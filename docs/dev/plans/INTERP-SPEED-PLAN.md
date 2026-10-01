@@ -11,6 +11,58 @@ taught. Measurements come from
 
 ---
 
+## The order, refreshed 2026-10-01
+
+Tasks 2–9 below have each landed in part. This is the order for what is left,
+across this plan, [CNP-PLAN.md](CNP-PLAN.md), [TYPES-PLAN.md](TYPES-PLAN.md)
+and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
+
+**Tier 1, in progress:**
+
+1. **Typed values in value position** — task 9's rest, which is also
+   [NATIVE-MATH-PLAN.md](NATIVE-MATH-PLAN.md) phase 4: comparisons and
+   arithmetic whose result is read (not only a condition), with a tag check at
+   each leaf, and `++`/`op=` on element and attribute targets (`@a[$i]++`,
+   `$!n++`). TYPES N0 measured typed evaluation at 4.8× on the arithmetic.
+2. **`--cnp` on x86-64** (CNP-PLAN P1). The one hard blocker for tier-up
+   (task 10), for `--cnp` as the default, and for retiring `--jit`.
+3. **Inline slots for `Env::vars`, `Env` on the slab, and pads for
+   `given`/`when` blocks** (task 6's last item, task 7's second). 99% of the
+   mallocs in `for %h.kv -> $k, $v`, 30% of those in `objects`, and a loop
+   3.3× slower inside a `given`.
+4. **The multi-dispatch cache, and the redispatch context built only for a
+   body that redispatches** (task 6, V6 P2, issue #47). `multiwhere` is the
+   last perf-guard kernel slower than v4.0.1.
+
+**Tier 2:**
+
+5. `--cnp` sees more loop sources: `for @array`, `for %h.kv`, the
+   statement-modifier `for`, then `.map`. Of the 40 programs in `examples/` and
+   `tools/bench/`, 20 have no loop it counts at all, and since 2026-09-29 a
+   kernel may index and call, so reach is now the limit.
+6. Memory without touching `Value`: `ObjectData::boxed` behind a pointer
+   (128 of 280 bytes), the 83 `make_shared<Value>` sites onto the slab and
+   Pairs with an inline key, `VarExpr`'s declaration-only fields behind a
+   pointer, and `Callable` split into a per-AST part and a small closure
+   (V6 P3 items 4, 5, 7, 8).
+7. Packed native arrays: `my int @a` as contiguous `int64` (V6 P3 item 6).
+   The 26× row in V6's memory table, SPEC-DIVERGENCES #14, and contiguous data
+   for `--cnp`.
+8. Task 5's rest, done as hot/rare splits of whole functions, and the
+   frame-size ceiling in `budget.raku`.
+9. Task 10 on arm64: `--cnp` on by default for hot loops, the threaded-program
+   decision, the kernel arena (CNP-PLAN P2), then `--jit` retired once item 2
+   has landed.
+
+**Tier 3, measure first or wait:** the built-in method call-site cache (task 3,
+blocked on a per-segment audit; also what `textsplit` waits on); handlers for
+more node kinds (task 8, first reading −1.1% mean); Rats without their
+`shared_ptr<BigInt>` pair (task 7); `--types` N1–N3 (a correctness contract
+since N0); and `Value` below 80 bytes (VALUE32-PLAN: an architecture change
+now, not a layout one).
+
+---
+
 ## Where the gap is
 
 How many times faster `--exe` runs each benchmark kernel than the interpreter
@@ -85,7 +137,7 @@ known on one machine in one sitting.
 ### 2. Win back the v4.0.1 → v5.0.0 interpreter regressions
 
 v5.0.0 interprets 17 of 18 kernels slower than v4.0.1 did: `fib` +30%,
-`streq` +41% ([BENCHMARKS.md](../../status/BENCHMARKS.md#v401-to-v500)). The
+`streq` +41% ([BENCHMARKS-HISTORY.md](../findings/BENCHMARKS-HISTORY.md#v401-to-v500)). The
 split has already recovered part of it.
 
 *Moved after task 6:* tasks 3–6 rework the same paths, so a regression found
@@ -288,17 +340,13 @@ Each is its own plan, in V6's order of evidence per cost:
   the kernel's allocations per iteration 10 → 6. What is left per Rat is its
   cold block and the two `shared_ptr<BigInt>`s — the part that needs the
   172 `ratN()`/`ratD()` sites to stop handing out a `shared_ptr`.
-- [ ] [VALUE32-PLAN.md](VALUE32-PLAN.md): a 56-byte `Value`, the endgame.
-  *Priced again 2026-09-30, after tasks 3–9 took the temporaries out of the
-  hot loops:* the leaf samples in `Value` construction/copy/destruction,
-  vector growth, malloc/free and `shared_ptr` refcounting are 10–17% of
-  `hashfill`, `arraypush`, `loopsum`, `objects`, `fib` and `textsplit`, and
-  25% of `arrayops` (inlined copies not counted). Design A acts on the first
-  two and the refcount's size, not its atomic cost (VALUE32-PLAN measured
-  `Ref` at 1.08× on copying), so its expected gain on these kernels is the
-  plan's 3–12%, and the bigger win is footprint (a million-element array,
-  128 → 56 MB). It stays a campaign of its own: batches in a worktree,
-  gated like REPRESENTATION-PLAN's.
+- [x] [VALUE32-PLAN.md](VALUE32-PLAN.md) design A: `Value` is 80 bytes, not
+  128 (22605246). perf-guard −2.6% mean, every kernel level or faster, and a
+  third less memory (a million-element array 258 → 164 MB, `hashfill` 100 →
+  69 MB). The step to 72 (the cold block out of the struct) measured +1.8%
+  mean and was not kept, so design A ends at 80. Going lower is an
+  architecture change (kind-specific bodies, or the container leaving the
+  value), not a batch.
 
 *Done when:* V6's memory table has no row worse and the kernels that allocate
 (`hashfill`, `arraypush`, `objects`) have closed half their gap.

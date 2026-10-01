@@ -669,7 +669,8 @@ phases.
   are counted at all. A `for` over an array, over `.kv`, over a lazy sequence or
   as a statement modifier is not refused — it is never examined — and neither is
   any `.map`.
-- **It is not more general than `--jit`.** The 53 stencils are the ceiling.
+- **It is not more general than `--jit`.** The stencils (71 since the
+  2026-09-29 widening) are the ceiling.
 - **It is not a speculating JIT.** No type feedback and no deopt path: the tags
   are checked per operation, which is what lets a guard miss fall back *within*
   the kernel instead of leaving it.

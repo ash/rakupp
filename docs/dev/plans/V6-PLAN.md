@@ -247,10 +247,9 @@ Each item is gated alone, so its effect has a number:
 
 In order of evidence per cost:
 
-1. **[VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md), still unimplemented.**
-   A small first chunk instead of the 4,032-byte `std::deque` block
-   (ValueHash.h:60). It is the largest row in the memory table and 6–11.5% of
-   two profiles.
+1. **[VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md).** *Done* (8aa4be66):
+   a small first chunk instead of the 4,032-byte `std::deque` block. A program
+   that keeps 100k objects and 50k small hashes: peak RSS 531 → 175 MB.
 2. **Inline storage for `Env::vars`.** Four stable slots with spill, and the
    86 `make_shared<Env>` sites moved onto the slab. It accounts for 99% of the
    mallocs in `for %h.kv -> $k, $v` and 30% of those in `objects`.
@@ -273,7 +272,8 @@ In order of evidence per cost:
    unboxed typed slots in the pads. Re-price them first; the UNBOX lanes landed
    on 2026-09-19 and took phase 4.
 10. **The endgame** ([VALUE32-PLAN.md](VALUE32-PLAN.md)):
-    - design A, a 56-byte `Value`
+    - design A: *landed at 80 bytes* (22605246), −2.6% mean and a third less
+      memory; the step to 72 measured +1.8% and was not kept, so A ends there
     - then the question the plan leaves open, whether values stop being
       refcounted; that is also the answer to reference cycles
 
@@ -327,7 +327,8 @@ In order of evidence per cost:
 
 - **`--cnp` becomes the default and `--jit` goes** ([CNP-PLAN.md](CNP-PLAN.md)):
   - stencils that call a runtime helper that cannot throw, covering index
-    reads and writes, hash elements and calls
+    reads and writes, hash elements and calls — *landed 2026-09-29*
+    (0fec0ac2, 2374b5c0, 2c85fb9c, 07508052)
   - correct answers on x86-64
   - threaded programs
 
@@ -492,6 +493,10 @@ overturn these:
 | hashing the method-dispatch chain | slower than the chain |
 | repacking `Value`'s fields | 2.5% slower |
 | constant folding | 0.7 foldable sites per 1k nodes |
+| `Value`'s cold block out of the struct (80 → 72 bytes) | +1.8% mean for 4–10% less memory; the cost is the mechanism, not the size (VALUE32-PLAN batch 5) |
+| native storage for variables in the interpreter | 1.00× over guarded typed evaluation (TYPES-PLAN N0) |
+| a small front for `evalBinary`'s fast shape | `fib` +4–5%: two calls where there was one (INTERP-SPEED-PLAN task 5) |
+| a handler for a Binary with no fast shape | `fib` +1.1%, mean +0.4% (INTERP-SPEED-PLAN task 8) |
 
 The last five are from earlier sittings, with their files under
 [../experiments/](../experiments/).

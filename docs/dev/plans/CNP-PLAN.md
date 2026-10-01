@@ -8,6 +8,15 @@ named the four things it would cost; this file is what they actually cost.*
 the build-time extractor, the patcher, the lowering, the bundled-binary lane, and
 ten cases of its own on top of the fourteen it inherits from `--jit`.
 
+**Since then (2026-09-29):** a kernel may index plain arrays and hashes
+(0fec0ac2), call routines with its variables written back and reloaded around
+each call (2374b5c0), call methods (2c85fb9c), compile a small sub in place
+instead of calling it (07508052), and keep a small Rat exact in a register
+pair (977d435e) — [TYPES-PLAN.md](TYPES-PLAN.md) N5 v1 and N6. 71 stencils.
+The sections below are the design as it landed; where they say "53 stencils"
+or "nothing else", read them as of 2026-09-19. What is open is the phase table
+at the end: x86-64 (P1) first.
+
 **Both flags are provisional, and the intended end state is that neither
 survives as a flag.** `--jit` and `--cnp` are one feature with two backends,
 kept apart only so each can be measured against the interpreter on its own. The
@@ -477,7 +486,7 @@ One binary, no compiler and no rakupp on the machine running it.
   differential gate caught and nothing else would have. Copy-and-patch binds its
   slots by name and has the question nowhere. Closing the split means teaching
   Codegen to bind a topic to a name.
-- **It is not more general than `--jit`.** The 53 stencils are the ceiling. Where
+- **It is not more general than `--jit`.** The stencils (71 now) are the ceiling. Where
   `--jit` can in principle compile whatever `--exe -O` emits, this refuses and
   leaves the loop interpreted.
 - **It does not tier up a loop whose operators the program overloads**, and
@@ -511,7 +520,7 @@ One binary, no compiler and no rakupp on the machine running it.
 | **P0** | the ABI, the stencils, the extractor, the patcher, the lowering, `--cnp`, the gate | **DONE** |
 | **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **next, and now a known defect rather than a gap** |
 | **P2** | arena allocation, so kernels share pages instead of taking one each | |
-| **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | per-item gates |
+| **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | **in part**: element reads and stores, calls, methods, inlined small subs, the Rat lane (2026-09-29). Next: loop sources — `for @array`, `.kv`, the statement modifier, `.map` |
 | | *and*: re-read read-only slots per iteration instead of refusing a threaded program outright, if the measured cost of one inline reload turns out to be worth the generality | |
 | **P4** | make it the default and retire `--jit` | |
 
