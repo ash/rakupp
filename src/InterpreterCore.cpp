@@ -1841,29 +1841,17 @@ struct TopicAliasFrame {
         v = &tc.topicAliases;
         v->push_back({nullptr, &var, arr, 0});
     }
+    TopicAliasFrame(ExecContext& tc, bool enable, const std::string& var, const Value* packedSrc) {
+        if (!enable) return;
+        v = &tc.topicAliases;
+        v->push_back({nullptr, &var, PRef<ValueList>(), 0, packedSrc});
+    }
     void at(Env* scope, size_t i) { // between our push and pop, back() is ours
         if (v) { auto& r = v->back(); r.scope = scope; r.idx = i; }
     }
     ~TopicAliasFrame() { if (v) v->pop_back(); }
 };
 
-// Whether an if/unless/with reads a condition's VALUE rather than only its
-// truth (IfStmt::condValueUsed): a binder on a branch or on its else, or a
-// branch body whose lone placeholder — or implicit @_ — receives the value.
-// These are the only readers of `cv`/`lastCond` in exec's IfStmt arm.
-static bool ifCondValueUsed(const IfStmt* is) {
-    if (!is->thenVar.empty() || !is->elseVar.empty() || !is->elseParams.empty()) return true;
-    for (auto& v : is->branchVars) if (!v.empty()) return true;
-    for (auto& p : is->branchParams) if (!p.empty()) return true;
-    for (auto& br : is->branches) {
-        if (!br.second) continue;
-        if (!computePlaceholders(br.second->stmts).empty()) return true;
-        std::set<std::string> ph2;
-        for (auto& s2 : br.second->stmts) collectPHStmt(s2.get(), ph2);
-        if (ph2.count("@_")) return true;
-    }
-    return false;
-}
 
 // A vector of pointers with its first eight inline: a candidate's positional
 // parameters, collected on every scoring, were a heap block per candidate.
@@ -3112,7 +3100,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // IterationEnd is the iteration protocol's SENTINEL, so a literal one
     // sitting in the list ENDS the loop there (`.say for ["foo",
     // IterationEnd, "baz"]` prints only foo)
-    if (listv.t == VT::Array && listv.arr()) {
+    if (listv.t == VT::Array && !listv.packedLive() && listv.arr()) {   // (words hold no IterationEnd)
         for (size_t k = 0; k < listv.arr()->size(); k++)
             if ((*listv.arr())[k].t == VT::Type && (*listv.arr())[k].s == "IterationEnd") {
                 Value cut = Value::array(); cut.isList = listv.isList;
@@ -3480,6 +3468,72 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
             return st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted));
         }();
+        // PACKED-ARRAY-PLAN: `for @a` over a still-packed array walks the
+        // words, and a write through the topic goes back as a word while it
+        // is one. Whatever unpacks the array meanwhile — the body, a write
+        // that is not a word, take-rw — leaves the walk on the unpacked list,
+        // where it continues as the loop below would have.
+        if (listv.packedLive() && !hyperLoop && fs->params.empty() && fs->vars.size() <= 1 &&
+            !var.empty() && var[0] == '$' && fs->list->kind == NK::VarExpr &&
+            static_cast<VarExpr*>(fs->list.get())->name.size() > 1 &&
+            static_cast<VarExpr*>(fs->list.get())->name[0] == '@') {
+            PackedArr* pa = listv.packed();
+            const bool rw = fs->vars.empty() || fs->rwVars;
+            auto elemAt = [&](size_t k, Value& out) -> bool {   // false past the end
+                if (listv.packedLive()) {
+                    if (k >= pa->w.size()) return false;
+                    out = pa->at(k);
+                    return true;
+                }
+                ParStripe es(*this, pa->boxed.get());
+                if (k >= pa->boxed->size()) return false;
+                out = (*pa->boxed)[k];
+                return true;
+            };
+            Value* topic = nullptr;
+            size_t i = 0;
+            std::function<void()> rb = [&] {
+                Value el;
+                if (!rw && elemAt(i, el)) {
+                    if (topic) *topic = asTopic(std::move(el), var, 0);
+                    else scope->define(var, asTopic(std::move(el), var, 0));
+                }
+            };
+            const bool flat = flatLoopBody(fs->body.get());
+            TopicAliasFrame taf(tctx_, rw, var, &listv);
+            for (;; i++) {
+                Value el;
+                if (!elemAt(i, el)) break;
+                if (flat && topic && scope.use_count() == 1) *topic = asTopic(std::move(el), var, 0);
+                else {
+                    freshScope();
+                    topic = &scope->define(var, asTopic(std::move(el), var, 0));
+                }
+                taf.at(scope.get(), i);
+                Value nx;
+                const bool last = !elemAt(i + 1, nx);
+                bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, last, col, rb);
+                if (rw) {
+                    auto it = scope->vars.find(var);
+                    if (it != scope->vars.end()) {
+                        const Value& nv = *it->second.deref();
+                        if (listv.packedLive() && i < pa->w.size() && plainWordValue(nv, pa->isNum)) {
+                            if (pa->isNum) std::memcpy(&pa->w[i], &nv.n, 8);
+                            else pa->w[i] = nv.i;
+                        } else {
+                            ValueList* l = listv.arr();
+                            ParStripe es3(*this, l);
+                            if (i < l->size()) {
+                                (*l)[i] = nv;
+                                if ((*l)[i].t == VT::Array && arrayElemSrc) (*l)[i].itemized = false;
+                            }
+                        }
+                    }
+                }
+                if (!cont) break;
+            }
+            return forResult();
+        }
         if (listv.t == VT::Array && listv.arr() && !liveLazy) {
             auto arr = listv.arrS(); // share, don't copy the elements
             // `$_` is rw-aliased to the elements when the source is a mutable
@@ -11282,6 +11336,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
                     plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get()))
                     cls = 6;
+                else if (a->target && a->target->kind == NK::Index && packedStoreShape(a))
+                    cls = 7;
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
                     if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
@@ -11296,7 +11352,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 a->simpleSlot = cls;
                 sv = cls;
             }
-            if (sv == 6) {
+            if (sv == 7) {
+                Value out;
+                if (packedElemStore(a, out)) return sink ? Value::any() : out;
+            }
+            else if (sv == 6) {
                 if (Value* slot = declLane(a)) return sink ? Value::any() : *slot;
             }
             else if (sv >= 1) {
@@ -11951,44 +12011,41 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     return r;
 }
 
-static bool isDimslipIndex(const Expr* e) {
-    if (!e || e->kind != NK::Index) return false;
-    auto* ix = static_cast<const Index*>(e);
-    if (!ix->index || ix->multiDim) return false;
-    auto isSlip = [](const Expr* x) {
-        return x->kind == NK::Unary && static_cast<const Unary*>(x)->op == "dimslip";
-    };
-    if (isSlip(ix->index.get())) return true;
-    // `@a[|| (0,1), 1]` — the slip heads a list of further dimensions
-    if (ix->index->kind == NK::ListExpr) {
-        auto& items = static_cast<const ListExpr*>(ix->index.get())->items;
-        return !items.empty() && isSlip(items[0].get());
+// The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when
+// @a is still packed, the subscript is in range and EXPR's value is a plain
+// machine Int (Num, for a `num` array) — what the boxed element would have
+// held. False before EXPR is evaluated for any other array, and after it for
+// any other value: packedStoreShape held EXPR to an expression with no effects,
+// so the general path's second evaluation of it answers the same value. Off
+// while worker threads run (a word written there could race the unpack).
+bool Interpreter::packedElemStore(Assign* a, Value& out) {
+    auto* ix = static_cast<Index*>(a->target.get());
+    auto* bve = static_cast<VarExpr*>(ix->base.get());
+    Value* bp = padPtr(bve);
+    if (!bp) bp = tctx_.cur->find(bve->name);
+    if (!bp || bp->t != VT::Array || !bp->packedLive() || bp->readonly || !bp->hashKind.empty() ||
+        bp->elemDefault() || (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0))
+        return false;
+    long long i;
+    if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
+    else {
+        auto* ive = static_cast<VarExpr*>(ix->index.get());
+        Value* ip = padPtr(ive);
+        if (!ip) ip = tctx_.cur->find(ive->name);
+        if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return false;
+        i = ip->i;
     }
-    return false;
-}
-// Does this assignment's initializer (syntactically) run a `start`? Cached per node.
-static bool assignSpawns(const Assign* a) {
-    static std::mutex mu;
-    static std::unordered_map<const Assign*, bool> cache;
-    {
-        std::lock_guard<std::mutex> lk(mu);
-        auto it = cache.find(a);
-        if (it != cache.end()) return it->second;
-    }
-    std::set<std::string> calls;
-    spCallsE(a->value.get(), calls);
-    bool r = calls.count("start") > 0;
-    std::lock_guard<std::mutex> lk(mu);
-    cache[a] = r;
-    return r;
-}
-// A Value that differs from `Value::integer(x)` (or `number(x)`) in its
-// number alone: what a packed array may hold as a word (PACKED-ARRAY-PLAN).
-static inline bool plainWordValue(const Value& v, bool asNum) {
-    return (asNum ? v.t == VT::Num : (v.t == VT::Int && !v.big())) && !v.x_ && v.pk_ == PK::None &&
-           !v.natBits && !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b &&
-           !v.isList && !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg &&
-           v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+    PackedArr* pa = bp->packed();
+    if (i < 0 || i >= (long long)pa->w.size()) return false;
+    Value v = eval(a->value.get());
+    v.readonly = v.immutableBind = false;
+    if (v.natBits == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
+    if (!plainWordValue(v, pa->isNum)) return false;
+    if (pa->isNum) std::memcpy(&pa->w[(size_t)i], &v.n, 8);
+    else pa->w[(size_t)i] = v.i;
+    if (anyRwLinks_) rwWriteThrough(a->target.get());
+    out = std::move(v);
+    return true;
 }
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {

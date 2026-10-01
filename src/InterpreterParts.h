@@ -525,6 +525,9 @@ void wrapNative(Value& v, int bits, bool sign, bool isFloat = false);
 void collectPHExpr(const Expr* e, std::set<std::string>& out);
 static std::string privMixinKey(const std::string& name);
 void collectPHStmt(const Stmt* s, std::set<std::string>& out);
+bool ifCondValueUsed(const IfStmt* is);   // an if reads its condition's VALUE (IfStmt::condValueUsed)
+bool isDimslipIndex(const Expr* e);   // `@a[|| …]`, a dimension slip
+bool assignSpawns(const Assign* a);   // the initializer runs a `start` (cached per node)
 
 void collectPHExpr(const Expr* e, std::set<std::string>& out);
 

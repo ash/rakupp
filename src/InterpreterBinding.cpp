@@ -2255,7 +2255,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
 }
 
 void Interpreter::drainIfFiniteLazy(const Value& v) {
-    if (!(v.t == VT::Array && v.arr() && v.ext())) return;
+    if (!(v.t == VT::Array && v.ext() && v.arr())) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (st->infinite) return;
     // …nor is a STREAMING source: it ends, but only when its producer says so,

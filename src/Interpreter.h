@@ -1141,7 +1141,10 @@ struct ExecContext {
     // copy-in/copy-out, severed the moment an iteration ends — `take-rw $_`
     // consults this to hand out a Proxy over the slot itself instead, so the
     // taken thing stays writable-through after the loop has moved on.
-    struct TopicAlias { Env* scope; const std::string* var; PRef<ValueList> arr; size_t idx; };
+    // (a loop over a still-packed array has no list yet: packedSrc is the
+    // array, and take-rw unpacks it to reach the slot — PACKED-ARRAY-PLAN)
+    struct TopicAlias { Env* scope; const std::string* var; PRef<ValueList> arr; size_t idx;
+                        const Value* packedSrc = nullptr; };
     std::vector<TopicAlias> topicAliases;
     std::vector<ValueList*> supplyStack;
     std::vector<std::shared_ptr<SupplyTapCtx>> tapStack; // active on-demand supply activations
@@ -3691,6 +3694,8 @@ private:
     int typedTreeBool(Binary* b);                  // a comparison subtree as a condition: 1/0, or -1
     bool fusedTypedAssign(Binary* b, Value* slot); // `$x = <typed subtree>`, into the slot
     static bool plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes the declaration lane
+    static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane
+    bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
     bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
     Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
     bool typedTreeDecide(Binary* b);               // is it a typed-subtree root (and compiled to one)?

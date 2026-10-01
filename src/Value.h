@@ -1189,8 +1189,8 @@ namespace rakupp {
 
 // PACKED-ARRAY-PLAN. The words of a `my int @a` / `my num @a` (a Num bit-cast
 // into its int64), until something asks for the elements as Values: then
-// `boxed` is built once and the words are released, and the body answers as a
-// ValueList for every Value that shares it.
+// `boxed` is built once, and the body answers as a ValueList for every Value
+// that shares it (the words stay: see packedUnpackBody).
 struct PackedArr {
     bool isNum = false;
     std::vector<int64_t> w;
@@ -1201,6 +1201,14 @@ struct PackedArr {
         double d; std::memcpy(&d, &w[i], 8); return Value::number(d);
     }
 };
+// A Value that differs from `Value::integer(x)` (or `number(x)`) in its
+// number alone: what a packed array may hold as a word (PACKED-ARRAY-PLAN).
+inline bool plainWordValue(const Value& v, bool asNum) {
+    return (asNum ? v.t == VT::Num : (v.t == VT::Int && !v.big())) && !v.x_ && v.pk_ == PK::None &&
+           !v.natBits && !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b &&
+           !v.isList && !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg &&
+           v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+}
 inline PackedArr* Value::packed() const { return pk_ == PK::Packed ? pv<PackedArr>() : nullptr; }
 inline bool Value::packedLive() const {
     return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);
@@ -1310,7 +1318,7 @@ std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=fal
 // The walk descends exactly as many levels as there are dimensions, so a leaf
 // that is ITSELF an array is not flattened along with the structure.
 inline bool isMultiDimShaped(const Value& v) {
-    return v.t == VT::Array && v.arr() && v.shape() && v.shape()->size() >= 2;
+    return v.t == VT::Array && v.shape() && v.shape()->size() >= 2 && v.arr();
 }
 inline void shapedLeaves(const Value& v, ValueList& out) {
     const size_t ndim = v.shape() ? v.shape()->size() : 0;

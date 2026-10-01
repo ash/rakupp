@@ -75,6 +75,28 @@ an interleaved perf-guard A/B, and the memory row.
 2. Element stores (4) and `for` iteration (5).
 3. `--cnp` (6) and the reductions (7).
 
+## Status
+
+- **Batch 1 (done, 1071b9e3).** Construction, reads, `.elems`/`.end`. A
+  million-element `my int @a = ^N` read back by index: 83 → 9 bytes an element.
+- **Batch 2 (done).** Element stores, `for`, and `push`:
+  - `@a[$i] = EXPR` / `@a[3] = EXPR` (Assign::simpleSlot 7, the packed-store
+    lane) writes the word when the subscript is in range and EXPR's value is a
+    plain machine Int (Num, for a `num` array). EXPR is held to literals, plain
+    lexicals, element reads and arithmetic over them: the lane evaluates it
+    before it knows the value fits a word, and a value that does not goes the
+    general way, which evaluates it again.
+  - `for @a` walks the words. A write through the topic (`$_`, `<-> $x`) goes
+    back as a word while it is one; anything that unpacks the array meanwhile
+    leaves the walk on the unpacked list. take-rw over the topic unpacks.
+  - `.push` / `push` of plain machine words appends words.
+  - Stores and pushes take the general path while worker threads run (a word
+    written there could race the unpack).
+  - A million-element array filled by index, summed by `for` and stepped
+    through `$_`: 96 → 16 MB peak, 0.46 → 0.28 s.
+- **Batch 3 (next).** `--cnp` on packed registers (a packed `for @a` does not
+  enter a kernel yet), the reductions, and the census below.
+
 ## What would falsify this plan
 
 - If ordinary programs over `my int @a` unpack on their first few statements —

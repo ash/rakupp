@@ -1914,7 +1914,7 @@ Value Interpreter::takeRwSlotProxy(Expr* arg) {
         if (owner) {
             for (auto it = tctx_.topicAliases.rbegin(); it != tctx_.topicAliases.rend(); ++it)
                 if (it->scope == owner.get() && *it->var == name)
-                    return makeArraySlotProxy(it->arr, it->idx);
+                    return makeArraySlotProxy(it->arr ? it->arr : it->packedSrc->arrS(), it->idx);
             return makeEnvSlotProxy(owner, name);
         }
     }
@@ -3332,6 +3332,104 @@ bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
     }
 }
 
+
+// The packed-store lane's shape (Assign::simpleSlot 7, PACKED-ARRAY-PLAN batch
+// 2): `@name[$i] = EXPR` or `@name[3] = EXPR`, where EXPR has no effects.
+// The lane evaluates EXPR before it knows the value fits a word, and a value
+// that does not goes the general way, which evaluates EXPR again: so EXPR is
+// held to literals, plain lexicals, element reads and arithmetic over them.
+static bool packedRhsPure(const Expr* e, int depth = 0) {
+    if (!e || depth > 8) return false;
+    auto lex = [](const Expr* x, char sigil) {
+        if (x->kind != NK::VarExpr) return false;
+        auto* ve = static_cast<const VarExpr*>(x);
+        return !ve->declare && ve->name.size() > 1 && ve->name[0] == sigil &&
+               (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_');
+    };
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: return true;
+        case NK::VarExpr: return lex(e, '$');
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            static const char* kOps[] = {"+", "-", "*", "/", "%", "div", "mod", "+&", "+|", "+^", "+<", "+>", "**"};
+            bool ok = false;
+            for (const char* o : kOps) if (b->op == o) { ok = true; break; }
+            return ok && packedRhsPure(b->lhs.get(), depth + 1) && packedRhsPure(b->rhs.get(), depth + 1);
+        }
+        case NK::Index: {
+            auto* ix = static_cast<const Index*>(e);
+            return !ix->isHash && !ix->multiDim && !ix->semicolonSub && !ix->zen && ix->adverb.empty() &&
+                   ix->base && lex(ix->base.get(), '@') && ix->index &&
+                   (ix->index->kind == NK::IntLit || lex(ix->index.get(), '$'));
+        }
+        default: return false;
+    }
+}
+bool Interpreter::packedStoreShape(const Assign* a) {
+    if (!a->target || a->target->kind != NK::Index || a->userOp || !opEq(a->op, "=")) return false;
+    auto* ix = static_cast<const Index*>(a->target.get());
+    if (ix->isHash || ix->multiDim || ix->semicolonSub || ix->zen || !ix->adverb.empty() || !ix->base ||
+        ix->base->kind != NK::VarExpr || !ix->index)
+        return false;
+    auto* bv = static_cast<const VarExpr*>(ix->base.get());
+    if (bv->declare || bv->name.size() < 2 || bv->name[0] != '@' ||
+        !(ascii::isalpha((unsigned char)bv->name[1]) || bv->name[1] == '_'))
+        return false;
+    const Expr* ie = ix->index.get();
+    const bool idxOk = ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
+                                              : ie->kind == NK::VarExpr && packedRhsPure(ie);
+    return idxOk && packedRhsPure(a->value.get());
+}
+
+// Whether an if/unless/with reads a condition's VALUE rather than only its
+// truth (IfStmt::condValueUsed): a binder on a branch or on its else, or a
+// branch body whose lone placeholder — or implicit @_ — receives the value.
+// These are the only readers of `cv`/`lastCond` in exec's IfStmt arm.
+bool ifCondValueUsed(const IfStmt* is) {
+    if (!is->thenVar.empty() || !is->elseVar.empty() || !is->elseParams.empty()) return true;
+    for (auto& v : is->branchVars) if (!v.empty()) return true;
+    for (auto& p : is->branchParams) if (!p.empty()) return true;
+    for (auto& br : is->branches) {
+        if (!br.second) continue;
+        if (!computePlaceholders(br.second->stmts).empty()) return true;
+        std::set<std::string> ph2;
+        for (auto& s2 : br.second->stmts) collectPHStmt(s2.get(), ph2);
+        if (ph2.count("@_")) return true;
+    }
+    return false;
+}
+
+bool isDimslipIndex(const Expr* e) {
+    if (!e || e->kind != NK::Index) return false;
+    auto* ix = static_cast<const Index*>(e);
+    if (!ix->index || ix->multiDim) return false;
+    auto isSlip = [](const Expr* x) {
+        return x->kind == NK::Unary && static_cast<const Unary*>(x)->op == "dimslip";
+    };
+    if (isSlip(ix->index.get())) return true;
+    // `@a[|| (0,1), 1]` — the slip heads a list of further dimensions
+    if (ix->index->kind == NK::ListExpr) {
+        auto& items = static_cast<const ListExpr*>(ix->index.get())->items;
+        return !items.empty() && isSlip(items[0].get());
+    }
+    return false;
+}
+// Does this assignment's initializer (syntactically) run a `start`? Cached per node.
+bool assignSpawns(const Assign* a) {
+    static std::mutex mu;
+    static std::unordered_map<const Assign*, bool> cache;
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = cache.find(a);
+        if (it != cache.end()) return it->second;
+    }
+    std::set<std::string> calls;
+    spCallsE(a->value.get(), calls);
+    bool r = calls.count("start") > 0;
+    std::lock_guard<std::mutex> lk(mu);
+    cache[a] = r;
+    return r;
+}
 
 // The placeholder collectors (`$^a`, `$:n`, `@_`, `$!attr` references): run when
 // a block is declared, not per evaluation, so they live here rather than with

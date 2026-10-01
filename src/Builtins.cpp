@@ -5305,6 +5305,22 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         const long long n = (long long)inv.packed()->w.size();
         return Value::integer(m[0] == 'e' && m[1] == 'l' ? n : n - 1);
     }
+    // …and `.push` of plain machine words appends words (not while worker
+    // threads run: a word appended there could race the unpack)
+    if (inv.pk_ == PK::Packed && !args.empty() && m.size() == 4 && opEq(m, "push") && inv.hashKind.empty() &&
+        inv.packedLive() && !(parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0)) {
+        PackedArr* pa = inv.packed();
+        bool words = true;
+        for (auto& a : args) if (!plainWordValue(a, pa->isNum)) { words = false; break; }
+        if (words) {
+            for (auto& a : args) {
+                int64_t w = a.i;
+                if (pa->isNum) std::memcpy(&w, &a.n, 8);
+                pa->w.push_back(w);
+            }
+            return inv;
+        }
+    }
     // A construction whose BUILD/TWEAK answered a Failure answers that Failure
     // (BuildFailureEx, from the hook runner). The catch is armed once per
     // `.new`/`.bless` — a nested construction inside a BUILD arms its own —
