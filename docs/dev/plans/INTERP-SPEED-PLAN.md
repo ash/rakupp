@@ -25,8 +25,8 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
    each leaf, and `++`/`op=` on element and attribute targets (`@a[$i]++`,
    `$!n++`). TYPES N0 measured typed evaluation at 4.8× on the arithmetic.
    *In part (task 9 below):* typed subtrees, Num in the fast shape, and the
-   `my $x = EXPR` declaration lane — `types/mandel-plain` −63%. Element and
-   attribute targets are still open.
+   `my $x = EXPR` declaration lane — `types/mandel-plain` −63%; and `++`/`--`
+   on elements and attributes in place — perf-guard `hash` −24%.
 2. **`--cnp` on x86-64** (CNP-PLAN P1). The one hard blocker for tier-up
    (task 10), for `--cnp` as the default, and for retiring `--jit`.
    *Fixed for Mach-O 2026-10-01:* the GOT slot held value − 4. Linux x86-64
@@ -484,8 +484,19 @@ UNBOX / `--cnp` idea applied per node rather than per loop.
     compare-and-declare loop −41%. `examples/mandel.raku` is level: its
     decimal literals are Rats. perf-guard level (retired instructions within
     ±0.4% on 15 of 19 kernels).
-  - *Not done:* element and attribute targets (`@a[$i]++`, `$!n++`); typed
-    Rat leaves.
+  - `@a[I]++`, `%h{K}++` and `$!n++` step an Int in place
+    (`plainIntStepTarget`): an existing element of a plain `@`/`%` lexical
+    (no element type, shape, laziness, List or Bag) at a subscript evaluated
+    without side effects — a literal, a plain `$`, a typed or fast-shape
+    expression; a hash key is its Str, or an Int's decimal — or an untyped,
+    unconstrained `$!` attribute, through the same slot lvalue reaches
+    (`attrSlotFor`). Anything else, a missing element included, takes the
+    full path. Against 8cc40284: perf-guard `hash` −24% (geomean −1.3%), and
+    in retired instructions an element-increment loop −22%, an attribute one
+    −43%. A loop keyed by another subscript (`%h{@k[$i]}++`) is +2% in
+    retired instructions: the lane's own refusal is 16 per iteration, the
+    rest is how the compiler laid out the surrounding path.
+  - *Not done:* typed Rat leaves.
 
 *Done when:* `loopsum` and `streq` have closed half their gap.
 

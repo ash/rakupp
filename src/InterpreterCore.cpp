@@ -19350,6 +19350,73 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
     return padOwnerLayout(ve)->simple[ve->padSlot] ? slot : nullptr;
 }
 
+// The slot `@a[I]++`, `%h{K}++` or `$!n++` may step in place, as
+// plainIntStepSlot's for a scalar: an element that exists and holds a plain
+// Int, of a plain `@`/`%` lexical — no element type, shape, laziness, Bag or
+// List — at a subscript computed without side effects (declLaneRhs); or an
+// untyped, unconstrained `$!` attribute of a plain object. Null, with
+// nothing evaluated, for anything else.
+[[gnu::noinline]] Value* Interpreter::plainIntStepTarget(Expr* e) {
+    if (e->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(e);
+        if (!ix->index || !ix->base || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() ||
+            !plainLexVar(ix->base.get()))
+            return nullptr;
+        switch (ix->index->kind) {   // the subscripts declLaneRhs can answer, before any lookup
+            case NK::IntLit: case NK::StrLit: case NK::VarExpr: case NK::Binary: break;
+            default: return nullptr;
+        }
+        auto* bv = static_cast<VarExpr*>(ix->base.get());
+        const char sig = bv->name[0];
+        if (sig != (ix->isHash ? '%' : '@')) return nullptr;
+        Env* const cur = tctx_.cur.get();   // (after the shape tests: a thread_local read is a call)
+        Value* bp = padPtrIn(bv, cur);
+        if (!bp) bp = cur->find(bv->name);
+        if (!bp || bp->readonly || !bp->hashKind.empty() || bp->isList || bp->natBits ||
+            bp->ext() || bp->shape() || !bp->ofType().empty())
+            return nullptr;
+        Value k;
+        if (!declLaneRhs(ix->index.get(), k)) return nullptr;
+        Value* el = nullptr;
+        if (!ix->isHash) {
+            if (bp->t != VT::Array || !bp->arr() || k.t != VT::Int || k.big() || k.natBits) return nullptr;
+            auto& a = *bp->arr();
+            if (k.i < 0 || (unsigned long long)k.i >= a.size()) return nullptr;
+            el = &a[(size_t)k.i];
+        } else {
+            // what hashSubKey answers for a plain hash: the key's Str
+            if (bp->t != VT::Hash || !bp->hash() || bp->objKeyed) return nullptr;
+            std::string ks;
+            if (k.t == VT::Str) ks = k.s.str();
+            else if (k.t == VT::Int && !k.big() && !k.natBits) ks = std::to_string(k.i);
+            else return nullptr;
+            auto it = bp->hash()->find(ks);
+            if (it == bp->hash()->end()) return nullptr;
+            el = &it->second;
+        }
+        return plainIntSlotValue(*el) ? el : nullptr;
+    }
+    if (e->kind != NK::VarExpr) return nullptr;
+    auto* ve = static_cast<VarExpr*>(e);
+    if (ve->declare || ve->name.size() < 3 || ve->name[0] != '$' || ve->name[1] != '!' || !ve->attrTwin.empty())
+        return nullptr;
+    Value* selfp = tctx_.cur->findSelf();
+    if (!selfp || selfp->t != VT::Object || !selfp->obj() || !selfp->obj()->cls) return nullptr;
+    for (ClassInfo* ci = selfp->obj()->cls.get(); ci; ci = ci->parent.get())
+        for (auto& at : ci->attrs)
+            if (at.name == ve->attrBare) {
+                if (at.sigil != '$' || !at.type.empty() || at.where || at.defaultTrait ||
+                    !at.containerIs.empty())
+                    return nullptr;
+                std::string buf;
+                const std::string& key = attrSlotFor(selfp->obj(), ve->attrBare, buf);
+                auto it = selfp->obj()->attrs.find(key);
+                if (it == selfp->obj()->attrs.end() || !plainIntSlotValue(it->second)) return nullptr;
+                return &it->second;
+            }
+    return nullptr;
+}
+
 // `$x = $a op $b` with `+`, `-` or `*` on two machine Ints (task 9, the fused
 // integer leaf): the result written into the slot, where the lane would build
 // an Int, move it in and destroy the temporary. Only for a node compiled to
@@ -22478,8 +22545,12 @@ Value Interpreter::evalUnary(Unary* u) {
         // `where`), so the typed-assign check below would find nothing; with
         // no subset types and no `is rw` links anywhere, nothing else below
         // applies to it either. An overflow takes the full path (a bignum).
-        if (u->operand->kind == NK::VarExpr && subsets_.empty() && !anyRwLinks_)
-            if (Value* slot = plainIntStepSlot(static_cast<VarExpr*>(u->operand.get()))) {
+        // …and `@a[$i]++`, `%h{$k}++`, `$!n++` on an element or untyped
+        // attribute that holds one (plainIntStepTarget, out of line)
+        if (subsets_.empty() && !anyRwLinks_)
+            if (Value* slot = u->operand->kind == NK::VarExpr && static_cast<VarExpr*>(u->operand.get())->name[1] != '!'
+                                  ? plainIntStepSlot(static_cast<VarExpr*>(u->operand.get()))
+                                  : plainIntStepTarget(u->operand.get())) {
                 long long z;
                 if (!(opEq(u->op, "++") ? rakupp::add_ovf(slot->i, 1, &z)
                                         : rakupp::sub_ovf(slot->i, 1, &z))) {
