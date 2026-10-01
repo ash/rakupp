@@ -109,6 +109,35 @@ static PtrCensusDump g_ptrCensusDump;
 
 namespace rakupp {
 
+// A packed array unpacks once (PACKED-ARRAY-PLAN): the first arr()/arrS() on
+// it builds the Values every element would have been stored as — a plain Int
+// or Num — under one lock, since two threads may ask at once, and from then on
+// the shared body answers with that list.
+static std::mutex g_packedMu;
+static void packedUnpackBody(PackedArr* p) {
+    if (p->unpacked.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lk(g_packedMu);
+    if (p->unpacked.load(std::memory_order_relaxed)) return;
+    auto l = makePayload<ValueList>();
+    l->reserve(p->w.size());
+    for (size_t i = 0; i < p->w.size(); i++) l->push_back(p->at(i));
+    p->boxed = l;
+    // The words stay: a reader on another thread may be past its packedLive()
+    // test and reading them (parallel mode is the default), and they cost 8
+    // bytes an element beside the 80 just built.
+    p->unpacked.store(true, std::memory_order_release);
+}
+ValueList* Value::packedUnpack() const {
+    PackedArr* p = pv<PackedArr>();
+    packedUnpackBody(p);
+    return p->boxed.get();
+}
+PRef<ValueList> Value::packedUnpackS() const {
+    PackedArr* p = pv<PackedArr>();
+    packedUnpackBody(p);
+    return p->boxed;
+}
+
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ObjMethodStrFn g_objMethodStr = nullptr; // installed by InterpreterCalls.cpp (see Value.h)
 TypeDispNameFn g_typeDispName = nullptr; // installed by InterpreterBinding.cpp (see Value.h)

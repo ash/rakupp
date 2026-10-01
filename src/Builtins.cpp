@@ -5298,6 +5298,13 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // PACKED-ARRAY-PLAN: `.elems` / `.end` of a packed native array, from its
+    // words — through arr() they would unpack it
+    if (inv.pk_ == PK::Packed && args.empty() && m.size() <= 5 && inv.hashKind.empty() && inv.packedLive() &&
+        (opEq(m, "elems") || opEq(m, "end"))) {
+        const long long n = (long long)inv.packed()->w.size();
+        return Value::integer(m[0] == 'e' && m[1] == 'l' ? n : n - 1);
+    }
     // A construction whose BUILD/TWEAK answered a Failure answers that Failure
     // (BuildFailureEx, from the hook runner). The catch is armed once per
     // `.new`/`.bless` — a nested construction inside a BUILD arms its own —

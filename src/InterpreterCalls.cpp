@@ -3333,4 +3333,135 @@ bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
 }
 
 
+// The placeholder collectors (`$^a`, `$:n`, `@_`, `$!attr` references): run when
+// a block is declared, not per evaluation, so they live here rather than with
+// the evaluator in InterpreterCore.cpp.
+// The order `$:name` placeholders are first met in, while computePlaceholders
+// is listing them: Rakudo lists the named ones as they appear in the source
+// (`{ $:c ~ $:a }` is `(:$c!, :$a!)`), where the positional ones sort.
+static thread_local std::vector<std::string>* phNamedOrder_ = nullptr;
+
+static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
+    if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) { // $^a positional, $:n named
+        if (name[1] == ':' && phNamedOrder_ &&
+            std::find(phNamedOrder_->begin(), phNamedOrder_->end(), name) == phNamedOrder_->end())
+            phNamedOrder_->push_back(name);
+        out.insert(name);
+    }
+    else if (name == "@_" || name == "%_") out.insert(name); // implicit slurpies — consumers filter
+    else if (name.size() > 2 && name[1] == '!' &&
+             (ascii::isalpha((unsigned char)name[2]) || name[2] == '_'))
+        out.insert(name); // $!attr — attribute references; placeholder consumers filter these
+}
+void collectPHExpr(const Expr* e, std::set<std::string>& out) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::VarExpr: addIfPlaceholder(static_cast<const VarExpr*>(e)->name, out); break;
+        case NK::Binary: collectPHExpr(static_cast<const Binary*>(e)->lhs.get(), out);
+                         collectPHExpr(static_cast<const Binary*>(e)->rhs.get(), out); break;
+        case NK::Unary: collectPHExpr(static_cast<const Unary*>(e)->operand.get(), out); break;
+        case NK::Assign: collectPHExpr(static_cast<const Assign*>(e)->target.get(), out);
+                         collectPHExpr(static_cast<const Assign*>(e)->value.get(), out); break;
+        case NK::Call: { auto* c = static_cast<const Call*>(e); collectPHExpr(c->callee.get(), out);
+                         for (auto& a : c->args) collectPHExpr(a.get(), out); break; }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); collectPHExpr(m->inv.get(), out);
+                         for (auto& a : m->args) collectPHExpr(a.get(), out); break; }
+        case NK::Index: collectPHExpr(static_cast<const Index*>(e)->base.get(), out);
+                        collectPHExpr(static_cast<const Index*>(e)->index.get(), out); break;
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); collectPHExpr(t->cond.get(), out);
+                         collectPHExpr(t->then.get(), out); collectPHExpr(t->els.get(), out); break; }
+        case NK::Range: collectPHExpr(static_cast<const RangeExpr*>(e)->from.get(), out);
+                        collectPHExpr(static_cast<const RangeExpr*>(e)->to.get(), out); break;
+        case NK::Pair: {
+            auto* p = static_cast<const PairExpr*>(e);
+            if (p->keyExpr) collectPHExpr(p->keyExpr.get(), out);
+            collectPHExpr(p->value.get(), out); break;
+        }
+        case NK::ListExpr: for (auto& it : static_cast<const ListExpr*>(e)->items) collectPHExpr(it.get(), out); break;
+        // `{0 <= $^x < 0.3 ?? 0 !! 1}` — a chained comparison's operands carry
+        // placeholders too; without this the block had arity 0 and $^x was Any
+        // (Math::NIntegrate's step-function integrand integrated to 0)
+        case NK::ChainExpr: for (auto& it : static_cast<const ChainExpr*>(e)->operands) collectPHExpr(it.get(), out); break;
+        case NK::ArrayLit: for (auto& it : static_cast<const ArrayLit*>(e)->items) collectPHExpr(it.get(), out); break;
+        case NK::HashLit: for (auto& it : static_cast<const HashLit*>(e)->items) collectPHExpr(it.get(), out); break;
+        case NK::InterpStr: for (auto& it : static_cast<const InterpStr*>(e)->parts) collectPHExpr(it.get(), out); break;
+        case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e); // $^a lives in the raw pattern/repl text
+            auto scan = [&](const std::string& str) {
+                for (size_t i = 0; i + 2 < str.size(); i++)
+                    if (str[i] == '$' && str[i + 1] == '^' && ascii::isalpha((unsigned char)str[i + 2])) {
+                        size_t j = i + 2; std::string nm = "$^";
+                        while (j < str.size() && (ascii::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
+                        out.insert(nm);
+                    }
+            };
+            scan(sl->pattern); scan(sl->repl); break; }
+        case NK::RegexLit: { // and in a plain regex literal, the same way
+            const std::string& str = static_cast<const RegexLit*>(e)->pattern;
+            for (size_t i = 0; i + 2 < str.size(); i++)
+                if (str[i] == '$' && str[i + 1] == '^' && ascii::isalpha((unsigned char)str[i + 2])) {
+                    size_t j = i + 2; std::string nm = "$^";
+                    while (j < str.size() && (ascii::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
+                    out.insert(nm);
+                }
+            break; }
+        default: break; // do NOT descend into nested BlockExpr (own scope)
+    }
+}
+void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::ExprStmt: collectPHExpr(static_cast<const ExprStmt*>(s)->e.get(), out); break;
+        case NK::ReturnStmt: collectPHExpr(static_cast<const ReturnStmt*>(s)->value.get(), out); break;
+        case NK::Block: for (auto& st : static_cast<const Block*>(s)->stmts) collectPHStmt(st.get(), out); break;
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
+            for (auto& br : i->branches) { collectPHExpr(br.first.get(), out); collectPHStmt(br.second.get(), out); }
+            if (i->elseBlock) collectPHStmt(i->elseBlock.get(), out); break; }
+        case NK::WhileStmt: collectPHExpr(static_cast<const WhileStmt*>(s)->cond.get(), out);
+                            collectPHStmt(static_cast<const WhileStmt*>(s)->body.get(), out); break;
+        case NK::ForStmt: { auto* fs = static_cast<const ForStmt*>(s);
+            collectPHExpr(fs->list.get(), out);
+            // A block-form loop's placeholders are ITS parameters: `gather { for
+            // <a b> { take $^v } }` hands $^v to the loop block, not to the gather's
+            // (which then demanded an argument nobody passes). Only the modifier
+            // form, which has no block of its own, shares them. Attribute
+            // references are the class's wherever they sit, so they still count.
+            if (fs->modifier) collectPHStmt(fs->body.get(), out);
+            else {
+                std::set<std::string> inner;
+                collectPHStmt(fs->body.get(), inner);
+                for (auto& n : inner) if (n.size() > 1 && n[1] == '!') out.insert(n);
+            }
+            break; }
+        // `EXPR given $^n % 64` — a statement-modifier given/with: BOTH sides may
+        // carry placeholders (Digest::SHA3's ROL64 is written exactly this way).
+        // Only the MODIFIER form: a block given owns its own scope.
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            if (g->modifier) {
+                collectPHExpr(g->topic.get(), out);
+                if (g->body) for (auto& st : g->body->stmts) collectPHStmt(st.get(), out);
+            }
+            break; }
+        default: break;
+    }
+}
+
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
+    std::set<std::string> ph;
+    std::vector<std::string> namedOrder;
+    auto* savedOrder = phNamedOrder_;
+    phNamedOrder_ = &namedOrder;
+    try { for (auto& s : body) collectPHStmt(s.get(), ph); }
+    catch (...) { phNamedOrder_ = savedOrder; throw; }
+    phNamedOrder_ = savedOrder;
+    // the positional ones sorted (std::set is), then the named ones in the
+    // order they appear — the order Rakudo's signature lists them in. (The log
+    // also saw names from a nested loop block's own scope; only those `ph`
+    // kept belong to this body.)
+    std::vector<std::string> out;
+    for (auto& n : ph) if (n[1] == '^') out.push_back(n); // drop $!attr and @_/%_ refs
+    for (auto& n : namedOrder) if (ph.count(n)) out.push_back(n);
+    return out;
+}
+
+
 } // namespace rakupp

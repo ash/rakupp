@@ -381,77 +381,6 @@ static void nativeCompoundStore(Value& slot, const Value& before, int bits, bool
     wrapNative(slot, bits, sign, isFloat);
 }
 
-// The order `$:name` placeholders are first met in, while computePlaceholders
-// is listing them: Rakudo lists the named ones as they appear in the source
-// (`{ $:c ~ $:a }` is `(:$c!, :$a!)`), where the positional ones sort.
-static thread_local std::vector<std::string>* phNamedOrder_ = nullptr;
-
-static void addIfPlaceholder(const std::string& name, std::set<std::string>& out) {
-    if (name.size() > 2 && (name[1] == '^' || name[1] == ':')) { // $^a positional, $:n named
-        if (name[1] == ':' && phNamedOrder_ &&
-            std::find(phNamedOrder_->begin(), phNamedOrder_->end(), name) == phNamedOrder_->end())
-            phNamedOrder_->push_back(name);
-        out.insert(name);
-    }
-    else if (name == "@_" || name == "%_") out.insert(name); // implicit slurpies — consumers filter
-    else if (name.size() > 2 && name[1] == '!' &&
-             (ascii::isalpha((unsigned char)name[2]) || name[2] == '_'))
-        out.insert(name); // $!attr — attribute references; placeholder consumers filter these
-}
-void collectPHExpr(const Expr* e, std::set<std::string>& out) {
-    if (!e) return;
-    switch (e->kind) {
-        case NK::VarExpr: addIfPlaceholder(static_cast<const VarExpr*>(e)->name, out); break;
-        case NK::Binary: collectPHExpr(static_cast<const Binary*>(e)->lhs.get(), out);
-                         collectPHExpr(static_cast<const Binary*>(e)->rhs.get(), out); break;
-        case NK::Unary: collectPHExpr(static_cast<const Unary*>(e)->operand.get(), out); break;
-        case NK::Assign: collectPHExpr(static_cast<const Assign*>(e)->target.get(), out);
-                         collectPHExpr(static_cast<const Assign*>(e)->value.get(), out); break;
-        case NK::Call: { auto* c = static_cast<const Call*>(e); collectPHExpr(c->callee.get(), out);
-                         for (auto& a : c->args) collectPHExpr(a.get(), out); break; }
-        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); collectPHExpr(m->inv.get(), out);
-                         for (auto& a : m->args) collectPHExpr(a.get(), out); break; }
-        case NK::Index: collectPHExpr(static_cast<const Index*>(e)->base.get(), out);
-                        collectPHExpr(static_cast<const Index*>(e)->index.get(), out); break;
-        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); collectPHExpr(t->cond.get(), out);
-                         collectPHExpr(t->then.get(), out); collectPHExpr(t->els.get(), out); break; }
-        case NK::Range: collectPHExpr(static_cast<const RangeExpr*>(e)->from.get(), out);
-                        collectPHExpr(static_cast<const RangeExpr*>(e)->to.get(), out); break;
-        case NK::Pair: {
-            auto* p = static_cast<const PairExpr*>(e);
-            if (p->keyExpr) collectPHExpr(p->keyExpr.get(), out);
-            collectPHExpr(p->value.get(), out); break;
-        }
-        case NK::ListExpr: for (auto& it : static_cast<const ListExpr*>(e)->items) collectPHExpr(it.get(), out); break;
-        // `{0 <= $^x < 0.3 ?? 0 !! 1}` — a chained comparison's operands carry
-        // placeholders too; without this the block had arity 0 and $^x was Any
-        // (Math::NIntegrate's step-function integrand integrated to 0)
-        case NK::ChainExpr: for (auto& it : static_cast<const ChainExpr*>(e)->operands) collectPHExpr(it.get(), out); break;
-        case NK::ArrayLit: for (auto& it : static_cast<const ArrayLit*>(e)->items) collectPHExpr(it.get(), out); break;
-        case NK::HashLit: for (auto& it : static_cast<const HashLit*>(e)->items) collectPHExpr(it.get(), out); break;
-        case NK::InterpStr: for (auto& it : static_cast<const InterpStr*>(e)->parts) collectPHExpr(it.get(), out); break;
-        case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e); // $^a lives in the raw pattern/repl text
-            auto scan = [&](const std::string& str) {
-                for (size_t i = 0; i + 2 < str.size(); i++)
-                    if (str[i] == '$' && str[i + 1] == '^' && ascii::isalpha((unsigned char)str[i + 2])) {
-                        size_t j = i + 2; std::string nm = "$^";
-                        while (j < str.size() && (ascii::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
-                        out.insert(nm);
-                    }
-            };
-            scan(sl->pattern); scan(sl->repl); break; }
-        case NK::RegexLit: { // and in a plain regex literal, the same way
-            const std::string& str = static_cast<const RegexLit*>(e)->pattern;
-            for (size_t i = 0; i + 2 < str.size(); i++)
-                if (str[i] == '$' && str[i + 1] == '^' && ascii::isalpha((unsigned char)str[i + 2])) {
-                    size_t j = i + 2; std::string nm = "$^";
-                    while (j < str.size() && (ascii::isalnum((unsigned char)str[j]) || str[j] == '_')) nm += str[j++];
-                    out.insert(nm);
-                }
-            break; }
-        default: break; // do NOT descend into nested BlockExpr (own scope)
-    }
-}
 // Does this expression hand its value over IN A CONTAINER? Rakudo's sink does
 // not descend a Scalar to sink what is inside it, so a statement whose value
 // arrives contained is not sunk at all: `$p;`, `$q = failing-proc();` and
@@ -566,62 +495,6 @@ static Value gatherDeepCopy(const Value& v, int depth = 0) {
     }
     return c;
 }
-void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
-    if (!s) return;
-    switch (s->kind) {
-        case NK::ExprStmt: collectPHExpr(static_cast<const ExprStmt*>(s)->e.get(), out); break;
-        case NK::ReturnStmt: collectPHExpr(static_cast<const ReturnStmt*>(s)->value.get(), out); break;
-        case NK::Block: for (auto& st : static_cast<const Block*>(s)->stmts) collectPHStmt(st.get(), out); break;
-        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
-            for (auto& br : i->branches) { collectPHExpr(br.first.get(), out); collectPHStmt(br.second.get(), out); }
-            if (i->elseBlock) collectPHStmt(i->elseBlock.get(), out); break; }
-        case NK::WhileStmt: collectPHExpr(static_cast<const WhileStmt*>(s)->cond.get(), out);
-                            collectPHStmt(static_cast<const WhileStmt*>(s)->body.get(), out); break;
-        case NK::ForStmt: { auto* fs = static_cast<const ForStmt*>(s);
-            collectPHExpr(fs->list.get(), out);
-            // A block-form loop's placeholders are ITS parameters: `gather { for
-            // <a b> { take $^v } }` hands $^v to the loop block, not to the gather's
-            // (which then demanded an argument nobody passes). Only the modifier
-            // form, which has no block of its own, shares them. Attribute
-            // references are the class's wherever they sit, so they still count.
-            if (fs->modifier) collectPHStmt(fs->body.get(), out);
-            else {
-                std::set<std::string> inner;
-                collectPHStmt(fs->body.get(), inner);
-                for (auto& n : inner) if (n.size() > 1 && n[1] == '!') out.insert(n);
-            }
-            break; }
-        // `EXPR given $^n % 64` — a statement-modifier given/with: BOTH sides may
-        // carry placeholders (Digest::SHA3's ROL64 is written exactly this way).
-        // Only the MODIFIER form: a block given owns its own scope.
-        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
-            if (g->modifier) {
-                collectPHExpr(g->topic.get(), out);
-                if (g->body) for (auto& st : g->body->stmts) collectPHStmt(st.get(), out);
-            }
-            break; }
-        default: break;
-    }
-}
-
-std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
-    std::set<std::string> ph;
-    std::vector<std::string> namedOrder;
-    auto* savedOrder = phNamedOrder_;
-    phNamedOrder_ = &namedOrder;
-    try { for (auto& s : body) collectPHStmt(s.get(), ph); }
-    catch (...) { phNamedOrder_ = savedOrder; throw; }
-    phNamedOrder_ = savedOrder;
-    // the positional ones sorted (std::set is), then the named ones in the
-    // order they appear — the order Rakudo's signature lists them in. (The log
-    // also saw names from a nested loop block's own scope; only those `ph`
-    // kept belong to this body.)
-    std::vector<std::string> out;
-    for (auto& n : ph) if (n[1] == '^') out.push_back(n); // drop $!attr and @_/%_ refs
-    for (auto& n : namedOrder) if (ph.count(n)) out.push_back(n);
-    return out;
-}
-
 // A bareword term for native codegen — the interpreter's NameTerm tail: an
 // env-bound value, a zero-arg &routine call, a zero-arg builtin, else a type object.
 // The bareword VALUE constants — `pi`, `e`, `i`, `tau`, and the three that are
@@ -12109,6 +11982,15 @@ static bool assignSpawns(const Assign* a) {
     cache[a] = r;
     return r;
 }
+// A Value that differs from `Value::integer(x)` (or `number(x)`) in its
+// number alone: what a packed array may hold as a word (PACKED-ARRAY-PLAN).
+static inline bool plainWordValue(const Value& v, bool asNum) {
+    return (asNum ? v.t == VT::Num : (v.t == VT::Int && !v.big())) && !v.x_ && v.pk_ == PK::None &&
+           !v.natBits && !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b &&
+           !v.isList && !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg &&
+           v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+}
+
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `@shaped[0] = …` on a 2-D array names a ROW, which is not a container:
     // X::NotEnoughDimensions (only looked for once a shaped array exists)
@@ -14689,8 +14571,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *lv = one;
             }
             else {
-                Value nv = coerceArray(rhs);
-                if (nv.arr()) { // each element enters a container: Nil resets
+                // PACKED-ARRAY-PLAN: `my int @a = LO .. HI` fills the words
+                // straight from the Range, never building the Values a finite
+                // Int Range would flatten to (coerceArray's plain Array of plain
+                // Ints, which is what they unpack to)
+                bool packedNow = false;
+                Value nv;
+                if (opEq(a->op, "=") && rhs.t == VT::Range && !rhs.rNum() && rhs.ofType().empty() &&
+                    !rhs.ext() && (keepType == "int" || keepType == "int64") && !keepDefault &&
+                    lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape()) {
+                    const long long lo = rhs.rFrom() + (rhs.rExFrom() ? 1 : 0);
+                    const long long hi = rhs.rTo() - (rhs.rExTo() ? 1 : 0);
+                    if (hi < lo || (unsigned long long)(hi - lo) < (1ull << 31)) {
+                        auto pa = makePayload<PackedArr>();
+                        if (hi >= lo) {
+                            pa->w.reserve((size_t)(hi - lo) + 1);
+                            for (long long k = lo; k <= hi; k++) pa->w.push_back(k);
+                        }
+                        nv = Value::array();
+                        nv.setPacked(pa);
+                        packedNow = true;
+                    }
+                }
+                if (!packedNow) nv = coerceArray(rhs);
+                if (!packedNow && nv.arr()) { // each element enters a container: Nil resets
                     Value proto; proto.ofTypeM() = keepType; proto.elemDefaultM() = keepDefault;
                     std::string want = elemTypeOfSpec(keepType);
                     // `@a = Nil` is a RESET to ONE default element, never a
@@ -14762,6 +14666,29 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         checkElemSmiley(targetName('@'), want, el);   // `my Int:D @x = Nil` dies
                     }
                 }
+                // PACKED-ARRAY-PLAN: a full-width `int`/`num` array whose every
+                // element came out a plain machine Int (Num) — the Value
+                // `Value::integer(x)` (`number(x)`) would be, nothing else set —
+                // is stored as words, when nothing else holds the container's
+                // storage (so the refill's identity has no other observer). It
+                // unpacks to exactly those Values the first time anything asks
+                // for them as Values.
+                if (!packedNow && opEq(a->op, "=") && rhs.t != VT::Nil && nv.arr() && lv->t == VT::Array &&
+                    lv->payloadUnique() && !lv->elemDefault() && !lv->shape() &&
+                    (keepType == "int" || keepType == "int64" || keepType == "num" || keepType == "num64")) {
+                    const bool asNum = keepType[0] == 'n';
+                    bool all = true;
+                    for (auto& el : *nv.arr())
+                        if (!plainWordValue(el, asNum)) { all = false; break; }
+                    if (all) {
+                        auto pa = makePayload<PackedArr>();
+                        pa->isNum = asNum;
+                        pa->w.reserve(nv.arr()->size());
+                        for (auto& el : *nv.arr()) pa->w.push_back(el.i);   // (`i` and `n` share one word)
+                        nv.setPacked(pa);
+                        packedNow = true;
+                    }
+                }
                 // `=` REFILLS the same container (Raku identity): anything bound
                 // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change.
                 // When the coerced buffer has NO other owner (coerceArray built it
@@ -14771,7 +14698,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // copy here for a buffer about to be thrown away. A shared buffer
                 // (a lazy RHS passes its own arr through) still copies: moving out
                 // of it would gut the list the RHS still holds.
-                if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) {
+                if (packedNow) {}   // (lv's storage had no other holder: nv's words replace it)
+                else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) {
                     if (nv.payloadUnique()) *lv->arr() = std::move(*nv.arr());
                     else                         *lv->arr() = *nv.arr();
                     nv.setArr(lv->arrS());
@@ -24413,6 +24341,20 @@ Value Interpreter::evalIndex(Index* idx) {
         auto* bve = static_cast<VarExpr*>(idx->base.get());
         Value* bp = padPtr(bve);
         if (!bp) bp = tctx_.cur->find(bve->name);
+        // PACKED-ARRAY-PLAN: a packed `int`/`num` array answers from its
+        // words, before arr() below would unpack it
+        if (bp && bp->t == VT::Array && bp->packedLive() && bp->hashKind.empty() && !bp->elemDefault()) {
+            long long i = idx->litIdx;
+            bool have = idx->fastShape == 2;
+            if (!have) {
+                auto* ive = static_cast<VarExpr*>(idx->index.get());
+                Value* ip = padPtr(ive);
+                if (!ip) ip = tctx_.cur->find(ive->name);
+                if (ip && ip->t == VT::Int && ip->hashKind.empty() && !ip->big()) { i = ip->i; have = true; }
+            }
+            const PackedArr* pa = bp->packed();
+            if (have && i >= 0 && i < (long long)pa->w.size()) return pa->at((size_t)i);
+        }
         if (bp) {
             // a plain, fully materialised Array: no lazy/extended state, no
             // Failure or other kinded value, nothing with its own AT-POS

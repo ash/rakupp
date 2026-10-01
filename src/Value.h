@@ -642,7 +642,8 @@ struct MatchData {
 // Env::find/local and padPtr hand out the Value inside, so a cell is never read
 // as a value of its own. (Array and hash ELEMENTS bound to a container still
 // hold a Proxy over such a shared Value — the form their readers deproxy.)
-enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match, Cell };
+enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match, Cell, Packed };
+struct PackedArr;   // a native int/num array's elements as machine words (PACKED-ARRAY-PLAN)
 
 #ifdef RAKUPP_IN_AUDIT
 // VALUE32-PLAN design A, batch 1: may `i` and `n` share one slot? This build
@@ -788,8 +789,17 @@ struct Value {
     ValueList* arr() const {
         if (pk_ == PK::List) return pv<ValueList>();
         if (pk_ == PK::Match) return pv<MatchData>()->pos.get();
+        if (pk_ == PK::Packed) return packedUnpack();
         return nullptr;
     }
+    // PACKED-ARRAY-PLAN: a packed payload answers arr() by unpacking itself
+    // once, inside the shared body, so every holder sees the same Values from
+    // then on. packedLive() is true while it is still packed — what the fast
+    // paths that read the words directly ask first.
+    ValueList* packedUnpack() const;
+    PRef<ValueList> packedUnpackS() const;
+    PackedArr* packed() const;   // the body, live or not; null unless pk_ == PK::Packed
+    bool packedLive() const;
     ValueMap* hash() const {
         if (pk_ == PK::Hash) return pv<ValueMap>();
         if (pk_ == PK::Match) return pv<MatchData>()->named.get();
@@ -808,6 +818,7 @@ struct Value {
     PRef<ValueList> arrS() const {
         if (pk_ == PK::List) return PRef<ValueList>::fromSlot(p_);
         if (pk_ == PK::Match) return pv<MatchData>()->pos;
+        if (pk_ == PK::Packed) return packedUnpackS();
         return nullptr;
     }
     PRef<ValueMap> hashS() const {
@@ -852,6 +863,7 @@ struct Value {
     }
     void setMatch(const PRef<MatchData>& x) { p_ = x.slot(); pk_ = p_ ? PK::Match : PK::None; }
     void clearPayload() { p_.reset(); pk_ = PK::None; }
+    void setPacked(const PRef<PackedArr>& x) { p_ = x.slot(); pk_ = p_ ? PK::Packed : PK::None; }
     // A shared container (PK::Cell above). The holder itself is inert: the
     // Value every bound name reads and writes is the one it points to.
     bool isCell() const { return pk_ == PK::Cell; }
@@ -1175,6 +1187,24 @@ inline PRef<Value> makeValueAlias(std::shared_ptr<void> owner, Value* target) {
 #include "ValueHash.h"
 namespace rakupp {
 
+// PACKED-ARRAY-PLAN. The words of a `my int @a` / `my num @a` (a Num bit-cast
+// into its int64), until something asks for the elements as Values: then
+// `boxed` is built once and the words are released, and the body answers as a
+// ValueList for every Value that shares it.
+struct PackedArr {
+    bool isNum = false;
+    std::vector<int64_t> w;
+    PRef<ValueList> boxed;
+    std::atomic<bool> unpacked{false};
+    Value at(size_t i) const {
+        if (!isNum) return Value::integer(w[i]);
+        double d; std::memcpy(&d, &w[i], 8); return Value::number(d);
+    }
+};
+inline PackedArr* Value::packed() const { return pk_ == PK::Packed ? pv<PackedArr>() : nullptr; }
+inline bool Value::packedLive() const {
+    return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);
+}
 inline Value Value::makeHash() { Value v; v.t = VT::Hash; v.setHash(makePayload<ValueMap>()); return v; }
 inline Value Value::matchVal(std::string text, long from, long to) {
     Value v; v.t = VT::Match; v.s = std::move(text);
