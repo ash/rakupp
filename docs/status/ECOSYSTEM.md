@@ -16,7 +16,7 @@ Nothing below reimplements anything, which is why a release has a runbook at
 all: one interpreter changes, and every surface has to be handed the new one.
 
 The pieces divide by which way they face. Most **consume** the interpreter —
-those are the ones a release has to redeploy. Five **measure** it, and those
+those are the ones a release has to redeploy. Six **measure** it, and those
 are where a fix session gets its worklist:
 
 - **raku-corpus** — real-world Raku programs, run differentially.
@@ -27,6 +27,10 @@ are where a fix session gets its worklist:
   compares Rakudo with Raku++, checks stability, and preserves replayable
   findings. Run deliberately when searching beyond the known grid
   (**[F](#f-explore-with-rakumap)**).
+- **Rakuglaze** — short snippets taken from real ecosystem modules, each a
+  construct as its author wrote it, reduced to run with no module installed.
+  Run like Roast, by the interpreter under test, after any engine change
+  (**[G](#g-run-rakuglaze)**).
 - **raku-eye** — the weekly unattended run that measures `main` against fresh
   Weekly Challenge solutions, new ecosystem releases and the corpus, and
   publishes a ranked list of what to fix. It does not run Rakugrid. Its design
@@ -52,6 +56,7 @@ are where a fix session gets its worklist:
 | **raku-corpus** | Real-world Raku programs used as a beyond-Roast differential test target. | [ash/raku-corpus](https://github.com/ash/raku-corpus) | — (test input) |
 | **Rakugrid** | An engine-neutral behavioural suite for the *language*, organised as a grid: atoms (one construct, one behaviour) and molecules (constructs in combination) over eight orthogonal facet axes, mostly machine-generated. Rakudo is the **oracle, not the arbiter** — every test stores what Rakudo did next to what we assert, and a divergence without a signed ruling fails the build. Runs under any implementation and tests any implementation; its generators run on rakupp. The whole grid — every recorded test, matrix by matrix, plus the divergence clusters and the signed rulings — is browsable at raku.online/grid, rendered by `sites/grid` in the raku.online repo. | [ash/rakugrid](https://github.com/ash/rakugrid) | [raku.online/grid](https://raku.online/grid/) |
 | **Rakumap** | An autonomous differential explorer for behaviour not yet represented in the known grid. Its deterministic, domain-specific generators run under rakupp; Rakudo and Raku++ are bounded child engines. Stable differences become replayable evidence dossiers, not automatic language rulings, and may later graduate into Rakugrid or an implementation regression suite. | [ash/rakumap](https://github.com/ash/rakumap) | — (development tool) |
+| **Rakuglaze** | Short snippets taken from real ecosystem modules — a `new` over `bless`, a `subset … where any(…)`, a grammar rule with `*%%` — each reduced until it runs alone, with no module installed and nothing fetched, and tagged with the dist, version, file and line it came from (permissively licensed dists only). Expected output is recorded from Rakudo; the suite is run by the engine under test, the way `tools/run-roast.raku` is, and over a thousand snippets finish in seconds, so it is a check to run after every change rather than once a release. Its mining tool ranks constructs by how many dists use them, from `rakupp --ast` over the sources of the last ecosystem sweep. Runs under rakupp, Rakudo and mutsu. | [ash/rakuglaze](https://github.com/ash/rakuglaze) | — (test suite) |
 | **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -72,6 +77,7 @@ graph TD
     CORPUS["raku-corpus<br/>real-world programs"]
     GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
     MAP["Rakumap<br/>generated programs<br/>stable differential findings"]
+    GLAZE["Rakuglaze<br/>snippets from real modules<br/>run by the engine under test"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
     PWC(["Weekly Challenge<br/>+ REA releases"])
     BREW["Homebrew tap<br/>ash/rakupp"]
@@ -97,6 +103,8 @@ graph TD
     NATIVE -->|hosts generators;<br/>runs as candidate child| MAP
     MAP -.->|replayable finding dossiers| SRC
     MAP -.->|confirmed behaviour graduates| GRID
+    NATIVE -->|rakupp bin/rakuglaze:<br/>the running engine is tested| GLAZE
+    GLAZE -.->|failing snippets,<br/>each with its dist and line| SRC
     SRC -->|tag → release.yml CI| REL
     NATIVE -->|rakupp build.raku<br/>--verify generator| TOUR
     REL -->|bump url + sha256| BREW
@@ -467,6 +475,33 @@ Raku++ regression or Rakugrid interchange artifacts. In this command,
 `--generator=all` means all generators available in that checkout—not every
 Raku language domain promised by its roadmap.
 
+### G. Run Rakuglaze
+
+[Rakuglaze](https://github.com/ash/rakuglaze) asks whether the code module
+authors actually publish still works. Each snippet is a construct taken from a
+real module — its `from:` line names the dist, version, file and line — reduced
+until it runs with no module installed. That makes it the quick stand-in for the
+ecosystem sweep: the sweep installs and tests whole dists and takes hours;
+Rakuglaze runs in seconds, so it belongs after every engine change, next to
+Roast, not only at release time.
+
+It is run the way `tools/run-roast.raku` is: the interpreter that runs the
+script is the engine under test, and bare arguments filter. From a
+[Rakuglaze](https://github.com/ash/rakuglaze) checkout:
+
+```sh
+/path/to/new/rakupp bin/rakuglaze             # every snippet; failures, then a table per area
+/path/to/new/rakupp bin/rakuglaze -v hashes   # one area, with expected/got for each failure
+/path/to/new/rakupp bin/rakuglaze -j2         # two engine processes instead of every core
+```
+
+A failure names the snippet and its file and line, and the snippet's `from:`
+line points at the module line it came from, so it arrives already reduced.
+Expected output is recorded by Rakudo (`rakudo bin/rakuglaze --oracle`); a
+snippet whose expectation was ruled against Rakudo carries `ruled:` with the
+reason. New snippets come from `tools/mine.raku`, which ranks constructs by how
+many dists use them and finds real uses of each.
+
 ---
 
 ## Quick reference
@@ -488,6 +523,7 @@ Raku language domain promised by its roadmap.
 | the interpreter, and you want its standing against the book's verified examples | `rakupp build.raku --verify --report=<raku++>/docs/dev/findings/behind-the-docs/raku-divergences.md` in the book's checkout; each example Raku++ gets wrong is listed with both outputs (**C**) |
 | the interpreter, and you want to search beyond known tests | run a bounded Rakumap `--generator=all` campaign with the new binary as host and candidate; inspect stable dossiers before promoting any result (**F**) |
 | a Rakumap generator or comparator | run its fixed-seed tests under rakupp, then regenerate only its committed fixture corpus in the Rakumap checkout (**F**) |
+| the interpreter, and you want to know whether real modules' constructs still work | `rakupp bin/rakuglaze` in the rakuglaze checkout, with the new binary running it — seconds, so after every change (**G**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
 | cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 6**) |
