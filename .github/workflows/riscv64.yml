@@ -9,8 +9,10 @@ name: riscv64
 # is, nothing picks up the `ubuntu-24.04-riscv` label and the job waits in the
 # queue rather than failing.
 #
-# A workflow of its own, not a row in release.yml's matrix, so a riscv64
-# failure (or a queue with no runner behind it) never holds up a release.
+# On demand only (Actions tab -> riscv64 -> Run workflow, or
+# `gh workflow run riscv64.yml --repo ash/rakupp`), and a workflow of its own
+# rather than a row in release.yml's matrix, so a riscv64 failure never holds
+# up a push or a release.
 # The tree builds with no riscv64-specific code: the interpreter is portable
 # C++, `gather` uses the re-running fallback instead of the hand-written
 # coroutine switch (Coro.h covers x86-64 and aarch64 only), and `--cnp` finds
@@ -21,8 +23,6 @@ name: riscv64
 # artifact needs glibc 2.39. It is a test build, not a release asset.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
