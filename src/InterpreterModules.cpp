@@ -364,6 +364,25 @@ const Value* Interpreter::builtinRef(const std::string& name) {
     return &(builtinRefs_[name] = code);
 }
 
+// A package name inside `Foo::<x>` is looked up from where it is written,
+// as `Foo::{…}` (through .WHO) already is: in `unit module M`,
+// `my package EXPORT::DEFAULT { }` binds the lexical EXPORT::DEFAULT to
+// M::EXPORT::DEFAULT, and `EXPORT::DEFAULT::<&f> = &f` is a slot in THAT
+// package — the one the importer reads. Sparrow6::DSL builds its whole
+// export list this way. Only a name that resolves to a LONGER name of the
+// same tail is rewritten; anything else is the package it says.
+std::string Interpreter::pkgSymbolName(const std::string& name) const {
+    std::string pkg, key;
+    if (!tctx_.cur || !splitPkgSymbol(name, pkg, key)) return name;
+    const Value* t = tctx_.cur->find(pkg);
+    if (!t || t->t != VT::Type) return name;
+    const std::string full(t->s.c_str());
+    if (full.size() <= pkg.size() + 2 ||
+        full.compare(full.size() - pkg.size() - 2, std::string::npos, "::" + pkg) != 0) return name;
+    size_t off = std::strchr("$@%&", name[0]) ? 1 : 0;
+    return name.substr(0, off) + full + name.substr(off + pkg.size());
+}
+
 // Would importing `key` = `val` REPLACE a routine already in scope with something
 // that cannot be called? Some of rakupp's built-in module surfaces publish a name
 // as a bare TYPE-OBJECT placeholder — NativeCall's export list carries
