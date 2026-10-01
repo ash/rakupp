@@ -508,6 +508,13 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     bool want = reqAll || reqNames.count(bare) != 0;
                     for (const std::string& tag : se.tags)
                         if ((tag == "DEFAULT" && reqDefault) || tag == "MANDATORY" || reqTags.count(tag)) { want = true; break; }
+                    // a hand-filled EXPORT::TAG package answers its own tag only
+                    // (`:ALL` is the EXPORT::ALL package, `:&name` an entry there)
+                    if (se.stashOnly) {
+                        const std::string& tag = se.tags.front();
+                        want = tag == "MANDATORY" || (tag == "DEFAULT" ? reqDefault : reqTags.count(tag) != 0) ||
+                               (tag == "ALL" && reqNames.count(bare));
+                    }
                     // an imported MULTI joins a same-named multi the scope
                     // already declared (`use Foo; multi waz($x) {…}` sees both)
                     if (want && se.value.t == VT::Code && se.value.code() &&
@@ -875,6 +882,50 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (Value* g = global_->local(k))
                     if (g->t == VT::Hash && g->hashKind == "Proxy") continue;
                 global_->define(k, kv.second);
+            }
+            // A module may fill its EXPORT::TAG packages by hand instead of (or
+            // beside) `is export`:
+            //     my package EXPORT::DEFAULT { }
+            //     BEGIN for <&config &bash …> { EXPORT::DEFAULT::{$_} = ::($_) }
+            // (Sparrow6::DSL re-exports its whole DSL that way.) Each tag package
+            // imports what it holds when the `use` asks for that tag — DEFAULT
+            // for a plain `use`, MANDATORY always — and `:ALL` reads only the
+            // EXPORT::ALL package, as Rakudo's import does. The `is export`
+            // routines above publish into the same packages; they are theirs.
+            if (name.empty()) return;
+            const std::string tagPfx = name + "::EXPORT::";
+            std::map<std::pair<std::string, std::string>, Value> handBuilt;   // (tag, key) → value
+            auto take = [&](const std::string& pkg, const std::string& key, const Value& v) {
+                if (pkg.size() <= tagPfx.size() || pkg.compare(0, tagPfx.size(), tagPfx) != 0) return;
+                std::string tag = pkg.substr(tagPfx.size());
+                if (tag.find("::") != std::string::npos || key.empty()) return;
+                std::string bare = std::strchr("$@%&", key[0]) ? key.substr(1) : key;
+                if (key[0] == '&' && (exported.count(bare) || exportTagsByName.count(bare))) return;
+                handBuilt.emplace(std::make_pair(tag, key), v);
+            };
+            for (auto& kv : global_->vars) {
+                std::string pkg, key;
+                if (splitPkgSymbol(kv.first, pkg, key)) take(pkg, key, kv.second);
+            }
+            for (auto& [pkg, stash] : pkgStashes_)
+                if (stash) for (auto& kv : *stash) take(pkg, kv.first, kv.second);
+            const bool plainUse = requestedTags.empty();
+            for (auto& [tk, v] : handBuilt) {
+                const std::string& tag = tk.first;
+                const std::string& key = tk.second;
+                moduleSelectiveExports_[name].push_back({key, v, {tag}, /*stashOnly=*/true});
+                std::string bare = std::strchr("$@%&", key[0]) ? key.substr(1) : key;
+                bool want = tag == "MANDATORY" ||
+                            (tag == "DEFAULT" ? plainUse || requestedTags.count("DEFAULT")
+                                              : requestedTags.count(tag) != 0) ||
+                            (tag == "ALL" && requestedNames.count(bare));
+                if (!want || !doImport || !saved) continue;
+                // a placeholder never displaces a routine (see importWouldShadowRoutine)
+                if (key[0] == '&' && v.t != VT::Code) continue;
+                if (saved.get() != global_.get()) {
+                    if (!saved->local(key)) saved->define(key, v);
+                }
+                else if (!mainlineSubNames_.count(key)) global_->define(key, v);
             }
         };
         // A runtime failure in a module's load-time code (often a deep dependency

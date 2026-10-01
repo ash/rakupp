@@ -2560,7 +2560,13 @@ public:
     // kept so a REPEAT `use Mod :tag` can import the ones its tag now selects —
     // they are withheld on a plain `use`, so the module body's one run does not
     // publish them (Prompt: plain `use Prompt` then `use Prompt :prompt`).
-    struct SelectiveExport { std::string key; Value value; std::vector<std::string> tags; };
+    // stashOnly: an entry the module put into its EXPORT::TAG package by hand
+    // (`EXPORT::DEFAULT::<&f> = &f`), which only that tag imports — `:ALL`
+    // reads the EXPORT::ALL package and nothing else, as in Rakudo
+    struct SelectiveExport { std::string key; Value value; std::vector<std::string> tags; bool stashOnly = false; };
+    // `Foo::<x>` names the package `Foo` resolves to where it is written
+    // (`my package EXPORT::DEFAULT` in `unit module M` is M::EXPORT::DEFAULT)
+    std::string pkgSymbolName(const std::string& name) const;
     std::map<std::string, std::vector<SelectiveExport>> moduleSelectiveExports_;
     // every export tag a loaded module has (scanExportTags), for X::Import::NoSuchTag
     // on a later `use Mod :tag`; absent when the module builds its own EXPORT
