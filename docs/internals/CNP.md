@@ -658,10 +658,11 @@ with a column saying whether each kernel was refused, never counted, or built.
 Short version; [CNP-PLAN.md](../dev/plans/CNP-PLAN.md) has the long one and the
 phases.
 
-- **It has run on one instruction set.** arm64. The x86-64 patcher is written,
-  is known to be *wrong* rather than merely unexercised — CI entered a kernel
-  and got the wrong answer — and is refused at startup until that is fixed.
-  `RAKUPP_CNP_X86=1` lifts the gate for whoever fixes it.
+- **x86-64 is verified on macOS only.** The kernel CI saw give a wrong answer
+  read every GOT-loaded operand four bytes short; with that fixed the gate
+  agrees on macOS x86-64 (run under Rosetta). ELF x86-64 shares the fix but has
+  not run since, so on Linux x86-64 the backend is still refused at startup;
+  `RAKUPP_CNP_X86=1` lifts that for whoever runs the check there.
 - **It does not tier up threaded code**, for the reason in §7(c). That is a real
   functional gap against `--jit`, which does not hoist.
 - **It reaches the most common loop shape, not the most common loop sources.**

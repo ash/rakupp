@@ -83,24 +83,26 @@ std::string g_why;
 bool checkTable() {
     if (kCount == 0) { g_why = "this build carries no stencils (see the build log for cnp-extract)"; return false; }
     if (!kArm64 && !kX86_64) { g_why = "no patcher for this instruction set"; return false; }
-    // x86-64 is WRITTEN but not CORRECT. CNP-PLAN.md has said since the backend
-    // landed that the encodings came off the manual and had never executed an
-    // instruction; CI then ran them, and they do execute -- a kernel is entered
-    // and returns the WRONG ANSWER, which is the one outcome worse than not
-    // running at all. Until P1 verifies the patcher, saying so and running
-    // interpreted is the honest answer: the same result the machine would have
-    // given anyway, a little slower.
+    // x86-64. CI ran the patcher and a kernel returned the WRONG answer: every
+    // operand a stencil loads through the GOT read four bytes short, because
+    // the -4 that belongs to the rip-relative displacement went into the slot
+    // as well (CNP-PLAN.md P1). With that fixed, the differential gate agrees
+    // on macOS x86-64 (run under Rosetta) and every tier-up case enters a
+    // kernel. ELF x86-64 shares the fix but has not been run since, so on
+    // Linux the backend still refuses until a CI run says otherwise.
     //
-    // RAKUPP_CNP_X86=1 lifts the gate, because P1 cannot be done by anyone who
-    // cannot run the thing being fixed.
+    // RAKUPP_CNP_X86=1 lifts the gate there, because P1 cannot be finished by
+    // anyone who cannot run the thing being checked.
+#if !defined(__APPLE__)
     if (kX86_64) {
         const char* e = std::getenv("RAKUPP_CNP_X86");
         if (!(e && *e == '1')) {
-            g_why = "the x86-64 patcher is unverified and gives wrong answers "
+            g_why = "the x86-64 patcher has not been verified on ELF yet "
                     "(CNP-PLAN.md P1; set RAKUPP_CNP_X86=1 to run it anyway)";
             return false;
         }
     }
+#endif
     for (unsigned i = 0; i < kHelperCount; i++)
         if (!helperAddr(kHelperNames[i])) {
             g_why = std::string("the stencils call a helper this build does not have: ") + kHelperNames[i];
@@ -482,8 +484,12 @@ std::unique_ptr<Code> assemble(const std::vector<Op>& ops, std::string& err) {
                     auto it = gotSlot.find(key);
                     if (it == gotSlot.end()) { err = "a GOT reference with no slot"; return nullptr; }
                     uint8_t* slot = base + gotBase + it->second * 8;
-                    uint64_t sv = (uint64_t)((int64_t)value + h.addend);
-                    std::memcpy(slot, &sv, 8);
+                    // The slot holds the value itself. The addend (-4, the end of
+                    // the instruction, on both object formats) belongs to the
+                    // displacement only: written into the slot as well, every
+                    // operand an x86-64 stencil loads through the GOT read four
+                    // bytes short of its value (CNP-PLAN P1).
+                    std::memcpy(slot, &value, 8);
                     if (!patchRel32(at, (uint64_t)slot, here, h.addend, err)) return nullptr;
                     break;
                 }

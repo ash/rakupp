@@ -29,6 +29,8 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
    attribute targets are still open.
 2. **`--cnp` on x86-64** (CNP-PLAN P1). The one hard blocker for tier-up
    (task 10), for `--cnp` as the default, and for retiring `--jit`.
+   *Fixed for Mach-O 2026-10-01:* the GOT slot held value − 4. Linux x86-64
+   stays refused until a CI run of `t/jit/run.raku --cnp` there agrees.
 3. **Inline slots for `Env::vars`, `Env` on the slab, and pads for
    `given`/`when` blocks** (task 6's last item, task 7's second). 99% of the
    mallocs in `for %h.kv -> $k, $v`, 30% of those in `objects`, and a loop

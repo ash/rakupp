@@ -121,6 +121,20 @@ would have given anyway, a little slower. `RAKUPP_CNP_X86=1` lifts the gate,
 because P1 cannot be done by anyone who cannot run the thing being fixed. The
 gate comes out when P1 lands, and not before.
 
+**Found and fixed 2026-10-01, on macOS x86-64 under Rosetta.** Every operand
+an x86-64 stencil loads through the GOT read four bytes short of its value.
+The extractor records a GOT load's addend as −4 on both object formats — the
+end of the instruction, which belongs to the rip-relative displacement — and
+the patcher added it to the slot's contents as well. The first kernel showed
+it as `Unsupported operator '<bytes of a function prologue>'`: the operator
+name's pointer, four bytes off. With the slot holding the value, `t/jit/run.raku
+--cnp` agrees on every program on macOS x86-64 and all 30 tier-up cases enter a
+kernel; what it still reports there is the environment (an `--exe` child
+linking an arm64 compile against x86-64 libraries, an arm64 test fixture
+dylib). The startup refusal is gone on macOS. ELF x86-64 shares the fix but
+has not run since, so on Linux the refusal stays until a CI run of the gate
+agrees.
+
 The suite follows the gate rather than the architecture. `t/run.raku` asks the
 binary in front of it — `-V` prints one `Cnp` line — and where the answer is
 `none`, the two checks that require a kernel to be ENTERED are skipped by name
@@ -497,9 +511,9 @@ One binary, no compiler and no rakupp on the machine running it.
   is not limited this way — it emits the call (`rtUserInfix`), which it could do
   all along and did not: until 2026-09-20 every compiled backend quietly
   answered differently from the interpreter here, `--exe` included.
-- **It has run on one platform.** arm64 macOS. The x86-64 patcher is written,
-  is now known to be *wrong* rather than merely unexercised, and is refused at
-  startup until P1 (see above). ELF is exercised on aarch64 and works.
+- **It has run on two platforms.** arm64 macOS, and x86-64 macOS since the P1
+  fix (see above; run under Rosetta). ELF is exercised on aarch64 and works;
+  ELF x86-64 is refused at startup until a Linux run of the gate agrees.
 - **It does not tier up threaded code.** Any loop reached while another Raku
   thread is live stays interpreted, for the reason above. That is a real
   functional gap against `--jit`, which has no such restriction because it does
@@ -518,7 +532,7 @@ One binary, no compiler and no rakupp on the machine running it.
 | | | |
 |---|---|---|
 | **P0** | the ABI, the stencils, the extractor, the patcher, the lowering, `--cnp`, the gate | **DONE** |
-| **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **next, and now a known defect rather than a gap** |
+| **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **fixed** (the GOT slot held value − 4); Mach-O verified and ungated 2026-10-01; ELF waits on a Linux CI run of the gate |
 | **P2** | arena allocation, so kernels share pages instead of taking one each | |
 | **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | **in part**: element reads and stores, calls, methods, inlined small subs, the Rat lane (2026-09-29). Next: loop sources — `for @array`, `.kv`, the statement modifier, `.map` |
 | | *and*: re-read read-only slots per iteration instead of refusing a threaded program outright, if the measured cost of one inline reload turns out to be worth the generality | |

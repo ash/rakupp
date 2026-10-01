@@ -123,7 +123,7 @@ sixty-six flags the binary accepts, including a whole run mode.
 | `RAKUPP_JIT_VERBOSE` | narrate every tier-up decision to stderr |
 | `RAKUPP_JIT_DIR` | where `--jit` keeps compiled kernels |
 | `RAKUPP_CNP` | a bundled binary only, which has no option surface of its own: `0` or `off` turns the baked-in back end off for one run, `1` on, anything else is read as a `--cnp` spec |
-| `RAKUPP_CNP_X86=1` | run the unverified x86-64 patcher, which is refused at startup because it gives wrong answers |
+| `RAKUPP_CNP_X86=1` | run the x86-64 patcher on Linux, where it is refused at startup until it has been verified on ELF (it runs on macOS x86-64 without this) |
 
 ### The foreign-function interface
 

@@ -47,8 +47,8 @@ my $LANE  = $cnp ?? '--cnp' !! '--jit';
 # The copy-and-patch lane needs a binary that HAS that backend, and three
 # supported configurations do not have it: a build with no stencil table (a
 # cross-compile, or the universal macOS build, which has no single instruction
-# set to extract for), an instruction set with no patcher, and x86-64, whose
-# patcher is written but unverified and gated off until it is not
+# set to extract for), an instruction set with no patcher, and x86-64 on
+# Linux, whose patcher is gated off until it has been verified on ELF
 # (CNP-PLAN.md P1). Each prints ONE line to stderr and runs interpreted, so
 # every case in the corpus would be reported as a stderr disagreement and the
 # run would prove nothing about a backend that never ran. Nothing to compare is

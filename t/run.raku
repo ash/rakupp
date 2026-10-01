@@ -760,8 +760,8 @@ section('--target=js (JavaScript backend)');
 # everywhere yet, and three SUPPORTED configurations carry none of it: a build
 # with no stencil table (a cross-compile, or the universal macOS build, which
 # has no single instruction set to extract for), an instruction set with no
-# patcher, and x86-64, whose patcher is written but unverified and gated off
-# until it is not (CNP-PLAN.md P1). All three say so on stderr and run the loop
+# patcher, and x86-64 on Linux, whose patcher is gated off until it has been
+# verified on ELF (CNP-PLAN.md P1). All three say so on stderr and run the loop
 # interpreted — the same answer by a slower road — so a check that requires a
 # KERNEL can only be put where there is one to enter. The flag-surface checks
 # further down are asked everywhere, because the flag exists everywhere.

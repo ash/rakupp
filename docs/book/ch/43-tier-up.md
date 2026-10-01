@@ -501,8 +501,10 @@ produced the two-piece stencil described above.
 
 The end state is no flag at all: hot loops tier up because that is what the
 interpreter does. Three things stand between here and there. The x86-64 patcher
-has to be made correct, because making a back end the default that has run on
-one instruction set would be making it the default on trust. The threaded gap
+has to be shown correct on Linux too — on macOS it now agrees with the
+interpreter, after a fix to how it fills the GOT — because making a back end
+the default on a platform it has not run on would be making it the default on
+trust. The threaded gap
 has to be closed or consciously accepted — as a flag it is a documented
 limitation, as a default it is a silent cliff in threaded programs. And then
 `--jit` can go, which deletes the C++-emission lane, the precompiled header,
