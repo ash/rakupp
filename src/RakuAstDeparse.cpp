@@ -46,6 +46,11 @@ std::string shortName(const Value& node) {
     return s;
 }
 
+// rakudo/rakudo#6771 renames the empty part; a tree may carry either name.
+bool isEmptyPart(const std::string& c) {
+    return c == "Name::Part::Empty" || c == "Name::Part::EmptyEdge";
+}
+
 // Where a class's POSITIONAL `.new` arguments land. Everything else arrives as
 // a named pair and is stored under its own key, so this table only has to carry
 // the constructors Rakudo gives a positional signature.
@@ -62,6 +67,7 @@ const std::map<std::string, const char*>& positionalSlot() {
         {"ColonPair::True", "key"}, {"ColonPair::False", "key"},
         {"Blockoid", "statement-list"},
         {"Term::TopicCall", "call"}, {"Term::Name", "name"}, {"Term::Enum", "name"},
+        {"Name::Part::Simple", "name"}, {"Name::Part::Expression", "expr"},
         {"Type::Simple", "name"}, {"Type::Capture", "name"},
         {"ParameterTarget::Term", "name"},
         {"Initializer::Assign", "expression"}, {"Initializer::Bind", "expression"},
@@ -300,7 +306,7 @@ struct Deparser {
             for (auto& e : *p->arr()) {
                 if (!isNode(e)) { if (!out.empty()) out += "::"; out += e.toStr(); continue; }
                 const std::string pc = shortName(e);
-                if (pc == "Name::Part::Empty") continue;
+                if (isEmptyPart(pc)) continue;
                 if (pc == "Name::Part::Expression")
                     { out += "::(" + opt(attr(e, "expr"), indent) + ")"; continue; }
                 if (!out.empty()) out += "::";
@@ -308,7 +314,7 @@ struct Deparser {
             }
             return out;
         }
-        if (c == "Name::Part::Empty") return "";
+        if (isEmptyPart(c)) return "";
         if (c == "Name::Part::Expression") return "::(" + opt(attr(node, "expr"), indent) + ")";
         if (c == "Name::Part::Simple") {
             const Value* v = attr(node, "name");

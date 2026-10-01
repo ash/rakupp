@@ -24,6 +24,9 @@ namespace {
 // against Rakudo — see the generator named in the file itself.
 const char* const kClassTable[] = {
 #include "rakuast-classes.inc"
+    // rakudo/rakudo#6771 renames Name::Part::Empty to EmptyEdge; both are
+    // accepted until the oracle moves, and `.AST` keeps emitting the old name.
+    "Name::Part::EmptyEdge", "Name::Part", nullptr,
     nullptr
 };
 
@@ -46,13 +49,16 @@ const Registry* build() {
         std::string name = kRakuAstPrefix + std::string(*p);
         auto ci = std::make_shared<ClassInfo>();
         ci->name = name;
-        reg->byName.emplace(name, std::move(ci));
-        // `.^mro` is the row itself plus Any and Mu — verified on 2026.08 for
-        // every class in the table, which is why nothing here recomputes it.
-        auto& anc = reg->ancestry[name];
-        for (const char* const* q = p; *q; q++) anc.push_back(kRakuAstPrefix + std::string(*q));
-        anc.push_back("Any");
-        anc.push_back("Mu");
+        // A regenerated table may come to carry a hand-added row too; the
+        // first one wins, so the ancestry is not listed twice.
+        if (reg->byName.emplace(name, std::move(ci)).second) {
+            // `.^mro` is the row itself plus Any and Mu — verified on 2026.08
+            // for every class in the table, which is why nothing recomputes it.
+            auto& anc = reg->ancestry[name];
+            for (const char* const* q = p; *q; q++) anc.push_back(kRakuAstPrefix + std::string(*q));
+            anc.push_back("Any");
+            anc.push_back("Mu");
+        }
         while (*p) p++;
         p++;                              // past the row's null
     }
@@ -64,7 +70,7 @@ const Registry* build() {
         // which is what makes `$node ~~ RakuAST::Expression` answer without a
         // walk, and `findMethod` recurses through both — so the methods the
         // renderer puts on `RakuAST::Node` are inherited by every node class.
-        if (*q) {
+        if (*q && !ci->parent) {
             auto it = reg->byName.find(kRakuAstPrefix + std::string(*q));
             if (it != reg->byName.end()) ci->parent = it->second;
             for (q++; *q; q++) {
