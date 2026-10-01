@@ -1986,6 +1986,48 @@ static bool ifCondValueUsed(const IfStmt* is) {
     return false;
 }
 
+// A vector of pointers with its first eight inline: a candidate's positional
+// parameters, collected on every scoring, were a heap block per candidate.
+template <typename T>
+struct SmallPtrVec {
+    T* inl[8]; size_t n = 0; std::vector<T*> all;
+    void push_back(T* p) {
+        if (n < 8) inl[n] = p;
+        else { if (all.empty()) all.assign(inl, inl + 8); all.push_back(p); }
+        n++;
+    }
+    size_t size() const { return n; }
+    bool empty() const { return n == 0; }
+    T* operator[](size_t i) const { return n <= 8 ? inl[i] : all[i]; }
+    T* const* begin() const { return n <= 8 ? inl : all.data(); }
+    T* const* end() const { return begin() + n; }
+};
+
+// A multi dispatch's per-parameter score vectors, leased from a per-thread
+// pool and handed back cleared: a vector per dispatch was two or three heap
+// blocks per call. A dispatch nested in a `where` or a candidate leases its
+// own.
+struct ScoreVec {
+    static thread_local std::vector<std::vector<int>> pool;
+    std::vector<int> v;
+    ScoreVec() { if (!pool.empty()) { v = std::move(pool.back()); pool.pop_back(); } }
+    ~ScoreVec() { if (pool.size() < 16) { v.clear(); pool.push_back(std::move(v)); } }
+};
+thread_local std::vector<std::vector<int>> ScoreVec::pool;
+
+// The candidates a multi dispatch has already run (nextsame / callsame move
+// past them): eight inline, which is every real chain, and a vector after.
+struct VisitedCands {
+    const Value* inl[8]; size_t n = 0; std::vector<const Value*> more;
+    bool empty() const { return n == 0; }
+    void push_back(const Value* v) { if (n < 8) inl[n] = v; else more.push_back(v); n++; }
+    bool contains(const Value* v) const {
+        for (size_t k = 0; k < n && k < 8; k++) if (inl[k] == v) return true;
+        for (auto* m : more) if (m == v) return true;
+        return false;
+    }
+};
+
 // A per-thread pool of call frames — see the note at its first user; the frames
 // themselves are the thread's ExecContext::framePool. It lives at
 // file scope because BOTH call paths need it: subs come through callCallableRaw,
@@ -5573,7 +5615,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                                              : Value::typeObj(selfForWhere->typeName()));
             }
     };
-    ValueList pos; for (auto& a : args) if (!isNamedArg(a)) pos.push_back(a);
+    // the positional arguments: `args` itself when none is named, which is
+    // nearly every call, so scoring a candidate copies nothing
+    bool anyNamed = false;
+    for (auto& a : args) if (isNamedArg(a)) { anyNamed = true; break; }
+    ValueList posStore;
+    if (anyNamed) for (auto& a : args) if (!isNamedArg(a)) posStore.push_back(a);
+    const ValueList& pos = anyNamed ? posStore : args;
     // A candidate that does not DECLARE a named parameter cannot take one. Raku
     // rejects `f(1, :nope)` when f has no `:$nope` and no `*%` slurpy; accepting
     // it silently let a candidate win calls meant for its sibling — YAMLish
@@ -5603,7 +5651,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     }
     size_t required = 0, total = 0; bool slurpy = false;
     const Param* slurpyParam = nullptr;
-    std::vector<const Param*> positional;
+    SmallPtrVec<const Param> positional;
     for (auto& p : params) {
         if (p.named) continue;
         if (p.invocant) continue; // the invocant (`Foo:D:`) is matched by the dispatch, not a positional arg
@@ -6007,6 +6055,14 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if (!p->type.empty()) {
                 bool nsign; int nbits = Value::natWidthOfType(p->type, nsign);
                 if (nbits) wrapNative(wv, nbits, nsign);
+            }
+            // a `where` that reads nothing per call: its Code, built once
+            if (const Value* wc = staticWhereCode(*p, params, whereScope)) {
+                bool ok = false;
+                try { ok = boolify(callCallable(*wc, ValueList{wv})); } catch (...) { return -1; }
+                if (!ok) return -1;
+                score += 4;
+                continue;
             }
             auto env = std::make_shared<Env>(); env->parent = whereScope;
             // A method's `where` may read the INVOCANT's own state:
@@ -7009,9 +7065,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // pushing a redispatch context so callsame/nextsame (same args) and callwith/
         // nextwith (new args) re-dispatch to the next candidate. A `visited` set (shared
         // across the chain) picks the next-less-specific candidate and prevents loops.
-        auto visited = std::make_shared<std::vector<const Value*>>();
-        std::function<Value(ValueList)> dispatch = [this, &c, &codeVal, rwArgs, visited, &dispatch](ValueList as) -> Value {
-            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec, vec;
+        VisitedCands visited;
+        // a lambda on this frame, as the multi-method dispatcher keeps one (see there)
+        auto dispatchImpl = [&](auto& self_, ValueList as) -> Value {
+            const Value* best = nullptr; int bestScore = -1; ScoreVec bestS, vecS; std::vector<int>& bestVec = bestS.v; std::vector<int>& vec = vecS.v;
             bool bestRw = false;
             const Value* matched[8]; int nMatched = 0;   // every candidate that fit (ambiguity check)
             // `vec` is hoisted and CLEARED per candidate rather than rebuilt: declared
@@ -7029,7 +7086,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // (`proto qa($x) {*}; qa(1, 2)`; `proto f(|c(Int $x)) {*}; f 'foo'`;
             // `proto bar {*}` is `()`). A multi SUB group only — a method proto
             // carries its invocant and an implicit *%_.
-            if (visited->empty() && c.protoShapeScan.get() != 0) {
+            if (visited.empty() && c.protoShapeScan.get() != 0) {
                 const Callable* proto = nullptr;
                 for (auto& pc : c.candidates)
                     if (pc.code() && pc.code()->isProto && !pc.code()->isMethod) { proto = pc.code(); break; }
@@ -7107,7 +7164,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     }
                 }
             }
-            if (visited->empty() && rwArgs && rwArgs->size() == as.size() && c.protoTypedScan.get() != 0) {
+            if (visited.empty() && rwArgs && rwArgs->size() == as.size() && c.protoTypedScan.get() != 0) {
                 static const std::set<std::string> kCore = {"Int", "Str", "Num", "Rat", "Complex", "Bool"};
                 if (c.protoTypedScan.get() < 0) {
                     bool typed = false;
@@ -7148,16 +7205,20 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                             "Calling " + c.name + "(" + argProf + ") will never work with proto signature (" + sigt + ")");
                     }
             }
+            // the dispatch cache's answer for this argument shape (dispatchCacheLookup)
+            const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
+                ? dispatchCacheLookup(c, nullptr, as) : nullptr;
+            if (cached) { best = cached; bestScore = 0; }
+            else
             for (auto& cand : c.candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
-                bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
-                if (seen) continue;
+                if (visited.contains(&cand)) continue;
                 vec.clear();
                 int s = scoreCandidate(cand, as, &vec);
-                if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs, &as)) s = -1;
+                if (s >= 0 && visited.empty() && rwCandidateRejects(cand, as.size(), rwArgs, &as)) s = -1;
                 // a tie goes to the candidate binding a container `is rw`
-                bool candRw = s >= 0 && rwArgs && visited->empty() && rwCandidateBinds(cand, rwArgs);
+                bool candRw = s >= 0 && rwArgs && visited.empty() && rwCandidateBinds(cand, rwArgs);
                 if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore) ||
                                (cand.code() && cand.code()->isDefaultCand && best->code() &&
                                 !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s)) ||
@@ -7165,13 +7226,15 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     { bestScore = s; best = &cand; bestVec = vec; bestRw = candRw; }
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
-            if (best && visited->empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
+            if (!cached && best && visited.empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
+            if (!cached && best && bestScore >= 0 && visited.empty() && c.dispatchCacheable != 0)
+                dispatchCacheStore(c, nullptr, as, best);
             if (!best || bestScore < 0) {
                 // A redispatch (callsame/nextsame) that runs past the last same-class
                 // candidate: for a METHOD multi, defer up the inheritance tree to the
                 // outer dispatcher (the parent class's method pushed by
                 // invokeMethodChain); otherwise → Nil.
-                if (!visited->empty()) return Value::nil();
+                if (!visited.empty()) return Value::nil();
                 // no candidate takes the Junction itself — autothread over it
                 // (recursively, so `mstest(1&2 | 3)` threads down to the leaves)
                 for (size_t ai = 0; ai < as.size(); ai++) {
@@ -7259,18 +7322,21 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                                 "Cannot resolve caller " + c.name + "(" + defProf +
                                 "); none of these signatures matches:" + sigs};
             }
-            visited->push_back(best);
+            visited.push_back(best);
             RedispatchCtx rc;
             rc.sameArgs = as;
-            rc.next = [&dispatch](ValueList na) -> Value { return dispatch(std::move(na)); };
-            rc.restart = [this, codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
+            rc.next = [&self_](ValueList na) -> Value { return self_(self_, std::move(na)); };
+            rc.restart = [this, &codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
             redispatchStack_.push_back(std::move(rc));
             Value r;
-            try { r = callCallable(*best, as, rwArgs, /*ownFrame=*/true, /*arityCheck=*/false,
+            try { r = callCallable(*best, std::move(as), rwArgs, /*ownFrame=*/true, /*arityCheck=*/false,
                                    /*whereVerified=*/true); }
             catch (...) { redispatchStack_.pop_back(); throw; }
             redispatchStack_.pop_back();
             return r;
+        };
+        std::function<Value(ValueList)> dispatch = [&dispatchImpl](ValueList as) -> Value {
+            return dispatchImpl(dispatchImpl, std::move(as));
         };
         // A `proto` with a real body wraps the whole dispatch: it runs first, and the
         // `{*}` inside it is where the candidates are chosen (S06). Only when there is
@@ -7278,7 +7344,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         // is just a sub.
         if (const Value* pb = protoBodyOf(c))
             return callProtoBody(*pb, dispatch, std::move(args), rwArgs);
-        return dispatch(args);
+        return dispatch(std::move(args));
     }
     // `&infix:<=>` / `&infix:<+=>` / `&infix:<~=>` … as a first-class Callable: an
     // assignment operator needs an l-value first operand, which only the call-site
@@ -8953,7 +9019,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // Mirror the multi-sub dispatcher: push a redispatch frame around the
         // chosen candidate so callsame/nextsame (→ next candidate) and
         // samewith/nextwith (→ re-dispatch from the top) work inside multi methods.
-        auto visited = std::make_shared<std::vector<const Value*>>();
+        VisitedCands visited;
         Value dispatcherVal = codeVal;
         Value selfCopy = self;
         // If we were reached via invokeMethodChain (a parent class also defines this
@@ -8967,23 +9033,33 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             parentNext = redispatchStack_.back().next;
             parentFrame = redispatchStack_.size() - 1;
         }
-        std::function<Value(ValueList)> dispatch =
-            [this, &c, dispatcherVal, selfCopy, rwArgs, visited, parentNext, parentFrame, &dispatch](ValueList as) -> Value {
-            const Value* best = nullptr; int bestScore = -1; std::vector<int> bestVec, vec;
+        // samewith's target, for the frame's `restart` (one pointer: no allocation)
+        struct RestartTo { const Value* dispatcher; const Value* self; const std::vector<ExprPtr>* rwArgs; }
+            restartTo{&dispatcherVal, &selfCopy, rwArgs};
+        // A lambda on this frame, not a std::function: what it reads lives here
+        // for as long as any dispatch through it runs, and a std::function
+        // holding ~250 bytes of captures was a heap block per call. `self_` is
+        // the lambda itself, for the next candidate's `next`.
+        auto dispatchImpl = [&](auto& self_, ValueList as) -> Value {
+            const Value* best = nullptr; int bestScore = -1; ScoreVec bestS, vecS; std::vector<int>& bestVec = bestS.v; std::vector<int>& vec = vecS.v;
             const Value* matched[8]; int nMatched = 0;   // every candidate that fit (ambiguity check)
             // `vec` is hoisted and CLEARED per candidate rather than rebuilt: declared
             // inside the loop, every candidate of every call paid a heap allocation for
             // a handful of ints. `bestVec = vec` copies rather than moves for the same
             // reason — a move steals vec's buffer and the next iteration allocates again.
             // multimeth is 400k calls x 2 candidates, so it is 800k allocations there.
+            // the dispatch cache's answer for this argument shape (dispatchCacheLookup)
+            const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
+                ? dispatchCacheLookup(c, &selfCopy, as) : nullptr;
+            if (cached) { best = cached; bestScore = 0; }
+            else
             for (auto& cand : c.candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
-                bool seen = false; for (auto* v : *visited) if (v == &cand) { seen = true; break; }
-                if (seen) continue;
+                if (visited.contains(&cand)) continue;
                 vec.clear();
                 int s = scoreCandidate(cand, as, &vec, &selfCopy);
-                if (s >= 0 && visited->empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
+                if (s >= 0 && visited.empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
                 // constrained invocant REJECTS on mismatch and outranks an
                 // unconstrained candidate on match — this is how a proto splits
@@ -9019,9 +9095,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     { bestScore = s; best = &cand; bestVec = vec; }
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
-            if (best && visited->empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
+            if (!cached && best && visited.empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
+            if (!cached && best && bestScore >= 0 && visited.empty() && c.dispatchCacheable != 0)
+                dispatchCacheStore(c, &selfCopy, as, best);
             if (!best || bestScore < 0) {
-                if (!visited->empty()) {                     // ran past the last same-class candidate
+                if (!visited.empty()) {                     // ran past the last same-class candidate
                     if (parentNext) return parentNext(as);   // defer up the inheritance tree
                     return Value::nil();
                 }
@@ -9108,21 +9186,24 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                                 "Cannot resolve caller " + c.name + "(" + prof +
                                 "); none of these signatures matches"};
             }
-            visited->push_back(best);
+            visited.push_back(best);
             RedispatchCtx rc;
             rc.sameArgs = as;
-            rc.next = [&dispatch](ValueList na) -> Value { return dispatch(std::move(na)); };
-            rc.restart = [this, dispatcherVal, selfCopy, rwArgs](ValueList na) -> Value {
-                return invokeMethod(dispatcherVal, selfCopy, std::move(na), rwArgs);
+            rc.next = [&self_](ValueList na) -> Value { return self_(self_, std::move(na)); };
+            rc.restart = [this, &restartTo](ValueList na) -> Value {
+                return invokeMethod(*restartTo.dispatcher, *restartTo.self, std::move(na), restartTo.rwArgs);
             };
             redispatchStack_.push_back(std::move(rc));
             Value r;
-            try { r = invokeMethod(*best, selfCopy, as, rwArgs, /*ownFrame=*/true,
+            try { r = invokeMethod(*best, selfCopy, std::move(as), rwArgs, /*ownFrame=*/true,
                                    /*selfBack=*/nullptr, /*skipWrappers=*/false,
                                    /*whereVerified=*/true); }
             catch (...) { redispatchStack_.pop_back(); throw; }
             redispatchStack_.pop_back();
             return r;
+        };
+        std::function<Value(ValueList)> dispatch = [&dispatchImpl](ValueList as) -> Value {
+            return dispatchImpl(dispatchImpl, std::move(as));
         };
         if (const Value* pb = protoBodyOf(c))
             return callProtoBodyMethod(*pb, selfCopy, dispatch, std::move(args), rwArgs);

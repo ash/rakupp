@@ -2866,6 +2866,10 @@ public:
     std::atomic<bool> symbolsFrozen_{false};
     std::thread::id mainThread_;
     void noteSymbolMutation(const char* what);
+    // the multi-dispatch cache (InterpreterCore.cpp): the winner for this
+    // argument shape, or null; and the store after a full dispatch
+    const Value* dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as);
+    void dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best);
 
     // Concurrency. saveCtx moves the live execution registers into `c`; loadCtx
     // moves them back out. The GIL serialises Raku execution across real threads:
@@ -3669,6 +3673,8 @@ private:
     Value evalAssign(Assign* a, bool sink = false);
     Value evalValueOf(Expr* e); // like eval(), but a bare regex literal is a Regex object (value context)
     Value evalBinary(Binary* b);
+    // a `where`'s Code, built once for a declaration scope, or null (staticWhereCode)
+    const Value* staticWhereCode(const Param& p, const std::vector<Param>& sig, const std::shared_ptr<Env>& scope);
     static Value binaryFastHandler(Interpreter& I, Expr* e);   // a Binary's compiled fast shape
     bool fusedIntAssign(Binary* b, Value* slot);   // `$x = $a op $b` on Ints, into the slot
     static Value typedTreeHandler(Interpreter& I, Expr* e);    // a Binary's numeric subtree, typed

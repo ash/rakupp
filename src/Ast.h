@@ -731,6 +731,12 @@ struct Param {
     // bindParams' positional fast path. A static property of the signature, so
     // it is decided on first call and read from the first param thereafter
     // (-1 = undecided). Only element [0] is ever consulted.
+    // A `where` whose value is a Code that reads nothing the dispatch or the
+    // bind supplies per call (no `self`, attribute, parameter or type
+    // capture): -1 undecided, 0 no, 1 yes. whereCode then holds the Code,
+    // built once for one declaration scope (Interpreter::staticWhereCode).
+    mutable DecidedOnce<signed char> whereStatic{-1};
+    mutable PublishedOnce<const void*> whereCode{nullptr};
     mutable DecidedOnce<signed char> sigSimple{-1};
     // Two more things every bind used to re-derive from the `type` STRING:
     //   natSpec  — Value::natWidthOfType's answer, as bits<<1|signed. That

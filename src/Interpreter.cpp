@@ -5021,7 +5021,11 @@ void Interpreter::gilMainlineLeave(bool outermost) {
 // be reading a table another thread is restructuring — the race lock-free reads
 // must avoid. Off by default (no behaviour change); set RAKUPP_FREEZE_TRACE to
 // have each post-freeze mutation reported to stderr with the offending thread.
+std::atomic<uint64_t> g_symbolGen{0};
 void Interpreter::noteSymbolMutation(const char* what) {
+    // every structural change moves the generation the multi-dispatch cache
+    // was filled under (dispatchCacheLookup), whatever the freeze says
+    g_symbolGen.fetch_add(1, std::memory_order_relaxed);
     if (!symbolsFrozen_.load(std::memory_order_relaxed)) return;
     static const bool trace = std::getenv("RAKUPP_FREEZE_TRACE") != nullptr;
     if (!trace) return;

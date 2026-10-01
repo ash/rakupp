@@ -2941,4 +2941,240 @@ Value composeCode(const Value& fV, const Value& gV) {
     return code;
 }
 
+// Whether a `where` expression reads only what its declaration scope gives
+// it — so the Code it makes can be built once there instead of in a fresh
+// scope holding `self`, the earlier parameters and `$_` at every check. A
+// whitelist over node kinds: anything not named here (a regex, a symbolic
+// reference, a declaration, a statement other than an expression) answers
+// no. `inBlock` is true inside a block literal, which reads its variables
+// when it runs and binds its own `$_`; outside one, only literals, `*`,
+// type names and operators over them.
+static bool whereReadsStatic(const Expr* e, const std::vector<Param>& sig, bool inBlock) {
+    if (!e) return true;
+    auto paramNamed = [&](const std::string& n) {
+        for (auto& p : sig) {
+            if (p.name == n || (!p.captureName.empty() && p.captureName == n)) return true;
+            if (p.typeCapture && p.type == n) return true;
+        }
+        return false;
+    };
+    auto all = [&](const std::vector<ExprPtr>& v) {
+        for (auto& x : v) if (!whereReadsStatic(x.get(), sig, inBlock)) return false;
+        return true;
+    };
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+        case NK::AllomorphLit: case NK::Whatever:
+            return true;
+        case NK::VarExpr: {
+            // Outside a block literal a variable is read when the WhateverCode
+            // is MADE (`* > $lim` keeps $lim's value then), so a Code built
+            // once would keep a stale one: only a block reads it per call.
+            if (!inBlock) return false;
+            auto* v = static_cast<const VarExpr*>(e);
+            const std::string& n = v->name;
+            if (v->declare || n.size() < 2 || paramNamed(n)) return false;
+            if (n[1] == '!' || n[1] == '.') return false;          // an attribute: self's
+            return true;
+        }
+        case NK::NameTerm: {
+            const std::string& n = static_cast<const NameTerm*>(e)->name;
+            return n != "self" && !paramNamed(n) && n.rfind("::?", 0) != 0 && n.rfind("&?", 0) != 0;
+        }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            return whereReadsStatic(b->lhs.get(), sig, inBlock) && whereReadsStatic(b->rhs.get(), sig, inBlock); }
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            static const char* const kOk[] = {"-", "+", "!", "?", "~", "not", "so", "^", "+^", "~^", "?^", "++", "--"};
+            bool ok = false;
+            for (const char* k : kOk) if (u->op == k) { ok = true; break; }
+            return ok && whereReadsStatic(u->operand.get(), sig, inBlock);
+        }
+        case NK::ChainExpr: return all(static_cast<const ChainExpr*>(e)->operands);
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return whereReadsStatic(t->cond.get(), sig, inBlock) && whereReadsStatic(t->then.get(), sig, inBlock) &&
+                   whereReadsStatic(t->els.get(), sig, inBlock); }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e);
+            return whereReadsStatic(r->from.get(), sig, inBlock) && whereReadsStatic(r->to.get(), sig, inBlock); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e);
+            return whereReadsStatic(p->keyExpr.get(), sig, inBlock) && whereReadsStatic(p->value.get(), sig, inBlock); }
+        case NK::ListExpr: return all(static_cast<const ListExpr*>(e)->items);
+        case NK::ArrayLit: return all(static_cast<const ArrayLit*>(e)->items);
+        case NK::HashLit: return all(static_cast<const HashLit*>(e)->items);
+        case NK::InterpStr: return all(static_cast<const InterpStr*>(e)->parts);
+        case NK::Index: { auto* i = static_cast<const Index*>(e);
+            return whereReadsStatic(i->base.get(), sig, inBlock) && whereReadsStatic(i->index.get(), sig, inBlock); }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            return !m->methodExpr && (inBlock || m->inv) && whereReadsStatic(m->inv.get(), sig, inBlock) &&
+                   all(m->args); }
+        case NK::Call: {
+            if (!inBlock) return false;   // (evaluated when the WhateverCode is made, as a variable is)
+            auto* c = static_cast<const Call*>(e);
+            static const char* const kNo[] = {"EVAL", "EVALFALLBACK", "callsame", "callwith", "nextsame",
+                                              "nextwith", "samewith", "nextcallee", "lastcall", "callframe",
+                                              "return", "temp", "let"};
+            for (const char* k : kNo) if (c->name == k) return false;
+            return whereReadsStatic(c->callee.get(), sig, inBlock) && all(c->args);
+        }
+        case NK::BlockExpr: {
+            auto* b = static_cast<const BlockExpr*>(e);
+            if (b->isSub || b->isMethodTerm || !b->phaser.empty()) return false;
+            for (auto& bp : b->params)
+                if (bp.defaultVal || bp.whereExpr || bp.subSig || bp.codeSig) return false;
+            for (auto& st : b->body) {
+                if (st->kind != NK::ExprStmt) return false;
+                if (!whereReadsStatic(static_cast<const ExprStmt*>(st.get())->e.get(), sig, true)) return false;
+            }
+            return true;
+        }
+        default: return false;
+    }
+}
+
+namespace {
+struct WhereCodeCache { const Env* scope; Value code; };
+}
+
+// The Code a parameter's `where` makes, built once for the declaration scope
+// `scope` and reused by every later check from it — or null, when the `where`
+// reads something per call (whereReadsStatic), does not make a Code, or was
+// built for another scope (a candidate recreated by its enclosing routine).
+// Built in a scope of its own under `scope`, so the Code closes over nothing a
+// call supplies; the cache keeps that scope, and so `scope`, alive.
+const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Param>& sig,
+                                          const std::shared_ptr<Env>& scope) {
+    signed char st = p.whereStatic;
+    if (st < 0) p.whereStatic = st = whereReadsStatic(p.whereExpr.get(), sig, false) ? 1 : 0;
+    if (st == 0 || !scope) return nullptr;
+    if (auto* c = static_cast<const WhereCodeCache*>(p.whereCode.get()))
+        return c->scope == scope.get() ? &c->code : nullptr;
+    auto env = std::make_shared<Env>();
+    env->parent = scope;
+    auto saved = tctx_.cur; tctx_.cur = env;
+    Value cv;
+    try { cv = eval(p.whereExpr.get()); } catch (...) { tctx_.cur = saved; p.whereStatic = 0; return nullptr; }
+    tctx_.cur = saved;
+    if (!(cv.t == VT::Code && cv.code() && (cv.code()->isWhateverCode || cv.code()->isBlock))) {
+        p.whereStatic = 0;
+        return nullptr;
+    }
+    auto* mine = new WhereCodeCache{scope.get(), std::move(cv)};
+    auto* won = static_cast<const WhereCodeCache*>(p.whereCode.publish(mine));
+    if (won != mine) delete mine;
+    return won->scope == scope.get() ? &won->code : nullptr;
+}
+
+// --- the multi-dispatch cache (INTERP-SPEED-PLAN tier 1, item 4) ------------
+// A dispatcher remembers the argument shape of one dispatch and the candidate
+// that won it, and a later call with the same shape goes straight to that
+// candidate. Sound only where the winner cannot depend on anything but the
+// shape, so both sides are narrow:
+//   the arguments — each a plain Int, Num or Str (no tag, enum, allomorph or
+//   native) or an instance of a class, keyed by its kind and its ClassInfo;
+//   the candidates — every parameter a `$` positional typed by a name whose
+//   match depends only on that key (an unconstrained one, a core numeric or
+//   string type, a user class), with no `where`, literal, coercion, capture,
+//   sub-signature, default, `is rw` or native type.
+// The entry is published once and names its candidate by index; it is good
+// while the candidate count and the symbol generation are what they were.
+extern std::atomic<uint64_t> g_symbolGen;
+namespace {
+struct DispatchCacheEntry {
+    uint64_t gen; uint32_t ncand; uint32_t nkey; uint32_t best; uint64_t key[8];
+};
+// One argument's key: its kind (and definedness), and its class. False when
+// its match may depend on more than that.
+inline bool dispatchArgKey(const Value& v, uint64_t& k0, uint64_t& k1) {
+    if (!v.hashKind.empty() || !v.enumName.empty() || !v.enumType.empty()) return false;
+    switch (v.t) {
+        case VT::Int: case VT::Num: case VT::Str:
+            if (v.isAllomorph()) return false;
+            // a native's width, sign and kind are part of its shape
+            k0 = (uint64_t)v.t | (uint64_t)v.natBits << 8 | (uint64_t)v.natSigned << 16 |
+                 (uint64_t)v.natFloat << 17;
+            k1 = 0;
+            return true;
+        case VT::Object:
+            if (!v.obj() || !v.obj()->cls || v.obj()->hasBoxed) return false;
+            k0 = (uint64_t)v.t; k1 = (uint64_t)(uintptr_t)v.obj()->cls.get(); return true;
+        default: return false;
+    }
+}
+inline bool dispatchKey(const Value* self, const ValueList& as, uint64_t* key, uint32_t& n) {
+    n = 0;
+    if (as.size() + (self ? 1 : 0) > 4) return false;
+    if (self && !dispatchArgKey(*self, key[0], key[1])) return false;
+    if (self) n = 2;
+    for (auto& a : as) {
+        if (a.t == VT::Pair && a.namedArg) return false;
+        if (!dispatchArgKey(a, key[n], key[n + 1])) return false;
+        n += 2;
+    }
+    return true;
+}
+}  // namespace
+
+Callable::DispatchCacheSlot::~DispatchCacheSlot() {
+    delete static_cast<const DispatchCacheEntry*>(p.load(std::memory_order_relaxed));
+}
+
+// Whether every candidate's parameters are ones a cached answer can stand for.
+template <typename Classes, typename Subsets>
+static bool dispatchCandidatesCacheable(const Callable& c, const Classes& classes, const Subsets& subsets) {
+    static const std::set<std::string> kNominal = {"", "Any", "Mu", "Int", "Str", "Num", "Real",
+                                                   "Numeric", "Cool", "Stringy"};
+    for (auto& cand : c.candidates) {
+        const Callable* cc = cand.code();
+        if (!cc) return false;
+        if (cc->isProto || cc->isProtoBody) continue;
+        if (!cc->params || cc->isDefaultCand || !cc->wrappers.empty()) return false;
+        for (auto& p : *cc->params) {
+            if (p.slurpy && p.sigil == '%') continue;           // a method's implicit *%_
+            if (p.named || p.slurpy || p.sigil != '$' || p.whereExpr || p.hadWhere || p.litVal ||
+                p.subSig || p.codeSig || p.coerce || p.typeCapture || p.isRw || p.defaultVal ||
+                p.optional || !p.shapeDims.empty())
+                return false;
+            if (kNominal.count(p.type)) continue;
+            auto it = classes.find(p.type);
+            if (it == classes.end() || !it->second || it->second->isRole || subsets.count(p.type) ||
+                p.type.find('[') != std::string::npos)
+                return false;
+        }
+    }
+    return true;
+}
+
+const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as) {
+    auto* e = static_cast<const DispatchCacheEntry*>(c.dispatchCache.p.load(std::memory_order_acquire));
+    if (!e || e->ncand != c.candidates.size() || e->gen != g_symbolGen.load(std::memory_order_relaxed))
+        return nullptr;
+    uint64_t key[8]; uint32_t n;
+    if (!dispatchKey(self, as, key, n) || n != e->nkey) return nullptr;
+    for (uint32_t k = 0; k < n; k++) if (key[k] != e->key[k]) return nullptr;
+    return &c.candidates[e->best];
+}
+
+void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best) {
+    if (c.dispatchCache.p.load(std::memory_order_relaxed)) return;   // published once
+    const uint32_t ncand = (uint32_t)c.candidates.size();
+    if (c.dispatchCacheable < 0 || c.dispatchCacheN != ncand) {
+        c.dispatchCacheable = dispatchCandidatesCacheable(c, classes_, subsets_) ? 1 : 0;
+        c.dispatchCacheN = ncand;
+    }
+    if (c.dispatchCacheable != 1) return;
+    DispatchCacheEntry k{};
+    if (!dispatchKey(self, as, k.key, k.nkey) || best < c.candidates.data() ||
+        best >= c.candidates.data() + ncand)
+        return;
+    auto* e = new DispatchCacheEntry(k);
+    e->gen = g_symbolGen.load(std::memory_order_relaxed);
+    e->ncand = ncand;
+    e->best = (uint32_t)(best - c.candidates.data());
+    const void* expected = nullptr;
+    if (!c.dispatchCache.p.compare_exchange_strong(expected, e, std::memory_order_release,
+                                                    std::memory_order_relaxed))
+        delete e;
+}
+
+
 } // namespace rakupp

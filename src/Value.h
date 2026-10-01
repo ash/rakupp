@@ -415,6 +415,21 @@ struct Callable {
         return n;
     }
     ValueList candidates;                          // multi-dispatch candidates
+    // A multi dispatcher's monomorphic cache: the argument shape of a dispatch
+    // it could cache and the candidate that won it (Interpreter's
+    // dispatchCacheLookup). Not copied with the Callable, freed with it.
+    struct DispatchCacheSlot {
+        std::atomic<const void*> p{nullptr};
+        DispatchCacheSlot() = default;
+        DispatchCacheSlot(const DispatchCacheSlot&) {}
+        DispatchCacheSlot& operator=(const DispatchCacheSlot&) { return *this; }
+        ~DispatchCacheSlot();
+    } dispatchCache;
+    // whether the candidate set is one a cached answer can stand for (every
+    // parameter nominal and positional): -1 undecided, else the decision for
+    // dispatchCacheN candidates
+    DecidedOnce<signed char> dispatchCacheable{-1};
+    DecidedOnce<uint32_t> dispatchCacheN{0};
     PRef<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
                                                    // dispatch group is synthesized; .dispatcher reads it)
     bool isMultiDispatcher = false;

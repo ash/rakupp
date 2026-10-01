@@ -44,7 +44,9 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
    6.d fall-through for nested blocks needs a deep scan first).
 4. **The multi-dispatch cache, and the redispatch context built only for a
    body that redispatches** (task 6, V6 P2, issue #47). `multiwhere` is the
-   last perf-guard kernel slower than v4.0.1.
+   last perf-guard kernel slower than v4.0.1. *Done (task 6):* `multimeth`
+   −52%, `multiwhere` −46%. The redispatch frame is still built per call, but
+   it no longer allocates, so making it lazy is not worth a body scan.
 
 **Tier 2:**
 
@@ -326,9 +328,38 @@ Dispatch work does not move calls; call setup does
   for a user object. Too many arms in front of the user-object path still
   apply to one (a Junction argument, custom HOWs, the Seq tag on a
   `keys`/`values`-named result), so a bypass would have to copy those rules.
-- [ ] Build the redispatch context lazily, only for a body that uses
-  `callsame`/`nextsame` (V6 P2).
-- [ ] The multi-dispatch cache (V6 P2, issue #47).
+- [x] The multi-dispatch cache (V6 P2, issue #47), and a dispatch that
+  allocates nothing. Four parts:
+  - **The dispatch itself.** Both dispatchers (subs in callCallableRaw,
+    methods in invokeMethod) kept the dispatch in a std::function holding
+    ~250 bytes of captures, a shared `visited` vector, score vectors, a
+    positional-parameter vector per candidate, a positional-argument copy per
+    candidate and a samewith closure that copied the invocant: 10 heap
+    blocks per multi-method call. The dispatch is a lambda on the frame, the
+    vectors are inline or leased from a per-thread pool, and the frame's
+    closures capture one pointer. A multi-method call allocates nothing now.
+  - **`where` Code built once** (`Param::whereStatic`, `staticWhereCode`): a
+    `where` whose Code reads nothing per call — a block over its own `$_`
+    and outer lexicals, or a WhateverCode over literals — is built once in
+    the candidate's declaration scope, not in a fresh scope holding `self`,
+    the earlier parameters and `$_` at every check. A WhateverCode over a
+    variable (`* > $lim`) reads it when it is made, so it is rebuilt as before.
+  - **The cache** (`Callable::dispatchCache`, `dispatchCacheLookup`): a
+    monomorphic entry per dispatcher, published once, keyed on each argument's
+    kind (with native width) and class, and the winner by index. Only where
+    the winner cannot depend on more: plain Int/Num/Str or tag-free class
+    instances, and candidates whose parameters are all `$` positionals typed
+    by a core numeric/string type or a user class, with no `where`, literal,
+    coercion, capture, sub-signature, default, `is rw` or `is default`.
+    Invalid once the candidate count or the symbol generation (bumped in
+    noteSymbolMutation) moves.
+  - **Measured** against 96c07845, interleaved best of 3: `multimeth` −52%,
+    `multiwhere` −46%, perf-guard geomean −7.3%; a two-candidate multi sub
+    −48% in retired instructions; every other kernel within ±1% in retired
+    instructions.
+- [ ] The redispatch frame is still built per call (a copy of the arguments
+  for callsame); building it only for a body that can redispatch would save
+  that copy.
 - [ ] Split `Callable` into an immutable per-AST part and a ~64-byte closure
   (V6 P3 item 7).
 - [ ] A variable declared in a `given`/`when` block falls back to map lookups:
