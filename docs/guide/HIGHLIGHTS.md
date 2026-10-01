@@ -85,8 +85,9 @@ no server, with an embeddable in-page playground.
   redistributable needed), **OpenBSD** x86-64. What a compiled program
   needs, per platform: [COMPILERS.md](COMPILERS.md#what-runs-where).
 - **Linux on RISC-V** (riscv64) builds from source with no
-  architecture-specific code, and is built and tested on real RISC-V hardware
-  in CI. It has no release archive yet.
+  architecture-specific code — reported built on a Milk-V Pioneer (64 cores);
+  in CI on RISC-V hardware it builds and passes the smoke tests. It has no
+  release archive yet.
 - Prebuilt archives on [GitHub Releases](https://github.com/ash/rakupp/releases);
   macOS also via `brew install ash/rakupp/rakupp`.
 - CI builds and smoke-tests all three on every push.
