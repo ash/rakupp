@@ -327,6 +327,9 @@ struct Callable {
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
     // parameters builds that array only then. -1 = not yet scanned.
     DecidedOnce<signed char> atArgsScan{-1};
+    // a BLOCK that may read `@_` (Interpreter::blockTakesAtArgs, a deep scan): 1,
+    // or 0 and a call gives it none. -1 = not yet scanned.
+    DecidedOnce<signed char> blockAtArgs{-1};
     // Three more static properties of the AST that callCallableRaw used to
     // recompute on EVERY call. Each is cheap once and worthless repeated; a
     // 73,603-call parse pays for them 73,603 times. -1/undecided as above.

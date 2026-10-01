@@ -3691,6 +3691,7 @@ private:
     Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
     bool typedTreeDecide(Binary* b);               // is it a typed-subtree root (and compiled to one)?
     Value* plainIntStepSlot(VarExpr* ve);           // the slot `$n++` steps in place, or null
+    bool blockTakesAtArgs(Callable& c);             // does a called block get an `@_`?
     Value* plainIntStepTarget(Expr* e);             // …`@a[$i]++` / `%h{$k}++` / `$!n++`'s, or null
     // `EXPR xx N` — `item` is re-evaluated once per copy (it is a THUNK), so the
     // two operands arrive as AST nodes; `Rxx` hands them over the other way round.

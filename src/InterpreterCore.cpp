@@ -7800,7 +7800,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             env->define("%_", h);
             env->define("@_", Value::array(slurpyArgs(posOnly)));
         }
-        else if (sixE() || !(c.isBlock && args.empty()))
+        // (and only for a block that can read it: Rakudo gives a block an
+        // `@_` only when it mentions one — blockTakesAtArgs)
+        else if ((sixE() || !(c.isBlock && args.empty())) && blockTakesAtArgs(c))
             env->define("@_", Value::array(slurpyArgs(args)));
     }
     auto saved = tcx.cur;

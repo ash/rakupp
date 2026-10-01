@@ -359,9 +359,10 @@ Dispatch work does not move calls; call setup does
     `multiwhere` −46%, perf-guard geomean −7.3%; a two-candidate multi sub
     −48% in retired instructions; every other kernel within ±1% in retired
     instructions.
-- [ ] The redispatch frame is still built per call (a copy of the arguments
-  for callsame); building it only for a body that can redispatch would save
-  that copy.
+- [ ] ~~The redispatch frame built only for a body that can redispatch.~~
+  Measured and not pursued: the census shows no allocation per multi call
+  once the rest of this item landed (a short argument list copies inline),
+  so there is nothing left for laziness to save.
 - [ ] Split `Callable` into an immutable per-AST part and a ~64-byte closure
   (V6 P3 item 7).
 - [ ] A variable declared in a `given`/`when` block falls back to map lookups:
@@ -387,8 +388,14 @@ Each is its own plan, in V6's order of evidence per cost:
   Against 24c577db, best of 3: `for %h.kv -> $k, $v` −35%, an if/else
   loop −12%, `for ^N { my $x = … }` −12%; the census shows no allocation
   per iteration in any of the three.
-- [ ] `$_`/`@_` for a block called as a Code (`.map({ … })`): two map
-  nodes and an Array per call.
+- [x] `@_` for a block called as a Code (`.map({ … })`): it was built on
+  every call. A block gets one only when it can read it
+  (`Callable::blockAtArgs`, a deep whitelist scan decided once, nested
+  blocks included; an EVAL, a symbolic reference or a regex naming `@_`
+  counts as reading it), as Rakudo gives one only to a block that mentions
+  it. A `.map({ $_ * 2 })` element: two allocations → one, −19% in retired
+  instructions. The `$_` map node per call is left: a pooled frame cannot
+  keep it, since the next routine through that frame may define none.
 - [ ] Small Rats inline. *In part, without touching `Value`:* a BigInt's limbs
   are a `LimbVec` with four limbs inline (anything under 10^36), and the
   assignment lane takes a Rat accumulator. `rats` −7% and −7%, `bigint` −7%;
