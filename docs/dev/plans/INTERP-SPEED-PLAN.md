@@ -53,19 +53,32 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
 **Tier 2:**
 
 5. `--cnp` sees more loop sources: `for @array`, `for %h.kv`, the
-   statement-modifier `for`, then `.map`. Of the 40 programs in `examples/` and
+   statement-modifier `for`, then `.map`. *`for @array` done* (c403605c, and a
+   trip now goes only to a loop the hot one is written in); it moves no
+   program in the corpus into a kernel, because their loop BODIES are refused
+   (interpolated strings, whole-array assignment, `-> @row`), so the bodies
+   are the next limit, not more sources. Of the 40 programs in `examples/` and
    `tools/bench/`, 20 have no loop it counts at all, and since 2026-09-29 a
    kernel may index and call, so reach is now the limit.
-6. Memory without touching `Value`: `ObjectData::boxed` behind a pointer
-   (128 of 280 bytes), the 83 `make_shared<Value>` sites onto the slab and
-   Pairs with an inline key, `VarExpr`'s declaration-only fields behind a
-   pointer, and `Callable` split into a per-AST part and a small closure
-   (V6 P3 items 4, 5, 7, 8).
+6. *In part:* arrays grow by realloc (59a6daf6: 1M Ints 165 → 83 bytes an
+   element) and `ObjectData::boxed` is behind a pointer (56fd5291: an object
+   796 → 666). Still open: the 83 `make_shared<Value>` sites onto the slab
+   and Pairs with an inline key (a 1M Int-keyed Pair list is 582 bytes an
+   element: the element, its cold block, a shared key Value and the value's
+   body), `VarExpr`'s declaration-only fields behind a pointer (400 bytes a
+   node), and `Callable` split into a per-AST part and a small closure (680
+   bytes) — V6 P3 items 4, 7, 8.
 7. Packed native arrays: `my int @a` as contiguous `int64` (V6 P3 item 6).
    The 26× row in V6's memory table, SPEC-DIVERGENCES #14, and contiguous data
    for `--cnp`.
 8. Task 5's rest, done as hot/rare splits of whole functions, and the
-   frame-size ceiling in `budget.raku`.
+   frame-size ceiling in `budget.raku`. *Re-priced 2026-10-01:* ten hot
+   functions still have frames over the 4 KB probe interval (evalAssignInner
+   7.5 KB, bindParams 6.4, lvalue 5.5, evalBinary 5.3, evalIndex 5.1, …), but
+   `___chkstk_darwin` no longer reaches the sampler's floor in `fib` or
+   `objnew` and is ~1.5% of an element-increment loop: the lanes in front of
+   these functions answer the hot shapes before their frames are entered. Not
+   worth the split now.
 9. Task 10 on arm64: `--cnp` on by default for hot loops, the threaded-program
    decision, the kernel arena (CNP-PLAN P2), then `--jit` retired once item 2
    has landed.
