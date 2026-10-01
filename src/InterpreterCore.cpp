@@ -5815,7 +5815,9 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
                                type == "Block" || type == "Code" || type == "Callable";
         // a Match IS a Capture and IS Cool (Rakudo: Match ~~ Capture/Cool both True)
         case VT::Match: return type == "Match" || type == "Capture" || type == "Cool";
-        case VT::Range: return type == "Range" || type == "Iterable";
+        // a Range is Positional and Cool (Rakudo: Range.^roles, Range ~~ Cool)
+        case VT::Range: return type == "Range" || type == "Positional" ||
+                               type == "Iterable" || type == "Cool";
         case VT::Object: {
             std::string tdisp;   // a role pun's written form (see typeNameConforms)
             if (type.find('\x01') != std::string::npos && g_matchClasses) {
