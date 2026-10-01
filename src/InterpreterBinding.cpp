@@ -1388,6 +1388,152 @@ void Interpreter::throwIfAmbiguous(const Callable& c, const Value* best, const V
                     "Ambiguous call to '" + c.name + "(" + prof + ")'; these signatures all match:" + sigs};
 }
 
+// A user `multi infix:<op>` whose operands are CORE values joins the same
+// dispatch as the built-in operator in Rakudo: `multi infix:<+>(Int:D $a,
+// Int:D $b where * > 0)` is narrower than the core `(Int:D, Int:D)` and wins,
+// `(Int $a, Int $b)` ties with it and the call is ambiguous, and `(Numeric,
+// Numeric)` is broader and the core candidate wins. The built-in operators are
+// not candidates here, so the one they would field is modelled from the
+// operand types: same-typed numbers meet their own type (Rat meets Rational),
+// mixed reals meet `Real`, string comparisons over two Strs meet `Str`, and
+// anything else meets the generic `(\a, \b)`.
+//
+// Only the operators below are modelled, and a group is looked at only once
+// one of its candidates names a concrete core type (noteUserInfixCandidate
+// arms the operator's bit in g_lexShadowMask): a group over a user class
+// alone keeps the fast paths, and its candidates are dispatched where object
+// operands are (evalBinary).
+static bool userInfixModelledOp(const std::string& op, bool& stringOp) {
+    static const std::unordered_map<std::string, bool> kOps = {
+        {"+", false}, {"-", false}, {"*", false}, {"/", false}, {"%", false}, {"**", false},
+        {"==", false}, {"!=", false}, {"<", false}, {">", false}, {"<=", false}, {">=", false},
+        {"<=>", false}, {"div", false}, {"mod", false},
+        {"eq", true}, {"ne", true}, {"lt", true}, {"gt", true}, {"le", true}, {"ge", true}, {"leg", true}};
+    auto it = kOps.find(op);
+    if (it == kOps.end()) return false;
+    stringOp = it->second;
+    return true;
+}
+
+static bool userInfixCoreType(const std::string& t) {
+    return t == "Int" || t == "UInt" || t == "Num" || t == "Rat" || t == "FatRat" || t == "Str" ||
+           t == "Bool" || t == "Complex";
+}
+
+// The two positional parameters a binary candidate dispatches on, or false
+// when it has some other shape (a slurpy, an optional, a named it requires…).
+static bool userInfixParams(const Callable* c, const Param*& a, const Param*& b) {
+    if (!c || !c->params) return false;
+    const Param* ps[2] = {nullptr, nullptr};
+    int n = 0;
+    for (auto& p : *c->params) {
+        if (p.invocant) continue;
+        if (p.named) { if (p.required) return false; continue; }
+        if (p.pastDoubleSemi || p.slurpy || p.optional || p.defaultVal || p.subSig || p.coerce ||
+            p.typeCapture || p.sigil != '$' || n == 2)
+            return false;
+        ps[n++] = &p;
+    }
+    if (n != 2) return false;
+    a = ps[0]; b = ps[1];
+    return true;
+}
+
+void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable* cand) {
+    if (name.size() < 9 || name.compare(0, 7, "infix:<") != 0 || name.back() != '>') return;
+    const std::string op = name.substr(7, name.size() - 8);
+    bool stringOp;
+    if (!userInfixModelledOp(op, stringOp)) return;
+    const Param *a, *b;
+    if (!userInfixParams(cand, a, b)) return;
+    auto concrete = [&](const Param* p) {
+        if (p->litVal) return true;
+        std::string t = p->type;
+        for (int guard = 0; guard < 16; guard++) {
+            auto it = subsets_.find(t);
+            if (it == subsets_.end() || it->second.base.empty()) break;
+            t = it->second.base;
+        }
+        if (userInfixCoreType(t)) return true;
+        // a name nothing has declared YET: the sub is hoisted above the
+        // `subset P of Int` its parameter names, so it may be one
+        static const std::set<std::string> kBroad = {
+            "Any", "Mu", "Cool", "Numeric", "Real", "Rational", "Stringy", "Positional", "Associative",
+            "Callable", "Code", "Iterable", "Junction", "List", "Array", "Hash", "Seq", "Range"};
+        return !t.empty() && !kBroad.count(t) && !classes_.count(t);
+    };
+    if (concrete(a) && concrete(b))
+        g_lexShadowMask.fetch_or(1ull << lexShadowSlot(op.data(), op.size()), std::memory_order_relaxed);
+}
+
+bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out) {
+    bool stringOp;
+    if (!tctx_.cur || !userInfixModelledOp(op, stringOp)) return false;
+    auto plain = [](const Value& v) {
+        return isDefined(v) && v.hashKind.empty() && !v.isAllomorph() && v.enumType.empty() &&
+               (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Str ||
+                v.t == VT::Bool || v.t == VT::Complex);
+    };
+    if (!plain(l) || !plain(r)) return false;
+    static thread_local std::string key;
+    key.assign("&infix:<").append(op).append(">");
+    Value* f = tctx_.cur->find(key);
+    if (!f || f->t != VT::Code || !f->code() || !f->code()->isMultiDispatcher) return false;
+    // the built-in candidate these operands meet
+    const std::string tl = l.typeName(), tr = r.typeName();
+    auto intish = [](const std::string& t) { return t == "Int" || t == "Bool"; };
+    auto real = [&](const std::string& t) { return intish(t) || t == "Num" || t == "Rat" || t == "FatRat"; };
+    std::string core;
+    if (stringOp) core = tl == "Str" && tr == "Str" ? "Str" : "Any";
+    else if (intish(tl) && intish(tr)) core = "Int";
+    else if (tl == tr && (tl == "Num" || tl == "Complex")) core = tl;
+    else if ((tl == "Rat" || tl == "FatRat") && (tr == "Rat" || tr == "FatRat")) core = "Rational";
+    else if (real(tl) && real(tr)) core = "Real";
+    else core = "Any";
+    const ValueList args{l, r};
+    enum { Lose, Tie, Win };
+    int verdict = Lose;
+    const Value* tied = nullptr;
+    for (auto& cand : f->code()->candidates) {
+        const Callable* c = cand.code();
+        if (!c || c->isProto || c->isProtoBody) continue;
+        const Param *pa, *pb;
+        if (!userInfixParams(c, pa, pb) || scoreCandidate(cand, args) < 0) continue;
+        bool constrained = c->isDefaultCand, narrower = false, broader = false;
+        const Param* ps[2] = {pa, pb};
+        for (int i = 0; i < 2; i++) {
+            const Param& p = *ps[i];
+            // a literal parameter is its value's type with a constraint
+            std::string t = p.litVal ? args[i].typeName() : p.type.empty() ? std::string("Any") : p.type;
+            if (p.litVal || p.whereExpr || p.hadWhere) constrained = true;
+            for (int guard = 0; guard < 16; guard++) {
+                auto it = subsets_.find(t);
+                if (it == subsets_.end() || it->second.base.empty()) break;
+                t = it->second.base;
+                constrained = true;
+            }
+            if (t == "UInt") { t = "Int"; constrained = true; }
+            if (t == core) continue;
+            if (typeMatchesArg(Value::typeObj(t), core)) narrower = true;
+            else broader = true;
+        }
+        if (broader) continue;
+        if (narrower || constrained) { verdict = Win; break; }
+        verdict = Tie;
+        if (!tied) tied = &cand;
+    }
+    if (verdict == Win) { out = callCallable(*f, ValueList{l, r}); return true; }
+    if (verdict == Lose) return false;
+    const bool angled = op.find_first_of("<>") != std::string::npos;
+    const std::string name = angled ? "infix:\u00AB" + op + "\u00BB" : "infix:<" + op + ">";
+    std::string sigs = "\n    (" + core + ":D, " + core + ":D)";
+    if (core == "Any" || core == "Real") sigs = "\n    (" + core + " \\a, " + core + " \\b)";
+    try { sigs += "\n    " + methodCall(methodCall(*tied, "signature", {}), "gist", {}).toStr(); }
+    catch (...) {}
+    throw RakuError{Value::typeObj("X::Multi::Ambiguous"),
+                    "Ambiguous call to '" + name + "(" + tl + ", " + tr + ")'; these signatures all match:" + sigs};
+}
+
 // `try { …; CATCH {…} }` runs its block under `use fatal` (Rakudo): a Failure
 // the block ENDS with is thrown inside it, where its own CATCH sees it. The try
 // sets this for the one call it makes; that call consumes it on entry, so the

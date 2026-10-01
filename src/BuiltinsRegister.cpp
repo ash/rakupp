@@ -489,9 +489,17 @@ void Interpreter::registerBuiltins() {
             return Value::nil();
         }
         // the returned Callable runs the captured next candidate with WHATEVER
-        // args it is handed (the wrapper passes `self, |c` back through)
-        return Value::closure([nextFn](ValueList& a) -> Value {
-            ValueList copy = a; return nextFn(std::move(copy));
+        // args it is handed (the wrapper passes `self, |c` back through). Taken
+        // inside a METHOD it is that next method, called with the invocant
+        // first — `n(self, $x)` — while the frame's own continuation binds the
+        // invocant itself and wants the rest only.
+        const bool inMethod = d && !d->wrapperFrame && I.tctx_.curRoutineVal &&
+                              I.tctx_.curRoutineVal->t == VT::Code && I.tctx_.curRoutineVal->code() &&
+                              I.tctx_.curRoutineVal->code()->isMethod;
+        return Value::closure([nextFn, inMethod](ValueList& a) -> Value {
+            ValueList copy = a;
+            if (inMethod && !copy.empty()) copy.erase(copy.begin());
+            return nextFn(std::move(copy));
         });
     };
     B["samewith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {

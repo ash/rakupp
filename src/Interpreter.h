@@ -1888,6 +1888,10 @@ public:
                          const std::string& nm);   // `my Str(Int(Cool)) $x = …`
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
+    // A user `multi infix:<op>` over core operands, judged against the
+    // built-in candidate it competes with (see InterpreterBinding.cpp).
+    bool userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out);
+    void noteUserInfixCandidate(const std::string& name, const Callable* cand);
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
     char elemSmileyOf(const std::string& symbol);
     void checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v);

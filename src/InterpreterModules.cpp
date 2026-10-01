@@ -4352,6 +4352,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 return;
                         c.code()->isMultiCandidate = true;
                         disp->candidates.push_back(c);
+                        noteUserInfixCandidate(sname, c.code());
                     };
                     joins(code);
                     for (auto& c : altCands) joins(c);

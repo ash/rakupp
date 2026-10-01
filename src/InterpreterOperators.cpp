@@ -542,6 +542,13 @@ Value Interpreter::prefixStringify(const Value& v) {
         }
     return Value::str(strOf(v));
 }
+// `-$i` for a machine Int: the one value whose negation does not fit, the
+// minimum int64, promotes to a big Int (`-(-2**63)` is 2**63, not itself).
+static Value negInt(long long i) {
+    if (i == LLONG_MIN) return Value::bigint(-BigInt(i));
+    return Value::integer(-i);
+}
+
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     if (v.t == VT::Array) v.seqTouch();   // `+$s` is its count: a Seq is cached (SeqToken)
     if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->isWhateverCode &&
@@ -561,7 +568,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         for (const char* nm : {"Numeric", "Bridge", "Int"})
             if (Value* m = v.obj()->cls->findMethod(nm)) {
                 ValueList none; Value n = invokeMethod(*m, v, none);
-                if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+                if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
                 return n;
             }
         // …and a class deriving a built-in numifies as the value it BOXES:
@@ -570,7 +577,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
             Value b = v.obj()->boxed;
             ValueList none;
             Value n = b.isNumeric() ? b : methodCall(b, "Numeric", none);
-            if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+            if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
             return n;
         }
     }
@@ -578,14 +585,14 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     // not the part pulled so far: `+$fh.lines` reads to the end
     if ((op == "+" || op == "-") && v.t == VT::Array && v.ext() && v.hashKind.empty() && v.enumName.empty()) {
         ValueList none; Value n = methodCall(v, "elems", none);
-        if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+        if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
         return n;
     }
     // …and a CAPTURE numifies to its POSITIONAL count: the named parts are not
     // elements, so `+\(2, 3, :a(7))` is 2, not 3.
     if ((op == "+" || op == "-") && v.t == VT::Array && v.hashKind == "Capture") {
         ValueList none; Value n = methodCall(v, "Numeric", none);
-        return op == "-" ? Value::integer(-n.toInt()) : n;
+        return op == "-" ? negInt(n.toInt()) : n;
     }
     // A Blob/Buf is Positional too, so numeric context is its ELEMENT COUNT, not a
     // numification of its bytes as text. `+"key".encode` is 3; rakupp was reading
@@ -595,7 +602,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     if ((op == "+" || op == "-") && v.t == VT::Str && !v.itemized &&
         (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8")) {
         long long n = v.blobElems();
-        return Value::integer(op == "-" ? -n : n);
+        return (op == "-" ? negInt(n) : Value::integer(n));
     }
     // …but a Range with an infinite or NaN endpoint has no element count and
     // still numifies: `+(1..*)` is Inf and `+(1..NaN)` is NaN, where `.elems`
@@ -628,7 +635,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
             auto it = v.hash()->find("addr");
             if (it != v.hash()->end()) {
                 long long a = it->second.toInt();
-                return Value::integer(op == "-" ? -a : a);
+                return (op == "-" ? negInt(a) : Value::integer(a));
             }
         }
         // +$date is its DAYCOUNT and +$datetime its Instant (Rakudo's Dateish
@@ -636,14 +643,14 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         if (v.t == VT::Hash && v.hash() && (v.hashKind == "Date" || v.hashKind == "DateTime")) {
             ValueList none;
             Value n = methodCall(v, "Numeric", none);
-            if (op == "-") return n.t == VT::Int ? Value::integer(-n.toInt()) : Value::number(-n.toNum());
+            if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
             return n;
         }
         long long n;
         if (v.t == VT::Array) n = (long long)v.arr()->size();
         else if (v.t == VT::Hash) n = (long long)v.hash()->size();
         else n = (long long)v.flatten().size();
-        return Value::integer(op == "-" ? -n : n);
+        return (op == "-" ? negInt(n) : Value::integer(n));
     }
     if (op == "-") {
         // `0 - z`, not `(-re, -im)`: Raku's unary minus on a Complex subtracts
@@ -651,7 +658,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         // -0.0 is negative zero and `(-i).re.raku` then prints "-0e0").
         if (v.t == VT::Complex) return Value::complex(0.0 - v.n, 0.0 - v.im());
         if (v.t == VT::Int && v.big()) return Value::bigint(-(*v.big()));
-        if (v.t == VT::Int || v.t == VT::Bool) return Value::integer(-v.toInt());
+        if (v.t == VT::Int || v.t == VT::Bool) return negInt(v.toInt());
         if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.fatRatM() = v.fatRat(); return r; }
         if (v.t == VT::Str || v.t == VT::Match) {
             Value n = v.t == VT::Str ? numifyStrFailure(v.s) : numifyStr(strOf(v));
@@ -659,7 +666,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
             if (n.t == VT::Hash && n.hashKind == "Failure") failureDetonate(n);
             if (n.t == VT::Complex) return Value::complex(0.0 - n.n, 0.0 - n.im());
             if (n.t == VT::Int && n.big()) return Value::bigint(-(*n.big()));
-            if (n.t == VT::Int && !n.big()) return Value::integer(-n.toInt());
+            if (n.t == VT::Int && !n.big()) return negInt(n.toInt());
             return n.t==VT::Rat ? Value::rat(-(*n.ratN()),*n.ratD()) : Value::number(-n.toNum());
         }
         if (!isDefined(v)) return Value::integer(0); // `-$undef` is 0, an Int (Rakudo warns; the binary ladder agrees)

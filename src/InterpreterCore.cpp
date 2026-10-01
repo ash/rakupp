@@ -20042,8 +20042,12 @@ Value Interpreter::evalBinary(Binary* b) {
             return typedTreeHandler(*this, b);
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
-        if (shadowMaybe)
+        if (shadowMaybe) {
             if (Value* f = lexShadowedInfix(op, l, r)) return callCallable(*f, ValueList{l, r});
+            // a user multi over core operands, against the built-in it meets
+            Value uv;
+            if (userInfixOverCore(op, l, r, uv)) return uv;
+        }
         // An operand that is a Proxy is being READ: run its FETCH, or the operator
         // sees the container instead of the value it stands for.
         if (l.hashKind == "Proxy") l = deproxy(l);
