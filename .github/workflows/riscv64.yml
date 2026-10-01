@@ -1,0 +1,106 @@
+name: riscv64
+
+# Builds and tests rakupp natively on RISC-V (riscv64, Linux).
+#
+# The runner is not GitHub's: GitHub hosts no RISC-V machines. It is a RISE
+# RISC-V Runner (https://github.com/riseproject-dev/riscv-runner), real
+# riscv64 hardware offered free to open-source projects through a GitHub App.
+# The app must be installed on the account that owns the repository; until it
+# is, nothing picks up the `ubuntu-24.04-riscv` label and the job waits in the
+# queue rather than failing.
+#
+# A workflow of its own, not a row in release.yml's matrix, so a riscv64
+# failure (or a queue with no runner behind it) never holds up a release.
+# The tree builds with no riscv64-specific code: the interpreter is portable
+# C++, `gather` uses the re-running fallback instead of the hand-written
+# coroutine switch (Coro.h covers x86-64 and aarch64 only), and `--cnp` finds
+# an ELF machine the stencil extractor does not know and ships an empty table,
+# so it runs interpreted.
+#
+# Built on the runner's own Ubuntu 24.04, not in a manylinux container, so the
+# artifact needs glibc 2.39. It is a test build, not a release asset.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: linux-riscv64
+    runs-on: ubuntu-24.04-riscv
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          if ! command -v clang++ >/dev/null || ! command -v cmake >/dev/null; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q clang cmake make
+          fi
+          uname -m
+          nproc
+          clang++ --version
+          cmake --version
+
+      # Clang, as on every other Linux build (release.yml says why).
+      - name: Configure + build + install layout
+        id: build
+        run: |
+          CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON \
+                "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+          cmake --build build -j "$(nproc)"
+          cmake --install build --prefix dist/rakupp
+          build/rakupp --version
+
+      # The same POSIX gates release.yml runs. Each one runs even when an
+      # earlier one failed, so a first look at a new architecture shows every
+      # gate that breaks, not just the first.
+      - name: Smoke test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: build/rakupp tools/smoke.raku
+
+      - name: Smoke test -e
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          out=$(build/rakupp -e 'say 6 * 7')
+          echo "got: [$out]"
+          test "$out" = "42"
+
+      - name: Smoke test --exe
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          build/rakupp --exe tools/smoke.raku -o smoke-native
+          ./smoke-native
+
+      - name: Example & showcase suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: build/rakupp t/run.raku
+
+      - name: Concurrency stress matrix
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: build/rakupp t/stress/run.raku
+
+      - name: Embed + extension ABI gate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: build/rakupp tools/embed-smoke.raku build
+
+      - name: Standalone binary gate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: build/rakupp t/standalone/run.raku
+
+      - name: Package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: tar -C dist -czf rakupp-linux-riscv64.tar.gz rakupp
+
+      - name: Upload build artifact
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rakupp-linux-riscv64
+          path: rakupp-linux-riscv64.tar.gz
