@@ -1986,6 +1986,56 @@ static bool ifCondValueUsed(const IfStmt* is) {
     return false;
 }
 
+// A per-thread pool of call frames — see the note at its first user; the frames
+// themselves are the thread's ExecContext::framePool. It lives at
+// file scope because BOTH call paths need it: subs come through callCallableRaw,
+// methods through invokeMethod, and only the first one had it. That asymmetry was
+// the whole difference between a sub call at ~2x Rakudo and a method call at
+// 5.8x — every method allocated a control block, an Env and its hash buckets, and
+// destroyed them again, per call (DISPATCH-PERF-PLAN.md). An `if`/`else` branch
+// takes its scope from the same pool, which made one Env per branch entered.
+namespace {
+struct FramePool {
+    std::vector<std::shared_ptr<Env>>& free;
+    std::shared_ptr<Env> acquire() {
+        if (free.empty()) return std::make_shared<Env>();
+        auto e = std::move(free.back());
+        free.pop_back();
+        return e;
+    }
+    void release(std::shared_ptr<Env>&& e) {
+        if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
+        e->vars.clear();          // keeps the bucket array — the next call's
+        e->selfSlot = nullptr;    // …and the recorded `self` dies with them
+        e->parent.reset();        // "$_" insert does not rehash
+        // every flag back to a fresh Env's: a pooled frame is also a block's
+        // scope (an `if` branch), and a `no strict` or a `use fatal` inside
+        // one must not outlive it
+        e->routineFrame = e->staticSeeded = e->unitFrame = e->packageFrame = false;
+        e->evalFrame = e->stateFrame = e->loopFrame = false;
+        e->btBlock = e->callEnv = false;
+        e->btLine = 0;
+        e->routineFrameId = 0;
+        e->strictPragma = e->fatalPragma = 0;
+        e->declStmts = nullptr;
+        e->ex.reset();
+        e->layout.reset();        // pads: next call re-attaches its own layout;
+        e->pad.clear();           // clear() keeps the vector's capacity, the
+        e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
+        free.push_back(std::move(e));
+    }
+};
+// Hands out a pooled frame that returns itself on scope exit. A frame anything
+// captured — a closure, an rwLink, a stateEnv chain — fails the use_count test in
+// release() and is simply dropped instead of reused.
+struct PooledFrame {
+    FramePool pool;
+    std::shared_ptr<Env> env;
+    explicit PooledFrame(ExecContext& t) : pool{t.framePool}, env(pool.acquire()) {}
+    ~PooledFrame() { pool.release(std::move(env)); }
+};
+} // namespace
+
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
     extern unsigned long long g_execStmts;
@@ -2233,7 +2283,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         }
                         return execBlock(br.second.get(), tctx_.cur);
                     }
-                    auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                    PooledFrame pf(tctx_);   // the branch's scope, back to the pool after it
+                    auto& scope = pf.env; scope->parent = tctx_.cur;
                     std::string bv = bi < is->branchVars.size() ? is->branchVars[bi]
                                      : (bi == 0 ? is->thenVar : "");
                     const std::vector<Param>* bps =
@@ -2279,7 +2330,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 if (is->isUnless) break; // unless has single branch
             }
             if (is->elseBlock) {
-                auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                PooledFrame pf(tctx_);
+                auto& scope = pf.env; scope->parent = tctx_.cur;
                 if (!is->elseParams.empty() && !is->branches.empty()) { // else -> ($a,$b)
                     ValueList one{lastCond};
                     one[0].namedArg = false;
@@ -3310,7 +3362,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 scope = std::make_shared<Env>();
                 scope->parent = tctx_.cur;
             } else {
-                scope->clearBindings(); // reuse buckets, drop last iteration's bindings
+                // reuse buckets, drop last iteration's bindings — all but the
+                // topic's node, which the define that follows refills
+                scope->clearBindingsKeeping(&var, 1);
             }
         };
         if (listv.t == VT::Range && !listv.rNum() && listv.ofType() != "Str") {
@@ -3770,8 +3824,16 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     if (scalarItem && loopVars.empty() && items.size() == 1 &&
         fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->declare)
         try { scalarSlot = lvalue(fs->list.get()); } catch (...) { scalarSlot = nullptr; }
+    // One scope for every iteration, as the single-variable path keeps: a
+    // closure that captured the last one bumps its use_count, and gets it to
+    // keep while this takes a fresh one.
+    std::shared_ptr<Env> scope;
     for (size_t i = 0; haveItem(i); i += nvars) {
-        auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+        if (!scope || scope.use_count() > 1) {
+            scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+        }
+        else if (loopVars.empty()) { static const std::string kTopic = "$_"; scope->clearBindingsKeeping(&kTopic, 1); }
+        else scope->clearBindingsKeeping(loopVars.data(), loopVars.size());
         TopicAlias tback{scalarSlot, scope.get(), itemsR[i]};
         if (loopVars.empty()) {
             scope->define("$_", asTopic(itemsR[i], "$_", 0));
@@ -6500,13 +6562,6 @@ static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
     e->ex->letRestores.clear();
 }
 
-// A per-thread pool of call frames — see the note at its first user; the frames
-// themselves are the thread's ExecContext::framePool. It lives at
-// file scope because BOTH call paths need it: subs come through callCallableRaw,
-// methods through invokeMethod, and only the first one had it. That asymmetry was
-// the whole difference between a sub call at ~2x Rakudo and a method call at
-// 5.8x — every method allocated a control block, an Env and its hash buckets, and
-// destroyed them again, per call (DISPATCH-PERF-PLAN.md).
 void Interpreter::attachPads(Callable& c, Env& env) {
     if (!c.body) return;
     if (c.padReady != 1) {
@@ -6522,40 +6577,6 @@ void Interpreter::attachPads(Callable& c, Env& env) {
         env.pad.resize(c.padLayout->names.size());
     }
 }
-namespace {
-struct FramePool {
-    std::vector<std::shared_ptr<Env>>& free;
-    std::shared_ptr<Env> acquire() {
-        if (free.empty()) return std::make_shared<Env>();
-        auto e = std::move(free.back());
-        free.pop_back();
-        return e;
-    }
-    void release(std::shared_ptr<Env>&& e) {
-        if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
-        e->vars.clear();          // keeps the bucket array — the next call's
-        e->selfSlot = nullptr;    // …and the recorded `self` dies with them
-        e->parent.reset();        // "$_" insert does not rehash
-        e->routineFrame = false;
-        e->loopFrame = false;
-        e->btBlock = e->callEnv = false;
-        e->ex.reset();
-        e->layout.reset();        // pads: next call re-attaches its own layout;
-        e->pad.clear();           // clear() keeps the vector's capacity, the
-        e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
-        free.push_back(std::move(e));
-    }
-};
-// Hands out a pooled frame that returns itself on scope exit. A frame anything
-// captured — a closure, an rwLink, a stateEnv chain — fails the use_count test in
-// release() and is simply dropped instead of reused.
-struct PooledFrame {
-    FramePool pool;
-    std::shared_ptr<Env> env;
-    explicit PooledFrame(ExecContext& t) : pool{t.framePool}, env(pool.acquire()) {}
-    ~PooledFrame() { pool.release(std::move(env)); }
-};
-} // namespace
 // `$h{$k}` / `@a[$i]` / `%h<a>` over a variable: ONE element, named by a
 // subscript whose key reads nothing but a variable or a literal, so a Proxy
 // can re-evaluate the path on every read and write (makePathProxy).

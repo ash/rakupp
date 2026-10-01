@@ -644,6 +644,20 @@ struct Env {
             for (auto& v : pad) v = Value();
         }
     }
+    // clearBindings for a loop scope about to define the same loop variables
+    // again: when they are all the map holds, their nodes stay (each value
+    // reset) and the next iteration's define reuses them instead of
+    // allocating. Anything else in the map, and it is cleared as before.
+    void clearBindingsKeeping(const std::string* names, size_t n) {
+        bool keep = vars.size() == n;
+        for (size_t k = 0; keep && k < n; k++) keep = vars.count(names[k]) == 1;
+        if (keep) for (auto& kv : vars) kv.second = Value();
+        else vars.clear();
+        if (layout) {
+            padLive.store(0, std::memory_order_relaxed);
+            for (auto& v : pad) v = Value();
+        }
+    }
     Value* padFind(const std::string& name) {
         auto it = layout->byName.find(name);
         if (it != layout->byName.end() &&

@@ -32,7 +32,16 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
 3. **Inline slots for `Env::vars`, `Env` on the slab, and pads for
    `given`/`when` blocks** (task 6's last item, task 7's second). 99% of the
    mallocs in `for %h.kv -> $k, $v`, 30% of those in `objects`, and a loop
-   3.3× slower inside a `given`.
+   3.3× slower inside a `given`. *Re-priced 2026-10-01 with
+   tools/malloc-census.c:* `objects` makes no Env any more (method frames
+   are pooled), and the `given` loop is level with a bare block since
+   ee4a533a. What allocated per iteration was an `if`/`else` branch's Env,
+   the multi-variable `for`'s fresh Env and two map nodes, and the topic's
+   map node in a `for` body that declares — all gone, see task 7. Left: a
+   block called as a Code (`.map({ … })`) defines `$_` and `@_` as map
+   nodes per call, and `@_` is built even when the body never reads it
+   (Rakudo gives `@_` only to a block that mentions it, but this engine's
+   6.d fall-through for nested blocks needs a deep scan first).
 4. **The multi-dispatch cache, and the redispatch context built only for a
    body that redispatches** (task 6, V6 P2, issue #47). `multiwhere` is the
    last perf-guard kernel slower than v4.0.1.
@@ -336,7 +345,17 @@ Each is its own plan, in V6's order of evidence per cost:
   instead of the 4,032-byte deque block. Allocation on `objects` −74%, but
   its peak RSS and time did not move (the block was churn); a program that
   keeps 100k objects and 50k small hashes: peak RSS 531 → 175 MB, time −16%.
-- [ ] Inline slots in `Env::vars`, and `make_shared<Env>` on the slab.
+- [x] Per-iteration Envs and map nodes, which is what inline slots were
+  for. An `if`/`else` branch takes its scope from the call-frame pool
+  (whose release now resets every Env field, so a `no strict` or
+  `use fatal` in a branch cannot outlive it); the multi-variable `for`
+  reuses one scope as the single-variable path does; and a reused loop
+  scope keeps its loop variables' map nodes (`clearBindingsKeeping`).
+  Against 24c577db, best of 3: `for %h.kv -> $k, $v` −35%, an if/else
+  loop −12%, `for ^N { my $x = … }` −12%; the census shows no allocation
+  per iteration in any of the three.
+- [ ] `$_`/`@_` for a block called as a Code (`.map({ … })`): two map
+  nodes and an Array per call.
 - [ ] Small Rats inline. *In part, without touching `Value`:* a BigInt's limbs
   are a `LimbVec` with four limbs inline (anything under 10^36), and the
   assignment lane takes a Rat accumulator. `rats` −7% and −7%, `bigint` −7%;
