@@ -661,6 +661,17 @@ struct Env {
             for (auto& v : pad) v = Value();
         }
     }
+    // Drop one binding from THIS scope (map or pad slot); outer bindings show through again.
+    void undefine(const std::string& name) {
+        if (!vars.empty()) vars.erase(name);
+        if (layout) {
+            auto it = layout->byName.find(name);
+            if (it != layout->byName.end()) {
+                padLive.fetch_and(~((uint64_t)1 << it->second), std::memory_order_release);
+                pad[it->second] = Value();
+            }
+        }
+    }
     Value* padFind(const std::string& name) {
         auto it = layout->byName.find(name);
         if (it != layout->byName.end() &&

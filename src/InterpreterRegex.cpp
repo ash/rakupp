@@ -2236,10 +2236,13 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             }
         }
         // save & overlay $/ + params; restore them after (but let :my vars persist)
-        std::vector<std::pair<std::string, Value>> restore;
+        // A name with no binding of its own in this scope is UNDEFINED again on the
+        // way out: restoring it as Nil left a Nil shadow that the next block's
+        // empty-param skip below then kept (`<t('')>` read Nil from its second block).
+        std::vector<std::pair<std::string, std::optional<Value>>> restore;
         auto overlay = [&](const std::string& name, const Value& v) {
-            Value* slot = tctx_.cur->find(name);
-            restore.push_back({name, slot ? *slot : Value::nil()});
+            Value* own = tctx_.cur->localRaw(name);
+            restore.push_back({name, own ? std::optional<Value>(*own) : std::nullopt});
             tctx_.cur->define(name, v);
         };
         bool hadSlash = tctx_.cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
@@ -2262,7 +2265,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         catch (...) {}
         tctx_.makeTargets.pop_back();
         if (makeTarget.pairVal()) (*pendingMakes)[{from, to}] = *makeTarget.pairVal(); // record the inline make
-        for (auto it = restore.rbegin(); it != restore.rend(); ++it) tctx_.cur->define(it->first, it->second);
+        for (auto it = restore.rbegin(); it != restore.rend(); ++it) {
+            if (it->second) tctx_.cur->define(it->first, *it->second);
+            else tctx_.cur->undefine(it->first);
+        }
         if (Value* s2 = tctx_.cur->find("$/")) *s2 = savedSlash;
         return last;
     };
