@@ -71,4 +71,4 @@ sub ck($got, $want, $desc) {
   ck($steps, 14167, 'Collatz') }
 { my $s = 0; for 1 .. 100 { next if $_ %% 2; last if $_ > 10; $s += $_ }; ck($s, 25, 'next and last') }
 
-say $fails ?? "FAILED $fails" !! "all ok";
+say $fails ?? "FAILED $fails" !! "PASS";

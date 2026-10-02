@@ -160,4 +160,4 @@ sub ck($got, $want, $desc) {
 { my &infix:<+> = -> $a, $b { $a * $b };
   my $s = 1; $s = $s + $_ for 1 .. 5; ck($s, 120, 'a lexically shadowed infix:<+>') }
 
-say $fails ?? "FAILED $fails" !! "all ok";
+say $fails ?? "FAILED $fails" !! "PASS";

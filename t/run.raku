@@ -1604,8 +1604,12 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     # arm64. The line stays at 128M anyway. It was never the frame count that
     # was worth asserting, and re-tightening it would only rebuild the
     # knife-edge that made three pushes red.
+    #
+    # The sub works in Nums: a closed integer sub runs on the int64 kernel,
+    # whose frames are so small that 8000 of them fit in 64M — these lines
+    # are about the interpreter's frames.
     {
-        my @deep = '-e', 'sub f($n) { $n == 0 ?? 0 !! 1 + f($n-1) }; say f(+@*ARGS[0])';
+        my @deep = '-e', 'sub f($n) { $n == 0 ?? 0e0 !! 1e0 + f($n-1) }; say f(+@*ARGS[0])';
         is(run-rakupp('--stack-size=128M', |@deep, '1000')[0], "1000\n", '--stack-size=128M: 1000 frames fit');
         my ($o, $e, $x) = run-rakupp-err('--stack-size=64', |@deep, '8000');
         ok($x == 1 && $e.contains('Too many levels of recursion'),

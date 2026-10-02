@@ -5,6 +5,7 @@
 #include "AstSerial.h"
 #include <functional>
 #include <memory>
+#include <climits>
 #include <cstdio>
 #include <algorithm>
 #include <cctype>

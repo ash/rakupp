@@ -5367,7 +5367,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // built-in constructors below are keyed on the bare name and answered
     // first, building a Format, a Match, a Proc instead of the user's object.
     // (User exception classes, X::…, already construct on the ordinary path.)
-    if (__builtin_expect(inv.t == VT::Type && !skipOwn && m.size() == 3 && m == "new", 0) &&
+    if (inv.t == VT::Type && !skipOwn && m.size() == 3 && m == "new" &&
         inv.s.rfind("X::", 0) != 0 && inv.s.rfind("IO::", 0) != 0 && isKnownTypeName(inv.s)) {
         auto cit = classes_.find(inv.s);
         // …only where that declaration is IN SCOPE: the class table is global,
