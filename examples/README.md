@@ -14,6 +14,9 @@ Every output shown below is what the program actually prints; a `...` line
 marks a cut, and `life.raku` seeds itself from `rand`, so its numbers change
 every run.
 
+[`modules/`](modules) holds examples that need modules installed from the
+ecosystem, one directory each — see [Needs modules](#needs-modules) below.
+
 [`lint/`](lint) is a different kind of gallery beside these: twelve programs
 written to trip one `rakupp --lint` diagnostic each — see
 [LINT.md](../docs/guide/LINT.md).
@@ -452,6 +455,38 @@ any file. The entire source is held once in the string `$s`; `printf` feeds `$s`
 back into itself, using `%c` (codepoint 39) for the quote marks that wrap it and
 `%s` for the text. `diff <(./build/rakupp examples/quine.raku) examples/quine.raku`
 shows no differences.
+
+## Needs modules
+
+These live under [`modules/`](modules), one directory per example, because they
+depend on ecosystem modules installed with `zef`.
+
+### `modules/cro/`
+
+A tiny [Cro](https://cro.raku.org) web service laid out the way `cro stub`
+lays one out: [`service.raku`](modules/cro/service.raku) with two routes,
+[`.cro.yml`](modules/cro/.cro.yml) telling the `cro` tool how to start it, and a
+`META6.json`. Install Cro, then start it with `cro run`, which picks the port
+and restarts the service when a file changes:
+
+```sh
+zef install cro
+cd examples/modules/cro && cro run
+```
+
+```
+▶ Starting Hello (hello)
+🔌 Endpoint HTTP will be at http://localhost:20000/
+📓 hello Listening at http://localhost:20000
+```
+
+```
+$ curl http://localhost:20000/greet/Cro
+Hello, Cro!
+```
+
+Without the `cro` tool, `rakupp service.raku` serves the same routes on
+`localhost:10000`.
 
 ---
 

@@ -1,0 +1,14 @@
+---
+cro: 1
+id: hello
+name: Hello
+entrypoint: service.raku
+endpoints:
+  - id: http
+    name: HTTP
+    protocol: http
+    host-env: HELLO_HTTP_HOST
+    port-env: HELLO_HTTP_PORT
+links: []
+env: []
+...

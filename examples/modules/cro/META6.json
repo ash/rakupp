@@ -1,0 +1,8 @@
+{
+  "name": "cro-example",
+  "version": "0.0.1",
+  "description": "A tiny Cro example",
+  "depends": [
+    "Cro::HTTP"
+  ]
+}
