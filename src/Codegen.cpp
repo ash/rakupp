@@ -2874,6 +2874,294 @@ struct Codegen {
         line(ind, "}");
     }
 
+    // ---- integer kernels (the interpreter's src/IntKernel.cpp, compiled) ----
+    // A top-level sub whose body is closed integer arithmetic gets an int64
+    // twin, `k_<name>`, beside its Value function, which tries the twin first
+    // when every argument is a plain Int. The body has no side effects, so a
+    // twin that meets what it cannot answer exactly (int64 overflow, a zero
+    // divisor, past __KR's depth) bails, and the Value function runs as it
+    // always did: same results, same errors. Which subs qualify, and the
+    // operators they use, are decided here at compile time, against the same
+    // facts the Value code is emitted from (userOpFn, userSubs, multiNames).
+    std::map<std::string, int> kernelSubs_;   // name -> arity
+    std::string kernelText_;                  // preamble + forward decls + definitions
+
+    static bool kernelParams(const std::vector<Param>& ps) {
+        if (ps.size() > 6) return false;
+        for (const Param& p : ps)
+            if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy ||
+                p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
+                p.hadWhere || p.defConstraint || p.coerce || p.typeCapture || p.codeSig ||
+                !p.captureName.empty() || !p.type.empty() || p.name.size() < 2 ||
+                (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.' || p.name[1] == '^')))
+                return false;
+        return true;
+    }
+    bool kernelOpFree(const std::string& routine) const { return userOpFn(routine).empty(); }
+    std::string kName(const std::string& sub) const { return "k_" + mangleSub(sub); }
+
+    // An expression of a kernel body as C++ over int64 (`p0`… the parameters,
+    // `__r` the run), or "" when it is not one. `isInt`: an Int value, else a
+    // truth value (a comparison); `cond`: only a condition's truth is read.
+    std::string kExpr(const Expr* e, const std::vector<Param>& ps, bool cond, bool& isInt,
+                      const std::set<std::string>& ok) {
+        if (!e) return "";
+        switch (e->kind) {
+            case NK::IntLit: {
+                auto* l = static_cast<const IntLit*>(e);
+                if (!l->big.empty()) return "";
+                isInt = true;
+                return l->v == LLONG_MIN ? "INT64_MIN" : "INT64_C(" + std::to_string(l->v) + ")";
+            }
+            case NK::VarExpr: {
+                auto* v = static_cast<const VarExpr*>(e);
+                if (v->declare || v->viaPseudoPkg || v->pkgSymbol || v->processScoped ||
+                    v->nativeIntRead || v->nativeNumRead || v->nativeStrRead || v->synthTopic)
+                    return "";
+                for (size_t i = 0; i < ps.size(); i++)
+                    if (ps[i].name == v->name) { isInt = true; return "p" + std::to_string(i); }
+                return "";
+            }
+            case NK::Unary: {
+                auto* u = static_cast<const Unary*>(e);
+                if (u->postfix || !u->operand) return "";
+                bool oi = false;
+                if (u->op == "-") {
+                    if (!kernelOpFree("prefix:<->")) return "";
+                    std::string a = kExpr(u->operand.get(), ps, false, oi, ok);
+                    if (a.empty() || !oi) return "";
+                    isInt = true;
+                    return "__kNeg(" + a + ", __r)";
+                }
+                if ((u->op == "!" || u->op == "not") && cond) {
+                    if (!kernelOpFree("prefix:<" + u->op + ">")) return "";
+                    std::string a = kExpr(u->operand.get(), ps, true, oi, ok);
+                    if (a.empty()) return "";
+                    isInt = false;
+                    return "((" + a + ") == 0)";
+                }
+                return "";
+            }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                const std::string& op = b->op;
+                static const std::map<std::string, std::string> arith = {
+                    {"+", "__kAdd"}, {"-", "__kSub"}, {"*", "__kMul"}, {"div", "__kDiv"},
+                    {"%", "__kMod"}, {"%%", "__kDivBy"}};
+                static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
+                const bool logical = cond && (op == "&&" || op == "and" || op == "||" || op == "or");
+                const auto ai = arith.find(op);
+                if (ai == arith.end() && !cmp.count(op) && !logical) return "";
+                if (!kernelOpFree("infix:<" + op + ">")) return "";
+                bool li = false, ri = false;
+                std::string l = kExpr(b->lhs.get(), ps, logical, li, ok);
+                std::string r = l.empty() ? "" : kExpr(b->rhs.get(), ps, logical, ri, ok);
+                if (r.empty()) return "";
+                if (logical) {
+                    isInt = false;
+                    const char* j = (op == "&&" || op == "and") ? " && " : " || ";
+                    return "((" + l + ") != 0" + j + "(" + r + ") != 0)";
+                }
+                if (!li || !ri) return "";
+                if (ai != arith.end()) {
+                    isInt = op != "%%";
+                    return ai->second + "(" + l + ", " + r + ", __r)";
+                }
+                isInt = false;
+                return "((" + l + ") " + op + " (" + r + "))";
+            }
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                bool ci = false, ai = false, bi = false;
+                std::string c = kExpr(t->cond.get(), ps, true, ci, ok);
+                std::string a = c.empty() ? "" : kExpr(t->then.get(), ps, cond, ai, ok);
+                std::string b = a.empty() ? "" : kExpr(t->els.get(), ps, cond, bi, ok);
+                if (b.empty() || ai != bi) return "";
+                isInt = ai;
+                return "((" + c + ") != 0 ? (int64_t)(" + a + ") : (int64_t)(" + b + "))";
+            }
+            case NK::Call: {
+                auto* c = static_cast<const Call*>(e);
+                if (c->callee || c->name.empty() || c->dotAmp || !ok.count(c->name)) return "";
+                auto it = kernelSubs_.find(c->name);
+                if (it == kernelSubs_.end() || it->second != (int)c->args.size()) return "";
+                std::string s = kName(c->name) + "(";
+                for (auto& a : c->args) {
+                    if (!a || a->kind == NK::Pair) return "";
+                    bool ai = false;
+                    std::string x = kExpr(a.get(), ps, false, ai, ok);
+                    if (x.empty() || !ai) return "";
+                    s += x + ", ";
+                }
+                isInt = true;
+                return s + "__r)";
+            }
+            default:
+                return "";
+        }
+    }
+    // A statement list of a kernel body; `tail`: it produces the result.
+    bool kStmts(const std::vector<StmtPtr>& ss, const std::vector<Param>& ps, bool tail, int ind,
+                std::string& o, const std::set<std::string>& ok) {
+        if (ss.empty()) return false;
+        for (size_t i = 0; i < ss.size(); i++) {
+            const Stmt* s = ss[i].get();
+            const bool last = tail && i + 1 == ss.size();
+            if (!s || !s->label.empty()) return false;
+            const std::string pad(ind * 4, ' ');
+            bool isInt = false;
+            switch (s->kind) {
+                case NK::ExprStmt: {
+                    if (!last) return false;
+                    std::string x = kExpr(static_cast<const ExprStmt*>(s)->e.get(), ps, false, isInt, ok);
+                    if (x.empty() || !isInt) return false;
+                    o += pad + "return " + x + ";\n";
+                    break;
+                }
+                case NK::ReturnStmt: {
+                    auto* r = static_cast<const ReturnStmt*>(s);
+                    if (r->isRw || !r->value) return false;
+                    std::string x = kExpr(r->value.get(), ps, false, isInt, ok);
+                    if (x.empty() || !isInt) return false;
+                    o += pad + "return " + x + ";\n";
+                    break;
+                }
+                case NK::IfStmt: {
+                    auto* is = static_cast<const IfStmt*>(s);
+                    if (!is->thenVar.empty() || !is->elseVar.empty() || !is->elseParams.empty() ||
+                        is->branches.empty() || (last && !is->elseBlock) ||
+                        (is->isUnless && is->branches.size() > 1))
+                        return false;
+                    for (auto& bv : is->branchVars) if (!bv.empty()) return false;
+                    for (auto& bp : is->branchParams) if (!bp.empty()) return false;
+                    for (size_t bi = 0; bi < is->branches.size(); bi++) {
+                        auto& br = is->branches[bi];
+                        if (!br.second || !br.second->label.empty()) return false;
+                        bool ci = false;
+                        std::string c = kExpr(br.first.get(), ps, true, ci, ok);
+                        if (c.empty()) return false;
+                        if (is->isUnless) c = "!(" + c + ")";
+                        o += pad + (bi ? "else if ((" : "if ((") + c + ") != 0) {\n";
+                        if (!kStmts(br.second->stmts, ps, last, ind + 1, o, ok)) return false;
+                        o += pad + "}\n";
+                    }
+                    if (is->elseBlock) {
+                        if (!is->elseBlock->label.empty()) return false;
+                        o += pad + "else {\n";
+                        if (!kStmts(is->elseBlock->stmts, ps, last, ind + 1, o, ok)) return false;
+                        o += pad + "}\n";
+                    }
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+        return true;
+    }
+    // Decide the kernel subs (a fixpoint: a sub qualifies only if every sub it
+    // calls does) and render them. A program that mentions `wrap` anywhere gets
+    // none: a wrapper must see every call, and a kernel's calls go direct.
+    void planKernels(const std::vector<SubDecl*>& subs, const std::string& srcText) {
+        // RAKUPP_NO_KERNELS=1 at compile time leaves them out, as it does in the interpreter
+        if (const char* nk = std::getenv("RAKUPP_NO_KERNELS")) if (*nk && *nk != '0') return;
+        if (srcText.find("wrap") != std::string::npos) return;
+        std::map<std::string, SubDecl*> cand;
+        for (SubDecl* d : subs) {
+            if (d->isMulti || d->isProto || d->isMethod || d->isNative || d->retRw ||
+                d->retLiteralPresent || !d->retType.empty() || d->deprecated || d->testAssertion ||
+                !d->traits.empty() || !d->altParams.empty() || d->nameExpr || d->body.empty() ||
+                multiNames.count(d->name) || rwSubs.count(d->name) || moduleExports_.count(d->name) ||
+                d->name.find(':') != std::string::npos)
+                continue;
+            if (!kernelParams(sigOf(d))) continue;
+            cand[d->name] = d;
+        }
+        std::map<std::string, std::string> bodies;
+        for (bool changed = true; changed;) {
+            changed = false;
+            std::set<std::string> ok;
+            kernelSubs_.clear();
+            for (auto& c : cand) { ok.insert(c.first); kernelSubs_[c.first] = (int)sigOf(c.second).size(); }
+            bodies.clear();
+            for (auto it = cand.begin(); it != cand.end();) {
+                std::string o;
+                if (kStmts(it->second->body, sigOf(it->second), true, 1, o, ok)) {
+                    bodies[it->first] = o;
+                    ++it;
+                }
+                else { it = cand.erase(it); changed = true; }
+            }
+        }
+        kernelSubs_.clear();
+        for (auto& c : cand) kernelSubs_[c.first] = (int)sigOf(c.second).size();
+        if (kernelSubs_.empty()) return;
+        std::string t =
+            "// integer kernels (see Codegen::planKernels): int64 twins of closed\n"
+            "// integer subs; a bail leaves the answer to the Value function\n"
+            "struct __KR { int depth = 100000; bool bail = false; };\n"
+            "static inline bool __kInt(const Value& v) {\n"
+            "    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned &&\n"
+            "           !v.natFloat && !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() &&\n"
+            "           v.enumType.empty() && v.hashKind.empty() && v.s.empty();\n"
+            "}\n"
+            "static inline int64_t __kAdd(int64_t a, int64_t b, __KR& r) { long long z = 0; if (rakupp::add_ovf(a, b, &z)) r.bail = true; return z; }\n"
+            "static inline int64_t __kSub(int64_t a, int64_t b, __KR& r) { long long z = 0; if (rakupp::sub_ovf(a, b, &z)) r.bail = true; return z; }\n"
+            "static inline int64_t __kMul(int64_t a, int64_t b, __KR& r) { long long z = 0; if (rakupp::mul_ovf(a, b, &z)) r.bail = true; return z; }\n"
+            "static inline int64_t __kDiv(int64_t a, int64_t b, __KR& r) {\n"
+            "    if (b == 0 || (b == -1 && a == INT64_MIN)) { r.bail = true; return 0; }\n"
+            "    int64_t q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q;\n"
+            "}\n"
+            "static inline int64_t __kMod(int64_t a, int64_t b, __KR& r) {\n"
+            "    if (b == 0) { r.bail = true; return 0; }\n"
+            "    if (b == -1) return 0;\n"
+            "    int64_t m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return m;\n"
+            "}\n"
+            "static inline int64_t __kDivBy(int64_t a, int64_t b, __KR& r) {\n"
+            "    if (b == 0) { r.bail = true; return 0; }\n"
+            "    return b == -1 || a % b == 0;\n"
+            "}\n"
+            "static inline int64_t __kNeg(int64_t a, __KR& r) { if (a == INT64_MIN) { r.bail = true; return 0; } return -a; }\n";
+        auto sig = [&](const std::string& n, int ar) {
+            std::string s = "static int64_t " + kName(n) + "(";
+            for (int i = 0; i < ar; i++) s += "int64_t p" + std::to_string(i) + ", ";
+            return s + "__KR& __r)";
+        };
+        for (auto& k : kernelSubs_) t += sig(k.first, k.second) + ";\n";
+        for (auto& k : kernelSubs_) {
+            t += sig(k.first, k.second) + " {\n"
+                 "    if (__r.bail || --__r.depth < 0) { __r.bail = true; return 0; }\n"
+                 "    struct __D { __KR& r; ~__D() { ++r.depth; } } __d{__r};\n" +
+                 bodies[k.first] + "    return 0;\n}\n";
+        }
+        kernelText_ = t + "\n";
+    }
+    // The first lines of a kernel sub's Value function: the twin, when every
+    // argument is a plain Int (`args`: the C++ expressions for them, or empty
+    // for a ValueList `__a`). A twin that keeps bailing stops being tried.
+    std::string kernelEntry(const std::string& name, const std::vector<std::string>& args) {
+        auto it = kernelSubs_.find(name);
+        if (it == kernelSubs_.end()) return "";
+        const int ar = it->second;
+        std::vector<std::string> a = args;
+        std::string guard;
+        if (a.empty() && ar > 0) {
+            guard = "__a.size() == " + std::to_string(ar);
+            for (int i = 0; i < ar; i++) a.push_back("__a[" + std::to_string(i) + "]");
+        }
+        else if (a.empty()) guard = "__a.empty()";
+        for (auto& x : a) guard += (guard.empty() ? "" : " && ") + std::string("__kInt(") + x + ")";
+        std::string call = kName(name) + "(";
+        for (auto& x : a) call += x + ".i, ";
+        call += "__kr)";
+        return "    { static std::atomic<int> __kb{0};\n"
+               "      if (__kb.load(std::memory_order_relaxed) < 8 && " + guard + ") {\n"
+               "        __KR __kr; int64_t __kv = " + call + ";\n"
+               "        if (!__kr.bail) return Value::integer(__kv);\n"
+               "        __kb.fetch_add(1, std::memory_order_relaxed);\n"
+               "      } }\n";
+    }
+
     // ---- -O fast-call eligibility ----
     // A sub qualifies for direct `Value` parameters when every param is a plain
     // required positional scalar (no named/slurpy/optional/default/destructuring).
@@ -4162,7 +4450,8 @@ struct Codegen {
         line(1, std::string("return ") + tailFallback(body) + ";");
     }
     // Emit a sub/candidate body given its C++ function name.
-    void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false) {
+    void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false,
+                 const std::string& kernelName = "") {
         BodyScope __bs{this, /*closure=*/false};
         std::set<std::string> params;
         for (auto& p : ps) if (!p.name.empty()) params.insert(p.name);
@@ -4180,6 +4469,11 @@ struct Codegen {
                 fwd += "rtPos(__a, " + std::to_string(i) + ")";
             }
             line(0, "static Value " + fnName + "(" + sig + ") {");
+            if (!kernelName.empty() && !anyCell) {
+                std::vector<std::string> ka;
+                for (auto& p : ps) ka.push_back(mangleVar(p.name));
+                out << kernelEntry(kernelName, ka);
+            }
             line(1, "try {");
             if (anyCell)
                 for (size_t i = 0; i < ps.size(); i++)
@@ -4194,6 +4488,7 @@ struct Codegen {
         bool hasRw = false;
         for (auto& p : ps) if (p.isRw && !p.named && !p.slurpy && !p.invocant) hasRw = true;
         line(0, "static Value " + fnName + "(ValueList" + (hasRw ? "&" : "") + " __a) {");
+        if (!kernelName.empty()) out << kernelEntry(kernelName, {});
         // A ROUTINE BODY IS A ReturnEx BOUNDARY. `return` itself compiles to a C++
         // return, so this catches the ones thrown from elsewhere — a builtin such
         // as `fail`, or an interpreter-evaluated callback. Without it they escaped
@@ -4208,7 +4503,8 @@ struct Codegen {
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
-        bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0);
+        bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
+                kernelSubs_.count(d->name) ? d->name : std::string());
     }
 
     // A multi: emit each candidate, then a dispatcher that tries candidates
@@ -4446,6 +4742,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
               << (e.type.empty() ? "" : ", " + cesc(e.type)) << ");\n";
     if (!enumConsts.empty()) g.out << "\n";
 
+    g.planKernels(subs, srcText);
     // forward declarations (subs + multis + class methods)
     for (SubDecl* d : subs) {
         auto fit = g.fastSubs.find(d->name);
@@ -4462,6 +4759,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         for (auto& mp : cd->methods)
             g.out << "static Value " << g.methodFn(cd->name, Codegen::methodKey(mp.get())) << "(ValueList&);\n";
     g.out << "\n";
+    g.out << g.kernelText_;   // empty unless a sub qualifies (planKernels)
 
     // Generate all code into buffers FIRST (definitions, class registration,
     // program body), so the full set of builtin call sites is known before we
