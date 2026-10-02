@@ -733,7 +733,7 @@ std::string ensurePch() {
     // As with a kernel, the publish belongs to the shell command: a program that
     // exits before this 0.8 s build finishes would otherwise leave the .tmp
     // behind and rebuild the whole thing on every subsequent run.
-    std::string cmd = shq(g_cxx) + " -std=c++17 -O2 -w -fPIC -I " + shq(g_inc) +
+    std::string cmd = shq(g_cxx) + " -std=c++17 -ffp-contract=off -O2 -w -fPIC -I " + shq(g_inc) +
                       " -x c++-header " + shq(g_inc + "/Interpreter.h") + " -o " + shq(tmp) +
                       " && mv -f " + shq(tmp) + " " + shq(p);
     note("building the precompiled header (once per build)");
@@ -759,7 +759,9 @@ KernelFn buildAndLoad(const std::string& src, const std::string& fnName) {
         std::string cpp = stem + ".cpp";
         { std::ofstream o(cpp); if (!o) return nullptr; o << src; }
         std::string tmp = stem + ".tmp";
-        std::string cmd = shq(g_cxx) + " -std=c++17 -O2 -w -fPIC -I " + shq(g_inc);
+        // (-ffp-contract=off: see compileCmd in main.cpp — a kernel must
+        // round each Num operation as the interpreter does)
+        std::string cmd = shq(g_cxx) + " -std=c++17 -ffp-contract=off -O2 -w -fPIC -I " + shq(g_inc);
         if (!pch.empty()) cmd += " -include-pch " + shq(pch);
         cmd += " -shared";
 #ifdef __APPLE__

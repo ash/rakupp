@@ -77,6 +77,90 @@ ck(@cl[0](5), 11, 'a closure copy');
 @cl[1].wrap(-> $x { callsame() * 100 });
 ck(@cl.map({ .(5) }).List, (11, 1100, 11), 'a wrapper on one closure copy only');
 
+# results are values, not containers
+sub id($n) { $n }
+ck((try { id(1) = 5; 'assigned' }) // 'refused', 'refused', 'a result is not assignable');
+
+# typed signatures: an Int parameter and an Int return keep their checks for
+# every argument the kernel does not take
+sub tfib(Int $n --> Int) { $n < 2 ?? $n !! tfib($n - 1) + tfib($n - 2) }
+ck(tfib(20), 6765, 'Int $n --> Int');
+my ($rat, $str) = 2.5, "7";
+ck((try { tfib($rat); True }) // False, False, 'a Rat argument to an Int parameter refuses');
+ck((try { tfib($str); True }) // False, False, 'a Str argument to an Int parameter refuses');
+sub tdd(Int:D $n --> Int:D) { $n * 2 }
+ck(tdd(21), 42, 'Int:D');
+my $tobj = Int;
+ck((try { tdd($tobj); True }) // False, False, 'a type object to an Int:D parameter refuses');
+sub tu(Int:U $n) { 5 }
+ck(tu(Int), 5, 'Int:U is no kernel\'s');
+sub big(Int $n --> Int) { $n * $n }
+ck(big(2**40), 1208925819614629174706176, 'Int return past int64');
+
+# a body of statements: `my` locals, loops, assignments, `return` anywhere
+sub collatz(Int $n is copy --> Int) {
+    my $steps = 0;
+    while $n != 1 {
+        if $n %% 2 { $n = $n div 2 } else { $n = 3 * $n + 1 }
+        $steps++;
+    }
+    $steps
+}
+ck(collatz(27), 111, 'while, is copy, a local');
+sub firstdiv($n) {
+    for 2 .. $n -> $d {
+        return $d if $n %% $d;
+    }
+    0
+}
+ck((firstdiv(91), firstdiv(97), firstdiv(1)), (7, 97, 0), 'return from inside a for');
+sub tri($n) { my $s = 0; for 1 .. $n { $s += $_ }; $s }
+ck(tri(100), 5050, 'a for loop in a sub');
+sub sgn($n) { if $n > 0 { 1 } elsif $n < 0 { -1 } else { 0 } }
+ck((sgn(5), sgn(-5), sgn(0)), (1, -1, 0), 'an if/elsif/else as the value');
+sub nested($n) { my $c = 0; for 1 .. $n -> $i { for 1 .. $i -> $j { next if $j %% 2; $c += $j; last if $c > 1000 } }; $c }
+ck(nested(30), 1020, 'nested loops with next / last');
+sub ovf($n) { my $x = 9223372036854775800; for 1 .. $n { $x++ }; $x }
+ck(ovf(20), 9223372036854775820, 'a local that outgrows int64');
+sub ro($n) { $n = 5; $n }
+ck((try ro(1)) // 'refused', 'refused', 'a read-only parameter refuses');
+sub lastif($n) { if $n > 0 { 1 } }
+ck((lastif(1), lastif(0)), (1, Empty), 'an if with no else as the value');
+
+# calls with more arguments than the fast forms take
+sub s4($a, $b, $c, $d) { $a + 2 * $b + 3 * $c + 4 * $d }
+sub c4($n) { s4($n, $n + 1, $n + 2, $n + 3) }
+ck(c4(1), 30, 'four arguments');
+sub s6($a, $b, $c, $d, $e, $f) { $a - $b + $c - $d + $e - $f }
+sub c6($n) { s6($n, 1, 2, 3, 4, 5) + s6(1, 2, 3, 4, 5, $n) }
+ck(c6(10), 0, 'six arguments');
+
+# a loop kernel that calls sub kernels
+sub sq($x) { $x * $x }
+{ my $s = 0; for 1 .. 100 { $s += sq($_) }; ck($s, 338350, 'a loop calling a sub') }
+{ my $s = 0; for 1 .. 10 { $s += tfib($_) }; ck($s, 143, 'a loop calling a recursive sub') }
+
+# a routine bound to a variable can be re-bound; a kernel looks again
+sub ra($x) { $x + 1 }
+sub rb($x) { $x + 100 }
+my &rg = &ra;
+sub rf($n) { rg($n) * 2 }
+ck(rf(1), 4, 'through a variable');
+&rg = &rb;
+ck(rf(1), 202, 'the variable re-assigned');
+{ my $s = 0; for 1 .. 3 { $s += rg($_) }; ck($s, 306, 'a loop through the variable') }
+&rg = &ra;
+{ my $s = 0; for 1 .. 3 { $s += rg($_) }; ck($s, 9, 'and back') }
+
+# a wrapper on a sub a loop calls
+sub w1($x) { $x + 1 }
+{ my $s = 0; for 1 .. 3 { $s += w1($_) }; ck($s, 9, 'before the wrap') }
+my $wh = &w1.wrap(-> $x { callsame() * 10 });
+{ my $s = 0; for 1 .. 3 { $s += w1($_) }; ck($s, 90, 'a loop calling a wrapped sub') }
+&w1.unwrap($wh);
+
+# (last: a shadowed `+` arms a program-wide filter, and every kernel after it
+# that uses `+` steps aside)
 # a lexically shadowed operator
 sub g($n) { $n + 1 }
 ck(g(1), 2, 'before the shadow');
@@ -85,10 +169,6 @@ ck(g(1), 2, 'before the shadow');
     ck(3 + 4, 'plus(3,4)', 'the shadow answers in its own scope');
     ck(g(3), 4, '…and not inside a sub declared outside it');
 }
-
-# results are values, not containers
-sub id($n) { $n }
-ck((try { id(1) = 5; 'assigned' }) // 'refused', 'refused', 'a result is not assignable');
 
 say $fails ?? "FAIL ($fails)" !! 'PASS';
 exit $fails ?? 1 !! 0;

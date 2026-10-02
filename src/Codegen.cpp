@@ -2898,6 +2898,13 @@ struct Codegen {
         return true;
     }
     bool kernelOpFree(const std::string& routine) const { return userOpFn(routine).empty(); }
+    static bool loopLanesByDefault() {
+        static const bool on = [] {
+            const char* nk = std::getenv("RAKUPP_NO_KERNELS");
+            return !(nk && *nk && *nk != '0');
+        }();
+        return on;
+    }
     std::string kName(const std::string& sub) const { return "k_" + mangleSub(sub); }
 
     // An expression of a kernel body as C++ over int64 (`p0`… the parameters,
@@ -3341,7 +3348,7 @@ struct Codegen {
     // the existing emission runs unchanged, which is what makes it safe to widen
     // one construct at a time.
 
-    enum class LT { I64, F64 };   // a slot's lane type; it NEVER changes
+    enum class LT { I64, F64, STR };   // a slot's lane type; it NEVER changes
 
     struct ULoop {
         std::map<std::string, LT> slots;   // every lane variable -> its lane type
@@ -3384,6 +3391,11 @@ struct Codegen {
         std::set<std::string> topics;
         bool inHeader = false;
         bool atTopHeader = false;   // this header belongs to the loop being replaced
+        int givens = 0;             // `given`s open inside the innermost loop (a `when` needs one)
+        // Names that are integers whatever the type pass sees: a `for`'s loop
+        // variable, a `my int`. A string operator never turns one into a Str slot.
+        std::set<std::string> pinned;
+        std::vector<Expr*> topicExpr;   // the open `given`s' topics, innermost last (typing)
         bool ok = true;
         void fail() { ok = false; }
     };
@@ -3399,6 +3411,30 @@ struct Codegen {
         if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false;
         if (n.find("::") != std::string::npos) return false;
         name = n;
+        return true;
+    }
+
+    // The Str lane's operators: `~` yields a string, the six comparisons a
+    // truth value, and every operand is a string.
+    static bool uStrOp(const std::string& op) {
+        return op == "~" || op == "eq" || op == "ne" || op == "lt" || op == "gt" || op == "le" || op == "ge";
+    }
+    // A string literal: a StrLit, or a "…" whose parts are all literal text
+    // (each already NFC; pure ASCII joins without renormalizing, so more than
+    // one part is taken only then). `out` gets the text when non-null.
+    static bool uStrLit(Expr* e, std::string* out) {
+        if (!e) return false;
+        if (e->kind == NK::StrLit) { if (out) *out = static_cast<StrLit*>(e)->v; return true; }
+        if (e->kind != NK::InterpStr) return false;
+        auto* is = static_cast<InterpStr*>(e);
+        std::string t;
+        for (auto& p : is->parts) {
+            if (!p || p->kind != NK::StrLit) return false;
+            t += static_cast<StrLit*>(p.get())->v;
+        }
+        if (is->parts.size() > 1)
+            for (unsigned char c : t) if (c >= 0x80) return false;
+        if (out) *out = t;
         return true;
     }
 
@@ -3419,6 +3455,10 @@ struct Codegen {
                 if (n->isRat || n->imaginary) U.fail();
                 return;
             }
+            case NK::StrLit: return;
+            case NK::InterpStr:   // "…" with nothing interpolated (see uStrLit)
+                if (!uStrLit(e, nullptr)) U.fail();
+                return;
             case NK::VarExpr: {
                 auto* v = static_cast<VarExpr*>(e);
                 std::string nm;
@@ -3435,8 +3475,8 @@ struct Codegen {
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
-                static const std::set<std::string> ops = {"=", "+=", "-=", "*=", "/=", "%="};
-                if (!ops.count(a->op) || a->containerSigil) { U.fail(); return; }
+                static const std::set<std::string> ops = {"=", "+=", "-=", "*=", "/=", "%=", "~="};
+                if (!ops.count(a->op) || a->containerSigil || a->userOp) { U.fail(); return; }
                 std::string nm;
                 if (!uScalar(a->target.get(), nm)) { U.fail(); return; }
                 if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
@@ -3456,6 +3496,7 @@ struct Codegen {
                     // store-back would replace without its width: not taken
                     if (nk && U.inHeader) { U.fail(); return; }
                     if (nk) U.natDecl[nm] = nk;
+                    if (nk) U.pinned.insert(nm);
                     // A declaration that SHADOWS a name the lane already holds
                     // needs two locals for one name, and the emitter has one per
                     // name. This must refuse on ANY name already in the lane,
@@ -3478,8 +3519,12 @@ struct Codegen {
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
                 static const std::set<std::string> ops = {
-                    "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "||" };
+                    "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "||",
+                    "~", "eq", "ne", "lt", "gt", "le", "ge" };
                 if (!ops.count(b->op)) { U.fail(); return; }
+                // a program that declares its own string operator gets the
+                // boxed emission, which consults it (userOpFn)
+                if (uStrOp(b->op) && !kernelOpFree("infix:<" + b->op + ">")) { U.fail(); return; }
                 uCollectExpr(b->lhs.get(), U); uCollectExpr(b->rhs.get(), U);
                 return;
             }
@@ -3503,6 +3548,24 @@ struct Codegen {
                 return;
             default: U.fail(); return;
         }
+    }
+
+    // The integer Range a laned `for` walks: `A .. B` with either end open, or
+    // `^N` (0 ..^ N, `from` null). Anything else is an iterator.
+    static bool uRangeOf(ForStmt* f, Expr*& from, Expr*& to, bool& exFrom, bool& exTo) {
+        if (!f->list) return false;
+        if (f->list->kind == NK::Range) {
+            auto* r = static_cast<RangeExpr*>(f->list.get());
+            from = r->from.get(); to = r->to.get(); exFrom = r->exFrom; exTo = r->exTo;
+            return from && to;
+        }
+        if (f->list->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(f->list.get());
+            if (u->op != "^" || u->postfix || !u->operand) return false;
+            from = nullptr; to = u->operand.get(); exFrom = false; exTo = true;
+            return true;
+        }
+        return false;
     }
 
     // An unlabelled `next` belonging to THIS loop — so nested loops, which have
@@ -3563,7 +3626,9 @@ struct Codegen {
                   U.inHeader = true; U.atTopHeader = outerW;
                   uCollectExpr(w->cond.get(), U);
                   U.atTopHeader = svt; U.inHeader = sv; }
-                for (auto& x : w->body->stmts) uCollectStmt(x.get(), U);
+                { int sg = U.givens; U.givens = 0;
+                  for (auto& x : w->body->stmts) uCollectStmt(x.get(), U);
+                  U.givens = sg; }
                 return;
             }
             case NK::ForStmt: {
@@ -3577,11 +3642,11 @@ struct Codegen {
                 U.atTop = false;
                 if (f->asExpr || f->rwVars || f->destructure) { U.fail(); return; }
                 if (f->vars.size() > 1 || !f->params.empty()) { U.fail(); return; }
-                if (!f->list || f->list->kind != NK::Range) { U.fail(); return; }
-                auto* r = static_cast<RangeExpr*>(f->list.get());
+                Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
+                if (!uRangeOf(f, rFrom, rTo, exF, exT)) { U.fail(); return; }
                 { bool sv = U.inHeader; U.inHeader = true;
-                  uCollectExpr(r->from.get(), U);
-                  uCollectExpr(r->to.get(), U);
+                  if (rFrom) uCollectExpr(rFrom, U);
+                  uCollectExpr(rTo, U);
                   U.inHeader = sv; }
                 if (!U.ok) return;
                 std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
@@ -3589,8 +3654,45 @@ struct Codegen {
                 U.topics.insert(tv);
                 U.local.insert(tv);
                 U.slots.emplace(tv, LT::I64);
-                for (auto& x : f->body->stmts) uCollectStmt(x.get(), U);
+                U.pinned.insert(tv);
+                { int sg = U.givens; U.givens = 0;
+                  for (auto& x : f->body->stmts) uCollectStmt(x.get(), U);
+                  U.givens = sg; }
                 U.topics.erase(tv);
+                return;
+            }
+            case NK::GivenStmt: {
+                // `given X { when … }` with a plain topic: `$_` is a lane local
+                // of X's type for the block. A `my` directly in the block is
+                // refused: a matched `when` jumps to the block's end, past it.
+                auto* g = static_cast<GivenStmt*>(st);
+                if (!g->var.empty() || !g->params.empty() || !g->elseParams.empty() || g->modifier ||
+                    g->defGuard != 0 || g->hasElse || g->elseBody || !g->body) { U.fail(); return; }
+                if (U.topics.count("$_") || U.slots.count("$_")) { U.fail(); return; }   // shadowing
+                uCollectExpr(g->topic.get(), U);
+                if (!U.ok) return;
+                U.topics.insert("$_");
+                U.local.insert("$_");
+                U.slots.emplace("$_", LT::I64);
+                U.givens++;
+                for (auto& x : g->body->stmts) {
+                    if (x && x->kind == NK::ExprStmt) {
+                        Expr* xe = static_cast<ExprStmt*>(x.get())->e.get();
+                        if (xe && xe->kind == NK::Assign && static_cast<Assign*>(xe)->target &&
+                            static_cast<Assign*>(xe)->target->kind == NK::VarExpr &&
+                            static_cast<VarExpr*>(static_cast<Assign*>(xe)->target.get())->declare) { U.fail(); return; }
+                    }
+                    uCollectStmt(x.get(), U);
+                }
+                U.givens--;
+                U.topics.erase("$_");
+                return;
+            }
+            case NK::WhenStmt: {
+                auto* w = static_cast<WhenStmt*>(st);
+                if (U.givens == 0 || !w->body) { U.fail(); return; }
+                if (!w->isDefault && w->cond) uCollectExpr(w->cond.get(), U);
+                for (auto& x : w->body->stmts) uCollectStmt(x.get(), U);
                 return;
             }
             case NK::LoopStmt: {
@@ -3610,11 +3712,36 @@ struct Codegen {
                   uCollectExpr(l->incr.get(), U);
                   U.atTopHeader = svt;
                   U.inHeader = sv; }
-                for (auto& x : l->body->stmts) uCollectStmt(x.get(), U);
+                { int sg = U.givens; U.givens = 0;
+                  for (auto& x : l->body->stmts) uCollectStmt(x.get(), U);
+                  U.givens = sg; }
                 return;
             }
             default: U.fail(); return;
         }
+    }
+
+    // A string operand. A slot the pass has not typed yet (still I64, which
+    // is only the starting guess) becomes a Str slot; a float, a pinned
+    // integer, or an expression that is not a string refuses the lane. A
+    // `given`'s `$_` is its topic, so wanting it a string wants the topic one.
+    void uWantStr(Expr* e, ULoop& U, bool& changed) {
+        std::string nm;
+        if (e && e->kind == NK::VarExpr && uScalar(e, nm)) {
+            if (nm == "$_" && !U.topicExpr.empty() && !U.pinned.count(nm)) {
+                Expr* t = U.topicExpr.back();
+                U.topicExpr.pop_back();
+                uWantStr(t, U, changed);
+                U.topicExpr.push_back(t);
+                if (U.ok && U.slots["$_"] != LT::STR) { U.slots["$_"] = LT::STR; changed = true; }
+                return;
+            }
+            auto it = U.slots.find(nm);
+            if (it == U.slots.end() || it->second == LT::F64 || U.pinned.count(nm)) { U.fail(); return; }
+            if (it->second == LT::I64) { it->second = LT::STR; changed = true; }
+            return;
+        }
+        if (uTypeOf(e, U, changed) != LT::STR) U.fail();
     }
 
     // Pass 2: the lane type of an expression, given the slot types decided so
@@ -3625,6 +3752,7 @@ struct Codegen {
         switch (e->kind) {
             case NK::IntLit: return LT::I64;
             case NK::NumLit: return LT::F64;
+            case NK::StrLit: case NK::InterpStr: return LT::STR;
             case NK::VarExpr: {
                 std::string nm;
                 if (!uScalar(e, nm)) return LT::I64;
@@ -3633,9 +3761,22 @@ struct Codegen {
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
-                LT rhs = uTypeOf(a->value.get(), U, changed);
                 std::string nm;
-                if (!uScalar(a->target.get(), nm)) return rhs;
+                if (!uScalar(a->target.get(), nm)) { U.fail(); return LT::I64; }
+                // `~=`, and `=` of a string, make a Str slot; a Str slot takes
+                // nothing else
+                if (a->op == "~=") {
+                    uWantStr(a->target.get(), U, changed);
+                    uWantStr(a->value.get(), U, changed);
+                    return LT::STR;
+                }
+                LT rhs = uTypeOf(a->value.get(), U, changed);
+                if (rhs == LT::STR || U.slots[nm] == LT::STR) {
+                    if (a->op != "=") { U.fail(); return LT::STR; }
+                    uWantStr(a->target.get(), U, changed);
+                    uWantStr(a->value.get(), U, changed);
+                    return LT::STR;
+                }
                 LT& cur = U.slots[nm];
                 // `/` on two integers is a Rat in Raku, never an Int — so a slot
                 // written by a division cannot be an I64 lane. Widening it to
@@ -3650,7 +3791,13 @@ struct Codegen {
             }
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
+                if (uStrOp(b->op)) {
+                    uWantStr(b->lhs.get(), U, changed);
+                    uWantStr(b->rhs.get(), U, changed);
+                    return b->op == "~" ? LT::STR : LT::I64;
+                }
                 LT l = uTypeOf(b->lhs.get(), U, changed), r = uTypeOf(b->rhs.get(), U, changed);
+                if (l == LT::STR || r == LT::STR) { U.fail(); return LT::I64; }   // a Str is no number here
                 static const std::set<std::string> cmp = {
                     "<", "<=", ">", ">=", "==", "!=", "&&", "||" };
                 if (cmp.count(b->op)) return LT::I64;              // a truth value
@@ -3661,6 +3808,7 @@ struct Codegen {
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
+                if (uTypeOf(u->operand.get(), U, changed) == LT::STR) { U.fail(); return LT::I64; }
                 if (u->op == "!") return LT::I64;
                 if (u->op == "++" || u->op == "--") {
                     std::string nm;
@@ -3679,14 +3827,64 @@ struct Codegen {
         }
     }
 
+    // A `when` condition that IS a truth value (a comparison, a negation, a
+    // logical) rather than a value the topic is smartmatched against.
+    static bool uTruthExpr(Expr* e) {
+        if (!e) return false;
+        if (e->kind == NK::Unary) return static_cast<Unary*>(e)->op == "!";
+        if (e->kind != NK::Binary) return false;
+        static const std::set<std::string> t = {"<", "<=", ">", ">=", "==", "!=", "&&", "||",
+                                                "eq", "ne", "lt", "gt", "le", "ge"};
+        return t.count(static_cast<Binary*>(e)->op) > 0;
+    }
+    // A condition: a Str's truth is not a number's, so none is laned.
+    void uTypeCond(Expr* e, ULoop& U, bool& changed) {
+        if (uTypeOf(e, U, changed) == LT::STR) U.fail();
+    }
+
     void uTypeStmt(Stmt* st, ULoop& U, bool& changed) {
         if (!U.ok || !st) return;
         switch (st->kind) {
             case NK::ExprStmt: uTypeOf(static_cast<ExprStmt*>(st)->e.get(), U, changed); return;
+            case NK::GivenStmt: {
+                auto* g = static_cast<GivenStmt*>(st);
+                LT t = uTypeOf(g->topic.get(), U, changed);
+                LT& cur = U.slots["$_"];
+                if (cur != t) {
+                    // the topic's type moves only from the starting guess
+                    if (cur != LT::I64) { U.fail(); return; }
+                    cur = t; changed = true;
+                }
+                U.topicExpr.push_back(g->topic.get());
+                for (auto& x : g->body->stmts) uTypeStmt(x.get(), U, changed);
+                U.topicExpr.pop_back();
+                return;
+            }
+            case NK::WhenStmt: {
+                auto* w = static_cast<WhenStmt*>(st);
+                if (!w->isDefault && w->cond) {
+                    Expr* c = w->cond.get();
+                    if (uTruthExpr(c)) uTypeCond(c, U, changed);
+                    else {
+                        // `$_ ~~ V`: a string V matches a Str topic by `eq`, a
+                        // number a numeric topic by `==`; across the two, the
+                        // boxed smartmatch decides
+                        LT ct = uTypeOf(c, U, changed);
+                        if (ct == LT::STR) {
+                            Expr* t = U.topicExpr.back();
+                            uWantStr(t, U, changed);
+                            if (U.ok && U.slots["$_"] != LT::STR) { U.slots["$_"] = LT::STR; changed = true; }
+                        }
+                        else if (U.slots["$_"] == LT::STR) U.fail();
+                    }
+                }
+                for (auto& x : w->body->stmts) uTypeStmt(x.get(), U, changed);
+                return;
+            }
             case NK::IfStmt: {
                 auto* f = static_cast<IfStmt*>(st);
                 for (auto& br : f->branches) {
-                    uTypeOf(br.first.get(), U, changed);
+                    uTypeCond(br.first.get(), U, changed);
                     for (auto& x : br.second->stmts) uTypeStmt(x.get(), U, changed);
                 }
                 if (f->elseBlock) for (auto& x : f->elseBlock->stmts) uTypeStmt(x.get(), U, changed);
@@ -3695,22 +3893,25 @@ struct Codegen {
             case NK::Block: for (auto& x : static_cast<Block*>(st)->stmts) uTypeStmt(x.get(), U, changed); return;
             case NK::WhileStmt: {
                 auto* w = static_cast<WhileStmt*>(st);
-                uTypeOf(w->cond.get(), U, changed);
+                uTypeCond(w->cond.get(), U, changed);
                 for (auto& x : w->body->stmts) uTypeStmt(x.get(), U, changed);
                 return;
             }
             case NK::ForStmt: {
                 auto* f = static_cast<ForStmt*>(st);
-                auto* r = static_cast<RangeExpr*>(f->list.get());
-                uTypeOf(r->from.get(), U, changed);
-                uTypeOf(r->to.get(), U, changed);
+                Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
+                uRangeOf(f, rFrom, rTo, exF, exT);
+                // integer ends only: a Num end steps through Nums, which the
+                // lane's counter does not
+                if ((rFrom && uTypeOf(rFrom, U, changed) != LT::I64) || uTypeOf(rTo, U, changed) != LT::I64)
+                    U.fail();
                 for (auto& x : f->body->stmts) uTypeStmt(x.get(), U, changed);
                 return;
             }
             case NK::LoopStmt: {
                 auto* l = static_cast<LoopStmt*>(st);
                 uTypeOf(l->init.get(), U, changed);
-                uTypeOf(l->cond.get(), U, changed);
+                if (l->cond) uTypeCond(l->cond.get(), U, changed);
                 uTypeOf(l->incr.get(), U, changed);
                 for (auto& x : l->body->stmts) uTypeStmt(x.get(), U, changed);
                 return;
@@ -3728,7 +3929,11 @@ struct Codegen {
 
     std::string uCast(const std::string& expr, LT from, LT to) {
         if (from == to) return expr;
+        if (from == LT::STR || to == LT::STR) return "";   // the type pass keeps these apart
         return to == LT::F64 ? "(double)(" + expr + ")" : "(long long)(" + expr + ")";
+    }
+    static const char* uCType(LT t) {
+        return t == LT::F64 ? "double " : t == LT::STR ? "std::string " : "long long ";
     }
 
     // An expression in BOOLEAN context. Not the same as asking for it as an
@@ -3737,6 +3942,7 @@ struct Codegen {
     // that looked harmless. A float is true when it is not zero, and C++'s own
     // truthiness on an integer is already Raku's.
     std::string uCond(Expr* e, std::vector<std::string>& pre) {
+        if (uNodeType(e) == LT::STR) return "";
         if (uNodeType(e) == LT::F64) {
             std::string v = uExpr(e, LT::F64, pre);
             return v.empty() ? v : "((" + v + ") != 0.0)";
@@ -3750,6 +3956,13 @@ struct Codegen {
         switch (e->kind) {
             case NK::IntLit:
                 return uCast(std::to_string(static_cast<IntLit*>(e)->v) + "LL", LT::I64, want);
+            case NK::StrLit: case NK::InterpStr: {
+                std::string text;
+                if (want != LT::STR || !uStrLit(e, &text)) return "";
+                std::string t = gensym("__us");
+                pre.push_back("static const std::string " + t + " = " + cesc(text) + ";");
+                return t;
+            }
             case NK::NumLit: {
                 std::ostringstream o;
                 o.precision(17);
@@ -3789,6 +4002,20 @@ struct Codegen {
                     if (l.empty() || r.empty()) return "";
                     return "((" + l + ") " + op + " (" + r + "))";
                 }
+                if (uStrOp(op)) {
+                    // the Str lane: the interpreter's answers for two plain Strs
+                    // (a byte compare is code-point order; see rtLaneCat for `~`)
+                    std::string a = uExpr(b->lhs.get(), LT::STR, pre);
+                    std::string c = a.empty() ? a : uExpr(b->rhs.get(), LT::STR, pre);
+                    if (c.empty()) return "";
+                    if (op == "~") return want == LT::STR ? "rtLaneCat(" + a + ", " + c + ")" : "";
+                    std::string r = op == "eq" ? "((" + a + ") == (" + c + "))"
+                                  : op == "ne" ? "((" + a + ") != (" + c + "))"
+                                  : "((" + a + ").compare(" + c + ") " +
+                                        (op == "lt" ? "<" : op == "gt" ? ">" : op == "le" ? "<=" : ">=") + " 0)";
+                    return uCast(r, LT::I64, want);
+                }
+                if (want == LT::STR) return "";
                 LT lt = uNodeType(b->lhs.get()), rt = uNodeType(b->rhs.get());
                 LT operandT = (lt == LT::F64 || rt == LT::F64) ? LT::F64 : LT::I64;
                 static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
@@ -3824,12 +4051,14 @@ struct Codegen {
         switch (e->kind) {
             case NK::NumLit: return LT::F64;
             case NK::IntLit: return LT::I64;
+            case NK::StrLit: case NK::InterpStr: return LT::STR;
             case NK::VarExpr: { std::string nm; if (!uScalar(e, nm)) return LT::I64;
                                 auto it = uType_.find(nm); return it == uType_.end() ? LT::I64 : it->second; }
             case NK::Unary: { auto* u = static_cast<Unary*>(e);
                               if (u->op == "!") return LT::I64;
                               return uNodeType(u->operand.get()); }
             case NK::Binary: { auto* b = static_cast<Binary*>(e);
+                if (uStrOp(b->op)) return b->op == "~" ? LT::STR : LT::I64;
                 static const std::set<std::string> cmp = {"<","<=",">",">=","==","!=","&&","||"};
                 if (cmp.count(b->op)) return LT::I64;
                 if (b->op == "/") return LT::F64;
@@ -3903,12 +4132,13 @@ struct Codegen {
             }
             case NK::ForStmt: {
                 auto* f = static_cast<ForStmt*>(st);
-                auto* r = static_cast<RangeExpr*>(f->list.get());
+                Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
+                if (!uRangeOf(f, rFrom, rTo, exF, exT)) return false;
                 std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
                 std::string lv = uLocal_[tv];
                 std::vector<std::string> pre;
-                std::string lo = uExpr(r->from.get(), LT::I64, pre);
-                std::string hi = uExpr(r->to.get(), LT::I64, pre);
+                std::string lo = rFrom ? uExpr(rFrom, LT::I64, pre) : std::string("0LL");
+                std::string hi = uExpr(rTo, LT::I64, pre);
                 if (lo.empty() || hi.empty()) return false;
                 std::string lon = gensym("__ulo"), hin = gensym("__uhi");
                 line(ind, "{");
@@ -3919,11 +4149,61 @@ struct Codegen {
                 // I64 expression is either a literal or a slot guarded rtIntSlot,
                 // so the runtime kind test the boxed range loop performs cannot
                 // fail here.
-                line(ind + 1, "long long " + lon + " = (" + lo + ")" + (r->exFrom ? " + 1;" : ";"));
-                line(ind + 1, "long long " + hin + " = (" + hi + ")" + (r->exTo ? " - 1;" : ";"));
+                // (an open end steps by one, checked: `^N` of the smallest
+                // int64 has no top to stand on)
+                line(ind + 1, "long long " + lon + "; if (rakupp::add_ovf(" + lo + ", " + (exF ? "1LL" : "0LL") + ", &" + lon
+                            + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                line(ind + 1, "long long " + hin + "; if (rakupp::sub_ovf(" + hi + ", " + (exT ? "1LL" : "0LL") + ", &" + hin
+                            + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
                 line(ind + 1, "for (long long " + lv + " = " + lon + "; " + lv + " <= " + hin + "; " + lv + "++) {");
                 for (auto& x : f->body->stmts) if (!uStmt(x.get(), ind + 2)) return false;
                 line(ind + 1, "}");
+                line(ind, "}");
+                return true;
+            }
+            case NK::GivenStmt: {
+                // the topic in its own local; each `when` a test whose match
+                // runs the body and jumps to the end of the `given` (its
+                // `last` / `next` still reach the loop around it)
+                auto* g = static_cast<GivenStmt*>(st);
+                const LT t = uType_["$_"];
+                const std::string tl = uLocal_["$_"];
+                std::vector<std::string> pre;
+                std::string v = uExpr(g->topic.get(), t, pre);
+                if (v.empty()) return false;
+                std::string end = gensym("__ugv");
+                line(ind, "{");
+                for (auto& p2 : pre) line(ind + 1, p2);
+                line(ind + 1, uCType(t) + tl + " = " + v + ";");
+                for (auto& x : g->body->stmts) {
+                    if (!x || x->kind != NK::WhenStmt) {
+                        if (!uStmt(x.get(), ind + 1)) return false;
+                        continue;
+                    }
+                    auto* w = static_cast<WhenStmt*>(x.get());
+                    std::vector<std::string> wp;
+                    std::string c;
+                    if (w->isDefault || !w->cond) c = "true";
+                    else if (uTruthExpr(w->cond.get())) c = uCond(w->cond.get(), wp);
+                    else if (t == LT::STR) {
+                        std::string cv = uExpr(w->cond.get(), LT::STR, wp);
+                        if (!cv.empty()) c = "(" + tl + " == " + cv + ")";
+                    }
+                    else {
+                        const LT opT = (t == LT::F64 || uNodeType(w->cond.get()) == LT::F64) ? LT::F64 : LT::I64;
+                        std::string cv = uExpr(w->cond.get(), opT, wp);
+                        if (!cv.empty()) c = "(" + uCast(tl, t, opT) + " == " + cv + ")";
+                    }
+                    if (c.empty()) return false;
+                    line(ind + 1, "{");
+                    for (auto& p2 : wp) line(ind + 2, p2);
+                    line(ind + 2, "if (" + c + ") {");
+                    for (auto& y : w->body->stmts) if (!uStmt(y.get(), ind + 3)) return false;
+                    line(ind + 3, "goto " + end + ";");
+                    line(ind + 2, "}");
+                    line(ind + 1, "}");
+                }
+                line(ind + 1, end + ": ;");
                 line(ind, "}");
                 return true;
             }
@@ -3981,6 +4261,16 @@ struct Codegen {
         std::string lv = uLocal_[nm];
         std::vector<std::string> pre;
         std::string rhs;
+        if (t == LT::STR) {
+            rhs = uExpr(a->value.get(), LT::STR, pre);
+            if (rhs.empty() || (a->op != "=" && a->op != "~=")) return false;
+            for (auto& p2 : pre) line(ind, p2);
+            if (a->op == "~=") { line(ind, "rtLaneAppend(" + lv + ", " + rhs + ");"); return true; }
+            bool decl = a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->declare
+                        && !uEscape_.count(nm);
+            line(ind, (decl ? "std::string " : "") + lv + " = " + rhs + ";");
+            return true;
+        }
         if (a->op == "=") {
             rhs = uExpr(a->value.get(), t, pre);
         } else {
@@ -4030,7 +4320,10 @@ struct Codegen {
     // The driver. Returns true when the loop was emitted as an unboxed lane with
     // its boxed self as the fallback; false leaves the caller to emit as before.
     bool tryUnboxedLoop(Stmt* loop, int ind, const std::function<void()>& emitBoxed) {
-        if (!optimize_) return false;
+        // Under -O always; without it too, as the interpreter's loop kernels
+        // (src/IntKernel.cpp) are: a lane is the same guarded, bail-and-rerun
+        // shape, and RAKUPP_NO_KERNELS=1 at compile time leaves it to -O alone
+        if (!optimize_ && !loopLanesByDefault()) return false;
         if (!loop->label.empty()) return false;
 
         ULoop U;
@@ -4081,17 +4374,18 @@ struct Codegen {
         line(ind, "{ bool " + ok + " = false; do { // -O unboxed loop lane (UNBOX-PLAN.md)");
         std::vector<std::string> guards;
         for (auto& n : names)
-            guards.push_back(std::string(uType_[n] == LT::F64 ? "rtNumSlot(" : "rtIntSlot(") + varRef(n) + ")");
+            guards.push_back(std::string(uType_[n] == LT::F64 ? "rtNumSlot(" : uType_[n] == LT::STR ? "rtStrSlot("
+                                                                                       : "rtIntSlot(") + varRef(n) + ")");
         if (!guards.empty()) line(ind + 1, "if (!(" + joinAnd(guards) + ")) break;");
         for (auto& n : names)
-            line(ind + 1, std::string(uType_[n] == LT::F64 ? "double " : "long long ") + uLocal_[n]
-                        + " = " + varRef(n) + (uType_[n] == LT::F64 ? ".n;" : ".i;"));
+            line(ind + 1, std::string(uCType(uType_[n])) + uLocal_[n] + " = " + varRef(n)
+                        + (uType_[n] == LT::F64 ? ".n;" : uType_[n] == LT::STR ? ".s.str();" : ".i;"));
         // A header `my` is declared here rather than where it is written, so the
         // store-back after the loop can still see it. Its value on the way in is
         // never read: the header assigns it before anything else runs.
         for (auto& n : esc)
-            line(ind + 1, std::string(uType_[n] == LT::F64 ? "double " : "long long ") + uLocal_[n]
-                        + (uType_[n] == LT::F64 ? " = 0.0;" : " = 0;"));
+            line(ind + 1, std::string(uCType(uType_[n])) + uLocal_[n]
+                        + (uType_[n] == LT::F64 ? " = 0.0;" : uType_[n] == LT::STR ? ";" : " = 0;"));
         // The ENTRY snapshot. An integer operation that overflows leaves the
         // lane mid-loop, and the boxed loop must then run from a state it can
         // re-derive — so the whole thing is rewound to the loop's entry and the
@@ -4106,7 +4400,10 @@ struct Codegen {
             for (auto& n : names) {
                 std::string e = gensym("__ue");
                 entry.push_back(e);
-                line(ind + 1, std::string(uType_[n] == LT::F64 ? "double " : "long long ") + e + " = " + uLocal_[n] + ";");
+                // (a Str slot's box is never written before the commit, so
+                // it needs no snapshot to be rewound to)
+                if (uType_[n] != LT::STR)
+                    line(ind + 1, std::string(uCType(uType_[n])) + e + " = " + uLocal_[n] + ";");
             }
         line(ind + 1, "bool " + uBail_ + " = false; (void)" + uBail_ + ";");
         if (!uStmt(loop, ind + 1)) good = false;
@@ -4119,7 +4416,8 @@ struct Codegen {
         if (canBail) {
             line(ind + 1, "if (" + uBail_ + ") {");
             for (size_t i = 0; i < names.size(); i++)
-                line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
+                if (uType_[names[i]] != LT::STR)
+                    line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
             line(ind + 2, "break;");
             line(ind + 1, "}");
         }
@@ -4127,14 +4425,17 @@ struct Codegen {
         // be re-stored, which would be a no-op on a good day and a retyping on a
         // bad one.
         for (auto& n : names)
-            if (U.written.count(n))
-                line(ind + 1, varRef(n) + (uType_[n] == LT::F64 ? ".n = " : ".i = ") + uLocal_[n] + ";");
+            if (U.written.count(n)) {
+                if (uType_[n] == LT::STR) line(ind + 1, varRef(n) + ".s = std::move(" + uLocal_[n] + ");");
+                else line(ind + 1, varRef(n) + (uType_[n] == LT::F64 ? ".n = " : ".i = ") + uLocal_[n] + ";");
+            }
         // An escaping name's box may hold anything at all (it was `Value::any()`
         // a moment ago), so this CONSTRUCTS rather than writing a payload under
         // a tag that was never checked.
         for (auto& n : escStore)
-            line(ind + 1, varRef(n) + " = " + (uType_[n] == LT::F64 ? "Value::number(" : "Value::integer(")
-                        + uLocal_[n] + ");");
+            line(ind + 1, varRef(n) + " = " + (uType_[n] == LT::F64 ? "Value::number(" : uType_[n] == LT::STR
+                                                   ? "Value::str(std::move(" : "Value::integer(")
+                        + uLocal_[n] + (uType_[n] == LT::STR ? "));" : ");"));
         line(ind + 1, ok + " = true;");
         line(ind, "} while (0);");
         line(ind, "if (!" + ok + ") {");

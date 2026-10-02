@@ -669,7 +669,14 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
 #endif
         return c;
     }
-    std::string c = cxx + " -std=c++17 " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
+    // -ffp-contract=off: the interpreter rounds every Num operation on its
+    // own, and so must the compiled program. Left to itself the compiler
+    // fuses `a * b + c` in one expression into a single FMA — the -O F64
+    // loop lanes emit exactly that, and `0.1e0 * 10e0 + -1e0` printed
+    // 5.55e-17 compiled where Rakudo and the interpreter print 0 (GCC fuses
+    // across statements by default, too). Before the level, so an explicit
+    // -Ofast keeps meaning fast-math.
+    std::string c = cxx + " -std=c++17 -ffp-contract=off " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
     // --slim ≥ safe (the default): let the linker see section granularity in
     // the one TU we compile here, and drop what nothing references. The big
     // win is symbol stripping — the runtime archive's reachability is real

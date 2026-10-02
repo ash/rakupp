@@ -2919,6 +2919,14 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         if (!lvRaw.itemized) seqUse(lvRaw, SeqUse::Iterate);   // a Seq is read once (SeqToken)
         Value lv = iterationSourceOf(lvRaw);
         drainIfFiniteLazy(lv);
+        // `STMT for A .. B` over machine integers: a loop kernel, on the test
+        // the block form's integer-Range path makes, for a range whose ends
+        // are machine integers (a BigInt end rides in ext()), and only for a
+        // range written in place — a `$r` holding one is a single item
+        if (fs->list->kind == NK::Range && lv.t == VT::Range && !lvRaw.itemized && !lv.rNum() &&
+            !lv.ext() && !lv.big() && lv.ofType() != "Str" && !col &&
+            tryLoopKernel(fs, "$_", lv.rFrom() + (lv.rExFrom() ? 1 : 0), lv.rTo() - (lv.rExTo() ? 1 : 0)))
+            return forResult();
         // …and a user object doing the Iterator role is DRAINED by
         // pull-one, exactly as the block form below does it. Only the
         // block form did: `.say for @a` over a container class with its
@@ -3330,6 +3338,12 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                     }, nullptr, col);
                 return forResult();
             }
+            // a body of plain Int / Str arithmetic runs as a loop kernel
+            // (IntKernel.cpp), which leaves nothing behind but the variables
+            // it wrote, exactly as the iterations below would — over a range
+            // whose ends are machine integers (one that carries its endpoint
+            // objects, a BigInt among them, is not walked by lo/hi alone)
+            if (!col && !listv.ext() && !listv.big() && tryLoopKernel(fs, var, lo, hi)) return forResult();
             // Flat body (see flatLoopBody): one scope, ONE topic map
             // node, overwritten in place — no clear and no re-emplace
             // per iteration. A closure capturing the scope bumps

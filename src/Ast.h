@@ -1142,6 +1142,12 @@ struct ForStmt : Stmt {
     // `hyper for` ('h') / `race for` ('r'): the iterations run over worker
     // threads, in batches (Interpreter's runHyperLoop); 0 is an ordinary loop
     char hyper = 0;
+    // The loop kernel (IntKernel.cpp) of a `for` over an integer Range, or a
+    // sentinel saying it can never have one; decided on the loop's first entry
+    // and tried again a few times (loopKernelTries) while the reason is a value
+    // rather than the syntax. A property of one run: not serialized, never freed.
+    PublishedOnce<void*> loopKernel{nullptr};
+    DecidedOnce<unsigned char> loopKernelTries{0};
     ForStmt(): Stmt(NK::ForStmt) {}
 };
 

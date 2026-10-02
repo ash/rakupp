@@ -1502,6 +1502,8 @@ public:
     Value callPlainSub(const Value& codeVal, Callable& c, ValueList& args, bool ownFrame);
     // IntKernel.cpp: run a plain sub as an integer kernel; false = nothing ran, take the call path
     bool tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out);
+    // …and a `for` over an integer Range as a loop kernel; false = nothing ran, run the loop
+    bool tryLoopKernel(ForStmt* fs, const std::string& var, long long lo, long long hi);
     [[gnu::noinline]] Value execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink,
                                           std::unique_ptr<HandedError>* handOff);
     // A bare block written as a statement (exec's NK::Block); the rare
@@ -3918,6 +3920,31 @@ inline bool rtIntSlot(const Value& v) {
 // runtime type, so a slot the lane holds as a double must already BE a Num.
 inline bool rtNumSlot(const Value& v) {
     return v.t == VT::Num && (!v.natFloat || v.natBits == 64) && v.enumName.empty();   // num, not num32
+}
+// …and a string slot: a plain Str (no Blob/Buf or other tag, no enum, no
+// native width), which a lane holds as a std::string and writes back into `.s`.
+inline bool rtStrSlot(const Value& v) {
+    return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty();
+}
+// A Str lane's `~` and `~=`: what the interpreter answers for two plain Strs.
+// `~` is nfcNormalize(l ~ r), and text that is all ASCII joins to itself;
+// `~=` appends an ASCII right side in place and renormalizes the rest.
+inline bool rtAsciiOnly(const std::string& s) {
+    for (unsigned char c : s) if (c >= 0x80) return false;
+    return true;
+}
+inline std::string rtLaneCat(const std::string& l, const std::string& r) {
+    std::string out;
+    out.reserve(l.size() + r.size());
+    out += l; out += r;
+    if (rtAsciiOnly(l) && rtAsciiOnly(r)) return out;
+    return nfcNormalize(std::move(out));
+}
+inline void rtLaneAppend(std::string& d, const std::string& r) {
+    if (rtAsciiOnly(r)) d += r;
+    else d = nfcNormalize(d + r);
 }
 // Non-`-O` codegen emits every value-position operator as `applyArith("+", …)`,
 // and the parameter is a std::string — so a one- or two-character literal was
