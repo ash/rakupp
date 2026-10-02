@@ -5853,6 +5853,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // `self.expr($x)`: matched in the running parse, at the cursor's position),
     // then the grammar's own methods (`self.panic(…)`), and is otherwise the
     // Match it is: `.pos`, `.target`, `.orig` fall through to the Match arms.
+    // …and with the grammar's own methods stepped over — `method ws { …;
+    // callsame }` (DSL::Shared's error handling) — the BUILT-IN rule answers
+    if (inv.t == VT::Match && inv.md() && inv.md()->cursor && m.skipOwn && args.empty()) {
+        auto cur = std::static_pointer_cast<GrammarCursor>(inv.md()->cursor);
+        if (RxCursorCall* call = cur->call(); call && !call->hasRule(m)) {
+            long e = call->callBuiltin(m, (long)inv.rTo());
+            if (e != -2) {
+                if (e < 0) return Value::nil();
+                Value r = Value::matchVal(cur->input->substr((size_t)inv.rTo(), (size_t)(e - inv.rTo())),
+                                          inv.rTo(), e);
+                r.extM() = cur->input;
+                auto next = std::make_shared<GrammarCursor>(*cur);
+                next->rule = m;
+                r.mdW().cursor = next;
+                return r;
+            }
+        }
+    }
     if (inv.t == VT::Match && inv.md() && inv.md()->cursor && !m.skipOwn) {
         auto cur = std::static_pointer_cast<GrammarCursor>(inv.md()->cursor);
         RxCursorCall* call = cur->call();

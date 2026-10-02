@@ -3999,6 +3999,19 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
             st = sit->second.base;
         }
     }
+    // …and a type object into a parameter typed by a role's CAPTURE: with
+    // `role R[::C] { method m(C:U $c) }` composed as R[Game], `m(Int)` is a
+    // type object of the wrong type, not an undefined Game
+    if (v.t == VT::Type && !p.typeKnown && !p.typeCapture && sigEnv && !p.type.empty() &&
+        ascii::isupper((unsigned char)p.type[0]) && !classes_.count(p.type) && !isKnownTypeName(p.type))
+        if (Value* tv = sigEnv->find(p.type))
+            if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type &&
+                tv->s.str().find('(') == std::string::npos &&
+                (classes_.count(tv->s.str()) || isKnownTypeName(tv->s.str())) &&
+                !typeOrSubsetMatches(v, tv->s))
+                throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                    "Type check failed in binding to parameter '" + p.name +
+                    "'; expected " + tv->s.str() + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
     if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
     if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
                              v.enumName == "one" || v.enumName == "none")) {
@@ -9130,6 +9143,22 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             if (!best || bestScore < 0) {
                 if (!visited.empty()) {                     // ran past the last same-class candidate
                     if (parentNext) return parentNext(as);   // defer up the inheritance tree
+                    // a user `multi method new` joins Mu's own candidates: past
+                    // the last of them, callwith(|%rest) builds the object
+                    if (c.name == "new") return methodCall(selfCopy, "new", as, nullptr, /*skipOwn=*/true);
+                    // …where a PARENT's generated accessor is the next candidate:
+                    // `multi method config(::?CLASS:D:) { nextsame }` over a
+                    // parent's `has $.config` (LibXML) reads the attribute
+                    if (as.empty() && selfCopy.t == VT::Object && selfCopy.obj() && selfCopy.obj()->cls) {
+                        ClassInfo* oc = selfCopy.obj()->cls.get();
+                        const ClassAttr* ca = nullptr;
+                        if (oc->parent) ca = oc->parent->findAttr(c.name);
+                        for (auto& p : oc->extraParents) if (!ca && p && !p->isRole) ca = p->findAttr(c.name);
+                        if (ca && ca->pub) {
+                            auto it = selfCopy.obj()->attrs.find(c.name);
+                            if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
+                        }
+                    }
                     return Value::nil();
                 }
                 // No same-class candidate fits. In Rakudo a multi method's
@@ -9161,6 +9190,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         } un{markIdx};
                         return parentNext(as);
                     }
+                }
+                // …and Mu's `new(*%attrinit)` is one of `new`'s candidates: a
+                // samewith whose arguments no user candidate takes builds the
+                // object (Dan's Series re-enters `new` with a Hash index)
+                if (c.name == "new" && selfCopy.t == VT::Type) {
+                    bool allNamed = true;
+                    for (auto& a : as) if (!(a.t == VT::Pair && a.namedArg)) { allNamed = false; break; }
+                    if (allNamed) return methodCall(selfCopy, "new", as, nullptr, /*skipOwn=*/true);
                 }
                 // no candidate takes the Junction itself — autothread over it
                 for (size_t ai = 0; ai < as.size(); ai++) {

@@ -748,6 +748,10 @@ struct RxCursorCall {
     // Match rule `name` at `pos` (args as `<rule(…)>` call text). On success fill
     // `out` (name = the rule, span, captures, subtree) and return true.
     bool callRule(const std::string& name, const std::string& args, long pos, ParseNode& out);
+    // a BUILT-IN rule (`ws`, `alpha`, `ident` …) at `pos`, past any grammar
+    // method of that name: where `callsame` in a `method ws` lands. The end
+    // position, or < 0 for no match (-2: no such built-in).
+    long callBuiltin(const std::string& name, long pos) const;
 };
 
 } // namespace rakupp

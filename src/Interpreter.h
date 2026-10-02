@@ -2656,6 +2656,9 @@ public:
     // method's returned Match both hand their result to the engine this way.
     static void matchValueToNode(const Value& mv, long offset, ParseNode& node);
     std::string rxInterpArrays(const std::string& pat); // `/@arr/` -> longest-first literal alternation
+    // a Regex VALUE's source with its `@array` atoms resolved in the scope it
+    // closed over — what splicing it into another pattern must paste
+    std::string closedRegexSource(const Value& v);
     // `:enc` on file I/O: rakupp holds every Str as UTF-8, so text in another
     // encoding is converted at the edge. Both route through `.decode`/`.encode`,
     // which already own the encoding table.

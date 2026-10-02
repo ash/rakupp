@@ -67,6 +67,130 @@ static size_t rxDeclEnd(const std::string& p, size_t i) {
     return 0;
 }
 
+// A grammar rule's ARRAY atoms — `@names`, `@$ref`, `@( expr )`, and each of
+// them aliased as `<alias=…>` — are an alternation of the elements' LITERAL
+// text, read when the rule MATCHES: MUGS' command grammar reads
+// `<thing=@($*ctx.items)>` from whatever context the parse runs in. A rule body
+// is compiled once per grammar, so the atom becomes a `<{ … }>` block marked
+// "\x01L" (rxLiteralAlternatives reads the mark), and the value is looked up
+// at match time like any other code in the rule.
+static std::string grammarArrayAtoms(const std::string& pat) {
+    if (pat.find('@') == std::string::npos) return pat;
+    std::string out;
+    out.reserve(pat.size() + 16);
+    for (size_t i = 0; i < pat.size(); i++) {
+        char c = pat[i];
+        if (c == '\\') { out += c; if (i + 1 < pat.size()) out += pat[++i]; continue; }
+        if (c == '\'' || c == '"') {
+            size_t j = i + 1;
+            for (; j < pat.size(); j++) { if (pat[j] == '\\') { j++; continue; } if (pat[j] == c) break; }
+            out += pat.substr(i, std::min(j + 1, pat.size()) - i); i = j; continue;
+        }
+        if (c == '#') {
+            size_t j = pat.find('\n', i);
+            if (j == std::string::npos) j = pat.size();
+            out += pat.substr(i, j - i); i = j - 1; continue;
+        }
+        if (c == '{') {
+            if (size_t e = rxCodeBraceEnd(pat, i)) { out += pat.substr(i, e - i); i = e - 1; continue; }
+        }
+        if (c == ':' && (pat.compare(i, 4, ":my ") == 0 || pat.compare(i, 6, ":temp ") == 0 ||
+                         pat.compare(i, 5, ":let ") == 0)) {
+            if (size_t e = rxDeclEnd(pat, i)) { out += pat.substr(i, e - i); i = e - 1; continue; }
+        }
+        // a character class: `<[…]>`, `<-[…]>`, `<+[…]>`
+        if (c == '[' && !out.empty() && (out.back() == '<' || out.back() == '-' || out.back() == '+')) {
+            size_t j = i + 1;
+            for (; j < pat.size() && pat[j] != ']'; j++) if (pat[j] == '\\') j++;
+            out += pat.substr(i, std::min(j + 1, pat.size()) - i); i = j; continue;
+        }
+        if (c != '@' || i + 1 >= pat.size()) { out += c; continue; }
+        // the atom's extent: `@name`, `@$name` or `@( … )`
+        size_t j = i + 1;
+        if (pat[j] == '(') {
+            int d = 0; char q = 0;
+            for (; j < pat.size(); j++) {
+                char cj = pat[j];
+                if (q) { if (cj == '\\') j++; else if (cj == q) q = 0; continue; }
+                if (cj == '\'' || cj == '"') { q = cj; continue; }
+                if (cj == '(') d++;
+                else if (cj == ')' && --d == 0) { j++; break; }
+            }
+            if (d != 0) { out += c; continue; }
+        }
+        else {
+            if (pat[j] == '$') j++;
+            if (j >= pat.size() || !(ascii::isalpha((unsigned char)pat[j]) || pat[j] == '_')) { out += c; continue; }
+            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
+                   (pat[j] == '-' && j + 1 < pat.size() && ascii::isalpha((unsigned char)pat[j + 1])) ||
+                   (pat[j] == ':' && j + 2 < pat.size() && pat[j + 1] == ':' && ascii::isalpha((unsigned char)pat[j + 2]))))
+                j += pat[j] == ':' ? 2 : 1;
+            // `@a=( … )` binds a capture to the variable: not an atom
+            size_t e = j;
+            while (e < pat.size() && (pat[e] == ' ' || pat[e] == '\t')) e++;
+            if (e + 1 < pat.size() && pat[e] == '=' && pat[e + 1] != '=') { out += pat.substr(i, j - i); i = j - 1; continue; }
+        }
+        const std::string expr = pat.substr(i, j - i);
+        const bool closes = j < pat.size() && pat[j] == '>';
+        // `<@arr>` — the assertion form compiles each element as a REGEX
+        if (closes && !out.empty() && out.back() == '<') {
+            out += "{ " + expr + " }"; i = j - 1; continue;
+        }
+        const std::string block = "<{\x01L " + expr + " }>";
+        // `<alias=@…>`
+        if (closes && !out.empty() && out.back() == '=') {
+            size_t b = out.size() - 1, e = b;
+            while (e > 0 && (ascii::isalnum((unsigned char)out[e - 1]) || out[e - 1] == '_' || out[e - 1] == '-')) e--;
+            if (e > 0 && e < b && out[e - 1] == '<') {
+                std::string alias = out.substr(e, b - e);
+                out.erase(e - 1);
+                out += "$<" + alias + ">=[" + block + "]";
+                i = j;   // past the '>'
+                continue;
+            }
+        }
+        out += block;
+        i = j - 1;
+    }
+    return out;
+}
+
+// What a "\x01L"-marked `<{ … }>` (grammarArrayAtoms) answered, as the list
+// dynRegexFor reads: a Str element matches as its literal text, a Regex as
+// itself, and an empty list matches nothing.
+static Value rxLiteralAlternatives(const Value& v) {
+    ValueList els;
+    auto add = [&](const Value& e) {
+        if (e.t == VT::Nil || e.t == VT::Any || e.t == VT::Type) return;
+        els.push_back(e.t == VT::Regex ? e : Value::regex(quoteMetaRx(e.toStr())));
+    };
+    if (v.t == VT::Array && v.arr() && v.enumName.empty()) for (auto& e : *v.arr()) add(e);
+    else add(v);
+    if (els.empty()) return Value::regex("<!>");
+    return Value::list(std::move(els));
+}
+
+// A regex value's variables belong to the scope it was WRITTEN in: pasting the
+// source alone left `sub g { my @k = …; rx{@k} }` to resolve @k where it is
+// spliced, which usually has no @k at all (IO::Glob's character classes).
+std::string Interpreter::closedRegexSource(const Value& v) {
+    std::string src = v.s.str();
+    if (!v.ext() || isP5Pattern(src)) return src;
+    // (a declared `token {…}` keeps its $vars for the match-time hook)
+    const bool arr = src.find('@') != std::string::npos,
+               sc = v.hashKind.empty() && src.find('$') != std::string::npos;
+    if (!arr && !sc) return src;
+    auto savedOuter = tctx_.cur;
+    tctx_.cur = std::static_pointer_cast<Env>(v.ext());
+    try {
+        if (sc) src = interpRegexPattern(src);
+        if (arr) src = rxInterpArrays(src);
+    }
+    catch (...) { tctx_.cur = savedOuter; throw; }
+    tctx_.cur = savedOuter;
+    return src;
+}
+
 // Interpolate @array variables into a regex as an LTM `|` alternation of the
 // elements' literal (quotemeta'd) text, LONGEST-FIRST — `/@alpha/` matches any
 // element, as in Rakudo.
@@ -127,6 +251,27 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 std::stable_sort(els.begin(), els.end(),
                     [](const std::pair<std::string, bool>& a, const std::pair<std::string, bool>& b) {
                         return a.first.size() > b.first.size(); });
+                // `<alias=@( … )>` — aliased like `<alias=@arr>` below: one call
+                // frame, captured under the alias (MUGS' `<thing=@($*ctx.items)>`)
+                std::string alias;
+                if (j < pat.size() && pat[j] == '>' && !out.empty() && out.back() == '=') {
+                    size_t b = out.size() - 1, e = b;
+                    while (e > 0 && (ascii::isalnum((unsigned char)out[e - 1]) ||
+                                     out[e - 1] == '_' || out[e - 1] == '-')) e--;
+                    if (e > 0 && e < b && out[e - 1] == '<') alias = out.substr(e, b - e);
+                }
+                if (!alias.empty()) {
+                    std::string src;
+                    for (size_t k = 0; k < els.size(); k++) {
+                        if (k) src += " | ";
+                        src += "[ "; src += els[k].second ? spliceRegexValueFwd(els[k].first) : els[k].first; src += " ]";
+                    }
+                    if (els.empty()) src = "<!>";
+                    out.erase(out.size() - alias.size() - 2);  // drop `<alias=`
+                    out += Regex::subSpliceOf(alias, src, false);
+                    i = j;                                     // skip the '>'
+                    continue;
+                }
                 if (els.empty()) out += "<!>";                // an empty list matches nothing
                 else {
                     out += "[";
@@ -405,13 +550,19 @@ const Regex* Interpreter::dynRegexFor(const Value& v, const std::string& flags) 
         for (auto& e : *v.arr()) {
             if (undefined(e)) continue;
             bool ep5 = false;
-            std::string es = rxSourceOf(e, ep5);
+            std::string es = e.t == VT::Regex && e.ext() ? closedRegexSource(e) : rxSourceOf(e, ep5);
+            if (e.t == VT::Regex && e.ext()) { ep5 = isP5Pattern(es); if (ep5) es = es.substr(es.find(' ') + 1); }
             if (es.empty()) continue;
             els.push_back(ep5 ? Regex::spliceOf(es, true) : "[ " + es + " ]");
         }
         std::stable_sort(els.begin(), els.end(),
             [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
         for (size_t k = 0; k < els.size(); k++) { if (k) src += " | "; src += els[k]; }
+    }
+    else if (v.t == VT::Regex && v.ext()) {   // in the scope it closed over
+        src = closedRegexSource(v);
+        p5 = isP5Pattern(src);
+        if (p5) src = src.substr(src.find(' ') + 1);
     }
     else src = rxSourceOf(v, p5);
     if (v.t == VT::Str && !p5 && rxRestricted()) rxRestrictedCheck(src);
@@ -661,7 +812,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 }
                 if (depth == 0) {
                     Value v = evalString(pat.substr(i, j - i));   // the whole `$( … )`
-                    out += v.t == VT::Regex ? spliceRegexValue(v.s) : quoteMetaRx(v.toStr());
+                    out += v.t == VT::Regex ? spliceRegexValue(closedRegexSource(v)) : quoteMetaRx(v.toStr());
                     i = j - 1;
                     continue;
                 }
@@ -752,7 +903,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // how IO::Glob assembles a glob out of per-term matchers. Only a
                 // Str value keeps the quote-it-literally reading.
                 if (v && v->t == VT::Regex) {
-                    out += spliceRegexValue(v->s);
+                    out += spliceRegexValue(closedRegexSource(*v));
                     i = j - 1;
                     continue;
                 }
@@ -827,13 +978,7 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
                     // Path::Finder's `{a,b}` and `[a-z]` matchers, built as
                     // `/@list/` inside a grammar action and then folded
                     // together by a `reduce`, came out matching nothing.
-                    std::string src = v->s.str();
-                    if (v->ext() && src.find('@') != std::string::npos && !isP5Pattern(src)) {
-                        auto savedOuter = tctx_.cur;
-                        tctx_.cur = std::static_pointer_cast<Env>(v->ext());
-                        src = rxInterpArrays(src);
-                        tctx_.cur = savedOuter;
-                    }
+                    std::string src = closedRegexSource(*v);
                     out += spliceRegexValue(src); sawRegex = true;
                 }
                 else out += quoteMetaRx(v->toStr());
@@ -2072,7 +2217,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         for (auto& r : c->rules) {
             if (gm.rules.count(r.first)) continue; // a more-derived declaration already won
             GrammarMatcher::Rule rule;
-            rule.pattern = r.second;
+            rule.pattern = grammarArrayAtoms(r.second);
             rule.kind = c->ruleKind.count(r.first) ? c->ruleKind.at(r.first) : "token";
             auto pit = c->ruleParams.find(r.first);
             if (pit != c->ruleParams.end()) rule.params = pit->second;
@@ -2086,7 +2231,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     if (!pt || ar == c->ruleLitArgs.end()) continue;
                     GrammarMatcher::Rule::Lit lit;
                     lit.args = ar->second;
-                    lit.pattern = *pt;
+                    lit.pattern = grammarArrayAtoms(*pt);
                     auto ki = c->ruleKind.find(key);
                     lit.kind = ki != c->ruleKind.end() ? ki->second : rule.kind;
                     rule.lits.push_back(std::move(lit));
@@ -2114,7 +2259,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     for (auto& kv : namedRegex_) {
         if (gm.rules.count(kv.first)) continue;
         GrammarMatcher::Rule rule;
-        rule.pattern = kv.second;
+        rule.pattern = grammarArrayAtoms(kv.second);
         auto kit = namedRegexKind_.find(kv.first);
         rule.kind = (kit != namedRegexKind_.end() && !kit->second.empty()) ? kit->second : "regex";
         gm.rules[kv.first] = std::move(rule);
@@ -2322,6 +2467,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     gm.hooks.dynRule = [this, runCode](const std::string& code, long from, long to, const NamedMap& nm,
                                        const std::vector<std::pair<long, long>>& caps, const ParamMap& pm,
                                        const std::string& flags) -> const Regex* {
+        if (code.size() > 2 && code[0] == '\x01' && code[1] == 'L')   // grammarArrayAtoms' mark
+            return dynRegexFor(rxLiteralAlternatives(runCode(code.substr(2), from, to, nm, pm, &caps)), flags);
         return dynRegexFor(runCode(code, from, to, nm, pm, &caps), flags);
     };
     gm.hooks.range = [this, runCode](const std::string& code, const NamedMap& nm, const ParamMap& pm) -> std::pair<long, long> {

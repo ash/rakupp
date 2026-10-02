@@ -6880,6 +6880,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     "Cannot look up attributes in a " + inv.s + " type object"};
             }
             if (m == "new" || m == "bless") {
+                // Punning a role composes it into a class, and a class cannot
+                // keep a stub: `role Basic { method auth { ... } }; Basic.new`
+                // dies there, as Rakudo's composition does — not later, when the
+                // stub is called
+                if (ci->isRole && m == "new")
+                    for (auto& mk : ci->methods)
+                        if (mk.second.t == VT::Code && mk.second.code() && mk.second.code()->isStub)
+                            throw RakuError{Value::typeObj("X::AdHoc"),
+                                "Method '" + mk.first + "' must be implemented by " + ci->name +
+                                " because it is required by roles: " + ci->name + "."};
                 // An X::IO exception composes its .message from its attributes,
                 // as Rakudo does — the class carries no method of its own, so the
                 // text is built here, once, at construction.

@@ -4941,8 +4941,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     // and stopped at the `::` with "expected variable after declarator".
     else if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" &&
              peek(2).kind == Tok::Ident) {
-        advance(); advance(); advance(); // :: ? CLASS
-        type = typeStack_.empty() ? "Mu" : typeStack_.back();
+        advance(); advance();                                           // :: ?
+        const std::string which = advance().text;                       // CLASS / ROLE
+        type = which == "ROLE" && !enclosingRoleName().empty() ? enclosingRoleName()
+             : typeStack_.empty() ? "Mu" : typeStack_.back();
         indirectType = true;
     }
     // the `:D` / `:U` / `:_` smiley that may follow either form
@@ -6251,6 +6253,8 @@ ExprPtr Parser::parsePrimary() {
         advance(); advance(); // :: ?
         std::string which = advance().text; // CLASS / ROLE / PACKAGE
         std::string nm = typeStack_.empty() ? "" : typeStack_.back();
+        // ::?ROLE is the innermost enclosing ROLE, past any class nested in it
+        if (which == "ROLE" && !enclosingRoleName().empty()) return std::make_unique<NameTerm>(enclosingRoleName());
         if ((which == "PACKAGE" || which == "MODULE") && !pkgStack_.empty()) {
             std::string pn;
             for (auto it = pkgStack_.rbegin(); it != pkgStack_.rend(); ++it)
@@ -8997,8 +9001,29 @@ ExprPtr Parser::parsePrimary() {
                 return ix;
             }
             // bareword tight against `[` whose first arg is a (capitalized) type name.
+            // …but only when EVERY positional argument is a type: a VALUE after
+            // the type (`Units[Str, 'rgba']`, `T[Int, 3]`, `R[Lengths, $x]`) is
+            // a role argument list, which the general path below builds whole —
+            // this one keeps names only, and dropped the 'rgba'
+            auto valueArgFollows = [&]() {
+                int d = 0;
+                for (size_t q = pos_; q < toks_.size(); q++) {
+                    const Token& t = toks_[q];
+                    if (t.kind == Tok::LBracket) { d++; continue; }
+                    if (t.kind == Tok::RBracket) { if (--d == 0) return false; continue; }
+                    if (t.kind == Tok::End) return false;
+                    if (d != 1 || q == 0) continue;
+                    // a value at the START of an argument (after the comma), not a
+                    // colonpair's value or a smiley
+                    if (toks_[q - 1].kind == Tok::Comma &&
+                        (t.kind == Tok::StrLit || t.kind == Tok::StrInterp || t.kind == Tok::IntLit ||
+                         t.kind == Tok::NumLit || t.kind == Tok::Var || t.kind == Tok::QwList))
+                        return true;
+                }
+                return false;
+            };
             if (!name.empty() && (ascii::isupper((unsigned char)name[0]) || name == "array") &&
-                isKind(Tok::LBracket) && !cur().spaceBefore &&
+                isKind(Tok::LBracket) && !cur().spaceBefore && !valueArgFollows() &&
                 peek().kind == Tok::Ident && !peek().text.empty() &&
                 (ascii::isupper((unsigned char)peek().text[0]) ||
                  [&]{ static const std::set<std::string> nat = {
@@ -13065,6 +13090,24 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
                 }
             }
         }
+        // `@( … )` / `$( … )` is CODE: its `)` is no group's, and a `)>` after
+        // it (`<thing=@($*ctx.items)>`) closes the assertion, not a capture
+        if ((c == '@' || c == '$') && i + 1 < pat.size() && pat[i + 1] == '(') {
+            size_t j = i + 1; int d = 0; char qq = 0;
+            for (; j < pat.size(); j++) {
+                char cj = pat[j];
+                if (qq) { if (cj == '\\') j++; else if (cj == qq) qq = 0; continue; }
+                if (cj == '\'' || cj == '"') { qq = cj; continue; }
+                if (cj == '(') d++;
+                else if (cj == ')' && --d == 0) break;
+            }
+            if (j < pat.size()) {
+                i = j;
+                atomStart = groupStart = afterBranch = false;
+                lastKind = LkAtom;
+                continue;
+            }
+        }
         // `<(` / `)>` are capture markers, not groups — either may stand alone
         if (c == '<' && i + 1 < pat.size() && pat[i + 1] == '(') { i++; continue; }
         if (c == ')' && i + 1 < pat.size() && pat[i + 1] == '>') { i++; continue; }
@@ -13906,8 +13949,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             bool attrSmileyExplicit = false;
             // `has ::?CLASS $.attr` — the enclosing class as the attribute's type
             if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" && peek(2).kind == Tok::Ident) {
-                advance(); advance(); advance(); // :: ? CLASS
-                attrType = typeStack_.empty() ? std::string() : typeStack_.back();
+                advance(); advance();                                   // :: ?
+                const std::string which = advance().text;               // CLASS / ROLE
+                attrType = which == "ROLE" ? enclosingRoleName() : typeStack_.empty() ? std::string() : typeStack_.back();
                 if (isOp(":") && peek().kind == Tok::Ident) {
                     advance(); std::string sm = advance().text;
                     if (sm == "D") attrSmiley = 1; else if (sm == "U") attrSmiley = 2;

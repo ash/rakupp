@@ -4839,6 +4839,10 @@ bool RxCursorCall::hasRule(const std::string& name) const {
     return gm->rules.count(name) || gm->protos.count(name);
 }
 
+long RxCursorCall::callBuiltin(const std::string& name, long pos) const {
+    return builtinRuleMatch(name, st->s, pos, (long)st->s.size());
+}
+
 bool RxCursorCall::callRule(const std::string& name, const std::string& args, long pos, ParseNode& out) {
     // Record under a private key, take the first completion (a method call
     // cannot be backtracked INTO, in Rakudo either), and lift the node out of

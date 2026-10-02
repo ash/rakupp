@@ -488,6 +488,13 @@ private:
     // `--> CArray[Str]` — a NativeCall return type keeps its element parameter
     std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
+    // the innermost enclosing ROLE (what ::?ROLE names), past any class or
+    // grammar declared inside it — "" outside every role
+    std::string enclosingRoleName() const {
+        for (size_t i = typeStack_.size(); i-- > 0; )
+            if (i < typeIsRole_.size() && typeIsRole_[i]) return typeStack_[i];
+        return "";
+    }
     size_t lastRegexDeclBody_ = (size_t)-1;   // the RegexLit that was a `token`/`regex`/`rule` body: it ends a statement as a `}` does
     size_t stmtStart_ = 0; // first token of the statement being parsed (see lastBlockClose_)
     bool matchOp(const std::string& s);

@@ -5418,7 +5418,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `$var` atoms in the pattern resolve here too — `.split(/$d+/)`,
         // `.comb(/$sep/)`, `.subst(/$old/, …)` all compile a raw regex source, and
         // without this pass they matched the literal text "$d".
-        std::string pat = rxInterpArrays(interpRegexPattern(args[rxIdx].s));
+        // A regex VALUE that outlived its scope (`sub f(@k) { /@k/ }`) resolves
+        // its variables where it was written first, as a smartmatch does.
+        std::string pat = args[rxIdx].s;
+        if (args[rxIdx].t == VT::Regex && args[rxIdx].ext() && args[rxIdx].hashKind.empty() &&
+            (pat.find('$') != std::string::npos || pat.find('@') != std::string::npos)) {
+            auto savedOuter = tctx_.cur;
+            tctx_.cur = std::static_pointer_cast<Env>(args[rxIdx].ext());
+            try { pat = rxInterpArrays(interpRegexPattern(pat)); }
+            catch (...) { tctx_.cur = savedOuter; throw; }
+            tctx_.cur = savedOuter;
+        }
+        pat = rxInterpArrays(interpRegexPattern(pat));
         // the replacement is the first positional (non-Pair) arg that isn't the regex
         Value* replArg = nullptr;
         for (size_t i = 0; i < args.size(); i++)
