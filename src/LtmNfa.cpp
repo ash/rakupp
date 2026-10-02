@@ -361,6 +361,15 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                         states_[from].edges.push_back({addPred(p), nxt});
                         return nxt;
                     }
+                    case 4: { // the built-in <ident>: <alpha> \w*
+                        int nxt = addState();
+                        states_[nxt].litDepth = litDepth;
+                        Pred a; a.kind = 'F'; a.lit = 'a';
+                        Pred w; w.kind = 'F'; w.lit = 'w';
+                        states_[from].edges.push_back({addPred(a), nxt});
+                        states_[nxt].edges.push_back({addPred(w), nxt});
+                        return nxt;
+                    }
                     default: break; // fall through to the lexical route
                 }
             }

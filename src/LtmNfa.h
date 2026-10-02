@@ -45,7 +45,8 @@ struct GrammarHooks;
 // `grammar` answers: 0 refuse (a model gap), 1 = out is a const Regex* whose
 // body to inline, 2 = the built-in <ws> (modeled as \s* — ranking-grade;
 // the commit engine enforces the real <!ww> gate), 3 = a single-char
-// built-in class, flag = its letter ('d','a','w',…).
+// built-in class, flag = its letter ('d','a','w',…), 4 = the built-in <ident>
+// (<alpha> \w*).
 struct LtmExpand {
     const GrammarHooks* hooks = nullptr;
     std::function<int(const std::string& name, const void*& regexOut, char& flagOut)> grammar;

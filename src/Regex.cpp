@@ -4864,7 +4864,12 @@ int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, c
     if (m.isWs) return 2;
     if (m.proto) return 0;             // nested proto: not unioned here (yet)
     if (m.isMethod) return 0;          // user code: never part of a declarative prefix
-    if (m.dynDep) return 0;            // caller-state-dependent body
+    // (a dynDep body — `:my`, a `$*` read — is NOT refused: dynDep only keeps
+    // the packrat cache off. The NFA reads the body's nodes, and each of those
+    // is already placed: `:my` is transparent to the prefix, as in Rakudo,
+    // `<?{ $*X }>` is code, an interpolated `$*X` ends the prefix. Refusing
+    // sent Cro's `arg` proto, whose by-name candidate opens with `:my`, to
+    // the probe, which ran by-pos's `|| <.panic>` on `:$m` — #116.)
     if (m.rule) {
         auto* rl = static_cast<const Rule*>(m.rule);
         if (!rl->params.empty() || !rl->lits.empty()) return 0;
@@ -4878,6 +4883,13 @@ int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, c
         return 1;
     }
     if (m.builtinClass.size() == 1) { flagOut = m.builtinClass[0]; return 3; }
+    // the two-letter "ad" names are no single class to the NFA, but both are
+    // modelable: <alnum> is exactly \w (<alpha> takes `_`), <ident> is
+    // <alpha> \w*. Left a gap, a proto with `':' '$' <identifier>` in one
+    // candidate fell back to the probe, which RAN its sibling's `|| <.panic>`
+    // (Cro templates: `<.f(:$m)>`, #116).
+    if (name == "alnum" && m.builtinClass == "ad") { flagOut = 'w'; return 3; }
+    if (name == "ident" && m.builtinClass == "ad") return 4;
     return 0;
 }
 

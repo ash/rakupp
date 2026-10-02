@@ -365,6 +365,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.isModuleDecl);
     F(io, n.classRw);
     F(io, n.howName);
+    F(io, n.isExport);
     if constexpr (IO::reading) {
         size_t k = io.count(); n.userTraits.clear(); n.userTraits.resize(k);
         for (auto& ut : n.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }

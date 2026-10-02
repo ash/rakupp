@@ -3908,6 +3908,10 @@ Interpreter::Interpreter() {
         }
         global_->define("%*ENV", envh);
     }
+    // `Cursor` is the setting's old name for Match: `has Cursor $.cursor` holds
+    // a Match (Cro::WebApp::Template's SyntaxError does), and `Cursor.^name`
+    // answers Match
+    global_->define("Cursor", Value::typeObj("Match"));
     // X::AdHoc — the exception `die "message"` produces (so $_/$! in CATCH answer .message/.^name)
     // — plus the handful of typed exceptions roast constructs with .new.
     {

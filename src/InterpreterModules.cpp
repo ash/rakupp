@@ -793,6 +793,22 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 // LEXICAL to the module (its routines close over them), and the
                 // program's own `$?DISTRIBUTION` stays undefined (cur-current-distribution.t)
                 if (k.size() > 2 && k[1] == '?' && std::strchr("$@%&", k[0])) continue;
+                // …nor a type the module declares and does NOT export: `role Node`
+                // inside `unit module YAMLish` is YAMLish::Node, reachable by that
+                // name alone. Published under its short name, it replaced the
+                // `Node` an earlier module exported, and Cro's template builder,
+                // loaded first, typed its variables with YAMLish's role (#116).
+                if (!name.empty() && !k.empty() && !std::strchr("$@%&", k[0]) &&
+                    kv.second.t == VT::Type && kv.second.s == name + "::" + k) {
+                    auto cit = classes_.find(kv.second.s);
+                    if (cit != classes_.end() && cit->second) {
+                        const ClassInfo* ci = cit->second.get();
+                        bool exp = ci->decl && ci->decl->isExport;
+                        for (auto& v : ci->roleVariants)
+                            if (v && v->decl && v->decl->isExport) exp = true;
+                        if (!exp) continue;
+                    }
+                }
                 if (k.size() > 1 && k[0] == '&') {
                     std::string bare = k.substr(1);
                     if (!exported.count(bare) && builtins_.count(bare)) continue; // withhold shadower
