@@ -459,7 +459,7 @@ shows no differences.
 ## Needs modules
 
 These live under [`modules/`](modules), one directory per example, because they
-depend on ecosystem modules installed with `zef`.
+depend on ecosystem modules installed with `rakupp install`.
 
 ### `modules/cro/`
 
@@ -470,7 +470,7 @@ lays one out: [`service.raku`](modules/cro/service.raku) with two routes,
 and restarts the service when a file changes:
 
 ```sh
-zef install cro
+rakupp install cro
 cd examples/modules/cro && cro run
 ```
 
