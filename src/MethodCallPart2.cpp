@@ -3157,6 +3157,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // LibraryMake does `$ldusr ~~ s/\%s//` to recover the bare flag.
             ch["ldusr"]    = Value::str(msvc ? "%s.lib" : "-l%s");
             ch["make"]     = Value::str(envOr("MAKE", makeProg));
+            // NativeCall's FFI library, as MoarVM spells it ('dyncall' or
+            // 'libffi'). NativeLibs reads it at load time to pick dlopen/dlsym
+            // over dlLoadLibrary/dlFindSymbol — missing, every DBDish driver
+            // load warned "uninitialized value of type Any in string context".
+            ch["nativecall_backend"] = Value::str("libffi");
             // `osname` is the OPERATING SYSTEM, not the VM: Rakudo's
             // `$*VM.config<osname>` is 'darwin'/'linux'/'mswin32', and modules
             // dispatch on it (NativeLibs' cannon-name test does). Answering the

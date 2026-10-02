@@ -33,6 +33,18 @@ struct ParseError : std::runtime_error {
 // afterwards. (`--exe`/`--aot` parse at BUILD time and never need this.)
 void rakuppRegisterModuleSource(const std::string& name, const char* src, size_t len);
 const std::string* rakuppEmbeddedModuleSource(const std::string& name);
+// The engine's SHADOW modules (rakulib/: NativeHelpers::Blob, ::CStruct,
+// ::Pointer), compiled into the CLI by cmake/EmbedTools.cmake. Registered,
+// they answer their names ahead of every search path and store — an installed
+// rakupp has no rakulib/ beside it, and without them the ecosystem originals
+// (which read MoarVM's memory layout) were loaded instead (#118). The module
+// graph `--exe` collects resolves them the same way, so a compiled program
+// carries the shadow too. Unregistered (an embedder of librakupp), the
+// binary-relative rakulib/ still serves.
+// pathOut is the name the module answers to as $?FILE and in backtraces:
+// `rakupp:rakulib/NativeHelpers/Blob.rakumod`, which no disk path can be.
+void rakuppRegisterShadowModule(const std::string& name, const char* src, size_t len);
+bool rakuppShadowModule(const std::string& name, std::string& pathOut, std::string& srcOut);
 // Resolve a module's SOURCE exactly as the loader does — the lib search path
 // first, then the installed CompUnit repositories. Defined in Interpreter.cpp;
 // the parser needs it to scan a `use`d module for operators and for the

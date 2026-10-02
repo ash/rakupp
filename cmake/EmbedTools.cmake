@@ -45,6 +45,11 @@ embed_file(BLOB_DOC      kDoc     "${SRC_DIR}/tools/doc.raku")
 embed_file(BLOB_UPGRADE  kUpgrade "${SRC_DIR}/tools/upgrade.raku")
 embed_file(BLOB_REFERENCE kRef    "${SRC_DIR}/docs/guide/REFERENCE.md")
 embed_file(BLOB_FEATURES kFeat    "${SRC_DIR}/docs/guide/FEATURES.md")
+# The engine's shadow modules: an installed rakupp has no rakulib/ beside it,
+# so it carries them (see rakuppRegisterShadowModule in src/Parser.h).
+embed_file(BLOB_SH_BLOB    kShBlob    "${SRC_DIR}/rakulib/NativeHelpers/Blob.rakumod")
+embed_file(BLOB_SH_CSTRUCT kShCStruct "${SRC_DIR}/rakulib/NativeHelpers/CStruct.rakumod")
+embed_file(BLOB_SH_POINTER kShPointer "${SRC_DIR}/rakulib/NativeHelpers/Pointer.rakumod")
 
 # The fixed half of the output. docToolSource() splices the two guides into
 # doc.raku's `my %DOCS;` declaration, so `rakupp doc` answers from a lone
@@ -87,22 +92,35 @@ std::string docToolSource() {
     s.replace(at, eol + 1 - at, fill);
     return s;
 }
+
+void registerShadowModules() {
+    rakuppRegisterShadowModule(\"NativeHelpers::Blob\",
+        reinterpret_cast<const char*>(kShBlob), kShBlobLen);
+    rakuppRegisterShadowModule(\"NativeHelpers::CStruct\",
+        reinterpret_cast<const char*>(kShCStruct), kShCStructLen);
+    rakuppRegisterShadowModule(\"NativeHelpers::Pointer\",
+        reinterpret_cast<const char*>(kShPointer), kShPointerLen);
+}
 } // namespace rakupp
 ")
 
 set(GENERATED "\
 // GENERATED at build time by cmake/EmbedTools.cmake from tools/install.raku,
-// tools/doc.raku, tools/upgrade.raku and docs/guide/{REFERENCE,FEATURES}.md —
-// DO NOT EDIT, and do not commit: this file lives in the build tree so those
-// five stay the only copy of their own contents.
+// tools/doc.raku, tools/upgrade.raku, docs/guide/{REFERENCE,FEATURES}.md and
+// rakulib/NativeHelpers/*.rakumod — DO NOT EDIT, and do not commit: this file
+// lives in the build tree so those stay the only copy of their own contents.
 #include \"EmbeddedTools.h\"
 #include <cstddef>
 namespace rakupp {
+void rakuppRegisterShadowModule(const std::string& name, const char* src, size_t len);
 ${BLOB_INSTALL}
 ${BLOB_DOC}
 ${BLOB_UPGRADE}
 ${BLOB_REFERENCE}
 ${BLOB_FEATURES}
+${BLOB_SH_BLOB}
+${BLOB_SH_CSTRUCT}
+${BLOB_SH_POINTER}
 ${EPILOGUE}")
 
 # copy_if_different, like BuildInfo.cmake: touching a guide without changing it

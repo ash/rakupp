@@ -2039,6 +2039,7 @@ static std::string envOptRefused(const std::vector<std::string>& toks) {
 
 int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
+    rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
     std::string exePath = selfExePath(argv[0]); // resolve the real binary (argv[0] may be a bare PATH name)
 #ifndef _WIN32
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }

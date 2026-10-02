@@ -186,6 +186,9 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/tools/upgrade.raku"
           "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/REFERENCE.md"
           "${CMAKE_CURRENT_SOURCE_DIR}/docs/guide/FEATURES.md"
+          "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/NativeHelpers/Blob.rakumod"
+          "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/NativeHelpers/CStruct.rakumod"
+          "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/NativeHelpers/Pointer.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
   COMMENT "Embedding the install, doc and upgrade tools"
   VERBATIM)

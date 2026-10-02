@@ -1156,7 +1156,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         auto prog = std::make_shared<Program>();
         std::string finish;
         double t0 = traceLoad ? nowMs() : 0;
-        std::string cpath = precompEnabled() ? precompPath(srcPath, libPaths_) : std::string();
+        std::string cpath = precompEnabled() && srcPath.rfind("rakupp:", 0) != 0
+                          ? precompPath(srcPath, libPaths_) : std::string();
         bool cached = false;
         if (!cpath.empty()) {
             std::string blob;
@@ -1273,6 +1274,19 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     // MoarVM's REPR memory layout by design and cannot run here, so even the
     // dist's OWN suite — which `rakupp test` runs with the dist's lib in
     // front — must exercise the shadow, which keeps the same surface.
+    // The copy compiled into this binary wins over the rakulib/ beside it: an
+    // installed rakupp has no rakulib/ at all, and a checkout's is the same
+    // text the build embedded. Not precompiled — the path is not a file, and
+    // three small modules parse in well under a millisecond.
+    {
+        std::string shPath, shSrc;
+        if (rakuppShadowModule(name, shPath, shSrc)) {
+            if (traceLoad) fprintf(stderr, "[Load] %s <- the shadow compiled into this binary\n", name.c_str());
+            if (pinnedInstall_ && pinnedInstall_->name == name) pinnedInstall_.reset();
+            loadSource(shSrc, shPath);
+            return;
+        }
+    }
     // A store's `.need` of one particular distribution (see the CURI arm):
     // that dist's source, whatever else the search path holds
     if (pinnedInstall_ && pinnedInstall_->name == name) {
@@ -1306,6 +1320,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         }
         searchOrder.insert(searchOrder.begin(), repoDirs.begin(), repoDirs.end());
     }
+    // No shadow compiled in (an embedder of librakupp): the rakulib/ on disk
     if (!shadowLibDir_.empty() && isShadowedModule(name)) {
         searchOrder.erase(std::remove(searchOrder.begin(), searchOrder.end(), shadowLibDir_),
                           searchOrder.end());

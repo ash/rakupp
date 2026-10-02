@@ -4,7 +4,7 @@
 // own — copied into a container, unpacked as a bare rakupp.exe, installed by a
 // route that dropped libexec/ — runs the same tools as a checkout.
 //
-// All three are defined in a translation unit cmake/EmbedTools.cmake writes
+// They are defined in a translation unit cmake/EmbedTools.cmake writes
 // into the BUILD tree at build time, from the ordinary files in tools/ —
 // nothing generated is checked in, and those files stay the only copy of their
 // own contents.
@@ -22,5 +22,6 @@ namespace rakupp {
 std::string installerSource();  // tools/install.raku
 std::string docToolSource();      // tools/doc.raku, with the guides spliced in
 std::string upgradeToolSource();  // tools/upgrade.raku, the ENGINE updater
+void registerShadowModules();     // rakulib/NativeHelpers/*, the engine's shadows
 
 } // namespace rakupp

@@ -1165,27 +1165,18 @@ sub run-dist-tests(%e, $root, Str $prefix) {
     True
 }
 
-# Does rakupp already ship every module this dist provides? The shadows live in
-# `rakulib/` beside the binary (a checkout) or under `libexec/rakupp/` (an
-# installed prefix) — the same two places the interpreter looks.
-sub rakulib-dirs() {
-    state @d = do {
-        my $bin = $*EXECUTABLE.parent;
-        (($bin.add('../rakulib'), $bin.add('../libexec/rakupp/rakulib'),
-          $*CWD.add('rakulib')).grep(*.d).map(*.absolute)).unique;
-    }
-}
+# Does rakupp already ship this dist? The shadows (rakulib/NativeHelpers/*) are
+# compiled into the binary this installer runs in (cmake/EmbedTools.cmake), so
+# the answer no longer depends on a rakulib/ beside it — an installed rakupp
+# has none, and used to fetch the MoarVM-only original and fail its suite.
+# Keep in step with Interpreter::isShadowedModule.
+constant SHADOWED = set <NativeHelpers::Blob NativeHelpers::CStruct NativeHelpers::Pointer>;
 sub shadowed-by-rakulib(%e --> Bool) {
     # The DIST's own name is the question: NativeHelpers::Blob also provides
     # `MoarVM::Guts::REPRs`, which reads MoarVM's object headers and exists for
     # no other purpose — shadowing that would be a lie, and nothing that runs
     # here can want it.
-    my $name = %e<name> // '';
-    return False unless $name;
-    my $rel = $name.split('::').join('/');
-    ?rakulib-dirs().first({
-        (.IO.add("$rel.rakumod").e || .IO.add("$rel.pm6").e || .IO.add("$rel.raku").e)
-    })
+    ?SHADOWED{%e<name> // ''}
 }
 
 sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
@@ -2095,7 +2086,9 @@ sub MAIN(
         if $show-plan;
     for @plan -> %e {
         my $known = %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)};
-        say "  {%e<dist> // %e<name>}   {archive-url(%e)}{$known ?? '   (already installed)' !! ''}"
+        my $note = shadowed-by-rakulib(%e) ?? '   (provided by rakupp, not fetched)'
+                !! $known ?? '   (already installed)' !! '';
+        say "  {%e<dist> // %e<name>}   {archive-url(%e)}$note"
             if $show-plan;
     }
     for %notes.sort -> $n {

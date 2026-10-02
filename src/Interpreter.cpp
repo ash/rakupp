@@ -7180,6 +7180,7 @@ static bool findModuleSourceFor(const std::string& name,
     static const char* exts6e[]  = {".rakumod", ".pm6"};
     const char* const* exts = sixE ? exts6e : extsAll;
     const size_t nExts = sixE ? 2 : 3;
+    if (rakuppShadowModule(name, pathOut, srcOut)) return true;   // ahead of everything, as the loader
     for (auto& entry : searchPath) {
         std::string storePre;
         if (repoSpecStore(entry, storePre)) continue; // an inst# store is not a directory
@@ -7249,6 +7250,24 @@ bool rakuppFindModuleSource(const std::string& name,
                             const std::vector<std::string>& searchPath,
                             std::string& pathOut, std::string& srcOut, bool sixE) {
     return findModuleSourceFor(name, searchPath, pathOut, srcOut, sixE);
+}
+
+static std::map<std::string, std::string>& shadowModuleSources() {
+    static std::map<std::string, std::string> m;
+    return m;
+}
+void rakuppRegisterShadowModule(const std::string& name, const char* src, size_t len) {
+    shadowModuleSources()[name] = std::string(src, len);
+}
+bool rakuppShadowModule(const std::string& name, std::string& pathOut, std::string& srcOut) {
+    auto& m = shadowModuleSources();
+    auto it = m.find(name);
+    if (it == m.end()) return false;
+    std::string rel = name;
+    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
+    pathOut = "rakupp:rakulib/" + rel + ".rakumod";
+    srcOut = it->second;
+    return true;
 }
 
 // Every module name a tree `use`s, at any depth — a `use` can sit inside a
