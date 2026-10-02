@@ -82,7 +82,7 @@ for @files -> $f {
             @bad.push("BROKEN FILE    {$f.relative($ROOT)} -> $tgt");
             next;
         }
-        if $frag && %anchors{$target.absolute}:exists && $frag !(elem) %anchors{$target.absolute} {
+        if $frag && (%anchors{$target.absolute}:exists) && $frag !(elem) %anchors{$target.absolute} {
             @bad.push("BROKEN ANCHOR  {$f.relative($ROOT)} -> $tgt");
         }
     }

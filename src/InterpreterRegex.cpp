@@ -2247,6 +2247,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         };
         bool hadSlash = tctx_.cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
         setMatchVar(m);
+        // `self` in a rule's code is the cursor the rule was called with — it
+        // answers `.orig`, and `.pos`/`.from` where the rule began (`:my $o =
+        // self.orig;`, issue #109). Only where nothing else is `self`; gone
+        // again on the way out.
+        struct SelfGuard {
+            Env* e = nullptr;
+            ~SelfGuard() { if (e) { e->undefine("self"); e->selfSlot = nullptr; } }
+        } selfGuard;
+        if (!tctx_.cur->findSelf()) {
+            tctx_.cur->define("self", subMatch(from, from));
+            selfGuard.e = tctx_.cur.get();
+        }
         for (auto& cs : capSlots) overlay(cs.first, cs.second);
         for (auto& p : params) {
             // A rule parameter with NO textual value (the entry rule's, when the

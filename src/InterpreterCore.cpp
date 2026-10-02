@@ -1619,12 +1619,23 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     auto inScope = [&](void (Interpreter::*ph2)(const std::vector<StmtPtr>&)) {
         auto saved = tc.cur; tc.cur = scope; try { (this->*ph2)(body->stmts); } catch (...) { tc.cur = saved; throw; } tc.cur = saved;
     };
+    // …and `next` in it ends the first iteration before the body: NEXT and
+    // LAST still run as for any other `next` (Rakudo), handled below once
+    // the loop frame is in place.
+    bool firstNext = false;
     if (isFirst && hasFirst) { // FIRST {…}: once, before the first iteration; `last` in it breaks the loop
-        try { inScope(&Interpreter::runFirstPhasers); }
+        try {
+            inScope(&Interpreter::runFirstPhasers);
+            if (tc.loopCtl == 1) { tc.loopCtl = 0; firstNext = true; }
+        }
         catch (LastEx& e) {
             if (!e.label.empty() && e.label != label) throw;
             if (hasLast) runLoopLast(body, scope); // the loop ends here, so its LAST runs (Rakudo)
             return false;
+        }
+        catch (NextEx& e) {
+            if (!e.label.empty() && e.label != label) throw;
+            firstNext = true;
         }
     }
     bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
@@ -1679,6 +1690,17 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
         // restore both frames; clear a when-flag an exception left unconsumed
         ~LoopGuard() { t.curLoopFrame = lf; t.curGivenFrame = gf; }
     } lguard{tc, savedLoopFrame, savedGivenFrame};
+    if (firstNext) {
+        if (hasNext) {
+            try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+            catch (LastEx& e) {
+                if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                if (hasLast) runLoopLast(body, scope);
+                suppressLoopFirst_ = savedSF; return false;
+            }
+        }
+        runLast(); suppressLoopFirst_ = savedSF; return true;
+    }
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
               if (tc.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
@@ -8577,6 +8599,13 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             // (slurpy-is-rw.t)
             if ((p.isRaw || p.isRw) && p.sigil == '@' && !p.name.empty() && pi < rwArgs->size())
                 bindSlurpyContainers(p, env, rwArgs, pi);
+            // …and a plain `*@l` holds a VALUE with no container where the
+            // argument had none: `sub f(*@l) { @l[0] ~= '!' }; f('a')` is
+            // "Cannot modify an immutable Str" (issue #109). A variable's
+            // value, or one flattened out of a list, sits in a fresh container.
+            else if (p.sigil == '@' && p.slurpyKind == 'f' && !p.isCopy && !p.name.empty() &&
+                     pi < rwArgs->size())
+                markSlurpyLiterals(p, env, rwArgs, pi);
             break;
         }
         if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
@@ -10928,11 +10957,15 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 for (ClassInfo* ci = base->obj()->cls.get(); ci && !isAttr; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
                         if (at.name == mcName) { isAttr = true; break; }
-                if (!isAttr && base->obj()->cls->findMethod(mcName)) {
+                // …and a PRIVATE method (`self!rec($k)<n>++`), which is
+                // filed under `!rec` — looked up bare it fell to the phantom
+                // attribute too, and the write went nowhere (issue #104)
+                const std::string callName = mc->bang ? "!" + mcName : mcName;
+                if (!isAttr && base->obj()->cls->findMethod(callName)) {
                     ValueList as;
                     for (auto& a : mc->args) as.push_back(eval(a.get()));
                     static thread_local Value methHold;
-                    methHold = methodCall(*base, mcName, as);
+                    methHold = methodCall(*base, callName, as);
                     if (methHold.t == VT::Array || methHold.t == VT::Hash || methHold.t == VT::Object)
                         return &methHold;
                 }
@@ -24339,18 +24372,38 @@ Value Interpreter::evalIndex(Index* idx) {
     // `@a[0..1, 2]` is ((3, 7), 9) — each iterable part of a comma subscript
     // answers a list of its own. Decided syntactically, so nothing is
     // evaluated twice: a parenthesised list, a finite range or an @-variable.
-    // `@a[**]` — the HyperWhatever slice: every leaf, however deep
+    // `@a[**]` — the HyperWhatever slice: every leaf, however deep. Any
+    // Iterable is descended, itemized or not — a Range or a Seq as well — and
+    // the base may be any term: `EVAL($code)[**]`, `f()[**]`, `(1..3)[**]`.
+    // Only a variable that is not a list goes on to the general path; any
+    // other base is evaluated here, once, and answered here.
     if (!idx->isHash && idx->index && idx->index->kind == NK::Whatever &&
-        static_cast<WhateverExpr*>(idx->index.get())->hyper && idx->adverb.empty() && idx->base &&
-        idx->base->kind == NK::VarExpr) {
+        static_cast<WhateverExpr*>(idx->index.get())->hyper && idx->adverb.empty() && idx->base) {
         Value base = eval(idx->base.get());
-        if (base.t == VT::Array && base.arr()) {
+        bool isVar = idx->base->kind == NK::VarExpr;
+        bool listy = (base.t == VT::Array && base.arr()) || base.t == VT::Range;
+        if (listy || (!isVar && base.t == VT::Hash)) {
             Value out = Value::array(); out.isList = true;
             std::function<void(const Value&)> walk = [&](const Value& v) {
-                if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) walk(e); }
+                if (v.t == VT::Array && v.arr()) { forceLazy(v); for (auto& e : *v.arr()) walk(e); }
+                else if (v.t == VT::Range) {
+                    Value l = methodCall(v, "list", ValueList{});
+                    if (l.t == VT::Array && l.arr()) for (auto& e : *l.arr()) walk(e);
+                    else out.arr()->push_back(v);
+                }
                 else out.arr()->push_back(v);
             };
-            for (auto& e : *base.arr()) walk(e);
+            if (base.t == VT::Array) walk(base);
+            else if (base.t == VT::Range) walk(base);
+            else {
+                Value l = methodCall(base, "list", ValueList{});
+                if (l.t == VT::Array && l.arr()) for (auto& e : *l.arr()) out.arr()->push_back(e);
+            }
+            return out;
+        }
+        if (!isVar) {
+            Value out = Value::array(); out.isList = true;
+            out.arr()->push_back(base);
             return out;
         }
     }

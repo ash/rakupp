@@ -1695,7 +1695,15 @@ bool Parser::attachSpacedAdverb(ExprPtr& lhs) {
             return true;
         case NK::Unary: {
             auto* u = static_cast<Unary*>(lhs.get());
-            if (u->postfix || !userPrefix_.count(u->op)) return false;
+            if (u->postfix) return false;
+            if (!userPrefix_.count(u->op)) {   // `-@a.elems :foo`: the built-in prefix's
+                if (!adverbTakingOp(u)) return false;
+                std::vector<ExprPtr> named;
+                const std::string text = ":" + peek().text;
+                named.push_back(parseColonPair());
+                giveAdverbToOperator(lhs, std::move(named), text);
+                return true;
+            }
             auto c = std::make_unique<Call>();
             c->name = "prefix:<" + u->op + ">";
             c->args.push_back(std::move(u->operand));
@@ -1703,9 +1711,18 @@ bool Parser::attachSpacedAdverb(ExprPtr& lhs) {
             lhs = std::move(c);
             return true;
         }
-        case NK::Binary: {
+        case NK::Binary: case NK::Ternary: case NK::ChainExpr: case NK::Range: {
+            // `1 || 2 :foo`, `1 + 2 :foo` — a built-in operator tighter than
+            // item assignment takes it too (refusing it, or no candidate)
+            if (lhs->kind != NK::Binary || !userInfix_.count(static_cast<Binary*>(lhs.get())->op)) {
+                if (!adverbTakingOp(lhs.get())) return false;
+                std::vector<ExprPtr> named;
+                const std::string text = ":" + peek().text;
+                named.push_back(parseColonPair());
+                giveAdverbToOperator(lhs, std::move(named), text);
+                return true;
+            }
             auto* b = static_cast<Binary*>(lhs.get());
-            if (!userInfix_.count(b->op)) return false;
             auto c = std::make_unique<Call>();
             c->name = "infix:<" + b->op + ">";
             c->args.push_back(std::move(b->lhs));
@@ -1718,9 +1735,198 @@ bool Parser::attachSpacedAdverb(ExprPtr& lhs) {
     }
 }
 
+// `0 || %h<k>:exists` — a subscript adverb written at the end of an operand
+// goes to the LOOSEST operator tighter than item assignment that the operand
+// belongs to, not to the subscript (Rakudo). The short-circuit, chaining and
+// ternary operators and `xx` cannot take one, which is a compile error there;
+// any other operator is CALLED with it as a named argument — a user's infix
+// receives it, a built-in has no candidate that takes it. Parenthesising the
+// subscript, `0 || (%h<k>:exists)`, keeps the adverb where it was written.
+bool Parser::adverbToOperator(ExprPtr& lhs) {
+    const Expr* ix = subAdverbIx_;
+    // the subscript itself, alone: an enclosing operator may still claim it
+    if (!lhs || !ix || lhs.get() == ix) return false;
+    subAdverbEnd_ = (size_t)-1; subAdverbIx_ = nullptr;
+    // The adverb must END the operator's operand: in `1 || foo %h<k>:exists`
+    // the listop's own argument list took it.
+    if (!adverbTakingOp(lhs.get()) || !adverbEnds(lhs.get(), ix)) return false;
+    auto* idx = const_cast<Index*>(static_cast<const Index*>(ix));
+    const std::string adv = idx->adverb;
+    // the adverb leaves the subscript and becomes the operator's named argument(s)
+    std::vector<ExprPtr> named;
+    size_t at = 0;
+    while (at <= adv.size()) {
+        size_t c = adv.find(':', at);
+        std::string part = adv.substr(at, c == std::string::npos ? std::string::npos : c - at);
+        at = c == std::string::npos ? adv.size() + 1 : c + 1;
+        if (part.empty()) continue;
+        auto pe = std::make_unique<PairExpr>();
+        pe->colonForm = true;
+        size_t q = part.find('?');
+        if (part[0] == '$') { pe->key = part.substr(1); pe->value = std::make_unique<VarExpr>(part); }
+        else if (q != std::string::npos) { pe->key = part.substr(0, q); pe->value = std::make_unique<VarExpr>(part.substr(q + 1)); }
+        else if (part[0] == '!') { pe->key = part.substr(1); pe->value = std::make_unique<BoolLit>(false); }
+        else { pe->key = part; pe->value = std::make_unique<BoolLit>(true); }
+        named.push_back(std::move(pe));
+    }
+    giveAdverbToOperator(lhs, std::move(named), ":" + adv);
+    idx->adverb.clear();
+    return true;
+}
+
+bool Parser::adverbEnds(const Expr* e, const Expr* ix) const {
+    bool ops = true;   // operators first; once off them, only the postfix chain
+    while (e && e != ix) {
+        if (ops && adverbTakingOp(e)) {
+            switch (e->kind) {
+                case NK::Binary:    e = static_cast<const Binary*>(e)->rhs.get(); continue;
+                case NK::ChainExpr: { auto& o = static_cast<const ChainExpr*>(e)->operands;
+                                      e = o.empty() ? nullptr : o.back().get(); continue; }
+                case NK::Ternary:   e = static_cast<const Ternary*>(e)->els.get(); continue;
+                case NK::Range:     e = static_cast<const RangeExpr*>(e)->to.get(); continue;
+                case NK::Unary:     e = static_cast<const Unary*>(e)->operand.get(); continue;
+                case NK::Call:      { auto& a = static_cast<const Call*>(e)->args;
+                                      e = a.empty() ? nullptr : a.back().get(); continue; }
+                default: return false;
+            }
+        }
+        ops = false;
+        if (e->kind == NK::MethodCall) e = static_cast<const MethodCall*>(e)->inv.get();
+        else if (e->kind == NK::Index) e = static_cast<const Index*>(e)->base.get();
+        else return false;
+    }
+    return e == ix;
+}
+
+// Is `e` an operator an adverb after it is given to — anything tighter than
+// item assignment, symbolic prefixes included (`-%h<k>:exists`); a user infix
+// arrives already as its call.
+bool Parser::adverbTakingOp(const Expr* e) const {
+    switch (e->kind) {
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            return !b->parenned && infixBpOf(b->op) > BP_ASSIGN;
+        }
+        case NK::ChainExpr: case NK::Ternary: case NK::Range: return true;
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            return !u->postfix && !u->op.empty() && !ascii::isalpha((unsigned char)u->op[0]) &&
+                   u->op != "|" && u->op != "||";
+        }
+        case NK::Call: {
+            auto* c = static_cast<const Call*>(e);
+            if (c->callee || c->args.size() != 2 || c->name.rfind("infix:<", 0) != 0 || c->name.back() != '>')
+                return false;
+            auto it = userInfix_.find(c->name.substr(7, c->name.size() - 8));
+            return it != userInfix_.end() && it->second > BP_ASSIGN;
+        }
+        default: return false;
+    }
+}
+
+// Hand the adverb `named` to the operator at the top of `lhs`: refused at
+// compile time by those that cannot take one, a call with it otherwise.
+void Parser::giveAdverbToOperator(ExprPtr& lhs, std::vector<ExprPtr> named, const std::string& advText) {
+    const int line = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+    // `&infix:«<»`: a name holding an angle is quoted with the French ones
+    auto opRef = [](const std::string& cat, const std::string& op) {
+        return op.find_first_of("<>") == std::string::npos ? cat + ":<" + op + ">"
+                                                           : cat + ":\xC2\xAB" + op + "\xC2\xBB";
+    };
+    // The same precedence again straight after it, `1 + %h<k>:exists + 0`:
+    // which of the two operators is it for? Rakudo will not guess.
+    std::string names;
+    for (auto& n : named) names += (names.empty() ? ":" : ", :") + static_cast<PairExpr*>(n.get())->key;
+    bool ambiguous = false;
+    {
+        int bp = -1;
+        if (lhs->kind == NK::Binary) bp = infixBpOf(static_cast<Binary*>(lhs.get())->op);
+        else if (lhs->kind == NK::ChainExpr) bp = BP_COMPARE;
+        else if (lhs->kind == NK::Call) {
+            const std::string& nm = static_cast<Call*>(lhs.get())->name;
+            bp = infixBpOf(nm.substr(7, nm.size() - 8));
+        }
+        else if (lhs->kind == NK::Range) bp = BP_RANGE;
+        if (bp > 0 && (cur().kind == Tok::Op || cur().kind == Tok::Ident) && cur().spaceBefore) {
+            InfixInfo in = classifyInfix(cur());
+            ambiguous = in.valid && in.lbp == bp;
+        }
+    }
+    const std::string ambMsg = "Cannot determine the destination for named argument " + names +
+                               ": it follows an operand of two operators of the same precedence; "
+                               "parenthesise the call it is for";
+    auto refuse = [&](const std::string& what) {
+        const std::string msg = "You can't adverb " + what + "; to apply " + advText +
+                                " to the subscript, put it in parentheses";
+        // …and when it is ambiguous as well, Rakudo reports the two together
+        if (ambiguous)
+            throw ParseError(msg + "\n" + ambMsg, line, "X::Comp::Group",
+                             {{"sorrow", "X::Syntax::Adverb"}, {"sorrow-msg", msg}, {"sorrow-what", what},
+                              {"panic", "X::Syntax::AmbiguousAdverb"}, {"panic-msg", ambMsg}});
+        throw ParseError(msg, line, "X::Syntax::Adverb", {{"what", what}});
+    };
+    if (lhs->kind == NK::Ternary) refuse("?? !!");
+    if (lhs->kind == NK::ChainExpr) refuse("&" + opRef("infix", static_cast<ChainExpr*>(lhs.get())->ops.back()));
+    if (lhs->kind == NK::Binary) {
+        const std::string& op = static_cast<Binary*>(lhs.get())->op;
+        static const std::unordered_set<std::string> kRefused = {
+            "||", "&&", "//", "^^", "xx", "~~", "!~~", "==", "!=", "<", ">", "<=", ">=",
+            "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv", "===", "!===", "=:=", "!=:=",
+            "=~=", "\xE2\x89\x85", "before", "after", "!==", "!eq",
+        };
+        if (!userInfix_.count(op) &&
+            (kRefused.count(op) || (infixBpOf(op) == BP_COMPARE && op != "cmp" && op != "<=>" && op != "leg" &&
+                                    op != "unicmp" && op != "coll" && op != "but" && op != "does")))
+            refuse("&" + opRef("infix", op));
+    }
+    if (ambiguous) throw ParseError(ambMsg, line, "X::Syntax::AmbiguousAdverb", {{"adverb", names}});
+    if (lhs->kind == NK::Call) {            // a user infix: one more argument
+        for (auto& n : named) static_cast<Call*>(lhs.get())->args.push_back(std::move(n));
+        return;
+    }
+    std::string opName, sym;
+    bool user = false;
+    if (lhs->kind == NK::Binary) {
+        sym = static_cast<Binary*>(lhs.get())->op;
+        user = userInfix_.count(sym) > 0;
+        opName = user ? "infix:<" + sym + ">" : opRef("infix", sym);
+    }
+    else if (lhs->kind == NK::Range) {
+        auto* r = static_cast<RangeExpr*>(lhs.get());
+        opName = std::string("infix:<") + (r->exFrom ? "^" : "") + ".." + (r->exTo ? "^" : "") + ">";
+    }
+    else {
+        sym = static_cast<Unary*>(lhs.get())->op;
+        user = userPrefix_.count(sym) > 0;
+        opName = user ? "prefix:<" + sym + ">" : opRef("prefix", sym);
+    }
+    auto c = std::make_unique<Call>();
+    // a built-in operator has no candidate taking it: the call is refused when
+    // it is MADE (X::Multi::NoMatch), its operands evaluated first
+    c->name = user ? opName : "__adverb-nomatch";
+    if (!user) c->args.push_back(std::make_unique<StrLit>(opName));
+    switch (lhs->kind) {
+        case NK::Binary: { auto* b = static_cast<Binary*>(lhs.get());
+                           c->args.push_back(std::move(b->lhs)); c->args.push_back(std::move(b->rhs)); break; }
+        case NK::Range:  { auto* r = static_cast<RangeExpr*>(lhs.get());
+                           c->args.push_back(std::move(r->from)); c->args.push_back(std::move(r->to)); break; }
+        default:         c->args.push_back(std::move(static_cast<Unary*>(lhs.get())->operand)); break;
+    }
+    for (auto& n : named) c->args.push_back(std::move(n));
+    lhs = std::move(c);
+}
+
 ExprPtr Parser::parseExpr(int minbp) {
+    struct MinbpScope { int& r; int s; ~MinbpScope() { r = s; } } minbpScope{exprMinbp_, exprMinbp_};
+    exprMinbp_ = minbp;
     ExprPtr lhs = parsePrefix();
     for (;;) {
+        exprMinbp_ = minbp;   // (a nested parse in the operand reset it on its way out)
+        // An operand of a tight operator that ENDS in a subscript adverb is done
+        // there: the adverb goes to that operator (Rakudo applies it at the point
+        // it is seen), so `1 + %h<k>:exists * 2` is `(1 + %h<k> :exists) * 2`.
+        if (minbp > BP_ASSIGN && subAdverbIx_ && subAdverbEnd_ == pos_ && adverbEnds(lhs.get(), subAdverbIx_))
+            break;
         // inside a user circumfix its CLOSER ends the expression, even when the
         // same spelling is also a declared infix (`@ 5 @` next to `infix:<@>`)
         if (!circumfixClosers_.empty() && cur().text == circumfixClosers_.back() &&
@@ -1733,6 +1939,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             lhs = parsePostfix(std::move(lhs));
             continue;
         }
+        if (minbp <= BP_ASSIGN && subAdverbEnd_ == pos_ && adverbToOperator(lhs)) continue;
         if (minbp <= BP_ASSIGN && attachSpacedAdverb(lhs)) continue;
         // 6.c's `≼`/`≽` and `(<+)`/`(>+)` ARE the subset/superset tests there;
         // later revisions keep the spelling only to say it was removed
@@ -2479,8 +2686,15 @@ ExprPtr Parser::parseExpr(int minbp) {
             while (true) {
                 InfixInfo ci = classifyInfix(cur());
                 if (!ci.valid || ci.lbp != BP_COMPARE || !chainOps.count(ci.op)) break;
+                // an operand ending in a subscript adverb ends the chain there:
+                // the adverb is the comparison's (see adverbToOperator)
+                // (only a RIGHT operand: in `%h<k>:exists == 1` no operator is on its left)
+                if (!chain->ops.empty() && subAdverbIx_ && subAdverbEnd_ == pos_ &&
+                    adverbEnds(chain->operands.back().get(), subAdverbIx_))
+                    break;
                 advance();
                 chain->ops.push_back(ci.op);
+                infixRhsPos_ = pos_;   // a term is REQUIRED here too: `1 >;`
                 chain->operands.push_back(parseExpr(BP_COMPARE + 1));
             }
             if (chain->ops.size() == 1) {
@@ -2986,7 +3200,12 @@ ExprPtr Parser::parsePrefix(bool tight) {
             // `%!ref-count{$_} > 1 || ? .obj-num`.
             u->op = o;
             const bool parenOperand = isKind(Tok::LParen);
-            u->operand = parsePrefix(!(cur().kind == Tok::Op && cur().text == "."));
+            {   // the operand is a TIGHT one: a spaced adverb after it is the prefix's
+                // (`-@a.elems :foo`), not its method call's — see parsePostfix
+                struct MinbpScope { int& r; int s; ~MinbpScope() { r = s; } } scope{exprMinbp_, exprMinbp_};
+                exprMinbp_ = BP_PREFIX;
+                u->operand = parsePrefix(!(cur().kind == Tok::Op && cur().text == "."));
+            }
             if (o == "?" || o == "!") markFatalExempt(u->operand.get());
             // `++$x++` — the prefix and postfix autoincrements do not associate
             if ((o == "++" || o == "--") && !parenOperand && u->operand &&
@@ -3315,6 +3534,9 @@ bool Parser::prefixOpCallAt(size_t i) const {
 
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     bool hyperNext = false;
+    // A postfix written after a subscript adverb (`%h<k>:exists.so`) does not
+    // move the adverb: whichever operator it belongs to, it still ends there.
+    size_t advCarry = (size_t)-1;
     // A zen slice — `$x<>`, `$x[]`, `$x{}` and their dotted spellings — DECONTAINERISES.
     // It was a plain no-op here, which is right for `@a<>` and wrong for a Scalar:
     // `for $aoa<>` then walked the ONE item the Scalar is instead of the elements it
@@ -3341,6 +3563,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
         return u;
     };
     for (;;) {
+        if (advCarry != (size_t)-1 && pos_ != advCarry && subAdverbIx_ && subAdverbEnd_ == advCarry)
+            subAdverbEnd_ = pos_;
+        advCarry = subAdverbIx_ && subAdverbEnd_ == pos_ ? pos_ : (size_t)-1;
         // A block-closing `}` at end of line ends the statement — for a POSTFIX
         // continuation just as for an infix one. `@a .= sort: { .chars }` followed
         // by a line starting `.sum given …` is two statements; reading the `.sum`
@@ -3609,6 +3834,7 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             auto* ix = static_cast<Index*>(base.get());
             // stacked adverbs (`:exists:kv:$delete`) accumulate ':'-joined
             ix->adverb += (ix->adverb.empty() ? "" : ":") + adv;
+            subAdverbEnd_ = pos_; subAdverbIx_ = ix;
             continue;
         }
         if (isKind(Tok::LBracket) && !cur().spaceBefore) {
@@ -4181,7 +4407,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             mc->allMode = allMode;
             mc->meta = metaCall;
             mc->mutate = mutate;
-            mc->hyper = hyperNext; hyperNext = false;
+            // `».^name` is the META-method of the list itself, once — Rakudo
+            // answers `List`, not a name per element
+            mc->hyper = hyperNext && !metaCall; hyperNext = false;
             bool indirectName = false;
             if ((cur().kind == Tok::Var || cur().kind == Tok::Op) && cur().text == "$" &&
                 peek().kind == Tok::LParen && !peek().spaceBefore) {
@@ -4248,6 +4476,9 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 throw ParseError("Cannot give arguments to " + mc->method, cur().line,
                                  "X::Syntax::Argument::MOPMacro", {{"macro", mc->method}});
             if (isKind(Tok::LParen) && (!cur().spaceBefore || (slang_ && slang_->spacedMethodop))) { advance(); mc->args = parseCallArgs(); takeTrailingAdverbs(mc->args); } // .method(args) — tight only; `.doit ()` is Confused (use unspace) — unless Slang::Tuxic's methodop is in force
+            // …but a SPACED one in the operand of a tight operator belongs to
+            // that operator (`1 + @a.elems :foo` is `+`'s), as Rakudo reads it
+            else if (isOp(":") && cur().spaceBefore && exprMinbp_ > BP_ASSIGN && spacedAdverbAhead(false)) {}
             // a DETACHED adverb — `$sth.row :hash` — the colonpair (ident TIGHT
             // after the colon) is the call's named argument. It must be decided
             // BEFORE the colon-args form below, which was swallowing
@@ -9360,14 +9591,36 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         // demote it to an operator token and let the end-glue rule below split it.
         if (close == ">" && cur().kind == Tok::FatArrow && cur().text == "=>")
             toks_[pos_].kind = Tok::Op;
-        if (close == ">" && cur().kind == Tok::Op && cur().text == "<") depth++;
-        else if (close == ">" && depth > 0 && cur().kind == Tok::Op && cur().text == ">") depth--;
+        // Angles nest by CHARACTER, as Rakudo counts them: `<a <=> b>` holds
+        // the word `<=>`, `<a <<b>> c>` the word `<<b>>`, and the first `>`
+        // with nothing open closes the list wherever it stands — `< a >= b >`
+        // is the list `<a>` followed by `= b >`, a syntax error there too.
+        if (close == ">" && cur().kind == Tok::Op && cur().text.find_first_of("<>") != std::string::npos) {
+            const std::string& tx = cur().text;
+            int d = depth;
+            size_t ci = std::string::npos;
+            for (size_t k = 0; k < tx.size(); k++) {
+                if (tx[k] == '<') d++;
+                else if (tx[k] == '>') { if (d == 0) { ci = k; break; } d--; }
+            }
+            if (ci == std::string::npos || ci > 0) {
+                std::string part = ci == std::string::npos ? tx : tx.substr(0, ci);
+                if (words.empty() || cur().spaceBefore) words.push_back(part);
+                else words.back() += part;
+                if (ci == std::string::npos) { depth = d; advance(); continue; }
+                std::string rest = tx.substr(ci + 1);
+                if (rest.empty()) advance();
+                else { toks_[pos_].text = rest; toks_[pos_].spaceBefore = false; }
+                return words;
+            }
+            depth = 0;   // the token STARTS with the closer: the rules below split it
+        }
         // The closing delimiter may be glued to a following operator by the lexer:
         // `%h<a>=9` lexes `>=` as one token, `%h<a>>` lexes `>>`. Split it: the leading
-        // `>` closes the word list, the remainder stays as the next token. Only when the
-        // token is glued to the preceding word (no space) — a spaced `< a >= b >` word
-        // list legitimately contains `>=` as a word and must not be truncated.
-        if (depth == 0 && cur().kind == Tok::Op && !cur().spaceBefore &&
+        // `>` closes the word list, the remainder stays as the next token. A `<…>`
+        // list closes there even after a space (see above); a `<<…>>` / `«…»` one
+        // only when the token is glued to the preceding word.
+        if (depth == 0 && cur().kind == Tok::Op && (!cur().spaceBefore || close == ">") &&
             cur().text.size() > close.size() &&
             cur().text.compare(0, close.size(), close) == 0) {
             toks_[pos_].text = cur().text.substr(close.size());
@@ -10033,6 +10286,36 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             bool hadPostfix = scanChain(j, var);
             // @arr/%hash only interpolate when followed by a postcircumfix/method
             if ((sig == '@' || sig == '%') && !hadPostfix) { lit += var; i = j; continue; }
+            const int strLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
+            // `"$a->$b"` is Perl's arrow, refused in a string as anywhere (#109)
+            if (j + 1 < n && raw[j] == '-' && raw[j + 1] == '>') {
+                const std::string old = j + 2 < n && raw[j + 2] == '[' ? "->[]"
+                                      : j + 2 < n && raw[j + 2] == '{' ? "->{}" : "->";
+                const std::string repl = old == "->" ? "either . to call a method, or whitespace to have a pointy block"
+                                                     : old == "->[]" ? "[] for array subscripting" : "{} for hash subscripting";
+                throw ParseError("The arrow after " + var + " in a string is Perl's postfix " + old +
+                                 ", which Raku does not have; use " + repl + ".",
+                                 strLine, "X::Obsolete", {{"old", old + " as postfix"}, {"replacement", repl}});
+            }
+            // `"$h:Set(1)"`: a colon and a word after a plain `$name` continue
+            // the NAME — `$h:Set<1>`, a long name with an adverb — which is no
+            // variable in scope (#109). `"$h::x"` and `"$h: x"` are other things.
+            if (sig == '$' && !hadPostfix && j + 1 < n && raw[j] == ':' &&
+                (ascii::isalpha((unsigned char)raw[j + 1]) || raw[j + 1] == '_') &&
+                var.size() > 1 && (ascii::isalpha((unsigned char)var[1]) || var[1] == '_')) {
+                size_t k = j + 1;
+                std::string adv;
+                for (size_t l; k < n && identContAt(k, l); ) { adv.append(raw, k, l); k += l; }
+                std::string name = var + ":" + adv;
+                if (k < n && (raw[k] == '(' || raw[k] == '<')) {
+                    const char close = raw[k] == '(' ? ')' : '>';
+                    size_t e = raw.find(close, k + 1);
+                    if (e != std::string::npos) name += "<" + raw.substr(k + 1, e - k - 1) + ">";
+                }
+                throw ParseError("Variable '" + name + "' is not declared (in a string, a colon and a word "
+                                 "after a variable continue its name; write {" + var + "}:" + adv + ")",
+                                 strLine, "X::Undeclared", {{"symbol", name}, {"what", "Variable"}});
+            }
             flush();
             try {
                 ExprPtr part = parseEmbeddedExpr(var);

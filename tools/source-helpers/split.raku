@@ -86,7 +86,7 @@ sub MAIN(Str $src-file, Str $plan-file, Str $out-dir, Bool :$dry = False, Str :$
     my @part-of;
     my $cur = 0;
     for @items.kv -> $i, $it {
-        if $i > $ns-open && %starts{$it.l1 + 1}:exists {
+        if $i > $ns-open && (%starts{$it.l1 + 1}:exists) {
             die "part {@parts[%starts{$it.l1 + 1}]<file>} starts inside an anonymous namespace (line {$it.l1 + 1})"
                 unless $it.container == $ns-open;
             $cur = %starts{$it.l1 + 1};

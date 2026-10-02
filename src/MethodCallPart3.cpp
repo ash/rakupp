@@ -103,6 +103,12 @@ static bool succPredExact(const Value& v) {
     return v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num || v.t == VT::Complex;
 }
 
+// Has a read of the process's stdin met its end? `$*IN.eof` answers from
+// this: every mention of `$*IN` is a fresh handle with no state of its own,
+// and Rakudo's `.eof` turns True only once a read has found the end — never
+// by looking ahead, which on a terminal would wait for input.
+static std::atomic<bool> g_stdinHitEof{false};
+
 // A TEXT read folds CRLF to LF: a handle's default :nl-in is ["\n", "\r\n"] and
 // Rakudo's text decoders translate the separator on the way in — a file, $*IN,
 // $*ARGFILES and a Proc's captured pipes alike (`run(:out).out.slurp` of
@@ -1778,13 +1784,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // already-existing directory is success; an existing FILE is not.
         std::string acc;
         int err = 0;
+        // A prefix that is already a directory is fine whatever errno says:
+        // Windows answers mkdir("C:") with EACCES, not EEXIST, and the walk
+        // used to stop at the drive (issue #107). There `\` separates too.
         for (size_t i = 0; i <= path.size(); i++) {
-            if (i == path.size() || path[i] == '/') {
+#ifdef _WIN32
+            const bool sep = i < path.size() && (path[i] == '/' || path[i] == '\\');
+#else
+            const bool sep = i < path.size() && path[i] == '/';
+#endif
+            if (i == path.size() || sep) {
                 if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
-                    err = errno;
-                    break;
+                    int e = errno;
+                    struct stat pst;
+                    if (!(::stat(acc.c_str(), &pst) == 0 && S_ISDIR(pst.st_mode))) {
+                        err = e;
+                        break;
+                    }
                 }
-                if (i < path.size()) acc += '/';
+                if (i < path.size()) acc += path[i];
             } else acc += path[i];
         }
         struct stat st;
@@ -2774,8 +2792,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 "get", "getline", "lines", "words", "slurp", "slurp-rest", "read", "readchars",
                 "getc", "comb", "split", "seek", "Supply"};
             if (kTouch.count(m)) (*inv.hash())["\x01touched"] = Value::boolean(true);
-            else if (m == "eof" && !fhClosed(inv) && !inv.hash()->count("\x01touched"))
+            else if (m == "eof" && !fhClosed(inv) && !inv.hash()->count("\x01touched")) {
+                // …but `$*IN` is a fresh handle at every mention: the stream's
+                // own state answers there (see g_stdinHitEof)
+                auto sit = inv.hash()->find("std");
+                if (sit != inv.hash()->end() && sit->second.toStr() == "in" &&
+                    !inv.hash()->count("captured") && !inv.hash()->count("lines"))
+                    return Value::boolean(g_stdinHitEof.load(std::memory_order_relaxed));
                 return Value::boolean(false);
+            }
         }
         // `.DESTROY` closes the handle (what the GC would do to an open one)
         if (m == "DESTROY") {
@@ -3235,7 +3260,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (want < 0) want = 0;
                 for (long long i = 0; i < want; i++) {
                     int c = std::cin.get();
-                    if (c == EOF) break;
+                    if (c == EOF) { g_stdinHitEof = true; break; }
                     got += (char)(unsigned char)c;
                 }
                 return binBuf(got);
@@ -3646,6 +3671,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash())["bpos"] = Value::integer(want);
             return Value::boolean(true);
         }
+        // `$*IN.eof` with no line cache: has a read found the end? Asking must
+        // not take the input — the line-cache path below loads ALL of it, and
+        // the next `.read(1)` then found nothing (issue #111).
+        if (m == "eof" && isStdin && inv.hash()->find("lines") == inv.hash()->end() &&
+            !inv.hash()->count("captured"))
+            return Value::boolean(g_stdinHitEof.load(std::memory_order_relaxed));
         // `$*IN.get` takes ONE line from the stream. Every read of `$*IN` is a
         // fresh handle, so loading the whole input into this one's line cache
         // (the path below) threw the rest away with it: `say $*IN.get; say
@@ -3655,7 +3686,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             !inv.hash()->count("nl-in") && !inv.hash()->count("captured") &&
             !inv.hash()->count("enc")) {
             std::string line;
-            if (!std::getline(std::cin, line)) return Value::nil();
+            if (!std::getline(std::cin, line)) { g_stdinHitEof = true; return Value::nil(); }
             const bool keep = inv.hash()->count("chomp") && !(*inv.hash())["chomp"].truthy();
             if (keep) line += std::cin.eof() ? "" : "\n";
             else if (!line.empty() && line.back() == '\r') line.pop_back();

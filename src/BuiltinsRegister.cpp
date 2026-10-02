@@ -1946,13 +1946,25 @@ void Interpreter::registerBuiltinsPart2() {
         // failure is the soft X::IO::Mkdir Failure that detonates when sunk.
         std::string acc;
         int err = 0;
+        // A prefix that is already a directory is fine whatever errno says:
+        // Windows answers mkdir("C:") with EACCES, not EEXIST, and the walk
+        // used to stop at the drive (issue #107). There `\` separates too.
         for (size_t i = 0; i <= path.size(); i++) {
-            if (i == path.size() || path[i] == '/') {
+#ifdef _WIN32
+            const bool sep = i < path.size() && (path[i] == '/' || path[i] == '\\');
+#else
+            const bool sep = i < path.size() && path[i] == '/';
+#endif
+            if (i == path.size() || sep) {
                 if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
-                    err = errno;
-                    break;
+                    int e = errno;
+                    struct stat pst;
+                    if (!(::stat(acc.c_str(), &pst) == 0 && S_ISDIR(pst.st_mode))) {
+                        err = e;
+                        break;
+                    }
                 }
-                if (i < path.size()) acc += '/';
+                if (i < path.size()) acc += path[i];
             } else acc += path[i];
         }
         struct stat st;

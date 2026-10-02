@@ -3511,7 +3511,7 @@ bool whichIsObjAt(const Value& v) {
                                 v.hashKind == "BagHash" || v.hashKind == "MixHash")) ||
            (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "IO")) ||
            (v.isNumeric() && v.hashKind == "Instant") ||
-           v.t == VT::Code || (v.t == VT::Object && !userWhichIsValue(v));
+           v.t == VT::Code || v.t == VT::Match || (v.t == VT::Object && !userWhichIsValue(v));
 }
 std::string whichOf(const Value& v) {
     auto ratPart = [](const Value& r) {
@@ -3569,6 +3569,15 @@ std::string whichOf(const Value& v) {
         // it makes `1..^5` and `1..4` the same value, and builds a huge string
         // for a large range on the way
         case VT::Range:   return "Range|" + v.gist();
+        // A MATCH is an object: two matches of the same text are two nodes of
+        // the tree (issue #109), and a copy of one is still it — the payload
+        // every copy shares, which is what `===` compares
+        case VT::Match:   if (v.p_) {
+                              char buf[24];
+                              std::snprintf(buf, sizeof buf, "|%p", (const void*)v.p_.get());
+                              return v.typeName() + buf;
+                          }
+                          return v.typeName() + "|" + v.toStr();
         // A Pair identifies by its PARTS — but only while both are values. With
         // an Array (or any other reference type) inside, the Pair is an object
         // and identifies by BEING itself: the payload it was built with, which
@@ -3656,6 +3665,8 @@ std::string baggyKeyStr(const Value& v) {
     // …and an OBJECT, whose rendering is `Class<obj>` for every instance, so two
     // distinct objects collapsed into one Set element.
     if (v.t == VT::Object) return whichOf(v);
+    // …and a MATCH: two matches of the same text are two elements
+    if (v.t == VT::Match) return whichOf(v);
     // …and a Dateish, whose rendering a `:formatter` rewrites: two Dates of the
     // same day are ONE set element however either of them prints (whichOf keys a
     // Date on its daycount, a DateTime on its rendering — both as Rakudo does).

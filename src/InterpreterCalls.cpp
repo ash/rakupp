@@ -201,6 +201,47 @@ void Interpreter::bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env
     sv->markHoldsContainers();
 }
 
+// `*@l` bound from arguments that are all plain VALUES — literals, operator
+// and call results, nothing to flatten — keeps them as they came: each element
+// is a value, not a container, and writing one dies (see setupRwLinks). One
+// variable or list among them and Rakudo builds the slurpy afresh, every
+// element in a container of its own; so it is all or nothing, never per
+// element (`f($x, 2)` may write `@l[1]`, `f(1, 2)` may not).
+void Interpreter::markSlurpyLiterals(const Param& p, std::shared_ptr<Env>& env,
+                                     const std::vector<ExprPtr>* rwArgs, size_t from) {
+    Value* sv = env->local(p.name);
+    if (!sv || sv->t != VT::Array || !sv->arr() || sv->arr()->empty()) return;
+    size_t count = 0;
+    for (size_t i = from; i < rwArgs->size(); i++) {
+        const Expr* ae = (*rwArgs)[i].get();
+        if (!ae) return;
+        switch (ae->kind) {
+            case NK::Pair: continue;                            // a named argument
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit:
+            case NK::InterpStr: case NK::AllomorphLit: case NK::Binary:
+            case NK::ChainExpr: case NK::Ternary:
+                break;
+            case NK::Unary: {
+                const std::string& op = static_cast<const Unary*>(ae)->op;
+                if (op == "|" || op.rfind("ctx", 0) == 0) return;
+                break;
+            }
+            case NK::Call:
+                if (static_cast<const Call*>(ae)->callee) return;
+                break;
+            default: return;                                    // a variable, an element, a list…
+        }
+        count++;
+    }
+    // …and nothing flattened: one element per argument
+    if (count != sv->arr()->size()) return;
+    for (auto& e : *sv->arr()) {
+        if ((e.t == VT::Array || e.t == VT::Hash) && !e.isList) return;   // a container after all
+        if (e.t == VT::Array && e.arr() && e.isList && !e.itemized) return;
+    }
+    for (auto& e : *sv->arr()) { e.readonly = true; e.immutableBind = true; }
+}
+
 // Bind hyper element slots: like setupRwLinks but the caller supplies container
 // slots DIRECTLY (positional, aligned with the params); a null slot means the
 // argument was immutable — assigning that param dies.

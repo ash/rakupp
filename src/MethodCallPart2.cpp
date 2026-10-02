@@ -9420,10 +9420,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (!mv.ext()) return Value::integer((long long)byteOff);
         const std::string& orig = *std::static_pointer_cast<std::string>(mv.ext());
         size_t b = std::min((size_t)byteOff, orig.size());
-        for (size_t i = 0; i < b; i++)             // pure ASCII: byte == grapheme
+        long long n = (long long)b;                // pure ASCII: byte == grapheme,
+        for (size_t i = 0; i < b; i++) {           // except "\r\n", ONE grapheme (#102)
             if ((unsigned char)orig[i] >= 0x80)
                 return Value::integer((long long)uniGraphemeCount(utf8cp(orig.substr(0, b))));
-        return Value::integer((long long)b);
+            if (orig[i] == '\r' && i + 1 < b && orig[i + 1] == '\n') n--;
+        }
+        return Value::integer(n);
     };
     // A LIST of matches answers the span it covers: `.from` of the first, `.to` of
     // the last. `$/.list.from` is how a :g match reports where its matches start.

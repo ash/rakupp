@@ -2190,7 +2190,9 @@ public:
     // (ROAST-TRACKS-PLAN track A). False = not that case; link as before.
     bool bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env);
     void bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env,
-                              const std::vector<ExprPtr>* rwArgs, size_t from); // `*@l is raw`
+                              const std::vector<ExprPtr>* rwArgs, size_t from);
+    void markSlurpyLiterals(const Param& p, std::shared_ptr<Env>& env,
+                            const std::vector<ExprPtr>* rwArgs, size_t from); // `*@l is raw`
     // The shared cell behind a variable owned by `owner`, promoting it on first
     // use; null for a slot that holds some other Proxy.
     PRef<Value> varCell(Env* owner, const std::string& name);

@@ -950,7 +950,10 @@ Regex::NodePtr Regex::parseSeq() {
         char c = peek();
         if (eof() || c == '|' || c == '&' || c == ']' ||
             (c == ')' && peek(1) != '>') ||
-            (assertDepth_ > 0 && c == '>')) {
+            // inside an assertion `>` closes it — but `>>` is the right word
+            // boundary, there as anywhere (Rakudo reads `<?before a>>` as an
+            // unclosed assertion): `<!before 'end' >> >` (issue #105)
+            (assertDepth_ > 0 && c == '>' && peek(1) != '>')) {
             // sigspace: TRAILING whitespace in a rule also matches <.ws> —
             // `rule TOP { \w+ '=' \N* }` accepts the line's trailing newline
             if (sigspace_ && hadSpace && !seq->kids.empty()) {
@@ -1036,6 +1039,7 @@ void Regex::countCaptureNames(const Node* n, std::map<std::string, int>& out) {
         if (n->ruleCapture && !n->ruleName.empty()) {
             out[n->ruleAlias.empty() ? n->ruleName : n->ruleAlias] += 1;
             if (aliasAlsoRuleName(n)) out[n->ruleName] += 1;   // `<tags=td>` fills `$<td>` too
+            for (auto& more : n->aliasMore) out[more] += 1;
         }
         return;                                  // a subrule's own captures are its own
     }
@@ -1147,6 +1151,7 @@ void Regex::collectListNames(const Node* n) {
         // quantifier that copy is an Array exactly as `$<tags>` is. Left a lone
         // Match, YAMLish's `@<tag-directive>».ast` read no directives (#100).
         if (aliasAlsoRuleName(n)) listNames_->insert(n->ruleName);
+        for (auto& more : n->aliasMore) listNames_->insert(more);
     }
     // a NAMED group alias is list-valued under a quantifier too:
     // `[\%$<bit>=[..]]+` gives $<bit> = [Match, Match, …] (URI::Encode's decoder)
@@ -1500,6 +1505,25 @@ Regex::NodePtr Regex::parseAtom() {
             pos_++;
             skipWs();
             auto child = parseQuant(); // bind the whole quantified atom: `$<v>=.*` = `$<v>=[.*]`
+            // `$<lo>=<inner>` is `<lo=inner>`: ONE Match, the subrule's own, under
+            // both names — its action runs once and `.made` is there under the
+            // alias too. Wrapping it in a capture group made a second Match of
+            // the same text, without the `.made`, and built the subtree twice
+            // (issue #108). Quantified, it is aliased occurrence by occurrence.
+            if (!listCap && !hashCap) {
+                Node* sub = child.get();
+                if (sub->k == K::Rep && sub->kids.size() == 1) sub = sub->kids[0].get();
+                if (sub->k == K::Subrule && sub->ruleAlias.empty() && !sub->ruleName.empty() &&
+                    !sub->inlineRx && sub->dynCode.empty()) {
+                    sub->ruleAlias = name;
+                    if (!sub->ruleCapture) { sub->ruleCapture = true; sub->aliasDotted = true; }
+                    if (sub != child.get() && child->max != 1) {
+                        if (!listNames_) listNames_ = std::make_shared<std::set<std::string>>();
+                        listNames_->insert(name);
+                    }
+                    return child;
+                }
+            }
             // …but a quantified CAPTURE is aliased occurrence by occurrence, as
             // Rakudo reads it: `$<l>=(A)**3` has three `$<l>`, `$<v>=\w+` one
             const bool quantCap = !listCap && !hashCap && child->k == K::Rep && !child->kids.empty() &&
@@ -2197,6 +2221,12 @@ Regex::NodePtr Regex::parseAtom() {
                 auto eq = nm.find('=');
                 if (eq != std::string::npos && eq < nm.find('(')) { // not the `=>` of an argument
                     sr->ruleAlias = nm.substr(0, eq); nm = nm.substr(eq + 1); // <alias=rule>
+                    // <a=b=rule> — every name in the chain gets the same Match
+                    for (size_t e2 = nm.find('='); e2 != std::string::npos && e2 < nm.find('(') &&
+                         e2 > 0 && (ascii::isalpha((unsigned char)nm[0]) || nm[0] == '_'); e2 = nm.find('=')) {
+                        sr->aliasMore.push_back(nm.substr(0, e2));
+                        nm = nm.substr(e2 + 1);
+                    }
                     // <alias=.rule> — the dot only suppresses the RULE-NAME capture;
                     // the alias still captures (Cro::MediaType: `<attribute=.token>`)
                     if (!nm.empty() && nm[0] == '.') { nm = nm.substr(1); sr->aliasDotted = true; }
@@ -3350,6 +3380,43 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             return (m != n->negate) ? k(pos) : false; // zero-width; negate flips
         }
         case K::Subrule: {
+            // `<a=b=rule>`: the call records itself under `a` (and `rule`) as any
+            // `<a=rule>` does; this files that same capture — one alias id, so one
+            // Match and one action run — under each further name before going on.
+            if (!n->aliasMore.empty() && st.aliasMoreDone != n && !n->ruleAlias.empty()) {
+                const std::string& key = n->ruleAlias;
+                auto filed = [&](long p) -> bool {
+                    st.aliasMoreDone = nullptr;
+                    auto it = st.children.find(key);
+                    if (it == st.children.end() || it->second.empty()) return k(p);
+                    if (!it->second.back().aliasId) it->second.back().aliasId = newAliasId();
+                    ParseNode copy = it->second.back();
+                    std::pair<long, long> span = {copy.from, copy.to};
+                    auto spanIt = st.named.find(key);
+                    if (spanIt != st.named.end()) span = spanIt->second;
+                    std::vector<std::pair<bool, std::pair<long, long>>> saved;
+                    for (auto& more : n->aliasMore) {
+                        auto had = st.named.find(more);
+                        saved.push_back({had != st.named.end(), had != st.named.end() ? had->second : std::pair<long, long>{-1, -1}});
+                        st.named[more] = span;
+                        st.children[more].push_back(copy);
+                    }
+                    if (k(p)) return true;
+                    for (size_t i = n->aliasMore.size(); i-- > 0; ) {
+                        const std::string& more = n->aliasMore[i];
+                        auto& v = st.children[more];
+                        v.pop_back();
+                        if (v.empty()) st.children.erase(more);
+                        if (saved[i].first) st.named[more] = saved[i].second; else st.named.erase(more);
+                    }
+                    return false;
+                };
+                st.aliasMoreDone = n;
+                bool ok = matchNode(n, st, pos, filed);
+                st.aliasMoreDone = nullptr;
+                return ok;
+            }
+            st.aliasMoreDone = nullptr;
             // `<$var>` / `<alias=$var>` — an interpolated pattern, compiled with its
             // own front-end and CALLED here (its captures are its own).
             if (n->inlineRx) return matchInlineSub(n, n->inlineRx, st, pos, k);

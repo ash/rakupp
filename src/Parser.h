@@ -390,6 +390,18 @@ private:
     std::string sigillessTermName(const std::string& nm); // `\\term:<ℵ₀>` → `ℵ₀`
     bool spacedAdverbAhead(bool allowTight = false); // ` :name` next, tight on its own
     bool attachSpacedAdverb(ExprPtr& lhs); // …given to the loosest op of `lhs`
+    // A SUBSCRIPT adverb that ends an operand of an operator tighter than item
+    // assignment belongs to that operator (`0 || %h<k>:exists`, issue #109):
+    // where the last one ended (a token index) and the Index it was hung on.
+    size_t subAdverbEnd_ = (size_t)-1;
+    const Expr* subAdverbIx_ = nullptr;
+    bool adverbToOperator(ExprPtr& lhs);
+    bool adverbTakingOp(const Expr* e) const;
+    // Does the adverbed subscript `ix` END `e`, along operators and then a
+    // postfix chain (`1 || %h<k>:exists.so`)?
+    bool adverbEnds(const Expr* e, const Expr* ix) const;
+    int exprMinbp_ = 0;   // the innermost parseExpr's minbp: above BP_ASSIGN = a tight operand
+    void giveAdverbToOperator(ExprPtr& lhs, std::vector<ExprPtr> named, const std::string& advText);
     void regInfix(const std::string& n, int bp) {
         auto it = userInfix_.find(n);
         opUndo_.push_back({'i', n, it != userInfix_.end(), it != userInfix_.end() ? it->second : 0, ""});

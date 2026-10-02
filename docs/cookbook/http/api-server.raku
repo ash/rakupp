@@ -38,7 +38,7 @@ my $app = route {
 
     post -> 'books' {
         my %new = await request.body;
-        if %new<title>:exists && %new<author>:exists {
+        if (%new<title>:exists) && (%new<author>:exists) {
             my %book = id => @books.map(*.<id>).max + 1, |%new;
             @books.push(%book);
             created "books/%book<id>", 'application/json', %book;

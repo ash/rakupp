@@ -390,6 +390,7 @@ private:
         std::string ruleName;
         std::string ruleArgs;            // raw args of a parameterised call <name($x, '')>
         std::string ruleAlias;           // capture key for <alias=rule> (else = ruleName)
+        std::vector<std::string> aliasMore; // <a=b=rule>: the further names (`b`), the same Match under each
         bool aliasDotted = false;        // <alias=.rule> — the alias captures, the rule name does NOT
         bool ruleCapture = true;         // <name> captures as $<name>; <.name> does not
         bool noBack = false;             // written under :ratchet — the call commits to its first match
@@ -520,6 +521,7 @@ public:
         int probeAbove = 0;
         long litPrefix = -1;                               // end pos of the leading literal-atom run from startPos (-1 = not started)
         long steps = 0;                                    // backtracking step budget (guards catastrophic patterns)
+        const void* aliasMoreDone = nullptr;               // the <a=b=rule> node whose extra names are being filed
         // Bare `{…}` blocks QUEUED rather than run where they appear: the matcher
         // is CPS + backtracking, so a block sitting on a branch that is later
         // abandoned would otherwise fire its side effects anyway — and fire them

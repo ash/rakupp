@@ -662,6 +662,19 @@ void Interpreter::registerBuiltinsPart3() {
     // out. A miss is Nil, as Rakudo's is; the no-hop forms resolve at parse time.
     // CLIENT:: — the frames of the running routine's own compilation unit are
     // skipped; the first caller from elsewhere (or the mainline) is the client
+    // `1 + %h<k>:exists` — the adverb went to the built-in operator (see
+    // Parser::adverbToOperator), and no candidate of it takes a named argument
+    B["__adverb-nomatch"] = [](Interpreter& I, ValueList& a) -> Value {
+        std::string sig;
+        for (size_t i = 1; i < a.size(); i++) {
+            if (!sig.empty()) sig += ", ";
+            if (a[i].t == VT::Pair && a[i].namedArg) sig += ":" + a[i].s.str();
+            else sig += a[i].typeName() + (a[i].t == VT::Type ? ":U" : ":D");
+        }
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller " + (a.empty() ? std::string("?") : a[0].toStr()) + "(" + sig +
+                        "); no candidate takes a named argument"};
+    };
     B["__assign-immutable"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : a[0];
         throw RakuError{Value::typeObj("X::Assignment::RO"),
