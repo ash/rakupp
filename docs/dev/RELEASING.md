@@ -760,6 +760,20 @@ So:
    clone** from your working copy — `brew audit`/`brew fetch` read *that* one,
    so testing your edit means copying the file in (then `git checkout --` to
    leave it clean) or pushing first.
+
+   **The container image needs no bump, only a look.** The tag's `docker` job
+   pushes `ghcr.io/ash/rakupp:X.Y.Z`, `:X.Y` and `:latest` for amd64 and arm64,
+   built from the archives the release just attached. It runs only when every
+   build leg is green — a red leg means **no image for that release**, and
+   `:latest` stays on the previous one. Check it from a clean machine:
+
+   ```bash
+   docker run --rm ghcr.io/ash/rakupp:X.Y.Z --version
+   ```
+
+   The first push creates the package **private**. Make it public once, by
+   hand: github.com/ash → Packages → rakupp → Package settings → Change
+   visibility. Until then every `docker run` in the docs answers "denied".
 6. **Republish raku.online.** This is the step that gets forgotten, because the
    release is already out by then and everything looks finished. It isn't —
    until this runs, the site announces the new version while showing the

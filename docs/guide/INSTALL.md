@@ -24,8 +24,14 @@ asks whether you also want the engine under the second name `raku`, and puts
 its `bin/` on your `PATH`. Neither needs root or an administrator. Re-running
 either upgrades in place, and so does `rakupp upgrade`.
 
-Then open a **new** terminal — a running one keeps the environment it started
-with — and:
+**Docker**, with nothing installed on the machine — see [Docker](#docker):
+
+```sh
+docker run --rm -it ghcr.io/ash/rakupp
+```
+
+After either installer, open a **new** terminal — a running one keeps the
+environment it started with — and:
 
 ```sh
 rakupp -e 'say 6 * 7'
@@ -288,6 +294,62 @@ one-liner is not:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
+```
+
+## Docker
+
+Every release is also an image, `ghcr.io/ash/rakupp`, for `linux/amd64` and
+`linux/arm64` — so Docker on an Apple Silicon Mac runs it natively. Nothing is
+installed on the machine itself:
+
+```sh
+docker run --rm -it ghcr.io/ash/rakupp
+```
+
+That is the REPL. The engine is the image's entry point, so everything after
+the image name is a `rakupp` argument, and `/work` is the working directory —
+mount the current one there to run a file from it:
+
+```sh
+docker run --rm ghcr.io/ash/rakupp -e 'say 6 * 7'
+docker run --rm -v "$PWD:/work" ghcr.io/ash/rakupp script.raku
+echo 'say 1 + 2' | docker run --rm -i ghcr.io/ash/rakupp
+```
+
+The tags are `latest`, the version (`5.1.0`) and the minor (`5.1`). The image
+is the release archive for its architecture, checked against the published
+SHA-256 and unpacked into `/opt/rakupp` on `debian:bookworm-slim`, with the
+second name `raku` beside it. Nothing in it is built separately, so it runs
+exactly the engine the archive does.
+
+`rakupp install` works inside it — `curl`, `tar` and the CA certificates it
+needs are in the image, as are `libffi` and `libssl` for NativeCall and the
+OpenSSL-backed modules. Modules go to `/root/.raku`, which lives as long as
+the container does; to keep them, build on the image:
+
+```dockerfile
+FROM ghcr.io/ash/rakupp:5.1
+RUN rakupp install JSON::Fast
+COPY . /work
+CMD ["main.raku"]
+```
+
+There is **no C++ compiler** in the image, so `--exe` has nothing to compile
+with. The runtime it links (`lib/`, `include/`) is there, so adding one brings
+it back:
+
+```dockerfile
+FROM ghcr.io/ash/rakupp:5.1
+RUN apt-get update && apt-get install -y --no-install-recommends g++ \
+ && rm -rf /var/lib/apt/lists/*
+```
+
+To build the image yourself, from a checkout — it downloads the archive, so
+the source tree is not read:
+
+```sh
+docker build -t rakupp .
+docker build --build-arg RAKUPP_VERSION=v5.0.1 -t rakupp:5.0.1 .
 ```
 
 ## Prebuilt archives

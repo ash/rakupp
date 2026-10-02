@@ -75,6 +75,11 @@ name `raku`, and puts it on your `PATH`. Then open a new terminal.
 rakupp upgrade        # later: replace it with the latest release, in place
 ```
 
+With Docker, nothing is installed at all — `docker run --rm -it
+ghcr.io/ash/rakupp` opens the REPL, and `docker run --rm -v "$PWD:/work"
+ghcr.io/ash/rakupp script.raku` runs a file from the current directory
+([details](docs/guide/INSTALL.md#docker)).
+
 On macOS there is the Homebrew tap as well — `brew tap ash/rakupp && brew
 install rakupp` — and on Windows a wizard:
 **[rakupp-setup-windows-x64.exe](https://github.com/ash/rakupp/releases/latest/download/rakupp-setup-windows-x64.exe)**, with the same two questions

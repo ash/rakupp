@@ -1,0 +1,3 @@
+# The Dockerfile downloads the release archive; it reads nothing from the
+# build context, so send none of it (this checkout carries GBs of build dirs).
+*

@@ -74,5 +74,8 @@ This plan closes that. Status: **landed**, in the six commits below.
 - **macOS code signing and notarization.** The one-liner is a script, so no
   Gatekeeper check applies to it; the Windows wizard's SmartScreen note in
   INSTALL.md is the equivalent disclosure there.
-- **Docker images.** `COPY bin/rakupp /usr/local/bin/rakupp` is already the
-  whole installation, and INSTALL.md says so.
+- ~~**Docker images.**~~ Reversed 2026-10-02: `COPY bin/rakupp` covers someone
+  writing their own Dockerfile, not someone who wants to try Raku++ with one
+  `docker run`. `ghcr.io/ash/rakupp` is the release archive unpacked onto
+  `debian:bookworm-slim` (the root `Dockerfile`), pushed by the tag's `docker`
+  job in `release.yml` — no per-release bump to forget.

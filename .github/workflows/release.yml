@@ -834,6 +834,97 @@ jobs:
             rakupp-setup-windows-x64.*
             rakulang-*.whl
 
+  # The container image, ghcr.io/ash/rakupp, for linux/amd64 and linux/arm64.
+  # The Dockerfile builds nothing: it downloads the tag's rakupp-linux-<arch>
+  # archive from the release the build job above just attached it to, checks
+  # the .sha256 and unpacks it -- so the image is the archive, byte for byte.
+  #
+  # `needs: build` is load-bearing on a tag: the archives exist only once every
+  # leg has attached its own, and a red leg skips this job rather than
+  # publishing an image that is missing an architecture (v5.1.0's linux-aarch64
+  # leg failed and shipped no archive -- an image that day would have been
+  # amd64 only, under a tag that promises both).
+  #
+  # On main it still runs, against the latest release and without pushing, so
+  # a broken Dockerfile shows up before a tag needs it. The amd64 image is
+  # built and smoke-tested first; the push then rebuilds both platforms (amd64
+  # from cache, arm64 under QEMU -- the Dockerfile's own `--version` and
+  # `6 * 7` lines run the arm64 binary there too).
+  #
+  # The package's visibility is set on GitHub, not here: a package created by
+  # the first push is PRIVATE, and is made public once, by hand, in its
+  # settings (RELEASING.md).
+  docker:
+    name: docker image (ghcr.io)
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Image tags
+        id: tags
+        run: |
+          image="ghcr.io/${{ github.repository }}"
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = true ]; then
+            v="${GITHUB_REF_NAME#v}"
+            echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "tags=$image:$v,$image:${v%.*},$image:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=latest" >> "$GITHUB_OUTPUT"   # checked, never pushed
+          fi
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build (amd64, for the smoke test)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: RAKUPP_VERSION=${{ steps.tags.outputs.version }}
+          load: true
+          tags: rakupp-smoke
+
+      # What the README promises a `docker run` does: -e, a script from a
+      # mounted directory, a program on stdin, the second name `raku`, and the
+      # module installer travelling inside the binary (no arguments = usage,
+      # exit 2 by design -- a crash is not a usage message).
+      - name: Smoke test the image
+        run: |
+          test "$(docker run --rm rakupp-smoke -e 'say 6 * 7')" = 42
+          echo 'say "mounted: ", $*CWD.basename' > probe.raku
+          test "$(docker run --rm -v "$PWD:/work" rakupp-smoke probe.raku)" = "mounted: work"
+          test "$(echo 'say 1 + 2' | docker run --rm -i rakupp-smoke)" = 3
+          test "$(docker run --rm --entrypoint raku rakupp-smoke -e 'say 7')" = 7
+          rc=0; docker run --rm rakupp-smoke install > out.txt 2>&1 || rc=$?
+          cat out.txt
+          test "$rc" -eq 2
+          grep -q "usage: rakupp install" out.txt
+          docker run --rm rakupp-smoke --version
+
+      - name: Log in to ghcr.io
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (amd64 + arm64)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: RAKUPP_VERSION=${{ steps.tags.outputs.version }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
   # Raku.js: the interpreter compiled to WebAssembly (rakujs/build.sh). Ships two
   # release assets so users don't need Emscripten:
   #   - rakujs-<tag>.zip        the reusable build + playground (embed anywhere)
