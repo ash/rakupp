@@ -1308,7 +1308,7 @@ Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
         if (isPositionalKey(ck.first)) continue;   // a NUMBER — presented above
         bool many = ck.second.size() > 1 || (c.listNames && c.listNames->count(ck.first));
         if (!many) { cv.hashRef()[ck.first] = child(ck.second[0]); continue; }
-        Value a2 = Value::array(); a2.isList = true;
+        Value a2 = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
         for (auto& g : ck.second) a2.arr()->push_back(child(g));
         cv.hashRef()[ck.first] = a2;
     }
@@ -1698,7 +1698,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             // occurrence becomes one Match ($m<bit>.list in URI::Encode's decoder)
             auto ch = mm.children.find(kv.first);
             if (mm.listNames && mm.listNames->count(kv.first) && ch != mm.children.end()) {
-                Value lst = Value::array(); lst.isList = true;
+                Value lst = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
                 for (auto& pn : ch->second) lst.arrRef().push_back(matchFromNode(pn, subj, origStr));
                 v.hashRef()[kv.first] = std::move(lst);
                 continue;
@@ -2217,7 +2217,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     return subMatch(pn.from, pn.to);
                 };
                 if (!asList) { m.hashRef()[kv.first] = one(occ.back()); continue; }
-                Value lst = Value::array(); lst.isList = true;
+                Value lst = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
                 for (auto& pn : occ) lst.arrRef().push_back(one(pn));
                 m.hashRef()[kv.first] = std::move(lst);
             }
@@ -2642,7 +2642,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                        || (pn.listNames && pn.listNames->count(kv.first));
             if (!asList) mv.hashRef()[kv.first] = buildChild(kv.second[0]);
             else {
-                Value arr = Value::array(); arr.isList = true;
+                Value arr = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
                 for (auto& child : kv.second) arr.arr()->push_back(buildChild(child));
                 mv.hashRef()[kv.first] = arr;
             }
@@ -2651,7 +2651,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (pn.listNames) for (auto& nm : *pn.listNames)
             if ((!pn.kids || !pn.kids->count(nm)) && !mv.hashRef().count(nm) &&
                 !consumedByGroup.count(nm)) {
-                Value arr = Value::array(); arr.isList = true;
+                Value arr = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
                 mv.hashRef()[nm] = arr;
             }
         // a deferred inline `{ make … }` runs now, with $/ = this fully-built match

@@ -488,6 +488,7 @@ private:
     // `--> CArray[Str]` — a NativeCall return type keeps its element parameter
     std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
+    size_t lastRegexDeclBody_ = (size_t)-1;   // the RegexLit that was a `token`/`regex`/`rule` body: it ends a statement as a `}` does
     size_t stmtStart_ = 0; // first token of the statement being parsed (see lastBlockClose_)
     bool matchOp(const std::string& s);
     bool matchKind(Tok k);

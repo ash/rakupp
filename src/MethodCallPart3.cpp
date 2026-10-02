@@ -5550,6 +5550,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                                     pat[k - 1] != '<' && pat[k - 1] != '*')))
                         bareCode = true;
                 }
+                // …and so does a call to a regex declared in SCOPE (`my regex nm
+                // {…}; $s.comb(/<nm>+/)`): only the `~~` machinery resolves it,
+                // the standalone compile below matched it as nothing at all
+                for (size_t k = 0; k + 1 < pat.size() && !bareCode; k++) {
+                    if (pat[k] == '\\') { k++; continue; }
+                    if (pat[k] != '<') continue;
+                    size_t b = k + 1;
+                    if (b < pat.size() && (pat[b] == '&' || pat[b] == '.')) b++;
+                    size_t e = b;
+                    while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
+                    if (e == b || !tctx_.cur) continue;
+                    Value* rv = tctx_.cur->find("&" + pat.substr(b, e - b));
+                    if (rv && rv->t == VT::Code && rv->code() && rv->code()->isRegexRoutine) bareCode = true;
+                }
                 if (bareCode) {
                     Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
                     Value savedSlash = slash ? *slash : Value::nil();
@@ -5613,11 +5627,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (haveLimit && pieces >= limit - 1) break;
                 emit(subj.substr(pos, mm.from - pos));
                 if (want) {
-                    Value sepv = Value::matchVal(subj.substr(mm.from, mm.to - mm.from),
-                                                 (long)mm.from, (long)mm.to);
+                    // the separator is a Match over the WHOLE subject (.orig), with
+                    // its positional AND named captures — `"a1b".split(/$<d>=(\d)/,
+                    // :v)[1]<d>` is "1", and `.orig` is "a1b", not the separator
+                    auto origStr = std::make_shared<std::string>(subj);
+                    auto span = [&](long f, long t) {
+                        Value x = Value::matchVal(subj.substr(f, t - f), f, t);
+                        x.extM() = origStr;
+                        return x;
+                    };
+                    Value sepv = span((long)mm.from, (long)mm.to);
                     for (auto& c : mm.caps) // the separator's own captures: @a[1][0]
-                        sepv.arrRef().push_back(c.first < 0 ? Value::nil()
-                            : Value::matchVal(subj.substr(c.first, c.second - c.first), c.first, c.second));
+                        sepv.arrRef().push_back(c.first < 0 ? Value::nil() : span(c.first, c.second));
+                    for (auto& nc : mm.named)
+                        if (nc.second.first >= 0) sepv.hashRef()[nc.first] = span(nc.second.first, nc.second.second);
                     Value idx = Value::integer(0);
                     if (want == 'k' || want == 'm') out.arr()->push_back(idx);
                     if (want == 'v' || want == 'm') out.arr()->push_back(sepv);

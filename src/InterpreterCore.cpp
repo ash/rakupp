@@ -1975,6 +1975,17 @@ struct PooledFrame {
 };
 } // namespace
 
+// `return |@rc` slips the elements in as return's ARGUMENTS, and return gives
+// back one List of them (or the one value, alone) — not a Slip that flattens
+// into the caller's list: ('x', f(), 'y') has three elements. `return
+// slip(…)` stays a Slip. Every place a `return` is evaluated calls this.
+static inline void returnSlipArgs(const ReturnStmt* r, Value& v) {
+    if (!r->value || r->value->kind != NK::Unary || static_cast<const Unary*>(r->value.get())->op != "|") return;
+    if (v.t != VT::Array || !v.arr() || v.s != "Slip") return;
+    if (v.arr()->size() == 1) v = (*v.arr())[0];
+    else { v.s = ""; v.isList = true; }
+}
+
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
     extern unsigned long long g_execStmts;
@@ -2137,6 +2148,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // like an empty routine's own tail (Nil-Any sheet NA-13, and
             // roast S02-types/nil.t "bare return returns Nil").
             Value v = r->value ? eval(r->value.get()) : Value::nil();
+            returnSlipArgs(r, v);
             // An EXPLICIT `return $p` hands the container on; only a routine's
             // implicit tail value is decontainerized (below, at the tail exit).
             tctx_.valContained = exprYieldsContainer(r->value.get());
@@ -4407,6 +4419,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 Value h = Value::makeHash();
                 for (auto& kv : named) if (!explicitNamed.count(kv.first)) (*h.hash())[kv.first] = kv.second;
                 env->define(slotName(p, pidx), h);
+                // `submethod BUILD(*%!f)` — an ATTRIBUTIVE slurpy writes through to
+                // the invocant, as `:$!x` does: `C.new(a => 1).f` is {a => 1}
+                if (p.name.size() > 2 && p.name[1] == '!')
+                    if (Value* sp = env->find("self"))
+                        if (sp->t == VT::Object && sp->obj()) sp->obj()->attrs[p.name.substr(2)] = h;
             } else {
                 Value a = Value::array();
                 // a capture doesn't CONSUME its args — it sees the whole
@@ -4568,6 +4585,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // parts and it round-trips as \(…) (Log::Async's wrap tests)
                 if (capture && !p.name.empty()) { a.hashKind = "Capture"; a.itemized = true; }
                 env->define(slotName(p, pidx), a);
+                // …and `*@!items`, an attributive positional slurpy, the same way
+                if (!capture && p.name.size() > 2 && p.name[1] == '!')
+                    if (Value* sp = env->find("self"))
+                        if (sp->t == VT::Object && sp->obj()) sp->obj()->attrs[p.name.substr(2)] = coerceArray(a);
                 // capture sub-signature `|c($x, :$y!)` — unpack the slurped
                 // positionals AND the call's named args into the inner params
                 if (p.subSig) {
@@ -4699,8 +4720,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     env->define(p.captureName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName()));
                 attrWrite(dv); // `:$!x = 42` with no arg still initializes the attr
             }
+            // (Rakudo raises this as a plain X::AdHoc — there is no named class
+            // for it there, and `.^name` is what a handler or a test sees)
             else if (p.required)
-                throw RakuError{Value::typeObj("X::Parameter::RequiredNamed"),
+                throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Required named parameter '" + bareName + "' not passed"};
             else env->define(slotName(p, pidx), typedDefault(p.type, p.sigil));
             continue;
@@ -5051,8 +5074,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     if (whereVerified) return;
     for (size_t i = 0; i < params.size(); i++) {
         const Param& p = params[i];
-        // (a capture `|c where …` is slurpy too, but its where sees the Capture)
-        if (!p.whereExpr || (p.slurpy && p.sigil != '\\') || p.name.empty()) continue;
+        // (a capture `|c where …` is slurpy too, but its where sees the Capture;
+        // a slurpy `*@c where …` sees the whole collected array, as Rakudo's
+        // does: `sub f(*@c where { @c.elems <= 2 })` refuses three)
+        if (!p.whereExpr || p.name.empty()) continue;
         Value* bound = env->find(slotName(p, i));
         if (!bound) continue;
         Value val = *bound;
@@ -5342,7 +5367,9 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (!arg.isList && isNativeScalarName(arg.ofType()))
                 return type == "array" || type == "Positional" ||
                        type == "Iterable" || type == "Cool";
-            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || (arg.isList && arg.s == "Seq" && type == "Seq") ||
+            // (List and Seq are Cool, and an Array is a List: `Cool $c` and
+            // `Str(Cool) $s` take [1, 2], as Rakudo's do)
+            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || type == "Cool" || (arg.isList && arg.s == "Seq" && type == "Seq") ||
                    (type == "Slip" && arg.s == "Slip");   // `--> Slip` (highlighter's matches)
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
@@ -5983,6 +6010,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 score += 8;
                 if (p->type == pos[i].typeName()) score += 2;
             }
+        }
+        // `Cool` is the widest a LIST can match short of Any — a bare `@x`
+        // (Positional) says more about it: `multi m(Cool $x)` / `multi m(@x)`
+        // sends [1] to the @x candidate, as Rakudo does
+        else if (p->type == "Cool" && pos[i].t == VT::Array) {
+            score += 5;
         }
         else if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
             score += 8;                                // a NOMINAL type outranks a bare @/% sigil
@@ -6746,6 +6779,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
                 }
                 last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                      : r->value ? eval(r->value.get()) : Value::nil();
+                if (!(tcx.lvalueOut && r->isRw)) returnSlipArgs(r, last);
                 tcx.valContained = exprYieldsContainer(r->value.get());
                 explicitTailReturn = true;
             }
@@ -7955,6 +7989,7 @@ resumeBody:
                     }
                     last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                          : r->value ? eval(r->value.get()) : Value::nil(); // bare `return` is Nil (NA-13)
+                    if (!(tcx.lvalueOut && r->isRw)) returnSlipArgs(r, last);
                     // …and, as at the exec-site `return` arm, an explicit
                     // `return $p` hands the CONTAINER on. This fast path is the
                     // routine's last statement, so the tail-decontainerizing
@@ -12757,6 +12792,31 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         for (auto* ve : early) { (void)lvalue(ve); }
         Value rhs = eval(a->value.get());
         for (auto* ve : early) ve->declare = false;   // restored by Undeclare
+        // `my :($a, $b) := (1, 2, 3)` binds a SIGNATURE, so the count must fit:
+        // Rakudo's "Too many/few positionals" (an @ or % item soaks up the rest)
+        if (tl->fromSignature && opEq(a->op, ":=")) {
+            // (a parameter with a DEFAULT — `$r = $reader` — need not be given)
+            bool soaks = false;
+            size_t required = 0;
+            for (auto& it : tl->items) {
+                if (!it) continue;
+                if (it->kind == NK::Assign) continue;   // `$x = default`: optional
+                ++required;
+                if (it->kind == NK::VarExpr) {
+                    const std::string& n = static_cast<VarExpr*>(it.get())->name;
+                    if (!n.empty() && (n[0] == '@' || n[0] == '%')) soaks = true;
+                }
+            }
+            const size_t most = tl->items.size();
+            const size_t got = (rhs.t == VT::Array || rhs.t == VT::Range) && !rhs.itemized ? toList(rhs).size() : 1;
+            if (!soaks && (got > most || got < required)) {
+                const size_t want = got > most ? most : required;
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    std::string(got > most ? "Too many" : "Too few") + " positionals passed to '<anon>'; expected " +
+                    (required == most ? std::to_string(want) : std::to_string(required) + (most == required + 1 ? " or " : " to ") + std::to_string(most)) +
+                    " argument" + (want == 1 ? "" : "s") + " but got " + std::to_string(got)};
+            }
+        }
         assignListTarget(tl, rhs, opEq(a->op, ":="));
         // `my ($a) := \(3)` — a scalar bound to a LITERAL part of a literal
         // capture holds the value itself: no container to assign or step
@@ -18631,7 +18691,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (!asList) {
                 v.hashRef()[kv.first] = childMatch(kv.second[0]);
             } else {
-                Value arr = Value::array(); arr.isList = true;
+                Value arr = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
                 for (auto& c : kv.second) arr.arr()->push_back(childMatch(c));
                 v.hashRef()[kv.first] = arr;
             }
@@ -18639,7 +18699,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         // a quantified capture that matched zero times is an empty list, not absent
         if (m.listNames) for (auto& nm : *m.listNames)
             if (!m.children.count(nm) && !v.hashRef().count(nm)) {
-                Value arr = Value::array(); arr.isList = true;
+                Value arr = Value::array();
                 v.hashRef()[nm] = arr;
             }
         // `%bases=( … )+` / `@a=( … )+` / `$x=( … )` alias a VARIABLE of the
@@ -23804,7 +23864,8 @@ Value Interpreter::evalCall(Call* c) {
               (args[0].t == VT::Any || args[0].t == VT::Nil)))) {
             if (Value* lv = lvalue(c->args[0].get())) {
                 const bool scalarVar = c->args[0]->kind == NK::VarExpr;
-                if (lv->t == VT::Any || lv->t == VT::Nil) { *lv = Value::array(); if (scalarVar) lv->itemized = true; }
+                // (an element slot holds the new Array in its Scalar too: `$[2]`)
+                if (lv->t == VT::Any || lv->t == VT::Nil) { *lv = Value::array(); lv->itemized = true; }
                 if (lv->t == VT::Array) {
                     ValueList rest(args.begin() + 1, args.end());
                     return methodCall(*lv, c->name, rest);
@@ -29517,6 +29578,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 std::string et = lv->ofType();
                 *lv = Value::array(); lv->ofTypeM() = et;
             }
+            // an ELEMENT slot holds the vivified Array in its Scalar, as an
+            // assigned element does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]`
+            if (mc->inv->kind == NK::Index && lv->t == VT::Array) lv->itemized = true;
             inv = *lv;
         }
         else inv = Value::array(); // no container: still act on a fresh Array
@@ -29706,8 +29770,12 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         bool hashy = opEq(mc->method, "ASSIGN-KEY") || opEq(mc->method, "BIND-KEY");
         try {
             if (Value* slot = lvalue(mc->inv.get())) {
-                if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type)
+                if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
                     *slot = hashy ? Value::makeHash() : Value::array();
+                    // …and an ELEMENT holds it in its Scalar, as an assigned one
+                    // does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]`
+                    if (mc->inv->kind == NK::Index) slot->itemized = true;
+                }
                 inv = *slot; // shares the arr/hash shared_ptr; the write goes through
             }
         } catch (...) {}

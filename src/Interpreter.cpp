@@ -4677,8 +4677,13 @@ void collectMentionedS(const Stmt* s, std::set<std::string>& out) {
             for (auto& br : i->branches) { collectMentionedE(br.first.get(), out);
                                            collectMentionedB(br.second.get(), out); }
             collectMentionedB(i->elseBlock.get(), out); break; }
-        case NK::WhileStmt: case NK::RepeatStmt: { auto* w = static_cast<const WhileStmt*>(s);
+        case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s);
             collectMentionedE(w->cond.get(), out); collectMentionedB(w->body.get(), out); break; }
+        // its own struct, with `isUntil` BEFORE `body`: read as a WhileStmt the
+        // flag was taken for the body pointer (a crash for `repeat … until`, a
+        // skipped body for `repeat … while`)
+        case NK::RepeatStmt: { auto* r = static_cast<const RepeatStmt*>(s);
+            collectMentionedE(r->cond.get(), out); collectMentionedB(r->body.get(), out); break; }
         case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
             collectMentionedE(f->list.get(), out); collectMentionedB(f->body.get(), out); break; }
         case NK::LoopStmt: { auto* l = static_cast<const LoopStmt*>(s);

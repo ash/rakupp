@@ -177,6 +177,11 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // a NAMED sub term keeps its name: `my $s = sub bar {}` and
     // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
     if (!be->termName.empty()) code.code()->name = be->termName;
+    // `-> | --> Nil {}` / `sub (--> 5) {}`: the return literal is the body's last
+    // statement, and the signature still shows it (`:(| --> Nil)`), as a
+    // declared sub's does
+    if (be->retLiteralPresent && !be->body.empty() && be->body.back()->kind == NK::ExprStmt)
+        code.code()->retLiteral = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
     // a NAMED method term inside a class body is still that class's method
     // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
     if (be->isMethodTerm && !be->termName.empty()) {

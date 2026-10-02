@@ -605,6 +605,10 @@ Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
     // public attrs are always built; a private one only via `is built`
     // (what JSON::Marshal's is_built probe asks)
     (*at.hash())["built"] = Value::boolean(a.pub || a.built);
+    // `.required` as Rakudo answers it: 1 for `is required`, the reason for
+    // `is required("why")`, and Mu when the attribute is not required
+    (*at.hash())["required"] = !a.required ? Value::typeObj("Mu")
+                             : a.requiredWhy.empty() ? Value::integer(1) : Value::str(a.requiredWhy);
     (*at.hash())["package"] = Value::typeObj(ownerName);
     for (auto& ut : a.userTraits) (*at.hash())["trait:" + ut.first] = ut.second;
     if (!a.pod.empty()) { // declarator pod, answered by .WHY
@@ -1091,6 +1095,17 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                 if (at.defaultTrait && provided->val && provided->val->t == VT::Nil) ensureEnv();
                 od->attrs[slot] = typedContainer(
                     coerceToSigil(namedStore(provided->val, at, lvl->declEnv.get()), at.sigil), at);
+                // …and a passed container keeps the attribute's ELEMENT default:
+                // `DA.new(subtags => <a b>).subtags[5]` is the `is default("")`,
+                // not the bare element type
+                {
+                    Value& sv = od->attrs[slot];
+                    if (at.defaultTrait && (at.sigil == '@' || at.sigil == '%') &&
+                        (sv.t == VT::Array || sv.t == VT::Hash)) {
+                        ensureEnv();
+                        sv.elemDefaultM() = std::make_shared<Value>(eval(const_cast<Expr*>(at.defaultTrait)));
+                    }
+                }
                 provided->bound = true;
                 continue;
             }
@@ -7961,6 +7976,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (c->hasPrimed) { for (auto& sp : c->primedParams) out.push_back(sp.get()); }
             else if (c->params) for (auto& p : *c->params) out.push_back(&p);
         };
+        // A METHOD's signature begins with its invocant, which is positional
+        // and required: `method al()` has arity 1 and count 1 in Rakudo (an
+        // explicit `$self:` is already among the params and counts there)
+        auto implicitInvocant = [&]() -> long long {
+            const Callable* c = inv.code();
+            if (!c->isMethod || c->hasPrimed) return 0;
+            if (c->params) for (auto& p : *c->params) if (p.invocant) return 0;
+            return 1;
+        };
         // a multi's arity/count are its PROTO's, which `.signature` renders
         if ((m == "arity" || m == "count") && inv.code()->isMultiDispatcher) {
             Value sig = methodCall(inv, "signature", ValueList{});
@@ -7982,7 +8006,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional && !p->defaultVal) n++;
             }
             else n = (long long)inv.code()->placeholderPos();
-            return Value::integer(n);
+            return Value::integer(n + implicitInvocant());
         }
         if (m == "count") { // required + optional positionals; a slurpy makes it Inf
             if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
@@ -8010,7 +8034,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (p.slurpy && p.sigil == '%') continue;
                 if (p.slurpy) slurpy = true; else n++;
             } else n = (long long)inv.code()->placeholderPos();
-            return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n);
+            return slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(n + implicitInvocant());
         }
         // `&f.callwith(…)` calls it; `&f.nextwith(…)` calls it and RETURNS that
         // from the routine we are in, as a tail call (roast S04-statements/goto.t)
@@ -8078,7 +8102,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "returns" || m == "of") {
             const std::string& rt = inv.code()->retType;
-            if (rt.empty()) return Value::typeObj("Mu");
+            if (rt.empty()) {   // `--> Nil` is a value, and still what the routine returns
+                const std::string lit = retLiteralText(inv.code()->retLiteral);
+                if (lit == "True" || lit == "False") return Value::typeObj("Bool");
+                return Value::typeObj(lit.empty() ? std::string("Mu") : lit);
+            }
             // a COERCION answers its coercion type, `--> Str()` being Str(Any)
             if (retTypeCoerces(rt)) {
                 std::string from = retTypeCoerceFrom(rt);

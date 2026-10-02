@@ -1903,8 +1903,18 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         }
     } evalTemps{mainlinePH ? tctx_.cur : nullptr,
                 tctx_.cur && tctx_.cur->ex ? tctx_.cur->ex->tempRestores.size() : 0};
+    // a CATCH at the unit's own top level handles what its statements throw,
+    // as a block's does — the mainline of a file gets that from execBlock,
+    // and an EVAL'd unit runs its statements one by one, so it is done here
+    Block* unitCatch = nullptr;
+    if (mainlinePH)
+        for (auto& s : prog->stmts)
+            if (s && s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
+                static_cast<Block*>(s.get())->phaser == "CATCH")
+                unitCatch = static_cast<Block*>(s.get());
     for (auto& s : prog->stmts) {
         tctx_.endCurTopStmt = s.get();   // for a `use` in it
+        if (s.get() == unitCatch) continue;
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
         // Loop control inside the EVAL, with a loop OUTSIDE it, belongs to that
@@ -1919,7 +1929,16 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         // reads this very message to keep such a block quiet).
         const bool ownedOutside = mainlinePH && tctx_.curLoopFrame != ExecContext::kNoFrame;
         predeclareStmt(s.get());   // the declaration is in scope for its own initialiser
-        try { last = exec(s.get()); }
+        try {
+            if (!unitCatch) last = exec(s.get());
+            else try { last = exec(s.get()); }
+            catch (RakuError& e) {
+                int r = runBlockCatch(prog->stmts, unitCatch, e);
+                if (r == 2) throw;           // nothing matched: the error goes on
+                if (r == 1) continue;        // .resume: on with the next statement
+                return Value::nil();         // handled: the unit is done
+            }
+        }
         // (named as Rakudo names them: the illegal control and what encloses it)
         catch (RedoEx&) { if (ownedOutside) throw; throwTypedV("X::ControlFlow", {{"illegal", Value::str("redo")}, {"enclosing", Value::str("loop construct")}}, "redo without loop construct"); }
         catch (NextEx&) { if (ownedOutside) throw; throwTypedV("X::ControlFlow", {{"illegal", Value::str("next")}, {"enclosing", Value::str("loop construct")}}, "next without loop construct"); }

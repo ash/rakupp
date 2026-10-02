@@ -2167,6 +2167,14 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (cur().spaceBefore && peek().kind == Tok::LBracket && !peek().spaceBefore &&
             ((cur().kind == Tok::Ident && !cur().text.empty() &&
               cur().text.find_first_not_of('R') == std::string::npos) ||  // R, RR, RRR…
+             // …and the zip/cross letters: `<a b> Z[ne] <a c>`, `1,2 X[cmp] 2`
+             // (a symbolic inner op arrives glued as one token already; a WORD
+             // one came here as `Z` then a `[ne]` reduction of what followed)
+             // (…but not a CALLABLE in the brackets, `X[&sprintf]`, which the
+             // metaop reader already handles as a whole)
+             (cur().kind == Tok::Ident && (cur().text == "Z" || cur().text == "X") &&
+              !(peek(2).kind == Tok::Var && peek(2).text.size() > 1 && peek(2).text[0] == '&') &&
+              !(peek(2).kind == Tok::Op && peek(2).text == "&")) ||
              (cur().kind == Tok::Op && cur().text == "!")))
             outerMeta = cur().text;
         // `$a R[and]= 42` — a reversed ASSIGNMENT is refused (Rakudo), and this
@@ -2300,7 +2308,11 @@ ExprPtr Parser::parseExpr(int minbp) {
                         lhs = std::move(as);
                         made = true;
                     }
-                    else if (!assignForm && base.lbp >= minbp) {
+                    else if (!assignForm &&
+                             ((outerMeta == "Z" || outerMeta == "X") ? BP_ZIP : base.lbp) >= minbp) {
+                        // a zip or cross binds as loosely as `Z`/`X` themselves,
+                        // whatever the operator inside the brackets
+                        if (outerMeta == "Z" || outerMeta == "X") base.lbp = BP_ZIP;
                         if (outerMeta.empty() && rPfx.empty() && userInfix_.count(baseOp)) {
                             auto call = std::make_unique<Call>();
                             call->name = "infix:<" + baseOp + ">";
@@ -5091,7 +5103,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     // named or slurpy parameter) is left to the error at the end of this
     // function rather than bound to the wrong thing. PDF::COS::Tie's `method
     // raku` is written this way, and the parse error stopped all of PDF (#79).
-    if (isOp(":") && peek().kind == Tok::LParen) advance();
+    const bool sigLiteral = isOp(":") && peek().kind == Tok::LParen;
+    if (sigLiteral) advance();
     // `constant ($a, $b) = …` — a constant names ONE thing
     if (scope == "constant" && isKind(Tok::LParen))
         throw ParseError("Missing initializer on constant declaration", cur().line,
@@ -5099,6 +5112,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     if (isKind(Tok::LParen)) {
         advance();
         auto list = std::make_unique<ListExpr>();
+        list->fromSignature = sigLiteral;
         while (!isKind(Tok::RParen) && !isKind(Tok::End)) {
             if (isKind(Tok::LParen)) { // nested destructure:  my (\a, (\b, \c)) = …
                 list->items.push_back(parseDeclarator(scope));
@@ -7964,6 +7978,7 @@ ExprPtr Parser::parsePrimary() {
                     auto es = std::make_unique<ExprStmt>();
                     es->e = std::move(retLit);
                     be->body.push_back(std::move(es));
+                    be->retLiteralPresent = true;
                 }
                 return be;
             }
@@ -8304,11 +8319,13 @@ ExprPtr Parser::parsePrimary() {
                 be->isMethodTerm = name == "method"; // …and a method binds `self`
                 if (isKind(Tok::Ident))     // optional name: `(sub bar {}).name` is "bar"
                     be->termName = advance().text;
+                ExprPtr subRetLit;   // `sub (--> 5) { … }`: the literal is the value
                 if (isKind(Tok::LParen)) {
-                    advance(); sigRetType_.clear();
+                    advance(); sigRetType_.clear(); sigRetLiteral_.reset();
                     be->sigParens = true;
                     be->params = parseSignature();
                     be->retType = sigRetType_;   // `sub (--> Int) { … }`
+                    subRetLit = std::move(sigRetLiteral_);
                     expectKind(Tok::RParen, ")");
                 }
                 // The traits between the signature and the block are skipped —
@@ -8333,6 +8350,12 @@ ExprPtr Parser::parsePrimary() {
                     if (be->isMethodTerm) refuseFreeMethodAttrs(anonBodyAt);
                     routineDepth_--;
                     be->body = std::move(blk->stmts);
+                }
+                if (subRetLit) {   // the literal is the routine's value, as a declared sub's is
+                    auto es = std::make_unique<ExprStmt>();
+                    es->e = std::move(subRetLit);
+                    be->body.push_back(std::move(es));
+                    be->retLiteralPresent = true;
                 }
                 attachTrailingPod(*be);
                 if (be->podTrail.empty() && !openTrail.empty()) {
@@ -14694,7 +14717,8 @@ StmtPtr Parser::parseIf(bool isUnless) {
         // …and so does anything past one plain name: several parameters
         // (`-> :$foo, *@a`) or a slurpy of any kind (`*@a` flattens the
         // condition, `**@a` keeps it whole, `+@a` takes the single-arg rule)
-        if (anySub || ps.size() > 1 || (ps.size() == 1 && (ps[0].slurpy || ps[0].named)))
+        // …and a COERCION (`if $s -> Int() $n`), which the name alone would drop
+        if (anySub || ps.size() > 1 || (ps.size() == 1 && (ps[0].slurpy || ps[0].named || ps[0].coerce)))
             intoParams = std::move(ps);
         else if (!ps.empty() && !ps[0].name.empty())
             into = ps[0].name;
@@ -15572,7 +15596,7 @@ StmtPtr Parser::parseStatementImpl() {
                 else if (isKind(Tok::QwList) && !cur().spaceBefore) advance();   // is foo<a b>
                 else if (isOp("<") && !cur().spaceBefore) { advance(); readAngleWords(">"); }
             }
-            if (isKind(Tok::RegexLit)) nr->pattern = advance().text; // lexer captured the body as a RegexLit
+            if (isKind(Tok::RegexLit)) { lastRegexDeclBody_ = pos_; nr->pattern = advance().text; } // lexer captured the body as a RegexLit
             else { // fallback: skip a brace body we couldn't capture
                 while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) advance();
                 if (isKind(Tok::LBrace)) { int d = 0; do { if (isKind(Tok::LBrace)) d++; else if (isKind(Tok::RBrace)) d--; advance(); } while (d > 0 && !isKind(Tok::End)); }
@@ -16166,7 +16190,8 @@ StmtPtr Parser::parseStatementImpl() {
                 advance();
                 auto ps = parsePointyParams();
                 bool anySub = false;
-                for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+                // a COERCION too (`with $s -> Int() $n`): the name alone would drop it
+                for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce;
                 if (anySub) g->params = std::move(ps); // destructuring binder — bindParams
                 else if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
             }
@@ -16202,7 +16227,7 @@ StmtPtr Parser::parseStatementImpl() {
                     advance();
                     auto ps = parsePointyParams();
                     bool anySub = false;
-                    for (auto& p : ps) anySub = anySub || (bool)p.subSig;
+                    for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce;
                     if (anySub) g->elseParams = std::move(ps);
                     else if (!ps.empty() && !ps[0].name.empty()) g->elseVar = ps[0].name;
                 }
@@ -16697,7 +16722,14 @@ void Parser::enforceStmtSep() {
         !isKind(Tok::Semicolon) && !vertBetween())
         throw ParseError("Strange text after block (missing semicolon or comma?)", cur().line,
                          "X::Syntax::Confused", {{"reason", "Strange text after block (missing semicolon or comma?)"}});
-    if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line == pv.line) {
+    // a `token`/`regex`/`rule` body is one RegexLit token, and it closes its
+    // declaration exactly as a block's `}` does: `my token c { a }` then a
+    // new line is two statements, not two terms
+    const bool closesBlock = pv.kind == Tok::RBrace || pos_ - 1 == lastRegexDeclBody_;
+    if (pos_ - 1 == lastRegexDeclBody_ && cur().line == pv.line && !isKind(Tok::Semicolon) && !vertBetween())
+        throw ParseError("Strange text after block (missing semicolon or comma?)", cur().line,
+                         "X::Syntax::Confused", {{"reason", "Strange text after block (missing semicolon or comma?)"}});
+    if (!closesBlock && pv.kind != Tok::Semicolon && cur().line == pv.line) {
         // A `[` here was read as a bracketed INFIX whose brackets do not spell an
         // operator — `@a [0]` — and naming that is more use than "two terms in a
         // row", which is also what Rakudo says about it. (parseExpr cannot raise
@@ -16712,7 +16744,7 @@ void Parser::enforceStmtSep() {
     }
     // …and across lines: only a closing `}` may end a statement at a newline
     // (`42 if 23\nis 50` is two terms in a row)
-    if (pv.kind != Tok::RBrace && pv.kind != Tok::Semicolon && cur().line != pv.line &&
+    if (!closesBlock && pv.kind != Tok::Semicolon && cur().line != pv.line &&
         startsTermToken(cur()))
         throw ParseError("Two terms in a row across lines (missing semicolon or comma?)", cur().line,
                          "X::Syntax::Confused", {{"reason", "Two terms in a row across lines (missing semicolon or comma?)"}});

@@ -4165,6 +4165,11 @@ Value makeSignature(const Callable* c) {
         if (char sm = retTypeSmiley(rt)) rt = retTypeName(rt) + ":" + std::string(1, sm);
         sig += " --> " + rt; rsig += " --> " + rt;
     }
+    else if (c) {   // `--> Nil` / `--> True`: a return value written as one
+        const std::string lit = retLiteralText(c->retLiteral);
+        const std::string shown = lit == "True" || lit == "False" ? "Bool::" + lit : lit;   // as Rakudo renders it
+        if (!lit.empty()) { sig += " --> " + shown; rsig += " --> " + shown; }
+    }
     sig += ")"; rsig += ")";
     Value s = Value::makeHash(); s.hashKind = "Signature";
     (*s.hash())["str"] = Value::str(sig);
@@ -5357,6 +5362,24 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // A USER class named after a built-in (`my class Pair`, `my class Match`,
+    // `my class Formatter`) shadows it, so its `.new` is the class's own — the
+    // built-in constructors below are keyed on the bare name and answered
+    // first, building a Format, a Match, a Proc instead of the user's object.
+    // (User exception classes, X::…, already construct on the ordinary path.)
+    if (__builtin_expect(inv.t == VT::Type && !skipOwn && m.size() == 3 && m == "new", 0) &&
+        inv.s.rfind("X::", 0) != 0 && inv.s.rfind("IO::", 0) != 0 && isKnownTypeName(inv.s)) {
+        auto cit = classes_.find(inv.s);
+        // …only where that declaration is IN SCOPE: the class table is global,
+        // and a `my class Pair` inside a block must not outlive it
+        const Value* lex = tctx_.cur ? tctx_.cur->find(inv.s) : nullptr;
+        if (cit != classes_.end() && cit->second && cit->second->decl && !cit->second->isRole &&
+            lex && lex->t == VT::Type) {
+            ClassInfo* ci = cit->second.get();
+            if (ci->findMethod("new")) return invokeMethodChain("new", ci, inv, args, rwArgs);
+            return methodCall(inv, "bless", std::move(args), rwArgs);
+        }
+    }
     // PACKED-ARRAY-PLAN: `.elems` / `.end` of a packed native array, from its
     // words — through arr() they would unpack it
     if (inv.pk_ == PK::Packed && args.empty() && m.size() <= 5 && inv.hashKind.empty() && inv.packedLive() &&

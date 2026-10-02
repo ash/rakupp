@@ -320,6 +320,7 @@ struct ListExpr : Expr {
     bool parenned = false; // came from `( … )` → a distinct nested list, not a comma-chain to merge into
     bool semicolon = false; // `( a; b )` semicolon-list: each item is one segment's value (multidim)
     bool userComma = false; // the program declares its own `infix:<,>` — eval asks it first
+    bool fromSignature = false; // `my :($a, $b) := …` — binding it checks the arity, as a signature does
     ListExpr(): Expr(NK::ListExpr) {}
 };
 
@@ -796,6 +797,7 @@ struct BlockExpr : Expr {
     bool sigParens = false;    // `sub () {…}` — an anonymous routine that WROTE its (maybe empty) signature
     std::string termName;      // `method m1(…) {…}` as a TERM still names (and, in a class, adds) the method
     bool anonTerm = false;     // `anon sub f {…}`: named, but installs `&f` nowhere
+    bool retLiteralPresent = false; // `-> --> Nil {…}` / `sub (--> 5) {…}`: the body's last statement is that literal
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
     bool retRw = false;        // `is rw` / `is raw` on an anonymous routine term
     std::string pod;           // `#|` / `#=` declarator pod of the block / anon routine (.WHY)
@@ -1381,6 +1383,20 @@ inline bool nativeNumericStatic(const Expr* e, char* kind = nullptr) {
     }
     if (kind) *kind = k;
     return k != 0;
+}
+
+// A `--> Nil` / `--> True` in a signature is a return VALUE, kept apart from a
+// return type — but it still belongs to the signature: Rakudo renders
+// `:(| --> Nil)` and answers Nil to `.returns`. The literal as written ("Nil",
+// "Empty", "True", "False"), or "" for anything else.
+inline std::string retLiteralText(const Expr* e) {
+    if (!e) return "";
+    if (e->kind == NK::NameTerm) {
+        const std::string& n = static_cast<const NameTerm*>(e)->name;
+        if (n == "Nil" || n == "Empty") return n;
+    }
+    if (e->kind == NK::BoolLit) return static_cast<const BoolLit*>(e)->v ? "True" : "False";
+    return "";
 }
 
 } // namespace rakupp
