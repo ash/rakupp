@@ -513,6 +513,25 @@ This runs after the tag at the latest, on the bundle copied to raku.online
 (see "Always — after the tag" below), and before the tag whenever the
 candidate's Raku.js was built this cycle.
 
+### 6c. An installed binary, not a checkout
+
+```bash
+rakupp t/installed/run.raku --dbiish        # --dbiish=DIR to use a DBIish checkout
+```
+
+Every other gate runs the binary where it was built, beside the checkout's
+`rakulib/` and `src/`. Users run a copy in an install prefix with neither.
+This gate copies the candidate into such a prefix, with HOME empty, RAKULIB
+cleared and the working directory outside the checkout. Then it checks that
+NativeHelpers::{Blob,CStruct,Pointer} come from the binary rather than from a
+decoy dist of the same names on `-I`, that `rakupp install` does not fetch
+them, and that `--exe` carries them. With `--dbiish` it also installs the real
+DBIish into the empty HOME and runs its SQLite suite (network and libsqlite3
+needed). Issue #118 lived in exactly this gap: every DBIish measurement ran
+from a checkout. The v5.1.0 release asset fails 10 of the 13 offline checks
+and dies in DBIish with "Can't determine actual Offset". CI runs the offline
+part on every push; the `--dbiish` run is for the release.
+
 ### 7. Conformance — only before a release
 
 ```bash

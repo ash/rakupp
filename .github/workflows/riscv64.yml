@@ -94,6 +94,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: build/rakupp t/standalone/run.raku
 
+      - name: Installed-binary gate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: build/rakupp t/installed/run.raku
+
       - name: Package
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: tar -C dist -czf rakupp-linux-riscv64.tar.gz rakupp

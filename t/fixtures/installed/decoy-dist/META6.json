@@ -1,0 +1,12 @@
+{
+  "name": "NativeHelpers::Blob",
+  "version": "0.1.13",
+  "auth": "zef:raku-community-modules",
+  "description": "Gate fixture: a dist named like the MoarVM-only original, whose modules die when loaded. rakupp must neither load it nor install it.",
+  "provides": {
+    "NativeHelpers::Blob": "lib/NativeHelpers/Blob.rakumod",
+    "NativeHelpers::CStruct": "lib/NativeHelpers/CStruct.rakumod",
+    "NativeHelpers::Pointer": "lib/NativeHelpers/Pointer.rakumod"
+  },
+  "depends": []
+}

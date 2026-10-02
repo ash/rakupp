@@ -539,6 +539,15 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp t/install/run.raku
 
+      # The installed-binary gate (#118): the binary COPIED into a prefix with no
+      # rakulib/ near it, HOME empty, run from outside the checkout — the shims
+      # it carries must answer ahead of a decoy on -I, the installer must not
+      # fetch what the binary provides, and --exe must carry them. Offline; the
+      # opt-in --dbiish lane (network + libsqlite3) is a release check.
+      - name: Installed-binary gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/installed/run.raku
+
       # Package the --exe-capable install layout: bin/rakupp, the archive set in
       # lib/ (librakupp_rt.a plus ucd_names/ucd_coll/ucd_props/parse, and the
       # rakupp_stubs archive --slim links in place of a cut feature — the SLIM
