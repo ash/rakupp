@@ -328,7 +328,7 @@ OpenSSL-backed modules. Modules go to `/root/.raku`, which lives as long as
 the container does; to keep them, build on the image:
 
 ```dockerfile
-FROM ghcr.io/ash/rakupp:5.1
+FROM ghcr.io/ash/rakupp:5.2
 RUN rakupp install JSON::Fast
 COPY . /work
 CMD ["main.raku"]
@@ -339,7 +339,7 @@ with. The runtime it links (`lib/`, `include/`) is there, so adding one brings
 it back:
 
 ```dockerfile
-FROM ghcr.io/ash/rakupp:5.1
+FROM ghcr.io/ash/rakupp:5.2
 RUN apt-get update && apt-get install -y --no-install-recommends g++ \
  && rm -rf /var/lib/apt/lists/*
 ```
