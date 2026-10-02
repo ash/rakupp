@@ -9595,8 +9595,10 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         // the word `<=>`, `<a <<b>> c>` the word `<<b>>`, and the first `>`
         // with nothing open closes the list wherever it stands — `< a >= b >`
         // is the list `<a>` followed by `= b >`, a syntax error there too.
-        if (close == ">" && cur().kind == Tok::Op && cur().text.find_first_of("<>") != std::string::npos) {
-            const std::string& tx = cur().text;
+        // (by the SOURCE spelling: `≤` arrives rewritten as `<=`, text2 keeping `≤`)
+        if (close == ">" && cur().kind == Tok::Op &&
+            (cur().text2.empty() ? cur().text : cur().text2).find_first_of("<>") != std::string::npos) {
+            const std::string tx = cur().text2.empty() ? cur().text : cur().text2;
             int d = depth;
             size_t ci = std::string::npos;
             for (size_t k = 0; k < tx.size(); k++) {
@@ -9621,6 +9623,7 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         // list closes there even after a space (see above); a `<<…>>` / `«…»` one
         // only when the token is glued to the preceding word.
         if (depth == 0 && cur().kind == Tok::Op && (!cur().spaceBefore || close == ">") &&
+            cur().text2.empty() &&   // (`≥` arrives as `>=`: a rewritten operator holds no angle)
             cur().text.size() > close.size() &&
             cur().text.compare(0, close.size(), close) == 0) {
             toks_[pos_].text = cur().text.substr(close.size());
@@ -9667,7 +9670,7 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
         }
         // symmetric end-glue: `infix:<+>` lexes `+>` as ONE op token — the
         // trailing close belongs to the word list; the front is the word.
-        if (depth == 0 && cur().kind == Tok::Op && cur().text.size() > close.size() &&
+        if (depth == 0 && cur().kind == Tok::Op && cur().text2.empty() && cur().text.size() > close.size() &&
             cur().text.compare(cur().text.size() - close.size(), close.size(), close) == 0) {
             std::string word = cur().text.substr(0, cur().text.size() - close.size());
             if (words.empty() || cur().spaceBefore) words.push_back(word);

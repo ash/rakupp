@@ -60,15 +60,15 @@ $sh.out-buffer = 1000;                              # the resize itself flushes
 check($sized.s, 23, 'resize-flushes');
 $sh.close;
 
-# 5. rakupp's DEFAULT still buffers, and that is deliberate — Rakudo writes
-#    through on every call (its $*OUT reports 0 and a fresh handle reports 1),
-#    which costs a syscall per print. The knob above is the documented way to
-#    ask for that; the default is not changed under programs that never do.
+# 5. A fresh handle writes THROUGH by default, as Rakudo's does (its
+#    `.out-buffer` reports 1): what was said is in the file before the close,
+#    so a process watching the file sees it at once. `:out-buffer` asks for
+#    buffering, as above.
 my $dflt = $dir.add('dflt');
 my $dh = open $dflt, :w;
-check($dh.out-buffer > 0, True, 'file-default-buffered');
+check($dh.out-buffer, 1, 'file-default-writes-through');
 $dh.say('held');
-check($dflt.s, 0, 'default-holds-until-close');
+check($dflt.s, 5, 'default-written-before-close');
 $dh.close;
 check($dflt.slurp, "held\n", 'close-writes');
 

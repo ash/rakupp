@@ -77,6 +77,14 @@ static inline char** rakupp_environ() { return environ; }
 #include <pthread_np.h>  // pthread_stackseg_np (OpenBSD) / pthread_attr_get_np (Free/Net/DragonFly)
 #endif
 
+// A branch that is almost never taken (a warning path in a hot operator).
+// MSVC has no __builtin_expect, so there it is only the condition.
+#if defined(__GNUC__) || defined(__clang__)
+#define RAKUPP_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define RAKUPP_UNLIKELY(x) (x)
+#endif
+
 namespace rakupp {
 std::vector<ClassInfo*> c3Linearize(ClassInfo* c, bool& ok);
 static bool hasMultipleInheritance(ClassInfo* c);

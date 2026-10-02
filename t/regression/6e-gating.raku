@@ -98,8 +98,9 @@ check $e, '6.e', '…and 6.e when that is the one';
 check $d, 'False False', ':smartcase is ignored before 6.e';
 check $e, 'True False',  '…and from 6.e folds case only for a needle that carries none';
 
-($d, $e) = both 'say "Hello World".index("world", :smartcase) ~ " " ~ "Hello".substr-eq("hell", 0, :smartcase)';
-check $d, ' False', ':smartcase reaches index and substr-eq too (6.d: no match)';
+# (.raku: a Nil stringified would also warn "Use of Nil in string context")
+($d, $e) = both 'say "Hello World".index("world", :smartcase).raku ~ " " ~ "Hello".substr-eq("hell", 0, :smartcase)';
+check $d, 'Nil False', ':smartcase reaches index and substr-eq too (6.d: no match)';
 check $e, '6 True', '…and finds them from 6.e on';
 
 ($d, $e) = both 'say "abcdefg".comb(2 => 1, :partial)';

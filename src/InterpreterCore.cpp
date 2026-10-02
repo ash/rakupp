@@ -11479,7 +11479,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         // ASCII `~=` append, applyArith for the rest
                         Value rhs = eval(a->value.get());
                         // an undefined value appended (`$s ~= $u`) warns as the `~` operand it is
-                        if (sv == 5 && __builtin_expect(uninitOperand(rhs), 0)) {
+                        if (sv == 5 && RAKUPP_UNLIKELY(uninitOperand(rhs))) {
                             UninitNameScope nm(*this, uninitNameOf(a->value.get()).empty() ? std::string() : std::string("element"));
                             rhs = Value::str(strOf(rhs));
                         }
@@ -20223,7 +20223,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // Costs a type check on the eager path and the AST walk only when an
         // operand really is one.
         if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
-        if (__builtin_expect(uninitOperand(l) || uninitOperand(r), 0)) uninitBinaryOperands(b, op, l, r);
+        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
         // not the hash's numeric coercion (which would be 0).
         {
@@ -20750,7 +20750,7 @@ Value Interpreter::evalBinary(Binary* b) {
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
         if (l.hashKind == "Proxy") l = deproxy(l);
         if (r.hashKind == "Proxy") r = deproxy(r);
-        if (__builtin_expect(uninitOperand(l) || uninitOperand(r), 0)) uninitBinaryOperands(b, op, l, r);
+        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
         // …but an operand that IS-A Str is a Str:D, so Rakudo binds the Str:D
         // candidate and concatenates its VALUE — per operand, even when the
         // other side is a plain object. `("bb" but R) ~ Plain.new` is "bbplain",
@@ -23846,7 +23846,7 @@ Value Interpreter::evalCall(Call* c) {
             }
             // `abs($u)` / `floor($u)` of an undefined value: 0, with the numeric
             // warning — abs binds the container raw and names it, floor does not
-            if (__builtin_expect(args.size() == 1 && args[0].t == VT::Any, 0) &&
+            if (RAKUPP_UNLIKELY(args.size() == 1 && args[0].t == VT::Any) &&
                 (c->name == "abs" || c->name == "floor")) {
                 UninitNameScope nm(*this, c->name == "abs" && !c->args.empty() ? uninitNameOf(c->args[0].get())
                                                                               : std::string());
@@ -29065,7 +29065,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // `.Str`/`.Numeric`/`.Int` of an undefined value, `@a.join` and `($u, 1).sum`
     // over an undefined element: Rakudo's warning names the container. Taken out
     // of line (uninitMethodCall) so this frame carries nothing for the rare case.
-    if (__builtin_expect(uninitMethodShape(mc, inv), 0)) return uninitMethodCall(mc, inv);
+    if (RAKUPP_UNLIKELY(uninitMethodShape(mc, inv))) return uninitMethodCall(mc, inv);
     // Offer the invocant EXPRESSION to the callee's binder: a candidate
     // whose invocant is `is rw` links it like an rw parameter and writes
     // assignments back into the caller's variable (see setupRwLinks).
