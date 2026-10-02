@@ -121,7 +121,18 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         // seen in version string' off `.parts[0] eq "v"` and strips it; stripping
         // it here instead meant that check never fired. (The `v0.0.1` LITERAL is a
         // different path and still parses as 0.0.1.)
-        Value v = Value::str(args.empty() ? "" : args[0].toStr());
+        // A LIST is the parts themselves: `Version.new((1,2,3))` and
+        // `Version.new($match[0])` are v1.2.3, where stringifying the list
+        // gave "1 2 3" and printed `v1 2 3`.
+        std::string spelled;
+        if (!args.empty() && args[0].t == VT::Array && !args[0].itemized) {
+            for (const Value& part : toList(args[0])) {
+                if (!spelled.empty()) spelled += '.';
+                spelled += part.toStr();
+            }
+        }
+        else if (!args.empty()) spelled = args[0].toStr();
+        Value v = Value::str(spelled);
         v.hashKind = "Version";
         return v;
     }

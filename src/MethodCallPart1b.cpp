@@ -1019,6 +1019,10 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         if (size_t lb = et.find('['); lb != std::string::npos) et = et.substr(lb + 1, et.find(']', lb) - lb - 1);
         bool signedElem = et.compare(0, 3, "int") == 0;
         b.ofTypeM() = (signedElem ? "int" : "uint") + std::to_string(w * 8);
+        // …and a typed Blob is NAMED by it: `blob8.new(1).^name` and
+        // `Blob[uint8].new(1).^name` are "Blob[uint8]" (Buf shows its [T] from
+        // the element type; Blob reads its name)
+        if (b.hashKind == "Blob") b.enumName = "Blob[" + b.ofType() + "]";
         b.s.promote();   // a native buffer needs stable, shared storage
         if (b.hashKind == "Buf") identify(b);
         return b;

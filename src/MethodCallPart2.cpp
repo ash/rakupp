@@ -6390,6 +6390,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (*h.hash())[tblNames[i]] = (*out.arr())[i];
                     return h;
                 }
+                // `:all` walks on past the user classes into Any and Mu, as the
+                // MRO does (`PT2.^methods(:all)` has Any's `list`, Mu's `gist`, …);
+                // the core table answers those, and answers them under :all
+                bool all = false;
+                for (auto& a : args) if (a.t == VT::Pair && a.s == "all")
+                    all = a.pairVal() ? a.pairVal()->truthy() : true;
+                if (all && !local && m == "methods") {
+                    Value anyT = Value::typeObj("Any");
+                    Value how = methodCall(anyT, "HOW", ValueList{});
+                    Value allArg = Value::pair("all", Value::boolean(true)); allArg.namedArg = true;
+                    Value core = methodCall(how, "methods", ValueList{anyT, allArg});
+                    if (core.t == VT::Array && core.arr())
+                        for (auto& cm : *core.arr()) out.arr()->push_back(cm);
+                }
                 return out;
             }
             // `roles_to_compose` is Rakudo's "queued for composition" list; by the
@@ -10210,10 +10224,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             !inv.ofType().empty() && inv.ofType() != "Mu" &&
             inv.typeName().find('[') == std::string::npos)
             return Value::str(inv.typeName() + "[" + inv.ofType() + "]");
-        // plain .name is NOT a universal method: a user-class instance with no
-        // name method/attr dies X::Method::NotFound like Rakudo ($.name typo)
-        if (m == "^name" || !(inv.t == VT::Object && inv.obj() && inv.obj()->cls))
-            return Value::str(inv.typeName());
+        // plain .name is NOT a universal method: only code, parameters and
+        // attributes have one (answered before this point). `42.name`,
+        // `Int.name`, `Less.name` and a user-class instance with no name
+        // method all die X::Method::NotFound in Rakudo — answering the type
+        // name made `try $x.name` a wrong guess instead of Nil
+        if (m == "^name") return Value::str(inv.typeName());
+        throwTypedV("X::Method::NotFound",
+                    {{"method", Value::str("name")}, {"typename", Value::str(inv.typeName())}, {"invocant", inv}},
+                    "No such method 'name' for invocant of type '" + inv.typeName() + "'");
     }
 
     // Set/Bag/Mix coercions and queries

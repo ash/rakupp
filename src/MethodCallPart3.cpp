@@ -4172,6 +4172,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         ValueList a2 = args;
         return methodCall(Value::str(inv.toStr()), "encode", a2, nullptr);
     }
+    // a Str is not bytes: only a Blob/Buf decodes. `"x".decode` is
+    // X::Method::NotFound in Rakudo, so `try $str.decode` answers Nil
+    if (m == "decode" && inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph())
+        throwTypedV("X::Method::NotFound",
+                    {{"method", Value::str("decode")}, {"typename", Value::str("Str")}, {"invocant", inv}},
+                    "No such method 'decode' for invocant of type 'Str'");
     if ((m == "encode" || m == "decode") && inv.t == VT::Str) {
         // normalize the encoding name: utf8 (default) or latin-1/iso-8859-1
         std::string enc;
@@ -4656,6 +4662,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (it != kEaw.end()) return Value::str(it->second);
             }
             if (!ev.empty()) return Value::str(ev);
+            // A property VALUE named instead of a property answers the property it
+            // belongs to, as MoarVM does: `.uniprop("W")` is the East_Asian_Width
+            // ("Na" for "a"), `.uniprop("Lu")` the General_Category ("Ll").
+            // Only the unambiguous names: the single letters A and N belong to
+            // several properties, and MoarVM's answers for them are not a value.
+            if (prop == "W" || prop == "Na" || prop == "F" || prop == "H") {
+                ValueList ea{Value::str("East_Asian_Width")};
+                return methodCall(Value::integer(cp), "uniprop", ea);
+            }
+            if (prop.size() == 2 && std::string("LMNPSZC").find(prop[0]) != std::string::npos) {
+                static const std::set<std::string> kGc = {
+                    "Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd","Ps","Pe","Pi","Pf",
+                    "Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
+                if (kGc.count(prop)) return Value::str(uniGeneralCategory(cp));
+            }
             // otherwise a binary property — strict (unknown names are False, not a lenient match)
             int b = uniBinaryProp(cp, prop);
             return Value::boolean(b == 1);
@@ -5302,7 +5323,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         size_t p = subj.find(needle);
         if (p == std::string::npos) return Value::nil();
-        return Value::matchVal(needle, (long)p, (long)(p + needle.size()));
+        Value mv = Value::matchVal(needle, (long)p, (long)(p + needle.size()));
+        // .orig is the whole SUBJECT, so .prematch/.postmatch cut it: after
+        // `"1999/04".match("/")` they are "1999" and "04", not "/" and ""
+        mv.extM() = std::make_shared<std::string>(subj);
+        return mv;
     }
     if (m == "split" && inv.t == VT::Str) {
         // Str.split has no default delimiter, and :k/:v/:kv/:p exclude each other

@@ -16631,7 +16631,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                       : (a.second < b.second ? -1 : a.second > b.second ? 1 : 0);
                 else if (!a.first && !b.first) // both alpha: string compare
                     c = a.second < b.second ? -1 : a.second > b.second ? 1 : 0;
-                else c = a.first ? -1 : 1; // a numeric part sorts BEFORE an alpha part (3 < "a")
+                else c = a.first ? 1 : -1; // an alpha part sorts BEFORE a numeric one: v1.2.a < v1.2.1 (Rakudo)
             }
             // one side ran out: an EXTRA non-zero numeric part makes that side greater
             // (1.2.1.1 > 1.2.1) but a trailing ZERO is insignificant (1.2.1a1.0 == 1.2.1a1);
@@ -18995,6 +18995,15 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
 // Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
 // Duration±x→Duration; everything else drops to plain numbers (like Rakudo's *).
 void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res) {
+    // `*`, `/` and `**` with an Instant or Duration operand take Real's path
+    // through the Num bridge, as Rakudo does: `Duration.new(3) * 2` is the
+    // Num 6, not a Rat (and `$d * $d` is a Num too)
+    if ((opEq(op, "*") || opEq(op, "/") || opEq(op, "**")) && res.isNumeric() && res.hashKind.empty() &&
+        (l.hashKind == "Duration" || r.hashKind == "Duration" ||
+         l.hashKind == "Instant" || r.hashKind == "Instant")) {
+        res = Value::number(res.toNum());
+        return;
+    }
     if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "%")) || !res.isNumeric() || !res.hashKind.empty()) return;
     bool li = l.hashKind == "Instant", ri = r.hashKind == "Instant";
     bool ld = l.hashKind == "Duration", rd = r.hashKind == "Duration";
@@ -23832,10 +23841,18 @@ Value Interpreter::evalCall(Call* c) {
             // number: `Direction(2 <=> 3)` is Less, which Direction lacks
             const bool foreignMember = !args[0].enumName.empty() && !args[0].enumType.empty() &&
                                        args[0].enumType != v->enumType;
-            if (v->arr() && !foreignMember) for (auto& pr : *v->arr())
-                if (pr.t == VT::Pair && pr.pairVal() && pr.pairVal()->toInt() == want) {
-                    Value ev = Value::enumVal(pr.s, want); ev.enumType = v->enumType; return ev;
-                }
+            // A member is found by its VALUE, compared as that value is: a
+            // Str-valued enum (`enum S (Strict => "Strict", Lax => "Lax")`) is
+            // looked up by string, so `S("Lax")` is Lax — reducing both sides
+            // to integers made every Str value 0 and answered the first member.
+            if (v->arr() && !foreignMember) for (auto& pr : *v->arr()) {
+                if (pr.t != VT::Pair || !pr.pairVal()) continue;
+                const Value& pv = *pr.pairVal();
+                const bool hit = pv.t == VT::Int ? pv.toInt() == want : pv.toStr() == args[0].toStr();
+                if (!hit) continue;
+                if (Value* mv = tctx_.cur->find(std::string(v->enumType.str()) + "::" + pr.s.str())) return *mv;
+                Value ev = Value::enumVal(pr.s, want); ev.enumType = v->enumType; return ev;
+            }
             // no member with that value → a FAILURE, as Rakudo's X::Enum::NoValue:
             // it lives until used, and assigning it into an attribute detonates
             // (Date::Event's `dies-ok { .new(:Etype(300)) }`)

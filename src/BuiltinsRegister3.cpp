@@ -373,7 +373,16 @@ void Interpreter::registerBuiltinsPart5() {
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw —
         // and a TYPED array type-checks what it is given: the method does both
         if (!a.empty() && a[0].t == VT::Array && (a[0].isList || !a[0].ofType().empty())) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "push", rest); }
-        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = 1; i < a.size(); i++) a[0].arr()->push_back(a[i]); return a[0]; }
+        // a Slip argument is its elements, as in any argument list:
+        // `push @c, (1,2).Slip` adds two (Rakudo), as `@c.push: (1,2).Slip` does
+        if (!a.empty() && a[0].t == VT::Array) {
+            for (size_t i = 1; i < a.size(); i++) {
+                if (a[i].t == VT::Array && a[i].arr() && a[i].s == "Slip")
+                    for (auto& e : *a[i].arr()) a[0].arr()->push_back(e);
+                else a[0].arr()->push_back(a[i]);
+            }
+            return a[0];
+        }
         return Value::any();
     };
     B["pop"] = [](Interpreter& I, ValueList& a) -> Value {
