@@ -1261,6 +1261,8 @@ struct NativeWatch {
 #elif defined(__APPLE__)
     void* stream = nullptr;
     dispatch_queue_t queue = nullptr;
+    struct timespec startWall {};    // file ctimes are wall-clock
+    struct timespec startMono {};
 #endif
     ~NativeWatch();
     void take(std::vector<std::pair<std::string, bool>>& out);
@@ -1324,6 +1326,18 @@ void fsEventsCallback(const void*, void* info, size_t n, void* paths, const uint
         std::string rest = p.substr(r.size());
         if (!rest.empty() && rest[0] == '/') rest.erase(0, 1);
         if (rest.empty() || rest.find('/') != std::string::npos) continue;
+        // "Since now" still lets through writes made just before the stream
+        // started that fseventsd had not logged yet — a directory copied and then
+        // watched reported its own files as changed. Any change (write, chmod,
+        // create, rename in) moves an entry's ctime, so in the first seconds an
+        // entry whose ctime predates the watch is such a leftover.
+        struct timespec nowMono;
+        clock_gettime(CLOCK_MONOTONIC, &nowMono);
+        struct stat st;
+        if (nowMono.tv_sec - w->startMono.tv_sec < 3 && ::lstat(p.c_str(), &st) == 0 &&
+            (st.st_ctimespec.tv_sec < w->startWall.tv_sec ||
+             (st.st_ctimespec.tv_sec == w->startWall.tv_sec && st.st_ctimespec.tv_nsec < w->startWall.tv_nsec)))
+            continue;
         bool renamed = true;
         if (!(flags[i] & kRenamed) && ((flags[i] & kModified) || !(flags[i] & kIsDir))) renamed = false;
         std::lock_guard<std::mutex> lk(w->m);
@@ -1390,6 +1404,8 @@ static std::shared_ptr<NativeWatch> startNativeWatch(const std::string& path, bo
     if (!s) return nullptr;
     const void* one[1] = {s};
     void* paths = a.CFArrayCreate(nullptr, one, 1, a.typeArrayCallBacks);
+    clock_gettime(CLOCK_REALTIME, &w->startWall);
+    clock_gettime(CLOCK_MONOTONIC, &w->startMono);
     FSCtx ctx{0, w.get(), nullptr, nullptr, nullptr};
     // as libuv asks: 50 ms latency, no deferral, one record per file
     if (paths) w->stream = a.Create(nullptr, fsEventsCallback, &ctx, paths,
