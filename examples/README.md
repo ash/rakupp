@@ -466,8 +466,9 @@ depend on ecosystem modules installed with `rakupp install`.
 A tiny [Cro](https://cro.raku.org) web service laid out the way `cro stub`
 lays one out: [`service.raku`](modules/cro/service.raku) with two routes,
 [`.cro.yml`](modules/cro/.cro.yml) telling the `cro` tool how to start it, and a
-`META6.json`. Install Cro, then start it with `cro run`, which picks the port
-and restarts the service when a file changes:
+`META6.json`; its [README](modules/cro/README.md) has the details. Install Cro,
+then start it with `cro run`, which picks the port and restarts the service when
+a file changes:
 
 ```sh
 rakupp install cro
