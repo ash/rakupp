@@ -1596,6 +1596,7 @@ static void markAnonDecl(Expr* e) {
     if (!e) return;
     if (e->kind == NK::Unary) { markAnonDecl(static_cast<Unary*>(e)->operand.get()); return; }
     if (e->kind != NK::BlockExpr) return;
+    static_cast<BlockExpr*>(e)->anonTerm = true;   // `anon sub f {}` installs no &f
     for (auto& st : static_cast<BlockExpr*>(e)->body)
         if (st && st->kind == NK::ClassDecl) static_cast<ClassDecl*>(st.get())->isAnonDecl = true;
 }
@@ -8070,10 +8071,8 @@ ExprPtr Parser::parsePrimary() {
                 be->pod = leadingPodAt(pos_ - 1); be->podLine = cur().line;
                 be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
                 be->isMethodTerm = name == "method"; // …and a method binds `self`
-                if (isKind(Tok::Ident)) {   // optional name (anon use)
-                    std::string nm = advance().text;
-                    if (be->isMethodTerm) be->termName = nm;
-                }
+                if (isKind(Tok::Ident))     // optional name: `(sub bar {}).name` is "bar"
+                    be->termName = advance().text;
                 if (isKind(Tok::LParen)) {
                     advance(); sigRetType_.clear();
                     be->sigParens = true;
@@ -9329,6 +9328,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     p.wordInfixSubs_ = wordInfixSubs_;   // `"{ div 3 }"` sees this unit's `sub div`
     p.kwNamedSubs_ = kwNamedSubs_;       // …and its `sub if`, so `"{ if() }"` calls it
     p.inEmbedded_ = true;                // (`"$!name"` in a method reaches the attribute)
+    p.routineDepth_ = routineDepth_;     // `"{&?ROUTINE.name}"` inside a sub names that sub
     Program prog = p.parseProgram();
     if (p.sawEndPhaser_) sawEndPhaser_ = true;   // `"{ END { … } }"` needs the END walk too
     // a single bare expression interpolates directly — unless it is a `{…}`

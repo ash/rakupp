@@ -1040,6 +1040,10 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip, bool allowObject) {
         // parse result and wreck it (URI's grammar walk is written that way).
         auto* ix = static_cast<Index*>(topic);
         if (!ix->base) return nullptr;
+        // an ADVERBED subscript is a value, not the element's container:
+        // `with %h<k>:delete { }` must not take the slot back — asking for it
+        // re-created the key the :delete had just removed
+        if (!ix->adverb.empty()) return nullptr;
         Value* base = nullptr;
         try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (...) { return nullptr; }
         if (!base) return nullptr;

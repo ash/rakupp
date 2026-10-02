@@ -29682,10 +29682,11 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         Value self = inv; ValueList margs = args;
         std::string method = mc->meta ? "^" + mc->method : mc->method; // *.^name keeps its meta form
         bool hyper = mc->hyper; // `*.attr».m` — the » belongs to the CURRIED call
+        bool maybe = mc->maybe; // `*.?meth` keeps its `.?`: no such method is Nil
         // a curry written under `use fatal` carries it: its Failure throws
         // wherever it is called from (`"a".map: *.Int`, S02-types/whatever.t)
         const bool fatal = fatalHere();
-        code.code()->builtin = [self, method, margs, hyper, fatal](Interpreter& I, ValueList& a) -> Value {
+        code.code()->builtin = [self, method, margs, hyper, fatal, maybe](Interpreter& I, ValueList& a) -> Value {
             Value arg = a.empty() ? Value::any() : a[0];
             Value base = arg;
             if (self.t != VT::Whatever) {
@@ -29693,8 +29694,17 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 else base = self;
             }
             ValueList ma = margs;
-            if (hyper) return I.hyperMethodEach(base, method, ma);
-            Value r = I.methodCall(base, method, ma);
+            if (hyper) return I.hyperMethodEach(base, method, ma, maybe);
+            Value r;
+            if (!maybe) r = I.methodCall(base, method, ma);
+            else try { r = I.methodCall(base, method, ma); }
+            catch (RakuError& err) {
+                const Value& p = err.payload;
+                if (!((p.t == VT::Type && p.s == "X::Method::NotFound") ||
+                      (p.t == VT::Object && p.obj() && p.obj()->cls &&
+                       p.obj()->cls->name == "X::Method::NotFound"))) throw;
+                return Value::nil();
+            }
             if (fatal && r.t == VT::Hash && r.hashKind == "Failure") failureDetonate(r);
             return r;
         };

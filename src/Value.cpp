@@ -579,6 +579,12 @@ std::string Value::toStr() const {
         return enumName;
     }
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
+    // an Instant says what it is: `say now` and `~now` are "Instant:1704067274"
+    // in Rakudo, both .Str and .gist (its number is .Numeric / .tai / .to-posix)
+    if ((t == VT::Int || t == VT::Rat || t == VT::Num) && hashKind == "Instant") {
+        Value bare = *this; bare.hashKind = "";
+        return "Instant:" + bare.toStr();
+    }
     // a BacktraceFrame stringifies as its backtrace line (newline included),
     // so joining frames gives the backtrace text again
     if (t == VT::Hash && hash() && hashKind == "BacktraceFrame") {

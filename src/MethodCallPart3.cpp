@@ -4184,6 +4184,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& a : args) if (a.t != VT::Pair) { enc = a.toStr(); break; }
         std::string norm;
         for (char ch : enc) if (ascii::isalnum((unsigned char)ch)) norm += (char)ascii::tolower((unsigned char)ch);
+        // an encoding nobody knows is an error, not utf8 in disguise:
+        // `.decode("bogus-enc")` dies "Unknown string encoding: 'bogus-enc'"
+        // (Rakudo's X::AdHoc); these are the spellings the code below handles
+        if (m == "decode" && !norm.empty()) {
+            static const std::set<std::string> kDecodes = {
+                "utf8", "utf8c8", "ascii", "usascii", "iso88591", "latin1",
+                "windows1252", "cp1252", "windows1251", "cp1251", "windows932", "shiftjis",
+                "gb2312", "gb18030", "utf16", "utf16le", "utf16be", "utf32", "utf32le", "utf32be"};
+            if (!kDecodes.count(norm))
+                throwTyped("X::AdHoc", {}, "Unknown string encoding: '" + enc + "'");
+        }
         // windows-1252 is latin-1 except across 0x80..0x9F, where it carries
         // printable characters instead of C1 controls; Rakudo leaves the five
         // unassigned slots (0x81/0x8D/0x8F/0x90/0x9D) as the C1 codepoint of the

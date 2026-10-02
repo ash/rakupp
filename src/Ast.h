@@ -795,6 +795,7 @@ struct BlockExpr : Expr {
     bool isPointy = false;     // `-> {…}` / `<-> {…}` — a WRITTEN signature, even an empty one
     bool sigParens = false;    // `sub () {…}` — an anonymous routine that WROTE its (maybe empty) signature
     std::string termName;      // `method m1(…) {…}` as a TERM still names (and, in a class, adds) the method
+    bool anonTerm = false;     // `anon sub f {…}`: named, but installs `&f` nowhere
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
     bool retRw = false;        // `is rw` / `is raw` on an anonymous routine term
     std::string pod;           // `#|` / `#=` declarator pod of the block / anon routine (.WHY)

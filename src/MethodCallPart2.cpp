@@ -5626,8 +5626,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     out.arr()->push_back(Value::typeObj(anc[i]));
                 return out;
             }
-            bool all = false;
-            for (auto& a : args) if (a.t == VT::Pair && a.s == "all" && (!a.pairVal() || a.pairVal()->truthy())) all = true;
+            bool all = false, local = false;
+            for (auto& a : args) if (a.t == VT::Pair && (!a.pairVal() || a.pairVal()->truthy())) {
+                if (a.s == "all") all = true;
+                else if (a.s == "local") local = true;
+            }
+            // `:local` is the immediate parent: `Any.^parents(:local)` is (Mu),
+            // `Str.^parents(:local)` is (Cool)
+            if (local) {
+                bool self = true;
+                for (auto& a : typeAncestry(inv.s)) {
+                    if (self) { self = false; continue; }
+                    if (!isBuiltinRole(a)) { out.arr()->push_back(Value::typeObj(a)); break; }
+                }
+                return out;
+            }
             if (all) { bool self = true;
                 for (auto& a : typeAncestry(inv.s)) { if (self) { self = false; continue; } if (!isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a)); } }
             return out;
@@ -6551,16 +6564,30 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         return out;
                     }
                     Value out = Value::array(); out.isList = true;
+                    // the built-in parent may be an ANCESTOR's: `grammar GB is GA`
+                    // reaches Grammar, Match and Capture through GA
+                    std::string nativeP = ci->nativeParent;
                     if (!ci->isRole) {   // the C3 order, less the class itself
                         auto lin = c3ClassMro(ci.get());
-                        for (size_t i = 1; i < lin.size(); i++) out.arr()->push_back(Value::typeObj(lin[i]->name));
+                        for (size_t i = 1; i < lin.size(); i++) {
+                            out.arr()->push_back(Value::typeObj(lin[i]->name));
+                            if (nativeP.empty()) nativeP = lin[i]->nativeParent;
+                        }
                     }
-                    if (!ci->nativeParent.empty()) {
-                        const auto& anc = typeAncestry(ci->nativeParent);
-                        if (anc.empty() || anc[0] != ci->nativeParent)
-                            out.arr()->push_back(Value::typeObj(ci->nativeParent));
+                    if (!nativeP.empty()) {
+                        // a type the C3 walk already listed is not listed twice:
+                        // `also is Exception` puts Exception there AND names it
+                        // as the built-in parent
+                        auto listed = [&](const std::string& n) {
+                            for (auto& v : *out.arr()) if (v.t == VT::Type && v.s == n) return true;
+                            return false;
+                        };
+                        const auto& anc = typeAncestry(nativeP);
+                        if (anc.empty() || anc[0] != nativeP) {
+                            if (!listed(nativeP)) out.arr()->push_back(Value::typeObj(nativeP));
+                        }
                         else for (auto& a : anc)
-                            if (a != "Any" && a != "Mu" && (all || a != "Cool") && !isBuiltinRole(a))
+                            if (a != "Any" && a != "Mu" && (all || a != "Cool") && !isBuiltinRole(a) && !listed(a))
                                 out.arr()->push_back(Value::typeObj(a));
                     }
                     if (all && !ci->isRole) {
@@ -7656,8 +7683,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // method that way), so `X::AdHoc.new(payload => "boom").message`
             // answers "boom" and not an undefined attribute. Only the
             // hand-built form needs it — `die "boom"` sets both.
+            // …and so is a SUBCLASS's: `my class X::M is X::AdHoc {}` built with
+            // `:payload("p")` says "p", as Rakudo's inherited method does
+            std::function<bool(const ClassInfo*)> adHoc = [&](const ClassInfo* c) -> bool {
+                if (!c) return false;
+                if (c->name == "X::AdHoc") return true;
+                if (adHoc(c->parent.get())) return true;
+                for (auto& p : c->extraParents) if (adHoc(p.get())) return true;
+                return false;
+            };
             if ((it == inv.obj()->attrs.end() || !rtIsDefined(it->second)) &&
-                m == "message" && ci->name == "X::AdHoc") {
+                m == "message" && adHoc(ci.get())) {
                 auto pl = inv.obj()->attrs.find("payload");
                 if (pl != inv.obj()->attrs.end() && rtIsDefined(pl->second)) return Value::str(pl->second.toStr());
                 return Value::str("Unexplained error");   // a payload-less X::AdHoc (Rakudo's default)
@@ -9897,7 +9933,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // the built-in comparison enum first
         if (inv.t == VT::Type && inv.s == "Order" && !args.empty()) {
             long long want = args[0].toInt();
-            return want >= -1 && want <= 1 ? Value::orderVal(want) : Value::any();
+            return want >= -1 && want <= 1 ? Value::orderVal(want) : Value::typeObj("Mu");
         }
         const Value* elist = nullptr;
         Value resolved;
@@ -9909,14 +9945,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 { resolved = *ev; elist = &resolved; }
         }
         if (elist && elist->arr() && !args.empty()) {
-            long long want = args[0].toInt();
-            for (auto& e : *elist->arr())
-                if (e.t == VT::Pair && e.pairVal() && e.pairVal()->toInt() == want) {
-                    Value out = *e.pairVal();
-                    out.enumName = e.s; out.enumType = elist->enumType;
-                    return out;
-                }
-            return Value::any();
+            // compared as the member's value is: an Int member matches a NUMBER
+            // (so "pink" is no Color, where reading it as 0 answered the first
+            // member), any other member matches by string — and a miss is Mu
+            const Value& a0 = args[0];
+            const bool numericArg = a0.t == VT::Int || a0.t == VT::Rat || a0.t == VT::Num || a0.isAllomorph();
+            for (auto& e : *elist->arr()) {
+                if (e.t != VT::Pair || !e.pairVal()) continue;
+                const Value& pv = *e.pairVal();
+                const bool hit = pv.t == VT::Int ? numericArg && pv.toInt() == a0.toInt()
+                                                 : pv.toStr() == a0.toStr();
+                if (!hit) continue;
+                Value out = pv;
+                out.enumName = e.s; out.enumType = elist->enumType;
+                return out;
+            }
+            return Value::typeObj("Mu");
         }
     }
     if (m == "HOW") {

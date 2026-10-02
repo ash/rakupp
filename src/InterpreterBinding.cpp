@@ -174,6 +174,9 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
     // first argument and binds `self`, exactly as a declared one does.
     code.code()->isMethod = be->isMethodTerm;
+    // a NAMED sub term keeps its name: `my $s = sub bar {}` and
+    // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
+    if (!be->termName.empty()) code.code()->name = be->termName;
     // a NAMED method term inside a class body is still that class's method
     // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
     if (be->isMethodTerm && !be->termName.empty()) {
@@ -227,6 +230,12 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `sub (Str :$foo is option(*.flip)) {}` — a converter handed to Getopt::Long
     // inline — has only this one place to run.
     applyParamTraits(be->params, code);
+    // …and a named SUB term is declared where it stands, as Rakudo does:
+    // `my $b = sub bar {…}; bar()` works, and so does `sub fact($n) { … fact(…) }`
+    // recursing inside the term. `anon` installs nothing, and a method term
+    // belongs to its class (above).
+    if (!be->termName.empty() && !be->isMethodTerm && !be->anonTerm)
+        tctx_.cur->define("&" + be->termName, code);
     return code;
 }
 

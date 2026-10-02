@@ -3651,6 +3651,9 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
         for (auto& kv : *h.hash()) {
             decontCopied(kv.second);
             if (kv.second.natBits) dropNativeTags(kv.second);   // `my %h = a => $an-int`
+            // Nil assigned into an element resets it, as into any container:
+            // `my %h = point => Nil; %h<point>` is Any (Rakudo), not Nil
+            if (kv.second.t == VT::Nil) kv.second = Value::any();
         }
     if (store) itemizeHashValues(h);
     return h;
