@@ -73,14 +73,14 @@ accepts:
 
 | Corpus | Files parsed |
 |---|---|
-| `examples/` | 36 / 36 |
-| `showcase/` | 25 / 27 |
-| `tools/` | 69 / 75 |
-| `live/`, `bindings/` | 6 / 6 |
-| `t/` | 280 / 406 |
-| **total** | **418 / 553** |
+| `examples/` | 38 / 38 |
+| `showcase/` | 35 / 44 |
+| `tools/` | 114 / 129 |
+| `live/`, `bindings/` | 7 / 7 |
+| `t/` | 634 / 907 |
+| **total** | **828 / 1,125** |
 
-`raku-grammar.raku` is one of the 25 in `showcase/`: the grammar parses itself.
+`raku-grammar.raku` is one of the 35 in `showcase/`: the grammar parses itself.
 
 `t/` is the regression suite, so it is deliberately a catalogue of unusual
 syntax — atomic operators, `%?RESOURCES`, binding to hash keys, declarator

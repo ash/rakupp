@@ -254,6 +254,7 @@ grammar RakuGrammar {
         [ <.ws> <param-default> ]?
         [ <.ws> 'where' <.ws> <ternary-expr> ]?
         | <type-name> [ <.ws> <.trait> ]*      # type-only: `sub f(Int, Pointer is rw)`
+        | [ <quote> | <number> ] <param-quant>? # a literal value: `multi f(0)`, `-> 'greet', $name`
     }
     # `$x`, `*@rest`, `:$named`, `:%opts`, `:name($alias)`, `($a, $b)`, `\c`
     token param-core {
