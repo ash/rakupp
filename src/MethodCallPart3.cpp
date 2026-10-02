@@ -1794,7 +1794,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             const bool sep = i < path.size() && path[i] == '/';
 #endif
             if (i == path.size() || sep) {
-                if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
+#ifdef _WIN32
+                // a bare drive ("C:") is never created; MSVC's stat("C:")
+                // fails too, so the check below would not rescue it
+                const bool drive = acc.size() == 2 && acc[1] == ':';
+#else
+                const bool drive = false;
+#endif
+                if (!acc.empty() && !drive && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
                     int e = errno;
                     struct stat pst;
                     if (!(::stat(acc.c_str(), &pst) == 0 && S_ISDIR(pst.st_mode))) {

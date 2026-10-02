@@ -26,15 +26,16 @@ for @events {
 @fail.push("no event for the new file") unless @events.grep(*.path.IO.basename eq 'new.txt');
 
 # a content change, as each platform's notifier reports it through Rakudo:
-# macOS's FSEvents (via libuv) calls everything in a directory FileRenamed,
-# Linux's inotify tells a modification apart
+# Linux's inotify tells a modification apart; macOS's FSEvents (via libuv)
+# says FileRenamed when it folds the file's earlier creation into the edit's
+# record and FileChanged when it does not, which is timing (CI sees both)
 my @edits;
 my $etap = $dir.watch.tap({ @edits.push($_) if .path.IO.basename eq 'new.txt' });
 sleep 0.3;
 $dir.add("new.txt").spurt("two");
 sleep 0.5;
 $etap.close;
-my $want = $*KERNEL.name eq 'darwin' ?? FileRenamed !! FileChanged;
+my $want = $*KERNEL.name eq 'darwin' ?? (FileRenamed | FileChanged) !! FileChanged;
 @fail.push("edit reported as {@edits».event}") unless @edits && @edits.all.event == $want;
 
 # the pieces Cro builds itself
