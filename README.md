@@ -352,6 +352,11 @@ What other people write about Raku++ — the newsletters, posts and remarks —
 is collected in **[MENTIONS.md](MENTIONS.md)**; other people's software that
 reached for the engine is in **[live/ADOPTIONS.md](live/ADOPTIONS.md)**.
 
+Organisations that run Raku on Raku++ can get commercial support — support
+agreements, fixes and features on demand, help moving code from Rakudo,
+performance work and training — from the team that builds it:
+**[raku.online/support](https://raku.online/support/)**.
+
 ## License
 
 [Artistic License 2.0](LICENSE) — the same license Raku itself uses.
