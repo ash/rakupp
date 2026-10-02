@@ -25,6 +25,11 @@ only way these can drift.
 - **[containers.md](containers.md)** — "why does my list have one element?":
   itemisation, `$(…)` vs `[…]`, when you need `@(…)`, and passing a list to a
   routine.
+- **[parametric-roles.md](parametric-roles.md)** — what `role Foo[::T]`
+  means: type captures, applying and punning a parametrised role, several
+  parameters and defaults, value parameters, overloading a role on its
+  arguments, `Array[Int]` as one you already know, and the one place the
+  engines differ (a missing argument).
 - **[modules.md](modules.md)** — installing and finding modules: `zef install`
   or `rakupp install` and then just `use` it, installing something the ecosystem
   does not carry (a directory or a URL, and why a URL has no checksum), the
