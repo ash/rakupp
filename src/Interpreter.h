@@ -1440,7 +1440,11 @@ struct ReactEvent { Value handler; Value value; bool isDone = false; };
 struct ReactCtx {
     std::deque<ReactEvent> queue;
     int liveSources = 0;   // live taps not yet done
-    bool closed = false;   // `done`/`last` called
+    // `done`/`last` called. Atomic: it is SET under m, but the timer and
+    // interval workers poll it between sleeps and the emit fan-out checks it
+    // after each handler, neither holding m (a data race TSan reports on every
+    // run of react-done-and-timer.raku in parallel mode).
+    std::atomic<bool> closed{false};
     bool aborted = false;  // drainWorkers wake-up: a parked WORKER react unwinds
     std::mutex m;
     std::condition_variable cv;

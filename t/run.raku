@@ -519,17 +519,21 @@ for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     my $exit = $p.exitcode;
+    # a case KILLED by a signal reports exitcode 0 (Rakudo agrees) -- the signal
+    # is on .signal, and a crash at exit, after PASS was flushed, must not read
+    # as green. Unchecked, an aarch64 crash showed as "exit=0 last-line=''".
+    my $sig = $p.signal;
     my $last = $out.lines.tail // '';
     # Green is either shape a case may take: the house pattern's final PASS
     # line, or a `use Test` file — a plan (`1..N`, first line under `plan`,
     # last under `done-testing`), every line ok, and Test's END exiting 0.
-    my $tap-green = $exit == 0
+    my $tap-green = $exit == 0 && $sig == 0
         && $out.lines.first({ /^ '1..' \d+ $/ }).defined
         && !$out.lines.grep(*.starts-with('not ok'));
-    my $green = $exit == 0 && ($last eq 'PASS' || $tap-green);
+    my $green = $exit == 0 && $sig == 0 && ($last eq 'PASS' || $tap-green);
     ok($green, "regression: {$f.basename}");
     unless $green {
-        diag("exit=$exit last-line='$last'");
+        diag("exit={$exit}{$sig ?? " signal=$sig" !! ''} last-line='$last'");
         # …and the house pattern reports on STDOUT (`ck` says "FAIL: <desc> — got
         # vs want"), so stderr alone leaves a CI log saying only "FAIL (2)" —
         # which is what sent the libuuid case to a log dive. Echo the failing
@@ -554,13 +558,13 @@ section('t/fixtures/yamlish (YAMLish\'s own test suite)');
         my $p = run($*EXECUTABLE, '-I', $ydir.add('lib').Str, $t.Str, :out, :err, :cwd($ydir.Str));
         my $out = $p.out.slurp(:close);
         my @err = $p.err.slurp(:close).lines.grep({ !.starts-with('#') });
-        my $green = $p.exitcode == 0
+        my $green = $p.exitcode == 0 && $p.signal == 0
             && $out.lines.first({ /^ '1..' \d+ $/ }).defined
             && !$out.lines.grep(*.starts-with('not ok'))
             && !@err;
         ok($green, "yamlish: {$t.basename}");
         unless $green {
-            diag("exit={$p.exitcode}");
+            diag("exit={$p.exitcode}{$p.signal ?? " signal={$p.signal}" !! ''}");
             diag("stdout: $_") for $out.lines.grep(*.starts-with('not ok')).head(20);
             diag("stderr: $_") for @err.unique.head(10);
         }
