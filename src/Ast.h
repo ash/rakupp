@@ -1115,6 +1115,8 @@ struct WhileStmt : Stmt {
                                 // value, bound through bindParams like `for` does
     bool asExpr = false; // used in value context: collect each iteration's value into a List
     bool modifier = false; // `STMT while COND` postfix form — no implicit block (a `my` in STMT leaks out)
+    PublishedOnce<void*> loopKernel{nullptr};       // as ForStmt's (IntKernel.cpp)
+    DecidedOnce<unsigned char> loopKernelTries{0};
     WhileStmt(): Stmt(NK::WhileStmt) {}
 };
 
@@ -1234,6 +1236,8 @@ struct LoopStmt : Stmt {   // C-style: loop (init; cond; incr) { }
     ExprPtr init, cond, incr;
     std::unique_ptr<Block> body;
     bool asExpr = false; // used in value context: collect each iteration's value into a List
+    PublishedOnce<void*> loopKernel{nullptr};       // as ForStmt's (IntKernel.cpp)
+    DecidedOnce<unsigned char> loopKernelTries{0};
     LoopStmt(): Stmt(NK::LoopStmt) {}
 };
 

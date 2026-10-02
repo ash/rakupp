@@ -9,7 +9,8 @@
 //    `return`, and calls to subs that qualify themselves (fib, ackermann, tak,
 //    gcd). Such a body has no side effects: it reads its arguments and computes.
 //
-//  * A LOOP KERNEL. A `for` over an integer Range whose body reads and writes
+//  * A LOOP KERNEL. A `for` over an integer Range (or a `while`, or a C-style
+//    `loop` once its init has run) whose body reads and writes
 //    only `$` variables holding a plain Int or a plain Str, its own `my`
 //    locals and loop variables, through the integer operators above, the six
 //    string comparisons, `~` and `=`, `+=`, `-=`, `*=`, `~=`, `++`, `--`, with
@@ -37,6 +38,7 @@
 // RAKUPP_KERNEL_TRACE=1 names each sub and loop as its kernel is decided.
 #include "InterpreterParts.h"
 #include "IntOps.h"
+#include "BuiltinsShared.h"   // graphemeCount
 #include <climits>
 #include <cstdlib>
 #include <mutex>
@@ -68,6 +70,10 @@ enum class KOp : uint8_t {
     Given,    // given a { c }: the topic a in slot (SGiven: a string topic)
     SGiven,
     When,     // when a { c }: a is the smartmatch already, c the body; then leave the given
+    CLoop,    // loop (; a; b) { c }: a C-style loop whose init has already run
+    SInt,     // an Int's text (into a string temporary)
+    SCond,    // a ?? b !! c over strings
+    Chars,    // a.chars
     // strings: SVar, SLit and SCat yield a string (sfn), the rest an integer
     SVar, SLit, SCat, SSet, SApp,
     SEq, SNe, SLt, SLe, SGt, SGe,
@@ -143,6 +149,7 @@ struct LoopCx {
     int givens = 0;                          // `given`s enclosing it, inside the innermost loop
     bool inModifier = false;                 // a statement-modifier body: no `my` (it would leak out)
     bool usesInc = false;                    // any `++` / `--`
+    bool usesMethods = false;                // a built-in method (`.chars`), which `augment` could replace
     std::string why;                         // the first thing refused, for the trace
 };
 
@@ -166,6 +173,15 @@ struct Compiler {
     KNode* ltail(IKernel& k, const std::vector<StmtPtr>& ss);
     KNode* lif(IKernel& k, IfStmt* is, bool tail);
     const LSym* lookup(const std::string& name);
+    // An Int or a Str as a string (an Int's text is what `~` and interpolation
+    // make of it); null for anything else.
+    KNode* asStr(IKernel& k, KNode* n, KT t) {
+        if (!n) return nullptr;
+        if (t == KT::Str) return n;
+        if (t != KT::Int || !L || L->sub) return nullptr;
+        KNode* s = k.node(KOp::SInt); s->a = n; s->slot = L->nstr++;
+        return s;
+    }
     KNode* refuse(const std::string& why) {
         if (L && L->why.empty()) L->why = why;
         return nullptr;
@@ -254,6 +270,12 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             KNode* n = k.node(KOp::Lit); n->lit = l->v; t = KT::Int;
             return n;
         }
+        case NK::BoolLit: {
+            // a truth value only: a Bool is not an Int a kernel may store
+            if (!cond) return refuse("a Bool outside a condition");
+            KNode* n = k.node(KOp::Lit); n->lit = static_cast<BoolLit*>(e)->v ? 1 : 0; t = KT::Bool;
+            return n;
+        }
         case NK::StrLit: {
             if (!L || L->sub) return refuse("a string in a sub");
             KNode* n = k.node(KOp::SLit); n->str = k.text(static_cast<StrLit*>(e)->v); t = KT::Str;
@@ -265,10 +287,26 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             if (!L || L->sub) return refuse("a string in a sub");
             std::string s;
             auto* is = static_cast<InterpStr*>(e);
-            for (auto& p : is->parts) {
-                if (!p || p->kind != NK::StrLit) return refuse("an interpolated string");
-                s += static_cast<StrLit*>(p.get())->v;
+            bool literal = true;
+            for (auto& p : is->parts) literal = literal && p && p->kind == NK::StrLit;
+            if (!literal) {
+                // "…$x…": the parts' texts joined, renormalized as `~` does
+                // (normalizing a join in steps is normalizing it once)
+                KNode* acc = nullptr;
+                for (auto& p : is->parts) {
+                    if (!p) return refuse("an interpolated string");
+                    KT pt;
+                    KNode* pn = asStr(k, expr(k, c, p.get(), false, pt), pt);
+                    if (!pn) return refuse("an interpolated part that is neither an Int nor a Str");
+                    if (!acc) { acc = pn; continue; }
+                    KNode* cat = k.node(KOp::SCat); cat->a = acc; cat->b = pn; cat->slot = L->nstr++;
+                    acc = cat;
+                }
+                if (!acc) return refuse("an empty interpolation");
+                t = KT::Str;
+                return acc;
             }
+            for (auto& p : is->parts) s += static_cast<StrLit*>(p.get())->v;
             if (is->parts.size() > 1)
                 for (unsigned char ch : s) if (ch >= 0x80) return refuse("a non-ASCII string in parts");
             KNode* n = k.node(KOp::SLit); n->str = k.text(std::move(s)); t = KT::Str;
@@ -379,9 +417,9 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             KNode* r = l ? expr(k, c, b->rhs.get(), logical, rt) : nullptr;
             if (!r) return nullptr;
             if (strop) {
-                // two Strs: an Int operand would be stringified, which these
-                // kernels leave to the generic path
-                if (lt != KT::Str || rt != KT::Str) return refuse("string operator " + op + " on a non-Str");
+                // two Strs; an Int operand takes its text, as the generic path's does
+                l = asStr(k, l, lt); r = asStr(k, r, rt);
+                if (!l || !r) return refuse("string operator " + op + " on a non-Str");
             }
             // arithmetic and comparison take Ints; a condition's && / || take
             // either (an Int is true when it is not zero)
@@ -401,8 +439,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             if (cn && (ct == KT::Str || ct == KT::Void)) return refuse("a Str as a condition");
             KNode* an = cn ? expr(k, c, tn->then.get(), cond, at) : nullptr;
             KNode* bn = an ? expr(k, c, tn->els.get(), cond, bt) : nullptr;
-            if (!bn || at != bt || at == KT::Str || at == KT::Void) return refuse("?? !! of these types");
-            KNode* n = k.node(KOp::Cond); n->a = cn; n->b = an; n->c = bn; t = at;
+            if (!bn || at != bt || at == KT::Void) return refuse("?? !! of these types");
+            KNode* n = k.node(at == KT::Str ? KOp::SCond : KOp::Cond); n->a = cn; n->b = an; n->c = bn; t = at;
             return n;
         }
         case NK::Assign: {
@@ -444,7 +482,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 if (vt != tt) return refuse("an assignment that would change a variable's type");
                 kop = tt == KT::Str ? KOp::SSet : KOp::Set;
             }
-            else if (a->op == "~=" && tt == KT::Str && vt == KT::Str) { kop = KOp::SApp; noteOp("~"); }
+            else if (a->op == "~=" && tt == KT::Str && (vt == KT::Str || vt == KT::Int)) {
+                v = asStr(k, v, vt);
+                kop = KOp::SApp; noteOp("~");
+            }
             else if ((a->op == "+=" || a->op == "-=" || a->op == "*=") && tt == KT::Int && vt == KT::Int) {
                 kop = a->op[0] == '+' ? KOp::AddTo : a->op[0] == '-' ? KOp::SubTo : KOp::MulTo;
                 noteOp(a->op.substr(0, 1));
@@ -454,6 +495,21 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             else for (auto& o : L->outer) if (o.name == tv->name) o.written = true;
             KNode* n = k.node(kop); n->slot = tn->slot; n->a = v;
             t = tt == KT::Str ? KT::Void : KT::Int;
+            return n;
+        }
+        case NK::MethodCall: {
+            // `.chars` of an Int or a Str: the grapheme count (an Int's digits
+            // are ASCII). Entered only while no `augment` has touched a
+            // built-in type, which is how a program could give Str its own.
+            auto* m = static_cast<MethodCall*>(e);
+            if (!L || L->sub || m->method != "chars" || !m->args.empty() || m->methodExpr || m->maybe || m->allMode ||
+                m->bang || m->mutate || m->hyper || m->meta || !m->methodQual.empty() || !m->inv)
+                return refuse("a method call");
+            KT it;
+            KNode* inv = asStr(k, expr(k, c, m->inv.get(), false, it), it);
+            if (!inv) return refuse(".chars of something neither an Int nor a Str");
+            L->usesMethods = true;
+            KNode* n = k.node(KOp::Chars); n->a = inv; t = KT::Int;
             return n;
         }
         case NK::Call: {
@@ -1140,6 +1196,26 @@ int64_t whenFn(const KNode* n, int64_t* fr, KRun& R) {
     if (!stopped(R)) R.succeed = true;
     return R.ret ? v : 0;
 }
+// a C-style loop: `next` still runs the step, as the generic loop's does
+int64_t cloopFn(const KNode* n, int64_t* fr, KRun& R) {
+    for (;;) {
+        if (n->a) {
+            const int64_t c = krun(n->a, fr, R);
+            if (R.bail || !c) break;
+        }
+        const int64_t v = krun(n->c, fr, R);
+        if (stopped(R)) {
+            if (R.bail || R.ret || R.succeed) return R.ret ? v : 0;
+            if (R.last) { R.last = false; break; }
+            R.next = false;
+        }
+        if (n->b) {
+            krun(n->b, fr, R);
+            if (R.bail) break;
+        }
+    }
+    return 0;
+}
 int64_t lastFn(const KNode*, int64_t*, KRun& R) { R.last = true; return 0; }
 int64_t nextFn(const KNode*, int64_t*, KRun& R) { R.next = true; return 0; }
 
@@ -1162,11 +1238,23 @@ const std::string& scatFn(const KNode* n, int64_t* fr, KRun& R) {
     else out = nfcNormalize(out + r);
     return out;
 }
+const std::string& sintFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string& out = R.sfr[n->slot];
+    out = std::to_string(krun(n->a, fr, R));
+    return out;
+}
+const std::string& scondFn(const KNode* n, int64_t* fr, KRun& R) {
+    return krun(n->a, fr, R) != 0 ? srun(n->b, fr, R) : srun(n->c, fr, R);
+}
+int64_t charsFn(const KNode* n, int64_t* fr, KRun& R) {
+    const std::string& s = srun(n->a, fr, R);
+    return allAscii(s) ? (int64_t)s.size() : (int64_t)graphemeCount(s);
+}
 int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->a, fr, R);
     std::string& dst = R.sfr[n->slot];
     // a concatenation's temporary is dead once stored: take its buffer
-    if (n->a->op == KOp::SCat) std::swap(dst, R.sfr[n->a->slot]);
+    if (n->a->op == KOp::SCat || n->a->op == KOp::SInt) std::swap(dst, R.sfr[n->a->slot]);
     else if (&v != &dst) dst = v;
     return 0;
 }
@@ -1243,6 +1331,10 @@ void link(KNode* n) {
         case KOp::Given: n->fn = givenFn; break;
         case KOp::SGiven: n->fn = sgivenFn; break;
         case KOp::When: n->fn = whenFn; break;
+        case KOp::CLoop: n->fn = cloopFn; break;
+        case KOp::SInt: n->sfn = sintFn; break;
+        case KOp::SCond: n->sfn = scondFn; break;
+        case KOp::Chars: n->fn = charsFn; break;
         case KOp::SVar: n->sfn = svarFn; break;
         case KOp::SLit: n->sfn = slitFn; break;
         case KOp::SCat: n->sfn = scatFn; break;
@@ -1296,8 +1388,20 @@ struct LKernel {
     int nint = 0, nstr = 0;
     std::vector<std::string> binOps;
     bool usesPrefix = false;
+    bool usesMethods = false;
     std::atomic<unsigned char> bails{0};
 };
+
+// The kernel slot of a loop statement: a `for` over an integer Range, a
+// `while` / `until`, or a C-style `loop`.
+PublishedOnce<void*>* loopSlot(Stmt* s, DecidedOnce<unsigned char>*& tries) {
+    switch (s->kind) {
+        case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s); tries = &f->loopKernelTries; return &f->loopKernel; }
+        case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s); tries = &w->loopKernelTries; return &w->loopKernel; }
+        case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s); tries = &l->loopKernelTries; return &l->loopKernel; }
+        default: return nullptr;
+    }
+}
 
 // The frame slots 0 and 1 hold a top-level loop's bounds and 2 its variable.
 constexpr int kLoSlot = 0, kHiSlot = 1, kVarSlot = 2;
@@ -1428,7 +1532,10 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
         if (opShadowed(op)) return false;
     if (k->usesPrefix && g_userPrefixShadow.load(std::memory_order_relaxed)) return false;
     // the generic path's own limits (DepthGuard): bail where it would refuse,
-    // and it will refuse with its own error
+    // and it will refuse with its own error. (Recorded here when no guarded
+    // frame has run yet: a sub called from the mainline declined until one
+    // had, so only a RECURSIVE sub ever got its kernel at the top level.)
+    ensureStackBounds(stackHere());
     if (!t_stack.top) return false;
     size_t reserve = size_t(2) << 20;
     if (t_stack.limit < reserve * 4) reserve = t_stack.limit / 4;
@@ -1438,6 +1545,8 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
     if (R.depthLeft <= 0) return false;
     const int64_t v = krun(k->body, a, R);
     if (R.bail) {
+        if (g_kernelTrace)
+            std::fprintf(stderr, "kernel: %s bailed\n", c.name.empty() ? "<anon>" : c.name.c_str());
         // a kernel that keeps bailing (its numbers outgrow int64) stops trying
         const unsigned char b = c.intKernel.bails.load(std::memory_order_relaxed);
         if (b >= 8) c.intKernel.state.store(0, std::memory_order_release);
@@ -1449,16 +1558,21 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
     return true;
 }
 
-// A `for` over an integer Range, `lo .. hi` already worked out, run as a loop
-// kernel. False: nothing ran and nothing changed — run the loop the ordinary
-// way. `var` is the loop variable (`$_` when the loop names none).
-bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long lo, long long hi) {
-    if (g_noKernels || g_traceStmts || jit::on() || lo > hi) return false;
+// A loop statement run as a loop kernel: a `for` over an integer Range with
+// `lo .. hi` already worked out (`var` its loop variable, `$_` when it names
+// none), or a `while` / `until`, or a C-style `loop` whose init has already
+// run. False: nothing ran and nothing changed — run the loop the ordinary way.
+bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo, long long hi) {
+    const bool isFor = loop->kind == NK::ForStmt;
+    if (g_noKernels || g_traceStmts || jit::on() || (isFor && lo > hi)) return false;
     // the kernel holds the loop's variables in its frame until the loop is
     // done, which only this thread may do
     if (liveWorkers_.load(std::memory_order_acquire) > 0 || cuedLoads_.load(std::memory_order_acquire) > 0)
         return false;
-    void* h = fs->loopKernel.get();
+    DecidedOnce<unsigned char>* tries = nullptr;
+    PublishedOnce<void*>* slot = loopSlot(loop, tries);
+    if (!slot) return false;
+    void* h = slot->get();
     if (h == kNeverKernel) return false;
     Env* env = tctx_.cur.get();
     if (!h) {
@@ -1466,51 +1580,101 @@ bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long l
         // loop's variables hold now. Body checks that do not depend on the
         // values come first, so a loop that can never qualify says so for good.
         std::lock_guard<std::mutex> lk(g_compileMu);
-        if (!(h = fs->loopKernel.get())) {
+        if (!(h = slot->get())) {
             auto* lk2 = new LKernel;
             LoopCx cx;
             cx.env = env;
-            cx.nint = 3;   // bounds and loop variable
-            cx.scopes.push_back({{var, KT::Int, kVarSlot, true}});
+            cx.nint = 3;   // a `for`'s bounds and loop variable
             cx.loops = 1;
-            cx.inModifier = fs->modifier;
             Compiler cc;
             cc.global = global_.get();
             cc.L = &cx;
             KNode* body = nullptr;
-            if (fs->asExpr || fs->destructure || fs->rwVars || !fs->params.empty() || fs->emptyPointy ||
-                fs->hyper || fs->vars.size() > 1 || !fs->label.empty())
-                cx.why = "a `for` of this shape";
+            KNode* root = nullptr;
+            if (isFor) {
+                auto* fs = static_cast<ForStmt*>(loop);
+                cx.scopes.push_back({{var, KT::Int, kVarSlot, true}});
+                cx.inModifier = fs->modifier;
+                if (fs->asExpr || fs->destructure || fs->rwVars || !fs->params.empty() || fs->emptyPointy ||
+                    fs->hyper || fs->vars.size() > 1 || !fs->label.empty())
+                    cx.why = "a `for` of this shape";
+                else {
+                    bool traits = false;
+                    for (auto tr : fs->varTraits) traits = traits || tr;
+                    if (traits) cx.why = "an `is rw` / `is raw` loop variable";
+                    else body = cc.lbody(lk2->k, fs->body.get(), !fs->modifier);
+                }
+                if (body) {
+                    KNode* loLeaf = lk2->k.node(KOp::Param); loLeaf->slot = kLoSlot;
+                    KNode* hiLeaf = lk2->k.node(KOp::Param); hiLeaf->slot = kHiSlot;
+                    root = lk2->k.node(KOp::For);
+                    root->slot = kVarSlot; root->a = loLeaf; root->b = hiLeaf; root->c = body;
+                }
+            }
+            else if (loop->kind == NK::WhileStmt) {
+                // the condition declares nothing the kernel could keep (a `my`
+                // there belongs to the enclosing block, after the loop too)
+                auto* ws = static_cast<WhileStmt*>(loop);
+                cx.scopes.emplace_back();
+                if (ws->modifier || ws->asExpr || !ws->var.empty() || !ws->params.empty() || !ws->label.empty())
+                    cx.why = "a `while` of this shape";
+                else {
+                    KT ct;
+                    cx.inModifier = true;
+                    KNode* cn = cc.expr(lk2->k, nullptr, ws->cond.get(), true, ct);
+                    cx.inModifier = false;
+                    if (cn && (ct == KT::Str || ct == KT::Void)) { cn = nullptr; cx.why = "a Str as a condition"; }
+                    if (cn && ws->isUntil) { KNode* nn = lk2->k.node(KOp::Not); nn->a = cn; cn = nn; }
+                    if (cn) body = cc.lbody(lk2->k, ws->body.get(), true);
+                    if (body) { root = lk2->k.node(KOp::While); root->a = cn; root->c = body; }
+                }
+            }
             else {
-                bool traits = false;
-                for (auto tr : fs->varTraits) traits = traits || tr;
-                if (traits) cx.why = "an `is rw` / `is raw` loop variable";
-                else body = cc.lbody(lk2->k, fs->body.get(), !fs->modifier);
+                // `loop (INIT; COND; STEP)`: the interpreter has run INIT, so
+                // what it declared is a variable of the program by now
+                auto* ls = static_cast<LoopStmt*>(loop);
+                cx.scopes.emplace_back();
+                if (ls->asExpr || !ls->label.empty()) cx.why = "a `loop` of this shape";
+                else {
+                    KT ct = KT::Int, st = KT::Int;
+                    KNode* cn = nullptr;
+                    KNode* sn = nullptr;
+                    bool ok = true;
+                    cx.inModifier = true;
+                    if (ls->cond) {
+                        cn = cc.expr(lk2->k, nullptr, ls->cond.get(), true, ct);
+                        ok = cn && ct != KT::Str && ct != KT::Void;
+                    }
+                    if (ok && ls->incr) {
+                        sn = cc.expr(lk2->k, nullptr, ls->incr.get(), false, st);
+                        ok = sn && st != KT::Str;
+                    }
+                    cx.inModifier = false;
+                    if (ok) body = cc.lbody(lk2->k, ls->body.get(), true);
+                    else if (cx.why.empty()) cx.why = "a `loop` header of this kind";
+                    if (body) { root = lk2->k.node(KOp::CLoop); root->a = cn; root->b = sn; root->c = body; }
+                }
             }
             // the sub kernels the body calls were compiled with it
             finishSession(cc, body != nullptr, nullptr);
             // a body nothing can be compiled for is settled for good; one that
             // met a value of another type (or a name not yet bound) may be
             // tried again on a later entry — but not on every one
-            if (!body) {
+            if (!root) {
                 const bool valueDependent = cx.why.find("holds neither") != std::string::npos ||
                                             cx.why.find("not in scope") != std::string::npos;
                 if (g_kernelTrace)
-                    std::fprintf(stderr, "kernel: loop at line %d declined: %s\n", fs->line,
+                    std::fprintf(stderr, "kernel: loop at line %d declined: %s\n", loop->line,
                                  cx.why.empty() ? "?" : cx.why.c_str());
                 delete lk2;
                 if (valueDependent) {
-                    const unsigned char tries = fs->loopKernelTries;
-                    fs->loopKernelTries = (unsigned char)(tries + 1);
-                    if (tries + 1 < 4) return false;
+                    const unsigned char t = *tries;
+                    *tries = (unsigned char)(t + 1);
+                    if (t + 1 < 4) return false;
                 }
-                fs->loopKernel.publish(kNeverKernel);
+                slot->publish(kNeverKernel);
                 return false;
             }
-            KNode* loLeaf = lk2->k.node(KOp::Param); loLeaf->slot = kLoSlot;
-            KNode* hiLeaf = lk2->k.node(KOp::Param); hiLeaf->slot = kHiSlot;
-            KNode* root = lk2->k.node(KOp::For);
-            root->slot = kVarSlot; root->a = loLeaf; root->b = hiLeaf; root->c = body;
             link(root);
             lk2->k.body = root;
             // the loop's own calls resolve from the scope it runs in, which is
@@ -1525,10 +1689,11 @@ bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long l
             lk2->nstr = cx.nstr;
             lk2->binOps = cc.ops;
             lk2->usesPrefix = cc.prefix;
-            fs->loopKernel.publish(lk2);
+            lk2->usesMethods = cx.usesMethods;
+            slot->publish(lk2);
             h = lk2;
             if (g_kernelTrace)
-                std::fprintf(stderr, "kernel: loop at line %d compiled (%zu variable(s))\n", fs->line,
+                std::fprintf(stderr, "kernel: loop at line %d compiled (%zu variable(s))\n", loop->line,
                              lk2->outer.size());
         }
         if (h == kNeverKernel) return false;
@@ -1536,7 +1701,7 @@ bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long l
     auto* L = static_cast<LKernel*>(h);
     auto notEntered = [&](const char* why, const std::string& name = std::string()) {
         if (g_kernelTrace)
-            std::fprintf(stderr, "kernel: loop at line %d not entered: %s%s%s\n", fs->line, why,
+            std::fprintf(stderr, "kernel: loop at line %d not entered: %s%s%s\n", loop->line, why,
                          name.empty() ? "" : " ", name.c_str());
         return false;
     };
@@ -1550,6 +1715,7 @@ bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long l
     if (!callsBound(L->k.graph)) return notEntered("a sub it calls is wrapped or re-bound");
     if (L->usesPrefix && g_userPrefixShadow.load(std::memory_order_relaxed))
         return notEntered("the program declares a prefix operator");
+    if (L->usesMethods && !builtinExt_.empty()) return notEntered("a built-in type is augmented");
     // The program's variables, found again for THIS entry: each must still
     // hold the type its slots were compiled for, each one written must be a
     // plain container, and no two names may share a container (the kernel
@@ -1587,6 +1753,7 @@ bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long l
     R.stackFloor = nullptr;
     R.depthLeft = 0;
     if (!L->calls.empty()) {
+        ensureStackBounds(stackHere());
         if (!t_stack.top) return false;
         size_t reserve = size_t(2) << 20;
         if (t_stack.limit < reserve * 4) reserve = t_stack.limit / 4;
@@ -1601,8 +1768,8 @@ bool Interpreter::tryLoopKernel(ForStmt* fs, const std::string& var, long long l
         // bailing (its numbers outgrow int64) stops trying
         const unsigned char b = L->bails.load(std::memory_order_relaxed);
         L->bails.store((unsigned char)(b + 1), std::memory_order_relaxed);
-        if (b + 1 >= 2) fs->loopKernel = kNeverKernel;
-        if (g_kernelTrace) std::fprintf(stderr, "kernel: loop at line %d bailed\n", fs->line);
+        if (b + 1 >= 2) *slot = kNeverKernel;
+        if (g_kernelTrace) std::fprintf(stderr, "kernel: loop at line %d bailed\n", loop->line);
         return false;
     }
     for (size_t i = 0; i < no; i++) {

@@ -2320,6 +2320,9 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // flag: jit::on() is a plain bool that is false in every default
             // run, so the loop pays one never-taken branch per iteration.
             jit::LoopGuard __jg(jit::on() ? jit::siteFor(s) : nullptr);
+            // a body of plain Int / Str arithmetic runs as a loop kernel
+            // (IntKernel.cpp), as a `for` over a Range does
+            if (!col && bareCond && !ws->modifier && tryLoopKernel(s, std::string(), 0, 0)) return Value::nil();
             for (;;) {
                 if (__jg.site) {
                     // A while loop keeps its whole state in variables, so the
@@ -2442,6 +2445,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             auto saved = tctx_.cur; tctx_.cur = outer;
             try {
                 if (ls->init) eval(ls->init.get());
+                // …and so, from here, does a C-style loop (see WhileStmt)
+                if (!col && tryLoopKernel(s, std::string(), 0, 0)) { tctx_.cur = saved; return Value::nil(); }
                 bool firstIter = true;
                 std::shared_ptr<Env> scope; // reused across iterations unless captured
                 const bool flatB = flatLoopBody(ls->body.get());
@@ -6462,6 +6467,12 @@ static size_t currentThreadStackSize() {
     }
     return sz ? sz : (size_t(8) << 20);
 #endif
+}
+// t_stack as DepthGuard would record it from the frame at `here`, for code that
+// enforces the same limit before any guarded frame has run on this thread (the
+// kernels: a sub kernel called from the mainline is entered first thing).
+void ensureStackBounds(char* here) {
+    if (!t_stack.top) { t_stack.top = here; t_stack.limit = currentThreadStackSize(); }
 }
 struct DepthGuard {
     int& d;
@@ -15665,6 +15676,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // (XML::Document.Str appends its root element object this way)
     if (!overloaded && binop == "~" && (lv->t == VT::Object || rhs.t == VT::Object)) {
         *lv = Value::str(strInStrContext(*lv) + strInStrContext(rhs));
+        return sink ? Value::any() : *lv;
+    }
+    // `$s ~= $n` with a plain Int: its decimal text is ASCII, so it appends in
+    // place like an ASCII Str below. Through applyBinOp every append copied the
+    // whole string — `$s ~= $_ % 10` over 300k iterations took 8.5 s.
+    if (!overloaded && binop == "~" && lv->t == VT::Str && lv->hashKind.empty() && rhs.t == VT::Int &&
+        !rhs.x_ && rhs.pk_ == PK::None && rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() && !rhs.natBits) {
+        lv->s += std::to_string(rhs.i);
         return sink ? Value::any() : *lv;
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole

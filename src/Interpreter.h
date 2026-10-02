@@ -1502,8 +1502,9 @@ public:
     Value callPlainSub(const Value& codeVal, Callable& c, ValueList& args, bool ownFrame);
     // IntKernel.cpp: run a plain sub as an integer kernel; false = nothing ran, take the call path
     bool tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out);
-    // …and a `for` over an integer Range as a loop kernel; false = nothing ran, run the loop
-    bool tryLoopKernel(ForStmt* fs, const std::string& var, long long lo, long long hi);
+    // …and a loop statement as a loop kernel (a `for` over lo..hi, a `while`,
+    // a C-style `loop` past its init); false = nothing ran, run the loop
+    bool tryLoopKernel(Stmt* loop, const std::string& var, long long lo, long long hi);
     [[gnu::noinline]] Value execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink,
                                           std::unique_ptr<HandedError>* handOff);
     // A bare block written as a statement (exec's NK::Block); the rare

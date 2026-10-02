@@ -123,6 +123,26 @@ sub ck($got, $want, $desc) {
 { my $n = 0; for 1 .. 4 { given $_ { when 2 { given $_ + 1 { when 3 { $n += 100 } }; $n += 7 }; default { $n++ } } }
   ck($n, 110, 'nested `given`') }
 
+# while / until / loop at the top of a kernel
+{ my $t = 0; my $i = 0; while $i < 1000 { $i++; $t += $i }; ck(($t, $i), (500500, 1000), 'a top-level while') }
+{ my $i = 10; until $i <= 0 { $i -= 3 }; ck($i, -2, 'a top-level until') }
+{ my $t = 0; loop (my $i = 1; $i <= 100; $i++) { next if $i %% 2; $t += $i }; ck(($t, $i), (2500, 101), 'a C-style loop: `next` still steps, and its `my` outlives it') }
+{ my $t = 0; my $j; loop ($j = 0; $j < 10; $j += 3) { $t += $j }; ck(($t, $j), (18, 12), 'a C-style loop over an existing variable') }
+{ my $n = 0; loop { $n++; last if $n >= 7 }; ck($n, 7, 'a bare `loop` ended by `last`') }
+{ my $x = 9223372036854775800; my $i = 0; while $i < 20 { $i++; $x++ }; ck($x, 9223372036854775820, 'a while that outgrows int64') }
+{ my $c = 0; while (my $w = $c) < 5 { $c++ }; ck($c, 5, 'a `my` in a while condition') }
+
+# Ints as text, strings in ?? !!, .chars
+{ my $s = ""; for 1 .. 12 { $s ~= $_ % 10 }; ck($s, '123456789012', 'an Int appended to a Str') }
+{ my $s = ""; for 1 .. 3 { $s = $s ~ $_ ~ "," }; ck($s, '1,2,3,', 'an Int in a ~ chain') }
+{ my $s = ""; for 1 .. 3 -> $i { $s = "n$i:$s" }; ck($s, 'n3:n2:n1:', 'interpolation of an Int and a Str') }
+{ my $s = "e"; my $t = ""; for 1 .. 1 { $t = "$s\x[301]" }; ck(($t.chars, $t.codes), (1, 1), 'interpolation renormalizes') }
+{ my $k = "ab"; my $n = 0; for 1 .. 5 { $n++ if $k lt "b"; $k = $k eq "ab" ?? "ba" !! "ab" }; ck(($k, $n), ('ba', 3), 'Strs in ?? !!') }
+{ my $t = 0; my $s = "héllo"; for 1 .. 4 { $t += $s.chars; $t += $_.chars }; ck($t, 24, '.chars of a Str and an Int') }
+{ my $t = 0; my $s = "e\x[301]a"; for 1 .. 2 { $t += $s.chars }; ck($t, 4, '.chars counts graphemes') }
+{ my $n = 0; my $s = ""; for 1 .. 10 { $s ~= "ab"; $n = $s.chars if $_ == 7 }; ck(($n, $s.chars), (14, 20), '.chars of a growing Str') }
+{ my $t = 0; for 1 .. 3 { $t += 5 eq "5" ?? 1 !! 0 }; ck($t, 3, 'an Int compared as a Str') }
+
 # a loop whose kernel was built for other types, entered again
 { sub acc($init) { my $a = $init; for 1 .. 3 { $a ~= "x" }; $a }
   ck((acc("s"), acc(5), acc("t")), ('sxxx', '5xxx', 'txxx'), 'one loop, two types') }

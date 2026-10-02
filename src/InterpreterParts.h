@@ -1049,6 +1049,7 @@ RAKUPP_CONSTINIT extern thread_local bool t_fatalTry;
 // not two.
 struct StackBounds { char* top = nullptr; size_t limit = 0; };
 RAKUPP_CONSTINIT extern thread_local StackBounds t_stack;
+void ensureStackBounds(char* here);   // record t_stack from this frame if nothing has yet
 
 
 // Does this expression contain a literal `*` (Whatever) term — walking only
