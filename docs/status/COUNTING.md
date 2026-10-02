@@ -15,10 +15,9 @@ todo counted as passes, and third the files that fully pass. The file count is
 the strictest bar and the least informative, because one failing assertion
 fails a whole file.
 
-The figures on this page were measured on 2026-09-30, on the v5.1.0 release
+The figures on this page were measured on 2026-10-02, on the v5.2.0 release
 build, against Roast `1f749e338` and the 1,424 files `spectest.data` lists
-(three runs; one lost a file to the crash
-[ROAST.md](ROAST.md#the-one-file-that-flaps) describes).
+(three runs, all three alike).
 
 ## The measures
 

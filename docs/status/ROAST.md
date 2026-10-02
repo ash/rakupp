@@ -12,10 +12,11 @@ two ever disagree.
 
 **Headline: 100.00% of Roast's tests pass** — 218,420 of 218,420 with the tests Roast marks skip or todo left out, and all declared tests (220,055 / 220,055) with those counted as passes, as TAP counts them. **Every one of the 1,424 files passes.**
 
-Measured 2026-09-30 on the v5.1.0 release build, against Roast `1f749e338`
-(2026-09-29) and the 1,424 files its `spectest.data` lists: three runs, two of
-them 1,424 / 1,424. The third lost `S17-promise/nonblocking-await.t` to a
-crash at test 6 (see [the note below](#the-one-file-that-flaps)). On a loaded
+Measured 2026-10-02 on the v5.2.0 release build, against Roast `1f749e338`
+(2026-09-29) and the 1,424 files its `spectest.data` lists: three runs, all
+three 1,424 / 1,424, with v5.1.0's file list. `S17-promise/nonblocking-await.t`
+still crashes now and then (see [the note below](#the-one-file-that-flaps));
+it did not in these three runs. On a loaded
 machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
 s alone against the 10-second ceiling — can also time out with its tests
 passing.

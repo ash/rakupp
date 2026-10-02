@@ -17,7 +17,7 @@
   or compiles it to a standalone native executable.
 - Measured against **[Roast](https://github.com/Raku/roast)**, the official
   Raku specification suite: **100.00% of its tests pass** with skip and todo
-  left out (218,421 of 218,422), and **1,423 of the 1,424 files** of
+  left out (218,420 of 218,420), and **all 1,424 files** of
   `spectest.data` pass completely.
   Definitions and caveats: [ROAST.md](../status/ROAST.md), [COUNTING.md](../status/COUNTING.md).
 

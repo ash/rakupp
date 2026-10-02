@@ -3,6 +3,141 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.2.0 (2026-10-02) — integer and loop kernels, and a leaner tree-walker
+
+Roast stands where v5.1.0 left it: **all 1,424 files** of `spectest.data` and
+**all 218,420** of its tests with skip and todo left out (220,055 of 220,055
+counting them as passes), on the same Roast, `1f749e338`, in three runs of three
+with v5.1.0's file list.
+
+The release is speed and memory, plus the fixes found by Rakuglaze and the
+module battery.
+
+### Faster
+
+- **Integer kernels.** A sub whose body is closed integer arithmetic —
+  parameters, integer literals, `+ - * div % %%`, comparisons, `&& || !`,
+  `?? !!`, `if`/`elsif`/`else`/`unless`, `return`, calls to subs that qualify
+  themselves — is compiled on its first call into int64 nodes and runs there
+  (2d2f49a3). Anything it cannot answer exactly (an argument that is not a plain
+  Int, int64 overflow, a zero divisor, the recursion limit) re-runs the call the
+  ordinary way from the start, so results and errors are unchanged.
+  `--exe` gives such subs an int64 twin in the emitted C++ (b2a63b6c).
+  `RAKUPP_NO_KERNELS=1` turns both off; `RAKUPP_KERNEL_TRACE=1` names each
+  decision.
+- **Loop kernels.** A `for` over an integer Range, a `while`/`until` or a
+  C-style `loop` whose body touches only plain Int and Str variables runs on
+  int64 and string slots and writes them back at the end (68b2e991, d3c06426):
+  assignment and `op=`, `++`/`--`, the integer operators, string compares and
+  `~`, `if`/`unless`, nested loops, `last`/`next`, `given`/`when`, `my` locals,
+  calls to sub kernels, `.chars`. A bail re-runs the whole loop generically
+  before anything was written. `--exe` runs its loop lanes without `-O` too,
+  with a string slot type.
+- **The tree-walker's hot path** (INTERP-SPEED-PLAN rounds 1-4): a lean path for
+  plain blocks and plain subs, routine bodies that decide their entry work
+  once, per-node handlers for a binary operator's fast shape, Int assignment and
+  `++` written into the slot in place (scalars, elements, attributes), numeric
+  subtrees evaluated as machine numbers, pads for methods and for an inline
+  block's `my`s (a loop with its variables inside a `given` ran 4-5× slower than
+  in a sub), no scope allocated per loop iteration or branch, and multi dispatch
+  that allocates nothing and caches its winner (`multimeth` −52%, `multiwhere`
+  −46% in that commit).
+- **Less memory.** A Value is 80 bytes, not 128 (22605246); arrays past four
+  elements grow by `realloc` (59a6daf6); a hash's first entries no longer take a
+  4 KB block (8aa4be66); a BigInt keeps four limbs inline (b81c74fd); rarely used
+  fields moved out of objects and of the cold block (56fd5291, 69babe9f); a
+  `my int @a` holds machine words, 9 bytes an element where an array of Ints
+  takes 83 (1071b9e3, 6c24db2c).
+- **`--cnp`** tiers up `for @array`, and its kernels take interpolated strings,
+  chained comparisons, nested `for`, `my @x` and `-> @row`. On x86-64 a GOT slot
+  held the value minus four, so a kernel there read every operand it loads
+  through the GOT wrong. Fixed; `--cnp` runs again on macOS x86-64 and stays
+  opt-in on Linux x86-64 (`RAKUPP_CNP_X86=1`) until CI runs the gate there.
+
+Against the v5.1.0 release binary in the same sitting
+([BENCHMARKS.md](docs/status/BENCHMARKS.md)), the interpreter is faster on
+every kernel: `fib` −97% (392 → 14 ms), `loopsum` and `streq` −93%, `mainwhen`
+−92%, `strcat` −51%, `multiwhere` −49%, `sortnums` and `hash` −33%, `rats`
+−23%, the rest −9% to −22%. It now beats Rakudo 2026.09 on fifteen of
+seventeen kernels (`objects` and `multiwhere` remain), and mutsu on sixteen.
+Compiled, `fib` −88%, `mainwhen` −86%, `loopsum` −73%, `streq` −64%,
+`multiwhere` −50%. **One kernel is slower: `objects` under `--exe`, +9%**
+(185.3 → 202.7 ms, confirmed by an interleaved re-run); not yet bisected.
+
+Peak memory, v5.1.0 → v5.2.0: a million-element array of Ints 258 → 85 MB,
+200k objects with two attributes 946 → 133 MB, a 200k-key hash 101 → 74 MB.
+
+### Behaves like Rakudo
+
+- **A CATCH runs before the LEAVE phasers** of the blocks the error passes
+  through, so it sees `temp` values and dynamics as they were when the error
+  was thrown, and `.resume` gets back into the block that died (55b4f18a).
+- **Rakuglaze**, the module-snippet suite: 2,049 of 2,178 passing →
+  2,132 of 2,176. EVAL'd `token` bodies, top-level CATCH and
+  `repeat … until`; a user class named after a built-in; role arguments and
+  `::?ROLE`; redispatch from multi methods and a user `multi method new`; regex
+  arrays and regexes that outlive their scope; Version construction and
+  ordering; `.uniprop` with a property value; Duration arithmetic; and more.
+- **Issues #102, #104-#109, #111 and #114** (99f09017): `\r\n` match offsets,
+  `self!rec($k)<n>++`, `>>` inside `<?before>`, `next` in FIRST, `mkdir` on
+  Windows, an aliased capture runs its action once, `$*IN.eof`, `[**]`, and an
+  adverb goes to the operator on its left. **#113**: `3 ... -Inf` counts down.
+  **#112**: a MAIN imported from a module runs from `--exe`.
+- `-$i` on the int64 minimum promotes to a big Int; `nextcallee` in a method
+  passes the invocant; a user `multi infix` over core types meets the built-in
+  in dispatch instead of being skipped by the fast paths (e9ab76da).
+- **Modules keep their types in their package** (#116): an unexported type no
+  longer takes over a short name in GLOBAL, so Sparky's web UI renders; a
+  module's hand-filled `EXPORT::DEFAULT` is imported (Sparrow6::DSL).
+- A `$_` parameter is not a pad slot, so a loop inside such a routine sees its
+  own topic (Cro's HTTP/2 serializer wrote the same byte for a whole length
+  field); a Range binds a `Positional` or `Cool` parameter; `@c».(args)` keeps
+  its shape; attribute stores and method arity errors read as Rakudo's.
+
+### New
+
+- **`cro run` works** (#115): `IO::Path.watch` on a directory (inotify,
+  FSEvents, or a poller), live `Supply.stable`/`.delayed`/`.unique`/`.squish`,
+  `Proc::Async` inside a `supply` block. examples/modules/ starts with Cro.
+- **DBIish runs from an installed rakupp** (#118): the NativeHelpers shims ship
+  inside the binary instead of beside a checkout, and a new gate,
+  `t/installed/run.raku`, runs the binary as users get it.
+- **A Docker image**, `ghcr.io/ash/rakupp`: the release archive unpacked onto
+  `debian:bookworm-slim`, published for amd64 and arm64 from this tag on.
+- **riscv64** builds and is tested on RISE runners, on demand.
+
+### Fixed
+
+- The linux-aarch64 crashes (v5.1.0 shipped no aarch64 archive): a react's
+  closer raced the emit fan-out, and `ReactCtx::closed` was read unlocked. The
+  test runner now reports a child killed by a signal instead of reading it as
+  exit 0.
+- A Channel wait in parallel mode sleeps instead of spinning on the stripe that
+  its senders need (`S17-channel/stress.t` hung 1 run in 13).
+- Generated `--exe` code is compiled with `-ffp-contract=off`: a fused
+  multiply-add made `0.1e0 * 10e0 + -1e0` print 5.55e-17.
+
+### Gates
+
+Roast as above: three runs, each 1,424 / 1,424 files and 218,420 / 218,420
+assertions, the union identical to v5.1.0's. The local suite is 1,212 of
+1,212. perf-guard finds no kernel slower than the v5.0.0 baseline, and most far
+faster: `fib` −97%, `asg` −96%, `loopsum` −95%, `mainwhen` −94%, `mainnext`
+−85%, `multimeth` −61%, `multiwhere` −52%; `junctionwide` is +2%, inside the
+tolerance.
+
+**The perf baseline stays at v5.0.0's.** `perf-guard --record` refused, and
+this time the box was not the reason: `fib`, `asg`, `loopsum`, `hash` and
+`mainnext` now run in 5-13 ms, about 4 ms of which is process startup, so
+their runs span 5-17% where the gate enforces 5%. Those kernels need more
+iterations before a baseline can be recorded from them; until then the gate
+has the slack shown above on them.
+
+Not re-run for this release: the module battery (48 / 59 at v5.0.1), the
+ecosystem sweep (1,019 of 2,547 at v5.0.0), the documentation-example
+comparison, the slim differential, the second-toolchain build and Rakuglaze
+(2,132 of 2,176 at 3cb714f6, the last commit to change it).
+
 ## v5.1.0 (2026-09-30) — every file of Roast, and a faster tree-walker
 
 **All 1,424 files of Roast's `spectest.data` pass**, and all 218,420 of its

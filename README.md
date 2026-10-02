@@ -11,15 +11,16 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v5.1.0** (2026-09-30) — **100.00% of Roast.**
+**Status:** current release **v5.2.0** (2026-10-02) — **100.00% of Roast.**
 Of the tests Roast expects an implementation to pass, **all 218,420** pass, and
 **all 1,424 files** in Roast's `spectest.data` pass completely (Roast
 `1f749e338`). On Roast `1f521d798`, which v5.0.0 was measured against and whose
 todo for one TTY test does not name macOS 27, it is 1,423 files; Rakudo 2026.08,
 measured the same way on the same machine, passes 1,414 of them
-([ROAST.md](docs/status/ROAST.md)). v5.1.0 also interprets up to 29% faster
-than v5.0.0 ([BENCHMARKS.md](docs/status/BENCHMARKS.md)). Every release is written up in the
-[CHANGELOG](CHANGELOG.md), and what each major set out to do is in
+([ROAST.md](docs/status/ROAST.md)). v5.2.0 interprets faster than v5.1.0 on every
+benchmark kernel, and 92-97% faster where a sub or loop is plain integer and
+string work ([BENCHMARKS.md](docs/status/BENCHMARKS.md)). Every release is
+written up in the [CHANGELOG](CHANGELOG.md), and what each major set out to do is in
 [VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
 **Next:** v6 is about speed ([V6-PLAN.md](docs/dev/plans/V6-PLAN.md)). Beside
@@ -29,7 +30,7 @@ same harness (2026-09-16, 2,529 dists), passes 1,791; the other 738 cannot pass
 there under any engine, for want of libgsl, fontconfig or a network. Every distribution, with how it ran, is at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
-| | v5.1.0 | at v4.0.0 | at v3.0.0 |
+| | v5.2.0 | at v4.0.0 | at v3.0.0 |
 |---|---:|---:|---:|
 | Roast tests, skip and todo left out‡ | **218,420 of 218,420 (100.00%)** | — | — |
 | Roast tests, every declared test‡ | **220,055 of 220,055 (100.00%)** | 200,843 of 219,610 (91%) | 197,191 of 218,772 (90%) |
@@ -37,15 +38,15 @@ there under any engine, for want of libgsl, fontconfig or a network. Every distr
 | Official documentation examples byte-identical on both engines | **1,006**¶ | 957 | 945 |
 | Modules — the 59-dist battery, each against its own suite | **48 / 59**¶ | 49 / 59† | 47 / 59 |
 | Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/) | **1,019 of 2,547**§ | 1,006 of 2,529 | — |
-| Local regression suite | **1,167** | 1,020 | 398 |
+| Local regression suite | **1,212** | 1,020 | 398 |
 
-Dashes mean the measurement did not exist yet. The v5.1.0 Roast figures are on
+Dashes mean the measurement did not exist yet. The v5.2.0 Roast figures are on
 the 1,424 files `spectest.data` lists at Roast `1f749e338`; the older columns
 were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at v3.0.0),
 and 656 is how many of the 1,424 v4.0.0 passed.
 
 ¶ Measured for v5.0.0 (the documentation examples) and v5.0.1 (the battery);
-v5.1.0 did not re-run those two sweeps.
+v5.1.0 and v5.2.0 did not re-run those two sweeps.
 
 § A fresh sweep of every distribution in the index on the v5.0.0 release binary, 2026-09-29 ([ECOSWEEP](docs/dev/findings/ECOSWEEP-2026-08.md)); v4.0.0's figure was a warm-store board.
 

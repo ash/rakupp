@@ -54,6 +54,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-09-29 | **v5.0.0** | **100.00% of Roast** — 218,421 of 218,422 tests pass without skip/todo, and 1,423 of the 1,424 files of `spectest.data` |
 | 2026-09-29 | **v5.0.1** | YAMLish loads, and parses in linear time — a fix-only release |
 | 2026-09-30 | **v5.1.0** | **Every file of Roast passes** (1,424 / 1,424, on Roast `1f749e338`) — the interpreter up to 29% faster on sixteen of eighteen kernels, native `int`/`num` semantics, `--cnp` kernels that call and index, `--hints` |
+| 2026-10-02 | **v5.2.0** | **Integer and loop kernels** — every benchmark kernel faster interpreted, `fib` by 97% and `loopsum` by 93%; a Value of 80 bytes instead of 128; `cro run`, DBIish from an installed binary, a Docker image; Roast unchanged at 1,424 / 1,424 |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -254,6 +255,13 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   off the tree-walker's hot path, native `int`/`num` semantics in every tier,
   `--cnp` kernels that call routines and methods and index arrays and hashes —
   and a build that compiles in 23 s instead of 61.
+- **Oct 2 — v5.2.0.** Roast as v5.1.0 left it (1,424 / 1,424, the same file
+  list). The interpreter gained run-time compilation on by default: a sub of
+  closed integer arithmetic, or a loop over plain Int and Str variables, runs on
+  machine integers and strings — `fib(29)` 392 → 14 ms, `loopsum` 81 → 5 —
+  and the tree-walker's hot path got leaner everywhere else. A Value is 80
+  bytes, not 128. `cro run` works, DBIish runs from an installed binary, and
+  the release is also a Docker image.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

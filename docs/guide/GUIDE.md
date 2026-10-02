@@ -44,7 +44,7 @@ The long-term goal, in order:
 ## Status
 
 Against the 1,424 files of Roast's `spectest.data` (Rakudo's own run list, at
-Roast `1f749e338`), as of v5.1.0:
+Roast `1f749e338`), as of v5.2.0:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
@@ -329,8 +329,9 @@ checking — pick `--bundle` for fast builds, `--exe` for fast execution.
 **4. Native compile (`--exe`)** — transpiles the program's AST to C++ that
 implements it directly (calling the runtime only for `Value` semantics), then
 compiles that to native code. **No interpreter inside** — real ahead-of-time
-compilation, so hot code (loops, recursion, arithmetic) runs several times
-faster (e.g. `fib` is ~3× the interpreter's speed, level with Rakudo).
+compilation, so hot code (loops, recursion, arithmetic) runs faster: `fib(29)`
+takes 5.8 ms compiled, 13.7 ms interpreted and 305 ms on Rakudo
+([BENCHMARKS.md](../status/BENCHMARKS.md)).
 
 `--exe` handles the **whole supported language**: it native-compiles nearly
 everything and, for the few remaining constructs, transparently falls back to

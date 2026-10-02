@@ -57,8 +57,8 @@ growing the interpreter until it runs.
 | Written in | C++17 | Rust | Raku + NQP |
 | Front end | hand-written lexer + recursive descent / Pratt | hand-written parser | NQP grammar → QAST |
 | Execution | tree-walking interpreter | bytecode VM (~340 opcodes) | bytecode VM (MoarVM) |
-| Runtime optimiser | opt-in tier-up (`--jit`, `--cnp`), off by default | Cranelift JIT, default on | `spesh` type specialisation + inlining, then JIT |
-| Memory | `shared_ptr` refcounting, no collector | refcounting + Bacon–Rajan cycle collector | generational, precise, moving GC |
+| Runtime optimiser | integer and loop kernels, default on; opt-in tier-up (`--jit`, `--cnp`) | Cranelift JIT, default on | `spesh` type specialisation + inlining, then JIT |
+| Memory | intrusive reference counting, no collector | refcounting + Bacon–Rajan cycle collector | generational, precise, moving GC |
 | Value repr | one struct, cold fields behind a copy-on-write block | NaN-boxed (8-byte target) | MoarVM object model |
 | Third-party deps | none | ~25 crates (num-bigint, ICU, Cranelift, libffi, pcre2) | its own toolchain (NQP, MoarVM) |
 | Regex engine | own | own | own (NQP-compiled) |
@@ -104,8 +104,12 @@ Three different answers to the same question:
 - **Raku++** compiles ahead of time by default, and at run time only if asked.
   `--exe` turns the whole program into C++ and hands it to the system compiler,
   which has as long as it likes to optimise. The cost is that this only helps
-  code the generator can express; time spent inside the runtime's own methods is
-  unchanged, and the interpreter itself gets no help at all. The two tier-up
+  code the generator can express, and time spent inside the runtime's own
+  methods is unchanged. The interpreter has one run-time compiler on by
+  default: a sub of closed integer arithmetic, or a loop that uses only plain
+  Int and Str variables, runs on machine integers and strings, and anything
+  else in it sends the whole sub or loop back to the tree-walker
+  ([BENCHMARKS.md](../../status/BENCHMARKS.md)). The two tier-up
   flags — `--jit` and `--cnp` — do compile hot loops during the run, but they
   are off unless you pass one, and they reach arithmetic-shaped loops with no
   calls in them rather than the method dispatch `spesh` and Cranelift are aimed
