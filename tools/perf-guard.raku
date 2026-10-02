@@ -5,7 +5,7 @@
 # the interpreter on a few tight-loop kernels, best-of-3, in a couple of seconds.
 #
 # The kernels deliberately stress the paths a batch is most likely to slow down:
-#   fib     — recursive sub calls + int arithmetic (dispatch + applyArith)
+#   fib     — recursive sub calls + int arithmetic (an integer kernel since v5.2.0)
 #   asg     — a plain scalar `=` assignment loop
 #   loopsum — a `+=` compound assignment over a Range with the `$_` topic
 #   hash    — hash-index post-increment in a loop
@@ -20,6 +20,15 @@
 # rats was added after the cold block moved the Rat pair out of line: every
 # kernel above lives entirely in the inline part of a Value, so the one type
 # the change could plausibly have taxed was again invisible to the gate.)
+#
+# fib, asg, loopsum, hash, mainnext and mainwhen were scaled up 2026-10-02, after
+# v5.2.0. The integer and loop kernels (src/IntKernel.cpp) took fib, asg,
+# loopsum, mainnext and mainwhen from 30-380 ms to 5-13 ms, of which ~4 ms is
+# process startup, and those runs then spanned 5-17% against the 5% tolerance:
+# `--record` refused, and a gate whose noise is its tolerance cannot see a
+# regression its own size. Each now runs ~60-80 ms with the same shape and the
+# same output. With the kernels off (RAKUPP_NO_KERNELS=1) asg and loopsum take
+# 1.6-2.1 s, so a kernel that stops engaging reads as a 20x red, not as noise.
 #
 # Usage — A/B two binaries:
 #     RAKUPP=/path/to/old rakupp tools/perf-guard.raku
@@ -51,10 +60,10 @@ my $RAKUPP = %PICK<path>;
 my $RUNS   = 4;   # 1 warm-up (discarded) + 3 measured
 
 my %kernels =
-    fib     => 'sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }; say fib(29);',
-    asg     => 'my $x = 0; for ^2_000_000 { $x = $x + 1 }; say $x;',
-    loopsum => 'my $t = 0; for 1 .. 1_000_000 { $t += $_ }; say $t;',
-    hash    => 'my %c; for 1 .. 100_000 { %c{$_ % 1_000}++ }; say %c.elems;',
+    fib     => 'sub fib($n) { $n < 2 ?? $n !! fib($n-1) + fib($n-2) }; say fib(33);',
+    asg     => 'my $x = 0; for ^40_000_000 { $x = $x + 1 }; say $x;',
+    loopsum => 'my $t = 0; for 1 .. 40_000_000 { $t += $_ }; say $t;',
+    hash    => 'my %c; for 1 .. 800_000 { %c{$_ % 1_000}++ }; say %c.elems;',
     # The three string/call kernels below were added 2026-08-09, after v3.0.1
     # changed the string representation (CowStr) and the guard could not see it:
     # every kernel above is Int-and-Array work, so a release that made string
@@ -169,9 +178,9 @@ my %kernels =
     # rats) carry no loop control, and every kernel that carries control flow
     # runs inside a sub — which is the path that always worked. Both must stay
     # written AT THE MAINLINE; moved into a sub they measure something else.
-    mainnext  => 'my $n = 0; for ^200_000 { next if $_ % 2; $n = $n + 1 }; say $n;',
+    mainnext  => 'my $n = 0; for ^10_000_000 { next if $_ % 2; $n = $n + 1 }; say $n;',
     mainwhen  => 'my $n = 0;
-                  for ^200_000 -> $i {
+                  for ^6_000_000 -> $i {
                       given $i % 3 {
                           when 0 { $n = $n + 1 }
                           when 1 { $n = $n + 2 }

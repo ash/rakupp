@@ -14,14 +14,19 @@
 #
 # Regenerate with:  rakupp tools/perf-guard.raku --record
 {
-    'machine'       => 'macOS Darwin 24.6, Apple Silicon, idle desktop',
+    'machine'       => 'macOS Darwin 27.0.0, Apple M3, idle desktop',
     'tolerance-pct' => 5,     # a build may be this much slower before the gate fails
     'kernels' => {
         # kernel  => { baseline-ms, best-ms, best-version, best-date }
-        'fib'     => { 'baseline' => 382.9, 'best' => 302.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'asg'     => { 'baseline' => 181.2, 'best' => 150.6, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'loopsum' => { 'baseline' => 102.9, 'best' => 83.7, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'hash'    => { 'baseline' => 23.1, 'best' => 17.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
+        # fib, asg, loopsum, hash, mainnext and mainwhen were REMOVED here on
+        # 2026-10-02 because their workloads changed (tools/perf-guard.raku says
+        # why: the v5.2.0 integer and loop kernels made them 5-13 ms, too short to
+        # hold the 5% tolerance). The next `--record` writes them fresh. Their
+        # last figures on the OLD workloads, v5.0.0 baseline / best:
+        #   fib(29)              382.9 / 302.9    asg 2M      181.2 / 150.6
+        #   loopsum 1M           102.9 / 83.7     hash 100k    23.1 / 17.3
+        #   mainnext 200k         32.8 / 31.3     mainwhen 200k 90.2 / 90.2
+        # and v5.2.0 measured them at 12.7, 7.1, 4.8, 13.5, 4.9 and 5.5 ms.
         # The three string/call kernels were added 2026-08-09 and have no release
         # history, so their FIRST baseline is the number measured the day they
         # landed rather than the last release's. That is deliberate: v3.0.1
@@ -32,27 +37,31 @@
         #   strscan  2883.0 -> 221.6   (.substr stopped copying and rescanning)
         #   strpass   184.3 -> 153.8
         #   subcall   375.3 -> 281.1   (binder fast path, cached signature facts)
-        'strscan' => { 'baseline' => 137.1, 'best' => 108.2, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'strpass' => { 'baseline' => 83.3, 'best' => 68.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-01' },
-        'subcall' => { 'baseline' => 146.1, 'best' => 146.1, 'best-version' => 'unreleased', 'best-date' => '2026-09-29' },
-        'rats'    => { 'baseline' => 249.9, 'best' => 176.4, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'regexloop'=> { 'baseline' => 125.4, 'best' => 99.7, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
-        'attrread'=> { 'baseline' => 211.8, 'best' => 196.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'method'  => { 'baseline' => 189.1, 'best' => 171.0, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'multimeth'=> { 'baseline' => 399.2, 'best' => 373.2, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'strscan' => { 'baseline' => 114.2, 'best' => 108.2, 'best-version' => 'unreleased', 'best-date' => '2026-08-27' },
+        'strpass' => { 'baseline' => 62.0, 'best' => 62.0, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'subcall' => { 'baseline' => 115.7, 'best' => 115.7, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'rats'    => { 'baseline' => 173.7, 'best' => 173.7, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'regexloop'=> { 'baseline' => 91.2, 'best' => 91.2, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'attrread'=> { 'baseline' => 145.2, 'best' => 145.2, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'method'  => { 'baseline' => 114.3, 'best' => 114.3, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'multimeth'=> { 'baseline' => 152.9, 'best' => 152.9, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
         # multiwhere landed 2026-09-15 with the fix that stopped a multi candidate's
         # `where` being evaluated twice per matching call. Its first baseline is the
         # number measured AFTER that fix (781.4), not before it (943.0): recording
         # the pre-fix figure would have let the double evaluation back in through the
         # very kernel added to catch it — the same trap the three string kernels
         # above document. The pre-fix figure is kept here so the gain stays legible.
-        'multiwhere'=> { 'baseline' => 670.8, 'best' => 619.4, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'objnew'  => { 'baseline' => 274.2, 'best' => 220.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'privmeth'=> { 'baseline' => 320.7, 'best' => 302.5, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'mainnext'=> { 'baseline' => 32.8, 'best' => 31.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
-        'mainwhen'=> { 'baseline' => 90.2, 'best' => 90.2, 'best-version' => 'unreleased', 'best-date' => '2026-09-29' },
-        'junction'=> { 'baseline' => 124.8, 'best' => 124.8, 'best-version' => 'unreleased', 'best-date' => '2026-09-29' },
-        'junctionwide'=> { 'baseline' => 18.9, 'best' => 18.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-29' },
+        'multiwhere'=> { 'baseline' => 314.7, 'best' => 314.7, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'objnew'  => { 'baseline' => 229.6, 'best' => 220.3, 'best-version' => 'unreleased', 'best-date' => '2026-09-17' },
+        'privmeth'=> { 'baseline' => 208.5, 'best' => 208.5, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'junction'=> { 'baseline' => 89.2, 'best' => 89.2, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'junctionwide'=> { 'baseline' => 19.5, 'best' => 18.9, 'best-version' => 'unreleased', 'best-date' => '2026-09-29' },
+        'asg'     => { 'baseline' => 80.1, 'best' => 80.1, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'fib'     => { 'baseline' => 72.1, 'best' => 72.1, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'hash'    => { 'baseline' => 81.9, 'best' => 81.9, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'loopsum' => { 'baseline' => 57.2, 'best' => 57.2, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'mainnext'=> { 'baseline' => 76.2, 'best' => 76.2, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
+        'mainwhen'=> { 'baseline' => 70.6, 'best' => 70.6, 'best-version' => 'unreleased', 'best-date' => '2026-10-02' },
         # `rats` was added to the guard on 2026-08-22, after the cold block
         # moved the Rat numerator/denominator pair out of the inline Value, and
         # it went in here WITHOUT a number: it was written on the M1/Darwin 25.5
@@ -117,5 +126,5 @@
     # time, because nothing in its output moved. Pass `--for=vX.Y.Z` to name the
     # release; without it the stamp names the version of the binary measured,
     # which during a release sitting is still the previous one.
-    'recorded' => '2026-09-29 (v5.0.0)',
+    'recorded' => '2026-10-02 (v5.2.0)',
 }
