@@ -6855,15 +6855,32 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // as they are — exactly as many as the parameters, none named, none a
     // Junction (it would autothread), Mu (refused) or a Buf/Blob (snapshotted
     // for copy-back).
-    if (codeVal.t == VT::Code && codeVal.code() && plainSubShape(*codeVal.code()) &&
+    if (codeVal.t == VT::Code && codeVal.code() &&
         !rakupp::prof::on && !anyRevSwitch_ && !tcx.topicWriteback && !tcx.pendingRwSlots &&
         !tcx.pendingArgWriter && !tcx.noAutothread && !tcx.loopPhaserCtl && !tcx.forceRoutineFrame &&
-        !tcx.rwInvocantExpr && staticEnvs_.empty() && args.size() == codeVal.code()->params->size()) {
-        bool plainArgs = true;
-        for (auto& a : args)
-            if (isNamedArg(a) || (a.t == VT::Array && isJunction(a)) || isMuTypeObject(a) ||
-                (a.t == VT::Str && !a.hashKind.empty())) { plainArgs = false; break; }
-        if (plainArgs) return callPlainSub(codeVal, *codeVal.code(), args, ownFrame);
+        !tcx.rwInvocantExpr && staticEnvs_.empty()) {
+        Callable& pc = *codeVal.code();
+        // A body of closed integer arithmetic runs as an integer kernel
+        // (IntKernel.cpp), from the first call: the kernel's own shape test
+        // is static, so it needs nothing a first call settles. Its arguments
+        // must be plain Ints, which rules out everything plainArgs tests. A
+        // kernel that declines has run nothing.
+        if (pc.intKernel.state.load(std::memory_order_relaxed) != 0) {
+            Value kv;
+            if (tryIntKernel(pc, args, tcx.callDepth, kv)) {
+                tcx.arityCallName = nullptr;   // consumed, as the call path does
+                t_fatalTry = false;
+                tcx.valContained = false;
+                return kv;
+            }
+        }
+        if (plainSubShape(pc) && args.size() == pc.params->size()) {
+            bool plainArgs = true;
+            for (auto& a : args)
+                if (isNamedArg(a) || (a.t == VT::Array && isJunction(a)) || isMuTypeObject(a) ||
+                    (a.t == VT::Str && !a.hashKind.empty())) { plainArgs = false; break; }
+            if (plainArgs) return callPlainSub(codeVal, pc, args, ownFrame);
+        }
     }
     // --profile: routine-level entry/exit (RAII — this function returns in many
     // places). Bare blocks and builtins are skipped: block time lands in the

@@ -310,6 +310,25 @@ struct PadLayout; // Interpreter.h — the pad slot table a Callable's frames us
 using ValueList = RVec<Value>;
 using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
 
+// A routine's integer kernel (IntKernel.cpp): the compiled form, and whether there
+// is one (-1 undecided, 0 none, 1 compiled, 2 being compiled). A COPY of a
+// Callable decides afresh: a closure clone resolves the routines it calls from
+// its own scope, so the original's kernel is not its kernel.
+void intKernelFree(void* k);
+struct KernelSlot {
+    std::atomic<void*> k{nullptr};
+    std::atomic<signed char> state{-1};
+    std::atomic<unsigned char> bails{0};   // consecutive bail-outs (see tryIntKernel)
+    std::atomic<bool> borrowed{false};     // k belongs to the body's AST (Stmt::kernelHome), not to this slot
+    KernelSlot() = default;
+    KernelSlot(const KernelSlot&) {}
+    KernelSlot& operator=(const KernelSlot&) { k = nullptr; state = -1; bails = 0; borrowed = false; return *this; }
+    ~KernelSlot() {
+        if (void* p = k.load(std::memory_order_relaxed))
+            if (!borrowed.load(std::memory_order_relaxed)) intKernelFree(p);
+    }
+};
+
 // A callable: either a user sub (params+body+closure) or a builtin.
 struct Callable {
     std::string pkg; // enclosing package name ("" = GLOBAL) — &?ROUTINE.package
@@ -324,6 +343,7 @@ struct Callable {
     // 1 = a plain sub: every step of a call that its shape rules out can be
     // left out (Interpreter::callPlainSub); 0 = not; -1 = not yet decided.
     DecidedOnce<signed char> plainShape{-1};
+    KernelSlot intKernel;
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
     // parameters builds that array only then. -1 = not yet scanned.
     DecidedOnce<signed char> atArgsScan{-1};

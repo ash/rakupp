@@ -122,6 +122,12 @@ struct Stmt : Node {
     // under RAKUPP_PARALLEL two threads can meet the same loop node at once.
     // The Site is built, THEN released here; a reader acquires it.
     PublishedOnce<void*> jitSite{nullptr};
+    // The integer kernel (IntKernel.cpp) of the routine body this statement
+    // OPENS, shared by every closure made from that body — or a sentinel saying
+    // the body can never be one. Set only on a body's first statement, for a
+    // kernel that calls no other routine (so it depends on the syntax alone).
+    // Like jitSite, a property of one run: not serialized, never freed.
+    PublishedOnce<void*> kernelHome{nullptr};
 };
 using StmtPtr = std::unique_ptr<Stmt>;
 

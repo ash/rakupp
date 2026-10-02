@@ -1500,6 +1500,8 @@ public:
     // callCallableRaw's lean half, for a plain sub called plainly (see
     // plainSubShape and the entry test in callCallableRaw)
     Value callPlainSub(const Value& codeVal, Callable& c, ValueList& args, bool ownFrame);
+    // IntKernel.cpp: run a plain sub as an integer kernel; false = nothing ran, take the call path
+    bool tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out);
     [[gnu::noinline]] Value execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink,
                                           std::unique_ptr<HandedError>* handOff);
     // A bare block written as a statement (exec's NK::Block); the rare
