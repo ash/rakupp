@@ -5606,7 +5606,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // are read, so `for $fh.lines.kv -> \k, \v { last }` leaves the rest unread)
     if (inv.t == VT::Array && inv.ext() && inv.arr() &&
         std::static_pointer_cast<LazySeqState>(inv.ext())->finiteSource &&
-        m != "kv" && m != "pairs" && m != "antipairs")
+        m != "kv" && m != "pairs" && m != "antipairs" &&
+        // (…nor for a question about the object rather than its elements, and
+        // a List view is not read by sinking it — `Supply.list.sink` taps only)
+        m[0] != '^' && m != "WHAT" && m != "WHICH" &&
+        !(m == "sink" && std::static_pointer_cast<LazySeqState>(inv.ext())->listView))
         forceLazy(inv);
     // A JUNCTION argument autothreads: `$s.contains(none "01")` is a junction of
     // the per-eigenstate answers, which collapses later. This used to live only in

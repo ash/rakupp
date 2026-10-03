@@ -618,6 +618,7 @@ private:
     std::set<const Expr*> parenned_; // nodes handed back from inside `( … )`          // full expr incl. commas/and/or
     ExprPtr parseExpr(int minbp);
     ExprPtr curryCompoundAssign(std::unique_ptr<Assign> a); // `$n max= *.elems` is a closure
+    ExprPtr keyBeforeValue(std::unique_ptr<Assign> a);      // `%h{~$i} = $i++` reads the key first
     ExprPtr parsePrefix(bool tight = false);
     ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);
     ExprPtr parsePrimary();

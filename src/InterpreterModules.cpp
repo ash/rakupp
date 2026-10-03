@@ -1513,6 +1513,7 @@ bool Interpreter::bareNameResolves(const std::string& n, const Program& unit) {
     return global_ && (global_->find(n) || global_->find("&" + n));
 }
 
+bool unitHasNestedPhasers(const std::vector<StmtPtr>& stmts);   // InterpreterOperators.cpp
 Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* incompleteOut,
                               bool checkOnly) {
     // `class C { EVAL 'method x { … }' }` — code EVALed while a class body runs
@@ -1847,9 +1848,32 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // ITS mainline — not at their textual position. roast asserts this through
     // `throws-like '… gather for 1..3 { INIT take "OH HAI"; … }'`: the take has
     // to happen with no gather on the stack, and only hoisting puts it there.
+    bool hoistedForInit = false;
     {
         std::vector<Block*> inits;
         for (auto& s : prog->stmts) collectPhasersStmt(s.get(), "INIT", inits, /*topLevel=*/true);
+        // An INIT runs at the start of the unit, and the unit's named subs are
+        // declared by then — `INIT f()` and `:$x = INIT f()` call one (the
+        // hoist below waits for a mention above the sub, which an INIT is not).
+        // A BEGIN still sees only what is above it, so a unit with one is left be.
+        if (mainlinePH && (!inits.empty() || unitHasNestedPhasers(prog->stmts))) {
+            bool anyBegin = false;
+            for (auto& st : prog->stmts)
+                if (st && st->kind == NK::Block && static_cast<Block*>(st.get())->phaser == "BEGIN") anyBegin = true;
+            if (!anyBegin) { hoistSubs(prog->stmts); hoistedForInit = true; }
+            // …and its `my` variables exist (undefined) for such a sub to touch,
+            // as the program's do: `sub f { $calls++ }` called by an INIT
+            for (auto& st : prog->stmts) {
+                if (!st || st->kind != NK::ExprStmt) continue;
+                Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+                if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                if (!e || e->kind != NK::VarExpr) continue;
+                auto* ve = static_cast<VarExpr*>(e);
+                if (!ve->declare || ve->declScope != "my" || ve->name.empty()) continue;
+                if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) continue;
+                if (!tctx_.cur->local(ve->name)) tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
+            }
+        }
         // …and its nested BEGIN/CHECK/INIT run before its code, as the program's do
         if (!checkOnly) runStaticPhasers(prog->stmts, tctx_.cur, /*unitIsLive=*/true);
         for (auto* b : inits) runHoistedInit(b);
@@ -1918,7 +1942,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             spCallsS(st.get(), mentioned);
             collectMentionedS(st.get(), mentioned);
         }
-        if (anySub && !anyBegin) hoistSubs(prog->stmts);
+        if (anySub && !anyBegin && !hoistedForInit) hoistSubs(prog->stmts);
     }
     Value last = Value::nil();   // an empty unit is Nil, as an empty block is
     // the EVAL is a scope of its own for `temp`: `EVAL 'temp $x; ++$x'` leaves

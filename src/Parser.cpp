@@ -1983,6 +1983,70 @@ ExprPtr Parser::curryCompoundAssign(std::unique_ptr<Assign> a) {
     return be;
 }
 
+// `%index{~$i} = $i++` — Rakudo evaluates the subscript's key BEFORE the right
+// side, so the key is "0" and the value 0. The interpreter reads the right side
+// first, which only shows when that side changes a variable the key computes
+// from; then (and only then) the key goes into a temporary first:
+// `do { my $k = ~$i; %index{$k} = $i++ }`. A bare variable as the key is left
+// alone — it is a container, read when the element is stored, after the right
+// side (`%g{$i} = ++$i` keys by the NEW $i in Rakudo too).
+ExprPtr Parser::keyBeforeValue(std::unique_ptr<Assign> a) {
+    if (a->op != "=" || !a->target || a->target->kind != NK::Index || !a->value) return a;
+    auto* ix = static_cast<Index*>(a->target.get());
+    if (!ix->index || ix->multiDim || ix->zen || !ix->adverb.empty()) return a;
+    switch (ix->index->kind) {
+        case NK::VarExpr: case NK::Index: case NK::IntLit: case NK::NumLit: case NK::StrLit:
+        case NK::BoolLit: case NK::Whatever: case NK::Range: case NK::ListExpr: case NK::ArrayLit:
+            return a;
+        default: break;
+    }
+    // the variables the right side changes, and the variables the key reads
+    std::set<std::string> changed, read;
+    std::function<void(Expr*, bool)> walk = [&](Expr* e, bool rhs) {
+        if (!e) return;
+        switch (e->kind) {
+            case NK::VarExpr: if (!rhs) read.insert(static_cast<VarExpr*>(e)->name); return;
+            case NK::Unary: { auto* u = static_cast<Unary*>(e);
+                if (rhs && (u->op == "++" || u->op == "--") && u->operand && u->operand->kind == NK::VarExpr)
+                    changed.insert(static_cast<VarExpr*>(u->operand.get())->name);
+                walk(u->operand.get(), rhs); return; }
+            case NK::Assign: { auto* x = static_cast<Assign*>(e);
+                if (rhs && x->target && x->target->kind == NK::VarExpr)
+                    changed.insert(static_cast<VarExpr*>(x->target.get())->name);
+                walk(x->target.get(), rhs); walk(x->value.get(), rhs); return; }
+            case NK::Binary: { auto* b = static_cast<Binary*>(e); walk(b->lhs.get(), rhs); walk(b->rhs.get(), rhs); return; }
+            case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
+                walk(m->inv.get(), rhs); for (auto& x : m->args) walk(x.get(), rhs); return; }
+            case NK::Call: for (auto& x : static_cast<Call*>(e)->args) walk(x.get(), rhs); return;
+            case NK::Index: { auto* i = static_cast<Index*>(e); walk(i->base.get(), rhs); walk(i->index.get(), rhs); return; }
+            case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) walk(p.get(), rhs); return;
+            case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) walk(x.get(), rhs); return;
+            default: return;
+        }
+    };
+    walk(a->value.get(), true);
+    if (changed.empty()) return a;
+    walk(ix->index.get(), false);
+    bool clash = false;
+    for (auto& n : changed) if (read.count(n)) { clash = true; break; }
+    if (!clash) return a;
+    const int line = a->line;
+    static const std::string kKey = "$\x01subscript-key";
+    auto decl = std::make_unique<VarExpr>(kKey); decl->declare = true; decl->line = line;
+    auto pre = std::make_unique<Assign>();
+    pre->line = line; pre->op = "="; pre->target = std::move(decl); pre->value = std::move(ix->index);
+    auto use = std::make_unique<VarExpr>(kKey); use->line = line;
+    ix->index = std::move(use);
+    auto be = std::make_unique<BlockExpr>();
+    be->line = line;
+    auto s1 = std::make_unique<ExprStmt>(); s1->line = line; s1->e = std::move(pre);
+    auto s2 = std::make_unique<ExprStmt>(); s2->line = line; s2->e = std::move(a);
+    be->body.push_back(std::move(s1));
+    be->body.push_back(std::move(s2));
+    auto u = std::make_unique<Unary>(); u->line = line; u->op = "do"; u->operand = std::move(be);
+    return u;
+}
+
 ExprPtr Parser::parseExpr(int minbp) {
     struct MinbpScope { int& r; int s; ~MinbpScope() { r = s; } } minbpScope{exprMinbp_, exprMinbp_};
     exprMinbp_ = minbp;
@@ -3118,7 +3182,8 @@ ExprPtr Parser::parseExpr(int minbp) {
                 a->containerSigil = in.op[1];
                 a->op = "=";
             }
-            lhs = curryCompoundAssign(std::move(a));
+            if (a->op == "=" && !a->containerSigil) lhs = keyBeforeValue(std::move(a));
+            else lhs = curryCompoundAssign(std::move(a));
         } else if (in.isRange) {
             auto r = std::make_unique<RangeExpr>();
             r->from = std::move(lhs); r->to = std::move(rhs);

@@ -773,7 +773,13 @@ static void spWalkStmt(Stmt* s, std::vector<const std::vector<StmtPtr>*>& chain,
         // …and a SUB's body: its INIT (`my $fh = INIT open(…)`) runs once, at program
         // start, not at each call (integration/advent2012-day15.t)
         case NK::SubDecl: { auto* sd = static_cast<SubDecl*>(s);
-            if (!sd->isMethod && !sd->name.empty()) spWalkBody(sd->body, chain, out, true); return; }
+            if (sd->isMethod || sd->name.empty()) return;
+            // …and its parameter defaults, which are in the routine's scope:
+            // `:$language = INIT { user-language }` is computed once
+            chain.push_back(&sd->body);
+            for (auto& p : sd->params) spWalkExpr(p.defaultVal.get(), chain, out);
+            chain.pop_back();
+            spWalkBody(sd->body, chain, out, true); return; }
         default: return;
     }
 }
@@ -832,6 +838,16 @@ void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr
         else one(e);
     }
 }
+// Does the unit hold an INIT inside a routine or block (`:$x = INIT f()`)?
+// EVAL asks, to declare its subs before such a phaser runs.
+bool unitHasNestedPhasers(const std::vector<StmtPtr>& stmts) {
+    std::vector<StaticPhaserRec> recs;
+    std::vector<const std::vector<StmtPtr>*> chain;
+    for (auto& s : stmts) spWalkStmt(s.get(), chain, recs);
+    for (auto& r : recs) if (r.kind == "INIT") return true;
+    return false;
+}
+
 void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& unitEnv,
                                    bool unitIsLive) {
     std::vector<StaticPhaserRec> recs;

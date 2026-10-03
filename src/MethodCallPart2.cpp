@@ -1755,11 +1755,26 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return o;
         }
         if (m == "list" || m == "List" || m == "Seq" || m == "eager") {
-            // S-56: a supply that QUIT has no list — the exception that ended it
-            // surfaces here, where the values are asked for.
-            if (inv.hash()->count("quit-reason"))
-                throw RakuError{(*inv.hash())["quit-reason"],
-                                inv.hash()->count("quit-message") ? (*inv.hash())["quit-message"].toStr() : "Supply quit"};
+            // S-56: a supply that QUIT has no complete list — the exception that
+            // ended it surfaces when the list is READ past the values emitted
+            // before it, as in Rakudo, whose list is lazy over the stream. A
+            // sunk `.list` is never read, so it raises nothing.
+            if (inv.hash()->count("quit-reason")) {
+                auto got = std::make_shared<ValueList>(vals());
+                Value why = (*inv.hash())["quit-reason"];
+                std::string msg = inv.hash()->count("quit-message") ? (*inv.hash())["quit-message"].toStr() : "Supply quit";
+                Value o = Value::array(); o.isList = true;
+                if (m == "Seq") o.s = "Seq";
+                auto st = std::make_shared<LazySeqState>();
+                st->streaming = st->finiteSource = true;   // `for` reads up to the error
+                st->listView = m != "Seq";
+                st->appendNext = [got, why, msg](ValueList& out) -> bool {
+                    if (out.size() < got->size()) { out.push_back((*got)[out.size()]); return true; }
+                    throw RakuError{why, msg};
+                };
+                o.extM() = st;
+                return o;
+            }
             Value o = Value::array(); *o.arr() = vals(); o.isList = true;
             if (m == "Seq") o.s = "Seq";
             return o;

@@ -1395,6 +1395,9 @@ struct LazySeqState {
     // a `.map` that runs its block as it is read: sinking it runs the block too
     // (Rakudo iterates a sunk Seq), however the source is made
     bool mapView = false;
+    // a LIST over a finished stream (`Supply.list`): read like a handle's lines,
+    // but sinking a List reads nothing, so a sunk `.list` raises no quit error
+    bool listView = false;
     bool exhausted = false;
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until

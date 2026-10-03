@@ -463,7 +463,8 @@ void Interpreter::sinkValue(const Value& r) {
     // A LIST view of one (`.list`, `.cache`) is not a Seq, and sinking a List
     // reads nothing: `(gather { … }).cache;` runs none of the block.
     if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized &&
-        (std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource ||
+        ((std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource &&
+          !std::static_pointer_cast<LazySeqState>(r.ext())->listView) ||
          std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe ||
          // …and a lazy `.map`: `(^Inf).map({ last if …; … });` runs until its `last`
          std::static_pointer_cast<LazySeqState>(r.ext())->mapView ||
@@ -22569,6 +22570,9 @@ Value Interpreter::evalUnary(Unary* u) {
             // `@(…)` DECONTAINERISES; it does not convert. An Array stays an Array
             // (Rakudo: `@(%h<k>).raku` is `[1, 2]`, not `(1, 2)`) — only the
             // itemisation is stripped. A List stays a List.
+            // A LAZY list keeps its source: copying the elements read so far
+            // made `@$gather-list` the empty list nothing had pulled yet.
+            if (v.t == VT::Array && v.arr() && v.ext()) { Value a = v; a.itemized = false; return a; }
             if (v.t == VT::Array && v.arr()) {
                 Value a = Value::array(*v.arr());
                 a.isList = v.isList;

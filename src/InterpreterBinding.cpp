@@ -630,6 +630,14 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
             {{"got", v}, {"expected", Value::typeObj(ptype)}, {"symbol", Value::str(p.name)}},
             "Type check failed in binding to parameter '" + p.name + "'; expected " + render() +
             " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
+    // A DEFINITE target is never reached from a type object: `Str:D()` given
+    // `Int` dies rather than binding `Int.Str`'s empty string (Rakudo dies here
+    // too, each target in its own words). The target's own type object is the
+    // Impossible coercion below.
+    if (defConstraint == 1 && v.t == VT::Type && !typeOrSubsetMatches(v, ptype))
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "Cannot coerce the type object " + v.typeName() + " to " + ptype +
+            ":D in binding to parameter '" + p.name + "'"};
     // a List is not an Array, whatever they share underneath: `Array(Any)`
     // turns `(1, 2)` into one
     const bool listToArray = ptype == "Array" && v.t == VT::Array && v.isList && v.hashKind.empty();
@@ -637,7 +645,8 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
         v = listToArray ? methodCall(v, "Array", {}) : coerceToType(v, ptype);
     else return;
     if ((v.t == VT::Hash && v.hashKind == "Failure")) return;   // the coercer's own failure stands
-    if (!typeOrSubsetMatches(v, ptype) || (defConstraint == 1 && !isDefined(v)))
+    if (!typeOrSubsetMatches(v, ptype) || (defConstraint == 1 && !isDefined(v)) ||
+        (defConstraint == 2 && isDefined(v)))
         throwTypedV("X::Coerce::Impossible",
             {{"target-type", Value::typeObj(ptype)}, {"from-type", Value::typeObj(v.typeName())}},
             "Impossible coercion from '" + (from.empty() ? std::string("Any") : from) + "' into '" + ptype +

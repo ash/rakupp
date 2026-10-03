@@ -71,15 +71,26 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
-- [ ] **Rakuglaze**: 2170 of 2176 pass (round 4, 2026-10-03). Open, all
-  judgement calls: `Supply.list` is eager (Rakudo's is lazy, so a sunk `.list`
-  never taps); an `INIT` in a parameter default runs per call, not once at
-  INIT time; `@a.reverse` hands out copies where Rakudo's List holds the
-  array's own containers; `%h{~$i} = $i++` evaluates the right side first;
-  `('A'..∞).is-lazy` is True (Rakudo False, `'A'..*` True); `Str:D() $s` given
-  a type object (Rakudo: "Internal error: inconsistent bind result"). Also
-  `my \y = $s; y.VAR` is Int (a parameter's is Scalar now), and a `my class`
-  used earlier in its OWN block is no longer reported as a post-declaration.
+- [ ] **Rakuglaze**: 2175 of 2176 pass (round 5, 2026-10-03). Open:
+  `@a.reverse` hands out copies where Rakudo's List holds the array's own
+  containers (`@a.reverse.List[0] = 'x'` writes into `@a`); this needs
+  containers in arrays, so it waits for the container-model work (Roast
+  tracks A3). `('A'..∞).is-lazy` is ruled True in the suite (Rakudo answers
+  False, yet treats the range as lazy everywhere else). Seen during round 5,
+  not fixed:
+  - `%m{$i}{$i} = $i++` stores `0 => Any` as well as `1 => {1 => 0}`
+    (Rakudo: `{0 => {1 => 0}}`).
+  - `for $l.list` over a quit Supply's list raises before the values;
+    `for $l` and `for @$l` read them first, as Rakudo does.
+  - An INIT default that reads an earlier parameter (`$y = INIT { $x }`)
+    still runs per call.
+  - `sub k { 1 } sub v { 2 }` on one line parses; Rakudo says "Strange text
+    after block".
+  - `Int:D()` given a Str type object dies at bind; Rakudo is not consistent
+    there (it dies, or returns an undefined value).
+  Also `my \y = $s; y.VAR` is Int (a parameter's is Scalar now), and a `my
+  class` used earlier in its OWN block is no longer reported as a
+  post-declaration.
 - [ ] **#110 constructor type checks**: the module battery gate was never run.
   Open: `A.new ~~ Cool` is True; a List is accepted into Array-typed slots; Mu
   and Junction are accepted into `Any`; native width is not enforced;
