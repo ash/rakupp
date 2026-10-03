@@ -55,6 +55,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-09-29 | **v5.0.1** | YAMLish loads, and parses in linear time — a fix-only release |
 | 2026-09-30 | **v5.1.0** | **Every file of Roast passes** (1,424 / 1,424, on Roast `1f749e338`) — the interpreter up to 29% faster on sixteen of eighteen kernels, native `int`/`num` semantics, `--cnp` kernels that call and index, `--hints` |
 | 2026-10-02 | **v5.2.0** | **Integer and loop kernels** — every benchmark kernel faster interpreted, `fib` by 97% and `loopsum` by 93%; a Value of 80 bytes instead of 128; `cro run`, DBIish from an installed binary, a Docker image; Roast unchanged at 1,424 / 1,424 |
+| 2026-10-03 | **v5.2.1** | Cro at full scale, native module bodies in `--exe`, `pip install rakulang` — a patch release; Roast unchanged at 1,424 / 1,424 |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -262,6 +263,11 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   and the tree-walker's hot path got leaner everywhere else. A Value is 80
   bytes, not 128. `cro run` works, DBIish runs from an installed binary, and
   the release is also a Docker image.
+- **Oct 3 — v5.2.1.** Roast unchanged (1,424 / 1,424, the same file list).
+  Cro runs at full scale — form bodies, WebSockets, parallel requests — after
+  nine engine fixes; `--exe` compiles the routines of embedded modules to
+  native code (Math::NIntegrate 1.5–1.6× faster); and `pip install rakulang`
+  installs the Python binding with the engine inside it.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

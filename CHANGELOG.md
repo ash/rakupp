@@ -3,6 +3,101 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.2.1 (2026-10-03) — Cro at full scale, native module bodies in `--exe`, and `pip install rakulang`
+
+A patch release on v5.2.0. Roast is where v5.2.0 left it: **all 1,424 files**
+and **all 218,420 tests** without skip and todo (220,055 of 220,055 counting
+them), one run on Roast `1f749e338`, with the same file list as v5.2.0. The local
+regression suite passes all 1,240 checks. The benchmarks, the module battery
+and the documentation examples were not re-run; their figures in the README
+and `docs/status/` are v5.2.0's or older, as labelled.
+
+### Python on PyPI
+
+- **`pip install rakulang`** works: the package is on
+  [PyPI](https://pypi.org/project/rakulang/), with wheels for macOS
+  (universal), Linux (x86_64 and aarch64) and Windows (x64), each carrying the
+  engine inside it. 5.2.0 was the first upload; this release's wheels follow
+  through the same workflow.
+- **The Python guide starts from `pip install`**
+  ([bindings/python/README.md](bindings/python/README.md)), which is also the
+  PyPI page: complete programs with their output (`eval`, `say`, state between
+  calls, a `postfix:<!>` factorial, calling subs, a grammar inline and from its
+  own `.raku` file, errors), and building the engine, library lookup and
+  troubleshooting in a closing section for experienced users.
+
+### Cro
+
+Issue #119 was two bugs, and four Cro programs that check themselves
+(`examples/modules/cro/use-cases/`: a JSON REST API, forms and a file upload,
+middleware through server-sent events, a WebSocket chat room) found seven more
+(3fa9dcaf, ed407cf3). All four pass; v5.1.0-80 passed none.
+
+- A destructuring sub-signature binds its argument's own `.Capture`, so
+  `request-body -> (:$tags, :$description)` sees the form's fields.
+- `for … { when … { return } }` no longer leaves the `when` flag set to cut the
+  caller's next block short.
+- `Supply.map`/`.grep`/`.do` on a `supply {}` are on-demand supply blocks, not
+  an eager drain.
+- An enum type by its package-qualified name accepts its values in attribute
+  and parameter checks.
+- A `.then` callback on a pending promise runs on a worker of its own, not on
+  the settler's thread.
+- Two requests in flight no longer hang the client: a worker waiting in
+  `await` lets other threads run.
+- An async socket forgets its descriptor before EOF closes it, so writes to a
+  departed client cannot reach the next connection.
+- A live channel's `.Supply` reads through the channel on another thread.
+- Signature smart-matching and multi scoring look inside a sub-signature, so a
+  form without a required field is a 400 again, not a 500.
+
+### `--exe`: native bodies for module routines
+
+A compiled program used to interpret its modules, so a module-heavy program
+ran no faster under `--exe` (5acb85df). Now each module routine gets a native
+body when the backend can compile it; the interpreter still loads the module,
+dispatches every call and binds every signature. Math::NIntegrate: 225 of 255
+routines native, 1.50–1.63× faster, the same results. `RAKUPP_NO_AOT=1` keeps
+modules interpreted, and `RAKUPP_AOT_VERBOSE=1` says why a routine stays
+interpreted.
+
+Comparing native bodies with interpreted ones over 49 distributions' own test
+suites found about 25 places where the C++ backend gave a wrong answer in any
+compiled program; each is fixed, or refused so that the program falls back to
+the interpreter. Seven more script divergences are fixed or refused
+(1e535cb8): `&?ROUTINE`, `callframe`, `$Pkg::var`, `-> &f` loop parameters,
+writes to read-only parameters, typed and trait-carrying declarations, and
+nested `enum`/`class`. `t/aot/run.raku` checks the native path itself, case by
+case, and `tools/aot-battery.raku` runs module suites with and without native
+bodies (97d0c260).
+
+### Fixes
+
+- **`make @$<seg>.join(…)`** parsed as a bare `make` followed by a stray term,
+  in every mode (1e535cb8).
+- **Pointer arithmetic gives an Int**: `0 + $p` and `$p + 1` on a NativeCall
+  Pointer were Num, which made a compiled NativeHelpers::CStruct program write
+  through address 0x4 (7afa7e62). `abs $p` and `$p.Real` give the Int address
+  too (4e56e5e5).
+- **Precompilation**: a write sweeps its cache bucket for orphans only when it
+  adds an entry, so the first Cro start after a rebuild takes 0.31 s, not
+  2.44 s (8ff2461d).
+- A regression test for issue #117, `repeat … until` in a method beside a sub
+  (6359946c).
+
+### Tooling and docs
+
+- perf-guard's six fastest kernels are sized past process startup, and its
+  baseline is v5.2.0 (3bccfccb).
+- The README lists Docker as an install route of its own, and INSTALL.md's
+  examples build on the published image (262486a6).
+- [docs/dev/plans/TODO.md](docs/dev/plans/TODO.md) is the one list of open
+  work (89a268ad).
+
+Left open: lazy `Match` access from Python is a quarter to a half slower per
+field with the 5.2.0 library than with 4.0.1
+([findings](docs/dev/findings/PYTHON-BINDING-PERF-2026-10-03.md)).
+
 ## v5.2.0 (2026-10-02) — integer and loop kernels, and a leaner tree-walker
 
 Roast stands where v5.1.0 left it: **all 1,424 files** of `spectest.data` and
