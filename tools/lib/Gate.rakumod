@@ -68,27 +68,38 @@ sub binary-version(Str $path --> Str) is export {
 #| filters by architecture rather than taking the first path that exists: on the
 #| machine of record `build/` sat beside a native `build-arm64/` and held an
 #| x86_64 build for two releases, so "first path that exists" measured a
-#| translated binary and said nothing about it.
+#| translated binary and said nothing about it. Among the host's builds the
+#| newest wins, so a stale build directory cannot be picked by list order.
 #|
 #| Returns a Hash: path, picked-by-arch (a later candidate was preferred because
-#| it matches the host), from-env, host, arch, version, and candidates.
+#| it matches the host), picked-by-age (a later candidate was preferred because
+#| it is newer), from-env, host, arch, version, and candidates.
 sub pick-rakupp(IO::Path $repo, Str :$env-var = 'RAKUPP',
                 :@candidates = <build/rakupp build-arm64/rakupp rakupp> --> Hash) is export {
     my $host  = host-arch();
     my @paths = @candidates.map({ $repo.add($_).Str });
     my $from-env = %*ENV{$env-var};
-    my ($path, $by-arch) = $from-env, False;
+    my ($path, $by-arch, $by-age) = $from-env, False, False;
     without $path {
         my @runnable = @paths.grep(*.IO.x);
-        # prefer one built for THIS host; fall back to the first runnable so the
+        # prefer one built for THIS host; fall back to the runnable ones so the
         # refusal below still explains itself instead of silently finding nothing
-        my $native = $host ?? @runnable.first({ binary-arch($_) eq $host }) !! Nil;
-        $by-arch = ?$native && ?@runnable && $native ne @runnable[0];
-        $path = $native // @runnable[0] // @paths[0];
+        my @native = $host ?? @runnable.grep({ binary-arch($_) eq $host }) !! ();
+        my @pool   = @native || @runnable;
+        # among those, the NEWEST: a stale build/ beside a fresh build-arm64/
+        # (both native) was picked by list order and measured yesterday's code
+        my $newest = @pool[0];
+        for @pool[1..*] -> $p {
+            $newest = $p if $p.IO.modified > $newest.IO.modified;
+        }
+        $by-arch = ?@native && @native[0] ne @runnable[0];
+        $by-age  = ?@pool && $newest ne @pool[0];
+        $path = $newest // @paths[0];
     }
     %(
         path            => $path,
         :picked-by-arch($by-arch),
+        :picked-by-age($by-age),
         from-env        => $from-env.defined,
         host            => $host,
         candidates      => @paths,
@@ -136,4 +147,5 @@ sub provenance-line(Str $tool, %pick --> Str) is export {
     "$tool: {%pick<path>} (rakupp {%pick<version>})"
       ~ (%pick<from-env>       ?? "  ({%pick<host>} host; set explicitly)" !! '')
       ~ (%pick<picked-by-arch> ?? "  (chosen over an earlier candidate: it is the {%pick<host>} build)" !! '')
+      ~ (%pick<picked-by-age>  ?? "  (chosen over an earlier candidate: it is the newest build)" !! '')
 }

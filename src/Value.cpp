@@ -99,6 +99,7 @@ static PtrCensusDump g_ptrCensusDump;
 #endif
 #include "Unicode.h"     // uniGeneralCategory (magic-increment window over non-ASCII)
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -525,8 +526,11 @@ static std::string numToStr(double n) {
     // Num.Str). cnum, not ostringstream: a host's std::locale::global would
     // put a comma in a stream, and a host's setlocale would break the
     // round-trip check — both corrupt the output for embedders only.
+    // A subnormal carries fewer than 15 significant digits, so its shortest form
+    // can be shorter than 15 (Rakudo: 3e-320 * 3 is 9e-320, not
+    // 8.99989980464415e-320); search it from one digit up.
     char buf[40];
-    for (int prec = 15; prec <= 17; prec++) {
+    for (int prec = std::fabs(n) < DBL_MIN ? 1 : 15; prec <= 17; prec++) {
         cnum::snprintf(buf, sizeof buf, "%.*g", prec, n);
         if (cnum::strtod(buf, nullptr) == n) return buf;
         // A value whose decimal expansion ENDS exactly halfway — every power of

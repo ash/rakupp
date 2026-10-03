@@ -480,9 +480,20 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
         for (auto& kv : *envKV) cenv.push_back(const_cast<char*>(kv.c_str()));
         cenv.push_back(nullptr);
     }
+    // Every pipe end is CLOEXEC from birth, before the fork: a concurrent spawn
+    // (another worker) that forks before we close our copies would otherwise
+    // carry the write end across its execvp and defer our EOF until IT exits.
+    // The child's dup2 onto 0/1/2 sheds the flag on the copy it keeps. (No
+    // pipe2 on macOS, so the flag goes on by fcntl.)
+    auto cloexecPipe = [](int fd[2]) {
+        if (pipe(fd) != 0) return false;
+        fcntl(fd[0], F_SETFD, FD_CLOEXEC);
+        fcntl(fd[1], F_SETFD, FD_CLOEXEC);
+        return true;
+    };
     int pipefd[2] = {-1, -1}, errfd[2] = {-1, -1};
-    if (io.captureOut && pipe(pipefd) != 0) return sc;
-    if (io.captureErr && pipe(errfd) != 0) { if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); } return sc; }
+    if (io.captureOut && !cloexecPipe(pipefd)) return sc;
+    if (io.captureErr && !cloexecPipe(errfd)) { if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); } return sc; }
     // The exec-status pipe. Its write end is CLOEXEC, so a SUCCESSFUL execvp
     // closes it silently and the parent reads end-of-file; a FAILED one has the
     // child write its errno through first. That is the only way to tell "no such
@@ -490,8 +501,7 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
     // visible: Rakudo reports a failed spawn as exit code -1 with an `OS error`
     // clause naming the reason (roast S29-os/system.t asserts both).
     int xfd[2] = {-1, -1};
-    const bool haveX = pipe(xfd) == 0;
-    if (haveX) fcntl(xfd[1], F_SETFD, FD_CLOEXEC);
+    const bool haveX = cloexecPipe(xfd);
     pid_t pid = fork();
     if (pid < 0) {
         if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); }
@@ -543,16 +553,13 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
         }
     }
     sc.pid = (long long)pid;
-    // parent: don't let a concurrent spawn (another worker) inherit our read ends
-    // across its execvp — that would keep the write end open and defer our EOF.
+    // parent: keep the read ends (already CLOEXEC, see cloexecPipe)
     if (io.captureOut) {
-        fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
         close(pipefd[1]);
         fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
         sc.outFd = pipefd[0];
     }
     if (io.captureErr) {
-        fcntl(errfd[0], F_SETFD, FD_CLOEXEC);
         close(errfd[1]);
         fcntl(errfd[0], F_SETFL, O_NONBLOCK);
         sc.errFd = errfd[0];

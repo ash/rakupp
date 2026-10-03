@@ -815,7 +815,8 @@ function numToStr(n) {
     if (Number.isNaN(n)) return 'NaN';
     if (n === 0) return Object.is(n, -0) ? '-0' : '0';
     if (Number.isInteger(n) && Math.abs(n) < 1e15) return String(n);
-    for (let prec = 15; prec <= 17; prec++) {
+    // a subnormal's shortest form can be under 15 digits (9e-320)
+    for (let prec = Math.abs(n) < 2.2250738585072014e-308 ? 1 : 15; prec <= 17; prec++) {
         const s = fmtG(n, prec);
         if (Number(s) === n) return s;
     }
@@ -1005,10 +1006,10 @@ function raku(v) {
                 const m = v.ty.findUser('raku'); if (m) return str(m(v));
                 const parts = [];
                 for (const a of v.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(v['a_' + a.name]));
-                return v.ty.name + '.new(' + parts.join(', ') + ')';
-            }
 )RKJS",
-R"RKJS(            if (v instanceof RJunction) return junctionRaku(v);
+R"RKJS(                return v.ty.name + '.new(' + parts.join(', ') + ')';
+            }
+            if (v instanceof RJunction) return junctionRaku(v);
             if (v instanceof RWhatever) return '*';
             if (v instanceof RSetty) return v.raku();
             if (v instanceof RComplex) return '<' + v.Str() + '>';
@@ -1305,10 +1306,10 @@ function chars(s) { s = str(s); return isAscii(s) ? s.length : graphemes(s).leng
 function codes(s) { let n = 0; for (const _ of str(s)) n++; return n; }
 function substr(s, from, len) {
     s = str(s);
-    const g = isAscii(s) ? null : graphemes(s);
-    const total = g ? g.length : s.length;
 )RKJS",
-R"RKJS(    let f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
+R"RKJS(    const g = isAscii(s) ? null : graphemes(s);
+    const total = g ? g.length : s.length;
+    let f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
     if (f < 0) f += total;
     if (f > total) throw new RakuError(`Start argument to substr out of range. Is: ${f}, should be in 0..${total}; use *-${-f + total} if you want to index relative to the end`, 'X::OutOfRange');
     let l = len === undefined ? total - f : (typeof len === 'function' ? toInt(len(total)) : toInt(len));
@@ -1553,10 +1554,10 @@ function sprintf(fmt, ...args) {
             return sign + body;
         };
         switch (conv) {
-            case 's': s = str(next()); if (prec !== null) s = graphemes(s).slice(0, parseInt(prec, 10)).join(''); break;
-            case 'd': case 'i': case 'u': {
 )RKJS",
-R"RKJS(                const v = toInt(toNumeric(next()));
+R"RKJS(            case 's': s = str(next()); if (prec !== null) s = graphemes(s).slice(0, parseInt(prec, 10)).join(''); break;
+            case 'd': case 'i': case 'u': {
+                const v = toInt(toNumeric(next()));
                 let b = big(v); const neg = b < 0n; if (neg) b = -b;
                 let body = b.toString();
                 if (prec !== null) while (body.length < parseInt(prec, 10)) body = '0' + body;

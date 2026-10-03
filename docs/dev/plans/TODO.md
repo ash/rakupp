@@ -71,9 +71,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
-- [ ] **Subnormal Nums print 15 digits**: `say 3e-320 * 3` is `9e-320` in
-  Rakudo (the shortest form that reads back) and `8.99989980464415e-320` here;
-  `5e-324` prints `4.94065645841247e-324`. `numToStr` in src/Value.cpp.
 - [ ] **Rakuglaze**: 2170 of 2176 pass (round 4, 2026-10-03). Open, all
   judgement calls: `Supply.list` is eager (Rakudo's is lazy, so a sunk `.list`
   never taps); an `INIT` in a parameter default runs per call, not once at
@@ -259,8 +256,7 @@ with its tag, after the release run is green.
   [SLANG-PLAN.md](SLANG-PLAN.md).
 - [ ] **Larger walls**: PDF 16 of 49 test files (encryption, `ByteString`,
   filters, tie); Red #77 (compile-time lexical declaration).
-- [ ] **Data::Native**: README.md and the modules guide do not link
-  DATA-NATIVE.md; `Callable :sorted-keys` is refused.
+- [ ] **Data::Native**: `Callable :sorted-keys` is refused.
   [DATA-PLAN.md](DATA-PLAN.md).
 - [ ] **Not started**: [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) (`rakupp.lock`,
   `--frozen`) and [UUID-PLAN.md](UUID-PLAN.md) (draft; the distribution's name
@@ -283,11 +279,10 @@ with its tag, after the release run is green.
   exist yet.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/. Surveyed
   2026-10-01, not built.
-- [ ] **Roast harness**: set `FD_CLOEXEC` on both pipe ends before fork in
-  `spawnChildStart`. Run Rakudo at the 120 s budget; COUNTING.md's figures are
-  from the 60 s budget.
-- [ ] **`pick-rakupp`**: prefer the newest build, so a stale build directory
-  cannot be picked.
+- [ ] **Roast harness**: run Rakudo at the 120 s budget; COUNTING.md's figures
+  are from the 60 s budget. The Lock around spawns in tools/run-roast.raku can
+  go now that the engine's pipes are close-on-exec before the fork
+  (t/race/spawn-pipe-cloexec.raku).
 - [ ] **CLI**: the sandbox, `--profile=heap`, `--race`, inline script
   dependencies, `--explain`, `--lint --fix`.
   [CLI-BORROW-PLAN.md](CLI-BORROW-PLAN.md).
