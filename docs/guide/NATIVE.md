@@ -57,6 +57,59 @@ are not twins in every corner — a compiled `>>op<<` can answer where both the
 interpreter and Rakudo throw — so a program that must behave identically in both
 should be tested in both.
 
+## Modules
+
+A compiled program carries the modules it `use`s inside the binary, as their
+parsed ASTs, so it runs with the module tree deleted. `--exe` also compiles
+each module routine's **body** to native code. The interpreter still loads the
+module — it declares the packages, classes and roles, applies the traits,
+exports the symbols, dispatches every call and binds every signature, so all of
+that behaves exactly as it does interpreted — and where it would then walk the
+routine's statements, it runs the native body instead.
+
+The compile says how much of that it managed:
+
+```
+--exe: embedded 32 modules: Data::TypeSystem::Predicates … Math::NIntegrate
+--exe: 225 of 255 module routines compiled natively
+```
+
+A routine stays interpreted when its meaning lives in the call protocol around
+its statements — a phaser or `CATCH` in the body, an `is rw` routine, an
+`is rw`/`is raw`/sigilless parameter or a sub-signature, placeholder
+parameters, a `proto` — or when one of its statements can be neither compiled
+nor handed to the interpreter on its own. `RAKUPP_AOT_VERBOSE=1` at compile
+time names each such routine and the reason. A native body that the C++
+compiler rejects costs only that routine: the error is traced back to it and
+the binary is built again without it.
+
+When the program itself falls back to bundling, its modules' routines are
+still compiled natively. A plain `--bundle` leaves them interpreted and builds
+faster.
+
+`RAKUPP_NO_AOT=1` in the environment runs a binary's modules interpreted — the
+same binary, so the two can be compared — and, at compile time, leaves the
+native bodies out.
+
+[Math::NIntegrate](https://raku.land/zef:antononcube/Math::NIntegrate), 32
+modules, in-process time of each workload (module loading excluded), best of
+three, 2026-10-03 on the M3; the results are identical in both columns:
+
+| Workload | interpreted | `--exe` | `--exe` is |
+|---|---:|---:|---:|
+| gauss-kronrod | 407.4 ms | 250.4 ms | 1.63× |
+| gauss-kronrod (Rat) | 529.4 ms | 326.9 ms | 1.62× |
+| trapezoidal (Rat) | 12,482.7 ms | 7,821.0 ms | 1.60× |
+| trapezoidal | 3,425.3 ms | 2,169.8 ms | 1.58× |
+| multidimensional | 473.5 ms | 299.7 ms | 1.58× |
+| cartesian Gauss-Kronrod | 463.7 ms | 298.6 ms | 1.55× |
+| newton-cotes | 530.1 ms | 341.7 ms | 1.55× |
+| clenshaw-curtis | 595.9 ms | 398.3 ms | 1.50× |
+| clenshaw-curtis (Rat) | 621.4 ms | 413.0 ms | 1.50× |
+
+What is left is mostly method dispatch: a native body calls a module's methods
+through the interpreter's dispatcher, the same one an interpreted call uses.
+
 ## Numbers
 
 User CPU time, best of 3, arm64 build on an M3 (macOS). Measured 2026-07-12.

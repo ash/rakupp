@@ -2905,7 +2905,11 @@ Value rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, ValueL
 // |x for native codegen. In argument position (argPos): arrays/ranges spread
 // positionally and a hash spreads as named args — mirroring evalArgs. In a list
 // literal a hash stays one item — mirroring the ListExpr eval.
+void rtSpreadSlipArg(ValueList& args, const Value& v);   // InterpreterCore.cpp — evalArgs' own `|`
 void rtSpreadArg(ValueList& as, const Value& v, bool argPos) {
+    // an argument list spreads ONE level, by the interpreter's own rules: `f(|@aoa)`
+    // passes each inner array whole (flatten() took them apart as well)
+    if (argPos) { rtSpreadSlipArg(as, v); return; }
     if (v.t == VT::Array || v.t == VT::Range) { for (auto& x : v.flatten()) as.push_back(x); return; }
     if (argPos && v.t == VT::Hash && v.hash()) {
         for (auto& kv : *v.hash()) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; as.push_back(std::move(p)); }
@@ -3038,8 +3042,89 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
 // a one-level splice marker — the consumer (map, list assignment) splices the
 // top-level elements; itemized inner arrays stay whole. Mirrors the interp,
 // where the value-position slip returns the array and the consumer flattens.
+Value& rtIndexRefW(Value& base, const Value& key) {
+    Value idx = key;
+    Value* b = base.deref();
+    const long long n = b->t == VT::Array && b->arr() ? (long long)b->arr()->size() : 0;
+    if (key.t == VT::Whatever) idx = Value::integer(n);
+    else if (key.t == VT::Code && key.code() && key.code()->isWhateverCode)
+        if (Interpreter* I = Interpreter::liveTarget()) idx = I->callCallable(key, ValueList{Value::integer(n)});
+    return rtIndexRef(base, idx, false);
+}
+
+std::string rtInterpStr(const Value& v) {
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return v.s;
+    if ((v.t == VT::Int && !v.big()) && v.hashKind.empty() && v.enumName.empty()) return v.toStr();
+    if (Interpreter* I = Interpreter::liveTarget()) return I->strOf(v);
+    return v.toStr();
+}
+
+// `EXPR => value` for native codegen: the key keeps its own type, as the
+// interpreter's Pair arm keeps it — `1 => 2`, an object, a type, a regex — and
+// only a Str (or anything that is one) is stored as the plain string key.
+Value rtPairKeyed(const Value& kv, Value value) {
+    Value pr = Value::pair(kv.toStr(), std::move(value));
+    if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
+        kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
+        kv.t == VT::Match || kv.t == VT::Code || kv.t == VT::Regex ||
+        kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range)
+        pr.pairKeyM() = std::make_shared<Value>(kv);
+    return pr;
+}
+
+// `K => V` where a `*` was written on either side is a WhateverCode, not a
+// Pair (`.map(* => True)`, `.map($ns ~ * => *)`): the curry the interpreter's
+// Pair arm and native codegen both build. `kVar`/`vVar`: that side is a plain
+// variable, whose Whatever is a VALUE and curries nothing. Answers Any when
+// neither side curries; the caller then builds the Pair.
+Value rtPairCurry(const Value& kv, const Value& vv, bool kVar, bool vVar) {
+    auto curries = [](const Value& v) {
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+    };
+    if (!((curries(kv) && !kVar) || (curries(vv) && !vVar))) return Value::any();
+    Value kc = kv, vc = vv;
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+    code.code()->isWhateverCode = true;
+    auto arityOf = [&](const Value& x) -> long long {
+        if (x.t == VT::Whatever) return 1;
+        if (x.t == VT::Code && x.code() && x.code()->isWhateverCode)
+            return x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+        return 0;
+    };
+    code.code()->whateverArity = arityOf(kc) + arityOf(vc);
+    code.code()->builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
+        size_t idx = 0;
+        auto resolve = [&](const Value& x) -> Value {
+            if (x.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
+            if (x.t == VT::Code && x.code() && x.code()->isWhateverCode) {
+                long long ar = x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+                ValueList sub;
+                for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
+                return I.callCallable(x, sub);
+            }
+            return x;
+        };
+        Value k = resolve(kc);   // key first — argument order matters
+        Value v = resolve(vc);
+        Value pr = Value::pair(k.toStr(), v);
+        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+        return pr;
+    };
+    return code;
+}
+// …the whole of `EXPR => v` for native codegen: the curry, else the Pair.
+Value rtPairOf(const Value& kv, Value value, bool kVar, bool vVar) {
+    if (Value code = rtPairCurry(kv, value, kVar, vVar); code.t == VT::Code) return code;
+    return rtPairKeyed(kv, std::move(value));
+}
+
+Value rtSlipOf(const Value& v);   // InterpreterCore.cpp — the interpreter's own `|`
 Value rtSlipShallow(const Value& v) {
     if (v.t == VT::Array && v.arr()) { Value r = v; r.isList = true; r.s = "Slip"; return r; }
+    // A Hash/Map slips its pairs, out of its item container too: `(|$h, 5)` and
+    // `%(|$h, k => 1)` spread the pairs of the Hash in $h, as the interpreter's
+    // list and hash composers do.
+    if (v.t == VT::Hash) { Value d = v; d.itemized = false; return rtSlipOf(d); }
     if (v.t == VT::Range) { Value r = Value::array(v.flatten()); r.isList = true; r.s = "Slip"; return r; }
     Value out = Value::array(); out.isList = true; out.s = "Slip";
     if (v.t != VT::Nil) out.arr()->push_back(v);

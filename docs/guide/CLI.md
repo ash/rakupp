@@ -144,7 +144,7 @@ always did.
 | `install`, `reinstall`, `uninstall`, `test` | the plan, progress, `already installed:`, `provided by rakupp:`, `done:`, and the per-dist detail under `--list`'s identity lines — not warnings, refusals, failures, the identity lines themselves, or the `--check` and `--dry-run` reports |
 | `-c` | `Syntax OK` (the exit code is the verdict) |
 | `--lint` | the summary line; findings stay |
-| `--exe`, `--aot`, `--bundle` | `Compiled …` and the embedded-module list; a module that could *not* be embedded is still reported |
+| `--exe`, `--aot`, `--bundle` | `Compiled …`, the embedded-module list and `--exe`'s count of natively compiled module routines; a module that could *not* be embedded is still reported |
 | the REPL, `--mcp` | the banner |
 | `--jupyter-install`, `--precomp-clean`, `--precomp-*=on\|off`, `--ast-roundtrip` | the success line |
 | everything else | nothing — accepted, no effect |
@@ -846,7 +846,8 @@ writes it to a file.
 [COMPILERS.md](COMPILERS.md) and [NATIVE.md](NATIVE.md). Their flags
 (`-o OUT`, `-O[level]`, `-I`, `--slim[=SPEC]`, `--standalone`, `--static`)
 compose in any order with the mode, before or after the source file. `-q`
-drops the `Compiled …` line and the list of embedded modules; a module that
+drops the `Compiled …` line, the list of embedded modules and the count of module
+routines compiled natively (see [NATIVE.md](NATIVE.md#modules)); a module that
 could *not* be embedded is still reported, because the binary will need the
 disk for it.
 

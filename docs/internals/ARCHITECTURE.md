@@ -107,7 +107,7 @@ This is the heart. Key pieces:
 |---|---|
 | `Value.{h,cpp}` | The universal runtime value (see below), coercions, gist/Str. |
 | `BigInt.{h,cpp}` | Arbitrary-precision integers (base-1e9) for the exact number tower. |
-| `Interpreter.h`, `Interpreter*.cpp` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus module loading (`loadModule`: each `use`d module is lexed, parsed to its own AST and executed once, in every mode including `--exe`; see [MODULE-LOADING.md](MODULE-LOADING.md)) and the concurrency runtime (thread-local execution registers, interpreter compute on all cores by default since v3, and a CPython-style GIL kept as the `RAKUPP_GIL=1` escape hatch; see [ASYNC.md](../guide/ASYNC.md)). |
+| `Interpreter.h`, `Interpreter*.cpp` | Tree-walking evaluator: `eval`/`exec`, scopes, calls, dispatch, `applyArith`, codegen helpers — plus module loading (`loadModule`: each `use`d module is lexed, parsed to its own AST and executed once, in every mode including `--exe`, where its routines' bodies run as native code the interpreter enters after binding each call; see [MODULE-LOADING.md](MODULE-LOADING.md)) and the concurrency runtime (thread-local execution registers, interpreter compute on all cores by default since v3, and a CPython-style GIL kept as the `RAKUPP_GIL=1` escape hatch; see [ASYNC.md](../guide/ASYNC.md)). |
 | `InterpreterCore.cpp` | The hot paths: every function the `perf-guard` kernels spend time in (`eval`, `exec`, `evalBinary`, `evalAssignInner`, `applyArith`, `callCallableRaw`, `bindParams`, …) and the definition of `tctx_`, kept in ONE file. Apart, they stop inlining into each other, and a `thread_local` read from a file that does not define it costs a call per access: 14–35% slower on the kernels, measured. |
 | `Interpreter.cpp`, `InterpreterModules.cpp`, `InterpreterBinding.cpp`, `InterpreterCalls.cpp`, `InterpreterRegex.cpp`, `InterpreterOperators.cpp` | The rest of the evaluator, in the order it was written: construction and the mainline run; module loading, `EVAL` and declarations; signatures and binding; calls and lvalues; regexes and grammars; operators, phasers and `gather`. |
 | `InterpreterParts.h` | What those files share: types, helpers and variables one defines and another uses. Internal to `src/`. |
@@ -124,7 +124,8 @@ This is the heart. Key pieces:
 | `IOSpec.cpp` | `IO::Spec::*` path semantics (Unix/Win32). |
 | `Highlight.{h,cpp}` | The parse-aware syntax highlighter behind `--highlight` (HTML + ANSI). |
 | `Runtime.{h,cpp}` | Shared entry points: `rakuppRun` (lex+parse+interpret) and `rakuppRunProgram` (interpret a prebuilt AST, for `--aot`). |
-| `Codegen.*` | `--exe` back end: transpiles the AST to native C++ (with an optional `-O` optimizer — see [OPTIMIZATION.md](OPTIMIZATION.md)). |
+| `Codegen.*` | `--exe` back end: transpiles the AST to native C++ (with an optional `-O` optimizer — see [OPTIMIZATION.md](OPTIMIZATION.md)), and the native bodies of embedded module routines (`transpileModuleRoutine`). |
+| `AotModules.{h,cpp}` | Those module-routine bodies at run time: the routine walk the compiler and the loader share, the startup table that attaches each body to its routine, and what a body calls — outer names through the frame, attributes, the statements it hands to the interpreter. |
 | `codegen/Js.*`, `js-rt/` | `--target=js` back end: transpiles to JavaScript over a hand-written runtime. |
 | `AstEmit.cpp` | `--aot` back end: serializes the AST and emits C++ carrying the bytes. |
 | `AstDump.cpp` | `--ast` AST printer. |

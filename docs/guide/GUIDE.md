@@ -358,7 +358,11 @@ correct binary. Compiled natively:
 - **concurrency** — `Promise`/`start`/`await`, `Supply`, `Supplier`,
   `react`/`whenever`/`supply` (the synchronous model);
 - `do`, `try`, `gather`/`take`, `EVAL`, phasers
-  (`BEGIN`/`INIT`/`ENTER`/`LEAVE`/`END`), and `CATCH` blocks (`when`/`default`).
+  (`BEGIN`/`INIT`/`ENTER`/`LEAVE`/`END`), and `CATCH` blocks (`when`/`default`);
+- the **routines of the modules the program `use`s**: each module travels in the
+  binary as its parsed AST, and the bodies of its subs and methods are compiled
+  to native code that the interpreter enters after binding each call (see
+  [NATIVE.md](NATIVE.md#modules)).
 
 The main remaining fallback is **grammars** — where an interpreter-in-a-box is
 the right tool (they *are* the grammar engine). A few other constructs still

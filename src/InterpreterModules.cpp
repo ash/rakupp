@@ -2,6 +2,7 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "AotModules.h"
 
 namespace rakupp {
 static thread_local int t_stageDepth = 0;
@@ -1227,6 +1228,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         bool okEmbedded = true;
         try { deserializeAst(em->blob, *prog); }
         catch (AstSerialError&) { okEmbedded = false; } // fall through to the disk
+        if (okEmbedded) attachAotBodies(name, *prog);   // its routines' native bodies, if compiled
         if (okEmbedded) {
             if (traceLoad) fprintf(stderr, "[Load] %s <- embedded in this binary\n", name.c_str());
             // Its distribution travelled with it (MODULES-PLAN B3): bind

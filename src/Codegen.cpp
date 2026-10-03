@@ -7,6 +7,7 @@
 #include <memory>
 #include <climits>
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -220,7 +221,7 @@ struct Codegen {
         if (u->op == "-")  return nativeNumericStatic(u) ? "rtNativeNeg(" + x + ")"
                                                          : "applyArith(\"-\", Value::integer(0), " + x + ")";
         if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
-        if (u->op == "~")  return "Value::str((" + x + ").toStr())";
+        if (u->op == "~")  return "Value::str(rtInterpStr(" + x + "))";   // `~$obj` asks its .Str
         if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
         if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
         if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
@@ -264,7 +265,73 @@ struct Codegen {
     // A variable reference: a C++ local, unless the unit auto-vivifies the name.
     std::string varRef(const std::string& name) {
         if (laxVars_.count(name)) return "RT.laxVarRef(" + cesc(name) + ")";
+        if (moduleMode_) {
+            aotRefs_.insert(name);
+            if (aotFree_.count(name)) return "(*__f" + mangleVar(name) + ")";
+        }
         return mangleVar(name);
+    }
+
+    // ---- module routines (transpileModuleRoutine, AotModules.h) ----
+    //
+    // A module routine's body compiled on its own: the interpreter has already
+    // bound its signature into a frame, so its parameters are read out of that
+    // frame and every name it does not declare itself is an OUTER name — a
+    // module-level variable, a sub, a class-body `my` — reached through the
+    // frame's scope chain at entry. Those names are emitted as `(*__fv_…)`, a
+    // pointer bound once per call; the first of the two passes collects them.
+    bool moduleMode_ = false;
+    std::set<std::string> aotRefs_;   // every name varRef was asked for (pass one)
+    std::set<std::string> aotFree_;   // the outer names (pass two)
+    std::set<std::string> callEnvNames_;   // sub names a call resolves through the env
+    std::set<std::string> rwSubNames_, rwMethodNames_;   // see AotNames
+    std::set<std::string> aotTypeNames_;   // types the module graph declares (AotNames::types)
+    // A call argument a callee's `is rw` parameter could write back into.
+    static bool writableArg(Expr* a) {
+        if (a && a->kind == NK::Unary && static_cast<Unary*>(a)->op == "|") a = static_cast<Unary*>(a)->operand.get();
+        return a && (a->kind == NK::VarExpr || a->kind == NK::Index);
+    }
+    void refuseRwCall(const std::set<std::string>& names, const std::string& name, const std::vector<ExprPtr>& args) {
+        if (!moduleMode_ || !names.count(name)) return;
+        for (auto& a : args) if (writableArg(a.get())) unsupported("a call that may write back through an `is rw` parameter");
+    }
+    std::set<std::string> aotLocals_; // the C++ locals the routine declares (pass two; see delegateStmt)
+    std::string aotPreamble_;         // file-scope data the routine's code refers to
+    std::string aotTag_;              // unique per routine, for those symbols
+    int aotBlobN_ = 0;
+    // The closures being emitted, innermost last: 'b' a block (`return` inside
+    // belongs to the routine around it), 's' a sub (its own `return` boundary).
+    std::vector<char> nestKinds_;
+    struct Nest {
+        Codegen* g;
+        Nest(Codegen* g_, char k) : g(g_) { g->nestKinds_.push_back(k); }
+        ~Nest() { g->nestKinds_.pop_back(); }
+    };
+    // inside a native closure, which may run after the routine's frame is gone
+    bool inClosure() const { return !nestKinds_.empty() || wcDepth > 0; }
+
+    // A subtree the native body cannot evaluate faithfully on its own — an
+    // attribute, whose rules (private-slot shadowing, `$.x` as a method call,
+    // native-memory objects) live in the interpreter. Serialized here, read
+    // back once at run time, and evaluated by the interpreter in the frame.
+    std::string delegateNode(Expr* e) {
+        Program p;
+        auto es = std::make_unique<ExprStmt>();
+        es->e.reset(e);
+        p.stmts.push_back(std::move(es));
+        std::string blob;
+        try { blob = serializeAst(p); } catch (...) { blob.clear(); }
+        static_cast<ExprStmt*>(p.stmts[0].get())->e.release();   // the AST still owns it
+        if (blob.empty()) unsupported("a subtree the serializer declines");
+        std::string sym = "__aotb_" + aotTag_ + "_" + std::to_string(aotBlobN_++);
+        std::ostringstream d;
+        d << "static const unsigned char " << sym << "[] = {";
+        for (size_t i = 0; i < blob.size(); i++)
+            d << (i % 24 == 0 ? "\n    " : "") << (unsigned)(unsigned char)blob[i] << ",";
+        d << "\n};\n";
+        aotPreamble_ += d.str();
+        return "([]() -> Expr* { static Expr* const __n = rtAotNode(" + sym + ", sizeof " + sym +
+               "); return __n; }())";
     }
 
     // Names a `use`d module exports (`is export`). Resolving a call by name at
@@ -277,8 +344,11 @@ struct Codegen {
     std::set<std::string> moduleExports_;
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
-        if (moduleExports_.count(name))
+        if (moduleExports_.count(name) || callEnvNames_.count(name))
             return "RT.callEnvFirst(" + cesc(name) + ", " + vl + ")";
+        if (moduleMode_)   // no startup hook to resolve a shared pointer table from: resolve in place, once
+            return "rtCallB(RT, ([&]() -> const BuiltinFn* { static const BuiltinFn* const __p = RT.builtinPtr(" +
+                   cesc(name) + "); return __p; }()), " + cesc(name) + ", " + vl + ")";
         auto it = usedBuiltins_.emplace(name, (int)usedBuiltins_.size()).first;
         return "rtCallB(RT, __bfp" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")";
     }
@@ -687,6 +757,15 @@ struct Codegen {
             default: return nullptr;
         }
     }
+    // The value a block-final `if`/`with` without an `else` gives when nothing
+    // fires: Empty, as the interpreter's (`.map({ $_ if $_ > 2 })` skips the
+    // rest; Nil put a Nil per element in). Anything else seeds Nil.
+    static std::string tailSeed(Stmt* s) {
+        if (s->kind == NK::IfStmt && !static_cast<IfStmt*>(s)->elseBlock) return "emptySlipSingleton()";
+        if (s->kind == NK::GivenStmt && static_cast<GivenStmt*>(s)->defGuard != 0 &&
+            !static_cast<GivenStmt*>(s)->hasElse) return "emptySlipSingleton()";
+        return "Value::nil()";
+    }
     // What a body falls off the end into: Nil, both for an EMPTY body (execBlock's
     // seed) and for one whose last statement is a LOOP — the same two rules the
     // interpreter applies, so `sub f { }` and `sub f { while 0 {} }` answer Nil
@@ -868,6 +947,17 @@ struct Codegen {
              + ", " + cesc(v->declType) + "); return __sh; }())";
     }
 
+    // The slot a `my $*X` declares. At the top level that is the program's own
+    // scope. In a module routine it is the routine's frame, where the callees'
+    // dynamic lookup finds it and the caller's `$*X` stays as it was; a native
+    // closure or a compiled sub has no frame of its own, and finding the
+    // caller's `$*X` instead OVERWROTE it — so those are refused.
+    std::string dynDecl(const std::string& nm) {
+        if (atTopLevel_) return "RT.dynVarRef(" + cesc(nm) + ")";
+        if (moduleMode_ && !inClosure()) return "rtAotDeclDyn(__env, " + cesc(nm) + ")";
+        unsupported("a dynamic variable declared inside a routine");
+    }
+
     // A declaration whose slot may already exist (hoistLexicalSubs pre-declares
     // what a lexical sub captures; hoistExprDecls does the same for a `my` in
     // expression position). Assign into it, or declare it here.
@@ -877,6 +967,12 @@ struct Codegen {
     }
 
     std::string declVar(const std::string& rakuName, const std::string& init) {
+        if (rakuName.size() > 1 && rakuName[1] == '*') return dynDecl(rakuName) + " = " + init;
+        // A sigilless name (`my \x`, `sub f(\x)`) is read back as a bare term,
+        // which resolves through the RUNTIME scope — where a C++ local is not.
+        // Only the top level's are globals the term lookup knows (topVars_).
+        if (!rakuName.empty() && !atTopLevel_ && !std::strchr("$@%&", rakuName[0]))
+            unsupported("a sigilless variable inside a routine");
         std::string v = mangleVar(rakuName);
         if (cellVars_.count(rakuName)) {
             if (std::find(cellsLive_.begin(), cellsLive_.end(), rakuName) == cellsLive_.end())
@@ -954,6 +1050,7 @@ struct Codegen {
 
     std::string subClosure(SubDecl* d) {
         if (d->isNative) return nativeSubClosure(d);
+        Nest __nest{this, 's'};
         std::set<std::string> params;
         for (auto& p : sigOf(d)) if (!p.name.empty()) params.insert(p.name);
         checkClosureCapture(d->body, params); // against the OUTER scope's cells
@@ -971,7 +1068,7 @@ struct Codegen {
                     line(0, "return " + exArg(static_cast<ExprStmt*>(st)->e.get()) + ";");
                 else if (i + 1 == d->body.size() && (st->kind == NK::IfStmt || st->kind == NK::GivenStmt)) {
                     std::string rv = gensym("__rv");
-                    line(0, "Value " + rv + " = Value::nil();");   // the seed IS the answer for an empty branch
+                    line(0, "Value " + rv + " = " + tailSeed(st) + ";");   // the seed IS the answer for an empty branch
                     stmtValue(st, 0, rv);
                     line(0, "return " + rv + ";");
                 }
@@ -1043,6 +1140,7 @@ struct Codegen {
 
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
+        Nest __nest{this, be->isSub ? 's' : 'b'};
         BodyScope __bs{this, /*closure=*/true};
         bool pushed = false; std::string topic;
         std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
@@ -1087,7 +1185,7 @@ struct Codegen {
                     // a block-final if/elsif/else (or given) is the block's value,
                     // exactly as in sub bodies
                     std::string rv = gensym("__rv");
-                    line(0, "Value " + rv + " = Value::nil();");   // the seed IS the answer for an empty branch
+                    line(0, "Value " + rv + " = " + tailSeed(s) + ";");   // the seed IS the answer for an empty branch
                     stmtValue(s, 0, rv);
                     line(0, "return " + rv + ";");
                 }
@@ -1193,9 +1291,14 @@ struct Codegen {
                     return "RT.dynVar(\"$_\")"; // the runtime topic (mainline $_)
                 }
                 if (v->name == "@*ARGS") return "RT.getArgs()";
-                if (v->name.size() > 2 && (v->name[0] == '$' || v->name[0] == '@' || v->name[0] == '%')
+                // (`&!f` too: a Callable attribute, called as `&!f(…)`)
+                if (v->name.size() > 2 && (v->name[0] == '$' || v->name[0] == '@' || v->name[0] == '%' ||
+                                           v->name[0] == '&')
                     && (v->name[1] == '!' || v->name[1] == '.')) {
                     if (self_.empty()) unsupported("attribute access outside a method");
+                    if (moduleMode_)
+                        return "rtAotAttr(RT, " + self_ + ", " + delegateNode(v) + ", " +
+                               (inClosure() ? "true" : "false") + ")";
                     return "rtAttrGet(" + self_ + ", " + cesc(v->name.substr(2)) + ")"; // $!x / @.y / %!z
                 }
                 if (v->name.size() && v->name[0] == '&') { // &sub : a reference to a routine
@@ -1206,6 +1309,7 @@ struct Codegen {
                         return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(ValueList(__a)); })";
                     if (codeVars.count(nm)) return mangleVar(v->name); // `my &f = …`
                     if (envSubs.count(nm)) return "RT.dynVar(" + cesc(v->name) + ")"; // lexical sub
+                    if (moduleMode_ && callEnvNames_.count(nm)) return varRef(v->name);  // the module's own sub
                     if (nm.rfind("infix:", 0) == 0 || nm.rfind("prefix:", 0) == 0 || nm.rfind("postfix:", 0) == 0) {
                         // &infix:<op> — an operator as a callable
                         std::string op = nm.substr(nm.find('<') + 1);
@@ -1273,6 +1377,13 @@ struct Codegen {
             case NK::BlockExpr: return emitBlockClosure(static_cast<BlockExpr*>(e));
             case NK::Range: {
                 auto* r = static_cast<RangeExpr*>(e);
+                // `0..*-2`: an endpoint that is a WhateverCode resolves against the
+                // list it indexes (or curries the range), which the interpreter's
+                // range does; rtRangeVal takes only a bare `*`, and numified the
+                // code to 0 — `@l[0..*-2]` was the first element alone.
+                auto codeEnd = [](Expr* x) { return x && x->kind != NK::Whatever && hasStarLit(x); };
+                if (codeEnd(r->from.get()) || codeEnd(r->to.get()))
+                    unsupported("a range with a WhateverCode endpoint");
                 // integer literal endpoints keep the direct construction; anything else
                 // goes through rtRangeVal so string ranges ('a'..'z') materialise via succ
                 if (r->from->kind == NK::IntLit && r->to->kind == NK::IntLit &&
@@ -1441,7 +1552,7 @@ struct Codegen {
                                 else if (i + 1 == be->body.size() &&
                                          (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                                     std::string rv = gensym("__rv");
-                                    line(0, "Value " + rv + " = Value::nil();"); // the seed IS the answer for an empty branch
+                                    line(0, "Value " + rv + " = " + tailSeed(s) + ";"); // the seed IS the answer for an empty branch
                                     stmtValue(s, 0, rv);
                                     line(0, "return " + rv + ";");
                                 }
@@ -1465,6 +1576,7 @@ struct Codegen {
                 }
                 if (u->op == "gather") { // gather { … take … } — probe-and-double lazy, like the interp
                     std::string body;
+                    Nest __nest{this, 'b'};   // lazy: the body may run after the routine has returned
                     gatherDepth_++;   // loops in here check the probe's budget per iteration
                     if (u->operand->kind == NK::BlockExpr) {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
@@ -1523,6 +1635,32 @@ struct Codegen {
             }
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
+                // `$obj does Role`, `$x but Role`: a mixin, which the interpreter's
+                // own arm performs (the runtime operator table has no entry — compiled,
+                // it died "Unsupported operator 'does'")
+                if (b->op == "does" || b->op == "but") unsupported("a `" + b->op + "` mixin");
+                // …and the topicalizing short-circuits, which bind `$_` to the left
+                // side for the right (the operator table has none of the three)
+                if (b->op == "andthen" || b->op == "orelse" || b->op == "notandthen")
+                    unsupported("`" + b->op + "`");
+                // `@a Z @b Z @c` is ONE list-infix chain producing 3-tuples (the
+                // interpreter's armZX); folded in pairs it zipped tuples with a
+                // list, `(("x", 1), "l")` — same for X.
+                if ((b->op == "Z" || b->op == "X") && b->lhs->kind == NK::Binary &&
+                    static_cast<Binary*>(b->lhs.get())->op == b->op) {
+                    std::vector<Expr*> chain;
+                    Expr* cur = b;
+                    while (cur->kind == NK::Binary && static_cast<Binary*>(cur)->op == b->op) {
+                        chain.push_back(static_cast<Binary*>(cur)->rhs.get());
+                        cur = static_cast<Binary*>(cur)->lhs.get();
+                    }
+                    chain.push_back(cur);
+                    std::reverse(chain.begin(), chain.end());
+                    std::string items;
+                    for (Expr* x : chain) items += (items.empty() ? "" : ", ") + ex(x);
+                    return "([&]()->Value{ ValueList __zl{" + items + "}; return RT.applyReducePublic(" +
+                           cesc(b->op) + ", __zl); }())";
+                }
                 // smartmatch against a regex literal: `$x ~~ /.../`
                 if ((b->op == "~~" || b->op == "!~~") && b->rhs->kind == NK::RegexLit) {
                     requireEngineOnlyRegex(static_cast<RegexLit*>(b->rhs.get())->pattern, "a regex");
@@ -1678,7 +1816,7 @@ struct Codegen {
                         piece = cesc(static_cast<StrLit*>(s->parts[i].get())->v);
                         if (i == 0) piece = "std::string(" + piece + ")";
                     }
-                    else piece = "(" + ex(s->parts[i].get()) + ").toStr()";
+                    else piece = "rtInterpStr(" + ex(s->parts[i].get()) + ")";
                     if (i) acc += " + ";
                     acc += piece;
                 }
@@ -1695,6 +1833,16 @@ struct Codegen {
                 // `[2 3 4]`. Refuse, exactly as an `is rw` NativeCall param
                 // does, and let --exe fall back to bundling and stay CORRECT.
                 if (c->name == "take-rw" && !c->callee) unsupported("take-rw");
+                if (!c->callee) refuseRwCall(rwSubNames_, c->name, c->args);
+                // `Int($x)`, `Str($x)`, `MyClass($x)` — a TYPE called as a routine is
+                // the coercion protocol (the argument's own method, COERCE, CALL-ME,
+                // .new), which the interpreter's call evaluation carries and the
+                // builtin table does not: compiled, it was "Undefined routine 'Int'"
+                // at run time.
+                if (!c->callee && !userSubs.count(c->name) && !multiNames.count(c->name) &&
+                    !codeVars.count(c->name) && !envSubs.count(c->name) && !callEnvNames_.count(c->name) &&
+                    (isKnownTypeName(c->name) || classNames.count(c->name) || aotTypeNames_.count(c->name)))
+                    unsupported("a type-coercion call " + c->name + "(…)");
                 bool slip = false;
                 for (auto& a : c->args) if (isSlip(a.get())) slip = true;
                 std::string vl = argsVL(c->args);
@@ -1760,6 +1908,14 @@ struct Codegen {
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
                 if (m->maybe) unsupported("method-call form (.?)");
+                // Two call forms the dispatch below would silently get wrong:
+                // `self.Parent::meth` dispatches to Parent's method past any
+                // override (emitted plainly it re-entered the override — a
+                // method calling its parent's version recursed forever), and
+                // `.+`/`.*` collect every candidate's result.
+                if (!m->methodQual.empty()) unsupported("a qualified method call (.Class::method)");
+                if (m->allMode) unsupported("a .+/.* method call");
+                refuseRwCall(rwMethodNames_, m->method, m->args);
                 // The dispatch-key prefix of the call form: the class method
                 // tables key a private method `!name` and the metamodel `^name`
                 // (classRegister emits the same keys).
@@ -1776,8 +1932,8 @@ struct Codegen {
                     std::string mv = ex(m->methodExpr.get());
                     if (m->mutate) { // $x .= &f — rebind the invocant to the result
                         return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; Value __m = " + mv +
-                               "; __r = rtIndirectMethod(RT, __r, __m, " + argsVL(m->args) + ", " + cesc(pfx) +
-                               ", false); return __r; }())";
+                               "; __r = " + coerceFor(m->inv.get(), "rtIndirectMethod(RT, __r, __m, " + argsVL(m->args) +
+                               ", " + cesc(pfx) + ", false)") + "; return __r; }())";
                     }
                     return "([&]()->Value{ Value __i = " + ex(m->inv.get()) + "; Value __m = " + mv +
                            "; return rtIndirectMethod(RT, __i, __m, " + argsVL(m->args) + ", " + cesc(pfx) + ", " +
@@ -1790,8 +1946,11 @@ struct Codegen {
                 std::string name = pfx + m->method;
                 if (m->mutate) { // $x .= meth : rebind the invocant to the result
                     if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
-                    return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; __r = RT.methodCall(__r, "
-                         + cesc(name) + ", " + argsVL(m->args) + "); return __r; }())";
+                    // …through the container's assignment: `%h .= map(…)` stores
+                    // a Hash built from the Seq, as `%h = %h.map(…)` would
+                    return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; __r = " +
+                           coerceFor(m->inv.get(), "RT.methodCall(__r, " + cesc(name) + ", " + argsVL(m->args) + ")") +
+                           "; return __r; }())";
                 }
                 // AUTOVIVIFY through a subscript for the methods that grow a
                 // container. `@ready[2].push(10)` must create the inner Array in the
@@ -1811,12 +1970,34 @@ struct Codegen {
                            std::string(hashy ? "Value::makeHash()" : "Value::array()") + "; "
                            "return RT.methodCall(__s, " + cesc(name) + ", " + argsVL(m->args) + "); }())";
                 }
+                // A Buf/Blob mutator changes the invocant's VARIABLE (rtMutMethod):
+                // the bytes are the value, there is no shared payload to write into.
+                // (a `$` variable or attribute holds one; `@a.push` needs none of this)
+                auto bufHolder = [](Expr* x) {
+                    if (x->kind == NK::Index) return true;
+                    if (x->kind != NK::VarExpr) return false;
+                    auto* v = static_cast<VarExpr*>(x);
+                    return !v->declare && v->name.size() > 1 && v->name[0] == '$' && v->name != "$_" &&
+                           v->name[1] != '*' && v->name[1] != '?' && v->name != "$/" && v->name != "$!";
+                };
+                if (!m->meta && !m->bang && !m->maybe && !hasWhatever(e) && bufHolder(m->inv.get()) &&
+                    (name == "push" || name == "append" || name == "prepend" || name == "unshift" ||
+                     name == "pop" || name == "shift" || name == "splice" || name == "reallocate" ||
+                     name.rfind("write-", 0) == 0))
+                    return "rtMutMethod(RT, " + lvalueExpr(m->inv.get()) + ", " + cesc(name) + ", " +
+                           argsVL(m->args) + ")";
                 // The INVOCANT composes on its own where the call itself does not
                 // — a metamodel macro asks about the star: `(* < 1).WHAT` is
                 // `(WhateverCode)`, and `(* < 1).^name` is the WhateverCode that
                 // answers "WhateverCode" per argument. (exArg is `ex` for every
                 // invocant without a `*` in it, so nothing else changes.)
-                return "RT.methodCall(" + exArg(m->inv.get()) + ", " + cesc(name) + ", " + argsVL(m->args) + ")";
+                // Where the call DOES compose, it is part of the curry an outer
+                // exArg already opened, and the invocant continues that one:
+                // `*.value.defined` is one closure calling .value then .defined —
+                // curried again, .defined was asked of the inner WhateverCode,
+                // which is always defined, so `.grep(*.value.defined)` kept all.
+                return "RT.methodCall(" + (wcDepth > 0 && hasWhatever(e) ? ex(m->inv.get()) : exArg(m->inv.get())) +
+                       ", " + cesc(name) + ", " + argsVL(m->args) + ")";
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
@@ -1846,16 +2027,22 @@ struct Codegen {
             }
             case NK::Pair: {
                 auto* p = static_cast<PairExpr*>(e);
-                std::string key = p->keyExpr ? "(" + ex(p->keyExpr.get()) + ").toStr()" : cesc(p->key);
                 std::string val = p->value ? exArg(p->value.get()) : "Value::boolean(true)"; // :g  ==  g => True
-                return "Value::pair(" + key + ", " + val + ")";
+                // a computed key keeps its type (`$node => 1`, `1 => 2`); toStr() made every one a Str
+                // …and a `*` written on either side curries the whole `=>` (rtPairCurry)
+                if (p->keyExpr) {
+                    auto isVar = [](Expr* x) { return x && x->kind == NK::VarExpr ? "true" : "false"; };
+                    return "rtPairOf(" + ex(p->keyExpr.get()) + ", " + val + ", " + isVar(p->keyExpr.get()) +
+                           ", " + isVar(p->value.get()) + ")";
+                }
+                return "Value::pair(" + cesc(p->key) + ", " + val + ")";
             }
             case NK::ListExpr: {
                 auto* le = static_cast<ListExpr*>(e);
                 std::string built = "listToArray({" + argList(le->items) + "})";
-                if (le->parenned) // (1, 2, 3) is a List — mirrors the interpreter's eval
-                    return "([&]()->Value{ Value _l = " + built + "; _l.isList = true; return _l; }())";
-                return built;
+                // a comma list — parenned or bare — is a List, as the interpreter's
+                // eval has it: `method rgbd { $a, $b, $c }` answers (…), not […]
+                return "([&]()->Value{ Value _l = " + built + "; _l.isList = true; return _l; }())";
             }
             case NK::HashLit:  return "rtHashLit({" + argList(static_cast<HashLit*>(e)->items) + "})";
             case NK::ArrayLit: { // mirror the interpreter's per-item splice rules
@@ -2092,7 +2279,138 @@ struct Codegen {
                 line(ind, declVar(n, "Value::any()") + "; // hoisted `my` from expression position");
     }
 
+    // A statement of a module routine that the emitter cannot compile is handed
+    // to the interpreter instead of costing the whole routine its native body
+    // (module mode only). The statement is serialized into the binary; at run
+    // time the interpreter executes it in a scope of its own, whose parent is
+    // the routine's frame, with the native locals it names copied in and back
+    // out afterwards. So it must not DECLARE anything (the declaration would
+    // vanish with that scope), make a closure (which would capture the copies,
+    // not the locals), or leave the statement through control flow the native
+    // code around it cannot see (`return`, `next`, a `when`'s succeed). Within a
+    // native closure the frame may already be gone, so nothing is delegated
+    // there. Anything else the interpreter runs exactly as it would have.
     void stmt(Stmt* s, int ind) {
+        if (!moduleMode_ || inClosure()) { stmtNative(s, ind); return; }
+        auto savedHoisted = hoisted; auto savedRefs = aotRefs_; auto savedCells = cellsLive_;
+        auto savedCodeVars = codeVars; auto savedEnvSubs = envSubs; auto savedSpecials = boundSpecials;
+        const size_t savedPre = aotPreamble_.size();
+        std::string why;
+        std::string text = capture([&]() {
+            try { stmtNative(s, ind); } catch (const CodegenError& e) { why = e.msg.empty() ? "?" : e.msg; }
+        });
+        if (why.empty()) { out << text; return; }
+        hoisted = std::move(savedHoisted); aotRefs_ = std::move(savedRefs); cellsLive_ = std::move(savedCells);
+        codeVars = std::move(savedCodeVars); envSubs = std::move(savedEnvSubs); boundSpecials = std::move(savedSpecials);
+        aotPreamble_.resize(savedPre);
+        std::string call = delegateStmt(s, /*sink=*/true);
+        if (call.empty()) unsupported(why);
+        line(ind, call + ";");
+    }
+    // …and the same for a routine's final statement, whose value is the result.
+    std::string tailExpr(ExprStmt* es) {
+        if (!moduleMode_ || inClosure()) return exArg(es->e.get());
+        auto savedHoisted = hoisted; auto savedRefs = aotRefs_; auto savedCells = cellsLive_;
+        auto savedCodeVars = codeVars; auto savedEnvSubs = envSubs; auto savedSpecials = boundSpecials;
+        const size_t savedPre = aotPreamble_.size();
+        std::string r, why;
+        std::string text = capture([&]() {
+            try { r = exArg(es->e.get()); } catch (const CodegenError& e) { why = e.msg.empty() ? "?" : e.msg; }
+        });
+        if (why.empty()) { out << text; return r; }
+        hoisted = std::move(savedHoisted); aotRefs_ = std::move(savedRefs); cellsLive_ = std::move(savedCells);
+        codeVars = std::move(savedCodeVars); envSubs = std::move(savedEnvSubs); boundSpecials = std::move(savedSpecials);
+        aotPreamble_.resize(savedPre);
+        std::string call = delegateStmt(es, /*sink=*/false);
+        if (call.empty()) unsupported(why);
+        return call;
+    }
+
+    // The interpreter-side half of the above: "" when `s` may not be delegated.
+    std::string delegateStmt(Stmt* s, bool sink) {
+        Program p;
+        p.stmts.emplace_back(s);
+        std::ostringstream dump;
+        dumpAst(p, dump);
+        std::string blob;
+        try { blob = serializeAst(p); } catch (...) { blob.clear(); }
+        p.stmts[0].release();   // the routine's AST still owns it
+        if (blob.empty()) return "";
+        const std::string d = dump.str();
+        bool given = false, when = false;
+        std::vector<std::string> names;
+        std::istringstream in(d);
+        for (std::string ln; std::getline(in, ln);) {
+            size_t a = ln.find_first_not_of(' ');
+            if (a == std::string::npos) continue;
+            std::string row = ln.substr(a);
+            // the node name, and its detail after the "│ " column
+            std::string node = row.substr(0, row.find(' '));
+            size_t bar = row.find("\xE2\x94\x82 ");
+            std::string detail = bar == std::string::npos ? "" : row.substr(bar + 4);
+            detail.erase(0, detail.find_first_not_of(' '));
+            static const std::set<std::string> refuse = {
+                "BlockExpr", "Sub", "MultiSub", "Method", "Return", "last", "next", "redo",
+                "Expr?", "Stmt?", "Whatever", "Phaser", "CATCH", "VarDecl", "Use", "Class",
+                "Role", "Grammar", "Package", "Enum", "param"};
+            if (refuse.count(node)) return "";
+            // control flow written as an expression operand: `$s // return $s`
+            if (node == "Unary") {
+                static const std::set<std::string> ctlOps = {"return", "return-rw", "last", "next", "redo",
+                    "succeed", "proceed", "leave", "take", "take-rw", "emit", "done"};
+                if (ctlOps.count(detail.substr(0, detail.find(' ')))) return "";
+            }
+            if (node == "Given" || node == "With" || node == "Without") given = true;
+            if (node == "When" || node == "Default") when = true;
+            if (node == "Call") {
+                static const std::set<std::string> ctl = {"take", "take-rw", "emit", "done", "succeed",
+                    "proceed", "leave", "return", "return-rw", "callsame", "callwith", "nextsame",
+                    "nextwith", "samewith", "EVAL", "EVALFILE"};
+                if (ctl.count(detail.substr(0, detail.find(' ')))) return "";
+            }
+            if (node == "VarExpr") {
+                std::string nm = detail.substr(0, detail.find(' '));
+                if (detail.find("[decl") != std::string::npos) return "";
+                names.push_back(nm);
+            }
+        }
+        if (when && !given) return "";
+        // The names to copy in: the routine's own locals among them. An outer
+        // name the interpreter finds itself, through the frame; a special the
+        // frame holds already — except a topic or match a native construct
+        // holds in a local.
+        std::vector<std::pair<std::string, std::string>> bind;   // Raku name, C++ lvalue
+        std::set<std::string> seen;
+        for (auto& nm : names) {
+            if (!seen.insert(nm).second) continue;
+            if (nm == "$_") { if (!topics.empty()) bind.push_back({nm, topics.back()}); continue; }
+            if ((nm == "$/" || nm == "$!") && boundSpecials.count(nm)) { bind.push_back({nm, mangleVar(nm)}); continue; }
+            if (nm.size() < 2 || nm[1] == '*' || nm[1] == '!' || nm[1] == '.' || nm[1] == '?') continue;
+            if (aotLocals_.count(mangleVar(nm))) bind.push_back({nm, mangleVar(nm)});
+        }
+        std::string sym = "__aotb_" + aotTag_ + "_" + std::to_string(aotBlobN_++);
+        std::ostringstream o;
+        o << "static const unsigned char " << sym << "[] = {";
+        for (size_t i = 0; i < blob.size(); i++)
+            o << (i % 24 == 0 ? "\n    " : "") << (unsigned)(unsigned char)blob[i] << ",";
+        o << "\n};\n";
+        aotPreamble_ += o.str();
+        // an expression (the statement's value), so a routine's LAST statement
+        // can be delegated as its result too
+        std::string c = "([&]() -> Value { static Stmt* const __ds = rtAotStmt(" + sym + ", sizeof " + sym + "); ";
+        std::string nmList, slList;
+        for (auto& b : bind) {
+            nmList += cesc(b.first) + ", ";
+            slList += "&" + b.second + ", ";
+        }
+        if (bind.empty()) c += "return rtAotExec(RT, __ds, nullptr, nullptr, 0, ";
+        else c += "const char* const __dn[] = {" + nmList + "}; Value* __dv[] = {" + slList +
+                  "}; return rtAotExec(RT, __ds, __dn, __dv, " + std::to_string(bind.size()) + ", ";
+        c += (self_.empty() ? std::string("nullptr") : "&" + self_) + (sink ? ", true" : ", false") + "); }())";
+        return c;
+    }
+
+    void stmtNative(Stmt* s, int ind) {
         // Pre-declare expression-position `my`s from every expression slot a
         // statement evaluates — `while (my $line = prompt).defined {…}`,
         // `if my $m = …`, `for my-producing-list`, `return my $x = …`. Raku
@@ -2250,7 +2568,13 @@ struct Codegen {
             }
             case NK::ReturnStmt: {
                 auto* r = static_cast<ReturnStmt*>(s);
-                line(ind, "return " + (r->value ? exArg(r->value.get()) : std::string("Value::any()")) + ";");
+                std::string v = r->value ? exArg(r->value.get()) : std::string("Value::any()");
+                // In a module routine, a `return` inside a BLOCK leaves the routine,
+                // through whatever called the block — interpreted frames included —
+                // so it is thrown at the routine's own frame, as the interpreter's is.
+                if (moduleMode_ && !nestKinds_.empty() && nestKinds_.back() == 'b')
+                    line(ind, "throw ReturnEx{" + v + ", __fid};");
+                else line(ind, "return " + v + ";");
                 return;
             }
             case NK::LastStmt: {
@@ -2343,6 +2667,9 @@ struct Codegen {
             if (v->name.size() > 2 && (v->name[0] == '$' || v->name[0] == '@' || v->name[0] == '%')
                 && (v->name[1] == '!' || v->name[1] == '.')) { // $!x = .. / @!y = ..
                 if (self_.empty()) unsupported("attribute assignment outside a method");
+                if (moduleMode_)
+                    return "rtAotAttrRef(RT, " + self_ + ", " + delegateNode(v) + ", " +
+                           (inClosure() ? "true" : "false") + ")";
                 return "rtAttrRef(" + self_ + ", " + cesc(v->name.substr(2)) + ")";
             }
             if ((v->name == "$!" || v->name == "$/") && boundSpecials.count(v->name))
@@ -2366,11 +2693,21 @@ struct Codegen {
             // (rtIndexRef returns an autovivifying Value&, so the chain is natural)
             if (ix->base->kind != NK::VarExpr && ix->base->kind != NK::Index)
                 unsupported("assignment to nested index");
+            // `@a[*-1] = v`: the subscript counts from the END — resolved against
+            // the array as the read side's idxW does (it was element 0)
+            if (!ix->isHash && hasStarLit(ix->index.get()))
+                return "rtIndexRefW(" + lvalueExpr(ix->base.get()) + ", " + exArg(ix->index.get()) + ")";
             return "rtIndexRef(" + lvalueExpr(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
                  + (ix->isHash ? "true" : "false") + ")";
         }
         if (e->kind == NK::MethodCall) { // $obj.accessor = v (rw accessors; RO check at runtime)
             auto* mc = static_cast<MethodCall*>(e);
+            // In a module routine the object is the interpreter's, and so is the
+            // meaning of writing through its method — an `is rw` method of its
+            // own, a Proxy, a role mixed into a built-in (`$attr does R;
+            // $attr.x = v`) — which accessorRef's direct attribute store does
+            // not have. The statement goes to the interpreter instead.
+            if (moduleMode_) unsupported("an assignment through a method call");
             if (!mc->mutate && !mc->hyper && !mc->meta && mc->args.empty()) {
                 // An INDIRECT call as a target — `$obj."$name"() = v` — carries its
                 // name in methodExpr and leaves `method` EMPTY. Reading `method`
@@ -2421,6 +2758,17 @@ struct Codegen {
 
     std::string assign(Assign* a) {
         Expr* tgt = a->target.get();
+        // `$!x = v` in a module routine: stored as the interpreter stores it
+        // (rtAotAttrAssign) — Nil resets the attribute to its default, a `$`
+        // attribute itemizes, a Proxy STOREs.
+        if (moduleMode_ && a->op == "=" && tgt->kind == NK::VarExpr && !self_.empty()) {
+            auto* v = static_cast<VarExpr*>(tgt);
+            if (!v->declare && v->name.size() > 2 && std::strchr("$@%&", v->name[0]) &&
+                (v->name[1] == '!' || v->name[1] == '.'))
+                return "rtAotAttrAssign(RT, " + self_ + ", " + delegateNode(v) + ", " +
+                       (inClosure() ? "true" : "false") + ", " +
+                       coerceFor(tgt, exArg(a->value.get()), a->value.get()) + ")";
+        }
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
             auto* dv = static_cast<VarExpr*>(tgt);
             if (std::string sh = shapedInit(dv, exArg(a->value.get())); !sh.empty()) // `my @a[3;2] = …`
@@ -2428,7 +2776,7 @@ struct Codegen {
                                                                : declVar(dv->name, sh);
             const std::string& nm = static_cast<VarExpr*>(tgt)->name;
             if (nm.size() > 1 && nm[1] == '*') // `my $*X = ..`: dynamics live in the runtime env
-                return "RT.dynVarRef(" + cesc(nm) + ") = " + coerceFor(tgt, exArg(a->value.get()), a->value.get());
+                return dynDecl(nm) + " = " + coerceFor(tgt, exArg(a->value.get()), a->value.get());
             if (nm.size() > 1 && nm[0] == '&') codeVars.insert(nm.substr(1));
             if (atTopLevel_ && topVars_.count(nm)) // hoisted to a global: assign it
                 return mangleVar(nm) + " = " + coerceFor(tgt, exArg(a->value.get()), a->value.get());
@@ -2687,8 +3035,77 @@ struct Codegen {
                   " catch (const RedoEx& __e) { throw; }");
     }
 
+    // Does a statement WRITE the topic — `$_ = …`, `$_ /= 2`, `$_++`, `.=`, a
+    // bare `s///`? Within closures too: they see the same `$_`.
+    bool writesTopicE(Expr* e) {
+        if (!e) return false;
+        auto topic = [](Expr* t) { return t && t->kind == NK::VarExpr && static_cast<VarExpr*>(t)->name == "$_"; };
+        switch (e->kind) {
+            case NK::Assign: { auto* a = static_cast<Assign*>(e); return topic(a->target.get()) || writesTopicE(a->value.get()) || writesTopicE(a->target.get()); }
+            case NK::Unary: { auto* u = static_cast<Unary*>(e); return ((u->op == "++" || u->op == "--") && topic(u->operand.get())) || writesTopicE(u->operand.get()); }
+            case NK::Binary: { auto* b = static_cast<Binary*>(e); return writesTopicE(b->lhs.get()) || writesTopicE(b->rhs.get()); }
+            case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return writesTopicE(t->cond.get()) || writesTopicE(t->then.get()) || writesTopicE(t->els.get()); }
+            // …or hands it to a parameter that writes back (`clip-to 0, $_, 255`)
+            case NK::Call: { auto* c = static_cast<Call*>(e);
+                for (auto& x : c->args) if (writesTopicE(x.get()) || (rwSubNames_.count(c->name) && topic(x.get()))) return true;
+                return writesTopicE(c->callee.get()); }
+            case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); if (m->mutate && topic(m->inv.get())) return true; if (writesTopicE(m->inv.get())) return true;
+                for (auto& x : m->args) if (writesTopicE(x.get()) || (rwMethodNames_.count(m->method) && topic(x.get()))) return true;
+                return false; }
+            case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) if (writesTopicE(x.get())) return true; return false;
+            case NK::Index: { auto* ix = static_cast<Index*>(e); return writesTopicE(ix->base.get()) || writesTopicE(ix->index.get()); }
+            case NK::SubstLit: return true;
+            case NK::BlockExpr: for (auto& st : static_cast<BlockExpr*>(e)->body) if (writesTopicS(st.get())) return true; return false;
+            default: return false;
+        }
+    }
+    bool writesTopicS(Stmt* s) {
+        if (!s) return false;
+        switch (s->kind) {
+            case NK::ExprStmt: return writesTopicE(static_cast<ExprStmt*>(s)->e.get());
+            case NK::ReturnStmt: return writesTopicE(static_cast<ReturnStmt*>(s)->value.get());
+            case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s);
+                for (auto& br : f->branches) { if (writesTopicE(br.first.get())) return true; for (auto& x : br.second->stmts) if (writesTopicS(x.get())) return true; }
+                if (f->elseBlock) for (auto& x : f->elseBlock->stmts) if (writesTopicS(x.get())) return true;
+                return false; }
+            case NK::Block: for (auto& x : static_cast<Block*>(s)->stmts) if (writesTopicS(x.get())) return true; return false;
+            case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s);
+                if (writesTopicE(w->cond.get())) return true;
+                for (auto& x : w->body->stmts) if (writesTopicS(x.get())) return true;
+                return false; }
+            case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s);
+                if (writesTopicE(l->init.get()) || writesTopicE(l->cond.get()) || writesTopicE(l->incr.get())) return true;
+                for (auto& x : l->body->stmts) if (writesTopicS(x.get())) return true;
+                return false; }
+            case NK::RepeatStmt: { auto* r = static_cast<RepeatStmt*>(s);
+                if (writesTopicE(r->cond.get())) return true;
+                for (auto& x : r->body->stmts) if (writesTopicS(x.get())) return true;
+                return false; }
+            case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s);
+                if (writesTopicE(f->list.get())) return true;
+                // a topic-form `for` rebinds `$_` for its body; a pointy one does not
+                if (f->vars.empty() && f->params.empty()) return false;
+                for (auto& x : f->body->stmts) if (writesTopicS(x.get())) return true;
+                return false; }
+            case NK::GivenStmt: return writesTopicE(static_cast<GivenStmt*>(s)->topic.get());   // rebinds `$_` inside
+            case NK::WhenStmt: { auto* w = static_cast<WhenStmt*>(s);
+                if (writesTopicE(w->cond.get())) return true;
+                for (auto& x : w->body->stmts) if (writesTopicS(x.get())) return true;
+                return false; }
+            default: return false;
+        }
+    }
+
     void forStmt(ForStmt* f, int ind) {
         if (f->rwVars) unsupported("a read-write (<->) loop parameter"); // every branch below binds a COPY
+        // `$_ /= 255 for $r, $g, $b`, `clip-to 0, $_, 255 for @$rgb`: the topic
+        // ALIASES each element, so a write to it is a write to the element — and
+        // every branch below iterates copies. Such a loop keeps its interpreted
+        // form.
+        if (f->vars.empty() && f->params.empty())
+            for (auto& st : f->body->stmts)
+                if (writesTopicS(st.get()))
+                    unsupported("a loop that writes `$_` (the topic aliases each element)");
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             // names live in f->vars, or — when the parser produced a real signature
             // (ForStmt.params, one param with a sub-signature) — in that sub-signature
@@ -2698,7 +3115,7 @@ struct Codegen {
                     if (!sp.name.empty()) names.push_back(sp.name);
             std::string lst = gensym("__lst"), el = gensym("__e");
             line(ind, "{");
-            line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
+            line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr()) {");
             for (size_t k = 0; k < names.size(); k++)
                 line(ind + 2, declVar(names[k], "rtIndexGet(" + el +
@@ -2712,7 +3129,7 @@ struct Codegen {
             size_t n = f->vars.size();
             std::string lst = gensym("__lst"), i = gensym("__fi");
             line(ind, "{");
-            line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
+            line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + i + " = 0; " + i + " < " + lst + ".arr()->size(); " + i + " += " + std::to_string(n) + ") {");
             for (size_t k = 0; k < n; k++)
                 line(ind + 2, declVar(f->vars[k], "(" + i + "+" + std::to_string(k) + " < " + lst +
@@ -2753,7 +3170,7 @@ struct Codegen {
             line(ind + 1, "}");
         } else {
             std::string lst = gensym("__lst"), el = gensym("__e");
-            line(ind + 1, "Value " + lst + " = rtArrayVal(" + ex(f->list.get()) + ");");
+            line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (auto& " + el + " : *" + lst + ".arr()) {");
             if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], el) + ";");
             else line(ind + 2, "Value " + topic + " = " + el + ";");
@@ -2799,12 +3216,14 @@ struct Codegen {
             line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
             std::string def = "rtIsDefined(" + topic + ")"; // one definedness rule (Failure/enum-type aware), same as `//`
             line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
+            if (!g->var.empty()) line(ind + 2, declVar(g->var, topic) + ";");   // `with X -> $y`
             topics.push_back(topic);
             blockValue(g->body.get(), ind + 2, dst);
             topics.pop_back();
             line(ind + 1, "}");
             if (g->hasElse && g->elseBody) {
                 line(ind + 1, "else {");
+                if (!g->elseVar.empty()) line(ind + 2, declVar(g->elseVar, topic) + ";");
                 blockValue(g->elseBody.get(), ind + 2, dst);
                 line(ind + 1, "}");
             }
@@ -2814,17 +3233,21 @@ struct Codegen {
         std::string topic = gensym("v__g"), done = gensym("__gdone");
         line(ind, "{");
         line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
+        if (!g->var.empty()) line(ind + 1, declVar(g->var, topic) + ";");   // `given X -> $y`
         topics.push_back(topic);
-        for (auto& st : g->body->stmts) {
+        for (size_t si = 0; si < g->body->stmts.size(); si++) {
+            Stmt* st = g->body->stmts[si].get();
             if (st->kind == NK::WhenStmt) {
-                auto* w = static_cast<WhenStmt*>(st.get());
+                auto* w = static_cast<WhenStmt*>(st);
                 if (w->isDefault) line(ind + 1, "{");
                 else line(ind + 1, "if (" + whenCond(topic, w->cond.get()) + ") {");
                 blockValue(w->body.get(), ind + 2, dst);
                 line(ind + 2, "goto " + done + ";");
                 line(ind + 1, "}");
+            } else if (si + 1 == g->body->stmts.size()) {
+                stmtValue(st, ind + 1, dst);   // the block's last statement is its value
             } else {
-                stmt(st.get(), ind + 1);
+                stmt(st, ind + 1);
             }
         }
         topics.pop_back();
@@ -2842,12 +3265,16 @@ struct Codegen {
             line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
             std::string def = "rtIsDefined(" + topic + ")"; // one definedness rule (Failure/enum-type aware), same as `//`
             line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
+            // `with X -> $y { }` binds $y to the topic as well (it was dropped,
+            // and $y read an outer variable or a type object of that name)
+            if (!g->var.empty()) line(ind + 2, declVar(g->var, topic) + ";");
             topics.push_back(topic);
             block(g->body.get(), ind + 2);
             topics.pop_back();
             line(ind + 1, "}");
             if (g->hasElse && g->elseBody) {
                 line(ind + 1, "else {");
+                if (!g->elseVar.empty()) line(ind + 2, declVar(g->elseVar, topic) + ";");
                 block(g->elseBody.get(), ind + 2);
                 line(ind + 1, "}");
             }
@@ -2857,6 +3284,7 @@ struct Codegen {
         std::string topic = gensym("v__g"), done = gensym("__gdone");
         line(ind, "{");
         line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
+        if (!g->var.empty()) line(ind + 1, declVar(g->var, topic) + ";");   // `given X -> $y { }`
         topics.push_back(topic);
         for (auto& st : g->body->stmts) {
             if (st->kind == NK::WhenStmt) {
@@ -4590,7 +5018,7 @@ struct Codegen {
                     line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
                 else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                     std::string rv = gensym("__rv");
-                    line(1, "Value " + rv + " = Value::nil();");   // as above
+                    line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
                     stmtValue(s, 1, rv);
                     line(1, "return " + rv + ";");
                 }
@@ -4740,10 +5168,10 @@ struct Codegen {
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
-                line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                line(1, "return " + tailExpr(static_cast<ExprStmt*>(s)) + ";");
             else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                 std::string rv = gensym("__rv"); // trailing if/given: the matched branch's value
-                line(1, "Value " + rv + " = Value::nil();");   // as above
+                line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
                 stmtValue(s, 1, rv);
                 line(1, "return " + rv + ";");
             }
@@ -5190,6 +5618,137 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "    std::pair<int, char**> __ctx{argc, argv};\n"
              "    return rakupp::rakuppMainOnBigStack(&__rakupp_main_body, &__ctx);\n}\n";
     return g.out.str();
+}
+
+// ---- module routines (AotModules.h) ----------------------------------------
+//
+// One native body per module routine the emitter can compile. The routine's
+// declaration, dispatch and signature binding stay the interpreter's; what is
+// emitted here replaces only the walk over its statements.
+namespace {
+
+// Why a routine keeps its interpreted body before the emitter is even asked.
+// These are the shapes whose meaning lives in the call protocol around the
+// statements rather than in them, so a native body would have to reproduce
+// that protocol: a phaser or CATCH the interpreter registers for the call, a
+// result that is a container (`is rw`), parameters that alias the caller's
+// variables, placeholders the interpreter names from the body.
+const char* aotIneligible(SubDecl* d) {
+    if (d->isNative) return "a NativeCall sub";
+    if (d->isProto) return "a proto";
+    if (d->body.empty()) return "an empty body";
+    if (d->retRw) return "an `is rw` routine";
+    if (d->nameExpr) return "a computed name";
+    if (!d->altParams.empty()) return "alternative signatures";
+    if (d->params.empty() && !d->hadSig && !computePlaceholders(d->body).empty())
+        return "placeholder parameters";
+    for (auto& p : d->params) {
+        if (p.isRw || p.isRaw) return "an `is rw`/`is raw` parameter";
+        if (p.subSig) return "a sub-signature";
+        if (!p.name.empty() && p.name[0] != '$' && p.name[0] != '@' && p.name[0] != '%' && p.name[0] != '&')
+            return "a sigilless parameter";
+    }
+    for (auto& st : d->body)
+        if (st && st->kind == NK::Block) {
+            auto* b = static_cast<Block*>(st.get());
+            if (b->isCatch || !b->phaser.empty()) return "a phaser or CATCH block";
+        }
+    return nullptr;
+}
+
+// The C++ identifiers the emitted text DECLARES for Raku names — whichever
+// emitter path wrote the declaration (a `my`, a loop variable, a pointy
+// parameter, a cell alias). A name the body declares nowhere is an outer name.
+std::set<std::string> declaredIdents(const std::string& t) {
+    std::set<std::string> out;
+    auto ident = [](char c) { return ascii::isalnum((unsigned char)c) || c == '_'; };
+    for (size_t i = t.find("v_"); i != std::string::npos; i = t.find("v_", i + 2)) {
+        if (i > 0 && ident(t[i - 1])) continue;
+        size_t j = i - (i > 0 ? 1 : 0);
+        while (j > 0 && (t[j] == ' ' || t[j] == '&')) j--;
+        size_t k = j + 1;
+        while (k > 0 && ident(t[k - 1])) k--;
+        std::string ty = t.substr(k, j + 1 - k);
+        if (ty != "Value" && ty != "auto") continue;
+        size_t e = i;
+        while (e < t.size() && ident(t[e])) e++;
+        out.insert(t.substr(i, e - i));
+    }
+    return out;
+}
+
+std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names,
+                        const std::set<std::string>& freeNames, const std::set<std::string>& frameNames,
+                        const std::set<std::string>& locals, std::set<std::string>* refsOut) {
+    Codegen g;
+    g.moduleMode_ = true;
+    g.callEnvNames_ = names.callEnv;
+    g.rwSubNames_ = names.rwSubs;
+    g.rwMethodNames_ = names.rwMethods;
+    g.aotTypeNames_ = names.types;
+    g.aotFree_ = freeNames;
+    g.aotLocals_ = locals;
+    g.aotTag_ = fn;
+    std::vector<std::string> copied;   // read out of the frame: parameters, then @_/%_
+    for (auto& p : d->params) {
+        if (p.name.size() < 2) continue;
+        if (p.name[1] == '!' || p.name[1] == '.') continue;   // `:$!x` binds the attribute, no local
+        copied.push_back(p.name);
+    }
+    for (auto& n : frameNames) copied.push_back(n);
+    std::string inner = g.capture([&]() {
+        Codegen::BodyScope bs{&g, /*closure=*/false};
+        std::set<std::string> own(copied.begin(), copied.end());
+        g.analyzeCells(d->body, own);
+        if (d->isMethod) {
+            g.line(2, "Value __self = rtAotParam(__env, \"self\"); (void)__self;");
+            g.self_ = "__self";
+        }
+        for (auto& n : copied) {
+            g.line(2, g.declVar(n, "rtAotParam(__env, " + cesc(n) + ")") + "; (void)" + mangleVar(n) + ";");
+            if (n == "$/" || n == "$!") g.boundSpecials.insert(n);
+            if (n[0] == '&') g.codeVars.insert(n.substr(1));
+        }
+        g.line(2, "try {");
+        g.emitBody(d->body);
+        g.line(2, "} catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }");
+    });
+    if (refsOut) *refsOut = g.aotRefs_;
+    std::ostringstream o;
+    o << g.aotPreamble_;
+    // `RT` is the interpreter that made the call (the section around these
+    // bodies defines it so): a bundled binary has no other to name
+    // `__fid` is the frame the interpreter opened for this call: a `return`
+    // aimed at it ends the routine, and one aimed at a frame further out — a
+    // block of an interpreted caller, returning from THAT routine — passes on.
+    o << "static bool " << fn << "(Interpreter& __I, Env* __env, Value& __out) { // "
+      << (d->isMethod ? "method " : "sub ") << d->name << "\n    Interpreter* const __RTp = &__I; (void)__RTp;\n"
+      << "    const uint64_t __fid = __env ? __env->routineFrameId : 0; (void)__fid;\n";
+    for (auto& n : freeNames)
+        o << "    Value* __f" << mangleVar(n) << " = rtAotOuter(__env, " << cesc(n) << "); if (!__f"
+          << mangleVar(n) << ") return false;\n";
+    o << "    __out = [&]() -> Value {\n" << inner << "    }();\n    return true;\n}\n";
+    return o.str();
+}
+
+} // namespace
+
+std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& callEnvNames) {
+    if (const char* why = aotIneligible(d)) throw CodegenError{why};
+    // Pass one learns which names the body reads without declaring; pass two
+    // emits them as outer names. `@_`/`%_` are the frame's own (the
+    // interpreter binds them for a routine without a signature), so they are
+    // copied out of it like parameters.
+    std::set<std::string> refs;
+    std::string first = emitAotPass(d, fnName, callEnvNames, {}, {}, {}, &refs);
+    std::set<std::string> decl = declaredIdents(first);
+    std::set<std::string> outer, frame;
+    for (auto& n : refs) {
+        if (decl.count(mangleVar(n))) continue;
+        if (n == "@_" || n == "%_") frame.insert(n);
+        else outer.insert(n);
+    }
+    return emitAotPass(d, fnName, callEnvNames, outer, frame, decl, nullptr);
 }
 
 // ---- the tier-up JIT's kernel emitter (docs/dev/plans/JIT-PLAN.md) ---------

@@ -29,6 +29,29 @@ std::string transpileToCpp(Program& prog, bool optimize = false, const std::stri
                            const std::set<std::string>& moduleExports = {},
                            const std::string& srcText = "");
 
+// ---- module routines (AotModules.h) -----------------------------------------
+//
+// Emit the native BODY of one routine of an embedded module: a C++ function
+// `static bool fnName(Interpreter&, Env* frame, Value& out)` that the
+// interpreter enters after binding the routine's signature into `frame`.
+// Parameters are copied out of the frame; every other name the body does not
+// declare is resolved through the frame's scope chain when the body starts
+// (and the function answers false, running nothing, when one is missing).
+// `callEnvNames` are the sub names a call must look up in the environment
+// before the builtin table — the module's own subs and every module export.
+// Throws CodegenError when the routine keeps its interpreted body.
+// `rwNames` / `rwMethods`: subs and methods, anywhere in the module graph,
+// with a positional parameter that writes back to its argument (`is rw`,
+// `is raw`, sigilless). A call passing one of them a variable cannot be made
+// with a native local — the write would land in a copy — so the statement is
+// handed to the interpreter, which copies the local in and back out.
+// `types`: the class/role/grammar names the graph declares, full and short —
+// a call to one of them is a coercion, not a sub call.
+struct AotNames {
+    std::set<std::string> callEnv, rwSubs, rwMethods, types;
+};
+std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& names);
+
 // ---- the tier-up JIT's entry point (docs/dev/plans/JIT-PLAN.md) -------------
 //
 // Emit ONE loop statement as a standalone C++ translation unit holding a single

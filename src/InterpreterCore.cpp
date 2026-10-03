@@ -2,8 +2,17 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "AotModules.h"
 
 namespace rakupp {
+// The native body a compiled binary attached to this routine (AotModules.h):
+// run it in the frame the call just bound. False when there is none, or when it
+// declined before running anything — the caller then walks the statements.
+static inline bool runAotBody(Interpreter& I, const Callable& c, Env* frame, Value& out) {
+    if (!c.body || c.body->empty()) return false;
+    void* f = (*c.body)[0]->aotBody;
+    return f && reinterpret_cast<AotBodyFn>(f)(I, frame, out);
+}
 // (opEq, the literal compare every hot function here uses, is in Interpreter.h)
 // The operators that compare their operands AS STRINGS.
 static bool isStringCmpOp(const std::string& op) {
@@ -6804,7 +6813,10 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     try {
         captureBodyEnds(c);
         const auto& body = *c.body;
-        const size_t nst = body.size();
+        // a native body (an embedded module's, AotModules.h) runs in place of the walk
+        const bool aotRan = runAotBody(*this, c, env.get(), last);
+        const size_t nst = aotRan ? 0 : body.size();
+        if (aotRan) tcx.valContained = false;
         bool explicitTailReturn = false;
         for (size_t i = 0; i < nst; i++) {
             auto* s = body[i].get();
@@ -7995,7 +8007,10 @@ resumeBody:
             else if (c.body && (bodyWork & 2)) runEnterPhasers(*c.body);
         }
         if (c.body) {
-            size_t nst = c.body->size();
+            // a native body (an embedded module's, AotModules.h) runs in place of the walk
+            const bool aotRan = resumeAt == 0 && isRoutine && runAotBody(*this, c, env.get(), last);
+            size_t nst = aotRan ? 0 : c.body->size();
+            if (aotRan) tcx.valContained = false;
             // The statement whose value becomes the routine result — trailing
             // phasers / CATCH blocks don't count; everything before it runs in
             // sink context, so a discarded object with a `sink` method has it
@@ -9629,7 +9644,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
 resumeMethodBody:
     try {
         if (c.body) {
-            size_t nst = c.body->size();
+            // a native body (an embedded module's, AotModules.h) runs in place of the walk
+            const bool aotRan = resumeAt == 0 && runAotBody(*this, c, tcx.cur.get(), last);
+            size_t nst = aotRan ? 0 : c.body->size();
+            if (aotRan) tcx.valContained = false;
             // The statement whose value becomes the method's result; everything
             // before it runs in SINK context, so a discarded object's `sink` runs
             // (the sub path has always done this; a method body never did).
@@ -15996,6 +16014,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
 }
 
 static Value applyArithGeneral(const std::string& op, const Value& l, const Value& r) {
+    // `~` with an OBJECT operand coerces it the way the interpreter's own `~`
+    // does (armCat): a user `method Str` answers, and an operand that IS-A Str
+    // gives its value. The interpreter's binary `~` never gets here with one;
+    // compiled code, `[~]` and the metaops do — and printed `A<503865983376>`.
+    if (op.size() == 1 && op[0] == '~' && (l.t == VT::Object || r.t == VT::Object) && g_cbInterp)
+        return Value::str(g_cbInterp->strInStrContext(l) + g_cbInterp->strInStrContext(r));
     // Distribution::Path / ::Hash / a repository's dist: each reports its own
     // type name, and each does Distribution
     if (r.t == VT::Type && l.t == VT::Hash && l.hashKind == "Distribution" && r.s == "Distribution" &&
@@ -21775,6 +21799,8 @@ static Value slipOf(const Value& v) {
     }
     return v;
 }
+// …the same answer for the native backend's `|` on a Hash (rtSlipShallow)
+Value rtSlipOf(const Value& v) { return slipOf(v); }
 
 // Where evalUnary answers an operator (Unary::evalPath). The arms at the top of
 // evalUnary each test `u->op` against their own spelling, so every operator
@@ -23303,6 +23329,58 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     throw RakuError{Value::typeObj("X::NYI"), "Unsupported prefix '" + u->op + "'"};
 }
+// `|x` in an ARGUMENT list, once x is evaluated: what it hands the call. Shared
+// with the native backend (rtSpreadArg), so a compiled call site and an
+// interpreted one pass the same arguments.
+static void spreadSlipArg(Interpreter& I, ValueList& args, const Value& v) {
+    if (v.t == VT::Array && v.arr()) {
+        // (a part that is a CONTAINER — `\($x)` — passes what it holds)
+        if (v.holdsContainers()) { for (auto& x : *I.decontList(v).arr()) args.push_back(x); }
+        else for (auto& x : *v.arr()) args.push_back(x);
+    }
+    else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
+    // A Blob/Buf is Positional over its ELEMENTS, so `|$blob` slips those
+    // — it is a VT::Str internally and fell to the scalar arm below,
+    // arriving as ONE argument. Digest::MD5's final
+    // `reduce {…}, buf8.new, |$state` then wrote a single word (the
+    // element count) and every digest came out 4 bytes instead of 16.
+    else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
+        for (auto& x : v.blobList()) args.push_back(x);
+    }
+    // `|%h` slips a HASH as named arguments — but only a real Hash or Map.
+    // Plenty of ordinary objects are hash-BACKED here (DateTime, Instant,
+    // Proxy, Set…), and slipping their internals as nameds meant the value
+    // itself never arrived: `$.to-string(|$args)` in DateTime::Format's
+    // CALL-ME handed to-string no positional at all, so it worked on the
+    // DateTime TYPE OBJECT. The list-literal path already drew this line.
+    else if (v.t == VT::Hash && v.hash() &&
+             (v.hashKind.empty() || v.hashKind == "Map")) {
+        for (auto& kv : *v.hash()) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); }
+    }
+    // …and an OBJECT of a class that derives Hash slips the same way:
+    // its Capture is its entries as nameds. The line above takes only a
+    // bare Hash, so `PDF::IO::Crypt::RC4.new(:$doc, |$encrypt)` — where
+    // $encrypt is a PDF dictionary with its entry role mixed in — passed
+    // the whole dictionary as ONE POSITIONAL and the constructor refused
+    // it. (A hash-backed BUILT-IN — DateTime, Proxy, Set — is a VT::Hash
+    // with a hashKind and is still left alone, for the reason above.)
+    else if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
+             v.obj()->boxed().t == VT::Hash && v.obj()->boxed().hash() &&
+             v.obj()->boxed().hashKind.empty()) {
+        for (auto& kv : *v.obj()->boxed().hash()) {
+            Value p = Value::pair(kv.first, kv.second); p.namedArg = true;
+            args.push_back(std::move(p));
+        }
+    }
+    // `|` on a PAIR passes it as a NAMED argument (`f(1, |(:tee<OUT>))`,
+    // and the conditional form `|(:tee<OUT> if $on)` Test::Output uses).
+    // A pair inside a slipped LIST stays positional — that is Rakudo's
+    // split, and it decides which multi candidate a call reaches.
+    else if (v.t == VT::Pair) { Value pr = v; pr.namedArg = true; args.push_back(std::move(pr)); }
+    else args.push_back(v);
+}
+void rtSpreadSlipArg(ValueList& args, const Value& v) { forceLazy(v); spreadSlipArg(*Interpreter::liveTarget(), args, v); }
+
 ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
     ValueList args;
     for (auto& a : exprs) {
@@ -23340,51 +23418,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             // parts already knows whether it went in named — so slipping one hands
             // them back exactly as they arrived: `min |\(1,7,3, by => {1/$_})` keeps
             // its :by named, `f(|\(('a' => 1)))` keeps its Pair positional.
-            if (v.t == VT::Array && v.arr()) {
-                // (a part that is a CONTAINER — `\($x)` — passes what it holds)
-                if (v.holdsContainers()) { for (auto& x : *decontList(v).arr()) args.push_back(x); }
-                else for (auto& x : *v.arr()) args.push_back(x);
-            }
-            else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
-            // A Blob/Buf is Positional over its ELEMENTS, so `|$blob` slips those
-            // — it is a VT::Str internally and fell to the scalar arm below,
-            // arriving as ONE argument. Digest::MD5's final
-            // `reduce {…}, buf8.new, |$state` then wrote a single word (the
-            // element count) and every digest came out 4 bytes instead of 16.
-            else if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
-                for (auto& x : v.blobList()) args.push_back(x);
-            }
-            // `|%h` slips a HASH as named arguments — but only a real Hash or Map.
-            // Plenty of ordinary objects are hash-BACKED here (DateTime, Instant,
-            // Proxy, Set…), and slipping their internals as nameds meant the value
-            // itself never arrived: `$.to-string(|$args)` in DateTime::Format's
-            // CALL-ME handed to-string no positional at all, so it worked on the
-            // DateTime TYPE OBJECT. The list-literal path already drew this line.
-            else if (v.t == VT::Hash && v.hash() &&
-                     (v.hashKind.empty() || v.hashKind == "Map")) {
-                for (auto& kv : *v.hash()) { Value p = Value::pair(kv.first, kv.second); p.namedArg = true; args.push_back(std::move(p)); }
-            }
-            // …and an OBJECT of a class that derives Hash slips the same way:
-            // its Capture is its entries as nameds. The line above takes only a
-            // bare Hash, so `PDF::IO::Crypt::RC4.new(:$doc, |$encrypt)` — where
-            // $encrypt is a PDF dictionary with its entry role mixed in — passed
-            // the whole dictionary as ONE POSITIONAL and the constructor refused
-            // it. (A hash-backed BUILT-IN — DateTime, Proxy, Set — is a VT::Hash
-            // with a hashKind and is still left alone, for the reason above.)
-            else if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
-                     v.obj()->boxed().t == VT::Hash && v.obj()->boxed().hash() &&
-                     v.obj()->boxed().hashKind.empty()) {
-                for (auto& kv : *v.obj()->boxed().hash()) {
-                    Value p = Value::pair(kv.first, kv.second); p.namedArg = true;
-                    args.push_back(std::move(p));
-                }
-            }
-            // `|` on a PAIR passes it as a NAMED argument (`f(1, |(:tee<OUT>))`,
-            // and the conditional form `|(:tee<OUT> if $on)` Test::Output uses).
-            // A pair inside a slipped LIST stays positional — that is Rakudo's
-            // split, and it decides which multi candidate a call reaches.
-            else if (v.t == VT::Pair) { Value pr = v; pr.namedArg = true; args.push_back(std::move(pr)); }
-            else args.push_back(v);
+            spreadSlipArg(*this, args, v);
         } else {
             Value v = eval(a.get());
             // a native `str` variable's value goes out marked native (see
@@ -27403,46 +27437,13 @@ struct RatLitParts {
                 // The BAREWORD-key form (`a => *`) is a pair literal in Rakudo,
                 // not an infix, and stays a Pair — that is the `p->key` branch
                 // below, which never gets here.
-                auto curries = [](const Value& v) {
-                    return v.t == VT::Whatever ||
-                           (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
-                };
                 Value vv0 = pairValueOf(p->value.get());
                 // currying is SYNTACTIC: a `*` written there, not a Whatever a
                 // variable happens to hold (`my $k = *; $k => 1` is a Pair)
                 auto fromVar = [](const Expr* x) { return x && x->kind == NK::VarExpr; };
-                if ((curries(kv) && !fromVar(p->keyExpr.get())) ||
-                    (curries(vv0) && !fromVar(p->value.get()))) {
-                    Value kc = kv, vc = vv0;
-                    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-                    code.code()->isWhateverCode = true;
-                    auto arityOf = [&](const Value& x) -> long long {
-                        if (x.t == VT::Whatever) return 1;
-                        if (x.t == VT::Code && x.code() && x.code()->isWhateverCode)
-                            return x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
-                        return 0;
-                    };
-                    code.code()->whateverArity = arityOf(kc) + arityOf(vc);
-                    code.code()->builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
-                        size_t idx = 0;
-                        auto resolve = [&](const Value& x) -> Value {
-                            if (x.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
-                            if (x.t == VT::Code && x.code() && x.code()->isWhateverCode) {
-                                long long ar = x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
-                                ValueList sub;
-                                for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
-                                return I.callCallable(x, sub);
-                            }
-                            return x;
-                        };
-                        Value k = resolve(kc);   // key first — argument order matters
-                        Value v = resolve(vc);
-                        Value pr = Value::pair(k.toStr(), v);
-                        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
-                        return pr;
-                    };
+                if (Value code = rtPairCurry(kv, vv0, fromVar(p->keyExpr.get()), fromVar(p->value.get()));
+                    code.t == VT::Code)
                     return code;
-                }
                 Value pr = Value::pair(kv.toStr(), vv0);
                 markPairValueRO(pr, p->value.get());
                 // `$k => $v` holds $v's CONTAINER: `$pair.value = 5` writes $v

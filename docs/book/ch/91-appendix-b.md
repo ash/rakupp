@@ -159,6 +159,7 @@ sixty-six flags the binary accepts, including a whole run mode.
 | `RAKUPP_ACTTRACE=1` | grammar action firing |
 | `RAKUPP_TAP_TRACE=1` | the test harness's own emission |
 | `RAKUPP_KEEPGEN=1` | keep the generated C++ from a compiling mode |
+| `RAKUPP_NO_AOT=1` | `--exe`: keep the embedded modules' routines interpreted (`RAKUPP_AOT_VERBOSE=1` says why one stays interpreted) |
 | `RAKUPP_DEBUG_MAKE`, `RAKUPP_DEBUG_REPLAY` | grammar `make` and replay diagnostics |
 
 ### The interactive session

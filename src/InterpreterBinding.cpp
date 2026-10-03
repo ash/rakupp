@@ -2470,7 +2470,12 @@ Value Interpreter::dynVar(const std::string& name) {
         Value p = Value::str(d); p.hashKind = "IO"; return p;
     }
     // anything else: resolve from the live env chain (covers %*ENV, $*REPO,
-    // program-declared dynamics, $!, $/ — used by native codegen)
+    // program-declared dynamics, $!, $/ — used by native codegen). A `*` name
+    // is found through the CALLERS first, as the interpreter's own read finds
+    // it: a routine's `my $*X` is what its callees see, not whatever `$*X`
+    // their lexical scope holds.
+    if (name.size() > 1 && name[1] == '*')
+        if (Value* p = findDynamicLenient(name)) return *p;
     if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
     if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
@@ -3452,6 +3457,17 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // (`my $i = *-1; @a[$i]`) only the KEY knows, and this read element one.
     if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode))
         if (g_cbInterp) return g_cbInterp->idxW(base, key, isHash);
+    // An INFINITE range subscript (`@a[1..Inf]`, `@a[$s ..^ $e]` with $e = Inf)
+    // is lazy and stops at the end of the list, as the interpreter's does;
+    // flattened, it was thousands of Nils.
+    if (key.t == VT::Range && !isHash && key.ofType().empty() && key.rTo() >= 9000000000000000000LL &&
+        base.t == VT::Array && base.arr()) {
+        Value out = Value::array(); out.isList = true;
+        const long long n = (long long)base.arr()->size();
+        for (long long i = key.rFrom() + (key.rExFrom() ? 1 : 0); i < n; i++)
+            out.arr()->push_back(rtIndexGet(base, Value::integer(i), false));
+        return out;
+    }
     // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
     if (key.t == VT::Range || (key.t == VT::Array && key.arr())) {
         Value out = Value::array(); out.isList = true;

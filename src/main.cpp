@@ -21,6 +21,7 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "AstSerial.h"
+#include "AotModules.h"
 #include "SlimScan.h"
 #include "RakuAstClasses.h"
 #include "Interpreter.h"
@@ -38,6 +39,7 @@
 #include <cctype>
 #include <fstream>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -911,11 +913,208 @@ static std::string defaultOut(const std::string& srcName) {
     return srcName + ".out";
 }
 
+// Native bodies for the routines of the modules an `--exe` binary embeds
+// (AotModules.h). Each module's blob is read back into the very AST the binary
+// will load, so the walk that numbers its routines here is the walk the loader
+// repeats. A routine the emitter declines keeps its interpreted body; so does
+// every routine of a module whose AST cannot be read back. RAKUPP_NO_AOT=1
+// leaves them all interpreted, here and in a binary at run time.
+struct AotRoutine { size_t mod; int index; std::string name, fn, code; bool dropped = false; };
+struct ModuleAot {
+    std::vector<AotRoutine> routines;   // the ones the emitter compiled
+    int total = 0;                      // …out of this many
+    int live() const { int n = 0; for (auto& r : routines) n += !r.dropped; return n; }
+};
+static std::string aotStrLit(const std::string& v) {
+    std::string o = "\"";
+    for (unsigned char ch : v) {
+        if (ch == '\\' || ch == '"') { o += '\\'; o += (char)ch; }
+        else if (ch < 0x20 || ch >= 0x7f) { char b[8]; std::snprintf(b, sizeof b, "\\%03o", ch); o += b; }
+        else o += (char)ch;
+    }
+    return o + "\"";
+}
+static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
+                                const std::set<std::string>& exports) {
+    ModuleAot r;
+    if (const char* e = std::getenv("RAKUPP_NO_AOT")) if (*e && *e != '0') return r;
+    const bool verbose = [] { const char* e = std::getenv("RAKUPP_AOT_VERBOSE"); return e && *e && *e != '0'; }();
+    // every module's AST, read back once: the routines that write back through
+    // a parameter are a property of the whole graph (a call can reach any of them)
+    std::vector<std::unique_ptr<Program>> progs(mods.size());
+    AotNames rw;
+    for (size_t mi = 0; mi < mods.size(); mi++) {
+        auto p = std::make_unique<Program>();
+        try { deserializeAst(mods[mi].blob, *p); } catch (...) { continue; }
+        std::function<void(std::vector<StmtPtr>&)> types = [&](std::vector<StmtPtr>& ss) {
+            for (auto& st : ss)
+                if (st && st->kind == NK::ClassDecl) {
+                    auto* cd = static_cast<ClassDecl*>(st.get());
+                    if (!cd->name.empty()) {
+                        rw.types.insert(cd->name);
+                        size_t c = cd->name.rfind("::");
+                        if (c != std::string::npos) rw.types.insert(cd->name.substr(c + 2));
+                    }
+                    types(cd->body);
+                }
+        };
+        types(p->stmts);
+        forEachAotRoutine(*p, [&](SubDecl* sd) {
+            for (auto& pa : sd->params) {
+                if (pa.named) continue;
+                const bool sigilless = !pa.name.empty() && !std::strchr("$@%&", pa.name[0]);
+                if (pa.isRw || pa.isRaw || sigilless) {
+                    (sd->isMethod ? rw.rwMethods : rw.rwSubs).insert(sd->name);
+                    break;
+                }
+            }
+        });
+        progs[mi] = std::move(p);
+    }
+    for (size_t mi = 0; mi < mods.size(); mi++) {
+        if (!progs[mi]) continue;
+        Program& prog = *progs[mi];
+        std::vector<SubDecl*> routines;
+        forEachAotRoutine(prog, [&](SubDecl* sd) { routines.push_back(sd); });
+        AotNames names = rw;
+        names.callEnv = exports;
+        for (SubDecl* sd : routines) if (!sd->isMethod && !sd->name.empty()) names.callEnv.insert(sd->name);
+        for (size_t k = 0; k < routines.size(); k++) {
+            const std::string fn = "__aot" + std::to_string(mi) + "_" + std::to_string(k);
+            r.total++;
+            try {
+                std::string code = transpileModuleRoutine(routines[k], fn, names);
+                r.routines.push_back({mi, (int)k, routines[k]->name, fn, std::move(code)});
+            } catch (const CodegenError& e) {
+                if (verbose)
+                    std::cerr << "--exe: " << mods[mi].name << " " << (routines[k]->isMethod ? "method " : "sub ")
+                              << routines[k]->name << " stays interpreted: " << e.msg << "\n";
+            }
+        }
+    }
+    return r;
+}
+// The declarations and the startup registrations for the routines not dropped.
+// Each routine's code opens with a `// aot:FN` marker line, which is how a C++
+// error is traced back to the routine it is in (see aotRoutinesAt).
+static void assembleModuleAot(const std::vector<BundledModule>& mods, const ModuleAot& a,
+                              std::string& decls, std::string& calls) {
+    decls.clear(); calls.clear();
+    if (a.live() == 0) return;
+    std::ostringstream d, c;
+    d << "\n// Native bodies for the embedded modules' routines (AotModules.h).\n"
+         "#include \"AotModules.h\"\n"
+         "namespace rakupp {\n"
+         "Value* rtAotOuter(Env*, const char*);\n"
+         "Value rtAotParam(Env*, const char*);\n"
+         "Value& rtAotDeclDyn(Env*, const char*);\n"
+         "Expr* rtAotNode(const unsigned char*, std::size_t);\n"
+         "Value rtAotAttr(Interpreter&, const Value&, Expr*, bool);\n"
+         "Value& rtAotAttrRef(Interpreter&, const Value&, Expr*, bool);\n"
+         "Value rtAotAttrAssign(Interpreter&, const Value&, Expr*, bool, Value);\n"
+         "Stmt* rtAotStmt(const unsigned char*, std::size_t);\n"
+         "Value rtAotExec(Interpreter&, Stmt*, const char* const*, Value**, std::size_t, const Value*, bool);\n"
+         "}\n"
+         // inside a body, RT is the interpreter that called it (a bundled
+         // binary has no __rakupp_RT() to name)
+         "#pragma push_macro(\"RT\")\n#undef RT\n#define RT (*__RTp)\n";
+    for (size_t mi = 0; mi < mods.size(); mi++) {
+        std::vector<const AotRoutine*> mine;
+        for (auto& r : a.routines) if (r.mod == mi && !r.dropped) mine.push_back(&r);
+        if (mine.empty()) continue;
+        d << "\n// " << mods[mi].name << "\n";
+        for (auto* r : mine) d << "// aot:" << r->fn << "\n" << r->code;
+        d << "// aot:end\nstatic const rakupp::AotEntry kAot" << mi << "[] = {\n";
+        for (auto* r : mine) d << "    {" << r->index << ", " << aotStrLit(r->name) << ", &" << r->fn << "},\n";
+        d << "};\n";
+        c << "  rakupp::rakuppRegisterModuleAot(" << aotStrLit(mods[mi].name) << ", kAot" << mi
+          << ", sizeof kAot" << mi << " / sizeof kAot" << mi << "[0]);\n";
+    }
+    d << "#pragma pop_macro(\"RT\")\n";
+    decls = d.str();
+    calls = c.str();
+}
+// The routines the compiler's diagnostics point into: `GEN:LINE:COL: error:`
+// lines, each mapped to the `// aot:FN` region of the generated file holding
+// it. Empty when an error lies outside every region — then it is not a module
+// body's, and dropping bodies would not help.
+static std::set<std::string> aotRoutinesAt(const std::string& genText, const std::string& genPath,
+                                           const std::string& diag) {
+    std::vector<std::pair<size_t, std::string>> marks;   // line → routine ("" ends the last one)
+    size_t line = 1;
+    for (size_t i = 0; i < genText.size(); i++) {
+        if (genText[i] != '\n') continue;
+        line++;
+        if (genText.compare(i + 1, 7, "// aot:") == 0) {
+            size_t e = genText.find('\n', i + 1);
+            std::string fn = genText.substr(i + 8, e - (i + 8));
+            marks.push_back({line, fn == "end" ? "" : fn});
+        }
+    }
+    std::set<std::string> hit;
+    bool outside = false;
+    const std::string key = genPath + ":";
+    for (size_t p = diag.find(key); p != std::string::npos; p = diag.find(key, p + 1)) {
+        size_t q = p + key.size();
+        size_t ln = 0;
+        while (q < diag.size() && diag[q] >= '0' && diag[q] <= '9') ln = ln * 10 + (diag[q++] - '0');
+        size_t eol = diag.find('\n', q);
+        if (diag.substr(q, eol == std::string::npos ? std::string::npos : eol - q).find("error") == std::string::npos)
+            continue;
+        std::string owner;
+        for (auto& m : marks) { if (m.first > ln) break; owner = m.second; }
+        if (owner.empty()) outside = true; else hit.insert(owner);
+    }
+    if (outside) hit.clear();
+    return hit;
+}
+
+// Run the compile `cmd` over `genPath`, whose text is `render()`. The module
+// bodies are an addition to a program that builds without them, so a C++ error
+// in one must not cost the binary — nor the other bodies: the compiler's
+// diagnostics name the lines, the routines holding them go back to their
+// interpreted bodies, and the file is rendered and built again. An error
+// outside every body, or a third failure, builds with no module body at all.
+// Only the last attempt's diagnostics are shown.
+static int compileDroppingAot(const std::string& cmd, const std::string& genPath, const std::string& outPath,
+                              ModuleAot& aot, const std::vector<BundledModule>& mods,
+                              const std::function<std::string()>& render, const char* mode) {
+    if (aot.live() == 0) return runCommand(cmd);
+    const std::string diagPath = outPath + ".rakupp.diag";
+    const bool verbose = [] { const char* e = std::getenv("RAKUPP_AOT_VERBOSE"); return e && *e && *e != '0'; }();
+    std::string text = render();
+    int rc;
+    for (int attempt = 0;; attempt++) {
+        { std::ofstream g = openOut(genPath); g << text; }
+        rc = runCommand(cmd + " 2> " + shq(diagPath));
+        std::string diag;
+        { std::ifstream in(diagPath, std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); diag = ss.str(); }
+        if (rc == 0 || aot.live() == 0) { if (rc != 0) std::cerr << diag; break; }
+        std::set<std::string> bad = attempt < 2 ? aotRoutinesAt(text, genPath, diag) : std::set<std::string>{};
+        if (verbose) std::cerr << diag;
+        for (auto& r : aot.routines)
+            if (bad.empty() || bad.count(r.fn)) {
+                if (!r.dropped && verbose)
+                    std::cerr << mode << ": " << mods[r.mod].name << " " << r.name
+                              << " stays interpreted: its native body did not compile\n";
+                r.dropped = true;
+            }
+        text = render();
+    }
+    removeFile(diagPath);
+    if (aot.total > 0 && !g_quiet)
+        std::cerr << mode << ": " << aot.live() << " of " << aot.total << " module routines compiled natively\n";
+    return rc;
+}
+
 // Bundle a Raku program into a standalone native executable: generate a
 // small C++ stub that embeds the program source and calls the runtime, then
 // link it against librakupp_rt.a (statically, so the result needs no rakupp).
+// `moduleBodies`: also compile the routines of the modules it embeds to native
+// bodies (AotModules.h) — for the `--exe` fallback, which was asked for speed.
+// A plain `--bundle` keeps its fast build and interprets them.
 static int compileToExe(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe,
-                        const std::vector<std::string>& libPaths = {}) {
+                        const std::vector<std::string>& libPaths = {}, bool moduleBodies = false) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
     if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
@@ -952,9 +1151,14 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
     // Generate the stub. The program source is embedded as a raw byte array so
     // that any content (quotes, delimiters, binary) round-trips exactly.
     std::string stubPath = outPath + ".rakupp.stub.cpp";
+    // The stub in three parts, so the native bodies of its modules' routines
+    // (AotModules.h) can be spliced in — and taken out again, one routine at a
+    // time, if one of them does not compile (compileDroppingAot).
+    std::ostringstream stub, stubMain, stubTail;
+    ModuleAot aot;
+    std::vector<BundledModule> aotMods;
     {
-        std::ofstream stub = openOut(stubPath);
-        if (!stub) { std::cerr << "Cannot write " << stubPath << "\n"; return 5; }
+        if (!openOut(stubPath)) { std::cerr << "Cannot write " << stubPath << "\n"; return 5; }
         stub << "// Generated by `rakupp --bundle`. Embeds a Raku program and runs it\n"
                 "// via the linked-in Raku++ runtime.\n"
                 "#include <string>\n#include <vector>\n#include <cstdlib>\n#include <cstddef>\n"
@@ -988,9 +1192,14 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 Program pr = ps.parseProgram();
                 std::vector<ModuleSkip> skips;
                 std::set<std::string> natives;
-                mods = collectModuleGraph(pr, effectiveSearchPath(libPaths), nullptr,
+                std::set<std::string> exports;
+                mods = collectModuleGraph(pr, effectiveSearchPath(libPaths), &exports,
                                           &skips, &natives);
                 if (!reportModuleEmbedding("--bundle", mods, skips, natives)) return 4;
+                if (moduleBodies) {
+                    aot = buildModuleAot(mods, exports);
+                    aotMods = mods;
+                }
             } catch (const ParseError&) {}
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls, /*withSources=*/true);
@@ -1009,11 +1218,11 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 "                  void rakuppRegisterDistResource(const std::string&, const std::string&,"
                 " const std::string&, const char*, std::size_t);\n"
                 "                  void rakuppRegisterDistMeta(const std::string&, const char*, std::size_t); }\n";
-        stub << "int main(int argc, char** argv) {\n"
+        stubMain << "int main(int argc, char** argv) {\n"
              // a bundled binary embeds ONE program: `-e` has nothing to eval here
              << "  if (int rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return rc;\n"
-             << bundleModuleCalls
-             << "  rakupp::setupConsole();\n"
+             << bundleModuleCalls;
+        stubTail << "  rakupp::setupConsole();\n"
                 "  std::string src(reinterpret_cast<const char*>(SRC), SRC_LEN);\n"
                 "  std::vector<std::string> args; for (int i = 1; i < argc; i++) args.push_back(argv[i]);\n"
                 "  std::string exe = argc > 0 ? argv[0] : \"program\";\n"
@@ -1030,8 +1239,16 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
              << ", exe);\n"
              << "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";
-        stub << slimManifestTU("bundle");
+        stubTail << slimManifestTU("bundle");
     }
+    auto renderStub = [&]() {
+        std::string ad, ac;
+        assembleModuleAot(aotMods, aot, ad, ac);
+        // a native body needs the runtime's headers; a stub without one does not
+        if (!ad.empty()) ad = "#include \"Interpreter.h\"\nusing namespace rakupp;\n" + ad;
+        return stub.str() + ad + stubMain.str() + ac + stubTail.str();
+    };
+    { std::ofstream g = openOut(stubPath); g << renderStub(); }
 
     std::vector<std::string> rtLibs; std::string missingLib;
     if (!findRuntimeSet(lib, rtLibs, missingLib)) {
@@ -1042,8 +1259,8 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
     std::string expList, extra;
     if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
     std::string cxx = nativeCxx(lib);
-    std::string cmd = compileCmd(cxx, "-O2", "", stubPath, rtLibs, outPath, extra);
-    int rc = runCommand(cmd);
+    std::string cmd = compileCmd(cxx, "-O2", aot.live() > 0 ? inc : "", stubPath, rtLibs, outPath, extra);
+    int rc = compileDroppingAot(cmd, stubPath, outPath, aot, aotMods, renderStub, "--exe");
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(stubPath);  // as the other two paths honour it
     if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
@@ -1270,6 +1487,11 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
 
     std::string cpp;
+    // the native module bodies (AotModules.h), and what re-assembling the file
+    // without some of them needs
+    ModuleAot aot;
+    std::vector<BundledModule> aotMods;
+    std::string cppProgram, modDecls, modCalls;
     try {
         Lexer lexer(src);
         lexer.tolerant_ = true;
@@ -1292,11 +1514,16 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports,
                                        &skips, &natives);
         if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
+        aotMods = mods;
         cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src);
         if (!mods.empty()) {
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls);
-            cpp = injectModuleTable(cpp, decls.str(), calls.str());
+            aot = buildModuleAot(mods, moduleExports);
+            modDecls = decls.str(); modCalls = calls.str(); cppProgram = cpp;
+            std::string ad, ac;
+            assembleModuleAot(mods, aot, ad, ac);
+            cpp = injectModuleTable(cpp, modDecls + ad, modCalls + ac);
         }
         // The scan (SLIM-PLAN P4), over the same Program and the same module
         // graph codegen just compiled — and only AFTER transpile succeeded:
@@ -1311,7 +1538,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         // `--exe` still produces a correct binary for the full language.
         std::cerr << "note: " << e.msg << " — not yet natively compiled; "
                      "bundling the whole program with the interpreter instead.\n";
-        return compileToExe(src, srcName, outPath, selfExe, libPaths); // keep -I modules bundled
+        return compileToExe(src, srcName, outPath, selfExe, libPaths, /*moduleBodies=*/true); // keep -I modules bundled
     }
 
     std::string lib, inc;
@@ -1335,7 +1562,12 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
     std::string cxx = nativeCxx(lib);
     std::string cmd = compileCmd(cxx, ccOpt, inc, genPath, rtLibs, outPath, extra);
-    int rc = runCommand(cmd);
+    int rc = compileDroppingAot(cmd, genPath, outPath, aot, aotMods, [&]() {
+        if ((size_t)aot.live() == aot.routines.size() && !cpp.empty()) return cpp;   // the first attempt, as written
+        std::string ad, ac;
+        assembleModuleAot(aotMods, aot, ad, ac);
+        return injectModuleTable(cppProgram, modDecls + ad, modCalls + ac) + slimManifestTU("native");
+    }, "--exe");
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
@@ -2990,6 +3222,10 @@ int main(int argc, char** argv) {
 "  RAKUPP_NO_KERNELS=1          Run integer-only subs the ordinary way, not as\n"
 "                               integer kernels; RAKUPP_KERNEL_TRACE=1 names each\n"
 "                               sub as its kernel is decided\n"
+"  RAKUPP_NO_AOT=1              --exe: keep the embedded modules' routines\n"
+"                               interpreted (when compiling, or in the binary);\n"
+"                               RAKUPP_AOT_VERBOSE=1 at compile time says why a\n"
+"                               routine stays interpreted\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n"

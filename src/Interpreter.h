@@ -1475,6 +1475,7 @@ public:
 
     // evaluation
     Value eval(Expr* e);
+    Value* lvalueOf(Expr* e) { return lvalue(e); }   // for native module bodies (AotModules.cpp)
     // `sink`: the statement's value is discarded (loop bodies etc.), so an
     // assignment need not materialize its (possibly large) result — skips the copy.
     Value exec(Stmt* s, bool sink = false); // returns last value (for implicit return)
@@ -4190,9 +4191,38 @@ inline bool rtLeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlai
 inline bool rtGeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return l.s >= r.s; return applyArith("ge", l, r).truthy(); }
 // In-place `~=` append: mutate the accumulator's buffer instead of building a new
 // string each step, turning repeated `$s ~= …` from O(n²) copying into O(n).
+// An undefined accumulator (`my Str $s; $s ~= "x"`) starts from the empty
+// string, as the interpreter's compound assignment does — not from a
+// stringified type object with an "uninitialized" warning.
 inline void rtCatAssign(Value& l, const Value& r) {
     if (l.t == VT::Str && r.t == VT::Str) { l.s += r.s; return; }
+    if ((l.t == VT::Any || l.t == VT::Nil || l.t == VT::Type) && l.hashKind.empty()) {
+        l = applyArith("~", Value::str(""), r);
+        return;
+    }
     l = applyArith("~", l, r);
+}
+// A value interpolated into a string (native codegen): `"x$obj"` asks the
+// interpreter's `.Str` (a user method Str included); plain strings and numbers
+// take the direct way.
+std::string rtInterpStr(const Value& v);
+// `@a[*-1] = v` (native codegen): a Whatever/WhateverCode subscript resolved
+// against the array's element count, then the ordinary autovivifying slot.
+Value& rtIndexRefW(Value& base, const Value& key);
+// `$buf.push(…)` (native codegen): a mutator on a Buf/Blob writes its result
+// back into the invocant's variable, as the interpreter's does (AotModules.cpp).
+Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args);
+// What a `for` iterates (native codegen): an ITEMIZED list — `for $x` with an
+// array in $x — is ONE item, as the interpreter's `for` has it.
+Value rtArrayVal(const Value& v);
+inline Value rtForList(const Value& v) {
+    if (v.itemized && (v.t == VT::Array || v.t == VT::Hash)) { Value a = Value::array(); a.arr()->push_back(v); return a; }
+    return rtArrayVal(v);
+}
+// What a `$` container stores (native codegen): a list ITEMIZED, as `=` does.
+inline Value rtItemized(Value v) {
+    if ((v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) && !v.itemized) v.itemized = true;
+    return v;
 }
 // In-place `,=`: `A = A, B`, stored into the container A already holds. One
 // definition for the interpreter and both compiling backends — see the
@@ -4295,6 +4325,9 @@ bool endlessReduce(const std::string& op, const Value& v, Value& out);
 Value  rtNqpOp(NqpOpc op, ValueList& args);                 // eager `use nqp` leaf ops (interp + codegen)
 Value  rtAttrGet(const Value& self, const std::string& name);   // $!attr / $.attr read (codegen)
 Value& rtAttrRef(Value& self, const std::string& name);         // $!attr write (codegen)
+Value  rtPairKeyed(const Value& key, Value value);             // `EXPR => v`: a non-Str key stays itself (codegen)
+Value  rtPairCurry(const Value& key, const Value& value, bool keyIsVar, bool valueIsVar); // `* => v` curries (Any if not)
+Value  rtPairOf(const Value& key, Value value, bool keyIsVar, bool valueIsVar);          // …the curry, else rtPairKeyed
 bool   rtTypeMatch(const Value& v, const std::string& type);    // nominal type check for multi-dispatch (codegen)
 // argument-binding helpers used by native codegen for flexible signatures
 Value  rtPos(const ValueList& a, size_t idx);        // idx-th positional (non-Pair) arg, or Any

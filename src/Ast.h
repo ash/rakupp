@@ -128,6 +128,11 @@ struct Stmt : Node {
     // kernel that calls no other routine (so it depends on the syntax alone).
     // Like jitSite, a property of one run: not serialized, never freed.
     PublishedOnce<void*> kernelHome{nullptr};
+    // A native body for the routine this statement OPENS (AotModules.h): an
+    // AotBodyFn a `--exe` binary compiled for a module routine, attached when
+    // the module's embedded AST is loaded and before any of it runs. Like
+    // kernelHome, set only on a body's first statement and not serialized.
+    void* aotBody = nullptr;
 };
 using StmtPtr = std::unique_ptr<Stmt>;
 

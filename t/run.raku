@@ -932,6 +932,33 @@ section('an exported module sub shadows a built-in (every compile mode)');
     }
 }
 
+# ---- native bodies for embedded modules (--exe) -------------------------
+# `--exe` compiles the routines of the modules it embeds to native bodies
+# (src/AotModules.h) that the interpreter enters after binding each call. The
+# regression program checks itself (PASS); here the binary is built from it,
+# must report native module routines, and must answer as the interpreter does —
+# with the native bodies and, through RAKUPP_NO_AOT=1, without them.
+section('native bodies for embedded module routines (--exe)');
+{
+    my $lib  = $ROOT.add('t/regression/lib');
+    my $prog = $ROOT.add('t/regression/exe-module-native-bodies.raku');
+    my $want = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out).out.slurp(:close);
+    is($want.lines.tail, 'PASS', 'interpreter: the native-bodies program passes');
+    for (), ('-O',) -> @opt {
+        my $desc = ('--exe', |@opt).join(' ');
+        my $bin  = $*TMPDIR.add("rakupp-suite-aot{@opt.join}-$*PID").Str;
+        my $c = run($*EXECUTABLE, '--exe', |@opt, '-I', $lib.Str, $prog.Str, '-o', $bin, :out, :err);
+        $c.out.slurp(:close); my $err = $c.err.slurp(:close);
+        unless $c.exitcode == 0 { ok(False, "$desc builds the native-bodies program"); diag($err); next }
+        my $n = $err ~~ / (\d+) ' of ' \d+ ' module routines compiled natively' / ?? +$0 !! 0;
+        ok($n > 0, "$desc compiles module routines natively ($n)");
+        is(run($bin, :out, :err).out.slurp(:close), $want, "$desc: native module bodies agree with the interpreter");
+        my %env = %*ENV, RAKUPP_NO_AOT => '1';
+        is(run($bin, :out, :err, :%env).out.slurp(:close), $want, "$desc: RAKUPP_NO_AOT=1 runs the modules interpreted");
+        try unlink $bin;
+    }
+}
+
 # ---- module loading & the precomp cache --------------------------------
 # Smoke coverage for the module system itself, and specifically for the parsed-
 # AST cache's INVALIDATION. Every bug found in that cache so far — entries
