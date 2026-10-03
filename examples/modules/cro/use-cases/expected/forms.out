@@ -1,0 +1,8 @@
+urlencoded: 200 order from Ann in teal
+multipart: 200 order from Bob in red
+default: 200 order from Cat in none
+extra: 200 order from Dan in none, also gift,note
+missing: 400 (error)
+escaped: 200 WWWFormUrlEncoded a b=x&y&ключ=знач
+raw multi: 200 MultiPartFormData one=1&two=2
+upload: 200 Notes: notes.txt, 23 bytes, starts "first line"

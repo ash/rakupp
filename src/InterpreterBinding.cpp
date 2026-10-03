@@ -1307,6 +1307,17 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
             }
         }
     }
+    // …and the enum TYPE by its package-qualified name: `has Cro::WebSocket::
+    // Message::Opcode $.opcode` names the enum `package Cro::WebSocket::Message
+    // { enum Opcode … }` declared, whose values carry only the short name. The
+    // qualified name is bound to the enum's type object (its tagged pair-list).
+    if (!v.enumName.empty() && !v.enumType.empty() && type.size() > v.enumType.size() + 2 &&
+        type.compare(type.size() - v.enumType.size() - 2, std::string::npos, "::" + v.enumType) == 0 &&
+        !typeMatchesArg(v, type)) {
+        const Value* tv = tctx_.cur ? tctx_.cur->find(type) : nullptr;
+        if (!tv && global_) tv = global_->find(type);
+        if (tv && tv->t == VT::Array && tv->enumName.empty() && tv->enumType == v.enumType) return true;
+    }
     if (v.t != VT::Type) return typeMatchesArg(v, type);
     auto resolve = [&](std::string n) {
         size_t br = n.find('[');

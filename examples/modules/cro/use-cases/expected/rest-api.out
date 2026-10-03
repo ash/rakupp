@@ -1,0 +1,20 @@
+root: 200 home
+path segment: 200 Hello, Raku!
+typed segment: 200 42
+wrong type: 404 (error)
+query: 200 q=cro limit=3
+query default: 200 q=raku limit=10
+list: 200 $[{:id(1), :title("Think Raku"), :year(2020)},]
+one: 200 ${:id(1), :title("Think Raku"), :year(2020)}
+missing: 404 (error)
+create: 201 ${:id(2), :title("Raku Fundamentals"), :year(2023)}
+list again: 200 $[{:id(1), :title("Think Raku"), :year(2020)}, {:id(2), :title("Raku Fundamentals"), :year(2023)}]
+delete: 200 deleted
+delete again: 404 (error)
+header: 200 agent=rest-api/1.0
+redirect: 200 Hello, redirected!
+teapot: 418 (error)
+server error: 500 (error)
+cookie 1: 200 visit 1
+cookie 2: 200 visit 2
+no jar: 200 visit 1

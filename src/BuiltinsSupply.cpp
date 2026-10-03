@@ -2350,7 +2350,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // from inside its own handler.
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
-        addWorker(BigStackThread([self, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0, readEnc]() mutable {
+        addWorker(BigStackThread([self, fd, sock, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0, readEnc]() mutable {
             t_poll.isWorker = true;
             std::vector<char> buf(65536);
             bool malformed = false;   // bytes that are no UTF-8 at all: the supply QUITs
@@ -2460,6 +2460,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 carry.clear();
             }
             if (!tapClosed && doneCb.t == VT::Code) { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
+            // The socket forgets the descriptor BEFORE it is closed: the number
+            // is free for the next accept() at once, and a write still holding
+            // it (a Cro handler subscribed to a broadcast after its client went
+            // away) went into that NEW connection — chat messages for a dead
+            // client reached whoever connected next.
+            if (!tapClosed && fd >= 0 && sock.t == VT::Hash && sock.hash()) {
+                (*sock.hash())["fd"] = Value::integer(-1);
+                (*sock.hash())["closed"] = Value::boolean(true);
+            }
             self->gilYieldNotify();
             if (!tapClosed && fd >= 0) ::close(fd);
             self->liveWorkers_--;

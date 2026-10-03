@@ -10,6 +10,7 @@ lays one out, that runs under Raku++ with the `cro` development tool.
 | [`service.raku`](service.raku) | The service: two routes and a server that runs until Ctrl-C |
 | [`.cro.yml`](.cro.yml) | Tells `cro run` how to start the service and which environment variables carry its host and port |
 | [`META6.json`](META6.json) | The project's metadata, naming its dependency on `Cro::HTTP` |
+| [`use-cases/`](use-cases) | Four programs that each run a server and a client together — a JSON API, forms and uploads, middleware to WebSockets — and check what they print |
 
 ## Routes
 
@@ -75,3 +76,14 @@ Listening at http://localhost:10000
 ```
 
 Stop it with Ctrl-C.
+
+## Use cases
+
+[`use-cases/`](use-cases) goes past hello-world: each program there starts a
+server, drives it with Cro's own client in the same process, and prints what
+came back, so `check.raku` can compare a run with the expected output. See its
+[README](use-cases/README.md).
+
+```sh
+cd use-cases && rakupp check.raku
+```

@@ -5554,6 +5554,18 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
     if (!gilHeld_) return;                 // no async workers exist; nothing could
                                            // ever settle it — don't deadlock/UB, just return
     if (parallelMode_) {                   // no GIL: just wait for the worker to settle it
+        // …unless this is an event worker (timer, socket reader, a `.then`
+        // continuation), which still serialises on gil_. It must let the
+        // others run while it waits, as sleepYield does: Cro's client, with
+        // two `.then({ await .result.body })` in flight, parked one holding
+        // gil_ while the socket readers that would settle it queued for it.
+        if (t_holdsGil) {
+            gilYieldNotify();
+            ps->cv.wait(plk, [&] { return ps->done; });
+            plk.unlock();                  // drop ps->m BEFORE reacquiring the GIL (as below)
+            gilLock();
+            return;
+        }
         ps->cv.wait(plk, [&] { return ps->done; });
         return;
     }
@@ -6917,10 +6929,9 @@ bool precompRead(const std::string& path, const std::string& src,
 // deleted checkout, a module version zef replaced, a per-run temp directory.
 // Those accumulated without limit before.
 //
-// Called after a write, which is the only moment we are already touching this
-// directory. With 256 buckets that is a handful of small headers to read, so
-// the cost is bounded no matter how large the cache grows, and every bucket
-// gets swept eventually without a timer, a policy, or a flag to explain.
+// Called after a write that ADDS an entry — the only kind that grows the cache,
+// and a moment we are already touching this directory. Every bucket still gets
+// swept eventually, without a timer, a policy, or a flag to explain.
 static void precompSweepBucket(const std::string& entryPath) {
     auto slash = entryPath.rfind('/');
     if (slash == std::string::npos) return;
@@ -6929,15 +6940,25 @@ static void precompSweepBucket(const std::string& entryPath) {
     for (std::filesystem::directory_iterator it(bucket, ec), end; !ec && it != end; ++it) {
         if (it->path() == entryPath) continue;             // the one just written
         if (it->path().extension() != ".ast") continue;
+        // only the source path is wanted, and it is the second field: read the
+        // two length-prefixed strings at the front, never the tree behind them.
+        // Reading whole entries cost a bucket's worth of ASTs per write — with
+        // Roast's packages cached once per search path, ~550 entries and ~1.7 MB
+        // a bucket, two seconds before a Cro server started after a rebuild.
         std::ifstream in(it->path(), std::ios::binary);
         if (!in) continue;
-        std::ostringstream ss; ss << in.rdbuf();
+        auto field = [&](std::string& out) {
+            uint32_t n = 0;
+            if (!in.read(reinterpret_cast<char*>(&n), 4) || n > 65536) return false;
+            out.resize(n);
+            return (bool)in.read(out.data(), (std::streamsize)n);
+        };
+        std::string buildId, srcPath;
+        if (!field(buildId) || !field(srcPath)) continue;  // leave what we cannot read
         in.close();
-        PrecompHeader h;
-        if (!precompParseHeader(ss.str(), h)) continue;    // leave what we cannot read
-        if (h.srcPath.empty()) continue;
+        if (srcPath.empty()) continue;
         std::error_code e2;
-        if (std::filesystem::exists(h.srcPath, e2) || e2) continue;
+        if (std::filesystem::exists(srcPath, e2) || e2) continue;
         std::filesystem::remove(it->path(), e2);           // a loser in a race is fine
     }
 }
@@ -6974,9 +6995,15 @@ void precompWrite(const std::string& path, const std::string& srcPath,
         if (!out) { out.close(); std::remove(tmp.c_str()); return; }
     }
     std::error_code ec;
+    // A write that REPLACES an entry (an edited source, or every entry the first
+    // time a rebuilt rakupp runs) cannot grow the cache, so it leaves the sweep
+    // alone; only a write that ADDS an entry looks for one to drop. Sweeping on
+    // every write opened the whole bucket each time — after a rebuild, ~100
+    // rewrites for Cro and some 55,000 files read before its server started.
+    const bool adds = !std::filesystem::exists(path, ec);
     std::filesystem::rename(tmp, path, ec); // atomic: replaces this file's previous entry
-    if (ec) std::remove(tmp.c_str());
-    precompSweepBucket(path);
+    if (ec) { std::remove(tmp.c_str()); return; }
+    if (adds) precompSweepBucket(path);
 }
 
 // The two switches, for --precomp-info and --precomp-modules=/--precomp-files=.
