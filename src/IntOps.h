@@ -58,6 +58,20 @@ inline bool mul_ovf(long long a, long long b, long long* r) {
 #endif
 }
 
+// r = a ** b by squaring; returns true when the answer is not an int64: a
+// negative exponent (a Rat in Raku) or a power past int64 (a BigInt).
+inline bool pow_ovf(long long a, long long b, long long* r) {
+    if (b < 0) return true;
+    long long acc = 1, base = a;
+    for (long long e = b;;) {
+        if ((e & 1) && mul_ovf(acc, base, &acc)) return true;
+        if (!(e >>= 1)) break;
+        if (mul_ovf(base, base, &base)) return true;
+    }
+    *r = acc;
+    return false;
+}
+
 // count trailing zeros of a nonzero 64-bit value.
 inline int ctzll(unsigned long long x) {
 #if defined(__GNUC__) || defined(__clang__)

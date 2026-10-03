@@ -65,6 +65,28 @@ sub ck($got, $want, $desc) {
 # left to fuse `a * b + c` into one FMA answered 5.55e-17 here
 { my $a = 0.1e0; my $r = 0e0; for 1 .. 3 { $a = $a + 0e0; $r = $a * 10e0 + -1e0 }; ck($r, 0e0, 'no fused multiply-add') }
 
+# ** on Ints and Nums, min and max: an exact Int power, and the ordinary loop
+# where the answer is a Rat, a BigInt or a Num that underflowed
+{ my $t = 0; for 1 .. 1000 { $t += $_ ** 2 % 7 }; ck($t, 2002, 'an Int power') }
+{ my $p = 0; for 1 .. 70 { $p = 2 ** $_ }; ck($p, 1180591620717411303424, 'a power past int64') }
+{ my $q = 0; for 1 .. 1 { $q = (-2) ** 63 }; ck($q, -9223372036854775808, 'the smallest int64 as a power') }
+{ my $r = 0; for 1 .. 1 { $r = 2 ** -1 }; ck($r, 0.5, 'a negative exponent is a Rat') }
+{ my $u = 0; for 0 .. 5 { $u += 0 ** $_ + 1 ** $_ + (-1) ** $_ }; ck($u, 7, 'bases 0, 1 and -1') }
+{ my $x = 0e0; for 1 .. 10 { $x += 2e0 ** $_ }; ck($x, 2046e0, 'a Num power') }
+{ my $z = 0e0; for 1 .. 4 { $z = $z + $_ ** 0.5e0 }; ck($z, 6.146264369941973e0, 'an Int to a Num power') }
+{ my $y = 2e0; my $e = (try { for 1 .. 2 { $y = $y ** -2000 } }) // $!.^name; ck($e.Str, 'X::Numeric::Underflow', 'a Num power that underflows') }
+{ my $lo = 1_000_000; my $hi = 0; for 1 .. 10_000 { my $v = ($_ * 7919) % 1_000_003; $lo = $lo min $v; $hi = $hi max $v }
+  ck(($lo, $hi), (41, 999877), 'min and max') }
+
+# what a lane may store: an Int into a Num variable is an Int, a comparison is
+# a Bool, and `&&` / `||` give an operand
+{ my $x = 0e0; for 1 .. 3 { $x = $x + 0.5e0; $x = 1 if $_ == 3 }; ck(($x, $x.^name), (1, 'Int'), 'an Int stored over a Num') }
+{ my $b = 0; for 1 .. 3 { $b = $_ > 1 }; ck(($b, $b.^name), (True, 'Bool'), 'a comparison stored') }
+{ my $c = 0; for 1 .. 3 { $c = $c + ($_ > 1) }; ck($c, 2, 'a comparison as a number') }
+{ my $d = 0; for 1 .. 3 { $d = $_ && 7 }; ck($d, 7, '&& gives an operand') }
+{ my $e = 0; for 1 .. 4 { $e++ unless $_ == 2 || $_ == 3 }; ck($e, 2, '|| as a condition') }
+{ my $f = 0.5e0; my $g = 0e0; for 1 .. 1000 { $g = $g + $f }; ck($g, 500e0, 'a Num from outside the loop') }
+
 # while / until, last / next
 { my $steps = 0;
   for 1 .. 300 -> $i { my $n = $i; while $n != 1 { if $n %% 2 { $n = $n div 2 } else { $n = 3 * $n + 1 }; $steps++ } }

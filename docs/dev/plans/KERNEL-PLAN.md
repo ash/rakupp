@@ -121,6 +121,20 @@ differential battery.
 
 ## Task 2: Num slots
 
+*Done 2026-10-03 in the interpreter.* A Num travels as its bits in the int64
+frame and in what a node returns, so `Param`, `Lit`, `Set` and `?? !!` carry
+it unchanged; `+ - * / **`, the comparisons, `++ --`, `+= -= *= /=`, prefix
+`-`, a Num as text (`~`, interpolation, `.Str`) and a Num as a condition
+(`NTruth`, which `cexpr` puts in front of every condition, since `-0e0`'s bits
+are not zero) are nodes of their own. An Int meeting a Num is converted
+exactly as numFastArith converts it, `(double)i`, so an Int variable may meet a
+Num too; an Int literal is converted when the kernel is compiled. A zero
+divisor and a power that underflows bail. `.Num` of an Int is the same
+conversion. `#pragma clang fp contract(off)` heads the file. Measured
+(best of 5 against 954f1af7): the Num variation 59.7 → 4.7 ms, a mixed
+Int/Num loop 166 → 10 ms, a Newton iteration in a `while` 95 → 18 ms. The
+`--exe` half is below.
+
 **What.** A third slot type, `double`. Num literals (the `e` spelling; `0.5`
 is a Rat), `+ - * /` over Nums, the six comparisons, `++`/`--`, `+=`/`-=`/
 `*=`/`/=`, Num in `?? !!` and in conditions (true when not zero). An Int
@@ -150,7 +164,44 @@ Seed the lane type from the declaration's initializer as well: `my $x =
 depends on fusing (the 68b2e991 case) and one with NaN; t/exe for the lane
 change.
 
+*`--exe`, 2026-10-03:* a top-level `my $x = <Num literal>` (every top-level
+declaration of the name) seeds the slot F64 (`topNumInit_`, `uSeed`); the
+guard still decides at run time. Three pre-existing lane divergences surfaced
+while testing it and are fixed in the type pass: `$x = 1` into an F64 slot
+came back `1e0` (an `=` of an integer into an F64 slot now refuses the lane,
+unless it is a `my num`); `$b = $_ > 1` stored 1 where Raku stores True (an
+`=` of a comparison, `!`, `&&` or `||` refuses it); and `&&` / `||` in value
+position computed 0 or 1 where Raku returns an operand (they are laned only
+where their truth is all that is read).
+
 ## Task 3: Rat slots
+
+*Done 2026-10-03 in the interpreter, as EXACT slots rather than Rat slots.*
+The workloads that mattered start from an Int: `my $t = 0; … $t += $r` (the
+`rats` kernel and the Rat variation both), and Raku turns that Int into a Rat
+on the first `+=`. So a slot is an exact number, an Int or a Rat: two integer
+slots, the numerator and a denominator that is 0 for an Int. An exact node
+returns the numerator and leaves the denominator in the word in front of the
+loop frame (`kDenSlot`, `fr[-1]`). Arithmetic is in 128 bits, reduced by a
+binary gcd (`xratio`), a Rat with a denominator of 1 stays a Rat, an Int `/`
+an Int is a Rat; a part past int64 or a zero divisor bails, so the generic
+path decides the BigInt Rat or the Num a large denominator spills to. An Int
+variable that is given a Rat (`=`, `+= -= *= /=`) makes the first compile
+refuse with `again`, and the loop is compiled again with that name promoted
+(`LoopCx::promote`, at most five compiles); write-back stores an Int in place
+and anything else as a new value in the plain container. Rat literals are
+reduced at compile time. `.numerator`, `.denominator`, Rats as text and as
+conditions are in. Exact numbers need `__int128` (`kHasExact`); a Rat meeting
+a Num, `%`, `div`, `**` and `min`/`max` on Rats are refused. Measured (best of
+5 against 954f1af7): `rats` 176 → 25.5 ms, the Rat variation 70 → 17 ms; a
+harmonic sum outgrows 64-bit denominators within 50 terms and stays generic.
+
+Two placement findings, both kept in the code: a `den` register in `KRun`
+cost `fib` 5% (it never uses it), and a frame slot for it that moved every
+other slot by one cost `mainwhen` 4%. And code added to IntKernel.cpp moved
+`fib` by up to ±5% with nothing on its path changed, so its call path
+(`callFn`, `condFn`) is aligned to 64 bytes (`KHOT`); aligning every `binFn`
+instance as well cost `mainwhen` 8%, so `binFn` is not.
 
 **What.** A Rat as an `int64_t` numerator and denominator, normalized after
 every operation by gcd, with a positive denominator. Rat literals, `+ - *`
@@ -172,6 +223,17 @@ which must be byte-identical.
 
 ## Task 4: `**` and a few pure methods
 
+*Done 2026-10-03, interpreter and `--exe`.* `**` on Ints (`pow_ovf` in
+IntOps.h, shared by both), on Nums (`std::pow`, with applyArith's underflow
+rule), `min` and `max` on Ints, and the methods `.abs .sign .Str .Num .Int .ord
+.uc .lc .substr` (the last four ASCII only, else bail; `.substr` bails where
+the generic path fails). The native lanes took `**`, `min` and `max`; the
+methods stay interpreter-only. Measured (best of 5): the `**` variation 70.9 →
+4.9 ms interpreted and 52 → 3.9 ms native, a `min`/`max` loop 242 → 14 ms
+interpreted and 3.4 native, `.substr`/`.ord`/`.uc` in a loop 260 → 11 ms.
+`abs` and `chr` as subs are not done: a call to a built-in by name resolves
+nowhere a kernel looks.
+
 - **`**` on Ints.** A non-negative exponent: repeated squaring with overflow
   bails. A negative exponent is a Rat and bails, and so does a negative
   exponent on a Rat slot until task 3 decides otherwise.
@@ -188,6 +250,9 @@ which must be byte-identical.
 ## Task 5: --exe parity for d3c06426
 
 The interpreter took these in d3c06426; the native backend does not have them:
+
+- *Grown 2026-10-03:* the interpreter's exact slots (task 3), the methods
+  of task 4, and a Num `/=`. The lanes took `**`, `min` and `max` only.
 
 - **Lanes:** Int to Str in the Str lane (`~`, `~=`, interpolation with Int
   and Str parts), Str arms in `?? !!`, `.chars` (the same `graphemeCount`),
@@ -229,9 +294,8 @@ the callee checks above.
 
 ## Task 8: documentation
 
-- `--help` (`src/main.cpp`): the `RAKUPP_NO_KERNELS` line still says
-  "integer-only subs"; it now covers loops, strings and `given`/`when`, and
-  `--exe` lanes in plain `--exe` as well as `-O`.
+- *Done 2026-10-03:* `--help` (`src/main.cpp`) describes `RAKUPP_NO_KERNELS`
+  for subs and loops over Ints, Nums and Strs, and for `--exe` at compile time.
 - `docs/status/BENCHMARKS.md`: its prose and its mutsu comparisons
   ("Against mutsu, `--exe` wins all seventeen and the interpreter fourteen",
   the loopsum row) predate both commits. Rewrite them from the next release
@@ -264,9 +328,9 @@ build, each with its own spawned task:
 | | | Reach | Size |
 |---|---|---|---|
 | **1** | arrays and hashes, undo log | arraypush, hash, hashfill, 2 variations | large |
-| **2** | Num slots (+ the F64 lane seeding) | Num variation, numeric examples | small |
-| **3** | Rat slots | rats, Rat variation | medium |
-| **4** | `**`, pure methods | `**` variation, string munging loops | small |
+| ~~2~~ | Num slots (+ the F64 lane seeding) — done 2026-10-03 | Num variation, numeric examples | small |
+| ~~3~~ | Rat slots (exact slots) — done 2026-10-03 | rats, Rat variation | medium |
+| ~~4~~ | `**`, pure methods — done 2026-10-03 | `**` variation, string munging loops | small |
 | **5** | --exe parity for d3c06426 | the native column of all of the above | medium |
 | **8** | documentation | — | small |
 | **6** | Str in sub kernels | none measured yet | medium; waits for a workload |

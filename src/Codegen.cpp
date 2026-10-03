@@ -2193,6 +2193,12 @@ struct Codegen {
     int leaveCtr_ = 0;                // unique names for LEAVE scope guards
     std::set<std::string> topVars_;   // top-level `my` vars hoisted to C++ globals
     std::map<std::string, std::string> topVarTypes_; // …and their declared types, if any
+    // Top-level `my $x = 0.5e0` (every top-level declaration of the name has a
+    // Num literal for its initializer): a loop lane at the top level types the
+    // slot F64 from the start. The type pass only sees the loop, so a Num that
+    // reaches it only from outside was an I64 slot whose guard always failed.
+    // The guard still decides at run time.
+    std::set<std::string> topNumInit_;
     bool atTopLevel_ = false;         // emitting the mainline (not a sub body)
 
     void emitPhaserBody(Block* b, int ind) {
@@ -4023,6 +4029,10 @@ struct Codegen {
     // Pass 1: collect the slots and refuse anything outside the whitelist. The
     // lane TYPES are settled by the fixpoint in pass 2; here every slot starts
     // as I64 and a Num literal is the only thing that seeds F64 directly.
+    // A program variable's starting lane type (see topNumInit_).
+    LT uSeed(const std::string& nm) const {
+        return atTopLevel_ && topNumInit_.count(nm) ? LT::F64 : LT::I64;
+    }
     void uCollectExpr(Expr* e, ULoop& U) {
         if (!U.ok || !e) return;
         switch (e->kind) {
@@ -4052,7 +4062,7 @@ struct Codegen {
                     U.fail(); return;
                 }
                 if (nm == "$_" && !U.topics.count(nm)) { U.fail(); return; }
-                U.slots.emplace(nm, LT::I64);
+                U.slots.emplace(nm, uSeed(nm));
                 return;
             }
             case NK::Assign: {
@@ -4093,7 +4103,8 @@ struct Codegen {
                         if (U.atTopHeader) U.escapeStore.insert(nm);
                     } else U.local.insert(nm);
                 }
-                U.slots.emplace(nm, tv->declare && U.natDecl.count(nm) && U.natDecl[nm] == 'n' ? LT::F64 : LT::I64);
+                U.slots.emplace(nm, tv->declare ? (U.natDecl.count(nm) && U.natDecl[nm] == 'n' ? LT::F64 : LT::I64)
+                                                : uSeed(nm));
                 U.written.insert(nm);
                 uCollectExpr(a->value.get(), U);
                 return;
@@ -4102,8 +4113,12 @@ struct Codegen {
                 auto* b = static_cast<Binary*>(e);
                 static const std::set<std::string> ops = {
                     "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "||",
-                    "~", "eq", "ne", "lt", "gt", "le", "ge" };
+                    "~", "eq", "ne", "lt", "gt", "le", "ge", "**", "min", "max" };
                 if (!ops.count(b->op)) { U.fail(); return; }
+                if ((b->op == "**" || b->op == "min" || b->op == "max") && !kernelOpFree("infix:<" + b->op + ">")) {
+                    U.fail();
+                    return;
+                }
                 // a program that declares its own string operator gets the
                 // boxed emission, which consults it (userOpFn)
                 if (uStrOp(b->op) && !kernelOpFree("infix:<" + b->op + ">")) { U.fail(); return; }
@@ -4117,7 +4132,7 @@ struct Codegen {
                     if (!uScalar(u->operand.get(), nm)) { U.fail(); return; }
                     if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
                     if (U.topics.count(nm)) { U.fail(); return; }
-                    U.slots.emplace(nm, LT::I64);
+                    U.slots.emplace(nm, uSeed(nm));
                     U.written.insert(nm);
                     return;
                 }
@@ -4329,7 +4344,13 @@ struct Codegen {
     // Pass 2: the lane type of an expression, given the slot types decided so
     // far. `changed` is set when a slot has to be widened to F64, which is what
     // drives the fixpoint. Returns F64 if anything in the expression is a float.
+    // Set by uTypeCond for the one uTypeOf call it makes: the expression's truth
+    // is all that is read. `&&`, `||` and `!` pass it to their operands; every
+    // other node clears it.
+    bool uCondCtx_ = false;
     LT uTypeOf(Expr* e, ULoop& U, bool& changed) {
+        const bool inCond = uCondCtx_;
+        uCondCtx_ = false;
         if (!e) return LT::I64;
         switch (e->kind) {
             case NK::IntLit: return LT::I64;
@@ -4360,15 +4381,25 @@ struct Codegen {
                     return LT::STR;
                 }
                 LT& cur = U.slots[nm];
+                // A comparison, `!`, `&&` or `||` stores a Bool (or one of the
+                // operands), which a number slot would turn into 1 or 0.
+                if (a->op == "=" && uTruthExpr(a->value.get())) { U.fail(); return cur; }
                 // `/` on two integers is a Rat in Raku, never an Int — so a slot
                 // written by a division cannot be an I64 lane. Widening it to
                 // F64 would be WRONG (`1/3` is exact), so the lane is refused.
                 if (a->op == "/=") { U.fail(); return cur; }
                 if (rhs == LT::F64 && cur == LT::I64) { cur = LT::F64; changed = true; }
-                // The other direction is the rule that keeps this sound: an F64
-                // slot assigned an integer expression stays F64 (the integer
-                // widens), and an I64 slot is never assigned a float, because
-                // the line above already widened it.
+                // The other direction: `=` of an integer into an F64 slot stores
+                // an Int in Raku, which the slot would write back as a Num
+                // (`$x = 1` came back 1e0). Only a `my num` converts it. The
+                // slot only widens, so a refusal on an early pass of the
+                // fixpoint is one the last pass would make too. An op= (`+=
+                // 1`) on a Num is a Num, and widens as before.
+                if (a->op == "=" && rhs == LT::I64 && cur == LT::F64 &&
+                    !(U.natDecl.count(nm) && U.natDecl[nm] == 'n')) {
+                    U.fail();
+                    return cur;
+                }
                 return cur;
             }
             case NK::Binary: {
@@ -4378,7 +4409,14 @@ struct Codegen {
                     uWantStr(b->rhs.get(), U, changed);
                     return b->op == "~" ? LT::STR : LT::I64;
                 }
-                LT l = uTypeOf(b->lhs.get(), U, changed), r = uTypeOf(b->rhs.get(), U, changed);
+                // `&&` / `||` return an operand, not a truth value: the lane's
+                // 0 or 1 is right only where the truth is all that is read
+                const bool logical = b->op == "&&" || b->op == "||";
+                if (logical && !inCond) { U.fail(); return LT::I64; }
+                uCondCtx_ = logical;
+                LT l = uTypeOf(b->lhs.get(), U, changed);
+                uCondCtx_ = logical;
+                LT r = uTypeOf(b->rhs.get(), U, changed);
                 if (l == LT::STR || r == LT::STR) { U.fail(); return LT::I64; }   // a Str is no number here
                 static const std::set<std::string> cmp = {
                     "<", "<=", ">", ">=", "==", "!=", "&&", "||" };
@@ -4386,10 +4424,13 @@ struct Codegen {
                 // Integer `/` is a Rat and integer `%` on floats is not a lane op.
                 if (b->op == "/") { if (l == LT::I64 && r == LT::I64) U.fail(); return LT::F64; }
                 if (b->op == "%") { if (l == LT::F64 || r == LT::F64) U.fail(); return LT::I64; }
+                // `min` / `max` on two Ints only (a Num's NaN has rules of its own)
+                if ((b->op == "min" || b->op == "max") && (l == LT::F64 || r == LT::F64)) U.fail();
                 return (l == LT::F64 || r == LT::F64) ? LT::F64 : LT::I64;
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
+                uCondCtx_ = u->op == "!";
                 if (uTypeOf(u->operand.get(), U, changed) == LT::STR) { U.fail(); return LT::I64; }
                 if (u->op == "!") return LT::I64;
                 if (u->op == "++" || u->op == "--") {
@@ -4421,6 +4462,7 @@ struct Codegen {
     }
     // A condition: a Str's truth is not a number's, so none is laned.
     void uTypeCond(Expr* e, ULoop& U, bool& changed) {
+        uCondCtx_ = true;
         if (uTypeOf(e, U, changed) == LT::STR) U.fail();
     }
 
@@ -4431,6 +4473,7 @@ struct Codegen {
             case NK::GivenStmt: {
                 auto* g = static_cast<GivenStmt*>(st);
                 LT t = uTypeOf(g->topic.get(), U, changed);
+                if (uTruthExpr(g->topic.get())) { U.fail(); return; }   // a Bool topic
                 LT& cur = U.slots["$_"];
                 if (cur != t) {
                     // the topic's type moves only from the starting guess
@@ -4606,6 +4649,30 @@ struct Codegen {
                               + uExpr(b->rhs.get(), operandT, pre) + "))";
                 std::string a = uExpr(b->lhs.get(), operandT, pre);
                 std::string c = uExpr(b->rhs.get(), operandT, pre);
+                if (a.empty() || c.empty()) return "";
+                if (op == "**") {
+                    // the interpreter's answers: pow() for a Num, and an exact
+                    // Int power, whose Rat (a negative exponent) or BigInt leaves
+                    // the lane; a Num power that underflows to zero is a Failure
+                    std::string tv = gensym("__ut");
+                    if (operandT == LT::F64) {
+                        std::string x = gensym("__ut"), y = gensym("__ut");
+                        pre.push_back("const double " + x + " = " + a + ", " + y + " = " + c + ";");
+                        pre.push_back("const double " + tv + " = std::pow(" + x + ", " + y + "); if (" + tv
+                                    + " == 0 && " + x + " != 0 && !std::isnan(" + x + ") && std::isfinite(" + y
+                                    + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                        return uCast(tv, LT::F64, want);
+                    }
+                    pre.push_back("long long " + tv + "; if (rakupp::pow_ovf(" + a + ", " + c + ", &" + tv
+                                + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                    return uCast(tv, LT::I64, want);
+                }
+                if (op == "min" || op == "max") {
+                    if (operandT != LT::I64) return "";
+                    std::string x = gensym("__ut"), y = gensym("__ut");
+                    pre.push_back("const long long " + x + " = " + a + ", " + y + " = " + c + ";");
+                    return uCast("(" + x + (op == "min" ? " < " : " > ") + y + " ? " + x + " : " + y + ")", LT::I64, want);
+                }
                 if (operandT == LT::F64)   // IEEE 754: no overflow, and x/0 is Inf as Raku's Num is
                     return uCast("((" + a + ") " + op + " (" + c + "))", LT::F64, want);
                 if (op == "%") {           // rtMod's int case: floored, and 0 leaves the lane
@@ -5535,6 +5602,24 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         g.topVars_.insert(nm);
         if (!dt.empty()) g.topVarTypes_[nm] = dt;
     };
+    {
+        std::set<std::string> otherInit;
+        for (auto& s : prog.stmts) {
+            if (!s || s->kind != NK::ExprStmt) continue;
+            Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
+            if (!e || e->kind != NK::Assign) continue;
+            auto* a = static_cast<Assign*>(e);
+            if (!a->target || a->target->kind != NK::VarExpr || !static_cast<VarExpr*>(a->target.get())->declare)
+                continue;
+            auto* tv = static_cast<VarExpr*>(a->target.get());
+            Expr* v = a->value.get();
+            if (v && v->kind == NK::Unary && static_cast<Unary*>(v)->op == "-") v = static_cast<Unary*>(v)->operand.get();
+            const bool num = a->op == "=" && tv->declType.empty() && v && v->kind == NK::NumLit &&
+                             !static_cast<NumLit*>(v)->isRat && !static_cast<NumLit*>(v)->imaginary;
+            (num ? g.topNumInit_ : otherInit).insert(tv->name);
+        }
+        for (auto& nm : otherInit) g.topNumInit_.erase(nm);
+    }
     // class-body `my` names, checked for collisions once the whole file is seen
     std::map<std::string, std::pair<std::string, std::string>> classBodyVars; // name -> (class, declType)
     for (auto& s : prog.stmts) {

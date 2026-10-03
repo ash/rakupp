@@ -151,6 +151,57 @@ sub ck($got, $want, $desc) {
 { my $tot = 0; for 1 .. 300 -> $o { my $s = 0; my $n = $o %% 7 ?? 0 !! 2; $s += $_ for 1 .. $n; $tot += $s }
   ck($tot, 774, 'a kernel entered many times') }
 
+# Nums: IEEE where Raku agrees, and the ordinary loop where it does not
+{ my $x = 0e0; for 1 .. 1000 { $x += 0.1e0 }; ck($x, 99.9999999999986e0, 'a Num accumulator rounds at each step') }
+{ my $x = 0e0; my $i = 3; for 1 .. 4 { $x += $i * 0.5e0; $x -= 1 }; ck($x, 2e0, 'Ints meeting Nums') }
+{ my $x = 1e0; my $n = 0; while $x < 1e10 { $x *= 1.5e0; $n++ }; ck(($x, $n), (10894361101.313488e0, 57), 'a Num in a while condition') }
+{ my $c = 0; my $f = 0.3e0; for 1 .. 10 { $c++ if $f; $f -= 0.1e0 }; ck(($c, ~$f), (10, '-0.7'), 'a Num as a condition') }
+{ my $c = 0; my $z = -0e0; for 1 .. 3 { $c++ if $z }; ck(($c, ~$z), (0, '-0'), '-0e0 is false and stays -0') }
+{ my $n = NaN; my $c = 0; for 1 .. 2 { $c++ if $n; $c += 10 if $n == $n; $c += 100 if $n != $n }; ck($c, 202, 'NaN compares as IEEE, and is true') }
+{ my $x = 1e308; for 1 .. 2 { $x *= 10 }; ck($x, Inf, 'a Num overflows to Inf') }
+{ my $x = 0.5e0; $x++ for 1 .. 3; $x-- for 1 .. 1; ck($x, 2.5e0, '++ and -- on a Num') }
+{ my $s = ""; for 1 .. 3 { $s ~= "{$_ * 0.25e0}," }; ck($s, '0.25,0.5,0.75,', 'a Num as text') }
+{ my $x = 0.1e0; my $y = 10e0; my $r = 0e0; for 1 .. 1 { $r = $x * $y + -1e0 }; ck($r, 0e0, 'a multiply and an add are not fused') }
+{ my $r = 1e0; my $e = (try { for 1 .. 5 { $r = $r + 1e0 / (($_ - 3) * 1e0) } }) // $!.^name;
+  ck(($r, $e.Str), (-0.5e0, 'X::Numeric::DivideByZero'), 'a zero Num divisor: the ordinary loop answers') }
+{ my $x = 0e0; for 1 .. 10 { $x += 2e0 ** $_ }; ck($x, 2046e0, 'a Num power') }
+{ my $x = 2e0; my $e = (try { for 1 .. 2 { $x = $x ** -2000 } }) // $!.^name; ck($e.Str, 'X::Numeric::Underflow', 'a Num power that underflows') }
+{ sub acc($init) { my $a = $init; for 1 .. 3 { $a += $_ }; $a }
+  ck((acc(0.5e0), acc(1), acc(0.5e0)), (6.5e0, 7, 6.5e0), 'one loop, an Int and a Num') }
+{ my num $n = 0e0; for 1 .. 3 { $n += 0.5e0 }; ck($n, 1.5e0, 'a native num is not a slot') }
+
+# Rats: exact, reduced, still a Rat with a denominator of 1, and an Int that is
+# given a Rat becomes one; a denominator past 64 bits is the ordinary loop's
+{ my $x = 0; for 1 .. 300 { $x += 0.5 }; ck(($x, $x.^name), (150.0, 'Rat'), 'an Int accumulator given Rats') }
+{ my $t = 0; my $d = 0; for 1 .. 2000 { my $r = 0.01 * ($_ % 97); $t += $r; $d += $r.denominator }
+  ck(($t, $d), (949.5, 113061), 'a Rat local, .denominator') }
+{ my $x = 0.1; my $y = 0.2; my $c = 0; for 1 .. 3 { $c++ if $x + $y == 0.3 }; ck($c, 3, '0.1 + 0.2 == 0.3') }
+{ my $x = 1; for 1 .. 5 { $x /= 3 }; ck($x, 1/243, '/= makes an Int a Rat') }
+{ my $x = 0; for 1 .. 1 { $x = 4 / 2 }; ck(($x, $x.^name), (2.0, 'Rat'), 'Int / Int is a Rat, even when it divides') }
+{ my $x = 0.5; for 1 .. 3 { $x++ }; ck($x, 3.5, '++ on a Rat') }
+{ my $x = 0.5; for 1 .. 2 { $x = 7 }; ck(($x, $x.^name), (7, 'Int'), 'a Rat variable given an Int') }
+{ my $s = ""; for 1 .. 3 { $s ~= "{$_ / 3}," }; ck($s, '0.333333,0.666667,1,', 'a Rat as text') }
+{ my $x = 0.5; my $c = 0; while $x < 100 { $x *= 3; $c++ }; ck(($x, $c), (121.5, 5), 'a Rat in a while condition') }
+{ my $x = 1; for 1 .. 70 { $x = $x / 2 + 1/3 }; ck($x.^name, 'Num', 'a denominator past 64 bits spills to Num') }
+{ my $x = 0; my $n = 0; for 1 .. 10 { $n++ if $x; $x += 1/10 }; ck(($x, $n), (1.0, 9), 'a Rat as a condition') }
+{ my $x = -0.5; for 1 .. 3 { $x = -$x * 2 }; ck($x, 4.0, 'negation') }
+{ my $x = 0; for 1 .. 3 { $x += 0.5 if $_ > 5; $x++ }; ck(($x, $x.^name), (3, 'Int'), 'a promoted Int never given a Rat stays an Int') }
+{ my $r = 1/3; my $n = 0; for 1 .. 3 { $n += $r.numerator + $r.denominator }; ck($n, 12, '.numerator') }
+
+# ** on Ints, min and max, pure methods
+{ my $t = 0; for 1 .. 1000 { $t += $_ ** 2 % 7 }; ck($t, 2002, 'an Int power') }
+{ my $p = 0; for 1 .. 70 { $p = 2 ** $_ }; ck($p, 1180591620717411303424, 'a power past int64') }
+{ my $p = 0; for 1 .. 1 { $p = (-2) ** 63 }; ck($p, -9223372036854775808, 'the smallest int64 as a power') }
+{ my $p = 0; for 1 .. 1 { $p = 2 ** -1 }; ck($p, 0.5, 'a negative exponent is a Rat') }
+{ my $m = 0; for -5 .. 5 { $m += $_.abs * $_.sign + ($_ min 2) + ($_ max -1) }; ck($m, 4, '.abs .sign min max') }
+{ my $a = 0; my $x = -9223372036854775807 - 1; for 1 .. 1 { $a = $x.abs }; ck($a, 9223372036854775808, '.abs past int64') }
+{ my $s = ""; for 1 .. 5 { $s ~= "ab".uc ~ "XY".lc ~ "hello".substr($_ - 1, 2) }; ck($s, 'ABxyheABxyelABxyllABxyloABxyo', '.uc .lc .substr') }
+{ my $o = 0; my $w = "Raku"; for ^4 { $o += $w.substr($_).ord }; ck($o, 403, '.ord of .substr') }
+{ my $s = "naïve"; my $u = ""; for 1 .. 1 { $u = $s.uc }; ck($u, 'NAÏVE', '.uc beyond ASCII') }
+{ my $r = ""; for 1 .. 1 { $r = "hello".substr(5) }; ck($r, '', '.substr at the end') }
+{ my $r = ""; for 1 .. 1 { $r = "hello".substr(6) }; ck($r.^name, 'Failure', '.substr past the end') }
+{ my $o = 0; for 1 .. 1 { $o = "".ord }; ck($o, Any, '.ord of an empty Str') }
+
 # a loop that calls, or reaches the world, is not a kernel's
 { sub f($x) { $x * 2 }; my $s = 0; $s += f($_) for 1 .. 10; ck($s, 110, 'a call in the body') }
 { my @a; for 1 .. 3 { @a.push: $_ }; ck(@a, [1, 2, 3], 'a method call in the body') }

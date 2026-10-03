@@ -20,13 +20,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and
   task 10 (automatic `--cnp` tier-up). Task 1's quiet-machine baseline is still
   owed.
-- [ ] **Loop and sub kernels beyond scalars**: written 2026-10-02, not started.
-  [KERNEL-PLAN.md](KERNEL-PLAN.md). Tasks 1–8: arrays and hashes, Num and Rat
-  slots, `**` and pure methods, `--exe` parity, Str in sub kernels, closures in
-  `--exe`.
-- [ ] **Owed from the 2026-10-02 kernel work**: re-time the variations on
-  d3c06426, the final run-bench table, `perf-guard --check`, and the
-  BENCHMARKS.md prose about mutsu and `fib`.
+- [ ] **Loop and sub kernels beyond scalars**: [KERNEL-PLAN.md](KERNEL-PLAN.md).
+  Tasks 2–4 and the `--help` text done 2026-10-03 (Nums, Rats as exact slots,
+  `**`, `min`/`max`, pure methods; `**`/`min`/`max` and Num seeding in the
+  `--exe` lanes). Next: task 1 (arrays and hashes with an undo log, after the
+  `my $c := @arr[0]; $c += 1` bug), task 5 (`--exe` parity, now also Rats and
+  the methods), the UNBOX-PLAN note of task 8, then 6–7. Owed:
+  `perf-guard --check` on a quiet machine (inconclusive at load 4 on
+  2026-10-03; in cycles `fib`/`mainwhen` level, `objnew` +1.5% from code
+  placement).
 - [ ] **`--cnp` copy-and-patch**: [CNP-PLAN.md](CNP-PLAN.md). P1 on ELF waits
   on a Linux CI run of the gate; P2 arena allocation; P3 `.kv`, the statement
   modifier, `.map`, closures, `[+]`, whole-array assignment, `given`, `return`;
@@ -66,6 +68,12 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - B4: ecosystem and MOP clusters (custom HOW, Attribute MOP, Red #77).
   - B5: JS gate disagreements to 0, the `--slim` size gate.
   - B6: measure and tag.
+- [ ] **An assignment statement that stores a Failure does not throw**:
+  Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
+  f()` does not). Found 2026-10-03 with the Num kernels; not started.
+- [ ] **Subnormal Nums print 15 digits**: `say 3e-320 * 3` is `9e-320` in
+  Rakudo (the shortest form that reads back) and `8.99989980464415e-320` here;
+  `5e-324` prints `4.94065645841247e-324`. `numToStr` in src/Value.cpp.
 - [ ] **Rakuglaze**: 2113 of 2178 pass. Open: indexing an infinite Str range,
   anonymous enums, `.VAR` on sigilless names, EVAL with CONTROL.
 - [ ] **#110 constructor type checks**: the module battery gate was never run.

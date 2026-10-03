@@ -11,11 +11,14 @@
 //
 //  * A LOOP KERNEL. A `for` over an integer Range (or a `while`, or a C-style
 //    `loop` once its init has run) whose body reads and writes
-//    only `$` variables holding a plain Int or a plain Str, its own `my`
-//    locals and loop variables, through the integer operators above, the six
-//    string comparisons, `~` and `=`, `+=`, `-=`, `*=`, `~=`, `++`, `--`, with
-//    `if`/`unless`, nested `for` over integer ranges, `while`/`until`, `last`
-//    and `next`, and `given`/`when` over a plain topic. The kernel works on
+//    only `$` variables holding a plain Int, Num or Str, its own `my`
+//    locals and loop variables, through the integer operators above, `**`,
+//    `min`, `max`, Num `+ - * / **` and comparisons, the six string
+//    comparisons, `~` and `=`, `+=`, `-=`, `*=`, `/=` (Nums), `~=`, `++`,
+//    `--`, the methods `.chars .abs .sign .Str .Num .Int .ord .uc .lc
+//    .substr`, with `if`/`unless`, nested `for` over integer ranges,
+//    `while`/`until`, `last` and `next`, and `given`/`when` over a plain
+//    topic. The kernel works on
 //    COPIES of those variables (the frame) and writes them back only when the
 //    whole loop is done, so until then nothing it did is visible to anything.
 //
@@ -40,15 +43,35 @@
 #include "IntOps.h"
 #include "BuiltinsShared.h"   // graphemeCount
 #include <climits>
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
+#include <numeric>
 #if defined(_MSC_VER) && !defined(__clang__)
 #include <intrin.h>   // _AddressOfReturnAddress
+#endif
+
+// Every Num operation rounds on its own, as the generic path's do: nothing
+// here may fuse a multiply and an add.
+#if defined(__clang__)
+#pragma clang fp contract(off)
 #endif
 
 namespace rakupp {
 
 namespace {
+
+// Exact numbers (an Int or a Rat in one slot pair) compute in 128 bits.
+constexpr bool kHasExact = RAKUPP_HAS_INT128 != 0;
+// The word in front of a loop frame: the denominator of the exact number a
+// node has just returned. (A register in KRun cost fib 5%, and a slot of the
+// frame that moved every other slot by one cost mainwhen 4%; neither uses it.)
+constexpr int kDenSlot = -1;
+
+// A Num travels through the int64 world of the kernels as its bits.
+inline int64_t dbits(double d) { int64_t r; std::memcpy(&r, &d, sizeof r); return r; }
+inline double bitsd(int64_t r) { double d; std::memcpy(&d, &r, sizeof d); return d; }
 
 enum class KOp : uint8_t {
     Param, Lit,
@@ -77,6 +100,28 @@ enum class KOp : uint8_t {
     // strings: SVar, SLit and SCat yield a string (sfn), the rest an integer
     SVar, SLit, SCat, SSet, SApp,
     SEq, SNe, SLt, SLe, SGt, SGe,
+    // Nums: a double travels as its bits in the int64 a node returns and a
+    // slot holds (Param, Lit, Set, Cond carry it unchanged)
+    NAdd, NSub, NMul, NDiv, NPow, NNeg,
+    NLt, NLe, NGt, NGe, NEq, NNe,
+    NAddTo, NSubTo, NMulTo, NDivTo,
+    NPreInc, NPreDec, NPostInc, NPostDec,
+    NOfInt,   // an Int as a Num, as the generic path converts one
+    NTruth,   // a Num as a condition: true when not zero
+    SNum,     // a Num's text
+    // more integer operators and pure methods
+    Pow, Min, Max, Abs, Sign,
+    Ord, Uc, Lc, Substr,
+    // exact numbers (KT::Exact): an Int or a Rat. A node returns the
+    // numerator and leaves the denominator in the loop frame's kDenSlot, 0
+    // for an Int; a variable is two integer slots, the numerator and then
+    // the denominator.
+    XVar, XLit, XOfInt,
+    XAdd, XSub, XMul, XDiv, XNeg,
+    XLt, XLe, XGt, XGe, XEq, XNe,
+    XSet, XAddTo, XSubTo, XMulTo, XDivTo,
+    XPreInc, XPreDec, XPostInc, XPostDec,
+    XTruth, SExact, XNumer, XDenom,
 };
 
 struct IKernel;
@@ -94,7 +139,7 @@ struct KNode {
     KNode* a = nullptr;
     KNode* b = nullptr;
     KNode* c = nullptr;
-    IKernel* callee = nullptr;  // Call
+    union { IKernel* callee = nullptr; int64_t den; };   // Call / XLit: the denominator
     KNode** kids = nullptr;     // Call: nargs arguments; Seq: nargs statements
 };
 
@@ -131,10 +176,11 @@ struct IKernel {
 // --- compiling ---------------------------------------------------------------
 
 // Void: an expression with no value a kernel can use (a string assignment)
-enum class KT { Int, Bool, Str, Void };
+enum class KT { Int, Bool, Str, Void, Num, Exact };
 
 // A loop kernel's names. Every `$` variable the loop reads or writes gets a
-// slot in the frame: an integer slot or a string slot, by the type its value
+// slot in the frame: an integer slot (a Num's too, as its bits) or a string
+// slot, by the type its value
 // has when the kernel is compiled — which is the type it must still have at
 // every later entry.
 struct LSym { std::string name; KT t; int slot; bool ro; };
@@ -150,6 +196,15 @@ struct LoopCx {
     bool inModifier = false;                 // a statement-modifier body: no `my` (it would leak out)
     bool usesInc = false;                    // any `++` / `--`
     bool usesMethods = false;                // a built-in method (`.chars`), which `augment` could replace
+    // Int variables that are assigned a Rat somewhere in the loop: compiled as
+    // exact slots from the start, which takes a second compile once the first
+    // has found them (`again`)
+    std::vector<std::string> promote;
+    bool again = false;
+    bool promoted(const std::string& n) const {
+        for (auto& p : promote) if (p == n) return true;
+        return false;
+    }
     std::string why;                         // the first thing refused, for the trace
 };
 
@@ -178,9 +233,40 @@ struct Compiler {
     KNode* asStr(IKernel& k, KNode* n, KT t) {
         if (!n) return nullptr;
         if (t == KT::Str) return n;
-        if (t != KT::Int || !L || L->sub) return nullptr;
-        KNode* s = k.node(KOp::SInt); s->a = n; s->slot = L->nstr++;
+        if ((t != KT::Int && t != KT::Num && t != KT::Exact) || !L || L->sub) return nullptr;
+        KNode* s = k.node(t == KT::Num ? KOp::SNum : t == KT::Exact ? KOp::SExact : KOp::SInt);
+        s->a = n; s->slot = L->nstr++;
         return s;
+    }
+    // An Int or an exact number as an exact number; null for anything else.
+    KNode* asExact(IKernel& k, KNode* n, KT t) {
+        if (!n) return nullptr;
+        if (t == KT::Exact) return n;
+        if (t != KT::Int) return nullptr;
+        if (n->op == KOp::Lit) { KNode* l = k.node(KOp::XLit); l->lit = n->lit; l->slot = 0; return l; }
+        KNode* c = k.node(KOp::XOfInt); c->a = n;
+        return c;
+    }
+    // A slot pair for an exact variable
+    int exactSlot() { const int s = L->nint; L->nint += 2; return s; }
+    // An Int or a Num as a Num: an Int literal is converted here, as the
+    // generic path would convert it at run time; null for anything else.
+    KNode* asNum(IKernel& k, KNode* n, KT t) {
+        if (!n) return nullptr;
+        if (t == KT::Num) return n;
+        if (t != KT::Int) return nullptr;
+        if (n->op == KOp::Lit) { KNode* l = k.node(KOp::Lit); l->lit = dbits((double)n->lit); return l; }
+        KNode* c = k.node(KOp::NOfInt); c->a = n;
+        return c;
+    }
+    // An expression read as a condition: a Num is true when it is not zero
+    // (its bits are not: -0e0).
+    KNode* cexpr(IKernel& k, const Callable* c, Expr* e, KT& t) {
+        KNode* n = expr(k, c, e, true, t);
+        if (n && (t == KT::Num || t == KT::Exact)) {
+            KNode* b = k.node(t == KT::Num ? KOp::NTruth : KOp::XTruth); b->a = n; n = b; t = KT::Bool;
+        }
+        return n;
     }
     KNode* refuse(const std::string& why) {
         if (L && L->why.empty()) L->why = why;
@@ -221,6 +307,23 @@ inline bool plainIntValue(const Value& v) {
     return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
            !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
            v.hashKind.empty() && v.s.empty();
+}
+inline bool plainNumValue(const Value& v) {
+    return v.t == VT::Num && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty() && v.s.empty();
+}
+// A Rat whose numerator and denominator both fit an int64 (not a FatRat, not
+// a zero denominator, no tag, nothing in its block but the two parts)
+inline bool plainRatValue(const Value& v) {
+    if (v.t != VT::Rat || !v.x_ || v.pk_ != PK::None || v.natBits || v.natSigned || v.natFloat || v.b ||
+        v.isList || v.objKeyed || v.namedArg || !v.enumName.empty() || !v.enumType.empty() ||
+        !v.hashKind.empty() || !v.s.empty())
+        return false;
+    const ValueExt& x = *v.x_;
+    if (x.fatRat || x.big || x.pairKey || x.cont || x.holdsCells || x.rNum || !x.ratN || !x.ratD) return false;
+    if (!x.ratN->fitsLL() || !x.ratD->fitsLL()) return false;
+    return x.ratD->toLL() > 0;
 }
 inline bool plainStrValue(const Value& v) {
     return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
@@ -268,6 +371,25 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             auto* l = static_cast<IntLit*>(e);
             if (!l->big.empty()) return refuse("an integer literal beyond 64 bits");
             KNode* n = k.node(KOp::Lit); n->lit = l->v; t = KT::Int;
+            return n;
+        }
+        case NK::NumLit: {
+            // `0.5e0`; `0.5` is a Rat
+            auto* l = static_cast<NumLit*>(e);
+            if (!L || L->sub) return refuse("a Num in a sub");
+            if (l->imaginary) return refuse("a Complex literal");
+            if (l->isRat) {
+                // `0.5`: reduced here as the generic path reduces it
+                if (!kHasExact) return refuse("a Rat without 128-bit integers");
+                if (!l->bigNum.empty() || !l->bigDen.empty() || l->ratDen <= 0) return refuse("a Rat literal of this size");
+                long long g = std::gcd(l->ratNum < 0 ? -l->ratNum : l->ratNum, l->ratDen);
+                if (g <= 0) g = 1;
+                KNode* n = k.node(KOp::XLit); n->lit = l->ratNum / g; n->slot = (int32_t)0;
+                n->den = l->ratDen / g;
+                t = KT::Exact;
+                return n;
+            }
+            KNode* n = k.node(KOp::Lit); n->lit = dbits(l->v); t = KT::Num;
             return n;
         }
         case NK::BoolLit: {
@@ -336,15 +458,18 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     if (!raw) return refuse("variable " + v->name + " is not in scope");
                     const Value& cv = *raw->deref();
                     KT vt;
-                    if (plainIntValue(cv)) { vt = KT::Int; slot = L->nint++; }
+                    if (plainIntValue(cv) && L->promoted(v->name)) { vt = KT::Exact; slot = exactSlot(); }
+                    else if (plainIntValue(cv)) { vt = KT::Int; slot = L->nint++; }
+                    else if (plainRatValue(cv) && kHasExact) { vt = KT::Exact; slot = exactSlot(); }
+                    else if (plainNumValue(cv)) { vt = KT::Num; slot = L->nint++; }
                     else if (plainStrValue(cv)) { vt = KT::Str; slot = L->nstr++; }
-                    else return refuse("variable " + v->name + " holds neither a plain Int nor a plain Str");
+                    else return refuse("variable " + v->name + " holds neither a plain Int, Rat, Num nor Str");
                     L->outer.push_back({v->name, vt, slot, false});
                     o = &L->outer.back();
                 }
                 st = o->t; slot = o->slot;
             }
-            KNode* n = k.node(st == KT::Str ? KOp::SVar : KOp::Param);
+            KNode* n = k.node(st == KT::Str ? KOp::SVar : st == KT::Exact ? KOp::XVar : KOp::Param);
             n->slot = slot; t = st;
             return n;
         }
@@ -357,27 +482,30 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 if (u->operand->kind != NK::VarExpr) return refuse("++/-- on something not a variable");
                 KNode* tn = expr(k, c, u->operand.get(), false, ot);
                 if (!tn) return nullptr;
-                if (ot != KT::Int) return refuse("++/-- on a Str");
+                if (ot != KT::Int && ot != KT::Num && ot != KT::Exact) return refuse("++/-- on a Str");
                 const std::string& nm = static_cast<VarExpr*>(u->operand.get())->name;
                 if (const LSym* s = lookup(nm)) { if (s->ro) return refuse("++/-- on a loop variable"); }
                 else for (auto& o : L->outer) if (o.name == nm) o.written = true;
                 if (!u->postfix) prefix = true;
                 L->usesInc = true;
-                KNode* n = k.node(u->postfix ? (u->op == "++" ? KOp::PostInc : KOp::PostDec)
-                                             : (u->op == "++" ? KOp::PreInc : KOp::PreDec));
-                n->slot = tn->slot; t = KT::Int;
+                const bool num = ot == KT::Num, ex = ot == KT::Exact;
+                KNode* n = k.node(u->postfix ? (u->op == "++" ? (ex ? KOp::XPostInc : num ? KOp::NPostInc : KOp::PostInc)
+                                                              : (ex ? KOp::XPostDec : num ? KOp::NPostDec : KOp::PostDec))
+                                             : (u->op == "++" ? (ex ? KOp::XPreInc : num ? KOp::NPreInc : KOp::PreInc)
+                                                              : (ex ? KOp::XPreDec : num ? KOp::NPreDec : KOp::PreDec)));
+                n->slot = tn->slot; t = ot;
                 return n;
             }
             if (u->postfix) return nullptr;
             if (u->op == "-") {
                 KNode* a = expr(k, c, u->operand.get(), false, ot);
-                if (!a || ot != KT::Int) return nullptr;
+                if (!a || (ot != KT::Int && ot != KT::Num && ot != KT::Exact)) return nullptr;
                 prefix = true;
-                KNode* n = k.node(KOp::Neg); n->a = a; t = KT::Int;
+                KNode* n = k.node(ot == KT::Num ? KOp::NNeg : ot == KT::Exact ? KOp::XNeg : KOp::Neg); n->a = a; t = ot;
                 return n;
             }
             if ((u->op == "!" || u->op == "not") && cond) {
-                KNode* a = expr(k, c, u->operand.get(), true, ot);
+                KNode* a = cexpr(k, c, u->operand.get(), ot);
                 if (!a || ot == KT::Str || ot == KT::Void) return nullptr;
                 prefix = true;
                 KNode* n = k.node(KOp::Not); n->a = a; t = KT::Bool;
@@ -393,6 +521,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             if (op == "+") kop = KOp::Add;
             else if (op == "-") kop = KOp::Sub;
             else if (op == "*") kop = KOp::Mul;
+            else if (op == "/" && L && !L->sub) kop = KOp::NDiv;   // a Num's (two Ints make a Rat)
+            else if (op == "**") kop = KOp::Pow;
+            else if (op == "min") kop = KOp::Min;
+            else if (op == "max") kop = KOp::Max;
             else if (op == "div") kop = KOp::Div;
             else if (op == "%") kop = KOp::Mod;
             else if (op == "%%") { kop = KOp::DivBy; compare = true; }
@@ -413,29 +545,75 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             else if (L && op == "ge") { kop = KOp::SGe; compare = strop = true; }
             else return refuse("operator " + op);
             KT lt, rt;
-            KNode* l = expr(k, c, b->lhs.get(), logical, lt);
-            KNode* r = l ? expr(k, c, b->rhs.get(), logical, rt) : nullptr;
+            KNode* l = logical ? cexpr(k, c, b->lhs.get(), lt) : expr(k, c, b->lhs.get(), false, lt);
+            KNode* r = l ? (logical ? cexpr(k, c, b->rhs.get(), rt) : expr(k, c, b->rhs.get(), false, rt)) : nullptr;
             if (!r) return nullptr;
+            bool num = false;
             if (strop) {
-                // two Strs; an Int operand takes its text, as the generic path's does
+                // two Strs; an Int or Num operand takes its text, as the generic path's does
                 l = asStr(k, l, lt); r = asStr(k, r, rt);
                 if (!l || !r) return refuse("string operator " + op + " on a non-Str");
             }
-            // arithmetic and comparison take Ints; a condition's && / || take
-            // either (an Int is true when it is not zero)
-            else if (!logical && (lt != KT::Int || rt != KT::Int)) return refuse("operator " + op + " on a non-Int");
-            else if (logical && (lt == KT::Str || rt == KT::Str || lt == KT::Void || rt == KT::Void))
-                return refuse("a Str as a condition");
+            // a condition's && / || take an Int (true when it is not zero) or a Bool
+            else if (logical) {
+                if (lt == KT::Str || rt == KT::Str || lt == KT::Void || rt == KT::Void)
+                    return refuse("a Str as a condition");
+            }
+            // arithmetic and comparison take Ints, or Nums: an Int meeting a
+            // Num is converted, as the generic path converts it
+            else if (lt == KT::Int && rt == KT::Int && kop != KOp::NDiv) {}
+            // exact: an Int or a Rat on either side (two Ints under `/` make a
+            // Rat), computed exactly; a Num meeting a Rat is left alone
+            else if ((lt == KT::Exact || lt == KT::Int) && (rt == KT::Exact || rt == KT::Int) && L && !L->sub &&
+                     kHasExact) {
+                switch (kop) {
+                    case KOp::Add: kop = KOp::XAdd; break;
+                    case KOp::Sub: kop = KOp::XSub; break;
+                    case KOp::Mul: kop = KOp::XMul; break;
+                    case KOp::NDiv: kop = KOp::XDiv; break;
+                    case KOp::Lt: kop = KOp::XLt; break;
+                    case KOp::Le: kop = KOp::XLe; break;
+                    case KOp::Gt: kop = KOp::XGt; break;
+                    case KOp::Ge: kop = KOp::XGe; break;
+                    case KOp::Eq: kop = KOp::XEq; break;
+                    case KOp::Ne: kop = KOp::XNe; break;
+                    default: return refuse("operator " + op + " on a Rat");
+                }
+                l = asExact(k, l, lt); r = asExact(k, r, rt);
+                noteOp(op);
+                KNode* n = k.node(kop); n->a = l; n->b = r;
+                t = compare ? KT::Bool : KT::Exact;
+                return n;
+            }
+            else if ((lt == KT::Num || lt == KT::Int) && (rt == KT::Num || rt == KT::Int) && L && !L->sub) {
+                switch (kop) {
+                    case KOp::Add: kop = KOp::NAdd; break;
+                    case KOp::Sub: kop = KOp::NSub; break;
+                    case KOp::Mul: kop = KOp::NMul; break;
+                    case KOp::NDiv: break;
+                    case KOp::Pow: kop = KOp::NPow; break;
+                    case KOp::Lt: kop = KOp::NLt; break;
+                    case KOp::Le: kop = KOp::NLe; break;
+                    case KOp::Gt: kop = KOp::NGt; break;
+                    case KOp::Ge: kop = KOp::NGe; break;
+                    case KOp::Eq: kop = KOp::NEq; break;
+                    case KOp::Ne: kop = KOp::NNe; break;
+                    default: return refuse("operator " + op + " on a Num");
+                }
+                l = asNum(k, l, lt); r = asNum(k, r, rt);
+                num = true;
+            }
+            else return refuse("operator " + op + " on a non-Int");
             noteOp(op);
             KNode* n = k.node(kop); n->a = l; n->b = r;
             if (kop == KOp::SCat) { n->slot = L->nstr++; t = KT::Str; }   // the result's temporary
-            else t = (compare || logical) ? KT::Bool : KT::Int;
+            else t = (compare || logical) ? KT::Bool : num ? KT::Num : KT::Int;
             return n;
         }
         case NK::Ternary: {
             auto* tn = static_cast<Ternary*>(e);
             KT ct, at, bt;
-            KNode* cn = expr(k, c, tn->cond.get(), true, ct);
+            KNode* cn = cexpr(k, c, tn->cond.get(), ct);
             if (cn && (ct == KT::Str || ct == KT::Void)) return refuse("a Str as a condition");
             KNode* an = cn ? expr(k, c, tn->then.get(), cond, at) : nullptr;
             KNode* bn = an ? expr(k, c, tn->els.get(), cond, bt) : nullptr;
@@ -463,13 +641,14 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     return refuse("a declaration with a type, a trait or its own name");
                 KNode* v = expr(k, c, a->value.get(), false, vt);
                 if (!v) return nullptr;
-                if (vt != KT::Int && vt != KT::Str) return refuse("a declaration of a Bool");
+                if (vt != KT::Int && vt != KT::Str && vt != KT::Num && vt != KT::Exact) return refuse("a declaration of a Bool");
                 for (auto& s : L->scopes.back()) if (s.name == tv->name) return refuse("a redeclaration");
-                const int slot = vt == KT::Str ? L->nstr++ : L->nint++;
+                if (vt == KT::Int && L->promoted(tv->name)) { v = asExact(k, v, vt); vt = KT::Exact; }
+                const int slot = vt == KT::Str ? L->nstr++ : vt == KT::Exact ? exactSlot() : L->nint++;
                 L->scopes.back().push_back({tv->name, vt, slot, false});
-                KNode* n = k.node(vt == KT::Str ? KOp::SSet : KOp::Set);
+                KNode* n = k.node(vt == KT::Str ? KOp::SSet : vt == KT::Exact ? KOp::XSet : KOp::Set);
                 n->slot = slot; n->a = v;
-                t = vt == KT::Str ? KT::Void : KT::Int;
+                t = vt == KT::Str ? KT::Void : vt;
                 return n;
             }
             KT tt;
@@ -478,9 +657,25 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             KNode* v = expr(k, c, a->value.get(), false, vt);
             if (!v) return nullptr;
             KOp kop;
+            // an Int variable that is given a Rat (`$t += 0.5`) is an exact
+            // slot: compiled again with it promoted
+            if (tt == KT::Int && vt == KT::Exact &&
+                (a->op == "=" || a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=")) {
+                if (const LSym* s = lookup(tv->name); s && s->ro) return refuse("an assignment to a loop variable");
+                if (!L->promoted(tv->name)) L->promote.push_back(tv->name);
+                L->again = true;
+                return refuse("an Int variable given a Rat (compiled again)");
+            }
+            if (tt == KT::Int && vt == KT::Int && a->op == "/=") {
+                if (const LSym* s = lookup(tv->name); s && s->ro) return refuse("an assignment to a loop variable");
+                if (!L->promoted(tv->name)) L->promote.push_back(tv->name);
+                L->again = true;
+                return refuse("an Int variable divided (compiled again)");
+            }
             if (a->op == "=") {
-                if (vt != tt) return refuse("an assignment that would change a variable's type");
-                kop = tt == KT::Str ? KOp::SSet : KOp::Set;
+                if (vt != tt && !(tt == KT::Exact && vt == KT::Int)) return refuse("an assignment that would change a variable's type");
+                if (tt == KT::Exact) v = asExact(k, v, vt);
+                kop = tt == KT::Str ? KOp::SSet : tt == KT::Exact ? KOp::XSet : KOp::Set;
             }
             else if (a->op == "~=" && tt == KT::Str && (vt == KT::Str || vt == KT::Int)) {
                 v = asStr(k, v, vt);
@@ -490,26 +685,83 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 kop = a->op[0] == '+' ? KOp::AddTo : a->op[0] == '-' ? KOp::SubTo : KOp::MulTo;
                 noteOp(a->op.substr(0, 1));
             }
+            // a Num variable takes a Num or an Int (converted); an Int
+            // variable never takes a Num (it would change type)
+            else if ((a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=") && tt == KT::Exact &&
+                     (vt == KT::Exact || vt == KT::Int)) {
+                kop = a->op[0] == '+' ? KOp::XAddTo : a->op[0] == '-' ? KOp::XSubTo
+                    : a->op[0] == '*' ? KOp::XMulTo : KOp::XDivTo;
+                v = asExact(k, v, vt);
+                noteOp(a->op.substr(0, 1));
+            }
+            else if ((a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=") && tt == KT::Num &&
+                     (vt == KT::Num || vt == KT::Int)) {
+                kop = a->op[0] == '+' ? KOp::NAddTo : a->op[0] == '-' ? KOp::NSubTo
+                    : a->op[0] == '*' ? KOp::NMulTo : KOp::NDivTo;
+                v = asNum(k, v, vt);
+                noteOp(a->op.substr(0, 1));
+            }
             else return refuse("assignment operator " + a->op + " on these types");
             if (const LSym* s = lookup(tv->name)) { if (s->ro) return refuse("an assignment to a loop variable"); }
             else for (auto& o : L->outer) if (o.name == tv->name) o.written = true;
             KNode* n = k.node(kop); n->slot = tn->slot; n->a = v;
-            t = tt == KT::Str ? KT::Void : KT::Int;
+            t = tt == KT::Str ? KT::Void : tt;
             return n;
         }
         case NK::MethodCall: {
-            // `.chars` of an Int or a Str: the grapheme count (an Int's digits
-            // are ASCII). Entered only while no `augment` has touched a
-            // built-in type, which is how a program could give Str its own.
+            // A few pure methods of an Int, a Num or a Str, each answered as
+            // the generic path's own code answers it, and bailing where that
+            // would fail or where its answer needs more than ASCII. Entered
+            // only while no `augment` has touched a built-in type, which is
+            // how a program could give Str its own.
             auto* m = static_cast<MethodCall*>(e);
-            if (!L || L->sub || m->method != "chars" || !m->args.empty() || m->methodExpr || m->maybe || m->allMode ||
-                m->bang || m->mutate || m->hyper || m->meta || !m->methodQual.empty() || !m->inv)
+            if (!L || L->sub || m->methodExpr || m->maybe || m->allMode || m->bang || m->mutate || m->hyper ||
+                m->meta || !m->methodQual.empty() || !m->inv)
                 return refuse("a method call");
+            const std::string& mn = m->method;
+            const size_t na = m->args.size();
             KT it;
-            KNode* inv = asStr(k, expr(k, c, m->inv.get(), false, it), it);
-            if (!inv) return refuse(".chars of something neither an Int nor a Str");
+            KNode* inv = expr(k, c, m->inv.get(), false, it);
+            if (!inv) return nullptr;
+            KNode* n = nullptr;
+            if (mn == "chars" && !na) {
+                // the grapheme count (an Int's digits are ASCII)
+                if (it == KT::Num || it == KT::Exact || !(inv = asStr(k, inv, it)))
+                    return refuse(".chars of something neither an Int nor a Str");
+                n = k.node(KOp::Chars); n->a = inv; t = KT::Int;
+            }
+            else if ((mn == "abs" || mn == "sign") && !na && it == KT::Int) {
+                n = k.node(mn == "abs" ? KOp::Abs : KOp::Sign); n->a = inv; t = KT::Int;
+            }
+            else if (mn == "Str" && !na && (it == KT::Int || it == KT::Num || it == KT::Str || it == KT::Exact)) {
+                n = asStr(k, inv, it); t = KT::Str;
+            }
+            else if (mn == "Num" && !na && (it == KT::Int || it == KT::Num)) {
+                n = asNum(k, inv, it); t = KT::Num;
+            }
+            else if (mn == "Int" && !na && it == KT::Int) { n = inv; t = KT::Int; }
+            else if ((mn == "numerator" || mn == "denominator") && !na && (it == KT::Exact || it == KT::Int)) {
+                n = k.node(mn == "numerator" ? KOp::XNumer : KOp::XDenom); n->a = asExact(k, inv, it); t = KT::Int;
+            }
+            else if (mn == "ord" && !na && it == KT::Str) { n = k.node(KOp::Ord); n->a = inv; t = KT::Int; }
+            else if ((mn == "uc" || mn == "lc") && !na && it == KT::Str) {
+                n = k.node(mn == "uc" ? KOp::Uc : KOp::Lc); n->a = inv; n->slot = L->nstr++; t = KT::Str;
+            }
+            else if (mn == "substr" && (na == 1 || na == 2) && it == KT::Str) {
+                // `.substr(FROM)` / `.substr(FROM, CHARS)` with Int arguments
+                KNode* ab[2] = {nullptr, nullptr};
+                for (size_t i = 0; i < na; i++) {
+                    Expr* ae = m->args[i].get();
+                    if (!ae || ae->kind == NK::Pair) return refuse(".substr with a named argument");
+                    KT at;
+                    if (!(ab[i] = expr(k, c, ae, false, at))) return nullptr;
+                    if (at != KT::Int) return refuse(".substr with a non-Int argument");
+                }
+                n = k.node(KOp::Substr); n->a = inv; n->b = ab[0]; n->c = ab[1]; n->slot = L->nstr++;
+                t = KT::Str;
+            }
+            else return refuse("method ." + mn + " of this kind");
             L->usesMethods = true;
-            KNode* n = k.node(KOp::Chars); n->a = inv; t = KT::Int;
             return n;
         }
         case NK::Call: {
@@ -618,8 +870,8 @@ KNode* Compiler::stmt(IKernel& k, const Callable& c, Stmt* s, bool tail) {
                 auto& br = is->branches[bi];
                 if (!br.second || !br.second->label.empty()) return nullptr;
                 KT ct;
-                KNode* cn = expr(k, &c, br.first.get(), true, ct);
-                if (!cn) return nullptr;
+                KNode* cn = cexpr(k, &c, br.first.get(), ct);
+                if (!cn || ct == KT::Str || ct == KT::Void) return nullptr;
                 if (is->isUnless && bi == 0) { KNode* nn = k.node(KOp::Not); nn->a = cn; cn = nn; }
                 KNode* body = stmts(k, c, br.second->stmts, tail);
                 if (!body) return nullptr;
@@ -781,7 +1033,7 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
             if (w->modifier || w->asExpr || !w->var.empty() || !w->params.empty())
                 return refuse("a `while` of this shape");
             KT ct;
-            KNode* cn = expr(k, nullptr, w->cond.get(), true, ct);
+            KNode* cn = cexpr(k, nullptr, w->cond.get(), ct);
             if (!cn) return nullptr;
             if (ct == KT::Str || ct == KT::Void) return refuse("a Str as a condition");
             if (w->isUntil) { KNode* nn = k.node(KOp::Not); nn->a = cn; cn = nn; }
@@ -839,7 +1091,7 @@ KNode* Compiler::lif(IKernel& k, IfStmt* is, bool tail) {
     for (size_t bi = is->branches.size(); bi-- > 0;) {
         auto& br = is->branches[bi];
         KT ct;
-        KNode* cn = expr(k, nullptr, br.first.get(), true, ct);
+        KNode* cn = cexpr(k, nullptr, br.first.get(), ct);
         if (!cn) return nullptr;
         if (ct == KT::Str || ct == KT::Void) return refuse("a Str as a condition");
         if (is->isUnless && bi == 0) { KNode* nn = k.node(KOp::Not); nn->a = cn; cn = nn; }
@@ -1017,6 +1269,13 @@ template <KOp OP>
         if (y == 0) { R.bail = true; return 0; }
         return y == -1 || x % y == 0;
     }
+    else if constexpr (OP == KOp::Pow) {
+        // a negative exponent makes a Rat, and a result past int64 a BigInt
+        if (pow_ovf(x, y, &z)) R.bail = true;
+        return z;
+    }
+    else if constexpr (OP == KOp::Min) return x < y ? x : y;
+    else if constexpr (OP == KOp::Max) return x > y ? x : y;
     else if constexpr (OP == KOp::Lt) return x < y;
     else if constexpr (OP == KOp::Le) return x <= y;
     else if constexpr (OP == KOp::Gt) return x > y;
@@ -1024,6 +1283,16 @@ template <KOp OP>
     else if constexpr (OP == KOp::Eq) return x == y;
     else return x != y;
 }
+
+// The call path of a recursive integer kernel (fib) starts on cache lines of
+// its own, so that code added elsewhere in this file does not move its timing
+// (it moved fib by up to 5% either way). Not binFn: aligning every one of its
+// instances cost the loop kernels 8% (mainwhen).
+#if defined(__GNUC__) || defined(__clang__)
+#define KHOT __attribute__((aligned(64)))
+#else
+#define KHOT
+#endif
 
 template <KOp OP, int L, int Rk>
 int64_t binFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -1050,7 +1319,7 @@ int64_t negFn(const KNode* n, int64_t* fr, KRun& R) {
 int64_t notFn(const KNode* n, int64_t* fr, KRun& R) { return krun(n->a, fr, R) == 0; }
 int64_t andFn(const KNode* n, int64_t* fr, KRun& R) { return krun(n->a, fr, R) != 0 && krun(n->b, fr, R) != 0; }
 int64_t orFn(const KNode* n, int64_t* fr, KRun& R) { return krun(n->a, fr, R) != 0 || krun(n->b, fr, R) != 0; }
-int64_t condFn(const KNode* n, int64_t* fr, KRun& R) {
+KHOT int64_t condFn(const KNode* n, int64_t* fr, KRun& R) {
     return krun(n->a, fr, R) != 0 ? krun(n->b, fr, R) : krun(n->c, fr, R);
 }
 int64_t ifFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -1085,7 +1354,7 @@ int64_t seqFn(const KNode* n, int64_t* fr, KRun& R) {
 // the callee's body on a frame of machine integers. After a bail nothing more
 // recurses, so a doomed attempt ends quickly.
 template <int N>
-int64_t callFn(const KNode* n, int64_t* fr, KRun& R) {
+KHOT int64_t callFn(const KNode* n, int64_t* fr, KRun& R) {
     int64_t a[N > 0 ? N : kMaxParams];   // (N = 0: four to six arguments)
     const int cnt = N > 0 ? N : n->nargs;
     for (int i = 0; i < cnt; i++) a[i] = krun(n->kids[i], fr, R);
@@ -1254,7 +1523,9 @@ int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->a, fr, R);
     std::string& dst = R.sfr[n->slot];
     // a concatenation's temporary is dead once stored: take its buffer
-    if (n->a->op == KOp::SCat || n->a->op == KOp::SInt) std::swap(dst, R.sfr[n->a->slot]);
+    const KOp ao = n->a->op;
+    if (ao == KOp::SCat || ao == KOp::SInt || ao == KOp::SNum || ao == KOp::Uc || ao == KOp::Lc || ao == KOp::Substr)
+        std::swap(dst, R.sfr[n->a->slot]);
     else if (&v != &dst) dst = v;
     return 0;
 }
@@ -1282,6 +1553,243 @@ int64_t scmpFn(const KNode* n, int64_t* fr, KRun& R) {
         else return c >= 0;
     }
 }
+
+// Nums. Each operation is the one numFastArith (InterpreterCore.cpp) and
+// applyArith's double arm perform; where those decline or fail — a zero
+// divisor, a power that underflows — the kernel bails.
+template <KOp OP>
+[[gnu::always_inline]] inline int64_t napply(double x, double y, KRun& R) {
+    if constexpr (OP == KOp::NAdd) return dbits(x + y);
+    else if constexpr (OP == KOp::NSub) return dbits(x - y);
+    else if constexpr (OP == KOp::NMul) return dbits(x * y);
+    else if constexpr (OP == KOp::NDiv) {
+        if (y == 0.0) { R.bail = true; return 0; }
+        return dbits(x / y);
+    }
+    else if constexpr (OP == KOp::NPow) {
+        const double r = std::pow(x, y);
+        if (r == 0 && x != 0 && !std::isnan(x) && std::isfinite(y)) { R.bail = true; return 0; }
+        return dbits(r);
+    }
+    else if constexpr (OP == KOp::NLt) return x < y;
+    else if constexpr (OP == KOp::NLe) return x <= y;
+    else if constexpr (OP == KOp::NGt) return x > y;
+    else if constexpr (OP == KOp::NGe) return x >= y;
+    else if constexpr (OP == KOp::NEq) return x == y;
+    else return x != y;
+}
+template <KOp OP, int L, int Rk>
+int64_t nbinFn(const KNode* n, int64_t* fr, KRun& R) {
+    const double x = bitsd(leaf<L>(n->a, fr, R));
+    return napply<OP>(x, bitsd(leaf<Rk>(n->b, fr, R)), R);
+}
+template <KOp OP>
+KFn nbinPick(int l, int r) {
+    static const KFn T[3][3] = {
+        {nbinFn<OP, kP, kP>, nbinFn<OP, kP, kL>, nbinFn<OP, kP, kX>},
+        {nbinFn<OP, kL, kP>, nbinFn<OP, kL, kL>, nbinFn<OP, kL, kX>},
+        {nbinFn<OP, kX, kP>, nbinFn<OP, kX, kL>, nbinFn<OP, kX, kX>}};
+    return T[l][r];
+}
+template <KOp OP, int K>
+int64_t nstoreFn(const KNode* n, int64_t* fr, KRun& R) {
+    const double v = bitsd(leaf<K>(n->a, fr, R));
+    constexpr KOp B = OP == KOp::NAddTo ? KOp::NAdd : OP == KOp::NSubTo ? KOp::NSub
+                    : OP == KOp::NMulTo ? KOp::NMul : KOp::NDiv;
+    const int64_t r = napply<B>(bitsd(fr[n->slot]), v, R);
+    if (R.bail) return 0;
+    return fr[n->slot] = r;
+}
+template <KOp OP>
+KFn nstorePick(int k) {
+    static const KFn T[3] = {nstoreFn<OP, kP>, nstoreFn<OP, kL>, nstoreFn<OP, kX>};
+    return T[k];
+}
+template <int D, bool POST>
+int64_t nstepFn(const KNode* n, int64_t* fr, KRun&) {
+    const int64_t old = fr[n->slot];
+    const int64_t z = dbits(bitsd(old) + (D > 0 ? 1.0 : -1.0));
+    fr[n->slot] = z;
+    return POST ? old : z;
+}
+int64_t nnegFn(const KNode* n, int64_t* fr, KRun& R) { return dbits(-bitsd(krun(n->a, fr, R))); }
+int64_t nofintFn(const KNode* n, int64_t* fr, KRun& R) { return dbits((double)krun(n->a, fr, R)); }
+int64_t ntruthFn(const KNode* n, int64_t* fr, KRun& R) { return bitsd(krun(n->a, fr, R)) != 0.0; }
+const std::string& snumFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string& out = R.sfr[n->slot];
+    out = Value::number(bitsd(krun(n->a, fr, R))).toStr();
+    return out;
+}
+
+// Pure methods.
+int64_t absFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t x = krun(n->a, fr, R);
+    if (x == LLONG_MIN) { R.bail = true; return 0; }
+    return x < 0 ? -x : x;
+}
+int64_t signFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t x = krun(n->a, fr, R);
+    return (x > 0) - (x < 0);
+}
+// `.ord` of an ASCII first character; an empty string's is Nil
+int64_t ordFn(const KNode* n, int64_t* fr, KRun& R) {
+    const std::string& s = srun(n->a, fr, R);
+    if (s.empty() || (unsigned char)s[0] >= 0x80) { R.bail = true; return 0; }
+    return (unsigned char)s[0];
+}
+template <bool UP>
+const std::string& caseFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string& out = R.sfr[n->slot];
+    const std::string& s = srun(n->a, fr, R);
+    if (!allAscii(s)) { R.bail = true; return out; }
+    if (&s != &out) out = s;
+    for (char& ch : out) ch = UP ? (char)ascii::toupper((unsigned char)ch) : (char)ascii::tolower((unsigned char)ch);
+    return out;
+}
+// `.substr(FROM)` / `.substr(FROM, CHARS)` of an ASCII string; a start
+// outside it or a negative length is a Failure, so it bails
+const std::string& substrFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string& out = R.sfr[n->slot];
+    const std::string& s = srun(n->a, fr, R);
+    const int64_t from = krun(n->b, fr, R);
+    const int64_t len = n->c ? krun(n->c, fr, R) : INT64_MAX;
+    if (R.bail || !allAscii(s) || from < 0 || from > (int64_t)s.size() || len < 0) { R.bail = true; return out; }
+    const size_t cnt = (size_t)std::min<int64_t>(len, (int64_t)s.size() - from);
+    if (&s == &out) out = s.substr((size_t)from, cnt);
+    else out.assign(s, (size_t)from, cnt);
+    return out;
+}
+
+// Exact numbers: what applyArith's exact tower answers for an Int and a Rat
+// whose parts fit an int64 — a Rat reduced, with a positive denominator, and
+// still a Rat when that denominator is 1. Products are taken in 128 bits; a
+// result whose parts leave int64 bails, as does a zero divisor, and the
+// generic path decides (a BigInt Rat, or the Num a large denominator spills to).
+#if RAKUPP_HAS_INT128
+[[gnu::noinline]] int64_t xratio(__int128 n, __int128 d, int64_t* fr, KRun& R) {
+    if (d == 0) { R.bail = true; return 0; }
+    if (d < 0) { n = -n; d = -d; }
+    unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d;
+    auto ctz = [](unsigned __int128 x) -> int {
+        const unsigned long long lo = (unsigned long long)x;
+        return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll((unsigned long long)(x >> 64));
+    };
+    if (a) {
+        const int sh = ctz(a | b);
+        a >>= ctz(a);
+        while (b) {
+            b >>= ctz(b);
+            if (a > b) { const unsigned __int128 t = a; a = b; b = t; }
+            b -= a;
+        }
+        const unsigned __int128 g = a << sh;
+        if (g > 1) { n /= (__int128)g; d /= (__int128)g; }
+    }
+    else d = 1;   // 0/x is 0/1
+    if (n < (__int128)INT64_MIN || n > (__int128)INT64_MAX || d > (__int128)INT64_MAX) { R.bail = true; return 0; }
+    fr[kDenSlot] = (int64_t)d;
+    return (int64_t)n;
+}
+// the two operands of an exact operator, each with its denominator (1 for an Int)
+struct XPair { int64_t x, xd, y, yd; bool ints; };
+[[gnu::always_inline]] inline XPair xoperands(const KNode* n, int64_t* fr, KRun& R) {
+    XPair p;
+    p.x = krun(n->a, fr, R); p.xd = fr[kDenSlot];
+    p.y = krun(n->b, fr, R); p.yd = fr[kDenSlot];
+    p.ints = !p.xd && !p.yd;
+    if (!p.xd) p.xd = 1;
+    if (!p.yd) p.yd = 1;
+    return p;
+}
+template <KOp OP>
+[[gnu::always_inline]] inline int64_t xapply(int64_t x, int64_t xd, int64_t y, int64_t yd, bool ints, int64_t* fr, KRun& R) {
+    if constexpr (OP == KOp::XAdd || OP == KOp::XSub || OP == KOp::XMul) {
+        if (ints) {
+            long long z = 0;
+            if (OP == KOp::XAdd ? add_ovf(x, y, &z) : OP == KOp::XSub ? sub_ovf(x, y, &z) : mul_ovf(x, y, &z))
+                R.bail = true;
+            fr[kDenSlot] = 0;
+            return z;
+        }
+        if constexpr (OP == KOp::XMul) return xratio((__int128)x * y, (__int128)xd * yd, fr, R);
+        else {
+            const __int128 a = (__int128)x * yd, b = (__int128)y * xd;
+            return xratio(OP == KOp::XAdd ? a + b : a - b, (__int128)xd * yd, fr, R);
+        }
+    }
+    else if constexpr (OP == KOp::XDiv) {
+        if (y == 0) { R.bail = true; return 0; }
+        return xratio((__int128)x * yd, (__int128)xd * y, fr, R);
+    }
+    else {
+        const __int128 a = (__int128)x * yd, b = (__int128)y * xd;
+        if constexpr (OP == KOp::XLt) return a < b;
+        else if constexpr (OP == KOp::XLe) return a <= b;
+        else if constexpr (OP == KOp::XGt) return a > b;
+        else if constexpr (OP == KOp::XGe) return a >= b;
+        else if constexpr (OP == KOp::XEq) return a == b;
+        else return a != b;
+    }
+}
+template <KOp OP>
+int64_t xbinFn(const KNode* n, int64_t* fr, KRun& R) {
+    const XPair p = xoperands(n, fr, R);
+    return xapply<OP>(p.x, p.xd, p.y, p.yd, p.ints, fr, R);
+}
+template <KOp OP>
+int64_t xstoreFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t y = krun(n->a, fr, R);
+    const int64_t yd = fr[kDenSlot];
+    const int64_t xd = fr[n->slot + 1];
+    constexpr KOp B = OP == KOp::XAddTo ? KOp::XAdd : OP == KOp::XSubTo ? KOp::XSub
+                    : OP == KOp::XMulTo ? KOp::XMul : KOp::XDiv;
+    const int64_t r = xapply<B>(fr[n->slot], xd ? xd : 1, y, yd ? yd : 1, !xd && !yd, fr, R);
+    if (R.bail) return 0;
+    fr[n->slot] = r;
+    fr[n->slot + 1] = fr[kDenSlot];
+    return r;
+}
+// `++` / `--`: an Int steps by 1, a Rat by its denominator (and stays reduced)
+template <int D, bool POST>
+int64_t xstepFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t old = fr[n->slot], d = fr[n->slot + 1];
+    long long z;
+    if (D > 0 ? add_ovf(old, d ? d : 1, &z) : sub_ovf(old, d ? d : 1, &z)) { R.bail = true; return 0; }
+    fr[n->slot] = z;
+    fr[kDenSlot] = d;
+    return POST ? old : z;
+}
+int64_t xvarFn(const KNode* n, int64_t* fr, KRun& R) { fr[kDenSlot] = fr[n->slot + 1]; return fr[n->slot]; }
+int64_t xlitFn(const KNode* n, int64_t* fr, KRun&) { fr[kDenSlot] = n->den; return n->lit; }
+int64_t xofintFn(const KNode* n, int64_t* fr, KRun& R) { const int64_t v = krun(n->a, fr, R); fr[kDenSlot] = 0; return v; }
+int64_t xnegFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t v = krun(n->a, fr, R);
+    if (v == INT64_MIN) { R.bail = true; return 0; }
+    return -v;   // the operand's denominator stays in fr[kDenSlot]
+}
+int64_t xsetFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t v = krun(n->a, fr, R);
+    fr[n->slot] = v;
+    fr[n->slot + 1] = fr[kDenSlot];
+    return v;
+}
+int64_t xtruthFn(const KNode* n, int64_t* fr, KRun& R) { return krun(n->a, fr, R) != 0; }
+int64_t xnumerFn(const KNode* n, int64_t* fr, KRun& R) { return krun(n->a, fr, R); }
+int64_t xdenomFn(const KNode* n, int64_t* fr, KRun& R) { krun(n->a, fr, R); return fr[kDenSlot] ? fr[kDenSlot] : 1; }
+Value ratValue(int64_t n, int64_t d) {
+    Value v;
+    v.t = VT::Rat;
+    v.ratNM() = std::make_shared<BigInt>((long long)n);
+    v.ratDM() = std::make_shared<BigInt>((long long)d);
+    return v;
+}
+const std::string& sexactFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string& out = R.sfr[n->slot];
+    const int64_t v = krun(n->a, fr, R);
+    out = fr[kDenSlot] ? ratValue(v, fr[kDenSlot]).toStr() : std::to_string(v);
+    return out;
+}
+#endif
 
 void link(KNode* n) {
     if (!n) return;
@@ -1346,6 +1854,69 @@ void link(KNode* n) {
         case KOp::SLe: n->fn = scmpFn<KOp::SLe>; break;
         case KOp::SGt: n->fn = scmpFn<KOp::SGt>; break;
         case KOp::SGe: n->fn = scmpFn<KOp::SGe>; break;
+        case KOp::NAdd: n->fn = nbinPick<KOp::NAdd>(l, r); break;
+        case KOp::NSub: n->fn = nbinPick<KOp::NSub>(l, r); break;
+        case KOp::NMul: n->fn = nbinPick<KOp::NMul>(l, r); break;
+        case KOp::NDiv: n->fn = nbinPick<KOp::NDiv>(l, r); break;
+        case KOp::NPow: n->fn = nbinFn<KOp::NPow, kX, kX>; break;
+        case KOp::NLt: n->fn = nbinPick<KOp::NLt>(l, r); break;
+        case KOp::NLe: n->fn = nbinPick<KOp::NLe>(l, r); break;
+        case KOp::NGt: n->fn = nbinPick<KOp::NGt>(l, r); break;
+        case KOp::NGe: n->fn = nbinPick<KOp::NGe>(l, r); break;
+        case KOp::NEq: n->fn = nbinPick<KOp::NEq>(l, r); break;
+        case KOp::NNe: n->fn = nbinPick<KOp::NNe>(l, r); break;
+        case KOp::NNeg: n->fn = nnegFn; break;
+        case KOp::NAddTo: n->fn = nstorePick<KOp::NAddTo>(l); break;
+        case KOp::NSubTo: n->fn = nstorePick<KOp::NSubTo>(l); break;
+        case KOp::NMulTo: n->fn = nstorePick<KOp::NMulTo>(l); break;
+        case KOp::NDivTo: n->fn = nstorePick<KOp::NDivTo>(l); break;
+        case KOp::NPreInc: n->fn = nstepFn<1, false>; break;
+        case KOp::NPreDec: n->fn = nstepFn<-1, false>; break;
+        case KOp::NPostInc: n->fn = nstepFn<1, true>; break;
+        case KOp::NPostDec: n->fn = nstepFn<-1, true>; break;
+        case KOp::NOfInt: n->fn = nofintFn; break;
+        case KOp::NTruth: n->fn = ntruthFn; break;
+        case KOp::SNum: n->sfn = snumFn; break;
+        case KOp::Pow: n->fn = binFn<KOp::Pow, kX, kX>; break;
+        case KOp::Min: n->fn = binPick<KOp::Min>(l, r); break;
+        case KOp::Max: n->fn = binPick<KOp::Max>(l, r); break;
+        case KOp::Abs: n->fn = absFn; break;
+        case KOp::Sign: n->fn = signFn; break;
+        case KOp::Ord: n->fn = ordFn; break;
+        case KOp::Uc: n->sfn = caseFn<true>; break;
+        case KOp::Lc: n->sfn = caseFn<false>; break;
+        case KOp::Substr: n->sfn = substrFn; break;
+#if RAKUPP_HAS_INT128
+        case KOp::XVar: n->fn = xvarFn; break;
+        case KOp::XLit: n->fn = xlitFn; break;
+        case KOp::XOfInt: n->fn = xofintFn; break;
+        case KOp::XAdd: n->fn = xbinFn<KOp::XAdd>; break;
+        case KOp::XSub: n->fn = xbinFn<KOp::XSub>; break;
+        case KOp::XMul: n->fn = xbinFn<KOp::XMul>; break;
+        case KOp::XDiv: n->fn = xbinFn<KOp::XDiv>; break;
+        case KOp::XNeg: n->fn = xnegFn; break;
+        case KOp::XLt: n->fn = xbinFn<KOp::XLt>; break;
+        case KOp::XLe: n->fn = xbinFn<KOp::XLe>; break;
+        case KOp::XGt: n->fn = xbinFn<KOp::XGt>; break;
+        case KOp::XGe: n->fn = xbinFn<KOp::XGe>; break;
+        case KOp::XEq: n->fn = xbinFn<KOp::XEq>; break;
+        case KOp::XNe: n->fn = xbinFn<KOp::XNe>; break;
+        case KOp::XSet: n->fn = xsetFn; break;
+        case KOp::XAddTo: n->fn = xstoreFn<KOp::XAddTo>; break;
+        case KOp::XSubTo: n->fn = xstoreFn<KOp::XSubTo>; break;
+        case KOp::XMulTo: n->fn = xstoreFn<KOp::XMulTo>; break;
+        case KOp::XDivTo: n->fn = xstoreFn<KOp::XDivTo>; break;
+        case KOp::XPreInc: n->fn = xstepFn<1, false>; break;
+        case KOp::XPreDec: n->fn = xstepFn<-1, false>; break;
+        case KOp::XPostInc: n->fn = xstepFn<1, true>; break;
+        case KOp::XPostDec: n->fn = xstepFn<-1, true>; break;
+        case KOp::XTruth: n->fn = xtruthFn; break;
+        case KOp::SExact: n->sfn = sexactFn; break;
+        case KOp::XNumer: n->fn = xnumerFn; break;
+        case KOp::XDenom: n->fn = xdenomFn; break;
+#else
+        default: break;   // never built: no exact numbers without 128-bit integers
+#endif
     }
 }
 
@@ -1581,79 +2152,93 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         // values come first, so a loop that can never qualify says so for good.
         std::lock_guard<std::mutex> lk(g_compileMu);
         if (!(h = slot->get())) {
-            auto* lk2 = new LKernel;
+            LKernel* lk2 = nullptr;
             LoopCx cx;
-            cx.env = env;
-            cx.nint = 3;   // a `for`'s bounds and loop variable
-            cx.loops = 1;
             Compiler cc;
-            cc.global = global_.get();
-            cc.L = &cx;
             KNode* body = nullptr;
             KNode* root = nullptr;
-            if (isFor) {
-                auto* fs = static_cast<ForStmt*>(loop);
-                cx.scopes.push_back({{var, KT::Int, kVarSlot, true}});
-                cx.inModifier = fs->modifier;
-                if (fs->asExpr || fs->destructure || fs->rwVars || !fs->params.empty() || fs->emptyPointy ||
-                    fs->hyper || fs->vars.size() > 1 || !fs->label.empty())
-                    cx.why = "a `for` of this shape";
-                else {
-                    bool traits = false;
-                    for (auto tr : fs->varTraits) traits = traits || tr;
-                    if (traits) cx.why = "an `is rw` / `is raw` loop variable";
-                    else body = cc.lbody(lk2->k, fs->body.get(), !fs->modifier);
-                }
-                if (body) {
-                    KNode* loLeaf = lk2->k.node(KOp::Param); loLeaf->slot = kLoSlot;
-                    KNode* hiLeaf = lk2->k.node(KOp::Param); hiLeaf->slot = kHiSlot;
-                    root = lk2->k.node(KOp::For);
-                    root->slot = kVarSlot; root->a = loLeaf; root->b = hiLeaf; root->c = body;
-                }
-            }
-            else if (loop->kind == NK::WhileStmt) {
-                // the condition declares nothing the kernel could keep (a `my`
-                // there belongs to the enclosing block, after the loop too)
-                auto* ws = static_cast<WhileStmt*>(loop);
-                cx.scopes.emplace_back();
-                if (ws->modifier || ws->asExpr || !ws->var.empty() || !ws->params.empty() || !ws->label.empty())
-                    cx.why = "a `while` of this shape";
-                else {
-                    KT ct;
-                    cx.inModifier = true;
-                    KNode* cn = cc.expr(lk2->k, nullptr, ws->cond.get(), true, ct);
-                    cx.inModifier = false;
-                    if (cn && (ct == KT::Str || ct == KT::Void)) { cn = nullptr; cx.why = "a Str as a condition"; }
-                    if (cn && ws->isUntil) { KNode* nn = lk2->k.node(KOp::Not); nn->a = cn; cn = nn; }
-                    if (cn) body = cc.lbody(lk2->k, ws->body.get(), true);
-                    if (body) { root = lk2->k.node(KOp::While); root->a = cn; root->c = body; }
-                }
-            }
-            else {
-                // `loop (INIT; COND; STEP)`: the interpreter has run INIT, so
-                // what it declared is a variable of the program by now
-                auto* ls = static_cast<LoopStmt*>(loop);
-                cx.scopes.emplace_back();
-                if (ls->asExpr || !ls->label.empty()) cx.why = "a `loop` of this shape";
-                else {
-                    KT ct = KT::Int, st = KT::Int;
-                    KNode* cn = nullptr;
-                    KNode* sn = nullptr;
-                    bool ok = true;
-                    cx.inModifier = true;
-                    if (ls->cond) {
-                        cn = cc.expr(lk2->k, nullptr, ls->cond.get(), true, ct);
-                        ok = cn && ct != KT::Str && ct != KT::Void;
+            // A second compile (or more) when the first finds an Int variable
+            // that is given a Rat: it then holds an exact slot from the start.
+            std::vector<std::string> promote;
+            for (int attempt = 0;; attempt++) {
+                lk2 = new LKernel;
+                cx = LoopCx{};
+                cx.promote = promote;
+                cx.env = env;
+                cx.nint = 3;   // a `for`'s bounds and loop variable
+                cx.loops = 1;
+                cc = Compiler{};
+                cc.global = global_.get();
+                cc.L = &cx;
+                body = root = nullptr;
+                if (isFor) {
+                    auto* fs = static_cast<ForStmt*>(loop);
+                    cx.scopes.push_back({{var, KT::Int, kVarSlot, true}});
+                    cx.inModifier = fs->modifier;
+                    if (fs->asExpr || fs->destructure || fs->rwVars || !fs->params.empty() || fs->emptyPointy ||
+                        fs->hyper || fs->vars.size() > 1 || !fs->label.empty())
+                        cx.why = "a `for` of this shape";
+                    else {
+                        bool traits = false;
+                        for (auto tr : fs->varTraits) traits = traits || tr;
+                        if (traits) cx.why = "an `is rw` / `is raw` loop variable";
+                        else body = cc.lbody(lk2->k, fs->body.get(), !fs->modifier);
                     }
-                    if (ok && ls->incr) {
-                        sn = cc.expr(lk2->k, nullptr, ls->incr.get(), false, st);
-                        ok = sn && st != KT::Str;
+                    if (body) {
+                        KNode* loLeaf = lk2->k.node(KOp::Param); loLeaf->slot = kLoSlot;
+                        KNode* hiLeaf = lk2->k.node(KOp::Param); hiLeaf->slot = kHiSlot;
+                        root = lk2->k.node(KOp::For);
+                        root->slot = kVarSlot; root->a = loLeaf; root->b = hiLeaf; root->c = body;
                     }
-                    cx.inModifier = false;
-                    if (ok) body = cc.lbody(lk2->k, ls->body.get(), true);
-                    else if (cx.why.empty()) cx.why = "a `loop` header of this kind";
-                    if (body) { root = lk2->k.node(KOp::CLoop); root->a = cn; root->b = sn; root->c = body; }
                 }
+                else if (loop->kind == NK::WhileStmt) {
+                    // the condition declares nothing the kernel could keep (a `my`
+                    // there belongs to the enclosing block, after the loop too)
+                    auto* ws = static_cast<WhileStmt*>(loop);
+                    cx.scopes.emplace_back();
+                    if (ws->modifier || ws->asExpr || !ws->var.empty() || !ws->params.empty() || !ws->label.empty())
+                        cx.why = "a `while` of this shape";
+                    else {
+                        KT ct;
+                        cx.inModifier = true;
+                        KNode* cn = cc.cexpr(lk2->k, nullptr, ws->cond.get(), ct);
+                        cx.inModifier = false;
+                        if (cn && (ct == KT::Str || ct == KT::Void)) { cn = nullptr; cx.why = "a Str as a condition"; }
+                        if (cn && ws->isUntil) { KNode* nn = lk2->k.node(KOp::Not); nn->a = cn; cn = nn; }
+                        if (cn) body = cc.lbody(lk2->k, ws->body.get(), true);
+                        if (body) { root = lk2->k.node(KOp::While); root->a = cn; root->c = body; }
+                    }
+                }
+                else {
+                    // `loop (INIT; COND; STEP)`: the interpreter has run INIT, so
+                    // what it declared is a variable of the program by now
+                    auto* ls = static_cast<LoopStmt*>(loop);
+                    cx.scopes.emplace_back();
+                    if (ls->asExpr || !ls->label.empty()) cx.why = "a `loop` of this shape";
+                    else {
+                        KT ct = KT::Int, st = KT::Int;
+                        KNode* cn = nullptr;
+                        KNode* sn = nullptr;
+                        bool ok = true;
+                        cx.inModifier = true;
+                        if (ls->cond) {
+                            cn = cc.cexpr(lk2->k, nullptr, ls->cond.get(), ct);
+                            ok = cn && ct != KT::Str && ct != KT::Void;
+                        }
+                        if (ok && ls->incr) {
+                            sn = cc.expr(lk2->k, nullptr, ls->incr.get(), false, st);
+                            ok = sn && st != KT::Str;
+                        }
+                        cx.inModifier = false;
+                        if (ok) body = cc.lbody(lk2->k, ls->body.get(), true);
+                        else if (cx.why.empty()) cx.why = "a `loop` header of this kind";
+                        if (body) { root = lk2->k.node(KOp::CLoop); root->a = cn; root->b = sn; root->c = body; }
+                    }
+                }
+                if (body || !cx.again || attempt >= 4) break;
+                promote = cx.promote;
+                finishSession(cc, false, nullptr);
+                delete lk2;
             }
             // the sub kernels the body calls were compiled with it
             finishSession(cc, body != nullptr, nullptr);
@@ -1729,7 +2314,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         Env* owner = nullptr;
         Value* cell = outerCell(env, o.name, &owner);
         if (!cell) return notEntered("no variable", o.name);
-        if (o.t == KT::Int ? !plainIntValue(*cell) : !plainStrValue(*cell))
+        if (o.t == KT::Int ? !plainIntValue(*cell) : o.t == KT::Num ? !plainNumValue(*cell)
+            : o.t == KT::Exact ? !(plainIntValue(*cell) || plainRatValue(*cell)) : !plainStrValue(*cell))
             return notEntered("a value of another type in", o.name);
         if (o.written && !writableCell(*cell, owner, o.name))
             return notEntered("a container a plain store would not honour:", o.name);
@@ -1737,15 +2323,20 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             if (cells[j] == cell) return notEntered("two names for one container:", o.name);
         cells[i] = cell;
     }
-    int64_t stackInts[32];
+    int64_t stackInts[33];   // kDenSlot first
     std::unique_ptr<int64_t[]> heapInts;
-    int64_t* fr = L->nint <= 32 ? stackInts : (heapInts.reset(new int64_t[L->nint]), heapInts.get());
+    int64_t* fr = 1 + (L->nint <= 32 ? stackInts : (heapInts.reset(new int64_t[L->nint + 1]), heapInts.get()));
     std::unique_ptr<std::string[]> strs(L->nstr ? new std::string[L->nstr] : nullptr);
     fr[kLoSlot] = lo;
     fr[kHiSlot] = hi;
     for (size_t i = 0; i < no; i++) {
         const LOuter& o = L->outer[i];
         if (o.t == KT::Int) fr[o.slot] = cells[i]->i;
+        else if (o.t == KT::Num) fr[o.slot] = dbits(cells[i]->n);
+        else if (o.t == KT::Exact) {
+            if (cells[i]->t == VT::Int) { fr[o.slot] = cells[i]->i; fr[o.slot + 1] = 0; }
+            else { fr[o.slot] = cells[i]->ratN()->toLL(); fr[o.slot + 1] = cells[i]->ratD()->toLL(); }
+        }
         else strs[o.slot] = cells[i]->s.str();
     }
     // the generic path's own limits for the calls it makes (see tryIntKernel)
@@ -1776,6 +2367,15 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         const LOuter& o = L->outer[i];
         if (!o.written) continue;
         if (o.t == KT::Int) cells[i]->i = fr[o.slot];
+        else if (o.t == KT::Num) cells[i]->n = bitsd(fr[o.slot]);
+#if RAKUPP_HAS_INT128
+        else if (o.t == KT::Exact) {
+            // an Int stays in place; anything else is a new value in the plain
+            // container (an Int that became a Rat, or the reverse)
+            if (!fr[o.slot + 1] && cells[i]->t == VT::Int) cells[i]->i = fr[o.slot];
+            else *cells[i] = fr[o.slot + 1] ? ratValue(fr[o.slot], fr[o.slot + 1]) : Value::integer(fr[o.slot]);
+        }
+#endif
         else cells[i]->s = std::move(strs[o.slot]);
     }
     return true;
