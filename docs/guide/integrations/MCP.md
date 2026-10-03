@@ -19,7 +19,7 @@ and calls them mid-conversation. This server offers two:
   what an agent needs to fix its grammar and try again.
 
 Everything engine-side goes through the public C ABI
-([EMBEDDING.md](EMBEDDING.md)); the grammar service is the same
+([EMBEDDING.md](../EMBEDDING.md)); the grammar service is the same
 `rk_grammar_shim()` every language binding loads. The server is another host
 of that ABI, not a private door into the interpreter — what an agent gets is
 byte-for-byte what a binding (or plain `rakupp`) would get.
@@ -113,7 +113,7 @@ The answer is JSON. A match:
 {"matched":true,"tree":{"a":"2","b":"40"},"made":42}
 ```
 
-with the bindings' tree shape ([bindings/README.md](../../bindings/README.md)
+with the bindings' tree shape ([bindings/README.md](../../../bindings/README.md)
 section 4): a node with no captures is its matched text, named captures are
 keys, positional captures are `"0"`, `"1"`, …, and a quantified capture is
 an array. Anything the actions printed rides along as `output`. A non-match:
@@ -172,7 +172,7 @@ embed, grammar, and bindings gates.
 
 ## Design notes
 
-The server lives in [src/McpServer.cpp](../../src/McpServer.cpp) behind the
+The server lives in [src/McpServer.cpp](../../../src/McpServer.cpp) behind the
 `--mcp` flag, speaks the protocol floor every MCP revision shares
 (`initialize`, `tools/list`, `tools/call`) and echoes the client's protocol
 revision back. Frames are newline-delimited, so the protocol reads fd 0
@@ -180,6 +180,6 @@ directly — `rk_set_input` redirects `std::cin` by design, and the server
 must not starve with it. It creates the interpreter lazily at the first tool
 call (`initialize` answers instantly), with `own_stack` on, so deep
 recursion in evaluated code meets the engine's own guard exactly as it does
-under the CLI. The JSON layer is [src/JsonLite.h](../../src/JsonLite.h) — about 300
+under the CLI. The JSON layer is [src/JsonLite.h](../../../src/JsonLite.h) — about 300
 lines, shared with the Jupyter kernel — rather than a dependency, for the same
 reason the engine has no other dependencies.

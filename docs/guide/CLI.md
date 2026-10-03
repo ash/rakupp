@@ -496,10 +496,13 @@ the errors a build would report. It has no completion, hover or
 go-to-definition, and it answers nothing else.
 
 Start it the way the editor wants — a command of `rakupp --lsp`, no arguments —
-and it runs until the editor closes the connection. Malformed or hostile input
+and it runs until the editor closes the connection. `--stdio`, which some
+clients append (VS Code's does), is accepted and changes nothing; stdio is the
+only transport. Outside `--lsp` it is an illegal option. Malformed or hostile input
 is dropped rather than fatal: the framing rejects an impossible
 `Content-Length`, the parser caps nesting depth, and a bad `\u` escape ends
-the string instead of the process.
+the string instead of the process. Setting it up in VS Code, and what each
+diagnostic means, is in [integrations/LSP.md](integrations/LSP.md).
 
 ### Undeclared variables are refused before the program runs
 
@@ -656,20 +659,24 @@ rakupp --completions=fish > ~/.config/fish/completions/rakupp.fish
 
 ## Serving
 
-`--mcp` turns the process into a [Model Context Protocol](MCP.md) server on
+Three modes turn the process into a server for another tool. [integrations/](integrations/README.md)
+has a guide for each: `--lsp` (an editor's diagnostics, described
+[above](#--lsp-the-language-server)), `--mcp` and `--jupyter`.
+
+`--mcp` turns the process into a [Model Context Protocol](integrations/MCP.md) server on
 stdio, so AI agent clients get `raku` (a persistent session) and
 `raku-parse` (grammars) as tools. `--timeout=SECS` bounds a stuck call
 (default 120, `0` = never), `-M` preloads modules into the session, and
 `RAKULIB` — not `-I` — adds module directories. The whole story is
-[MCP.md](MCP.md).
+[MCP.md](integrations/MCP.md).
 
-`--jupyter FILE` runs the process as a [Jupyter kernel](JUPYTER.md) against
+`--jupyter FILE` runs the process as a [Jupyter kernel](integrations/JUPYTER.md) against
 the connection file the frontend passes as `{connection_file}`, and
 `--jupyter-install` writes the kernelspec that makes `jupyter lab` and
 `jupyter console --kernel raku` able to launch it (`--name=NAME` for a second
 build, `--prefix=DIR` for another location). `-M` preloads modules into the
 notebook's session. No ZeroMQ is needed: the binary speaks the wire protocol
-itself. The whole story is [JUPYTER.md](JUPYTER.md).
+itself. The whole story is [JUPYTER.md](integrations/JUPYTER.md).
 
 ## `--jit`: compiling while the program runs
 

@@ -192,7 +192,11 @@ with its tag, after the release run is green.
   - MCP: embedded sessions never join start-workers.
   - LSP: needs a review. Diagnostics span whole lines; only full-document
     sync; hover, completion, go-to-definition and formatting are not written;
-    the VS Code extension is unpublished.
+    the VS Code extension is unpublished. 2026-10-03: the extension could
+    never start the server (it appends `--stdio`, which rakupp refused); fixed
+    in src/main.cpp, verified in VS Code 1.140, user guide in
+    docs/guide/integrations/LSP.md. `vsce package` fails from a copy of the
+    folder outside the repo ("entrypoint(s) missing"); it works in place.
 - [ ] **libffi**: by-value structs (§6) and linking libffi rather than loading
   it (§10, which matters for Windows). [LIBFFI-PLAN.md](LIBFFI-PLAN.md).
 

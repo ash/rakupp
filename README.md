@@ -258,6 +258,19 @@ language has a guide and two runnable examples in
 [bindings/examples/](bindings/examples/README.md), kept honest by two smoke
 gates that re-run everything the guides claim.
 
+## Errors underlined as you type — the language server
+
+`rakupp --lsp` is a Language Server: an editor sends it your code and it sends
+back the syntax errors, undeclared variables and `--lint` findings, which the
+editor underlines. These are the same findings `rakupp --lint` prints, from the
+same code, and the server never runs the file. The VS Code extension in
+[editors/vscode](editors/vscode/) is a thin client for it; any other editor with
+an LSP client can start `rakupp --lsp` directly.
+
+Guide: **[LSP.md](docs/guide/integrations/LSP.md)**. It covers building and
+installing the extension, what each diagnostic means, and what to check when
+nothing is underlined.
+
 ## Give an AI agent a Raku interpreter — MCP
 
 *Work in progress, on the same terms as the bindings above.*
@@ -291,7 +304,7 @@ claude mcp add raku -- /path/to/rakupp --mcp
 This repository carries one, pointing at `./build/rakupp`: a built checkout
 serves its own interpreter to the agent working on it.
 
-Guide: **[MCP.md](docs/guide/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
+Guide: **[MCP.md](docs/guide/integrations/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
 which drives the server exactly as a client does, on every push.
 
 ## Raku in a notebook — Jupyter
@@ -307,7 +320,7 @@ Nothing needs installing on the Raku side — **no ZeroMQ, no Python module, no
 shared library**. The binary speaks ZMTP and signs its own messages, because
 this project links no third-party libraries.
 
-Guide: **[JUPYTER.md](docs/guide/JUPYTER.md)**. Gated by
+Guide: **[JUPYTER.md](docs/guide/integrations/JUPYTER.md)**. Gated by
 `tools/jupyter-smoke.raku` — a Jupyter client written in Raku, with its own
 HMAC-SHA256 pinned to the RFC 4231 vectors, so both halves of the protocol
 have to agree.

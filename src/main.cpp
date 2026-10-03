@@ -2510,6 +2510,7 @@ int main(int argc, char** argv) {
     bool watch = false;                   // --watch: rerun on change (run, -c, --lint)
     bool optimize = false;                // -O (compile modes and --cpp)
     bool sawHtml = false;                 // --html is only legal under --highlight
+    bool sawStdio = false;                // --stdio is only legal under --lsp
     long mcpTimeout = -1;                 // --timeout=SECS, only legal under --mcp
     std::string jupyterConn;              // --jupyter FILE: Jupyter's connection file
     std::string jupyterName = "raku";     // --jupyter-install --name=NAME
@@ -2676,6 +2677,10 @@ int main(int argc, char** argv) {
             if (a == "--diff")  { fmtDiff = true; continue; }
             if (a == "--mcp") { if (!setMode(Mode::Mcp, a)) return 4; continue; }
             if (a == "--lsp") { if (!setMode(Mode::Lsp, a)) return 4; continue; }
+            // --stdio: the transport flag LSP clients append (vscode-languageclient
+            // adds it for TransportKind.stdio). Stdio is the only transport, so
+            // under --lsp it is a no-op; anywhere else it stays illegal.
+            if (a == "--stdio") { sawStdio = true; continue; }
             // --jupyter FILE: Jupyter launches the kernel with the connection
             // file as its own argv token, so the flag EATS the next argument —
             // it is not the program to run, and the two-phase scan would take
@@ -2931,6 +2936,7 @@ int main(int argc, char** argv) {
     if (mode != Mode::Help && mode != Mode::Version && mode != Mode::VersionFull
         && mode != Mode::FfiInfo) {
         if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
+        if (sawStdio && mode != Mode::Lsp) return illegalOpt("--stdio");
         // (-q is deliberately absent here: every mode takes it — see g_quiet)
         if (mcpTimeout >= 0 && mode != Mode::Mcp) return illegalOpt("--timeout");
         if (mode == Mode::Lsp && haveSrc) {

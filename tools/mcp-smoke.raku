@@ -1,5 +1,5 @@
 # The MCP gate: does `rakupp --mcp` still speak the protocol, and do the two
-# tools still answer what the guide (docs/guide/MCP.md) says they answer?
+# tools still answer what the guide (docs/guide/integrations/MCP.md) says they answer?
 #
 # The server is driven exactly as an MCP client drives it — JSON-RPC 2.0, one
 # object per line, over the child's stdio: a batch of requests goes down its

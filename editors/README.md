@@ -1,5 +1,10 @@
 # Editor integration — the rakupp language server
 
+> **Using it?** The user guide is
+> [docs/guide/integrations/LSP.md](../docs/guide/integrations/LSP.md): VS Code
+> setup in three steps, what each diagnostic means, and troubleshooting. This
+> page is for working on the server and the extension.
+
 > **Status: NEEDS REVIEW AND UPDATE.** This server and the VS Code client were
 > written on 2026-07-21 and then sat uncommitted in a side worktree while main
 > moved on by roughly nine hundred commits. What is here compiles and answers

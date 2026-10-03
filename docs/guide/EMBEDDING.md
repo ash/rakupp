@@ -15,7 +15,7 @@ in agreement.
 - **Real embedder:** [`rakujs/rakupp_web.cpp`](../../rakujs/rakupp_web.cpp) —
   the WebAssembly entry point behind raku.online, written against this API.
 - **Another:** [`src/McpServer.cpp`](../../src/McpServer.cpp) — `rakupp --mcp`
-  ([MCP.md](MCP.md)) serves the interpreter to AI agent clients through this
+  ([MCP.md](integrations/MCP.md)) serves the interpreter to AI agent clients through this
   same API, in-process.
 
 ## Hello

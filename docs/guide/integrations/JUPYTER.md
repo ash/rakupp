@@ -131,7 +131,7 @@ message is signed with HMAC-SHA256 over its four JSON parts; one that does not
 verify is dropped rather than answered.
 
 Engine-side, the kernel is a host of the public C ABI
-([EMBEDDING.md](EMBEDDING.md)) — `rk_new`, `rk_eval`, `rk_set_output`,
+([EMBEDDING.md](../EMBEDDING.md)) — `rk_new`, `rk_eval`, `rk_set_output`,
 `rk_register` — exactly as the [MCP server](MCP.md) is. Neither has a private
 door into the interpreter, which is why a notebook cell, an agent's tool call
 and a `.raku` file all get the same answers.

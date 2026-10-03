@@ -15,13 +15,18 @@ More is planned (hover, completion, go-to-definition).
 
 ## Requirements
 
-You need the `rakupp` binary. Install it (`brew install rakupp`) or build it
-from the [rakupp repo](https://github.com/ash/rakupp). If it is not on your
-`PATH`, set:
+You need a `rakupp` binary newer than 5.2.1. Versions up to and including
+5.2.1 reject the `--stdio` flag this client passes, and the server does not start.
+Install it ([installation guide](https://github.com/ash/rakupp/blob/main/docs/guide/INSTALL.md))
+or build it from the [rakupp repo](https://github.com/ash/rakupp), then set its
+absolute path:
 
 ```jsonc
 "rakupp.path": "/absolute/path/to/rakupp"
 ```
+
+The full setup guide, with troubleshooting, is
+[LSP.md](https://github.com/ash/rakupp/blob/main/docs/guide/integrations/LSP.md).
 
 ## Settings
 
