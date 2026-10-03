@@ -1,70 +1,459 @@
 # rakulang — Raku from Python
 
-A pure-source Python package over `librakupp`'s C ABI. No compiled glue: the
-loader is `ctypes`, values cross through
-[`rakupp.h`](https://github.com/ash/rakupp/blob/main/include/rakupp/rakupp.h), and the grammar logic lives in a
-small Raku shim (`rakulang/grammar_shim.raku`) the binding evaluates into its
-interpreter at startup.
+`rakulang` is based on [Raku++](https://github.com/ash/rakupp), an
+implementation of the Raku language written in C++. The Raku++ engine comes
+inside the package.
 
-The package is named for the language, in the Raku community's disambiguated
-spelling — `raku` is an unrelated package on PyPI. The engine underneath is
-Raku++: `rakupp` the binary, `librakupp` the library. `import rakulang as
-raku` if you like the short spelling.
+Run Raku code and Raku grammars inside a Python program. Raku is good at
+text: its grammars turn messy input into structured data, and its numbers are
+exact (integers of any size, rationals). `rakulang` lets a Python program use
+that without leaving Python.
 
-Python is the reference binding; the other four follow it.
-
-## 1. What you need
-
-- **Python 3.9+.** No third-party packages — `ctypes` is in the standard
-  library.
-- **`librakupp`**, unless the wheel from PyPI is what you install: that one
-  carries the library inside it. From a checkout, build it at the repo root:
-
-  ```bash
-  cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
-  cmake --build build -j
-  ```
-
-  A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-  static-only and this package cannot use it.
-
-## 2. Install
+## Install
 
 ```bash
 pip install rakulang
 ```
 
-The wheel carries `librakupp` inside it, so it needs no rakupp on the
-machine; `rakulang.interpreter().version` says which engine it holds, and the
-package version is that engine's. It is built for macOS (universal), Linux
-(x86_64 and aarch64) and Windows (x64), and each wheel's own platform tag
-names the floor it needs.
+That is all. You need Python 3.9 or later on macOS, Linux or Windows. There is
+nothing to compile and nothing else to install: the package carries its own
+Raku engine.
 
-From a checkout, `pip install -e bindings/python` instead, after which plain
-`import rakulang` works. The examples below add the directory to `sys.path`,
-so they run against a fresh checkout with nothing installed.
+If you installed `rakulang` before, upgrade it to get the newest engine.
+`pip install` alone keeps a version that is already there:
 
-Finding the library usually needs no configuration: if `rakupp` is on PATH,
-the loader takes `librakupp` from beside it — an installed layout's sibling
-`lib/`, a Homebrew keg's, or the build directory the binary sits in. A
-platform wheel carries its own copy and needs nothing at all.
+```bash
+pip install --upgrade rakulang
+```
 
-To override, name one: an explicit path to
-`rakulang.interpreter("/path/to/librakupp.dylib")`, or `RAKUPP_LIB` (the
-file), or `RAKUPP_HOME` (an install prefix with `lib/`). **A library you name
-is used as given.** If it cannot be loaded you get that error, not a quiet
-fall-back to whichever other library happens to be findable — the usual cause
-is an architecture mismatch, and falling back makes the symptom (some other
-build's behaviour) point nowhere near the cause. Unset the variable to search
-instead.
+## Your first program
 
-On ELF platforms the library is loaded `RTLD_GLOBAL` so Raku extensions
-`dlopen`'ed later can resolve `rk_*` — a requirement from ABI-PLAN A3, not a
-preference.
+Save this as `hello.py`:
 
-## 3. Two minutes
+```python
+import rakulang
 
-Run both examples from the repo root (`.so` for `.dylib` on Linux):
+raku = rakulang.interpreter()
+
+raku.eval('say "Hello from Raku!"')
+
+print(raku.eval("(1..10).sum"))
+print(raku.eval("2 ** 100"))
+print(raku.eval("<apple banana cherry>.map(*.uc)"))
+```
+
+Run it with `python3 hello.py`:
+
+```
+Hello from Raku!
+55
+1267650600228229401496703205376
+['APPLE', 'BANANA', 'CHERRY']
+```
+
+`rakulang.interpreter()` gives you the Raku interpreter. `raku.eval(code)` runs
+a piece of Raku code. Raku's `say` prints straight to your terminal, as the
+first line shows. `eval` also returns the code's result as an ordinary Python
+value (a number, a string, a list, a dict), which the other lines print from
+Python.
+
+## Variables live on between calls
+
+Everything you declare stays in the interpreter, so later calls can use it:
+
+```python
+import rakulang
+
+raku = rakulang.interpreter()
+
+raku.eval("my @words = <the quick brown fox>")
+raku.eval("say @words.elems")
+raku.eval("say @words.grep(*.chars > 3)")
+
+raku.eval("my %age = Ada => 36, Alan => 41")
+raku.eval("say %age<Ada>")
+raku.eval("say %age")
+```
+
+```
+4
+(quick brown)
+36
+{Ada => 36, Alan => 41}
+```
+
+This time Raku does the printing, so you see Raku's own notation: `(quick
+brown)` for a list and `{Ada => 36, Alan => 41}` for a hash. Printed from
+Python, the same values would look like `['quick', 'brown']` and
+`{'Ada': 36, 'Alan': 41}`.
+
+## Your own operators
+
+Raku lets you define new operators. Here is factorial, written the way it is
+in a maths book, as `!` after the number:
+
+```python
+import rakulang
+
+raku = rakulang.interpreter()
+
+raku.eval("sub postfix:<!>($n) { [*] 1..$n }")
+
+raku.eval("say 5!")
+raku.eval("say (1..10).map({ $_! })")
+
+print(raku.eval("50!"))
+```
+
+```
+120
+(1 2 6 24 120 720 5040 40320 362880 3628800)
+30414093201713378043612608166064768844377641568960512000000000000
+```
+
+`postfix:<!>` declares an operator that goes after its operand, and
+`[*] 1..$n` multiplies all the numbers from 1 to `$n`. Once defined, `!` works
+in every later `eval`. Raku integers have no size limit, and `50!` arrives in
+Python as an ordinary `int`, with all 65 digits.
+
+## Calling Raku subs from Python
+
+Define subs with `eval`, then call them by name with `raku.call`. Python
+values go in as arguments, and the result comes back as a Python value:
+
+```python
+import rakulang
+
+raku = rakulang.interpreter()
+
+raku.eval("""
+    sub area($w, $h)   { $w * $h }
+    sub total(@prices) { @prices.sum }
+    sub describe(%p)   { "%p<name> costs %p<price>" }
+    sub hello($name, $greeting = 'Hello') { "$greeting, $name!" }
+""")
+
+print(raku.call("area", 3, 4))
+print(raku.call("total", [1, 2, 3.5]))
+print(raku.call("describe", {"name": "tea", "price": 3}))
+print(raku.call("hello", "Ada"))
+print(raku.call("hello", "Ada", "Hi"))
+```
+
+```
+12
+6.5
+tea costs 3
+Hello, Ada!
+Hi, Ada!
+```
+
+A Python list arrives in Raku as an array (`@prices`), and a dict arrives as
+a hash (`%p`).
+
+If your Raku code is in a file, load all of it at once:
+
+```python
+raku.eval(open("tools.raku").read())
+```
+
+To call a sub that takes **named** arguments, write the call in Raku:
+
+```python
+raku.eval('sub greet(:$name, :$age = 0) { "Hello, $name! You are $age." }')
+print(raku.eval('greet(name => "Ada", age => 36)'))
+```
+
+```
+Hello, Ada! You are 36.
+```
+
+## Parsing text with a grammar
+
+A grammar describes the shape of some text. Here is one for a shopping list
+of `name=quantity` pairs, with an actions class that adds up the quantities
+while it parses:
+
+```python
+import rakulang
+
+source = """
+grammar Shopping {
+    rule  TOP  { <item>+ }
+    rule  item { <name> '=' <qty> }
+    token name { \\w+ }
+    token qty  { \\d+ }
+}
+
+class ShoppingActions {
+    method item($/) { make $<qty>.Int }
+    method TOP($/)  { make $<item>.map(*.made).sum }
+}
+"""
+
+shopping = rakulang.Grammar.from_source(source, name="Shopping",
+                                        actions="ShoppingActions")
+
+m = shopping.parse("milk=2  bread = 1\neggs=12")
+
+for item in m["item"]:
+    print(item["name"].str(), item["qty"].int())
+
+print("total:", m.made)
+print(m.tree())
+print(shopping.parse("milk=lots"))
+```
+
+```
+milk 2
+bread 1
+eggs 12
+total: 15
+{'item': [{'name': 'milk', 'qty': '2'}, {'name': 'bread', 'qty': '1'}, {'name': 'eggs', 'qty': '12'}]}
+None
+```
+
+What you can do with the result of `parse`:
+
+- `m["item"]` picks the captures named `item`, and you can loop over them.
+- `.str()` gives a capture's text and `.int()` gives it as a number.
+- `m.made` is whatever the actions class computed with `make`.
+- `m.tree()` turns the whole result into plain Python lists and dicts. The
+  leaves in it are strings, so use `.int()` or an actions class when you want
+  numbers.
+- `parse` returns `None` when the text does not match.
+
+Inside a normal Python string, write `\\w` and `\\d` so that Raku receives
+`\w` and `\d`.
+
+### Keeping the grammar in its own file
+
+A grammar is easier to write and read in a file of its own: no escaping, and
+your editor highlights it as Raku. Save the same grammar and actions as
+`shopping.raku`:
+
+```raku
+grammar Shopping {
+    rule  TOP  { <item>+ }
+    rule  item { <name> '=' <qty> }
+    token name { \w+ }
+    token qty  { \d+ }
+}
+
+class ShoppingActions {
+    method item($/) { make $<qty>.Int }
+    method TOP($/)  { make $<item>.map(*.made).sum }
+}
+```
+
+Next to it, save `shop.py`:
+
+```python
+import rakulang
+
+shopping = rakulang.Grammar.from_file("shopping.raku", name="Shopping",
+                                      actions="ShoppingActions")
+
+m = shopping.parse("milk=2  bread = 1\neggs=12")
+
+for item in m["item"]:
+    print(item["name"].str(), item["qty"].int())
+
+print("total:", m.made)
+```
+
+Run `python3 shop.py` in that folder:
+
+```
+milk 2
+bread 1
+eggs 12
+total: 15
+```
+
+`from_file` takes the same arguments as `from_source`: `name` is the grammar
+to use, and `actions` is the actions class, both from the file. The path is
+relative to the folder you run Python in.
+
+## When something goes wrong
+
+A Raku error (`die`, a failed call) arrives in Python as
+`rakulang.RakuError`, carrying Raku's message:
+
+```python
+import rakulang
+
+raku = rakulang.interpreter()
+
+try:
+    raku.eval('die "out of coffee"')
+except rakulang.RakuError as e:
+    print("Raku said:", e)
+
+raku.eval("sub area($w, $h) { $w * $h }")
+try:
+    raku.call("area", 3)
+except rakulang.RakuError as e:
+    print("Raku said:", e)
+```
+
+```
+Raku said: out of coffee
+Raku said: Calling area(Int) will never work with declared signature ($w, $h)
+```
+
+To find out *where* a parse failed, pass `strict=True`. Instead of returning
+`None`, `parse` then raises `rakulang.ParseError` with the line, the column
+and the rule it was trying:
+
+```python
+try:
+    shopping.parse("milk=2\nbread=lots", strict=True)
+except rakulang.ParseError as e:
+    print(f"line {e.line}, column {e.column}, while trying <{e.rule}>")
+```
+
+```
+line 2, column 7, while trying <qty>
+```
+
+## How values convert
+
+| Raku | Python |
+|---|---|
+| `Int` (any size) | `int` |
+| `Num`, `Rat` | `float` |
+| `Str` | `str` |
+| `True`, `False` | `bool` |
+| `List`, `Array` | `list` |
+| `Hash` | `dict` |
+| `Any` (no value) | `None` |
+
+Arguments to `call` convert the same way in reverse: `None`, `bool`, `int`,
+`float`, `str`, `list`, `tuple` and `dict` are accepted. Any other Python type
+raises `TypeError`.
+
+---
+
+## For experienced users
+
+Everything below is optional. The sections above are all a typical program
+needs.
+
+### How it works
+
+The package is plain Python over the C interface of `librakupp`, the library
+form of the [Raku++](https://raku.online) engine. It loads the library with
+`ctypes`, from the standard library, so there is no compiled glue. Values
+cross through
+[`rakupp.h`](https://github.com/ash/rakupp/blob/main/include/rakupp/rakupp.h).
+The grammar support is a small Raku shim (`rakulang/grammar_shim.raku`) that
+the package evaluates into the interpreter at startup.
+
+The package is named for the language, in the Raku community's disambiguated
+spelling: `raku` is an unrelated package on PyPI. Write
+`import rakulang as raku` if you prefer the short name. The package version is
+the version of the engine inside it; `rakulang.interpreter().version` reports
+it.
+
+Wheels are built for macOS 11 or later (universal: Apple silicon and Intel),
+Linux with glibc 2.28 or later (x86_64 and aarch64) and Windows x64. On any
+other platform pip reports that it finds no matching distribution, and you
+build the library yourself (see below).
+
+### More about calls
+
+`call` checks its arguments exactly as a call written in Raku is checked. Too
+few or too many arguments, or a value that fails a type constraint, raise
+`RakuError` instead of binding silently. The conversion is by Python type, so
+`sub flag(Bool $b)` wants `True`, not `1`.
+
+`call` passes positional arguments only. A dict is one positional `Hash`, not
+a set of named arguments, which is why named parameters go through `eval`.
+`multi` subs, slurpy `*@args`, and `our sub`s inside a package
+(`raku.call("Geo::perimeter", 3, 4)`) all resolve through `call`. Methods are
+reached through `eval`: `raku.eval("Counter.new.bump.n")`. `raku.can("area")`
+says whether a sub of that name is callable.
+
+An integer wider than 64 bits arrives as an ordinary Python `int`: the C
+interface passes integers as `int64`, so the binding reads the digits instead
+whenever that saturates.
+
+### More about grammars
+
+`from_file(path, name=..., actions=...)` and `from_source` compile and cache:
+identical source compiles once. Each *named* compile is isolated in its own
+wrapper package, so recompiling an edited grammar under the same name works,
+and earlier handles keep the body they were compiled from. Without `name`
+there is no wrapper, and a same-name recompile raises the engine's
+`X::Redeclaration`. `name` may be omitted only when the grammar declaration is
+the source's last statement.
+
+`parse(text, rule=...)` anchors to the whole input. Pass `rule=` to parse a
+fragment with one rule. Indexing a match builds a lazy path, and nothing
+crosses into the engine until a terminal operation: `.str()`, `.int()`,
+`.num()`, `.made`, `bool()`, `len()`, iteration, `.tree()`, or `.match()`,
+which returns an independent `Match`. A lazy walk costs one engine call per
+leaf; `.tree()` converts everything at once, which takes about ten times as
+long as the parse itself.
+
+A terminal operation on a missing capture raises `RakuError`; `bool()` and
+`len()` answer `False` and `0` instead, which is how you test for one.
+
+### Lifetime, threads and output
+
+There is one interpreter per process, created on first use. One Python thread
+talks to it at a time; Raku code inside it may start threads of its own. A
+`Match` holds values alive inside the interpreter: `close()` it, use it in a
+`with` block, or let the garbage collector release it. Values returned by
+`eval` and `call` are plain Python data and need nothing.
+
+Raku's `say` and `print` write to the same standard output as Python, through
+their own buffer. On a terminal the lines come out in order. When the output
+is piped or redirected, Python holds its own lines back until its buffer
+fills, so a `say` that runs after a `print` may appear before it. Run Python
+with `-u`, or print with `flush=True`, if the order matters.
+
+### Using your own build of the engine
+
+This is for working on the binding itself, or for a platform with no wheel.
+Build `librakupp` at the root of a [rakupp](https://github.com/ash/rakupp)
+checkout:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
+```
+```bash
+cmake --build build -j
+```
+
+A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
+static-only, and this package cannot use it. Then install the package from the
+checkout with `pip install -e bindings/python`.
+
+Without a bundled library, the package usually finds one by itself: if
+`rakupp` is on PATH, it takes `librakupp` from beside it (an installed
+layout's sibling `lib/`, a Homebrew keg's, or the build directory the binary
+sits in). To choose one explicitly, pass a path to
+`rakulang.interpreter("/path/to/librakupp.dylib")`, or set `RAKUPP_LIB` (the
+file) or `RAKUPP_HOME` (an install prefix with `lib/`).
+
+**A library you name is used as given.** If it cannot be loaded, you get that
+error, not a quiet fall-back to some other library that happens to be
+findable. The usual cause is an architecture mismatch, and a fall-back would
+make the symptom (another build's behaviour) point nowhere near the cause.
+Unset the variable to search instead.
+
+The full search order: the path passed to `interpreter()`, then `RAKUPP_LIB`,
+then `RAKUPP_HOME/lib/`; otherwise a copy bundled inside the package
+(`rakulang/_lib/`), then the library beside the `rakupp` on PATH (its sibling
+`lib/`, then its own directory), then the system linker path.
+
+On ELF platforms the library is loaded `RTLD_GLOBAL`, so Raku extensions that
+are `dlopen`ed later can resolve `rk_*` (a requirement from ABI-PLAN A3).
+
+The repository's two examples run from the repo root against such a build
+(`.so` for `.dylib` on Linux):
 
 ```bash
 RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/calc.py
@@ -73,178 +462,41 @@ RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/calc.py
 RAKUPP_LIB=$PWD/build/librakupp.dylib python3 bindings/python/examples/shopping.py
 ```
 
-`calc` ([examples/calc.py](https://github.com/ash/rakupp/blob/main/bindings/python/examples/calc.py)) prints:
+Their expected output is in
+[bindings/examples/expected/](https://github.com/ash/rakupp/tree/main/bindings/examples/expected).
 
-```
-2 + 2 = 4
-area(3, 4) = 12
-primes below 30: 2 3 5 7 11 13 17 19 23 29
-stats: count=8 sum=31 mean=3.88 max=9
-greet: Hello, Ada! You are 36.
-30! = 265252859812191058636308480000000
-died: division by zero
-```
+### Building a wheel
 
-`shopping` ([examples/shopping.py](https://github.com/ash/rakupp/blob/main/bindings/python/examples/shopping.py)) prints:
+`tools/build-wheel.sh <build-dir>` bundles that build's library into the
+package. A `pip install` of the result needs no `rakupp` on PATH and no
+variables. The bundled copy is a snapshot: `.version` reports it, and
+refreshing it means rebuilding and reinstalling. The script builds in a
+scratch venv, so it needs pip access to PyPI.
 
+```bash
+tools/build-wheel.sh build dist-wheel
 ```
-3 items
-milk x 2
-bread x 1
-eggs x 12
-total, computed in Raku: 15
-as plain Python data: {'item': [{'name': 'milk', 'qty': '2'}, {'name': 'bread', 'qty': '1'}, {'name': 'eggs', 'qty': '12'}]}
-line 2 column 7 while trying <qty>
+```bash
+python3 -m pip install --force-reinstall --no-deps dist-wheel/rakulang-*.whl
 ```
 
-If you see both, the binding works.
+On Windows, run it under Git Bash and name the configuration directory the
+Visual Studio generator writes to, `build/Release`, where `librakupp.dll` is.
 
-## 4. Running Raku
-
-```python
-import rakulang
-
-raku = rakulang.interpreter()          # the process's interpreter
-
-raku.eval("my $x = 41")
-raku.eval("$x + 1")                    # 42 — eval keeps state, like the REPL
-
-raku.version                           # '3.14.0'
-```
-
-`eval` returns the last statement's value, converted to Python data.
-
-### Define a sub in Raku, call it from Python
-
-Declare the sub with `eval` — the declaration stays in the interpreter's
-mainline scope — then `call` it by name. Python arguments bind to the
-signature's positional parameters, in order, and the return value comes back
-as Python data:
-
-```python
-raku.eval("""
-    sub area($w, $h)   { $w * $h }
-    sub total(@prices) { @prices.sum }
-    sub describe(%p)   { "%p<name> costs %p<price>" }
-    sub hello($name, $greeting = 'Hello') { "$greeting, $name!" }
-""")
-
-raku.call("area", 3, 4)                # 12 — one argument per parameter
-raku.call("total", [1, 2, 3.5])        # 6.5 — a list binds to @prices
-raku.call("describe", {"name": "tea", "price": 3})
-                                       # 'tea costs 3' — a dict binds to %p
-raku.call("hello", "Ada")              # 'Hello, Ada!' — the default fills in
-raku.can("area")                       # True; False before the eval
-```
-
-The subs may as well come from a file: `raku.eval(open("calc.raku").read())`
-declares everything in it, which is how [examples/calc.py](https://github.com/ash/rakupp/blob/main/bindings/python/examples/calc.py)
-loads [../examples/calc.raku](https://github.com/ash/rakupp/blob/main/bindings/examples/calc.raku).
-
-Arguments convert automatically — `None`, `bool`, `int` (any width), `float`,
-`str`, `list`, `tuple`, `dict`. Anything else raises `TypeError`. The
-conversion is by Python type, so `sub flag(Bool $b)` wants `True`, not `1`.
-
-The call is checked exactly as a call written in Raku is. Too few or too many
-arguments, or a value that fails a type constraint, raise `RakuError`
-carrying the engine's message instead of binding silently:
-
-```python
-raku.call("area", 3)
-# RakuError: Calling area(Int) will never work with declared signature ($w, $h)
-```
-
-**Named parameters.** `call` passes positionals only. A sub declared with
-named parameters is called by writing the call in Raku and evaluating it:
-
-```python
-raku.eval('sub greet(:$name, :$age = 0) { "Hello, $name! You are $age." }')
-
-raku.eval('greet(name => "Ada", age => 36)')   # 'Hello, Ada! You are 36.'
-raku.call("greet", {"name": "Ada"})            # RakuError — the dict is one
-                                               # positional Hash, not two names
-```
-
-Or declare the sub to take a hash, `sub greet(%who)`, and pass a dict — which
-is what `calc.raku` does. `multi` subs, slurpy `*@args`, and `our sub`s inside
-a package (`raku.call("Geo::perimeter", 3, 4)`) all resolve through `call`. A
-method is reached through `eval`: `raku.eval("Counter.new.bump.n")`.
-
-## 5. Parsing with grammars
-
-```python
-log = rakulang.Grammar.from_file("log.raku", name="Log", actions="LogActions")
-
-m = log.parse(text)                    # a handle, not data; None if no match
-for line in m["line"]:                 # lazy: one engine call per leaf
-    print(line["ip"].str(), line["status"].int())
-print(m["line"][0]["size"].made)       # computed by LogActions, in the parse
-
-everything = m.tree()                  # eager, opt-in (~1.4× the parse)
-```
-
-`from_file(path, name=..., actions=...)` compiles and caches: identical
-source compiles once, and each *named* compile is isolated in its own wrapper
-package, so recompiling an edited grammar under the same name works and
-earlier handles keep the body they were compiled from. Without `name` there
-is no wrapper, and a same-name recompile raises the engine's
-`X::Redeclaration`. `name` may be omitted only when the grammar declaration
-is the file's last statement.
-
-`parse(text, rule=...)` anchors to the whole input and returns a `Match` or
-`None`; pass `rule=` to parse a fragment with one rule. Indexing builds a
-lazy path — nothing crosses the boundary until a terminal: `.str()`,
-`.int()`, `.num()`, `.made`, `bool()`, `len()`, iteration, `.tree()`, or
-`.match()` (which returns an independent rooted `Match`).
-
-## 6. Values
-
-Raku `Int` → `int`, `Num`/`Rat` → `float`, `Str` → `str`, `List` → `list`,
-`Hash` → `dict`, `True`/`False` → `bool`, `Any` → `None`. The same rules run
-in reverse for arguments.
-
-An integer wider than 64 bits arrives as an ordinary Python `int`: the C ABI
-hands integers over as an `int64`, so the binding reads the digits instead
-whenever that saturates. In a `tree()`, a
-match node with no sub-captures becomes its matched *text* — `qty` is the
-string `"2"` — so use `.int()` on the node, or an actions class, for numbers.
-
-## 7. Errors
-
-`RakuError` is a Raku `die` crossing the boundary. `ParseError` is its
-subclass for a diagnosed non-match, carrying `.line`, `.column`, `.rule` and
-`.pos`:
-
-```python
-try:
-    g.parse(text, strict=True)
-except rakulang.ParseError as e:
-    print(f"line {e.line} column {e.column} while trying <{e.rule}>")
-```
-
-A failed terminal on a missing capture raises `RakuError`; `bool()` and
-`len()` answer `False`/`0` instead, which is how you probe for one.
-
-## 8. Lifetime and threading
-
-One interpreter per process, created on first use; one host thread talks to
-it at a time (Raku code inside it threads freely). Matches hold rooted values
-in the interpreter — `close()` them, use a `with` block, or let the GC do it.
-Values from `eval` and `call` are already plain Python data and need nothing.
-
-## 9. Testing
+### Testing
 
 ```bash
 build/rakupp tools/bindings-smoke.raku
 ```
 
-Runs both examples in all five languages and checks the output against
-[../examples/expected/](https://github.com/ash/rakupp/tree/main/bindings/examples/expected). For the deep gate — this
-binding driving the same grammar and 2000-line corpus as the Raku reference
-driver, byte-compared — run `build/rakupp tools/grammar-smoke.raku`. Both run
-in CI on every push.
+This runs both examples in every binding's language and checks the output
+against
+[bindings/examples/expected/](https://github.com/ash/rakupp/tree/main/bindings/examples/expected).
+For the deep gate (this binding driving the same grammar and 2000-line corpus
+as the Raku reference driver, byte-compared), run
+`build/rakupp tools/grammar-smoke.raku`. Both run in CI on every push.
 
-## Troubleshooting
+### Troubleshooting
 
 Four questions settle most reports: which Python ran, which copy of the
 package it imported, which library file that copy loaded, and which engine
@@ -254,30 +506,22 @@ that library is. One line answers all four:
 python3 -c "import rakulang, sys; r = rakulang.interpreter(); print(sys.executable, rakulang.__file__, r._lib._name, r.version, sep='\n')"
 ```
 
-`_lib._name` is the loaded file's path — a private attribute, fine for
-diagnosis. Compare the last line with `rakupp --version` for the binary on
-PATH: the library reports the plain release number, the binary adds its git
-describe suffix, and the leading numbers should agree.
-
-The search order decides the third line. A library you name is used as
-given: the path passed to `interpreter()`, else `RAKUPP_LIB`, else
-`RAKUPP_HOME/lib/`. Otherwise the loader takes, in this order, a copy bundled
-inside the package (`rakulang/_lib/`), the library beside the `rakupp` on
-PATH (its sibling `lib/`, then its own directory), and the system linker
-path.
+`_lib._name` is the loaded file's path (a private attribute, fine for
+diagnosis). With a wheel installed, it points inside the package's own
+`_lib/` directory.
 
 **`librakupp not found`.** Nothing bundled, nothing beside `rakupp`, nothing
 on the linker path; the message lists every path it tried. If it continues
 `A rakupp binary WAS found (…) but its build carries no shared library`, the
 build directory on PATH is configured without `-DRAKUPP_BUILD_SHARED=ON`.
 Reconfigure it with that option and build again, set `RAKUPP_LIB` to a build
-that has the library, or install the platform wheel (below).
+that has the library, or `pip install rakulang` for the bundled one.
 
 **`RAKUPP_LIB names …, which could not be loaded`.** A named library is
 authoritative; the loader does not fall back to another. The quoted `dlopen`
-error says why: `no such file` when the path does not exist — a relative path
+error says why: `no such file` when the path does not exist (a relative path
 is resolved against the current directory, so a shell profile wants an
-absolute one — or the architecture mismatch below. Unset the variable to
+absolute one), or the architecture mismatch below. Unset the variable to
 search instead.
 
 **`incompatible architecture`.** Your `python3` and the library disagree
@@ -291,8 +535,9 @@ build overwrites them, and a directory reconfigured without
 `-DRAKUPP_BUILD_SHARED=ON` never does: the binary beside them stays current
 while the library keeps the version it had. `make rakupp` rebuilds the binary
 only; `cmake --build <dir>` with no target rebuilds the library too. Delete
-the leftovers or rebuild the shared target — the loader cannot tell a leftover
-from a fresh build.
+the leftovers or rebuild the shared target; the loader cannot tell a leftover
+from a fresh build. (The library reports the plain release number, the binary
+adds its git describe suffix; the leading numbers should agree.)
 
 **`AttributeError: dlsym(…, rk_…): symbol not found`.** Raised from
 `interpreter()` when the library lacks an entry point this package declares,
@@ -302,44 +547,10 @@ checkout the package came from.
 **`import rakulang` is not the copy you edited.** `rakulang.__file__` says
 which one loaded. `pip install -e bindings/python` imports the checkout
 itself; a plain `pip install bindings/python`, or a wheel, copies the package
-at install time and does not follow later edits — reinstall to refresh. `python`
-and `python3` can be different interpreters with different site-packages.
-
-**The platform wheel.** `tools/build-wheel.sh <build-dir>` bundles that
-build's library into the package, and a `pip install` of the result needs no
-`rakupp` on PATH and no variables. The bundled copy is a snapshot: `.version`
-reports it, and refreshing it is a rebuild and a reinstall. The script builds
-in a scratch venv, so it needs pip access to PyPI.
-
-```bash
-tools/build-wheel.sh build dist-wheel
-```
-```bash
-python3 -m pip install --force-reinstall --no-deps dist-wheel/rakulang-*.whl
-```
-
-On Windows run it under Git Bash, and name the configuration directory the
-Visual Studio generator writes to, `build/Release`, where `librakupp.dll`
-is.
+at install time and does not follow later edits, so reinstall to refresh.
+`python` and `python3` can be different interpreters with different
+site-packages.
 
 **`rk_new refused: an interpreter is already live in this process`.**
 Something already created an interpreter in this process. Use
 `rakulang.interpreter()`, which returns the shared one.
-
-## Numbers (G0 gate, 2026-08-11, M-series macOS)
-
-2000-line / 168 KB access log, seven-token grammar, best of three
-(`python3 bindings/python/bench.py build-shared`):
-
-| phase | rakupp direct | via shim, engine-side | Python host | host/direct |
-|---|---:|---:|---:|---:|
-| parse | 11.6 ms | 10.7 ms | 10.5 ms | **1.0×** |
-| tree (eager) | 68.0 ms | 68.2 ms | 93.0 ms | **1.4×** |
-| selective (2 fields × 2000 lines) | 1.7 ms | 25.9 ms | 52.6 ms | **~31×** |
-
-Parse is engine-bound — the host boundary adds nothing. Selective access
-costs ~13 µs per leaf (half the walk sub, half ABI + ctypes); it exists
-because eager conversion of everything nobody asked for is usually the worse
-deal, but if a profile ever shows the per-leaf cost dominating a real
-workload, that is GRAMMAR-PLAN G4's cue (a native Match walker), not a reason
-to grow this layer.

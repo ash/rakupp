@@ -229,6 +229,12 @@ logs and the reviews. This page is the complete list.
   engine found ~19% in thread-local-storage reads and ~11% in per-iteration
   block entry/exit. The second became `Block::entryWork`: −10 to −11% on loop
   kernels, with Roast, the corpus and the module battery unchanged.
+- **[PYTHON-BINDING-PERF-2026-10-03.md](PYTHON-BINDING-PERF-2026-10-03.md)**
+  *(2026-10-03, at v5.2.0)* — the Python binding's grammar benchmark on the
+  library the PyPI wheel installs: parse from Python costs what it costs in
+  `rakupp` (0.9×), eager tree conversion 1.5×. Lazy field-by-field access got
+  a quarter to a half slower than with the 4.0.1 library while the engine-side walk
+  did not, so the extra time is in crossing the C interface. Cause open.
 
 ## One-off bug reports
 

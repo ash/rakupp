@@ -139,11 +139,9 @@ Language) are committed and gated on every push, and
 progress. As of v5.2.0, the release CI builds four Python wheels (macOS
 universal2, manylinux_2_28 x86_64 and aarch64, win_amd64) and smoke-tests each
 one installed in a venv. The Windows export surface and the Windows bindings
-gate now pass in CI.
+gate now pass in CI. Those four wheels are on PyPI as `rakulang` 5.2.0; a
+later release reaches PyPI by running Actions → PyPI with its tag.
 
-- [ ] **PyPI**: `rakulang` is not on PyPI, and `pypi.yml` has never run. Check
-  the pending publisher on pypi.org (project `rakulang`, workflow `pypi.yml`,
-  environment `pypi`), then run Actions → PyPI with tag v5.2.0.
 - [ ] **npm**: `rakulang` is not published. The binding is `bun:ffi`, so it
   runs on Bun only. A Node host needs the napi addon, which waits on A5
   ([EMBED-PLAN.md](EMBED-PLAN.md) E4). `package.json` still says 0.1.0.
@@ -161,6 +159,12 @@ gate now pass in CI.
 - [ ] **Static extension registry**: A4 in [ABI-PLAN.md](ABI-PLAN.md),
   `rakupp_ext_register(&mod)` for WASM and `--exe`. A5, compiled bindings,
   "only where measured".
+- [ ] **Python per-leaf slowdown**: lazy `Match` access from Python
+  (`m["line"][i]["ip"].str()`, one `rk_call` per leaf) is a quarter to a half
+  slower with the 5.2.0 library than with 4.0.1, while the engine-side walk
+  did not get slower. [PYTHON-BINDING-PERF-2026-10-03.md](../findings/PYTHON-BINDING-PERF-2026-10-03.md).
+  Next: profile a tight `rk_call` loop on both libraries, then bisect
+  v4.0.1..v5.2.0 with shared-library builds.
 - [ ] **Grammars as a service**: G3 host callbacks and G4 the native Match
   walker, only if a workload needs them. [GRAMMAR-PLAN.md](GRAMMAR-PLAN.md).
 - [ ] **Hosts**:
