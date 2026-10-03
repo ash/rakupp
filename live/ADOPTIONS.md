@@ -24,6 +24,8 @@ raku.online — those are ours and belong in
 | [**Raku Koans**](https://hankache.github.io/raku-koans/) | Naoum Hankache | runs a course of 105 test-driven koans on Raku.js, in the browser |
 | [**rakupp-dsci**](https://github.com/melezhik/rakupp-dsci) | Alexey Melezhik | ports the Raku++ release matrix to another CI |
 | [**sibl**](https://github.com/4zv4l/sibl-channel) | 4zv4l | packages rakupp in a personal Guix channel |
+| [**321**](https://github.com/nige123/cli.321.do) | Nigel Hamilton | compiles an agent runtime, written in Raku, into one standalone file per system |
+| [**iz4**](https://github.com/nige123/cli.iz4.you) | Nigel Hamilton | ships a tool for keeping a project's invariants as Raku++-built files that update themselves |
 
 ## RakuppLink — the Wolfram binding as an official paclet
 
@@ -152,10 +154,51 @@ its own Guix gate
 which builds the working tree rather than a tag). Somebody wrote a channel
 package without asking us, which is exactly why it is worth recording.
 
+## 321 — an agent runtime shipped as one file
+
+[**321**](https://github.com/nige123/cli.321.do) is Nigel Hamilton's
+harness-agnostic agent runtime and its command-line front door (Apache-2.0):
+it loads an agent package, picks an installed harness or a deterministic
+procedure, enforces capability grants and approvals, and writes an immutable
+receipt of each run. It began in Go; in September 2026 it was ported to Raku,
+module by module with its test suites, and the Go tree was removed.
+
+Raku++ is how it ships. Its own CI fetches a pinned Raku++ release, checks the
+archive's SHA-256, and runs `rakupp --aot --standalone` on each of four
+systems — Linux x86-64 and arm64, a universal macOS file, 64-bit Windows —
+then runs the whole suite against each compiled file before publishing them
+as a GitHub release. The person who installs `321` gets one file and needs no
+Raku at all.
+
+Its author has filed thirteen engine bugs here since September, among them
+[#80](https://github.com/ash/rakupp/issues/80) (`--bundle` on Windows) and
+[#112](https://github.com/ash/rakupp/issues/112) (a `MAIN` imported from a
+module under `--exe`).
+
+## iz4 — invariants, installed as one file
+
+[**iz4**](https://github.com/nige123/cli.iz4.you) is the same author's tool
+for the few truths a piece of software must never accidentally lose
+(Apache-2.0). An `IZ4` file beside the code says what the project is for, who
+it is for, and a handful of invariants, each with the reason it must survive,
+so that the people and agents who rewrite the code cannot build them away.
+The format is a Raku grammar, and the parser is that grammar; `iz4 test`
+writes a failing test per invariant that has no evidence yet. Its agentic
+commands run through `321`.
+
+It is built exactly as `321` is — `rakupp --aot --standalone` from a pinned,
+checksum-verified Raku++, for the same four systems, with the suite run
+against each file. Its one-line installer downloads the file for the machine,
+verifies it and puts it on `PATH`, and `iz4 update` replaces it in place with
+the newest release; only where no file fits does it fall back to a source
+install on Rakudo. So the usual way to get iz4 is a Raku program compiled by
+Raku++, on a machine with no Raku installed.
+
 ## What they have in common
 
 Every one of these pins a snapshot. The playground vendors a July build, the
-Guix channel a v1.2.0 tag, the koans a v4.0.1 release by checksum, and the
+Guix channel a v1.2.0 tag, the koans, `321` and `iz4` a v4.0.1 release by
+checksum, and the
 paclet is written against the C ABI in
 [include/rakupp/rakupp.h](../include/rakupp/rakupp.h), linking whatever
 `librakupp` its user happened to build. A fix landing here reaches none of
@@ -166,4 +209,5 @@ builds are compiled against, so it is the part to keep still.
 
 None of this is under our control. Rows can move or disappear without notice;
 the links are what they were on the date each was last checked —
-**2026-09-28** for Raku Koans, **2026-08-28** for the rest.
+**2026-10-03** for 321 and iz4, **2026-09-28** for Raku Koans, **2026-08-28** for
+the rest.
