@@ -48,10 +48,10 @@ Building needs Node.js and npm. From the repository root:
 (cd editors/vscode && npm install && npx @vscode/vsce package)
 ```
 
-This writes `rakupp-1.0.0.vsix` into `editors/vscode/`. Install it:
+This writes `rakupp-1.0.1.vsix` into `editors/vscode/`. Install it:
 
 ```bash
-code --install-extension editors/vscode/rakupp-1.0.0.vsix
+code --install-extension editors/vscode/rakupp-1.0.1.vsix
 ```
 
 If `code` is not found, run **Shell Command: Install 'code' command in PATH**

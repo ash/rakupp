@@ -2,7 +2,7 @@
   "name": "rakupp",
   "displayName": "Raku++ (rakupp)",
   "description": "Raku language support from the rakupp language server: errors and lint findings as you type, hover documentation, completion and go-to-definition.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "DeepSoft",
   "license": "Artistic-2.0",
   "repository": { "type": "git", "url": "https://github.com/ash/rakupp" },
