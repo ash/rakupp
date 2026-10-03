@@ -25,6 +25,7 @@
 namespace rakupp {
 
 struct Program;
+struct Stmt;
 struct SubDecl;
 struct Env;
 struct Value;
@@ -56,5 +57,18 @@ void rakuppRegisterModuleAot(const char* module, const AotEntry* table, size_t n
 // table, or a table that does not fit the AST it was built for, attaches
 // nothing and runs interpreted.
 void attachAotBodies(const std::string& module, Program& prog);
+
+// RAKUPP_AOT_RUNLOG=FILE (t/aot/): the binary records what became of each
+// module's table (attached, refused, disabled) and how often each native body
+// was entered or declined, and writes it to FILE at exit. The flag is read once
+// at startup; while it is off, a call pays one predictable branch.
+extern const bool g_aotRunLog;
+bool aotRunLogged(Interpreter& I, Stmt* first, void* fn, Env* frame, Value& out);
+//
+// Test-only fault knobs, read at attach time (t/aot/ proves the fallbacks with
+// them): RAKUPP_AOT_FAULT_DECLINE=NAME[,NAME…] attaches, for each routine so
+// named, a body that declines at entry; RAKUPP_AOT_FAULT_TABLE=MODULE[:name]
+// corrupts that module's table — the first entry's index, or with `:name` the
+// last entry's name — so the attach must refuse the whole module.
 
 } // namespace rakupp

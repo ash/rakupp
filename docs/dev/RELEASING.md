@@ -351,6 +351,29 @@ module-battery leg runs at the release too:
 rakupp tools/slim-diff.raku <battery program paths>
 ```
 
+### 4c. Native module bodies change nothing
+
+```bash
+rakupp t/aot/run.raku                     # the mechanism, case by case (~30 s)
+rakupp tools/aot-battery.raku             # the module battery's own tests (~1 h, one core)
+```
+
+`--exe` compiles the bodies of embedded modules' routines natively
+(docs/guide/NATIVE.md, "Modules"). `t/aot/run.raku` runs one case per mechanism
+— each a module and a program — with the native bodies, with `RAKUPP_NO_AOT=1`
+and interpreted, against output recorded from Rakudo; and it holds every routine
+to the path its module's `#aot:` comments name, through the compiler's report
+and the binary's run log, so a routine that quietly stops compiling natively,
+or a native body that is never entered, fails it. It belongs with the local
+suite and is cheap enough for every change to the backend.
+
+The battery is the pre-release half: each test file of the distributions in
+`tools/aot-battery.list` is compiled with `--exe` and run with and without its
+native bodies. A difference that is not on the tool's known-benign list fails
+the release; `--one DIST t/FILE` shows it, and `--bisect DIST t/FILE` names the
+native bodies behind it (RAKUPP_AOT_RANGE). An `EXEDIFF` count is informational
+— the compiled program against the interpreter, which gate 4 owns.
+
 ### 5. A second toolchain
 
 ```bash

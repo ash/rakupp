@@ -1,0 +1,33 @@
+# Closures that outlive their native routine (t/aot/run.raku).
+use Aot::Closure;
+
+my &c = make-counter(5);
+say c(), c(), c();
+my &c2 = make-counter(100);
+say c2(), c();
+say make-reader()();
+my ($add, $get) = make-pair();
+$add(2); $add(3);
+say $get();
+say over-param('p')('x');
+my @subs = per-iteration();
+say @subs.map({ .() }).join(' ');
+say call-all(@subs);
+my &pre = over-module();
+say pre('a');
+set-prefix('>');
+say pre('b');
+say nested-maker('a')('b')('c');
+my &t = lexical-sub();
+t(); t();
+say t();
+my $acct = Account.new;
+my &rep = $acct.reporter;
+my &dep = $acct.depositor;
+say rep();
+dep(10);
+dep(5);
+say rep();
+$acct.balance = 1;
+say rep();
+say call-all([&rep, &c]);

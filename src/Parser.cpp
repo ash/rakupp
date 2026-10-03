@@ -14462,6 +14462,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         if ((isIdent("multi") || isIdent("proto")) &&
             !(peek(1).text == "token" || peek(1).text == "rule" || peek(1).text == "regex")) {
             std::string multiness = cur().text;
+            const int ln = cur().line;
             advance();
             bool isM = false, isSub = false;
             if (isIdent("method") || isIdent("submethod")) { isSub = isIdent("submethod"); advance(); isM = true; }
@@ -14477,6 +14478,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                                   {"routine-type", isM ? "method" : "sub"}});
             static_cast<SubDecl*>(s.get())->isMethod = isM;
             static_cast<SubDecl*>(s.get())->isSubmethod = isSub;
+            if (s->line == 0) s->line = ln;   // as a plain method's, above
             applyHasMethodRet(static_cast<SubDecl*>(s.get()));
             // Only `multi method` / `submethod` declares a method. A bare
             // `proto`/`multi` in a class body is a SUB, as it is anywhere else —

@@ -50,7 +50,10 @@ std::string transpileToCpp(Program& prog, bool optimize = false, const std::stri
 struct AotNames {
     std::set<std::string> callEnv, rwSubs, rwMethods, types;
 };
-std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& names);
+// `delegatedLines`, when given, receives the source line of every statement
+// the body hands to the interpreter (RAKUPP_AOT_REPORT).
+std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& names,
+                                   std::vector<int>* delegatedLines = nullptr);
 
 // ---- the tier-up JIT's entry point (docs/dev/plans/JIT-PLAN.md) -------------
 //

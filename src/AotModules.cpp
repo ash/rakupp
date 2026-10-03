@@ -4,6 +4,8 @@
 #include "Interpreter.h"
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -51,7 +53,73 @@ bool aotDisabled() {
     static const bool off = [] { const char* e = std::getenv("RAKUPP_NO_AOT"); return e && *e && *e != '0'; }();
     return off;
 }
+// `name` is one of the comma-separated items of the environment variable `var`
+bool envListHas(const char* var, const std::string& name) {
+    const char* e = std::getenv(var);
+    if (!e || !*e) return false;
+    return (std::string(",") + e + ",").find("," + name + ",") != std::string::npos;
+}
+
+// ---- RAKUPP_AOT_RUNLOG -------------------------------------------------------
+struct RunBody {
+    std::string module, name;
+    int line;
+    std::atomic<long> entered{0}, declined{0};
+};
+struct RunLog {
+    std::mutex mu;
+    std::map<Stmt*, std::unique_ptr<RunBody>> bodies;   // keyed by the body's first statement
+    std::vector<std::string> events;                    // one row per attach decision, in order
+    bool registered = false;
+};
+RunLog& runLog() { static RunLog* l = new RunLog; return *l; }   // never freed: atexit reads it
+void writeRunLog() {
+    const char* path = std::getenv("RAKUPP_AOT_RUNLOG");
+    if (!path || !*path) return;
+    RunLog& L = runLog();
+    std::lock_guard<std::mutex> g(L.mu);
+    FILE* f = std::fopen(path, "w");
+    if (!f) return;
+    std::fprintf(f, "# rakupp native module bodies, run log\n");
+    for (auto& e : L.events) std::fprintf(f, "%s\n", e.c_str());
+    std::vector<const RunBody*> rows;
+    for (auto& kv : L.bodies) rows.push_back(kv.second.get());
+    std::sort(rows.begin(), rows.end(), [](const RunBody* a, const RunBody* b) {
+        return a->module != b->module ? a->module < b->module : a->line < b->line;
+    });
+    for (auto* b : rows)
+        std::fprintf(f, "body\t%s\t%d\t%s\t%ld\t%ld\n", b->module.c_str(), b->line, b->name.c_str(),
+                     b->entered.load(), b->declined.load());
+    std::fclose(f);
+}
+void runLogEvent(const std::string& row) {
+    RunLog& L = runLog();
+    std::lock_guard<std::mutex> g(L.mu);
+    L.events.push_back(row);
+    if (!L.registered) { L.registered = true; std::atexit(writeRunLog); }
+}
+
+// RAKUPP_AOT_FAULT_DECLINE: a body that declines before running anything, as a
+// real one does when it cannot bind an outer name.
+bool aotFaultDecline(Interpreter&, Env*, Value&) { return false; }
 } // namespace
+
+const bool g_aotRunLog = [] { const char* e = std::getenv("RAKUPP_AOT_RUNLOG"); return e && *e; }();
+
+bool aotRunLogged(Interpreter& I, Stmt* first, void* fn, Env* frame, Value& out) {
+    RunBody* b = nullptr;
+    {
+        RunLog& L = runLog();
+        std::lock_guard<std::mutex> g(L.mu);
+        auto it = L.bodies.find(first);
+        if (it != L.bodies.end()) b = it->second.get();
+    }
+    bool ran;
+    try { ran = reinterpret_cast<AotBodyFn>(fn)(I, frame, out); }
+    catch (...) { if (b) b->entered++; throw; }   // a body that throws has run
+    if (b) (ran ? b->entered : b->declined)++;
+    return ran;
+}
 
 void rakuppRegisterModuleAot(const char* module, const AotEntry* table, size_t n) {
     aotTables()[module] = AotTable{table, n};
@@ -59,10 +127,27 @@ void rakuppRegisterModuleAot(const char* module, const AotEntry* table, size_t n
 
 void attachAotBodies(const std::string& module, Program& prog) {
     auto it = aotTables().find(module);
-    if (it == aotTables().end() || aotDisabled()) return;
+    if (it == aotTables().end()) return;
+    if (aotDisabled()) { if (g_aotRunLog) runLogEvent("disabled\t" + module); return; }
     std::vector<SubDecl*> routines;
     forEachAotRoutine(prog, [&](SubDecl* d) { routines.push_back(d); });
-    const AotTable& t = it->second;
+    AotTable t = it->second;
+    // RAKUPP_AOT_FAULT_TABLE (test-only): a copy of the table whose first
+    // entry points at the routine after its own, or whose last entry names
+    // another routine (`:name`)
+    std::vector<AotEntry> corrupt;
+    if (const char* ft = std::getenv("RAKUPP_AOT_FAULT_TABLE"); ft && *ft && t.n > 0) {
+        std::string mod = ft;   // MODULE, or MODULE:name (module names have `::` of their own)
+        const bool byName = mod.size() > 5 && mod.compare(mod.size() - 5, 5, ":name") == 0 &&
+                            mod[mod.size() - 6] != ':';
+        if (byName) mod.resize(mod.size() - 5);
+        if (mod == module) {
+            corrupt.assign(t.entries, t.entries + t.n);
+            if (byName) corrupt.back().name = "\x01corrupt";
+            else corrupt.front().index++;   // the next routine's slot: a table built for another AST
+            t.entries = corrupt.data();
+        }
+    }
     // Check the whole table before attaching any of it: an entry whose index
     // or name does not match means the AST is not the one the bodies were
     // compiled from, and then none of them can be trusted.
@@ -73,6 +158,7 @@ void attachAotBodies(const std::string& module, Program& prog) {
             if (aotTrace())
                 std::fprintf(stderr, "[aot] %s: table does not fit the module AST; running it interpreted\n",
                              module.c_str());
+            if (g_aotRunLog) runLogEvent("refused\t" + module + "\tthe table does not fit the module AST");
             return;
         }
     }
@@ -94,6 +180,7 @@ void attachAotBodies(const std::string& module, Program& prog) {
         }
         return true;
     }();
+    size_t attached = 0;
     for (size_t i = 0; i < t.n; i++) {
         const AotEntry& e = t.entries[i];
         long n = seq++;
@@ -101,8 +188,19 @@ void attachAotBodies(const std::string& module, Program& prog) {
         for (auto& rg : ranges) if (n >= rg.first && n <= rg.second) in = true;
         if (!in) continue;
         if (ranged && aotTrace()) std::fprintf(stderr, "[aot] #%ld %s::%s\n", n, module.c_str(), e.name);
-        routines[e.index]->body[0]->aotBody = reinterpret_cast<void*>(e.fn);
+        SubDecl* d = routines[e.index];
+        AotBodyFn fn = envListHas("RAKUPP_AOT_FAULT_DECLINE", e.name) ? &aotFaultDecline : e.fn;
+        d->body[0]->aotBody = reinterpret_cast<void*>(fn);
+        if (g_aotRunLog) {
+            RunLog& L = runLog();
+            std::lock_guard<std::mutex> g(L.mu);
+            auto& slot = L.bodies[d->body[0].get()];
+            if (!slot) { slot = std::make_unique<RunBody>(); slot->module = module; slot->name = e.name; slot->line = d->line; }
+        }
+        attached++;
     }
+    if (g_aotRunLog)
+        runLogEvent("attached\t" + module + "\t" + std::to_string(attached) + " of " + std::to_string(routines.size()));
     if (aotTrace())
         std::fprintf(stderr, "[aot] %s: %zu of %zu routines native\n", module.c_str(), t.n, routines.size());
 }
@@ -117,6 +215,10 @@ void attachAotBodies(const std::string& module, Program& prog) {
 // in scope at all, or it lives in the call frame itself — a frame is pooled
 // and reused after the call, so a native closure must not keep a pointer
 // into one. (Parameters are COPIED out of the frame instead; see rtAotParam.)
+// The pointer is the name's SLOT, not the Value behind a cell: the body
+// dereferences it at every use, because the slot can become a cell while the
+// body runs (an `is rw` parameter binding it promotes it in place), and the
+// Value it held then moves behind the cell.
 Value* rtAotOuter(Env* frame, const char* name) {
     if (!frame) return nullptr;
     if (frame->localRaw(name)) {
@@ -124,7 +226,7 @@ Value* rtAotOuter(Env* frame, const char* name) {
         return nullptr;
     }
     Env* up = frame->parent.get();
-    Value* p = up ? up->find(name) : nullptr;
+    Value* p = up ? up->findRaw(name) : nullptr;
     if (!p && aotTrace()) std::fprintf(stderr, "[aot] decline: %s is not in scope\n", name);
     return p;
 }

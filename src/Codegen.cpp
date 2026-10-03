@@ -267,7 +267,10 @@ struct Codegen {
         if (laxVars_.count(name)) return "RT.laxVarRef(" + cesc(name) + ")";
         if (moduleMode_) {
             aotRefs_.insert(name);
-            if (aotFree_.count(name)) return "(*__f" + mangleVar(name) + ")";
+            // the slot, dereferenced at each use: the interpreter can promote
+            // it to a shared cell during the call (an `is rw` argument binding
+            // it), and then the Value it held lives behind the cell
+            if (aotFree_.count(name)) return "(*__f" + mangleVar(name) + "->deref())";
         }
         return mangleVar(name);
     }
@@ -299,6 +302,7 @@ struct Codegen {
     std::string aotPreamble_;         // file-scope data the routine's code refers to
     std::string aotTag_;              // unique per routine, for those symbols
     int aotBlobN_ = 0;
+    std::vector<int> aotDelegated_;   // the source line of each statement handed to the interpreter
     // The closures being emitted, innermost last: 'b' a block (`return` inside
     // belongs to the routine around it), 's' a sub (its own `return` boundary).
     std::vector<char> nestKinds_;
@@ -804,13 +808,23 @@ struct Codegen {
     // int lanes) keeps using the plain name through the reference.
     std::set<std::string> cellVars_;   // names needing cells in the current function scope
     std::set<std::string> readCaptures_; // names a nested closure merely READS from this scope
+    // Names the function body itself writes, outside every closure. One a
+    // closure reads must be a cell too: by value, the closure would keep the
+    // value the variable had when it was made, and never see a later write.
+    std::set<std::string> outerWrites_;
     std::vector<std::string> cellsLive_; // cells declared so far (emission order), Raku names
     // Collect names assigned inside any (transitively) nested closure, that are
     // not local to that closure — i.e. mutated captures.
     void collectMutatedCaptures(const std::vector<StmtPtr>& body, std::set<std::string> local,
                                 bool inClosure, std::set<std::string>& out) {
         auto record = [&](Expr* t) {
-            if (!inClosure || !t) return;
+            if (!t) return;
+            if (!inClosure) {   // a write outside every closure: see outerWrites_
+                while (t && t->kind == NK::Index) t = static_cast<Index*>(t)->base.get();
+                if (t && t->kind == NK::VarExpr && !static_cast<VarExpr*>(t)->declare)
+                    outerWrites_.insert(static_cast<VarExpr*>(t)->name);
+                return;
+            }
             // Mutating THROUGH a subscript mutates the variable: `%bag{$k}++`,
             // `@result[$i] += 1`, `@ready[$p].push(…)` all write to the container.
             // Only a bare VarExpr counted before, so a hash or array a closure
@@ -907,8 +921,10 @@ struct Codegen {
     void analyzeCells(const std::vector<StmtPtr>& body, const std::set<std::string>& params) {
         std::set<std::string> out;
         readCaptures_.clear();
+        outerWrites_.clear();
         collectMutatedCaptures(body, params, /*inClosure=*/false, out);
         for (auto& n : out) cellVars_.insert(n);
+        for (auto& n : readCaptures_) if (outerWrites_.count(n)) cellVars_.insert(n);
     }
     // Declaration text for a possibly-cell local; used by every decl site.
     // `my @a[3;2]` — the initialiser for a SHAPED declaration, or "" when the
@@ -2305,6 +2321,7 @@ struct Codegen {
         aotPreamble_.resize(savedPre);
         std::string call = delegateStmt(s, /*sink=*/true);
         if (call.empty()) unsupported(why);
+        aotDelegated_.push_back(s->line);
         line(ind, call + ";");
     }
     // …and the same for a routine's final statement, whose value is the result.
@@ -2323,6 +2340,7 @@ struct Codegen {
         aotPreamble_.resize(savedPre);
         std::string call = delegateStmt(es, /*sink=*/false);
         if (call.empty()) unsupported(why);
+        aotDelegated_.push_back(es->line);
         return call;
     }
 
@@ -2568,7 +2586,8 @@ struct Codegen {
             }
             case NK::ReturnStmt: {
                 auto* r = static_cast<ReturnStmt*>(s);
-                std::string v = r->value ? exArg(r->value.get()) : std::string("Value::any()");
+                // a bare `return` answers Nil, as the interpreter's and Rakudo's do
+                std::string v = r->value ? exArg(r->value.get()) : std::string("Value::nil()");
                 // In a module routine, a `return` inside a BLOCK leaves the routine,
                 // through whatever called the block — interpreted frames included —
                 // so it is thrown at the routine's own frame, as the interpreter's is.
@@ -5679,7 +5698,8 @@ std::set<std::string> declaredIdents(const std::string& t) {
 
 std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names,
                         const std::set<std::string>& freeNames, const std::set<std::string>& frameNames,
-                        const std::set<std::string>& locals, std::set<std::string>* refsOut) {
+                        const std::set<std::string>& locals, std::set<std::string>* refsOut,
+                        std::vector<int>* delegatedOut = nullptr) {
     Codegen g;
     g.moduleMode_ = true;
     g.callEnvNames_ = names.callEnv;
@@ -5714,6 +5734,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
         g.line(2, "} catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }");
     });
     if (refsOut) *refsOut = g.aotRefs_;
+    if (delegatedOut) *delegatedOut = g.aotDelegated_;
     std::ostringstream o;
     o << g.aotPreamble_;
     // `RT` is the interpreter that made the call (the section around these
@@ -5733,7 +5754,8 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
 
 } // namespace
 
-std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& callEnvNames) {
+std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& callEnvNames,
+                                   std::vector<int>* delegatedLines) {
     if (const char* why = aotIneligible(d)) throw CodegenError{why};
     // Pass one learns which names the body reads without declaring; pass two
     // emits them as outer names. `@_`/`%_` are the frame's own (the
@@ -5748,7 +5770,7 @@ std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const 
         if (n == "@_" || n == "%_") frame.insert(n);
         else outer.insert(n);
     }
-    return emitAotPass(d, fnName, callEnvNames, outer, frame, decl, nullptr);
+    return emitAotPass(d, fnName, callEnvNames, outer, frame, decl, nullptr, delegatedLines);
 }
 
 // ---- the tier-up JIT's kernel emitter (docs/dev/plans/JIT-PLAN.md) ---------

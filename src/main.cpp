@@ -2,6 +2,7 @@
 #include "BuildInfo.h"
 #include "Runtime.h"
 #include "Profiler.h"
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <thread>
@@ -919,12 +920,63 @@ static std::string defaultOut(const std::string& srcName) {
 // repeats. A routine the emitter declines keeps its interpreted body; so does
 // every routine of a module whose AST cannot be read back. RAKUPP_NO_AOT=1
 // leaves them all interpreted, here and in a binary at run time.
-struct AotRoutine { size_t mod; int index; std::string name, fn, code; bool dropped = false; };
+struct AotRoutine {
+    size_t mod; int index; std::string name, fn, code; bool dropped = false;
+    int line = 0; bool method = false;
+    std::vector<int> delegated;   // lines of the statements its body hands to the interpreter
+};
+struct AotSkipped { size_t mod; int index; std::string name; int line; bool method; std::string why; };
 struct ModuleAot {
     std::vector<AotRoutine> routines;   // the ones the emitter compiled
+    std::vector<AotSkipped> skipped;    // …and the ones it declined, with the reason
     int total = 0;                      // …out of this many
+    bool disabled = false;              // RAKUPP_NO_AOT=1 at compile time
     int live() const { int n = 0; for (auto& r : routines) n += !r.dropped; return n; }
 };
+static bool aotEnvOn(const char* name) { const char* e = std::getenv(name); return e && *e && *e != '0'; }
+// RAKUPP_AOT_FAULT_CXX=NAME[,NAME…] (test-only, t/aot/): the native body of each
+// routine so named gets a line the C++ compiler rejects, to prove that a body
+// which does not compile costs that routine alone.
+static bool aotFaultCxx(const std::string& name) {
+    const char* e = std::getenv("RAKUPP_AOT_FAULT_CXX");
+    if (!e || !*e) return false;
+    std::string list = std::string(",") + e + ",";
+    return list.find("," + name + ",") != std::string::npos;
+}
+// RAKUPP_AOT_REPORT=FILE: what became of every module routine, written once the
+// binary is built — one tab-separated row per routine, then one per statement a
+// native body hands to the interpreter. t/aot/run.raku checks the `#aot:`
+// annotations of its cases against it.
+//   routine    MODULE  LINE  sub|method NAME  native
+//   routine    MODULE  LINE  sub|method NAME  interpreted  REASON
+//   delegated  MODULE  LINE  sub|method NAME
+static void writeAotReport(const ModuleAot& a, const std::vector<BundledModule>& mods, int rc) {
+    const char* path = std::getenv("RAKUPP_AOT_REPORT");
+    if (!path || !*path) return;
+    std::ofstream o(path, std::ios::binary);
+    if (!o) { std::cerr << "RAKUPP_AOT_REPORT: cannot write " << path << "\n"; return; }
+    o << "# rakupp --exe module routine report\n";
+    if (a.disabled) { o << "disabled\tRAKUPP_NO_AOT\n"; return; }
+    if (rc != 0) o << "failed\tcompiler exit " << rc << "\n";
+    struct Row { size_t mod; int index; std::string text; };
+    std::vector<Row> rows;
+    auto who = [&](size_t mod, int line, bool method, const std::string& name) {
+        return mods[mod].name + "\t" + std::to_string(line) + "\t" + (method ? "method " : "sub ") + name;
+    };
+    for (auto& r : a.routines) {
+        std::string t = "routine\t" + who(r.mod, r.line, r.method, r.name) +
+                        (r.dropped ? "\tinterpreted\tits native body did not compile\n" : "\tnative\n");
+        if (!r.dropped)
+            for (int ln : r.delegated) t += "delegated\t" + who(r.mod, ln, r.method, r.name) + "\n";
+        rows.push_back({r.mod, r.index, t});
+    }
+    for (auto& s : a.skipped)
+        rows.push_back({s.mod, s.index, "routine\t" + who(s.mod, s.line, s.method, s.name) + "\tinterpreted\t" + s.why + "\n"});
+    std::sort(rows.begin(), rows.end(), [](const Row& x, const Row& y) {
+        return x.mod != y.mod ? x.mod < y.mod : x.index < y.index;
+    });
+    for (auto& r : rows) o << r.text;
+}
 static std::string aotStrLit(const std::string& v) {
     std::string o = "\"";
     for (unsigned char ch : v) {
@@ -937,8 +989,8 @@ static std::string aotStrLit(const std::string& v) {
 static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
                                 const std::set<std::string>& exports) {
     ModuleAot r;
-    if (const char* e = std::getenv("RAKUPP_NO_AOT")) if (*e && *e != '0') return r;
-    const bool verbose = [] { const char* e = std::getenv("RAKUPP_AOT_VERBOSE"); return e && *e && *e != '0'; }();
+    if (aotEnvOn("RAKUPP_NO_AOT")) { r.disabled = true; return r; }
+    const bool verbose = aotEnvOn("RAKUPP_AOT_VERBOSE");
     // every module's AST, read back once: the routines that write back through
     // a parameter are a property of the whole graph (a call can reach any of them)
     std::vector<std::unique_ptr<Program>> progs(mods.size());
@@ -982,10 +1034,18 @@ static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
         for (size_t k = 0; k < routines.size(); k++) {
             const std::string fn = "__aot" + std::to_string(mi) + "_" + std::to_string(k);
             r.total++;
+            SubDecl* sd = routines[k];
             try {
-                std::string code = transpileModuleRoutine(routines[k], fn, names);
-                r.routines.push_back({mi, (int)k, routines[k]->name, fn, std::move(code)});
+                std::vector<int> delegated;
+                std::string code = transpileModuleRoutine(sd, fn, names, &delegated);
+                if (aotFaultCxx(sd->name)) {   // after the function's opening line, inside its `// aot:` region
+                    size_t nl = code.find('\n', code.find("static bool " + fn + "("));
+                    if (nl != std::string::npos) code.insert(nl + 1, "    rakupp_aot_injected_fault();\n");
+                }
+                r.routines.push_back({mi, (int)k, sd->name, fn, std::move(code), false, sd->line, sd->isMethod,
+                                      std::move(delegated)});
             } catch (const CodegenError& e) {
+                r.skipped.push_back({mi, (int)k, sd->name, sd->line, sd->isMethod, e.msg});
                 if (verbose)
                     std::cerr << "--exe: " << mods[mi].name << " " << (routines[k]->isMethod ? "method " : "sub ")
                               << routines[k]->name << " stays interpreted: " << e.msg << "\n";
@@ -1079,9 +1139,9 @@ static std::set<std::string> aotRoutinesAt(const std::string& genText, const std
 static int compileDroppingAot(const std::string& cmd, const std::string& genPath, const std::string& outPath,
                               ModuleAot& aot, const std::vector<BundledModule>& mods,
                               const std::function<std::string()>& render, const char* mode) {
-    if (aot.live() == 0) return runCommand(cmd);
+    if (aot.live() == 0) { int rc = runCommand(cmd); writeAotReport(aot, mods, rc); return rc; }
     const std::string diagPath = outPath + ".rakupp.diag";
-    const bool verbose = [] { const char* e = std::getenv("RAKUPP_AOT_VERBOSE"); return e && *e && *e != '0'; }();
+    const bool verbose = aotEnvOn("RAKUPP_AOT_VERBOSE");
     std::string text = render();
     int rc;
     for (int attempt = 0;; attempt++) {
@@ -1102,6 +1162,7 @@ static int compileDroppingAot(const std::string& cmd, const std::string& genPath
         text = render();
     }
     removeFile(diagPath);
+    writeAotReport(aot, mods, rc);
     if (aot.total > 0 && !g_quiet)
         std::cerr << mode << ": " << aot.live() << " of " << aot.total << " module routines compiled natively\n";
     return rc;
@@ -3226,6 +3287,11 @@ int main(int argc, char** argv) {
 "                               interpreted (when compiling, or in the binary);\n"
 "                               RAKUPP_AOT_VERBOSE=1 at compile time says why a\n"
 "                               routine stays interpreted\n"
+"  RAKUPP_AOT_REPORT=FILE       --exe: write which module routines got native\n"
+"                               bodies, why the others did not, and which\n"
+"                               statements they hand to the interpreter\n"
+"  RAKUPP_AOT_RUNLOG=FILE       in a compiled binary: at exit, write how often each\n"
+"                               native module body was entered or declined\n"
 "\n"
 "Run the spec-test harness (self-hosted, in Raku):\n"
 "  ROAST=/path/to/roast rakupp tools/run-roast.raku [PATH-SUBSTRING]\n"
