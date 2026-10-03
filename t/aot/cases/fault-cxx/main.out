@@ -1,0 +1,5 @@
+before(1)
+broken(2) still answers
+after(3) broken(3) still answers
+fine 7
+broken-method 7

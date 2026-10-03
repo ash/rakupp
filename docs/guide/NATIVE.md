@@ -79,7 +79,10 @@ its statements — a phaser or `CATCH` in the body, an `is rw` routine, an
 `is rw`/`is raw`/sigilless parameter or a sub-signature, placeholder
 parameters, a `proto` — or when one of its statements can be neither compiled
 nor handed to the interpreter on its own. `RAKUPP_AOT_VERBOSE=1` at compile
-time names each such routine and the reason. A native body that the C++
+time names each such routine and the reason; `RAKUPP_AOT_REPORT=FILE` writes
+the whole account — every routine, native or not and why, and each statement
+a native body hands to the interpreter — and a compiled binary run with
+`RAKUPP_AOT_RUNLOG=FILE` writes, at exit, how often each native body ran. A native body that the C++
 compiler rejects costs only that routine: the error is traced back to it and
 the binary is built again without it.
 

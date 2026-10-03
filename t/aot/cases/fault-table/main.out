@@ -1,0 +1,6 @@
+first-a 1
+second-a first-a 2
+A.who
+last-a
+b(second-a first-a 3)
+b-alone

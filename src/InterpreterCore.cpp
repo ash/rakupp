@@ -10,8 +10,11 @@ namespace rakupp {
 // declined before running anything — the caller then walks the statements.
 static inline bool runAotBody(Interpreter& I, const Callable& c, Env* frame, Value& out) {
     if (!c.body || c.body->empty()) return false;
-    void* f = (*c.body)[0]->aotBody;
-    return f && reinterpret_cast<AotBodyFn>(f)(I, frame, out);
+    Stmt* first = (*c.body)[0].get();
+    void* f = first->aotBody;
+    if (!f) return false;
+    if (g_aotRunLog) [[unlikely]] return aotRunLogged(I, first, f, frame, out);
+    return reinterpret_cast<AotBodyFn>(f)(I, frame, out);
 }
 // (opEq, the literal compare every hot function here uses, is in Interpreter.h)
 // The operators that compare their operands AS STRINGS.

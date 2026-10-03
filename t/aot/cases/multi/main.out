@@ -1,0 +1,13 @@
+Int 42
+Str hi
+list starting 7
+Rat 3/4
+something else
+<int 5>
+<str ABC>
+Int>Numeric>Cool
+Numeric>Cool
+Cool
+S: square 9
+S: rect 10
+S: no area for circle

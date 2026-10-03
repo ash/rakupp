@@ -1,0 +1,14 @@
+builtin: 20
+builtin: none
+n>i: 4
+n>i: none
+i>n: 6
+i>n: none
+n>n: 2
+n>n: none
+deep 2: 2
+each-native finished
+(2, 2)
+inner 1, inner none, and on
+Nil
+late

@@ -1,0 +1,8 @@
+1 1
+mine -> changed by callee
+3,2,1,0.
+1 1 / still outer
+program
+1 1
+program
+seen by a block 1; seen by a block 2
