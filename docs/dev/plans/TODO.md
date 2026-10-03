@@ -101,6 +101,10 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - `my $x = INIT expr` discards the INIT value.
   - `fail` in BUILD.
   - An exception in END is swallowed.
+  - Stacked postfixes: with only `postfix:<!>` declared, `3!!` is a parse
+    error (Rakudo 720), and `3!²` drops the `²` (Rakudo 36).
+  - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
+    answers a WhateverCode, Rakudo a Range.
 - [ ] **Roast tracks A3**: retire the remaining copy-back mechanisms
   (`rwLinks`, `copyOutRw`, `builtinTopicWB_`, `ArgWriter`).
   [ROAST-TRACKS-PLAN.md](ROAST-TRACKS-PLAN.md). The B1 coroutine code on
@@ -119,6 +123,8 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - Two `-O` differences in t/exe.
   - `--exe` refuses multidim slices.
   - Rakudo dies on `<`, `<=>`, `%` and `mod` over a Pointer; Raku++ answers.
+  - A `*` under a user operator (`*!`, `* quack 5`) is refused and bundled;
+    the emitter does not build the curry natively.
 - [ ] **`--target=js`**: [TRANSPILE-PLAN.md](TRANSPILE-PLAN.md). The corpus
   gate has never been green. Open: the slot-binding half of the container
   model; `use` refused (exit 5, see V6 P7); `t/js/run.raku` does not pass MAIN

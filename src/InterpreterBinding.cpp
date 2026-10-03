@@ -1878,7 +1878,11 @@ bool Interpreter::exprHasWhateverLit(const Expr* e) {
             if (c->dotAmp && !c->args.empty() && exprHasWhateverLit(c->args[0].get())) return true;
             // a USER infix is a Call: `(* quack *) quack 'a'` extends the curry
             // its left side started (S02-types/whatever.t)
-            return !c->callee && c->args.size() == 2 && c->name.rfind("infix:<", 0) == 0 &&
+            if (c->callee) return false;
+            // …and a USER postfix, `*!`: `(*! + 1)` curries on through it
+            if (c->args.size() == 1 && c->name.rfind("postfix:<", 0) == 0)
+                return exprHasWhateverLit(c->args[0].get());
+            return c->args.size() == 2 && c->name.rfind("infix:<", 0) == 0 &&
                    (exprHasWhateverLit(c->args[0].get()) || exprHasWhateverLit(c->args[1].get()));
         }
         case NK::MethodCall:
