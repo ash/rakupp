@@ -1197,8 +1197,11 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             // mutator rakupp cannot apply" — so its failure surfaced as a baffling
             // parse error in the DIST that used it. Slangs are applied now, and a
             // slang module that will not parse fails like any other.)
-            throw ParseError("Error while compiling module " + name + " (line " +
-                             std::to_string(e.line) + "): " + e.what(), e.line);
+            ParseError pe("Error while compiling module " + name + " (line " +
+                          std::to_string(e.line) + "): " + e.what(), e.line);
+            // the line is the MODULE's; a nested module's failure keeps its own file
+            pe.file = e.file.empty() ? srcPath : e.file;
+            throw pe;
         }
         howMs = traceLoad ? nowMs() - t0 : 0;
         howLabel = cached ? "precomp" : "parse";

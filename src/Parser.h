@@ -21,6 +21,11 @@ struct ParseError : std::runtime_error {
     // The text of the token the parse died on, when Parser::error raised it;
     // "" otherwise. The language server underlines it on `line`.
     std::string got;
+    // The file the error is in, when that is NOT the program being run — a
+    // module that failed to compile during `use`. "" = the main source. The
+    // excerpt and the `at FILE:LINE` under the header read it; without it they
+    // quoted the loading script's line of the same number.
+    std::string file;
     ParseError(const std::string& msg, int line) : std::runtime_error(msg), line(line) {}
     ParseError(const std::string& msg, int line, bool atEof)
         : std::runtime_error(msg), line(line), atEof(atEof) {}

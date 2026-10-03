@@ -23,6 +23,10 @@
 
 namespace rakupp {
 
+// InterpreterBinding.cpp: a module's path as the reader should see it
+std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
+                          const std::string& srcAsGiven);
+
 // $?FILE is the source path as an absolute path: cwd-prefixed when invoked
 // relatively (Rakudo keeps the `./` — no realpath canonicalization).
 static std::string absSrcPath(const std::string& f) {
@@ -359,11 +363,15 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         // …and the line itself. A syntax error names a position the reader has
         // to go and look at; showing it here saves the trip (issue #67).
-        std::string sl = interp.srcLineOf(interp.srcFileAbs_.empty() ? fileName : interp.srcFileAbs_, e.line);
+        // A module that failed during `use` names its own file: the line is
+        // the module's, not the loading script's.
+        std::string sl = !e.file.empty() ? interp.srcLineOf(e.file, e.line)
+                       : interp.srcLineOf(interp.srcFileAbs_.empty() ? fileName : interp.srcFileAbs_, e.line);
         if (!sl.empty()) std::cerr << "      " << e.line << " | " << sl << "\n";
         // …and where, as FILE:LINE — the spelling editors and Rakudo's own
         // "at FILE:LINE" both jump to (integration/error-reporting.t)
-        std::cerr << "  at " << fileName << ":" << e.line << "\n";
+        std::string at = !e.file.empty() ? btDisplayPath(e.file, interp.srcFileAbs_, fileName) : fileName;
+        std::cerr << "  at " << at << ":" << e.line << "\n";
         return 1; // a compile-time (syntax) error exits 1, like Rakudo
     } catch (const RakuError& e) {
         // the same diagnostic the mainline handler prints — this is the path a
