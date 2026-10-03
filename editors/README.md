@@ -183,6 +183,16 @@ npx @vscode/vsce package    # produces rakupp-<version>.vsix
 code --install-extension rakupp-*.vsix
 ```
 
+### Emacs
+
+The init files for Emacs (eglot or `lsp-mode`, with `raku-mode` from MELPA)
+are in [`emacs/`](emacs/), with `check.sh`, which loads the eglot one into a
+batch Emacs and checks the diagnostics, completion and hover it gets:
+
+```sh
+cd emacs && RAKUPP=../../build/rakupp ./check.sh
+```
+
 ### Other editors
 
 Any LSP-capable editor can use the server — the command is always

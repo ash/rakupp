@@ -45,6 +45,10 @@ or `~/.emacs` that exists. If none does, create `~/.emacs.d/init.el`. Add:
   (add-to-list 'eglot-server-programs '(raku-mode . ("rakupp" "--lsp"))))
 ```
 
+The same lines are in
+[`editors/emacs/init-eglot.el`](../../../editors/emacs/init-eglot.el); you can
+`(load ...)` that file from your init file instead of copying them.
+
 Restart Emacs. The first start downloads `raku-mode` from MELPA, which takes a
 few seconds.
 
@@ -201,6 +205,9 @@ of its own, so the block registers `rakupp`:
                     :server-id 'rakupp)))
 ```
 
+The block is also in
+[`editors/emacs/init-lsp-mode.el`](../../../editors/emacs/init-lsp-mode.el).
+
 The first time you open a Raku file, `lsp-mode` asks which folder is the
 project root. The diagnostics, completion, documentation and `M-.` are the
 same as with eglot. In `lsp-mode`'s messages the code comes last, for example
@@ -220,7 +227,9 @@ same as with eglot. In `lsp-mode`'s messages the code comes last, for example
 To see the messages exchanged with the server, run `M-x eglot-events-buffer`.
 To tell an Emacs problem from a server problem, run
 [`editors/lsp-demo.sh`](LSP.md#check-the-server-without-an-editor) in a
-terminal.
+terminal. [`editors/emacs/check.sh`](../../../editors/emacs/README.md#check-the-setup)
+runs the eglot setup in a batch Emacs that does not read your init file, and
+checks the underlines, completion and hover.
 
 ## What it does not do
 
