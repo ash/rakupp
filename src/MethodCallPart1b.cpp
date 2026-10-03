@@ -20,7 +20,11 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     if (inv.t == VT::Hash && inv.hashKind == "Pointer") {
         long long addr = inv.hash()->count("addr") ? (*inv.hash())["addr"].toInt() : 0;
         std::string of = inv.hash()->count("of") ? (*inv.hash())["of"].toStr() : "";
-        if (m == "Int" || m == "Numeric") return Value::integer(addr);
+        // A pointer is numerically its address, an Int — and Raku++ lets it be
+        // a REAL one too, so `$p < $end` orders addresses. Rakudo's Pointer has
+        // no .Real and dies there; the address is the only sensible answer.
+        if (m == "Int" || m == "Numeric" || m == "Real") return Value::integer(addr);
+        if (m == "abs") { Value a = Value::integer(addr); return methodCall(a, "abs", args); }
         // An instantiated Pointer is DEFINED whatever it points at — `Pointer.new`
         // is a real object holding NULL. Emptiness is .Bool's job, and the two
         // were the same test here, which inverted both against Rakudo.

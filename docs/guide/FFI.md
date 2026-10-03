@@ -424,6 +424,21 @@ these two lines apiece:
 on both engines should stay inside the type map above, write the `use` line, and
 not rely on an argument being coerced.
 
+A `Pointer` is a number in both engines: its address, an `Int`. `+$p`,
+`$p + 8`, `$p == $q`, `$p cmp $q` and `abs $p` agree. Rakudo's Pointer has no
+`.Real`, though, so every operator that asks for one dies there with
+`Cannot resolve caller Real`. In Raku++ the address is the Real, and addresses
+are ordered as they are in C:
+
+| expression | Raku++ | Rakudo |
+|---|---|---|
+| `$p < $end`, `$p >= $start` | `True` / `False` | dies |
+| `$p <=> $q` | an `Order` | dies |
+| `$p % 64`, `$p mod 64`, `$p %% 64` | the alignment test | dies |
+| `$p.Real` | the address, an `Int` | dies |
+
+To run on both engines, compare the addresses: `+$p < +$end`.
+
 ## Diagnostics
 
 | | |
