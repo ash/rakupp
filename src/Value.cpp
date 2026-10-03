@@ -1179,7 +1179,8 @@ std::string Value::gist() const {
 }
 
 std::string Value::typeName() const {
-    if (!enumType.empty()) return enumType; // enum value / enum type object -> its enum type
+    if (!enumType.empty())  // enum value / enum type object -> its enum type
+        return enumType.str()[0] == '\x01' ? std::string() : std::string(enumType.str()); // (an anonymous one has none)
     if (isAllomorph()) return hashKind;     // IntStr / RatStr / NumStr / ComplexStr
     // an Instant/Duration rides on an exact Int or Rat (or a Num, from `now`)
     if ((t == VT::Int || t == VT::Rat || t == VT::Num) &&

@@ -1921,6 +1921,66 @@ void Parser::giveAdverbToOperator(ExprPtr& lhs, std::vector<ExprPtr> named, cons
     lhs = std::move(c);
 }
 
+// `$n max= *.value.elems` — a `*` on the right of a compound assignment curries
+// the WHOLE assignment (Rakudo: `@data.map($n max= *.elems)` updates `$n` per
+// element). Rewritten here to `-> $a { $n max= $a.value.elems }`. The short-
+// circuit and list forms (`//=`, `||=`, `&&=`, `,=`, `xx=` …) assign the
+// Whatever itself, as plain `=` does.
+ExprPtr Parser::curryCompoundAssign(std::unique_ptr<Assign> a) {
+    static const std::set<std::string> kNoCurryBase = {
+        "", "=", ":", ":=", "~~", "!~~", ",", "=>", "..", "^..", "..^", "^..^", "...", "xx",
+        "//", "||", "&&", "^^", "or", "and", "xor", "orelse", "andthen", "notandthen",
+        "but", "does", "."};
+    if (a->op.size() < 2 || a->op.back() != '=' || a->userOp || a->containerSigil ||
+        kNoCurryBase.count(a->op.substr(0, a->op.size() - 1)) || !a->value)
+        return a;
+    std::vector<ExprPtr*> stars;
+    std::function<void(ExprPtr&)> find = [&](ExprPtr& x) {
+        if (!x || parenned_.count(x.get())) return;
+        switch (x->kind) {
+            case NK::Whatever:
+                if (!static_cast<WhateverExpr*>(x.get())->hyper &&
+                    !static_cast<WhateverExpr*>(x.get())->curryClosed) stars.push_back(&x);
+                return;
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(x.get());
+                static const std::set<std::string> kNoCurry = {
+                    "=", ":=", "~~", "!~~", ",", "=>", "..", "^..", "..^", "^..^", "...", "...^",
+                    "^...", "^...^", "xx", "//", "orelse", "andthen", "notandthen", "but", "does"};
+                if (b->parenned || kNoCurry.count(b->op)) return;
+                find(b->lhs); find(b->rhs); return;
+            }
+            case NK::MethodCall: find(static_cast<MethodCall*>(x.get())->inv); return;
+            case NK::Index: find(static_cast<Index*>(x.get())->base); return;
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(x.get());
+                static const std::set<std::string> kCurryPrefix = {"decont", "-", "+", "~", "?", "!"};
+                if (kCurryPrefix.count(u->op)) find(u->operand);
+                return;
+            }
+            default: return;
+        }
+    };
+    find(a->value);
+    if (stars.empty()) return a;
+    auto be = std::make_unique<BlockExpr>();
+    be->line = a->line;
+    be->isPointy = true;
+    for (size_t i = 0; i < stars.size(); i++) {
+        Param p;
+        p.name = "$__whatever-assign-" + std::to_string(i);
+        be->params.push_back(std::move(p));
+        auto v = std::make_unique<VarExpr>(be->params.back().name);
+        v->line = (*stars[i])->line;
+        *stars[i] = std::move(v);
+    }
+    auto st = std::make_unique<ExprStmt>();
+    st->line = a->line;
+    st->e = std::move(a);
+    be->body.push_back(std::move(st));
+    return be;
+}
+
 ExprPtr Parser::parseExpr(int minbp) {
     struct MinbpScope { int& r; int s; ~MinbpScope() { r = s; } } minbpScope{exprMinbp_, exprMinbp_};
     exprMinbp_ = minbp;
@@ -2903,7 +2963,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             static const std::set<std::string> looseWord = {
                 "or", "and", "xor", "orelse", "andthen", "notandthen"};
             a->value = parseExpr(looseWord.count(opname) ? BP_ZIP : BP_ASSIGN);
-            lhs = std::move(a);
+            lhs = curryCompoundAssign(std::move(a));
             continue;
         }
 
@@ -3007,6 +3067,8 @@ ExprPtr Parser::parseExpr(int minbp) {
             // only a `$` VARIABLE takes item assignment: `$o.h = a => 1, b => 2`
             // (an rw accessor) assigns the whole list, as in Rakudo
             else if (lhs->kind == NK::MethodCall && in.op == "=") listAssign = true;
+            // …and so does a CALL: `f() = 7, 8`, `$obj('k') = 7, 8` (CALL-ME)
+            else if (lhs->kind == NK::Call && in.op == "=") listAssign = true;
         }
 
         int nextMin = listAssign ? BP_ZIP : (in.rightAssoc ? in.lbp : in.lbp + 1); // list assign includes Z/X (looser than comma)
@@ -3054,7 +3116,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 a->containerSigil = in.op[1];
                 a->op = "=";
             }
-            lhs = std::move(a);
+            lhs = curryCompoundAssign(std::move(a));
         } else if (in.isRange) {
             auto r = std::make_unique<RangeExpr>();
             r->from = std::move(lhs); r->to = std::move(rhs);
@@ -4582,8 +4644,10 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             advance();
             auto c = std::make_unique<Call>();
             // (a type wearing a smiley stays the callee: `Int:D(Str)` is that
-            // coercion type, and the name alone would drop the `:D`)
-            if (base->kind == NK::NameTerm && !static_cast<NameTerm*>(base.get())->defConstraint)
+            // coercion type, and the name alone would drop the `:D` — as does a
+            // parameterized one: `Hash[Str,Str]({})` is a Hash[Str,Str])
+            if (base->kind == NK::NameTerm && !static_cast<NameTerm*>(base.get())->defConstraint &&
+                static_cast<NameTerm*>(base.get())->ofType.empty())
                 c->name = static_cast<NameTerm*>(base.get())->name;
             else c->callee = std::move(base);
             c->args = parseCallArgs();
@@ -14701,7 +14765,12 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
              (st->kind == NK::Block && (static_cast<Block*>(st.get())->phaser == "BEGIN" ||
                                         static_cast<Block*>(st.get())->phaser == "CHECK" ||
                                         static_cast<Block*>(st.get())->phaser == "INIT")) ||
-             st->kind == NK::UseStmt)) // `use X` inside a class body loads at declaration (URI does this after `unit class URI`)
+             st->kind == NK::UseStmt || // `use X` inside a class body loads at declaration (URI does this after `unit class URI`)
+             // …and the body's plain control flow runs at declaration too, as
+             // Rakudo runs it: `for <get post> -> $m { ::?CLASS.^add_method: $m, … }`
+             // without the BEGIN is the same API (and was dropped the same way)
+             st->kind == NK::ForStmt || st->kind == NK::IfStmt || st->kind == NK::WhileStmt ||
+             st->kind == NK::LoopStmt || st->kind == NK::RepeatStmt || st->kind == NK::GivenStmt))
             cd->body.push_back(std::move(st));
         // `my $x will leave {…}` in a class body: the body runs once, at
         // declaration, so its LEAVE-ish phasers fire when that run ends
@@ -16709,9 +16778,14 @@ Program Parser::parseProgram() {
     checkRedeclarations(prog.stmts, /*unitScope=*/true);
     // Illegal post-declaration: a class/role/grammar named as a term BEFORE the
     // unit declares it is Rakudo's X::Undeclared::Symbols (with `post_types`)
+    // (a LEXICAL `my class` inside a block is only that block's: a same-named
+    // term elsewhere is not a use of it — `{ my enum <A B>; B }; { my class B {} }`)
     if (!importsModules_ && !declTypesOpaque_)
         for (auto& [n, ln] : earlyTypeUse_)
-            if (declClassDecls_.count(n) && !isKnownTypeName(n))
+            if (declClassDecls_.count(n) && !isKnownTypeName(n) &&
+                !(declClassDecls_.at(n)->isMy &&
+                  std::none_of(prog.stmts.begin(), prog.stmts.end(),
+                               [&](const StmtPtr& st) { return st.get() == declClassDecls_.at(n); })))
                 throw ParseError("Undeclared name:\n    " + n + " used at line " + std::to_string(ln) +
                                  " (illegal post-declaration)", ln, "X::Undeclared::Symbols", {{"post_types", n}});
     for (auto& cp : captureParents_)

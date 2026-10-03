@@ -626,11 +626,13 @@ Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
 //
 // Both `.can` arms — the one on a class and the one on an instance — needed this
 // and each carried a copy, list of universal names included.
-static Value builtinCanStub(const std::string& mn, bool isGrammar) {
+// A grammar's own token/rule/regex is one of its methods too (`G.^can("statement")`).
+static Value builtinCanStub(const std::string& mn, const ClassInfo* ci) {
     static const std::set<std::string> universal = {
         "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
         "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
-    if (!universal.count(mn) && !(isGrammar && (mn == "parse" || mn == "subparse")))
+    if (!universal.count(mn) && !(ci->isGrammar && (mn == "parse" || mn == "subparse")) &&
+        !ci->findRule(mn))
         return Value::nil();
     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
     stub.code()->name = mn; stub.code()->isMethod = true;
@@ -1026,6 +1028,23 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
         if (v.ofType().empty()) v.ofTypeM() = resolveRoleType(at.type);
         std::string want = elemTypeOf(v);
+        // `has P() %.props` COERCES each element it is given (P's COERCE, or
+        // the built-in conversion) rather than refusing what is not one yet
+        if (at.coerce && !want.empty()) {
+            if (v.t == VT::Array && v.arr()) {
+                Value nv = Value::array(); nv.ofTypeM() = v.ofType();
+                for (auto& el : *v.arr())
+                    nv.arr()->push_back(typeOrSubsetMatches(el, want) ? el : coerceToType(el, want));
+                return nv;
+            }
+            if (v.hash()) {
+                Value nv = Value::makeHash(); nv.ofTypeM() = v.ofType();
+                for (auto& kv : *v.hash())
+                    (*nv.hash())[kv.first] = typeOrSubsetMatches(kv.second, want) ? kv.second
+                                                                                   : coerceToType(kv.second, want);
+                return nv;
+            }
+        }
         if (!want.empty()) {
             std::string sym = std::string(1, at.sigil) + "!" + at.name;
             if (v.t == VT::Array && v.arr()) for (auto& el : *v.arr()) checkElemType(want, el, sym);
@@ -6374,7 +6393,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // BUILT-IN methods answer .can too: every class news/blesses/gists,
                 // and a grammar parses (IETF::RFC_Grammar gates on `.can('parse')`)
                 if (out.arr()->empty()) {
-                    Value stub = builtinCanStub(mn, ci->isGrammar);
+                    Value stub = builtinCanStub(mn, &*ci);
                     if (stub.t == VT::Code) out.arr()->push_back(stub);
                 }
                 return out;
@@ -7887,6 +7906,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto ma = inv.code()->mixins.p->attrs.find(m.s);
             if (ma != inv.code()->mixins.p->attrs.end()) return ma->second;
         }
+        // …and a METHOD of such a role: a trait's `$m does Accessible` makes
+        // `$m.is-accessible` (and `.?is-accessible`) answer
+        if (inv.code()->mixins.p && !inv.code()->mixins.p->roles.empty() && m != "WHAT")
+            for (auto& rn : inv.code()->mixins.p->roles) {
+                auto rci = classes_.find(rn);
+                if (rci == classes_.end() || !rci->second) continue;
+                if (Value* um = rci->second->findMethodForCall(m.s)) return invokeMethod(*um, inv, args);
+            }
         // `&foo.file` / `&foo.line` — where the routine was DECLARED. Rakudo
         // answers these on every Code object, and a module's EXPORT routine is
         // the common caller: Identity::Utils decides what to export by asking
@@ -9143,7 +9170,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // grammar parses (IETF::RFC_Grammar gates on `$g.can('parse')`). A stub
         // callable that dispatches for real if someone actually invokes it.
         if (ci && out.arr()->empty()) {
-            Value stub = builtinCanStub(mn, ci->isGrammar);
+            Value stub = builtinCanStub(mn, &*ci);
             if (stub.t == VT::Code) out.arr()->push_back(stub);
         }
         // a BUILTIN value (Match, IO::Path, …) answers .can by PROBING, the same

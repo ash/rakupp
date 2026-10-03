@@ -74,8 +74,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **Subnormal Nums print 15 digits**: `say 3e-320 * 3` is `9e-320` in
   Rakudo (the shortest form that reads back) and `8.99989980464415e-320` here;
   `5e-324` prints `4.94065645841247e-324`. `numToStr` in src/Value.cpp.
-- [ ] **Rakuglaze**: 2113 of 2178 pass. Open: indexing an infinite Str range,
-  anonymous enums, `.VAR` on sigilless names, EVAL with CONTROL.
+- [ ] **Rakuglaze**: 2170 of 2176 pass (round 4, 2026-10-03). Open, all
+  judgement calls: `Supply.list` is eager (Rakudo's is lazy, so a sunk `.list`
+  never taps); an `INIT` in a parameter default runs per call, not once at
+  INIT time; `@a.reverse` hands out copies where Rakudo's List holds the
+  array's own containers; `%h{~$i} = $i++` evaluates the right side first;
+  `('A'..∞).is-lazy` is True (Rakudo False, `'A'..*` True); `Str:D() $s` given
+  a type object (Rakudo: "Internal error: inconsistent bind result"). Also
+  `my \y = $s; y.VAR` is Int (a parameter's is Scalar now), and a `my class`
+  used earlier in its OWN block is no longer reported as a post-declaration.
 - [ ] **#110 constructor type checks**: the module battery gate was never run.
   Open: `A.new ~~ Cool` is True; a List is accepted into Array-typed slots; Mu
   and Junction are accepted into `Any`; native width is not enforced;

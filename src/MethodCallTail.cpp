@@ -627,7 +627,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (inv.t == VT::Pair) {
         if (m == "Pair") return inv;   // .Pair on a Pair is itself
         if (m == "key") return inv.pairKey() ? *inv.pairKey() : Value::str(inv.s); // object/array keys preserved
-        if (m == "value") return inv.pairVal() ? *inv.pairVal() : Value::any();
+        if (m == "value") {
+            if (!inv.pairVal()) return Value::any();
+            Value v = *inv.pairVal();
+            // an object hash's entry keeps its key object beside the value
+            // (elemKey); that is the hash's, and must not travel with the value
+            // into whatever it is assigned to next (`%by{…} = .value`)
+            if (v.t != VT::Pair && v.pairKey()) v.pairKeyM() = nullptr;
+            return v;
+        }
         if (m == "kv") { Value o = Value::array({inv.pairKey() ? *inv.pairKey() : Value::str(inv.s), inv.pairVal() ? *inv.pairVal() : Value::any()}); o.isList = true; return o; }
         if (m == "antipair") {
             // The VALUE becomes the key, as itself — `(a => 1).antipair` is
@@ -792,6 +800,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (inv.t == VT::Array && inv.ext()) {
         auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
         bool infinite = lst->infinite;
+        // a list DECLARED lazy (`lazy gather {…}`) has no count to give
+        // until it is made eager: Rakudo refuses rather than reifying it
+        if (m == "elems" && lst->declaredLazy && !lst->exhausted)
+            throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
         // a sequence whose length is KNOWN (`permutations(30)`, `42 xx 2**62`)
         // answers its count without building anything
         if (lst->hasCount && (m == "elems" || m == "Numeric" || m == "Int" || m == "Bool") &&
@@ -4188,18 +4200,23 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         {{"got", Value::array()}, {"expected", Value::typeObj(wantT)}},
                         "Type check failed in assignment to %h; expected " + wantT + " but got Array");
                 if (it == inv.hash()->end()) {
-                    // a NEW key stores the value as it is; only a LIST value spreads
+                    // a NEW key stores the value as it is — a List, a Slip and all
                     // (append and push agree here — it is the existing-key branch that
-                    // tells them apart)
-                    if (val.t == VT::Array && val.isList) { Value ar = Value::array(); for (auto& x : val.flatten()) ar.arr()->push_back(x); (*inv.hash())[key] = ar; }
-                    else (*inv.hash())[key] = val;
+                    // tells them apart) — in the entry's Scalar: `.raku` of it is
+                    // `$(1, 2)` / `$(slip(…))`
+                    Value& slot = (*inv.hash())[key];
+                    slot = val;
+                    if (slot.t == VT::Array) slot.itemized = true;
                 } else {
-                    if (it->second.t != VT::Array) { Value ar = Value::array(); ar.arr()->push_back(it->second); it->second = ar; }
+                    if (it->second.t != VT::Array) { Value ar = Value::array(); ar.arr()->push_back(it->second); ar.itemized = true; it->second = ar; }
                     // …and a LIST value becomes an Array too — `:b(2, 3)` then
                     // `.append(:b<Y>)` is `[2, 3, "Y"]`, an Array (S32-hash/push.t);
                     // pushing onto the List left it a List.
-                    else if (it->second.isList) { Value ar = Value::array(); for (auto& x : *it->second.arr()) ar.arr()->push_back(x); it->second = ar; }
+                    else if (it->second.isList) { Value ar = Value::array(); for (auto& x : *it->second.arr()) ar.arr()->push_back(x); ar.itemized = true; it->second = ar; }
                     if (m == "append") for (auto& x : val.flatten()) it->second.arr()->push_back(x);
+                    // a Slip pushed onto the Array slips into it, as Array.push does
+                    else if (val.t == VT::Array && val.isList && val.s == "Slip" && val.arr())
+                        for (auto& x : *val.arr()) it->second.arr()->push_back(x);
                     else it->second.arr()->push_back(val);
                 }
             }

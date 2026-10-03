@@ -1793,9 +1793,11 @@ Regex::NodePtr Regex::parseAtom() {
             for (;;) {
                 while (peek() == ' ' || peek() == '\t' || peek() == '\n' || peek() == '\r') pos_++; // blanks between members / before '>'
                 if (peek() == '#') { skipRegexComment(); continue; } // `<[f] #`[why] + [o]>`: a comment between members
-                if (!(peek() == '[' || peek() == '+' || peek() == '-')) break;
+                // (a leading `:Prop` / `:!Prop` is the first member, unsigned: `<:!L - [\#]>`)
+                if (!(peek() == '[' || peek() == '+' || peek() == '-' || (first && peek() == ':'))) break;
                 char op = '+';
-                if (peek() == '+') { pos_++; op = '+'; }
+                if (peek() == ':') {}
+                else if (peek() == '+') { pos_++; op = '+'; }
                 else if (peek() == '-') { pos_++; op = '-'; }
                 while (peek() == ' ' || peek() == '\t') pos_++; // `<+tok - [x]>` — blanks after the op
                 if (peek() == '[') {
@@ -1872,6 +1874,7 @@ Regex::NodePtr Regex::parseAtom() {
             auto mkProp = [&](const std::string& pr) {
                 auto n = std::make_unique<Node>();
                 n->k = K::Class; n->icase = curIcase_; n->uprop = pr;
+                if (!pr.empty() && pr[0] == '!') { n->negate = true; n->uprop = pr.substr(1); }   // `:!L`
                 return n;
             };
             auto seq = std::make_unique<Node>(); seq->k = K::Seq;
@@ -1897,8 +1900,19 @@ Regex::NodePtr Regex::parseAtom() {
             }
             return seq;
         };
+        // `<:!L - [ \# \: ]>` — a Unicode property composed with more members
+        auto propComposes = [&]() -> bool {
+            if (peek() != ':') return false;
+            size_t q = pos_ + 1;
+            if (q < pat_.size() && pat_[q] == '!') q++;
+            size_t st = q;
+            while (q < pat_.size() && (ascii::isalnum((unsigned char)pat_[q]) || pat_[q] == '_')) q++;
+            if (q == st) return false;
+            while (q < pat_.size() && (pat_[q] == ' ' || pat_[q] == '\t')) q++;
+            return q < pat_.size() && (pat_[q] == '+' || pat_[q] == '-');
+        };
         if (peek() == '[' || signThenBracket() || plusThenName() ||
-            negFlagComposes())
+            negFlagComposes() || propComposes())
             return parseComposedClass();
         else if (peek() == '-' && [&]{
                      // Whitespace is insignificant in a regex, so a blank may sit
@@ -4156,41 +4170,76 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         capt = (subtreeCaptures(child) || subtreeCaptures(sep)) ? 1 : 0;
                         n->repCaptures.store(capt, std::memory_order_relaxed);
                     }
-                    std::vector<std::pair<long, long>> markCaps;
-                    GrammarHooks::NamedMap markNamed;
-                    std::vector<std::pair<std::string, size_t>> markKids;
-                    std::map<int, std::vector<std::pair<long, long>>> markReps;
-                    if (capt) {
-                        markCaps = st.caps; markNamed = st.named; markReps = st.capReps;
-                        markKids.reserve(st.children.size());
-                        for (auto& ce : st.children) markKids.emplace_back(ce.first, ce.second.size());
-                    }
-                    auto unwind = [&]() {
-                        if (!capt) return;
-                        st.caps = std::move(markCaps); st.named = std::move(markNamed);
-                        st.capReps = std::move(markReps);
+                    struct CapMark {
+                        std::vector<std::pair<long, long>> caps;
+                        GrammarHooks::NamedMap named;
+                        std::vector<std::pair<std::string, size_t>> kids;
+                        std::map<int, std::vector<std::pair<long, long>>> reps;
+                    };
+                    auto takeMark = [&](CapMark& m) {
+                        m.caps = st.caps; m.named = st.named; m.reps = st.capReps;
+                        m.kids.clear(); m.kids.reserve(st.children.size());
+                        for (auto& ce : st.children) m.kids.emplace_back(ce.first, ce.second.size());
+                    };
+                    auto restoreMark = [&](CapMark& m) {
+                        st.caps = std::move(m.caps); st.named = std::move(m.named);
+                        st.capReps = std::move(m.reps);
                         // occurrences only ever go on at the END of a name's list,
                         // so cutting each list back to its marked length (and
                         // dropping names that were not there) is an exact undo
                         size_t j = 0;
                         for (auto it = st.children.begin(); it != st.children.end(); ) {
-                            while (j < markKids.size() && markKids[j].first < it->first) j++;
-                            if (j < markKids.size() && markKids[j].first == it->first) {
-                                it->second.resize(markKids[j].second);
+                            while (j < m.kids.size() && m.kids[j].first < it->first) j++;
+                            if (j < m.kids.size() && m.kids[j].first == it->first) {
+                                it->second.resize(m.kids[j].second);
                                 ++it;
                             }
                             else it = st.children.erase(it);
                         }
                     };
+                    CapMark mark;
+                    if (capt) takeMark(mark);
+                    auto unwind = [&]() { if (capt) restoreMark(mark); };
+                    int sepCapt = -1;
                     long cnt = count, q = p;
                     while (mx < 0 || cnt < mx) {
                         long np = -1;
                         auto grab = [&](long r) { np = r; return true; };
                         if (cnt > 0 && sep) {
                             // commit the separator at its first (greedy) end even if the
-                            // child then fails — matches the pre-FnRef behavior exactly
+                            // child then fails — matches the pre-FnRef behavior exactly…
+                            // but what a separator with no item after it CAPTURED is
+                            // not kept: `<w>+ %% <op>` then `<op>?` over "a~b~" has
+                            // two ops, not the trailing one twice
+                            // (a light mark — the growing lists by LENGTH — taken only
+                            // when the separator itself can capture)
+                            if (sepCapt < 0) sepCapt = subtreeCaptures(sep) ? 1 : 0;
+                            std::vector<std::pair<long, long>> sCaps;
+                            GrammarHooks::NamedMap sNamed;
+                            std::vector<std::pair<int, size_t>> sReps;
+                            std::vector<std::pair<std::string, size_t>> sKids;
+                            if (sepCapt) {
+                                sCaps = st.caps; sNamed = st.named;
+                                for (auto& r : st.capReps) sReps.emplace_back(r.first, r.second.size());
+                                for (auto& ce : st.children) sKids.emplace_back(ce.first, ce.second.size());
+                            }
                             auto viaSep = [&](long sp) { matchNode(child, st, sp, grab); return true; };
                             matchNode(sep, st, q, viaSep);
+                            if (np < 0 && sepCapt) {
+                                st.caps = std::move(sCaps); st.named = std::move(sNamed);
+                                for (auto it = st.capReps.begin(); it != st.capReps.end(); ) {
+                                    auto f = std::find_if(sReps.begin(), sReps.end(),
+                                                          [&](const auto& r) { return r.first == it->first; });
+                                    if (f == sReps.end()) it = st.capReps.erase(it);
+                                    else { it->second.resize(f->second); ++it; }
+                                }
+                                size_t j = 0;
+                                for (auto it = st.children.begin(); it != st.children.end(); ) {
+                                    while (j < sKids.size() && sKids[j].first < it->first) j++;
+                                    if (j < sKids.size() && sKids[j].first == it->first) { it->second.resize(sKids[j].second); ++it; }
+                                    else it = st.children.erase(it);
+                                }
+                            }
                         } else
                             matchNode(child, st, q, grab);
                         if (np < 0) break;

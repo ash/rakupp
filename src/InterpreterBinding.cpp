@@ -1494,7 +1494,10 @@ void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable
 bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out) {
     bool stringOp;
     if (!tctx_.cur || !userInfixModelledOp(op, stringOp)) return false;
+    // (…and the built-in Dateish values, whose operators are core multis a
+    // user candidate can be narrower than: `multi infix:«-»(Date:D, Str:D)`)
     auto plain = [](const Value& v) {
+        if (v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime")) return true;
         return isDefined(v) && v.hashKind.empty() && !v.isAllomorph() && v.enumType.empty() &&
                (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Str ||
                 v.t == VT::Bool || v.t == VT::Complex);
@@ -1559,10 +1562,12 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
                     "Ambiguous call to '" + name + "(" + tl + ", " + tr + ")'; these signatures all match:" + sigs};
 }
 
-// `try { …; CATCH {…} }` runs its block under `use fatal` (Rakudo): a Failure
-// the block ENDS with is thrown inside it, where its own CATCH sees it. The try
-// sets this for the one call it makes; that call consumes it on entry, so the
-// block's own inner calls run as usual.
+// `try { … }` runs its block under `use fatal` (Rakudo): the call marks the
+// block's scope fatal (a `fail` in it throws, a call in it that answers a
+// Failure throws), and with a CATCH, a Failure the block ENDS with is thrown
+// inside it, where that CATCH sees it. The try sets this for the one call it
+// makes; that call consumes it on entry, so the block's own inner calls run as
+// usual.
 thread_local bool t_fatalTry = false;
 
 // Per-thread stack accounting for the recursion guard. `t_stack.top` is a byte

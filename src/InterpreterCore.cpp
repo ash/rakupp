@@ -4501,6 +4501,16 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.name.size() > 2 && p.name[1] == '!')
                     if (Value* sp = env->find("self"))
                         if (sp->t == VT::Object && sp->obj()) sp->obj()->attrs[p.name.substr(2)] = h;
+                // `*%opts (Int :date-local-offset($))` — the slurped nameds bind
+                // to the sub-signature too, which types and checks them
+                if (p.subSig) {
+                    ValueList inner;
+                    for (auto& kv : *h.hash()) {
+                        Value na = Value::pair(kv.first, kv.second); na.namedArg = true;
+                        inner.push_back(std::move(na));
+                    }
+                    { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*p.subSig, inner, env); }
+                }
             } else {
                 Value a = Value::array();
                 // a capture doesn't CONSUME its args — it sees the whole
@@ -4675,6 +4685,24 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         inner.push_back(na);
                     }
                     { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind}; bindParams(*p.subSig, inner, env); }
+                    // …and the slurped list must fit it: `*@ids ($, *@)` takes at
+                    // least one (Rakudo: "Too few positionals … in sub-signature")
+                    size_t req = 0, mx = 0, got = 0;
+                    if (a.arr()) for (auto& e : *a.arr()) if (!isNamedArg(e)) got++;
+                    bool open = false;
+                    for (auto& ip : *p.subSig) {
+                        if (ip.named || ip.invocant) continue;
+                        if (ip.slurpy || ip.sigil == '|') { open = true; continue; }
+                        mx++;
+                        if (!ip.optional && !ip.defaultVal && !ip.litVal) req++;
+                    }
+                    if (got < req || (!open && got > mx))
+                        throw RakuError{Value::typeObj("X::AdHoc"),
+                            std::string(got < req ? "Too few" : "Too many") + " positionals passed; expected " +
+                            std::string(got < req ? "at least " : "") + std::to_string(got < req ? req : mx) +
+                            " argument" + ((got < req ? req : mx) == 1 ? "" : "s") + " but got " +
+                            std::to_string(got) + " in sub-signature" +
+                            (p.name.empty() ? std::string() : " of parameter " + p.name)};
                 }
                 if (capture) pi = piStart;
             }
@@ -5279,6 +5307,8 @@ static bool classOutsideAny(const Value& arg) {
 bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type == "Any" && (arg.t == VT::Object || arg.t == VT::Type) && classOutsideAny(arg)) return false;
     if (type.empty() || type == "Any" || type == "Mu") return true;
+    // a `Junction $j` candidate takes the junction whole (`multi f(Junction $)`)
+    if (type == "Junction") return isJunction(arg) || (arg.t == VT::Type && arg.s == "Junction");
     // `CORE::v6c::PseudoStash` / `CORE::v6e::PseudoStash`: the revision's own
     // class — a stash made under 6.c or 6.d is the first, under 6.e the second
     if (type.size() == 22 && type.compare(0, 8, "CORE::v6") == 0 && type.compare(9, 13, "::PseudoStash") == 0) {
@@ -6015,6 +6045,18 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                         auto it = av.obj()->attrs.find(key); if (it != av.obj()->attrs.end()) got = &it->second;
                     }
                     if (got && !typeOrSubsetMatches(*got, sp.type)) return -1;
+                }
+                // …and a plain Hash binds AS its pairs, nameds to the inner
+                // signature: the inner `where`s, sub-signatures and the refusal
+                // of a key nothing takes (`% (:$a!)` does not bind {a => 1, b => 2})
+                if (av.t == VT::Hash && av.hash() && (av.hashKind.empty() || av.hashKind == "Map")) {
+                    ValueList inner;
+                    for (auto& kv : *av.hash()) {
+                        Value pr = Value::pair(kv.first, kv.second);
+                        pr.namedArg = true;
+                        inner.push_back(std::move(pr));
+                    }
+                    if (!innerBinds(inner)) return -1;
                 }
                 score += 7 + nominal; // as specific as an arity-matched positional destructure
                 continue;
@@ -6917,7 +6959,8 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     Value last = Value::nil();
     env->declStmts = c.body;
     env->callEnv = true;
-    t_fatalTry = false;   // consumed: it only matters to a body with a CATCH
+    if (t_fatalTry) env->fatalPragma = 1;   // a `try` block's own scope is under `use fatal`
+    t_fatalTry = false;   // consumed
     // what runLeavePhasers does for a body with no LEAVE, KEEP, UNDO or POST
     auto leaveNoPhasers = [&] { tcx.leaveReturned = false; drainTempRestores(tcx.cur.get(), 0); };
     auto failed = [](const Value& v) { return !isDefined(v) || (v.t == VT::Hash && v.hashKind == "Failure"); };
@@ -7307,6 +7350,26 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                         }
                     }
                     if (!anyParam && !proto->hadSig && (!proto->placeholders.empty() || proto->usesArgs)) unbounded = true;
+                    // …and a NAMED argument the proto has no place for fails there
+                    // too, whatever a candidate's `*%` would take:
+                    // `proto f($, :$enc) {*}; f('x', :bogus)` (Rakudo)
+                    if (proto->params && anyParam) {
+                        bool namedOpen = false;
+                        std::set<std::string> keys;
+                        for (auto& p : *proto->params) {
+                            if ((p.slurpy && (p.sigil == '%' || p.sigil == '\\')) || p.sigil == '|') namedOpen = true;
+                            if (!p.named) continue;
+                            if (!p.namedKey.empty()) keys.insert(p.namedKey);
+                            else if (p.name.size() > 1) keys.insert(p.name.substr(1));
+                            if (p.aliasBoth && p.name.size() > 1) keys.insert(p.name.substr(1));
+                            for (auto& k : p.aliasKeys) keys.insert(k);
+                        }
+                        if (!namedOpen)
+                            for (auto& a : as)
+                                if (isNamedArg(a) && !keys.count(a.s.str()))
+                                    throw RakuError{Value::typeObj("X::AdHoc"),
+                                                    "Unexpected named argument '" + a.s.str() + "' passed"};
+                    }
                     if (capSub && (maxPos > 0 || unbounded)) { capSub = nullptr; unbounded = true; }
                     if (capSub) {
                         // the capture's own signature takes the arguments
@@ -8087,6 +8150,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                ((bodyWork & 4) || (env->ex && (!env->ex->tempRestores.empty() || !env->ex->letRestores.empty())));
     };
     const bool fatalHere = t_fatalTry;
+    if (fatalHere) env->fatalPragma = 1;   // a `try` block's own scope is under `use fatal`
     t_fatalTry = false;
     // A CONTROL block in the body is registered for the whole call, as
     // execBlock registers a block's own: `do { CONTROL { when CX::Warn {…} };
@@ -9394,6 +9458,25 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     if (c.name == "Str") return Value::str("");
                     if (c.name == "Bool") return Value::boolean(false);
                 }
+                // …and an INSTANCE meets Any's own candidates: `.gist` when no
+                // user `gist` takes no arguments, and AT-POS on a one-item
+                // "list" — itself at 0, an X::OutOfRange Failure past it
+                if (selfCopy.t == VT::Object) {
+                    size_t npos = 0;
+                    for (auto& a : as) if (!isNamedArg(a)) npos++;
+                    if (c.name == "gist" && npos == 0) return Value::str(gistOf(selfCopy, /*skipUser=*/true));
+                    if (c.name == "AT-POS" && npos == 1 && (as[0].t == VT::Int || as[0].t == VT::Bool)) {
+                        const long long i = as[0].toInt();
+                        if (i == 0) return selfCopy;
+                        Value f = rakuppNewFailure();
+                        (*f.hash())["exception"] = makeTypedEx("X::OutOfRange",
+                            {{"what", Value::str("Index")}, {"got", as[0]}, {"range", Value::str("0..0")}},
+                            "Index out of range. Is: " + std::to_string(i) + ", should be in 0..0");
+                        (*f.hash())["message"] = Value::str("Index out of range. Is: " + std::to_string(i) +
+                                                            ", should be in 0..0");
+                        return f;
+                    }
+                }
                 // …and a PUBLIC ATTRIBUTE's accessor stands behind a multi of
                 // its name the same way. Red adds `multi method id(Mu:U:)` for
                 // the class-level column expression, which took the name from
@@ -9736,6 +9819,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // attribute switched for the rest of the program, and every indirect
     // reference in the file stayed unresolved. (The sub path always drained.)
     const size_t tempMark0 = tcx.cur && tcx.cur->ex ? tcx.cur->ex->tempRestores.size() : 0;
+    // KEEP on a DEFINED result, UNDO on an undefined one (or a Failure), as for a sub
+    auto leaveOk = [](const Value& v) {
+        return isDefined(v) && !(v.t == VT::Hash && v.hashKind == "Failure");
+    };
     auto runLeaves = [&](bool ok, const Value* result = nullptr) {
         if (phasersDone || !c.body) return;
         const bool temps = tcx.cur && tcx.cur->ex && tcx.cur->ex->tempRestores.size() > tempMark0;
@@ -9833,7 +9920,7 @@ resumeMethodBody:
             if (trailingCatch && !explicitTailReturn) last = Value::nil();
         }
     } catch (ReturnEx& r) { if (r.target && r.target < savedFrameTop) { runLeaves(true, &r.v); tcx.cur = saved; throw; }
-                            runLeaves(true, &r.v); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
+                            runLeaves(leaveOk(r.v), &r.v); tcx.cur = saved; copyOutRw(c.params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return checkRetType(c, std::move(r.v)); }
     catch (BreakGivenEx& b) {
@@ -9904,7 +9991,7 @@ resumeMethodBody:
         return checkRetType(c, le.hasVal ? std::move(le.v) : Value::nil());
     }
     catch (...) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
-    runLeaves(true, &last);
+    runLeaves(leaveOk(last), &last);
     tcx.cur = saved;
     copyOutRw(c.params, env, rwArgs);
     // `self = …` in a method on a VALUE type (an `augment`ed Hash/Array/Str) has to
@@ -10881,7 +10968,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // still resolves as a place, as before.
             const Expr* root = mc->inv.get();
             while (root && root->kind == NK::Index) root = static_cast<const Index*>(root)->base.get();
-            if (root && (root->kind == NK::VarExpr || root->kind == NK::SelfTerm)) {
+            // (…and so does a sigilless name: `-> \p { p.value = … }`)
+            if (root && (root->kind == NK::VarExpr || root->kind == NK::SelfTerm ||
+                         root->kind == NK::NameTerm)) {
                 try { base = lvalue(mc->inv.get()); } catch (RakuError&) {}
             }
             else {
@@ -11448,6 +11537,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 for (auto& cand : fp->code()->candidates)
                     if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { rw = true; break; }
         }
+        // `$mv('b') = 7, 8` — an object called through an `is rw` CALL-ME
+        else if (fp && fp->t == VT::Object && fp->obj() && fp->obj()->cls)
+            if (Value* cm = fp->obj()->cls->findMethodForCall("CALL-ME"))
+                rw = cm->t == VT::Code && cm->code() && cm->code()->retRw;
         if (rw) {
             static thread_local Value callRwHold;
             struct WantG { ExecContext& t; int w; Value* o;
@@ -13074,6 +13167,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (!allVars) return rhs;
         Value out = Value::array(); out.isList = true;
         for (auto& it : tl->items) {
+            // read back as a USE: evaluating the declaring `my (Int $e)` again
+            // re-declared it, and an EVAL's last statement (not sunk) answered
+            // — and left — `$e` as the type object
+            // (a `my` only: re-evaluating an `our` is what publishes it)
+            auto* iv = static_cast<VarExpr*>(it.get());
+            const bool wasDecl = iv->declare;
+            if (iv->declScope == "my") iv->declare = false;
+            struct Re { VarExpr* v; bool d; ~Re() { v->declare = d; } } re{iv, wasDecl};
             Value v = eval(it.get());
             char sg = static_cast<VarExpr*>(it.get())->name[0];
             if (sg == '@' && v.t == VT::Array && v.arr()) for (auto& e : *v.arr()) out.arr()->push_back(e);
@@ -14896,6 +14997,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `('x','y','z')` compares the type. Only a non-List Array is demoted,
             // which is what stops the bound items from being flattened together.
             if (opEq(a->op, ":=") && rhs.t == VT::Array) {
+                // a Seq is Iterable but not Positional: a PARAMETER caches one,
+                // a variable bind refuses it (Rakudo: X::TypeCheck::Binding)
+                if (rhs.typeName() == "Seq")
+                    throwTypedV("X::TypeCheck::Binding",
+                                {{"got", rhs}, {"expected", Value::typeObj("Positional")}},
+                                "Type check failed in binding; expected Positional but got Seq");
                 *lv = rhs;
                 // …but the `@` sigil says "this name IS the list": binding an
                 // ITEMIZED array ($[…], which is what the slurpy one-arg rule
@@ -18325,6 +18432,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                   // name match — ask typeMatchesArg, which owns the rule (rakupp#11)
                   (r.s == "UInt" && typeMatchesArg(l, "UInt")) ||
                   (l.t == VT::Bool && (r.s == "Int" || r.s == "Real")) || // Bool is an Int-backed enum
+                  // …and so is any enum whose members are Ints: `R ~~ Int` (Rakudo)
+                  (l.t == VT::Int && !l.enumName.empty() && !l.enumType.empty() && !l.pairVal() &&
+                   (r.s == "Int" || r.s == "Real")) ||
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO")) ||
                   // …and a Failure IS a Nil — that is why `$f // $default`
@@ -22670,7 +22780,7 @@ Value Interpreter::evalUnary(Unary* u) {
             if (u->operand->kind == NK::BlockExpr) {
                 Value blk = makeClosure(static_cast<BlockExpr*>(u->operand.get()));
                 struct FT { ~FT() { t_fatalTry = false; } } ft;
-                t_fatalTry = explicitCatch;
+                t_fatalTry = true;
                 r = callCallable(blk, {});
             }
             else r = eval(u->operand.get());
@@ -23957,6 +24067,30 @@ Value Interpreter::evalCall(Call* c) {
                 return I.callCallable(outer, ValueList{mid});
             };
             return code;
+        }
+        // `Hash[Str,Str]({})` / `Array[Int](@a)` — a PARAMETERIZED container
+        // type applied to a value is that container, filled from it, each
+        // element checked against the parameter as an assignment would
+        if (c->callee->kind == NK::NameTerm && !static_cast<const NameTerm*>(c->callee.get())->ofType.empty() &&
+            args.size() == 1 && !args[0].namedArg) {
+            const std::string& tn = static_cast<const NameTerm*>(c->callee.get())->name;
+            if (tn == "Hash" || tn == "Array") {
+                Value obj = methodCall(eval(c->callee.get()), "new", ValueList{});
+                if (obj.t == VT::Hash && obj.hash()) {
+                    Value src = coerceHash(args[0], /*store=*/false, /*objKeyed=*/false);
+                    if (src.t == VT::Hash && src.hash())
+                        for (auto& kv : *src.hash()) {
+                            checkElemType(obj, kv.second);
+                            methodCall(obj, "ASSIGN-KEY", ValueList{hashEntryKey(src, kv.first, kv.second), kv.second});
+                        }
+                    return obj;
+                }
+                if (obj.t == VT::Array) {
+                    Value src = args[0];
+                    methodCall(obj, "push", src.t == VT::Array || src.t == VT::Range ? src.flatten() : ValueList{src});
+                    return obj;
+                }
+            }
         }
         // `Int:D(Str)` / `Foo:D()` — a type wearing a smiley, applied to nothing
         // or to one TYPE OBJECT, is the coercion type, as the bare `Int(Str)` is;
@@ -27521,6 +27655,8 @@ struct RatLitParts {
             // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
             // marks an infinite range, same as 1..Inf)
             checkRangeEndpoint(from); checkRangeEndpoint(to);
+            // `'A'..∞` is `'A'..*`: a string range with no top
+            if (from.t == VT::Str && to.t == VT::Num && std::isinf(to.n) && to.n > 0) to.t = VT::Whatever;
             // (the `^` markers survive: `1..^*` still excludes its endpoint, which
             // is what .excludes-max and .raku report; a STRING endpoint opposite
             // the Whatever stays a string — see the twin in rangeFromValues)
@@ -28631,6 +28767,22 @@ Value Interpreter::evalVarExpr(Expr* e) {
                         init = methodCall(Value::typeObj(ve->containerIs), "new", none);
                     }
                 }
+                // `state %pc is default({…})` — the element default, as for `my`;
+                // on a scalar the initial AND reset value
+                if (ve->declDefault) {
+                    Value dv = eval(ve->declDefault.get());
+                    checkDeclDefault(ve->declType, sigil, dv, false);
+                    if (sigil == '@' || sigil == '%') {
+                        if (init.t != VT::Array && init.t != VT::Hash)
+                            init = sigil == '@' ? Value::array() : Value::makeHash();
+                        init.elemDefaultM() = std::make_shared<Value>(dv);
+                    } else {
+                        tctx_.curStateEnv->x().varDefault[ve->name] = dv;
+                        if (dv.t == VT::Type && ve->declType.empty())
+                            tctx_.curStateEnv->x().varDefaultUntyped.insert(ve->name);
+                        init = dv;
+                    }
+                }
                 tctx_.curStateEnv->define(ve->name, init);
             }
             return tctx_.curStateEnv->vars[ve->name];
@@ -28991,6 +29143,22 @@ Value Interpreter::evalVarExpr(Expr* e) {
             // a plain VALUE bound to `$/` is its own one-element list: `$0` is `$/[0]`
             else if (ve->name == "$0" && (sl->t == VT::Str || sl->t == VT::Int || sl->t == VT::Num || sl->t == VT::Rat))
                 return *sl;
+        }
+    }
+    // …and `@0` is `@($0)`: the quantified capture's list (or a lone Match's
+    // own positional captures)
+    if (ve->name.size() >= 2 && ve->name.size() < 19 && ve->name[0] == '@' &&
+        ascii::isdigit((unsigned char)ve->name[1])) {
+        bool alldig = true;
+        for (size_t k = 1; k < ve->name.size(); k++) if (!ascii::isdigit((unsigned char)ve->name[k])) alldig = false;
+        if (alldig) if (Value* sl = tctx_.cur->find("$/")) if (sl->arr()) {
+            long idx = std::stol(ve->name.substr(1));
+            Value out = Value::array(); out.isList = true;
+            if (idx >= (long)sl->arr()->size()) { out.arr()->push_back(Value::nil()); return out; }  // @(Nil)
+            Value l = methodCall((*sl->arr())[idx], "list", ValueList{});
+            if (l.t == VT::Array && l.arr()) *out.arr() = *l.arr();
+            else out.arr()->push_back(l);
+            return out;
         }
     }
     // @_ in a block that was never CALLED (a for-loop body, a given block):
@@ -29930,6 +30098,25 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             (*sc.hash())["value"] = inv;
             return sc;
         }
+    }
+    // `\it` bound to a CONTAINER (`f($s)`, `f(@a[0])`) answers that Scalar; one
+    // bound to a value (`f(5)`) or to an Array/Hash answers the value itself
+    if (opEq(mc->method, "VAR") && !mc->methodExpr && !mc->meta && mc->inv->kind == NK::NameTerm) {
+        const std::string& nm = static_cast<NameTerm*>(mc->inv.get())->name;
+        bool contained = false;
+        for (Env* en = tctx_.cur.get(); en; en = en->parent.get())
+            if (Value* raw = en->localRaw(nm)) {
+                // (a literal argument binds readonly: `f(5)` has no container)
+                contained = raw->isCell() || (!raw->readonly && en->xr().rwLinks.count(nm));
+                break;
+            }
+        if (contained && inv.t != VT::Array && inv.t != VT::Hash) {
+                Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+                (*sc.hash())["name"] = Value::str("$" + nm);
+                (*sc.hash())["default"] = Value::any();
+                (*sc.hash())["value"] = inv;
+                return sc;
+            }
     }
     // `%h<a>.VAR` / `@a[0].VAR` — an element of a mutable Hash or Array
     // lives in a Scalar container (a Map's or List's does not)

@@ -49,6 +49,15 @@ bool argIsNeverContainer(const Expr* e) {
 // `DEFINITE` and `so` are NOT routed here — Rakudo keeps both on the
 // representation, and the probe in t/regression/lizmat-nqp-ops.raku pins that.
 bool Interpreter::topicDefined(const Value& v) {
+    // A junction answers by collapsing: `with (1, Any).all` is not taken, and
+    // `(Any, Any).any // 5` is 5 (Rakudo).
+    if (v.t == VT::Array && v.arr() &&
+        (v.enumName == "any" || v.enumName == "all" ||
+         v.enumName == "one" || v.enumName == "none")) {
+        JunctionCollapse jc(v.enumName);
+        for (auto& e : *v.arr()) { jc.feed(topicDefined(e)); if (jc.done()) break; }
+        return jc.verdict();
+    }
     // A TYPE OBJECT can override `defined` as much as an instance can, and
     // `andthen`/`orelse`/`with` are exactly where that override is observable —
     // S03-operators/andthen.t counts the calls.

@@ -2924,11 +2924,14 @@ RakuError Interpreter::dieError(ValueList& a) {
         payload = lst;
     }
     // an object that is not an Exception is thrown as an X::AdHoc CARRYING it
+    // (the X:: name marks only the built-in ones: a program's own `class
+    // X::Libgsl { method throw { die self } }` with no `is Exception` is not one)
     bool isException = false;
     if (payload.t == VT::Object && payload.obj())
         for (ClassInfo* c = payload.obj()->cls.get(); c && !isException; c = c->parent.get())
             if (c->name == "Exception" || c->nativeParent == "Exception" ||
-                c->name.rfind("X::", 0) == 0 || c->name.rfind("CX::", 0) == 0) isException = true;
+                (!c->decl && (c->name.rfind("X::", 0) == 0 || c->name.rfind("CX::", 0) == 0)))
+                isException = true;
     // exception objects: prefer a readable .message / .Str accessor
     if (payload.t == VT::Object && payload.obj() && isException) {
         for (const char* acc : {"message", "Str"}) {

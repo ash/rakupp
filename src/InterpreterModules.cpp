@@ -1527,10 +1527,15 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     }
     const std::string& src = wrapped.empty() ? srcIn : wrapped;
     // (an EVAL runs in its caller's scope, so a `use fatal` inside it must
-    // not outlive it: the pragma is put back as it was)
+    // not outlive it: the pragma is put back as it was — and one OUTSIDE it,
+    // a `try` block's included, does not reach in: the EVAL'd code is a unit
+    // compiled on its own, and starts as `no fatal`)
     struct EvalUnit {
         std::shared_ptr<Env> env; signed char fatal;
-        EvalUnit(const std::shared_ptr<Env>& e) : env(e), fatal(e ? e->fatalPragma : 0) { g_evalUnits.push_back(e); }
+        EvalUnit(const std::shared_ptr<Env>& e) : env(e), fatal(e ? e->fatalPragma : 0) {
+            g_evalUnits.push_back(e);
+            if (e) e->fatalPragma = -1;
+        }
         ~EvalUnit() { g_evalUnits.pop_back(); if (env) env->fatalPragma = fatal; }
     } evalUnit(tctx_.cur);
     // a `unit module Foo;` inside the EVAL scopes the rest of THAT source, not
@@ -1865,7 +1870,15 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // mention in an EARLIER statement resolve: `EVAL '$foo; my $foo = 42'`
     // stopped being X::Undeclared, where Rakudo refuses it and
     // S04-declarations/my-6e.t (and its 6.c twin) checks that it does.
-    auto predeclareStmt = [this](Stmt* s) {
+    // (`my $r = Nil unless $dir.chars` — a statement MODIFIER's `my` declares
+    // in this scope too, and is there, undefined, when the condition skips it)
+    std::function<void(Stmt*)> predeclareStmt = [this, &predeclareStmt](Stmt* s) {
+        if (s->kind == NK::IfStmt) {
+            auto* is = static_cast<IfStmt*>(s);
+            if (is->modifier && is->branches.size() == 1 && is->branches[0].second)
+                for (auto& st : is->branches[0].second->stmts) if (st) predeclareStmt(st.get());
+            return;
+        }
         if (s->kind != NK::ExprStmt) return;
         Expr* e = static_cast<ExprStmt*>(s)->e.get();
         if (!e || e->kind != NK::Assign) return;
@@ -1929,6 +1942,9 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             if (s && s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
                 static_cast<Block*>(s.get())->phaser == "CATCH")
                 unitCatch = static_cast<Block*>(s.get());
+    // registered like a block's, so an error from deeper down that runs the
+    // handlers ahead of its unwinding finds this one before any outside the EVAL
+    CatchReg unitCatchReg{tctx_, unitCatch, &prog->stmts, tctx_.cur};
     for (auto& s : prog->stmts) {
         tctx_.endCurTopStmt = s.get();   // for a `use` in it
         if (s.get() == unitCatch) continue;
@@ -1950,7 +1966,17 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             if (!unitCatch) last = exec(s.get());
             else try { last = exec(s.get()); }
             catch (RakuError& e) {
-                int r = runBlockCatch(prog->stmts, unitCatch, e);
+                int r = 2;
+                switch (catchSeen(unitCatchReg.serial, e)) {
+                case CatchSeen::Taken:  r = replayCatchOutcome(e); break;   // it ran ahead
+                case CatchSeen::Passed: break;
+                case CatchSeen::Fresh: {
+                    CatchFence fence(tctx_, unitCatchReg.serial);
+                    try { r = runBlockCatch(prog->stmts, unitCatch, e); }
+                    catch (RakuError& e2) { markHandlerError(e2, unitCatchReg.serial); throw; }
+                    if (r == 2) markHandlerError(e, unitCatchReg.serial);
+                }
+                }
                 if (r == 2) throw;           // nothing matched: the error goes on
                 if (r == 1) continue;        // .resume: on with the next statement
                 return Value::nil();         // handled: the unit is done
@@ -4600,6 +4626,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             long long counter = 0;
             Value pairs = Value::array();
             Value lastVal;             // the previous member's value (a bare key succeeds it)
+            // an ANONYMOUS enum is still a type its members belong to — `.pred`,
+            // `.succ` and `.enums` walk it — under a hidden name that every
+            // rendering shows as Rakudo shows the empty one: `.^name` is "",
+            // `.raku` is `::B` (Value::typeName, enumTypeShown)
+            std::string enumTypeName = ed->name;
+            if (enumTypeName.empty()) {
+                static std::atomic<unsigned> anonEnums{0};
+                enumTypeName = std::string(kAnonEnumPrefix) + std::to_string(++anonEnums);
+            }
             std::string enumBaseType;  // the type every value must share
             for (auto& it : items) {
                 std::string key; Value val;
@@ -4637,7 +4672,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // a NON-Int enum value (`enum Blerp (One => "Eins")`) keeps its real
                 // value beside the ordinal; `.value` and `.pair` answer with it
                 if (val.t != VT::Int) ev.setPairVal(makePayload<Value>(val));
-                ev.enumType = ed->name; // carry the enum's type identity (for .^name, ~~, .WHAT)
+                ev.enumType = enumTypeName; // carry the enum's type identity (for .^name, ~~, .WHAT)
                 // a short name ANOTHER enum of this scope already claimed is
                 // poisoned: neither can have it (`S1::b` / `S2::b` still work)
                 {
@@ -4652,7 +4687,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     }
                     else tctx_.cur->define(key, ev);
                 }
-                if (!ed->name.empty()) tctx_.cur->define(ed->name + "::" + key, ev);
+                tctx_.cur->define(enumTypeName + "::" + key, ev);   // (`.succ` finds a member by it)
                 // …and under the PACKAGE-QUALIFIED names, so another compilation
                 // unit can write `URI::Query::Mixed`. Without them the qualified
                 // form fell through to a bare type object carrying that name, and
@@ -4673,8 +4708,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
                 pairs.arr()->push_back(Value::pair(key, val));
             }
-            pairs.enumType = ed->name; // the type object itself is the tagged pair-list
-            if (!ed->name.empty()) { enumPairs_[ed->name] = pairs; enumLangRev_[ed->name] = langRev_; }  // reachable from any scope
+            pairs.enumType = enumTypeName; // the type object itself is the tagged pair-list
+            enumPairs_[enumTypeName] = pairs; enumLangRev_[enumTypeName] = langRev_;  // reachable from any scope
             if (!ed->name.empty()) {
                 tctx_.cur->define(ed->name, pairs);
                 if (!tctx_.pkgPrefix.empty()) global_->define(tctx_.pkgPrefix + ed->name, pairs);

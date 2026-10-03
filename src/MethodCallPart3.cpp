@@ -1415,6 +1415,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (nv.t != VT::Str) return methodCall(nv, m, args, rwArgs);
         }
         if (inv.t == VT::Rat) {
+            // a FatRat whose denominator no longer fits a Rat's 64 bits cannot
+            // become one: a soft Failure, as Rakudo's
+            if (!fat && inv.fatRat() && inv.ratD() && !inv.ratD()->fitsU64()) {
+                const std::string msg = "Cannot convert from FatRat to Rat because denominator is too big";
+                Value f = rakuppNewFailure();
+                (*f.hash())["exception"] = makeTypedEx("X::AdHoc", {}, msg);
+                (*f.hash())["message"] = Value::str(msg);
+                return f;
+            }
             r = inv;
             // .Rat on a RatStr allomorph sheds the Str half — keeping the tag made
             // `jsonify(.Rat)` see another RatStr and recurse forever (JSON::Fast)
@@ -4192,6 +4201,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (from < 0) from = 0; if (from > n) from = n;
         if (len < 0) len = 0; if (from + len > n) len = n - from;
         Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind;
+        // …of the same type: `buf8.new(…).subbuf(…)` is a Buf[uint8]
+        if (b.hashKind == "Blob") b.enumName = inv.enumName;
+        else if (!inv.ofType().empty()) b.ofTypeM() = inv.ofType();
         if (b.hashKind == "Buf") identify(b); // a subbuf is a NEW Buf, not a view
         return b;
     }
@@ -5086,7 +5098,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (!line.empty()) { if (!out.empty()) out += '\n'; out += line; }
         return Value::str(out);
     }
-    if (m == "trim" || m == "trim-leading" || m == "trim-trailing") {
+    // 6.e Str methods (Rakudo 2026.09): the whitespace `.trim-leading` /
+    // `.trim-trailing` would remove, and whether that is the whole string
+    const bool wsQuery = inv.t == VT::Str &&
+        (m == "leading-whitespace" || m == "trailing-whitespace" || m == "is-whitespace");
+    if (m == "trim" || m == "trim-leading" || m == "trim-trailing" || wsQuery) {
         // Unicode White_Space, as `.words` splits on — the ASCII-only set left
         // NBSP, form feed and vertical tab in place
         std::string s = inv.toStr();
@@ -5097,7 +5113,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return uniIsSpaceCp(cpAtByte(s, p)) ? adv : 0;
         };
         size_t a = 0, b = s.size();
-        if (m != "trim-trailing") { size_t l; while (a < b && (l = spaceLen(a)) > 0) a += l; }
+        if (m != "trim-trailing" && m != "trailing-whitespace") { size_t l; while (a < b && (l = spaceLen(a)) > 0) a += l; }
+        if (m == "leading-whitespace") return Value::str(s.substr(0, a));
+        if (m == "is-whitespace") return Value::boolean(a == s.size());
         if (m != "trim-leading") {
             while (b > a) { // step back to the start of the last character, test it
                 size_t st = b - 1;
@@ -5107,6 +5125,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 b = st;
             }
         }
+        if (m == "trailing-whitespace") return Value::str(s.substr(b));
         return Value::str(s.substr(a, b - a));
     }
     if (m == "substr" || m == "substr-rw") {

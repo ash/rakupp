@@ -1783,7 +1783,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
     // came from. Junctions tag themselves with enumName too (any/all/one/none)
     // and are NOT enums — they carry no enumType, which is what tells them apart.
     if (!v.enumName.empty() && !v.enumType.empty() && v.t != VT::Bool)
-        return v.enumType.str() + "::" + v.enumName.str();
+        return v.typeName() + "::" + v.enumName.str();   // (an anonymous enum's is `::A`)
     switch (v.t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";
@@ -1954,7 +1954,9 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // Only a Bool value — `:a(Bool)` is the type object. This is the
             // PAIR's own rendering, so it reaches a Pair inside a list or an
             // Array (`[:a]`); Hash.raku spells its entries out in full.
-            if (val.t == VT::Bool && val.enumType.empty())
+            // …and only a value the Pair holds BY VALUE: a container's Bool (a
+            // Hash's entry, `a => $flag`) is spelled out, `:x(Bool::False)`
+            if (val.t == VT::Bool && val.enumType.empty() && v.pairValRO && !v.pairLive())
                 return (val.b ? ":" : ":!") + v.s;
             return ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")";
         }
@@ -3919,6 +3921,12 @@ static bool sigLiteral(Interpreter& I, const Param& p, Value& out, std::string& 
 }
 static std::string sigParamType(const Param& p) {
     if (!p.type.empty()) return p.type;
+    // the SIGIL constrains too: `:($, @)` does not accept `-> $a, $b`
+    if (!p.slurpy) {
+        if (p.sigil == '@') return "Positional";
+        if (p.sigil == '%') return "Associative";
+        if (p.sigil == '&') return "Callable";
+    }
     return "Any";
 }
 static std::set<std::string> sigParamNames(const Param& p) {
@@ -7672,7 +7680,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                          "indices", "lc", "lines", "match", "ord", "ords", "parse-base", "raku", "split",
                          "starts-with", "subst", "subst-mutate", "substr", "substr-eq", "tc", "tclc",
                          "trans", "trim", "uc", "words", "encode", "NFC", "NFD", "NFKC", "NFKD",
-                         "samemark", "wordcase", "succ", "pred", "Date", "DateTime", "IO"}},
+                         "samemark", "wordcase", "succ", "pred", "Date", "DateTime", "IO",
+                         "leading-whitespace", "trailing-whitespace", "is-whitespace"}},
                 {"Int", {"Bool", "Int", "Num", "Rat", "Str", "Range", "chr", "expmod", "is-prime",
                          "lsb", "msb", "pred", "succ", "polymod", "sqrt-rem"}},
                 {"Num", {"Bool", "Int", "Num", "Rat", "Str", "Range", "pred", "succ", "rand"}},

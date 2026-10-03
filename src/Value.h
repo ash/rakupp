@@ -1565,6 +1565,9 @@ struct ParamMetaBox { Value v; };
 // keeps it out of the way of any real key: role attributes live in the same map
 // under their plain names, which is what makes `$a.where` work afterwards.
 inline constexpr const char* ATTR_ROLES_KEY = "\x01roles";
+// The hidden type name an ANONYMOUS enum (`my enum <A B>`) files its members
+// under; it renders as the empty name Rakudo gives it (`.^name` "", `.raku` `::A`).
+inline constexpr const char* kAnonEnumPrefix = "\x01" "anon-enum-";
 // …and where `$attr.container` keeps the one placeholder container it hands out
 inline constexpr const char* ATTR_CONTAINER_KEY = "\x01container";
 

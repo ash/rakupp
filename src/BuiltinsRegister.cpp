@@ -562,8 +562,9 @@ void Interpreter::registerBuiltins() {
         (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
                              ? ex.obj()->attrs["message"] : Value::str("Failed");
         // with no ROUTINE to return from, `fail` behaves like `die` (Rakudo):
-        // the exception itself is thrown where the fail was written
-        if (I.tctx_.curRoutineFrame == 0) {
+        // the exception itself is thrown where the fail was written — and so
+        // it does under `use fatal`, which a `try` block's scope is
+        if (I.tctx_.curRoutineFrame == 0 || I.fatalHere()) {
             std::string msg = (*f.hash())["message"].toStr();
             throw RakuError{ex, msg};
         }
