@@ -1,0 +1,15 @@
+included: 200 ${:api(2)}
+slurpy: 200 a/b/c
+after header: web-features
+static: 200 body { color: teal }⏎
+static type: text/css
+static 404: 404 (error)
+template: 200 <h1>Shop</h1>⏎<ul>⏎  <li>tea costs 3</li>⏎  <li>cake costs 5</li>⏎</ul>⏎<p>fresh today</p>⏎
+streamed: 200 line 1⏎line 2⏎line 3⏎line 4⏎line 5⏎
+events: 200 event: tick⏎data: alpha⏎⏎event: tick⏎data: beta⏎⏎event: tick⏎data: gamma⏎⏎
+streamed bytes: 35
+parallel: slept 600, slept 400, slept 200
+overlapped: yes
+upload: 200 got 1048576 bytes, sum 133693440
+download: 1048576 bytes, same as sent: True
+middleware saw 15 requests, the first /api/version

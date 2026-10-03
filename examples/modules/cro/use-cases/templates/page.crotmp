@@ -1,0 +1,6 @@
+<h1><.title></h1>
+<ul>
+<@items>  <li><.name> costs <.price></li>
+</@>
+</ul>
+<?.note><p><.note></p></?>

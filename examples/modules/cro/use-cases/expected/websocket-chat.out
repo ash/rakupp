@@ -1,0 +1,21 @@
+echo: text desserts
+echo: binary 3 2 1
+ann saw:
+  1 room: ann joined
+  2 room: bob joined
+  3 ann: hi all
+  4 room: cat joined
+  5 bob: hello cat
+  6 room: cat left
+  7 ann: bye
+bob saw:
+  2 room: bob joined
+  3 ann: hi all
+  4 room: cat joined
+  5 bob: hello cat
+  6 room: cat left
+  7 ann: bye
+cat saw:
+  4 room: cat joined
+  5 bob: hello cat
+listeners: Kept Kept Kept

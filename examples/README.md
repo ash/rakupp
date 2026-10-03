@@ -489,6 +489,11 @@ Hello, Cro!
 Without the `cro` tool, `rakupp service.raku` serves the same routes on
 `localhost:10000`.
 
+[`modules/cro/use-cases/`](modules/cro/use-cases) has four larger programs —
+a JSON API, forms and file uploads, middleware through server-sent events, and
+a WebSocket chat room — each running a server and a Cro client together, with
+a checker that compares their output with the expected one.
+
 ---
 
 These are complete programs. `rakupp` can also compile one to a standalone
