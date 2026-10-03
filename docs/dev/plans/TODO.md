@@ -145,8 +145,9 @@ Language) are committed and gated on every push, and
 progress. As of v5.2.0, the release CI builds four Python wheels (macOS
 universal2, manylinux_2_28 x86_64 and aarch64, win_amd64) and smoke-tests each
 one installed in a venv. The Windows export surface and the Windows bindings
-gate now pass in CI. Those four wheels are on PyPI as `rakulang` 5.2.0; a
-later release reaches PyPI by running Actions → PyPI with its tag.
+gate now pass in CI. `pip install rakulang` installs them from PyPI (5.2.0 and
+5.2.1 are published); each release reaches PyPI when Actions → PyPI is run
+with its tag, after the release run is green.
 
 - [ ] **npm**: `rakulang` is not published. The binding is `bun:ffi`, so it
   runs on Bun only. A Node host needs the napi addon, which waits on A5
@@ -156,7 +157,7 @@ later release reaches PyPI by running Actions → PyPI with its tag.
 - [ ] **Go**: the module path is the bare `rakulang`, so `go get` cannot
   fetch it. It needs a repository-qualified path or its own repository.
 - [ ] **Versioning**: one rule for binding versions. Python follows the
-  engine (5.2.0); JavaScript and Rust are at 0.1.0.
+  engine (5.2.1); JavaScript and Rust are at 0.1.0.
 - [ ] **Announcement**: remove the work-in-progress notice once the packages
   above are installable by name.
 - [ ] **More than one interpreter per process**: E5 in
@@ -171,6 +172,11 @@ later release reaches PyPI by running Actions → PyPI with its tag.
   did not get slower. [PYTHON-BINDING-PERF-2026-10-03.md](../findings/PYTHON-BINDING-PERF-2026-10-03.md).
   Next: profile a tight `rk_call` loop on both libraries, then bisect
   v4.0.1..v5.2.0 with shared-library builds.
+- [ ] **Python guide, `*!`**: the factorial example in
+  [bindings/python/README.md](../../../bindings/python/README.md) maps with
+  `{ $_! }` because the published 5.2.1 wheel does not curry `*!`. Switch it
+  to `.map(*!)` once a release carries 14e72451, and re-run the README's
+  programs against that wheel.
 - [ ] **Grammars as a service**: G3 host callbacks and G4 the native Match
   walker, only if a workload needs them. [GRAMMAR-PLAN.md](GRAMMAR-PLAN.md).
 - [ ] **Hosts**:
@@ -207,6 +213,10 @@ later release reaches PyPI by running Actions → PyPI with its tag.
 
 ## 6. Tooling, release and CI
 
+- [ ] **v5.2.1 after the tag**: tagged and on PyPI 2026-10-03. Left: bump
+  the Homebrew tap, and republish raku.online (the release's dashboard point
+  from the artifact, the front page's version, the Roast map). RELEASING.md
+  steps 5 and 6.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.
 - [ ] **setup-rakupp Action**: written, not committed; its repository does not
