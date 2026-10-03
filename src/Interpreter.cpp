@@ -5469,6 +5469,18 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
     if (!gilHeld_) return;                 // no async workers exist; nothing could
                                            // ever settle it — don't deadlock/UB, just return
     if (parallelMode_) {                   // no GIL: just wait for the worker to settle it
+        // …unless this is an event worker (timer, socket reader, a `.then`
+        // continuation), which still serialises on gil_. It must let the
+        // others run while it waits, as sleepYield does: Cro's client, with
+        // two `.then({ await .result.body })` in flight, parked one holding
+        // gil_ while the socket readers that would settle it queued for it.
+        if (t_holdsGil) {
+            gilYieldNotify();
+            ps->cv.wait(plk, [&] { return ps->done; });
+            plk.unlock();                  // drop ps->m BEFORE reacquiring the GIL (as below)
+            gilLock();
+            return;
+        }
         ps->cv.wait(plk, [&] { return ps->done; });
         return;
     }

@@ -1703,7 +1703,15 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     }
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
-              if (tc.returning) { suppressLoopFirst_ = savedSF; return false; } // cooperative return: stop looping
+              // cooperative return: stop looping. A `when … { return … }` in the
+              // body raised the when-match flag too, and nobody past this loop
+              // consumes it: left set, it rode out of the routine and cut the
+              // CALLER's next block to one statement (Cro's run-body-handler,
+              // `for … { when … { return … } }`, made the later
+              // `with Grammar.parse(…) { .ast }` in MediaType.parse yield Any).
+              // A CATCH's `default { return … }` still sees its flag: the
+              // handler consumes it before any loop does.
+              if (tc.returning) { tc.givenCtl = 0; suppressLoopFirst_ = savedSF; return false; }
               // LOOP CONTROL FIRST: `when … { last }` sets BOTH flags — the
               // when-match and the `last`. Consuming the when-flag first said
               // "iteration done" and left the loop flag set, so it travelled out
@@ -4637,7 +4645,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         }
         // destructure a value against p's sub-signature: positionals from the
         // elements, named inner params (`:key($k)`) from the value's accessors
-        auto destructure = [&](const Param& sp, const Value& v) {
+        auto destructure = [&](const Param& sp, const Value& v0) {
+            // An object whose class writes its own `.Capture` binds as THAT
+            // (Cro's form bodies: `request-body -> (:$tags, :$description)`
+            // takes the fields from WWWFormUrlEncoded.Capture's named part).
+            Value v = v0;
+            if (v0.t == VT::Object && v0.obj() && v0.obj()->cls && v0.obj()->cls->findMethod("Capture"))
+                v = methodCall(v0, "Capture", {});
             // a hash sub-signature `%h (:$left, :$right, *%)` binds each `:$k` from the
             // hash's KEY (not a `.k` accessor), and `*%` slurps the remaining keys.
             if (v.t == VT::Hash && v.hash()) {
@@ -4655,6 +4669,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (v.t == VT::Array && v.hashKind != "Capture")
                 for (auto& e : inner)
                     if (e.t == VT::Pair && !e.pairKey()) e.namedArg = true;
+            // a Capture already says which nameds it carries; the accessor
+            // fallback is for plain objects only
+            if (v.hashKind != "Capture")
             for (auto& ip : *sp.subSig)
                 if (ip.named) {
                     std::string key = ip.namedKey.empty()
@@ -5627,6 +5644,34 @@ bool Interpreter::methodTakesAnyNamed(const Callable& c, const ValueList& args) 
     return true;
 }
 
+// The arguments a sub-signature binds from `v`, unpacked as bindParams'
+// destructure unpacks them: an object's own `.Capture`, a Capture's parts as
+// they are, a List's elements with its Str-keyed Pairs as nameds (List.Capture),
+// a Range's elements, a Hash's pairs as nameds. False for anything else, which
+// the older, shape-only checks below still answer.
+static bool subSigArgs(Interpreter& I, const Value& v0, ValueList& out) {
+    Value v = v0;
+    if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("Capture")) {
+        try { v = I.methodCall(v0, "Capture", {}); }
+        catch (RakuError&) { return false; }
+    }
+    if (v.t == VT::Array && v.arr()) {
+        const bool cap = v.hashKind == "Capture";
+        for (auto& e : *v.arr()) {
+            Value x = e;
+            if (!cap && x.t == VT::Pair && !x.pairKey()) x.namedArg = true;
+            out.push_back(std::move(x));
+        }
+        return true;
+    }
+    if (v.t == VT::Range) { for (auto& x : v.flatten()) out.push_back(x); return true; }
+    if (v.t == VT::Hash && v.hash() && (v.hashKind.empty() || v.hashKind == "Map")) {
+        for (auto& kv : *v.hash()) { Value n = Value::pair(kv.first, kv.second); n.namedArg = true; out.push_back(n); }
+        return true;
+    }
+    return false;
+}
+
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                 std::vector<int>* perParam, const Value* selfForWhere) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
@@ -5851,12 +5896,41 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // count matches the sub-signature's positional arity (so `foo([1,2])` picks
         // the two-element candidate over the one-element one).
         if (p->subSig) {
-            size_t reqd = 0, tot = 0; bool sslurpy = false, innerNamed = false;
+            size_t tot = 0; bool innerNamed = false;
             for (auto& sp : *p->subSig) {
                 if (sp.named) { innerNamed = true; continue; }
-                if (sp.slurpy) { sslurpy = true; continue; }
+                if (sp.slurpy) continue;
                 tot++;
-                if (!sp.optional && !sp.defaultVal) reqd++;
+            }
+            // would the unpacked argument bind the inner parameters? The same
+            // scoring, one level down: their types, required nameds, slurpies
+            // and sub-signatures of their own (Signature.ACCEPTS asks this, and
+            // Cro answers 400 rather than 500 when a form lacks a field)
+            auto innerBinds = [&](const ValueList& inner) {
+                auto tmp = makePayload<Callable>();
+                tmp->params = p->subSig.get();
+                tmp->closure = cand.code()->closure;
+                Value tv; tv.t = VT::Code; tv.setCode(tmp);
+                try { return scoreCandidate(tv, inner) >= 0; }
+                catch (RakuError&) { return false; }
+            };
+            // The declared type comes first — `P $ (:$x!)` takes only a P — and
+            // ranks as it would without the sub-signature, which then narrows
+            // it: Rakudo tries `multi m(P $ (:$x!))` before `multi m(P $)` when
+            // both bind. The flat score this branch gave let the plain `P $`
+            // outrank it, and never checked the P at all.
+            int nominal = 0;
+            if (p->sigil == '$' && !p->type.empty() && p->type != "Any" && p->type != "Mu") {
+                if (subsets_.count(p->type)) {
+                    if (!subsetMatches(p->type, pos[i])) return -1;
+                    nominal = 12;
+                }
+                else {
+                    const std::string& t = p->aliasTarget ? *p->aliasTarget
+                                                          : *(p->aliasTarget = &typeAliasTarget(p->type));
+                    if (!typeMatchesArg(pos[i], t)) return -1;
+                    nominal = 8 + (t == pos[i].typeName() ? 2 : 0);
+                }
             }
             // A sub-signature made of NAMED params unpacks by KEY, not by
             // position: `% (:$header!, :$body!)` wants an Associative and
@@ -5868,6 +5942,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // two-argument one.
             if (innerNamed && tot == 0) {
                 const Value& av = pos[i];
+                // an object that writes its own `.Capture` binds as that
+                if (av.t == VT::Object && av.obj() && av.obj()->cls && av.obj()->cls->findMethod("Capture")) {
+                    ValueList inner;
+                    if (!subSigArgs(*this, av, inner) || !innerBinds(inner)) return -1;
+                    score += 7 + nominal;
+                    continue;
+                }
                 bool assoc = typeMatchesArg(av, "Associative");
                 if (p->sigil == '%' ? !assoc : (!assoc && av.t != VT::Object)) return -1;
                 // a required inner key that the hash does not carry cannot bind
@@ -5898,17 +5979,19 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     }
                     if (got && !typeOrSubsetMatches(*got, sp.type)) return -1;
                 }
-                score += 7; // as specific as an arity-matched positional destructure
+                score += 7 + nominal; // as specific as an arity-matched positional destructure
                 continue;
             }
             if (pos[i].t != VT::Array || !pos[i].arr()) return -1;
-            size_t got = pos[i].arr()->size();
-            if (got < reqd) return -1;
-            if (!sslurpy && got > tot) return -1;
+            {
+                ValueList inner;
+                subSigArgs(*this, pos[i], inner);
+                if (!innerBinds(inner)) return -1;
+            }
             // a matching-arity destructure is very specific — and, being a
             // constraint, one more than the bare `@a` it would otherwise tie
             // with: `multi a([])` is tried before `multi a(@a)` (Rakudo)
-            score += 7;
+            score += 7 + nominal;
             continue;
         }
         if (subsets_.count(p->type)) {

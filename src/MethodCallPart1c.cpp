@@ -684,20 +684,18 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             return o;
         }
         if (m == "Supply") {
-            // A live channel (one carrying its source supplier) re-exposes a live
-            // Supply on the SAME supplier, so `$s.Supply.Channel.Supply` forwards
-            // emits (IO::Socket::Async::SSL's read path). A plain (from-list)
-            // channel yields its queued snapshot as a list-backed Supply.
-            std::lock_guard<std::recursive_mutex> lk(chm);
-            if (inv.hash()->count("supplier")) {
-                Value s = Value::makeHash(); s.hashKind = "Supply";
-                (*s.hash())["supplier"] = (*inv.hash())["supplier"];
-                return s;
-            }
-            // Any other channel is Rakudo's on-demand `supply { whenever $c {
-            // emit … } }`: each tap reads what is sent from then on and is done
-            // when the channel closes (rakudo#1974, S17-channel/basic.t). It
-            // answered a snapshot LIST, which nothing could tap.
+            // Every channel is Rakudo's on-demand `supply { whenever $c { emit
+            // … } }`: each tap reads what is sent from then on and is done when
+            // the channel closes (rakudo#1974, S17-channel/basic.t). It answered
+            // a snapshot LIST, which nothing could tap.
+            //
+            // That includes a LIVE channel (`$supplier.Supply.Channel`). It used
+            // to hand back a Supply on the same supplier, which delivered on the
+            // EMITTER's thread; Rakudo's goes through the channel's queue on
+            // the scheduler, and code relies on the hop. Cro's WebSocket
+            // handler feeds the user's block through `.Channel.Supply`, so the
+            // block's `await $message.body` waits for fragments that the frame
+            // parser — the emitter — has yet to deliver.
             auto env = std::make_shared<Env>();
             env->parent = tctx_.cur ? tctx_.cur : global_;
             env->define("$__rakupp_chan", inv);

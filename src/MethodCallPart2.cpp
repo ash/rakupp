@@ -1456,6 +1456,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 ValueList a2; a2.push_back(inv); for (auto& a : args) a2.push_back(a);
                 return methodCall(Value::typeObj("Supply"), m, a2, rwArgs);
             }
+            // .map / .grep / .do are on-demand too: a supply block that taps
+            // this one when IT is tapped (Rakudo's own shape). Draining here ran
+            // the block before anyone tapped and lost every value emitted after
+            // — Cro's web-socket hands `$pipeline.transformer(…).map(*.data)` to
+            // the response, and the upgrade died before the 101 went out.
+            if ((m == "map" || m == "grep" || m == "do") && args.size() == 1 && args[0].t != VT::Pair) {
+                Value& code = m == "map" ? supplyMapCode_ : m == "grep" ? supplyGrepCode_ : supplyDoCode_;
+                if (code.t != VT::Code) {
+                    auto saved = tctx_.cur;
+                    tctx_.cur = global_;
+                    try {
+                        code = evalString(m == "map"
+                            ? "(-> $s, &f { supply { whenever $s -> \\v { emit f(v) } } })"
+                            : m == "grep"
+                            ? "(-> $s, Mu $t { supply { whenever $s -> \\v { emit v if v ~~ $t } } })"
+                            : "(-> $s, &f { supply { whenever $s -> \\v { f(v); emit v } } })");
+                    }
+                    catch (...) { tctx_.cur = saved; throw; }
+                    tctx_.cur = saved;
+                }
+                ValueList ca{inv, args[0]};
+                return callCallable(code, ca);
+            }
             if ((m == "tap" || m == "act") && (reactStack_.empty() || !tctx_.tapStack.empty())) {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
@@ -1887,7 +1910,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*c.hash())["supplier"] = (*inv.hash())["supplier"];
             Value tapRec = Value::makeHash();
             Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-            emitCb.code()->builtin = [qarr](Interpreter&, ValueList& a) -> Value {
+            // the channel's reader runs on another thread: push under its lock
+            // (the stripe is chosen by address, so a raw pointer is enough —
+            // holding the channel here would close a supplier→tap→channel cycle)
+            emitCb.code()->builtin = [qarr, key = (const void*)c.hash()](Interpreter&, ValueList& a) -> Value {
+                std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(key));
                 if (!a.empty()) qarr->push_back(a[0]);
                 return Value::any();
             };
@@ -3604,7 +3631,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& f : chain) f();
             };
             bool now = false;
-            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(run); }
+            // A callback that waits on a still-pending promise runs on a worker
+            // of its own once that promise settles (Rakudo hands it to the
+            // thread pool). Run inline on the SETTLER's thread instead, an
+            // `await` inside it could wait for the very thread it was blocking:
+            // Cro's client keeps the response promise from the socket reader,
+            // and `.then({ await .result.body })` waited for body bytes only
+            // that reader could deliver.
+            std::function<void()> deferred = [self, run]() { self->spawnDelayedNative(0, run); };
+            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(deferred); }
             else if (kind == "timer") spawnDelayedNative(timerRemainingSecs(inv), run); // fire when the timer does, not at t=0
             else if (kind == "anyof" || kind == "allof") thenCombinator(inv, run);     // when its members say so
             else if (kind == "proc") {
