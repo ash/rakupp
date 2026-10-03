@@ -244,6 +244,7 @@ function strTrans(s, pairs, named) {
     const map = new Map();
     const ps = pairs instanceof RList ? pairs.arr() : [pairs];
     const squash = named && truthy(named.get('s') ?? named.get('squash') ?? false), del = named && truthy(named.get('d') ?? named.get('delete') ?? false);
+    const comp = named && truthy(named.get('c') ?? named.get('complement') ?? false);
     if (ps.some(p => p instanceof RPair && p.k instanceof RRegex)) return transRegex(s, ps, squash);
     // A LIST key may name whole strings, not characters — `.trans(['&', '<'] =>
     // ['&amp;', '&lt;'])` is how HTML is escaped — and a multi-character key
@@ -251,13 +252,23 @@ function strTrans(s, pairs, named) {
     // scan, which is the same one a regex key takes.
     if (ps.some(p => p instanceof RPair && expandTrans(p.k).some(f => graphemes(f).length !== 1)))
         return transRegex(s, ps, squash);
+    // :complement — the left side names what to KEEP; every other character
+    // becomes the first replacement character, or goes when there is none
+    let compTo = null;
     for (const p of ps) {
         if (!(p instanceof RPair)) continue;
         const from = expandTrans(p.k), to = expandTrans(p.v);
+        if (compTo === null && from.length) compTo = to.length ? to[0] : '';
         for (let i = 0; i < from.length; i++) map.set(from[i], del ? (i < to.length ? to[i] : '') : (to.length ? to[Math.min(i, to.length - 1)] : ''));
     }
     let out = '', prev = null;   // :squash — a run of characters mapping to the same replacement becomes one
     for (const g of graphemes(s)) {
+        if (comp && compTo !== null) {
+            if (map.has(g)) { out += g; prev = null; continue; }
+            if (squash && prev === compTo) continue;
+            out += compTo; prev = compTo;
+            continue;
+        }
         if (!map.has(g)) { out += g; prev = null; continue; }
         const r = map.get(g);
         if (squash && prev === r) continue;

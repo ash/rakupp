@@ -4311,6 +4311,10 @@ Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); /
 ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false,
                      Interpreter* scope = nullptr);
 Value& rtIndexRef(Value& base, const Value& key, bool isHash);
+Value& rtDerefRef(Value& v, bool isHash);   // `@$h[…] = v`: the Array (Hash) $h holds, or X::Assignment::RO
+Value* rtRwSource(Value& v, bool isHash, Value& hold);   // native rw loops (Codegen::forStmt): the source container
+Value  rtRwKeys(const Value& src);                       // …its keys (indices for an Array)
+Value* rtRwSlot(Value& src, const Value& key);           // …one slot by key, nullptr once gone
 Value  rtReduce(Interpreter& I, const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop — folds via applyReduce
 // Endless operands — an infinite Range (1..Inf / 1..*, which carries the
 // ±LLONG_MAX sentinel in its integer endpoints) or a lazy list with no end.

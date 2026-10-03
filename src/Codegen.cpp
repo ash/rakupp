@@ -285,8 +285,26 @@ struct Codegen {
     // element type of `my Int @a` (`.^name`, the store checks), and the traits
     // that change what a store means. Compiled as a plain variable, each of
     // these answered differently from the interpreter and Rakudo.
+    // a subscript that names several places: `@a[0, 1]`, `[^3]`, `[1..*]`, `[*]`,
+    // `[@idx]`, `<a b>`, `[0, 2 ... 8]`, `[1 xx 3]` (the JS emitter's isSliceIndex)
+    static bool isSliceSubscript(const Expr* i) {
+        switch (i->kind) {
+            case NK::ListExpr: case NK::Range: case NK::Whatever: return true;
+            case NK::ArrayLit: return static_cast<const ArrayLit*>(i)->items.size() != 1;
+            case NK::Unary: return static_cast<const Unary*>(i)->op == "^";
+            case NK::VarExpr: return static_cast<const VarExpr*>(i)->name[0] == '@';
+            case NK::Binary: { const std::string& o = static_cast<const Binary*>(i)->op;
+                return o == "..." || o == "...^" || o == "^..." || o == "^...^" || o == "xx"; }
+            default: return false;
+        }
+    }
     static void refuseDeclTraits(const VarExpr* v) {
         const std::string& n = v->name;
+        // `state $n` (and the anonymous `$++`) keeps its value across runs of
+        // its block; a C++ local is made afresh each time — `for ^2 { state $n;
+        // say $n++ }` printed 0 0 — and `(state $n)++` / `@a[$++]` named a
+        // local nothing declared, failing the whole C++ build
+        if (v->declScope == "state") unsupported("a `state` variable");
         if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->declType.empty())
             unsupported("a typed " + std::string(1, n[0]) + " variable (my " + v->declType + " " + n + ")");
         if (v->declDefault) unsupported("an `is default` variable");
@@ -2792,6 +2810,7 @@ struct Codegen {
     std::string lvalueExpr(Expr* e) {
         if (e->kind == NK::VarExpr) {
             auto* v = static_cast<VarExpr*>(e);
+            if (v->declare) refuseDeclTraits(v);
             if (v->name.size() > 2 && (v->name[0] == '$' || v->name[0] == '@' || v->name[0] == '%')
                 && (v->name[1] == '!' || v->name[1] == '.')) { // $!x = .. / @!y = ..
                 if (self_.empty()) unsupported("attribute assignment outside a method");
@@ -2815,11 +2834,29 @@ struct Codegen {
         if (e->kind == NK::Index) {
             auto* ix = static_cast<Index*>(e);
             if (!ix->adverb.empty()) unsupported("index adverb on assignment");
+            // `@a[0, 1] = 7, 8`: a SLICE is several places, and rtIndexRef is
+            // one — the whole list landed in the element its count named
+            // (`[1 2 (7 8)]`)
+            if (ix->index && isSliceSubscript(ix->index.get())) unsupported("assignment to a slice");
             // A multi-dim slot is not a plain reference into the top-level buffer;
             // assign() routes `@a[i;j] = v` through ASSIGN-POS before reaching here.
             if (ix->multiDim) unsupported("a multi-dimensional index in this position");
             // nested indices chain: @g[$r][$c] = v → rtIndexRef(rtIndexRef(v_g, r), c)
             // (rtIndexRef returns an autovivifying Value&, so the chain is natural)
+            // `@$h[$i] = v` / `%$h<k>++`: the base is the Array (Hash) the scalar
+            // holds — never autovivified, as `$h[$i]` would be (#122)
+            if (ix->base->kind == NK::Unary) {
+                auto* cu = static_cast<Unary*>(ix->base.get());
+                bool arr = cu->op == "ctx@", hsh = cu->op == "ctx%" || cu->op == "ctx%{}";
+                if ((arr || hsh) && hsh == ix->isHash && cu->operand && !ix->multiDim &&
+                    ((cu->operand->kind == NK::VarExpr && static_cast<VarExpr*>(cu->operand.get())->name[0] == '$') ||
+                     cu->operand->kind == NK::Index)) {   // `@(@aoa[1])[0] = v`
+                    std::string base = "rtDerefRef(" + lvalueExpr(cu->operand.get()) + ", " + (hsh ? "true" : "false") + ")";
+                    if (!ix->isHash && hasStarLit(ix->index.get()))
+                        return "rtIndexRefW(" + base + ", " + exArg(ix->index.get()) + ")";
+                    return "rtIndexRef(" + base + ", " + ex(ix->index.get()) + ", " + (hsh ? "true" : "false") + ")";
+                }
+            }
             if (ix->base->kind != NK::VarExpr && ix->base->kind != NK::Index)
                 unsupported("assignment to nested index");
             // `@a[*-1] = v`: the subscript counts from the END — resolved against
@@ -3229,8 +3266,61 @@ struct Codegen {
         }
     }
 
+    // `for @a.kv -> $i, $x is rw` / `for @$h.kv …` / `for %$h.kv -> $k, $v is rw`:
+    // the interpreter's own model (its rw multi-variable arm) — each value is
+    // copied into the variable and copied back into its slot after the body,
+    // `next` and `last` included. Only `.kv` over a container variable: a
+    // one-variable `<->` loop ALIASES the element mid-body in the interpreter,
+    // which a copy cannot show, so it keeps the interpreted form.
+    bool rwKvForStmt(ForStmt* f, int ind) {
+        if (f->destructure || !f->params.empty() || f->vars.size() != 2 || f->list->kind != NK::MethodCall)
+            return false;
+        auto* mc = static_cast<MethodCall*>(f->list.get());
+        if (mc->method != "kv" || !mc->args.empty() || mc->hyper || mc->meta || mc->methodExpr || !mc->inv)
+            return false;
+        Expr* le = mc->inv.get();
+        std::string ref;
+        bool isHash = false;
+        if (le->kind == NK::VarExpr) {               // @a.kv / %h.kv
+            const std::string& n = static_cast<VarExpr*>(le)->name;
+            if (n.size() < 2 || (n[0] != '@' && n[0] != '%') || n[1] == '*') return false;
+            isHash = n[0] == '%';
+            ref = lvalueExpr(le);
+        }
+        else if (le->kind == NK::Unary) {            // @$h.kv / %$h.kv (#123)
+            auto* cu = static_cast<Unary*>(le);
+            if ((cu->op != "ctx@" && cu->op != "ctx%") || !cu->operand || cu->operand->kind != NK::VarExpr ||
+                static_cast<VarExpr*>(cu->operand.get())->name[0] != '$')
+                return false;
+            isHash = cu->op == "ctx%";
+            ref = lvalueExpr(cu->operand.get());
+        }
+        else return false;
+        const bool valRw = f->varTraits.size() > 1 && (f->varTraits[1] & ForStmt::VT_RW);
+        std::string hold = gensym("__rwh"), src = gensym("__rws"), keys = gensym("__rwk"), i = gensym("__rwi"),
+                    key = gensym("__rwkey"), slot = gensym("__rwslot"), wb = gensym("__rwwb");
+        line(ind, "{");
+        line(ind + 1, "Value " + hold + ";");
+        line(ind + 1, "Value* " + src + " = rtRwSource(" + ref + ", " + (isHash ? "true" : "false") + ", " + hold + ");");
+        line(ind + 1, "Value " + keys + " = rtRwKeys(*" + src + ");");
+        line(ind + 1, "for (size_t " + i + " = 0; " + i + " < " + keys + ".arr()->size(); " + i + "++) {");
+        line(ind + 2, "const Value " + key + " = (*" + keys + ".arr())[" + i + "];");
+        line(ind + 2, "Value* " + slot + " = rtRwSlot(*" + src + ", " + key + ");");
+        line(ind + 2, "if (!" + slot + ") continue;   // removed by an earlier iteration");
+        line(ind + 2, declVar(f->vars[0], key) + ";");
+        line(ind + 2, declVar(f->vars[1], "*" + slot) + ";");
+        if (valRw) {
+            line(ind + 2, "auto " + wb + "f = [&]() { if (Value* __p = rtRwSlot(*" + src + ", " + key + ")) *__p = " +
+                          mangleVar(f->vars[1]) + "; };");
+            line(ind + 2, "struct " + wb + "t { decltype(" + wb + "f)& f; ~" + wb + "t() { f(); } } " + wb + "{" + wb + "f};");
+        }
+        loopBody(f->body.get(), ind + 2, f->label);
+        line(ind + 1, "}");
+        line(ind, "}");
+        return true;
+    }
+
     void forStmt(ForStmt* f, int ind) {
-        if (f->rwVars) unsupported("a read-write (<->) loop parameter"); // every branch below binds a COPY
         // `$_ /= 255 for $r, $g, $b`, `clip-to 0, $_, 255 for @$rgb`: the topic
         // ALIASES each element, so a write to it is a write to the element — and
         // every branch below iterates copies. Such a loop keeps its interpreted
@@ -3263,6 +3353,10 @@ struct Codegen {
                 if (n[0] == '$' && !(tr & (ForStmt::VT_RW | ForStmt::VT_RAW))) readonlyVars_.insert(n);
                 else readonlyVars_.erase(n);
             }
+        }
+        if (f->rwVars) {
+            if (rwKvForStmt(f, ind)) return;
+            unsupported("a read-write (<->) loop parameter"); // every branch below binds a COPY
         }
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             // names live in f->vars, or — when the parser produced a real signature

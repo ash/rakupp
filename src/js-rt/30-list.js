@@ -236,6 +236,25 @@ function hviv(h, k, sigil) {
     }
     return hget(h, k);
 }
+// `@$h[$i] = v` / `%$h<k>++`: the subscript base is the Array (Hash) the scalar
+// holds, written in place; anything else would be a fresh copy, so not assignable (#122)
+function derefAt(v, sigil) {
+    v = decont(v);
+    if (sigil === '%' ? (v instanceof RHash && v.ty === T.Hash) : (v instanceof RList && v.ty === T.Array)) return v;
+    throw new RakuError(`Target is not assignable`, 'X::Assignment::RO');
+}
+// read-write `.kv` loops (Js.cpp rwKvFor): the container itself when the
+// variable holds one, else a copy whose writes go nowhere (the interpreter's
+// ordinary path); its keys, taken up front; one slot by key
+function rwSource(v, sigil) {
+    v = decont(v);
+    if (sigil === '%' ? (v instanceof RHash && v.ty === T.Hash) : (v instanceof RList && v.ty === T.Array)) return v;
+    return sigil === '%' ? newHash(v) : mkArray(arr(v).slice());
+}
+function rwKeys(s) { return s instanceof RHash ? Array.from(s.m.keys()) : s.a.map((_, i) => i); }
+function rwHas(s, k) { return s instanceof RHash ? s.m.has(k) : k < s.a.length; }
+function rwGet(s, k) { return s instanceof RHash ? s.get(k) : (s.a[k] ?? Any); }
+function rwSet(s, k, v) { if (rwHas(s, k)) { if (s instanceof RHash) hset(s, k, v); else aset(s, k, v); } }
 function aviv(a, i, sigil) {
     if (a instanceof RList) {
         const idx = Number(toInt(i));
@@ -831,7 +850,7 @@ function smartmatch(v, pat) {
 
 Object.assign(R, { item, decont, bindArray, iterTopic, smartmatchWith, smartmatchType, minMaxAdv, withDefault,
     RList, RSeq, RRange, RHash, mkList, mkArray, mkSeq, mkSlip, seqOf, range, upto, mkHash, hashKey, hget, hset, hexists, hdelete, hslice,
-    hviv, aviv, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
+    hviv, aviv, derefAt, rwSource, rwKeys, rwHas, rwGet, rwSet, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
     assignArray, newArray, newHash, flat, slip, spreadArgs, aget, aset, aslice, aexists, adelete, elemsOf,
     mapList, grepList, matcherOf, firstOf, repeatedList, joinList, reverseList, sumList, sortList, orderNum, minOf, maxOf, minmax, uniqueList, squishList,
     headOf, tailOf, keysOf, valuesOf, kvOf, pairsOf, antipairsOf, invertOf, pushTo, appendTo, unshiftTo, prependTo, popFrom, shiftFrom, spliceArr,

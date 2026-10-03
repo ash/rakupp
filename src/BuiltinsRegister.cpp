@@ -981,8 +981,18 @@ void Interpreter::registerBuiltins() {
             }
             else break;
         }
+        // Rakudo's use-ok is `EVAL "use $code"`: the module is loaded and its
+        // imports land in the EVAL's own scope, which is then dropped. Into
+        // the caller's they leaked, and an exported MAIN was then RUN with the
+        // test's arguments (#124: a CLI's t/00-load.t started the app)
         bool ok = true;
-        try { I.loadModule(bare, {}, /*doImport=*/true, /*quiet=*/false, verReq); } catch (...) { ok = false; }
+        {
+            auto scope = std::make_shared<Env>();
+            scope->parent = I.tctx_.cur;
+            struct CurG { ExecContext& t; std::shared_ptr<Env> s; ~CurG() { t.cur = s; } } cg{I.tctx_, I.tctx_.cur};
+            I.tctx_.cur = scope;
+            try { I.loadModule(bare, {}, /*doImport=*/true, /*quiet=*/false, verReq); } catch (...) { ok = false; }
+        }
         I.restoreTestLine(callLine);
         I.emitTest(ok, a.size() > 1 ? a[1].toStr() : ("The module can be use-d ok: " + mod));
         return Value::boolean(ok);

@@ -2825,12 +2825,29 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         !fs->modifier) {
         Expr* le = fs->list.get();
         bool kvMode = false;
+        // `@$h.kv` / `%$h.kv` / `$h.kv`: a scalar holding the Array (Hash)
+        // hands out that container's own slots too, as `@a.kv` does (#123:
+        // Terminal::UI turns its `fr => 1` pane heights into rows this way,
+        // and the write was silently lost)
+        char derefSigil = 0;
         if (le->kind == NK::MethodCall) {
             auto* mc = static_cast<MethodCall*>(le);
             if (mc->method == "kv" && mc->args.empty() && !mc->hyper && !mc->meta &&
-                !mc->methodExpr && mc->inv->kind == NK::VarExpr && fs->vars.size() == 2) {
-                kvMode = true;
-                le = mc->inv.get();
+                !mc->methodExpr && fs->vars.size() == 2) {
+                Expr* inv = mc->inv.get();
+                if (inv->kind == NK::Unary) {
+                    auto* cu = static_cast<Unary*>(inv);
+                    if (cu->operand && cu->operand->kind == NK::VarExpr &&
+                        static_cast<VarExpr*>(cu->operand.get())->name[0] == '$') {
+                        if (opEq(cu->op, "ctx@")) derefSigil = '@';
+                        else if (opEq(cu->op, "ctx%") || opEq(cu->op, "ctx%{}")) derefSigil = '%';
+                        if (derefSigil) inv = cu->operand.get();
+                    }
+                }
+                if (inv->kind == NK::VarExpr) {
+                    kvMode = true;
+                    le = inv;
+                }
             }
         }
         Value* src = nullptr;
@@ -2838,9 +2855,17 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             const std::string& vn = static_cast<VarExpr*>(le)->name;
             if (!vn.empty() && (vn[0] == '@' || (kvMode && vn[0] == '%')))
                 try { src = lvalue(le); } catch (RakuError&) {}
+            // a scalar holding the Array/Hash itself (`$h.kv`, `@$h.kv`)
+            Value* held = nullptr;
+            if (kvMode && vn.size() > 1 && vn[0] == '$') {
+                try { held = lvalue(le); } catch (RakuError&) {}
+                if (held && ((derefSigil != '%' && held->t == VT::Array) ||
+                             (derefSigil != '@' && held->t == VT::Hash)))
+                    src = held;
+            }
             // `for $pair.kv -> $k, $v is rw`: ONE key and the pair's own
             // value container, which `$k => $v` shares with $v
-            else if (kvMode && vn.size() > 1 && vn[0] == '$') {
+            if (!src && kvMode && !derefSigil && vn.size() > 1 && vn[0] == '$') {
                 Value pv = eval(le);
                 if (pv.t == VT::Pair && pv.pairValS() && !pv.pairValRO) {
                     auto scope = std::make_shared<Env>();
@@ -11323,6 +11348,22 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // for the container — assign into the inner slot
     if (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "ctx$")
         return lvalue(static_cast<Unary*>(e)->operand.get());
+    // `@$h[$i] = v` / `%$h<k>++` — a subscript reaching THROUGH a contextualiser:
+    // when the operand already holds an Array (a Hash for `%`), `@` changes
+    // nothing and the element is that container's own, exactly as `$h[$i]`.
+    // Anything else (a List, a Seq) is coerced into a fresh value and stays
+    // unassignable. Terminal::UI sizes its panes with `@$heights[…]++` (#122).
+    if (asInvocant && e->kind == NK::Unary) {
+        auto* u = static_cast<Unary*>(e);
+        bool arr = opEq(u->op, "ctx@"), hsh = opEq(u->op, "ctx%") || opEq(u->op, "ctx%{}");
+        if ((arr || hsh) && u->operand) {
+            Value* p = nullptr;
+            try { p = lvalue(u->operand.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+            if (p && ((arr && p->t == VT::Array && p->arr() && !p->isList) ||
+                      (hsh && p->t == VT::Hash && p->hash() && p->hashKind.empty())))
+                return p;
+        }
+    }
     // a TERNARY is an lvalue over whichever branch its condition picks:
     // `($c ?? $x !! $y) = 5` writes $x. JSON::Fast passes an rw arg as
     // `$ord == -1 ?? $pos !! ++$pos`, and the write-back comes through here.

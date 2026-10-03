@@ -113,6 +113,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     error (Rakudo 720), and `3!²` drops the `²` (Rakudo 36).
   - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
     answers a WhateverCode, Rakudo a Range.
+  - `for @$list.kv -> $i, $x is rw` over a List: Rakudo dies binding `$x`
+    (not a container); Raku++ runs it and the writes go nowhere.
+  - A `sub EXPORT` inside a `unit module` runs on `use`; Rakudo does not call
+    it there (it has to be outside the module).
+  - Outside `react`, a `Proc::Async` with `:w` feeds its stdout taps only when
+    the start promise is awaited, so an interactive driver never sees a reply
+    before `close-stdin` (found with #121).
 - [ ] **Roast tracks A3**: retire the remaining copy-back mechanisms
   (`rwLinks`, `copyOutRw`, `builtinTopicWB_`, `ArgWriter`).
   [ROAST-TRACKS-PLAN.md](ROAST-TRACKS-PLAN.md). The B1 coroutine code on
@@ -130,6 +137,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - 18 AOT differences in the corpus.
   - Two `-O` differences in t/exe.
   - `--exe` refuses multidim slices.
+  - Refused since 2026-10-03, so these programs are bundled rather than wrong:
+    `state` variables (they compiled as `my`, and `$++` did not compile at
+    all) and assignment to a slice (`@a[0, 1] = 7, 8` filled one element).
+    Native versions are owed: a `static` is right for a top-level sub or loop
+    but not for a cloned closure.
+  - Read-write loops: only `for <container>.kv -> $k, $v is rw` is compiled
+    (in JS too). A one-variable `<->` aliases the element mid-body in the
+    interpreter, so a copy-back cannot stand in for it; `$h.kv` (a Pair is
+    possible there) stays with the interpreter.
   - Rakudo dies on `<`, `<=>`, `%` and `mod` over a Pointer; Raku++ answers.
   - A `*` under a user operator (`*!`, `* quack 5`) is refused and bundled;
     the emitter does not build the curry natively.

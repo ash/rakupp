@@ -3414,12 +3414,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if ((m == "print" || m == "spurt" || m == "write" || m == "say" || m == "put") &&
             !inv.hash()->count("ran")) {
             std::string add;
+            // a NAMED argument is not content: `.spurt($s, :close)` wrote
+            // "close\tTrue" into the child's stdin and left the pipe open
+            bool closeAfter = false;
             if (m == "write" && !args.empty() && args[0].t == VT::Str) add = args[0].s;
-            else for (auto& a : args) add += a.toStr();
+            else for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) {
+                    if (m == "spurt" && a.s == "close" && (!a.pairVal() || a.pairVal()->truthy())) closeAfter = true;
+                    continue;
+                }
+                add += a.toStr();
+            }
             if (m == "say" || m == "put") add += "\n";
             auto pit = inv.hash()->find("pending-in");
             std::string cur = pit != inv.hash()->end() ? pit->second.toStr() : std::string();
             (*inv.hash())["pending-in"] = Value::str(cur + add);
+            if (closeAfter) { ValueList none; return methodCall(inv, "close", none); }
             return Value::boolean(true);
         }
         if (m == "flush") return Value::boolean(true);

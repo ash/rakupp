@@ -8,6 +8,10 @@
 #include "BuiltinsShared.h"
 #include "Parser.h"
 #include <fcntl.h>
+#ifndef _WIN32
+#include <poll.h>
+#include <sys/stat.h>
+#endif
 #ifdef RAKUPP_HAVE_ICONV   // CMakeLists.txt: iconv in libc, or macOS's libiconv
 #include <iconv.h>
 #endif
@@ -108,6 +112,32 @@ static bool succPredExact(const Value& v) {
 // and Rakudo's `.eof` turns True only once a read has found the end — never
 // by looking ahead, which on a terminal would wait for input.
 static std::atomic<bool> g_stdinHitEof{false};
+
+#ifndef _WIN32
+// How many bytes stdio already holds for stdin — what a read can hand out
+// without asking the kernel (gnulib's freadahead, for the libcs we ship on);
+// -1 where the FILE is opaque, and then only the kernel is asked
+static long stdinReadAhead() {
+#if defined(__GLIBC__)
+    long n = (long)(stdin->_IO_read_end - stdin->_IO_read_ptr);
+    if (stdin->_flags & 0x100) n +=   // _IO_IN_BACKUP, which glibc keeps private (gnulib does the same)
+        (long)(stdin->_IO_save_end - stdin->_IO_save_base);
+    return n;
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    return (long)stdin->_r + (stdin->_ub._base ? (long)stdin->_ur : 0);
+#else
+    return -1;
+#endif
+}
+
+// can `fd` be read right now without waiting? (data, or the end)
+static bool fdReadableNow(int fd) {
+    struct pollfd p{fd, POLLIN, 0};
+    int r;
+    do r = ::poll(&p, 1, 0); while (r < 0 && errno == EINTR);
+    return r > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR));
+}
+#endif
 
 // A TEXT read folds CRLF to LF: a handle's default :nl-in is ["\n", "\r\n"] and
 // Rakudo's text decoders translate the separator on the way in — a file, $*IN,
@@ -3262,16 +3292,48 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             long long want = args.empty() ? 65536 : args[0].toInt();
             // $*IN has no path to slurp: read the bytes as they arrive, so a
             // terminal in raw mode delivers each keystroke instead of nothing.
+            // Like Rakudo (one read(2)), it waits for the FIRST byte only and
+            // then hands back what is there: a keypress in raw mode is one
+            // byte, an arrow key its whole escape sequence, and `.read(10)`
+            // does not sit waiting for ten (#121, Terminal::UI's get-key).
             if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
                 std::string got;
                 if (want < 0) want = 0;
-                for (long long i = 0; i < want; i++) {
+                while ((long long)got.size() < want) {
+#ifndef _WIN32
+                    if (!got.empty() && stdinReadAhead() <= 0 && !fdReadableNow(0)) break;
+#endif
                     int c = std::cin.get();
                     if (c == EOF) { g_stdinHitEof = true; break; }
                     got += (char)(unsigned char)c;
                 }
                 return binBuf(got);
             }
+#ifndef _WIN32
+            // a handle on a terminal, a FIFO or a socket (`open("/dev/tty")`)
+            // has no end to slurp up to: read it through a descriptor, one
+            // read(2) at a time, as Rakudo does — the slurp below never
+            // returned on a tty (#121)
+            if (inv.hash()->find("bytes") == inv.hash()->end() && !inv.hash()->count("closed")) {
+                auto st = inv.hash()->find("stream");
+                if (st == inv.hash()->end()) {
+                    struct stat sb{};
+                    bool stream = ::stat((*inv.hash())["path"].toStr().c_str(), &sb) == 0 && !S_ISREG(sb.st_mode) &&
+                                  !S_ISDIR(sb.st_mode);
+                    st = inv.hash()->emplace("stream", Value::boolean(stream)).first;
+                }
+                if (st->second.truthy()) {
+                    if (want <= 0) return binBuf(std::string());
+                    int fd = (int)methodCall(inv, "native-descriptor", ValueList{}).toInt();
+                    if (fd < 0) return binBuf(std::string());
+                    std::string buf((size_t)want, '\0');
+                    ssize_t r;
+                    do r = ::read(fd, &buf[0], (size_t)want); while (r < 0 && errno == EINTR);
+                    buf.resize(r > 0 ? (size_t)r : 0);
+                    return binBuf(buf);
+                }
+            }
+#endif
             if (inv.hash()->find("bytes") == inv.hash()->end()) {
                 std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
                 std::ostringstream ss; ss << in.rdbuf();
@@ -5798,6 +5860,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::vector<const Value*> mpairs;
         bool anyArray = false;
         std::function<void(const Value&)> collect = [&](const Value& a) {
+            // a NAMED argument is never a mapping: :s/:c/:d (any truthy value,
+            // `:delete(1)` too) set the mode, anything else (`:g`, which
+            // Terminal::UI passes) is ignored, as Rakudo's *%_ swallows it
+            if (a.t == VT::Pair && a.namedArg) {
+                bool on = !a.pairVal() || a.pairVal()->truthy();
+                if (a.s == "s" || a.s == "squash")          squash = on;
+                else if (a.s == "c" || a.s == "complement") complement = on;
+                else if (a.s == "d" || a.s == "delete")     del = on;
+                return;
+            }
             if (a.t == VT::Pair && (!a.pairVal() || a.pairVal()->t == VT::Bool)) {
                 bool on = !a.pairVal() || a.pairVal()->truthy();
                 if (a.s == "s" || a.s == "squash")          { squash = on; return; }
@@ -5939,7 +6011,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 while (pos + clen < s.size() && ((unsigned char)s[pos + clen] & 0xC0) == 0x80) clen++;
                 if (bestEnt >= 0) { out.append(s, pos, (size_t)bestLen); pos += (size_t)bestLen; haveLast = false; continue; }
                 if (haveComp) emit(pinText(compTo, Value::str(s.substr(pos, clen))));
-                else if (!del) { out.append(s, pos, clen); haveLast = false; }
+                // an EMPTY replacement side drops what it does not name, as
+                // :delete does (`.trans("ab" => "", :c)` is "ab"); with no
+                // mapping at all there is nothing to complement
+                else if (!del && ents.empty()) { out.append(s, pos, clen); haveLast = false; }
                 pos += clen;
                 continue;
             }

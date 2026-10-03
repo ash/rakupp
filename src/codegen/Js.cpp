@@ -818,6 +818,16 @@ struct JsGen {
     }
     // the base autovivified: `%h{$k}.push(1)` / `%h{$a}{$b} = 1`
     string vivBase(Expr* b, char sigil) {
+        // `@$h[$i] = v` / `%$h<k>++`: the container the scalar holds, never the
+        // copy `@$h` makes as a value (#122)
+        if (b->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(b);
+            bool arr = u->op == "ctx@", hsh = u->op == "ctx%";
+            if ((arr || hsh) && (hsh ? '%' : '@') == sigil && u->operand &&
+                ((u->operand->kind == NK::VarExpr && static_cast<VarExpr*>(u->operand.get())->name[0] == '$') ||
+                 u->operand->kind == NK::Index))   // `@(@aoa[1])[0] = v`
+                return "R.derefAt(" + ex(u->operand.get()) + ", \"" + sigil + "\")";
+        }
         if (b->kind == NK::Index) {
             auto* ix = static_cast<Index*>(b);
             if (ix->adverb.empty() && !ix->multiDim && ix->index) {
@@ -964,8 +974,10 @@ struct JsGen {
         if (op == "postfix ...") refuse("a stub (...)", u->line);
         if (u->postfix) {
             if (op == "++" || op == "--") {
+                // an undefined container answers 0, not itself: `my $x; say $x++` is 0
                 LV lv = lvalue(x); string t = tmp();
-                return lvExpr(lv, t + " = " + lv.get + ", " + lv.set(string(op == "++" ? "R.inc(" : "R.dec(") + t + ")") + ", " + t);
+                return lvExpr(lv, t + " = " + lv.get + ", " + lv.set(string(op == "++" ? "R.inc(" : "R.dec(") + t + ")") +
+                                  ", (R.defined(" + t + ") ? " + t + " : 0)");
             }
             if (op == "i") return "R.mul(" + ex(x) + ", " + litConst("new R.RComplex(0, 1)") + ")";
             if (op == "!") return "R.factorial(" + ex(x) + ")";
@@ -1958,7 +1970,9 @@ struct JsGen {
     }
     // Emit a loop body inside the loop: handles redo, thrown control, FIRST/NEXT/LAST.
     // `head` is the loop header up to the opening brace; `pre` runs before the loop.
-    void loopBody(Stmt* loop, Block* body, int ind, const string& head, const std::function<void()>& bindVars, bool tailBody = false, const string& lastPrelude = "") {
+    // `finallyStmt`: run after every pass of the body however it ends (`next`,
+    // `last`, an exception) — a read-write loop's copy-back (rwKvFor)
+    void loopBody(Stmt* loop, Block* body, int ind, const string& head, const std::function<void()>& bindVars, bool tailBody = false, const string& lastPrelude = "", const string& finallyStmt = "") {
         LoopPhasers ph = loopPhasers(body);
         bool hasRedo = contains(body, [](Node* n) { return n->kind == NK::RedoStmt || (n->kind == NK::Unary && static_cast<Unary*>(n)->op == "redo"); }, true);
         string lbl = label("L");
@@ -1975,6 +1989,7 @@ struct JsGen {
         if (hasRedo) { line(bi, lbl + "_redo: for (;;) {"); bi++; }
         string bodyText = capture([&]() { emitStmts(body->stmts, bi + 1, tailBody); });
         // emitting the body may have set needsCatch (a nested closure signals this loop)
+        if (!finallyStmt.empty()) line(bi, "try {");
         if (loops.back().needsCatch) {
             line(bi, "try {");
             out << bodyText;
@@ -1986,6 +2001,7 @@ struct JsGen {
             line(bi + 1, "throw _e;");
             line(bi, "}");
         } else { line(bi, "{"); out << bodyText; line(bi, "}"); }
+        if (!finallyStmt.empty()) line(bi, "} finally { " + finallyStmt + " }");
         if (!ph.next.empty()) for (auto* b : ph.next) emitStmts(static_cast<Block*>(b)->stmts, bi, false);
         if (hasRedo) { line(bi, "break;"); bi--; line(bi, "}"); }
         line(ind, "}");
@@ -2047,9 +2063,48 @@ struct JsGen {
     void forStmt(ForStmt* f, int ind, bool tail) {
         collecting(f->asExpr, tail, ind, [&](bool tb) { forStmtBody(f, ind, tb); });
     }
+    // `for @a.kv -> $i, $x is rw` / `for @$h.kv …` / `for %$h.kv -> $k, $v is rw`
+    // (#123): the interpreter's model — each value copied into the variable and
+    // back into its slot after the body. A one-variable `<->` aliases mid-body
+    // there, which a copy cannot show, so it stays refused.
+    bool rwKvFor(ForStmt* f, int ind, bool tb) {
+        if (f->destructure || !f->params.empty() || f->vars.size() != 2 || f->list->kind != NK::MethodCall) return false;
+        for (auto& v : f->vars) if (v.size() < 2 || v[0] != '$' || v == "$_") return false;
+        if (!loopPhasers(f->body.get()).last.empty()) return false;   // LAST reads the variables after the loop
+        auto* mc = static_cast<MethodCall*>(f->list.get());
+        if (mc->method != "kv" || !mc->args.empty() || mc->hyper || mc->methodExpr || !mc->inv) return false;
+        Expr* le = mc->inv.get();
+        string cont; char sigil;
+        if (le->kind == NK::VarExpr) {
+            auto* v = static_cast<VarExpr*>(le);
+            const string& n = v->name;
+            if (v->declare || n.size() < 2 || (n[0] != '@' && n[0] != '%') || n[1] == '*' || n[1] == '!' || n[1] == '.') return false;
+            sigil = n[0]; cont = varRef(v);
+        }
+        else if (le->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(le);
+            if ((u->op != "ctx@" && u->op != "ctx%") || !u->operand || u->operand->kind != NK::VarExpr ||
+                static_cast<VarExpr*>(u->operand.get())->name[0] != '$') return false;
+            sigil = u->op == "ctx%" ? '%' : '@'; cont = ex(u->operand.get());
+        }
+        else return false;
+        const bool valRw = f->varTraits.size() > 1 && (f->varTraits[1] & ForStmt::VT_RW);
+        string src = label("_rws"), k = label("_rwk"), kv = mangleVar(f->vars[0]), vv = mangleVar(f->vars[1]);
+        line(ind, "{");
+        line(ind + 1, "const " + src + " = R.rwSource(" + cont + ", \"" + sigil + "\");");
+        loopBody(f, f->body.get(), ind + 1, "for (const " + k + " of R.rwKeys(" + src + "))", [&]() {
+            line(ind + 2, "if (!R.rwHas(" + src + ", " + k + ")) continue;   // removed by an earlier pass");
+            line(ind + 2, "let " + kv + " = " + k + ", " + vv + " = R.rwGet(" + src + ", " + k + ");");
+        }, tb, "", valRw ? "R.rwSet(" + src + ", " + k + ", " + vv + ");" : "");
+        line(ind, "}");
+        return true;
+    }
     void forStmtBody(ForStmt* f, int ind, bool tb) {
         if (f->modifier) hoistModifierDecls(f->body.get(), ind);
-        if (f->rwVars) refuse("a read-write (<->) loop parameter", f->line);
+        if (f->rwVars) {
+            if (!f->modifier && rwKvFor(f, ind, tb)) return;
+            refuse("a read-write (<->) loop parameter", f->line);
+        }
         hoistExprDecls(f->list.get(), ind);
         Expr* le = f->list.get();
         string src = listSource(le);

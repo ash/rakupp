@@ -4484,6 +4484,50 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
         base.arr()->resize(i + 1, containerFill(base));
     return (*base.arr())[i];
 }
+// `@$h[$i] = v` / `%$h<k>++` for native codegen: the scalar's own Array (Hash)
+// is the subscript base, as the interpreter's lvalue() takes it (#122). Any
+// other content is coerced to a fresh value there, so it is not assignable.
+Value& rtDerefRef(Value& v, bool isHash) {
+    if (isHash ? (v.t == VT::Hash && v.hash() && v.hashKind.empty())
+               : (v.t == VT::Array && v.arr() && !v.isList))
+        return v;
+    throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
+}
+// Native read-write loops (Codegen::forStmt): `for @a <-> $x`, `for @$h.kv ->
+// $i, $x is rw`, `for %$h.kv -> $k, $v is rw`. The interpreter's model, step
+// for step: each slot is copied into the loop variable and copied back after
+// the body. The source is the Array (Hash) itself when the variable holds one;
+// anything else is iterated as a coerced copy, whose writes go nowhere — the
+// interpreter's ordinary path.
+Value* rtRwSource(Value& v, bool isHash, Value& hold) {
+    // (an object-keyed hash files its entries under a key the subscript does not spell)
+    if (isHash ? (v.t == VT::Hash && v.hash() && v.hashKind.empty() && !v.objKeyed)
+               : (v.t == VT::Array && v.arr() && !v.isList && !v.ext()))
+        return &v;
+    hold = isHash ? rtCoerceHash(v) : rtArrayVal(v);
+    return &hold;
+}
+// the keys a read-write loop walks, taken before the first iteration
+Value rtRwKeys(const Value& src) {
+    Value out = Value::array();
+    if (src.t == VT::Array && src.arr())
+        for (size_t i = 0; i < src.arr()->size(); i++) out.arr()->push_back(Value::integer((long long)i));
+    else if (src.t == VT::Hash && src.hash())
+        for (auto& kv : *src.hash()) out.arr()->push_back(hashEntryKey(src, kv.first, kv.second));
+    return out;
+}
+// …and the slot for one of them, nullptr once it is gone (a shrunk array, a deleted key)
+Value* rtRwSlot(Value& src, const Value& key) {
+    if (src.t == VT::Array && src.arr()) {
+        long long i = key.toInt();
+        return i >= 0 && i < (long long)src.arr()->size() ? &(*src.arr())[(size_t)i] : nullptr;
+    }
+    if (src.t == VT::Hash && src.hash()) {
+        auto it = src.hash()->find(key.toStr());
+        return it == src.hash()->end() ? nullptr : &it->second;
+    }
+    return nullptr;
+}
 // `--doc` — the unit's `$=pod` through Pod::To::Text, declarator blocks with
 // the declaration they document ("sub foo()\nits doc"), as Rakudo prints it
 std::string Interpreter::docModeText() {
