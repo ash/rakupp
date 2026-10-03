@@ -244,6 +244,68 @@ struct Codegen {
     void line(int ind, const std::string& s) { out << std::string(ind * 4, ' ') << s << "\n"; }
 
     std::set<std::string> codeVars; // `my &name = …` seen so far — calls go through the Value
+
+    // The read-only parameters in scope: a plain `$p` of a routine or a pointy
+    // loop (`for @a -> $x`), which a native local would otherwise let the body
+    // overwrite where Rakudo and the interpreter die. A write to one is
+    // refused (checkWritable) at every site that stores into a variable.
+    std::set<std::string> readonlyVars_;
+    void markParams(const std::vector<Param>& ps) {
+        for (const Param& p : ps) {
+            if (p.name.size() < 2) continue;
+            if (p.name[0] == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.slurpy && !p.invocant &&
+                p.name[1] != '!' && p.name[1] != '.')
+                readonlyVars_.insert(p.name);
+            else readonlyVars_.erase(p.name);
+        }
+    }
+    void checkWritable(Expr* e) {
+        if (!e || e->kind != NK::VarExpr) return;
+        auto* v = static_cast<VarExpr*>(e);
+        if (!v->declare && readonlyVars_.count(v->name))
+            throw CodegenError{"a write to the read-only parameter " + v->name, /*routineWide=*/true};
+    }
+
+    // `&?ROUTINE`: the Code value of the routine being emitted, innermost
+    // last, or "" where the emitter has no such value to name (a method, a
+    // multi candidate, a lexical or anonymous sub). A plain block pushes
+    // nothing: inside it, `&?ROUTINE` is still the routine around it.
+    std::vector<std::string> routineRef_;
+    struct RoutineScope {
+        Codegen* g;
+        RoutineScope(Codegen* c, const std::string& ref) : g(c) { g->routineRef_.push_back(ref); }
+        ~RoutineScope() { g->routineRef_.pop_back(); }
+    };
+
+    // The top-level class and enum declarations the pre-pass registered. One
+    // anywhere else (inside a sub or a block) is emitted by nothing at all.
+    std::set<const Stmt*> topDecls_;
+
+    // A declaration whose container the native backend does not model: the
+    // element type of `my Int @a` (`.^name`, the store checks), and the traits
+    // that change what a store means. Compiled as a plain variable, each of
+    // these answered differently from the interpreter and Rakudo.
+    static void refuseDeclTraits(const VarExpr* v) {
+        const std::string& n = v->name;
+        if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->declType.empty())
+            unsupported("a typed " + std::string(1, n[0]) + " variable (my " + v->declType + " " + n + ")");
+        if (v->declDefault) unsupported("an `is default` variable");
+        if (!v->declCoerce.empty()) unsupported("a coercion-typed variable");
+        if (!v->containerIs.empty() || !v->containerOf.empty()) unsupported("a container-type trait on a variable");
+        if (v->declSmiley) unsupported("a `:D`/`:U` variable");
+        if (v->declWhereExpr || v->declHasWhere) unsupported("a `where`-constrained variable");
+    }
+
+    // `$Foo::greeting` — a package-qualified name lives in a package's stash,
+    // which a program's C++ locals and globals are not: reaching varRef, it
+    // became a reference to a local nothing declares, and the C++ compiler
+    // failed the whole build instead of bundling. A module routine resolves
+    // it through its frame (rtAotOuter), so only the program refuses it.
+    void refusePackageVar(const std::string& name) {
+        if (!moduleMode_ && name.find("::") != std::string::npos && !topVars_.count(name))
+            unsupported("a package-qualified variable '" + name + "'");
+    }
+
     int wcDepth = 0;               // nesting level of WhateverCode closures (0 = not in one)
     std::vector<int> wcArity;      // per-level count of `*` slots consumed
 
@@ -348,6 +410,9 @@ struct Codegen {
     std::set<std::string> moduleExports_;
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
+        // `callframe` reads the INTERPRETER's frames, and native code runs in
+        // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
+        if (name == "callframe") unsupported("callframe");
         if (moduleExports_.count(name) || callEnvNames_.count(name))
             return "RT.callEnvFirst(" + cesc(name) + ", " + vl + ")";
         if (moduleMode_)   // no startup hook to resolve a shared pointer table from: resolve in place, once
@@ -584,13 +649,13 @@ struct Codegen {
     // in the runtime env, so calls (including self-recursive ones) resolve by name.
     struct BodyScope {
         Codegen* g;
-        std::set<std::string> savedHoisted, savedSpecials, savedEnvSubs, savedCells, savedCodeVars, savedReads;
+        std::set<std::string> savedHoisted, savedSpecials, savedEnvSubs, savedCells, savedCodeVars, savedReads, savedReadonly;
         std::vector<std::string> savedCellsLive;
         int savedDepth;
         BodyScope(Codegen* g_, bool closure) : g(g_),
             savedHoisted(g_->hoisted), savedSpecials(g_->boundSpecials),
             savedEnvSubs(g_->envSubs), savedCells(g_->cellVars_),
-            savedCodeVars(g_->codeVars), savedReads(g_->readCaptures_),
+            savedCodeVars(g_->codeVars), savedReads(g_->readCaptures_), savedReadonly(g_->readonlyVars_),
             savedCellsLive(g_->cellsLive_), savedDepth(g_->loopDepth_) {
             g->loopDepth_ = 0;               // break/continue never cross a C++ function boundary
             if (!closure) { g->hoisted.clear(); g->boundSpecials.clear(); g->cellVars_.clear(); g->cellsLive_.clear(); }
@@ -604,6 +669,7 @@ struct Codegen {
             g->codeVars = std::move(savedCodeVars);
             g->cellsLive_ = std::move(savedCellsLive);
             g->readCaptures_ = std::move(savedReads);
+            g->readonlyVars_ = std::move(savedReadonly);
             g->loopDepth_ = savedDepth;
         }
     };
@@ -1067,6 +1133,7 @@ struct Codegen {
     std::string subClosure(SubDecl* d) {
         if (d->isNative) return nativeSubClosure(d);
         Nest __nest{this, 's'};
+        RoutineScope __rs{this, ""};
         std::set<std::string> params;
         for (auto& p : sigOf(d)) if (!p.name.empty()) params.insert(p.name);
         checkClosureCapture(d->body, params); // against the OUTER scope's cells
@@ -1158,6 +1225,9 @@ struct Codegen {
     std::string emitBlockClosure(BlockExpr* be) {
         Nest __nest{this, be->isSub ? 's' : 'b'};
         BodyScope __bs{this, /*closure=*/true};
+        // an anonymous `sub` is a routine of its own; a plain block is not
+        std::unique_ptr<RoutineScope> __rs;
+        if (be->isSub) __rs = std::make_unique<RoutineScope>(this, "");
         bool pushed = false; std::string topic;
         std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
                                                           : std::vector<std::string>{};
@@ -1319,6 +1389,14 @@ struct Codegen {
                 }
                 if (v->name.size() && v->name[0] == '&') { // &sub : a reference to a routine
                     std::string nm = v->name.substr(1);
+                    // `&?ROUTINE` names the routine being emitted; `&?BLOCK` and the
+                    // rest have no compiled form (they used to be builtin calls by
+                    // the name "?ROUTINE": an empty .name, "Undefined routine")
+                    if (!nm.empty() && nm[0] == '?') {
+                        if (nm == "?ROUTINE" && !routineRef_.empty() && !routineRef_.back().empty())
+                            return routineRef_.back();
+                        unsupported("'" + v->name + "' here");
+                    }
                     if (userSubs.count(nm))
                         return subRefSig("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(__a); })", nm);
                     if (multiNames.count(nm))
@@ -1378,6 +1456,8 @@ struct Codegen {
                 if (!v->declare && v->name.size() == 1 &&
                     (v->name[0] == '@' || v->name[0] == '%'))
                     return v->name[0] == '@' ? "Value::array()" : "Value::makeHash()";
+                if (v->declare) refuseDeclTraits(v);
+                refusePackageVar(v->name);
                 return varRef(v->name); // scalars, @arrays and %hashes are all C++ Value locals
             }
             case NK::SelfTerm:
@@ -1611,6 +1691,7 @@ struct Codegen {
                 if (u->postfix) { // $x++ / $x-- as an expression: yield the old value
                     if (u->op == "i") return "RT.postfixIPub(" + ex(u->operand.get()) + ")"; // (2+3)i
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
+                    checkWritable(u->operand.get());
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = optimize_ ? "rtAdd(_o, Value::integer(" + delta + "))"
                                                 : "applyArith(\"+\", _o, Value::integer(" + delta + "))";
@@ -1621,6 +1702,7 @@ struct Codegen {
                            "; Value _o=_r; _r=" + add + "; return _o; }())";
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
+                    checkWritable(u->operand.get());
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = optimize_ ? "rtAdd(_r, Value::integer(" + delta + "))"
                                                 : "applyArith(\"+\", _r, Value::integer(" + delta + "))";
@@ -1690,6 +1772,7 @@ struct Codegen {
                     auto* sub = static_cast<SubstLit*>(b->rhs.get());
                     requireEngineOnlyRegex(sub->pattern, "an `s///` pattern");
                     requireEngineOnlyRegex(sub->repl, "an `s///` replacement");
+                    if (!sub->nonMut) checkWritable(b->lhs.get());
                     return "RT.substApply(&(" + lvalueExpr(b->lhs.get()) + "), "
                          + cesc(sub->pattern) + ", " + cesc(sub->repl) + ", "
                          + (sub->nonMut ? "true" : "false") + ")";
@@ -1886,6 +1969,7 @@ struct Codegen {
                                     Expr* a = c->args[i].get();
                                     bool lv = (a->kind == NK::VarExpr && !static_cast<VarExpr*>(a)->declare)
                                            || a->kind == NK::Index;
+                                    if (lv) checkWritable(a);   // Rakudo: "expected a writable container"
                                     if (lv) o += " " + lvalueExpr(a) + " = __rw[" + std::to_string(i) + "];";
                                 }
                         return o + " return __r; }())";
@@ -1947,6 +2031,7 @@ struct Codegen {
                         unsupported(".= on this invocant");
                     std::string mv = ex(m->methodExpr.get());
                     if (m->mutate) { // $x .= &f — rebind the invocant to the result
+                        checkWritable(m->inv.get());
                         return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; Value __m = " + mv +
                                "; __r = " + coerceFor(m->inv.get(), "rtIndirectMethod(RT, __r, __m, " + argsVL(m->args) +
                                ", " + cesc(pfx) + ", false)") + "; return __r; }())";
@@ -1962,6 +2047,7 @@ struct Codegen {
                 std::string name = pfx + m->method;
                 if (m->mutate) { // $x .= meth : rebind the invocant to the result
                     if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
+                    checkWritable(m->inv.get());
                     // …through the container's assignment: `%h .= map(…)` stores
                     // a Hash built from the Seq, as `%h = %h.map(…)` would
                     return "([&]()->Value{ Value& __r = " + lvalueExpr(m->inv.get()) + "; __r = " +
@@ -2313,7 +2399,7 @@ struct Codegen {
         const size_t savedPre = aotPreamble_.size();
         std::string why;
         std::string text = capture([&]() {
-            try { stmtNative(s, ind); } catch (const CodegenError& e) { why = e.msg.empty() ? "?" : e.msg; }
+            try { stmtNative(s, ind); } catch (const CodegenError& e) { if (e.routineWide) throw; why = e.msg.empty() ? "?" : e.msg; }
         });
         if (why.empty()) { out << text; return; }
         hoisted = std::move(savedHoisted); aotRefs_ = std::move(savedRefs); cellsLive_ = std::move(savedCells);
@@ -2332,7 +2418,7 @@ struct Codegen {
         const size_t savedPre = aotPreamble_.size();
         std::string r, why;
         std::string text = capture([&]() {
-            try { r = exArg(es->e.get()); } catch (const CodegenError& e) { why = e.msg.empty() ? "?" : e.msg; }
+            try { r = exArg(es->e.get()); } catch (const CodegenError& e) { if (e.routineWide) throw; why = e.msg.empty() ? "?" : e.msg; }
         });
         if (why.empty()) { out << text; return r; }
         hoisted = std::move(savedHoisted); aotRefs_ = std::move(savedRefs); cellsLive_ = std::move(savedCells);
@@ -2475,8 +2561,14 @@ struct Codegen {
                 return;
             }
             case NK::SubDecl: return; // registered by hoistLexicalSubs at block entry
-            case NK::EmptyStmt: case NK::EnumDecl:
-            case NK::ClassDecl: return; // subs/enums/classes emitted separately
+            case NK::EmptyStmt: return;
+            case NK::EnumDecl: case NK::ClassDecl: // emitted separately — the top-level ones
+                // one inside a routine or block is in no table the pre-pass built:
+                // an enum's keys read 0, a class had no methods
+                if (!topDecls_.count(s))
+                    unsupported(std::string(s->kind == NK::EnumDecl ? "an enum" : "a class") +
+                                " declared inside a routine or block");
+                return;
             case NK::ExprStmt: {
                 Expr* e = static_cast<ExprStmt*>(s)->e.get();
                 // `my Foo $x .= new(…)` — declare + mutate: the invocant starts as the type object
@@ -2485,6 +2577,7 @@ struct Codegen {
                     if (mc->mutate && !mc->hyper && mc->inv->kind == NK::VarExpr &&
                         static_cast<VarExpr*>(mc->inv.get())->declare) {
                         auto* v = static_cast<VarExpr*>(mc->inv.get());
+                        refuseDeclTraits(v);
                         std::string init = v->declType.empty() ? "Value::any()"
                                          : "Value::typeObj(" + cesc(v->declType) + ")";
                         std::string name = mc->meta ? "^" + mc->method : mc->method;
@@ -2523,6 +2616,7 @@ struct Codegen {
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
                     auto* dv = static_cast<VarExpr*>(e);
+                    refuseDeclTraits(dv);
                     const std::string& nm = dv->name;
                     char sigil = nm.empty() ? '$' : nm[0];
                     std::string sh = shapedInit(dv);            // `my @a[3;2];`
@@ -2552,6 +2646,7 @@ struct Codegen {
                     if (allDecl) {
                         for (auto& it : le->items) {
                             const std::string& nm = static_cast<VarExpr*>(it.get())->name;
+                            refuseDeclTraits(static_cast<VarExpr*>(it.get()));
                             if (atTopLevel_ && topVars_.count(nm)) continue; // global
                             char sigil = nm.empty() ? '$' : nm[0];
                             line(ind, declVar(nm, declInit(static_cast<VarExpr*>(it.get())->declType, sigil)) + ";");
@@ -2700,6 +2795,7 @@ struct Codegen {
             if (v->name == "@*ARGS" || (v->name.size() && v->name[0] == '&') ||
                 (v->name.size() > 1 && v->name[1] == '?'))
                 unsupported("assignment to '" + v->name + "'");
+            refusePackageVar(v->name);
             return varRef(v->name);
         }
         if (e->kind == NK::Index) {
@@ -2788,8 +2884,12 @@ struct Codegen {
                        (inClosure() ? "true" : "false") + ", " +
                        coerceFor(tgt, exArg(a->value.get()), a->value.get()) + ")";
         }
+        checkWritable(tgt);
+        if (tgt->kind == NK::ListExpr)
+            for (auto& it : static_cast<ListExpr*>(tgt)->items) checkWritable(it.get());
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
             auto* dv = static_cast<VarExpr*>(tgt);
+            refuseDeclTraits(dv);
             if (std::string sh = shapedInit(dv, exArg(a->value.get())); !sh.empty()) // `my @a[3;2] = …`
                 return atTopLevel_ && topVars_.count(dv->name) ? mangleVar(dv->name) + " = " + sh
                                                                : declVar(dv->name, sh);
@@ -3125,6 +3225,31 @@ struct Codegen {
             for (auto& st : f->body->stmts)
                 if (writesTopicS(st.get()))
                     unsupported("a loop that writes `$_` (the topic aliases each element)");
+        // The loop's own names, for its body: a `-> &f` variable is CALLED by
+        // that name (`f(…)` was "Undefined routine 'f'"), and a plain one is
+        // read-only. Restored after the loop.
+        struct LoopNames {
+            Codegen* g; std::set<std::string> cv, ro;
+            explicit LoopNames(Codegen* c) : g(c), cv(c->codeVars), ro(c->readonlyVars_) {}
+            ~LoopNames() { g->codeVars = std::move(cv); g->readonlyVars_ = std::move(ro); }
+        } __ln{this};
+        {
+            std::vector<std::string> names = f->vars;
+            if (f->destructure && names.empty() && !f->params.empty() && f->params[0].subSig) {
+                // `-> ($a is copy, &f)` — a real sub-signature keeps its traits
+                for (auto& sp : *f->params[0].subSig)
+                    if (sp.name.size() > 1 && sp.name[0] == '&') codeVars.insert(sp.name.substr(1));
+                markParams(*f->params[0].subSig);
+            }
+            else for (size_t k = 0; k < names.size(); k++) {
+                const std::string& n = names[k];
+                if (n.size() < 2) continue;
+                if (n[0] == '&') codeVars.insert(n.substr(1));
+                const unsigned char tr = k < f->varTraits.size() && !f->destructure ? f->varTraits[k] : 0;
+                if (n[0] == '$' && !(tr & (ForStmt::VT_RW | ForStmt::VT_RAW))) readonlyVars_.insert(n);
+                else readonlyVars_.erase(n);
+            }
+        }
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             // names live in f->vars, or — when the parser produced a real signature
             // (ForStmt.params, one param with a sub-signature) — in that sub-signature
@@ -3745,6 +3870,7 @@ struct Codegen {
         if (a->target->kind != NK::VarExpr) return false;
         auto* tv = static_cast<VarExpr*>(a->target.get());
         if (tv->declare) return false;                 // `my $x = …` declares a C++ var
+        if (readonlyVars_.count(tv->name)) return false;   // assign() refuses it
         if (tv->nativeIntRead || tv->nativeNumRead) return false;   // a native store checks and wraps (coerceFor)
         std::string lv = laneVar(tv);
         if (lv.empty()) return false;
@@ -4777,6 +4903,9 @@ struct Codegen {
         ULoop U;
         uCollectStmt(loop, U);
         if (!U.ok || U.slots.empty() || U.written.empty()) return false;
+        for (auto& w : U.written) if (readonlyVars_.count(w)) return false;   // the boxed path refuses it
+        if (loop->kind == NK::ForStmt)   // …and so its own read-only variable (forStmt marks it)
+            for (auto& v : static_cast<ForStmt*>(loop)->vars) if (U.written.count(v)) return false;
 
         // Fixpoint: widen a slot to F64 the moment anything float reaches it, and
         // re-run until nothing moves. Bounded by the slot count (a slot can only
@@ -4901,6 +5030,7 @@ struct Codegen {
     bool tryLaneIncDec(Unary* u, int ind) {
         if (u->op != "++" && u->op != "--") return false;
         if (u->operand->kind != NK::VarExpr) return false;
+        if (readonlyVars_.count(static_cast<VarExpr*>(u->operand.get())->name)) return false;   // ex() refuses it
         std::string lv = laneVar(static_cast<VarExpr*>(u->operand.get()));
         if (lv.empty()) return false;
         std::string ok = gensym("__lok"), t = gensym("__ln");
@@ -4988,6 +5118,7 @@ struct Codegen {
             if (p.name.size() > 1 && p.name[0] == '&') codeVars.insert(p.name.substr(1)); // sub bin(&op) — op(...) calls the param
             pi++;
         }
+        markParams(ps);
     }
 
     // ---- classes ----
@@ -5206,6 +5337,7 @@ struct Codegen {
         for (auto& p : ps) if (!p.name.empty()) params.insert(p.name);
         analyzeCells(body, params);
         if (fast) {
+            markParams(ps);   // (bindParams does this on the boxed path)
             // -O: direct-Value signature (params are the C++ args themselves — no
             // ValueList). A param mutated by an inner closure takes the sig slot
             // under a synthetic name and re-binds through a shared cell.
@@ -5252,6 +5384,8 @@ struct Codegen {
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
+        RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
+                                          mangleSub(d->name) + "(__a); })", d->name)};
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
                 kernelSubs_.count(d->name) ? d->name : std::string());
     }
@@ -5267,6 +5401,7 @@ struct Codegen {
                 if (p.whereExpr || p.defConstraint)
                     unsupported("a multi candidate with a where/:D constraint");
         std::map<SubDecl*, int> idx;
+        RoutineScope __rs{this, ""};   // a candidate's &?ROUTINE is the candidate, not the dispatcher
         for (size_t i = 0; i < cands.size(); i++) {
             idx[cands[i]] = (int)i;
             bodyDef(mangleSub(name) + "__" + std::to_string(i), cands[i]->params, cands[i]->body);
@@ -5415,6 +5550,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             if (cd->isRole || cd->isPackage) throw CodegenError{"a role/package"};
             g.classNames.insert(cd->name);
             g.classDecls_[cd->name] = cd;
+            g.topDecls_.insert(cd);
             classes.push_back(cd);
             // A class-BODY `my` variable is lexically visible to that class's
             // methods (`class C { my %h = …; method m { %h<a> } }`). Methods are
@@ -5434,6 +5570,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             forEachMyDecl(s.get(), asTopVar); // top-level `my` → C++ global, so subs see it
         } else if (s->kind == NK::EnumDecl) {
             auto* ed = static_cast<EnumDecl*>(s.get());
+            g.topDecls_.insert(ed);
             Expr* v = ed->values.get();
             std::vector<ExprPtr>* items = v && v->kind == NK::ArrayLit ? &static_cast<ArrayLit*>(v)->items
                                         : v && v->kind == NK::ListExpr ? &static_cast<ListExpr*>(v)->items : nullptr;
@@ -5729,6 +5866,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
             if (n == "$/" || n == "$!") g.boundSpecials.insert(n);
             if (n[0] == '&') g.codeVars.insert(n.substr(1));
         }
+        g.markParams(d->params);
         g.line(2, "try {");
         g.emitBody(d->body);
         g.line(2, "} catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }");

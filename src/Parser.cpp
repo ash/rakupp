@@ -1439,6 +1439,11 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                      // is deliberately NOT here: it is the Perl 5 dereference,
                      // which Rakudo refuses outright and points at `@( … )`.)
                      (t.text == "%" && peek().kind == Tok::LBrace && !peek().spaceBefore) ||
+                     // …and `@$<seg>`, the contextualized match capture, whose
+                     // variable lexes as a bare `$` with the `<` glued after it:
+                     // `make @$<seg>.join` was a nullary `make` and a stray term
+                     (peek().kind == Tok::Var && !peek().spaceBefore && peek().text == "$" &&
+                      peek(2).kind == Tok::Op && peek(2).text == "<" && !peek(2).spaceBefore) ||
                      (peek().kind == Tok::Var && !peek().spaceBefore && peek().text.size() > 1))) || // `%(...)` / `@(...)` / `%{...}` / `@$x` / `%$h` contextualizers
                    (t.text == "&" && &t == &cur() && !peek().spaceBefore &&
                     (peek().kind == Tok::LBracket ||   // infix-as-value `say &[+](2,3)`
