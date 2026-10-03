@@ -489,11 +489,12 @@ that does is `--lsp`.
 ### `--lsp`: the language server
 
 `rakupp --lsp` speaks the Language Server Protocol on stdin/stdout, for an
-editor that talks to a server rather than shelling out per file. It is a
-**diagnostics** server: it parses what the editor sends and answers with the
-same findings `-c` and `--lint` produce, so the errors an editor underlines are
-the errors a build would report. It has no completion, hover or
-go-to-definition, and it answers nothing else.
+editor that talks to a server rather than shelling out per file. It parses what
+the editor sends and answers with the same findings `-c` and `--lint` produce,
+each underlined on the token it is about, so the errors an editor underlines
+are the errors a build would report. It also answers hover, completion and
+go-to-definition from the file's declarations and the built-in reference. It
+never runs the file.
 
 Start it the way the editor wants — a command of `rakupp --lsp`, no arguments —
 and it runs until the editor closes the connection. `--stdio`, which some
@@ -501,8 +502,10 @@ clients append (VS Code's does), is accepted and changes nothing; stdio is the
 only transport. Outside `--lsp` it is an illegal option. Malformed or hostile input
 is dropped rather than fatal: the framing rejects an impossible
 `Content-Length`, the parser caps nesting depth, and a bad `\u` escape ends
-the string instead of the process. Setting it up in VS Code, and what each
-diagnostic means, is in [integrations/LSP.md](integrations/LSP.md).
+the string instead of the process. Setting it up in VS Code, what each
+diagnostic means and what hover and completion know are in
+[integrations/LSP.md](integrations/LSP.md); Emacs has
+[integrations/EMACS.md](integrations/EMACS.md).
 
 ### Undeclared variables are refused before the program runs
 
@@ -566,6 +569,7 @@ line of the frame the error came from.
 | `--color=auto\|always\|never` | ANSI colour: `auto` (the default) means a terminal, unless `NO_COLOR` is set; `always` colours even into a pipe; `never` never. The same switch governs the REPL's prompt, echo and error colour. `--colour` is accepted too |
 | `NO_COLOR` | no ANSI colour, by the no-color.org convention (present and non-empty) |
 | `RAKUPP_COLOR=0` / `=1` | what `--color=never` / `always` set; the environment form |
+| `TERM=dumb` | the REPL is plain: no colour, no line editor, a bare `> ` prompt and line-by-line reads. Emacs sets it for `M-x run-raku` and `M-x shell`, which cannot follow cursor movement. `RAKUPP_COLOR=1` still colours |
 | `RAKUPP_UNICODE=0` / `=1` | the non-ASCII glyphs in rakupp's own output — `-V`'s Camelia — off or on. The default is on at a terminal in a UTF-8 locale and off into a pipe, so captured output is the same bytes everywhere |
 
 On Windows `auto` asks one more question: a console only *renders* an escape
@@ -660,8 +664,8 @@ rakupp --completions=fish > ~/.config/fish/completions/rakupp.fish
 ## Serving
 
 Three modes turn the process into a server for another tool. [integrations/](integrations/README.md)
-has a guide for each: `--lsp` (an editor's diagnostics, described
-[above](#--lsp-the-language-server)), `--mcp` and `--jupyter`.
+has a guide for each: `--lsp` (an editor's diagnostics, hover and completion,
+described [above](#--lsp-the-language-server)), `--mcp` and `--jupyter`.
 
 `--mcp` turns the process into a [Model Context Protocol](integrations/MCP.md) server on
 stdio, so AI agent clients get `raku` (a persistent session) and

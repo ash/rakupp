@@ -8,7 +8,8 @@ side.
 
 | You want | Command | Protocol | Guide |
 |---|---|---|---|
-| Errors and lint warnings underlined in VS Code or another editor | `rakupp --lsp` | Language Server Protocol | [LSP.md](LSP.md) |
+| Errors underlined, hover, completion and go-to-definition in VS Code or another editor | `rakupp --lsp` | Language Server Protocol | [LSP.md](LSP.md) |
+| Raku in Emacs: highlighting, errors as you type, completion, documentation, a REPL buffer | `rakupp --lsp` and `rakupp` | Language Server Protocol; a REPL on a pty | [EMACS.md](EMACS.md); never used Emacs: [EMACS-101.md](EMACS-101.md) |
 | An AI agent (Claude Code, Claude Desktop, Cursor, …) that can run Raku and parse with grammars | `rakupp --mcp` | Model Context Protocol | [MCP.md](MCP.md) |
 | Raku cells in JupyterLab, Notebook, `jupyter console` or VS Code notebooks | `rakupp --jupyter-install`, then pick **Raku++** | Jupyter messaging over ZMTP | [JUPYTER.md](JUPYTER.md) |
 | Raku called from Mathematica or the Wolfram Engine | ``Get["RakuLang.wl"]`` | the Wolfram FFI over `librakupp` | [bindings/wolfram](../../../bindings/wolfram/README.md) |

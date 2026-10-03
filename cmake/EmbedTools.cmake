@@ -67,6 +67,10 @@ std::string upgradeToolSource() {
     return std::string(reinterpret_cast<const char*>(kUpgrade), kUpgradeLen);
 }
 
+std::string referenceGuide() {
+    return std::string(reinterpret_cast<const char*>(kRef), kRefLen);
+}
+
 // A guide as a Raku heredoc body. Q:to/…/ interpolates nothing and unescapes
 // nothing, so the Markdown goes in as it is; the only text that could end it
 // early is a line spelled exactly like the terminator, which

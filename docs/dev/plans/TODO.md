@@ -225,13 +225,21 @@ with its tag, after the release run is green.
 - [ ] **Hosts**:
   - Jupyter: its gaps wait on an `rk_interrupt` ABI.
   - MCP: embedded sessions never join start-workers.
-  - LSP: needs a review. Diagnostics span whole lines; only full-document
-    sync; hover, completion, go-to-definition and formatting are not written;
-    the VS Code extension is unpublished. 2026-10-03: the extension could
-    never start the server (it appends `--stdio`, which rakupp refused); fixed
-    in src/main.cpp, verified in VS Code 1.140, user guide in
-    docs/guide/integrations/LSP.md. `vsce package` fails from a copy of the
-    folder outside the repo ("entrypoint(s) missing"); it works in place.
+  - LSP: diagnostics (on the token: LintFinding::subject, ParseError::got),
+    hover, completion and go-to-definition (src/LspIndex.cpp, token-based,
+    REFERENCE.md baked via referenceGuide()) since 2026-10-03,
+    t/regression/lsp-hover-completion.raku. Open: find references, rename,
+    signature help, documentSymbol (imenu/outline; lsp-mode's by-name xref
+    needs it), cross-file names from `use`d modules, type-aware method
+    completion; VS Code never re-checked after hover/completion landed; the
+    extension is unpublished. `vsce package` fails from a copy of the folder
+    outside the repo ("entrypoint(s) missing"); it works in place. Emacs:
+    eglot and lsp-mode verified in Emacs 31.1 (batch runs against raku-mode
+    from MELPA), guide docs/guide/integrations/EMACS.md; lsp-mode completion
+    checked at the candidate level only (batch completion-at-point does not
+    insert under lsp-mode). Fixed on the way: `diagnosticProvider: false`
+    made lsp-mode pull diagnostics, and the REPL under TERM=dumb
+    (`M-x run-raku`) is plain (t/regression/repl-dumb-terminal.raku).
 - [ ] **libffi**: by-value structs (§6) and linking libffi rather than loading
   it (§10, which matters for Windows). [LIBFFI-PLAN.md](LIBFFI-PLAN.md).
 

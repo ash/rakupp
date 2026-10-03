@@ -106,12 +106,26 @@ int strWidth(const std::string& s, size_t from = 0, size_t to = std::string::npo
 // the console setupConsole() actually got, and is unconditionally true
 // elsewhere. RAKUPP_COLOR=1 still wins over it, so a user piping the session
 // into something that does render escapes can ask for them.
+//
+// TERM=dumb is a terminal that cannot move the cursor: Emacs sets it for the
+// buffers it runs a REPL in (M-x run-raku, M-x shell). There the session is
+// plain: no colour, and no raw-mode editor (RawMode stays off, so lines are
+// read cooked) — the editor's redraws arrive as literal escapes and erase the
+// `> ` that Emacs looks for to tell output from input.
+bool dumbTerminal() {
+    static const bool dumb = [] {
+        const char* t = std::getenv("TERM");
+        return t && std::strcmp(t, "dumb") == 0;
+    }();
+    return dumb;
+}
 bool replColour() {
     static const bool on = [] {
         const char* f = std::getenv("RAKUPP_COLOR");
         if (f && *f) return std::strcmp(f, "0") != 0;
         const char* n = std::getenv("NO_COLOR");
         if (n && *n) return false;
+        if (dumbTerminal()) return false;
         return consoleAnsi(1);
     }();
     return on;
@@ -162,6 +176,7 @@ struct RawMode {
     termios saved{};
     bool on = false;
     RawMode() {
+        if (dumbTerminal()) return;
         if (tcgetattr(STDIN_FILENO, &saved) == -1) return;
         termios raw = saved;
         raw.c_iflag &= ~(unsigned long)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -770,7 +785,7 @@ int replMain(ReplCtx& ctx) {
             // is worse than the command doing nothing. Off Windows, and on any
             // console setupConsole() reached, the answer is yes and it clears.
             else if (cmd == "l" || cmd == "clear") {
-                if (consoleAnsi(1)) std::cout << "\x1b[H\x1b[2J" << std::flush;
+                if (consoleAnsi(1) && !dumbTerminal()) std::cout << "\x1b[H\x1b[2J" << std::flush;
             }
             else if (cmd == "r" || cmd == "reset") {
                 interp->replFinish();

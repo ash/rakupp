@@ -5,32 +5,33 @@
 > setup in three steps, what each diagnostic means, and troubleshooting. This
 > page is for working on the server and the extension.
 
-> **Status: NEEDS REVIEW AND UPDATE.** This server and the VS Code client were
-> written on 2026-07-21 and then sat uncommitted in a side worktree while main
-> moved on by roughly nine hundred commits. What is here compiles and answers
-> the protocol, and that is all that has been checked. Before anyone leans on
-> it, review it against current main: the lint rule set has grown since, the
-> capabilities block advertises full-document sync and nothing else, diagnostic
-> ranges still span the whole offending line rather than the offending token
-> (`struct Node` carries a line but no column — the same gap the parse-tree
-> export ran into), and the "planned" list below — hover, completion,
-> go-to-definition, formatting — is still entirely unwritten. The VS Code
-> extension's package.json names version 0.9.1 and has never been published.
+> **Status.** The server answers diagnostics, hover, completion and
+> go-to-definition; diagnostic ranges cover the token a finding is about
+> (`LintFinding::subject`, `ParseError::got`), found on the finding's line in
+> the token stream, since `struct Node` carries a line but no column. Hover,
+> completion and definition are `src/LspIndex.cpp`. Checked with VS Code 1.140
+> (diagnostics) and with Emacs 31.1 through eglot and lsp-mode (everything).
+> The VS Code extension's package.json names version 0.9.1 and has never been
+> published.
 
 
 `rakupp --lsp` runs a [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
 server on stdin/stdout. It reuses the exact same pipeline as `rakupp --lint`
 (lex → parse → lint) plus parse-error reporting, and pushes the results to your
-editor as **diagnostics** — the red/yellow squiggles under mistakes.
+editor as **diagnostics** — the red/yellow squiggles under mistakes — and
+answers hover, completion and go-to-definition from the open file's tokens and
+the baked `docs/guide/REFERENCE.md`.
 
 Because it *is* the same binary that runs your code, the diagnostics can never
 disagree with the interpreter, and every parser improvement sharpens them for
 free.
 
-- **v1 (now):** diagnostics — syntax errors (severity *Error*) and lint
-  findings such as unused variables, redundant `return`, unreachable code
-  (severity *Warning* / *Info*).
-- **planned:** hover, completion, go-to-definition, formatting.
+- **Diagnostics:** syntax errors (severity *Error*) and lint findings such as
+  unused variables, redundant `return`, unreachable code (severity *Warning* /
+  *Info*), each on the token it is about.
+- **Hover, completion, go-to-definition:** see
+  [LSP.md](../docs/guide/integrations/LSP.md#hover-completion-and-go-to-definition).
+- **Not written:** find references, rename, signature help, formatting.
 
 There are two ways to see it work: straight from the command line (no editor
 needed — great for debugging), or through the VS Code extension.
@@ -126,7 +127,7 @@ Each entry in the `diagnostics` array is standard LSP:
 
 | Field | Meaning |
 |---|---|
-| `range` | `{start,end}` positions, **0-based** line & UTF-16 character (v1 spans the whole offending line) |
+| `range` | `{start,end}` positions, **0-based** line & UTF-16 character (the token the finding is about, else the line without its indentation) |
 | `severity` | `1` Error · `2` Warning · `3` Info · `4` Hint |
 | `code` | the stable rule id — `parse-error`, `unused-variable`, … (same ids as `rakupp --lint`) |
 | `source` | always `"rakupp"` |

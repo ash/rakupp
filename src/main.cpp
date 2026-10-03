@@ -2942,7 +2942,7 @@ int main(int argc, char** argv) {
         if (mode == Mode::Lsp && haveSrc) {
             // Same shape as --mcp: the server IS the program, stdio is the
             // protocol, and the editor sends documents over it — not argv.
-            std::cerr << "--lsp serves diagnostics over stdio and takes no program\n";
+            std::cerr << "--lsp serves an editor over stdio and takes no program\n";
             return 4;
         }
         if (mode == Mode::Mcp) {
@@ -3423,11 +3423,12 @@ int main(int argc, char** argv) {
         return rakupp::jupyter::installKernelspec(io);
     }
 
-    // --lsp : the Language Server, JSON-RPC over stdin/stdout. Diagnostics only
-    // (v1): it runs the SAME lex -> parse -> lintProgram pipeline as --lint, so an
-    // editor's squiggles can never disagree with the CLI. Nothing in the engine is
-    // reached — no interpreter, no codegen.
-    if (mode == Mode::Lsp) return rakupp::runLsp();
+    // --lsp : the Language Server, JSON-RPC over stdin/stdout. Its diagnostics
+    // run the SAME lex -> parse -> lintProgram pipeline as --lint, so an editor's
+    // squiggles can never disagree with the CLI; hover and completion read the
+    // baked REFERENCE.md. Nothing in the engine is reached — no interpreter, no
+    // codegen.
+    if (mode == Mode::Lsp) return rakupp::runLsp(rakupp::referenceGuide());
 
     if (mode == Mode::Mcp) {
         rakupp::mcp::Options mo;

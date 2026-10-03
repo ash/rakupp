@@ -1,8 +1,10 @@
-// Raku++ Language Server (LSP v1 — diagnostics).
+// Raku++ Language Server: diagnostics, hover, completion, go-to-definition.
 //
-// A self-contained JSON-RPC server over stdin/stdout. It wraps the *same*
-// pipeline as `--lint` (Lexer -> Parser -> lintProgram + findUndeclaredVars)
-// and reports parse errors, publishing all of them as LSP diagnostics. It is deliberately read-only
+// A self-contained JSON-RPC server over stdin/stdout. Its diagnostics wrap the
+// *same* pipeline as `--lint` (Lexer -> Parser -> lintProgram +
+// findUndeclaredVars) plus parse errors, each underlined on the token it is
+// about. Hover, completion and definition come from LspIndex.cpp, which reads
+// the token stream and the baked REFERENCE.md. It is deliberately read-only
 // against the engine: no interpreter, no codegen, nothing mutated. That keeps
 // it decoupled from grammar/runtime churn — every parser improvement simply
 // makes the diagnostics sharper for free.
@@ -15,6 +17,7 @@
 #include "DeclCheck.h"
 #include "Lexer.h"
 #include "Lint.h"
+#include "LspIndex.h"
 #include "Parser.h"
 #include "Runtime.h"
 
@@ -279,22 +282,27 @@ struct JsonParser {
 };
 
 // ---------------------------------------------------------------------------
-// UTF-16 length of a UTF-8 line (LSP columns count UTF-16 code units).
+// Positions: LSP speaks (0-based line, UTF-16 column); LspIndex speaks byte
+// offsets. The conversion lives in lsp::TextDoc.
 // ---------------------------------------------------------------------------
-int utf16Len(const std::string& line) {
-    int n = 0;
-    for (size_t k = 0; k < line.size();) {
-        unsigned char c = line[k];
-        int adv, units;
-        if (c < 0x80) { adv = 1; units = 1; }
-        else if ((c >> 5) == 0x6) { adv = 2; units = 1; }
-        else if ((c >> 4) == 0xE) { adv = 3; units = 1; }
-        else if ((c >> 3) == 0x1E) { adv = 4; units = 2; } // astral -> surrogate pair
-        else { adv = 1; units = 1; }
-        n += units;
-        k += adv;
-    }
-    return n;
+Json toPosition(const lsp::TextDoc& doc, size_t off) {
+    int line0 = 0, col = 0;
+    doc.positionOf(off, line0, col);
+    Json p = Json::makeObj();
+    p.set("line", Json::N(line0)).set("character", Json::N(col));
+    return p;
+}
+
+Json toRange(const lsp::TextDoc& doc, lsp::Span s) {
+    Json r = Json::makeObj();
+    r.set("start", toPosition(doc, s.start)).set("end", toPosition(doc, s.end));
+    return r;
+}
+
+size_t fromPosition(const lsp::TextDoc& doc, const Json& pos) {
+    const Json& l = pos["line"];
+    const Json& c = pos["character"];
+    return doc.offsetAt(l.type == Json::Num ? (int)l.num : 0, c.type == Json::Num ? (int)c.num : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -305,34 +313,13 @@ int utf16Len(const std::string& line) {
 Json computeDiagnostics(const std::string& src) {
     Json diags = Json::makeArr();
 
-    // Split into lines once, to size each squiggle to its full line.
-    std::vector<std::string> lines;
-    {
-        std::string cur;
-        for (char c : src) {
-            if (c == '\n') { lines.push_back(cur); cur.clear(); }
-            else if (c != '\r') cur += c;
-        }
-        lines.push_back(cur);
-    }
-    auto lineLen = [&](int line0) -> int {
-        if (line0 < 0 || line0 >= (int)lines.size()) return 0;
-        return utf16Len(lines[line0]);
-    };
-    auto makeRange = [&](int line1) {
-        int line0 = line1 > 0 ? line1 - 1 : 0;
-        Json start = Json::makeObj();
-        start.set("line", Json::N(line0)).set("character", Json::N(0));
-        Json end = Json::makeObj();
-        end.set("line", Json::N(line0)).set("character", Json::N(lineLen(line0)));
-        Json range = Json::makeObj();
-        range.set("start", std::move(start)).set("end", std::move(end));
-        return range;
-    };
+    // Each squiggle covers the token the finding is about (its subject) when
+    // that can be found on the line, else the line without its indentation.
+    lsp::TextDoc doc(src);
     auto addDiag = [&](int line1, int severity, const std::string& code,
-                       const std::string& message) {
+                       const std::string& message, const std::string& subject = "") {
         Json d = Json::makeObj();
-        d.set("range", makeRange(line1));
+        d.set("range", toRange(doc, lsp::locateOnLine(doc, line1, subject)));
         d.set("severity", Json::N(severity)); // 1=Error 2=Warning 3=Info 4=Hint
         if (!code.empty()) d.set("code", Json::S(code));
         d.set("source", Json::S("rakupp"));
@@ -346,7 +333,7 @@ Json computeDiagnostics(const std::string& src) {
         Parser parser(lexer.tokenize());
         prog = parser.parseProgram();
     } catch (const ParseError& e) {
-        addDiag(e.line, 1 /*Error*/, "parse-error", e.what());
+        addDiag(e.line, 1 /*Error*/, "parse-error", e.what(), e.got);
         return diags; // can't lint an unparseable program
     } catch (const std::exception& e) {
         addDiag(1, 1, "internal", e.what());
@@ -366,7 +353,7 @@ Json computeDiagnostics(const std::string& src) {
         try {
             for (const auto& u : findUndeclaredVars(prog, src, effectiveSearchPath({})))
                 findings.push_back({u.line, 'E', "undeclared-variable",
-                                    "'" + u.name + "' is not declared"});
+                                    "'" + u.name + "' is not declared", u.name});
         } catch (const std::exception& e) {
             // A long-running server may not die of this. Say so rather than
             // silently dropping the check: a missing error is what this whole
@@ -387,7 +374,7 @@ Json computeDiagnostics(const std::string& src) {
         // 'E' -> Error(1): the program will not run. 'W' -> Warning(2),
         // anything else (notes) -> Info(3).
         int sev = f.severity == 'E' ? 1 : f.severity == 'W' ? 2 : 3;
-        addDiag(f.line, sev, f.rule, f.message);
+        addDiag(f.line, sev, f.rule, f.message, f.subject);
     }
     return diags;
 }
@@ -412,6 +399,7 @@ public:
             const std::string& m = method.str;
 
             if (m == "initialize") {
+                readClientCapabilities(msg["params"]["capabilities"]);
                 reply(msg["id"], initializeResult());
             } else if (m == "initialized") {
                 // notification, nothing to do
@@ -422,6 +410,7 @@ public:
                 return shuttingDown_ ? 0 : 1;
             } else if (m == "textDocument/didOpen") {
                 const Json& doc = msg["params"]["textDocument"];
+                docs_[doc["uri"].str] = doc["text"].str;
                 publish(doc["uri"].str, doc["text"].str);
             } else if (m == "textDocument/didChange") {
                 const Json& params = msg["params"];
@@ -430,13 +419,28 @@ public:
                 // content change carries the whole new document.
                 const Json& changes = params["contentChanges"];
                 if (changes.type == Json::Arr && !changes.arr.empty()) {
-                    publish(uri, changes.arr.back()["text"].str);
+                    docs_[uri] = changes.arr.back()["text"].str;
+                    publish(uri, docs_[uri]);
                 }
             } else if (m == "textDocument/didClose") {
                 const std::string& uri = msg["params"]["textDocument"]["uri"].str;
                 // Clear this file's squiggles on close.
+                docs_.erase(uri);
                 Json empty = Json::makeArr();
                 sendDiagnostics(uri, empty);
+            } else if (m == "textDocument/hover" || m == "textDocument/completion" ||
+                       m == "textDocument/definition") {
+                // A query may never take the server down: whatever goes wrong
+                // in the index, the client gets an empty answer.
+                Json result;
+                try {
+                    result = m == "textDocument/hover"      ? hover(msg["params"])
+                           : m == "textDocument/completion" ? completion(msg["params"])
+                                                            : definition(msg["params"]);
+                } catch (...) {
+                    result = Json();
+                }
+                if (hasId) reply(msg["id"], std::move(result));
             } else if (hasId) {
                 // Unknown request: MethodNotFound so the client isn't left hanging.
                 Json err = Json::makeObj();
@@ -452,6 +456,91 @@ public:
 
 private:
     bool shuttingDown_ = false;
+    std::map<std::string, std::string> docs_; // uri -> the text the client last sent
+    bool hoverMarkdown_ = false;               // the client renders Markdown in a hover
+    bool docMarkdown_ = false;                 // … and in completion documentation
+
+    static bool listsMarkdown(const Json& formats) {
+        if (formats.type != Json::Arr) return false;
+        for (auto& f : formats.arr)
+            if (f.type == Json::Str && f.str == "markdown") return true;
+        return false;
+    }
+
+    void readClientCapabilities(const Json& caps) {
+        const Json& td = caps["textDocument"];
+        hoverMarkdown_ = listsMarkdown(td["hover"]["contentFormat"]);
+        docMarkdown_ = listsMarkdown(td["completion"]["completionItem"]["documentationFormat"]);
+    }
+
+    // The document a request names, or nullptr when the client never opened it.
+    const std::string* docFor(const Json& params) const {
+        auto it = docs_.find(params["textDocument"]["uri"].str);
+        return it == docs_.end() ? nullptr : &it->second;
+    }
+
+    static Json markup(bool md, const std::string& markdown, const std::string& plain) {
+        Json m = Json::makeObj();
+        m.set("kind", Json::S(md ? "markdown" : "plaintext"));
+        m.set("value", Json::S(md ? markdown : plain));
+        return m;
+    }
+
+    Json hover(const Json& params) {
+        const std::string* text = docFor(params);
+        if (!text) return Json();
+        lsp::TextDoc doc(*text);
+        lsp::Hover h = lsp::hoverAt(doc, fromPosition(doc, params["position"]));
+        if (!h.found) return Json();
+        Json r = Json::makeObj();
+        r.set("contents", markup(hoverMarkdown_, h.markdown, h.plain));
+        r.set("range", toRange(doc, h.span));
+        return r;
+    }
+
+    Json completion(const Json& params) {
+        Json list = Json::makeObj();
+        list.set("isIncomplete", Json::B(false));
+        Json items = Json::makeArr();
+        const std::string* text = docFor(params);
+        if (text) {
+            lsp::TextDoc doc(*text);
+            lsp::Completions c = lsp::completeAt(doc, fromPosition(doc, params["position"]));
+            Json range = toRange(doc, c.replace);
+            for (auto& it : c.items) {
+                Json item = Json::makeObj();
+                item.set("label", Json::S(it.label));
+                item.set("kind", Json::N((int)it.kind));
+                if (!it.detail.empty()) item.set("detail", Json::S(it.detail));
+                // Names from this file first, then the built-ins, each alphabetical.
+                item.set("sortText", Json::S((it.local ? "0" : "1") + it.label));
+                // The edit replaces the whole typed prefix, sigil and twigil
+                // included: a client's own idea of a word stops at `$`.
+                Json edit = Json::makeObj();
+                edit.set("range", range).set("newText", Json::S(it.label));
+                item.set("textEdit", std::move(edit));
+                item.set("filterText", Json::S(it.label));
+                if (!it.docPlain.empty())
+                    item.set("documentation", markup(docMarkdown_, it.docMarkdown, it.docPlain));
+                items.push(std::move(item));
+            }
+        }
+        if (items.type != Json::Arr) items = Json::makeArr();
+        list.set("items", std::move(items));
+        return list;
+    }
+
+    Json definition(const Json& params) {
+        const std::string* text = docFor(params);
+        if (!text) return Json();
+        lsp::TextDoc doc(*text);
+        lsp::Span target;
+        if (!lsp::definitionAt(doc, fromPosition(doc, params["position"]), target)) return Json();
+        Json loc = Json::makeObj();
+        loc.set("uri", Json::S(params["textDocument"]["uri"].str));
+        loc.set("range", toRange(doc, target));
+        return loc;
+    }
 
     // Read one `Content-Length`-framed message body from stdin.
     bool readMessage(std::string& body) {
@@ -516,7 +605,20 @@ private:
 
         Json caps = Json::makeObj();
         caps.set("textDocumentSync", std::move(textSync));
-        caps.set("diagnosticProvider", Json::B(false)); // we push, not pull
+        caps.set("hoverProvider", Json::B(true));
+        caps.set("definitionProvider", Json::B(true));
+        // Completion opens by itself after `.` (methods) and the `$`/`@`
+        // sigils (variables). `%` and `&` are operators as often as sigils,
+        // so those wait for the editor's own completion key.
+        Json triggers = Json::makeArr();
+        for (const char* t : {".", "$", "@"}) triggers.push(Json::S(t));
+        Json completion = Json::makeObj();
+        completion.set("triggerCharacters", std::move(triggers));
+        caps.set("completionProvider", std::move(completion));
+        // No "diagnosticProvider": we push diagnostics, and its absence is how
+        // a server says so. The field takes an options object, never a
+        // boolean; lsp-mode reads any value as "pull supported" and sends
+        // textDocument/diagnostic requests.
 
         Json info = Json::makeObj();
         info.set("name", Json::S("rakupp-lsp"));
@@ -530,7 +632,8 @@ private:
 
 } // namespace
 
-int runLsp() {
+int runLsp(const std::string& reference) {
+    lsp::setReference(reference);
     Server srv;
     return srv.run();
 }

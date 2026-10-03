@@ -17,6 +17,11 @@ struct LintFinding {
     char severity = 'W';
     std::string rule;
     std::string message;
+    // The source text the finding is about, as written on `line`: a variable
+    // with its sigil, an operator, a keyword. "" when the whole statement is
+    // the subject. Only the language server reads it, to underline that token
+    // instead of the line; --lint prints lines.
+    std::string subject;
 };
 
 // Static analysis over an already-parsed program. Runs a set of deliberately

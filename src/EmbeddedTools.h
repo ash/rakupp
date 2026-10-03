@@ -22,6 +22,7 @@ namespace rakupp {
 std::string installerSource();  // tools/install.raku
 std::string docToolSource();      // tools/doc.raku, with the guides spliced in
 std::string upgradeToolSource();  // tools/upgrade.raku, the ENGINE updater
+std::string referenceGuide();     // docs/guide/REFERENCE.md: `--lsp` hover and completion
 void registerShadowModules();     // rakulib/NativeHelpers/*, the engine's shadows
 
 } // namespace rakupp

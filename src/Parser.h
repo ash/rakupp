@@ -18,6 +18,9 @@ struct ParseError : std::runtime_error {
     // than said something wrong — `sub f {` with no `}`. Only the REPL reads it,
     // to tell "give me a continuation line" from "this is a syntax error".
     bool atEof = false;
+    // The text of the token the parse died on, when Parser::error raised it;
+    // "" otherwise. The language server underlines it on `line`.
+    std::string got;
     ParseError(const std::string& msg, int line) : std::runtime_error(msg), line(line) {}
     ParseError(const std::string& msg, int line, bool atEof)
         : std::runtime_error(msg), line(line), atEof(atEof) {}

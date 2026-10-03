@@ -140,8 +140,9 @@ struct Linter {
 
     int lineOf(Node* n) const { return n && n->line ? n->line : curLine; }
 
-    void warn(int line, const char* rule, std::string msg, char sev = 'W') {
-        out.push_back({line, sev, rule, std::move(msg)});
+    void warn(int line, const char* rule, std::string msg, char sev = 'W',
+              std::string subject = "") {
+        out.push_back({line, sev, rule, std::move(msg), std::move(subject)});
     }
 
     Scope& cur() { return scopes.back(); }
@@ -153,7 +154,7 @@ struct Linter {
             if (kind == 'v' && prev->kind == 'v')
                 warn(line, "redeclaration",
                      "redeclaration of '" + name + "' (first declared on line " +
-                         std::to_string(prev->line) + ")");
+                         std::to_string(prev->line) + ")", 'W', name);
             return prev;
         }
         cur().decls.push_back({name, line, 0, kind, emit, false});
@@ -193,15 +194,15 @@ struct Linter {
             if (dynamicNames) continue; // a name may be reached via EVAL / ::()
             if (d.kind == 'v')
                 warn(d.line, "unused-variable",
-                     "'" + d.name + "' is declared but never used");
+                     "'" + d.name + "' is declared but never used", 'W', d.name);
             else if (d.kind == 'p')
                 // advisory only: an unused parameter is frequently intentional
                 // (callback/dispatch signatures, interface conformance).
                 warn(d.line, "unused-parameter",
-                     "parameter '" + d.name + "' is never used", 'N');
+                     "parameter '" + d.name + "' is never used", 'N', d.name);
             else if (d.kind == 's')
                 warn(d.line, "unused-routine",
-                     "lexical routine '" + d.name + "' is never called");
+                     "lexical routine '" + d.name + "' is never called", 'W', d.name);
         }
         scopes.pop_back();
     }
@@ -322,7 +323,8 @@ struct Linter {
                     !static_cast<VarExpr*>(a->target.get())->declare) {
                     warn(lineOf(a), "self-assignment",
                          "'" + static_cast<VarExpr*>(a->target.get())->name +
-                             "' is assigned to itself");
+                             "' is assigned to itself", 'W',
+                         static_cast<VarExpr*>(a->target.get())->name);
                 }
                 walkExpr(a->target.get());
                 walkExpr(a->value.get());
@@ -433,7 +435,7 @@ struct Linter {
              "literal: the numerator and denominator are built in full before the result becomes a "
              "Num, which can take minutes; write the base with a Num (1e0 instead of 1) if a Num is "
              "what you want (--hints reports it at run time)",
-             'N');
+             'N', "**");
     }
 
     void checkNumericStringCmp(Binary* b) {
@@ -444,7 +446,7 @@ struct Linter {
                 !isNumericLiteralStr(sv))
                 warn(lineOf(b), "numeric-cmp-of-string",
                      "numeric '" + b->op + "' compares the string literal \"" + sv +
-                         "\"; use eq/ne/lt/gt for string comparison");
+                         "\"; use eq/ne/lt/gt for string comparison", 'W', b->op);
             return;
         }
         // The same mistake in ARITHMETIC, and it costs more there: the comparison
@@ -466,7 +468,7 @@ struct Linter {
              "numeric '" + b->op + "' has the string literal \"" + sv +
                  "\" on its " + (onLeft ? "left" : "right") +
                  "; it cannot convert to a number and dies at run time" +
-                 (b->op == "+" ? " (concatenation is '~')" : ""));
+                 (b->op == "+" ? " (concatenation is '~')" : ""), 'W', b->op);
     }
 
     // A condition that is an ASSIGNMENT rather than a comparison: `if $x = 5`.
@@ -481,7 +483,7 @@ struct Linter {
         if (v->declare) return;                        // `if my $x = …` — binding, not a typo
         warn(lineOf(a), "assignment-in-condition",
              std::string(kw) + " tests an assignment to '" + v->name +
-                 "'; did you mean '=='?");
+                 "'; did you mean '=='?", 'W', v->name);
     }
 
     // The same condition twice in one if/elsif chain: the second can never be
@@ -766,7 +768,7 @@ struct Linter {
                      "named argument '" + p->key + "' to " + cls +
                          ".new matches no public attribute" +
                          (have.empty() ? "" : " (has: " + have + ")") +
-                         " — the default constructor silently ignores it");
+                         " — the default constructor silently ignores it", 'W', p->key);
             }
         }
     }
@@ -777,7 +779,7 @@ struct Linter {
         if (last->kind == NK::ReturnStmt)
             warn(last->line, "redundant-return",
                  "'return' as the final statement is redundant; the block's last "
-                 "value is returned automatically", 'N');
+                 "value is returned automatically", 'N', "return");
     }
 };
 
