@@ -81,6 +81,26 @@ coroutine switch, so its block runs further ahead of the consumer than it does
 elsewhere, and `--cnp` has no native stencils for the architecture, so its
 kernels run interpreted.
 
+### Debian and Ubuntu: a `.deb`
+
+The same release as a Debian package, for x86-64 and ARM64, if you would
+rather have apt own the files:
+
+```sh
+curl -fLO https://github.com/ash/rakupp/releases/latest/download/rakupp-linux-x86_64.deb
+sudo apt install ./rakupp-linux-x86_64.deb
+```
+
+On ARM64 the file is `rakupp-linux-aarch64.deb`. It installs `/usr/bin/rakupp`,
+the runtime `--exe` links against in `/usr/lib` and `/usr/include/rakupp`, and
+nothing else. There is no `raku` name, because Debian's `rakudo` package
+already owns `/usr/bin/raku`. `--exe` needs a C++ compiler: `sudo apt install
+g++`. The package needs Debian 12 or Ubuntu 22.04 or newer.
+
+It is a file, not an APT repository, so `apt upgrade` does not see new
+releases: download the new `.deb` and run the same `apt install` again.
+`sudo apt remove rakupp` takes it all away.
+
 Two Linux cases have a route of their own rather than an archive:
 [**Nix**](#nix--nixos), which cannot run a generic Linux binary at all, and
 [**Guix**](#gnu-guix-linux), which has a channel.
@@ -192,6 +212,7 @@ overwriting it:
 |---|---|
 | the one-liner, either platform | `rakupp upgrade`, or re-run the one-liner |
 | Homebrew | `brew upgrade rakupp` |
+| the `.deb` | the new release's `.deb`, through `sudo apt install ./…` again |
 | Nix | `nix profile upgrade rakupp` |
 | Guix | `guix upgrade rakupp` |
 | a source checkout | `git pull && cmake --build build -j 4` |

@@ -69,8 +69,12 @@ This plan closes that. Status: **landed**, in the six commits below.
 - **Scoop and WinGet manifests.** Each is a manifest in a separate repo plus a
   per-release bump — a third and fourth thing to forget on release day, beside
   the Homebrew tap that already gets forgotten.
-- **`.deb` / `.rpm` / AUR packages.** Repo hosting, GPG signing, per-distro
-  conventions and an AUR maintainer relationship. Its own campaign.
+- **An APT repository, `.rpm` and AUR packages.** Repo hosting, GPG signing,
+  per-distro conventions and an AUR maintainer relationship. Its own campaign.
+  ~~`.deb`~~ — reversed 2026-10-03 for the file alone: `tools/make-deb.raku`
+  packs the Linux archive under `/usr`, and the build job attaches
+  `rakupp-linux-<arch>.deb` next to the archive, so there is no per-release
+  bump. Being in Debian itself (ITP, a sponsor, every architecture) stays out.
 - **macOS code signing and notarization.** The one-liner is a script, so no
   Gatekeeper check applies to it; the Windows wizard's SmartScreen note in
   INSTALL.md is the equivalent disclosure there.

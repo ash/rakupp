@@ -219,6 +219,11 @@ with its tag, after the release run is green.
   steps 5 and 6.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.
+- [ ] **`.deb`**: `tools/make-deb.raku` plus release.yml's "Debian package
+  (Linux)" step, tested in Ubuntu 24.04 against the 5.2.0 layout, not yet run
+  in CI. The first release that carries it makes the README and INSTALL.md
+  download lines true; the CHANGELOG entry goes with that release. An APT
+  repository is the next step, if asked for.
 - [ ] **setup-rakupp Action**: written, not committed; its repository does not
   exist yet.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/. Surveyed

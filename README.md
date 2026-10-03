@@ -88,8 +88,11 @@ The tags are `latest`, the version and the minor (`5.2.1`, `5.2`); building on
 the image, modules and `--exe` inside it are in
 [INSTALL.md](docs/guide/INSTALL.md#docker).
 
-On macOS there is the Homebrew tap as well — `brew tap ash/rakupp && brew
-install rakupp` — and on Windows a wizard:
+On Debian and Ubuntu there is a `.deb` —
+`sudo apt install ./rakupp-linux-x86_64.deb` after downloading it, see
+[INSTALL.md](docs/guide/INSTALL.md#debian-and-ubuntu-a-deb). On macOS there is
+the Homebrew tap — `brew tap ash/rakupp && brew install rakupp` — and on
+Windows a wizard:
 **[rakupp-setup-windows-x64.exe](https://github.com/ash/rakupp/releases/latest/download/rakupp-setup-windows-x64.exe)**, with the same two questions
 as checkboxes and an Add/Remove Programs entry.
 

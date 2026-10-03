@@ -725,6 +725,32 @@ jobs:
             sha256sum rakupp-${{ matrix.name }}.tar.gz > rakupp-${{ matrix.name }}.tar.gz.sha256
           fi
 
+      # The same layout as a Debian package, for `sudo apt install ./….deb`.
+      # tools/make-deb.raku packs, it does not build: the .deb is the archive
+      # under /usr. Named like the archive rather than Debian's
+      # rakupp_<version>_<arch>.deb, so releases/latest/download/ has a link
+      # that does not change per release (apt reads the version from inside).
+      # Built on every push like the wheel, so a broken package shows up before
+      # a tag needs it. Then installed with apt on this runner and run from
+      # /usr/bin, --exe included (findRuntime() reaching /usr/lib and
+      # /usr/include/rakupp); `rakupp upgrade` must refuse it, and it must
+      # remove cleanly.
+      - name: Debian package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          deb=rakupp-${{ matrix.name }}.deb
+          build/rakupp tools/make-deb.raku dist/rakupp "$deb"
+          dpkg-deb --info "$deb"
+          sha256sum "$deb" > "$deb.sha256"
+          sudo apt-get install -y "./$deb"
+          test "$(/usr/bin/rakupp -e 'say 6 * 7')" = "42"
+          test ! -e /usr/bin/raku
+          (cd "$RUNNER_TEMP" && /usr/bin/rakupp --exe -e 'say 6 * 7' -o deb-native && test "$(./deb-native)" = "42")
+          if /usr/bin/rakupp upgrade > upgrade.txt 2>&1; then cat upgrade.txt; exit 1; fi
+          grep -q 'distribution package' upgrade.txt
+          sudo apt-get remove -y rakupp
+          test ! -e /usr/bin/rakupp
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
