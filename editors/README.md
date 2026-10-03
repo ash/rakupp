@@ -1,5 +1,9 @@
 # Editor integration — the rakupp language server
 
+> **Work in progress.** Every editor integration here, the language server,
+> the VS Code extension and the Emacs setup, is still being built: features
+> are missing, and what is there can change between releases.
+
 > **Using it?** The user guide is
 > [docs/guide/integrations/LSP.md](../docs/guide/integrations/LSP.md): VS Code
 > setup in three steps, what each diagnostic means, and troubleshooting. This
