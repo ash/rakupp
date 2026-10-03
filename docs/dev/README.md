@@ -30,6 +30,9 @@ The user-facing documentation is one level up, in [../](../README.md).
 
 ## plans/ — what we intend to build (and what we decided not to)
 
+- **[plans/TODO.md](plans/TODO.md)** — **what is open, across every plan**:
+  each unfinished item, the plan that owns it, and its next step. Kept current
+  as work starts and finishes; read it first.
 - **[plans/VERSIONS.md](plans/VERSIONS.md)** — the single per-version plan
   index: what each major release set out to do, where its plan lived, and
   what it shipped — v1.0.0 through the **v3.0.0** campaign (2026-08-07).
