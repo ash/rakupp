@@ -16175,6 +16175,24 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         return applyArith(op, g_deproxy(l), r);
     if (r.t == VT::Hash && r.hashKind == "Proxy" && r.hash() && g_deproxy)
         return applyArith(op, l, g_deproxy(r));
+    // A NativeCall Pointer is numerically its ADDRESS, an Int: `+$p`,
+    // `0 + $p` and `$p + 1` are all Int in Rakudo. The tagged hash fell
+    // through to the floating-point arm here, so compiled code — which
+    // spells prefix `+` as `0 + x` — handed `Pointer.new` a Num and got
+    // NULL back. (A user `infix:<+>` over Pointer, NativeHelpers::Pointer's
+    // typed arithmetic, is consulted by the caller before this point.)
+    // Only the ops Rakudo answers through Pointer.Numeric: `<`, `<=>`, `%`
+    // and `mod` want .Real, which Pointer lacks, and die there.
+    if ((l.t == VT::Hash && l.hashKind == "Pointer" && l.hash()) ||
+        (r.t == VT::Hash && r.hashKind == "Pointer" && r.hash())) {
+        static const std::set<std::string> numOps = {"+", "-", "*", "/", "**", "div", "==", "!="};
+        if (numOps.count(op)) {
+            auto addr = [](const Value& v) {
+                return v.t == VT::Hash && v.hashKind == "Pointer" && v.hash() ? Value::integer(v.toInt()) : v;
+            };
+            return applyArith(op, addr(l), addr(r));
+        }
+    }
     // A Pair is no number: `(:foo) < 3` asks Pair for .Real and finds no
     // candidate (X::Multi::NoMatch), it does not compare the value
     if ((l.t == VT::Pair || r.t == VT::Pair) && !op.empty() && op.size() <= 3) {
