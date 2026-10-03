@@ -120,6 +120,18 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - Outside `react`, a `Proc::Async` with `:w` feeds its stdout taps only when
     the start promise is awaited, so an interactive driver never sees a reply
     before `close-stdin` (found with #121).
+  - A typed parameter binds ANY type object: `sub g(Str $x) {}; g(Any)` and
+    `sub g(Str :$x) {}; g(x => Int)` run; Rakudo dies with
+    X::TypeCheck::Binding::Parameter (a defined `42` is refused correctly).
+    Found 2026-10-03: it let rakuglaze's race surface as `.IO` on Any.
+  - Named `is rw` / `is raw` parameters do not write back:
+    `sub f(:$x! is rw) { $x = 5 }; f(x => $v)` leaves `$v` alone (Rakudo 5).
+- [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
+  literal, `given`) no longer promotes a variable's slot while `start` workers
+  run, because the in-place rewrite raced unlocked readers; there the Pair
+  holds the value, so `$p.value = …` does not write back. The other
+  promoteToCell sites (`:=` binding, loop variables in src/InterpreterCore.cpp)
+  still rewrite in place. Gate: `t/race/varcell.raku`.
 - [ ] **Roast tracks A3**: retire the remaining copy-back mechanisms
   (`rwLinks`, `copyOutRw`, `builtinTopicWB_`, `ArgWriter`).
   [ROAST-TRACKS-PLAN.md](ROAST-TRACKS-PLAN.md). The B1 coroutine code on

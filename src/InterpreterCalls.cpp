@@ -1449,6 +1449,14 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
     if (raw->isCell()) return raw->cellS();
     if (auto c = cellOfProxy(raw)) return c;
     if (raw->t == VT::Hash && raw->hashKind == "Proxy") return nullptr;
+    // Promotion REWRITES the slot, and a Value is several words: a thread
+    // reading the variable meanwhile saw its old Str emptied (""), its tag
+    // already Any, or a Cell kind with no cell behind it (a SIGSEGV). Only a
+    // read of the variable gets here — `start { f(:$tmp) }` on eight workers
+    // promoted one outer `$tmp` eight times over — so while workers are live
+    // a slot not yet promoted stays as it is, and the caller holds the value
+    // (a Pair's .value then does not write back; `given` writes back at exit).
+    if (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0) return nullptr;
     return raw->promoteToCell();
 }
 
