@@ -1954,9 +1954,10 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // Only a Bool value — `:a(Bool)` is the type object. This is the
             // PAIR's own rendering, so it reaches a Pair inside a list or an
             // Array (`[:a]`); Hash.raku spells its entries out in full.
-            // …and only a value the Pair holds BY VALUE: a container's Bool (a
-            // Hash's entry, `a => $flag`) is spelled out, `:x(Bool::False)`
-            if (val.t == VT::Bool && val.enumType.empty() && v.pairValRO && !v.pairLive())
+            // …and only a value the Pair holds BY VALUE: a Hash entry's Bool, in
+            // its container, is spelled out, `:x(Bool::False)`. (`a => $flag`
+            // is one too in Rakudo; nothing marks that Pair here, so it is not.)
+            if (val.t == VT::Bool && val.enumType.empty() && !v.pairLive())
                 return (val.b ? ":" : ":!") + v.s;
             return ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")";
         }
