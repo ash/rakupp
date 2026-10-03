@@ -84,7 +84,7 @@ void setupConsole() {
 // fallback are all UTF-8 and all draw a box.
 //
 // So the answer is deliberately narrow — a UTF-8 locale AND an interactive
-// terminal — and RAKUPP_UNICODE=0|1 overrides it in both directions, the way
+// terminal, and on Windows a terminal known to draw emoji — and RAKUPP_UNICODE=0|1 overrides it in both directions, the way
 // RAKUPP_COLOR overrides the colour heuristic. Not a terminal means a pipe, a
 // file, a CI log or the test harness: those take the ASCII form, so captured
 // output is identical on every machine.
@@ -99,7 +99,18 @@ bool consoleUnicode(int fd) {
     if (!::_isatty(::_fileno(fd == 2 ? stderr : stdout))) return false;
     // setupConsole() asked for UTF-8; a console that refused it cannot render
     // the bytes at all, never mind the glyph.
-    return ::GetConsoleOutputCP() == CP_UTF8;
+    if (::GetConsoleOutputCP() != CP_UTF8) return false;
+    // And the code page is no evidence about glyphs, because setupConsole()
+    // just set it. The classic console host behind cmd.exe and PowerShell
+    // windows decodes the bytes fine and draws a boxed `?`: its cells and its
+    // fonts stop at the BMP. Windows Terminal (WT_SESSION) and the editor
+    // terminals that set TERM_PROGRAM (VS Code, WezTerm) draw emoji; nothing
+    // else is assumed to.
+    for (const char* var : {"WT_SESSION", "TERM_PROGRAM"}) {
+        const char* s = std::getenv(var);
+        if (s && *s) return true;
+    }
+    return false;
 #else
     if (!::isatty(fd)) return false;
     // POSIX precedence: the first of these that is SET decides, even if what it

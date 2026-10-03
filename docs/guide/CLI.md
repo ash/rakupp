@@ -125,9 +125,12 @@ compatibility.
   under the name someone who knows `--version` would guess.
 
   Camelia is drawn as 🦋 at a terminal in a UTF-8 locale, and as `}i{` — the
-  three ASCII characters every terminal draws alike — anywhere else. A pipe,
-  a file and a CI log always get the ASCII form, so captured output is the
-  same bytes on every machine; `RAKUPP_UNICODE=0` or `=1` forces either.
+  three ASCII characters every terminal draws alike — anywhere else. On
+  Windows the terminal must also be Windows Terminal or VS Code: the classic
+  console window behind `cmd.exe` and PowerShell draws a boxed `?` instead.
+  A pipe, a file and a CI log always get the ASCII form, so captured output
+  is the same bytes on every machine; `RAKUPP_UNICODE=0` or `=1` forces
+  either.
   A UTF-8 locale is not a promise that the font holds an astral glyph, which
   is why the default is the cautious one.
 
@@ -570,7 +573,7 @@ line of the frame the error came from.
 | `NO_COLOR` | no ANSI colour, by the no-color.org convention (present and non-empty) |
 | `RAKUPP_COLOR=0` / `=1` | what `--color=never` / `always` set; the environment form |
 | `TERM=dumb` | the REPL is plain: no colour, no line editor, a bare `> ` prompt and line-by-line reads. Emacs sets it for `M-x run-raku` and `M-x shell`, which cannot follow cursor movement. `RAKUPP_COLOR=1` still colours |
-| `RAKUPP_UNICODE=0` / `=1` | the non-ASCII glyphs in rakupp's own output — `-V`'s Camelia — off or on. The default is on at a terminal in a UTF-8 locale and off into a pipe, so captured output is the same bytes everywhere |
+| `RAKUPP_UNICODE=0` / `=1` | the non-ASCII glyphs in rakupp's own output — `-V`'s Camelia — off or on. The default is on at a terminal in a UTF-8 locale (on Windows, Windows Terminal or VS Code) and off into a pipe, so captured output is the same bytes everywhere |
 
 On Windows `auto` asks one more question: a console only *renders* an escape
 sequence once virtual-terminal processing is on, and rakupp turns it on at
