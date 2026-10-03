@@ -19,6 +19,22 @@ That is all. You need Python 3.9 or later on macOS, Linux or Windows. There is
 nothing to compile and nothing else to install: the package carries its own
 Raku engine.
 
+If pip answers `error: externally-managed-environment` (Ubuntu, Debian and
+Homebrew's Python do), your system Python does not take packages directly.
+Make a virtual environment for your project and install into that:
+
+```bash
+python3 -m venv ~/raku-env
+```
+```bash
+~/raku-env/bin/pip install rakulang
+```
+
+Then run your programs with `~/raku-env/bin/python`, or run
+`source ~/raku-env/bin/activate` once per terminal so that plain `python3`
+and `pip` use it. On Ubuntu and Debian, `python3 -m venv` needs
+`sudo apt install python3-venv` the first time.
+
 If you installed `rakulang` before, upgrade it to get the newest engine.
 `pip install` alone keeps a version that is already there:
 
