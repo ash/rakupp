@@ -29,6 +29,7 @@
 // `return` inside a nested lambda still means what it always did. nullopt =
 // "not handled here".
 namespace rakupp {
+bool isP5Pattern(const std::string& pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
 
 namespace {
 
@@ -2825,6 +2826,54 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& a : args) ca.push_back(a);
         return callBuiltin("open", ca);
     }
+    if (inv.t == VT::Hash && inv.hashKind == "FileHandle" && inv.hash()->count("live-tok") && !fhClosed(inv)) {
+        // An IO::Pipe onto a child running over LIVE pipes (run(:out) / :err).
+        // Lines and `.get` come off the pipe as the child writes them; any other
+        // read takes the rest of the stream, after which this is an ordinary
+        // captured handle over it. `.close` lets the child finish.
+        const long long tok = (*inv.hash())["live-tok"].toInt();
+        const bool isErr = inv.hash()->count("live-err") != 0;
+        const bool chompIt = !inv.hash()->count("chomp") || (*inv.hash())["chomp"].truthy();
+        const bool plain = !inv.hash()->count("nl-in") && !inv.hash()->count("enc") &&
+                           !(inv.hash()->count("bin") && (*inv.hash())["bin"].truthy());
+        bool positional = false;
+        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) positional = true;
+        if (plain && (m == "get" || m == "getline") && args.empty()) {
+            std::string line;
+            if (!liveProcReadLine(this, tok, isErr, line, chompIt)) return Value::nil();
+            return Value::str(line);
+        }
+        if (plain && m == "lines" && args.empty()) {
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto st = std::make_shared<LazySeqState>();
+            st->streaming = true;
+            st->finiteSource = true;
+            Interpreter* self = this;
+            st->appendNext = [self, tok, isErr, chompIt](ValueList& cache) -> bool {
+                std::string l;
+                if (!liveProcReadLine(self, tok, isErr, l, chompIt)) return false;
+                cache.push_back(Value::str(l));
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        }
+        if (m == "eof" && args.empty()) return Value::boolean(liveProcEof(this, tok, isErr));
+        static const std::set<std::string> kTakesRest = {
+            "get", "getline", "lines", "words", "slurp", "slurp-rest", "read", "readchars", "getc",
+            "comb", "split", "Supply", "seek", "tell", "close", "eof", "encoding"};
+        if (kTakesRest.count(m) || positional) {
+            std::string rest = liveProcReadAll(this, tok, isErr);
+            Value& buf = (*inv.hash())["buffer"];
+            buf = Value::str((buf.t == VT::Str ? buf.s : std::string()) + rest);
+            inv.hash()->erase("live-tok");
+            (*inv.hash())["captured"] = Value::boolean(true);
+            if (m == "close") {
+                auto po = inv.hash()->find("proc-owner");
+                if (po != inv.hash()->end()) procSettleLive(this, po->second);
+            }
+        }
+    }
     if (inv.t == VT::Hash && inv.hashKind == "FileHandle") {
         // IO::Handle accessors (with defaults); writable via lvalue()
         if (m == "chomp")  { auto it = inv.hash()->find("chomp");  return it != inv.hash()->end() ? it->second : Value::boolean(true); }
@@ -3769,6 +3818,29 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (keep) line += std::cin.eof() ? "" : "\n";
             else if (!line.empty() && line.back() == '\r') line.pop_back();
             return Value::str(line);
+        }
+        // …and `$*IN.lines` is STREAMED the same way, one line per pull, as
+        // `lines()` already is. Loading the whole input first made a `for
+        // $*IN.lines` over a pipe wait for the writer to close before its first
+        // iteration — a reader of NDJSON frames from a live process saw none
+        // until the process ended. An eager context still reads it all.
+        if (m == "lines" && isStdin && args.empty() &&
+            inv.hash()->find("lines") == inv.hash()->end() &&
+            !inv.hash()->count("nl-in") && !inv.hash()->count("captured") &&
+            !inv.hash()->count("enc") && !inv.hash()->count("chomp")) {
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto st = std::make_shared<LazySeqState>();
+            st->streaming = true;
+            st->finiteSource = true;
+            st->appendNext = [](ValueList& cache) -> bool {
+                std::string l;
+                if (!std::getline(std::cin, l)) { g_stdinHitEof = true; return false; }
+                if (!l.empty() && l.back() == '\r') l.pop_back();
+                cache.push_back(Value::str(l));
+                return true;
+            };
+            out.extM() = st;
+            return out;
         }
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" ||
             m == "slurp-rest" || m == "seek" || m == "tell") {
@@ -5501,16 +5573,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // without this pass they matched the literal text "$d".
         // A regex VALUE that outlived its scope (`sub f(@k) { /@k/ }`) resolves
         // its variables where it was written first, as a smartmatch does.
+        // A `:P5` pattern interpolates its variables as Perl SOURCE, as `~~`
+        // does: `.subst(rx:P5/$pat/, …)` quoted `b+` into a literal `b\+`
+        // and replaced nothing that the same regex matched under `~~`.
         std::string pat = args[rxIdx].s;
+        const bool p5pat = isP5Pattern(pat);
+        auto interp = [&](const std::string& p) {
+            return p5pat ? interpP5Pattern(p) : rxInterpArrays(interpRegexPattern(p));
+        };
         if (args[rxIdx].t == VT::Regex && args[rxIdx].ext() && args[rxIdx].hashKind.empty() &&
             (pat.find('$') != std::string::npos || pat.find('@') != std::string::npos)) {
             auto savedOuter = tctx_.cur;
             tctx_.cur = std::static_pointer_cast<Env>(args[rxIdx].ext());
-            try { pat = rxInterpArrays(interpRegexPattern(pat)); }
+            try { pat = interp(pat); }
             catch (...) { tctx_.cur = savedOuter; throw; }
             tctx_.cur = savedOuter;
         }
-        pat = rxInterpArrays(interpRegexPattern(pat));
+        pat = interp(pat);
         // the replacement is the first positional (non-Pair) arg that isn't the regex
         Value* replArg = nullptr;
         for (size_t i = 0; i < args.size(); i++)

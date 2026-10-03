@@ -3195,6 +3195,11 @@ public:
     // unwound when the program is shutting down. A no-op on the main thread and
     // whenever no abort is pending — just a thread-local bool + relaxed atomic,
     // inlined so hot loops pay ~nothing.
+    // The same question for code that waits outside the interpreter (a worker
+    // draining a child's pipes): is this a worker the program is ending under?
+    bool workerShouldUnwind() const {
+        return t_poll.isWorker && workerAbort_.load(std::memory_order_relaxed);
+    }
     inline void safePoint() {
         if (!t_poll.isWorker) return; // main-thread loops never park or abort here
         if (workerAbort_.load(std::memory_order_relaxed)) throw WorkerAbortEx{};

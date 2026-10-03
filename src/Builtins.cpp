@@ -643,6 +643,7 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
     pid_t pid = (pid_t)sc.pid;
     int fd = sc.outFd, efd = sc.errFd;
     bool oEof = (fd < 0), eEof = (efd < 0);
+    bool abandoned = false;
     while (!oEof || !eEof) {
         struct pollfd pfds[2]; int nf = 0;
         if (!oEof) { pfds[nf] = {fd, POLLIN, 0}; nf++; }
@@ -661,6 +662,10 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
             break;
         }
         if (oEof && eEof) break;
+        // The program is ending and this is the worker driving a Proc::Async
+        // nobody awaited: leave the child to run on (a fire-and-forget daemon
+        // outlives us, as under Rakudo) rather than hold the exit until it ends.
+        if (gil && gil->workerShouldUnwind()) { abandoned = true; break; }
         if (timeoutSec > 0) {
             double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             if (elapsed > timeoutSec) {
@@ -673,7 +678,8 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
         }
     }
     int status = 0;
-    if (sc.reaped) status = sc.rawStatus; // the zombie sweep got there first
+    if (abandoned) {}                     // not ours to wait for any more
+    else if (sc.reaped) status = sc.rawStatus; // the zombie sweep got there first
     else if (timedout) { while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} }
     else if (timeoutSec > 0) {
         // the deadline binds even with no pipe left to key on (none was asked
@@ -691,8 +697,23 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
             poll(nullptr, 0, 10);
         }
     }
+    // A worker waits in slices, so the end of the program can still reach it;
+    // the main thread blocks, which costs a short-lived `run` no latency.
+    // The slices start short and grow: a child whose pipes just closed has
+    // usually exited within a millisecond, and a fixed 10 ms nap cost every
+    // short-lived Proc::Async that much (roast starts a thousand in a loop).
+    else if (t_poll.isWorker) {
+        long napUs = 50;
+        for (;;) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid || (r == -1 && errno != EINTR)) break;
+            if (gil && gil->workerShouldUnwind()) { abandoned = true; break; }
+            std::this_thread::sleep_for(std::chrono::microseconds(napUs));
+            if (napUs < 10000) napUs = std::min(napUs * 2, 10000L);
+        }
+    }
     else { while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {} } // reap; retry on EINTR
-    if (!timedout) exitCode = procStatusFold(status); // 256+N for a signal; the stores split it
+    if (!timedout && !abandoned) exitCode = procStatusFold(status); // 256+N for a signal; the stores split it
     if (fd >= 0) close(fd);
     if (efd >= 0) close(efd);
 #endif
@@ -939,6 +960,203 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     if (parked) gil->gilUnpark(true); // reacquire the GIL before touching interpreter state
 #endif
 }
+
+// ---- run(:in/:out/:err) over LIVE pipes ------------------------------------
+// Rakudo's `run` with a pipe asked for returns at once, with the child running:
+// `.in` writes reach it as they are made, and `.out.get` / `.out.lines` read
+// what it has written so far. Capturing everything first and handing it over
+// at exit made a conversation impossible (the second `.in.say` arrived after
+// the child was gone) and held every line of a long-running child until it
+// ended. A live child is a LiveProc in this registry, keyed by the token the
+// Proc and its handles carry ("live-tok"). Every read multiplexes all of the
+// child's pipes, buffering the ones not asked for, so a child that fills its
+// stderr while we read its stdout (or its stdout while we write its stdin)
+// cannot wedge either side. POSIX only; Windows keeps the captured model.
+#if !defined(_WIN32)
+namespace {
+struct LiveProc {
+    pid_t pid = 0;
+    int inFd = -1, outFd = -1, errFd = -1;   // our ends; -1 = closed or never piped
+    std::string outBuf, errBuf;              // read from the child, not yet handed out
+    bool finished = false;
+    int code = -1;                           // procStatusFold'ed once finished
+};
+std::mutex g_liveM;
+std::map<long long, std::shared_ptr<LiveProc>> g_live;
+long long g_liveSeq = 0;
+std::shared_ptr<LiveProc> liveGet(long long tok) {
+    std::lock_guard<std::mutex> lk(g_liveM);
+    auto it = g_live.find(tok);
+    return it == g_live.end() ? nullptr : it->second;
+}
+// One round of reading: wait up to `ms` for any open read end (or for `wantW`,
+// the stdin end, to take more), then take everything available into the buffers.
+// Returns whether the stdin end is writable.
+bool livePump(LiveProc& lp, int ms, Interpreter* I, bool wantW) {
+    struct pollfd pf[3]; int n = 0, oi = -1, ei = -1, wi = -1;
+    if (lp.outFd >= 0) { oi = n; pf[n++] = {lp.outFd, POLLIN, 0}; }
+    if (lp.errFd >= 0) { ei = n; pf[n++] = {lp.errFd, POLLIN, 0}; }
+    if (wantW && lp.inFd >= 0) { wi = n; pf[n++] = {lp.inFd, POLLOUT, 0}; }
+    if (n == 0) return false;
+    bool parked = I ? I->gilPark() : false;
+    int r;
+    do { r = ::poll(pf, n, ms); } while (r < 0 && errno == EINTR);
+    if (parked) I->gilUnpark(true);
+    if (r <= 0) return false;
+    char buf[65536];
+    auto drain = [&](int idx, int& fd, std::string& into) {
+        if (idx < 0 || !(pf[idx].revents & (POLLIN | POLLHUP | POLLERR))) return;
+        ssize_t k = ::read(fd, buf, sizeof buf);
+        if (k > 0) into.append(buf, (size_t)k);
+        else if (k == 0 || (errno != EAGAIN && errno != EINTR)) { ::close(fd); fd = -1; }
+    };
+    drain(oi, lp.outFd, lp.outBuf);
+    drain(ei, lp.errFd, lp.errBuf);
+    return wi >= 0 && (pf[wi].revents & (POLLOUT | POLLERR | POLLHUP));
+}
+} // namespace
+
+long long liveProcStart(const std::vector<std::string>& argv, const std::string& cwd,
+                        const std::vector<std::string>* envKV, SpawnStdio io, bool pipeIn,
+                        long long& pidOut, std::string& spawnErr) {
+    pidOut = 0;
+    int wp[2] = {-1, -1};
+    if (pipeIn && io.stdinFd < 0) {
+        if (::pipe(wp) != 0) return 0;
+        fcntl(wp[0], F_SETFD, FD_CLOEXEC); fcntl(wp[1], F_SETFD, FD_CLOEXEC);
+        io.stdinFd = wp[0];
+    }
+    SpawnedChild sc = spawnChildStart(argv, cwd, envKV, io);
+    if (wp[0] >= 0) ::close(wp[0]);          // the child holds its own copy
+    if (!sc.pid) {
+        if (wp[1] >= 0) ::close(wp[1]);
+        spawnErr = sc.spawnErr;
+        return 0;
+    }
+    auto lp = std::make_shared<LiveProc>();
+    lp->pid = (pid_t)sc.pid; lp->inFd = wp[1]; lp->outFd = sc.outFd; lp->errFd = sc.errFd;
+    pidOut = sc.pid;
+    std::lock_guard<std::mutex> lk(g_liveM);
+    long long tok = ++g_liveSeq;
+    g_live[tok] = lp;
+    return tok;
+}
+// The next line of a stream; false at its end with nothing left.
+bool liveProcReadLine(Interpreter* I, long long tok, bool err, std::string& line, bool chomp) {
+    auto lp = liveGet(tok); if (!lp) return false;
+    std::string& b = err ? lp->errBuf : lp->outBuf;
+    int& fd = err ? lp->errFd : lp->outFd;
+    for (;;) {
+        size_t nl = b.find('\n');
+        if (nl != std::string::npos) {
+            line = b.substr(0, chomp ? nl : nl + 1);
+            if (chomp && !line.empty() && line.back() == '\r') line.pop_back();
+            b.erase(0, nl + 1);
+            return true;
+        }
+        if (fd < 0) {
+            if (b.empty()) return false;
+            line.swap(b); b.clear();
+            return true;
+        }
+        livePump(*lp, 100, I, false);
+    }
+}
+// Up to `n` bytes as soon as any are there (`.read`); "" only at the end.
+std::string liveProcRead(Interpreter* I, long long tok, bool err, size_t n) {
+    auto lp = liveGet(tok); if (!lp) return "";
+    std::string& b = err ? lp->errBuf : lp->outBuf;
+    int& fd = err ? lp->errFd : lp->outFd;
+    while (b.empty() && fd >= 0) livePump(*lp, 100, I, false);
+    std::string r = b.substr(0, n);
+    b.erase(0, r.size());
+    return r;
+}
+// Everything left on a stream, to its end.
+std::string liveProcReadAll(Interpreter* I, long long tok, bool err) {
+    auto lp = liveGet(tok); if (!lp) return "";
+    int& fd = err ? lp->errFd : lp->outFd;
+    while (fd >= 0) livePump(*lp, 100, I, false);
+    std::string r; r.swap(err ? lp->errBuf : lp->outBuf);
+    return r;
+}
+bool liveProcEof(Interpreter* I, long long tok, bool err) {
+    auto lp = liveGet(tok); if (!lp) return true;
+    std::string& b = err ? lp->errBuf : lp->outBuf;
+    int& fd = err ? lp->errFd : lp->outFd;
+    while (b.empty() && fd >= 0) livePump(*lp, 100, I, false);
+    return b.empty();
+}
+// Write all of `data` to the child's stdin, reading its output meanwhile.
+bool liveProcWrite(Interpreter* I, long long tok, const std::string& data) {
+    auto lp = liveGet(tok); if (!lp || lp->inFd < 0) return false;
+    size_t off = 0;
+    while (off < data.size() && lp->inFd >= 0) {
+        if (!livePump(*lp, 100, I, true)) continue;
+        ssize_t k = ::write(lp->inFd, data.data() + off, data.size() - off);
+        if (k > 0) off += (size_t)k;
+        else if (k < 0 && errno != EAGAIN && errno != EINTR) { ::close(lp->inFd); lp->inFd = -1; return false; }
+    }
+    return off == data.size();
+}
+void liveProcCloseIn(long long tok) {
+    auto lp = liveGet(tok); if (!lp) return;
+    if (lp->inFd >= 0) { ::close(lp->inFd); lp->inFd = -1; }
+}
+// Hand a stream's read end to someone else (`run(…, :in($p.out))` makes the
+// next child read this one's output directly); -1 once anything was buffered.
+int liveProcTakeFd(long long tok, bool err) {
+    auto lp = liveGet(tok); if (!lp) return -1;
+    int& fd = err ? lp->errFd : lp->outFd;
+    if (fd < 0 || !(err ? lp->errBuf : lp->outBuf).empty()) return -1;
+    int r = fd; fd = -1;
+    // our end reads non-blocking, and the flag lives on the open file, so the
+    // next child would see EAGAIN ("Resource temporarily unavailable")
+    int fl = fcntl(r, F_GETFL);
+    if (fl >= 0) fcntl(r, F_SETFL, fl & ~O_NONBLOCK);
+    return r;
+}
+// The child's end: stdin closed, what is left of its output buffered for the
+// handles, and its status collected. Idempotent.
+bool liveProcFinish(Interpreter* I, long long tok, int& code) {
+    auto lp = liveGet(tok); if (!lp) return false;
+    if (!lp->finished) {
+        if (lp->inFd >= 0) { ::close(lp->inFd); lp->inFd = -1; }
+        while (lp->outFd >= 0 || lp->errFd >= 0) livePump(*lp, 100, I, false);
+        int status = 0;
+        bool parked = I ? I->gilPark() : false;
+        while (waitpid(lp->pid, &status, 0) == -1 && errno == EINTR) {}
+        if (parked) I->gilUnpark(true);
+        lp->code = procStatusFold(status);
+        lp->finished = true;
+    }
+    code = lp->code;
+    return true;
+}
+#else
+bool liveProcReadLine(Interpreter*, long long, bool, std::string&, bool) { return false; }
+std::string liveProcRead(Interpreter*, long long, bool, size_t) { return ""; }
+std::string liveProcReadAll(Interpreter*, long long, bool) { return ""; }
+bool liveProcEof(Interpreter*, long long, bool) { return true; }
+bool liveProcWrite(Interpreter*, long long, const std::string&) { return false; }
+void liveProcCloseIn(long long) {}
+int liveProcTakeFd(long long, bool) { return -1; }
+bool liveProcFinish(Interpreter*, long long, int&) { return false; }
+#endif
+
+void procSettleLive(Interpreter* I, const Value& proc) {
+#if !defined(_WIN32)
+    if (!(proc.t == VT::Hash && proc.hash())) return;
+    auto it = proc.hash()->find("live-tok");
+    if (it == proc.hash()->end() || proc.hash()->count("live-done")) return;
+    int code = -1;
+    if (liveProcFinish(I, it->second.toInt(), code)) storeProcStatus(proc, code);
+    (*proc.hash())["live-done"] = Value::boolean(true);
+#else
+    (void)I; (void)proc;
+#endif
+}
+static const bool g_procSettleSet = (g_procSettle = [](const Value& p) { procSettleLive(nullptr, p); }, true);
 
 std::pair<size_t, size_t> nextLogicalNewline(const std::string& s, size_t from) {
     for (size_t i = from; i < s.size(); i++) {
@@ -1345,10 +1563,25 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
         }
         return n;
     };
-    auto emitChunk = [&](const char* key, const std::string& data0) {
-        if (data0.empty()) return;
+    // A stream asked for before the start but not tapped yet keeps what
+    // arrives ("held-<key>"); its first tap replays it (registerProcStreamTap).
+    // What a tap left held — the start of a character — leads the next chunk.
+    auto emitChunk = [&](const char* key, const std::string& data1) {
+        if (data1.empty()) return;
+        const std::string hk = std::string("held-") + key;
         auto taps = proc.hash()->find(key);
-        if (taps == proc.hash()->end() || !taps->second.arr()) return;
+        if (taps == proc.hash()->end() || !taps->second.arr() || taps->second.arr()->empty()) {
+            const bool asked = std::string(key) == "taps"
+                ? proc.hash()->count("used-stdout") != 0 : proc.hash()->count("used-stderr") != 0;
+            if (asked) {
+                Value& h = (*proc.hash())[hk];
+                h = Value::str(h.t == VT::Str ? h.s + data1 : data1);
+            }
+            return;
+        }
+        std::string data0 = data1;
+        { auto hit = proc.hash()->find(hk);
+          if (hit != proc.hash()->end()) { data0 = hit->second.toStr() + data1; proc.hash()->erase(hit); } }
         std::string& carry = utf8Carry[key];
         std::string whole = carry + data0;
         const size_t cut = completeUtf8Prefix(whole);
@@ -1416,6 +1649,9 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
           if (it != g_spawned.end()) { sc = it->second; g_spawned.erase(it); } }
         childPid = sc.pid;
         spawnChildFinish(sc, timeoutSec, out, &err, code, timedout, this, &sink, &sinkErr);
+        // the program ended while this worker drove the process: unwind, and
+        // touch no promise — the child keeps running without us
+        if (workerShouldUnwind()) throw WorkerAbortEx{};
     }
     else {
         std::vector<std::string> argv;
@@ -1451,6 +1687,13 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
             if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
         });
     };
+    // …and a stream nobody has tapped yet is marked ENDED, so a late first
+    // tap gets its done after the replay
+    for (const char* k : {"taps", "taps-err"}) {
+        auto t = proc.hash()->find(k);
+        if (t == proc.hash()->end() || !t->second.arr() || t->second.arr()->empty())
+            (*proc.hash())[std::string("ended-") + k] = Value::boolean(true);
+    }
     finishTaps("taps");
     finishTaps("taps-err");
     storeProcStatus(proc, code); // exitcode + signal

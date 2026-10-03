@@ -1590,10 +1590,31 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     }
     if (!literal) {
         // interpolate scalar variables ($foo, $^a) into the regex as literal (quotemeta'd) text
+        // A `{ … }` block (`<{ $p }>`, `<?{ $n > 1 }>`, `**{$n}`) is CODE that
+        // reads its own variables when it runs, and a '…' span is literal text:
+        // neither is pattern for this pass. Pasting the value in turned
+        // `<{ $p }>` into `<{ b }>`, a call to a routine named b.
         std::string ip;
+        int braces = 0;
+        bool inSq = false;
         for (size_t i = 0; i < realPat.size(); i++) {
             if (size_t sp = Regex::spliceSpan(realPat, i)) { ip += realPat.substr(i, sp); i += sp - 1; continue; }
             if (realPat[i] == '\\' && i + 1 < realPat.size()) { ip += realPat[i]; ip += realPat[i + 1]; i++; continue; }
+            if (!p5 && !inSq && !braces && realPat[i] == '<' && i + 1 < realPat.size() &&
+                (realPat[i + 1] == '[' || realPat[i + 1] == '-')) {
+                // a character class: a `{` or `'` inside it is a member
+                size_t j = i;
+                while (j + 1 < realPat.size() && !(realPat[j] == ']' && realPat[j + 1] == '>')) ip += realPat[j++];
+                while (j < realPat.size() && realPat[j] != '>') ip += realPat[j++];
+                if (j < realPat.size()) ip += realPat[j];
+                i = j; continue;
+            }
+            if (!p5) {
+                if (realPat[i] == '{' && !inSq) { braces++; ip += realPat[i]; continue; }
+                if (realPat[i] == '}' && !inSq) { if (braces) braces--; ip += realPat[i]; continue; }
+                if (realPat[i] == '\'' && !braces) { inSq = !inSq; ip += realPat[i]; continue; }
+                if (inSq || braces) { ip += realPat[i]; continue; }
+            }
             if (realPat[i] == '$' && i + 1 < realPat.size()) {
                 size_t j = i + 1;
                 if (realPat[j] == '^' && j + 1 < realPat.size()) j++; // $^a is visible as $a

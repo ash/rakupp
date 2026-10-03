@@ -347,6 +347,23 @@ inline void storeProcStatus(const Value& proc, int code) {
     (*proc.hash())["exitcode"] = Value::integer(code >= 256 ? 0 : code);
     (*proc.hash())["signal"]   = Value::integer(code >= 256 ? code - 256 : 0);
 }
+// run(:in/:out/:err) over LIVE pipes (Builtins.cpp): a child still running,
+// keyed by the "live-tok" its Proc and IO::Pipe handles carry. POSIX only —
+// on Windows nothing carries a live-tok, and these are inert stubs.
+bool liveProcReadLine(Interpreter* I, long long tok, bool err, std::string& line, bool chomp);
+std::string liveProcRead(Interpreter* I, long long tok, bool err, size_t n);
+std::string liveProcReadAll(Interpreter* I, long long tok, bool err);
+bool liveProcEof(Interpreter* I, long long tok, bool err);
+bool liveProcWrite(Interpreter* I, long long tok, const std::string& data);
+void liveProcCloseIn(long long tok);
+int liveProcTakeFd(long long tok, bool err);
+bool liveProcFinish(Interpreter* I, long long tok, int& code);
+// A Proc whose child still runs over live pipes is SETTLED before anything
+// reads its status: stdin closed, the rest of its output buffered for its
+// handles, the exit status stored. A no-op for every other Proc. Value.cpp
+// reaches it through g_procSettle (a Proc's truth and numeric value).
+void procSettleLive(Interpreter* I, const Value& proc);
+extern void (*g_procSettle)(const Value&);
 
 bool isBuiltinRole(const std::string& n);
 

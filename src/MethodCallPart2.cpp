@@ -900,6 +900,59 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
         if (!proc.hash()->count("taps-err")) (*proc.hash())["taps-err"] = Value::array();
         (*proc.hash())["taps-err"].arr()->push_back(rec2);
     }
+    // Output the process wrote before this first tap was there: the worker that
+    // drains the pipes held it on the proc ("held-taps"), and it is this tap's
+    // now — the Supply was asked for before the start, so nothing it carried
+    // may be lost (S17-procasync/basic.t taps after a `sleep`). If the stream
+    // has already ENDED, its end comes too. A held tail that stops inside a
+    // character stays held until the rest of it arrives.
+    auto replay = [&](const char* k, const Value& r) {
+        std::string hk = std::string("held-") + k;
+        auto hit = proc.hash()->find(hk);
+        std::string held = hit != proc.hash()->end() ? hit->second.toStr() : std::string();
+        bool ended = proc.hash()->count(std::string("ended-") + k) != 0;
+        Value ecb = (*r.hash())["emit"], edone = (*r.hash())["done"];
+        bool bin = r.hash()->count("bin") && (*r.hash())["bin"].truthy();
+        bool lines = r.hash()->count("lines") != 0;
+        if (!held.empty()) {
+            std::string now = held, rest;
+            if (!bin && !ended) {                 // whole characters only
+                size_t n = now.size(), cut = n;
+                for (size_t back = 1; back <= 3 && back <= n; back++) {
+                    unsigned char c = (unsigned char)now[n - back];
+                    if ((c >> 6) == 2) continue;
+                    int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+                    if ((size_t)len > back) cut = n - back;
+                    break;
+                }
+                rest = now.substr(cut); now.resize(cut);
+            }
+            if (rest.empty()) proc.hash()->erase(hk); else (*proc.hash())[hk] = Value::str(rest);
+            if (!now.empty() && ecb.t == VT::Code) {
+                Value chunk = Value::str(now);
+                if (bin) chunk.hashKind = "Blob";
+                else {
+                    if (r.hash()->count("enc")) {
+                        std::string enc = (*r.hash())["enc"].toStr();
+                        if (!(enc.empty() || enc == "utf-8" || enc == "utf8")) now = decodeTextEnc(now, enc);
+                    }
+                    std::string t; t.reserve(now.size());
+                    for (size_t i = 0; i < now.size(); i++)
+                        if (!(now[i] == '\r' && i + 1 < now.size() && now[i + 1] == '\n')) t += now[i];
+                    chunk = Value::str(t);
+                }
+                callCallable(ecb, ValueList{chunk});
+            }
+        }
+        if (ended) {
+            proc.hash()->erase(std::string("ended-") + k);
+            if (lines && ecb.t == VT::Code) callCallable(ecb, ValueList{Value::str(""), Value::boolean(true)});
+            if (edone.t == VT::Code) callCallable(edone, ValueList{});
+        }
+    };
+    replay(key, rec);
+    if (inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "Supply")
+        replay("taps-err", (*proc.hash())["taps-err"].arr()->back());
 }
 
 void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
@@ -3363,6 +3416,29 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc") { // standard Proc from run()
+        // a child over live pipes ends before its status is read
+        if (inv.hash()->count("live-tok") &&
+            (m == "exitcode" || m == "signal" || m == "so" || m == "Bool" || m == "sink" ||
+             m == "Numeric" || m == "Int" || m == "status"))
+            procSettleLive(this, inv);
+        // …and its `.out` / `.err` read the pipe itself: ONE IO::Pipe per
+        // stream, kept on the Proc, so what one `.out.get` took is gone for
+        // the next `.out` as well
+        if ((m == "out" || m == "err") && inv.hash()->count("live-tok") &&
+            inv.hash()->count(m == "out" ? "live-out" : "live-err")) {
+            const std::string hk = std::string("live-h-") + m;
+            auto hit = inv.hash()->find(hk);
+            if (hit != inv.hash()->end()) return hit->second;
+            Value h = Value::makeHash(); h.hashKind = "FileHandle";
+            (*h.hash())["mode"] = Value::str("r");
+            (*h.hash())["live-tok"] = (*inv.hash())["live-tok"];
+            if (m == "err") (*h.hash())["live-err"] = Value::boolean(true);
+            (*h.hash())["buffer"] = Value::str("");
+            (*h.hash())["proc-owner"] = inv;
+            if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy()) (*h.hash())["bin"] = Value::boolean(true);
+            (*inv.hash())[hk] = h;
+            return h;
+        }
         if (m == "exitcode") return (*inv.hash())["exitcode"];
         if (m == "timedout") { // rakupp extension, set when :timeout(N) fired
             auto it = inv.hash()->find("timedout");
@@ -3437,6 +3513,27 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto ec = inv.hash()->find("exitcode");
             return Value::boolean(ec != inv.hash()->end() && ec->second.toInt() == 0);
         }
+    }
+    if (inv.t == VT::Hash && inv.hashKind == "ProcIn" && inv.hash()->count("live-tok")) {
+        // stdin of a child running over live pipes: each write goes to it now
+        const long long tok = (*inv.hash())["live-tok"].toInt();
+        if (m == "print" || m == "spurt" || m == "write" || m == "say" || m == "put") {
+            std::string add; bool closeAfter = false;
+            if (m == "write" && !args.empty() && args[0].t == VT::Str) add = args[0].s;
+            else for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) {
+                    if (m == "spurt" && a.s == "close" && (!a.pairVal() || a.pairVal()->truthy())) closeAfter = true;
+                    continue;
+                }
+                add += a.toStr();
+            }
+            if (m == "say" || m == "put") add += "\n";
+            bool ok = liveProcWrite(this, tok, add);
+            if (closeAfter) liveProcCloseIn(tok);
+            return Value::boolean(ok);
+        }
+        if (m == "flush") return Value::boolean(true);
+        if (m == "close") { liveProcCloseIn(tok); Value pr = inv; pr.hashKind = "Proc"; return pr; }
     }
     if (inv.t == VT::Hash && inv.hashKind == "ProcIn") { // $proc.in — feed stdin, which runs a deferred proc
         // Closing stdin without ever writing to it still runs the child — with no

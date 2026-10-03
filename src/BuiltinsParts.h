@@ -191,6 +191,13 @@ void arrayOpArgs(const std::string& op, const ValueList& a, bool oneArray); // t
 // reads the terminal. `run 'stty', '-echo'` hung there forever — which is how
 // `fez login` came to echo the password and then wedge (issue #72) — and so did
 // every interactive child, `less` and `vi` and a `sudo` password prompt included.
+// run(:in/:out/:err) over live pipes (Builtins.cpp): the spawn half; the
+// rest is in BuiltinsShared.h. POSIX only.
+#if !defined(_WIN32)
+long long liveProcStart(const std::vector<std::string>& argv, const std::string& cwd,
+                        const std::vector<std::string>* envKV, SpawnStdio io, bool pipeIn,
+                        long long& pidOut, std::string& spawnErr);
+#endif
 // `:env` / `:ENV` as Rakudo takes it: the `.hash` of whatever was passed (BuiltinsRegister.cpp)
 bool envPairsFrom(const Value& v, std::map<std::string, std::string>& out);
 SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::string& cwd,

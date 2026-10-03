@@ -1554,7 +1554,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // on watching files. So the process is driven as Rakudo drives it:
             // a worker feeds the taps as output arrives (the GIL parked while
             // it waits) and keeps a real promise with the Proc when it exits.
-            if (!tctx_.tapStack.empty() && inv.hash()->count("spawn-token")) {
+            // …and so it is everywhere else: a promise that only an `await` could
+            // move left `.status` Planned and the taps silent for as long as the
+            // program did something else (`sleep 1; say $p.status`), and an
+            // `anyof` that timed out took the process down with it.
+            if (inv.hash()->count("spawn-token")) {
                 Value lazyP = pr;
                 Value drive; drive.t = VT::Code; drive.setCode(makePayload<Callable>());
                 drive.code()->builtin = [lazyP](Interpreter& I2, ValueList&) mutable -> Value {

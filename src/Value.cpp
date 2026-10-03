@@ -150,6 +150,7 @@ EndlessLazyFn g_endlessLazy = nullptr; // installed by InterpreterBinding.cpp (s
 // here that needs a bounded number: Bool, which asks for a first element.
 // Installed by InterpreterBinding.cpp beside g_forceLazy.
 void (*g_pullLazy)(const Value&, size_t) = nullptr;
+void (*g_procSettle)(const Value&) = nullptr;   // Builtins.cpp: a live run() child settles first
 DateFormatFn g_dateFormat = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
@@ -238,6 +239,7 @@ bool Value::truthy() const {
             // A Proc / Proc::Async is true iff it exited successfully: exit code 0
             // AND no signal (a SIGKILLed child has exitcode 0 — Rakudo's split).
             if ((hashKind == "Proc" || hashKind == "Proc::Async") && hash()) {
+                if (g_procSettle && hash()->count("live-tok")) g_procSettle(*this);
                 auto it = hash()->find("exitcode"), sg = hash()->find("signal");
                 return (it == hash()->end() || it->second.toInt() == 0) &&
                        (sg == hash()->end() || sg->second.toInt() == 0);
@@ -375,6 +377,7 @@ long long Value::toInt() const {
             }
             // A Proc / Proc::Async numifies to its exit status (+$proc), like Rakudo.
             if (hash() && (hashKind == "Proc" || hashKind == "Proc::Async")) {
+                if (g_procSettle && hash()->count("live-tok")) g_procSettle(*this);
                 auto it = hash()->find("exitcode");
                 return it != hash()->end() ? it->second.toInt() : 0;
             }
@@ -1084,6 +1087,7 @@ std::string Value::gist() const {
                     }
                     cmd += ")";
                 }
+                if (g_procSettle && hash()->count("live-tok")) g_procSettle(*this);
                 const Value* ec = fld("exitcode");
                 const Value* pid = fld("pid");
                 return hashKind + ".new(in => IO::Pipe, out => IO::Pipe, err => IO::Pipe, "

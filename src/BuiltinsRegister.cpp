@@ -35,6 +35,21 @@ static int stdinFdForHandle(const Value& h, bool& resolved) {
     };
     if (h.hashKind == "FileHandle") {
         if (const Value* std_ = field("std")) { resolved = std_->toStr() == "in"; return -1; }
+        // `:in($p.out)` of a child running over live pipes: this child reads
+        // that one's output straight from its pipe — or, once part of it was
+        // read here, the rest of it from a file
+        if (const Value* lt = field("live-tok")) {
+            const Value* le = field("live-err");
+            const bool isErr = le && le->truthy();
+            int fd = liveProcTakeFd(lt->toInt(), isErr);
+            if (fd >= 0) { resolved = true; return fd; }
+            std::string rest = liveProcReadAll(nullptr, lt->toInt(), isErr);
+            Value& buf = (*h.hash())["buffer"];
+            buf = Value::str((buf.t == VT::Str ? buf.s : std::string()) + rest);
+            h.hash()->erase("live-tok");
+            (*h.hash())["captured"] = Value::boolean(true);
+            return stdinFdForHandle(h, resolved);
+        }
         if (const Value* path = field("path")) {
             if (path->toStr().empty()) return -1;
             int fd = ::open(path->toStr().c_str(), O_RDONLY);
@@ -1753,6 +1768,41 @@ void Interpreter::registerBuiltinsPart2() {
         if (binPipes) (*p.hash())["bin"] = Value::boolean(true);
         (*p.hash())["argv"] = av; // for .command
         I.syncEnvToProcess(); // child inherits any %*ENV changes the program made
+#if !defined(_WIN32)
+        // A PIPE asked for — `:in`, `:out` or `:err` — and the child runs from
+        // here over live pipes, as Rakudo's does: `run` returns at once, `.in`
+        // writes reach the child as they are made, and `.out.get` / `.lines`
+        // read what it has written so far (see liveProcStart). A sink (`:out($fh)`),
+        // a `:timeout` or an input still waiting on another child keep the
+        // captured path below.
+        {
+            const bool pipeIn = wantIn && !haveInHandle && inFrom.t != VT::Hash;
+            const bool pipeOut = outMode == 1, pipeErr = errMode == 1;
+            if ((pipeIn || pipeOut || pipeErr) && !haveOutSink && !haveErrSink && timeoutSec <= 0 &&
+                !argv.empty()) {
+                SpawnStdio io;
+                io.stdinFd = inFd;
+                io.captureOut = pipeOut;
+                io.outToNull = outMode == 0;
+                io.captureErr = pipeErr;
+                io.errToNull = errMode == 0;
+                io.mergeErr = merge;
+                long long pid = 0; std::string spawnErr;
+                long long tok = liveProcStart(argv, cwd, haveEnv ? &envKV : nullptr, io, pipeIn, pid, spawnErr);
+                if (tok) {
+                    if (inFd >= 0) ::close(inFd);    // the child holds its own copy
+                    (*p.hash())["live-tok"] = Value::integer(tok);
+                    (*p.hash())["pid"] = Value::integer(pid);
+                    if (pipeOut) (*p.hash())["live-out"] = Value::boolean(true);
+                    if (pipeErr) (*p.hash())["live-err"] = Value::boolean(true);
+                    (*p.hash())["out-str"] = Value::str("");
+                    (*p.hash())["err-str"] = Value::str("");
+                    return p;
+                }
+                // could not start: the captured path below reports why
+            }
+        }
+#endif
         if (wantIn && !haveInHandle) {
             // Defer spawning: the process runs when its stdin is written via
             // `.in.spurt(...)`, so we can feed input and capture output together.
@@ -1858,6 +1908,32 @@ void Interpreter::registerBuiltinsPart2() {
         std::string out, err; int code = 0; bool timedout = false;
         long long childPid = 0;
         if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; } // as in run(), above
+#if !defined(_WIN32)
+        // `:out` / `:err` pipes are live, as in run() above
+        if ((outMode == 1 || errMode == 1) && !haveOutSink && !haveErrSink) {
+            SpawnStdio io;
+            io.stdinFd = inFd;
+            io.captureOut = outMode == 1; io.outToNull = outMode == 0;
+            io.captureErr = errMode == 1; io.errToNull = errMode == 0;
+            io.mergeErr = merge;
+            long long pid = 0; std::string spawnErr;
+            long long tok = liveProcStart(argv, cwd, haveEnv ? &envKV : nullptr, io, false, pid, spawnErr);
+            if (tok) {
+                if (inFd >= 0) ::close(inFd);
+                Value p = Value::makeHash(); p.hashKind = "Proc";
+                Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
+                if (binPipes) (*p.hash())["bin"] = Value::boolean(true);
+                (*p.hash())["argv"] = av;
+                (*p.hash())["live-tok"] = Value::integer(tok);
+                (*p.hash())["pid"] = Value::integer(pid);
+                if (outMode == 1) (*p.hash())["live-out"] = Value::boolean(true);
+                if (errMode == 1) (*p.hash())["live-err"] = Value::boolean(true);
+                (*p.hash())["out-str"] = Value::str("");
+                (*p.hash())["err-str"] = Value::str("");
+                return p;
+            }
+        }
+#endif
         int outSpawn = (outMode == -1 && !haveOutSink) ? -1 : (outMode == 0 ? 0 : 1);
         spawnCapture(argv, 0, out, code, timedout, &I, errMode != -1 ? &err : nullptr, cwd, &childPid,
                      haveEnv ? &envKV : nullptr, errMode == -1, outSpawn, nullptr, nullptr, inFd,

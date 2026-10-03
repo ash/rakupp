@@ -8372,7 +8372,8 @@ ExprPtr Parser::parsePrimary() {
                 // the op's (cooperative) result (zef: `next() R, DEBUG(...)`).
                 if (name != "return" && name != "return-rw" &&
                     isKind(Tok::LParen) && peek().kind == Tok::RParen) { advance(); advance(); }
-                bool retTerm = startsTermToken(cur()) && !kBlockKeywords.count(cur().text);
+                bool retTerm = startsTermToken(cur()) &&
+                               (!kBlockKeywords.count(cur().text) || kwCallHere(cur().text));
                 // sub/method/do/start blocks are valid expression operands too, as is
                 // an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
@@ -16478,6 +16479,9 @@ StmtPtr Parser::parseStatementImpl() {
             // loop controls already do for `next without $x`.
             } else if ((startsTermToken(cur()) && !kBlockKeywords.count(cur().text) &&
                         !kStmtModifiers.count(cur().text)) ||
+                       // `return has("a")` where this unit declares `sub has`: the
+                       // call, not a bare return followed by a `has` statement
+                       kwCallHere(cur().text) ||
                        isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
                        ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                         (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {

@@ -474,6 +474,7 @@ void Interpreter::sinkValue(const Value& r) {
     if (r.t != VT::Hash) return;
     if (r.hashKind == "Failure") { failureDetonate(r); return; }
     if (r.hashKind == "Proc") {
+        procSettleLive(this, r);   // a child over live pipes ends first
         long long ec = r.hash()->count("exitcode") ? (*r.hash())["exitcode"].toInt() : 0;
         long long sg = r.hash()->count("signal") ? (*r.hash())["signal"].toInt() : 0;
         if (ec == 0 && sg == 0) return;
@@ -28151,6 +28152,13 @@ Value Interpreter::eval(Expr* e) {
                 bool bareAtVar = it->kind == NK::VarExpr &&
                                  !static_cast<VarExpr*>(it.get())->name.empty() &&
                                  static_cast<VarExpr*>(it.get())->name[0] == '@';
+                // …and so does an array taken OUT of its item: `@$v`, `@($v)` and
+                // `$v<>` exist to strip the Scalar, so `[ @$v ]` is the elements
+                // of the array in $v, not a one-element array holding it.
+                if (!bareAtVar && it->kind == NK::Unary && v.t == VT::Array) {
+                    const auto& op = static_cast<Unary*>(it.get())->op;
+                    bareAtVar = opEq(op, "ctx@") || opEq(op, "decont");
+                }
                 bool flatten = oneArgSpread || callSpread || isSlip ||
                                (!isHyper &&
                                ((bareAtVar && l->items.size() == 1 && !l->fromCommaList) ||
@@ -28200,7 +28208,8 @@ Value Interpreter::eval(Expr* e) {
                 else if (v.t == VT::Hash && v.hash() && v.hashKind.empty() &&
                          !v.itemized && l->items.size() == 1 && !l->fromCommaList &&
                          (it->kind == NK::HashLit ||
-                          (it->kind == NK::Unary && opEq(static_cast<Unary*>(it.get())->op, "ctx%")) ||
+                          (it->kind == NK::Unary && (opEq(static_cast<Unary*>(it.get())->op, "ctx%") ||
+                                                     opEq(static_cast<Unary*>(it.get())->op, "decont"))) ||
                           (it->kind == NK::VarExpr &&
                            !static_cast<VarExpr*>(it.get())->name.empty() &&
                            static_cast<VarExpr*>(it.get())->name[0] == '%'))) {

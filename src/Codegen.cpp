@@ -2190,6 +2190,11 @@ struct Codegen {
                         s += "rtSlipShallow(" + ex(static_cast<Unary*>(it)->operand.get()) + ")";
                     else if (atVar && one) // a lone bare @-variable flattens into the literal
                         s += "rtSlipShallow(" + exArg(it) + ")";
+                    else if (one && it->kind == NK::Unary &&
+                             (static_cast<Unary*>(it)->op == "ctx@" || static_cast<Unary*>(it)->op == "decont"))
+                        // `[ @$v ]` / `[ $v<> ]`: an array (or a hash's pairs) out of its item spreads
+                        s += "([&]()->Value{ Value _v = " + exArg(it) + "; return _v.t == VT::Array ||"
+                             " (_v.t == VT::Hash && _v.hashKind.empty()) ? rtSlipShallow(_v) : rtOneArgItem(_v); }())";
                     else if (isHyper)    // hyper results stay one (itemized) element
                         s += (one ? "rtOneArgItem(" : "rtHyperItem(") + exArg(it) + ")";
                     else if (one)        // single list-valued item spreads (one-arg rule)
