@@ -23216,7 +23216,8 @@ Value Interpreter::evalUnary(Unary* u) {
           // (a sigilless `\p` holding one is a VALUE too, like a `$p`)
           !(u->operand && (u->operand->kind == NK::VarExpr || u->operand->kind == NK::NameTerm)))) &&
         (opEq(u->op, "~") || opEq(u->op, "-") || opEq(u->op, "+") || opEq(u->op, "?") || opEq(u->op, "!") ||
-         opEq(u->op, "so") || opEq(u->op, "not") || opEq(u->op, "+^") || opEq(u->op, "^") || opEq(u->op, "|"))) {
+         opEq(u->op, "so") || opEq(u->op, "not") || opEq(u->op, "+^") || opEq(u->op, "^") || opEq(u->op, "|") ||
+         (u->postfix && opEq(u->op, "i")))) {   // …and postfix `*i`, as Rakudo curries it
         Value inner = v; std::string op = u->op;
         Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->isWhateverCode = true;
         code.code()->builtin = [inner, op](Interpreter& I, ValueList& a) -> Value {
@@ -23240,6 +23241,7 @@ Value Interpreter::evalUnary(Unary* u) {
             // `flatten` returned only the root and `levels` only the first
             // level, silently, on every tree.
             if (opEq(op, "|")) return slipOf(b);
+            if (opEq(op, "i")) return I.postfixIPub(b);
             if (opEq(op, "+^")) { // bitwise NOT: -(x+1), exact at any width
                 if (b.big()) {
                     BigInt res = BigInt(0) - (*b.big() + BigInt(1));
@@ -23829,6 +23831,29 @@ Value Interpreter::evalCall(Call* c) {
                 };
                 return code;
             }
+        }
+    }
+    // …and over USER-DEFINED postfixes: `(1..10).map(*!)` is `{ $_! }`, and
+    // `(* + 1)!` / `*.succ!` extend the curry their operand started. The same
+    // syntax rule: a `*` written there, not a WhateverCode the operand merely
+    // holds (`$f!` calls the operator on $f). (Tested on the VALUE first, so a
+    // plain call pays no name compare; `special` stays off for postfixes,
+    // which would refuse them from the integer kernels.)
+    if (args.size() == 1 && !c->callee && c->args.size() == 1 &&
+        (args[0].t == VT::Whatever || (args[0].t == VT::Code && args[0].code() && args[0].code()->isWhateverCode)) &&
+        c->name.compare(0, 9, "postfix:<") == 0 && exprHasWhateverLit(c->args[0].get())) {
+        if (Value* fp = tctx_.cur->find(callAmpName(c))) {
+            Value f = *fp, inner = args[0];
+            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+            code.code()->isWhateverCode = true;
+            code.code()->whateverArity = inner.t == VT::Code && inner.code()->whateverArity > 0
+                                             ? inner.code()->whateverArity : 1;
+            code.code()->builtin = [f, inner](Interpreter& I, ValueList& as) -> Value {
+                Value x = inner.t == VT::Whatever ? (as.empty() ? Value::any() : as[0])
+                                                  : I.callCallable(inner, ValueList(as));
+                return I.callCallable(f, ValueList{x});
+            };
+            return code;
         }
     }
     if (c->callee) {

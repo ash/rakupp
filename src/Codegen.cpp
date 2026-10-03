@@ -1932,6 +1932,14 @@ struct Codegen {
                 // `[2 3 4]`. Refuse, exactly as an `is rw` NativeCall param
                 // does, and let --exe fall back to bundling and stay CORRECT.
                 if (c->name == "take-rw" && !c->callee) unsupported("take-rw");
+                // A `*` written under a USER operator — `*!`, `* quack 5`,
+                // `(* + 1)!` — is a Whatever-curry, which evalCall builds and
+                // the emitter below does not: it handed the operator the Whatever
+                // itself, so `.map(*!)` died on `[*] 1..*`. Refused, so --exe
+                // bundles and answers what the interpreter does.
+                if (!c->callee && (c->name.rfind("infix:<", 0) == 0 || c->name.rfind("postfix:<", 0) == 0))
+                    for (auto& a : c->args)
+                        if (hasStarLit(a.get())) unsupported("a Whatever-curry over " + c->name);
                 if (!c->callee) refuseRwCall(rwSubNames_, c->name, c->args);
                 // `Int($x)`, `Str($x)`, `MyClass($x)` — a TYPE called as a routine is
                 // the coercion protocol (the argument's own method, COERCE, CALL-ME,
