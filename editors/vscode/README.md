@@ -1,39 +1,68 @@
 # Raku++ for VS Code
 
-Raku language support powered by the [rakupp](https://github.com/ash/rakupp)
-language server — live diagnostics as you type, plus syntax highlighting.
+Raku support from [Raku++](https://raku.online), an interpreter and compiler
+for Raku. The extension starts `rakupp --lsp`, the language server built into
+the `rakupp` binary, so the editor checks your code with the same engine that
+runs it.
 
 ## Features
 
-- **Diagnostics** — syntax errors and lint findings (unused variables,
-  redundant `return`, unreachable code, …) surfaced inline. They come straight
-  from `rakupp --lsp`, the same engine that runs your code, so they never lie.
-- **Syntax highlighting** for `.raku`, `.rakumod`, `.rakutest`, `.p6`, and
-  friends.
+- **Errors and lint findings as you type**: syntax errors, undeclared
+  variables, unused variables and routines, a redundant final `return`,
+  unreachable code. Each is underlined on the token it is about and listed in
+  **View → Problems**.
+- **Hover**: the declaration of the name under the cursor with its `#|`
+  comment, or the reference entry for a built-in such as `say`.
+- **Completion**: variables in scope, your subs and classes, and the built-in
+  subs and methods; after a `.`, methods.
+- **Go to definition** (F12) for names declared in the file.
+- **Syntax highlighting** for `.raku`, `.rakumod`, `.rakutest`, `.rakudoc`,
+  `.p6`, `.pl6` and `.pm6` files.
 
-More is planned (hover, completion, go-to-definition).
+Hover, completion and definitions cover the open file and the built-ins, not
+the modules it `use`s.
 
 ## Requirements
 
-You need a `rakupp` binary newer than 5.2.1. Versions up to and including
-5.2.1 reject the `--stdio` flag this client passes, and the server does not start.
-Install it ([installation guide](https://github.com/ash/rakupp/blob/main/docs/guide/INSTALL.md))
-or build it from the [rakupp repo](https://github.com/ash/rakupp), then set its
-absolute path:
+The extension needs the `rakupp` binary, which it does not include. Install it
+with one command.
 
-```jsonc
-"rakupp.path": "/absolute/path/to/rakupp"
+macOS, Linux and the BSDs:
+
+```sh
+curl -fsSL https://raku.online/install.sh | sh
 ```
 
-The full setup guide, with troubleshooting, is
-[LSP.md](https://github.com/ash/rakupp/blob/main/docs/guide/integrations/LSP.md).
+Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+```
+
+Then restart VS Code so that it sees the new `PATH`. The
+[installation guide](https://github.com/ash/rakupp/blob/main/docs/guide/INSTALL.md)
+lists the other ways to get `rakupp`.
+
+With `rakupp` 5.2.1 or older you get the underlines only. Hover, completion
+and go-to-definition need a newer `rakupp`; `rakupp upgrade` updates it in
+place.
 
 ## Settings
 
 | Setting | Default | Description |
 |---|---|---|
-| `rakupp.path` | `rakupp` | Path to the rakupp executable. |
-| `rakupp.trace.server` | `off` | Trace LSP traffic in the **Raku++** output channel (`messages` / `verbose`). |
+| `rakupp.path` | `rakupp` | The `rakupp` executable. Set an absolute path if VS Code does not find it on `PATH`. |
+| `rakupp.trace.server` | `off` | Log the messages exchanged with the server in the **Raku++** output channel (`messages` or `verbose`). |
+
+## Troubleshooting
+
+If no underlines appear, open **View → Output** and choose **Raku++** in the
+drop-down: a server that failed to start says why there. A new, unsaved file
+gets no checks until you save it with a Raku extension such as `.raku`.
+
+The full guide, with every kind of finding, is
+[LSP.md](https://github.com/ash/rakupp/blob/main/docs/guide/integrations/LSP.md).
+Report problems at [github.com/ash/rakupp/issues](https://github.com/ash/rakupp/issues).
 
 ## Developing this extension
 
@@ -43,5 +72,5 @@ npm run compile
 # then press F5 in VS Code to launch an Extension Development Host
 ```
 
-See [`../README.md`](../README.md) for how to exercise the language server
-directly from the command line — useful when debugging the server itself.
+[editors/README.md](https://github.com/ash/rakupp/blob/main/editors/README.md)
+shows how to drive the language server from the command line.

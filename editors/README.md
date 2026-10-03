@@ -11,8 +11,8 @@
 > the token stream, since `struct Node` carries a line but no column. Hover,
 > completion and definition are `src/LspIndex.cpp`. Checked with VS Code 1.140
 > (diagnostics) and with Emacs 31.1 through eglot and lsp-mode (everything).
-> The VS Code extension's package.json names version 0.9.1 and has never been
-> published.
+> The VS Code extension is version 1.0.0 (publisher `DeepSoft`), packaged with
+> `npx @vscode/vsce package` and not yet on the Marketplace.
 
 
 `rakupp --lsp` runs a [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)

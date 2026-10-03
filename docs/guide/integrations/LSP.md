@@ -36,10 +36,9 @@ command -v rakupp
 ```
 
 Note the absolute path it prints; step 3 uses it. Any install works: the
-one-liner, Homebrew, a release archive, or a build of this repository. The
-`rakupp` must be **newer than 5.2.1**. Versions up to and including 5.2.1 reject the
-`--stdio` flag that VS Code adds to the command, so the server never starts
-(see [Troubleshooting](#troubleshooting)).
+one-liner, Homebrew, a release archive, or a build of this repository. With
+`rakupp` 5.2.1 or older you get the diagnostics only; hover, completion and
+go-to-definition need a newer `rakupp`.
 
 ### 2. Build and install the extension
 
@@ -49,10 +48,10 @@ Building needs Node.js and npm. From the repository root:
 (cd editors/vscode && npm install && npx @vscode/vsce package)
 ```
 
-This writes `rakupp-0.9.1.vsix` into `editors/vscode/`. Install it:
+This writes `rakupp-1.0.0.vsix` into `editors/vscode/`. Install it:
 
 ```bash
-code --install-extension editors/vscode/rakupp-0.9.1.vsix
+code --install-extension editors/vscode/rakupp-1.0.0.vsix
 ```
 
 If `code` is not found, run **Shell Command: Install 'code' command in PATH**
@@ -123,7 +122,7 @@ drop-down. The server's startup messages and errors appear there.
 
 | What you see | Why, and the fix |
 |---|---|
-| `Illegal option --stdio`, then `Server initialization failed` five times | The `rakupp` is 5.2.1 or older. Upgrade it, or point `rakupp.path` at a newer build. |
+| `Illegal option --stdio`, then `Server initialization failed` five times | The extension is a build older than 1.0.0, which adds `--stdio` to the command, and the `rakupp` is 5.2.1 or older, which rejects it. Install the current extension, or upgrade `rakupp`. |
 | A pop-up saying *Raku++: failed to start language server* | `rakupp.path` names no runnable file. Check the path; it often points into a build directory that has since been removed. |
 | No squiggles in a new, unsaved buffer | The extension only handles files on disk. Save the buffer as `something.raku`. |
 | The status bar says *Plain Text* instead of *Raku* | VS Code does not treat the file as Raku. Click the language name in the status bar and choose **Raku**. |

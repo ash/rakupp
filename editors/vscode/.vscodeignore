@@ -13,3 +13,5 @@ node_modules/**
 !node_modules/balanced-match/**
 !node_modules/brace-expansion/**
 !node_modules/minimatch/**
+*.vsix
+images/icon.svg

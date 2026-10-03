@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="48" fill="#c8402b"/>
+  <text x="128" y="112" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="78"
+        font-weight="700" fill="#ffffff" text-anchor="middle">Raku</text>
+  <text x="128" y="206" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="104"
+        font-weight="700" fill="#ffffff" text-anchor="middle">++</text>
+</svg>
