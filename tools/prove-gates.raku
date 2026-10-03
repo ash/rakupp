@@ -268,6 +268,32 @@ gate
       ( $rc == 1, "exit $rc" ~ ($named ?? ', naming the koans whose solutions fail' !! ', but no koan is named') )
   };
 
+# The same planted engine, on an adopter's own suite. iz4 alone, in source
+# mode: it passes in full, so every file must turn red, and it is the cheaper
+# half. Needs the checkout in RAKUPP_ADOPTERS (the gate clones it on first use).
+gate
+  id     => '6d',
+  name   => 'adopters-gate (iz4)',
+  defect => 'an engine whose first assertion in every program comes out `not ok`',
+  cost   => '~1 min',
+  run    => sub {
+      my $wrap = $*TMPDIR.add("prove-gates-adopters-{$*PID}");
+      my $undo = plant-file($wrap, qq:to/WRAP/);
+          #!/bin/bash
+          # PLANTED by tools/prove-gates.raku — delete if a killed run left it.
+          "$RAKUPP" "\$@" | sed -E 's/^ok 1( |\$)/not ok 1\\1/'
+          exit \$\{PIPESTATUS[0]\}
+          WRAP
+      LEAVE $undo();
+      $wrap.chmod(0o755);
+      my ($rc, $out, $err) = sh($RAKUPP, $ROOT.add('tools/adopters-gate.raku').Str,
+                                '--only=iz4', '--mode=source',
+                                :env(%( RAKUPP => $wrap.Str )));
+      return (Nil, "could not judge: {$err.lines.tail(1).head // "exit $rc"}") if $rc == 2;
+      my $named = $out.contains('✗ t/');
+      ( $rc == 1, "exit $rc" ~ ($named ?? ', naming the files that fail' !! ', but no file is named') )
+  };
+
 # --- 1. Roast (slow) -------------------------------------------------------
 gate
   id     => '1',

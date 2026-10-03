@@ -251,6 +251,11 @@ with its tag, after the release run is green.
 
 ## 5. Ecosystem
 
+- [ ] **321 cannot run on main** (adopters gate 6d, `tools/adopters.list`): its
+  code relies on four things Raku++ v4.0.1 accepted and Rakudo refuses, so
+  12 of 13 files and the standalone build are listed as known failures and
+  only `t/00-canonical` is guarded. Next: the author hears of it (the
+  maintainer's call), then `--head` on their fix, move the pin, clear the line.
 - [ ] **Distributions passing their own tests**: 1,019 of 2,547 at v5.0.0.
   Next: a fresh grouping by cause of the ~1,175 that fail their own tests.
   Known layers underneath:
@@ -319,3 +324,5 @@ with its tag, after the release run is green.
 - The UUID distribution's name.
 - The rakuglaze repository's license.
 - The binding version scheme (section 4).
+- Telling the 321 author that their code breaks on Raku++ after v4.0.1
+  (section 5).

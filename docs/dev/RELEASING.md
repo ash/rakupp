@@ -555,6 +555,40 @@ from a checkout. The v5.1.0 release asset fails 10 of the 13 offline checks
 and dies in DBIish with "Can't determine actual Offset". CI runs the offline
 part on every push; the `--dbiish` run is for the release.
 
+### 6d. Adopters' own suites — 321 and iz4
+
+```bash
+rakupp tools/adopters-gate.raku             # RAKUPP=/path/to/rakupp to name the binary
+rakupp tools/adopters-gate.raku --ref=v5.2.0   # rerun what went red on the last release
+```
+
+[321 and iz4](../../live/ADOPTIONS.md) were written for Raku++ and ship as
+standalone files that their CI compiles with `--aot --standalone`. The gate
+runs their own `t/` suites the way that CI does, in two modes: from source
+(`rakupp -Ilib t/FILE`, what their `prove` line runs) and against the file the
+candidate compiles (their `DO321_TEST_BIN` / `IZ4_TEST_BIN`). Each file runs
+alone with HOME in a scratch directory. Both adopters in both modes take about
+40 seconds.
+
+Their code is not in this repository. `tools/adopters.list` holds each
+repository's URL, the commit it is pinned to, and the failures already known,
+with the reason. The gate clones into `~/.cache/rakupp-adopters` (or
+`RAKUPP_ADOPTERS`) and checks out the pin. It refuses a checkout with local
+changes unless given `--dirty`, which tests the tree as it is, to see what is
+behind a known failure.
+
+**Red is a failure that is not listed as known.** `--ref=TAG|PATH` reruns only
+the red files on a reference binary: passes there means ours. A failure that is
+the adopter's code relying on something Rakudo refuses as well is not reverted.
+It goes into `tools/adopters.list` as `known`, and the adopter hears of it
+before the release. When a known failure starts passing, the gate says which
+line to delete. Exit 2 means it could not judge (no git, no network, no
+binary, a modified checkout) and is never a pass.
+
+Before moving a pin, run `--head` (their newest commit instead of the pin)
+and settle what it shows. `rakupp tools/prove-gates.raku --gate=6d` plants a
+broken engine and confirms the gate goes red on iz4.
+
 ### 7. Conformance — only before a release
 
 ```bash

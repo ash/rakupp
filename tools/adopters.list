@@ -1,0 +1,25 @@
+# Adopters whose own test suites gate a release — read by tools/adopters-gate.raku.
+#
+# Only the address and a pinned commit live here. The code stays in its own
+# repository and is cloned into a cache when the gate runs.
+#
+#   adopter NAME URL COMMIT ENTRY TEST-BIN-VAR
+#       ENTRY is the program their CI compiles with `--aot --standalone`;
+#       TEST-BIN-VAR is the variable that points their suite at that file.
+#   known   NAME WHAT REASON…
+#       a failure that is expected: WHAT is a test file (t/…), `build`
+#       (the standalone compile), `*` (every file and the build), or several
+#       of those joined by commas.
+#
+# Move a pin only after running the gate with --head on the new commit. When a
+# `known` line starts passing, the gate says so: delete the line.
+
+adopter 321 https://github.com/nige123/cli.321.do 39ddf8a8957d54b3dd12e74e86cf9ad086a93560 bin/321 DO321_TEST_BIN
+# Behind Shape.rakumod (lines 47, 54, 64, 138) there are three more of the same
+# kind, all refused by Rakudo as well, found with --dirty on a patched checkout
+# (2026-10-03): `$a && (…){$k}:exists` (Trust.rakumod:221), `without … else`
+# (Run.rakumod:260, 464), and `try $proc.in.close` sinking a failed Proc
+# (t/lib/Do321Test.rakumod:68), which throws when the CLI exits non-zero.
+known   321 build,t/01-protocol.rakutest,t/02-digest.rakutest,t/03-trust.rakutest,t/04-tool.rakutest,t/05-adapter.rakutest,t/06-run.rakutest,t/07-run-tool.rakutest,t/08-claudecode.rakutest,t/09-wire.rakutest,t/10-cli.rakutest,t/11-hooks.rakutest,t/12-iz4-policy.rakutest lib/Do321/Shape.rakumod:47 passes a lone Pair, `(k => 'v')`, to `@fields`; Rakudo refuses it too (needs a trailing comma). Raku++ v4.0.1, their pin, accepted it.
+
+adopter iz4 https://github.com/nige123/cli.iz4.you 2eb86ab720658a682ecc14d0b68aa906ad867c3a bin/iz4 IZ4_TEST_BIN
