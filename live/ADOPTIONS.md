@@ -162,6 +162,11 @@ it loads an agent package, picks an installed harness or a deterministic
 procedure, enforces capability grants and approvals, and writes an immutable
 receipt of each run. It began in Go; in September 2026 it was ported to Raku,
 module by module with its test suites, and the Go tree was removed.
+[The commit that removed it](https://github.com/nige123/cli.321.do/commit/5fc651b374fda85b42d33de485f8732edb66f064)
+lists what was checked first — fixtures reproduced byte for byte, packages and
+receipts accepted across the two binaries, identical `help` and `doctor`
+output, 794 tests passing against the compiled file — and the Raku++ quirks
+met on the way, each worked around at the call site.
 
 Raku++ is how it ships. Its own CI fetches a pinned Raku++ release, checks the
 archive's SHA-256, and runs `rakupp --aot --standalone` on each of four
