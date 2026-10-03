@@ -89,7 +89,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   write). The fix needs the supplier lock key passed through tapSupply.
 - [ ] **Cro and #116 follow-ups**:
   - `all(@p)».status` collapses the junction.
-  - `Promise.WHICH`.
   - A bare `Node` resolves through the `classAliases_` tail.
   - `NativeLibs EXPORT failed: No such method 'dispatcher'`.
   - Nested protos under LTM.
@@ -104,15 +103,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   [../findings/semantics/](../findings/semantics/).
 - [ ] **Divergences found in sweeps and not fixed**:
   - `use` inside a sub loads at call time.
-  - `$x := Int; $x = 5` lives.
   - Role conflicts are undetected or reported late.
   - Seq, Range, Map and Hash answer one candidate for `.^can('elems')`.
-  - `.append($h<k>)` spreads.
-  - `[ %( … ) ]` does not flatten.
   - An exported `infix:<+++>`.
-  - `my $x = INIT expr` discards the INIT value.
-  - `fail` in BUILD.
-  - An exception in END is swallowed.
   - Stacked postfixes: with only `postfix:<!>` declared, `3!!` is a parse
     error (Rakudo 720), and `3!²` drops the `²` (Rakudo 36).
   - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
@@ -130,6 +123,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     Found 2026-10-03: it let rakuglaze's race surface as `.IO` on Any.
   - Named `is rw` / `is raw` parameters do not write back:
     `sub f(:$x! is rw) { $x = 5 }; f(x => $v)` leaves `$v` alone (Rakudo 5).
+  - `-> \v { v = 1 }(Int)` lives; Rakudo refuses the type object (`my \v =
+    Int` is refused since 2026-10-03). `my $x := Int:D; $x = 5` names `Int`,
+    not `Int:D`.
+  - Two `IO::Handle.new` share one WHICH (the handle payload is shared), and
+    `$supplier.Supply` answers the same Supply each call (Rakudo: a new one).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair

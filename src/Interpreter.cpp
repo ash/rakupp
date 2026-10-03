@@ -131,6 +131,15 @@ Value divZeroResult(const Value& lhs, const std::string& op) {
 }
 
 [[noreturn]] void throwImmutable(const Value& v) {
+    // a TYPE OBJECT refused is named as one: `my \v = Int; v = 1` is "Cannot
+    // modify an immutable 'Int' type object" in Rakudo, not "Int ((Int))"
+    if (v.t == VT::Type || v.t == VT::Any) {
+        const std::string tn = v.t == VT::Type ? v.s.str() : v.typeName();
+        const std::string msg = "Cannot modify an immutable '" + tn + "' type object";
+        if (g_revInterp)
+            g_revInterp->throwTypedV("X::Assignment::RO", {{"value", v}, {"typename", Value::str(tn)}}, msg);
+        throw RakuError{Value::typeObj("X::Assignment::RO"), msg};
+    }
     std::string kind = v.t == VT::Hash && !v.hashKind.empty() ? v.hashKind : v.typeName();
     // `.value` names what refused the write (`throws-like …, value => $list`)
     if (g_revInterp)

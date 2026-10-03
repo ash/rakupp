@@ -6735,6 +6735,10 @@ bool Interpreter::boolify(const Value& v) {
 // parameter keeps the plain message, as for `=`.
 [[noreturn]] static void throwNotWritableOp(Interpreter& I, const Value& v) {
     if (!v.immutableBind) throwNotWritable(v);
+    if (v.t == VT::Type || v.t == VT::Any) {   // `my $s := Str; $s ~= "a"`
+        Value iv = v; iv.readonly = iv.immutableBind = false;
+        throwImmutable(iv);
+    }
     const std::string ty = v.typeName();
     I.throwTypedV("X::Assignment::RO", {{"typename", Value::str(ty)}},
                   "Cannot modify an immutable " + ty + " (" + v.gist() + ")");
@@ -12278,14 +12282,20 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     }
     // `my $x := 42`, `my \z := once 42`: the name is bound to a VALUE, with no
     // container behind it, so a later assignment is refused ("Cannot assign to
-    // an immutable value") — as for `-> \v` handed a literal.
-    if (isBind && a->target->kind == NK::VarExpr && bindsBareValue(a->value.get())) {
+    // an immutable value") — as for `-> \v` handed a literal. A type name is a
+    // value too: `my $x := Int; $x = 5` dies in Rakudo ("assign requires a
+    // concrete object"), so a name term that produced a type object counts.
+    const bool bareBind = isBind && a->target->kind == NK::VarExpr && bindsBareValue(a->value.get());
+    if (bareBind || (isBind && a->target->kind == NK::VarExpr && a->value &&
+                     a->value->kind == NK::NameTerm)) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         const std::string& n = ve->name;
         const bool sigilless = !n.empty() && (ascii::isalpha((unsigned char)n[0]) || n[0] == '_');
         if ((sigilless || (n.size() > 1 && n[0] == '$' &&
                            (ascii::isalpha((unsigned char)n[1]) || n[1] == '_'))) && tctx_.cur)
-            if (Value* cur = tctx_.cur->find(n)) cur->readonly = cur->immutableBind = true;
+            if (Value* cur = tctx_.cur->find(n))
+                if (bareBind || cur->t == VT::Type || cur->t == VT::Any || cur->t == VT::Nil)
+                    cur->readonly = cur->immutableBind = true;
     }
     if (priorDisp.t == VT::Code) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
@@ -14751,6 +14761,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // keeps its old place, after the type check.
         // a SIGILLESS name bound to a bare value names the value itself, and
         // Rakudo refuses it as the typed "immutable T" (`-> \v { v = 22 }`)
+        // A name bound to a TYPE OBJECT: Rakudo's plain `=` asks for a concrete
+        // object (an X::AdHoc), every other modifying form — `~=`, `+=`, a
+        // sigilless name — says the type object is immutable.
+        if (lv->readonly && lv->immutableBind && !opEq(a->op, ":=") &&
+            (lv->t == VT::Type || lv->t == VT::Any || lv->t == VT::Nil)) {
+            Value iv = *lv; iv.readonly = iv.immutableBind = false;
+            const std::string tn = iv.t == VT::Type ? iv.s.str() : iv.typeName();
+            if (opEq(a->op, "=") && a->target->kind != NK::NameTerm)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "assign requires a concrete object (got a " + tn + " type object instead)"};
+            throwImmutable(iv);
+        }
         if (lv->readonly && lv->immutableBind && !opEq(a->op, ":=") && a->target->kind == NK::NameTerm) {
             Value iv = *lv; iv.readonly = iv.immutableBind = false;
             throwTypedV("X::Assignment::RO", {{"typename", Value::str(iv.typeName())}, {"value", iv}},
@@ -28164,15 +28186,17 @@ Value Interpreter::eval(Expr* e) {
                 // rakupp only marks a `$`-held hash itemized, not one fetched
                 // out of a container element or returned from a call. Rather
                 // than spread on a flag that does not model enough, spread only
-                // the two SYNTACTIC forms that cannot be itemized: a hash
-                // literal and a bare `%`-variable. That is the same shape as
-                // the `bareAtVar` rule above. `[f()]` returning a hash still
+                // the SYNTACTIC forms that cannot be itemized: a hash literal,
+                // a bare `%`-variable, and the `%( … )` / `%$h` contextualizer,
+                // whose whole job is to strip the item. That is the same shape
+                // as the `bareAtVar` rule above. `[f()]` returning a hash still
                 // does not spread where Rakudo would — unchanged from before,
                 // and much narrower than trusting the flag, which spread
                 // `[@r[0]]` and took apart the Perl showcase's frame stack.
                 else if (v.t == VT::Hash && v.hash() && v.hashKind.empty() &&
                          !v.itemized && l->items.size() == 1 && !l->fromCommaList &&
                          (it->kind == NK::HashLit ||
+                          (it->kind == NK::Unary && opEq(static_cast<Unary*>(it.get())->op, "ctx%")) ||
                           (it->kind == NK::VarExpr &&
                            !static_cast<VarExpr*>(it.get())->name.empty() &&
                            static_cast<VarExpr*>(it.get())->name[0] == '%'))) {

@@ -3510,6 +3510,20 @@ static bool userWhichIsValue(const Value& v) {
     std::string w; bool isValue = false;
     return g_userWhich && g_userWhich(v, w, isValue) && isValue;
 }
+// The built-in objects that keep their state in a Hash payload: each `.new` is
+// a different object however alike their fields read, so they identify by the
+// payload's address. Rendering the fields made every fresh Promise
+// `Promise|status Planned`, so `.unique`, a Set or an object hash merged them,
+// and the WHICH moved when the Promise was kept. (Rakudo 2026.09: all ObjAt.)
+static bool hashIsIdentity(const Value& v) {
+    if (v.t != VT::Hash || !v.hash()) return false;
+    static const char* const kinds[] = {
+        "Promise", "Channel", "Supplier", "Supply", "Tap", "Lock", "Lock::Async",
+        "LockCondition", "Semaphore", "Thread", "Cancellation", "Proc", "Proc::Async",
+        "Failure"};
+    for (const char* k : kinds) if (v.hashKind == k) return true;
+    return false;
+}
 bool whichIsObjAt(const Value& v) {
     if (v.t == VT::Pair)
         return v.pairLive() ||   // a live container inside: the Pair is an object (pair.t)
@@ -3519,8 +3533,9 @@ bool whichIsObjAt(const Value& v) {
            (v.t == VT::Hash && v.hashKind.empty()) ||
            (v.t == VT::Hash && (v.hashKind == "Hash" || v.hashKind == "SetHash" ||
                                 v.hashKind == "BagHash" || v.hashKind == "MixHash")) ||
+           hashIsIdentity(v) ||
            (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "IO")) ||
-           (v.isNumeric() && v.hashKind == "Instant") ||
+           (v.isNumeric() && (v.hashKind == "Instant" || v.hashKind == "Duration")) ||
            v.t == VT::Code || v.t == VT::Match || (v.t == VT::Object && !userWhichIsValue(v));
 }
 std::string whichOf(const Value& v) {
@@ -3609,7 +3624,8 @@ std::string whichOf(const Value& v) {
         // payload every copy of the value shares. A refill (`%h = …`) and a
         // write into a nested Hash both leave that payload where it is, so the
         // WHICH holds still, as Rakudo's `Map|…`/`Hash|…` does (S32-hash/map.t).
-        case VT::Hash:    if (v.hash() && (v.hashKind.empty() || v.hashKind == "Hash" || v.hashKind == "Map")) {
+        case VT::Hash:    if (v.hash() && (v.hashKind.empty() || v.hashKind == "Hash" || v.hashKind == "Map" ||
+                                       hashIsIdentity(v))) {
                               char buf[24];
                               std::snprintf(buf, sizeof buf, "|%p", (void*)v.hash());
                               return v.typeName() + buf;
@@ -3681,6 +3697,8 @@ std::string baggyKeyStr(const Value& v) {
     // same day are ONE set element however either of them prints (whichOf keys a
     // Date on its daycount, a DateTime on its rendering — both as Rakudo does).
     if (v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime")) return whichOf(v);
+    // …and a Promise, Channel, Lock and the rest: each is its own element
+    if (hashIsIdentity(v)) return whichOf(v);
     return v.toStr();
 }
 // A Bag count must stay EXACT: the old long-long path saturated weights near

@@ -677,6 +677,7 @@ void Interpreter::registerBuiltinsPart3() {
     };
     B["__assign-immutable"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : a[0];
+        if (v.t == VT::Type || v.t == VT::Any) throwImmutable(v);   // "…immutable 'Int' type object"
         throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable " + v.typeName() + " (" + v.gist() + ")"};
     };
