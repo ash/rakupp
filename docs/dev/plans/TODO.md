@@ -142,6 +142,10 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     33). Named `is rw` / `is raw` parameters do (2026-10-04).
   - `@a[$i++] = $i` evaluates the value before the subscript: Raku++ stores
     0 at index 0, Rakudo 1 (the subscript first). The same for `%h{…}`.
+  - A multi candidate wrapped with `.wrap` keeps taking part in dispatch with
+    its `where`: `multi wr(Int $n where * > 0)` beside `multi wr(Int $n)`,
+    the first wrapped, answers `wr(-1)` from the second; Rakudo dies binding
+    the wrapped candidate ("Constraint type check failed").
   - Two `IO::Handle.new` share one WHICH (the handle payload is shared), and
     `$supplier.Supply` answers the same Supply each call (Rakudo: a new one).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list

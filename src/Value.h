@@ -1637,6 +1637,10 @@ struct ClassInfo {
     // until the first `.new` asks, then fixed — the answer is a walk of the
     // type's ancestry, and it cannot change once the class is composed
     signed char rationalNew = -1;
+    // whether `.new` is the default construction with nothing around it
+    // (plainNewClass in Builtins.cpp), decided per symbol generation:
+    // (generation + 1) << 1 | answer, 0 = not decided
+    mutable DecidedOnce<uint64_t> plainNewKey{0};
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`
     // so the construction protocol's explicit BUILD/TWEAK walks still find them
     // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides

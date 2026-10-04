@@ -2246,9 +2246,18 @@ public:
     // the invocant's own state (`where $lval ~~ $!type`) sees the same thing the
     // bind would. Without it the attribute read answered Any, every such
     // constraint passed, and the candidate then died in the bind.
+    // `assume`: the outcomes of the candidate's positional `where`s, given
+    // rather than evaluated (bit k for the k-th, in order) — the where-aware
+    // dispatch cache has already evaluated them
+    struct WhereAssume { uint64_t bits = 0; int next = 0; };
     int scoreCandidate(const Value& cand, const ValueList& args,
                        std::vector<int>* perParam = nullptr,
-                       const Value* selfForWhere = nullptr);
+                       const Value* selfForWhere = nullptr,
+                       WhereAssume* assume = nullptr);
+    // A positional parameter's `where` against the value it would bind (the
+    // `i`-th positional of `cand`): as scoreCandidate evaluates it
+    bool paramWherePasses(const Value& cand, const Param& p, const Value& wv, size_t i,
+                          const ValueList& pos, const Value* selfForWhere);
     bool methodTakesJunction(const Value& inv, const std::string& m, size_t ai); // param `ai` accepts a Junction whole
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     // TARG lever B: a condition of a chapter-19-specialized comparison shape
@@ -2960,7 +2969,14 @@ public:
     void noteSymbolMutation(const char* what);
     // the multi-dispatch cache (InterpreterCore.cpp): the winner for this
     // argument shape, or null; and the store after a full dispatch
-    const Value* dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as);
+    // `pattern`: set for a where-aware entry whose table has no winner for the
+    // `where` outcomes just evaluated (they are in it, for the full dispatch to
+    // assume and then record with dispatchCacheRecord); UINT32_MAX otherwise
+    const Value* dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as,
+                                     uint32_t* pattern = nullptr);
+    void dispatchCacheRecord(Callable& c, uint32_t pattern, const Value* best);
+    // the where outcomes for one candidate of a pattern (null: none to assume)
+    bool dispatchWhereBits(const Callable& c, const Value* cand, uint32_t pattern, WhereAssume& out);
     void dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best);
 
     // Concurrency. saveCtx moves the live execution registers into `c`; loadCtx

@@ -1,6 +1,7 @@
 // InterpreterModules.cpp — module loading, EVAL, the REPL's hooks, statements and declarations
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
+#include <unordered_set>
 #include "InterpreterParts.h"
 #include "AotModules.h"
 
@@ -2896,6 +2897,13 @@ bool isNativeTypeName(const std::string& n) {
 
 bool isKnownTypeName(const std::string& n) {
     if (n.empty()) return false;
+    // Asked on hot paths (every `.new` of a user class asks whether it shadows
+    // a built-in): one hash probe answers nearly every name, and only a
+    // qualified or parameterized one goes on to the prefix tests below. The
+    // ordered set stays for callers that walk it.
+    static const std::unordered_set<std::string> kCore(coreTypeNames().begin(), coreTypeNames().end());
+    if (kCore.count(n)) return true;
+    if (n.find_first_of(":[") == std::string::npos) return n == "CArray" || n == "Pointer";
     if (n.rfind("X::", 0) == 0) return true;         // exception types
     if (n.rfind("Metamodel::", 0) == 0) return true; // HOWs
     if (n.rfind("IO::", 0) == 0) return true;         // IO::Path::Unix, etc.
@@ -2915,7 +2923,7 @@ bool isKnownTypeName(const std::string& n) {
     // routine return type in NativeHelpers::Array and friends
     if (n == "CArray" || n == "Pointer" ||
         n.rfind("CArray[", 0) == 0 || n.rfind("Pointer[", 0) == 0) return true;
-    return coreTypeNames().count(n) > 0;
+    return false;
 }
 
 // The core type names isKnownTypeName answers for, as a set a caller can walk

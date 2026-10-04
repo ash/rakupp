@@ -947,6 +947,12 @@ static inline bool isAdHocKind(const std::string& tn) {
 // calling it per bind allocated a std::string for every typed parameter of every
 // call. Answer encoded as bits<<1 | signed (0 = not a native-width type).
 int paramNatSpec(const Param& p);
+// isNativeTypeName(p.type), memoised per parameter (see Param::nativeName)
+inline bool paramIsNative(const Param& p) {
+    signed char n = p.nativeName;
+    if (n < 0) { n = isNativeTypeName(p.type) ? 1 : 0; p.nativeName = n; }
+    return n != 0;
+}
 
 bool typeNameConforms(const std::string& lnIn, const std::string& rn,
                              const std::string& lOfType, const std::string& rOfType);

@@ -765,6 +765,9 @@ struct Param {
     //              declared further down, a module loaded), so the negative
     //              answer must never stick.
     mutable DecidedOnce<int> natSpec{-1};
+    //   nativeName — isNativeTypeName(type), a chain of string compares, the
+    //              same way: pure, cached unconditionally. -1 = undecided.
+    mutable DecidedOnce<signed char> nativeName{-1};
     mutable DecidedOnce<signed char> typeKnown{0};
     //   aliasTarget — typeAliasTarget(type), resolved ONCE. That call is a hashed
     //   std::string lookup and multi dispatch asks it per parameter per CANDIDATE,

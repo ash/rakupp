@@ -1009,7 +1009,29 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         const ClassAttr* at;
         bool bound = false;
     };
-    std::vector<ProvidedArg> providedArgs;
+    // (a handful of named arguments: on the stack, spilling past eight)
+    struct ProvidedList {
+        ProvidedArg buf[8]; std::vector<ProvidedArg> spill; size_t n = 0;
+        ProvidedArg* begin() { return n <= 8 ? buf : spill.data(); }
+        ProvidedArg* end() { return begin() + n; }
+        void push_back(const ProvidedArg& a) {
+            if (n < 8) { buf[n++] = a; return; }
+            if (n == 8) spill.assign(buf, buf + 8);
+            spill.push_back(a); n++;
+        }
+    } providedArgs;
+    // Does this level declare its own `submethod BUILD`? Asked per named
+    // argument, so remembered per level for the construction.
+    signed char ownBuild[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    auto levelOwnsBuild = [&](size_t ci2) {
+        ClassInfo* oc = chainAt(ci2);
+        if (ci2 < 8 && ownBuild[ci2] >= 0) return ownBuild[ci2] != 0;
+        auto bm = oc->methods.find("BUILD");
+        const bool own = bm != oc->methods.end() && bm->second.t == VT::Code && bm->second.code() &&
+                         bm->second.code()->isSubmethod && !oc->roleSubmethods.count("BUILD");
+        if (ci2 < 8) ownBuild[ci2] = own ? 1 : 0;
+        return own;
+    };
     for (auto& arg : args)
         if (arg.t == VT::Pair) {
             const ClassAttr* pat = ci->findAttr(arg.s);
@@ -1022,10 +1044,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                     bool owns = false;
                     for (auto& a2 : oc->attrs) if (&a2 == pat) { owns = true; break; }
                     if (!owns) continue;
-                    auto bm = oc->methods.find("BUILD");
-                    if (bm != oc->methods.end() && bm->second.t == VT::Code && bm->second.code() &&
-                        bm->second.code()->isSubmethod && !oc->roleSubmethods.count("BUILD"))
-                        pat = nullptr;
+                    if (levelOwnsBuild(ci2)) pat = nullptr;
                     break;
                 }
             }
@@ -1165,13 +1184,15 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             if (provided && (slotIsName || shadowedHere)) {
                 // (an `is default` is evaluated in this level's scope, as a default is)
                 if (at.defaultTrait && provided->val && provided->val->t == VT::Nil) ensureEnv();
-                od->attrs[slot] = typedContainer(
+                Value stored = typedContainer(
                     coerceToSigil(namedStore(provided->val, at, lvl->declEnv.get()), at.sigil), at);
                 // …and a passed container keeps the attribute's ELEMENT default:
                 // `DA.new(subtags => <a b>).subtags[5]` is the `is default("")`,
                 // not the bare element type
+                // (one lookup: a hash entry never moves while the hash lives)
                 {
                     Value& sv = od->attrs[slot];
+                    sv = std::move(stored);
                     if (at.defaultTrait && (at.sigil == '@' || at.sigil == '%') &&
                         (sv.t == VT::Array || sv.t == VT::Hash)) {
                         ensureEnv();

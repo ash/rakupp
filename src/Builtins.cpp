@@ -5639,8 +5639,71 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
     return false;
 }
 
+// A class whose `.new` is the default construction and nothing else: no `new`,
+// `bless` or `^new` of its own, no built-in parent or Rational role to back
+// it, no native representation, no attribute the construction has to judge
+// afterwards (`is required`, a smiley, a `where`, a shape), and no name the
+// general path treats specially (a built-in's, an exception's, a pun's). For
+// such a class the general path's special cases cannot apply, and its `.new`
+// is runAttrDefaults and the build chain.
+extern std::atomic<uint64_t> g_symbolGen;
+static bool plainNewClass(Interpreter& I, ClassInfo& ci) {
+    if (!ci.decl || ci.isRole || !ci.repr.empty() || ci.awaitingCompose || !ci.roleVariants.empty())
+        return false;
+    const std::string& n = ci.name;
+    if (n.find_first_of("\x01[") != std::string::npos || isKnownTypeName(n)) return false;
+    if (ci.findMethod("new") || ci.findMethod("bless") || ci.findMethod("^new") || ci.methodHandles.count("new"))
+        return false;
+    for (ClassInfo* c = &ci; c; c = c->parent.get()) {
+        if (!c->nativeParent.empty()) return false;
+        for (auto& at : c->attrs)
+            if (at.required || at.defConstraint || at.where || at.shape) return false;
+        for (auto& r : c->doneRoles)
+            if (r == "Rational" || r.rfind("Rational[", 0) == 0) return false;
+    }
+    return !I.typeOrSubsetMatches(Value::typeObj(n), "Rational");
+}
+
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
+    // A PLAIN class's default constructor (plainNewClass): straight to the
+    // build, past the general path's special cases, which it cannot meet. The
+    // build's own Failure (BuildFailureEx) is caught here as the general path
+    // catches it, below.
+    if (inv.t == VT::Type && !skipOwn && m.size() == 3 && m[0] == 'n' && m[1] == 'e' && m[2] == 'w' &&
+        !inv.ext() && inv.ofType().empty()) {
+        auto cit = classes_.find(inv.s);
+        if (cit != classes_.end() && cit->second) {
+            ClassInfo& ci = *cit->second;
+            const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 1;
+            uint64_t k = ci.plainNewKey;
+            if ((k & ~uint64_t(1)) != key) {
+                k = key | (plainNewClass(*this, ci) ? 1 : 0);
+                ci.plainNewKey = k;
+            }
+            bool named = k & 1;
+            for (auto& a : args) if (a.t != VT::Pair) { named = false; break; }
+            if (named) {
+                ExecContext& t = tctx_;
+                const bool armed = t.ctorCatchSkip;   // an outer `.new` of this same call armed it
+                t.ctorCatchSkip = false;
+                auto build = [&]() -> Value {
+                    auto od = makePayload<ObjectData>();
+                    od->cls = cit->second;
+                    runAttrDefaults(od, cit->second, args);
+                    Value self = Value::object(od);
+                    runBuildChain(&ci, self, args);
+                    maybeRegisterDestroy(self);
+                    return self;
+                };
+                if (armed) return build();
+                t.ctorCatchDepth++;
+                struct G { ExecContext& t; ~G() { t.ctorCatchDepth--; } } g{t};
+                try { return build(); }
+                catch (BuildFailureEx& bf) { return bf.failure; }
+            }
+        }
+    }
     // A USER class named after a built-in (`my class Pair`, `my class Match`,
     // `my class Formatter`) shadows it, so its `.new` is the class's own — the
     // built-in constructors below are keyed on the bare name and answered

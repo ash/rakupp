@@ -4367,7 +4367,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                       }
                       // a boxed parameter takes the VALUE, not the native (see the slow path)
                       else if (v.natBits && !params[i].isRw && !params[i].isRaw &&
-                               !isNativeTypeName(params[i].type))
+                               !paramIsNative(params[i]))
                           dropNativeTags(v); }
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
@@ -5201,7 +5201,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     for (size_t i = 0; i < params.size(); i++) {
         const Param& p = params[i];
         if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
-        bool sign; int bits = Value::natWidthOfType(p.type, sign);
+        const int spec = paramNatSpec(p);
+        bool sign = spec & 1; int bits = spec >> 1;
         if (!bits && p.type == "int") { bits = 64; sign = true; }   // checked, not wrapped (below)
         if (!bits) {
             // an `is copy` parameter is a fresh BOXED container: a native
@@ -5209,7 +5210,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // readonly one: `sub f($x) { $x + 1 }` given a native int.max is
             // Int arithmetic in Rakudo and answers 2**63, not int.min. Only
             // `is rw` / `is raw` bind the caller's native container itself.
-            if (!p.isRw && !p.isRaw && !isNativeTypeName(p.type))
+            if (!p.isRw && !p.isRaw && !paramIsNative(p))
                 if (Value* bound = env->find(slotName(p, i)))
                     if (bound->natBits) dropNativeTags(*bound);
             continue;
@@ -5798,8 +5799,68 @@ static bool subSigArgs(Interpreter& I, const Value& v0, ValueList& out) {
     return false;
 }
 
+bool Interpreter::paramWherePasses(const Value& cand, const Param& p, const Value& wv, size_t i,
+                                   const ValueList& pos, const Value* selfForWhere) {
+    const auto& params = *cand.code()->params;
+    const std::shared_ptr<Env>& whereScope =
+        cand.code()->closure ? cand.code()->closure : tctx_.cur;
+    // a `where` that reads nothing per call: its Code, built once
+    if (const Value* wc = staticWhereCode(p, params, whereScope)) {
+        try { return boolify(callCallable(*wc, ValueList{wv})); } catch (...) { return false; }
+    }
+    auto env = std::make_shared<Env>(); env->parent = whereScope;
+    // A method's `where` may read the INVOCANT's own state:
+    // `multi method tie($lval where $lval ~~ $!type)` is how PDF::COS::Tie
+    // picks the candidate for an entry that is already of its declared
+    // type. Scored against the CALLER's scope there is no `self`, so
+    // `$!type` answered Any, the constraint passed, and the candidate then
+    // failed its bind — "Constraint type check failed in binding".
+    // (…and the invocant's type capture beside it: `multi method baz(::T: $
+    // where Foo[T])` reads T as the invocant's type)
+    if (selfForWhere) {
+        env->define("self", *selfForWhere);
+        for (auto& ip : params)
+            if (ip.invocant && ip.typeCapture) {
+                const std::string cn = !ip.captureName.empty() ? ip.captureName : ip.type;
+                if (!cn.empty())
+                    env->define(cn, selfForWhere->t == VT::Type ? *selfForWhere
+                                                                : Value::typeObj(selfForWhere->typeName()));
+            }
+    }
+    // The EARLIER parameters are in scope in a `where`: `multi f($l, $n
+    // where * > $l)` compares the two arguments, and dispatch has to see
+    // the same thing the bind would. Only this candidate's own earlier
+    // positionals, bound to the arguments they would take.
+    {
+        size_t j = 0;
+        for (auto& q : params) {
+            if (j >= i || j >= pos.size()) break;
+            if (q.named || q.invocant || q.slurpy) continue;
+            if (!q.name.empty() && !q.subSig) env->define(q.name, pos[j]);
+            j++;
+        }
+    }
+    if (!p.name.empty()) env->define(p.name, wv);
+    env->define("$_", wv);
+    auto saved = tctx_.cur; tctx_.cur = env;
+    bool ok = false;
+    try {
+        Value cv = eval(p.whereExpr.get());
+        // `where EXPR` is a SMARTMATCH, not a boolification: a Code is called
+        // with the value, anything else is matched against it. Boolifying
+        // instead made every non-Code constraint pass — `where :f` on a Pair
+        // is always truthy — so a candidate that should have been skipped won
+        // the dispatch and then died in the bind (XML's open-xml).
+        if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{wv}));
+        else ok = boolify(smartmatchValue("~~", wv, cv));
+    } catch (...) { tctx_.cur = saved; return false; }
+    tctx_.cur = saved;
+    return ok;
+}
+
 int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
-                                std::vector<int>* perParam, const Value* selfForWhere) {
+                                std::vector<int>* perParam, const Value* selfForWhere,
+                                WhereAssume* assume) {
     if (cand.t != VT::Code || !cand.code() || !cand.code()->params) return 0; // no signature: lowest specificity
     const auto& params = *cand.code()->params;
     // A `where` is evaluated in the candidate's OWN declaration scope — the names
@@ -6294,7 +6355,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
             // a NATIVE argument (`my int $i`) is exactly a native parameter:
             // `multi f(int)` beats `multi f(Int)` for it, and loses for a boxed one
-            if ((pos[i].natBits || pos[i].natFloat) && isNativeTypeName(p->type) && pos[i].t != VT::Str) {
+            if ((pos[i].natBits || pos[i].natFloat) && paramIsNative(*p) && pos[i].t != VT::Str) {
                 const bool pFloat = p->type.rfind("num", 0) == 0;
                 if (pFloat == (bool)pos[i].natFloat) score += 4;
             }
@@ -6303,6 +6364,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if (pos[i].t == VT::Str && pos[i].natFloat && p->type == "str") score += 4;
         }
         if (p->whereExpr) {
+            // outcomes the where-aware dispatch cache evaluated already
+            if (assume) {
+                if (!((assume->bits >> assume->next++) & 1)) return -1;
+                score += 4;
+                continue;
+            }
             // A COERCION parameter's `where` sees the COERCED value:
             // `IO::Path(Str) $src where :f` asks whether the PATH is a file, and a
             // string that is not one simply loses the candidate (XML's open-xml
@@ -6319,48 +6386,10 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // candidate won the dispatch), then bound 44 and DIED in the bind
             // instead of falling back to the `Int` candidate Rakudo picks.
             if (!p->type.empty()) {
-                bool nsign; int nbits = Value::natWidthOfType(p->type, nsign);
-                if (nbits) wrapNative(wv, nbits, nsign);
+                const int spec = paramNatSpec(*p);
+                if (spec >> 1) wrapNative(wv, spec >> 1, spec & 1);
             }
-            // a `where` that reads nothing per call: its Code, built once
-            if (const Value* wc = staticWhereCode(*p, params, whereScope)) {
-                bool ok = false;
-                try { ok = boolify(callCallable(*wc, ValueList{wv})); } catch (...) { return -1; }
-                if (!ok) return -1;
-                score += 4;
-                continue;
-            }
-            auto env = std::make_shared<Env>(); env->parent = whereScope;
-            // A method's `where` may read the INVOCANT's own state:
-            // `multi method tie($lval where $lval ~~ $!type)` is how PDF::COS::Tie
-            // picks the candidate for an entry that is already of its declared
-            // type. Scored against the CALLER's scope there is no `self`, so
-            // `$!type` answered Any, the constraint passed, and the candidate then
-            // failed its bind — "Constraint type check failed in binding".
-            defineSelf(*env);
-            // The EARLIER parameters are in scope in a `where`: `multi f($l, $n
-            // where * > $l)` compares the two arguments, and dispatch has to see
-            // the same thing the bind would. Only this candidate's own earlier
-            // positionals, bound to the arguments they would take.
-            for (size_t j = 0; j < i && j < pos.size(); j++)
-                if (!positional[j]->name.empty() && !positional[j]->subSig)
-                    env->define(positional[j]->name, pos[j]);
-            if (!p->name.empty()) env->define(p->name, wv);
-            env->define("$_", wv);
-            auto saved = tctx_.cur; tctx_.cur = env;
-            bool ok = false;
-            try {
-                Value cv = eval(p->whereExpr.get());
-                // `where EXPR` is a SMARTMATCH, not a boolification: a Code is called
-                // with the value, anything else is matched against it. Boolifying
-                // instead made every non-Code constraint pass — `where :f` on a Pair
-                // is always truthy — so a candidate that should have been skipped won
-                // the dispatch and then died in the bind (XML's open-xml).
-                if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{wv}));
-                else ok = boolify(smartmatchValue("~~", wv, cv));
-            } catch (...) { tctx_.cur = saved; return -1; }
-            tctx_.cur = saved;
-            if (!ok) return -1;
+            if (!paramWherePasses(cand, *p, wv, i, pos, selfForWhere)) return -1;
             score += 4; // a satisfied where-constraint is more specific
         }
     }
@@ -7524,8 +7553,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     }
             }
             // the dispatch cache's answer for this argument shape (dispatchCacheLookup)
+            uint32_t wherePattern = UINT32_MAX;   // outcomes the where-aware cache evaluated
             const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
-                ? dispatchCacheLookup(c, nullptr, as) : nullptr;
+                ? dispatchCacheLookup(c, nullptr, as, &wherePattern) : nullptr;
             if (cached) { best = cached; bestScore = 0; }
             else
             for (auto& cand : c.candidates) {
@@ -7533,7 +7563,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     continue; // the proto defines the group; it is not a candidate
                 if (visited.contains(&cand)) continue;
                 vec.clear();
-                int s = scoreCandidate(cand, as, &vec);
+                WhereAssume wa;
+                const bool assumed = wherePattern != UINT32_MAX && dispatchWhereBits(c, &cand, wherePattern, wa);
+                int s = scoreCandidate(cand, as, &vec, nullptr, assumed ? &wa : nullptr);
                 if (s >= 0 && visited.empty() && rwCandidateRejects(cand, as.size(), rwArgs, &as)) s = -1;
                 // a tie goes to the candidate binding a container `is rw`
                 bool candRw = s >= 0 && rwArgs && visited.empty() && rwCandidateBinds(cand, rwArgs);
@@ -7545,7 +7577,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
             if (!cached && best && visited.empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
-            if (!cached && best && bestScore >= 0 && visited.empty() && c.dispatchCacheable != 0)
+            if (!cached && best && bestScore >= 0 && wherePattern != UINT32_MAX)
+                dispatchCacheRecord(c, wherePattern, best);
+            else if (!cached && best && bestScore >= 0 && visited.empty() && c.dispatchCacheable != 0)
                 dispatchCacheStore(c, nullptr, as, best);
             if (!best || bestScore < 0) {
                 // A redispatch (callsame/nextsame) that runs past the last same-class
@@ -9451,8 +9485,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             // reason — a move steals vec's buffer and the next iteration allocates again.
             // multimeth is 400k calls x 2 candidates, so it is 800k allocations there.
             // the dispatch cache's answer for this argument shape (dispatchCacheLookup)
+            uint32_t wherePattern = UINT32_MAX;   // outcomes the where-aware cache evaluated
             const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
-                ? dispatchCacheLookup(c, &selfCopy, as) : nullptr;
+                ? dispatchCacheLookup(c, &selfCopy, as, &wherePattern) : nullptr;
             if (cached) { best = cached; bestScore = 0; }
             else
             for (auto& cand : c.candidates) {
@@ -9460,7 +9495,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     continue; // the proto defines the group; it is not a candidate
                 if (visited.contains(&cand)) continue;
                 vec.clear();
-                int s = scoreCandidate(cand, as, &vec, &selfCopy);
+                WhereAssume wa;
+                const bool assumed = wherePattern != UINT32_MAX && dispatchWhereBits(c, &cand, wherePattern, wa);
+                int s = scoreCandidate(cand, as, &vec, &selfCopy, assumed ? &wa : nullptr);
                 if (s >= 0 && visited.empty() && rwCandidateRejects(cand, as.size(), rwArgs)) s = -1;
                 // the invocant's definedness smiley (`D:U:` / `::?CLASS:D:`): a
                 // constrained invocant REJECTS on mismatch and outranks an
@@ -9498,7 +9535,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
             if (!cached && best && visited.empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
-            if (!cached && best && bestScore >= 0 && visited.empty() && c.dispatchCacheable != 0)
+            if (!cached && best && bestScore >= 0 && wherePattern != UINT32_MAX)
+                dispatchCacheRecord(c, wherePattern, best);
+            else if (!cached && best && bestScore >= 0 && visited.empty() && c.dispatchCacheable != 0)
                 dispatchCacheStore(c, &selfCopy, as, best);
             if (!best || bestScore < 0) {
                 if (!visited.empty()) {                     // ran past the last same-class candidate
