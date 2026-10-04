@@ -9533,6 +9533,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value o = Value::array(); o.isList = true; o.arr()->push_back(inv);
         return methodCall(o, m, args, rwArgs);
     }
+    // …and a RANGE is Iterable: its elements are mapped, into a List
+    // (`(1..3).deepmap(* * 2)` is (2, 4, 6), not the scaled Range 2..6)
+    if ((m == "deepmap" || m == "duckmap" || m == "nodemap") && !args.empty() && inv.t == VT::Range) {
+        Value o = Value::array(); o.isList = true;
+        for (auto& e : toList(inv)) o.arr()->push_back(e);
+        return methodCall(o, m, args, rwArgs);
+    }
     if (m == "toggle" &&
         (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str ||
          inv.t == VT::Bool || inv.t == VT::Complex || inv.t == VT::Pair)) {

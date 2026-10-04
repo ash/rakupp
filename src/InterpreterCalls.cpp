@@ -3719,6 +3719,9 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     // kept belong to this body.)
     std::vector<std::string> out;
     for (auto& n : ph) if (n[1] == '^') out.push_back(n); // drop $!attr and @_/%_ refs
+    // …sorted by NAME, the sigil ignored: `@^arr, &^cb, %^h` bind in that order
+    std::stable_sort(out.begin(), out.end(),
+                     [](const std::string& a, const std::string& b) { return a.compare(2, std::string::npos, b, 2, std::string::npos) < 0; });
     for (auto& n : namedOrder) if (ph.count(n)) out.push_back(n);
     return out;
 }

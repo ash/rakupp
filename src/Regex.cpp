@@ -3327,7 +3327,16 @@ bool Regex::classMatch(const Node* n, char ch) const {
         for (int v = 0; v < 256; v++) {
             unsigned char c = (unsigned char)v;
             bool in = test(c);
-            if (!in && n->icase) in = test((unsigned char)ascii::tolower(c)) || test((unsigned char)ascii::toupper(c));
+            // :i folds the LITERAL members only — a named one (`+upper`) keeps
+            // its meaning: `m:i/<+upper -[A]>/` does not match a lowercase z
+            if (!in && n->icase) {
+                auto lit = [&](unsigned char x) {
+                    for (auto& r : n->ranges) if (x >= r.first && x <= r.second) return true;
+                    for (auto& r : n->cpRanges) if (x >= r.first && x <= r.second) return true;
+                    return false;
+                };
+                in = lit((unsigned char)ascii::tolower(c)) || lit((unsigned char)ascii::toupper(c));
+            }
             // The class is (base, negated if `<-…>`) MINUS every `-member`: the
             // subtraction applies to the FINAL set, not to the base. Subtracting
             // first made `<-[\"]-space>` match a space — it is not in the base, so

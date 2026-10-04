@@ -3463,7 +3463,10 @@ public:
                            // entry: once callsame/callwith took it, another
                            // finds it exhausted and answers Nil (nextcallee
                            // hands out the callable itself and is not counted)
-                           bool wrapperFrame = false; bool spent = false; };
+                           bool wrapperFrame = false; bool spent = false;
+                           // whether `next` would find a candidate at all, when the
+                           // frame can tell (nextcallee answers Nil when it would not)
+                           std::function<bool()> hasNext; };
     // These three are per-thread call-stack state (a worker builds its own redispatch
     // chain / react stack / thread-depth). Left as plain members in step 1 because they
     // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)

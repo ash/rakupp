@@ -495,7 +495,10 @@ void Interpreter::registerBuiltins() {
     B["nextcallee"] = [dispTop, builtinNext](Interpreter& I, ValueList&) -> Value {
         auto* d = dispTop(I);
         std::function<Value(ValueList)> nextFn;
-        if (d && !d->lastcall) nextFn = d->next;
+        // (a frame that can tell there is no next candidate answers Nil, unless
+        // the core routine of that name is next in line)
+        const bool exhausted = d && d->hasNext && !d->hasNext();
+        if (d && !d->lastcall && !exhausted) nextFn = d->next;
         else if (auto b = builtinNext(I, nullptr)) { Value bv = *b; nextFn = [bv](ValueList) { return bv; }; }
         else {
             if (I.redispatchStack_.empty())

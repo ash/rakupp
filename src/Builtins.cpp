@@ -273,6 +273,10 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Hash",  {"Hash","Map","Associative","Iterable","Cool","Any","Mu"}},
         {"Range", {"Range","Positional","Iterable","Cool","Any","Mu"}},
         {"Pair",  {"Pair","Associative","Any","Mu"}},
+        // the awaitables: what `await` takes does the Awaitable role
+        {"Promise", {"Promise","Awaitable","Any","Mu"}},
+        {"Channel", {"Channel","Awaitable","Any","Mu"}},
+        {"Supply",  {"Supply","Awaitable","Any","Mu"}},
         {"Set",     {"Set","Setty","QuantHash","Associative","Any","Mu"}},
         {"SetHash", {"SetHash","Setty","QuantHash","Associative","Any","Mu"}},
         {"Bag",     {"Bag","Baggy","QuantHash","Associative","Any","Mu"}},
@@ -306,7 +310,7 @@ bool isBuiltinRole(const std::string& n) {
     static const std::set<std::string> roles = {
         "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
         "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy", "Sequence",
-        "IO::Socket", "PositionalBindFailover", "QuantHash"};
+        "IO::Socket", "PositionalBindFailover", "QuantHash", "Awaitable"};
     // …and the X:: exception roles (X::Comp, X::Syntax, X::IO, …), which the
     // generated table owns because Rakudo's hierarchy is what defines them.
     return roles.count(n) > 0 || isExceptionRole(n);
@@ -5781,7 +5785,9 @@ const std::vector<const char*>* coreTypeRoles(const std::string& tn, bool transi
         {"Date", {{"Dateish"}, {"Dateish"}}},
         {"DateTime", {{"Dateish"}, {"Dateish"}}},
         {"Bool", {{}, {}}}, {"Cool", {{}, {}}}, {"Any", {{}, {}}}, {"Mu", {{}, {}}},
-        {"Version", {{}, {}}}, {"Capture", {{}, {}}}};
+        {"Version", {{}, {}}}, {"Capture", {{}, {}}},
+        {"Promise", {{"Awaitable"}, {"Awaitable"}}}, {"Channel", {{"Awaitable"}, {"Awaitable"}}},
+        {"Supply", {{"Awaitable"}, {"Awaitable"}}}};
     auto cr = kCoreRoles.find(tn);
     if (cr == kCoreRoles.end()) return nullptr;
     return transitive ? &cr->second.all : &cr->second.direct;
@@ -6018,7 +6024,25 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         int r = it != enumLangRev_.end() ? it->second : langRev_;
         return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
     }
-    // `X::NYI.die` — throwing wants an exception INSTANCE, not its type object
+    // `X::NYI.die` — throwing wants an exception INSTANCE, not its type object.
+    // A USER subclass of Exception too (`MyErr.throw`), whose message names the
+    // type the method is declared on, Exception.
+    if (inv.t == VT::Type && (opEq(m, "fail") || opEq(m, "die") || opEq(m, "throw") || opEq(m, "rethrow") || opEq(m, "resume")) &&
+        inv.s != "Exception" && inv.s.rfind("X::", 0) != 0) {
+        auto uc = classes_.find(inv.s);
+        if (uc != classes_.end() && uc->second && !uc->second->findMethod(m)) {
+            bool isEx = false;
+            for (ClassInfo* c = uc->second.get(); c && !isEx; c = c->parent.get())
+                if (c->nativeParent == "Exception" || c->name == "Exception") isEx = true;
+            if (isEx)
+                throwTypedV("X::Parameter::InvalidConcreteness",
+                    {{"expected", Value::typeObj("Exception")}, {"got", inv},
+                     {"routine", Value::str(m)}, {"param", Value::str("self")},
+                     {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(true)}},
+                    "Invocant of method '" + m + "' must be an object instance of type 'Exception', not a type "
+                    "object of type '" + std::string(inv.s.c_str()) + "'.  Did you forget a '.new'?");
+        }
+    }
     if (inv.t == VT::Type && (opEq(m, "fail") || opEq(m, "die") || opEq(m, "throw") || opEq(m, "rethrow") || opEq(m, "resume")) &&
         (inv.s == "Exception" || inv.s.rfind("X::", 0) == 0))
         throwTypedV("X::Parameter::InvalidConcreteness",

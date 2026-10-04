@@ -2360,7 +2360,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (ioSpecMethod(*this, "IO::Spec::Unix", "join", ja, jr)) return asIO(jr.toStr());
             return asIO(dirOf(inv.toStr()) + "/" + (args.empty() ? "" : a0().toStr()));
         }
-        if (m == "child" || m == "add") {
+        if ((m == "child" || m == "add") && !(inv.t == VT::Hash && !inv.hashKind.empty() && inv.hashKind != "IO")) {   // (BagHash.add: MethodCallTail)
             if (!args.empty()) rejectNulPath(args[0].toStr());
             std::string s = inv.toStr(); if (!s.empty() && s.back() == '/') s.pop_back();
             // a bare `.` parent contributes NOTHING: `'.'.IO.child('t')` is `t`,

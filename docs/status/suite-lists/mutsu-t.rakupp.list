@@ -280,6 +280,7 @@ collections/range-pair/range-infinite-list.t
 collections/range-pair/range-join-default.t
 collections/range-pair/range-list.t
 collections/range-pair/range-minmax-adverbs.t
+collections/range-pair/range-pos-which.t
 collections/range-pair/range-reverse-metaop.t
 collections/range-pair/range-roll-non-numeric.t
 collections/range-pair/range-slice-assign-rvalue.t
@@ -291,6 +292,8 @@ collections/scalar-sort-seq.t
 collections/set-bag-mix/array-assign-setbagmix-flatten.t
 collections/set-bag-mix/bag-set-mix-flatten-seq.t
 collections/set-bag-mix/baggy-subclass-add.t
+collections/set-bag-mix/baghash-add-remove.t
+collections/set-bag-mix/baghash-subclass-add-remove.t
 collections/set-bag-mix/mix-binding-and-coercion.t
 collections/set-bag-mix/mix-weight-exact-accumulation.t
 collections/set-bag-mix/quanthash-coerce-map-seq.t
@@ -371,6 +374,7 @@ collections/subscript/interp-dynamic-twigil-subscript.t
 collections/subscript/itemized-hash-subscript.t
 collections/subscript/list-slice-returns-list.t
 collections/subscript/modifier-subscript-brace-newline.t
+collections/subscript/nested-angle-subscript-key.t
 collections/subscript/nested-lazy-slice.t
 collections/subscript/object-keyed-associative-subscript.t
 collections/subscript/object-subscript-attr-assign-keeps-var.t
@@ -424,6 +428,7 @@ collections/transform/cross-zip-seq.t
 collections/transform/deepmap-container.t
 collections/transform/deepmap-containerref-copy.t
 collections/transform/deepmap-nodemap-nodal.t
+collections/transform/deepmap-on-a-range.t
 collections/transform/first-listop-single-arg.t
 collections/transform/first-p-adverb.t
 collections/transform/flat-itemization-depth.t
@@ -513,6 +518,7 @@ concurrency/procasync-stdout-incremental.t
 concurrency/promise/await-died-exception.t
 concurrency/promise/await-nested-iterable.t
 concurrency/promise/await-slip-flatten.t
+concurrency/promise/awaitable-role-composition.t
 concurrency/promise/composite-promise-replays-proc-taps.t
 concurrency/promise/gc-promise-timer-stress.t
 concurrency/promise/promise-chain-lexical-callable-shadow.t
@@ -887,6 +893,7 @@ exceptions/error-reporting-quality.t
 exceptions/eval-parse-error-diagnostic.t
 exceptions/eval-stub-error-not-reraised.t
 exceptions/exception-adhoc-message.t
+exceptions/exception-concreteness.t
 exceptions/exception-failure-method.t
 exceptions/exception-message-fidelity.t
 exceptions/exception-role-membership.t
@@ -1290,6 +1297,7 @@ lang/ordered-alternation-loser-code-block.t
 lang/parsing/bare-adverb-listop-arg.t
 lang/parsing/bare-decl-andthen.t
 lang/parsing/bare-return-expression.t
+lang/parsing/bare-return-with-parens.t
 lang/parsing/bare-sigil.t
 lang/parsing/bare-word-forward-sub-slip-angle-call.t
 lang/parsing/bareword-assign-expr.t
@@ -1986,6 +1994,7 @@ oo/method/multi-method-container-arg-ranks-by-contents.t
 oo/method/multi-method-distance-ignores-named-args.t
 oo/method/multi-method-invocant-definedness.t
 oo/method/multi-method-literal-param-narrowness.t
+oo/method/multi-method-named-dispatch.t
 oo/method/multi-method-named-of.t
 oo/method/multi-method-rw-param-dispatch.t
 oo/method/multi-method-seq-binds-positional.t
@@ -2398,6 +2407,7 @@ regex/regex-exhaustive-repetition.t
 regex/regex-graph-excludes-symbols.t
 regex/regex-group-escaped-bracket.t
 regex/regex-group-separator-strict.t
+regex/regex-ignorecase-named-builtin-no-fold.t
 regex/regex-ignoremark-group-compiled.t
 regex/regex-ignoremark-scaling.t
 regex/regex-inline-code-compile-cache.t
@@ -2740,6 +2750,7 @@ routines/dispatch/monitor-dynamic-dispatch-topic-leak-in-loop.t
 routines/dispatch/multi-aggregate-rejects-nil.t
 routines/dispatch/multi-candidate-dispatcher.t
 routines/dispatch/multi-candidate-key-narrowing.t
+routines/dispatch/multi-candidate-ranking.t
 routines/dispatch/multi-candidate-state-otf.t
 routines/dispatch/multi-candidates-declaration-order.t
 routines/dispatch/multi-chained-named-alias-dispatch.t
@@ -2756,6 +2767,7 @@ routines/dispatch/multi-flexible-arity-named-only.t
 routines/dispatch/multi-frame-accumulation-coherence.t
 routines/dispatch/multi-function-resolution-cache.t
 routines/dispatch/multi-named-amp-sigil-callable.t
+routines/dispatch/multi-named-narrowness.t
 routines/dispatch/multi-named-only-candidates.t
 routines/dispatch/multi-named-tie-declaration-order.t
 routines/dispatch/multi-namespaced-class-specificity.t
@@ -2763,6 +2775,7 @@ routines/dispatch/multi-nonconstant-default-no-spurious-warn.t
 routines/dispatch/multi-optional-default-smiley-dispatch.t
 routines/dispatch/multi-optional-named-definite.t
 routines/dispatch/multi-optional-typed-dispatch.t
+routines/dispatch/multi-otf-dispatch.t
 routines/dispatch/multi-plain-positional-candidates.t
 routines/dispatch/multi-positional-light-dispatch.t
 routines/dispatch/multi-ref-dispatch.t
@@ -2776,6 +2789,7 @@ routines/dispatch/multi-sig.t
 routines/dispatch/multi-slip-otf.t
 routines/dispatch/multi-stub-class-invocant-implemented.t
 routines/dispatch/multi-sub.t
+routines/dispatch/multi-subset-base-type-narrowing.t
 routines/dispatch/multi-subset-predicate-runs-once.t
 routines/dispatch/multi-udismiley-ambiguity-leak.t
 routines/dispatch/multi-variadic-vs-smiley-narrowness.t
@@ -2800,9 +2814,11 @@ routines/dispatch/multitier-overlay-env.t
 routines/dispatch/nested-class-self-type-dispatch.t
 routines/dispatch/nextsame-definite-invocant-candidate.t
 routines/dispatch/nextsame-in-block-wrapper-returns-lexically.t
+routines/dispatch/nextsame-in-the-only-candidate.t
 routines/dispatch/nextwith-fewer-args-arity-mismatch.t
 routines/dispatch/nontrivial-proto-body-nested-sub-compiled.t
 routines/dispatch/overloading-fallbacks-deep.t
+routines/dispatch/parallel-dispatch-regression.t
 routines/dispatch/placeholder-in-multidim-subscript.t
 routines/dispatch/proto-add-dispatchee.t
 routines/dispatch/proto-candidate-otf-dispatch.t
@@ -2875,6 +2891,7 @@ routines/placeholder-in-nested-whatevercode.t
 routines/placeholder-index-assign-target.t
 routines/placeholder-outer-alias-writeback.t
 routines/placeholder-sub-rejects-extra-positionals.t
+routines/placeholder.t
 routines/raw-routine-tail-reference-value.t
 routines/rebind-in-routine-decides-writability.t
 routines/routine-nested-sub-shadowed-free-var.t
@@ -3225,6 +3242,7 @@ types/coercion/typed-hash-bind-typecheck.t
 types/coercion/typed-hash-expr-decl-of.t
 types/coercion/typed-hash-keyconstraint-cow.t
 types/coercion/typed-lexical-constraint-block-scoped.t
+types/coercion/typed-lexical-constraint-frame-scoped.t
 types/coercion/typed-lexical-gate-is-per-name.t
 types/coercion/typed-loop-decl-failed-initializer.t
 types/coercion/typed-scalar-store-constraint-paths.t
@@ -3317,6 +3335,7 @@ types/sequence-nonnumeric-regression.t
 types/set.t
 types/state-typed-container-alias.t
 types/state-typed-scalar-reads-as-type-object.t
+types/state-typed-scalar.t
 types/string/chomp-cr.t
 types/string/chop-numeric-arg.t
 types/string/concat-assign-local-in-place.t
@@ -3386,6 +3405,7 @@ types/succ-pred-instance.t
 types/temporal/date-datetime-raku.t
 types/temporal/date-subclass-methods.t
 types/temporal/date-whatever-and-daycount.t
+types/temporal/dateish-builtin-roles.t
 types/temporal/datetime-date-only-string.t
 types/temporal/datetime-offset-in-minutes.t
 types/temporal/datetime-regressions.t

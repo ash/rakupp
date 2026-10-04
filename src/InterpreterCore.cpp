@@ -444,62 +444,6 @@ static bool exprYieldsContainer(const Expr* e) {
     }
 }
 
-// Sink a VALUE: what happens to a statement's result nobody looks at, and to
-// a block's result a caller discards (throws-like/dies-ok/lives-ok). An
-// unhandled Failure detonates; a Proc that exited unsuccessfully throws
-// X::Proc::Unsuccessful (Rakudo's Proc.sink). One rule, wherever the sink is.
-void Interpreter::sinkValue(const Value& r) {
-    // A sunk lazy `.map` over an ENDLESS source runs until its block says
-    // `last`, as Rakudo iterates any sunk Seq (`(^Inf).map({ last if …; … });`).
-    // Nothing keeps what it produces, so the buffer is not left to grow.
-    if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized) {
-        auto st = std::static_pointer_cast<LazySeqState>(r.ext());
-        if (st->mapView && st->infinite && st->appendNext && !st->exhausted) {
-            ValueList& buf = *r.arr();
-            while (st->appendNext(buf)) if (buf.size() > 1024) buf.clear();
-            st->exhausted = true;
-            st->infinite = false;
-            return;
-        }
-    }
-    // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
-    // (…but an ITEM is a container, and sinking a container reads nothing:
-    // `lives-ok { my $s = (gather die)[] }` lives — S02-types/array.t)
-    // …and so does a sunk gather — its block runs to the end, `lazy` or not,
-    // which is how `gather { … };` as a statement does its work (sink-all).
-    // A LIST view of one (`.list`, `.cache`) is not a Seq, and sinking a List
-    // reads nothing: `(gather { … }).cache;` runs none of the block.
-    if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized &&
-        ((std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource &&
-          !std::static_pointer_cast<LazySeqState>(r.ext())->listView) ||
-         std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe ||
-         // …and a lazy `.map`: `(^Inf).map({ last if …; … });` runs until its `last`
-         std::static_pointer_cast<LazySeqState>(r.ext())->mapView ||
-         (RAKUPP_HAVE_CORO && std::static_pointer_cast<LazySeqState>(r.ext())->gatherSeq && r.s == "Seq"))) {
-        forceLazy(r); return;
-    }
-    if (r.t != VT::Hash) return;
-    if (r.hashKind == "Failure") { failureDetonate(r); return; }
-    if (r.hashKind == "Proc") {
-        procSettleLive(this, r);   // a child over live pipes ends first
-        long long ec = r.hash()->count("exitcode") ? (*r.hash())["exitcode"].toInt() : 0;
-        long long sg = r.hash()->count("signal") ? (*r.hash())["signal"].toInt() : 0;
-        if (ec == 0 && sg == 0) return;
-        std::string cmd;
-        auto it = r.hash()->find("argv");
-        if (it != r.hash()->end() && it->second.arr() && !it->second.arr()->empty()) cmd = (*it->second.arr())[0].toStr();
-        std::string msg = "The spawned command '" + cmd + "' exited unsuccessfully (exit code: " +
-                          std::to_string(ec) + ", signal: " + std::to_string(sg) + ")";
-        // …and, when the command never started, WHY it did not — the line
-        // Rakudo appends for a failed spawn (roast S29-os/system.t pins both
-        // halves of it: the -1 exit code and the `OS error = ` clause).
-        auto oe = r.hash()->find("os-error");
-        if (oe != r.hash()->end() && !oe->second.toStr().empty())
-            msg += "\n(OS error = " + oe->second.toStr() + ")";
-        throw RakuError{Value::typeObj("X::Proc::Unsuccessful"), msg};
-    }
-}
-
 // A structural copy for the snapshot: an Array/Hash Value shares its payload,
 // so a plain copy would still alias the block's mutations.
 static Value gatherDeepCopy(const Value& v, int depth = 0) {
@@ -7783,6 +7727,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             rc.sameArgs = as;
             rc.next = [&self_](ValueList na) -> Value { return self_(self_, std::move(na)); };
             rc.restart = [this, &codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
+            rc.hasNext = [this, &c, &visited, as]() {
+                for (auto& cand : c.candidates)
+                    if (cand.code() && !cand.code()->isProto && !cand.code()->isProtoBody &&
+                        !visited.contains(&cand) && scoreCandidate(cand, as) >= 0) return true;
+                return false;
+            };
             redispatchStack_.push_back(std::move(rc));
             Value r;
             try { r = callCallable(*best, std::move(as), rwArgs, /*ownFrame=*/true, /*arityCheck=*/false,
@@ -10340,7 +10290,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
 
         if (ve->declare) {
             if (ve->declScope == "state" && tcx.curStateEnv) { // persistent across calls
-                if (!tcx.curStateEnv->vars.count(ve->name)) tcx.curStateEnv->define(ve->name, declInitial(ve, sigil));
+                if (!tcx.curStateEnv->vars.count(ve->name)) {
+                    tcx.curStateEnv->define(ve->name, declInitial(ve, sigil));
+                    // its TYPE, which later assignments check (see evalVarDecl)
+                    if (sigil == '$' && !ve->declType.empty() && !ve->declDefault &&
+                        !tcx.curStateEnv->xr().varDefault.count(ve->name))
+                        tcx.curStateEnv->x().varDefault[ve->name] = Value::typeObj(ve->declType);
+                }
                 return &tcx.curStateEnv->vars[ve->name];
             }
             // a plain `my` never lands in a loop-statement state frame — a declare
@@ -29151,6 +29107,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
                     }
                 }
                 tctx_.curStateEnv->define(ve->name, init);
+                // …and its TYPE, which a later assignment checks as for `my`:
+                // `sub f { state Str $s; $s = 5 }` dies
+                if (sigil == '$' && !ve->declType.empty() && !ve->declDefault &&
+                    !tctx_.curStateEnv->xr().varDefault.count(ve->name))
+                    tctx_.curStateEnv->x().varDefault[ve->name] = Value::typeObj(ve->declType);
             }
             return tctx_.curStateEnv->vars[ve->name];
         }
@@ -30657,7 +30618,8 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         return code;
     }
     if (mc->hyper && mc->allMode && !mc->bang && !mc->meta) {   // `@o».*m` — each element's candidate list
-        Value out = Value::array(); out.isList = true;
+        // (over an Array the result is an Array, as every hyper call's is)
+        Value out = Value::array(); out.isList = !(inv.t == VT::Array && !inv.isList);
         for (auto& el : inv.t == VT::Array && inv.arr() ? *inv.arr() : ValueList{inv}) {
             Value d = el; d.itemized = false;
             out.arr()->push_back(callAllCandidates(d, mc->method, args, mc->allMode, nullptr));

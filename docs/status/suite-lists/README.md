@@ -16,7 +16,7 @@ file paths relative to each checkout's `t/`, and the checkouts are pinned below.
 | `rakudo-t.rakudo.list` | Rakudo's `t/` files Rakudo fully passes — the bar | 361 of 382 |
 | `rakudo-t.rakupp.list` | the same suite, files Raku++ fully passes | 133 of 382 |
 | `mutsu-t.rakudo.list` | mutsu's `t/` files Rakudo fully passes — the bar | 5,654 of 6,209 |
-| `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,696 of 6,209 |
+| `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,716 of 6,209 |
 
 The file counts are after `--suite` keeps each project's internals out: for
 Rakudo's `t/` the back-end directories, NativeCall, Telemetry and every file
@@ -34,7 +34,7 @@ Pins:
 
 ## Reading them
 
-The work list — files Rakudo passes and Raku++ does not (2,093 in mutsu's
+The work list — files Rakudo passes and Raku++ does not (2,073 in mutsu's
 suite, 229 in Rakudo's):
 
 ```bash
@@ -50,6 +50,19 @@ cd docs/status/suite-lists && comm -23 mutsu-t.rakupp.list /path/to/new.list
 
 Files only Raku++ passes (135 in mutsu's suite, 1 in Rakudo's) are files
 Rakudo itself fails; they are not part of the bar.
+
+## What is worth passing
+
+Passing on Rakudo does not make a test a statement about the language: mutsu's
+tests pin down what Rakudo does, details included. A random audit of 100 gap
+files (2026-10-04) classed what their FAILING assertions need: 85 language
+behaviour, 6 the RakuAST node API, 3 Rakudo internals, 4 Rakudo quirks, 2 only
+Rakudo's exact message wording.
+
+The work is the language behaviour, RakuAST and anything 6.e. A file whose
+failures are only Rakudo's prose, a Rakudo quirk or a Rakudo internal is listed
+in `mutsu-t.excluded.tsv` with the reason, and is not chased. A file that mixes
+the two is fixed for its language part.
 
 ## Measuring again
 

@@ -1,0 +1,11 @@
+# mutsu t/ files Rakudo passes that Raku++ does not aim to pass: what their failing
+# assertions need is Rakudo prose, a Rakudo quirk or a Rakudo internal (README).
+# path	class	why
+collections/range-pair/pair-subscript-store-is-refused.t	PROSE	Same X::Assignment::RO class; only the message differs (Rakudo names the Int value reached inside the Pair, not the Pair).
+io/io-handle-default-path.t	QUIRK	Needs an unset IO::Handle path to default to the IO type object and gist as <(IO)>, an accidental Rakudo attribute default.
+lang/issue-7750-runtime-binding-errors.t	PROSE	Mostly Rakudo's exact binding-error wording (signature, routine name, invocant type); one LANG failure: PositionalBindFailover binding through its iterator.
+oo/method/method-table-compose-timing.t	INTERNAL	Asserts .^method_table contents during composition (accessor not yet generated) - metamodel timing detail.
+oo/self-referential-element-store.t	QUIRK	Only .gist cycle rendering fails: expects Rakudo's (\Hash_ADDR = ...) notation; gist format of cycles is unspecified.
+types/enum-subset/enum-value-which.t	INTERNAL	Asserts the exact .WHICH string format 'Enum|ordinal'; identity/eqv behaviour already passes.
+types/numeric/big-denominator-rat-str.t	QUIRK	Rat with >64-bit denominator must render f64-degraded inexact digits; Raku++ prints exact digits; plus FatRat digit budget and 1e-40 cases.
+vm/code-object-gist-in-container.t	INTERNAL	Asserts Rakudo's Code .gist/.raku rendering shape ('-> $a { #`(Block|...) }', 'sub ($a) ...').

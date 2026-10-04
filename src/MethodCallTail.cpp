@@ -7,6 +7,52 @@ Value arrayMissingDefaultPublic(const Value& base);
 Value coerceHash(const Value& v, bool store, bool objKeyed);
 Value coerceArray(const Value& v, bool nativeTarget);
 
+// `%h.STORE(list)` / `@a.STORE(list)` — what `%h = list` and `@a = list` do,
+// into the SAME container (an alias sees it), answering the container.
+// (`:INITIALIZE` changes nothing for a plain one.) Nothing for another shape.
+static std::optional<Value> plainContainerStore(const Value& inv, const ValueList& args) {
+    ValueList pos;
+    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+    if (pos.size() != 1) return std::nullopt;
+    if (inv.t == VT::Hash) {
+        Value nv = coerceHash(pos[0], /*store=*/true, inv.objKeyed);
+        if (nv.hash()) *inv.hash() = *nv.hash();
+    }
+    else {
+        Value nv = coerceArray(pos[0], false);
+        if (nv.arr()) *inv.arr() = *nv.arr();
+    }
+    return inv;
+}
+
+// BagHash.add(items): ONE onto each item's count (a new key at 1), an
+// Iterable argument iterated one level, answering Nil. The counts come from
+// a bag built of the items, so each key keeps its own type (an Int stays one).
+static Value bagHashAdd(const Value& inv, const ValueList& args) {
+    ValueList items;
+    for (auto& a : args) {
+        if (a.t == VT::Pair && a.namedArg) continue;
+        // (a quanthash or Hash iterates to its Pairs, one element each)
+        if ((a.t == VT::Array && !a.itemized) || a.t == VT::Range || (a.t == VT::Hash && !a.itemized))
+            for (auto& x : toList(a)) items.push_back(x);
+        else items.push_back(a);
+    }
+    // a Pair is an ELEMENT here, not a key => weight entry
+    Value delta = makeBaggy(items, "BagHash", /*pairsAsElements=*/true);
+    if (delta.hash())
+        for (auto& kv : *delta.hash()) {
+            auto it = inv.hash()->find(kv.first);
+            if (it == inv.hash()->end()) (*inv.hash())[kv.first] = kv.second;
+            else {
+                auto keep = it->second.pairKey();
+                Value c = Value::integer(it->second.toInt() + kv.second.toInt());
+                c.pairKeyM() = keep;
+                it->second = std::move(c);
+            }
+        }
+    return Value::nil();
+}
+
 // One element of a .flat: append x (or its spread) to out. Shared by the eager
 // arm and the lazy view over an endless source (issue #30 follow-up) — the
 // rules are .flat's own, and they are about the SLOT x sits in, not about x:
@@ -1338,6 +1384,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // key when it reaches zero) and answers Nil. Note this is NOT `.delete`,
     // which drops the key outright — Rakudo defines `remove` on BagHash alone,
     // not on SetHash or MixHash.
+    if (inv.t == VT::Hash && inv.hash() && m == "add" && inv.hashKind == "BagHash") return bagHashAdd(inv, args);
     if (inv.t == VT::Hash && inv.hash() && m == "remove" && inv.hashKind == "BagHash") {
         for (auto& a : args)
             for (auto& k : (a.t == VT::Array || a.t == VT::Range) ? a.flatten() : ValueList{a}) {
@@ -1372,25 +1419,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (inv.hash() && nv.hash()) { *inv.hash() = *nv.hash(); return inv; }
         return nv;
     }
-    // `%h.STORE(list)` / `@a.STORE(list)` — what `%h = list` and `@a = list` do,
-    // into the SAME container (an alias sees it), answering the container.
-    // (`:INITIALIZE` changes nothing for a plain one.)
     if (m == "STORE" && ((inv.t == VT::Hash && inv.hash() && (inv.hashKind.empty() || inv.hashKind == "Map")) ||
-                         (inv.t == VT::Array && inv.arr() && !inv.isList && inv.hashKind.empty()))) {
-        ValueList pos;
-        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
-        if (pos.size() == 1) {
-            if (inv.t == VT::Hash) {
-                Value nv = coerceHash(pos[0], /*store=*/true, inv.objKeyed);
-                if (nv.hash()) *inv.hash() = *nv.hash();
-            }
-            else {
-                Value nv = coerceArray(pos[0], false);
-                if (nv.arr()) *inv.arr() = *nv.arr();
-            }
-            return inv;
-        }
-    }
+                         (inv.t == VT::Array && inv.arr() && !inv.isList && inv.hashKind.empty())))
+        if (auto r = plainContainerStore(inv, args)) return *r;
     // %h.Capture — a Capture whose named part is the hash's pairs
     if (inv.t == VT::Hash && m == "Capture" &&
         (inv.hashKind.empty() || inv.hashKind == "Map" ||
@@ -2075,8 +2106,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return inv.t == VT::Array && !inv.isList ? Value::any() : Value::nil();
         }
         if (m == "EXISTS-POS" && !args.empty()) {
+            // a negative position never exists — `.EXISTS-POS(-1)` is False on a
+            // List, an Array and a Range alike (`[*-1]` resolves before it asks)
             long long i = args[0].toInt(), n = (long long)items.size();
-            if (i < 0) i += n;
             return Value::boolean(i >= 0 && i < n);
         }
         // `.slice(@indices)` — the elements at those positions, as a Seq
@@ -3890,6 +3922,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return true;
             };
             std::function<Value(Value&)> deepEl = [&](Value& e) -> Value {
+                // a nested RANGE is Iterable too: its mapped elements, itemized
+                // like a nested list's (`(1, 2..3).deepmap(* + 1)` is (2, $(3, 4)))
+                if (e.t == VT::Range && !isEndlessRange(e)) {
+                    Value l = Value::array(); l.isList = true;
+                    for (auto& x : toList(e)) l.arr()->push_back(x);
+                    return deepEl(l);
+                }
                 if (e.t == VT::Array && e.arr()) {
                     Value o = Value::array(); o.isList = e.isList;
                     for (auto& x : *e.arr()) pushResult(o, deepEl(x));
@@ -3915,9 +3954,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 catch (NextEx&) { throw; }
                 catch (LastEx&) { throw; }
                 catch (...) {
+                    // (a nested Range descends as the list it is)
+                    if (e.t == VT::Range && !isEndlessRange(e)) {
+                        Value l = Value::array(); l.isList = true;
+                        for (auto& x : toList(e)) l.arr()->push_back(x);
+                        return duckEl(l);
+                    }
                     if (e.t == VT::Array && e.arr()) {
                         Value o = Value::array(); o.isList = e.isList;
                         for (auto& x : *e.arr()) if (!pushEl(o, x, duckEl)) break;
+                        // what the descent returns is ONE element of the level
+                        // above: `(1, (2, 3)).duckmap(…)` is (10, $(20, 30))
+                        o.itemized = true;
                         return o;
                     }
                     if (e.t == VT::Hash && e.hash() && e.hashKind.empty()) {

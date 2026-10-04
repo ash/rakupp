@@ -1416,10 +1416,28 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
         if (x.defConstraint != y.defConstraint) return false;
         // `is rw` / `is copy` / `is raw` decide by what the argument is
         if (x.isRw != y.isRw || x.isCopy != y.isCopy || x.isRaw != y.isRaw) return false;
-        if (x.type == y.type) continue;
-        if (!isUserClass(x.type) || !isUserClass(y.type)) return false;
-        if (inherits(x.type, y.type)) narrower = true;
-        else if (inherits(y.type, x.type)) wider = true;
+        // (an untyped parameter is Any)
+        const std::string xt = x.type.empty() ? "Any" : x.type, yt = y.type.empty() ? "Any" : y.type;
+        if (xt == yt) continue;
+        // two CORE types are ordered by the core ancestry: `(Int, Any)` beside
+        // `(Any, Int)` each wins a position, which is ambiguous for (1, 1)
+        auto coreKnown = [&](const std::string& t) {
+            return !classes_.count(t) && !subsets_.count(t) &&
+                   (t == "Any" || t == "Mu" || typeAncestry(t).size() > 2 || typeAncestry(t)[0] == t);
+        };
+        if (coreKnown(xt) && coreKnown(yt)) {
+            auto under = [](const std::string& sub, const std::string& sup) {
+                for (auto& a : typeAncestry(sub)) if (a == sup) return true;
+                return sup == "Mu" || (sup == "Any" && sub != "Mu");
+            };
+            if (under(xt, yt)) narrower = true;
+            else if (under(yt, xt)) wider = true;
+            else return false;
+            continue;
+        }
+        if (!isUserClass(xt) || !isUserClass(yt)) return false;
+        if (inherits(xt, yt)) narrower = true;
+        else if (inherits(yt, xt)) wider = true;
         else return false;
     }
     return narrower == wider;   // all equal, or each wins a position
@@ -6111,6 +6129,62 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
         env->x().rwOrigin[p.name] = std::move(origin);
     }
     return true;
+}
+
+// Sink a VALUE: what happens to a statement's result nobody looks at, and to
+// a block's result a caller discards (throws-like/dies-ok/lives-ok). An
+// unhandled Failure detonates; a Proc that exited unsuccessfully throws
+// X::Proc::Unsuccessful (Rakudo's Proc.sink). One rule, wherever the sink is.
+void Interpreter::sinkValue(const Value& r) {
+    // A sunk lazy `.map` over an ENDLESS source runs until its block says
+    // `last`, as Rakudo iterates any sunk Seq (`(^Inf).map({ last if …; … });`).
+    // Nothing keeps what it produces, so the buffer is not left to grow.
+    if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized) {
+        auto st = std::static_pointer_cast<LazySeqState>(r.ext());
+        if (st->mapView && st->infinite && st->appendNext && !st->exhausted) {
+            ValueList& buf = *r.arr();
+            while (st->appendNext(buf)) if (buf.size() > 1024) buf.clear();
+            st->exhausted = true;
+            st->infinite = false;
+            return;
+        }
+    }
+    // a sunk `$fh.lines` iterates, reading the handle to its end (`.eof` after)
+    // (…but an ITEM is a container, and sinking a container reads nothing:
+    // `lives-ok { my $s = (gather die)[] }` lives — S02-types/array.t)
+    // …and so does a sunk gather — its block runs to the end, `lazy` or not,
+    // which is how `gather { … };` as a statement does its work (sink-all).
+    // A LIST view of one (`.list`, `.cache`) is not a Seq, and sinking a List
+    // reads nothing: `(gather { … }).cache;` runs none of the block.
+    if (r.t == VT::Array && r.ext() && r.arr() && !r.itemized &&
+        ((std::static_pointer_cast<LazySeqState>(r.ext())->finiteSource &&
+          !std::static_pointer_cast<LazySeqState>(r.ext())->listView) ||
+         std::static_pointer_cast<LazySeqState>(r.ext())->diedProbe ||
+         // …and a lazy `.map`: `(^Inf).map({ last if …; … });` runs until its `last`
+         std::static_pointer_cast<LazySeqState>(r.ext())->mapView ||
+         (RAKUPP_HAVE_CORO && std::static_pointer_cast<LazySeqState>(r.ext())->gatherSeq && r.s == "Seq"))) {
+        forceLazy(r); return;
+    }
+    if (r.t != VT::Hash) return;
+    if (r.hashKind == "Failure") { failureDetonate(r); return; }
+    if (r.hashKind == "Proc") {
+        procSettleLive(this, r);   // a child over live pipes ends first
+        long long ec = r.hash()->count("exitcode") ? (*r.hash())["exitcode"].toInt() : 0;
+        long long sg = r.hash()->count("signal") ? (*r.hash())["signal"].toInt() : 0;
+        if (ec == 0 && sg == 0) return;
+        std::string cmd;
+        auto it = r.hash()->find("argv");
+        if (it != r.hash()->end() && it->second.arr() && !it->second.arr()->empty()) cmd = (*it->second.arr())[0].toStr();
+        std::string msg = "The spawned command '" + cmd + "' exited unsuccessfully (exit code: " +
+                          std::to_string(ec) + ", signal: " + std::to_string(sg) + ")";
+        // …and, when the command never started, WHY it did not — the line
+        // Rakudo appends for a failed spawn (roast S29-os/system.t pins both
+        // halves of it: the -1 exit code and the `OS error = ` clause).
+        auto oe = r.hash()->find("os-error");
+        if (oe != r.hash()->end() && !oe->second.toStr().empty())
+            msg += "\n(OS error = " + oe->second.toStr() + ")";
+        throw RakuError{Value::typeObj("X::Proc::Unsuccessful"), msg};
+    }
 }
 
 } // namespace rakupp

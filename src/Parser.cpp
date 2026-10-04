@@ -4114,6 +4114,16 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             idx->index = qqwwList(words);
             base = std::move(idx);
             continue;
+        } else if (isOp("<=>") && !cur().spaceBefore && base->kind != NK::IntLit && base->kind != NK::NumLit) {
+            // `%h<=>` GLUED to its term is the angle subscript of the key `=`, as
+            // Rakudo reads it (a spaced `<=>` is the comparison)
+            advance();
+            auto idx = std::make_unique<Index>();
+            idx->base = std::move(base);
+            idx->isHash = true;
+            idx->index = qqwwList({"="});
+            base = std::move(idx);
+            continue;
         } else if (isOp("<") && !cur().spaceBefore) {
             // word-key hash subscript: %h<key>  (and $<name>/@<name>/%<name> capture sugar for $/<name>)
             // On a numeric literal (`1<2`) this can only be a mistyped comparison —
@@ -8407,6 +8417,9 @@ ExprPtr Parser::parsePrimary() {
                 // just the first element. At BP_ASSIGN `(return (1,2), 9)` dropped
                 // the `9` and returned only `(1,2)`, while the statement-level
                 // `return (1,2), 9` (which parses a full expression) kept it.
+                // (`return()` tight: no arguments, Nil — see the statement form)
+                if ((name == "return" || name == "return-rw") && isKind(Tok::LParen) &&
+                    !cur().spaceBefore && peek().kind == Tok::RParen) { advance(); advance(); return u; }
                 if ((name == "return" || name == "return-rw") && retTerm &&
                     !isKind(Tok::RParen) && !isKind(Tok::Semicolon) && !isKind(Tok::RBrace))
                     u->operand = parseExpr(BP_COMMA);
@@ -13323,6 +13336,28 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
             atomStart = true;
             continue;
         }
+        // a character-class COMBINATION, `<+digit +[!]>` / `<-[a] + [b]>`: its
+        // bracketed sets hold literal characters (a `!` is one), so the whole
+        // assertion is skipped to its `>`
+        // (a plain `<-[…]>` is left to the checks below: `<-[d..b]>` must still die)
+        if (c == '<' && i + 2 < pat.size() &&
+            (pat[i + 1] == '+' || (pat[i + 1] == '-' && ascii::isalpha((unsigned char)pat[i + 2]))) &&
+            pat.find('[', i) != std::string::npos) {
+            size_t j = i + 2; int br = 0;
+            for (; j < pat.size(); j++) {
+                const char cj = pat[j];
+                if (cj == '\\') { j++; continue; }
+                if (cj == '[') br++;
+                else if (cj == ']') br--;
+                else if (cj == '>' && br == 0) break;
+            }
+            if (j < pat.size()) {
+                i = j;
+                atomStart = groupStart = afterBranch = false;
+                lastKind = LkAtom;
+                continue;
+            }
+        }
         // `<&foo('a')>` / `<at(0)>` / `<foo: 'x)'>` — call arguments are code,
         // not regex: skip them whole
         if (c == '<' && i + 1 < pat.size()) {
@@ -16601,6 +16636,12 @@ StmtPtr Parser::parseStatementImpl() {
             auto r = std::make_unique<ReturnStmt>();
             r->isRw = (kw == "return-rw");
             if (r->isRw) sawReturnRw_ = true; // …and the routine reading this body returns a container
+            // `return()` — TIGHT empty parens are a call with no arguments, which
+            // returns Nil (Rakudo); the spaced `return ()` returns the empty List
+            if (isKind(Tok::LParen) && !cur().spaceBefore && peek().kind == Tok::RParen) {
+                advance(); advance();
+                return applyModifiers(std::move(r));
+            }
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace) &&
                 cur().kind != Tok::Ident) {
                 r->value = parseExpression();
