@@ -4301,7 +4301,12 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     if (params)
         for (auto& p : *params)
             if (slottable(p.name)) {
-                int ps = layout->add(p.name, /*simple=*/true);
+                // (a TYPED `is copy` parameter is a typed container — Nil resets
+                // it to the type and assignment is checked against it — so the
+                // simple-assign lane, which knows neither, must not take it)
+                const bool typedCopy = p.isCopy && p.sigil == '$' && !p.type.empty() &&
+                                       !p.typeCapture && !p.coerce;
+                int ps = layout->add(p.name, /*simple=*/!typedCopy);
                 p.padSlot = ps;                          // TARG C2: the binder
                 p.padOwner = (const void*)layout.get();  // writes slots directly
             }

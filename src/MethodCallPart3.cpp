@@ -29,6 +29,18 @@
 // `return` inside a nested lambda still means what it always did. nullopt =
 // "not handled here".
 namespace rakupp {
+size_t topLevelComma(const std::string& s);   // InterpreterBinding.cpp: the first comma at bracket depth 0
+// `Hash[V, K]` carries both parameters, value type FIRST (Rakudo-checked:
+// Hash[Int, Str].of is Int, .keyof is Str). False for anything else — a
+// one-parameter `Hash[V]` keys on Str(Any), as `Hash` does.
+static bool hashTypeParam(const Value& inv, bool key, Value& out) {
+    if (inv.t != VT::Type || (inv.s != "Hash" && inv.s != "Map") || inv.ofType().empty()) return false;
+    const std::string vk = inv.ofType();
+    const size_t c = topLevelComma(vk);
+    if (c == std::string::npos) return false;
+    out = Value::typeObj(key ? vk.substr(c + 1) : vk.substr(0, c));
+    return true;
+}
 bool isP5Pattern(const std::string& pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
 
 namespace {
@@ -1359,6 +1371,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         break;
                     }
         }
+        if (Value t; hashTypeParam(inv, /*key=*/false, t)) return t;   // `Hash[V, K].of` is V
         return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
     }
     // …and on a buffer INSTANCE: `Buf.new(1,2).of`. The element type rides on
@@ -1384,6 +1397,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             static const std::set<std::string> qh = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
             if (qh.count(inv.s)) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
                 return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
+            if (Value t; hashTypeParam(inv, /*key=*/true, t)) return t;   // `Hash[V, K].keyof` is K
             return Value::typeObj("Str(Any)"); // `Hash.keyof`
         }
         // An OBJECT hash keys on its declared key type. Parser.cpp records that as

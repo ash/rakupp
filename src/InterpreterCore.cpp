@@ -3893,8 +3893,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                             }
                         }
                         auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
-                        bindParams(fs->params, r, sc);
-                        std::function<void()> rb2 = [&] { bindParams(fs->params, r, sc); };
+                        bindParams(fs->params, r, sc, false, /*blockParams=*/true);
+                        std::function<void()> rb2 = [&] { bindParams(fs->params, r, sc, false, /*blockParams=*/true); };
                         return runLoopBody(fs->body.get(), sc, fs->label, i == 0, atEnd(i + np), col, rb2);
                     };
                     keepGoing = runRow(row);
@@ -3902,14 +3902,14 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                     continue;
                 }
             }
-            bindParams(fs->params, row, scope);
+            bindParams(fs->params, row, scope, false, /*blockParams=*/true);
             // `redo` binds the parameters afresh — an `is copy` one is a
             // new copy of the element, as in the fast paths above (their
             // `rb`). This path had no rebind, so `-> $i is copy { …; $i
             // -= 1; redo if $i > 0 }` kept the decremented copy and
             // S04-statements/redo.t summed 220 where Rakudo's 201 needs
             // the refresh.
-            std::function<void()> rb = [&] { bindParams(fs->params, row, scope); };
+            std::function<void()> rb = [&] { bindParams(fs->params, row, scope, false, /*blockParams=*/true); };
             if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
                              atEnd(i + np), col, rb)) break;
         }
@@ -3980,8 +3980,48 @@ static inline bool isMuTypeObject(const Value& v) {
     return v.t == VT::Type && (v.s == "Mu" || v.s == "Junction") && v.ofType().empty();
 }
 
+// What an optional parameter nobody passed holds: its type object — and for an
+// UNTYPED `$` parameter, Any in a routine but Mu in a block, whose parameters
+// default to Mu (Rakudo: `-> $x? { $x.^name }()` is Mu, `sub f($x?)` gives Any)
+static Value unpassedDefault(const std::string& type, char sigil, bool blockParam) {
+    if (blockParam && type.empty() && sigil == '$') return Value::typeObj("Mu");
+    return typedDefault(type, sigil);
+}
+
+// A literal parameter — `sub f("a")`, `multi m(0)`, `-> 'about' { }` — takes
+// exactly that value. It is `Int $ where 0`: TYPED by the literal, so "0", 0.0
+// and 0e0 do not match `f(0)` (Rakudo), and NaN is its own literal (`multi
+// f(NaN)` takes a NaN, which `==` never does). Shared by multi dispatch and by
+// binding, so a plain sub and a candidate agree on what matches.
+bool Interpreter::literalParamAccepts(const Param& p, const Value& v) {
+    Value lv = eval(p.litVal.get());
+    // an angle literal `<1/2>`, `<−1+2i>` is the NUMBER (val gives the
+    // allomorph): its numeric value is both the literal's type and what to compare
+    if (lv.isAllomorph()) lv = methodCall(lv, "Numeric", {});
+    bool nanLit = lv.t == VT::Num && std::isnan(lv.toNum());
+    std::string litType = lv.typeName();
+    if (!typeMatchesArg(v, litType)) return false;
+    if (nanLit) return v.t == VT::Num && std::isnan(v.toNum());
+    // numbers compare as `==` does — a Complex by both parts (`f(<−1+2i>)`
+    // takes 1+2i's negative, which a real-part toNum compare got wrong)
+    if (v.isNumeric() && lv.isNumeric()) {
+        if (v.t == VT::Complex || lv.t == VT::Complex) return applyArith("==", v, lv).truthy();
+        return v.toNum() == lv.toNum();
+    }
+    return v.toStr() == lv.toStr();
+}
+
 void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
                                 bool whereVerified, Env* sigEnv) {
+    // …and BINDING enforces it too: a plain `sub f("a")` called with "b" dies,
+    // where it bound anything (dispatch had already checked a candidate's)
+    if (p.litVal && !whereVerified && !literalParamAccepts(p, v)) {
+        Value lv = eval(p.litVal.get());
+        throwTypedV("X::TypeCheck::Binding::Parameter",
+            {{"got", v}, {"expected", lv}, {"symbol", Value::str(p.name.empty() ? "<anon>" : p.name)}},
+            "Constraint type check failed in binding to parameter '" + (p.name.empty() ? std::string("<anon>") : p.name) +
+            "'; expected " + methodCall(lv, "raku", {}).toStr() + " but got " + methodCall(v, "raku", {}).toStr());
+    }
     if (p.codeSig && !codeSigAccepts(p, v, sigEnv))
         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
             "Constraint type check failed in binding to parameter '" + p.name + "'"};
@@ -4405,11 +4445,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     Env* e = env.get();
                     if (ps >= 0 && e->layout &&
                         (const void*)e->layout.get() == params[i].padOwner) {
-                        e->pad[ps] = typedDefault(params[i].type, '$');
+                        e->pad[ps] = unpassedDefault(params[i].type, '$', blockParams);
                         e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
                         if (!e->vars.empty()) e->vars.erase(params[i].name);
                     }
-                    else e->define(params[i].name, typedDefault(params[i].type, '$'));
+                    else e->define(params[i].name, unpassedDefault(params[i].type, '$', blockParams));
                 }
             }
             return;
@@ -4449,7 +4489,15 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             self->name[1] != '!' && self->name[1] != '.' && self->name[1] != '*' && !env->local(self->name))
             env->define(self->name, self->sigil == '&' ? Value::nil() : Value::typeObj("Mu"));
         Value v; try { v = eval(e); } catch (...) { tctx_.cur = saved; throw; }
-        tctx_.cur = saved; return v;
+        tctx_.cur = saved;
+        // an `is copy` parameter copies its DEFAULT as it copies an argument:
+        // `:@items is copy = @defaults` must not hand the body @defaults itself,
+        // or the first call's pushes are every later call's default
+        if (self && self->isCopy) {
+            if (self->sigil == '@') v = coerceArray(v);
+            else if (self->sigil == '%') v = coerceHash(v);
+        }
+        return v;
     };
     // Every ANONYMOUS parameter is spelled as the bare sigil, so one signature
     // can hold several called `$`: `sub f($ where .so, $)`, or the `:k($) :v($)
@@ -4911,7 +4959,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             else if (p.required)
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Required named parameter '" + bareName + "' not passed"};
-            else env->define(slotName(p, pidx), typedDefault(p.type, p.sigil));
+            else env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
             continue;
         }
         if (pi < positional.size()) {
@@ -5063,7 +5111,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // The OTHER '\\' params are the slurpies — `|c` and `+xs` — which
             // bind anything, Mu included, so they stay outside the gate.
             else if ((p.sigil == '$' || (p.sigil == '\\' && !p.slurpy)) &&
-                     !p.invocant && (!p.type.empty() || isMuTypeObject(v)))
+                     !p.invocant && (!p.type.empty() || isMuTypeObject(v) || p.litVal))
                 typeCheckBind(p, v, blockParams, whereVerified, env.get()); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // `&code:(Int)` — the callable's own signature must fit
             else if (p.sigil == '&' && p.codeSig && !codeSigAccepts(p, v, env.get()))
@@ -5147,7 +5195,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 env->define(p.captureName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName()));
             env->define(slotName(p, pidx), std::move(dv));
         } else {
-            env->define(slotName(p, pidx), typedDefault(p.type, p.sigil));
+            env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
         }
     }
 
@@ -5258,6 +5306,15 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // path that MATCHES, which is the hot one. Only the two dispatch sites set
     // this; a candidate reached any other way (`&f.candidates[0](-1)`, which never
     // goes through scoring) still gets the check that is its only guard.
+    // A typed `is copy` parameter is a fresh CONTAINER of the parameter's own
+    // type — not of the caller variable's, and not untyped: `$e = Nil` resets it
+    // to that type, and assigning another type throws X::TypeCheck::Assignment
+    // (Rakudo). varDefault is both the Nil reset and the assignment constraint.
+    // (Before the return below: a multi candidate binds with whereVerified.)
+    for (auto& p : params)
+        if (p.isCopy && p.sigil == '$' && p.name.size() > 1 && !p.type.empty() && !p.typeCapture &&
+            !p.coerce && ascii::isupper((unsigned char)p.type[0]))
+            env->x().varDefault[p.name] = Value::typeObj(p.type);
     if (whereVerified) return;
     for (size_t i = 0; i < params.size(); i++) {
         const Param& p = params[i];
@@ -6073,22 +6130,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         if (p->sigil == '$' && (p->type.empty() || p->type == "Any") &&
             !p->coerce && !p->subSig && !p->litVal && isJunction(pos[i])) return -1;
         if (p->litVal) { // literal parameter: arg must equal the literal
-            Value lv = eval(p->litVal.get());
-            // a literal parameter is `Int $ where 0` — TYPED by the literal, so
-            // "0", 0.0 and 0e0 do not match `multi f(0)` (Rakudo); the value
-            // compare alone routed all of them here
-            // (NaN is its own literal: `multi f(NaN)` takes a NaN, which `==` never does)
-            bool nanLit = lv.t == VT::Num && std::isnan(lv.toNum());
-            // an angle literal `<1/2>` is the NUMBER (val gives the allomorph)
-            std::string litType = lv.typeName();
-            if (lv.isAllomorph())
-                litType = lv.t == VT::Int ? "Int" : lv.t == VT::Rat ? "Rat" : lv.t == VT::Num ? "Num"
-                        : lv.t == VT::Complex ? "Complex" : litType;
-            bool eq = typeMatchesArg(pos[i], litType) &&
-                      (nanLit ? (pos[i].t == VT::Num && std::isnan(pos[i].toNum()))
-                       : (pos[i].isNumeric() && lv.isNumeric()) ? (pos[i].toNum() == lv.toNum())
-                                                                : (pos[i].toStr() == lv.toStr()));
-            if (!eq) return -1;
+            if (!literalParamAccepts(*p, pos[i])) return -1;
             score += 16; // a literal match is the narrowest thing there is
             continue;
         }
@@ -6538,8 +6580,41 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if (!supplied && p.defaultVal) {
                 auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
                 defineSelf(*denv);
+                // A default may read the parameters declared BEFORE it, as binding
+                // lets it: `:$style = 'double', :$corners where … = W{$style}`. Put
+                // them in scope first — the positionals, the supplied nameds, and
+                // an unsupplied earlier named as its own default, in order.
+                // Without them the default died here and the candidate was
+                // dropped, so a call that only needed defaults matched nothing.
+                for (size_t j = 0; j < positional.size() && j < pos.size(); j++)
+                    if (!positional[j]->name.empty() && !positional[j]->subSig)
+                        denv->define(positional[j]->name, pos[j]);
                 auto dsaved = tctx_.cur; tctx_.cur = denv;
-                try { v = eval(p.defaultVal.get()); }
+                try {
+                    for (auto& q : params) {
+                        if (&q == &p) break;
+                        if (!q.named || q.slurpy || q.name.empty()) continue;
+                        std::vector<std::string> qk;
+                        if (!q.namedKey.empty()) qk.push_back(q.namedKey);
+                        for (auto& ak : q.aliasKeys) qk.push_back(ak);
+                        if (q.namedKey.empty() || q.aliasBoth)
+                            qk.push_back(q.name.size() > 2 && (q.name[1] == '!' || q.name[1] == '.')
+                                         ? q.name.substr(2)
+                                         : (q.name.size() > 1 ? q.name.substr(1) : q.name));
+                        bool qSupplied = false;
+                        for (auto& a : args) {
+                            if (!isNamedArg(a)) continue;
+                            bool hit = false;
+                            for (auto& key : qk) if (a.s == key) { hit = true; break; }
+                            if (!hit) continue;
+                            denv->define(q.name, a.pairVal() ? *a.pairVal() : Value::boolean(true));
+                            qSupplied = true;
+                            break;
+                        }
+                        if (!qSupplied && q.defaultVal) denv->define(q.name, eval(q.defaultVal.get()));
+                    }
+                    v = eval(p.defaultVal.get());
+                }
                 catch (...) { tctx_.cur = dsaved; return -1; }
                 tctx_.cur = dsaved;
             }

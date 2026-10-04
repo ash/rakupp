@@ -11780,7 +11780,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // — see the second check, below the markers.
         if (!p.subSig && isKind(Tok::LParen) && cur().spaceBefore) {
             advance(); // '('
+            // (its own `-->` is the sub-signature's, not the routine's)
+            std::string savedRet = sigRetType_;
+            sigRetType_.clear();
             p.subSig = std::make_shared<std::vector<Param>>(parseSignature(Tok::RParen));
+            p.subSigRet = sigRetType_;
+            sigRetType_ = savedRet;
             if (!matchKind(Tok::RParen)) error("expected ')' in sub-signature");
         }
         // shaped-array parameter:  @a[3] / @a[4,*] / @a[3;3] — the argument must
@@ -11985,6 +11990,28 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         bool never = (strLit && (kNumT.count(p.type) || userClass)) ||
                      (numLit && (p.type == "Str" || userClass)) ||
                      (codeLit && (kNumT.count(p.type) || p.type == "Str" || userClass));
+        // …and a bare NUMERIC literal of another numeric kind (Rakudo-checked):
+        // `Num :$x = False` and `Bool $b = 1` never bind — False is an Int,
+        // not a Num, and 1 is not a Bool — while `Real $r = 1.5` does. Only a
+        // bare literal: `Num $x = -1` is an expression, and binds at run time.
+        if (!never && (kNumT.count(p.type) || p.type == "Rational")) {
+            const char* kind = nullptr;
+            if (dk == NK::BoolLit) kind = "Bool";
+            else if (dk == NK::IntLit) kind = "Int";
+            else if (dk == NK::NumLit) {
+                auto* nl = static_cast<const NumLit*>(p.defaultVal.get());
+                kind = nl->imaginary ? "Complex" : nl->isRat ? "Rat" : "Num";
+            }
+            if (kind) {
+                static const std::map<std::string, std::set<std::string>> kTakes = {
+                    {"Bool",    {"Bool", "Int", "UInt", "Real", "Numeric"}},
+                    {"Int",     {"Int", "UInt", "Real", "Numeric"}},
+                    {"Rat",     {"Rat", "Rational", "Real", "Numeric"}},
+                    {"Num",     {"Num", "Real", "Numeric"}},
+                    {"Complex", {"Complex", "Numeric"}}};
+                if (!kTakes.at(kind).count(p.type)) never = true;
+            }
+        }
         if (never)
             throw ParseError("Default value '" + std::string(strLit ? "\"…\"" : "…") + "' will never bind to a parameter of type " + p.type,
                              cur().line, "X::Parameter::Default::TypeCheck", {{"expected", p.type}});
@@ -12041,6 +12068,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             if (!p.captureName.empty()) caps.push_back(p.captureName);
         }
     }
+    // A named DYNAMIC parameter, `:$*x`, answers the name without its twigil:
+    // `f(:x(5))` binds it, and `.named_names` is ('x',). Every binding path
+    // takes namedKey first, so naming it here covers them all.
+    for (auto& p : params)
+        if (p.named && p.namedKey.empty() && p.name.size() > 2 && p.name[1] == '*')
+            p.namedKey = p.name.substr(2);
     return params;
 }
 

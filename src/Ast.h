@@ -738,6 +738,7 @@ struct Param {
     // destructuring sub-signature: `[$a,$b]` / `($a,$b)` / `|c($x)` — the inner
     // params the argument is unpacked into (null when not a destructuring param).
     std::shared_ptr<std::vector<Param>> subSig;
+    std::string subSigRet;   // its `-->` type: `&cmp (Int, Int --> Int)`
     // `&code:(Int --> Bool)` — the signature a Callable argument must have
     // (Rakudo's Signature.ACCEPTS(Signature)); codeSigRet is its `-->` type
     std::shared_ptr<std::vector<Param>> codeSig;

@@ -2443,6 +2443,7 @@ public:
     // typed by a `::T` capture can be resolved to what T actually captured. It is
     // read ONLY on the path where `p.type` does not name a real type — the rare
     // one — so an ordinary bind pays nothing for it.
+    bool literalParamAccepts(const Param& p, const Value& v);   // `sub f("a")`: v is that literal
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
                        bool whereVerified = false, Env* sigEnv = nullptr);
     // PSEUDO-PACKAGES as live stashes (S02): `MY::`, `OUTER::OUTER::`,

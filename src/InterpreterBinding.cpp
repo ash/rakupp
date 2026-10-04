@@ -1153,7 +1153,7 @@ bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
 // "valueType,keyType", so the value type is everything before that comma — but
 // an element type may itself be PARAMETERISED and carry commas inside its own
 // brackets (`my Hash[Int,Str] @a`), which a plain find(',') cut in half.
-static size_t topLevelComma(const std::string& s) {
+size_t topLevelComma(const std::string& s) {   // (shared: MethodCallPart3.cpp)
     int depth = 0;
     for (size_t i = 0; i < s.size(); i++) {
         if (s[i] == '[') depth++;

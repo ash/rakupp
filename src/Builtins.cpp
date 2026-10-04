@@ -4560,6 +4560,22 @@ Value makeSignature(const Callable* c) {
                                                (p.sigil == '|' || p.sigil == '\\'));
         (*pv.hash())["invocant"] = Value::boolean(p.invocant);
         (*pv.hash())["multi-invocant"] = Value::boolean(!p.pastDoubleSemi); // only `;;` makes it False
+        // `.sub_signature`: the parameter's own signature, written after it with
+        // a space — `@a ($x, $y)`, `&cmp (Int, Int --> Int)` — and the Signature
+        // TYPE OBJECT when it has none (a `&cb:(…)` constraint is not one, as in
+        // Rakudo). The Signature points into the parameter's own list, which
+        // lives as long as the routine.
+        {
+            const std::vector<Param>* sub = p.subSig ? p.subSig.get() : nullptr;
+            if (sub) {
+                Callable tmp;
+                tmp.params = sub;
+                tmp.retType = p.subSigRet;
+                tmp.hadSig = true;
+                (*pv.hash())["sub_signature"] = makeSignature(&tmp);
+            }
+            else (*pv.hash())["sub_signature"] = Value::typeObj("Signature");
+        }
         // `.prefix`/`.suffix`/`.modifier` — how the parameter is SPELLED
         (*pv.hash())["prefix"] = Value::str(
             !p.slurpy ? "" : p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+"
@@ -8421,7 +8437,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
              m == "raw" || m == "copy" || m == "rw" || m == "capture" ||
              m == "invocant" || m == "multi-invocant" ||
              m == "prefix" || m == "suffix" || m == "modifier" ||
-             m == "default" || m == "readonly") && inv.hash()->count(m))
+             m == "default" || m == "readonly" || m == "sub_signature") && inv.hash()->count(m))
             return (*inv.hash())[m];
         // `.type` answers the TYPE OBJECT (Cro's router compares `=:= Str`);
         // the plain string form stays under the "type" key for legacy callers
