@@ -144,8 +144,15 @@ static long long dateDays(const Value& v) {
 // Str holding the same bytes are eqv, and `$_ = Buf.new(.encode) with %h<k>` is
 // exactly the rewrite that has to land.
 static bool topicChanged(const Value& now, const Value& orig) {
-    return now.t != orig.t || now.hashKind != orig.hashKind ||
-           now.isList != orig.isList || !valueEqv(now, orig);
+    if (now.t != orig.t || now.hashKind != orig.hashKind || now.isList != orig.isList) return true;
+    // The SAME object or container is unchanged by definition — writing it
+    // back would store what the slot already holds. Asking valueEqv walked
+    // it instead, element by element, without any lock: `with $channel {
+    // .send(…) }` deep-compared the Channel's own queue while its reader
+    // thread drained it, and Selkie's trace test segfaulted about one run in
+    // three (ThreadSanitizer: TopicAlias::~TopicAlias against Channel.list).
+    if (now.pk_ == orig.pk_ && now.p_ && now.p_ == orig.p_) return false;
+    return !valueEqv(now, orig);
 }
 
 struct TopicAlias {
