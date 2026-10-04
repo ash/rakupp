@@ -300,11 +300,15 @@ with its tag, after the release run is green.
   repository is the next step, if asked for.
 - [ ] **setup-rakupp Action**: written, not committed; its repository does not
   exist yet.
-- [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/.
-  `tools/run-roast.raku --suite=rakudo|mutsu` runs them (2026-10-04);
-  `tools/run-bench.raku --suite=mutsu` times mutsu's benchmark files. Next:
-  the Rakudo-pass lists for both suites, a committed baseline, and the
-  benchmark rows where mutsu leads.
+- [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
+  `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
+  [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
+  The work: 2,227 mutsu files and 230 Rakudo files that Rakudo passes and
+  Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
+- [ ] **run-roast leaves grandchildren behind**: a timed-out file's own child
+  processes outlive it. mutsu's suite starts `rakudo -e` one-liners (one a
+  left-recursive grammar that never ends), and two kept a core each busy for
+  25 minutes after the run. Kill the file's process group, not just the file.
 - [ ] **User candidates beside a core ROUTINE (decision needed)**:
   `multi sub abs(Int $x) { … }; abs(-3)` is X::Multi::Ambiguous in Rakudo
   2026.09 — the user candidate ties the core `(Int:D \a)` (the message also
@@ -320,9 +324,6 @@ with its tag, after the release run is green.
     the cost is a divergence on code that only runs here.
   A middle path is a small table for the numeric builtins most often
   extended (`abs`, `sqrt`, `floor`, `ceiling`, `round`, `sign`).
-- [ ] **Selkie t/81-trace.rakutest segfaults intermittently** (rc 139, about 1 run
-  in 3, on every build tried 2026-10-04 — a9c99fa3 through the regex-prefilter
-  work): found by the battery t/ comparison, not yet investigated.
 - [ ] **Two regex divergences from Rakudo 2026.09** (found writing
   t/regression/regex-search-prefilters.raku; both older than the prefilters):
   `"STRASSE" ~~ / :i 'straße' /` matches `STRASSE` here and `STRASS` there,
