@@ -16,7 +16,7 @@ file paths relative to each checkout's `t/`, and the checkouts are pinned below.
 | `rakudo-t.rakudo.list` | Rakudo's `t/` files Rakudo fully passes — the bar | 361 of 382 |
 | `rakudo-t.rakupp.list` | the same suite, files Raku++ fully passes | 133 of 382 |
 | `mutsu-t.rakudo.list` | mutsu's `t/` files Rakudo fully passes — the bar | 5,654 of 6,209 |
-| `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,734 of 6,209 |
+| `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,739 of 6,209 |
 
 The file counts are after `--suite` keeps each project's internals out: for
 Rakudo's `t/` the back-end directories, NativeCall, Telemetry and every file
@@ -34,7 +34,7 @@ Pins:
 
 ## Reading them
 
-The work list — files Rakudo passes and Raku++ does not (2,055 in mutsu's
+The work list — files Rakudo passes and Raku++ does not (2,050 in mutsu's
 suite, 229 in Rakudo's):
 
 ```bash

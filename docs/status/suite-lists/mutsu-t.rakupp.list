@@ -2244,6 +2244,7 @@ oo/sunk-list-reassign-does-not-leak-containerref.t
 oo/tagged-enum-value-does-not-shadow-quote.t
 oo/topic-alias-does-not-cross-frames.t
 oo/trait/anon-class-qualified-trait.t
+oo/trait/anon-sub-custom-trait-arguments.t
 oo/trait/class-body-trait-multi.t
 oo/trait/decl-trait-arg-expression.t
 oo/trait/do-block-tail-declaration-trait.t
@@ -2261,6 +2262,7 @@ oo/trait/method-custom-trait-typed-method-param.t
 oo/trait/method-handles-no-space.t
 oo/trait/named-sub-hoist-custom-param-trait.t
 oo/trait/proto-method-trait-is-dispatcher.t
+oo/trait/routine-qualified-type-trait.t
 oo/trait/runtime-trait-persistence.t
 oo/trait/shadow-slot-var-trait.t
 oo/trait/subset-trait-after-of.t
@@ -2727,6 +2729,7 @@ routines/closure/wrap-invocant-arg-source.t
 routines/closure/wrap-original-runs-compiled-body.t
 routines/closure/wrap.t
 routines/dispatch/anonymous-any-multi-dispatch.t
+routines/dispatch/begin-selective-import-proto-multi.t
 routines/dispatch/block-local-sub-dispatch.t
 routines/dispatch/block-scoped-use-main-not-dispatched.t
 routines/dispatch/block-tail-assign-and-main-dispatch.t
@@ -3153,6 +3156,7 @@ tooling/is-deeply-user-raku-diagnostic.t
 tooling/is-run-raku-version.t
 tooling/is-run.t
 tooling/legacy-body-drop-instrument.t
+tooling/lives-ok-dies-ok-last-next-redo-propagates.t
 tooling/lives-ok-dies-ok-return-propagates.t
 tooling/main-default-arg.t
 tooling/main-enum-subset.t
@@ -3165,6 +3169,7 @@ tooling/skip-list-vs-test.t
 tooling/subtest-module-reuse.t
 tooling/subtest-plan.t
 tooling/subtest-reports-why-its-body-died.t
+tooling/tap-planned-zero-ran-stream.t
 tooling/test-assertion-line-number.t
 tooling/test-call-or-continuation.t
 tooling/test-counter-spawn-before-first-test.t

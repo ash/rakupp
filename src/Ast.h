@@ -813,6 +813,8 @@ enum : unsigned {
 };
 enum : unsigned { RSC_BLOCK = 1, RSC_HADSIG = 2 };
 
+struct SubTraitSpec { std::string name; ExprPtr arg; }; // `is traced` / `is role('admin')`
+
 struct BlockExpr : Expr {
     std::vector<Param> params; // for pointy blocks / placeholder
     std::vector<StmtPtr> body;
@@ -826,6 +828,7 @@ struct BlockExpr : Expr {
     bool retLiteralPresent = false; // `-> --> Nil {…}` / `sub (--> 5) {…}`: the body's last statement is that literal
     std::string retType;       // `--> T` in the signature of a pointy block / anon routine
     bool retRw = false;        // `is rw` / `is raw` on an anonymous routine term
+    std::vector<SubTraitSpec> userTraits; // `sub (…) is memoized(%c) {…}` — a user trait_mod:<is> runs on it
     std::string pod;           // `#|` / `#=` declarator pod of the block / anon routine (.WHY)
     std::string podTrail;      // …its `#=` part alone
     int podLine = 0;
@@ -855,7 +858,6 @@ struct VarDecl : Stmt {
     VarDecl(): Stmt(NK::VarDecl) {}
 };
 
-struct SubTraitSpec { std::string name; ExprPtr arg; }; // `is traced` / `is role('admin')`
 
 struct SubDecl : Stmt {
     std::string name; // empty for anon

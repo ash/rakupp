@@ -8535,6 +8535,20 @@ ExprPtr Parser::parsePrimary() {
                     if (isIdent("is") && peek().kind == Tok::Ident &&
                         (peek().text == "rw" || peek().text == "raw"))
                         be->retRw = true;
+                    // …and any other `is NAME` / `is NAME(args)` is a USER trait,
+                    // run when the routine is made (a block among its arguments,
+                    // `is memoized(%cache, { .[0] })`, is no body)
+                    if (isIdent("is") && peek().kind == Tok::Ident && peek().text != "rw" && peek().text != "raw") {
+                        advance();
+                        SubTraitSpec st; st.name = advance().text;
+                        if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                            advance();
+                            if (!isKind(Tok::RParen)) st.arg = parseExpression();
+                            expectKind(Tok::RParen, ")");
+                        }
+                        be->userTraits.push_back(std::move(st));
+                        continue;
+                    }
                     advance();
                 }
                 // the `#=` just inside its opening brace, as a bare block's
@@ -13372,16 +13386,20 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
         // bracketed sets hold literal characters (a `!` is one), so the whole
         // assertion is skipped to its `>`
         // (a plain `<-[…]>` is left to the checks below: `<-[d..b]>` must still die)
+        // (…and `<+:Lu +:name(/SMALL/)>`: a property's call arguments are code,
+        // so the skip respects parentheses too)
         if (c == '<' && i + 2 < pat.size() &&
-            (pat[i + 1] == '+' || (pat[i + 1] == '-' && ascii::isalpha((unsigned char)pat[i + 2]))) &&
-            pat.find('[', i) != std::string::npos) {
-            size_t j = i + 2; int br = 0;
+            (pat[i + 1] == '+' || (pat[i + 1] == '-' && (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == ':'))) &&
+            (pat.find('[', i) != std::string::npos || pat.find('(', i) != std::string::npos)) {
+            size_t j = i + 2; int br = 0, pr = 0;
             for (; j < pat.size(); j++) {
                 const char cj = pat[j];
                 if (cj == '\\') { j++; continue; }
                 if (cj == '[') br++;
                 else if (cj == ']') br--;
-                else if (cj == '>' && br == 0) break;
+                else if (cj == '(') pr++;
+                else if (cj == ')') pr--;
+                else if (cj == '>' && br == 0 && pr == 0) break;
             }
             if (j < pat.size()) {
                 i = j;
@@ -13395,7 +13413,10 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
         if (c == '<' && i + 1 < pat.size()) {
             size_t j = i + 1;
             if (std::strchr("&.?!:", pat[j])) j++;
-            if (j < pat.size() && (pat[j] == '.' || pat[j] == '!' || pat[j] == '+' || pat[j] == '-')) j++;
+            // (…and the property sigil after a negation: `<!:name(/SMALL/)>`)
+            if (j < pat.size() && (pat[j] == '.' || pat[j] == '!' || pat[j] == '+' || pat[j] == '-' ||
+                                   (pat[j] == ':' && (pat[j - 1] == '!' || pat[j - 1] == '?')))) j++;
+            if (j < pat.size() && pat[j] == ':' && (pat[j - 1] == '+' || pat[j - 1] == '-')) j++;   // `<+:name(…)>`
             size_t n0 = j;
             while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-' ||
                                       (pat[j] == ':' && j + 1 < pat.size() && pat[j + 1] == ':')))
@@ -15276,7 +15297,19 @@ static std::unique_ptr<Block> wrapStmt(StmtPtr s) {
 // `@(EXPR for LIST)`, `@(EXPR if COND)`, … — chains, wrapping the value so far.
 // Mirrors the desugars the plain-paren path uses (list-comprehension semantics).
 ExprPtr Parser::applyExprModifiers(ExprPtr e) {
+    // at most ONE conditional modifier, then at most one loop: `do 1 if $x if $x`
+    // is Rakudo's "Missing semicolon", as the statement form already is
+    int conds = 0, loops = 0;
+    auto chained = [&](bool loop) {
+        if (loop ? loops++ : (loops || conds++))
+            throw ParseError("Missing semicolon", cur().line, "X::Syntax::Confused",
+                             {{"reason", "Missing semicolon"}});
+    };
     for (;;) {
+        if (isIdent("when") || isIdent("if") || isIdent("unless") ||
+            ((isIdent("with") || isIdent("without")) && !(peek().kind == Tok::LParen && !peek().spaceBefore)))
+            chained(false);
+        else if (isIdent("for") || isIdent("while") || isIdent("until")) chained(true);
         // `(EXPR when X)` — EXPR if the topic smartmatches X, else nothing
         if (isIdent("when")) {
             advance();

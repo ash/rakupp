@@ -952,10 +952,11 @@ void Interpreter::registerBuiltins() {
             // `dies-ok { $c.to-string('bogus') }` over a routine that `fail`s (Color)
             try { I.sinkValue(I.callCallable(a[0], {})); } // a sunk Failure or failed Proc throws
             catch (RakuError&) { died = true; }
-            // a loop-control exception with no enclosing loop is a death (X::ControlFlow)
-            catch (NextEx&) { died = true; }
-            catch (LastEx&) { died = true; }
-            catch (RedoEx&) { died = true; }
+            // a loop-control exception with no enclosing loop is a death (X::ControlFlow);
+            // inside one it ESCAPES to it, recording no test (Rakudo)
+            catch (NextEx&) { if (I.loopNest_ > 0) throw; died = true; }
+            catch (LastEx&) { if (I.loopNest_ > 0) throw; died = true; }
+            catch (RedoEx&) { if (I.loopNest_ > 0) throw; died = true; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
@@ -967,9 +968,11 @@ void Interpreter::registerBuiltins() {
         if (!a.empty() && a[0].t == VT::Code) {
             try { I.sinkValue(I.callCallable(a[0], {})); } // a sunk Failure or failed Proc throws
             catch (RakuError&) { lived = false; }
-            catch (NextEx&) { lived = false; } // loop control with no loop is a death, as dies-ok counts it
-            catch (LastEx&) { lived = false; }
-            catch (RedoEx&) { lived = false; }
+            // loop control with no loop is a death, as dies-ok counts it; inside
+            // one it escapes to it (see dies-ok)
+            catch (NextEx&) { if (I.loopNest_ > 0) throw; lived = false; }
+            catch (LastEx&) { if (I.loopNest_ > 0) throw; lived = false; }
+            catch (RedoEx&) { if (I.loopNest_ > 0) throw; lived = false; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");

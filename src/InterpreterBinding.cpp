@@ -242,6 +242,10 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // belongs to its class (above).
     if (!be->termName.empty() && !be->isMethodTerm && !be->anonTerm)
         tctx_.cur->define("&" + be->termName, code);
+    // a USER trait on the anonymous routine (`sub (…) is memoized(%c) {…}`)
+    if (!be->userTraits.empty())
+        if (Value* tm = tctx_.cur->find("&trait_mod:<is>"))
+            if (tm->t == VT::Code) for (auto& st : be->userTraits) callRoutineTrait(*tm, code, st);
     return code;
 }
 

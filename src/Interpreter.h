@@ -3474,6 +3474,9 @@ public:
     // so true parallel execution can't corrupt them. Same access syntax (`X_`), so no
     // call-site changes. Cross-thread emit uses the mutex-guarded ReactCtx, not reactStack_.
     static thread_local std::vector<RedispatchCtx> redispatchStack_;
+    // how many loop BODIES are running on this thread (runLoopBody): a `last`
+    // inside `lives-ok { … }` escapes to such a loop instead of failing the test
+    static thread_local int loopNest_;
     // A `proto` with a real body runs AROUND the dispatch; the `{*}` inside it is
     // where the candidates are finally chosen. One frame per active proto body.
     struct ProtoCtx { std::function<Value(ValueList)> dispatch; ValueList args; };

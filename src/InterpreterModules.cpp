@@ -7920,6 +7920,12 @@ int Interpreter::run(Program& prog) {
     drainWorkers(); // join any outstanding async workers before we tear down
     // Rakudo's Test module never fabricates a trailing plan (and does not warn):
     // a file that ran tests without `plan`/`done-testing` just ends its TAP.
+    // A plan that was not met says so — on STDOUT when nothing ran at all, on
+    // stderr otherwise, as Rakudo's Test does
+    if (usedTest_ && planned_ >= 0 && testNum_ != planned_ && !crashed && !bailedOut_)
+        (testNum_ == 0 ? std::cout : std::cerr)
+            << "# You planned " << planned_ << " test" << (planned_ == 1 ? "" : "s")
+            << ", but ran " << testNum_ << "\n" << std::flush;
     // Rakudo's end-of-run summary when some tests failed.
     if (usedTest_ && failCount_ > 0 && !crashed && !bailedOut_) {
         std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")

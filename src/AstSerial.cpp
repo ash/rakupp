@@ -286,7 +286,14 @@ template <class IO> void visit(IO& io, BlockExpr& n){ ioParams(io, n.params); io
                                                       // same staleness hole SubDecl.retRw had. PDF::COS::Tie's
                                                       // generated accessors are `sub (\obj) is rw {…}`, and a
                                                       // cached load made every one of them unassignable.
-                                                      F(io, n.retRw); }
+                                                      F(io, n.retRw);
+                                                      if constexpr (IO::reading) {
+                                                          size_t k = io.count(); n.userTraits.clear(); n.userTraits.resize(k);
+                                                          for (auto& t : n.userTraits) ioTrait(io, t);
+                                                      } else {
+                                                          io.uvar(n.userTraits.size());
+                                                          for (auto& t : n.userTraits) ioTrait(io, t);
+                                                      } }
 template <class IO> void visit(IO&, SelfTerm&)      {}
 template <class IO> void visit(IO& io, WhateverExpr& n) { F(io, n.hyper); }
 

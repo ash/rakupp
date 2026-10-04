@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-04.*
+*Started 2026-10-03. Last updated 2026-10-05.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -235,6 +235,23 @@ with its tag, after the release run is green.
   `{ $_! }` because the published 5.2.1 wheel does not curry `*!`. Switch it
   to `.map(*!)` once a release carries 14e72451, and re-run the README's
   programs against that wheel.
+- [ ] **Python modules and objects**: `raku.use("Geo")`, `raku.main`,
+  `rakulang.Object` and keyword arguments to `call` (2026-10-05,
+  `rakulang/object_shim.raku`, `bindings/python/tests/`). The shim works
+  around Raku++ gaps that Rakudo 2026.09 does not have; each wants an engine
+  fix, after which the workaround can go: `my \x = Nil` binds `Any`; `try`
+  around a throw returns `Any`, not `Nil`; `MY::` after `use` lists the
+  imported subs but not the imported classes, constants and enum values;
+  `Geo.WHO` lacks the stub `Shape` of a nested `class Geo::Shape::Circle`;
+  `(0..*).map(...)` returned from a sub is a `List`, not a `Seq`; `Pair`,
+  `Range`, `Complex` report no `.^attributes`, `Exception` reports a
+  `$!message` accessor, and `Pair.^mro` is `(Any Mu)`; `Date.^can('new')`
+  and the core types' `.^methods(:local)` are empty; `use M:ver<1.2+>` does
+  not match a `use lib` module declared `:ver<1.2.3>`; JSON::Fast's
+  `&to-json.signature` is `:()`. Also: the README's `raku.call("area", 3)`
+  error text is 5.2.1's; the current engine says Rakudo's runtime message
+  ("Too few positionals passed..."), so re-run the README's programs against
+  the next wheel.
 - [ ] **Grammars as a service**: G3 host callbacks and G4 the native Match
   walker, only if a workload needs them. [GRAMMAR-PLAN.md](GRAMMAR-PLAN.md).
 - [ ] **Hosts**:
@@ -303,7 +320,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,055 mutsu files and 229 Rakudo files that Rakudo passes and
+  The work: 2,050 mutsu files and 229 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Parked from the audited LANG work: typed shaped arrays report unassigned
     cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices

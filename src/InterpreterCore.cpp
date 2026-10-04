@@ -1576,6 +1576,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     // coroutine resumes only on the thread that started it, so the reference
     // stays this thread's for as long as the function runs.
     ExecContext& tc = tctx_;
+    struct LoopNest { LoopNest() { loopNest_++; } ~LoopNest() { loopNest_--; } } loopNest;
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
     gatherProbePoint(); // …and lets a gather probe that has stopped TAKING still stop looping
     signed char ph = loopPhaserMask(body);
@@ -30519,8 +30520,14 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // sift-down builds a path of aliases into the heap this way and then
     // shifts values down it; with the value instead, every write landed
     // in a copy and `pop` answered an unordered heap.
+    // (only an expression that HAS a container is re-read for it: any other
+    // was evaluated once already — `.BIND-KEY($k, callsame)` must not call twice)
     if ((opEq(mc->method, "BIND-POS") || opEq(mc->method, "BIND-KEY")) &&
-        !mc->meta && !mc->methodExpr && mc->args.size() >= 2)
+        !mc->meta && !mc->methodExpr && mc->args.size() >= 2 &&
+        (mc->args[1]->kind == NK::VarExpr || mc->args[1]->kind == NK::Index ||
+         // (a SIGILLESS variable, `\v` — not a bare call like `callsame`)
+         (mc->args[1]->kind == NK::NameTerm &&
+          tctx_.cur->find(static_cast<NameTerm*>(mc->args[1].get())->name))))
         args[1] = containerOfExpr(mc->args[1].get());
     // `$x.&foo(...)` — call the sub `foo` (not a method) with the invocant prepended:
     // foo($x, ...). Used a lot for "method-ish" helpers, e.g. `@a.sort: { .&naturally }`.

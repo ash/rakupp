@@ -3837,6 +3837,7 @@ thread_local bool Interpreter::hoistingSubs_ = false;
 thread_local bool Interpreter::suppressLoopFirst_ = false;
 // Per-thread call-stack state (step 3a — see header).
 thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
+thread_local int Interpreter::loopNest_ = 0;
 thread_local std::vector<Interpreter::ProtoCtx> Interpreter::protoStack_;
 
 // A `proto` whose body is more than a bare `{*}` runs AROUND the dispatch: it does its
