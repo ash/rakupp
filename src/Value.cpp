@@ -146,6 +146,7 @@ ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.
 ForceLazyFn g_forceLazy = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 MakeTypedExFn g_makeTypedEx = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 EndlessLazyFn g_endlessLazy = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
+DeclLazyLiveFn g_declLazyLive = nullptr; // likewise
 // Pull a lazy sequence up to n elements (materializeLazy), for the one reader
 // here that needs a bounded number: Bool, which asks for a first element.
 // Installed by InterpreterBinding.cpp beside g_forceLazy.
@@ -576,7 +577,9 @@ static std::string ratToStr(const BigInt& num, const BigInt& den) {
 }
 
 std::string Value::toStr() const {
-    forceLazy(*this);   // an unpulled gather stringifies as its ELEMENTS, not as ()
+    // (…but a list lazy BY DECLARATION is not read out to be stringified: it
+    // Strs as its reified prefix and `...`, in the Array arm below)
+    if (!declLazyLive(*this)) forceLazy(*this);   // an unpulled gather stringifies as its ELEMENTS, not as ()
     // (a Blob/Buf uses enumName for its ENCODING, and a flavored IO::Path for its
     // OS grammar — neither is an enum key)
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
@@ -716,6 +719,10 @@ std::string Value::toStr() const {
                 if (k) out += " ";
                 out += (*arr())[k].toStr();
             }
+            // a LAZY list Strs as what it has reified and `...` for the rest —
+            // `my @e = lazy 1..3; @e[1]; ~@e` is "1 2 ...", an unread one "..."
+            if (ext() && (endlessLazy(*this) || declLazyLive(*this)))
+                return out.empty() ? std::string("...") : out + " ...";
             return out;
         }
         case VT::Hash: {
@@ -842,6 +849,9 @@ std::string Value::gist() const {
         Value held = g_deproxy(*this);
         if (!(held.t == VT::Hash && held.hashKind == "Proxy")) return held.gist();
     }
+    // a list lazy BY DECLARATION gists as one before anything pulls it whole
+    // (`my @e = lazy 1..3; say @e` is [...]), as an endless one does below
+    if (declLazyLive(*this)) return isList ? "(...)" : "[...]";
     forceLazy(*this);   // …and gists as them too: `say gather { take 1 }` is (1)
     // an ENDLESS sequence must not pass its cached prefix off as the whole
     // list: a Seq gists as Rakudo's "(...)", a lazy Array shows what is

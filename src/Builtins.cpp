@@ -2000,6 +2000,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
     // an ENDLESS sequence renders its cached prefix and MARKS the rest, Rakudo
     // style — nested occurrences included. (The .raku method arm pre-materialises
     // 100 elements for the top-level call; a nested one shows what is cached.)
+    if (!v.isList && declLazyLive(v)) return "[...]";   // nested, lazy by declaration
     if (v.t == VT::Array && v.arr() && v.ext() &&
         std::static_pointer_cast<LazySeqState>(v.ext())->infinite) {
         // A lazy ARRAY says only that it is one — `[...]` — whatever it has

@@ -305,10 +305,24 @@ with its tag, after the release run is green.
   `tools/run-bench.raku --suite=mutsu` times mutsu's benchmark files. Next:
   the Rakudo-pass lists for both suites, a committed baseline, and the
   benchmark rows where mutsu leads.
-- [ ] **Finite lazy Arrays**: `my @b = lazy 1..3` and `[lazy 1..3]` say
-  `.is-lazy` False (Rakudo: True), and Rakudo's lazy Array refuses `.elems`
-  ("Cannot .elems a lazy list"), which nothing here models. Endless ranges
-  (`[1..*]`, `(1..*).Array`, `my @a = 1..*`) are lazy Arrays in both lanes.
+- [ ] **User candidates beside a core ROUTINE (decision needed)**:
+  `multi sub abs(Int $x) { … }; abs(-3)` is X::Multi::Ambiguous in Rakudo
+  2026.09 — the user candidate ties the core `(Int:D \a)` (the message also
+  lists `(Real:D $a)` and `(\a)`); here the user candidate silently answers.
+  Operators already do this right: userInfixOverCore models the core
+  candidate an operator meets and reports the tie. The dilemma:
+  - *Match Rakudo*: model CORE's candidate signatures for named routines,
+    routine by routine (hundreds of them), and reproduce the tie. Faithful,
+    but a large table to keep in step with CORE, and its only effect is to
+    turn programs that run today into errors.
+  - *Keep the leniency*: a program written for Rakudo never declares such a
+    candidate (it would die there), so nothing portable depends on the error;
+    the cost is a divergence on code that only runs here.
+  A middle path is a small table for the numeric builtins most often
+  extended (`abs`, `sqrt`, `floor`, `ceiling`, `round`, `sign`).
+- [ ] **A lazy list inside a sequence's seed list** gists as its elements:
+  `(@f, 2, 3 ... 8)` with `@f = lazy 0, 1, 1` shows `[0 1 1]` where Rakudo
+  shows `[...]` (the seed list is read out to find the start values).
 - [ ] **Roast harness**: run Rakudo at the 120 s budget; COUNTING.md's figures
   are from the 60 s budget. The Lock around spawns in tools/run-roast.raku can
   go now that the engine's pipes are close-on-exec before the fork

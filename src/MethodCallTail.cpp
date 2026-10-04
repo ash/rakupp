@@ -857,7 +857,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // a HyperSeq/RaceSeq is never lazy: it is evaluated eagerly in batches
         if (m == "is-lazy" && (inv.s == "HyperSeq" || inv.s == "RaceSeq")) return Value::boolean(false);
         if (m == "is-lazy") {
-            if (lst->declaredLazy) return Value::boolean(true);
+            // lazy by declaration until it has been read to its end: Rakudo's
+            // `for @e { }` reifies it, and `@e.is-lazy` is False after
+            if (lst->declaredLazy) return Value::boolean(!lst->exhausted);
 #if RAKUPP_HAVE_CORO
             // a plain gather is not lazy, endless or not — Rakudo asks the
             // iterator, and a gather's says no — and asking pulls nothing
@@ -877,6 +879,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // only as far as the view is read, as in Rakudo. They share its buffer
         // and its state. `.lazy` is a view of its own that says it is lazy, so
         // that list assignment leaves it alone.
+        // …but a lazy ARRAY has no List to give until it is read to its end
+        // (`my @e = lazy 1..3; @e.List` dies in Rakudo; a lazy Seq's is itself)
+        if (m == "List" && !inv.isList && lst->declaredLazy && !lst->exhausted && args.empty())
+            throwTyped("X::Cannot::Lazy", {{"action", "List"}}, "Cannot List a lazy list");
+        // …and its `.Array` is the lazy Array over the same source, as `my @x =`
+        // makes it: `(lazy 1..3).Array.is-lazy` is True
+        if (m == "Array" && lst->declaredLazy && !lst->exhausted && args.empty()) {
+            Value out = inv; out.isList = false; out.s.clear(); out.itemized = false;
+            return out;
+        }
         if (lst->gatherSeq && !lst->exhausted && !infinite && args.empty() &&
             (m == "values" || m == "list" || m == "List" || m == "Seq" || m == "cache" || m == "lazy")) {
             Value out = inv; out.isList = true; out.itemized = false;
@@ -901,7 +913,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
 #endif
-        if (infinite) {
+        // A FINITE list lazy by declaration (`lazy 1..3`), not yet pulled to its
+        // end, refuses and renders exactly as an endless one does — Rakudo has
+        // no count for it until it is made eager — but `.eager` and `.reduce`
+        // run it out, which an endless one cannot do.
+        const bool declLive = !infinite && lst->declaredLazy && !lst->exhausted;
+        if (declLive && (m == "eager" || m == "reduce")) materializeLazy(inv, 1000000);
+        else if (infinite || declLive) {
             // operations that need the end of the list can't complete on an infinite
             // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
             // — in their own arms below, as in Rakudo)

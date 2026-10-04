@@ -1324,8 +1324,12 @@ static inline int settyTier(const Value& v) {
 }
 static inline bool lazySetOperand(const Value& v) {
     if (v.t == VT::Range && v.rTo() >= 9000000000000000000LL) return true;
-    if (v.t == VT::Array && v.ext())
-        return std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
+    // …endless, or lazy by declaration and not yet read out (`lazy 1, 2`):
+    // Rakudo refuses both, as it refuses `eqv` between two of them
+    if (v.t == VT::Array && v.ext()) {
+        auto* st = static_cast<LazySeqState*>(v.ext().get());
+        return st->infinite || (st->declaredLazy && !st->exhausted);
+    }
     return false;
 }
 // Coerce one operand to key => weight at the JOINT tier. A plain Hash coerces

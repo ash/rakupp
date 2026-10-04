@@ -1416,6 +1416,14 @@ extern EndlessLazyFn g_endlessLazy;
 inline bool endlessLazy(const Value& v) {
     return v.t == VT::Array && v.ext() && g_endlessLazy && g_endlessLazy(v);
 }
+// …and a FINITE one that is lazy by declaration (`lazy 1..3`, `lazy gather
+// {…}`) and not yet pulled to its end. It renders as "[...]" too, but it ENDS:
+// iteration and `.eager` run it out, which is why this is not endlessLazy.
+using DeclLazyLiveFn = bool (*)(const Value&);
+extern DeclLazyLiveFn g_declLazyLive;
+inline bool declLazyLive(const Value& v) {
+    return v.t == VT::Array && v.ext() && g_declLazyLive && g_declLazyLive(v);
+}
 // A Date/DateTime built with `:formatter(&code)` renders through THAT block
 // wherever it becomes a string — not only `.Str`/`.gist`, but `eq`, `~`,
 // `sprintf "%s"`, a hash key, and the gist of a list holding it. Rendering

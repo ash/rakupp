@@ -4247,6 +4247,24 @@ inline Value rtForList(const Value& v) {
     if (v.itemized && (v.t == VT::Array || v.t == VT::Hash)) { Value a = Value::array(); a.arr()->push_back(v); return a; }
     return rtArrayVal(v);
 }
+// Does element `i` of what a `for` iterates exist (native codegen)? A lazy
+// source is grown one element at a time as the loop reaches its end, as the
+// interpreter's `for` grows it: `for (1..*).map(…) { last if … }` runs, and
+// `for @e { }` over `lazy 1..3` reads it out (and so records it exhausted).
+// Walking only the buffer ran no iterations at all for an unpulled source.
+// A call's value discarded at statement level (native codegen) is SUNK, as the
+// interpreter sinks it: an unhandled Failure detonates (`"abc".Int;` inside a
+// `try`, `@lazy.sum;`), a failed Proc throws. Only a Hash-backed value can be
+// either, so a plain result costs one compare. Anything that is not a Value
+// (a native int kernel's result) has nothing to sink.
+template <class T> inline void rtSinkStmt(Interpreter&, const T&) {}
+inline void rtSinkStmt(Interpreter& I, const Value& v) {
+    if (__builtin_expect((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext()), 0)) I.sinkValue(v);
+}
+bool rtForPull(const Value& lst, size_t i);   // the cold half: grow a lazy source
+inline bool rtForHas(const Value& lst, size_t i) {
+    return (lst.arr() && i < lst.arr()->size()) || (lst.ext() && rtForPull(lst, i));
+}
 // What a `$` container stores (native codegen): a list ITEMIZED, as `=` does.
 inline Value rtItemized(Value v) {
     if ((v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) && !v.itemized) v.itemized = true;
@@ -4322,7 +4340,8 @@ void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip co
 void   rtXxCountCheck(const Value& count);   // `xx NaN` / `xx -Inf` name no count: X::Numeric::CannotConvert
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
-Value  rtOneArgArray(const Value& v);  // [ITEM]: the one-arg rule, and an endless Range as a lazy Array
+Value  rtOneArgArray(const Value& v);
+Value  rtOneArgAtVar(const Value& v);   // [@a]: its elements, or the lazy Array over a lazy @a  // [ITEM]: the one-arg rule, and an endless Range as a lazy Array
 Value  rtHyperItem(const Value& v);    // [..] hyper item: stays one element, isList cleared
 inline Value rtMarkList(Value v) { v.isList = true; return v; } // word-lists are flattening Lists
 Value  rtHashLit(const ValueList& items); // { k => v, … } hash constructor

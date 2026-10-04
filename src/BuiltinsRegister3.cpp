@@ -514,14 +514,36 @@ void Interpreter::registerBuiltinsPart5() {
     };
     // `lazy LIST` / `eager LIST` — rakupp lists are already index-materialised, so
     // both are identity passthroughs (single arg, or a List of the args).
+    // A FINITE list made lazy (`lazy 1..3`, `lazy (1, 2, 3)`) is a Seq lazy by
+    // DECLARATION, as in Rakudo: it hands out its elements as they are pulled,
+    // has no `.elems` until it is made eager, gists as (...), and an Array
+    // assigned from it stays lazy until it has been read to the end. An endless
+    // Range and a list that is already lazy keep the flag they always had.
     B["lazy"] = [](Interpreter&, ValueList& a) -> Value {
+        auto declared = [](ValueList items) -> Value {
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; out.b = true;
+            auto st = std::make_shared<LazySeqState>();
+            st->gatherSeq = true;
+            st->declaredLazy = true;
+            auto src = std::make_shared<ValueList>(std::move(items));
+            auto at = std::make_shared<size_t>(0);
+            st->appendNext = [src, at](ValueList& buf) -> bool {
+                if (*at >= src->size()) return false;
+                buf.push_back((*src)[(*at)++]);
+                return true;
+            };
+            out.extM() = st;
+            return out;
+        };
         if (a.size() == 1) {
             Value v = a[0];
+            const bool endless = v.t == VT::Range && v.rTo() >= 9000000000000000000LL;
+            if (v.t == VT::Range && !endless && !v.itemized) return declared(v.flatten());
+            if (v.t == VT::Array && !v.ext() && !v.itemized && v.arr()) return declared(*v.arr());
             if (v.t == VT::Range || v.t == VT::Array) v.b = true; // b marks laziness for .is-lazy
             return v;
         }
-        Value out = Value::array(); out.isList = true; out.b = true;
-        for (auto& v : a) out.arr()->push_back(v); return out;
+        return declared(a);
     };
     B["eager"] = [](Interpreter& I, ValueList& a) -> Value {
         // `eager` reads a Seq (SeqToken)
@@ -1162,7 +1184,7 @@ void Interpreter::registerBuiltinsPart5() {
     // `set *..*` — an endless list cannot become a quanthash
     auto refuseLazy = [](Interpreter& I, ValueList& a, const char* what) {
         for (auto& x : a) {
-            bool lazy = endlessLazy(x);
+            bool lazy = endlessLazy(x) || declLazyLive(x);
             if (!lazy && x.t == VT::Range) { ValueList none; lazy = I.methodCall(x, "is-lazy", none).truthy(); }
             if (lazy)
                 I.throwTyped("X::Cannot::Lazy", {{"action", "coerce"}, {"what", what}},

@@ -2114,6 +2114,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // (a SHALLOW split — a deep flatten would collapse an array-valued seed like
         // `[1]` to `1` and break an array sequence `[1], -> @b {…} … *`).
         ValueList seed;
+        // a FINITE lazy list on the left (`my @abc = lazy <a b c>; @abc ... *`)
+        // seeds with its elements, which its buffer does not hold until read
+        if (l.t == VT::Array && declLazyLive(l)) forceLazy(l);
         if (l.t == VT::Array) seed = *l.arr();
         else if (l.t == VT::Range) seed = l.flatten();
         else seed = ValueList{l};
@@ -3166,9 +3169,27 @@ static bool endlessRangeArray(const Value& v, Value& out) {
     out.isList = false;
     return true;
 }
+// a single lazy list (endless, or lazy by declaration and unread) is the lazy
+// Array over it, as the interpreter's ArrayLit arm makes it
+static bool lazyListArray(const Value& v, Value& out) {
+    if (v.t != VT::Array || !v.ext() || v.itemized || !(endlessLazy(v) || declLazyLive(v))) return false;
+    out = v; out.isList = false; out.s.clear();
+    return true;
+}
+extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
+bool rtForPull(const Value& lst, size_t i) {
+    if (!lst.arr() || !g_pullLazy) return false;
+    g_pullLazy(lst, i + 1);
+    return i < lst.arr()->size();
+}
 Value rtOneArgArray(const Value& v) {
-    if (Value a; endlessRangeArray(v, a)) return a;
+    if (Value a; endlessRangeArray(v, a) || lazyListArray(v, a)) return a;
     return listToArray({rtOneArgItem(v)});
+}
+// `[@a]` for native codegen: the elements of @a, or the lazy Array over it
+Value rtOneArgAtVar(const Value& v) {
+    if (Value a; lazyListArray(v, a)) return a;
+    return listToArray({rtSlipShallow(v)});
 }
 // a hyper result kept as one element is itemized — clear isList so later list
 // contexts don't re-spread it (matches the interpreter's ArrayLit else-branch)

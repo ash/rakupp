@@ -1059,7 +1059,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         for (auto& a : args) if (!a.namedArg) pos.push_back(a);
         ValueList items;
         for (auto& a : pos) {
-            bool lazy = endlessLazy(a) || (a.t == VT::Range && a.rTo() >= 9000000000000000000LL);
+            bool lazy = endlessLazy(a) || declLazyLive(a) || (a.t == VT::Range && a.rTo() >= 9000000000000000000LL);
             if (!lazy && a.t == VT::Range) { ValueList none; lazy = methodCall(a, "is-lazy", none).truthy(); }
             if (lazy)
                 throwTyped("X::Cannot::Lazy", {{"what", inv.s}},

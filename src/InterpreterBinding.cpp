@@ -2221,6 +2221,11 @@ static bool endlessLazyImpl(const Value& v) { // caller checked t == Array && ex
     return std::static_pointer_cast<LazySeqState>(v.ext())->infinite;
 }
 static const bool g_endlessLazyInstalled = ((g_endlessLazy = &endlessLazyImpl), true);
+static bool declLazyLiveImpl(const Value& v) { // caller checked t == Array && ext
+    auto* st = static_cast<LazySeqState*>(v.ext().get());
+    return st->declaredLazy && !st->exhausted && !st->infinite;
+}
+static const bool g_declLazyLiveInstalled = ((g_declLazyLive = &declLazyLiveImpl), true);
 void Interpreter::materializeLazy(const Value& v, size_t n) {
     if (!v.ext() || !v.arr()) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());

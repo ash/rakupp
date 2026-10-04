@@ -3150,7 +3150,11 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             auto haveItem = [&](size_t want) -> bool { // grows a live source
                 if (want < itemsR.size()) return true;
                 if (!liveSt) return false;
-                while (itemsR.size() <= want && liveSt->appendNext(itemsR)) {}
+                // a source that says it has no more is EXHAUSTED, as materializeLazy
+                // records it: `for @e { }` reads a lazy Array out, so it is no longer
+                // lazy afterwards (`@e.is-lazy` False, `@e.elems` answers)
+                while (itemsR.size() <= want)
+                    if (!liveSt->appendNext(itemsR)) { liveSt->exhausted = true; break; }
                 return want < itemsR.size();
             };
             // A live source only learns it is at its end by asking for one
@@ -3695,7 +3699,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             auto growTo = [&](size_t want) -> bool { // true = element `want` exists
                 if (want < arr->size()) return true;
                 if (!live) return false;
-                while (arr->size() <= want && lzst->appendNext(*arr)) {}
+                while (arr->size() <= want)   // (an end reached is recorded, as above)
+                    if (!lzst->appendNext(*arr)) { lzst->exhausted = true; break; }
                 return want < arr->size();
             };
             const bool flat = flatLoopBody(fs->body.get());
@@ -3827,7 +3832,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     auto haveItem = [&](size_t want) -> bool { // true = element `want` exists (grows a live source)
         if (want < itemsR.size()) return true;
         if (!liveSt) return false;
-        while (itemsR.size() <= want && liveSt->appendNext(itemsR)) {}
+        while (itemsR.size() <= want)   // (an end reached is recorded, as above)
+            if (!liveSt->appendNext(itemsR)) { liveSt->exhausted = true; break; }
         return want < itemsR.size();
     };
     // A live source only learns it is at its end by asking for one more
@@ -11972,7 +11978,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                   (sv >= 2 && slot->t == VT::Rat && slot->enumName.empty() &&
                                    slot->natBits == 0 && !slot->ext() && !slot->shape() &&
                                    slot->ofType().empty() && !slot->elemDefault() && !slot->pairKey());
-                    if (pl->simple[tv->padSlot] &&
+                    // …and an op= whose operator a user multi may take over core
+                    // operands (`multi infix:<+>(Int, Int $b where * > 100)`)
+                    // leaves the lane: the long path asks userInfixOverCore
+                    static const char* const kLaneOp[] = {"", "", "+", "-", "*", "~"};
+                    const bool userOpMaybe = sv >= 2 && g_lexShadowMask.load(std::memory_order_relaxed) &&
+                                             lexShadowPossible(std::string(kLaneOp[sv]));
+                    if (pl->simple[tv->padSlot] && !userOpMaybe &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
@@ -16105,10 +16117,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
     // auto-generates OP= from OP), falling back to the built-in operator.
     bool overloaded = false;
-    if (lv->t == VT::Object || rhs.t == VT::Object)
+    if (lv->t == VT::Object || rhs.t == VT::Object) {
         if (Value* f = tctx_.cur->find("&infix:<" + binop + ">"))
             try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
             catch (RakuError&) {}
+    }
+    // …and over CORE operands it meets the built-in exactly as `$t + x` does:
+    // `multi infix:<+>(Int, Int $b where * > 100)` takes `$t += 200` too
+    else if (RAKUPP_UNLIKELY(lexShadowPossible(binop))) {
+        Value uv;
+        if (Value* f = lexShadowedInfix(binop, *lv, rhs)) { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
+        else if (userInfixOverCore(binop, *lv, rhs, uv)) { *lv = std::move(uv); overloaded = true; }
+    }
     // an undefined value appended (`$s ~= $u`) warns as the operand of `~` it is
     if (!overloaded && binop == "~" && uninitOperand(rhs)) {
         UninitNameScope nm(*this, uninitNameOf(a->value.get()).empty() ? std::string() : std::string("element"));
@@ -16467,6 +16487,24 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // …`, `$s - 1`): an unread one is cached, as Rakudo's is (SeqToken)
     if (l.t == VT::Array) l.seqTouch();
     if (r.t == VT::Array) r.seqTouch();
+    // A LAZY list has no number until it is read out — Rakudo numifies a list
+    // as its .elems, which a lazy one refuses: `+@h` with `my @h = 1..*` dies,
+    // and so does `lazy 1..3` unread. (The count it used to give was the
+    // materialisation cap, or 0 for an unpulled source.)
+    if (RAKUPP_UNLIKELY((l.t == VT::Array && l.ext()) || (r.t == VT::Array && r.ext()))) {
+        static const std::unordered_set<std::string> kNumeric = {
+            "+", "-", "*", "/", "%", "**", "div", "mod", "==", "!=", "<", ">", "<=", ">=", "<=>"};
+        auto lazyNow = [](const Value& v) { return v.t == VT::Array && v.ext() && (endlessLazy(v) || declLazyLive(v)); };
+        if ((lazyNow(l) || lazyNow(r)) && kNumeric.count(op))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot .elems a lazy list"};
+        // `cmp` walks both lists element by element, so a FINITE lazy one is
+        // read out first: `[lazy 1, 2] cmp [lazy 1, 2, 3]` is Less, not the
+        // Same two empty buffers would say (S03-operators/cmp.t)
+        if (opEq(op, "cmp")) {
+            if (declLazyLive(l)) forceLazy(l);
+            if (declLazyLive(r)) forceLazy(r);
+        }
+    }
     // A NUMERIC TYPE OBJECT in an order comparison (`Int < 0`) has no value
     // to compare: Rakudo dies X::Numeric::Uninitialized (an undefined Any
     // only warns). The two-type-object form (`Int < Int`) stays a type test.
@@ -18188,6 +18226,15 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // so only the same-type pair throws — S03-operators/eqv.t pins all three.)
         // (a RANGE is compared by its endpoints, never by iterating — `Int.Range
         // eqv -Inf^..^Inf` is a fair question about two infinite ranges.)
+        // …but a list IS itself, lazy or not: `$b = $a; $a eqv $b` is True
+        // without reading either (S03-operators/eqv.t, "Seq eqv Seq")
+        if (l.t == VT::Array && r.t == VT::Array && l.ext() && l.ext() == r.ext() && l.arrS() == r.arrS())
+            return Value::boolean(true);
+        // …and exactly ONE lazy side is never equivalent to the other: Rakudo
+        // asks .is-lazy of both before it reads anything, so `[lazy 1, 2] eqv
+        // [1, 2]` is False however the elements compare
+        if (l.t == VT::Array && r.t == VT::Array && lazySetOperand(l) != lazySetOperand(r))
+            return Value::boolean(false);
         if (l.t == VT::Array && r.t == VT::Array &&
             lazySetOperand(l) && lazySetOperand(r)) {
             auto shape = [](const Value& v) { return v.s == "Seq" ? 2 : v.isList ? 1 : 0; };
@@ -28294,6 +28341,16 @@ Value Interpreter::eval(Expr* e) {
                     Value lz = makeInfArray(v.rFrom() + (v.rExFrom() ? 1 : 0));
                     lz.isList = false;
                     return lz;
+                }
+                // …and a single LAZY list — endless, or lazy by declaration and not
+                // yet read to its end — is the lazy Array over it, as `my @x = @e`
+                // makes it: `[@e].is-lazy` and `[lazy 1..3].is-lazy` are True.
+                if (l->items.size() == 1 && !l->fromCommaList && !a.isList && v.t == VT::Array &&
+                    v.ext() && !v.itemized && (endlessLazy(v) || declLazyLive(v)) &&
+                    !(it->kind == NK::VarExpr &&
+                      static_cast<const VarExpr*>(it.get())->name.rfind('$', 0) == 0)) {
+                    Value r = v; r.isList = false; r.s.clear();
+                    return r;
                 }
                 // a bare @-variable (or a |slip) flattens into the array literal;
                 // nested [...] literals stay as single items. A hyper result

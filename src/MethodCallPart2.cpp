@@ -9386,6 +9386,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "gist") return Value::str(inv.t == VT::Object ? gistOf(inv, m.skipOwn)
         : inv.t == VT::Array && inv.arr() && inv.ext() ? gistOf(inv)
         : inv.gist());
+    // a list lazy BY DECLARATION: an Array says only `[...]`; a Seq reads itself
+    // out and says it was lazy — `(lazy 1..3).raku` is `(1, 2, 3).lazy.Seq`
+    if (m == "raku" && declLazyLive(inv)) {
+        if (!inv.isList) return Value::str("[...]");
+        materializeLazy(inv, 1000000);
+        std::string r = rakuRepr(inv);
+        if (r.size() > 4 && r.compare(r.size() - 4, 4, ".Seq") == 0) r.insert(r.size() - 4, ".lazy");
+        else r += ".lazy";
+        return Value::str(r);
+    }
     if (m == "raku" && inv.t == VT::Array && inv.arr() && inv.ext() &&
         std::static_pointer_cast<LazySeqState>(inv.ext())->infinite) {
         // .raku of an endless sequence: Rakudo shows the first 100 elements,
