@@ -4322,6 +4322,7 @@ void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip co
 void   rtXxCountCheck(const Value& count);   // `xx NaN` / `xx -Inf` name no count: X::Numeric::CannotConvert
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
+Value  rtOneArgArray(const Value& v);  // [ITEM]: the one-arg rule, and an endless Range as a lazy Array
 Value  rtHyperItem(const Value& v);    // [..] hyper item: stays one element, isList cleared
 inline Value rtMarkList(Value v) { v.isList = true; return v; } // word-lists are flattening Lists
 Value  rtHashLit(const ValueList& items); // { k => v, … } hash constructor

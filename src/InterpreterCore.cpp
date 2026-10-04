@@ -21377,6 +21377,15 @@ Value Interpreter::evalBinary(Binary* b) {
         Value l = eval(b->lhs.get()), r = eval(b->rhs.get());
         if (l.hashKind == "Proxy") l = deproxy(l);
         if (r.hashKind == "Proxy") r = deproxy(r);
+        // A user `multi infix:<~>` over core operands meets the built-in here,
+        // as `+` and `eq` do on the general path: `(Str $a, Str $b where "Z")`
+        // is narrower than the core (Str, Str), `(Int, Int)` than (Any, Any).
+        // This arm concatenated before anything looked.
+        if (RAKUPP_UNLIKELY(lexShadowPossible(op))) {
+            if (Value* f = lexShadowedInfix(op, l, r)) return callCallable(*f, ValueList{l, r});
+            Value uv;
+            if (userInfixOverCore(op, l, r, uv)) return uv;
+        }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
         // …but an operand that IS-A Str is a Str:D, so Rakudo binds the Str:D
         // candidate and concatenates its VALUE — per operand, even when the
@@ -28272,6 +28281,20 @@ Value Interpreter::eval(Expr* e) {
                 // an element is a VALUE: a bare `/pat/` in `["a", /b+/, 4]` is the
                 // Regex itself, not an immediate match against $_
                 Value v = evalValueOf(it.get());
+                // An ENDLESS integer Range under the one-arg rule is a lazy Array
+                // of its elements, as in Rakudo: `[1..*].is-lazy` is True and
+                // `[1..*][2]` is 3. Storing the Range as the array's one element
+                // (the finite spread below refuses an endless one) made
+                // `[1..*][^5]` read `(1..Inf (Any) (Any) …)`. A `$`-held Range is
+                // the one item it is, as for a finite one.
+                if (l->items.size() == 1 && !l->fromCommaList && !a.isList && v.t == VT::Range &&
+                    v.rTo() >= 9000000000000000000LL && !v.rNum() && v.ofType() != "Str" &&
+                    !(it->kind == NK::VarExpr &&
+                      static_cast<const VarExpr*>(it.get())->name.rfind('$', 0) == 0)) {
+                    Value lz = makeInfArray(v.rFrom() + (v.rExFrom() ? 1 : 0));
+                    lz.isList = false;
+                    return lz;
+                }
                 // a bare @-variable (or a |slip) flattens into the array literal;
                 // nested [...] literals stay as single items. A hyper result
                 // (`@x».meth`) is itemized — it stays one element (so

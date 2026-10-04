@@ -2175,6 +2175,16 @@ struct Codegen {
             case NK::HashLit:  return "rtHashLit({" + argList(static_cast<HashLit*>(e)->items) + "})";
             case NK::ArrayLit: { // mirror the interpreter's per-item splice rules
                 auto* l = static_cast<ArrayLit*>(e);
+                // one plain item: the whole array comes from rtOneArgArray, which
+                // is where an endless Range becomes a lazy Array (`[1..*]`)
+                if (l->items.size() == 1 && !l->fromCommaList && !l->isList) {
+                    Expr* it = l->items[0].get();
+                    const bool spreadOp = it->kind == NK::Unary &&
+                        (static_cast<Unary*>(it)->op == "ctx@" || static_cast<Unary*>(it)->op == "decont");
+                    const bool plain = !isSlip(it) && it->kind != NK::VarExpr && !spreadOp &&
+                                       !(it->kind == NK::MethodCall && static_cast<MethodCall*>(it)->hyper);
+                    if (plain) return "rtOneArgArray(" + exArg(it) + ")";
+                }
                 std::string s;
                 for (size_t i = 0; i < l->items.size(); i++) {
                     if (i) s += ", ";

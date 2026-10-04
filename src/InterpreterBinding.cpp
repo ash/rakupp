@@ -1462,7 +1462,7 @@ static bool userInfixModelledOp(const std::string& op, bool& stringOp) {
         {"+", false}, {"-", false}, {"*", false}, {"/", false}, {"%", false}, {"**", false},
         {"==", false}, {"!=", false}, {"<", false}, {">", false}, {"<=", false}, {">=", false},
         {"<=>", false}, {"div", false}, {"mod", false},
-        {"eq", true}, {"ne", true}, {"lt", true}, {"gt", true}, {"le", true}, {"ge", true}, {"leg", true}};
+        {"~", true}, {"eq", true}, {"ne", true}, {"lt", true}, {"gt", true}, {"le", true}, {"ge", true}, {"leg", true}};
     auto it = kOps.find(op);
     if (it == kOps.end()) return false;
     stringOp = it->second;

@@ -3155,6 +3155,21 @@ Value rtOneArgItem(const Value& v) {
     if (v.t == VT::Range && !v.itemized && !v.rExFrom() && v.rTo() - v.rFrom() < 1000000) return rtSlipShallow(v);
     return v;
 }
+// `[ ITEM ]` with one plain item, for native codegen: the one-arg rule above,
+// and an ENDLESS integer Range is the lazy Array of its elements (`[1..*]`),
+// as the interpreter's ArrayLit arm makes it
+// An endless integer Range as the lazy Array of its elements, or false.
+static bool endlessRangeArray(const Value& v, Value& out) {
+    if (v.t != VT::Range || v.rTo() < 9000000000000000000LL || v.rNum() || v.ofType() == "Str" || v.itemized)
+        return false;
+    out = makeInfArray(v.rFrom() + (v.rExFrom() ? 1 : 0));
+    out.isList = false;
+    return true;
+}
+Value rtOneArgArray(const Value& v) {
+    if (Value a; endlessRangeArray(v, a)) return a;
+    return listToArray({rtOneArgItem(v)});
+}
 // a hyper result kept as one element is itemized — clear isList so later list
 // contexts don't re-spread it (matches the interpreter's ArrayLit else-branch)
 Value rtHyperItem(const Value& v) {
@@ -3369,6 +3384,9 @@ Value rtArrayVal(const Value& v) {
         if (v.s == "Seq") deproxyElems(r); // take-rw's Proxies decontainerize on assign
         return r;
     }
+    // `my @a = 1..*` is lazy, as interpreted: flattening reached the cap
+    // and `@a.is-lazy` said False
+    if (Value lz; endlessRangeArray(v, lz)) return lz;
     if (v.t == VT::Range) return Value::array(v.flatten());
     Value a = Value::array();
     if (v.t != VT::Nil) a.arr()->push_back(v);

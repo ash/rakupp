@@ -1834,8 +1834,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "AT-POS" && !args.empty()) return Value::integer(lo + args[0].toInt()); // infRange[i]
         // (`Str` and `gist` are NOT here: an endless range renders as its endpoint
         // form — 1..* and 1..Inf — instead of dying, the same as Rakudo.)
+        // `.Array` is the same lazy integers, typed Array (`(1..*).Array.is-lazy`)
+        if (m == "Array") { Value a = makeInfArray(lo); a.isList = false; return a; }
         if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" ||
-            m == "Array" || m == "eager" || m == "join")
+            m == "eager" || m == "join")
             throwTyped("X::Cannot::Lazy", {{"action", m.s}}, "Cannot " + m + " an infinite range");
     }
     // `.hyper` / `.race` — the parallel iteration wrappers, run SERIALLY: the
