@@ -26,6 +26,8 @@ raku.online — those are ours and belong in
 | [**sibl**](https://github.com/4zv4l/sibl-channel) | 4zv4l | packages rakupp in a personal Guix channel |
 | [**321**](https://github.com/nige123/cli.321.do) | Nigel Hamilton | compiles an agent runtime, written in Raku, into one standalone file per system |
 | [**iz4**](https://github.com/nige123/cli.iz4.you) | Nigel Hamilton | ships a tool for keeping a project's invariants as Raku++-built files that update themselves |
+| [**xc**](https://github.com/hjxkyw/xc) | hjxkyw | compiles a business language to TL++, the language of the TOTVS Protheus platform, with a compiler written in Raku and run by rakupp |
+| [**Raku full-stack skills**](https://github.com/ealvar3z/dotfiles/tree/master/prompts/.codex/skills/raku-full-stack-dev) | e. alvarez | teaches a coding agent to build Raku applications for Raku++, web backends included |
 
 ## RakuppLink — the Wolfram binding as an official paclet
 
@@ -199,20 +201,70 @@ the newest release; only where no file fits does it fall back to a source
 install on Rakudo. So the usual way to get iz4 is a Raku program compiled by
 Raku++, on a machine with no Raku installed.
 
+## xc — a compiler for a business platform, run by rakupp
+
+[**xc**](https://github.com/hjxkyw/xc) (MIT) compiles xtpl, a source language
+for the TOTVS Protheus ERP, to TL++, the platform's own language: a real
+grammar, an action pass, checks against an exported data dictionary, and an
+emitter whose output the platform's AppServer compiles. It replaces an older
+compiler, xtpl's own, whose test corpus and error cases it keeps and passes;
+`run-protheus.raku` has an AppServer compile and run its self-tests and read
+back the totals. Most of the project's text is in Portuguese, as the
+platform's community is.
+
+Its README begins with installing Raku++: download a pinned release (v5.2.1),
+check the archive against its published SHA-256, put `rakupp` on `PATH`.
+Every command it shows is `rakupp bin/xc …` and `rakupp run-tests.raku`.
+Rakudo is the second engine, not the first — the suite has to pass on it as
+well (`raku run-tests.raku`), and a September commit is titled "xc runs under
+Rakudo again".
+
+What it met on the way is written down in its own comments, each beside the
+code that works around it, naming the release it was found on (v4.0.1):
+grammar alternations (`|` in a `rule`, captures and actions left behind by a
+failed `||` branch, an alias running its actions twice, `>>` in a
+lookahead), match offsets counted in UTF-8 bytes rather than characters, a
+lexical `sub` the grammar could not see, and two container differences. Those
+notes are the most detailed outside report of grammar behaviour this project
+has had.
+
+## Raku full-stack skills — an agent taught to write for Raku++
+
+e. alvarez keeps two skills for the Codex coding agent in their
+[dotfiles](https://github.com/ealvar3z/dotfiles):
+[**raku-full-stack-dev**](https://github.com/ealvar3z/dotfiles/tree/master/prompts/.codex/skills/raku-full-stack-dev),
+for designing and building Raku applications — command-line entry points,
+modules, HTTP and TCP services, parsers, persistence, concurrency, and Raku.js
+in the browser — "following Raku++-compatible, data-oriented Raku style"; and
+a reference in their Datastar skill for writing a
+[Datastar backend on Raku++](https://github.com/ealvar3z/dotfiles/blob/master/prompts/.codex/skills/datastar-full-stack-dev/references/rakupp-backend.md),
+the server half of a hypermedia web app that streams its updates as SSE.
+
+The skills tell the agent to treat the active Raku++ checkout, its
+documentation and what `rakupp` actually does as the source of truth, to use
+Rakudo as a behavioural comparison when the semantics are uncertain, and not to
+claim that an ecosystem module works under Raku++ until the exact path has
+been run. The same repository has a script of their own on the engine,
+[`bin/todo.raku`](https://github.com/ealvar3z/dotfiles/blob/master/bin/todo.raku)
+(`#!/usr/bin/env rakupp`), a to-do list that records which Codex session each
+item belongs to.
+
 ## What they have in common
 
-Every one of these pins a snapshot. The playground vendors a July build, the
-Guix channel a v1.2.0 tag, the koans, `321` and `iz4` a v4.0.1 release by
-checksum, and the
+Nearly every one of these pins a snapshot. The playground vendors a July
+build, the Guix channel a v1.2.0 tag, the koans, `321` and `iz4` a v4.0.1
+release by checksum, `xc` a v5.2.1 release by checksum, and the
 paclet is written against the C ABI in
 [include/rakupp/rakupp.h](../include/rakupp/rakupp.h), linking whatever
 `librakupp` its user happened to build. A fix landing here reaches none of
 them until their author re-vendors or re-pins — worth remembering before
 reading a report from one of them as a live bug, and worth remembering the
 other way round: that ABI is the one part of this project other people's
-builds are compiled against, so it is the part to keep still.
+builds are compiled against, so it is the part to keep still. The agent skills
+are the exception: they pin nothing, and tell the agent to check whatever
+`rakupp` it finds.
 
 None of this is under our control. Rows can move or disappear without notice;
 the links are what they were on the date each was last checked —
-**2026-10-03** for 321 and iz4, **2026-09-28** for Raku Koans, **2026-08-28** for
+**2026-10-04** for xc and the agent skills, **2026-10-03** for 321 and iz4, **2026-09-28** for Raku Koans, **2026-08-28** for
 the rest.
