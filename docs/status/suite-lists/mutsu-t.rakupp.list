@@ -389,6 +389,7 @@ collections/subscript/shaped-array-pairs-zip-assign.t
 collections/subscript/shaped-array-raku-any.t
 collections/subscript/shaped-array-row-kind.t
 collections/subscript/shaped-array-slice-exists.t
+collections/subscript/shaped-array-type-preservation.t
 collections/subscript/shaped-attr-constant-dimension.t
 collections/subscript/single-store-slice-a.t
 collections/subscript/single-store-slice-c-prime.t
@@ -465,6 +466,7 @@ collections/transform/map-sub-return-index-rw.t
 collections/transform/map-type-repr.t
 collections/transform/map-when-succeed.t
 collections/transform/min-max-over-seq.t
+collections/transform/nodemap-sub.t
 collections/transform/permutations-function.t
 collections/transform/pick-roll-whatever-type-object.t
 collections/transform/polymod-bigint.t
@@ -762,6 +764,7 @@ control/end-phaser-source-order.t
 control/enter-phaser-rvalue.t
 control/eval-type-decl-and-phaser-message.t
 control/for-array-destructure.t
+control/for-bind-typed-array-deitemize.t
 control/for-collect-assign-container.t
 control/for-deref-list-topic-writeback.t
 control/for-destructure-object-hash-default.t
@@ -1129,6 +1132,7 @@ io/is-lazy-io-lines.t
 io/kernel-cpu-cores.t
 io/kernel-type-object-hostname.t
 io/lines-named-args.t
+io/lines-words-allomorph-limit.t
 io/list-assign-greedy-slurp.t
 io/method-implicit-named-slurpy.t
 io/mkdir-rmdir.t
@@ -3236,7 +3240,10 @@ types/coercion/typecheck-assignment-got.t
 types/coercion/typecheck-assignment-message-parity.t
 types/coercion/typecheck-assignment-message-prefix.t
 types/coercion/typecheck-binding-vs-argument.t
+types/coercion/typed-array-alias-reassign.t
+types/coercion/typed-array-bound-cell-writethrough.t
 types/coercion/typed-array-gather-init.t
+types/coercion/typed-array-mutate-preserves-type.t
 types/coercion/typed-array-nil-default.t
 types/coercion/typed-attr-array-append-flattens.t
 types/coercion/typed-begin-decl-preserves-value.t
@@ -3368,6 +3375,8 @@ types/string/str-date-coercion.t
 types/string/str-encode-strict-adverb-false.t
 types/string/str-numeric-long-decimal-exact-rat.t
 types/string/str-numify-decimal-rat.t
+types/string/str-positional-grapheme-index.t
+types/string/str-positioned-search-graphemes.t
 types/string/str-strand-bind-not-materialized.t
 types/string/str-systemic-context.t
 types/string/str-to-rat-bigint.t

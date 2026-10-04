@@ -9880,8 +9880,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (m == "WHAT") {
         // typed container -> its parameterized type object (Array[Int] / Hash[Int,Str])
+        // (a NATIVE array's is `array[int]`, the type its .^name says it is)
         if ((inv.t == VT::Array || inv.t == VT::Hash) && !inv.ofType().empty()) {
-            Value ty = Value::typeObj(inv.t == VT::Array ? "Array" : "Hash");
+            Value ty = Value::typeObj(inv.t == VT::Hash ? "Hash"
+                                      : inv.typeName().rfind("array[", 0) == 0 ? "array" : "Array");
             ty.ofTypeM() = inv.ofType();
             return ty;
         }

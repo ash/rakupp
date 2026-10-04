@@ -3917,8 +3917,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // in `map` — S32-list/duckmap.t's `<a b c>.duckmap({ next if $_ eq
             // "b"; $_ })` is `a c`. duckmap's catch-all below took the control
             // exception for "does not quack" and kept the element.
+            // (nodemap does NOT flatten a Slip: `.nodemap({ slip })` keeps each
+            // as an element, `(Empty, Empty)`)
             auto pushEl = [&](Value& o, Value& x, const std::function<Value(Value&)>& f) -> bool {
-                try { pushResult(o, f(x)); }
+                try { if (m == "nodemap") o.arr()->push_back(f(x)); else pushResult(o, f(x)); }
                 catch (NextEx&) { }
                 catch (LastEx&) { return false; }
                 return true;

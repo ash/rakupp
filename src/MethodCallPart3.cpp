@@ -4231,9 +4231,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long limit = -1;
         for (auto& av : args)
             if (!(av.t == VT::Pair && av.namedArg) &&
-                (av.t == VT::Int || av.t == VT::Num || av.t == VT::Rat || av.isAllomorph())) {
+                (av.t == VT::Int || av.t == VT::Num || av.t == VT::Rat || av.t == VT::Complex || av.isAllomorph())) {
                 if (av.t == VT::Num && std::isinf(av.toNum())) continue;
-                limit = (long long)av.toNum();
+                limit = (long long)(av.t == VT::Complex ? methodCall(av, "Real", {}).toNum() : av.toNum());   // (<3+0i> is 3)
             }
         while ((limit < 0 || (long long)out.arr()->size() < limit) && std::getline(src, line)) { // strip \r\n too (Windows/HTTP text)
             if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -6206,7 +6206,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         double fd = args[i].toNum();
                         if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "contains", args[i], s);
                     }
-                    from = charToByte(s, args[i].toInt());
+                    from = graphemeToByte(s, args[i].toInt());
                     if (args[i].toInt() > (long long)graphemeCount(s)) return Value::boolean(false);
                     break;
                 }

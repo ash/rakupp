@@ -2801,6 +2801,13 @@ size_t charToByte(const std::string& s, long long chars) {
     }
     return b;
 }
+// …and the byte offset of GRAPHEME `chars` (a Str position counts graphemes:
+// `"q\x[301]ab".contains("a", 2)` starts at the `b`)
+size_t graphemeToByte(const std::string& s, long long chars) {
+    size_t b = 0;
+    for (long long n = 0; n < chars && b < s.size(); n++) b = uniClusterEndUtf8(s, b, s.size());
+    return b;
+}
 std::string cpToUtf8(uint32_t cp) {
     std::string r;
     if (cp < 0x80) r += (char)cp;

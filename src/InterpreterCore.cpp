@@ -28061,7 +28061,11 @@ struct RatLitParts {
                     // …and a TYPE OBJECT key stays the type: `(Int) => 1`,
                     // Red's `:{ Red::AST => $response }`
                     kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil ||
-                    kv.t == VT::Range) pr.pairKeyM() = std::make_shared<Value>(kv);
+                    kv.t == VT::Range) {
+                    // (decontainerized: the KEY of `$s => "x"` is the list, not its Scalar)
+                    Value k = kv; k.itemized = false;
+                    pr.pairKeyM() = std::make_shared<Value>(std::move(k));
+                }
                 return pr;
             }
             {   // `:err(/pat/)` → Regex value
