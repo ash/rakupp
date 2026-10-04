@@ -303,8 +303,14 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,073 mutsu files and 229 Rakudo files that Rakudo passes and
+  The work: 2,064 mutsu files and 229 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
+  - Parked from the audited LANG work: typed shaped arrays report unassigned
+    cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices
+    (`@a[0..^2.5]` iterates the range and truncates in Rakudo); a closure
+    sequence's seed is stored before it is pulled (`(1, {…} ... *).join` is
+    `...` in Rakudo); `IO::Path.add` does not deep-flatten (methodCallPart3 is at
+    its size ceiling); an enum member named `q` does not shadow the `q{…}` quote.
   - Known open: `our native size_t is Int is ctype<…> is repr<P6int> { }`
     (native type declarations) does not parse; the 12 wrapped "You have to
     pass an explicitly typed …" binding hints are not produced.

@@ -8568,7 +8568,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // `.dynamic` — was this container declared with a `*` twigil? `.default` —
     // its `is default(…)` element value (Any when it has none).
     // `.self` is the invocant itself — the identity method every type has
-    if (m == "self" && args.empty()) return inv;
+    // (decontainerized: `$h.self` is the Hash, not its Scalar — Rakudo's
+    // method call sees the value)
+    if (m == "self" && args.empty()) { Value r = inv; r.itemized = false; return r; }
 
     // a value reached any other way is not a dynamic variable (the `*`-twigil
     // case is answered from the NAME, in the MethodCall evaluator)

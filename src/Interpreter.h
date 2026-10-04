@@ -2261,6 +2261,7 @@ public:
     // `i`-th positional of `cand`): as scoreCandidate evaluates it
     bool paramWherePasses(const Value& cand, const Param& p, const Value& wv, size_t i,
                           const ValueList& pos, const Value* selfForWhere);
+    Value lazyTailOver(const ValueList& prefix, const Value& src);   // `0, |(1..*)` (InterpreterBinding.cpp)
     bool omittedWherePasses(const Value& cand, const Param& p, size_t i,
                             const Param* const* positional, size_t npositional,
                             const ValueList& pos, const Value* selfForWhere);

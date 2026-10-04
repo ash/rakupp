@@ -2924,6 +2924,8 @@ bool Lexer::tryQuoteForm(Token& out) {
     // (only $/@/% still interpolate). Explicit `qq:c{…}` re-enables it above.
     if (interp && d == '{') { out = make(Tok::StrInterp, "\x02sahfb\x02" + raw); return true; }
     out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
+    // a bare `Q…` is fully RAW: no embedded `\q…[…]` escape is read in it later
+    if (w == "Q" && shortAdv.empty() && adverbs.find_first_not_of(' ') == std::string::npos) out.text2 = "Q";
     // q:o/…/ and q:format/…/ (6.e) build a Format object, not a plain string.
     if (adverbs.find(":o ") != std::string::npos || adverbs.find(":format ") != std::string::npos)
         out.flag = true;

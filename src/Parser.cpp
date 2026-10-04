@@ -6738,7 +6738,7 @@ ExprPtr Parser::parsePrimary() {
             bool fmt = cur().flag; bool qx = cur().text2 == "qx";
             // `q[$foo \qq[$bar]]` — a `\qq[…]` (or `\q:s{…}`, `\q/…/`) inside a
             // single-quoted string is a nested quote of its own kind
-            if (!fmt && !qx && cur().text.find("\\q") != std::string::npos) {
+            if (!fmt && !qx && cur().text2 != "Q" && cur().text.find("\\q") != std::string::npos) {
                 const std::string txt = cur().text;
                 auto closerOf = [](char o) -> char {
                     return o == '[' ? ']' : o == '{' ? '}' : o == '(' ? ')' : o == '<' ? '>' : o;
@@ -6746,9 +6746,11 @@ ExprPtr Parser::parsePrimary() {
                 std::vector<ExprPtr> parts; std::string lit; bool any = false;
                 for (size_t i = 0; i < txt.size(); i++) {
                     if (txt.compare(i, 2, "\\q") == 0) {
-                        size_t j = i + 2; bool qq = false; bool sOnly = false;
+                        size_t j = i + 2; bool qq = false; bool sOnly = false; bool words = false;
                         if (j < txt.size() && txt[j] == 'q') { qq = true; j++; }
-                        if (!qq && txt.compare(j, 2, ":s") == 0) { sOnly = true; j += 2; }
+                        // `\qw[…]` / `\qqw[…]`: the words, joined by one space
+                        if (j + 1 < txt.size() && txt[j] == 'w' && std::strchr("[{(<", txt[j + 1])) { words = true; j++; }
+                        if (!qq && !words && txt.compare(j, 2, ":s") == 0) { sOnly = true; j += 2; }
                         if (j < txt.size() && std::strchr("[{(</|!", txt[j])) {
                             char o = txt[j], c = closerOf(o);
                             int d = 1; size_t k = j + 1;
@@ -6759,7 +6761,17 @@ ExprPtr Parser::parsePrimary() {
                             if (k < txt.size()) {
                                 std::string inner = txt.substr(j + 1, k - j - 1);
                                 if (!lit.empty()) { parts.push_back(std::make_unique<StrLit>(lit)); lit.clear(); }
-                                if (qq || sOnly) parts.push_back(parseInterpString(inner));
+                                if (words) {
+                                    // `.words.join(" ")` over the (interpolated) text
+                                    auto w = std::make_unique<MethodCall>();
+                                    w->inv = qq ? parseInterpString(inner) : std::make_unique<StrLit>(inner);
+                                    w->method = "words";
+                                    auto jn = std::make_unique<MethodCall>();
+                                    jn->inv = std::move(w); jn->method = "join";
+                                    jn->args.push_back(std::make_unique<StrLit>(" "));
+                                    parts.push_back(std::move(jn));
+                                }
+                                else if (qq || sOnly) parts.push_back(parseInterpString(inner));
                                 else parts.push_back(std::make_unique<StrLit>(inner));
                                 any = true; i = k; continue;
                             }
@@ -7146,6 +7158,8 @@ ExprPtr Parser::parsePrimary() {
             // `$today:foo<a b>` — the adverbs are part of the NAME (the four
             // value spellings canonicalise to one), not a pair after the term
             raw += readExtendedNameSuffix();
+            // `$?NL` is the newline in force where it is written (`use newline`)
+            if (raw == "$?NL") return std::make_unique<StrLit>(newlineSeq_);
             // `$.name(ARGS)` is `self.name(ARGS)` — a method call that TAKES those
             // arguments. It used to parse as the no-argument accessor `$.name`
             // followed by a postfix call on whatever that returned, so
@@ -8358,10 +8372,15 @@ ExprPtr Parser::parsePrimary() {
             // A tight `pi()` is left as a call so it dies as an undeclared routine.
             // an ANONYMOUS enum in expression position, `my %e = enum :: <a b>` /
             // `enum <a b>`: the declaration, valued as its type
+            // …and a NAMED one, `my $e = enum Ea <p q>`, valued the same way
+            auto enumBody = [&](const Token& t) {
+                return (t.kind == Tok::Op && (t.text == "::" || t.text == "<" ||
+                                              t.text == "<<" || t.text == "\xC2\xAB")) ||
+                       t.kind == Tok::QwList || (t.kind == Tok::LParen && t.spaceBefore);
+            };
             if (name == "enum" &&
-                ((peek().kind == Tok::Op && (peek().text == "::" || peek().text == "<" ||
-                                             peek().text == "<<" || peek().text == "\xC2\xAB")) ||
-                 peek().kind == Tok::QwList || (peek().kind == Tok::LParen && peek().spaceBefore))) {
+                (enumBody(peek()) ||
+                 (peek().kind == Tok::Ident && enumBody(peek(2)) && !(peek(2).kind == Tok::Op && peek(2).text == "::")))) {
                 // (run in the CURRENT scope — `stmtseq`, not `do` — so the
                 // members it declares are there afterwards: `+baz` below it)
                 auto u = std::make_unique<Unary>(); u->op = "stmtseq";
@@ -10203,7 +10222,8 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 continue;
             }
             switch (e) {
-                case 'n': lit += newlineSeq_; break;
+                // (`\r\n` written out is a literal CRLF whatever `use newline` says)
+                case 'n': lit += (i >= 2 && raw[i - 2] == '\\' && raw[i - 1] == 'r' && !(i >= 3 && raw[i - 3] == '\\')) ? std::string("\n") : newlineSeq_; break;
                 case 't': lit += '\t'; break;
                 case 'r': lit += '\r'; break;
                 case '0': lit += '\0'; break;
@@ -12103,12 +12123,24 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     }
     { // `sub f($a, $a)` / `(::T, ::T)` redeclare; `(:$a, :@a)` clash on the name
         std::set<std::string> vars, keys;
+        // a name a NESTED sub-signature binds counts too: `(:key(($a)), :value(($a)))`
+        // binds $a twice (each sub-signature only checks its own)
+        std::function<void(const std::vector<Param>&)> nested = [&](const std::vector<Param>& ps) {
+            for (const auto& q : ps) {
+                if (!q.name.empty() && !(q.name.size() == 1 && std::strchr("$@%&", q.name[0])) &&
+                    !vars.insert(q.name).second)
+                    throw ParseError("Redeclaration of symbol '" + q.name + "'", cur().line,
+                                     "X::Redeclaration", {{"symbol", q.name}});
+                if (q.subSig) nested(*q.subSig);
+            }
+        };
         for (const auto& p : params) {
             std::string v = p.name;
             if (v.empty() && p.typeCapture && !p.type.empty()) v = "::" + p.type;
             if (!v.empty() && !(v.size() == 1 && std::strchr("$@%&", v[0])) && !vars.insert(v).second)
                 throw ParseError("Redeclaration of symbol '" + v + "'", cur().line,
                                  "X::Redeclaration", {{"symbol", v}});
+            if (p.subSig) nested(*p.subSig);
             if (p.named && p.name.size() > 1) {
                 std::string k = p.namedKey.empty() ? p.name.substr(1) : p.namedKey;
                 if (!keys.insert(k).second)
@@ -16872,6 +16904,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 4))
                 throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
                                  "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            // …and a proto beside a plain (only) sub of the name, either order
+            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 1))
+                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
+                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
             if (sd->isProto && !sd->name.empty() && !sd->isMethod) subs[sd->name] |= 4;
             if (sd->name.empty() || sd->isProto || sd->isMethod) continue;
             // `sub f {...}` (bare yada body) is a redeclarable forward stub
@@ -16885,7 +16921,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             }
             int& f = subs[sd->name];
             int bit = sd->isMulti ? 2 : 1;
-            if ((f & 1) && bit == 1)
+            if ((f & 5) && bit == 1)
                 throw ParseError("Redeclaration of routine '" + sd->name +
                                  "'. Did you mean to declare a multi-sub?", sd->line,
                                  "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});

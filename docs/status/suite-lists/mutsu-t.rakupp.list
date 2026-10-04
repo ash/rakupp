@@ -77,6 +77,7 @@ collections/hash/hash-gist-nested-comma.t
 collections/hash/hash-init-contained-pair.t
 collections/hash/hash-interp-key.t
 collections/hash/hash-itemization-flag.t
+collections/hash/hash-itemized-receiver-methods.t
 collections/hash/hash-iterator-itemized-receiver.t
 collections/hash/hash-junction-key.t
 collections/hash/hash-key-hashing-integrity.t
@@ -1100,6 +1101,7 @@ io/io-handle-tier2c-write-spurt.t
 io/io-handle-user-method-latch-late-registration.t
 io/io-handle-user-subclass.t
 io/io-handle-wrapped-subclass-nl-out.t
+io/io-newline-pragma.t
 io/io-out-buffer.t
 io/io-path-accepts-subclass.t
 io/io-path-childsecure-battery.t
@@ -1264,6 +1266,7 @@ lang/operators/operators-extra.t
 lang/operators/orwith-pointy-sigil.t
 lang/operators/overloading-operators.t
 lang/operators/postfix-if-after-block-assignment.t
+lang/operators/postfix-index.t
 lang/operators/prefix-double-negation-bang-bang.t
 lang/operators/prefix-incdec-whitespace.t
 lang/operators/prefix-incr-dot-assign.t
@@ -1332,6 +1335,7 @@ lang/pod-table.t
 lang/quoting/backslash-unrecognized.t
 lang/quoting/corner-quote-backslash.t
 lang/quoting/double-angle-quote-word-list.t
+lang/quoting/embedded-qqw-qw-escape.t
 lang/quoting/escaped-our-sub-incdec.t
 lang/quoting/forward-sub-quotewords.t
 lang/quoting/heredoc-imported-call-value.t
@@ -2313,6 +2317,7 @@ regex/match/match-from-to-counts-graphemes.t
 regex/match/match-gist.t
 regex/match/match-global-orig.t
 regex/match/match-global-positional-vars.t
+regex/match/match-hash-map.t
 regex/match/match-join-captures.t
 regex/match/match-nth-ordinal.t
 regex/match/match-raku-in-collection.t
@@ -2433,6 +2438,7 @@ regex/regex-my-lexical-in-make-block.t
 regex/regex-my-var-in-subpattern.t
 regex/regex-my-var-interpolation.t
 regex/regex-named-atom-spec-forms.t
+regex/regex-negated-class-crlf.t
 regex/regex-nested-subcaps-sharing.t
 regex/regex-nested-subrule-absolute-offsets.t
 regex/regex-numbered-alias-quantified.t
@@ -2929,6 +2935,7 @@ routines/signature/destructure-anonymous-type-constraint.t
 routines/signature/destructure-literal-postconstraint.t
 routines/signature/destructure-named-alias.t
 routines/signature/destructure-named-from-capture.t
+routines/signature/destructure-nested-pattern.t
 routines/signature/destructure-rest-params-named-default.t
 routines/signature/destructuring-sigilless-params.t
 routines/signature/direct-call-outer-var-ignores-callers-readonly-param.t
@@ -3256,6 +3263,7 @@ types/enum-subset/builtin-enum-base-tier.t
 types/enum-subset/definite-return-core-term-not-imported-type.t
 types/enum-subset/definite-scalar-nil-reassignment.t
 types/enum-subset/enum-bare-key-sub-scope.t
+types/enum-subset/enum-decl-statement-value.t
 types/enum-subset/enum-double-angle-colonpair.t
 types/enum-subset/enum-double-angle.t
 types/enum-subset/enum-in-class-body-scoped.t
@@ -3409,6 +3417,7 @@ types/temporal/dateish-builtin-roles.t
 types/temporal/datetime-date-only-string.t
 types/temporal/datetime-offset-in-minutes.t
 types/temporal/datetime-regressions.t
+types/temporal/datetime-timezoneclash.t
 types/temporal/duration-narrow-num-value.t
 types/temporal/duration-numeric-methods.t
 types/temporal/duration-rand.t

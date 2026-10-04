@@ -4,6 +4,7 @@
 #include "BuiltinsParts.h"
 
 namespace rakupp {
+bool seqIsLazy(const Value& v);   // (InterpreterParts.h)
 
 // registerBuiltins, continued. Split for compile time: each piece ends by
 // calling the next, so the registrations run in the original order (a later
@@ -785,6 +786,13 @@ void Interpreter::registerBuiltinsPart3() {
         if (a.empty()) return Value::str("");
         Value items = Value::array(); items.isList = true;
         for (size_t i = 1; i < a.size(); i++) {
+            // a LAZY argument ends the join with its own marker form, after what
+            // came before: `join(',', 1, (lazy 2, 3))` is `1,...`
+            if (!a[i].itemized && (seqIsLazy(a[i]) || isEndlessRange(a[i]))) {
+                std::string head = I.methodCall(items, "join", ValueList{a[0]}).toStr();
+                std::string tail = I.methodCall(a[i], "join", ValueList{a[0]}).toStr();
+                return Value::str(items.arr()->empty() ? tail : head + a[0].toStr() + tail);
+            }
             // an ITEMIZED list (`$[…]`) is one thing to join, not several
             if ((a[i].t == VT::Array || a[i].t == VT::Hash) && a[i].itemized && a[i].hashKind.empty() &&
                 a[i].enumName.empty()) { items.arr()->push_back(a[i]); continue; }

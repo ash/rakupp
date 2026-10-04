@@ -4361,6 +4361,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             }
                         }
                         size_t zp = is.find_first_of("Zz+-", tp + 1);
+                        // a `Z` designator is no numeric offset: with :timezone given,
+                        // that timezone applies to the fields as written (Rakudo)
+                        if (zp != std::string::npos && (is[zp] == 'Z' || is[zp] == 'z'))
+                            for (auto& na : args)
+                                if (na.t == VT::Pair && na.namedArg && na.s == "timezone") { zp = std::string::npos; break; }
                         // a timestamp that carries its own offset takes no :timezone
                         if (zp != std::string::npos)
                             for (auto& na : args)
@@ -9789,9 +9794,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         gap(inv.rTo());
         return o;
     }
-    if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list"
+    if (inv.t == VT::Match && (m == "keys" || m == "values" || m == "list" || m == "Hash"
                                || m == "hash" || m == "pairs" || m == "kv" || m == "elems")) {
-        if (m == "hash") { Value h = Value::makeHash(); if (inv.hash()) *h.hash() = *inv.hash(); return h; }
+        // `.hash` is the named captures as a Map (Capture.hash); `.Hash` a Hash
+        if (m == "hash" || m == "Hash") {
+            Value h = Value::makeHash(); if (inv.hash()) *h.hash() = *inv.hash();
+            if (m == "hash") h.hashKind = "Map";
+            return h;
+        }
         if (m == "elems") return Value::integer(inv.arr() ? (long long)inv.arr()->size() : 0);
         Value o = Value::array(); o.isList = true;
         // Set/Bag/Mix keep the element's original type in the count's pairKey.

@@ -168,6 +168,9 @@ void Regex::firstOf(const Node* n, FirstInfo& out) const {
             // `:m <[\x[e1]]>` takes a plain "a" — which the table does not know)
             if (!n->uprop.empty() || !n->clusterMembers.empty() || n->imark) { out.any = true; return; }
             for (unsigned c = 0; c < 0x80; c++) if (classMatch(n, (char)c)) add(c);
+            // a CRLF grapheme is a member when LF is, and it BEGINS with a CR:
+            // `"\r\n" ~~ /^<-[\r]>$/` must not be skipped at its first byte
+            if (classMatch(n, '\n')) add('\r');
             addHigh();
             return;
         }

@@ -1906,8 +1906,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // form — 1..* and 1..Inf — instead of dying, the same as Rakudo.)
         // `.Array` is the same lazy integers, typed Array (`(1..*).Array.is-lazy`)
         if (m == "Array") { Value a = makeInfArray(lo); a.isList = false; return a; }
-        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" ||
-            m == "eager" || m == "join")
+        // (…but `.join` answers the lazy marker, as for any lazy list: `...`)
+        if (m == "join") return Value::str("...");
+        if (m == "tail" || m == "pop" || m == "reverse" || m == "sort" || m == "eager")
             throwTyped("X::Cannot::Lazy", {{"action", m.s}}, "Cannot " + m + " an infinite range");
     }
     // `.hyper` / `.race` — the parallel iteration wrappers, run SERIALLY: the
@@ -2211,7 +2212,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "eager" && inv.t == VT::Array && !inv.ext() && inv.s != "Seq")
             return inv;
         // an ARRAY is its own .list (`[2, 3].list` is still [2 3])
-        if (m == "list" && inv.t == VT::Array && !inv.isList && inv.s.empty() && !inv.ext() && !inv.b && args.empty()) {
+        // …and its own .cache: `@a.cache === @a`, and `$[1, 2].cache` is the Array
+        if ((m == "list" || m == "cache") && inv.t == VT::Array && !inv.isList && inv.s.empty() && !inv.ext() && !inv.b && args.empty()) {
             Value out = inv; out.itemized = false; return out;
         }
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {

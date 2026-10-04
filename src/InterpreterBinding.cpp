@@ -6187,4 +6187,45 @@ void Interpreter::sinkValue(const Value& r) {
     }
 }
 
+// Is `src` a source that makes a list it is slipped into LAST endless: an
+// endless integer Range, or a lazy list that is infinite or lazy by
+// declaration (`1, |(lazy gather {…})` runs none of the gather)?
+bool isEndlessTailSource(const Value& src) {
+    const bool infRange = src.t == VT::Range && !src.rNum() &&
+                          src.rTo() == 9223372036854775807LL && !rangeEnds(src);
+    const bool infLazy = src.t == VT::Array && src.arr() && src.ext() &&
+                         (std::static_pointer_cast<LazySeqState>(src.ext())->infinite ||
+                          std::static_pointer_cast<LazySeqState>(src.ext())->declaredLazy);
+    return infRange || infLazy;
+}
+
+// The lazy List of `prefix` followed by `src` (isEndlessTailSource), pulled as
+// far as it is read: `0, |(1..*)`, `0, ([\+] 1..*).Slip`, `[0, |(1...*)]`.
+Value Interpreter::lazyTailOver(const ValueList& prefix, const Value& src) {
+    Value out = Value::array(); out.isList = true;
+    for (auto& x : prefix) out.arr()->push_back(x);
+    auto st = std::make_shared<LazySeqState>();
+    const bool declLazy = src.t == VT::Array && src.ext() &&
+                          std::static_pointer_cast<LazySeqState>(src.ext())->declaredLazy;
+    // a declared-lazy tail may still END: it is a gather-like unknown, which
+    // `.eager` finishes, not an endless source
+    if (declLazy) { st->gatherSeq = true; st->declaredLazy = true; }
+    else st->infinite = true;
+    auto idx = std::make_shared<long long>(0);
+    const bool infRange = src.t == VT::Range;
+    Value s2 = src;
+    st->appendNext = [this, s2, idx, infRange](ValueList& cache) -> bool {
+        if (infRange) {
+            cache.push_back(Value::integer(s2.rFrom() + (s2.rExFrom() ? 1 : 0) + (*idx)++));
+            return true;
+        }
+        materializeLazy(s2, (size_t)*idx + 1);
+        if ((size_t)*idx >= s2.arr()->size()) return false;
+        cache.push_back((*s2.arr())[(size_t)(*idx)++]);
+        return true;
+    };
+    out.extM() = st;
+    return out;
+}
+
 } // namespace rakupp

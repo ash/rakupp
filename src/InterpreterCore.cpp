@@ -22858,6 +22858,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (opEq(u->op, "ctx%") && v.t == VT::Match) {
             Value h = Value::makeHash();
             if (v.hash()) *h.hash() = *v.hash();
+            h.hashKind = "Map";   // (as `.hash` is: the captures' Map)
             return h;
         }
         // `%(…)` is a hash STORE: an odd number of plain items is the error,
@@ -23485,6 +23486,18 @@ Value Interpreter::evalUnary(Unary* u) {
         }
         // A LITERAL has no container to step: `4++` matches the `is rw` candidate
         // by type and fails to bind it, which is the error Rakudo reports.
+        // (…nor has the value of an arithmetic or string operator: `(1 + 2)++`)
+        if (u->operand->kind == NK::Binary) {
+            static const std::set<std::string> kValueOps = {
+                "+", "-", "*", "/", "%", "**", "~", "div", "mod", "x", "+&", "+|", "+^", "gcd", "lcm"};
+            if (kValueOps.count(static_cast<Binary*>(u->operand.get())->op)) {
+                Value v = eval(u->operand.get());
+                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                    "Cannot resolve caller " + std::string(u->postfix ? "postfix" : "prefix") +
+                    ":<" + u->op + ">(" + v.typeName() + ":D); the following candidates match the type but "
+                    "require mutable arguments"};
+            }
+        }
         switch (u->operand->kind) {
             case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::InterpStr:
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
@@ -28219,42 +28232,8 @@ Value Interpreter::eval(Expr* e) {
             // An ENDLESS source slipped in LAST (`0, |(1..*)`, `0, ([\+] 1..*).Slip`)
             // makes the list endless too: what came before, then the source,
             // pulled as far as it is read.
-            auto endlessTail = [&](const Value& src) -> bool {
-                const bool infRange = src.t == VT::Range && !src.rNum() &&
-                                      src.rTo() == 9223372036854775807LL && !rangeEnds(src);
-                const bool infLazy = src.t == VT::Array && src.arr() && src.ext() &&
-                                     (std::static_pointer_cast<LazySeqState>(src.ext())->infinite ||
-                                      // …or lazy by declaration: `1, |(lazy gather {…})`
-                                      // runs none of the gather (S02-types/array.t)
-                                      std::static_pointer_cast<LazySeqState>(src.ext())->declaredLazy);
-                return infRange || infLazy;
-            };
-            auto lazyTailList = [&](const Value& src) -> Value {
-                Value out = Value::array(); out.isList = true;
-                for (auto& x : items) out.arr()->push_back(x);
-                auto st = std::make_shared<LazySeqState>();
-                const bool declLazy = src.t == VT::Array && src.ext() &&
-                                      std::static_pointer_cast<LazySeqState>(src.ext())->declaredLazy;
-                // a declared-lazy tail may still END: it is a gather-like
-                // unknown, which `.eager` finishes, not an endless source
-                if (declLazy) { st->gatherSeq = true; st->declaredLazy = true; }
-                else st->infinite = true;
-                auto idx = std::make_shared<long long>(0);
-                const bool infRange = src.t == VT::Range;
-                Value s2 = src;
-                st->appendNext = [this, s2, idx, infRange](ValueList& cache) -> bool {
-                    if (infRange) {
-                        cache.push_back(Value::integer(s2.rFrom() + (s2.rExFrom() ? 1 : 0) + (*idx)++));
-                        return true;
-                    }
-                    materializeLazy(s2, (size_t)*idx + 1);
-                    if ((size_t)*idx >= s2.arr()->size()) return false;
-                    cache.push_back((*s2.arr())[(size_t)(*idx)++]);
-                    return true;
-                };
-                out.extM() = st;
-                return out;
-            };
+            auto endlessTail = [](const Value& src) { return isEndlessTailSource(src); };
+            auto lazyTailList = [&](const Value& src) { return lazyTailOver(items, src); };
             for (size_t li = 0; li < l->items.size(); li++) {
                 auto& it = l->items[li];
                 const bool lastItem = li + 1 == l->items.size();
@@ -28349,6 +28328,26 @@ Value Interpreter::eval(Expr* e) {
                 a.arr()->push_back(std::move(v));
             };
             for (auto& it : l->items) {
+                // an ENDLESS source slipped in LAST (`[0, |(1...*)]`) makes the
+                // Array lazy over it, as the same list in parens is
+                if (&it == &l->items.back() && l->items.size() > 1 && !a.isList &&
+                    it->kind == NK::Unary && static_cast<Unary*>(it.get())->op == "|") {
+                    Value sv = eval(static_cast<Unary*>(it.get())->operand.get());
+                    if (isEndlessTailSource(sv)) {
+                        Value lz = lazyTailOver(*a.arr(), sv);
+                        lz.isList = false;
+                        return lz;
+                    }
+                    forceLazy(sv);
+                    if (sv.t == VT::Array && sv.arr()) for (auto& x : *sv.arr()) storeSlot(x);
+                    else if (sv.t == VT::Range) for (auto& x : sv.flatten()) storeSlot(x);
+                    else {
+                        Value slipped = methodCall(sv, "Slip", {});
+                        if (slipped.t == VT::Array && slipped.arr()) for (auto& x : *slipped.arr()) storeSlot(x);
+                        else storeSlot(sv);
+                    }
+                    continue;
+                }
                 // an element is a VALUE: a bare `/pat/` in `["a", /b+/, 4]` is the
                 // Regex itself, not an immediate match against $_
                 Value v = evalValueOf(it.get());

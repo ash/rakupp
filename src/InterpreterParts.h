@@ -89,6 +89,7 @@ namespace rakupp {
 std::vector<ClassInfo*> c3Linearize(ClassInfo* c, bool& ok);
 static bool hasMultipleInheritance(ClassInfo* c);
 bool seqIsLazy(const Value& v);   // lazy as Rakudo means it, not merely unpulled
+bool isEndlessTailSource(const Value& src);   // slipped last, makes the list endless
 
 // A `{ ... }` / `{ !!! }` body: the routine is a STUB. Was a lambda local to the
 // class-declaration case and so was only ever asked about methods — `.yada` on a

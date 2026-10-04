@@ -4763,15 +4763,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (!tctx_.pkgPrefix.empty()) global_->define(tctx_.pkgPrefix + ed->name, pairs);
                 if (ed->isExport && global_) global_->define(ed->name, pairs);
             }
-            // an ANONYMOUS enum is valued as the Map of its members:
-            // `my %e = enum :: <foo bar>` is `{foo => 0, bar => 1}`
-            if (ed->name.empty()) {
-                Value m = Value::makeHash();
-                for (auto& p : *pairs.arr()) (*m.hash())[p.s] = p.pairVal() ? *p.pairVal() : Value::any();
-                m.hashKind = "Map";
-                return m;
-            }
-            return Value::any();
+            // an enum declaration is valued as the Map of its members, named or
+            // not: `my %e = enum :: <foo bar>` is `{foo => 0, bar => 1}`, and so
+            // is `my $e = enum Ea <foo bar>`
+            Value m = Value::makeHash();
+            for (auto& p : *pairs.arr()) (*m.hash())[p.s] = p.pairVal() ? *p.pairVal() : Value::any();
+            m.hashKind = "Map";
+            return m;
         }
         case NK::ClassDecl: {
             auto* cd = static_cast<ClassDecl*>(s);
