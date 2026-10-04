@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Raku Snippets
- * Plugin URI:  https://raku.online
+ * Plugin URI:  https://raku.online/embed/wordpress/
  * Description: Turns Raku code blocks in posts and pages into runnable editors powered by raku.online. Mark a block with the CSS class "raku" (or add a data-raku attribute) and it becomes editable and runnable in the browser.
  * Version:     1.0.0
  * Author:      Andrew Shitov

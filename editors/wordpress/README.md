@@ -4,10 +4,16 @@
 posts and pages into editors you can run in the browser, powered by
 [raku.js](https://raku.online/raku.js) from raku.online.
 
+The page for WordPress users, with the zip to download, is
+[raku.online/embed/wordpress](https://raku.online/embed/wordpress/); the
+plugin's *Visit plugin site* link goes there. That zip is built from this
+directory: after a change here, rebuild it in the raku.online repo.
+
 ## Install
 
-Copy (or zip and upload) the `raku-snippets` directory to
-`wp-content/plugins/`, then activate **Raku Snippets** under *Plugins*.
+Upload `raku-snippets.zip` under *Plugins → Add New → Upload Plugin*, or copy
+the `raku-snippets` directory to `wp-content/plugins/`; then activate
+**Raku Snippets** under *Plugins*.
 
 ## Use
 
