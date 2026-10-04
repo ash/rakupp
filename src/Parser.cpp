@@ -12031,6 +12031,16 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         }
     };
     addNames(params);
+    // a type name an EARLIER parameter captured refers to that capture
+    {
+        std::vector<std::string> caps;
+        for (auto& p : params) {
+            if (!p.typeCapture && !p.type.empty() &&
+                std::find(caps.begin(), caps.end(), p.type) != caps.end())
+                p.typeFromCapture = true;
+            if (!p.captureName.empty()) caps.push_back(p.captureName);
+        }
+    }
     return params;
 }
 

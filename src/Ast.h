@@ -695,6 +695,9 @@ struct Param {
     // carry a constraint (`::T Red::Model:U \type`), where `type` is the
     // constraint and this is the name the body reads the bound type back through.
     std::string captureName;
+    // `T $y` after `::T $x` in the SAME signature: `type` is the captured type,
+    // whatever else of that name exists (set by parseSignature)
+    bool typeFromCapture = false;
     // `::T:U $x` / `::T:D` / `::T:_` — the smiley form, a CONSTRAINT that captures
     // nothing. T need not name any type: Rakudo accepts the parameter with no T
     // declared anywhere (YAMLish: `::GrammarType:U :$schema`), so the undeclared-

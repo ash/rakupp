@@ -3972,6 +3972,22 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
     if (p.codeSig && !codeSigAccepts(p, v, sigEnv))
         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
             "Constraint type check failed in binding to parameter '" + p.name + "'"};
+    // A bare `::T $x` constrains nothing: T NAMES whatever arrived. Checking
+    // the value against a type called T went wrong as soon as one existed —
+    // a `my grammar T` in an earlier EVAL (classes_ outlives it) made
+    // `multi method new(::T $value)` refuse 42 (Definitely's Some.new).
+    if (p.typeCapture && p.type == p.captureName) return;
+    // …and a later `T $y` checks against what the capture bound, which a
+    // registered type of the same name must not stand in for
+    if (p.typeFromCapture && sigEnv && v.t != VT::Nil)
+        if (Value* tv = sigEnv->find(p.type))
+            if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type) {
+                if (typeOrSubsetMatches(v, tv->s)) return;
+                throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                    "Type check failed in binding to parameter '" + p.name +
+                    "'; expected " + tv->s + " but got " + v.typeName() +
+                    " (" + typeCheckRepr(v) + ")"};
+            }
     // A type SMILEY is part of the constraint: `Int:D $x` refuses a type object
     // and `Int:U $x` refuses an instance. The smiley was recorded (multi
     // dispatch scores on it) but never enforced on an ordinary bind, so
@@ -4078,7 +4094,14 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
                 throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                     "Type check failed in binding to parameter '" + p.name +
                     "'; expected " + tv->s.str() + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
-    if (v.t == VT::Type || v.t == VT::Nil || v.t == VT::Any) return;
+    // A TYPE OBJECT is an undefined value of its own type, so it binds only
+    // where that type conforms: `f(Int)` into an Int or Cool parameter, not
+    // into a Str one (`sub g(Str $x) {}; g(Any)` dies in Rakudo). Untyped, Any
+    // and Mu parameters take it without asking; everything else goes through
+    // the same matcher an instance does, below.
+    if (v.t == VT::Nil) return;
+    if ((v.t == VT::Type || v.t == VT::Any) &&
+        (p.type.empty() || p.type == "Any" || p.type == "Mu")) return;
     if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
                              v.enumName == "one" || v.enumName == "none")) {
         // …except a SUBSET that takes the junction whole (one refining Mu): its
@@ -4101,11 +4124,8 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
         // types that resolve, is enforced: the object must do R1[Int] itself
         // (a class composing R1[Str] does not). A parameter naming a capture
         // (`R[T]` inside the role) stays unenforced.
-        auto rolePunKnown = [&](const std::string& t) {
-            size_t br = t.find('[');
-            if (br == std::string::npos || br == 0 || t.back() != ']') return false;
-            auto bi = classes_.find(t.substr(0, br));
-            if (bi == classes_.end() || !bi->second || !bi->second->isRole) return false;
+        // every type name between the brackets of `Name[…]` resolves
+        auto rolePunArgsKnown = [&](const std::string& t, size_t br) {
             size_t i = br + 1;
             while (i < t.size()) {
                 if (!ascii::isupper((unsigned char)t[i]) ||
@@ -4118,8 +4138,26 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
             }
             return true;
         };
+        auto rolePunKnown = [&](const std::string& t) {
+            size_t br = t.find('[');
+            if (br == std::string::npos || br == 0 || t.back() != ']') return false;
+            auto bi = classes_.find(t.substr(0, br));
+            if (bi == classes_.end() || !bi->second || !bi->second->isRole) return false;
+            return rolePunArgsKnown(t, br);
+        };
+        // `Color $c` names an enum THIS scope can see. The registry by name
+        // (enumPairs_) outlives the scope that declared it — a `my enum T` in
+        // one EVAL would otherwise turn a later `::T $value` capture into a
+        // check against that enum — so the name is looked up from here.
+        auto enumInScope = [&](const std::string& t) {
+            if (p.typeCapture || !enumPairs_.count(t)) return false;
+            Env* from = sigEnv ? sigEnv : tctx_.cur.get();
+            const Value* tv = from ? from->find(t) : nullptr;
+            return tv && tv->t == VT::Array && tv->enumName.empty() && tv->enumType == t;
+        };
         if (!classes_.count(p.type) && !subsets_.count(p.type) &&
-            !isKnownTypeName(p.type) && !isNativeTypeName(p.type) && !rolePunKnown(p.type)) {
+            !isKnownTypeName(p.type) && !isNativeTypeName(p.type) && !rolePunKnown(p.type) &&
+            !enumInScope(p.type)) {
             // The name does not resolve. Almost always that means an unimported
             // module type, and binding freely is the right answer — but it is also
             // how `T $a` arrives when an earlier `::T` in the SAME signature has
@@ -4149,6 +4187,25 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
                             "Type check failed in binding to parameter '<anon>'; expected " + et +
                             " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
                     return;
+                }
+            }
+            // `Array[Int] $a` — a built-in container parameterized over types
+            // that resolve takes exactly what `~~` says it does: an Array of
+            // that element type, not a plain `[1, 2]` and not the bare Array
+            // type object (Rakudo: "You have to pass an explicitly typed array")
+            if (!p.typeCapture && p.type.back() == ']') {
+                size_t br = p.type.find('[');
+                std::string base = br == std::string::npos ? std::string() : p.type.substr(0, br);
+                if ((base == "Array" || base == "List" || base == "Hash" || base == "Map" ||
+                     base == "Positional" || base == "Associative") &&
+                    rolePunArgsKnown(p.type, br)) {
+                    Value tw = Value::typeObj(base);
+                    tw.ofTypeM() = p.type.substr(br + 1, p.type.size() - br - 2);
+                    if (boolify(smartmatchValue("~~", v, tw))) return;
+                    throwTypedV("X::TypeCheck::Binding::Parameter",
+                        {{"got", v}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
+                        "Type check failed in binding to parameter '" + p.name + "'; expected " +
+                        p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
                 }
             }
             if (sigEnv && !p.typeCapture)
@@ -8680,7 +8737,20 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     if (!any && env->xr().rwSynced.empty()) return;
     size_t pi = 0;
     for (auto& p : *params) {
-        if (p.named) continue;
+        if (p.named) {
+            // backstop for a named `is rw` / `is raw` linked in linkNamedRw
+            // (a cell-bound one shares the caller's container and needs none)
+            if ((p.isRw || p.isRaw) && !p.name.empty() && !env->xr().rwCelled.count(p.name)) {
+                auto li = env->xr().rwLinks.find(p.name);
+                Value* pv = env->local(p.name);
+                if (li != env->xr().rwLinks.end() && pv) {
+                    auto sy = env->xr().rwSynced.find(p.name);
+                    if (!(sy != env->xr().rwSynced.end() && valueEqv(*pv, sy->second)))
+                        try { if (Value* lv = lvalue(li->second.first)) *lv = *pv; } catch (...) {}
+                }
+            }
+            continue;
+        }
         if (p.invocant) {
             // backstop for the `is rw` invocant linked in setupRwLinks — the
             // link already wrote through on assignment, this catches a mutation
@@ -8842,6 +8912,54 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     return true;
 }
 
+// A `$` parameter that is `is rw` wants a SCALAR container: an array or hash
+// variable, a composer (`[1,2]`, `{a => 1}`), a list or an itemized `$[…]` is a
+// value without one (Rakudo: X::Parameter::RW).
+static bool noScalarContainer(const Expr* x) {
+    if (!x) return false;
+    if (x->kind == NK::ArrayLit || x->kind == NK::HashLit || x->kind == NK::ListExpr) return true;
+    if (x->kind == NK::Unary) {
+        const std::string& op = static_cast<const Unary*>(x)->op;
+        return opEq(op, "ctx$") || opEq(op, "ctx@") || opEq(op, "ctx%");
+    }
+    if (x->kind == NK::VarExpr) {
+        const std::string& n = static_cast<const VarExpr*>(x)->name;
+        return !n.empty() && (n[0] == '@' || n[0] == '%');
+    }
+    return false;
+}
+
+// A NAMED `is rw` / `is raw` parameter is the caller's container too:
+// `sub f(:$x! is rw) { $x = 5 }; f(x => $v)` sets $v. Its argument is the
+// value side of the matching `k => v` / `:k(v)` / `:$k` pair (the last one, as
+// the binder takes the last), linked exactly as a positional's is. A pair
+// flattened in from a hash (`|%args`) has no expression here and stays a copy,
+// as it does in Rakudo.
+void Interpreter::linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
+                              const std::vector<ExprPtr>& rwArgs, bool soleCandidate) {
+    if (p.name.size() < 2 || p.name[1] == '!' || p.name[1] == '.') return;
+    const std::string key = !p.namedKey.empty() ? p.namedKey : p.name.substr(1);
+    Expr* ae = nullptr;
+    for (auto& a : rwArgs) {
+        if (!syntacticNamedPair(a.get())) continue;
+        auto* pe = static_cast<PairExpr*>(a.get());
+        if (pe->key == key ||
+            std::find(p.aliasKeys.begin(), p.aliasKeys.end(), pe->key) != p.aliasKeys.end())
+            ae = pe->value.get();
+    }
+    if (!ae) return;
+    if (soleCandidate && p.isRw && (argIsNeverContainer(ae) || noScalarContainer(ae)))
+        throw RakuError{Value::typeObj("X::Parameter::RW"),
+                        "Parameter '" + p.name + "' expects a writable container "
+                        "(variable, element or attribute)"};
+    if (argIsNeverContainer(ae)) return;
+    if (bindArgCell(p, ae, env)) return;
+    env->x().rwLinks[p.name] = { ae, tctx_.cur };
+    Value* ip = env->local(p.name);
+    env->x().rwSynced[p.name] = ip ? *ip : Value::any();
+    anyRwLinks_ = true;
+}
+
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
@@ -8849,7 +8967,11 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
     if (!params) return;
     size_t pi = 0;
     for (auto& p : *params) {
-        if (p.named) continue;
+        if (p.named) {
+            if (rwArgs && (p.isRw || p.isRaw) && p.sigil == '$' && !p.slurpy)
+                linkNamedRw(p, env, *rwArgs, soleCandidate);
+            continue;
+        }
         if (p.invocant) {
             // `method AT-POS(\SELF: $i) is raw { SELF.substr-rw($i, 1) }`: a
             // sigilless or raw invocant is the caller's CONTAINER, as a `\x`
@@ -8907,19 +9029,6 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             // A `$` parameter also wants a SCALAR container: an array or hash
             // variable, a composer (`[1,2]`, `{a => 1}`), a list or an itemized
             // `$[…]` is a value without one (Rakudo: X::Parameter::RW).
-            auto noScalarContainer = [](const Expr* x) {
-                if (!x) return false;
-                if (x->kind == NK::ArrayLit || x->kind == NK::HashLit || x->kind == NK::ListExpr) return true;
-                if (x->kind == NK::Unary) {
-                    const std::string& op = static_cast<const Unary*>(x)->op;
-                    return opEq(op, "ctx$") || opEq(op, "ctx@") || opEq(op, "ctx%");
-                }
-                if (x->kind == NK::VarExpr) {
-                    const std::string& n = static_cast<const VarExpr*>(x)->name;
-                    return !n.empty() && (n[0] == '@' || n[0] == '%');
-                }
-                return false;
-            };
             if (soleCandidate && p.isRw &&
                 (argIsNeverContainer(ae) || (p.sigil == '$' && noScalarContainer(ae))))
                 throw RakuError{Value::typeObj("X::Parameter::RW"),
@@ -8935,7 +9044,20 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             // throw — and scoreCandidate sees only argument VALUES, with no way
             // to tell which had a container. Throwing here instead made
             // S06-traits/misc.t and native-is-rw.t abort mid-file.
-            if (!p.isRw && argIsNeverContainer(ae)) {
+            // A SIGILLESS name given no container names the value itself, and
+            // Rakudo refuses a write to it as "Cannot modify an immutable Int
+            // (5)" — or, for a type object written as a bare name (`f(Int)`),
+            // "…immutable 'Int' type object". immutableBind is what the
+            // assignment reads to say so.
+            if (!p.isRw && p.sigil == '\\' && ae && !p.slurpy &&
+                (argIsNeverContainer(ae) || ae->kind == NK::NameTerm)) {
+                Value* vp = env->local(p.name);
+                if (vp && !vp->isCell() && (ae->kind != NK::NameTerm || vp->t == VT::Type)) {
+                    vp->readonly = true;
+                    vp->immutableBind = true;
+                }
+            }
+            else if (!p.isRw && argIsNeverContainer(ae)) {
                 if (Value* vp = env->local(p.name)) vp->readonly = true;
             }
             // …and a CALL's immutable List/Seq result (`(%h{…}:v).sort`) is a
@@ -14770,9 +14892,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             (lv->t == VT::Type || lv->t == VT::Any || lv->t == VT::Nil)) {
             Value iv = *lv; iv.readonly = iv.immutableBind = false;
             const std::string tn = iv.t == VT::Type ? iv.s.str() : iv.typeName();
+            // (a smiley rides on the type value's `i`: `my $x := Int:D` names Int:D)
             if (opEq(a->op, "=") && a->target->kind != NK::NameTerm)
                 throw RakuError{Value::typeObj("X::AdHoc"),
-                                "assign requires a concrete object (got a " + tn + " type object instead)"};
+                                "assign requires a concrete object (got a " + tn +
+                                (iv.t == VT::Type && iv.i == 1 ? ":D" : iv.t == VT::Type && iv.i == 2 ? ":U" : "") +
+                                " type object instead)"};
             throwImmutable(iv);
         }
         if (lv->readonly && lv->immutableBind && !opEq(a->op, ":=") && a->target->kind == NK::NameTerm) {
@@ -15827,7 +15952,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto fit = lv->hash()->find("FETCH"), sit = lv->hash()->find("STORE");
         if (fit != lv->hash()->end() && sit != lv->hash()->end()) {
             std::string bop = a->op.substr(0, a->op.size() - 1);
-            Value cur = callCallable(fit->second, {});
+            Value cur = deproxy(*lv);   // FETCH as an ordinary read does it (a compact slot needs the proxy)
             Value nv;
             bool overloaded = false;
             // the same user-overload rule as the plain path below: Red's column
@@ -21677,9 +21802,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // This is the shape the report arrived as, and it slipped past the
                 // assignment guard because a substitution never goes through `=`.
                 if (Value* lv = lvalue(b->lhs.get())) {
-                    if (lv->readonly)
-                        throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                        "Cannot assign to a readonly variable or a value"};
+                    if (lv->readonly) throwNotWritable(*lv);   // an X::AdHoc, as Rakudo's
                     *lv = Value::str(out);
                 }
                 Value sd = Value::makeHash(); sd.hashKind = "StrDistance";
@@ -21694,9 +21817,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // This is the shape the report arrived as, and it slipped past the
             // assignment guard because a substitution never goes through `=`.
             if (Value* lv = lvalue(b->lhs.get())) {
-                if (lv->readonly)
-                    throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                    "Cannot assign to a readonly variable or a value"};
+                if (lv->readonly) throwNotWritable(*lv);   // an X::AdHoc, as Rakudo's
                 *lv = Value::str(out);
             }
             // s/// returns the Match / List of matches — and False, not Nil, when
@@ -23280,7 +23401,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
             auto fit = lv->hash()->find("FETCH"), sit = lv->hash()->find("STORE");
             if (fit != lv->hash()->end() && sit != lv->hash()->end()) {
-                Value oldp = callCallable(fit->second, {});
+                Value oldp = deproxy(*lv);
                 Value newp;
                 if (oldp.t == VT::Str) {
                     if (opEq(u->op, "++")) newp = Value::str(strSucc(oldp.s));

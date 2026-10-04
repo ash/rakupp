@@ -2200,6 +2200,9 @@ public:
     // reason to try the next candidate.
     void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
                       const std::vector<ExprPtr>* rwArgs, bool soleCandidate = false);
+    // …a NAMED `is rw` / `is raw` parameter's link, to its pair's value side
+    void linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
+                     const std::vector<ExprPtr>& rwArgs, bool soleCandidate);
     // …the plain-variable case of it: bind the parameter to the caller's cell
     // (ROAST-TRACKS-PLAN track A). False = not that case; link as before.
     bool bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env);

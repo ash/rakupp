@@ -189,7 +189,9 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"RatStr",     {"RatStr","Allomorph","Str","Rat","Stringy","Rational","Real","Numeric","Cool","Any","Mu"}},
         {"NumStr",     {"NumStr","Allomorph","Str","Num","Stringy","Real","Numeric","Cool","Any","Mu"}},
         {"ComplexStr", {"ComplexStr","Allomorph","Str","Complex","Stringy","Numeric","Cool","Any","Mu"}},
-        {"Rat",     {"Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
+        // …and Allomorph itself is a Str (`sub f(Str $s) {}; f(Allomorph)`)
+        {"Allomorph",  {"Allomorph","Str","Stringy","Cool","Any","Mu"}},
+        {"Rat",    {"Rat","Rational","Real","Numeric","Cool","Any","Mu"}},
         // FatRat is NOT a Rat in Rakudo — both DO Rational, and its MRO is
         // FatRat/Cool/Any/Mu. Claiming the inheritance made `when Rat` swallow a
         // FatRat, so DBDish::mysql sent one as a double instead of a decimal.

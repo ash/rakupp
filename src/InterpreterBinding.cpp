@@ -1302,6 +1302,26 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     // Distribution::Path, ::Hash and a repository's own dists report their own
     // names, and every one of them does Distribution
     if (v.t == VT::Hash && v.hashKind == "Distribution" && type == "Distribution") return true;
+    // an enum TYPE object (the tagged pair-list, enumName empty) is a type
+    // object of the enum, which does Enumeration and inherits from the type of
+    // its values: `enum Color <Red Green>` has the MRO Color, Int, Cool, Any,
+    // Mu, so it binds an Int parameter and not a Str one
+    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty()) {
+        if (type == v.enumType || type == "Enumeration" || type == "Any" || type == "Mu") return true;
+        std::string base;
+        if (v.arr())
+            for (const Value& pr : *v.arr()) {
+                const Value* pv = pr.pairVal();
+                std::string t = pv ? pv->typeName() : std::string();
+                if (base.empty()) base = t;
+                else if (t != base) { base.clear(); break; }
+            }
+        return !base.empty() && typeMatchesArg(Value::typeObj(base), type);
+    }
+    // …and no other type object is one of the enum (`Int` does not bind
+    // `Color $c`): the lenient tail of typeMatchesArg cannot tell, because a
+    // user enum's name is no type it knows
+    if (v.t == VT::Type && enumPairs_.count(type) && !classes_.count(type)) return v.s == type;
     // a PARAMETERIZED container type: `Array[Bool]` takes an Array whose element
     // type is Bool (what `Array[Array[Bool]].new($(Array[Bool].new(…)))` checks)
     if (v.t == VT::Array && type.size() > 2 && type.back() == ']' && v.enumName.empty()) {
