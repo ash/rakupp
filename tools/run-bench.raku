@@ -31,6 +31,18 @@
 #                          lane, printed as a second table. Measured in its own
 #                          pass AFTER the timing rounds, so the wall-clock
 #                          numbers stay exactly what they were without it.
+#     --suite=mutsu        time ANOTHER project's benchmarks instead of ours:
+#                          every benchmarks/*.raku of a mutsu checkout
+#                          ($MUTSU_ROOT, default $HOME/mutsu). Opt-in only —
+#                          a plain run is always our own kernels. These are
+#                          the files mutsu's bench CI times us on (it pins a
+#                          release; this times the build in hand). A file that
+#                          prints `bench-section-seconds: S` gets a second
+#                          `name@section` row: the in-process time of the
+#                          operation it exists for, minus startup and module
+#                          load — the row to read when the operation is small.
+#     --no-native          skip the `--exe` lane (compiling 40 foreign files
+#                          is most of a --suite run's wall time)
 #
 # Override the binaries via environment:
 #     RAKUPP=/path/to/rakupp RAKUDO=rakudo ./build/rakupp tools/run-bench.raku
@@ -55,11 +67,19 @@ my $PERL   = %*ENV<PERL>   // 'perl';   # only used by benches that ship a .pl t
 my $tsv-path = '';
 my @only;
 my $rusage = False;
+my $suite  = '';
+my $want-native = True;
 for @*ARGS -> $a {
     if $a.starts-with('--tsv=') { $tsv-path = $a.substr(6) }
     elsif $a.starts-with('--only=') { @only = $a.substr(7).split(',')>>.trim }
+    elsif $a.starts-with('--suite=') { $suite = $a.substr(8) }
     elsif $a eq '--rusage' { $rusage = True }
+    elsif $a eq '--no-native' { $want-native = False }
     else { note "run-bench: unknown argument $a"; exit 2 }
+}
+if $suite && $suite ne 'mutsu' {
+    note "run-bench: unknown suite '$suite' (known: mutsu)";
+    exit 2;
 }
 
 # A binary built for ANOTHER ARCHITECTURE runs under translation, which costs a
@@ -115,6 +135,28 @@ my @benches =
     # measures the path that always worked, not the one that was broken.
     %( :name<mainwhen>, :file("mainwhen.raku"),
        :note('200k iterations of a 3-way given/when ladder at the mainline') );
+# A foreign suite REPLACES the list above rather than adding to it, so our own
+# table never silently grows by forty rows. The files are read where they live
+# — this repo references upstream suites and never copies them in — and the
+# checkout's commit goes into the TSV header, so a figure names its source.
+my $suite-commit = '';
+if $suite eq 'mutsu' {
+    my $root = (%*ENV<MUTSU_ROOT> // ((%*ENV<HOME> // '.') ~ '/mutsu')).IO;
+    $bench = $root.add('benchmarks');
+    unless $bench.d {
+        note "run-bench: no mutsu benchmarks at $bench; set MUTSU_ROOT to a mutsu checkout";
+        exit 2;
+    }
+    my $p = run('git', '-C', ~$root, 'rev-parse', '--short=12', 'HEAD', :out, :err);
+    $suite-commit = $p.out.slurp(:close).trim; $p.err.slurp(:close);
+    # The note is the header's first comment line that says something, so the
+    # table explains a row without anyone opening the file.
+    @benches = $bench.dir(test => *.ends-with('.raku')).sort.map: -> $f {
+        my $note = $f.lines.first({ .starts-with('#') && !.starts-with('#!') && .substr(1).trim.chars > 3 }) // '#';
+        %( :name($f.basename.subst(/'.raku' $/, '')), :file($f.basename),
+           :note($note.substr(1).trim.substr(0, 70)) )
+    };
+}
 @benches = @benches.grep({ .<name> (elem) @only }) if @only;
 unless @benches {
     note "run-bench: --only matched no kernels";
@@ -135,7 +177,18 @@ sub capture(@cmd --> Str) {
     my $p = run(|@cmd, :out, :err);
     my $out = $p.out.slurp(:close);
     $p.err.slurp(:close);
-    $p.exitcode == 0 ?? $out !! Str;
+    $p.exitcode == 0 ?? strip-section($out) !! Str;
+}
+
+# A `bench-section-seconds: S` line is a timing, different on every run and on
+# every engine, so it is lifted out before outputs are compared; section-of
+# reads it back for the @section row. Our own kernels never print one.
+sub strip-section(Str $out --> Str) {
+    $out.lines(:!chomp).grep({ !.starts-with('bench-section-seconds:') }).join
+}
+sub section-of(Str $out) {
+    my $m = $out ~~ / ^^ 'bench-section-seconds:' \h* $<s>=[\d+ ['.' \d+]? [<[eE]> '-'? \d+]?] \h* $$ /;
+    $m ?? +$m<s> * 1000 !! Nil
 }
 
 # First stdout line of a command, or '' — for the metadata header.
@@ -272,6 +325,7 @@ if $tfh {
     $tfh.say: "# mutsu_version=$mutsu-v";
     $tfh.say: "# cpu=$cpu";
     $tfh.say: "# cxx=$cxx";
+    $tfh.say: "# suite=mutsu benchmarks @ $suite-commit" if $suite;
     $tfh.say: ('kernel',
                'interp_min_ms', 'interp_med_ms', 'native_min_ms', 'native_med_ms',
                'mutsu_min_ms', 'mutsu_med_ms',
@@ -280,8 +334,9 @@ if $tfh {
 }
 
 my $mismatch = False;
+my $W = $suite ?? max(12, |@benches.map({ .<name>.chars + 8 })) !! 12;   # room for a name@section row
 my @rusage-rows;   # one per kernel, filled only under --rusage
-printf "%-12s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'mutsu', 'rakudo', 'perl', 'note';
+printf "%-{$W}s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'mutsu', 'rakudo', 'perl', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
     my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
@@ -290,7 +345,7 @@ for @benches -> %b {
     # Correctness gate: every engine must emit byte-identical stdout, else the
     # timings aren't a like-for-like comparison. Rakudo is the oracle; if it
     # isn't available, Raku++'s interpreter is the reference instead.
-    my $built = compile-native($path, $nbin);
+    my $built = $want-native && compile-native($path, $nbin);
     my $oi = capture([$RAKUPP, $path]);
     my $on = $built ?? capture([$nbin]) !! Str;
     my $or = $RAKUDO-OK ?? capture([$RAKUDO, $path]) !! Str;
@@ -323,12 +378,15 @@ for @benches -> %b {
     @lanes.push: 'rakudo' => [$RAKUDO, $path]              if $or.defined;
     @lanes.push: 'perl'   => [$PERL, $ppath]               if $ppath.defined && $op.defined;
     my %times;
+    my %sections;
     for ^$RUNS -> $i {
         for @lanes -> $lane {
             my @cmd = |$lane.value;
             my $t0 = now;
-            run(|@cmd, :out).out.slurp(:close);   # drain stdout => waits for exit
-            %times{$lane.key}.push((now - $t0) * 1000) if $i > 0;
+            my $out = run(|@cmd, :out).out.slurp(:close);   # drain stdout => waits for exit
+            next unless $i > 0;
+            %times{$lane.key}.push((now - $t0) * 1000);
+            with section-of($out) { %sections{$lane.key}.push($_) }
         }
     }
     # A SEPARATE pass, after the timing rounds: every run here is wrapped in
@@ -358,7 +416,14 @@ for @benches -> %b {
     my $mutsu  = $MUTSU.defined ?? cell('mutsu') !! '—';
     my $rakudo = cell('rakudo');
     my $perl   = $ppath.defined ?? cell('perl') !! '—';
-    printf "%-12s %10s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $mutsu, $rakudo, $perl, %b<note>, $flag;
+    printf "%-{$W}s %10s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $mutsu, $rakudo, $perl, %b<note>, $flag;
+    # The @section row only when every measured run of a lane reported one.
+    my %sec = %sections.grep({ .value.elems == $RUNS - 1 });
+    if %sec {
+        my sub scell(Str $k) { %sec{$k} ?? sprintf('%.1fms', %sec{$k}.min) !! 'n/a' }
+        printf "%-{$W}s %10s %10s %10s %10s %10s   %s\n", %b<name> ~ '@section', scell('interp'), scell('native'),
+               ($MUTSU.defined ?? scell('mutsu') !! '—'), scell('rakudo'), '—', 'in-process time of the measured operation';
+    }
 
     if $tfh {
         my sub pair(Str $k) {
@@ -370,6 +435,13 @@ for @benches -> %b {
                    |pair('interp'), |pair('native'), |pair('mutsu'),
                    |pair('rakudo'), |pair('perl'),
                    (@all ?? @all.join('; ') !! 'ok')).join("\t");
+        if %sec {
+            my sub spair(Str $k) {
+                %sec{$k} ?? (sprintf('%.1f', %sec{$k}.min), sprintf('%.1f', median(%sec{$k}))) !! ('', '')
+            }
+            $tfh.say: (%b<name> ~ '@section', |spair('interp'), |spair('native'), |spair('mutsu'),
+                       |spair('rakudo'), '', '', 'ok').join("\t");
+        }
     }
 }
 $tfh andthen .close;
@@ -382,10 +454,10 @@ if @rusage-rows {
     my @lanes = <interp native mutsu rakudo perl>;
     say '';
     say '# CPU time (user+sys) and peak RSS — min of 3 runs, measured separately';
-    printf "%-12s %s\n", 'benchmark',
+    printf "%-{$W}s %s\n", 'benchmark',
            @lanes.map({ sprintf '%18s', $_ }).join;
     for @rusage-rows -> %row {
-        printf "%-12s %s\n", %row<name>,
+        printf "%-{$W}s %s\n", %row<name>,
                @lanes.map(-> $l {
                    my %r = %row<ru>{$l} // {};
                    sprintf '%18s', %r ?? sprintf('%.0fms/%.1fMB', %r<cpu>, %r<rss> / 1024)

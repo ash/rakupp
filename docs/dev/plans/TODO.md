@@ -300,8 +300,11 @@ with its tag, after the release run is green.
   repository is the next step, if asked for.
 - [ ] **setup-rakupp Action**: written, not committed; its repository does not
   exist yet.
-- [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/. Surveyed
-  2026-10-01, not built.
+- [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/.
+  `tools/run-roast.raku --suite=rakudo|mutsu` runs them (2026-10-04);
+  `tools/run-bench.raku --suite=mutsu` times mutsu's benchmark files. Next:
+  the Rakudo-pass lists for both suites, a committed baseline, and the
+  benchmark rows where mutsu leads.
 - [ ] **Roast harness**: run Rakudo at the 120 s budget; COUNTING.md's figures
   are from the 60 s budget. The Lock around spawns in tools/run-roast.raku can
   go now that the engine's pipes are close-on-exec before the fork

@@ -396,6 +396,15 @@ It streams a per-file line as each test finishes. `--all` runs every `.t` file
 in the checkout instead, and `--skip-marker=stress` leaves out the files the
 list marks `stress`, as Rakudo's own `make spectest` does.
 
+`--suite=rakudo` and `--suite=mutsu` run another project's own test directory
+on the same machinery instead of Roast: Rakudo's `t/` (`$RAKUDO_ROOT`, default
+`~/rakudo`) or mutsu's `t/` (`$MUTSU_ROOT`, default `~/mutsu`). Files that test
+the project's internals rather than the language (Rakudo's `nqp::` and back-end
+directories, NativeCall fixtures) are left out and counted. These are not
+specifications, so the bar is the set Rakudo passes: run the suite under
+`rakudo tools/run-roast.raku --suite=… --list=FILE` first and compare against
+that list.
+
 ## Architecture
 
 ```

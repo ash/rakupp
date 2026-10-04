@@ -347,7 +347,14 @@ RAKUDO=/opt/homebrew/bin/rakudo ./build-arm64/rakupp tools/run-bench.raku
 `--tsv=` writes the minimum and median per lane with the CPU and toolchain the
 sitting ran on; `--rusage` adds CPU time and peak RSS. The mutsu lane is
 optional and found as `$MUTSU`, then `mutsu` on `PATH`, then
-`$HOME/mutsu/target/release/mutsu`; without it the column reads `—`. The harness
+`$HOME/mutsu/target/release/mutsu`; without it the column reads `—`.
+
+`--suite=mutsu` times mutsu's own benchmark files (every `benchmarks/*.raku`
+of `$MUTSU_ROOT`, default `~/mutsu`) instead of the kernels above; it is
+opt-in, and a plain run is always this table's kernels. These are the files
+mutsu's CI times Raku++ on. A file that prints `bench-section-seconds:` gets a
+second `name@section` row with the in-process time of the operation it
+measures. `--no-native` skips the `--exe` lane. The harness
 checks the architecture of `$RAKUPP` only, so check the references yourself:
 
 ```sh

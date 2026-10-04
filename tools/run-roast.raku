@@ -57,7 +57,49 @@
 # file fudge already rewrote would be fudged twice. The note above the fudge
 # pass, before the provenance line, has the measurements.
 
-my $ROOT    = (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute;  # set $ROAST to your Roast checkout
+# --suite=NAME runs ANOTHER project's own test directory on the same machinery
+# instead of Roast: `rakudo` is Rakudo's t/ ($RAKUDO_ROOT, default
+# $HOME/rakudo), `mutsu` is mutsu's t/ ($MUTSU_ROOT, default $HOME/mutsu). It is
+# opt-in only — a run without it is Roast and nothing else. Both suites are read
+# where they live, never copied into this repo; the checkout's revision goes on
+# the provenance line like Roast's does.
+#
+# Neither suite is a specification. Each file is a project's test of ITSELF, so
+# some of it is internals no other engine should match — Rakudo's `nqp::` ops,
+# its JVM/JS/MoarVM back ends, its Telemetry module; mutsu's NativeCall fixtures.
+# Those are kept out by rule below and counted on the provenance line. What
+# remains is still only a candidate: the bar is the files RAKUDO passes, so run
+# the suite under rakudo first (`rakudo tools/run-roast.raku --suite=mutsu
+# --list=FILE`) and gate on that list, the way Roast's spectest.data is the set
+# the reference implementation is expected to pass.
+my $SUITE = do with @*ARGS.first(*.starts-with('--suite=')) { .substr(8) } else { '' };
+my $SUITE-HOME;    # the checkout root: suite files are run from here, as their own harness does
+my $ROOT = do given $SUITE {
+    when '' { (%*ENV<ROAST> // ((%*ENV<HOME> // '.') ~ '/roast')).IO.absolute }  # set $ROAST to your Roast checkout
+    when 'rakudo' {
+        $SUITE-HOME = (%*ENV<RAKUDO_ROOT> // ((%*ENV<HOME> // '.') ~ '/rakudo')).IO.absolute;
+        $SUITE-HOME.IO.add('t').absolute
+    }
+    when 'mutsu' {
+        $SUITE-HOME = (%*ENV<MUTSU_ROOT> // ((%*ENV<HOME> // '.') ~ '/mutsu')).IO.absolute;
+        $SUITE-HOME.IO.add('t').absolute
+    }
+    default { note "run-roast: unknown suite '$SUITE' (known: rakudo, mutsu)"; exit 2 }
+}
+if $SUITE && !$ROOT.IO.d {
+    note "run-roast: no $ROOT — set {$SUITE eq 'rakudo' ?? 'RAKUDO_ROOT' !! 'MUTSU_ROOT'} to a $SUITE checkout";
+    exit 2;
+}
+# The environment a suite's files expect. Rakudo's say `use lib
+# <t/packages/Test-Helpers>` themselves, relative to the checkout root; mutsu's
+# runner puts its fixtures and Roast's Test::Helpers on the path implicitly, so
+# the same two directories are handed over here, absolute.
+my %CHILD-ENV = %*ENV;
+if $SUITE eq 'mutsu' {
+    %CHILD-ENV<RAKULIB> = ($SUITE-HOME.IO.add('t/lib').absolute,
+                           $SUITE-HOME.IO.add('roast/packages/Test-Helpers').absolute,
+                           |(%*ENV<RAKULIB> // Empty)).join(',');
+}
 use lib $?FILE.IO.parent.add('lib').Str;
 use Gate;
 my $BIN     = $*EXECUTABLE.absolute;   # test whichever compiler is running this harness
@@ -88,6 +130,10 @@ if @*ARGS.grep({ $_ eq '--help' || $_ eq '-h' }) {
                            keep out the files spectest.data marks WORD;
                            `--skip-marker=stress` is exactly the set Rakudo's
                            `make spectest` runs, `--skip-marker=slow` a quick run
+      --suite=NAME         run another project's own tests instead of Roast:
+                           `rakudo` (Rakudo's t/) or `mutsu` (mutsu's t/),
+                           every .t and .rakutest minus that project's
+                           internals; opt-in, a plain run is Roast
 
     Scheduling
       -j=N, -jN            use N cores: a CPU budget of N, filled by 2N worker
@@ -121,6 +167,10 @@ if @*ARGS.grep({ $_ eq '--help' || $_ eq '-h' }) {
 
     Environment
       ROAST                the Roast checkout (default: \$HOME/roast)
+      RAKUDO_ROOT          the Rakudo checkout --suite=rakudo reads
+                           (default: \$HOME/rakudo)
+      MUTSU_ROOT           the mutsu checkout --suite=mutsu reads
+                           (default: \$HOME/mutsu)
       ROAST_TIMEOUT        seconds a file may run before it is killed and
                            scored as a timeout (default: 10, or 120 under a
                            foreign engine); files that sleep by spec have
@@ -319,7 +369,7 @@ sub run-with-timeout($bin, $file, $timeout) {
     $proc.stdout.tap(-> $chunk { $out ~= $chunk; Nil });
     $proc.stderr.tap(-> $chunk { $err ~= $chunk; Nil });
     my $done = $SPAWN.protect({
-        my $d = $proc.start(:cwd($SCRATCH.absolute));
+        my $d = $proc.start(:cwd($SUITE ?? $SUITE-HOME !! $SCRATCH.absolute), :ENV(%CHILD-ENV));
         $proc.close-stdin;
         $d
     });
@@ -373,7 +423,7 @@ sub find-t($dir) {
         if $e.IO.d {
             for find-t($e) -> $x { @out.push($x) }
         }
-        elsif $e.ends-with('.t') {
+        elsif $e.ends-with('.t') || ($SUITE && $e.ends-with('.rakutest')) {
             @out.push($e);
         }
     }
@@ -558,6 +608,7 @@ for @*ARGS -> $a {
     elsif $a eq '--failed'            { $FAILED = True }
     elsif $a ~~ /^ '--failed=' (.+) $/ { $FAILED = True; $FAILEDFILE = ~$0 }
     elsif $a eq '--all'               { $ALL = True }
+    elsif $a.starts-with('--suite=')  { }   # read before anything else, at the top
     elsif $a ~~ /^ '--skip-marker=' (.+) $/ { %SKIP-MARKER{$_} = True for (~$0).split(',').map(*.trim).grep(* ne '') }
     elsif $a.starts-with('-') {
         # a misspelt or valueless flag would otherwise become a PATTERN that
@@ -577,7 +628,10 @@ if $ALL && %SKIP-MARKER {
 # the contention that pushes a 3-4 s Rakudo file past the ceiling. The estimates
 # and the ordering both come from that file, so a foreign engine gets neither
 # unless --times was given explicitly.
-if $FOREIGN && !$TIMES-GIVEN {
+if $SUITE && !$TIMES-GIVEN {
+    $TIMESFILE = '';   # roast.times times Roast's files, not these
+}
+elsif $FOREIGN && !$TIMES-GIVEN {
     $TIMESFILE = '';
     note "run-roast: measuring $ENGINE, not rakupp — ignoring rakupp's roast.times "
        ~ "(pass --times=FILE to record and reuse this engine's own).";
@@ -647,7 +701,25 @@ my %KEPT-OUT;          # rel path -> the marker --skip-marker kept it out for
 my %UNMET;             # marker word -> entries --skip-marker kept out for it
 my $LISTED-N  = 0;     # entries in spectest.data, kept out or not
 my $MISSING-N = 0;     # entries to run but absent from the checkout
-my $USE-LIST  = !$ALL;
+my $USE-LIST  = !$ALL && !$SUITE;
+
+# What --suite keeps out, by rule, and why. A rule is a top directory or a
+# property of the file's text; each returns the reason it reports.
+my %SUITE-OUT;     # reason -> how many files it kept out
+sub suite-exclusion(Str $rel, $f --> Str) {
+    if $SUITE eq 'rakudo' {
+        my $top = $rel.split('/')[0];
+        return "$top (back end)"     if $top eq '03-jvm' | '09-moar' | '10-qast' | '11-js';
+        return '04-nativecall (needs C fixtures built by Rakudo\'s make)' if $top eq '04-nativecall';
+        return '06-telemetry (a Rakudo module)' if $top eq '06-telemetry';
+        return 'fixtures'            if $top eq '3rdparty' | 'packages';
+        return 'uses nqp'            if $f.IO.slurp(:enc<utf8-c8>) ~~ / 'use nqp' | 'nqp::' /;
+    }
+    elsif $SUITE eq 'mutsu' {
+        return 'nativecall (needs C fixtures built by mutsu\'s cargo)' if $rel.contains('nativecall');
+    }
+    Str
+}
 if $USE-LIST {
     my $data = $ROOT.IO.add('spectest.data');
     if $data.e {
@@ -684,6 +756,9 @@ my %SKIPPED-BY;        # marker word -> how many of those it kept out, for the s
         my $rel = $f.substr($ROOT.chars + 1).subst('\\', '/', :g);
         %present{$rel} = True;
         next unless @patterns.elems == 0 || @patterns.first(-> $p { $rel.contains($p) }).defined;
+        if $SUITE {
+            with suite-exclusion($rel, $f) { %SUITE-OUT{$_} += 1; next }
+        }
         if $USE-LIST && !%LISTED{$rel} {
             if %KEPT-OUT{$rel} { $SKIPPED += 1; %SKIPPED-BY{%KEPT-OUT{$rel}} += 1 } else { $UNLISTED += 1 }
             next;
@@ -711,6 +786,10 @@ if $USE-LIST {
         note "run-roast: $MISSING-N spectest.data entr{$MISSING-N == 1 ?? 'y names a file' !! 'ies name files'} "
            ~ "the checkout does not have — a partial checkout, or a list newer than it.";
     }
+}
+elsif $SUITE {
+    $SELECTION = "--suite=$SUITE: every .t/.rakutest under $ROOT"
+               ~ (%SUITE-OUT ?? ", kept out: " ~ %SUITE-OUT.sort(*.key).map({ "{.value} {.key}" }).join(' + ') !! '');
 }
 else {
     $SELECTION = "--all: every .t under the checkout";
@@ -764,7 +843,7 @@ if !$FOREIGN && $FUDGE-GIVEN {
     note "run-roast: --fudge is ignored under rakupp — the lexer applies the #?rakudo "
        ~ "directives itself, and a file fudge rewrote would be fudged twice.";
 }
-if $FOREIGN && @files {
+if $FOREIGN && @files && !$SUITE {   # a suite's own files carry no Roast fudge
     my @carry = @files.grep(-> $f {
         (try { $f.IO.lines } // ()).first({ .trim-leading.starts-with('#?') }).defined
     });
@@ -810,7 +889,7 @@ if $FOREIGN && @files {
     }
 }
 
-my $PROVENANCE = "{$ENGINE} {$ENGINE-VER} ($BIN) | roast {roast-revision()} ($ROOT)"
+my $PROVENANCE = "{$ENGINE} {$ENGINE-VER} ($BIN) | {$SUITE || 'roast'} {roast-revision()} ($ROOT)"
                 ~ ($BEFORE ?? " + {$BEFORE.elems} untracked" !! '')
                 ~ ($FUDGED ?? ", fudged with roast's fudge --version=v6.d $FUDGE-IMPL ($FUDGED files rewritten)" !! '')
                 ~ ($PREFUDGED ?? ", $PREFUDGED files fudged by hand" !! '')
