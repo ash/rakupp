@@ -717,6 +717,9 @@ sub suite-exclusion(Str $rel, $f --> Str) {
     }
     elsif $SUITE eq 'mutsu' {
         return 'nativecall (needs C fixtures built by mutsu\'s cargo)' if $rel.contains('nativecall');
+        # mutsu emulates some of Rakudo's nqp:: ops; they are Rakudo's internals,
+        # kept out here exactly as they are from Rakudo's own t/
+        return 'uses nqp' if $f.IO.slurp(:enc<utf8-c8>) ~~ / 'use nqp' | 'nqp::' /;
     }
     Str
 }

@@ -170,7 +170,6 @@ collections/lazy-seq/iteration-buffer.t
 collections/lazy-seq/iterator-held-in-array-advances.t
 collections/lazy-seq/iterator-itemized-array.t
 collections/lazy-seq/iterator-pull-from-lazy-source.t
-collections/lazy-seq/iterator-push-into-iterationbuffer.t
 collections/lazy-seq/iterator-push-methods.t
 collections/lazy-seq/iterator-regressions.t
 collections/lazy-seq/iterator-skip-target.t
@@ -183,7 +182,6 @@ collections/lazy-seq/lazy-map-returns-map-seq.t
 collections/lazy-seq/lazy-rat-index.t
 collections/lazy-seq/lazy-seq-isa-and-hash-new-nested-list.t
 collections/lazy-seq/nested-gather-seq-read.t
-collections/lazy-seq/nqp-eqaddr-iteration-end.t
 collections/lazy-seq/predictive-seq-tail-scope.t
 collections/lazy-seq/seq-array-context-reiterate.t
 collections/lazy-seq/seq-cache-returns-list.t
@@ -257,7 +255,6 @@ collections/listop-word-logical.t
 collections/listquote-regressions.t
 collections/minmax-failure-and-hash.t
 collections/nested-with-loop-element-writeback.t
-collections/nqp-uni-element-access-is-linear.t
 collections/nth-whatevercode.t
 collections/ords-returns-seq.t
 collections/range-pair/pair-freeze.t
@@ -500,14 +497,17 @@ collections/with-element-topic.t
 collections/with-resources-pseudo-var-element.t
 collections/with-statement-modifier-element-writeback.t
 concurrency/concurrency-basic.t
+concurrency/concurrent-array-index-assign.t
 concurrency/concurrent-cell-writeback-coherence.t
 concurrency/concurrent-hash-assign.t
+concurrency/concurrent-state-var.t
 concurrency/io-socket-async-listen-tap-close-backlog.t
 concurrency/io-socket-async-listen.t
 concurrency/io-socket-async-loopback-descriptor.t
 concurrency/io-socket-async-real-connect.t
 concurrency/io-socket-async-text-decode.t
 concurrency/proc-async-slurpy-command.t
+concurrency/procasync-ready-publishes-started.t
 concurrency/procasync-stdout-incremental.t
 concurrency/promise/await-died-exception.t
 concurrency/promise/await-nested-iterable.t
@@ -521,6 +521,7 @@ concurrency/promise/promise-result-broken-exception-type.t
 concurrency/promise/promise-scheduler.t
 concurrency/promise/promise-then-callback-die-skips-outer-catch.t
 concurrency/promise/promise-then-callback-output-order.t
+concurrency/promise/promise-then-sibling-ordering.t
 concurrency/promise/start-await.t
 concurrency/promise/start-block-and-then-keep-captured-binding.t
 concurrency/promise/start-block-destructured-array-param.t
@@ -797,6 +798,7 @@ control/modifier-cond-ending-in-block.t
 control/named-alias-and-loop-then-while.t
 control/nested-with-topic-isolation.t
 control/notandthen-topic-binding.t
+control/once-clone-scope.t
 control/once-phaser.t
 control/orwith.t
 control/outer-topic.t
@@ -1396,7 +1398,6 @@ modules/compound-declared-type-does-not-shadow-core-in-module.t
 modules/compunit/builtin-distribution-role.t
 modules/compunit/compunit-can-install.t
 modules/compunit/compunit-filesystem-meta6-provides.t
-modules/compunit/compunit-need-protocol.t
 modules/compunit/compunit.t
 modules/compunit/cross-compunit-multi-vs-plain-sub-name-collision.t
 modules/compunit/distribution.t
@@ -1539,7 +1540,6 @@ modules/import-export/use-before-unit-import-not-leaked.t
 modules/import-export/use-block-scope-reimport.t
 modules/import-export/use-dist-selector-param-type.t
 modules/import-export/use-fatal-pragma-scope.t
-modules/import-export/use-from-nqp-is-a-noop.t
 modules/import-export/use-in-do-block-is-scoped.t
 modules/import-export/use-in-package-failed-preload-error.t
 modules/import-export/use-inline-proto-argument.t
@@ -1578,6 +1578,7 @@ modules/module-routine-own-type-over-caller-enum.t
 modules/module-routine-use-import-stays-lexical.t
 modules/module-scope-symbol-beats-caller-lexical.t
 modules/module-search-no-implicit-paths.t
+modules/module-state-sub-shared-cell.t
 modules/module-sub-otf-coercion-return.t
 modules/module-sub-otf-dispatch.t
 modules/module-sub-otf-lexical-scope.t
@@ -2065,7 +2066,6 @@ oo/role/bless-defaulted-parametric-role.t
 oo/role/but-role-list.t
 oo/role/but-role-type-object-new.t
 oo/role/callsame-punned-role-and-hyper-infix-sub.t
-oo/role/classhow-can-mixin-role.t
 oo/role/curried-role-pun-identity.t
 oo/role/decl-does-role-with-init.t
 oo/role/default-role-pun-curry.t
@@ -2185,7 +2185,6 @@ oo/role/roles-stubs-regression.t
 oo/role/same-name-parametric-and-plain-role.t
 oo/role/tied-container-attribute-and-role.t
 oo/role/typed-array-element-container-ref-role-check.t
-oo/routine-mixin-survives-rebuild.t
 oo/self-in-nested-sub-coherence.t
 oo/self-is-lexical-in-blocks.t
 oo/self-var-assign.t
@@ -2619,6 +2618,7 @@ routines/closure/closure-capture-reflective-scope.t
 routines/closure/closure-capture-sub-valued-cell.t
 routines/closure/closure-capture-symbol-sets.t
 routines/closure/closure-capture-tier-key-memo.t
+routines/closure/closure-capture-type-constraint.t
 routines/closure/closure-captured-name-leak.t
 routines/closure/closure-captured-self-parent-tier.t
 routines/closure/closure-captured-state.t
@@ -2828,7 +2828,6 @@ routines/infix-routine-form-numeric-comparison.t
 routines/inner-sub-same-name-across-routines.t
 routines/keyword-named-subs.t
 routines/lexical-amp-binding-shadows-a-routine.t
-routines/lexical-sub-shadow-static-link.t
 routines/lvalue-subroutine-call-through-code-var.t
 routines/lvalue-subroutines-rw-proxy.t
 routines/mainline-block-sub-shadows-routine-nested-sub.t
@@ -2866,6 +2865,7 @@ routines/signature/bound-alias-outer-var-ignores-callers-readonly-param.t
 routines/signature/bracket-destructuring-params.t
 routines/signature/builtin-shadow-default-param.t
 routines/signature/callable-param-space-signature.t
+routines/signature/callable-param-sub-signature-returns.t
 routines/signature/captured-param-cell-not-in-shared-vars-lane.t
 routines/signature/closure-captured-var-ignores-callers-readonly-param.t
 routines/signature/closure-parameter-signature.t
@@ -2911,6 +2911,7 @@ routines/signature/for-single-param-shared-lane.t
 routines/signature/for-topic-shadows-topic-param.t
 routines/signature/gather-aggregate-param-infinite.t
 routines/signature/given-pointy-typed-param-junction.t
+routines/signature/hash-parametric-keyof.t
 routines/signature/if-pointy-container-param.t
 routines/signature/implicit-any-param-rejects-mu.t
 routines/signature/implicit-topic-block-signature-gist.t
@@ -2918,9 +2919,12 @@ routines/signature/indirect-type-param.t
 routines/signature/invocant-marker-detached-from-type.t
 routines/signature/invocant-marker.t
 routines/signature/is-copy-array-param-untyped.t
+routines/signature/is-copy-param-ignores-caller-variable-constraint.t
 routines/signature/is-rw-traits.t
 routines/signature/lazy-array-param-pull.t
 routines/signature/lexical-amp-param-shadow.t
+routines/signature/literal-param-enforced-at-call.t
+routines/signature/literal-param-return-arrow.t
 routines/signature/map-array-optional-trailing-param.t
 routines/signature/map-signature-last-phaser.t
 routines/signature/multi-aliased-named-param.t
@@ -2941,9 +2945,12 @@ routines/signature/named-arg-rightmost-wins.t
 routines/signature/named-arg-stmt-call-keeps-caller-cell.t
 routines/signature/named-array-destructure-absent-key.t
 routines/signature/named-callable-param.t
+routines/signature/named-dynamic-param.t
+routines/signature/named-dynamic-parameter.t
 routines/signature/named-hash-param.t
 routines/signature/named-param-alias-type-check.t
 routines/signature/named-param-anon-scalar-subsig.t
+routines/signature/named-param-default-reads-earlier-named.t
 routines/signature/named-param-no-leak-from-caller.t
 routines/signature/named-param-rename-is-copy-readonly-leak.t
 routines/signature/named-param-rename-redeclaration.t
@@ -2961,7 +2968,9 @@ routines/signature/nonconst-param-default-full-arity-light.t
 routines/signature/not-parametric.t
 routines/signature/object-hash-param-binding.t
 routines/signature/optional-named-empty-list-comparison.t
+routines/signature/optional-param-seed.t
 routines/signature/param-default-before-return-arrow.t
+routines/signature/param-default-bool-conforms-int.t
 routines/signature/param-default-keeps-code-lexicals.t
 routines/signature/param-default-self-scoping.t
 routines/signature/param-exprs-compile-once.t
@@ -2971,6 +2980,7 @@ routines/signature/param-itemize-on-bind.t
 routines/signature/param-smiley-invalid-type.t
 routines/signature/param-type-then-type-capture.t
 routines/signature/param-where-forward-ref.t
+routines/signature/parameter-copy-default-container.t
 routines/signature/parameter-default.t
 routines/signature/parameter-invalidtype.t
 routines/signature/parameter-type-smiley-modifier.t
@@ -3291,7 +3301,6 @@ types/string/str-to-rat-bigint.t
 types/string/strdistance-numeric.t
 types/string/stringy-numeric-object.t
 types/string/titlecase-digraph.t
-types/string/uni-codepoint-store.t
 types/string/uni-join-codepoints.t
 types/string/uni-map-grep-decompose-codepoints.t
 types/string/uni-normalization-gist.t
@@ -3358,7 +3367,6 @@ vm/binding/bind-expr-position-scalar-flattens.t
 vm/binding/bind-hash-value-pairs.t
 vm/binding/bind-index-temp-not-an-outer-frame-source.t
 vm/binding/bind-invalid-lhs.t
-vm/binding/bind-outer-immutable-rebind-from-sub.t
 vm/binding/bind-pos-shared-cell.t
 vm/binding/bind-rebind-alias-leaves-source.t
 vm/binding/bind-rebind-from-named-sub-leaves-source.t
@@ -3410,8 +3418,6 @@ vm/binding/var-metadata-key-namespaces.t
 vm/binding/var-on-literal-index.t
 vm/binding/varref-binding.t
 vm/codegen/adr0035-dynamics-chain-aware-enumeration.t
-vm/codegen/adr0110-trir-fallback-user-sub-shadows-core.t
-vm/codegen/adr0112-trir-string-path.t
 vm/codegen/compile-time-vars.t
 vm/codegen/hot-path-key-memoization.t
 vm/codegen/inline-declaration-rw-argument.t
@@ -3421,7 +3427,6 @@ vm/codegen/jit-hot-loop.t
 vm/codegen/jit-state-var-init-guard.t
 vm/codegen/jit-tier-b-arith.t
 vm/codegen/jit-tier-b-infix-override.t
-vm/codegen/nqp-int-ops-jit-inline.t
 vm/codegen/one-pass-parsing.t
 vm/codegen/rebound-return-hot-loop.t
 vm/create-container-attrs.t
@@ -3465,15 +3470,6 @@ vm/named-call-env-dirty.t
 vm/named-sub-bounded-env-sync.t
 vm/nested-frame-container-mutation-reaches-owner.t
 vm/non-variable-dollar.t
-vm/nqp-atkey-rebind-null.t
-vm/nqp-atpos-wide-buf.t
-vm/nqp-cbor-ops.t
-vm/nqp-chars-scan-is-linear.t
-vm/nqp-create-skips-user-create.t
-vm/nqp-p6scalarwithvalue-bool-container.t
-vm/nqp-repeat-loops.t
-vm/nqp-sha1.t
-vm/nqp-text-scan-cache.t
 vm/per-class-same-name-attr.t
 vm/protect-block-redeclared-aggregate.t
 vm/protect-block-self.t

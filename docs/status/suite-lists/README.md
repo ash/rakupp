@@ -14,24 +14,28 @@ file paths relative to each checkout's `t/`, and the checkouts are pinned below.
 | File | What it holds | Files |
 |---|---|---|
 | `rakudo-t.rakudo.list` | Rakudo's `t/` files Rakudo fully passes — the bar | 361 of 382 |
-| `rakudo-t.rakupp.list` | the same suite, files Raku++ fully passes | 132 of 382 |
-| `mutsu-t.rakudo.list` | mutsu's `t/` files Rakudo fully passes — the bar | 5,743 of 6,332 |
-| `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,652 of 6,332 |
+| `rakudo-t.rakupp.list` | the same suite, files Raku++ fully passes | 133 of 382 |
+| `mutsu-t.rakudo.list` | mutsu's `t/` files Rakudo fully passes — the bar | 5,654 of 6,209 |
+| `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,648 of 6,209 |
 
 The file counts are after `--suite` keeps each project's internals out: for
 Rakudo's `t/` the back-end directories, NativeCall, Telemetry and every file
-that uses `nqp`; for mutsu's `t/` the NativeCall directories.
+that uses `nqp`; for mutsu's `t/` the NativeCall directories and, the same way,
+every file that uses `nqp`.
 
-Measured 2026-10-04 with Rakudo v2026.09 and Raku++ 5.2.1 (working tree after
-f05192c6), against:
+Measured 2026-10-04 with Rakudo v2026.09 and Raku++ 5.2.1, against the pins
+below. The Raku++ lists move as fixes land: each is updated to every file that
+has passed since, so a flaky file does not drop out and back in.
+
+Pins:
 
 - Rakudo `t/` at rakudo/rakudo `6f5479cb746f8165ab4d59760770544e28483e8f`
 - mutsu `t/` at tokuhirom/mutsu `49442b3792eaa91c6f28b77120b69c4cea3f053d`
 
 ## Reading them
 
-The work list — files Rakudo passes and Raku++ does not (2,227 in mutsu's
-suite, 230 in Rakudo's):
+The work list — files Rakudo passes and Raku++ does not (2,141 in mutsu's
+suite, 229 in Rakudo's):
 
 ```bash
 cd docs/status/suite-lists && comm -23 mutsu-t.rakudo.list mutsu-t.rakupp.list
@@ -44,7 +48,7 @@ does, which must be empty:
 cd docs/status/suite-lists && comm -23 mutsu-t.rakupp.list /path/to/new.list
 ```
 
-Files only Raku++ passes (136 in mutsu's suite, 1 in Rakudo's) are files
+Files only Raku++ passes (135 in mutsu's suite, 1 in Rakudo's) are files
 Rakudo itself fails; they are not part of the bar.
 
 ## Measuring again

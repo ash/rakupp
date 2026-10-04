@@ -303,7 +303,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,227 mutsu files and 230 Rakudo files that Rakudo passes and
+  The work: 2,141 mutsu files and 229 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
 - [ ] **run-roast leaves grandchildren behind**: a timed-out file's own child
   processes outlive it. mutsu's suite starts `rakudo -e` one-liners (one a

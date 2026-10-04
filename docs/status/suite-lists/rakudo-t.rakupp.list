@@ -31,6 +31,7 @@
 02-rakudo/anon-method-in-role-invocant.t
 02-rakudo/attr-default-code-value.t
 02-rakudo/attribute-junction-default.t
+02-rakudo/attribute-typeobject-default.t
 02-rakudo/attributive-param-in-nested-sub.t
 02-rakudo/attributive-param-nested-alias.t
 02-rakudo/begin-clone-wrap.t
