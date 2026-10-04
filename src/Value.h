@@ -1595,6 +1595,10 @@ struct ClassInfo {
     // while what the user wrote — and what `.^name` must answer — is `Foo[Int]`.
     // Empty everywhere else, which is the signal to use `name`.
     std::string dispName;
+    // …and how `.^name` SHOWS a pun whose arguments are VALUES: `R[Str]` for
+    // `R["x"]`, `R[Block]` for `R[{…}]` (Rakudo). The key above keeps the values,
+    // so `C does R[5]` still is no `R[6]`. Empty when the two agree.
+    std::string shownName;
     std::shared_ptr<ClassInfo> parent;
     std::set<std::string> trusts; // `trusts Foo` — packages allowed to call its private methods
     std::string nativeParent; // a built-in parent (`is Str`/`is Cool`/…) that has no user ClassInfo

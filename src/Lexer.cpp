@@ -1993,6 +1993,22 @@ void Lexer::scanDeclaredSubNames(
             pos++;
             continue;
         }
+        // A TYPE of a quote keyword's name declares it too: `my role Q[&f] {}`
+        // makes `Q[{ 1 }]` a parameterization, not a Q[…] quote (Rakudo).
+        for (const char* kw : {"role", "class", "grammar"}) {
+            const size_t kl = std::strlen(kw);
+            if (src.compare(pos, kl, kw) != 0 || pos + kl >= src.size() ||
+                !ascii::isspace((unsigned char)src[pos + kl]) ||
+                (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '_' ||
+                         src[pos - 1] == '-')))
+                continue;
+            size_t i = pos + kl;
+            while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
+            size_t b = i;
+            while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
+            if (i > b) open.back().push_back({src.substr(b, i - b), pos});
+            break;
+        }
         if (src.compare(pos, 3, "sub") != 0) { pos++; continue; }
         if (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '_' ||
                     src[pos - 1] == '-' || src[pos - 1] == '&')) { pos += 3; continue; }  // `subst`, `my-sub`, `&sub`
@@ -4804,7 +4820,10 @@ std::vector<Token> Lexer::tokenize() {
     // The unit's own `sub q` / `sub tr` / `sub s` beat the quote forms of those
     // names. One pass over the source, and only when the source mentions `sub`
     // at all; a name the Parser learns from an imported module is added by it.
-    if (src_.find("sub") != std::string::npos) scanQuoteWordSubs(src_, notQuoteWords_);
+    // (…and a role/class/grammar of such a name: `my role Q[&f]`)
+    if (src_.find("sub") != std::string::npos || src_.find("role") != std::string::npos ||
+        src_.find("class") != std::string::npos || src_.find("grammar") != std::string::npos)
+        scanQuoteWordSubs(src_, notQuoteWords_);
     if (!tolerant_) { tokenizeImpl(out); return out; }
     try { tokenizeImpl(out); }
     catch (ParseError& e) {

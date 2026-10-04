@@ -2096,8 +2096,10 @@ oo/role/does-qualified-role-name.t
 oo/role/dynamic-add-role-begin-private-method.t
 oo/role/encoding-interface-role-composition.t
 oo/role/enum-does-role.t
+oo/role/isa-does-role-nominal-split.t
 oo/role/isa-role-type-object-and-role-only-parent.t
 oo/role/issue-8145-parametric-role-my-enum.t
+oo/role/iterator-role-default-methods.t
 oo/role/method-trait-proto-and-role-dispatch.t
 oo/role/method-trait-role-introspection.t
 oo/role/mixin-method-reaches-enclosing-role-multi-sub.t
@@ -2183,6 +2185,7 @@ oo/role/role-param-qualified-type-reuse-across-roles.t
 oo/role/role-param-qualified-type-reuse.t
 oo/role/role-parameterisation-keeps-the-topic.t
 oo/role/role-parameterize-no-candidate.t
+oo/role/role-parameterized-code-arg-name.t
 oo/role/role-proto-diamond-class.t
 oo/role/role-proto-diamond.t
 oo/role/role-public-private-same-name-method.t
@@ -2200,9 +2203,11 @@ oo/role/role-submethod-destroy-compiled.t
 oo/role/role-submethod-runtime-does-compiled.t
 oo/role/role-submethods-6e.t
 oo/role/role-type-capture-smiley-transitive-load.t
+oo/role/role-type-object-repr.t
 oo/role/role-type-param-smiley.t
 oo/role/role-ud-multi-dispatch.t
 oo/role/roles-stubs-regression.t
+oo/role/runtime-parametric-role-value-args.t
 oo/role/same-name-parametric-and-plain-role.t
 oo/role/tied-container-attribute-and-role.t
 oo/role/typed-array-element-container-ref-role-check.t
@@ -3558,6 +3563,7 @@ vm/scope/lexical-callwith-shadow.t
 vm/scope/lexical-class-decl-postfix-new.t
 vm/scope/lexical-class-identity.t
 vm/scope/lexical-class-shadows-exited-constant.t
+vm/scope/lexical-code-binding-shadow-survives-recompile.t
 vm/scope/lexical-self-vs-invocant.t
 vm/scope/lexical-shadow-slots.t
 vm/scope/lexical-shadows-builtin-call.t

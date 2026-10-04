@@ -3318,6 +3318,19 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     // parameter uses ITS display form, which is how `Baz[Foo[Int],Bar[Int]]`
     // comes out whole (roast S02-names-vars/names.t).
     pun->dispName = roleArgsDisplay(roleName, argv);
+    {   // a VALUE argument is shown by its type
+        bool anyValue = false;
+        for (auto& a : argv) if (!a.namedArg && (a.t != VT::Type || !a.enumName.empty())) anyValue = true;
+        if (anyValue) {
+            ValueList shown;
+            for (auto& a : argv) {
+                if (a.namedArg) continue;
+                Value t = a.t == VT::Type && a.enumName.empty() ? a : Value::typeObj(a.typeName());
+                shown.push_back(t);
+            }
+            pun->shownName = roleArgsDisplay(roleName, shown);
+        }
+    }
     if (cacheable) rolePunCache_[punKey] = pun->name;
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     // …and `~~ P[Int]` answers for THIS parameterization only

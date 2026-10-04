@@ -2173,7 +2173,8 @@ static void forceLazyImpl(const Value& v) {
 static std::string typeDispNameImpl(const std::string& key) {
     if (!g_matchClasses) return std::string();
     auto it = g_matchClasses->find(key);
-    return it == g_matchClasses->end() || !it->second ? std::string() : it->second->dispName;
+    if (it == g_matchClasses->end() || !it->second) return std::string();
+    return !it->second->shownName.empty() ? it->second->shownName : it->second->dispName;
 }
 static const bool g_typeDispNameInstalled = ((g_typeDispName = &typeDispNameImpl), true);
 static const bool g_forceLazyInstalled = ((g_forceLazy = &forceLazyImpl), true);

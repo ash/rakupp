@@ -366,6 +366,7 @@ void procSettleLive(Interpreter* I, const Value& proc);
 extern void (*g_procSettle)(const Value&);
 
 bool isBuiltinRole(const std::string& n);
+const std::vector<const char*>* coreTypeRoles(const std::string& tn, bool transitive); // `.^roles` of a core type
 
 Value complexSqrt(double re, double im);
 // Parse a JSON document into a Value (the codec lives in Builtins.cpp); returns

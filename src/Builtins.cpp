@@ -265,7 +265,20 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         // it has no ancestors of its own to fall back through.
         {"List",  {"List","Cool","Positional","Iterable","Any","Mu"}},
         {"Array", {"Array","List","Cool","Positional","Iterable","Any","Mu"}},
-        {"Seq",   {"Seq","Cool","Iterable","Any","Mu"}},
+        // (Seq does Sequence and PositionalBindFailover: `$seq ~~ Sequence`)
+        {"Seq",   {"Seq","Sequence","PositionalBindFailover","Iterable","Cool","Any","Mu"}},
+        // the hash family, the Range and the Pair, in Rakudo's .^mro(:roles)
+        // order: a Hash IS a Map (`Hash.isa(Map)`), and both are Associative
+        {"Map",   {"Map","Associative","Iterable","Cool","Any","Mu"}},
+        {"Hash",  {"Hash","Map","Associative","Iterable","Cool","Any","Mu"}},
+        {"Range", {"Range","Positional","Iterable","Cool","Any","Mu"}},
+        {"Pair",  {"Pair","Associative","Any","Mu"}},
+        {"Set",     {"Set","Setty","QuantHash","Associative","Any","Mu"}},
+        {"SetHash", {"SetHash","Setty","QuantHash","Associative","Any","Mu"}},
+        {"Bag",     {"Bag","Baggy","QuantHash","Associative","Any","Mu"}},
+        {"BagHash", {"BagHash","Baggy","QuantHash","Associative","Any","Mu"}},
+        {"Mix",     {"Mix","Mixy","Baggy","QuantHash","Associative","Any","Mu"}},
+        {"MixHash", {"MixHash","Mixy","Baggy","QuantHash","Associative","Any","Mu"}},
         {"Slip",  {"Slip","List","Cool","Positional","Iterable","Any","Mu"}},
         {"Mu",    {"Mu"}},
         {"Any",   {"Any","Mu"}},
@@ -293,7 +306,7 @@ bool isBuiltinRole(const std::string& n) {
     static const std::set<std::string> roles = {
         "Real", "Numeric", "Stringy", "Dateish", "Rational", "Callable",
         "Positional", "Associative", "Iterable", "Baggy", "Setty", "Mixy", "Sequence",
-        "IO::Socket"};
+        "IO::Socket", "PositionalBindFailover", "QuantHash"};
     // …and the X:: exception roles (X::Comp, X::Syntax, X::IO, …), which the
     // generated table owns because Rakudo's hierarchy is what defines them.
     return roles.count(n) > 0 || isExceptionRole(n);
@@ -5681,6 +5694,99 @@ static bool plainNewClass(Interpreter& I, ClassInfo& ci) {
     return !I.typeOrSubsetMatches(Value::typeObj(n), "Rational");
 }
 
+// The Iterator role's default methods for a user class that does it, each
+// built on the class's own `pull-one` (and on the target's `push`, so an
+// IterationBuffer takes them as well as an Array). Nothing for other names.
+static std::optional<Value> iteratorRoleDefault(Interpreter& I, const Value& inv, const std::string& m,
+                                                const ValueList& args) {
+    static const std::set<std::string> kDefaults = {
+        "push-exactly", "push-at-least", "push-all", "push-until-lazy", "sink-all", "skip-one",
+        "skip-at-least", "skip-at-least-pull-one", "is-lazy", "is-deterministic",
+        "is-monotonically-increasing"};
+    if (!kDefaults.count(m)) return std::nullopt;
+    const Value end = Value::typeObj("IterationEnd");
+    auto isEnd = [](const Value& v) { return v.t == VT::Type && v.s == "IterationEnd"; };
+    auto pull = [&]() { return I.methodCall(inv, "pull-one", ValueList{}); };
+    auto push = [&](const Value& target, const Value& v) { I.methodCall(target, "push", ValueList{v}); };
+    ValueList pos;
+    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+    if (m == "is-lazy" || m == "is-monotonically-increasing") return Value::boolean(false);
+    if (m == "is-deterministic") return Value::boolean(true);
+    if (m == "push-exactly" || m == "push-at-least") {
+        if (pos.size() < 2) return std::nullopt;
+        const long long want = pos[1].toInt();
+        long long n = 0;
+        for (; n < want; n++) {
+            Value v = pull();
+            if (isEnd(v)) return end;
+            push(pos[0], v);
+        }
+        return Value::integer(n);
+    }
+    if (m == "push-all" || m == "push-until-lazy") {
+        if (pos.empty()) return std::nullopt;
+        // a lazy iterator is left alone by push-until-lazy, which says so
+        if (m == "push-until-lazy" && I.methodCall(inv, "is-lazy", ValueList{}).truthy())
+            return Value::boolean(true);
+        for (;;) {
+            Value v = pull();
+            if (isEnd(v)) return end;
+            push(pos[0], v);
+        }
+    }
+    if (m == "sink-all") { while (!isEnd(pull())) {} return end; }
+    if (m == "skip-one") return Value::integer(isEnd(pull()) ? 0 : 1);
+    if (m == "skip-at-least" || m == "skip-at-least-pull-one") {
+        const long long want = pos.empty() ? 0 : pos[0].toInt();
+        for (long long i = 0; i < want; i++)
+            if (isEnd(pull())) return m == "skip-at-least" ? Value::integer(0) : end;
+        return m == "skip-at-least" ? Value::integer(1) : pull();
+    }
+    return std::nullopt;
+}
+
+// The roles of a CORE type, as Rakudo's `.^roles` answers them: over its whole
+// MRO, or with `:!transitive` the ones it composes itself (a role a role brings
+// stays out: Int is Real, and Numeric comes through Real). Parametric names and
+// all. Null for a type this table does not know.
+const std::vector<const char*>* coreTypeRoles(const std::string& tn, bool transitive) {
+    struct CoreRoles { std::vector<const char*> all, direct; };
+    static const std::map<std::string, CoreRoles> kCoreRoles = {
+        {"Int", {{"Real", "Numeric"}, {"Real"}}},
+        {"Num", {{"Real", "Numeric"}, {"Real"}}},
+        {"Real", {{"Numeric"}, {"Numeric"}}},
+        {"Rat", {{"Rational[Int,Int]", "Real", "Numeric"}, {"Rational[Int,Int]"}}},
+        {"FatRat", {{"Rational[Int,Int]", "Real", "Numeric"}, {"Rational[Int,Int]"}}},
+        {"Complex", {{"Numeric"}, {"Numeric"}}},
+        {"Duration", {{"Real", "Numeric"}, {"Real"}}},
+        {"Instant", {{"Real", "Numeric"}, {"Real"}}},
+        {"Str", {{"Stringy"}, {"Stringy"}}},
+        {"IntStr", {{"Stringy", "Real", "Numeric"}, {"Stringy", "Real"}}},
+        {"List", {{"Positional", "Iterable"}, {"Positional", "Iterable"}}},
+        {"Array", {{"Positional", "Iterable"}, {"Positional", "Iterable"}}},
+        {"Slip", {{"Positional", "Iterable"}, {"Positional", "Iterable"}}},
+        {"Range", {{"Positional", "Iterable"}, {"Positional", "Iterable"}}},
+        {"Map", {{"Associative", "Iterable"}, {"Associative", "Iterable"}}},
+        {"Hash", {{"Associative", "Iterable"}, {"Associative", "Iterable"}}},
+        {"Pair", {{"Associative"}, {"Associative"}}},
+        {"Seq", {{"Sequence", "PositionalBindFailover", "Iterable"}, {"Sequence", "Iterable"}}},
+        {"Set", {{"Setty", "QuantHash", "Associative"}, {"Setty"}}},
+        {"SetHash", {{"Setty", "QuantHash", "Associative"}, {"Setty"}}},
+        {"Bag", {{"Baggy", "QuantHash", "Associative"}, {"Baggy"}}},
+        {"BagHash", {{"Baggy", "QuantHash", "Associative"}, {"Baggy"}}},
+        {"Mix", {{"Mixy", "Baggy", "QuantHash", "Associative"}, {"Mixy"}}},
+        {"MixHash", {{"Mixy", "Baggy", "QuantHash", "Associative"}, {"Mixy"}}},
+        {"Blob", {{"Positional[T]", "Stringy"}, {"Positional[T]", "Stringy"}}},
+        {"Buf", {{"Blob[T]", "Positional[T]", "Stringy"}, {"Blob[T]"}}},
+        {"Date", {{"Dateish"}, {"Dateish"}}},
+        {"DateTime", {{"Dateish"}, {"Dateish"}}},
+        {"Bool", {{}, {}}}, {"Cool", {{}, {}}}, {"Any", {{}, {}}}, {"Mu", {{}, {}}},
+        {"Version", {{}, {}}}, {"Capture", {{}, {}}}};
+    auto cr = kCoreRoles.find(tn);
+    if (cr == kCoreRoles.end()) return nullptr;
+    return transitive ? &cr->second.all : &cr->second.direct;
+}
+
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
     // A PLAIN class's default constructor (plainNewClass): straight to the
@@ -7793,13 +7899,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (cn != classes_.end() && cn->second && !cn->second->name.empty())
                     // a ROLE PUN answers what it was WRITTEN as — `Foo[Int]` —
                     // not the registry key that keeps two of them one type
-                    return Value::str(cn->second->dispName.empty() ? cn->second->name
-                                                                   : cn->second->dispName);
+                    return Value::str(!cn->second->shownName.empty() ? cn->second->shownName
+                                      : cn->second->dispName.empty() ? cn->second->name
+                                                                     : cn->second->dispName);
             }
             {   // …and so does an INSTANCE of one: `Foo[Int].new.^name`
                 auto cn = classes_.find(inv.typeName());
                 if (cn != classes_.end() && cn->second && !cn->second->dispName.empty())
-                    return Value::str(cn->second->dispName);
+                    return Value::str(!cn->second->shownName.empty() ? cn->second->shownName : cn->second->dispName);
             }
             return Value::str(inv.typeName());
         }
@@ -7929,6 +8036,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // that was not already a type object (Nil-Any sheet NA-02).
         if ((mm == "mro" || mm == "parents") && inv.t != VT::Type && inv.t != VT::Object)
             return methodCall(Value::typeObj(inv.typeName()), m, std::move(args), rwArgs);
+        // `.^roles` of a CORE type: the roles over its whole MRO, and with
+        // `:!transitive` the ones it composes itself (a role a role brings
+        // stays out: Int is Real, and Numeric comes through Real). Rakudo's
+        // own answers, parametric names and all.
+        if (mm == "roles" && inv.t != VT::Object &&
+            !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s)))) {
+
+            const std::string tn = tobj.t == VT::Type ? std::string(tobj.s.c_str()) : inv.typeName();
+            bool transitive = true;
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.s == "transitive") transitive = !a.pairVal() || a.pairVal()->truthy();
+            if (const auto* rs = coreTypeRoles(tn, transitive)) {
+                Value out = Value::array(); out.isList = true;
+                for (const char* r : *rs) out.arr()->push_back(Value::typeObj(r));
+                return out;
+            }
+        }
         if ((mm == "lookup" || mm == "find_method") &&
             !(tobj.t == VT::Type && classes_.count(tobj.s))) {
             // builtin-type invocant (`().^lookup('elems')`): a "method object" —
@@ -9455,6 +9579,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (!(num.t == VT::Object)) return methodCall(num, m, args);
             }
         }
+    }
+    // A user class that does Iterator gets the role's default methods, all
+    // built on its own pull-one (Rakudo's Iterator role supplies them).
+    // (a lone `does Iterator` is recorded as the built-in parent, not in doneRoles)
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
+        bool isIter = inv.obj()->cls->doesRole("Iterator");
+        for (ClassInfo* c = inv.obj()->cls.get(); c && !isIter; c = c->parent.get())
+            if (c->nativeParent == "Iterator") isIter = true;
+        if (isIter)
+            if (auto r = iteratorRoleDefault(*this, inv, m, args)) return *r;
     }
     if (inv.t == VT::Object || inv.t == VT::Code || inv.t == VT::Regex) {
         static const std::set<std::string> kOneElem = {

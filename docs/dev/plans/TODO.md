@@ -303,7 +303,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,099 mutsu files and 229 Rakudo files that Rakudo passes and
+  The work: 2,093 mutsu files and 229 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Known open: `our native size_t is Int is ctype<…> is repr<P6int> { }`
     (native type declarations) does not parse; the 12 wrapped "You have to

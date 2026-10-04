@@ -631,8 +631,19 @@ static Value builtinCanStub(const std::string& mn, const ClassInfo* ci) {
     static const std::set<std::string> universal = {
         "new", "bless", "gist", "Str", "raku", "perl", "so", "defined",
         "can", "isa", "does", "WHAT", "WHICH", "WHERE", "clone"};
+    // …and a class that does Iterator has the role's defaults (see
+    // iteratorRoleDefault): `.can('push-all')`
+    static const std::set<std::string> iterDefaults = {
+        "push-exactly", "push-at-least", "push-all", "push-until-lazy", "sink-all", "skip-one",
+        "skip-at-least", "skip-at-least-pull-one", "is-lazy", "is-deterministic",
+        "is-monotonically-increasing"};
+    auto doesIterator = [ci]() {
+        if (ci->doesRole("Iterator")) return true;
+        for (const ClassInfo* c = ci; c; c = c->parent.get()) if (c->nativeParent == "Iterator") return true;
+        return false;
+    };
     if (!universal.count(mn) && !(ci->isGrammar && (mn == "parse" || mn == "subparse")) &&
-        !ci->findRule(mn))
+        !ci->findRule(mn) && !(iterDefaults.count(mn) && doesIterator()))
         return Value::nil();
     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
     stub.code()->name = mn; stub.code()->isMethod = true;
@@ -10434,6 +10445,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (it != classes_.end()) ci = it->second;
         }
         if (ci && !ci->repr.empty()) return Value::str(ci->repr);
+        // a ROLE type object is Uninstantiable (a pun's INSTANCE is P6opaque),
+        // the core ones and their curryings too (`Positional[Int]`, `Buf[uint8]`)
+        if (inv.t == VT::Type) {
+            const std::string base = inv.s.substr(0, inv.s.find('['));
+            if ((ci && ci->isRole) || isBuiltinRole(base) || base == "Blob" || base == "Buf")
+                return Value::str("Uninstantiable");
+        }
+        // …and a byte buffer is a VMArray
+        if (inv.t != VT::Type && (inv.hashKind == "Buf" || inv.hashKind == "Blob"))
+            return Value::str("VMArray");
         return Value::str("P6opaque");
     }
     if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s : inv.gist()); // debug snapshot (loose form)
