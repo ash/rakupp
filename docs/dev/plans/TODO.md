@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-03.*
+*Started 2026-10-03. Last updated 2026-10-04.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -23,9 +23,10 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **Loop and sub kernels beyond scalars**: [KERNEL-PLAN.md](KERNEL-PLAN.md).
   Tasks 2–4 and the `--help` text done 2026-10-03 (Nums, Rats as exact slots,
   `**`, `min`/`max`, pure methods; `**`/`min`/`max` and Num seeding in the
-  `--exe` lanes). Next: task 1 (arrays and hashes with an undo log, after the
-  `my $c := @arr[0]; $c += 1` bug), task 5 (`--exe` parity, now also Rats and
-  the methods), the UNBOX-PLAN note of task 8, then 6–7. Owed:
+  `--exe` lanes). Task 1 done 2026-10-04 (arrays and hashes in place with a
+  bounded undo log) except `%h{…}:exists` and `for @a` as a source. Next:
+  task 5 (`--exe` parity, now also Rats, the methods and containers), the
+  UNBOX-PLAN note of task 8, then 6–7. Owed:
   `perf-guard --check` on a quiet machine (inconclusive at load 4 on
   2026-10-03; in cycles `fib`/`mainwhen` level, `objnew` +1.5% from code
   placement).
@@ -128,15 +129,19 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - Outside `react`, a `Proc::Async` with `:w` feeds its stdout taps only when
     the start promise is awaited, so an interactive driver never sees a reply
     before `close-stdin` (found with #121).
-  - A typed parameter binds ANY type object: `sub g(Str $x) {}; g(Any)` and
-    `sub g(Str :$x) {}; g(x => Int)` run; Rakudo dies with
-    X::TypeCheck::Binding::Parameter (a defined `42` is refused correctly).
-    Found 2026-10-03: it let rakuglaze's race surface as `.IO` on Any.
-  - Named `is rw` / `is raw` parameters do not write back:
-    `sub f(:$x! is rw) { $x = 5 }; f(x => $v)` leaves `$v` alone (Rakudo 5).
-  - `-> \v { v = 1 }(Int)` lives; Rakudo refuses the type object (`my \v =
-    Int` is refused since 2026-10-03). `my $x := Int:D; $x = 5` names `Int`,
-    not `Int:D`.
+  - An enum TYPE object outside binding: `Color ~~ Int` and `Color ~~
+    Enumeration` are False, `Color.^mro` is `(Any) (Mu)` (Rakudo: Color, Int,
+    Cool, Any, Mu), `my Int $v = Color` dies, and `~Color` is the pair list
+    (Rakudo warns and gives "").
+  - A type object coerced to a number: `Str.Int`, `Num.Rat`, `Rat.Num` and
+    the rest answer 0 where Rakudo dies ("must be an object instance"), so
+    `sub f(Int() $x) {}; f(Str)` binds 0. Rakudo is not uniform here (`Any.Int`
+    and `Cool.Num` are 0 with a warning).
+  - A slurpy hash or a capture does not write back: `sub q(*%n) { %n<x> = 31 };
+    q(x => $v)` and `sub r(|c) { c<x> = 33 }` leave `$v` alone (Rakudo: 31,
+    33). Named `is rw` / `is raw` parameters do (2026-10-04).
+  - `@a[$i++] = $i` evaluates the value before the subscript: Raku++ stores
+    0 at index 0, Rakudo 1 (the subscript first). The same for `%h{…}`.
   - Two `IO::Handle.new` share one WHICH (the handle payload is shared), and
     `$supplier.Supply` answers the same Supply each call (Rakudo: a new one).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list

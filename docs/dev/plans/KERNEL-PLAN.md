@@ -62,6 +62,24 @@ vocabulary, not by size: the tasks below widen it.
 
 ## Task 1: arrays and hashes, with an undo log
 
+**Status (2026-10-04).** Done except two items: `%h{EXPR}:exists` and `for @a
+-> $x` as a source. In: reads, stores, `+= -= *= ~=`, `++`/`--` (a hole or a
+missing key counts from the identity, a postfix one answers it), `@a.push`,
+`.elems` on both kinds, Int and Str elements and keys. The undo log is bounded
+by the containers, not the iterations: once it outgrows the containers it
+covers, each is saved as it was before the loop (a copy with the log taken
+back on the copy) and logs no more; a bail restores in place, so a Proxy or a
+live Pair into an element still reaches it. A subscript with a side effect is
+refused (the generic path evaluates a store's value before its subscript, and
+Rakudo the other way round). Gate: `t/regression/loop-kernel-containers.raku`,
+28 on Rakudo, kernels off and kernels on. Interleaved min cycles against the
+build before it: arraypush −87%, hashfill −56%, hash −48% (−60% at 1M
+iterations), a two-iteration container loop entered 200k times −92%; fib,
+mainwhen, loopsum, streq, objects level or better. Two traps met: a
+`std::string` and two pointers added to KRun cost mainwhen 2% in the scalar
+loop (one pointer to a side struct is level), and `snprintf` for an Int key
+was half the hash kernel's time.
+
 **What.** Inside a loop kernel:
 
 - reads `@a[EXPR]` and `%h{EXPR}`;
@@ -313,8 +331,6 @@ Pre-existing, each reproduced with the kernels off and on the clean base
 build, each with its own spawned task:
 
 - the block form of `for` over a Range with BigInt ends iterates once;
-- `my $c := @arr[0]; $c += 1` loses the write (blocks task 1's bound
-  elements);
 - four `--exe` divergences: `:=` aliasing, `$x++` on a readonly parameter,
   `~=` NFC, a `where` container;
 - `t/exe`'s two `-O` disagreements: `failure-is-concrete-for-smiley`,

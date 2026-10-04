@@ -21,6 +21,11 @@
 //    topic. The kernel works on
 //    COPIES of those variables (the frame) and writes them back only when the
 //    whole loop is done, so until then nothing it did is visible to anything.
+//    It may also use plain `@` and `%` containers of the program IN PLACE:
+//    `@a[i]` and `%h{k}` read, stored, `+= -= *= ~=` and `++`/`--`,
+//    `@a.push`, `.elems`, each element checked as it is read. Those writes
+//    are visible at once, so each is logged first, and a bail takes them all
+//    back before anything else happens (KConts).
 //
 // That is what makes the whole scheme safe. A kernel that meets anything it
 // cannot answer exactly — an argument that is not a plain Int, a result that
@@ -122,7 +127,20 @@ enum class KOp : uint8_t {
     XSet, XAddTo, XSubTo, XMulTo, XDivTo,
     XPreInc, XPreDec, XPostInc, XPostDec,
     XTruth, SExact, XNumer, XDenom,
+    // containers of the program, read and written IN PLACE (an `@a` or `%h`
+    // in the loop's scope): `lit` is the container's index in KRun::conts,
+    // `a` the subscript, `nargs` the kFlag bits below. Every write is logged
+    // first, so a bail can put the container back (KRun::undo).
+    CGet, SCGet,          // @a[i] / %h{k} as an Int / a Str (`slot`: a string temporary)
+    CElems,               // @a.elems / %h.elems
+    CSet, SCSet,          // … = b
+    CAddTo, CSubTo, CMulTo, CSApp,
+    CPreInc, CPreDec, CPostInc, CPostDec,
+    CPush, SCPush,        // @a.push(a)
 };
+// KNode::nargs on a container node
+constexpr uint8_t kCHash = 1;     // %h, not @a
+constexpr uint8_t kCStrKey = 2;   // the key is a Str node (an Int key is its decimal text)
 
 struct IKernel;
 struct KNode;
@@ -185,11 +203,16 @@ enum class KT { Int, Bool, Str, Void, Num, Exact };
 // every later entry.
 struct LSym { std::string name; KT t; int slot; bool ro; };
 struct LOuter { std::string name; KT t; int slot; bool written; };
+// A container of the program the loop reads or writes in place: `@a` or `%h`,
+// and the kind of element it holds (Int or Str, from its contents or from the
+// first value the loop stores; Void while neither has said).
+struct LCont { std::string name; bool hash; KT elem; bool written; };
 struct LoopCx {
     Env* env = nullptr;                      // where the loop's free names resolve (this entry)
     const Callable* sub = nullptr;           // set for a sub body compiled as statements: no free names
     std::vector<std::vector<LSym>> scopes;   // the kernel's own: loop variables and `my`s
     std::vector<LOuter> outer;               // variables of the program, copied in and out
+    std::vector<LCont> conts;                // containers of the program, used in place
     int nint = 0, nstr = 0;                  // frame sizes, temporaries included
     int loops = 0;                           // loops enclosing the statement being compiled
     int givens = 0;                          // `given`s enclosing it, inside the innermost loop
@@ -228,6 +251,9 @@ struct Compiler {
     KNode* ltail(IKernel& k, const std::vector<StmtPtr>& ss);
     KNode* lif(IKernel& k, IfStmt* is, bool tail);
     const LSym* lookup(const std::string& name);
+    // containers (task 1)
+    int cont(const std::string& name, bool hash, std::string& why);
+    KNode* contRef(IKernel& k, const Callable* c, Index* ix, KOp op, KT& elem);
     // An Int or a Str as a string (an Int's text is what `~` and interpolation
     // make of it); null for anything else.
     KNode* asStr(IKernel& k, KNode* n, KT t) {
@@ -331,6 +357,74 @@ inline bool plainStrValue(const Value& v) {
            v.hashKind.empty();
 }
 
+// An `@a` / `%h` a loop kernel may read and write in place: one whose element
+// store is a plain store and nothing more. Not a List or a Map (immutable),
+// not typed, shaped, native or lazy, no `is default`, no bound elements, no
+// object keys, no Set/Bag/Mix or other tagged kind.
+inline bool plainContainer(const Value& v, bool hash) {
+    if (v.isList || v.itemized || v.objKeyed || v.namedArg || !v.enumName.empty() || !v.enumType.empty() ||
+        !v.hashKind.empty() || !v.s.empty() || v.natBits || v.natSigned || v.natFloat)
+        return false;
+    if (hash ? (v.t != VT::Hash || v.pk_ != PK::Hash || !v.hash() || v.hash()->hasObjKeys())
+             : (v.t != VT::Array || v.pk_ != PK::List || !v.arr()))
+        return false;
+    if (v.x_) {
+        const ValueExt& x = *v.x_;
+        if (x.holdsCells || x.big || x.ratN || x.ratD || x.pairKey) return false;
+        if (x.cont) {
+            const ValueContExt& c = *x.cont;
+            if (c.elemDefault || c.ext || c.shape || !c.ofType.empty() || c.seqTok) return false;
+        }
+    }
+    return true;
+}
+// …and an element a container store may simply replace: a plain Int or Str,
+// or the Any of a hole
+inline bool plainAnyValue(const Value& v) {
+    return v.t == VT::Any && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.b && !v.isList &&
+           v.hashKind.empty() && v.s.empty();
+}
+bool plainContName(const std::string& n, char sigil) {
+    if (n.size() < 2 || n[0] != sigil) return false;
+    const char c = n[1];
+    if (!(ascii::isalpha((unsigned char)c) || c == '_')) return false;
+    return n.find("::") == std::string::npos;
+}
+
+// Can evaluating `e` change anything? (An assignment or a ++/-- anywhere in it.)
+bool sideEffect(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::Assign: return true;
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            return u->op == "++" || u->op == "--" || sideEffect(u->operand.get());
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            return sideEffect(b->lhs.get()) || sideEffect(b->rhs.get());
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return sideEffect(t->cond.get()) || sideEffect(t->then.get()) || sideEffect(t->els.get());
+        }
+        case NK::Index: return sideEffect(static_cast<const Index*>(e)->index.get());
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (m->method == "push") return true;
+            for (auto& a : m->args) if (sideEffect(a.get())) return true;
+            return sideEffect(m->inv.get());
+        }
+        case NK::InterpStr:
+            for (auto& p : static_cast<const InterpStr*>(e)->parts) if (sideEffect(p.get())) return true;
+            return false;
+        case NK::Call:
+            for (auto& a : static_cast<const Call*>(e)->args) if (sideEffect(a.get())) return true;
+            return false;
+        default: return false;
+    }
+}
+
 // Does `e` read the variable `name`? (Over the expression kinds a kernel
 // compiles, which are the only ones this is asked about.)
 bool mentions(const Expr* e, const std::string& name) {
@@ -362,6 +456,58 @@ const LSym* Compiler::lookup(const std::string& name) {
         for (auto& s : *it)
             if (s.name == name) return &s;
     return nullptr;
+}
+
+// The program's `@a` / `%h` as an index into L->conts, found from the loop's
+// scope: a plain container (plainContainer) whose first element says what
+// the loop will find in it, a plain Int or a plain Str. -1 when it cannot be
+// used, with `why` saying so.
+int Compiler::cont(const std::string& name, bool hash, std::string& why) {
+    for (size_t i = 0; i < L->conts.size(); i++)
+        if (L->conts[i].name == name) return (int)i;
+    if (!plainContName(name, hash ? '%' : '@')) { why = "container " + name; return -1; }
+    Value* raw = L->env->findRaw(name);
+    if (!raw) { why = "container " + name + " is not in scope"; return -1; }
+    const Value& cv = *raw->deref();
+    if (!plainContainer(cv, hash)) { why = "container " + name + " of a kind a plain store would not honour"; return -1; }
+    const Value* first = nullptr;
+    if (hash) { for (auto& kv : *cv.hash()) { first = &kv.second; break; } }
+    else if (!cv.arr()->empty()) first = &(*cv.arr())[0];
+    KT elem = KT::Void;
+    if (first) {
+        if (plainIntValue(*first)) elem = KT::Int;
+        else if (plainStrValue(*first)) elem = KT::Str;
+        else { why = "container " + name + " holds neither a plain Int nor a plain Str"; return -1; }
+    }
+    L->conts.push_back({name, hash, elem, false});
+    return (int)L->conts.size() - 1;
+}
+
+// `@a[EXPR]` / `%h{EXPR}` as a container node of kind `op`: the subscript an
+// Int (or, for a hash, a Str), with no side effect of its own, so that the
+// order the generic path evaluates a store's two sides in cannot matter.
+KNode* Compiler::contRef(IKernel& k, const Callable* c, Index* ix, KOp op, KT& elem) {
+    if (!L || L->sub) return refuse("a container in a sub");
+    if (ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index || !ix->base ||
+        ix->base->kind != NK::VarExpr)
+        return refuse("a subscript of this form");
+    auto* bv = static_cast<VarExpr*>(ix->base.get());
+    const bool hash = ix->isHash;
+    if (bv->declare || bv->name.empty() || bv->name[0] != (hash ? '%' : '@'))
+        return refuse("a subscript of something not an @ or % variable");
+    std::string why;
+    const int ci = cont(bv->name, hash, why);
+    if (ci < 0) return refuse(why);
+    if (sideEffect(ix->index.get())) return refuse("a subscript with a side effect");
+    KT kt;
+    KNode* key = expr(k, c, ix->index.get(), false, kt);
+    if (!key) return nullptr;
+    uint8_t fl = hash ? kCHash : 0;
+    if (kt == KT::Str && hash) fl |= kCStrKey;
+    else if (kt != KT::Int) return refuse("a subscript neither an Int nor a hash's Str");
+    KNode* n = k.node(op); n->lit = ci; n->a = key; n->nargs = fl;
+    elem = L->conts[ci].elem;
+    return n;
 }
 
 KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) {
@@ -473,10 +619,39 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             n->slot = slot; t = st;
             return n;
         }
+        case NK::Index: {
+            // an element read: the element is checked on every read, and
+            // anything but the kind the loop was compiled for bails
+            if (!L) return nullptr;
+            KT et;
+            KNode* n = contRef(k, c, static_cast<Index*>(e), KOp::CGet, et);
+            if (!n) return nullptr;
+            if (et == KT::Void)
+                return refuse("container " + L->conts[n->lit].name + " holds neither a plain Int nor a plain Str yet");
+            if (et == KT::Str) { n->op = KOp::SCGet; n->slot = L->nstr++; }
+            t = et;
+            return n;
+        }
         case NK::Unary: {
             auto* u = static_cast<Unary*>(e);
             if (!u->operand) return nullptr;
             KT ot;
+            if ((u->op == "++" || u->op == "--") && L && u->operand->kind == NK::Index) {
+                // an element stepped in place; a hole or a missing key counts
+                // from 0, as the generic path's does
+                KT et;
+                KNode* n = contRef(k, c, static_cast<Index*>(u->operand.get()), KOp::CPreInc, et);
+                if (!n) return nullptr;
+                LCont& ct = L->conts[n->lit];
+                if (et == KT::Str) return refuse("++/-- on a Str element");
+                ct.elem = KT::Int; ct.written = true;
+                n->op = u->postfix ? (u->op == "++" ? KOp::CPostInc : KOp::CPostDec)
+                                   : (u->op == "++" ? KOp::CPreInc : KOp::CPreDec);
+                if (!u->postfix) prefix = true;
+                L->usesInc = true;
+                t = KT::Int;
+                return n;
+            }
             if (u->op == "++" || u->op == "--") {
                 if (!L) return nullptr;
                 if (u->operand->kind != NK::VarExpr) return refuse("++/-- on something not a variable");
@@ -624,6 +799,39 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
         case NK::Assign: {
             if (!L) return nullptr;
             auto* a = static_cast<Assign*>(e);
+            if (!a->userOp && !a->containerSigil && a->target && a->target->kind == NK::Index) {
+                // an element store, in place (logged first: see contSlot)
+                KT et, vt;
+                KNode* n = contRef(k, c, static_cast<Index*>(a->target.get()), KOp::CSet, et);
+                if (!n) return nullptr;
+                const int ci = (int)n->lit;
+                KNode* v = expr(k, c, a->value.get(), false, vt);
+                if (!v) return nullptr;
+                LCont& ct = L->conts[ci];
+                KOp op;
+                if (a->op == "=") {
+                    if (vt != KT::Int && vt != KT::Str) return refuse("an element store of this type");
+                    if (ct.elem != KT::Void && ct.elem != vt) return refuse("a store that would change a container's element type");
+                    ct.elem = vt;
+                    op = vt == KT::Str ? KOp::SCSet : KOp::CSet;
+                }
+                else if ((a->op == "+=" || a->op == "-=" || a->op == "*=") && vt == KT::Int && ct.elem != KT::Str) {
+                    ct.elem = KT::Int;
+                    op = a->op[0] == '+' ? KOp::CAddTo : a->op[0] == '-' ? KOp::CSubTo : KOp::CMulTo;
+                    noteOp(a->op.substr(0, 1));
+                }
+                else if (a->op == "~=" && (vt == KT::Str || vt == KT::Int) && ct.elem != KT::Int) {
+                    ct.elem = KT::Str;
+                    v = asStr(k, v, vt);
+                    op = KOp::CSApp;
+                    noteOp("~");
+                }
+                else return refuse("element assignment " + a->op + " on these types");
+                ct.written = true;
+                n->op = op; n->b = v;
+                t = ct.elem == KT::Str ? KT::Void : KT::Int;
+                return n;
+            }
             if (a->userOp || a->containerSigil || !a->target || a->target->kind != NK::VarExpr)
                 return refuse("an assignment of this form");
             auto* tv = static_cast<VarExpr*>(a->target.get());
@@ -720,6 +928,36 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 return refuse("a method call");
             const std::string& mn = m->method;
             const size_t na = m->args.size();
+            if (m->inv->kind == NK::VarExpr) {
+                // `@a.elems`, `%h.elems`, `@a.push(EXPR)` on a container in place
+                auto* iv = static_cast<VarExpr*>(m->inv.get());
+                if (!iv->declare && !iv->name.empty() && (iv->name[0] == '@' || iv->name[0] == '%')) {
+                    const bool hash = iv->name[0] == '%';
+                    std::string why;
+                    const int ci = cont(iv->name, hash, why);
+                    if (ci < 0) return refuse(why);
+                    L->usesMethods = true;
+                    if (mn == "elems" && !na) {
+                        KNode* n = k.node(KOp::CElems); n->lit = ci; n->nargs = hash ? kCHash : 0;
+                        t = KT::Int;
+                        return n;
+                    }
+                    if (mn == "push" && !hash && na == 1 && m->args[0] && m->args[0]->kind != NK::Pair &&
+                        !(m->args[0]->kind == NK::Unary && static_cast<Unary*>(m->args[0].get())->op == "|")) {
+                        KT vt;
+                        KNode* v = expr(k, c, m->args[0].get(), false, vt);
+                        if (!v) return nullptr;
+                        LCont& ct = L->conts[ci];
+                        if (vt != KT::Int && vt != KT::Str) return refuse(".push of this type");
+                        if (ct.elem != KT::Void && ct.elem != vt) return refuse("a push that would change a container's element type");
+                        ct.elem = vt; ct.written = true;
+                        KNode* n = k.node(vt == KT::Str ? KOp::SCPush : KOp::CPush); n->lit = ci; n->a = v;
+                        t = KT::Void;
+                        return n;
+                    }
+                    return refuse("method ." + mn + " of a container");
+                }
+            }
             KT it;
             KNode* inv = expr(k, c, m->inv.get(), false, it);
             if (!inv) return nullptr;
@@ -1221,6 +1459,19 @@ void collectGraph(IKernel* k, std::vector<IKernel*>& g) {
 // kernel `next` / `last` and a `when` that matched. Bools rather than one word of bits: the call
 // path SETS them with plain stores, and a read-modify-write of a flag word
 // there cost fib 12% (measured; the instructions were otherwise identical).
+// How to take back one write to a container of the program, logged before
+// the write: a bail replays the log backwards, which leaves every container
+// exactly as it was, and the loop then runs the ordinary way from the start.
+struct CUndo {
+    enum Kind : uint8_t { Elem, Size, HSet, HNew } kind;
+    uint16_t ci;          // the container (KConts::conts)
+    void* c;              // Elem, Size: the ValueList; HSet: the element (a hash entry never moves
+                          // while the hash lives, ValueHash's contract); HNew: the ValueHash
+    size_t idx;           // Elem: the element; Size: the length before
+    std::string key;      // HSet, HNew
+    Value old;            // Elem, HSet: what the element held
+};
+
 struct KRun {
     char* stackFloor;     // below this address the generic path would refuse
     int depthLeft;        // …or past this many more frames
@@ -1230,6 +1481,22 @@ struct KRun {
     bool last = false;
     bool succeed = false;         // a `when` matched: leave its `given`
     std::string* sfr = nullptr;   // a loop kernel's string slots
+    struct KConts* cc = nullptr;  // the containers a loop kernel uses in place (one pointer: the
+                                  // layout of this struct moves the scalar loops' timing)
+};
+// The containers a loop kernel uses in place, and how to take its writes to
+// them back. The log is bounded by the containers, not by the iterations: once
+// it outgrows the containers it covers, each of them is saved as it was before
+// the loop (a copy with its log taken back on the copy) and logs no more.
+struct KConts {
+    Value* const* conts = nullptr;
+    size_t n = 0;
+    std::vector<CUndo> undo;
+    size_t check = 1024;          // the log length at which compacting is next considered
+    std::vector<uint8_t> logged;  // per container: has entries in the log
+    std::vector<std::unique_ptr<ValueList>> savedList;   // per container: its state before the loop
+    std::vector<std::unique_ptr<ValueHash>> savedHash;
+    std::string key;              // a hash key being built
 };
 [[gnu::always_inline]] inline bool stopped(const KRun& R) { return R.bail | R.ret | R.next | R.last | R.succeed; }
 
@@ -1791,6 +2058,218 @@ const std::string& sexactFn(const KNode* n, int64_t* fr, KRun& R) {
 }
 #endif
 
+void compactUndo(KConts& cc);
+// Log a write to container `ci` — unless it has been saved whole already
+inline void logWrite(KConts& cc, int ci, CUndo&& u) {
+    if (cc.savedList[ci] || cc.savedHash[ci]) return;
+    u.ci = (uint16_t)ci;
+    cc.logged[ci] = 1;
+    cc.undo.push_back(std::move(u));
+    if (cc.undo.size() >= cc.check) compactUndo(cc);
+}
+// The log has grown: when it is longer than the containers it covers hold,
+// save each of them as it was before the loop and stop logging them.
+void compactUndo(KConts& cc) {
+    size_t total = 0;
+    for (size_t i = 0; i < cc.n; i++)
+        if (cc.logged[i]) {
+            const Value& c = *cc.conts[i];
+            total += c.t == VT::Hash ? c.hash()->size() : c.arr()->size();
+        }
+    if (cc.undo.size() < total) { cc.check = cc.undo.size() * 2; return; }
+    for (size_t i = 0; i < cc.n; i++)
+        if (cc.logged[i]) {
+            const Value& c = *cc.conts[i];
+            if (c.t == VT::Hash) cc.savedHash[i].reset(new ValueHash(*c.hash()));
+            else cc.savedList[i].reset(new ValueList(*c.arr()));
+        }
+    for (auto it = cc.undo.rbegin(); it != cc.undo.rend(); ++it) {
+        if (auto* l = cc.savedList[it->ci].get()) {
+            if (it->kind == CUndo::Elem) (*l)[it->idx] = std::move(it->old);
+            else l->resize(it->idx);
+        }
+        else if (auto* h = cc.savedHash[it->ci].get()) {
+            if (it->kind == CUndo::HSet) { auto f = h->find(it->key); if (f != h->end()) f->second = std::move(it->old); }
+            else h->erase(it->key);
+        }
+    }
+    cc.undo.clear();
+    cc.check = 1024;
+}
+// A bail's undo: the log replayed backwards, then every saved container put
+// back IN PLACE (an element or an entry keeps its identity: a Proxy or a live
+// Pair that holds one still reaches it)
+void undoContainers(KConts& cc) {
+    for (auto it = cc.undo.rbegin(); it != cc.undo.rend(); ++it) {
+        switch (it->kind) {
+            case CUndo::Elem: (*static_cast<ValueList*>(it->c))[it->idx] = std::move(it->old); break;
+            case CUndo::Size: static_cast<ValueList*>(it->c)->resize(it->idx); break;
+            case CUndo::HSet: *static_cast<Value*>(it->c) = std::move(it->old); break;
+            case CUndo::HNew: static_cast<ValueHash*>(it->c)->erase(it->key); break;
+        }
+    }
+    cc.undo.clear();
+    for (size_t i = 0; i < cc.n; i++) {
+        if (auto* l = cc.savedList[i].get()) {
+            ValueList& live = *cc.conts[i]->arr();
+            live.resize(l->size());
+            for (size_t j = 0; j < l->size(); j++) live[j] = std::move((*l)[j]);
+        }
+        else if (auto* h = cc.savedHash[i].get()) {
+            ValueHash& live = *cc.conts[i]->hash();
+            std::vector<std::string> added;   // (a loop never deletes a key: it can only add)
+            for (auto& kv : live) if (h->find(kv.first) == h->end()) added.push_back(kv.first);
+            for (auto& k : added) live.erase(k);
+            for (auto& kv : *h) { auto f = live.find(kv.first); if (f != live.end()) f->second = kv.second; }
+        }
+    }
+}
+
+// Containers in place. contSlot finds the element a node names: null when it
+// is absent (an index past the end, a missing key) and `write` is false, or
+// on a bail. A write is logged before anything changes: a key or a stretch of
+// array the store creates, then what the element held.
+Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
+    const Value& c = *R.cc->conts[n->lit];
+    if (n->nargs & kCHash) {
+        ValueHash& h = *c.hash();
+        std::string& key = R.cc->key;
+        if (n->nargs & kCStrKey) key = srun(n->a, fr, R);
+        else {
+            // an Int key is its decimal text, as hashSubKey makes it
+            char buf[24];
+            char* e = buf + sizeof buf;
+            char* p = e;
+            const int64_t v = krun(n->a, fr, R);
+            uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+            do { *--p = char('0' + u % 10); u /= 10; } while (u);
+            if (v < 0) *--p = '-';
+            key.assign(p, (size_t)(e - p));
+        }
+        if (R.bail) return nullptr;
+        auto it = h.find(key);
+        if (it == h.end()) {
+            if (!write) return nullptr;
+            logWrite(*R.cc, (int)n->lit, {CUndo::HNew, 0, &h, 0, key, Value()});
+            Value& slot = h[key];
+            slot = Value::any();
+            return &slot;
+        }
+        if (write) logWrite(*R.cc, (int)n->lit, {CUndo::HSet, 0, &it->second, 0, key, it->second});
+        return &it->second;
+    }
+    ValueList& a = *c.arr();
+    const int64_t i = krun(n->a, fr, R);
+    if (R.bail) return nullptr;
+    // a negative index is an error, and a store far past the end is the
+    // generic path's to make
+    if (i < 0 || (write && (uint64_t)i > a.size() + (size_t(1) << 20))) { R.bail = true; return nullptr; }
+    if ((uint64_t)i >= a.size()) {
+        if (!write) return nullptr;
+        const size_t was = a.size();
+        logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, was, {}, Value()});
+        a.resize((size_t)i + 1);
+        for (size_t j = was; j <= (size_t)i; j++) a[j] = Value::any();
+    }
+    if (write) logWrite(*R.cc, (int)n->lit, {CUndo::Elem, 0, &a, (size_t)i, {}, a[(size_t)i]});
+    return &a[(size_t)i];
+}
+// …and the element a store may replace: a plain Int, a plain Str or a hole.
+// Anything else (a bound container, a typed value) bails — logged already,
+// so the undo puts it back unchanged.
+inline Value* contStore(const KNode* n, int64_t* fr, KRun& R) {
+    Value* el = contSlot(n, fr, R, true);
+    if (el && !plainIntValue(*el) && !plainStrValue(*el) && !plainAnyValue(*el)) { R.bail = true; return nullptr; }
+    return el;
+}
+int64_t cgetFn(const KNode* n, int64_t* fr, KRun& R) {
+    const Value* el = contSlot(n, fr, R, false);
+    if (!el || !plainIntValue(*el)) { R.bail = true; return 0; }
+    return el->i;
+}
+const std::string& scgetFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string& out = R.sfr[n->slot];
+    const Value* el = contSlot(n, fr, R, false);
+    if (!el || !plainStrValue(*el)) { R.bail = true; out.clear(); return out; }
+    out = el->s.str();
+    return out;
+}
+int64_t celemsFn(const KNode* n, int64_t*, KRun& R) {
+    const Value& c = *R.cc->conts[n->lit];
+    return (n->nargs & kCHash) ? (int64_t)c.hash()->size() : (int64_t)c.arr()->size();
+}
+int64_t csetFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t v = krun(n->b, fr, R);
+    if (R.bail) return 0;
+    Value* el = contStore(n, fr, R);
+    if (!el) return 0;
+    *el = Value::integer(v);
+    return v;
+}
+int64_t scsetFn(const KNode* n, int64_t* fr, KRun& R) {
+    const std::string& v = srun(n->b, fr, R);
+    if (R.bail) return 0;
+    std::string text = v;   // (contSlot builds a hash key over a buffer of its own)
+    Value* el = contStore(n, fr, R);
+    if (!el) return 0;
+    *el = Value::str(std::move(text));
+    return 0;
+}
+// `op=` and ++/-- on an element: a hole or a missing key starts from the
+// operator's identity (0, or 1 for `*=`), as the generic path's do
+template <KOp OP>
+int64_t cmodFn(const KNode* n, int64_t* fr, KRun& R) {
+    int64_t v = 0;
+    if constexpr (OP == KOp::CAddTo || OP == KOp::CSubTo || OP == KOp::CMulTo) {
+        v = krun(n->b, fr, R);
+        if (R.bail) return 0;
+    }
+    Value* el = contStore(n, fr, R);
+    if (!el) return 0;
+    // (a postfix one answers that identity too: `my $x; $x++` is 0)
+    const bool hole = el->t == VT::Any;
+    const int64_t old = hole ? (OP == KOp::CMulTo ? 1 : 0) : el->i;
+    long long z = 0;
+    bool ovf;
+    if constexpr (OP == KOp::CAddTo) ovf = add_ovf(old, v, &z);
+    else if constexpr (OP == KOp::CSubTo) ovf = sub_ovf(old, v, &z);
+    else if constexpr (OP == KOp::CMulTo) ovf = mul_ovf(old, v, &z);
+    else if constexpr (OP == KOp::CPreInc || OP == KOp::CPostInc) ovf = add_ovf(old, 1, &z);
+    else ovf = sub_ovf(old, 1, &z);
+    if (ovf) { R.bail = true; return 0; }
+    *el = Value::integer(z);
+    return (OP == KOp::CPostInc || OP == KOp::CPostDec) ? old : z;
+}
+int64_t csappFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string v = srun(n->b, fr, R);
+    if (R.bail) return 0;
+    Value* el = contStore(n, fr, R);
+    if (!el) return 0;
+    if (el->t == VT::Any) { *el = Value::str(std::move(v)); return 0; }
+    if (el->t != VT::Str) { R.bail = true; return 0; }
+    std::string cur = el->s.str();
+    if (allAscii(v)) cur += v;
+    else cur = nfcNormalize(cur + v);
+    *el = Value::str(std::move(cur));
+    return 0;
+}
+int64_t cpushFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t v = krun(n->a, fr, R);
+    if (R.bail) return 0;
+    ValueList& a = *R.cc->conts[n->lit]->arr();
+    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), {}, Value()});
+    a.push_back(Value::integer(v));
+    return 0;
+}
+int64_t scpushFn(const KNode* n, int64_t* fr, KRun& R) {
+    std::string v = srun(n->a, fr, R);
+    if (R.bail) return 0;
+    ValueList& a = *R.cc->conts[n->lit]->arr();
+    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), {}, Value()});
+    a.push_back(Value::str(std::move(v)));
+    return 0;
+}
+
 void link(KNode* n) {
     if (!n) return;
     link(n->a); link(n->b); link(n->c);
@@ -1886,6 +2365,21 @@ void link(KNode* n) {
         case KOp::Uc: n->sfn = caseFn<true>; break;
         case KOp::Lc: n->sfn = caseFn<false>; break;
         case KOp::Substr: n->sfn = substrFn; break;
+        case KOp::CGet: n->fn = cgetFn; break;
+        case KOp::SCGet: n->sfn = scgetFn; break;
+        case KOp::CElems: n->fn = celemsFn; break;
+        case KOp::CSet: n->fn = csetFn; break;
+        case KOp::SCSet: n->fn = scsetFn; break;
+        case KOp::CAddTo: n->fn = cmodFn<KOp::CAddTo>; break;
+        case KOp::CSubTo: n->fn = cmodFn<KOp::CSubTo>; break;
+        case KOp::CMulTo: n->fn = cmodFn<KOp::CMulTo>; break;
+        case KOp::CPreInc: n->fn = cmodFn<KOp::CPreInc>; break;
+        case KOp::CPreDec: n->fn = cmodFn<KOp::CPreDec>; break;
+        case KOp::CPostInc: n->fn = cmodFn<KOp::CPostInc>; break;
+        case KOp::CPostDec: n->fn = cmodFn<KOp::CPostDec>; break;
+        case KOp::CSApp: n->fn = csappFn; break;
+        case KOp::CPush: n->fn = cpushFn; break;
+        case KOp::SCPush: n->fn = scpushFn; break;
 #if RAKUPP_HAS_INT128
         case KOp::XVar: n->fn = xvarFn; break;
         case KOp::XLit: n->fn = xlitFn; break;
@@ -1955,6 +2449,7 @@ void* const kNeverKernel = reinterpret_cast<void*>(uintptr_t(1));
 struct LKernel {
     IKernel k;                 // the nodes; k.body is the loop; k.graph the sub kernels it calls
     std::vector<LOuter> outer; // the program's variables it copies, in slot order of discovery
+    std::vector<LCont> conts;  // the program's containers it uses in place
     std::vector<std::pair<std::string, Callable*>> calls;   // `&name` → the routine, found from the loop's scope
     int nint = 0, nstr = 0;
     std::vector<std::string> binOps;
@@ -2270,6 +2765,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             lk2->k.scope = nullptr;
             collectGraph(&lk2->k, lk2->k.graph);
             lk2->outer = std::move(cx.outer);
+            lk2->conts = std::move(cx.conts);
             lk2->nint = cx.nint;
             lk2->nstr = cx.nstr;
             lk2->binOps = cc.ops;
@@ -2323,6 +2819,20 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             if (cells[j] == cell) return notEntered("two names for one container:", o.name);
         cells[i] = cell;
     }
+    // …and its containers: still plain ones (two names for one container are
+    // fine here — every write goes to the container itself)
+    const size_t nc = L->conts.size();
+    Value* stackConts[8];
+    std::unique_ptr<Value*[]> heapConts;
+    Value** conts = nc <= 8 ? stackConts : (heapConts.reset(new Value*[nc]), heapConts.get());
+    for (size_t i = 0; i < nc; i++) {
+        Env* owner = nullptr;
+        Value* cell = outerCell(env, L->conts[i].name, &owner);
+        if (!cell) return notEntered("no container", L->conts[i].name);
+        if (!plainContainer(*cell, L->conts[i].hash))
+            return notEntered("a container of another kind:", L->conts[i].name);
+        conts[i] = cell;
+    }
     int64_t stackInts[33];   // kDenSlot first
     std::unique_ptr<int64_t[]> heapInts;
     int64_t* fr = 1 + (L->nint <= 32 ? stackInts : (heapInts.reset(new int64_t[L->nint + 1]), heapInts.get()));
@@ -2353,8 +2863,14 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         if (R.depthLeft <= 0) return false;
     }
     R.sfr = strs.get();
+    KConts kc;
+    kc.conts = conts;
+    kc.n = nc;
+    if (nc) { kc.logged.assign(nc, 0); kc.savedList.resize(nc); kc.savedHash.resize(nc); }
+    R.cc = &kc;
     krun(L->k.body, fr, R);
     if (R.bail) {
+        undoContainers(kc);
         // the loop runs again the ordinary way, from the start; one that keeps
         // bailing (its numbers outgrow int64) stops trying
         const unsigned char b = L->bails.load(std::memory_order_relaxed);
