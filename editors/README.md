@@ -1,8 +1,19 @@
 # Editor integration — the rakupp language server
 
-> **Work in progress.** Every editor integration here, the language server,
-> the VS Code extension and the Emacs setup, is still being built: features
-> are missing, and what is there can change between releases.
+What is in this directory:
+
+- [`vscode/`](vscode/): the VS Code extension, a client for `rakupp --lsp`.
+- [`emacs/`](emacs/): Emacs setups for eglot and lsp-mode.
+- [`wordpress/`](wordpress/): Raku Snippets, a WordPress plugin that makes
+  Raku code blocks in posts runnable in the reader's browser with raku.js. It
+  needs no `rakupp` binary; the page for users is
+  [raku.online/embed/wordpress](https://raku.online/embed/wordpress/).
+
+The rest of this page is about the first two and the server behind them.
+
+> **Work in progress.** The language server, the VS Code extension and the
+> Emacs setup are still being built: features are missing, and what is there
+> can change between releases.
 
 > **Using it?** The user guide is
 > [docs/guide/integrations/LSP.md](../docs/guide/integrations/LSP.md): VS Code

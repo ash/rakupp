@@ -13,6 +13,7 @@ side.
 | An AI agent (Claude Code, Claude Desktop, Cursor, …) that can run Raku and parse with grammars | `rakupp --mcp` | Model Context Protocol | [MCP.md](MCP.md) |
 | Raku cells in JupyterLab, Notebook, `jupyter console` or VS Code notebooks | `rakupp --jupyter-install`, then pick **Raku++** | Jupyter messaging over ZMTP | [JUPYTER.md](JUPYTER.md) |
 | Raku called from Mathematica or the Wolfram Engine | ``Get["RakuLang.wl"]`` | the Wolfram FFI over `librakupp` | [bindings/wolfram](../../../bindings/wolfram/README.md) |
+| Runnable Raku code blocks in WordPress posts | the Raku Snippets plugin; class `raku` on a block | Raku.js (WebAssembly) in the reader's browser | [raku.online/embed/wordpress](https://raku.online/embed/wordpress/); source: [editors/wordpress](../../../editors/wordpress/README.md) |
 
 The first three run `rakupp` as a separate process. The Wolfram Language
 package loads the engine into its own process as a library instead, which
@@ -20,5 +21,9 @@ makes it one of the [language bindings](../../../bindings/README.md), alongside
 Python, JavaScript, Go, Rust and C++. All of them are built on the C API in
 [EMBEDDING.md](../EMBEDDING.md), which also lets you embed Raku in your own C
 or C++ program.
+
+The WordPress plugin runs nothing on the server at all: it loads
+[raku.js](https://raku.online/embed/) on the posts that need it, and the
+programs run in each reader's browser.
 
 The command-line flags for each mode are also in [CLI.md](../CLI.md#serving).
