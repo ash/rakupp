@@ -7536,16 +7536,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // matters when a positional argument is actually present — which,
                 // for the default constructor, is the error case and not the
                 // common one.
+                // (a Pair passed POSITIONALLY — `Plain.new($pair)` — is a
+                // positional too: only a named argument is one)
                 bool anyPositional = false;
                 for (auto& arg : args)
-                    if (arg.t != VT::Pair) { anyPositional = true; break; }
+                    if (!(arg.t == VT::Pair && arg.namedArg)) { anyPositional = true; break; }
                 // (a BUILD does not change that: Mu.new passes it NAMED arguments only)
                 // …and neither does a user `multi method new` none of whose
                 // candidates took these arguments: the call falls through to
                 // Mu.new, which refuses the positionals (workout.t's Vector)
                 if (anyPositional && !nativeBased)
                     for (auto& arg : args)
-                        if (arg.t != VT::Pair)
+                        if (!(arg.t == VT::Pair && arg.namedArg))
                             throwTypedV("X::Constructor::Positional",
                                         {{"type", Value::typeObj(ci->name)}},
                                         "Default constructor for '" + ci->name +

@@ -174,6 +174,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
     // first argument and binds `self`, exactly as a declared one does.
     code.code()->isMethod = be->isMethodTerm;
+    code.code()->isSubmethod = be->isSubmethodTerm;
     // a NAMED sub term keeps its name: `my $s = sub bar {}` and
     // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
     if (!be->termName.empty()) code.code()->name = be->termName;
@@ -1923,9 +1924,17 @@ bool Interpreter::exprHasWhateverLit(const Expr* e) {
             return c->args.size() == 2 && c->name.rfind("infix:<", 0) == 0 &&
                    (exprHasWhateverLit(c->args[0].get()) || exprHasWhateverLit(c->args[1].get()));
         }
-        case NK::MethodCall:
-            if (static_cast<const MethodCall*>(e)->curryClosed) return false;
-            return exprHasWhateverLit(static_cast<const MethodCall*>(e)->inv.get());
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (m->curryClosed) return false;
+            // a MACRO (`.WHAT` `.WHO` `.HOW` `.VAR` `.WHERE`) answers directly,
+            // so the curry stops there: `(* + 1).VAR.^name` is WhateverCode
+            if (!m->meta && !m->methodExpr &&
+                (m->method == "WHAT" || m->method == "WHO" || m->method == "HOW" ||
+                 m->method == "VAR" || m->method == "WHERE"))
+                return false;
+            return exprHasWhateverLit(m->inv.get());
+        }
         case NK::Index: return exprHasWhateverLit(static_cast<const Index*>(e)->base.get());
         case NK::ChainExpr: {
             auto* c = static_cast<const ChainExpr*>(e);

@@ -3414,6 +3414,13 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     if (out.empty()) return false;
     const Token& pv = out.back();
     if (pv.kind == Tok::Op && (pv.text == "." || pv.text == ".&" || pv.text == "->")) return true;
+    // …and after the dispatch-modifier forms `.*` `.+` `.?` `.^` `.=`, whose
+    // name is a METHOD too: `$obj.*m;` must not open an `m;…;` match
+    if (pv.kind == Tok::Op && !spaced && out.size() >= 2 &&
+        (pv.text == "*" || pv.text == "+" || pv.text == "?" || pv.text == "^" || pv.text == "=")) {
+        const Token& dot = out[out.size() - 2];
+        if (dot.kind == Tok::Op && dot.text == "." && !pv.spaceBefore) return true;
+    }
     // A name TIGHT after ':' is an adverb pair — `:y(2)` is y => 2, never a `y///`
     // transliteration; `:q<x>` is q => 'x'. (A spaced `$fh.say: q/hi/` stays a quote.)
     if (pv.kind == Tok::Op && pv.text == ":" && !spaced) return true;
@@ -4169,6 +4176,35 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         // (…but never inside a `< … >` word list, where every word is a word:
         // `<⁰ ¹ ² ³>` is four strings, not `⁰ ** 123`.)
         if (!inAngle && !out.empty() && (unsigned char)c >= 0x80) {
+            // …and the METHOD spelling of the same postfix, `2.²` / `$x.²`: the
+            // dot goes, and the term before it is the base
+            // …and with no term before the dot, `.³`, the topic is the base
+            if (!spaced && out.back().kind == Tok::Op && out.back().text == "." &&
+                superscriptChar(codepointHere())) {
+                Tok bk = out.size() >= 2 ? out[out.size() - 2].kind : Tok::Semicolon;
+                // (a SPACED dot is a topic call however the word before it
+                // reads: `say .²` squares $_)
+                if (!out.back().spaceBefore &&
+                    (bk == Tok::IntLit || bk == Tok::NumLit || bk == Tok::Var || bk == Tok::RParen ||
+                     bk == Tok::RBracket || bk == Tok::Ident || bk == Tok::StrLit || bk == Tok::StrInterp)) {
+                    out.pop_back();
+                    // `2².³` is (2²)³: the method form applies to the power
+                    // already written, where a bare `**` would associate right
+                    const size_t z = out.size();
+                    if (z >= 3 && out[z - 2].kind == Tok::Op && out[z - 2].text == "**" &&
+                        (out[z - 3].kind == Tok::IntLit || out[z - 3].kind == Tok::NumLit ||
+                         out[z - 3].kind == Tok::Var)) {
+                        Token lp = make(Tok::LParen, "("); lp.spaceBefore = out[z - 3].spaceBefore;
+                        out[z - 3].spaceBefore = false;
+                        out.insert(out.end() - 3, lp);
+                        Token rp = make(Tok::RParen, ")"); rp.spaceBefore = false; out.push_back(rp);
+                    }
+                }
+                else {
+                    const bool sb = out.back().spaceBefore;
+                    out.back() = make(Tok::Var, "$_"); out.back().spaceBefore = sb;
+                }
+            }
             Tok lk = out.back().kind;
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
                              lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||

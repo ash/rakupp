@@ -1270,6 +1270,7 @@ std::string Value::typeName() const {
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
         case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
                              : code() && code()->isRegexRoutine ? "Regex"
+                             : code() && code()->isSubmethod ? "Submethod"
                              : code() && code()->isMethod ? "Method" : code() && code()->isBlock ? "Block" : "Sub";
         case VT::Rat:   return fatRat() ? "FatRat" : "Rat";
         case VT::Range: return "Range";

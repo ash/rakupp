@@ -5060,7 +5060,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     // `my sub {42}()` — an anonymous sub expression under `my` is just the sub
     // term; `my $p = my package X {}` routes type declarations the same way
     if (isKind(Tok::Ident) &&
-        (((cur().text == "sub" || cur().text == "method") &&
+        (((cur().text == "sub" || cur().text == "method" || cur().text == "submethod") &&
           (peek().kind == Tok::LBrace || peek().kind == Tok::LParen ||
            (peek().kind == Tok::Ident &&
             (peek(2).kind == Tok::LBrace || peek(2).kind == Tok::LParen ||
@@ -7161,18 +7161,27 @@ ExprPtr Parser::parsePrimary() {
                 else { advance(); w = readAngleWords("\xC2\xBB"); }
                 symSuffix = ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
             }
+            // (`@.name: …` / `%.name(…)` are the same call in list / hash
+            // context: `@(self.name(…))`)
             bool dotColonCall = symSuffix.empty() &&
-                                raw.size() > 2 && raw[0] == '$' && raw[1] == '.' &&
+                                raw.size() > 2 && (raw[0] == '$' || raw[0] == '@' || raw[0] == '%') && raw[1] == '.' &&
                                 isOp(":") && !cur().spaceBefore &&
                                 peek().kind != Tok::RParen && peek().kind != Tok::Semicolon &&
+                                peek().kind != Tok::RBrace &&
                                 !(peek().kind == Tok::Op && peek().text == "=");
+            // …and with NOTHING after the colon, `@.seven: }`: a call with no
+            // arguments (Rakudo-checked), where the colon used to be left over
+            const bool dotColonEmpty = !dotColonCall && symSuffix.empty() && raw.size() > 2 &&
+                                       (raw[0] == '$' || raw[0] == '@' || raw[0] == '%') && raw[1] == '.' &&
+                                       isOp(":") && !cur().spaceBefore && peek().kind == Tok::RBrace;
+            if (dotColonEmpty) advance();   // :
             // …and `&.name(ARGS)` is the same call: the `&` sigil says the result
             // is wanted as a Callable, not that the name IS one. PDF::COS::Tie
             // coerces an assigned value with `&.coerce($_, :$.reader)`, which
             // read as a variable lookup followed by an invocation of whatever it
             // answered ("Cannot invoke non-Callable value of type Str").
-            if (raw.size() > 2 && (raw[0] == '$' || raw[0] == '&') && raw[1] == '.' &&
-                (!symSuffix.empty() || (isKind(Tok::LParen) && !cur().spaceBefore) || dotColonCall)) {
+            if (raw.size() > 2 && (raw[0] == '$' || raw[0] == '&' || raw[0] == '@' || raw[0] == '%') && raw[1] == '.' &&
+                (!symSuffix.empty() || (isKind(Tok::LParen) && !cur().spaceBefore) || dotColonCall || dotColonEmpty)) {
                 bool paren = isKind(Tok::LParen) && !cur().spaceBefore;
                 if (paren || dotColonCall) advance(); // ( or :
                 auto mc = std::make_unique<MethodCall>();
@@ -7190,6 +7199,12 @@ ExprPtr Parser::parsePrimary() {
                         break;
                     }
                 if (paren) expectKind(Tok::RParen, ")");
+                if (raw[0] == '@' || raw[0] == '%') {
+                    auto u = std::make_unique<Unary>();
+                    u->op = raw[0] == '@' ? "ctx@" : "ctx%";
+                    u->operand = std::move(mc);
+                    return u;
+                }
                 return mc;
             }
             // `$MY::x`, `$UNIT::x`, `$OUTERS::x`, and every CHAIN
@@ -7666,13 +7681,17 @@ ExprPtr Parser::parsePrimary() {
                     // A reduction metaop is a list-prefix: its argument needs whitespace
                     // (`[+] @a`) or the parenthesised function form (`[+](@a)`). A term
                     // glued directly to `]` — `[+]@a` — is Confused.
-                    if (!cur().spaceBefore && !isKind(Tok::LParen) && !isKind(Tok::Comma) &&
+                    // …but a method call glued on, `[+].^name`, is a call on the
+                    // ZERO-operand reduction (Rakudo: Int, the identity 0)
+                    const bool dotCall = !cur().spaceBefore && isKind(Tok::Op) &&
+                                         !cur().text.empty() && cur().text[0] == '.';
+                    if (!dotCall && !cur().spaceBefore && !isKind(Tok::LParen) && !isKind(Tok::Comma) &&
                         !isKind(Tok::RParen) && !isKind(Tok::RBracket) && !isKind(Tok::Semicolon) &&
                         !isKind(Tok::End) && startsTermToken(cur()))
                         throw ParseError("Confused (whitespace required before a reduction metaop's argument) (X::Syntax::Confused)", cur().line);
                     // the zero-argument forms: `([op])`, and `([op], 42)` — a comma
                     // right after it ends the (empty) reduction: that is `(0, 42)`
-                    if (isKind(Tok::Comma) || isKind(Tok::RParen) || isKind(Tok::Semicolon) || isKind(Tok::End)) {
+                    if (dotCall || isKind(Tok::Comma) || isKind(Tok::RParen) || isKind(Tok::Semicolon) || isKind(Tok::End)) {
                         auto empty = std::make_unique<ListExpr>();
                         u->operand = std::move(empty);
                     }
@@ -8457,12 +8476,13 @@ ExprPtr Parser::parsePrimary() {
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
                 return u;
             }
-            if ((name == "sub" || name == "method") && !kwCallHere(name)) {
+            if ((name == "sub" || name == "method" || name == "submethod") && !kwCallHere(name)) {
                 advance();
                 auto be = std::make_unique<BlockExpr>();
                 be->pod = leadingPodAt(pos_ - 1); be->podLine = cur().line;
                 be->isSub = true; // `sub {…}` as a term is a Sub, not a bare Block
-                be->isMethodTerm = name == "method"; // …and a method binds `self`
+                be->isMethodTerm = name == "method" || name == "submethod"; // …and a method binds `self`
+                be->isSubmethodTerm = name == "submethod";
                 if (isKind(Tok::Ident))     // optional name: `(sub bar {}).name` is "bar"
                     be->termName = advance().text;
                 ExprPtr subRetLit;   // `sub (--> 5) { … }`: the literal is the value
@@ -9937,6 +9957,33 @@ static std::string scanInterpBlock(const std::string& raw, size_t& j,
 }
 
 
+// The argument list of a call inside an interpolated string, from just past
+// its `(` (depth `d` already 1): copied into `var` up to and including the
+// matching `)`. A quoted argument is CODE, so a `)` inside one closes nothing —
+// `"$s.subst(")", "-")"` (the lexer reads the same group the same way). A
+// quote that never closes falls back to the plain paren count.
+static size_t interpCallArgsEnd(const std::string& raw, size_t j, int& d, std::string& var) {
+    const size_t n = raw.size();
+    size_t k = j; int dd = d;
+    while (k < n && dd > 0) {
+        const char ch = raw[k];
+        if (ch == '\\' && k + 1 < n) { k += 2; continue; }
+        if (ch == '"' || ch == '\'') {
+            size_t e = k + 1;
+            while (e < n && raw[e] != ch) e += raw[e] == '\\' ? 2 : 1;
+            if (e >= n) { k = std::string::npos; break; }
+            k = e + 1;
+            continue;
+        }
+        if (ch == '(') dd++;
+        else if (ch == ')') dd--;
+        k++;
+    }
+    if (k != std::string::npos && dd == 0) { var.append(raw, j, k - j); d = 0; return k; }
+    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+    return j;
+}
+
 ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     // interpolation-feature prefix from quoting adverbs (q:c / Q:s / qq:!s):
     // "\x02feats\x02" — s=scalars a=arrays h=hashes f=&calls c={blocks} b=backslashes
@@ -10241,7 +10288,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // argument list still fails to parse and falls back to literal
                 // text, which is what keeps `"$name(see note)"` printing.
                 int d = 1; var += raw[j++];
-                while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                j = interpCallArgsEnd(raw, j, d, var);
                 commit();
             } else if (j + 1 < n && ((raw[j] == '<' && raw[j + 1] == '<') ||
                                      ((unsigned char)raw[j] == 0xC2 && (unsigned char)raw[j + 1] == 0xAB))) {
@@ -10270,7 +10317,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 var += raw.substr(j, qe + 1 - j);
                 j = qe + 1;
                 int d = 1; var += raw[j++];
-                while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                j = interpCallArgsEnd(raw, j, d, var);
                 commit();
             } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '[' || raw[j+1] == '{' || raw[j+1] == '(')) {
                 var += raw[j++]; // .
@@ -10303,7 +10350,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 }
                 if (j < n && raw[j] == '(') {
                     int d = 1; var += raw[j++];
-                    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
+                    j = interpCallArgsEnd(raw, j, d, var);
                     commit();
                 }
                 // else: leave uncommitted; a later link in the chain may still commit it
@@ -12810,6 +12857,21 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             else if ((s->retType == "Positional" || s->retType == "Array" || s->retType == "List") &&
                      ascii::isupper((unsigned char)cur().text[0]))
                 s->retType += "[" + cur().text + "]";   // `returns Positional of Int` is Positional[Int]
+        } else if ((isIdent("of") || isIdent("returns")) && peek().kind == Tok::Op && peek().text == "::" &&
+                   peek(2).kind == Tok::Op && peek(2).text == "?" && peek(3).kind == Tok::Ident &&
+                   (peek(3).text == "CLASS" || peek(3).text == "ROLE")) {
+            // `returns ::?CLASS` / `of ::?ROLE:D` — the enclosing type, as
+            // `has ::?CLASS $.x` reads it
+            advance(); advance(); advance();                    // returns :: ?
+            const std::string which = advance().text;           // CLASS / ROLE
+            const std::string tn = which == "ROLE" ? enclosingRoleName()
+                                 : typeStack_.empty() ? std::string() : typeStack_.back();
+            if (s->retType.empty() && !tn.empty()) s->retType = tn;
+            if (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
+                (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
+                advance(); advance();   // the smiley: read, not yet checked on return
+            }
+            continue;
         } else if (isIdent("returns") && peek().kind != Tok::Ident && peek().kind != Tok::Var &&
                    peek().kind != Tok::LBrace) {
             // `returns !!!wtf???` — no type after the trait

@@ -4762,6 +4762,24 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         }
         case NK::ClassDecl: {
             auto* cd = static_cast<ClassDecl*>(s);
+            // A `my class` declared inside a ROUTINE is named under the package
+            // that routine belongs to: `class Q { method b { my class X {} } }`
+            // makes Q::X, as Rakudo names it (and a module sub's, M::Z). The
+            // call does not carry the package along, so it is taken from the
+            // running routine for the length of this declaration.
+            struct RoutinePkgPrefix {
+                std::string& p; std::string saved; bool on = false;
+                explicit RoutinePkgPrefix(std::string& x) : p(x) {}
+                ~RoutinePkgPrefix() { if (on) p = std::move(saved); }
+            } routinePkg(tctx_.pkgPrefix);
+            if (cd->isMy && !cd->isAugment && !cd->name.empty() && cd->name.find("::") == std::string::npos &&
+                tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code()) {
+                const std::string& pk = tctx_.curRoutineVal->code()->pkg;
+                if (!pk.empty() && pk != "GLOBAL" && tctx_.pkgPrefix != pk + "::") {
+                    routinePkg.saved = tctx_.pkgPrefix; routinePkg.on = true;
+                    tctx_.pkgPrefix = pk + "::";
+                }
+            }
             // one name, two ONLY methods (or two tokens) in one package is a
             // redeclaration — `multi` candidates and a proto's `:sym<…>` are not
             if (!hoistingSubs_) {

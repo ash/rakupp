@@ -4,6 +4,8 @@
 
 namespace rakupp {
 Value arrayMissingDefaultPublic(const Value& base);
+Value coerceHash(const Value& v, bool store, bool objKeyed);
+Value coerceArray(const Value& v, bool nativeTarget);
 
 // One element of a .flat: append x (or its spread) to out. Shared by the eager
 // arm and the lazy view over an endless source (issue #30 follow-up) — the
@@ -1369,6 +1371,25 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (inv.hash() && nv.hash()) { *inv.hash() = *nv.hash(); return inv; }
         return nv;
+    }
+    // `%h.STORE(list)` / `@a.STORE(list)` — what `%h = list` and `@a = list` do,
+    // into the SAME container (an alias sees it), answering the container.
+    // (`:INITIALIZE` changes nothing for a plain one.)
+    if (m == "STORE" && ((inv.t == VT::Hash && inv.hash() && (inv.hashKind.empty() || inv.hashKind == "Map")) ||
+                         (inv.t == VT::Array && inv.arr() && !inv.isList && inv.hashKind.empty()))) {
+        ValueList pos;
+        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+        if (pos.size() == 1) {
+            if (inv.t == VT::Hash) {
+                Value nv = coerceHash(pos[0], /*store=*/true, inv.objKeyed);
+                if (nv.hash()) *inv.hash() = *nv.hash();
+            }
+            else {
+                Value nv = coerceArray(pos[0], false);
+                if (nv.arr()) *inv.arr() = *nv.arr();
+            }
+            return inv;
+        }
     }
     // %h.Capture — a Capture whose named part is the hash's pairs
     if (inv.t == VT::Hash && m == "Capture" &&

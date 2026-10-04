@@ -278,7 +278,7 @@ template <class IO> void visit(IO& io, PairExpr& n) { F(io, n.key); F(io, n.colo
                                                       F(io, n.parenned);   // ( :k(v) ) is POSITIONAL
                                                       ioExpr(io, n.keyExpr); ioExpr(io, n.value); }
 template <class IO> void visit(IO& io, BlockExpr& n){ ioParams(io, n.params); ioStmtVec(io, n.body);
-                                                      F(io, n.isSub); F(io, n.isMethodTerm); F(io, n.isPointy);
+                                                      F(io, n.isSub); F(io, n.isMethodTerm); F(io, n.isSubmethodTerm); F(io, n.isPointy);
                                                       F(io, n.phaser);
                                                       F(io, n.retType);
                                                       // `is rw` on an ANONYMOUS routine term, consumed by the

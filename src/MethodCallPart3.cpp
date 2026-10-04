@@ -213,6 +213,20 @@ static long long combLimit(Interpreter& I, const Value& v, bool strict, bool& no
     return n;
 }
 
+// A Code value is not Cool: `$block.abs` has no such method (Rakudo), where
+// the generic numeric arm of methodCallPart3 numified the block and answered
+// a number.
+static void refuseNumericOnCode(Interpreter& I, const Value& inv, const std::string& m) {
+    static const std::set<std::string> kNumOnly = {
+        "abs", "sqrt", "floor", "ceiling", "round", "truncate", "sign", "exp", "log",
+        "log10", "log2", "sin", "cos", "tan"};
+    if (kNumOnly.count(m))
+        I.throwTypedV("X::Method::NotFound",
+                      {{"method", Value::str(m)}, {"typename", Value::str(inv.typeName())},
+                       {"private", Value::boolean(false)}},
+                      "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -374,7 +388,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             "exp", "log", "log10", "log2", "chr", "is-prime"};
         if (kNumifiesInv.has(m)) numifyStrOrThrow(inv.toStr());
     }
-    // numeric
+    if (inv.t == VT::Code && inv.code()) refuseNumericOnCode(*this, inv, m);   // numeric
     // `Int.abs` / `UInt.abs`: the method wants an INSTANCE (UInt's is Int's)
     if (m == "abs" && inv.t == VT::Type &&
         (inv.s == "Int" || inv.s == "UInt" || inv.s == "Num" || inv.s == "Rat" || inv.s == "Complex")) {

@@ -5699,7 +5699,9 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 ci.plainNewKey = k;
             }
             bool named = k & 1;
-            for (auto& a : args) if (a.t != VT::Pair) { named = false; break; }
+            // (a Pair passed POSITIONALLY is not a named argument: the general
+            // path refuses it, as Rakudo's default constructor does)
+            for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) { named = false; break; }
             if (named) {
                 ExecContext& t = tctx_;
                 const bool armed = t.ctorCatchSkip;   // an outer `.new` of this same call armed it
@@ -7458,18 +7460,30 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return invokeMethod(*f, inv, std::move(args), rwArgs);
     }
     builtinExtFallthrough:;
-    // Any is not Cool: string methods on an UNDEFINED invocant die in Rakudo
-    // ("Cannot resolve caller split(Any:U: …)"), typically after `prompt`/`get`
-    // hit EOF. Everything else on Any stays lenient.
-    if (inv.t == VT::Any) {
+    // Any is not Cool: string methods on an UNDEFINED invocant die in Rakudo,
+    // typically after `prompt`/`get` hit EOF — X::Method::NotFound, "No such
+    // method 'comb' for invocant of type 'Any'" (`split` alone is a sub-level
+    // multi there, with its own "Cannot resolve caller"). Everything else on
+    // Any stays lenient.
+    // (…and on Mu, which has no more of the Cool surface than Any does)
+    if (inv.t == VT::Any || (inv.t == VT::Type && inv.s == "Mu")) {
         static const std::set<std::string> strOnUndef = {
             "split", "comb", "words", "chars", "codes", "lc", "uc", "tc", "fc",
             "tclc", "wordcase", "flip", "substr", "subst", "trans", "index",
             "rindex", "starts-with", "ends-with", "contains", "match", "base",
-            "ord", "ords", "encode", "parse-base"};
+            "ord", "ords", "encode", "parse-base",
+            "trim", "trim-leading", "trim-trailing", "chomp", "chop", "bytes", "lines",
+            "indent", "samecase", "sprintf", "chr", "IO", "Rat",
+            "abs", "sqrt", "floor", "ceiling", "round", "sign", "exp", "log", "sin", "cos"};
+        const std::string tyName = inv.t == VT::Any ? "Any" : "Mu";
+        if (m == "split")
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                "Cannot resolve caller split(" + tyName + ":U); the invocant is a type object, not an instance"};
         if (strOnUndef.count(m))
-            throw RakuError{Value::typeObj("X::Method::NotFound"),
-                "Cannot resolve caller " + m + "(Any:U); the invocant is a type object, not an instance"};
+            throwTypedV("X::Method::NotFound",
+                        {{"method", Value::str(m)}, {"typename", Value::str(tyName)},
+                         {"private", Value::boolean(false)}},
+                        "No such method '" + (const std::string&)m + "' for invocant of type '" + tyName + "'");
     }
     // CompUnit — what `$*REPO.need(…)` answers. A module loaded from source is
     // held in the precomp cache (a serialized tree) once compiled, so it
@@ -7638,6 +7652,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // Nil numifies to the INT zero, as `.Int` already did — `.Numeric` went
         // through the generic Num path and answered `0e0` (Nil-Any sheet NA-08).
         if (m == "Numeric" || m == "Real") return Value::integer(0);
+        // …and the integer-valued rounding methods on that zero answer the Int
+        // 0 too, with the numeric-context warning (`Nil.abs` was 0e0)
+        if (m == "abs" || m == "floor" || m == "ceiling" || m == "round" ||
+            m == "truncate" || m == "sign") {
+            warnUninitNum(inv);
+            return Value::integer(0);
+        }
         // `.ACCEPTS` is the one question Nil answers rather than absorbs: it
         // is what `$x ~~ Nil` asks, and returning Nil for it made the
         // smartmatch neither true nor false. Only Nil itself — and a Failure,
@@ -8000,7 +8021,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // …except the CORE types' own method surface, which is known: a
         // table per type, walked along the built-in MRO (Any and Mu only
         // under :all, as Rakudo's .^methods does)
-        if ((mm == "methods" || mm == "method_names") &&
+        if ((mm == "methods" || mm == "method_names" || mm == "method_table") &&
             !(tobj.t == VT::Type && classes_.count(resolveClassAlias(tobj.s)))) {
             static const std::map<std::string, std::vector<const char*>> kCoreMethods = {
                 {"Mu", {"ACCEPTS", "WHICH", "WHERE", "WHY", "Bool", "Str", "Stringy", "gist", "raku",
@@ -8038,15 +8059,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                          "samemark", "wordcase", "succ", "pred", "Date", "DateTime", "IO",
                          "leading-whitespace", "trailing-whitespace", "is-whitespace"}},
                 {"Int", {"Bool", "Int", "Num", "Rat", "Str", "Range", "chr", "expmod", "is-prime",
-                         "lsb", "msb", "pred", "succ", "polymod", "sqrt-rem"}},
-                {"Num", {"Bool", "Int", "Num", "Rat", "Str", "Range", "pred", "succ", "rand"}},
+                         "lsb", "msb", "pred", "succ", "polymod", "sqrt-rem",
+                         "abs", "ceiling", "floor", "round", "truncate", "sign", "sqrt", "exp", "log", "log10", "log2",
+                         "sin", "cos", "tan", "atan2", "base", "conj", "narrow", "Complex", "FatRat",
+                         "Numeric", "Real", "isNaN"}},
+                {"Num", {"Bool", "Int", "Num", "Rat", "Str", "Range", "pred", "succ", "rand",
+                         "abs", "ceiling", "floor", "round", "truncate", "sign", "sqrt", "exp", "log", "log10", "log2",
+                         "sin", "cos", "tan", "atan2", "base", "conj", "narrow", "Complex", "FatRat",
+                         "Numeric", "Real", "isNaN"}},
                 {"Rat", {"Bool", "Int", "Num", "Rat", "Str", "nude", "numerator", "denominator",
                          "norm", "base-repeating", "round", "floor", "ceiling", "log", "succ", "pred",
                          "isNaN", "raku", "FatRat"}},
                 {"Map", {"AT-KEY", "EXISTS-KEY", "keys", "values", "kv", "pairs", "antipairs",
                          "elems", "Bool", "Str", "gist", "raku", "Hash", "Map", "invert"}},
                 {"Hash", {"ASSIGN-KEY", "BIND-KEY", "DELETE-KEY", "STORE", "classify-list",
-                          "categorize-list", "default", "dynamic", "keyof", "of", "push", "append"}},
+                          "categorize-list", "default", "dynamic", "keyof", "of", "push", "append",
+                          "AT-KEY", "Hash", "Map", "Str", "gist", "raku", "clone", "WHICH"}},
                 {"Range", {"min", "max", "bounds", "excludes-min", "excludes-max", "infinite",
                            "is-int", "elems", "list", "minmax", "rand", "reverse"}},
                 {"Seq", {"iterator", "cache", "is-lazy", "eager", "sink", "List", "Slip", "list"}},
@@ -8062,7 +8090,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             std::string tn = tobj.t == VT::Type ? tobj.s.str() : inv.typeName();
             auto mro = kCoreMro.find(tn);
             if (mro != kCoreMro.end()) {
-                bool all = false, local = mm == "method_names";
+                // (.^method_table is the LOCAL table as a Hash, name => Method)
+                bool all = false, local = mm == "method_names" || mm == "method_table";
                 for (auto& a : args) if (a.t == VT::Pair) {
                     if (a.s == "all") all = a.pairVal() ? a.pairVal()->truthy() : true;
                     if (a.s == "local") local = a.pairVal() ? a.pairVal()->truthy() : true;
@@ -8088,6 +8117,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             o.arr()->push_back(code);
                         }
                     if (local) break;
+                }
+                if (mm == "method_table") {
+                    Value t = Value::makeHash();
+                    for (auto& c : *o.arr()) (*t.hash())[c.code()->name] = c;
+                    return t;
                 }
                 return o;
             }
@@ -8847,7 +8881,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     // `Bool.enums` — the built-in enum's Map
-    if (inv.t == VT::Type && inv.s == "Bool" && m == "enums") {
+    if (((inv.t == VT::Type && inv.s == "Bool") || inv.t == VT::Bool) && m == "enums") {   // `True.enums` too
         Value mp = Value::makeHash(); mp.hashKind = "Map";
         (*mp.hash())["False"] = Value::integer(0);
         (*mp.hash())["True"] = Value::integer(1);

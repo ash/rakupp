@@ -5664,7 +5664,9 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
                               (type == "Routine" && !(arg.code() && (arg.code()->isBlock || arg.code()->isWhateverCode))) ||
                               (type == "Sub" && !(arg.code() && (arg.code()->isBlock || arg.code()->isWhateverCode ||
                                                                  arg.code()->isMethod))) ||
-                              (type == "Method" && arg.code() && arg.code()->isMethod) || // a method is a Method, not just a Sub
+                              (type == "Method" && arg.code() && arg.code()->isMethod && !arg.code()->isSubmethod) || // a method is a Method, not just a Sub
+                              // …and a submethod is a Submethod, which is a Routine but no Method
+                              (type == "Submethod" && arg.code() && arg.code()->isSubmethod) ||
                               // …and a curried `*-1` is a WhateverCode, which this
                               // list did not name at all: `sub f(WhateverCode:D $x)`
                               // called with `*-0` failed its own bind with "expected
@@ -18731,7 +18733,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                   // conforms to every one of them.
                   (l.t == VT::Code && (r.s == "Code" || r.s == "Callable" ||
                    r.s == "Routine" || r.s == "Block" ||
-                   (r.s == "Method" && l.code() && l.code()->isMethod) ||
+                   (r.s == "Method" && l.code() && l.code()->isMethod && !l.code()->isSubmethod) ||
+                   (r.s == "Submethod" && l.code() && l.code()->isSubmethod) ||
                    (r.s == "WhateverCode" && l.code() && l.code()->isWhateverCode))) ||
                   // a Regex is a Method: Routine, Block, Code, Callable
                   (l.t == VT::Regex && (r.s == "Code" || r.s == "Callable" || r.s == "Method" ||
@@ -29927,6 +29930,15 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     tctx_.rwInvocantExpr = mc->inv.get();
     if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
         Value mv = eval(mc->methodExpr.get());
+        // `.$var` is an INVOCATION of what the variable holds, never a method
+        // lookup by name: a Str there is a string being called (Rakudo:
+        // "No such method 'CALL-ME' for string 'uc'"). Only `."$name"()`
+        // names a method.
+        if (mv.t == VT::Str && mc->methodExpr->kind == NK::VarExpr && !mv.isAllomorph())
+            throwTypedV("X::Method::NotFound",
+                        {{"method", Value::str("CALL-ME")}, {"typename", Value::str("Str")},
+                         {"private", Value::boolean(false)}},
+                        "No such method 'CALL-ME' for string '" + mv.toStr() + "'");
         // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to
         // `$foo($invocant)`, so `$value.$ct` with `my $ct = Rat` is the
         // COERCION Rat($value) — which is how DBDish::SQLite types every
@@ -30599,7 +30611,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // the Whatever's own identity handed `map` a Str (sheet LA-32).
     // Measured on Rakudo 2026.08: `*.WHAT`, `*.WHO`, `*.HOW`, `*.VAR`
     // answer directly; `*.WHICH` and `*.WHY` are WhateverCodes.
-    static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR"};
+    static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR", "WHERE"};
     // …and a COMPOSED WhateverCode takes the same rule as a bare `*`:
     // `(* < 1).^name` is a WhateverCode on Rakudo, where we answered the
     // Str "WhateverCode" because a meta call on one was excluded here.

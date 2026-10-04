@@ -818,6 +818,7 @@ struct BlockExpr : Expr {
     std::vector<StmtPtr> body;
     bool isSub = false;        // anonymous `sub {…}` / `method {…}` term — a Sub, not a Block
     bool isMethodTerm = false; // …and `method {…}` in particular takes an invocant
+    bool isSubmethodTerm = false; // `submethod (…) {…}` as a term: a Submethod
     bool isPointy = false;     // `-> {…}` / `<-> {…}` — a WRITTEN signature, even an empty one
     bool sigParens = false;    // `sub () {…}` — an anonymous routine that WROTE its (maybe empty) signature
     std::string termName;      // `method m1(…) {…}` as a TERM still names (and, in a class, adds) the method
