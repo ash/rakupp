@@ -2974,7 +2974,15 @@ Token Lexer::lexIdentOrVar() {
             }
         }
         static const std::string p5punct = "\"$;&`',.\\|?@";
-        if (c1 && p5punct.find(c1) != std::string::npos && p5AssignAhead(2)) {
+        // …except `$? = 7` OPENING a parameter, `sub f($? = 7)`: an anonymous
+        // optional with a default, right after the `(` or `,` that starts it
+        bool paramStart = false;
+        if (c1 == '?') {
+            size_t b = pos_;
+            while (b > 0 && (src_[b - 1] == ' ' || src_[b - 1] == '\t')) b--;
+            paramStart = b > 0 && (src_[b - 1] == '(' || src_[b - 1] == ',');
+        }
+        if (c1 && !paramStart && p5punct.find(c1) != std::string::npos && p5AssignAhead(2)) {
             std::string sugg = c1 == '\\'
                 ? "; in Raku please use the .nl-out attribute on a filehandle"
                 : "; in Raku please use a different construct";

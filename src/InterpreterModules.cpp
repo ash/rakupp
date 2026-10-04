@@ -7750,7 +7750,7 @@ int Interpreter::run(Program& prog) {
                             global_->define(ve0->name, makeShapedContainer(evalShapeDims(ve0->declShape.get()), ve0->declType));
                         if (ve0->declDefault) {
                             Value dv = eval(ve0->declDefault.get());
-                            checkDeclDefault(ve0->declType, ve0->name[0], dv, false);
+                            checkDeclDefault(ve0->declType, ve0->name[0], dv, false, ve0->declSmiley);
                             if (ve0->name[0] == '@' || ve0->name[0] == '%') {
                                 // container stays empty; v is the ELEMENT default —
                                 // but the DECLARED type still applies, so build the

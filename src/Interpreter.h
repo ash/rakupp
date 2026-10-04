@@ -1092,6 +1092,9 @@ struct GatherCoro;   // a gather's block running as a coroutine (InterpreterOper
 using CallArgWriter = std::function<void(size_t, const Value&)>;
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    // The signature bindParams is binding now, so a binding error can carry
+    // its Parameter object (`$!.parameter`) — built only when one is thrown.
+    const std::vector<Param>* bindingParams = nullptr;
     // What an "uninitialized value" warning names: the container the value
     // came from (`$u`, `@a[2]`, `%h{'k'}`), `element` for an operand of infix
     // `~`, or nothing. Set by the site that converts a value it can name
@@ -1942,7 +1945,7 @@ public:
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
     char elemSmileyOf(const std::string& symbol);
     void checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v);
-    void checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr); // `is default(v)` vs the declared type
+    void checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr, char smiley = 0); // `is default(v)` vs the declared type
     Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
@@ -2258,6 +2261,9 @@ public:
     // `i`-th positional of `cand`): as scoreCandidate evaluates it
     bool paramWherePasses(const Value& cand, const Param& p, const Value& wv, size_t i,
                           const ValueList& pos, const Value* selfForWhere);
+    bool omittedWherePasses(const Value& cand, const Param& p, size_t i,
+                            const Param* const* positional, size_t npositional,
+                            const ValueList& pos, const Value* selfForWhere);
     bool methodTakesJunction(const Value& inv, const std::string& m, size_t ai); // param `ai` accepts a Junction whole
     bool boolify(const Value& v); // boolean context: honours a custom .Bool method on objects
     // TARG lever B: a condition of a chapter-19-specialized comparison shape
@@ -2446,6 +2452,8 @@ public:
     bool literalParamAccepts(const Param& p, const Value& v);   // `sub f("a")`: v is that literal
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
                        bool whereVerified = false, Env* sigEnv = nullptr);
+    void typeCheckBindImpl(const Param& p, const Value& v, bool blockParam, bool whereVerified, Env* sigEnv);
+    Value paramObjectFor(const Param& p);   // p's Parameter object, from the signature being bound
     // PSEUDO-PACKAGES as live stashes (S02): `MY::`, `OUTER::OUTER::`,
     // `CALLER::UNIT::`, … — an object whose AT-KEY/BIND-KEY/EXISTS-KEY look
     // the name up in the scope the chain designates, at the time of asking.

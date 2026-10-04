@@ -303,8 +303,15 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,141 mutsu files and 229 Rakudo files that Rakudo passes and
+  The work: 2,118 mutsu files and 229 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
+  - Known open: `our native size_t is Int is ctype<…> is repr<P6int> { }`
+    (native type declarations) does not parse; the 12 wrapped "You have to
+    pass an explicitly typed …" binding hints are not produced.
+  - Thread races these suites show (flaky, not regressions): concurrent
+    `@a[$i] = …` from 50 `start`s loses writes; a module sub's `state $n++`
+    across 100 `start`s loses one; `once` in a sub fires twice across
+    threads; sibling `.then` callbacks run out of registration order.
 - [ ] **run-roast leaves grandchildren behind**: a timed-out file's own child
   processes outlive it. mutsu's suite starts `rakudo -e` one-liners (one a
   left-recursive grammar that never ends), and two kept a core each busy for

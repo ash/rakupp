@@ -618,7 +618,7 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
         if (!satisfy(v, from))
             throwTypedV("X::TypeCheck::Binding::Parameter",
                 {{"got", v}, {"expected", Value::typeObj(ptype)}, {"symbol", Value::str(p.name)}},
-                "Type check failed in binding to parameter '" + p.name + "'; expected " + render() +
+                "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected " + render() +
                 " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
         from = from.substr(0, lp);
     }
@@ -628,7 +628,7 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
         (fsm == 1 && !defined) || (fsm == 2 && defined))
         throwTypedV("X::TypeCheck::Binding::Parameter",
             {{"got", v}, {"expected", Value::typeObj(ptype)}, {"symbol", Value::str(p.name)}},
-            "Type check failed in binding to parameter '" + p.name + "'; expected " + render() +
+            "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected " + render() +
             " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
     // A DEFINITE target is never reached from a type object: `Str:D()` given
     // `Int` dies rather than binding `Int.Str`'s empty string (Rakudo dies here
@@ -637,7 +637,7 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
     if (defConstraint == 1 && v.t == VT::Type && !typeOrSubsetMatches(v, ptype))
         throw RakuError{Value::typeObj("X::AdHoc"),
             "Cannot coerce the type object " + v.typeName() + " to " + ptype +
-            ":D in binding to parameter '" + p.name + "'"};
+            ":D in binding to parameter '" + paramShownName(p) + "'"};
     // a List is not an Array, whatever they share underneath: `Array(Any)`
     // turns `(1, 2)` into one
     const bool listToArray = ptype == "Array" && v.t == VT::Array && v.isList && v.hashKind.empty();
@@ -1204,7 +1204,7 @@ std::string containerNameOf(const Expr* e, char sigil) {
 // or the declaration dies: X::Parameter::Default::TypeCheck for a variable,
 // X::TypeCheck::Attribute::Default for an attribute. A NATIVE type has no
 // default at all (X::Comp::Trait::NotOnNative). Nil fits no type.
-void Interpreter::checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr) {
+void Interpreter::checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr, char smiley) {
     std::string t = declType.substr(0, declType.find(','));   // `%h{Str}` → value type
     if (t.empty() || t == "Mu" || t == "Any") return;   // (an object hash's implicit value type is Any)
     if (ascii::islower((unsigned char)t[0])) {
@@ -1212,9 +1212,13 @@ void Interpreter::checkDeclDefault(const std::string& declType, char sigil, cons
         throwTyped("X::Comp::Trait::NotOnNative", {{"type", "is"}, {"subtype", "default"}},
                    "Can't use trait 'is default' on a native.");
     }
-    if (typeOrSubsetMatches(dv, t)) return;
+    // …and its smiley: `my Int:U $y is default(0)` can never hold its default
+    // either (the message names the bare type for a scalar, as Rakudo's does)
+    const bool smileyFails = (smiley == 'U' && isDefined(dv)) || (smiley == 'D' && !isDefined(dv));
+    if (!smileyFails && typeOrSubsetMatches(dv, t)) return;
     if (!classes_.count(t) && !isKnownTypeName(t)) return;   // a type we cannot judge
-    std::string shown = sigil == '@' ? "Array[" + t + "]" : sigil == '%' ? "Hash[" + t + "]" : t;
+    const std::string elemT = smiley == 'U' || smiley == 'D' ? t + ":" + smiley : t;
+    std::string shown = sigil == '@' ? "Array[" + elemT + "]" : sigil == '%' ? "Hash[" + elemT + "]" : t;
     Value expected = Value::typeObj(t);
     if (sigil == '@' || sigil == '%') {
         expected = Value::typeObj(sigil == '@' ? "Array" : "Hash");
@@ -5942,6 +5946,161 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
         return p ? Value::str(std::string(p)) : Value::typeObj("Str");
     }
     return ncReadElem((long long)(intptr_t)addr, type, 0);
+}
+
+
+// A literal parameter — `sub f("a")`, `multi m(0)`, `-> 'about' { }` — takes
+// exactly that value. It is `Int $ where 0`: TYPED by the literal, so "0", 0.0
+// and 0e0 do not match `f(0)` (Rakudo), and NaN is its own literal (`multi
+// f(NaN)` takes a NaN, which `==` never does). Shared by multi dispatch and by
+// binding, so a plain sub and a candidate agree on what matches.
+bool Interpreter::literalParamAccepts(const Param& p, const Value& v) {
+    Value lv = eval(p.litVal.get());
+    // an angle literal `<1/2>`, `<−1+2i>` is the NUMBER (val gives the
+    // allomorph): its numeric value is both the literal's type and what to compare
+    if (lv.isAllomorph()) lv = methodCall(lv, "Numeric", {});
+    bool nanLit = lv.t == VT::Num && std::isnan(lv.toNum());
+    std::string litType = lv.typeName();
+    if (!typeMatchesArg(v, litType)) return false;
+    if (nanLit) return v.t == VT::Num && std::isnan(v.toNum());
+    // numbers compare as `==` does — a Complex by both parts (`f(<−1+2i>)`
+    // takes 1+2i's negative, which a real-part toNum compare got wrong)
+    if (v.isNumeric() && lv.isNumeric()) {
+        if (v.t == VT::Complex || lv.t == VT::Complex) return applyArith("==", v, lv).truthy();
+        return v.toNum() == lv.toNum();
+    }
+    return v.toStr() == lv.toStr();
+}
+
+// The Parameter object of `p` — introspection's own, from the signature
+// bindParams is binding (it renders the whole list and takes p's place in it).
+// Undefined when p is not in it.
+Value Interpreter::paramObjectFor(const Param& p) {
+    const std::vector<Param>* ps = tctx_.bindingParams;
+    if (!ps || ps->empty() || &p < ps->data() || &p >= ps->data() + ps->size()) return Value::any();
+    Callable tmp;
+    tmp.params = ps;
+    tmp.hadSig = true;
+    Value sig = makeSignature(&tmp);
+    if (sig.t != VT::Hash || !sig.hash()) return Value::any();
+    auto it = sig.hash()->find("params");
+    if (it == sig.hash()->end() || !it->second.arr()) return Value::any();
+    // makeSignature skips no parameter of a plain list, so the index carries over
+    const size_t idx = (size_t)(&p - ps->data());
+    return idx < it->second.arr()->size() ? (*it->second.arr())[idx] : Value::any();
+}
+
+// A binding failure carries the PARAMETER it failed on, as Rakudo's does:
+// `$!.parameter` is that parameter's Parameter object (`.name` `$user`,
+// `.named` …). The many throw sites below keep their own message and
+// attributes; the parameter is attached here, on the way out.
+void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
+                                bool whereVerified, Env* sigEnv) {
+    try { typeCheckBindImpl(p, v, blockParam, whereVerified, sigEnv); }
+    catch (RakuError& e) {
+        const Value& pl = e.payload;
+        const bool isObj = pl.t == VT::Object && pl.obj() && pl.obj()->cls;
+        const std::string tn = isObj ? pl.obj()->cls->name : pl.t == VT::Type ? pl.s.str() : std::string();
+        if (tn == "X::TypeCheck::Binding::Parameter") {
+            Value po = paramObjectFor(p);
+            if (po.t == VT::Hash) {
+                if (isObj) {
+                    if (!pl.obj()->attrs.count("parameter")) {
+                        e.payload.obj()->attrs["parameter"] = po;
+                        // declared on the class too, as makeTypedEx declares what
+                        // it sets: the accessor and .^attributes read the class
+                        auto& ci = e.payload.obj()->cls;
+                        bool have = false;
+                        for (auto& a : ci->attrs) if (a.name == "parameter") { have = true; break; }
+                        if (!have) { ClassAttr a; a.name = "parameter"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+                    }
+                }
+                else if (g_makeTypedEx) e.payload = g_makeTypedEx(tn, {{"parameter", po}}, e.message);
+            }
+        }
+        throw;
+    }
+}
+
+// Multi dispatch over an OMITTED optional positional runs its `where` — against
+// its default, or else the type object (an empty Array or Hash for `@`/`%`) —
+// as binding runs it: `multi g($x, $y? where Int)` does not take g(1), and a
+// trailing `$? where { $*KERNEL.bits == 64 }` guard that passes makes its
+// candidate the narrower one. (Optional parameters keep a multi out of the
+// dispatch cache, so its `assume` never covers these.)
+bool Interpreter::omittedWherePasses(const Value& cand, const Param& p, size_t i,
+                                     const Param* const* positional, size_t npositional,
+                                     const ValueList& pos, const Value* selfForWhere) {
+    Value v = p.sigil == '@' ? Value::array() : p.sigil == '%' ? Value::makeHash()
+            : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
+    if (p.defaultVal) {
+        auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
+        for (size_t j = 0; j < pos.size() && j < npositional; j++)
+            if (!positional[j]->name.empty() && !positional[j]->subSig)
+                denv->define(positional[j]->name, pos[j]);
+        auto dsaved = tctx_.cur; tctx_.cur = denv;
+        try { v = eval(p.defaultVal.get()); }
+        catch (...) { tctx_.cur = dsaved; return false; }
+        tctx_.cur = dsaved;
+    }
+    return paramWherePasses(cand, p, v, i, pos, selfForWhere);
+}
+
+// Did the binder hand the parameter exactly the argument's value? Identity of
+// the payload for the reference kinds, the scalar fields otherwise — cheap, and
+// false for anything a coercion, a native wrap or a misaligned argument changed.
+static bool sameBoundValue(const Value& a, const Value& b) {
+    if (a.t != b.t || a.pk_ != b.pk_ || a.x_ != b.x_) return false;
+    if (a.p_ || b.p_) return a.p_ == b.p_;
+    switch (a.t) {
+        case VT::Int:  return a.i == b.i;
+        case VT::Num:  return a.n == b.n || (a.n != a.n && b.n != b.n);
+        case VT::Bool: return a.b == b.b;
+        case VT::Str:  return a.s == b.s;
+        default:       return a.s == b.s;
+    }
+}
+
+bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env) {
+    // (a SIGILLESS `\t` has a one-character name: it binds the caller's
+    // container as surely as `$t is rw` does — `$!t := t` then aliases it)
+    if (!ae || p.coerce || p.isCopy || p.name.empty() ||
+        (p.name.size() < 2 && p.sigil != '\\') || p.name == "$_" || !tctx_.cur)
+        return false;
+    // a SIGILLESS argument that holds a container hands THAT container on:
+    // `method new(\times) { self.bless!SET-SELF: times }` passes $times's cell
+    // down a second sigilless parameter (the argument parses as a bare name)
+    if (ae->kind == NK::NameTerm) {
+        const std::string& an = static_cast<NameTerm*>(ae)->name;
+        if (an.empty() || !(ascii::isalpha((unsigned char)an[0]) || an[0] == '_')) return false;
+        Value* craw = tctx_.cur->findRaw(an);
+        Value* praw = env->localRaw(p.name);
+        if (!craw || !praw || !craw->isCell() || praw->isCell()) return false;
+        if (!sameBoundValue(*craw->deref(), *praw)) return false;
+        *praw = Value::cellHolder(craw->promoteToCell());
+        env->x().rwCelled.insert(p.name);
+        return true;
+    }
+    if (ae->kind != NK::VarExpr) return false;
+    const std::string& an = static_cast<VarExpr*>(ae)->name;
+    if (an.size() < 2 || an[0] != '$' || an == "$_" ||
+        !(ascii::isalpha((unsigned char)an[1]) || an[1] == '_'))
+        return false;
+    Env* own = nullptr;
+    Value* craw = tctx_.cur->findRaw(an, &own);
+    Value* praw = env->localRaw(p.name);
+    if (!craw || !praw || !own || praw->isCell()) return false;
+    if (own->ex && (own->ex->rwLinks.count(an) || own->ex->rwDirect.count(an))) return false;
+    if (!craw->isCell() && craw->t == VT::Hash && craw->hashKind == "Proxy") return false;
+    if (!sameBoundValue(*craw->deref(), *praw)) return false;
+    *praw = Value::cellHolder(craw->promoteToCell());
+    env->x().rwCelled.insert(p.name);
+    {   // the original variable, through a chain of rw parameters
+        std::string origin = an;
+        if (own->ex) { auto oi = own->ex->rwOrigin.find(an); if (oi != own->ex->rwOrigin.end()) origin = oi->second; }
+        env->x().rwOrigin[p.name] = std::move(origin);
+    }
+    return true;
 }
 
 } // namespace rakupp

@@ -1511,6 +1511,11 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                 (t.text == "and" || t.text == "or" || t.text == "xor" || t.text == "andthen" ||
                  t.text == "orelse" || t.text == "notandthen"))
                 return true;
+            // …and a declared sigilless TERM by that name is the term after a
+            // routine name: `my \x = 10; say x` says 10, as in Rakudo
+            if (wordInfix.count(t.text) && sigilless_.count(t.text) && !lhsName.empty() &&
+                ascii::islower((unsigned char)lhsName[0]))
+                return true;
             if (wordInfix.count(t.text)) return false;
             // …and a METAOP over one of them is just as much an infix: `rand Rxx 5`,
             // `@a Zcmp @b`, `$x RRxx 5`. Read as an argument instead, the metaop
@@ -11226,6 +11231,15 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (matchOp("**")) { p.slurpy = true; p.slurpyKind = 'n'; }      // **@a — no flatten
         else if (matchOp("*")) { p.slurpy = true; p.slurpyKind = 'f'; }  // *@a  — flatten iterables
         else if (matchOp("+")) { p.slurpy = true; p.slurpyKind = '1'; }  // +@a  — single-argument rule
+        // a bare `+` is an anonymous single-argument slurpy: `sub f($a, +)`,
+        // `sub f(+ --> Str)` — it takes what is left and binds no name
+        if (p.slurpy && p.slurpyKind == '1' &&
+            (isKind(Tok::RParen) || isKind(Tok::Comma) || isOp("-->"))) {
+            p.sigil = '@'; p.name = "";
+            params.push_back(std::move(p));
+            if (!matchKind(Tok::Comma)) break;
+            continue;
+        }
         // slurpy with a sub-signature: `*[$a,$b]` — destructure the slurped args
         if (p.slurpy && isKind(Tok::LBracket)) {
             advance();
@@ -11240,6 +11254,12 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             p.name = advance().text;
             p.sigil = '\\';
             sigilless_.insert(p.name);
+            // …and its `where`, which sees the whole slurped list:
+            // `sub s(+bar where *.elems > 1)`
+            if (isKind(Tok::Ident) && cur().text == "where") {
+                advance();
+                p.whereExpr = parseExpr(BP_ASSIGN + 1);
+            }
             if (isOp("="))   // …nor can a slurpy
                 throw ParseError("A slurpy parameter (" + p.name + ") cannot have a default value", cur().line,
                                  "X::Parameter::Default", {{"how", "slurpy"}, {"parameter", p.name}});
@@ -11955,7 +11975,9 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     {
         std::string seen; // last disqualifying group: optional / variadic / named
         for (const auto& p : params) {
-            if (p.invocant || p.sigil == '|' || p.sigil == '\\') continue;
+            // (a `|c` capture is a sigilless SLURPY; a plain `\x` is ordered
+            // like any positional: `sub g(:$a, \x)` puts it after a named)
+            if (p.invocant || p.sigil == '|' || (p.sigil == '\\' && p.slurpy)) continue;
             if (p.named) { if (!p.slurpy) seen = "named"; continue; }
             if (p.slurpy) { if (p.sigil != '%') seen = "variadic"; continue; }
             bool opt = p.optional || p.defaultVal != nullptr;
@@ -11985,8 +12007,11 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         const bool strLit = dk == NK::StrLit || dk == NK::InterpStr;
         const bool numLit = dk == NK::IntLit || dk == NK::NumLit;
         const bool codeLit = dk == NK::BlockExpr || dk == NK::SubDecl;
-        const bool userClass = declClassDecls_.count(p.type) && declClassDecls_.at(p.type) &&
-                               !declClassDecls_.at(p.type)->isRole;
+        // (…or a built-in EXCEPTION class, which no literal is either:
+        // `sub f(X::AdHoc $p = "x")`)
+        const bool userClass = (declClassDecls_.count(p.type) && declClassDecls_.at(p.type) &&
+                                !declClassDecls_.at(p.type)->isRole) ||
+                               p.type == "Exception" || p.type.rfind("X::", 0) == 0;
         bool never = (strLit && (kNumT.count(p.type) || userClass)) ||
                      (numLit && (p.type == "Str" || userClass)) ||
                      (codeLit && (kNumT.count(p.type) || p.type == "Str" || userClass));
@@ -14949,7 +14974,9 @@ StmtPtr Parser::parseIf(bool isUnless) {
         // (`-> :$foo, *@a`) or a slurpy of any kind (`*@a` flattens the
         // condition, `**@a` keeps it whole, `+@a` takes the single-arg rule)
         // …and a COERCION (`if $s -> Int() $n`), which the name alone would drop
-        if (anySub || ps.size() > 1 || (ps.size() == 1 && (ps[0].slurpy || ps[0].named || ps[0].coerce)))
+        // …and an `@`/`%` parameter, whose binding CHECKS: `if 5 -> @n { }` dies
+        if (anySub || ps.size() > 1 || (ps.size() == 1 && (ps[0].slurpy || ps[0].named || ps[0].coerce ||
+                                                          ps[0].sigil == '@' || ps[0].sigil == '%')))
             intoParams = std::move(ps);
         else if (!ps.empty() && !ps[0].name.empty())
             into = ps[0].name;

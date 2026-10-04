@@ -500,6 +500,7 @@ concurrency/concurrency-basic.t
 concurrency/concurrent-array-index-assign.t
 concurrency/concurrent-cell-writeback-coherence.t
 concurrency/concurrent-hash-assign.t
+concurrency/concurrent-shared-cell.t
 concurrency/concurrent-state-var.t
 concurrency/io-socket-async-listen-tap-close-backlog.t
 concurrency/io-socket-async-listen.t
@@ -941,6 +942,7 @@ exceptions/two-terms-in-a-row-undeclared-word-infix.t
 exceptions/typed-exception-class-of-compile-errors.t
 exceptions/typed-exceptions-misc.t
 exceptions/typed-exceptions.t
+exceptions/undeclared-constant-init.t
 exceptions/undeclared-qualified-type-new.t
 exceptions/undeclared-when-type.t
 exceptions/untyped-error-adhoc.t
@@ -2656,6 +2658,7 @@ routines/closure/loop-body-local-closure-capture.t
 routines/closure/loop-var-closure-capture.t
 routines/closure/loop-var-nested-closure-freeze.t
 routines/closure/nested-closure-resources-file-attribution.t
+routines/closure/pointy-block-light-bind.t
 routines/closure/pointy-block-return-type.t
 routines/closure/qqx-closure-interpolation.t
 routines/closure/reentrant-closure-array-capture.t
@@ -2677,6 +2680,7 @@ routines/closure/wrap-closure-capture.t
 routines/closure/wrap-closure-container-capture.t
 routines/closure/wrap-eval-redeclaration.t
 routines/closure/wrap-invocant-arg-source.t
+routines/closure/wrap-original-runs-compiled-body.t
 routines/closure/wrap.t
 routines/dispatch/anonymous-any-multi-dispatch.t
 routines/dispatch/block-local-sub-dispatch.t
@@ -2846,6 +2850,7 @@ routines/placeholder-block-topic.t
 routines/placeholder-in-nested-whatevercode.t
 routines/placeholder-index-assign-target.t
 routines/placeholder-outer-alias-writeback.t
+routines/placeholder-sub-rejects-extra-positionals.t
 routines/raw-routine-tail-reference-value.t
 routines/rebind-in-routine-decides-writability.t
 routines/routine-nested-sub-shadowed-free-var.t
@@ -2857,10 +2862,14 @@ routines/sibling-scope-routine-shadow.t
 routines/signature/allomorph-param-type-check.t
 routines/signature/amp-infix-param-shadows-proto.t
 routines/signature/amp-param-positional-light.t
+routines/signature/anon-onearg-param-marker.t
+routines/signature/anon-optional-param-tail.t
+routines/signature/anon-param-default-type-check.t
 routines/signature/anon-routine-param-terms.t
 routines/signature/array-dynamic-parameterization.t
 routines/signature/array-param-binds-itemized-range.t
 routines/signature/block-topic-explicit-params.t
+routines/signature/bool-param-binds-itemized-hash-element.t
 routines/signature/bound-alias-outer-var-ignores-callers-readonly-param.t
 routines/signature/bracket-destructuring-params.t
 routines/signature/builtin-shadow-default-param.t
@@ -2871,9 +2880,11 @@ routines/signature/closure-captured-var-ignores-callers-readonly-param.t
 routines/signature/closure-parameter-signature.t
 routines/signature/closure-shared-signature.t
 routines/signature/code-signature-param-otf.t
+routines/signature/coercion-type-param-default.t
 routines/signature/cro-client-nested-param-shadow.t
 routines/signature/custom-infix-rw-first-param.t
 routines/signature/defaulted-param-positional-light.t
+routines/signature/destructure-anonymous-type-constraint.t
 routines/signature/destructure-literal-postconstraint.t
 routines/signature/destructure-named-alias.t
 routines/signature/destructure-named-from-capture.t
@@ -2912,6 +2923,7 @@ routines/signature/for-topic-shadows-topic-param.t
 routines/signature/gather-aggregate-param-infinite.t
 routines/signature/given-pointy-typed-param-junction.t
 routines/signature/hash-parametric-keyof.t
+routines/signature/if-pointy-array-param-seq.t
 routines/signature/if-pointy-container-param.t
 routines/signature/implicit-any-param-rejects-mu.t
 routines/signature/implicit-topic-block-signature-gist.t
@@ -2920,6 +2932,8 @@ routines/signature/invocant-marker-detached-from-type.t
 routines/signature/invocant-marker.t
 routines/signature/is-copy-array-param-untyped.t
 routines/signature/is-copy-param-ignores-caller-variable-constraint.t
+routines/signature/is-default-where-expr.t
+routines/signature/is-default.t
 routines/signature/is-rw-traits.t
 routines/signature/lazy-array-param-pull.t
 routines/signature/lexical-amp-param-shadow.t
@@ -2969,6 +2983,7 @@ routines/signature/not-parametric.t
 routines/signature/object-hash-param-binding.t
 routines/signature/optional-named-empty-list-comparison.t
 routines/signature/optional-param-seed.t
+routines/signature/optional-param-where-runs-when-omitted.t
 routines/signature/param-default-before-return-arrow.t
 routines/signature/param-default-bool-conforms-int.t
 routines/signature/param-default-keeps-code-lexicals.t
@@ -2980,10 +2995,12 @@ routines/signature/param-itemize-on-bind.t
 routines/signature/param-smiley-invalid-type.t
 routines/signature/param-type-then-type-capture.t
 routines/signature/param-where-forward-ref.t
+routines/signature/paramdef-light-bind.t
 routines/signature/parameter-copy-default-container.t
 routines/signature/parameter-default.t
 routines/signature/parameter-invalidtype.t
 routines/signature/parameter-type-smiley-modifier.t
+routines/signature/parameter-wrong-order-spelling.t
 routines/signature/parameter-wrong-order.t
 routines/signature/parameterized-rules.t
 routines/signature/parameterized-type-object.t
@@ -3047,8 +3064,11 @@ routines/signature/sub-signature-where-clause.t
 routines/signature/subsig-param-compiled.t
 routines/signature/subsig-positional-typecheck.t
 routines/signature/system-object-signature-blob-type.t
+routines/signature/too-few-positionals-fixed-arity.t
+routines/signature/too-many-positionals-fixed-arity.t
 routines/signature/type-capture-smiley-param.t
 routines/signature/type-only-param-before-double-semicolon.t
+routines/signature/typecheck-binding-parameter-object.t
 routines/signature/typed-aggregate-param-constraint.t
 routines/signature/unicode-named-param-alias.t
 routines/signature/vardecl-shadows-readonly-param.t
@@ -3056,6 +3076,7 @@ routines/signature/where-clause.t
 routines/signature/where-constraint-default.t
 routines/signature/where-named-default-constraint.t
 routines/signature/where-named-param-sibling-ref.t
+routines/signature/where-plus-sigilless-param.t
 routines/signature/while-destructuring-pointy-param.t
 routines/signature/with-orwith-typed-pointy-param.t
 routines/signature/with-pointy-container-param.t
@@ -3180,6 +3201,7 @@ types/coercion/typed-hash-bind-typecheck.t
 types/coercion/typed-hash-expr-decl-of.t
 types/coercion/typed-hash-keyconstraint-cow.t
 types/coercion/typed-lexical-constraint-block-scoped.t
+types/coercion/typed-lexical-gate-is-per-name.t
 types/coercion/typed-loop-decl-failed-initializer.t
 types/coercion/typed-scalar-store-constraint-paths.t
 types/coercion/typed-var-assignment.t
@@ -3639,6 +3661,7 @@ vm/writeback/scalar-incdec-forms-agree.t
 vm/writeback/scalar-store-array-share-mark.t
 vm/writeback/shared-array-mutate-keeps-container-cell.t
 vm/writeback/shared-array-push.t
+vm/writeback/shared-elem-assign.t
 vm/writeback/shared-store-lineage-scope.t
 vm/writeback/shared-type-constraint-metadata.t
 vm/writeback/shared-var-nil-redeclared-mask.t

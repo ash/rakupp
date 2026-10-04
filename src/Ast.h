@@ -791,6 +791,13 @@ struct Param {
     mutable DecidedOnce<signed char> acceptClass{-1};
 };
 
+// The name a binding error shows: an anonymous `$`/`@`/`%`/`&` (or no name at
+// all) is `<anon>`, as Rakudo reports it; a sigilless `\x` keeps its bare name.
+inline std::string paramShownName(const Param& p) {
+    if (p.name.empty() || (p.sigil != '\\' && p.name.size() == 1)) return "<anon>";
+    return p.name;
+}
+
 // A compiled routine's signature, as `--exe` describes it: the plain fields of
 // each parameter (defaults pre-rendered), so `&f.signature` reads the names
 // and types the source wrote rather than the closure's positional bridge.
