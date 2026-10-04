@@ -122,6 +122,167 @@ Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(patter
     capsFlat_ = (long)topCaps_.size() == (long)ncaps_;
     for (size_t i = 0; capsFlat_ && i < topCaps_.size(); i++) capsFlat_ = topCaps_[i] == (int)i;
     markRepeatedNames();
+    if (ok_ && root_) buildPrefilter();
+}
+
+// ---- search prefilters (see Regex.h) -----------------------------------------
+// Does anything under `n` run code or reach outside the pattern while it is
+// being matched? Such an attempt is observable even when it fails.
+bool Regex::hasEffects(const Node* n) {
+    if (!n) return false;
+    switch (n->k) {
+        case K::Code: case K::Subrule: case K::VarMatch: case K::CondRef: return true;
+        default: break;
+    }
+    if (!n->repCode.empty()) return true;
+    for (auto& c : n->kids) if (hasEffects(c.get())) return true;
+    return hasEffects(n->sep.get());
+}
+
+// The bytes a match of `n` can begin with. `any` = not known (every byte);
+// `nullable` = `n` can match without consuming anything, so what follows it
+// can supply the first byte too.
+void Regex::firstOf(const Node* n, FirstInfo& out) const {
+    auto add = [&](unsigned c) { out.set[c >> 5] |= (1u << (c & 31)); };
+    auto addHigh = [&] { for (unsigned c = 0x80; c < 256; c++) add(c); };
+    switch (n->k) {
+        case K::Lit: {
+            if (n->lit.empty()) { out.nullable = true; return; }
+            if (n->imark) { out.any = true; return; }   // base-codepoint comparison
+            unsigned char b = (unsigned char)n->lit[0];
+            if (n->icase) {
+                // full case folding: a non-ASCII subject character can fold to an
+                // ASCII one (the Kelvin sign is `k`), and a non-ASCII literal to anything
+                if (b >= 0x80) { out.any = true; return; }
+                add((unsigned char)ascii::tolower(b)); add((unsigned char)ascii::toupper(b)); addHigh();
+                return;
+            }
+            add(b);
+            return;
+        }
+        case K::Class: {
+            // the per-byte table answers ASCII; every byte >= 0x80 may begin a
+            // multibyte member, and a property or a multi-codepoint member is
+            // not in the table at all
+            // (…and under :ignoremark a member matches by its BASE character —
+            // `:m <[\x[e1]]>` takes a plain "a" — which the table does not know)
+            if (!n->uprop.empty() || !n->clusterMembers.empty() || n->imark) { out.any = true; return; }
+            for (unsigned c = 0; c < 0x80; c++) if (classMatch(n, (char)c)) add(c);
+            addHigh();
+            return;
+        }
+        case K::Seq: {
+            for (auto& kid : n->kids) {
+                FirstInfo ki;
+                firstOf(kid.get(), ki);
+                if (ki.any) { out.any = true; return; }
+                for (int i = 0; i < 8; i++) out.set[i] |= ki.set[i];
+                if (!ki.nullable) return;
+            }
+            out.nullable = true;
+            return;
+        }
+        case K::Alt: {
+            if (n->kids.empty()) { out.nullable = true; return; }
+            for (auto& kid : n->kids) {
+                FirstInfo ki;
+                firstOf(kid.get(), ki);
+                if (ki.any) { out.any = true; return; }
+                for (int i = 0; i < 8; i++) out.set[i] |= ki.set[i];
+                if (ki.nullable) out.nullable = true;
+            }
+            return;
+        }
+        case K::Conj:   // every term matches at the same start: the first one bounds it
+            if (n->kids.empty()) { out.nullable = true; return; }
+            firstOf(n->kids[0].get(), out);
+            return;
+        case K::Rep:
+            if (n->kids.empty()) { out.nullable = true; return; }
+            firstOf(n->kids[0].get(), out);
+            if (n->min == 0 || !n->repCode.empty()) out.nullable = true;
+            return;
+        case K::Group:
+            if (n->kids.empty()) { out.nullable = true; return; }
+            firstOf(n->kids[0].get(), out);
+            return;
+        case K::CapStart: case K::CapEnd: case K::Nop:
+        case K::AnchorStart: case K::AnchorEnd: case K::WBLeft: case K::WBRight:
+            out.nullable = true;   // zero-width: what follows begins the match
+            return;
+        case K::Look:
+            if (hasEffects(n)) { out.any = true; return; }
+            out.nullable = true;
+            return;
+        default:   // `.`, code, subrules, interpolation, backreferences
+            out.any = true;
+            return;
+    }
+}
+
+// Literals one of which every match of `n` contains, each matched
+// case-sensitively and exactly; empty when none is known. Of a sequence's
+// terms the most selective set is kept: fewest alternatives, then the
+// shortest literal among them longest.
+std::vector<std::string> Regex::requiredLits(const Node* n) {
+    if (!n) return {};
+    auto better = [](const std::vector<std::string>& a, const std::vector<std::string>& b) {
+        if (a.empty()) return false;
+        if (b.empty()) return true;
+        if (a.size() != b.size()) return a.size() < b.size();
+        auto shortest = [](const std::vector<std::string>& v) {
+            size_t m = SIZE_MAX; for (auto& s : v) m = std::min(m, s.size()); return m;
+        };
+        return shortest(a) > shortest(b);
+    };
+    switch (n->k) {
+        case K::Lit:
+            if (n->icase || n->imark || n->lit.empty()) return {};
+            return {n->lit};
+        case K::Seq: case K::Conj: {
+            std::vector<std::string> best;
+            for (auto& kid : n->kids) {
+                auto l = requiredLits(kid.get());
+                if (better(l, best)) best = std::move(l);
+            }
+            return best;
+        }
+        case K::Alt: {   // every branch must promise a literal, or nothing is promised
+            std::vector<std::string> all;
+            for (auto& kid : n->kids) {
+                auto l = requiredLits(kid.get());
+                if (l.empty()) return {};
+                for (auto& s : l) all.push_back(std::move(s));
+            }
+            if (all.size() > 8) return {};   // past a handful, scanning for each costs more than it saves
+            return all;
+        }
+        case K::Group: return n->kids.empty() ? std::vector<std::string>{} : requiredLits(n->kids[0].get());
+        case K::Rep:
+            if (n->min >= 1 && n->repCode.empty() && !n->kids.empty()) return requiredLits(n->kids[0].get());
+            return {};
+        default: return {};
+    }
+}
+
+// Is none of the required literals in the subject from `from` on? Then no
+// match can start there or later.
+bool Regex::reqLitAbsent(const std::string& subject, long from) const {
+    if (pfReqLits_.empty() || from > (long)subject.size()) return false;
+    const size_t f = (size_t)std::max(0L, from);
+    for (auto& l : pfReqLits_)
+        if (subject.find(l, f) != std::string::npos) return false;
+    return true;
+}
+
+void Regex::buildPrefilter() {
+    FirstInfo fi;
+    firstOf(root_.get(), fi);
+    if (!fi.any && !fi.nullable) {
+        pfFirstOn_ = true;
+        for (int i = 0; i < 8; i++) pfFirst_[i] = fi.set[i];
+    }
+    if (!hasEffects(root_.get())) pfReqLits_ = requiredLits(root_.get());
 }
 
 // =====================  Perl 5 pattern syntax (:P5)  =====================
@@ -4134,6 +4295,43 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
                 auto rng = st.hooks->range(n->repCode, st.named, params); mn = rng.first; mx = rng.second;
             }
+            // FAST PATH: a run of one plain character class (`\w+`, `<[a..z]>**5`,
+            // `\d*`) with no separator. Count the run directly, then hand the
+            // continuation each length the generic path would try, in its order:
+            // only the longest when possessive, longest first when greedy,
+            // shortest first when frugal. One table probe per character instead
+            // of a matchNode call and a continuation frame. It decides only
+            // positions where a character is one ASCII byte — the byte is not
+            // `\r` (CRLF is one grapheme) and the next is ASCII, so no combining
+            // mark joins it — and hands the whole repetition back otherwise.
+            if (!sep && n->repCode.empty() && child->k == K::Class && !child->imark &&
+                child->uprop.empty() && child->cpRanges.empty() && child->clusterMembers.empty() &&
+                !(child->negate && child->ranges.empty() && child->classFlags.empty() &&
+                  child->negClassFlags.empty())) {
+                const long slen = (long)st.s.size();
+                long run = 0;
+                bool decided = true;
+                for (long q = pos; mx < 0 || run < mx; q++) {
+                    if (q >= slen) break;
+                    unsigned char c = (unsigned char)st.s[q];
+                    if (c >= 0x80 || c == '\r' || (q + 1 < slen && (unsigned char)st.s[q + 1] >= 0x80)) {
+                        decided = false;
+                        break;
+                    }
+                    if (!classMatch(child, (char)c)) break;
+                    run++;
+                }
+                if (decided) {
+                    if (run < mn) return false;
+                    if (greedy && !n->forceBack && (ratchet_ || n->possessive)) return k(pos + run);
+                    if (greedy) {
+                        for (long i = run; i >= mn; i--) if (k(pos + i)) return true;
+                        return false;
+                    }
+                    for (long i = mn; i <= run; i++) if (k(pos + i)) return true;
+                    return false;
+                }
+            }
             auto rep = [&](auto&& self, long count, long p) -> bool {
                 // match one more `child`, preceded by `sep` on all but the first iteration
                 auto matchOne = [&](long q, const FnRef& kk) -> bool {
@@ -4523,10 +4721,37 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         long e = (long)uniClusterEndUtf8(subject, (size_t)p, (size_t)n);
         return e > p ? e : p + 1;
     };
-    for (long start = startPos; start <= (long)subject.size(); start = nextStart(start)) {
-        MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
-        st.lexNames = lexNames;
-        st.hooks = hooks ? hooks : runHooks; // standalone matches may still run {…} blocks
+    // a literal every match contains, and the subject has none from here on
+    if (reqLitAbsent(subject, startPos)) return false;
+    const long slen = (long)subject.size();
+    // ONE match state for the whole search, reset field by field before each
+    // attempt — exactly the state a fresh one starts with. Building (and
+    // destroying) it per start position was a quarter of a long scan's time.
+    MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
+    st.lexNames = lexNames;
+    st.hooks = hooks ? hooks : runHooks; // standalone matches may still run {…} blocks
+    bool fresh = true;
+    for (long start = startPos; start <= slen; start = nextStart(start)) {
+        // positions whose byte cannot begin a match: stepped over, grapheme by
+        // grapheme as before, without an attempt (and the end of the subject,
+        // which has no byte, cannot begin a non-empty match)
+        if (pfFirstOn_) {
+            while (start < slen && !pfStart((unsigned char)subject[start])) start = nextStart(start);
+            if (start >= slen) break;
+        }
+        if (!fresh) {
+            st.caps.assign((size_t)ncaps_, {-1, -1});
+            if (!st.named.empty()) st.named.clear();
+            if (!st.children.empty()) st.children.clear();
+            if (!st.capReps.empty()) st.capReps.clear();
+            st.capFrom = st.capTo = -1;
+            st.curSym = nullptr;
+            st.firstCode = -1;
+            st.probing = st.probeAbove = 0;
+            st.litPrefix = -1;
+            st.aliasMoreDone = nullptr;
+        }
+        fresh = false;
         st.startPos = start;  // where THIS attempt began — the `$/` a `{…}` block sees
         st.steps = budget;
         long endPos = -1;
@@ -4550,7 +4775,9 @@ std::vector<RxMatch> Regex::searchExhaustive(const std::string& subject, const S
     std::vector<RxMatch> results;
     if (!ok_ || !root_) return results;
     long budget = 0;
+    if (reqLitAbsent(subject, 0)) return results;
     for (long start = 0; start <= (long)subject.size(); start++) {
+        if (pfFirstOn_ && (start >= (long)subject.size() || !pfStart((unsigned char)subject[start]))) continue;
         MState st{subject, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, r ? &r : nullptr, nullptr};
         st.lexNames = lexNames;
         st.hooks = hooks ? hooks : runHooks;

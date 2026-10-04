@@ -440,6 +440,32 @@ private:
     void markRepeatedNames();             // …and the names a single path can reach twice
     void countCaptureNames(const Node* n, std::map<std::string, int>& out);
     static bool aliasAlsoRuleName(const Node* n); // `<alias=rule>` records under the rule name too
+    // SEARCH PREFILTERS, computed once when the pattern is compiled. An
+    // unanchored search tries every start position, and each attempt builds a
+    // match state and walks the tree; most positions of a long subject cannot
+    // begin a match at all. Two facts about the pattern rule them out first:
+    //   - the bytes a match can START with: a position whose byte is not one
+    //     of them would fail on its first comparison, so it is not attempted;
+    //   - a literal EVERY match contains: if the subject has none from the
+    //     start position on, nothing can match and no attempt is made.
+    // Both are conservative (anything not understood means "any byte" / "no
+    // literal"), and the second is only used when no attempt could have a
+    // side effect (`{…}` code, subrules, interpolation): skipping an attempt
+    // that would fail before running anything is unobservable, skipping one
+    // that runs code on the way to failing is not.
+    struct FirstInfo { uint32_t set[8] = {0}; bool any = false; bool nullable = false; };
+    void firstOf(const Node* n, FirstInfo& out) const;
+    static bool hasEffects(const Node* n);
+    // Literals one of which every match contains (empty = none known). A
+    // single entry is a literal every match has; an alternation of literal
+    // branches gives one per branch.
+    static std::vector<std::string> requiredLits(const Node* n);
+    bool reqLitAbsent(const std::string& subject, long from) const;
+    void buildPrefilter();
+    bool pfFirstOn_ = false;             // pfFirst_ is a usable start-byte filter
+    uint32_t pfFirst_[8] = {0};          // the bytes a match can start with
+    std::vector<std::string> pfReqLits_; // one of these is in every match (empty = none known)
+    bool pfStart(unsigned char c) const { return (pfFirst_[c >> 5] >> (c & 31)) & 1; }
     bool ok_ = true;
     std::string obsolete_;               // retired metachar seen (e.g. "\\A"), for X::Obsolete
     std::string badEscape_;              // unknown backslash sequence seen (e.g. "\\y")

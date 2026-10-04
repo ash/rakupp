@@ -701,7 +701,11 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             else if (op == "min") kop = KOp::Min;
             else if (op == "max") kop = KOp::Max;
             else if (op == "div") kop = KOp::Div;
-            else if (op == "%") kop = KOp::Mod;
+            // `mod` is `%` over Ints (floored, the divisor's sign) — Rakudo-checked
+            // with negatives and past int64; a zero divisor bails either way, and
+            // the generic path then throws for `mod` where `%` fails softly.
+            // It was missing, so time-parts' loop never became a kernel.
+            else if (op == "%" || op == "mod") kop = KOp::Mod;
             else if (op == "%%") { kop = KOp::DivBy; compare = true; }
             else if (op == "<") { kop = KOp::Lt; compare = true; }
             else if (op == "<=") { kop = KOp::Le; compare = true; }

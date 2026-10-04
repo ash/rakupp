@@ -3635,16 +3635,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // Returns false — leaving `order` untouched — for any list this does
             // not describe, including one long enough that an index needs more
             // than 32 bits.
-            auto sortByNativeInt = [](const ValueList& xs, std::vector<size_t>& order) {
+            // (`desc`: largest first — still stable, equal keys keep their order)
+            auto sortByNativeInt = [](const ValueList& xs, std::vector<size_t>& order, bool desc = false) {
                 if (xs.size() > 0xFFFFFFFFull) return false;
                 for (const Value& v : xs)
                     if (!((v.t == VT::Int && !v.big() && !v.isAllomorph()) || v.t == VT::Bool)) return false;
                 std::vector<std::pair<long long, uint32_t>> kv(xs.size());
                 for (size_t i = 0; i < xs.size(); i++)
                     kv[i] = { xs[i].t == VT::Bool ? (xs[i].b ? 1LL : 0LL) : xs[i].i, (uint32_t)i };
-                std::sort(kv.begin(), kv.end(), [](const std::pair<long long, uint32_t>& a,
-                                                   const std::pair<long long, uint32_t>& b) {
-                    return a.first != b.first ? a.first < b.first : a.second < b.second;
+                std::sort(kv.begin(), kv.end(), [desc](const std::pair<long long, uint32_t>& a,
+                                                       const std::pair<long long, uint32_t>& b) {
+                    if (a.first != b.first) return desc ? a.first > b.first : a.first < b.first;
+                    return a.second < b.second;
                 });
                 for (size_t i = 0; i < kv.size(); i++) order[i] = kv[i].second;
                 return true;
@@ -3674,6 +3676,69 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // way. Asked as `cmp(x, y) < 0` no pair ever compared less
                     // and the list came back untouched. The two spellings agree
                     // for every antisymmetric comparator.
+                    // The comparator nearly every sort is written with —
+                    // `{ $^a <=> $^b }`, `{ $^b cmp $^a }`, `-> $a, $b { $b <=> $a }`:
+                    // ONE `<=>`/`cmp`/`leg` between its two plain parameters, in
+                    // either order. Its answer is that operator's, so the sort asks
+                    // the operator directly instead of calling the block ~n·log n
+                    // times (a comparator call was ~0.7 µs; the 10k-element sort
+                    // in mutsu's bench-array was 96 ms of its 100). Not when a
+                    // user `infix` may take the operator over (the shadow mask),
+                    // and over native Ints `<=>` and `cmp` are the int64 key
+                    // order, ascending or descending.
+                    int cmpOp = 0;          // 1 <=>, 2 cmp, 3 leg
+                    bool cmpSwapped = false;
+                    if (const Callable* c = blk.code();
+                        c && !c->isMultiDispatcher && !c->isMultiCandidate && c->wrappers.empty() &&
+                        c->body && c->body->size() == 1) {
+                        std::string pa, pb;
+                        if ((!c->params || c->params->empty()) && c->placeholders.size() == 2 &&
+                            c->placeholders[0].size() > 2 && c->placeholders[0][1] == '^' &&
+                            c->placeholders[1].size() > 2 && c->placeholders[1][1] == '^') {
+                            pa = c->placeholders[0]; pb = c->placeholders[1];
+                        }
+                        else if (c->placeholders.empty() && c->params && c->params->size() == 2) {
+                            bool plain = true;
+                            for (const Param& p : *c->params)
+                                if (p.sigil != '$' || p.name.size() < 2 || !p.type.empty() || p.typeCapture ||
+                                    p.whereExpr || p.litVal || p.defaultVal || p.subSig || p.codeSig || p.named ||
+                                    p.slurpy || p.optional || p.isRw || p.isRaw || p.isCopy || p.coerce ||
+                                    p.defConstraint || !p.userTraits.empty() || p.invocant) { plain = false; break; }
+                            if (plain) { pa = (*c->params)[0].name; pb = (*c->params)[1].name; }
+                        }
+                        const Stmt* st0 = (*c->body)[0].get();
+                        if (!pa.empty() && st0 && st0->kind == NK::ExprStmt) {
+                            const Expr* e0 = static_cast<const ExprStmt*>(st0)->e.get();
+                            if (e0 && e0->kind == NK::Binary) {
+                                auto* bx = static_cast<const Binary*>(e0);
+                                int op = bx->op == "<=>" ? 1 : bx->op == "cmp" ? 2 : bx->op == "leg" ? 3 : 0;
+                                auto nameOf = [](const Expr* x) -> std::string {
+                                    if (!x || x->kind != NK::VarExpr) return {};
+                                    auto* v = static_cast<const VarExpr*>(x);
+                                    return v->declare ? std::string() : v->name;
+                                };
+                                const std::string l = nameOf(bx->lhs.get()), r = nameOf(bx->rhs.get());
+                                if (op && l == pa && r == pb) cmpOp = op;
+                                else if (op && l == pb && r == pa) { cmpOp = op; cmpSwapped = true; }
+                                if (cmpOp && lexShadowPossible(bx->op)) cmpOp = 0;
+                            }
+                        }
+                    }
+                    if (cmpOp && cmpOp != 3 && sortByNativeInt(items, order, cmpSwapped)) {
+                        // (ordered as the operator orders them)
+                    }
+                    else if (cmpOp) {
+                        static const std::string kOps[] = {"", "<=>", "cmp", "leg"};
+                        const std::string& opn = kOps[cmpOp];
+                        // the block's answer for (first, second) is OP(first, second),
+                        // or OP(second, first) when it names them the other way round
+                        std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                            const Value& first = items[y]; const Value& second = items[x];
+                            Value v = cmpSwapped ? applyArith(opn, second, first) : applyArith(opn, first, second);
+                            return v.toInt() > 0;
+                        });
+                    }
+                    else
                     std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
                         return callCallable(blk, {items[y], items[x]}).toInt() > 0;
                     });

@@ -320,6 +320,14 @@ with its tag, after the release run is green.
     the cost is a divergence on code that only runs here.
   A middle path is a small table for the numeric builtins most often
   extended (`abs`, `sqrt`, `floor`, `ceiling`, `round`, `sign`).
+- [ ] **Selkie t/81-trace.rakutest segfaults intermittently** (rc 139, about 1 run
+  in 3, on every build tried 2026-10-04 — a9c99fa3 through the regex-prefilter
+  work): found by the battery t/ comparison, not yet investigated.
+- [ ] **Two regex divergences from Rakudo 2026.09** (found writing
+  t/regression/regex-search-prefilters.raku; both older than the prefilters):
+  `"STRASSE" ~~ / :i 'straße' /` matches `STRASSE` here and `STRASS` there,
+  and `"a\r\nb" ~~ / \r\n /` matches here but not there (the CRLF is one
+  grapheme, which a two-atom pattern cannot match).
 - [ ] **A lazy list inside a sequence's seed list** gists as its elements:
   `(@f, 2, 3 ... 8)` with `@f = lazy 0, 1, 1` shows `[0 1 1]` where Rakudo
   shows `[...]` (the seed list is read out to find the start values).
