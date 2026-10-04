@@ -3724,6 +3724,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             }
                         }
                     }
+                    // …and a COMPILED block (no tree to read) carries the shape
+                    // its compiler found (Callable::cmpShape)
+                    if (!cmpOp && blk.code() && !blk.code()->body && blk.code()->cmpShape) {
+                        static const char* const kShapeOps[] = {"", "<=>", "cmp", "leg"};
+                        const int sh = blk.code()->cmpShape;
+                        const int op = sh < 0 ? -sh : sh;
+                        if (op >= 1 && op <= 3 && !lexShadowPossible(kShapeOps[op])) {
+                            cmpOp = op;
+                            cmpSwapped = sh < 0;
+                        }
+                    }
                     if (cmpOp && cmpOp != 3 && sortByNativeInt(items, order, cmpSwapped)) {
                         // (ordered as the operator orders them)
                     }

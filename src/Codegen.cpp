@@ -1223,6 +1223,48 @@ struct Codegen {
         for (size_t k = 0; k < phs.size(); k++) names += std::string(k ? ", " : "") + cesc(phs[k]);
         return names;
     }
+    // `{ $^a <=> $^b }`, `-> $x, $y { $y cmp $x }`: a block whose body is ONE
+    // `<=>`/`cmp`/`leg` between its two plain parameters. The runtime sort asks
+    // that operator instead of calling the block per comparison
+    // (Callable::cmpShape); the interpreter recognises the same shape from the
+    // tree. 0 = not that shape, else 1/2/3, negative when swapped.
+    static int cmpShapeOf(const BlockExpr* be, const std::vector<std::string>& phs) {
+        if (be->isSub || be->body.size() != 1) return 0;
+        std::string pa, pb;
+        if (!phs.empty()) {
+            if (phs.size() != 2 || phs[0].size() < 3 || phs[0][1] != '^' || phs[1].size() < 3 || phs[1][1] != '^')
+                return 0;
+            pa = phs[0]; pb = phs[1];
+        }
+        else if (be->params.size() == 2) {
+            for (const Param& p : be->params)
+                if (p.sigil != '$' || p.name.size() < 2 || !p.type.empty() || p.typeCapture || p.whereExpr ||
+                    p.litVal || p.defaultVal || p.subSig || p.codeSig || p.named || p.slurpy || p.optional ||
+                    p.isRw || p.isRaw || p.isCopy || p.coerce || p.defConstraint || !p.userTraits.empty() ||
+                    p.invocant) return 0;
+            pa = be->params[0].name; pb = be->params[1].name;
+        }
+        else return 0;
+        const Stmt* st = be->body[0].get();
+        if (!st || st->kind != NK::ExprStmt) return 0;
+        const Expr* e = static_cast<const ExprStmt*>(st)->e.get();
+        if (!e || e->kind != NK::Binary) return 0;
+        auto* bx = static_cast<const Binary*>(e);
+        const int op = bx->op == "<=>" ? 1 : bx->op == "cmp" ? 2 : bx->op == "leg" ? 3 : 0;
+        auto nameOf = [](const Expr* x) -> std::string {
+            if (!x || x->kind != NK::VarExpr) return {};
+            auto* v = static_cast<const VarExpr*>(x);
+            return v->declare ? std::string() : v->name;
+        };
+        const std::string l = nameOf(bx->lhs.get()), r = nameOf(bx->rhs.get());
+        if (!op) return 0;
+        if (l == pa && r == pb) return op;
+        if (l == pb && r == pa) return -op;
+        return 0;
+    }
+    static std::string cmpShapeSet(int shape) {
+        return shape ? " _c.code()->cmpShape = " + std::to_string(shape) + ";" : std::string();
+    }
     // A named sub's closure, carrying the declared signature
     std::string subSig(const std::string& mk, const SubDecl* d) {
         if (d->params.empty() && !d->hadSig) {
@@ -1310,7 +1352,7 @@ struct Codegen {
         // under their real names, in the sorted order they bind.
         if (!phs.empty())
             return "([&]()->Value{ Value _c = " + mk + "; _c.code()->placeholders = {" + placeholderList(phs) +
-                   "}; return _c; }())";
+                   "};" + cmpShapeSet(cmpShapeOf(be, phs)) + " return _c; }())";
         if (be->params.empty() && !be->isPointy && !(be->isSub && be->sigParens)) return mk;
         std::string sc = sigWrap(mk, be->params, "", be->retType,
                                  (be->isSub ? 0u : (unsigned)RSC_BLOCK) |
@@ -1321,7 +1363,7 @@ struct Codegen {
         for (auto& p : be->params) if (!p.named && !p.slurpy) arityPhs.push_back("$^" + p.name.substr(p.name.empty() ? 0 : 1));
         if (arityPhs.size() <= 1) return sc;
         return "([&]()->Value{ Value _c = " + sc + "; _c.code()->placeholders = {" + placeholderList(arityPhs) +
-               "}; return _c; }())";
+               "};" + cmpShapeSet(cmpShapeOf(be, {})) + " return _c; }())";
     }
 
     bool stmtHasRedo(Stmt* s) {
@@ -3663,7 +3705,7 @@ struct Codegen {
                 const std::string& op = b->op;
                 static const std::map<std::string, std::string> arith = {
                     {"+", "__kAdd"}, {"-", "__kSub"}, {"*", "__kMul"}, {"div", "__kDiv"},
-                    {"%", "__kMod"}, {"%%", "__kDivBy"}};
+                    {"%", "__kMod"}, {"mod", "__kMod"}, {"%%", "__kDivBy"}};   // `mod` is `%` over Ints
                 static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
                 const bool logical = cond && (op == "&&" || op == "and" || op == "||" || op == "or");
                 const auto ai = arith.find(op);
@@ -3899,7 +3941,7 @@ struct Codegen {
     std::string fastBin(const std::string& op) {
         if (!optimize_) return "";
         static const std::map<std::string, std::string> m = {
-            {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"}, {"%", "rtMod"}, {"%%", "rtDivides"},
+            {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"}, {"%", "rtMod"}, {"mod", "rtModOp"}, {"%%", "rtDivides"},
             {"**", "rtPow"}, {"div", "rtDiv"},
             {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"},
             // string comparisons: plain Str/Str compares byte-wise inline; tagged

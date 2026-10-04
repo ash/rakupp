@@ -4276,6 +4276,8 @@ inline Value rtItemized(Value v) {
 // coerceHash statics that live there.)
 void rtCommaAssign(Value& l, const Value& r);
 inline Value rtMod(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("%", l, r); }
+// `mod`: the same over two Ints; anything else (a zero divisor throws, where `%` fails softly) is `mod`'s own
+inline Value rtModOp(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("mod", l, r); }
 inline Value rtDivides(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) return Value::boolean(l.i % r.i == 0); return applyArith("%%", l, r); }
 // Fast integer power by squaring, with overflow → bignum fallback (matches applyArith).
 inline Value rtPow(const Value& l, const Value& r) {

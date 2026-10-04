@@ -429,6 +429,11 @@ struct Callable {
     StateSlot state;
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted), then $:n nameds (source order)
+    // A compiled block whose body is ONE `<=>`/`cmp`/`leg` between its two
+    // parameters: 1/2/3 for the operator, negative when they are named the
+    // other way round (`{ $^b <=> $^a }`). Set by --exe codegen, which has the
+    // syntax tree; the interpreter's sort reads the tree itself. 0 = not that.
+    signed char cmpShape = 0;
     // How many placeholders are POSITIONAL. A `$:name` one is a required NAMED
     // parameter: it is in neither the arity nor the count, and no positional
     // argument binds to it — `{ $:k ~ $^a ~ $^z }` is `($a, $z, :$k!)`, 2 and 2.
