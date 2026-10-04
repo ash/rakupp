@@ -7585,8 +7585,21 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // A redispatch (callsame/nextsame) that runs past the last same-class
                 // candidate: for a METHOD multi, defer up the inheritance tree to the
                 // outer dispatcher (the parent class's method pushed by
-                // invokeMethodChain); otherwise → Nil.
-                if (!visited.empty()) return Value::nil();
+                // invokeMethodChain); otherwise → Nil. …except past the last USER
+                // candidate of an operator the language has: the built-in is the
+                // next candidate there, as it is for a call no user candidate takes
+                // (below). `multi infix:<*>(UInt $a, UInt $b) { callsame() mod $m }`
+                // — modular arithmetic over the core `*` — got Nil.
+                if (!visited.empty()) {
+                    if (as.size() == 2 && !c.isMethod && c.name.size() > 8 && c.name.back() == '>' &&
+                        c.name.rfind("infix:<", 0) == 0) {
+                        try { return applyArith(c.name.substr(7, c.name.size() - 8), as[0], as[1]); }
+                        catch (RakuError& e) {
+                            if (e.message.rfind("Unsupported operator", 0) != 0) throw;
+                        }
+                    }
+                    return Value::nil();
+                }
                 // no candidate takes the Junction itself — autothread over it
                 // (recursively, so `mstest(1&2 | 3)` threads down to the leaves)
                 for (size_t ai = 0; ai < as.size(); ai++) {
@@ -28319,10 +28332,15 @@ Value Interpreter::eval(Expr* e) {
                     const auto& op = static_cast<Unary*>(it.get())->op;
                     bareAtVar = opEq(op, "ctx@") || opEq(op, "decont");
                 }
-                bool flatten = oneArgSpread || callSpread || isSlip ||
+                // …and a `$` variable is the one item it holds, whatever that is:
+                // `my $l = (1, 2); [$l]` is one element in Rakudo. The itemized
+                // flag does not survive the store, so this keys on the syntax.
+                const bool dollarItem = it->kind == NK::VarExpr &&
+                                        static_cast<VarExpr*>(it.get())->name.rfind('$', 0) == 0;
+                bool flatten = isSlip || (!dollarItem && (oneArgSpread || callSpread ||
                                (!isHyper &&
                                ((bareAtVar && l->items.size() == 1 && !l->fromCommaList) ||
-                                (v.t == VT::Array && v.isList && !l->fromCommaList)));
+                                (v.t == VT::Array && v.isList && !l->fromCommaList)))));
                 if (flatten && v.t == VT::Array) {
                     forceLazy(v);   // `[gather { … }]` is the gather's elements
                     for (auto& x : *v.arr()) a.arr()->push_back(x);
@@ -28333,8 +28351,12 @@ Value Interpreter::eval(Expr* e) {
                 // module writes "these are the character sets to draw from".
                 // Spreading every Range item made that four hundred elements of
                 // the wrong type, and the check that rejected it was right to.
+                // (…but a Range held in a `$` variable is an ITEM: `my $r = 1..3;
+                // [$r]` is one element, as in Rakudo)
                 else if (v.t == VT::Range && l->items.size() == 1 && !l->fromCommaList &&
-                         !v.rExFrom() && v.rTo() - v.rFrom() < 1000000) {
+                         !v.rExFrom() && v.rTo() - v.rFrom() < 1000000 &&
+                         !(l->items[0]->kind == NK::VarExpr &&
+                           static_cast<const VarExpr*>(l->items[0].get())->name.rfind('$', 0) == 0)) {
                     for (auto& x : v.flatten()) a.arr()->push_back(x);
                 }
                 // …and a single HASH spreads into its PAIRS, by that same one-arg

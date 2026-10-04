@@ -2195,6 +2195,8 @@ struct Codegen {
                         // `[ @$v ]` / `[ $v<> ]`: an array (or a hash's pairs) out of its item spreads
                         s += "([&]()->Value{ Value _v = " + exArg(it) + "; return _v.t == VT::Array ||"
                              " (_v.t == VT::Hash && _v.hashKind.empty()) ? rtSlipShallow(_v) : rtOneArgItem(_v); }())";
+                    else if (one && it->kind == NK::VarExpr && static_cast<VarExpr*>(it)->name.rfind('$', 0) == 0)
+                        s += exArg(it);  // `[$r]`: what a `$` variable holds is one item
                     else if (isHyper)    // hyper results stay one (itemized) element
                         s += (one ? "rtOneArgItem(" : "rtHyperItem(") + exArg(it) + ")";
                     else if (one)        // single list-valued item spreads (one-arg rule)

@@ -305,6 +305,9 @@ with its tag, after the release run is green.
   `tools/run-bench.raku --suite=mutsu` times mutsu's benchmark files. Next:
   the Rakudo-pass lists for both suites, a committed baseline, and the
   benchmark rows where mutsu leads.
+- [ ] **Divergences found beside the mutsu benchmarks**: `[1..*].is-lazy` is
+  False (Rakudo: True), and a user `multi infix:<~>(Str, Str where …)` is
+  never consulted — `~` is not among userInfixOverCore's modelled operators.
 - [ ] **Roast harness**: run Rakudo at the 120 s budget; COUNTING.md's figures
   are from the 60 s budget. The Lock around spawns in tools/run-roast.raku can
   go now that the engine's pipes are close-on-exec before the fork

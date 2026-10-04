@@ -3147,8 +3147,12 @@ Value rtSpliceIfList(const Value& v) {
     return v;
 }
 // the one-arg rule: `[<a b>».Str]` — a SINGLE list-valued, non-itemized item spreads
+// …and so does a lone Range, under the interpreter's own bounds: `[1..3]` is
+// three elements, `[($k*8) ..^ ($k*8+8)]` eight (a `$`-held Range never gets
+// here — codegen passes a `$` variable through as the one item it is)
 Value rtOneArgItem(const Value& v) {
     if (v.t == VT::Array && v.arr() && v.isList && !v.itemized) { Value r = v; r.s = "Slip"; return r; }
+    if (v.t == VT::Range && !v.itemized && !v.rExFrom() && v.rTo() - v.rFrom() < 1000000) return rtSlipShallow(v);
     return v;
 }
 // a hyper result kept as one element is itemized — clear isList so later list
