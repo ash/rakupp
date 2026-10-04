@@ -2,7 +2,9 @@
 
 What is in this directory:
 
-- [`vscode/`](vscode/): the VS Code extension, a client for `rakupp --lsp`.
+- [`vscode/`](vscode/): the VS Code extension, a client for `rakupp --lsp`,
+  on the [Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepSoft.rakupp) as
+  `DeepSoft.rakupp`.
 - [`emacs/`](emacs/): Emacs setups for eglot and lsp-mode.
 - [`wordpress/`](wordpress/): Raku Snippets, a WordPress plugin that makes
   Raku code blocks in posts runnable in the reader's browser with raku.js. It
@@ -26,8 +28,10 @@ The rest of this page is about the first two and the server behind them.
 > the token stream, since `struct Node` carries a line but no column. Hover,
 > completion and definition are `src/LspIndex.cpp`. Checked with VS Code 1.140
 > (diagnostics) and with Emacs 31.1 through eglot and lsp-mode (everything).
-> The VS Code extension is version 1.0.0 (publisher `DeepSoft`), packaged with
-> `npx @vscode/vsce package` and not yet on the Marketplace.
+> The VS Code extension is version 1.0.1 (publisher `DeepSoft`), packaged with
+> `npx @vscode/vsce package` and on the
+> [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepSoft.rakupp) as
+> `DeepSoft.rakupp`.
 
 
 `rakupp --lsp` runs a [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
@@ -161,6 +165,10 @@ rakupp --lint myprogram.raku
 The extension in [`vscode/`](vscode/) is a thin client: it launches
 `rakupp --lsp` and lets VS Code render the squiggles. It also ships basic
 syntax highlighting.
+
+To use it, install `DeepSoft.rakupp` from the Marketplace, as
+[LSP.md](../docs/guide/integrations/LSP.md#vs-code) describes. The rest of this
+section is for working on the extension itself.
 
 ### Run it from source
 

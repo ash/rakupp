@@ -23,11 +23,12 @@ This page starts with VS Code. Other editors are covered
 
 ## VS Code
 
-The extension is in [`editors/vscode/`](../../../editors/vscode/). It is not on
-the Marketplace yet, so you build it once from the repository and install the
-`.vsix` file. The extension is a thin client: it starts `rakupp --lsp` and lets
-VS Code draw what the server reports. It also adds syntax highlighting for
-`.raku`, `.rakumod`, `.rakutest` and the older `.p6`/`.pm6` extensions.
+Install **Raku++ (rakupp)**, publisher DeepSoft, from the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=DeepSoft.rakupp);
+its source is [`editors/vscode/`](../../../editors/vscode/). The extension is a
+thin client: it starts `rakupp --lsp` and lets VS Code draw what the server
+reports. It also adds syntax highlighting for `.raku`, `.rakumod`, `.rakutest`
+and the older `.p6`/`.pm6` extensions.
 
 ### 1. Have a `rakupp` that VS Code can start
 
@@ -40,9 +41,22 @@ one-liner, Homebrew, a release archive, or a build of this repository. With
 `rakupp` 5.2.1 or older you get the diagnostics only; hover, completion and
 go-to-definition need a newer `rakupp`.
 
-### 2. Build and install the extension
+### 2. Install the extension
 
-Building needs Node.js and npm. From the repository root:
+Search for **Raku++** in the Extensions view (⇧⌘X) and press **Install**, or
+from a terminal:
+
+```bash
+code --install-extension DeepSoft.rakupp
+```
+
+If `code` is not found, run **Shell Command: Install 'code' command in PATH**
+from VS Code's Command Palette (⇧⌘P), or use the Extensions view.
+
+#### Or build it from source
+
+To try a change to the extension before it reaches the Marketplace, build the
+`.vsix` yourself. Building needs Node.js and npm. From the repository root:
 
 ```bash
 (cd editors/vscode && npm install && npx @vscode/vsce package)
@@ -54,10 +68,8 @@ This writes `rakupp-1.0.1.vsix` into `editors/vscode/`. Install it:
 code --install-extension editors/vscode/rakupp-1.0.1.vsix
 ```
 
-If `code` is not found, run **Shell Command: Install 'code' command in PATH**
-from VS Code's Command Palette (⇧⌘P), or install the file from the GUI:
-open the Extensions view, click the **⋯** menu at its top, choose
-**Install from VSIX…** and pick the file.
+Or install the file from the GUI: open the Extensions view, click the **⋯**
+menu at its top, choose **Install from VSIX…** and pick the file.
 
 Run the build inside `editors/vscode/` itself. Packaging from a copy of the
 folder elsewhere can fail with `Extension entrypoint(s) missing`, even though
