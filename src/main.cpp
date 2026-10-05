@@ -48,6 +48,9 @@
 #include "Platform.h"
 #include "EmbeddedTools.h"
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <dirent.h>
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -638,10 +641,113 @@ static std::string extExportFlag(const std::string& outPath, std::string& listPa
 #endif
 }
 
+// The flags a native compile of generated C++ is made with, ahead of its
+// include path — shared with the precompiled header below, which a compiler
+// accepts only when it was built with the same ones.
+static std::string nativeCflags(const std::string& opt) {
+    // -ffp-contract=off: the interpreter rounds every Num operation on its
+    // own, and so must the compiled program. Left to itself the compiler
+    // fuses `a * b + c` in one expression into a single FMA — the -O F64
+    // loop lanes emit exactly that, and `0.1e0 * 10e0 + -1e0` printed
+    // 5.55e-17 compiled where Rakudo and the interpreter print 0 (GCC fuses
+    // across statements by default, too). Before the level, so an explicit
+    // -Ofast keeps meaning fast-math.
+    std::string c = " -std=c++17 -ffp-contract=off " + (opt.empty() ? std::string("-O2") : opt) + " -w -pthread";
+    // --slim ≥ safe (the default): let the linker see section granularity in
+    // the one TU we compile here, and drop what nothing references. The big
+    // win is symbol stripping — the runtime archive's reachability is real
+    // (SLIM-PLAN measured dead-strip alone at −2%, symbols at −16%) — but
+    // dead-strip is free and it is what the later phases' stubs lean on.
+    if (g_slim.deadStrip) c += " -ffunction-sections -fdata-sections";
+    return c;
+}
+
+// ---- the precompiled runtime header (--exe) ---------------------------------
+// Every --exe compile starts by parsing Interpreter.h and all it includes:
+// about 82,000 lines with the C++ standard library, a third of the time a
+// small program takes to compile. The compiler can save that parse and load
+// it instead — a precompiled header. clang takes one as a `.pch` named with
+// -include-pch; GCC finds an `Interpreter.h.gch` in a directory searched ahead
+// of the real headers. It is built on the user's machine (it is tied to the
+// exact compiler), once per rakupp build, compiler and flag set, in the cache
+// (~37 MB with clang), and an entry another rakupp build made is removed when
+// a new one is. The compiler's own --version is part of the key, so an
+// upgraded compiler gets a new header rather than refusing a stale one.
+// RAKUPP_NO_PCH=1 compiles without it. Returns the flags to add ("" for none).
+static std::string pchFnv(const std::string& s) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (unsigned char c : s) { h ^= c; h *= 1099511628211ULL; }
+    char buf[17];
+    std::snprintf(buf, sizeof buf, "%016llx", h);
+    return buf;
+}
+static std::string exePchFlags(const std::string& cxx, const std::string& cflags,
+                               const std::string& inc, const std::string& selfExe) {
+#ifdef _WIN32
+    (void)cxx; (void)cflags; (void)inc; (void)selfExe;
+    return "";
+#else
+    if (const char* e = std::getenv("RAKUPP_NO_PCH"); e && *e && std::string(e) != "0") return "";
+    if (msvcStyle(cxx) || inc.empty()) return "";
+    std::string version;
+    if (FILE* p = ::popen((cxx + " --version 2>&1").c_str(), "r")) {
+        char buf[512];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) version.append(buf, n);
+        ::pclose(p);
+    }
+    const bool clang = version.find("clang") != std::string::npos;
+    const bool gcc = !clang && (version.find("Free Software Foundation") != std::string::npos ||
+                                version.find("g++") != std::string::npos || version.find("GCC") != std::string::npos);
+    if (!clang && !gcc) return "";
+    std::string dir;
+    if (const char* d = std::getenv("RAKUPP_PCH_DIR"); d && *d) dir = d;
+    else if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) dir = std::string(x) + "/rakupp/pch";
+    else if (std::string h = platHomeDir(); !h.empty()) dir = h + "/.cache/rakupp/pch";
+    else return "";
+    // the rakupp build (version, headers, the binary's size and mtime) and the
+    // compiler with its flags — the first half names the build, to prune by
+    std::string self = std::string(RAKUPP_VERSION) + "|" + inc;
+    struct stat st {};
+    if (::stat(selfExe.c_str(), &st) == 0)
+        self += "|" + std::to_string((long long)st.st_size) + "|" + std::to_string((long long)st.st_mtime);
+    const std::string build = pchFnv(self).substr(0, 8);
+    const std::string stem = "exe-" + build + "-" + pchFnv(cxx + "|" + version + "|" + cflags);
+    const std::string target = clang ? dir + "/" + stem + ".pch" : dir + "/" + stem + "/Interpreter.h.gch";
+    const std::string flags = clang ? " -include-pch " + shq(target) : " -I " + shq(dir + "/" + stem);
+    if (::stat(target.c_str(), &st) == 0) return flags;
+    // built under a temporary name and moved into place, so a compile
+    // running beside this one sees no header or a whole one
+    runCommand("mkdir -p " + shq(clang ? dir : dir + "/" + stem));
+    const std::string tmp = target + "." + std::to_string((long long)::getpid()) + ".tmp";
+    if (!g_quiet)
+        std::cerr << "Precompiling the C++ runtime header for --exe (" << (clang ? "clang" : "GCC")
+                  << "): once for this rakupp and compiler, in " << dir << " (RAKUPP_NO_PCH=1 skips it)\n";
+    const std::string cmd = cxx + cflags + " -I " + shq(inc) + " -x c++-header " + shq(inc + "/Interpreter.h") +
+                            " -o " + shq(tmp) + " >/dev/null 2>&1 && mv -f " + shq(tmp) + " " + shq(target);
+    if (runCommand(cmd) != 0 || ::stat(target.c_str(), &st) != 0) {
+        removeFile(tmp);
+        if (!g_quiet) std::cerr << "(the precompiled header did not build; compiling without it)\n";
+        return "";
+    }
+    // the entries another rakupp build made are never read again
+    if (DIR* h = ::opendir(dir.c_str())) {
+        std::vector<std::string> stale;
+        while (struct dirent* e = ::readdir(h)) {
+            std::string n = e->d_name;
+            if (n.rfind("exe-", 0) == 0 && n.compare(4, 8, build) != 0) stale.push_back(dir + "/" + n);
+        }
+        ::closedir(h);
+        for (auto& f : stale) runCommand("rm -rf " + shq(f));
+    }
+    return flags;
+#endif
+}
+
 static std::string compileCmd(const std::string& cxx, const std::string& opt,
                               const std::string& inc, const std::string& in,
                               const std::vector<std::string>& libs, const std::string& out,
-                              const std::string& extraLink = "") {
+                              const std::string& extraLink = "", const std::string& pchFlags = "") {
     if (msvcStyle(cxx)) {
         std::string o = opt == "-O0" ? "/Od" : opt == "-O1" ? "/O1" : "/O2";
         // /MT: static CRT, matching the /MT-built runtime archive (mixing
@@ -672,20 +778,10 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
 #endif
         return c;
     }
-    // -ffp-contract=off: the interpreter rounds every Num operation on its
-    // own, and so must the compiled program. Left to itself the compiler
-    // fuses `a * b + c` in one expression into a single FMA — the -O F64
-    // loop lanes emit exactly that, and `0.1e0 * 10e0 + -1e0` printed
-    // 5.55e-17 compiled where Rakudo and the interpreter print 0 (GCC fuses
-    // across statements by default, too). Before the level, so an explicit
-    // -Ofast keeps meaning fast-math.
-    std::string c = cxx + " -std=c++17 -ffp-contract=off " + (opt.empty() ? "-O2" : opt) + " -w -pthread -Wl,-w";
-    // --slim ≥ safe (the default): let the linker see section granularity in
-    // the one TU we compile here, and drop what nothing references. The big
-    // win is symbol stripping — the runtime archive's reachability is real
-    // (SLIM-PLAN measured dead-strip alone at −2%, symbols at −16%) — but
-    // dead-strip is free and it is what the later phases' stubs lean on.
-    if (g_slim.deadStrip) c += " -ffunction-sections -fdata-sections";
+    std::string c = cxx + nativeCflags(opt) + " -Wl,-w";
+    // (the precompiled header's flags go first: GCC's is a directory that has
+    // to be searched ahead of the real headers)
+    c += pchFlags;
     if (!inc.empty()) c += " -I " + shq(inc);
     c += " " + shq(in);
     // rt and parse reference each other (the runtime drives the Parser; the
@@ -1624,7 +1720,8 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     std::string expList, extra;
     if (programHostsExtension(src)) extra = extExportFlag(outPath, expList);
     std::string cxx = nativeCxx(lib);
-    std::string cmd = compileCmd(cxx, ccOpt, inc, genPath, rtLibs, outPath, extra);
+    std::string cmd = compileCmd(cxx, ccOpt, inc, genPath, rtLibs, outPath, extra,
+                                 exePchFlags(cxx, nativeCflags(ccOpt), inc, selfExe));
     int rc = compileDroppingAot(cmd, genPath, outPath, aot, aotMods, [&]() {
         if ((size_t)aot.live() == aot.routines.size() && !cpp.empty()) return cpp;   // the first attempt, as written
         std::string ad, ac;

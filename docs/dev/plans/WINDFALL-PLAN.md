@@ -97,6 +97,7 @@ W4, against the commit before each round:
 | W4-12, interpreted literal multi fib(24) | 95 ms | 82 ms |
 | W4-13, `.sort({ $^a cmp $^b })` over 200k Strs | 0.63 s | 0.086 s |
 | W4-14, one-byte regex search, 2,000-char subject | 15.4 ms | 3.6 ms |
+| W4-15, `--exe` of a `say 42`, clang / GCC 16 (a precompiled runtime header, on by default) | 1.10 s / 1.78 s | 0.77 s / 1.22 s |
 
 Tried and reverted, the gain did not show: hoisting long string literals in
 `--exe` (W4-11's second half), and an inline register file for `--cnp`
@@ -171,11 +172,6 @@ Still open:
 
 ## For the maintainer
 
-- **A precompiled header for `--exe` compiles (W4-15).** Measured: a trivial
-  program's C++ compile 1.00 → 0.68 s with a PCH of Interpreter.h built with
-  the same flags (0.77 s once, 37 MB). `--jit`'s PCH is opt-in for exactly this
-  size; on by default it would leave 37 MB per build of rakupp in the cache.
-  Not built: opt-in, default-on with pruning, or neither.
 
 - **Default `--exe` dispatches every operator by string.** `fastBin` returns
   nothing without `-O` (`Codegen.cpp:3942`): a loop with `if $i %% 3` is

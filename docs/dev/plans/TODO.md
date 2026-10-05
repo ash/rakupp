@@ -417,8 +417,6 @@ with its tag, after the release run is green.
 - Whether `--cnp` becomes the default.
 - Default `--exe` without `-O`: unconditional fast operators, or `-O` by
   default (WINDFALL-PLAN.md).
-- A precompiled header for `--exe` compiles: −0.3 s per compile, 37 MB per
-  build in the cache (WINDFALL-PLAN.md).
 - The UUID distribution's name.
 - The rakuglaze repository's license.
 - The binding version scheme (section 4).

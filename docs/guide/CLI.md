@@ -865,6 +865,11 @@ routines compiled natively (see [NATIVE.md](NATIVE.md#modules)); a module that
 could *not* be embedded is still reported, because the binary will need the
 disk for it.
 
+The first `--exe` compile on a machine also precompiles the C++ runtime
+header, once per rakupp build and compiler, and says so; later compiles are
+about a third faster. `RAKUPP_NO_PCH=1` turns it off — see
+[COMPILERS.md](COMPILERS.md#the-precompiled-runtime-header).
+
 A module's distribution travels with it: its `resources` files are embedded
 too, and `%?RESOURCES` and `$?DISTRIBUTION` answer inside the binary as they do
 under the interpreter, with the store hidden. The compile lists them beside the

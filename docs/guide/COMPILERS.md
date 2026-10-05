@@ -162,6 +162,47 @@ The compiler that builds the transpiled program is independent of the one that
 built `rakupp`; you can build `rakupp` with Clang and still compile `--exe`
 output with GCC, or vice versa.
 
+## The precompiled runtime header
+
+Every program `--exe` compiles starts with `#include "Interpreter.h"`, and with
+the C++ standard library behind it that is about 82,000 lines the compiler has
+to parse before it reaches the program itself. The first `--exe` compile on a
+machine saves that parse to a file, a *precompiled header*, and every later
+compile loads it instead:
+
+```
+$ rakupp --exe hello.raku
+Precompiling the C++ runtime header for --exe (clang): once for this rakupp and compiler, in /Users/you/.cache/rakupp/pch (RAKUPP_NO_PCH=1 skips it)
+Compiled (native) hello.raku -> hello
+$ rakupp --exe hello.raku
+Compiled (native) hello.raku -> hello
+```
+
+It is built on your machine because it belongs to the exact compiler that
+reads it; it cannot be shipped. Measured on an Apple M3 with a `say 42`:
+
+| Compiler | One `--exe` compile | With the header | Built once in | On disk |
+|---|---:|---:|---:|---:|
+| Clang (Apple `c++`) | 1.10 s | 0.77 s | 0.8 s | 37 MB |
+| GCC 16 | 1.78 s | 1.22 s | 2.6 s | 182 MB |
+
+The header is the compiler's own parsed form of those 82,000 lines — every
+declaration, template and inline function, whether a program uses it or not —
+which is why it is larger than any binary built with it.
+
+- **Where:** `$XDG_CACHE_HOME/rakupp/pch`, or `~/.cache/rakupp/pch`;
+  `RAKUPP_PCH_DIR` names another directory.
+- **One per build.** A header is named after the rakupp build, the compiler's
+  `--version` and the compile flags (`-O3` gets its own), so an upgraded
+  rakupp or compiler makes a new one rather than reading a stale one. Making
+  one removes those an earlier rakupp build left; the directory keeps the
+  current build's headers only.
+- **Concurrent compiles** are safe: the header is written under a temporary
+  name and moved into place, so a compile beside it sees none or a whole one.
+- **Off:** `RAKUPP_NO_PCH=1` compiles without it. MSVC (`cl`, `clang-cl`) and
+  Windows builds compile without it too.
+- `-q` drops the `Precompiling …` line along with the `Compiled …` one.
+
 ## What runs where
 
 What a binary needs from the machine that runs it, per platform — for the
