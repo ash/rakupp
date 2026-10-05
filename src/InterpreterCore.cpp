@@ -4216,27 +4216,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         coerceViaTypeVar(params[i], v, env.get())) { /* converted and checked */ }
                     else if (!params[i].type.empty() || isMuTypeObject(v) || params[i].codeSig)
                         typeCheckBind(params[i], v, blockParams, whereVerified, env.get());
-                    // a native-int param truncates on bind (see the slow path)
-                    // a machine-width `int` does not wrap, but a bigint does not fit it either
-                    if (v.t == VT::Bool && params[i].type == "int") v = Value::integer(v.b ? 1 : 0);
-                    if (v.t == VT::Int && v.big() && params[i].type == "int" && !v.big()->fitsLL())
-                        throw RakuError{Value::typeObj("X::AdHoc"),
-                            "Cannot unbox " + std::to_string(v.big()->bitLength() + 1) +
-                            " bit wide bigint into native integer"};
-                    { int spec = paramNatSpec(params[i]);
-                      if (spec >> 1) {
-                          // (…but refuses a value no machine word holds at all)
-                          if (v.t == VT::Int && v.big() &&
-                              ((spec & 1) ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
-                              throw RakuError{Value::typeObj("X::AdHoc"),
-                                  "Cannot unbox " + std::to_string(v.big()->bitLength() + (spec & 1)) +
-                                  " bit wide bigint into native integer"};
-                          wrapNative(v, spec >> 1, spec & 1);
-                      }
-                      // a boxed parameter takes the VALUE, not the native (see the slow path)
-                      else if (v.natBits && !params[i].isRw && !params[i].isRaw &&
-                               !paramIsNative(params[i]))
-                          dropNativeTags(v); }
+                    bindNativeParam(params[i], v);
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)

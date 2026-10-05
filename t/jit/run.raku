@@ -144,7 +144,8 @@ if !@args {
     my @want = @caseDirs.map({ .dir.grep({ .extension eq 'raku' }) }).flat
                         .grep({ !.lines[0].starts-with('# JIT: refused' | '# CNP: refused') }).sort(*.Str);
     for @want -> $f {
-        my $p = run $rakupp.Str, |@lane.map({ $_ ~ ',stats' }), $f.Str, :out, :err;
+        my $p = run $rakupp.Str, |@lane.map({ $_ ~ ',stats' }), $f.Str, :out, :err,
+                    :env(%(|%*ENV, RAKUPP_NO_KERNELS => 1));   # (as the lane above runs)
         $p.out.slurp(:close);
         my $e = $p.err.slurp(:close);
         $tiered++ if $e ~~ / 'kernels entered ' (\d+) / && +$0 > 0;

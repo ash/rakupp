@@ -19,6 +19,7 @@ namespace rakupp {
 
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCore.cpp
 bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
+bool isNativeTypeName(const std::string& n); // the native type names (int, num32, str, …)
 std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 
 namespace {
@@ -276,6 +277,29 @@ struct Codegen {
         RoutineScope(Codegen* c, const std::string& ref) : g(c) { g->routineRef_.push_back(ref); }
         ~RoutineScope() { g->routineRef_.pop_back(); }
     };
+    // One entry per routine body being emitted: set when a `return` inside one
+    // of its BLOCKS is (rtReturnFrom aims it at the routine's frame), so the
+    // routine opens that frame (RtRoutineFrame) — routines without such a
+    // block pay nothing.
+    std::vector<char> frameUse_;
+    // `do { }` / `try { }` blocks open in the routine being emitted: each is a
+    // C++ lambda called in place, so a `return` in one leaves the routine the
+    // same way as one in a block closure
+    int iife_ = 0;
+    struct FrameScope {
+        Codegen* g; int savedIife;
+        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_) { g->frameUse_.push_back(0); g->iife_ = 0; }
+        ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; }
+        bool used() const { return g->frameUse_.back() != 0; }
+    };
+    static std::string framePrologue() {
+        return "RtRoutineFrame __rf(RT); const uint64_t __fid = __rf.id; "
+               "const std::shared_ptr<bool> __flive = __rf.live;\n";
+    }
+    static std::string routineCatch(bool framed) {
+        return framed ? "catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }"
+                      : "catch (ReturnEx& __r) { return __r.v; }";
+    }
 
     // The top-level class and enum declarations the pre-pass registered. One
     // anywhere else (inside a sub or a block) is emitted by nothing at all.
@@ -1159,6 +1183,7 @@ struct Codegen {
         BodyScope __bs{this, /*closure=*/false};
         cellsLive_ = outerCells;   // outer cells stay reachable (aliased below)
         analyzeCells(d->body, params);
+        FrameScope __fs{this};
         std::string body = capture([&]() {
             emitCellAliases(0, params);
             bindParams(sigOf(d), 0, false);
@@ -1180,8 +1205,9 @@ struct Codegen {
         // a SUB body is a ReturnEx boundary (same rule as bodyDef): without the
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
-        return subSig("Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
-                      "} catch (ReturnEx& __r) { return __r.v; } })", d);
+        const bool framed = __fs.used();
+        return subSig("Value::closure([=](ValueList& __a)->Value{ " + (framed ? framePrologue() : std::string()) +
+                      "try {\n" + body + "} " + routineCatch(framed) + " })", d);
     }
 
     // The runtime Code object of a compiled routine carries the signature the
@@ -1289,7 +1315,8 @@ struct Codegen {
         BodyScope __bs{this, /*closure=*/true};
         // an anonymous `sub` is a routine of its own; a plain block is not
         std::unique_ptr<RoutineScope> __rs;
-        if (be->isSub) __rs = std::make_unique<RoutineScope>(this, "");
+        std::unique_ptr<FrameScope> __fs;
+        if (be->isSub) { __rs = std::make_unique<RoutineScope>(this, ""); __fs = std::make_unique<FrameScope>(this); }
         bool pushed = false; std::string topic;
         std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
                                                           : std::vector<std::string>{};
@@ -1344,9 +1371,10 @@ struct Codegen {
         if (pushed) topics.pop_back();
         // an anonymous `sub {…}` term is a ReturnEx boundary like any routine;
         // a plain block stays TRANSPARENT so `return` reaches the enclosing sub
+        const bool framed = __fs && __fs->used();
         std::string mk = be->isSub
-            ? "Value::closure([=](ValueList& __a)->Value{ try {\n" + body +
-              "} catch (ReturnEx& __r) { return __r.v; } })"
+            ? "Value::closure([=](ValueList& __a)->Value{ " + (framed ? framePrologue() : std::string()) +
+              "try {\n" + body + "} " + routineCatch(framed) + " })"
             : "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
         // A written signature (pointy params, `sub (…)`) rides in as the Code's
         // params — which is also what tells sort/map/for how many elements to
@@ -1694,6 +1722,7 @@ struct Codegen {
                     return "rtReduce(RT, " + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) + ")";
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
+                    struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
                     if (u->operand->kind == NK::BlockExpr) {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
                         body = capture([&]() {
@@ -2787,13 +2816,18 @@ struct Codegen {
                 // In a module routine, a `return` inside a BLOCK leaves the routine,
                 // through whatever called the block — interpreted frames included —
                 // so it is thrown at the routine's own frame, as the interpreter's is.
-                if (moduleMode_ && !nestKinds_.empty() && nestKinds_.back() == 'b')
+                const bool inBlock = (!nestKinds_.empty() && nestKinds_.back() == 'b') || iife_ > 0;
+                if (moduleMode_ && inBlock)
                     line(ind, "throw ReturnEx{" + v + ", __fid};");
-                // A program's routines have no frame to aim one at, and a C++
-                // `return` would leave only the block: `(1, 2).map({ return 5
-                // if $_ == 2; $_ })` went on with the routine.
-                else if (!nestKinds_.empty() && nestKinds_.back() == 'b')
-                    unsupported("a `return` inside a block (it leaves the enclosing routine)");
+                // …and so in a program's: a C++ `return` would leave only the
+                // block, and `(1, 2).map({ return 5 if $_ == 2; $_ })` went on
+                // with the routine. Outside any routine there is nothing to
+                // return from.
+                else if (inBlock) {
+                    if (frameUse_.empty()) unsupported("a `return` inside a block outside any routine");
+                    frameUse_.back() = 1;
+                    line(ind, "rtReturnFrom(" + v + ", __fid, __flive);");
+                }
                 else line(ind, "return " + v + ";");
                 return;
             }
@@ -5304,14 +5338,16 @@ struct Codegen {
     }
 
     // ---- sub definitions ----
-    // A parameter whose type the binding enforces: a `$` or sigilless one
-    // typed by a boxed type. Natives, type captures, and Any / Mu (which only
-    // refuse Mu, as an untyped parameter does not here) bind as before.
+    // A parameter whose type the binding enforces: a `$` or sigilless one with
+    // a type. Type captures, and Any / Mu (which only refuse Mu, as an untyped
+    // parameter does not here), bind as before.
     static bool checkedParam(const Param& p) {
         if (p.type.empty() || p.slurpy || p.invocant || p.isRw || p.typeCapture || p.typeFromCapture ||
             !p.captureName.empty() || (p.sigil != '$' && p.sigil != '\\')) return false;
         if (p.type == "Any" || p.type == "Mu") return false;
-        return !(p.type[0] >= 'a' && p.type[0] <= 'z');
+        // a lowercase name is a native's (`int`, `num32`, `str`) or nothing the
+        // binding knows
+        return !(p.type[0] >= 'a' && p.type[0] <= 'z') || isNativeTypeName(p.type);
     }
     // the parameter's descriptor, built once (a function-local static)
     std::string typedParamDesc(const Param& p, int ind) {
@@ -5321,8 +5357,10 @@ struct Codegen {
     }
     static std::string bindTypedExpr(const std::string& got, const std::string& pd, const Param& p) {
         const std::string& t = p.type;
-        const char* fast = t == "Int" ? "RTB_INT" : t == "Str" ? "RTB_STR" : t == "Num" ? "RTB_NUM"
-                         : t == "Rat" ? "RTB_RAT" : t == "Bool" ? "RTB_BOOL" : "RTB_NONE";
+        const char* fast = t == "Int" ? "RTB_INT" : t == "Str" || t == "str" ? "RTB_STR"
+                         : t == "Num" || t == "num" || t == "num64" ? "RTB_NUM"
+                         : t == "Rat" ? "RTB_RAT" : t == "Bool" ? "RTB_BOOL"
+                         : t == "int" ? "RTB_MACHINE_INT" : "RTB_NONE";
         return "rtBindTyped(" + got + ", " + pd + ", " + fast + ", [&]() -> Interpreter& { return RT; })";
     }
     // Emit binding lines that pull each parameter out of the call's `__a`
@@ -5451,27 +5489,33 @@ struct Codegen {
             std::string fname = md->isMulti ? methodCandFn(cd->name, mkey, multiSeq[mkey]++)
                                             : methodFn(cd->name, mkey);
             BodyScope __bs{this, /*closure=*/false};
-            line(0, "static Value " + fname + "(ValueList& __a) {");
-            line(1, "try {"); // a METHOD body is a ReturnEx boundary too (same rule as bodyDef)
-            line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
-            bindParams(md->params, 1, true);
-            std::string saved = self_; self_ = "__self";
-            hoistLexicalSubs(md->body, 1);
-            for (size_t i = 0; i < md->body.size(); i++) {
-                Stmt* s = md->body[i].get();
-                if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
-                    line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
-                else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
-                    std::string rv = gensym("__rv");
-                    line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
-                    stmtValue(s, 1, rv);
-                    line(1, "return " + rv + ";");
+            FrameScope __fs{this};
+            std::string saved = self_;
+            std::string mbody = capture([&]() {
+                line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
+                bindParams(md->params, 1, true);
+                self_ = "__self";
+                hoistLexicalSubs(md->body, 1);
+                for (size_t i = 0; i < md->body.size(); i++) {
+                    Stmt* s = md->body[i].get();
+                    if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
+                        line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                    else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
+                        std::string rv = gensym("__rv");
+                        line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
+                        stmtValue(s, 1, rv);
+                        line(1, "return " + rv + ";");
+                    }
+                    else stmt(s, 1);
                 }
-                else stmt(s, 1);
-            }
-            line(1, std::string("return ") + tailFallback(md->body) + ";");
-            line(1, "} catch (ReturnEx& __r) { return __r.v; }");
+                line(1, std::string("return ") + tailFallback(md->body) + ";");
+            });
             self_ = saved;
+            line(0, "static Value " + fname + "(ValueList& __a) {");
+            if (__fs.used()) out << "    " << framePrologue();
+            line(1, "try {"); // a METHOD body is a ReturnEx boundary too (same rule as bodyDef)
+            out << mbody;
+            line(1, "} " + routineCatch(__fs.used()));
             line(0, "}");
         }
     }
@@ -5660,12 +5704,17 @@ struct Codegen {
                 for (auto& p : ps) ka.push_back(mangleVar(p.name));
                 out << kernelEntry(kernelName, ka);
             }
+            FrameScope __fs{this};
+            std::string text = capture([&]() {
+                if (anyCell)
+                    for (size_t i = 0; i < ps.size(); i++)
+                        line(2, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
+                emitBody(body);
+            });
+            if (__fs.used()) out << "    " << framePrologue();
             line(1, "try {");
-            if (anyCell)
-                for (size_t i = 0; i < ps.size(); i++)
-                    line(2, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
-            emitBody(body);
-            line(1, "} catch (ReturnEx& __r) { return __r.v; }");
+            out << text;
+            line(1, "} " + routineCatch(__fs.used()));
             line(0, "}");
             // boxed adapter so named/slurpy/multi call sites still resolve
             line(0, "static Value " + fnName + "(ValueList __a) { return " + fnName + "(" + fwd + "); }");
@@ -5681,10 +5730,15 @@ struct Codegen {
         // main() and the binary died with "terminating due to uncaught exception of
         // type rakupp::ReturnEx", where the interpreter answered normally. The
         // interpreter states the same boundary in callCallableRaw (InterpreterCore.cpp).
+        FrameScope __fs{this};
+        std::string text = capture([&]() {
+            bindParams(ps, 2, false);
+            emitBody(body);
+        });
+        if (__fs.used()) out << "    " << framePrologue();
         line(1, "try {");
-        bindParams(ps, 2, false);
-        emitBody(body);
-        line(1, "} catch (ReturnEx& __r) { return __r.v; }");
+        out << text;
+        line(1, "} " + routineCatch(__fs.used()));
         line(0, "}");
     }
     void subDef(SubDecl* d) {

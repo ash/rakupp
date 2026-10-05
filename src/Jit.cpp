@@ -1602,7 +1602,12 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
             return refuse(s, "slot " + n + " is a native or readonly container the kernel would write");
         if (owner->ex) {
             const EnvExtras& x = *owner->ex;
+            // (the loop kernels' list, writableCell in IntKernel.cpp: a `where`
+            // or a smiley is a check every store makes, which a write-back
+            // does not — `my $w where * < 5` counted on to 20)
             if (x.varDefault.count(n) || x.varCoerce.count(n) || x.varDynamic.count(n) ||
+                x.varSmiley.count(n) || x.varWhere.count(n) || x.varConstant.count(n) ||
+                x.varValueBound.count(n) || x.rwCelled.count(n) ||
                 x.rwLinks.count(n) || x.rwDirect.count(n) || x.rwRoots.count(n) ||
                 x.rwSynced.count(n) || x.rwDead.count(n))
                 return refuse(s, "slot " + n + " has container traits the kernel would have to honour");

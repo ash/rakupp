@@ -44,6 +44,22 @@ ck((try C.new.m($str)) // $!.^name, 'X::TypeCheck::Binding::Parameter', 'a metho
 try fi($str);
 ck($!.message, q[Type check failed in binding to parameter '$n'; expected Int but got Str ("x")], 'the message');
 
+# native parameters bind as natives: an int8 wraps, a uint8 takes -1 as 255,
+# and a value of the wrong kind is refused
+sub n8(int8 $x) { $x }
+sub nu8(uint8 $x) { $x }
+sub nint(int $x) { $x + 1 }
+sub nstr(str $x) { $x }
+my $big = 2**70; my $three = 300; my $neg = -1;
+ck(n8($three), 44, 'an int8 parameter wraps');
+ck(nu8($neg), 255, 'a uint8 parameter wraps');
+ck(nint(True), 2, 'a Bool into int');
+ck((try nint($big)) // $!.^name, 'X::AdHoc', 'a BigInt does not fit an int');
+# (Rakudo says X::AdHoc, "cannot unbox"; the interpreter a binding type
+# check — so only the refusal is asserted)
+ck((try { nint($str); 1 }) // 'refused', 'refused', 'a Str into int is refused');
+ck((try { nstr($one); 1 }) // 'refused', 'refused', 'an Int into str is refused');
+
 sub fib(Int $n) { $n < 2 ?? $n !! fib($n - 1) + fib($n - 2) }
 ck(fib(20), 6765, 'a typed integer routine');
 

@@ -4511,7 +4511,49 @@ Value Interpreter::bindTypedParam(Value v, const Param& p) {
         v = coerceViaSubset(v, p.type);
         typeCheckBind(p, v, /*blockParam=*/false, /*whereVerified=*/false, nullptr);
     }
+    bindNativeParam(p, v);
     return v;
+}
+// What binding does to the value once the type check has passed: a native
+// parameter takes it as that native (an `int8` wraps, a BigInt no machine word
+// holds is refused), and a boxed one takes the value, not a native.
+void Interpreter::bindNativeParam(const Param& p, Value& v) {
+    // a native-int param truncates on bind (see the slow path)
+    // a machine-width `int` does not wrap, but a bigint does not fit it either
+    if (v.t == VT::Bool && p.type == "int") v = Value::integer(v.b ? 1 : 0);
+    if (v.t == VT::Int && v.big() && p.type == "int" && !v.big()->fitsLL())
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "Cannot unbox " + std::to_string(v.big()->bitLength() + 1) +
+            " bit wide bigint into native integer"};
+    int spec = paramNatSpec(p);
+    if (spec >> 1) {
+        // (…but refuses a value no machine word holds at all)
+        if (v.t == VT::Int && v.big() &&
+            ((spec & 1) ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Cannot unbox " + std::to_string(v.big()->bitLength() + (spec & 1)) +
+                " bit wide bigint into native integer"};
+        wrapNative(v, spec >> 1, spec & 1);
+    }
+    // a boxed parameter takes the VALUE, not the native (see the slow path)
+    else if (v.natBits && !p.isRw && !p.isRaw && !paramIsNative(p))
+        dropNativeTags(v);
+}
+RtRoutineFrame::RtRoutineFrame(Interpreter& I)
+    : t(I.tctx_), id(++I.tctx_.frameTop), rf(I.tctx_.curRoutineFrame), live(std::make_shared<bool>(true)) {
+    t.curRoutineFrame = id;
+}
+RtRoutineFrame::~RtRoutineFrame() {
+    *live = false;
+    t.frameTop = id - 1;
+    t.curRoutineFrame = rf;
+}
+void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live) {
+    if (!*live)
+        throw RakuError{Value::typeObj("X::ControlFlow::Return"),
+            "Attempt to return outside of immediately-enclosing Routine (i.e. `return` execution "
+            "is outside the dynamic scope of the Routine where `return` was used)"};
+    throw ReturnEx{std::move(v), id};
 }
 Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
     if (c.t != VT::Code || !c.code()) return c;

@@ -2420,6 +2420,7 @@ public:
     // subset's, then the type check and its X::TypeCheck::Binding::Parameter
     // (see rtBindTyped below, which settles the common cases inline)
     Value bindTypedParam(Value v, const struct Param& p);
+    void bindNativeParam(const struct Param& p, Value& v);   // a native param's wrap / refusal, after the type check
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
     // assignment: assignment, slice assignment, list initialisation and the
@@ -4462,7 +4463,7 @@ Value  rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const ch
 // an RTB_* code) straight through, asking the interpreter about everything
 // else. `rt` hands over the runtime interpreter only on that slow path.
 const Param& rtParamOf(const RtSigParam& d);
-enum : int { RTB_NONE = 0, RTB_INT, RTB_STR, RTB_NUM, RTB_RAT, RTB_BOOL };
+enum : int { RTB_NONE = 0, RTB_INT, RTB_STR, RTB_NUM, RTB_RAT, RTB_BOOL, RTB_MACHINE_INT };
 inline bool rtTypedFast(const Value& v, int fast) {
     if (!v.hashKind.empty()) return false;   // a tagged built-in (an Instant, a Blob, …) is not its storage type
     switch (fast) {
@@ -4471,6 +4472,7 @@ inline bool rtTypedFast(const Value& v, int fast) {
         case RTB_NUM: return v.t == VT::Num;
         case RTB_RAT: return v.t == VT::Rat;
         case RTB_BOOL: return v.t == VT::Bool;
+        case RTB_MACHINE_INT: return v.t == VT::Int && !v.big();   // into `int`: fits, nothing to wrap
         default: return false;
     }
 }
@@ -4479,6 +4481,20 @@ inline Value rtBindTyped(Value v, const Param& p, int fast, GetRT&& rt) {
     if (rtTypedFast(v, fast)) return v;
     return rt().bindTypedParam(std::move(v), p);
 }
+// --exe: a compiled routine one of whose BLOCKS says `return`. The return
+// leaves the routine, through whatever runs the block (`.map`'s own loop,
+// interpreted code), so the routine is an interpreter frame for the length of
+// the call — the ReturnEx is aimed at its id, by the rules the interpreter's
+// own routines keep — and `live` says whether the call is still running: a
+// block that outlives it has nothing to return from (rtReturnFrom).
+struct RtRoutineFrame {
+    ExecContext& t;
+    uint64_t id, rf;
+    std::shared_ptr<bool> live;
+    explicit RtRoutineFrame(Interpreter& I);
+    ~RtRoutineFrame();
+};
+[[noreturn]] void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live);
 
 // IO::Spec::{Unix,QNX,Win32,Cygwin} class-method dispatch — pure path-string
 // algorithms. Returns true (and sets `out`) when (cls, m) is handled.
