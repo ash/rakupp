@@ -20,9 +20,11 @@
 01-sanity/20-defined.t
 01-sanity/21-try.t
 01-sanity/56-use-isms.t
+01-sanity/99-test-basic.t
 02-rakudo/04-diag.t
 02-rakudo/05-range-in-range.t
 02-rakudo/06-is.t
+02-rakudo/12-proto-location.t
 02-rakudo/15-gh_1202.t
 02-rakudo/16-begin-time-eval.t
 02-rakudo/19-mkdir.t
@@ -32,6 +34,7 @@
 02-rakudo/24-qualified-our-anchor.t
 02-rakudo/25-min-max-by-key.t
 02-rakudo/25-regex-unspace.t
+02-rakudo/26-channel-closed-promise-race.t
 02-rakudo/anon-method-in-role-invocant.t
 02-rakudo/attr-default-code-value.t
 02-rakudo/attr-default-nil-typed.t
@@ -51,6 +54,7 @@
 02-rakudo/capture-var-adverb.t
 02-rakudo/charclass-enum-merge.t
 02-rakudo/cmp-collections.t
+02-rakudo/coercion-sigil-param-dispatch.t
 02-rakudo/colonpair-smiley-key-value.t
 02-rakudo/compose-added-method-precomp.t
 02-rakudo/compose-operator-precedence.t
@@ -107,6 +111,7 @@
 02-rakudo/qualified-lookup-parent-package-sc.t
 02-rakudo/qualified-method-call-unresolved.t
 02-rakudo/quit-phaser-block.t
+02-rakudo/quote-nibbling.t
 02-rakudo/redeclared-special-variable.t
 02-rakudo/regex-boundary-assertion.t
 02-rakudo/regex-constant-interpolation.t
@@ -121,6 +126,7 @@
 02-rakudo/return-method-in-sunk-for.t
 02-rakudo/role-attribute-package.t
 02-rakudo/role-forward-lexical-default.t
+02-rakudo/role-group-under-core-package.t
 02-rakudo/role-parameterization-hash-pair-args.t
 02-rakudo/role-shadows-setting-type.t
 02-rakudo/role-typed-hash-attr-hang.t
@@ -141,6 +147,7 @@
 02-rakudo/smartmatch-user-accepts.t
 02-rakudo/split-trans-capture-markers.t
 02-rakudo/sprintf-6e-e.t
+02-rakudo/sprintf-6e-f.t
 02-rakudo/sprintf-6e-g.t
 02-rakudo/sprintf-6e-s.t
 02-rakudo/str-raku-prepend.t

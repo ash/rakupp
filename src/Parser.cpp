@@ -16894,6 +16894,32 @@ Program Parser::parseProgram() {
 // a block's closing brace — `$obj.doit ()` is "two terms in a row" (Confused).
 // Enforced only in EVAL'd snippets (strictSep_): whole test files keep the
 // tolerant statement-split behavior so one bad line cannot kill their TAP.
+// `runaway multi-line "" quote starting at line 1 maybe?` — when the token
+// that ended the statement closes a quote that spanned lines; "" otherwise.
+std::string Parser::runawayQuoteHint(const Token& pv) {
+    if ((pv.kind == Tok::StrLit || pv.kind == Tok::StrInterp) && pv.text.find('\n') != std::string::npos &&
+        src_ && pv.off > 0 && pv.off <= src_->size()) {
+        const char q = (*src_)[pv.off - 1];
+        const std::string d = q == '"' ? "\"\"" : q == '\'' ? "''" : std::string();
+        if (d.empty()) return "";
+        int start = pv.line - (int)std::count(pv.text.begin(), pv.text.end(), '\n');
+        return "runaway multi-line " + d + " quote starting at line " + std::to_string(start) + " maybe?";
+    }
+    if (pv.kind == Tok::Op && (pv.text == ">>" || pv.text == "\xC2\xBB") && pos_ >= 2) {
+        const std::string open = pv.text == ">>" ? "<<" : "\xC2\xAB";
+        for (size_t j = pos_ - 1; j-- > 0; ) {
+            const Token& t = toks_[j];
+            if (t.kind == Tok::Semicolon || t.kind == Tok::LBrace || t.kind == Tok::RBrace) break;
+            if (t.kind == Tok::Op && t.text == open) {
+                if (t.line == pv.line) return "";
+                return "runaway multi-line " + open + pv.text + " quote starting at line " +
+                       std::to_string(t.line) + " maybe?";
+            }
+        }
+    }
+    return "";
+}
+
 void Parser::enforceStmtSep() {
     if (!strictSep_) return;
     if (isKind(Tok::End) || isKind(Tok::RBrace) || pos_ == 0) return;
@@ -16950,6 +16976,11 @@ void Parser::enforceStmtSep() {
         if (isKind(Tok::LBracket))
             throw ParseError("Missing infix inside []", cur().line,
                              "X::Syntax::Missing", {{"what", "infix inside []"}});
+        // after a quote that spanned lines, the likelier story is a runaway one:
+        // `say "a\nb" 1` — name where it opened
+        if (std::string rq = runawayQuoteHint(pv); !rq.empty())
+            throw ParseError("Two terms in a row (" + rq + ")", cur().line,
+                             "X::Syntax::Confused", {{"reason", "Two terms in a row (" + rq + ")"}});
         throw ParseError("Two terms in a row (missing semicolon?)", cur().line,
                          "X::Syntax::Confused", {{"reason", "Two terms in a row"}});
     }

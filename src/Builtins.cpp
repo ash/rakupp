@@ -3165,7 +3165,7 @@ static std::string fmtBigDec(std::string digits, const std::string& flags, long 
 // the double's 1.11499999999999999111… expansion, and `%.2f` of it rounds the
 // string half-up-away-from-zero to 1.12 where C's binary value gives 1.11.
 // Takes |v| (finite); the caller owns the sign, the flags and the width.
-static std::string fixedFromShortest(double av, int prec) {
+static std::string fixedFromShortest(double av, int prec, bool halfEven = false) {
     char buf[64];
     int sig = 0; // the fewest significant digits that read back as this double
     for (; sig < 17; sig++) {
@@ -3186,6 +3186,11 @@ static std::string fixedFromShortest(double av, int prec) {
     } else { intPart = digits.substr(0, pointAt); fracPart = digits.substr(pointAt); }
     if ((int)fracPart.size() > prec) {
         bool up = fracPart[prec] >= '5';
+        // (6.e: an exact tie — a 5 with nothing after it — goes to the EVEN digit)
+        if (halfEven && fracPart[prec] == '5' && fracPart.find_first_not_of('0', prec + 1) == std::string::npos) {
+            const char last = prec > 0 ? fracPart[prec - 1] : intPart.back();
+            up = ((last - '0') % 2) == 1;
+        }
         fracPart.resize(prec);
         if (up) { // ripple the carry through the whole number, growing it if it runs off
             std::string all = intPart + fracPart;
@@ -3392,11 +3397,20 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 }
                 // %f goes through the decimal-string renderer above; every other
                 // float conversion keeps C's.
+                // 6.e formats the DOUBLE as C does: its exact binary expansion, ties
+                // to even (`%.0f` of 2.5 is 2, `%.20f` of 0.1 shows …555)
+                if ((conv == 'f' || conv == 'F') && std::isfinite(fv) && langRev >= 2 && fa.t == VT::Num) {
+                    std::string spec = "%" + ff + (hasWidth ? std::to_string(width) : std::string()) +
+                                       "." + std::to_string(fprec) + "f";
+                    std::vector<char> fb(std::max(400, width + fprec + 400));
+                    cnum::snprintf(fb.data(), fb.size(), spec.c_str(), fv);
+                    out += fb.data(); break;
+                }
                 if ((conv == 'f' || conv == 'F') && std::isfinite(fv)) {
                     std::string sign = std::signbit(fv) ? "-"
                                      : ff.find('+') != std::string::npos ? "+"
                                      : ff.find(' ') != std::string::npos ? " " : "";
-                    std::string body = fixedFromShortest(std::fabs(fv), fprec);
+                    std::string body = fixedFromShortest(std::fabs(fv), fprec, /*halfEven=*/langRev >= 2);
                     if (fprec == 0 && langRev >= 2 && flags.find('#') != std::string::npos) body += ".";
                     std::string core = sign + body;
                     if ((int)core.size() < width) {
@@ -3454,7 +3468,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     // "-Inf" at 6.d. (C uppercases for %E and %F too; Raku does not,
                     // and the two Roast copies of S32-str/sprintf.t pin one version
                     // each: 6.d/…:234 wants "Inf", …/sprintf.t:241 wants "INF".)
-                    bool up = (conv == 'G' && langRev >= 2);
+                    bool up = ((conv == 'G' || conv == 'F') && langRev >= 2);   // (6.e: %F too, the oracle says)
                     const char* rep = std::isnan(fv) ? (up ? "NAN" : "NaN")
                                                      : (up ? "INF" : "Inf");
                     for (const char* bad : {"nan", "NAN", "inf", "INF"}) {

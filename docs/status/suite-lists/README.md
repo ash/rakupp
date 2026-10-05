@@ -14,7 +14,7 @@ file paths relative to each checkout's `t/`, and the checkouts are pinned below.
 | File | What it holds | Files |
 |---|---|---|
 | `rakudo-t.rakudo.list` | Rakudo's `t/` files Rakudo fully passes — the bar | 361 of 382 |
-| `rakudo-t.rakupp.list` | the same suite, files Raku++ fully passes | 177 of 382 |
+| `rakudo-t.rakupp.list` | the same suite, files Raku++ fully passes | 184 of 382 |
 | `mutsu-t.rakudo.list` | mutsu's `t/` files Rakudo fully passes — the bar | 5,654 of 6,209 |
 | `mutsu-t.rakupp.list` | the same suite, files Raku++ fully passes | 3,758 of 6,209 |
 
@@ -35,7 +35,7 @@ Pins:
 ## Reading them
 
 The work list — files Rakudo passes and Raku++ does not (2,033 in mutsu's
-suite, 185 in Rakudo's):
+suite, 178 in Rakudo's):
 
 ```bash
 cd docs/status/suite-lists && comm -23 mutsu-t.rakudo.list mutsu-t.rakupp.list

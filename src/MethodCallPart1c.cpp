@@ -631,6 +631,13 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot determine number of elements on a Channel"};
         if (m == "fail") {
             std::lock_guard<std::recursive_mutex> lk(chm);
+            // a channel already CLOSED stays closed cleanly: a later `.fail` changes
+            // nothing, and `.closed` keeps once it drains
+            {
+                auto ci = inv.hash()->find("closed");
+                if (ci != inv.hash()->end() && ci->second.truthy() && !inv.hash()->count("failCause"))
+                    return Value::boolean(true);
+            }
             (*inv.hash())["closed"] = Value::boolean(true);
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)

@@ -320,7 +320,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,033 mutsu files and 185 Rakudo files that Rakudo passes and
+  The work: 2,033 mutsu files and 178 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Parked from the audited LANG work: typed shaped arrays report unassigned
     cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices
@@ -351,7 +351,9 @@ with its tag, after the release run is green.
     `@a[$i] = …` from 50 `start`s loses writes; a module sub's `state $n++`
     across 100 `start`s loses one; `once` in a sub fires twice across
     threads; sibling `.then` callbacks run out of registration order; a
-    `Proc::Async`'s `.ready` can wake before `.started` reads True.
+    `Proc::Async`'s `.ready` can wake before `.started` reads True; nested
+    subscript stores from several threads lose writes
+    (concurrent-nested-subscript-store.t, on the 5.2.1 build too).
 - [ ] **run-roast leaves grandchildren behind**: a timed-out file's own child
   processes outlive it. mutsu's suite starts `rakudo -e` one-liners (one a
   left-recursive grammar that never ends), and two kept a core each busy for

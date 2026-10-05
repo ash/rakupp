@@ -632,6 +632,7 @@ private:
     ExprPtr parsePrimary();
     ExprPtr routineDeclTerm(const std::string& name, bool impliedSub); // `multi sub f(…) {…}` as a term
     ExprPtr subsetTerm();
+    std::string runawayQuoteHint(const Token& pv);   // `runaway multi-line "" quote starting at line N maybe?`
     ExprPtr pkgBraceKeyTerm(const std::string& name, std::string& pseudoPkg);   // `Foo::{'&f'}`                                               // `subset S of … where …` as a term
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits(bool onVarDecl = false, ExprPtr* defaultOut = nullptr);

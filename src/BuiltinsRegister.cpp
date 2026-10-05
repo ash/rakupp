@@ -896,6 +896,14 @@ void Interpreter::registerBuiltins() {
         else if (a.size() >= 3) {
             std::string op = a[1].toStr();
             const Value& x = a[0]; const Value& y = a[2];
+            // an operator the CALLER declared (`sub infix:<◀>`) is found where it is
+            // written — the name is looked up in the caller's scope
+            Value* user = I.tctx_.cur ? I.tctx_.cur->find("&infix:<" + op + ">") : nullptr;
+            if (user && user->t == VT::Code) {
+                c = I.callCallable(*user, ValueList{x, y}).truthy();
+                I.emitTest(c, a.size() > 3 ? a[3].toStr() : "");
+                return Value::boolean(c);
+            }
             // the numeric fast path only fits actual numbers — a Version (or any
             // tagged value) must go through the real operator (`cmp-ok $v, '>',
             // v0.0.0` flattened both sides to 0 and failed; Log::Async's suite)
@@ -922,7 +930,16 @@ void Interpreter::registerBuiltins() {
             // with both expected words sitting in the captured output.
             else if (op == "~~")  c = matcherAccepts(I, x, y);
             else if (op == "!~~") c = !matcherAccepts(I, x, y);
-            else c = applyArith(op, x, y).truthy(); // ===, eqv, before/after, user ops…
+            else {
+                // an operator nothing knows is a FAILED test, not an abandoned one
+                try { c = applyArith(op, x, y).truthy(); } // ===, eqv, before/after, user ops…
+                catch (RakuError& e) {
+                    if (e.message.rfind("Unsupported operator", 0) != 0) throw;
+                    I.emitTest(false, a.size() > 3 ? a[3].toStr() : "", "",
+                               "# Could not use '" + op + "' as a comparator.\n");
+                    return Value::boolean(false);
+                }
+            }
         }
         // On failure, present the operands via .raku (the "presentable" form) — not
         // .Str, which some objects make die — and name the matcher like Rakudo.
@@ -946,6 +963,12 @@ void Interpreter::registerBuiltins() {
     B["flunk"] = [](Interpreter& I, ValueList& a) -> Value { I.emitTest(false, a.empty() ? "" : a[0].toStr()); return Value::boolean(false); };
     B["diag"] = [](Interpreter&, ValueList& a) -> Value { std::cerr << "# " << (a.empty() ? "" : a[0].toStr()) << "\n"; return Value::boolean(true); };
     B["skip"] = [](Interpreter& I, ValueList& a) -> Value {
+        // the COUNT comes second and is a whole number: `skip 2, 'reason'` has
+        // its arguments backwards, and Test says so rather than skipping
+        if (a.size() > 1 && !(a[1].t == VT::Int || (a[1].t == VT::Num && a[1].toNum() == (double)(long long)a[1].toNum())))
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "skip() takes the reason first and a whole number of tests second "
+                            "(were the arguments given backwards?)"};
         long n = (a.size() > 1) ? a[1].toInt() : 1;
         std::string reason = a.empty() ? "" : a[0].toStr();
         // Rakudo's `ok N - # SKIP reason`, with the reason's own `#` escaped
@@ -2740,8 +2763,10 @@ void Interpreter::registerBuiltinsPart2() {
     {
         auto testSkip = B["skip"];
         B["skip"] = [testSkip](Interpreter& I, ValueList& a) -> Value {
+            // (`skip 2, 'reason'` — a lone STRING after the number — is Test's, with
+            // its arguments backwards: it dies rather than skipping a list)
             const bool listForm =
-                a.size() >= 2 &&
+                a.size() >= 2 && !(a.size() == 2 && a[1].t == VT::Str) &&
                 (a[0].t == VT::Int || a[0].t == VT::Num || a[0].t == VT::Rat ||
                  a[0].t == VT::Whatever || a[0].t == VT::Code);
             if (!listForm) return testSkip(I, a);

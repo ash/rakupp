@@ -3188,7 +3188,25 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
         if (v->decl) for (auto& p : v->decl->roleParams) if (!p.named) ps.push_back(&p);
         return ps;
     };
+    std::set<std::string> givenNamed;   // `R[Int, :extra]` — the named arguments passed
+    for (auto& v : vals) if (v.namedArg && v.t == VT::Pair) givenNamed.insert(v.s);
+    auto acceptsNamed = [&](ClassInfo* v) -> bool {
+        if (!v->decl) return givenNamed.empty();
+        std::set<std::string> takes; bool slurpyHash = false;
+        for (auto& p : v->decl->roleParams) {
+            if (p.slurpy && p.sigil == '%') { slurpyHash = true; continue; }
+            if (!p.named) continue;
+            std::string key = !p.namedKey.empty() ? p.namedKey : p.name;
+            while (!key.empty() && std::strchr("$@%&!.*", key[0])) key.erase(0, 1);
+            takes.insert(key);
+            for (auto& ak : p.aliasKeys) takes.insert(ak);
+            if (p.required && !givenNamed.count(key)) return false;   // `:$extra!` must be passed
+        }
+        if (!slurpyHash) for (auto& g : givenNamed) if (!takes.count(g)) return false;
+        return true;
+    };
     auto accepts = [&](ClassInfo* v) -> bool {
+        if (!acceptsNamed(v)) return false;
         auto ps = positionals(v);
         size_t req = 0; bool slurpy = false;
         for (auto* p : ps) { if (p->slurpy) slurpy = true; else if (!p->optional && !p->defaultVal) req++; }
@@ -4587,6 +4605,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         dispVal.code()->isMultiDispatcher = true;
                         disp = dispVal.code();
                         tctx_.cur->define(key, dispVal);
+                    }
+                    // the group is where its PROTO was written: `&zp.file` / `.line`
+                    if (sd->isProto && code.code() && disp) {
+                        disp->declFile = code.code()->declFile;
+                        disp->declLine = code.code()->declLine;
                     }
                     // A declaration inside a block runs twice — hoisted at the
                     // block's entry, then again in sequence — and used to join

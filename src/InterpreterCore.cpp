@@ -6103,6 +6103,17 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 score += 8;
             }
         }
+        else if (p->coerce && !p->type.empty() && (p->sigil == '@' || p->sigil == '%')) {
+            // `Int() @c` is a Positional[Int()]: the coercion is on the ELEMENTS,
+            // and it dispatches as `Int @c` does — a container of that type
+            const Value& av = pos[i];
+            if (p->sigil == '@' ? av.t != VT::Array : av.t != VT::Hash) return -1;
+            const std::string et = av.ofType();
+            if (et != p->type && (et.empty() || et == "Mu" || et == "Any" ||
+                                  !typeOrSubsetMatches(Value::typeObj(et), p->type)))
+                return -1;
+            score += 10;
+        }
         else if (p->coerce && !p->type.empty()) {
             // coercion type `Str(Cool)`: any coercible argument matches — the
             // coercion itself happens at binding (append-header('CL', $int)).
