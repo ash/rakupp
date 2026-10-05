@@ -1422,7 +1422,16 @@ void tick(Site* s) {
         // nothing and cost a second compile — which is exactly what the first
         // draft did on a Mandelbrot, filling the cache with a kernel that could
         // never be reached.
-        if (cs == StCompiling || cs == StReady) return;
+        //
+        // Under --cnp a kernel costs microseconds, not the half second a
+        // --jit compile does, and the enclosing kernel is entered only on its
+        // loop's NEXT iteration — never, for a loop that runs once around a
+        // hot inner one (`for 1..1 { while … }` stayed interpreted). So there
+        // the loop that tripped gets a kernel of its own as well.
+        if (cs == StCompiling || cs == StReady) {
+            if (g_opt.backend != Backend::Cnp || c == s) return;
+            break;
+        }
     }
     if (!target) {
         if (s->state.load(std::memory_order_acquire) == StNew) examine(s);

@@ -276,21 +276,22 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
             }
             if (plain) { setReg(f, dst, I.interpolate(vals)); return 0; }
         }
-        spill();
         // A side-effect-free builtin METHOD on a value that is not an object
         // goes straight to the runtime's method dispatch, the route --exe
-        // calls methods by.
+        // calls methods by. It reaches no user code and no container of the
+        // loop's, so the registers neither go back first nor come back after
+        // (and a throw leaves them to the kernel's exit, which writes them
+        // back on both paths).
         if (cs.msynth && cs.pureMethod) {
             Value inv = regValue(f, (uint64_t)cs.argRegs[0]);
             if (inv.t != VT::Object) {
                 ValueList args;
                 for (size_t k = 1; k < cs.argRegs.size(); k++) args.push_back(regValue(f, (uint64_t)cs.argRegs[k]));
-                Value res = I.methodCall(inv, cs.method, std::move(args));
-                reload();
-                setReg(f, dst, res);
+                setReg(f, dst, I.methodCall(inv, cs.method, std::move(args)));
                 return 0;
             }
         }
+        spill();
         // A BUILTIN the program has not shadowed goes straight to its function,
         // the route --exe calls builtins by: no scratch scope, no re-dispatch.
         if (!cs.builtinChecked) {
