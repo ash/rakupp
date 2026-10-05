@@ -1277,6 +1277,15 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                               ? (ensureEnv(), callCallable(at.buildFn, ValueList{selfEarly}))
                               : seed;   // `.set_build(&closure)`, added at runtime
             dv.readonly = dv.immutableBind = false;   // `has $.x = CONST` (see nilResetForAttr)
+            // `has IO::Handle $.x = Nil` ASSIGNS Nil, which resets the attribute
+            // to its default: the `is default` value, else the declared type
+            if (at.sigil == '$' && at.def && dv.t == VT::Nil) {
+                if (at.defaultTrait) dv = eval(const_cast<Expr*>(at.defaultTrait));
+                else if (!at.type.empty() && ascii::isupper((unsigned char)at.type[0]) &&
+                         at.type.find('[') == std::string::npos && at.type.find('(') == std::string::npos)
+                    dv = Value::typeObj(resolveRoleType(at.type));
+                else dv = Value::any();
+            }
             // …and what a `.set_build` closure answers is ASSIGNED to the
             // attribute, so the declared type is checked at run time
             // (S12-attributes/defaults.t)

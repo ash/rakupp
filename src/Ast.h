@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <iosfwd>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -1301,6 +1302,7 @@ struct Program {
     // hoisted routine is declared before the constant has run
     std::set<std::string> declaredTermNames;
     std::set<std::string> labelNames;   // `L:` statement labels — a bare `L` is the Label
+    std::map<std::string, int> labelLines; // … and the line each one was written on
     bool typeNamesOpaque = true;
     // Does this unit `use`/`need`/`import` a MODULE (as opposed to a pragma)?
     // An import brings in type names this unit never spells, and a top-level

@@ -358,6 +358,7 @@ collections/subscript/hash-string-range-slice.t
 collections/subscript/hash-subscript-adverbs.t
 collections/subscript/hash-subscript-brace-newline-continues.t
 collections/subscript/hyper-assoc-subscript.t
+collections/subscript/hyper-zen-slice-decontainerizes.t
 collections/subscript/hyperwhatever-and-lazy-slice-bind.t
 collections/subscript/incdec-autoviv-undefined-base.t
 collections/subscript/incdec-index-name-symbol.t
@@ -1687,6 +1688,7 @@ oo/attribute/attr-default-file-scoped-call.t
 oo/attribute/attr-default-trailing-comma.t
 oo/attribute/attr-handles-angle-word.t
 oo/attribute/attr-hash-assign-nested-method-call.t
+oo/attribute/attr-nil-default-bless.t
 oo/attribute/attr-nil-reset-typed.t
 oo/attribute/attr-subscript-assignment.t
 oo/attribute/attr-trait-multi-positional-args.t
@@ -2309,6 +2311,7 @@ regex/match/array-num-smartmatch.t
 regex/match/closure-interpolation-match-so-far.t
 regex/match/comb-capture-markers.t
 regex/match/comb-ignoremark.t
+regex/match/comb-match-named-captures.t
 regex/match/comb-rx-literal.t
 regex/match/comb-separated-quantifier-capture.t
 regex/match/comb-sub-form.t
@@ -2318,6 +2321,7 @@ regex/match/instance-regex-smartmatch.t
 regex/match/io-path-smartmatch-permissions.t
 regex/match/match-caps-chunks.t
 regex/match/match-caps.t
+regex/match/match-capture-exists.t
 regex/match/match-capture-numbering.t
 regex/match/match-from-to-counts-graphemes.t
 regex/match/match-gist.t
@@ -2409,6 +2413,7 @@ regex/regex-composite-class-scan.t
 regex/regex-composite-class-subtraction.t
 regex/regex-corner-bracket-literal-raw.t
 regex/regex-counted-adverbs.t
+regex/regex-crlf-literal-escape-pair.t
 regex/regex-decl-stmt-terminator.t
 regex/regex-declarative-modifiers.t
 regex/regex-dq-hex-escape.t

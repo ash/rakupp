@@ -293,6 +293,7 @@ public:
 private:
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
     std::set<std::string> labelNames_;       // statement labels, which are terms too
+    std::map<std::string, int> labelLines_;  // … and their lines (`L.line`)
     std::vector<std::set<std::string>> constNamesScoped_{1}; // constants declared per block scope
     std::string retTypeSpecHere() const;     // the `--> T` / `--> T(S)` / `--> T:D()` at cur()
     std::string newlineSeq_ = "\n";        // what `\n` means (`use newline :cr`)
@@ -356,6 +357,7 @@ private:
         return false;
     } // `my @a does R` — roles mixed in at the declaration
     ExprPtr lastWillBlock_;
+    std::vector<std::pair<std::string, ExprPtr>> earlierWills_; // `will enter {…} will leave {…}`: all but the last
     std::vector<StmtPtr> pendingStmts_;
     char attrsPragma_ = 0;        // `use attributes :D` / `:U` / `:_` in force (block-scoped)
     char varsPragma_ = 0;         // `use variables :D` / `:U` / `:_` in force (block-scoped)
@@ -627,6 +629,8 @@ private:
     ExprPtr parsePrefix(bool tight = false);
     ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);
     ExprPtr parsePrimary();
+    ExprPtr routineDeclTerm(const std::string& name, bool impliedSub); // `multi sub f(…) {…}` as a term
+    ExprPtr subsetTerm();                                               // `subset S of … where …` as a term
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits(bool onVarDecl = false, ExprPtr* defaultOut = nullptr);
     ExprPtr parseColonPair();

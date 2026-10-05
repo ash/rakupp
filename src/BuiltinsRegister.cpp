@@ -1350,6 +1350,101 @@ bool envPairsFrom(const Value& v, std::map<std::string, std::string>& out) {
     return false;
 }
 
+// A large `combinations($n, $k)` is a lazy Seq that KNOWS its count:
+// `+combinations(100, 70)` is the binomial C(100, 70) without building a single
+// combination, and iterating it walks the index combinations in order.
+static Value lazyIndexCombinations(long long n, long long k) {
+    Value cnt = Value::integer(0);
+    if (k >= 0 && k <= n) {
+        cnt = Value::integer(1);
+        const long long kk = std::min(k, n - k);
+        for (long long i = 1; i <= kk; i++)   // C(n, i) = C(n, i-1) * (n-i+1) / i, exact
+            cnt = applyArith("div", applyArith("*", cnt, Value::integer(n - kk + i)), Value::integer(i));
+    }
+    auto c = std::make_shared<std::vector<long long>>();
+    auto started = std::make_shared<bool>(false);
+    auto st = std::make_shared<LazySeqState>();
+    st->infinite = true;      // never materialised whole
+    st->hasCount = true; st->countVal = cnt;
+    st->appendNext = [c, started, n, k](ValueList& cache) -> bool {
+        if (k < 0 || k > n) return false;
+        if (!*started) {
+            *started = true;
+            for (long long i = 0; i < k; i++) c->push_back(i);
+        }
+        else {
+            long long i = k - 1;
+            while (i >= 0 && (*c)[(size_t)i] == n - k + i) i--;
+            if (i < 0) return false;
+            (*c)[(size_t)i]++;
+            for (long long j = i + 1; j < k; j++) (*c)[(size_t)j] = (*c)[(size_t)j - 1] + 1;
+        }
+        Value combo = Value::array(); combo.isList = true;
+        for (long long v : *c) combo.arr()->push_back(Value::integer(v));
+        cache.push_back(combo);
+        return true;
+    };
+    Value out = Value::array(); out.isList = true; out.s = "Seq";
+    out.extM() = st;
+    return out;
+}
+
+static Value builtinMkdir(Interpreter& I, ValueList& a) {
+    if (a.empty()) return Value::boolean(false);
+    rejectNulPath(a[0].toStr()); // (the sub created the name truncated at the NUL; the method refused)
+    std::string path = I.ioFsPath(a[0]);
+    long long mode = 0777;   // mkdir($path, 0o700) — the sub's positional mode
+    for (size_t i = 1; i < a.size(); i++) {
+        if (a[i].t == VT::Pair && a[i].namedArg && a[i].s == "mode" && a[i].pairVal()) mode = a[i].pairVal()->toInt();
+        else if (a[i].t == VT::Int) mode = a[i].toInt();
+    }
+    // mkdir -p, but HONEST about the outcome — the mirror of the method
+    // arm in MethodCallPart3.cpp, which tells the story (issue #26): the
+    // old form swallowed every error and answered success. Success is the
+    // IO::Path (as Rakudo answers, not the Str this used to hand back);
+    // failure is the soft X::IO::Mkdir Failure that detonates when sunk.
+    std::string acc;
+    int err = 0;
+    // A prefix that is already a directory is fine whatever errno says:
+    // Windows answers mkdir("C:") with EACCES, not EEXIST, and the walk
+    // used to stop at the drive (issue #107). There `\` separates too.
+    for (size_t i = 0; i <= path.size(); i++) {
+#ifdef _WIN32
+        const bool sep = i < path.size() && (path[i] == '/' || path[i] == '\\');
+#else
+        const bool sep = i < path.size() && path[i] == '/';
+#endif
+        if (i == path.size() || sep) {
+            if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
+                int e = errno;
+                struct stat pst;
+                if (!(::stat(acc.c_str(), &pst) == 0 && S_ISDIR(pst.st_mode))) {
+                    err = e;
+                    break;
+                }
+            }
+            if (i < path.size()) acc += path[i];
+        } else acc += path[i];
+    }
+    struct stat st;
+    bool isDir = false;
+    if (::stat(path.c_str(), &st) == 0) isDir = S_ISDIR(st.st_mode);
+    else if (!err) err = errno;
+    if (!isDir) {
+        if (!err) err = EEXIST;   // the path exists, and is not a directory
+        char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
+        return I.ioFailure("X::IO::Mkdir",
+                           {{"path", Value::str(path)},
+                            {"mode", Value::integer(mode)},
+                            {"os-error", Value::str(std::string("Failed to mkdir: ") + std::strerror(err))}},
+                           "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
+                           "': Failed to mkdir: " + std::strerror(err));
+    }
+    Value p = Value::str(path); p.hashKind = "IO";
+    p.ofTypeM() = I.cwdName();
+    return p;
+}
+
 void Interpreter::registerBuiltinsPart2() {
     auto& B = builtins_;
     // (the EVAL moves the current line into its own text: a failure is reported
@@ -2023,61 +2118,7 @@ void Interpreter::registerBuiltinsPart2() {
         }
         return I.methodCall(io, "dir", named);
     };
-    B["mkdir"] = [](Interpreter& I, ValueList& a) -> Value {
-        if (a.empty()) return Value::boolean(false);
-        rejectNulPath(a[0].toStr()); // (the sub created the name truncated at the NUL; the method refused)
-        std::string path = I.ioFsPath(a[0]);
-        long long mode = 0777;   // mkdir($path, 0o700) — the sub's positional mode
-        for (size_t i = 1; i < a.size(); i++) {
-            if (a[i].t == VT::Pair && a[i].namedArg && a[i].s == "mode" && a[i].pairVal()) mode = a[i].pairVal()->toInt();
-            else if (a[i].t == VT::Int) mode = a[i].toInt();
-        }
-        // mkdir -p, but HONEST about the outcome — the mirror of the method
-        // arm in MethodCallPart3.cpp, which tells the story (issue #26): the
-        // old form swallowed every error and answered success. Success is the
-        // IO::Path (as Rakudo answers, not the Str this used to hand back);
-        // failure is the soft X::IO::Mkdir Failure that detonates when sunk.
-        std::string acc;
-        int err = 0;
-        // A prefix that is already a directory is fine whatever errno says:
-        // Windows answers mkdir("C:") with EACCES, not EEXIST, and the walk
-        // used to stop at the drive (issue #107). There `\` separates too.
-        for (size_t i = 0; i <= path.size(); i++) {
-#ifdef _WIN32
-            const bool sep = i < path.size() && (path[i] == '/' || path[i] == '\\');
-#else
-            const bool sep = i < path.size() && path[i] == '/';
-#endif
-            if (i == path.size() || sep) {
-                if (!acc.empty() && ::mkdir(acc.c_str(), (int)mode) != 0 && errno != EEXIST) {
-                    int e = errno;
-                    struct stat pst;
-                    if (!(::stat(acc.c_str(), &pst) == 0 && S_ISDIR(pst.st_mode))) {
-                        err = e;
-                        break;
-                    }
-                }
-                if (i < path.size()) acc += path[i];
-            } else acc += path[i];
-        }
-        struct stat st;
-        bool isDir = false;
-        if (::stat(path.c_str(), &st) == 0) isDir = S_ISDIR(st.st_mode);
-        else if (!err) err = errno;
-        if (!isDir) {
-            if (!err) err = EEXIST;   // the path exists, and is not a directory
-            char ob[24]; snprintf(ob, sizeof ob, "0o%llo", (unsigned long long)mode);
-            return I.ioFailure("X::IO::Mkdir",
-                               {{"path", Value::str(path)},
-                                {"mode", Value::integer(mode)},
-                                {"os-error", Value::str(std::string("Failed to mkdir: ") + std::strerror(err))}},
-                               "Failed to create directory '" + path + "' with mode '" + std::string(ob) +
-                               "': Failed to mkdir: " + std::strerror(err));
-        }
-        Value p = Value::str(path); p.hashKind = "IO";
-        p.ofTypeM() = I.cwdName();
-        return p;
-    };
+    B["mkdir"] = builtinMkdir;
     B["rmdir"] = [](Interpreter& I, ValueList& a) -> Value {
         // `rmdir()` removes nothing and can only be a mistake — the same
         // reading Rakudo gives it, and the same exception.
@@ -2634,6 +2675,13 @@ void Interpreter::registerBuiltinsPart2() {
                 Value out = Value::array(); out.isList = true; out.s = "Seq";
                 out.extM() = st;
                 return out;
+            }
+            // …and a large `combinations($n, $k)` the same way: `+combinations(100, 70)`
+            // is the binomial C(100, 70) without building a single combination
+            if (std::string(nm) == "combinations" && items.size() == 2 && items[0].t == VT::Int &&
+                items[1].t == VT::Int && !items[0].big() && !items[1].big() &&
+                items[0].toInt() > kMax && items[0].toInt() <= 100000) {
+                return lazyIndexCombinations(items[0].toInt(), items[1].toInt());
             }
             // `combinations(@list, $k)` — an ITERABLE first argument is the list
             // and what follows is the argument, not more elements. The other

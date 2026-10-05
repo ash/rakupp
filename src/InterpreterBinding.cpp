@@ -2340,6 +2340,12 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         if (lv->readonly)
             throwNotWritable(*lv);
         v.readonly = v.immutableBind = false;                 // the flag marks the container, not the value
+        // a Proxy (a `take-rw` element as the topic) STOREs, as `=` does
+        if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash() && lv->hash()->count("STORE")) {
+            Value stored = *lv;
+            proxyStore(stored, v);
+            return deproxy(stored);
+        }
         // `with @a { .=uc }` — the topic IS @a: list-assign into that Array
         if (target && target->kind == NK::VarExpr && static_cast<VarExpr*>(target)->name == "$_" &&
             lv->t == VT::Array && lv->arr() && !lv->isList && !lv->itemized && tctx_.cur) {

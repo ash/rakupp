@@ -3241,18 +3241,34 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
     // "2 3 0" — the two implicit directives still read 1 then 2. (C and Perl 5
     // both work this way; so does Rakudo outside 6.e.)
     size_t used = 0;       // arguments the directives ASK for, however many exist
-    bool explicitIdx = false;  // any `%N$`: Rakudo drops the count check entirely then
+    bool explicitIdx = false;  // any `%N$`: Rakudo drops the count check then (6.e: see below)
+    size_t needed = 0;     // the highest argument position any directive reads
+    size_t implicitNeeded = 0; // …and the highest an UNINDEXED one reads
+    // (a read past the end formats a quiet 0: it either ends in the count
+    // error below, which no "uninitialized value" warning should precede, or —
+    // `%3$d` of one argument before 6.e — is the 0 Rakudo prints)
+    auto shortRead = [&]() { return Value::integer(0); };
     auto nextArg = [&]() -> Value {
         used++;
-        if (valIdx >= 1) return argAt(valIdx);
-        return ai < args.size() ? args[ai++] : Value::any();
+        if (valIdx >= 1) {
+            needed = std::max(needed, (size_t)valIdx);
+            if ((size_t)valIdx > args.size()) return shortRead();
+            return argAt(valIdx);
+        }
+        needed = std::max(needed, ai + 1); implicitNeeded = std::max(implicitNeeded, ai + 1);
+        return ai < args.size() ? args[ai++] : shortRead();
     };
     // A `*` width/precision takes its own argument: `%N$` if it carries one
     // (`%2$*1$d`), otherwise the next implicit one — never the directive's.
     auto starArg = [&](long long n1) -> Value {
         used++;
-        if (n1 >= 1) return argAt(n1);
-        return ai < args.size() ? args[ai++] : Value::any();
+        if (n1 >= 1) {
+            needed = std::max(needed, (size_t)n1);
+            if ((size_t)n1 > args.size()) return shortRead();
+            return argAt(n1);
+        }
+        needed = std::max(needed, ai + 1); implicitNeeded = std::max(implicitNeeded, ai + 1);
+        return ai < args.size() ? args[ai++] : shortRead();
     };
     // Parse an optional `digits $` at k, returning the 1-based index (or -1) and
     // consuming it only when the `$` is really there — a bare width like `%2d`
@@ -3391,6 +3407,40 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     }
                     out += core; break;
                 }
+                // `%.Na` rounds the mantissa half to EVEN (`%.0a` of 1.5 is 0x2p+0,
+                // `%.1a` of 0x1.18 is 0x1.2p+0) — the C library here rounds a tie
+                // down. A carry stays in the leading digit (`%.1a` of 255.5 is 0x2.0p+7).
+                if ((conv == 'a' || conv == 'A') && prec >= 0 && prec < 13 && std::isnormal(fv)) {
+                    int e2 = 0;
+                    double m = std::frexp(std::fabs(fv), &e2);       // [0.5, 1)
+                    uint64_t bits = (uint64_t)std::ldexp(m, 53);       // 1.xxxx as 53 bits
+                    uint64_t frac = bits & ((1ULL << 52) - 1);
+                    e2 -= 1;
+                    const int shift = (13 - prec) * 4;
+                    uint64_t keep = (frac >> shift) | (1ULL << (52 - shift)); // the leading 1 rides along
+                    const uint64_t rem = frac & ((1ULL << shift) - 1), half = 1ULL << (shift - 1);
+                    if (rem > half || (rem == half && (keep & 1))) keep++;
+                    const uint64_t lead = keep >> (52 - shift);
+                    const uint64_t digits = keep & ((1ULL << (52 - shift)) - 1);
+                    const bool up = conv == 'A';
+                    const char* hx = up ? "0123456789ABCDEF" : "0123456789abcdef";
+                    std::string body = std::string(up ? "0X" : "0x") + hx[lead];
+                    if (prec > 0 || flags.find('#') != std::string::npos) body += '.';
+                    for (int d = prec - 1; d >= 0; d--) body += hx[(digits >> (d * 4)) & 0xF];
+                    body += up ? 'P' : 'p';
+                    body += (e2 < 0 ? "-" : "+") + std::to_string(std::abs(e2));
+                    std::string sign = std::signbit(fv) ? "-"
+                                     : ff.find('+') != std::string::npos ? "+"
+                                     : ff.find(' ') != std::string::npos ? " " : "";
+                    std::string core = sign + body;
+                    if ((int)core.size() < width) {
+                        int pad = width - (int)core.size();
+                        if (leftJ) core += std::string(pad, ' ');
+                        else if (zeroF) core = sign + body.substr(0, 2) + std::string(pad, '0') + body.substr(2);
+                        else core = std::string(pad, ' ') + core;
+                    }
+                    out += core; break;
+                }
                 std::string spec = "%" + ff;
                 if (hasWidth) spec += std::to_string(width);
                 if (prec >= 0) spec += "." + std::to_string(prec);
@@ -3461,6 +3511,12 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
     // interpolated `$` (`"%s => $v"` where $v itself holds a `%s`) is reported
     // rather than silently formatting an (Any). An explicit `%N$` index makes the
     // correspondence non-positional, and Rakudo drops the check there.
+    // …except that from 6.e an indexed format still needs every argument it
+    // names: `sprintf('%2$d %d %d', 1)` reads up to the second
+    // (before 6.e only the UNINDEXED directives are counted: `%3$d` of one
+    // argument formats an Any, while `%2$d %d %d` of one runs short)
+    if (explicitIdx && langRev >= 2 && needed > args.size()) { explicitIdx = false; used = needed; }
+    if (explicitIdx && implicitNeeded > args.size()) { explicitIdx = false; used = implicitNeeded; }
     if (!explicitIdx && used != args.size()) {
         auto plural = [](size_t n, const char* noun) {
             return std::to_string(n) + " " + noun + (n == 1 ? "" : "s");

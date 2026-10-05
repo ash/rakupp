@@ -615,6 +615,12 @@ void Interpreter::registerBuiltinsPart3() {
     B["__sym-exists"] = [symEnv](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::boolean(false);
         const std::string n = a[0].toStr();
+        // `SETTING::{'&say'}:exists` asks the core: its routines and types,
+        // never a name the program declared (nor a compile-time `$?FILE`)
+        if (a.size() > 2 && a[2].toStr() == "SETTING") {
+            if (n.size() > 1 && n[0] == '&') return Value::boolean(I.builtins_.count(n.substr(1)) > 0);
+            return Value::boolean(!n.empty() && std::isupper((unsigned char)n[0]) && isKnownTypeName(n));
+        }
         Env* e = symEnv(I, a, 1);
         if (e && e->find(n)) return Value::boolean(true);
         return Value::boolean(false);

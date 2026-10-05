@@ -12919,6 +12919,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                   (v.t == VT::Object && typeOrSubsetMatches(v, "Positional"));
                 if (!positional) {
                     if (v.t == VT::Object) v = methodCall(v, "cache", {});   // a user type's own .cache
+                    // a LAZY Seq (`gather {…}`, `1, 1, *+* ... *`) keeps its
+                    // generator: copying what was reified kept nothing of it
+                    else if (v.t == VT::Array && v.s == "Seq" && v.ext()) v = methodCall(v, "cache", {});
                     else {
                         Value l = Value::array(); l.isList = true;
                         if (v.t == VT::Array && v.s == "Seq") for (auto& x : *v.arr()) l.arr()->push_back(x);
@@ -21833,7 +21836,9 @@ Value Interpreter::evalBinary(Binary* b) {
             }
         }
         // regex match: $str ~~ /pat/   /   $str ~~ s/pat/repl/
-        if (b->rhs->kind == NK::RegexLit) {
+        // (`rule { a b }` / `token {…}` carry their flavour on the VALUE: they
+        // take the general path, which matches with it)
+        if (b->rhs->kind == NK::RegexLit && static_cast<RegexLit*>(b->rhs.get())->declKind.empty()) {
             if (static_cast<RegexLit*>(b->rhs.get())->reservedHash) throwReservedHashRx();
             Value l = eval(b->lhs.get());
             std::string pat = static_cast<RegexLit*>(b->rhs.get())->pattern;
@@ -21971,6 +21976,12 @@ Value Interpreter::evalBinary(Binary* b) {
         // never there: the match's LHS stayed the topic for the rest of the sub.
         // That is what made `sub handle(Pair:D $_, %_)` in Needle::Compile call
         // `.key` on a Str one line after a `~~`.
+        // (a BARE `$_` on the right is the OUTER topic: `3 ~~ $_` with $_ = 5 is
+        // False — it is read before the left side becomes the topic)
+        const bool rhsIsTopic = b->rhs && b->rhs->kind == NK::VarExpr &&
+                                static_cast<VarExpr*>(b->rhs.get())->name == "$_";
+        Value outerTopic;
+        if (rhsIsTopic) outerTopic = eval(b->rhs.get());
         Value* topicSlot = tctx_.cur->local("$_");
         bool hadLocalTopic = topicSlot != nullptr;
         Value savedTopic = hadLocalTopic ? *topicSlot : Value::any();
@@ -21982,7 +21993,7 @@ Value Interpreter::evalBinary(Binary* b) {
             else tctx_.cur->vars.erase("$_");
         };
         Value r;
-        try { r = eval(b->rhs.get()); } catch (...) { restoreTopic(); throw; }
+        try { r = rhsIsTopic ? outerTopic : eval(b->rhs.get()); } catch (...) { restoreTopic(); throw; }
         restoreTopic();
         // A Proxy on either side is being READ: run its FETCH, or the match sees
         // the container rather than the value it stands for — and every branch
@@ -26051,6 +26062,14 @@ Value Interpreter::evalIndex(Index* idx) {
 
     // Match object indexing: $/[n] positional, $/{key} / $/<key> named
     if (base.t == VT::Match) {
+        // `$<p>:exists`, `$/[1]:!exists` — whether the capture is there
+        if ((idx->adverb == "exists" || idx->adverb == "!exists") && idx->index) {
+            Value kv = eval(idx->index.get());
+            bool has = false;
+            if (idx->isHash) has = base.hash() && base.hash()->count(hashSubKey(kv));
+            else { long long n = kv.toInt(); has = n >= 0 && base.arr() && n < (long long)base.arr()->size(); }
+            return Value::boolean(idx->adverb == "exists" ? has : !has);
+        }
         if (idx->isHash) {
             Value kv = eval(idx->index.get());
             // `$<w1 w2 w3>` / `$/{'x','y'}` — a SLICE of the named captures
@@ -27706,6 +27725,9 @@ struct RatLitParts {
                 if (!unit->labelNames.empty() && unit->labelNames.count(n)) {
                     Value lv = Value::makeHash(); lv.hashKind = "Label";
                     (*lv.hash())["name"] = Value::str(n);
+                    (*lv.hash())["file"] = Value::str(fileConstNow());
+                    auto li = unit->labelLines.find(n);
+                    (*lv.hash())["line"] = Value::integer(li != unit->labelLines.end() ? li->second : 0);
                     return lv;
                 }
             // package-relative short name: bare `Path` answers `URI::Path` when no

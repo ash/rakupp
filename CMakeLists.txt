@@ -212,6 +212,7 @@ set(RAKUPP_UCD_PROPS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_scripts_ge
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_bidi_gen.cpp")
 set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/Parser.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserRegexCheck.cpp"
                              # `.AST` IS the parser, so the RakuAST:: registry
                              # rides the same archive and the same stub seam.
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstClasses.cpp"

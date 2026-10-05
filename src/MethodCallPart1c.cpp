@@ -39,6 +39,20 @@ void Interpreter::loadIoNotification() {
 // one), so these arms run after the ones above and before methodCallPart2. nullopt = "not handled here".
 std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName& m, ValueList& args,
                                                    const std::vector<ExprPtr>* rwArgs) {
+    // a Label answers its name and where it was written: `L.line`, `L.file`
+    if (inv.t == VT::Hash && inv.hashKind == "Label" && inv.hash() && args.empty() &&
+        (m == "name" || m == "file" || m == "line" || m == "raku")) {
+        auto& h = *inv.hash();
+        auto field = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second : Value::any(); };
+        if (m != "raku") return field(m.c_str());
+        auto q = [](std::string v) {
+            std::string o = "\"";
+            for (char c : v) { if (c == '"' || c == '\\') o += '\\'; o += c; }
+            return o + "\"";
+        };
+        return Value::str("Label.new(name => " + q(field("name").toStr()) + ", file => " + q(field("file").toStr()) +
+                          ", line => " + field("line").toStr() + ")");
+    }
     if (inv.t == VT::Hash && inv.hashKind == "Cancellation" && m == "can")
         return Value::boolean(!args.empty() && (args[0].toStr() == "cancel" || args[0].toStr() == "cancelled"));
     if (inv.t == VT::Hash && inv.hashKind == "Cancellation") {

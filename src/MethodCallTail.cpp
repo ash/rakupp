@@ -1719,9 +1719,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (applyArith("~~", args[0], inv).truthy()) return Value::boolean(true);
         std::string what = "Value";
         for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) what = a.pairVal()->toStr();
+        // (a zero-denominator Rat has no gist — it shows as `<0/0>`)
+        std::string is;
+        try { is = args[0].gist(); } catch (RakuError&) { is = g_rakuRepr ? g_rakuRepr(args[0]) : std::string("<0/0>"); }
         throwTypedV("X::OutOfRange",
             {{"got", args[0]}, {"what", Value::str(what)}, {"range", inv}},
-            what + " out of range. Is: " + args[0].gist() + ", should be in " + inv.gist());
+            what + " out of range. Is: " + is + ", should be in " + inv.gist());
     }
     // An endless Range is summed by the limit of its arithmetic series, not by
     // adding up elements there is no end of: `(1..Inf).sum` is Inf and

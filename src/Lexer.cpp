@@ -510,6 +510,7 @@ static char superscriptChar(uint32_t cp) {
         case 0x00B3: return '3'; case 0x2074: return '4'; case 0x2075: return '5';
         case 0x2076: return '6'; case 0x2077: return '7'; case 0x2078: return '8';
         case 0x2079: return '9'; case 0x207B: return '-'; case 0x207A: return '+';
+        case 0x00AF: return '-';   // ¯ MACRON, the other negative sign: `10¯²⁴`
         default: return 0;
     }
 }
@@ -2428,12 +2429,18 @@ bool Lexer::tryQuoteForm(Token& out) {
         while ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) { advance(); advance(); opens++; }
         std::string raw;
         bool closed = false;
+        int depth = 0; // brackets nest: `Q«a«b»c»` is `a«b»c`
         while (!eof()) {
+            if (opens == 1 && (unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) {
+                raw += advance(); raw += advance(); depth++;
+                continue;
+            }
             if ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
                 int closes = 0;
                 while (closes < opens && (unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
                     advance(); advance(); closes++;
                 }
+                if (closes == opens && depth > 0) { depth--; raw += "\xC2\xBB"; continue; }
                 if (closes == opens) { closed = true; break; }       // matched full run: done
                 for (int k = 0; k < closes; k++) raw += "\xC2\xBB"; // shorter run is content
                 continue;

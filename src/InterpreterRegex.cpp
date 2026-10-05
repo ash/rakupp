@@ -450,7 +450,12 @@ static std::string spliceRegexValue(const std::string& src) {   // …into a RAK
     // it mean the HOST's pattern, so a self-recursive regex goes in as a marked
     // splice too — the parser compiles that with its own root and the recursion
     // stays inside it (`my $re = rx/ '(' <~~>* ')' /; "(())" ~~ /^$re$/`).
-    if (src.find("<~~>") != std::string::npos) return Regex::spliceOf(src, false);
+    // …and so does one with `<(` / `)>`: those mark the INNER match only, and
+    // the splice drops them (`/ $re /` over "foobar" with `$re = / o <( o )> b /`
+    // is "oob")
+    if (src.find("<~~>") != std::string::npos || src.find("<(") != std::string::npos ||
+        src.find(")>") != std::string::npos)
+        return Regex::spliceOf(src, false);
     return "[ " + src + " ]";
 }
 static std::string spliceRegexValueFwd(const std::string& src) { return spliceRegexValue(src); }

@@ -3168,7 +3168,7 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantArgs(const std::shared_pt
     try {
         for (auto& e : exprs) {
             vals.push_back(eval(e.get()));
-            if (e->kind == NK::Pair) vals.back().namedArg = true;
+            if (syntacticNamedPair(&*e)) vals.back().namedArg = true;
         }
     }
     catch (RakuError&) { return pickRoleVariant(group, exprs.size()); }
@@ -3597,7 +3597,7 @@ void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, C
         try {
             for (auto& e : *rargs) {
                 Value v = eval(e.get());
-                if (e->kind == NK::Pair) v.namedArg = true;
+                if (syntacticNamedPair(&*e)) v.namedArg = true;
                 argv.push_back(std::move(v));
             }
         } catch (RakuError&) { tctx_.cur = saved; return; }
@@ -5322,7 +5322,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         if (ra.first != written || seen++ != k) continue;
                         for (auto& e : ra.second) {
                             Value v = eval(e.get());
-                            if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]`
+                            if (syntacticNamedPair(&*e)) v.namedArg = true; // `does R[:opt]`
                             argv.push_back(std::move(v));
                         }
                         break;
@@ -5415,7 +5415,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             try {
                                 for (auto& e : *rargs) {
                                     Value v = eval(e.get());
-                                    if (e->kind == NK::Pair) v.namedArg = true;
+                                    if (syntacticNamedPair(&*e)) v.namedArg = true;
                                     av.push_back(std::move(v));
                                 }
                             } catch (RakuError&) { ok = false; }
@@ -6033,7 +6033,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (ca != concArgv.end()) argv = ca->second;
                     else if (rargs) for (auto& e : *rargs) {
                         Value v = eval(e.get());
-                        if (e->kind == NK::Pair) v.namedArg = true; // `does R[:opt]` → named arg
+                        if (syntacticNamedPair(&*e)) v.namedArg = true; // `does R[:opt]` → named arg
                         argv.push_back(std::move(v));
                     }
                     bindRoleParamsInto(ci.get(), role, argv, ci->declEnv);

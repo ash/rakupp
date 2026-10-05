@@ -432,6 +432,9 @@ Regex::NodePtr Regex::parseSplice() {
         const Node* target = sub.root_.get();
         std::function<void(Node*)> scope = [&](Node* n) {
             if (n->k == K::Subrule && n->ruleName == "~~" && !n->recTarget) n->recTarget = target;
+            // …and its `<( … )>` marks the INNER match only: `/ $re /` with
+            // `$re = / o <( o )> b /` matches "oob" over "foobar"
+            if (n->k == K::CapStart || n->k == K::CapEnd) n->k = K::Nop;
             for (auto& k : n->kids) scope(k.get());
             if (n->sep) scope(n->sep.get());
         };
@@ -2825,7 +2828,16 @@ Regex::NodePtr Regex::parseAtom() {
             case 'n': n->k = K::Class; n->classFlags = "n"; break;   // the logical newline (see mkClass 'n')
             case 'N': n->k = K::Class; n->classFlags = "n"; n->negate = true; break;
             case 't': n->lit = "\t"; break;
-            case 'r': n->lit = "\r"; break;
+            case 'r':
+                n->lit = "\r";
+                // `\r\n` — the two METACHARS fuse into the CR LF grapheme; a
+                // quantified `\n+` is an atom of its own and does not
+                if (peek() == '\\' && pos_ + 1 < pat_.size() && pat_[pos_ + 1] == 'n' &&
+                    !(pos_ + 2 < pat_.size() && std::strchr("*+?", pat_[pos_ + 2]) && pat_[pos_ + 2] != '\0')) {
+                    pos_ += 2;
+                    n->lit = "\r\n";
+                }
+                break;
             case 'e': n->lit = "\x1b"; break;
             case 'f': n->lit = "\f"; break;
             case '0': n->lit = std::string(1, '\0'); break;
@@ -3518,6 +3530,8 @@ static const GrammarHooks::ParamMap kNoParams; // shared empty map for hook call
 // which is one synthetic grapheme. Only a following non-ASCII byte can extend
 // the cluster, so ASCII text never pays for the lookup.
 static bool endsGrapheme(const std::string& s, long e, long len) {
+    // CR LF is ONE grapheme: a literal ending on its CR has split it
+    if (e > 0 && e < len && s[e] == '\n' && s[e - 1] == '\r') return false;
     // (nor can a character below U+0300 — lead bytes C2..CB: no mark lives there)
     if (e <= 0 || e >= len || (unsigned char)s[e] < 0x80 ||
         ((unsigned char)s[e] >= 0xC2 && (unsigned char)s[e] <= 0xCB)) return true;

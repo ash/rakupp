@@ -1008,6 +1008,13 @@ void Interpreter::registerBuiltinsPart5() {
                 }
                 ValueList na; return I.methodCall(p, "wait", na);
             }
+            // a plain VALUE is nothing to await: Rakudo refuses it, in words that
+            // changed with 6.d
+            if (p.t == VT::Int || p.t == VT::Num || p.t == VT::Rat || p.t == VT::Str ||
+                p.t == VT::Bool || p.t == VT::Complex || p.t == VT::Pair)
+                throw RakuError{Value::typeObj("X::AdHoc"), I.langRev_ == 0
+                    ? "Must specify a Promise, Channel, or Supply to await on (got a " + p.typeName() + ")"
+                    : "Can only specify Awaitable objects to await (got a " + p.typeName() + ")"};
             if (p.t != VT::Hash || p.hashKind != "Promise") return p;
             // PromiseState-backed promise (start / spawnPromise): block until it
             // settles, rethrowing the cause if it was broken.
