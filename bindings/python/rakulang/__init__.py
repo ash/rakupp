@@ -19,15 +19,22 @@
 # from two Python threads at once.
 
 import os
+import re
 import threading
 
 from . import _abi
 from ._abi import (RK_OK, RK_ANY, RK_BOOL, RK_INT, RK_NUM, RK_RAT, RK_STR,
                    RK_ARRAY, RK_HASH, RK_OTHER)
 
-__all__ = ["Grammar", "Match", "RakuError", "ParseError", "Interp", "interpreter"]
+__all__ = ["Grammar", "Match", "RakuError", "ParseError", "Interp", "interpreter",
+           "Object", "Module", "Method"]
 
 _SHIM_ABI = 1  # must equal rk-shim-abi() in grammar_shim.raku
+_OBJECT_ABI = 1  # must equal rk-py-abi() in object_shim.raku
+
+# The module name at the front of a use() spec: what `use` takes before any
+# adverbs (:ver<...>) or import arguments.
+_MODULE_NAME = re.compile(r"[A-Za-z_][\w'-]*(?:::[A-Za-z_][\w'-]*)*")
 
 # rk_int_get is an int64 and BigInt::toLL saturates there, so an Int arriving
 # as either of these may be a wider one in disguise — see _int_of.
@@ -89,6 +96,8 @@ class Interp:
                 "rk_new refused: an interpreter is already live in this process"
             )
         self._ctx = self._lib.rk_ctx(self._rk)
+        self._objects_loaded = False
+        self._main = None
         shim = os.path.join(os.path.dirname(__file__), "grammar_shim.raku")
         with open(shim, "r", encoding="utf-8") as f:
             self.eval(f.read())
@@ -126,6 +135,9 @@ class Interp:
         """Evaluate Raku source in the interpreter's mainline scope and return
         the last statement's value as a Python value. State persists across
         calls, exactly like the REPL."""
+        return self._to_py(self._eval_raw(source))
+
+    def _eval_raw(self, source):
         self._alive()
         import ctypes
         out = ctypes.c_void_p()
@@ -134,12 +146,67 @@ class Interp:
         if status != RK_OK:
             msg = self._lib.rk_last_error(self._rk)
             raise RakuError(msg.decode("utf-8", "replace") if msg else "rk_eval failed")
-        return self._to_py(out.value)
+        return out.value
 
-    def call(self, name, *args):
+    def call(self, name, /, *args, **named):
         """Call a Raku routine by name with Python arguments, returning a
-        Python value. The eager twin of _call_raw."""
+        Python value. Keyword arguments become Raku named arguments. The
+        eager twin of _call_raw."""
+        if named or any(_holds_object(a) for a in args):
+            # rk_call takes positionals only, and an Object travels boxed:
+            # the object shim unboxes and passes the named arguments
+            self._load_objects()
+            return self._to_py(self._call_raw("rk-py-call-sub", name,
+                                              list(args), named))
         return self._to_py(self._call_raw(name, *args))
+
+    # ---- modules and objects -------------------------------------------------
+
+    def use(self, module):
+        """Load a Raku module, as `use` does, and return it as a Module.
+
+        `module` is what follows `use` in Raku: "JSON::Fast", or with import
+        arguments, "Geo :ALL". The module's exports also become visible to
+        later eval() calls, exactly as after `use` in a Raku program."""
+        spec = module.strip()
+        m = _MODULE_NAME.match(spec)
+        if not m:
+            raise ValueError(f"not a module name: {module!r}")
+        name = m.group(0)
+        quoted = name.replace("'", "\\'")   # Raku names may hold an apostrophe
+        self._load_objects()
+        raw = self._eval_raw(
+            f"use {spec};\n"
+            f"do {{ use {spec}; rk-py-module('{quoted}', -> $n {{ ::($n) }}, MY::.keys) }}")
+        return Module(self, self._root(raw), name)
+
+    @property
+    def main(self):
+        """The mainline scope as a Module: every sub and class declared by
+        eval(), and everything the core provides, reached from Python as on
+        a module from use()."""
+        if self._main is None:
+            self._load_objects()
+            raw = self._eval_raw("rk-py-module('', -> $n { ::($n) }, Any)")
+            self._main = Module(self, self._root(raw), "")
+        return self._main
+
+    def _load_objects(self):
+        if self._objects_loaded:
+            return
+        shim = os.path.join(os.path.dirname(__file__), "object_shim.raku")
+        with open(shim, "r", encoding="utf-8") as f:
+            self._eval_raw(f.read())
+        got = self.call("rk-py-abi")
+        if got != _OBJECT_ABI:
+            raise RakuError(
+                f"object_shim.raku speaks ABI {got}, this binding expects {_OBJECT_ABI}"
+            )
+        self._objects_loaded = True
+
+    def _shim(self, sub, *args):
+        """A call into the object shim, its result converted with objects."""
+        return self._to_obj(self._call_raw(sub, *args))
 
     def _call_raw(self, name, *args):
         """rk_call, returning the raw RkValue (an int handle). The value is
@@ -162,6 +229,12 @@ class Interp:
 
     def _from_py(self, x):
         c, lib = self._ctx, self._lib
+        if isinstance(x, Object):
+            if x._interp is not self:
+                raise RakuError("this rakulang.Object belongs to another interpreter")
+            if not x._h:
+                raise RakuError("this rakulang.Object has been released (close())")
+            return x._h
         if x is None:
             return lib.rk_any(c)
         if isinstance(x, bool):
@@ -236,6 +309,28 @@ class Interp:
             return out
         raise RakuError(f"unknown RkType {t}")
 
+    def _to_obj(self, v):
+        """_to_py for the object shim's transport: every RK_OTHER is a box
+        (object_shim.raku, rk-py-out), rooted here as an Object. The walk
+        makes no calls, so the unrooted value it reads stays valid."""
+        import ctypes
+        c, lib = self._ctx, self._lib
+        t = lib.rk_type(c, v)
+        if t == RK_OTHER:
+            return Object(self, self._root(v))
+        if t == RK_ARRAY:
+            return [self._to_obj(lib.rk_at_pos(c, v, i))
+                    for i in range(lib.rk_elems(c, v))]
+        if t == RK_HASH:
+            out = {}
+            for i in range(lib.rk_elems(c, v)):
+                n = ctypes.c_size_t()
+                kp = lib.rk_key_at(c, v, i, ctypes.byref(n))
+                key = ctypes.string_at(kp, n.value).decode("utf-8", "replace")
+                out[key] = self._to_obj(lib.rk_val_at(c, v, i))
+            return out
+        return self._to_py(v)
+
     # ---- rooting -------------------------------------------------------------
 
     def _root(self, v):
@@ -254,6 +349,16 @@ class Interp:
     def version(self):
         """The engine's version string, e.g. "3.14.0"."""
         return self._lib.rk_version().decode()
+
+
+def _holds_object(x):
+    if isinstance(x, Object):
+        return True
+    if isinstance(x, (list, tuple)):
+        return any(_holds_object(i) for i in x)
+    if isinstance(x, dict):
+        return any(_holds_object(i) for i in x.values())
+    return False
 
 
 _default = None
@@ -427,3 +532,159 @@ class _Path(_Node):
 
     def __repr__(self):
         return f"<rakulang.Match path {list(self._steps)!r}>"
+
+
+class Object:
+    """A Raku value with no Python counterpart (an instance of a class, a
+    type object, a lazy Seq, a Pair, an enum value...), held in the
+    interpreter. Attribute access calls into Raku:
+
+        p = geo.Point.new(x=3, y=4)   # a type object's method, named arguments
+        p.x                            # a public attribute: its value
+        p.dist(other)                  # any other method: call it
+        p.x = 5                        # an `is rw` attribute
+
+    A Python name with underscores also finds the Raku name with hyphens
+    (p.to_json finds to-json); getattr(p, "to-json") spells it exactly.
+    Results convert as eval() results do, except that values with no Python
+    type come back as Objects instead of strings."""
+
+    __slots__ = ("_interp", "_h", "__weakref__")
+
+    def __init__(self, interp, rooted):
+        object.__setattr__(self, "_interp", interp)
+        object.__setattr__(self, "_h", rooted)
+
+    def _op(self, op, *arg):
+        return self._interp._shim("rk-py-op", self, op, *arg)
+
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        got = self._interp._shim("rk-py-attr", self, name)
+        return _attr_result(self, got, name)
+
+    def __setattr__(self, name, value):
+        if name in Object.__slots__:
+            object.__setattr__(self, name, value)
+        else:
+            self._interp._shim("rk-py-set-attr", self, name, value)
+
+    def __call__(self, /, *args, **named):
+        return self._interp._shim("rk-py-invoke", self, list(args), named)
+
+    def __getitem__(self, key):
+        if isinstance(key, bool) or not isinstance(key, (int, str)):
+            raise TypeError("an index is an int (a position) or a str (a key)")
+        return self._op("pos" if isinstance(key, int) else "key", key)
+
+    def __iter__(self):
+        it = self._op("iter")
+        while True:
+            got = it._op("pull")
+            if got[0] == "end":
+                return
+            yield got[1]
+
+    def __len__(self):
+        return self._op("elems")
+
+    def __bool__(self):
+        return self._op("bool")
+
+    def __int__(self):
+        return self._op("int")
+
+    def __index__(self):
+        return self._op("int")
+
+    def __float__(self):
+        return self._op("num")
+
+    def __str__(self):
+        return self._op("str")
+
+    def __repr__(self):
+        if not self._h or not self._interp._rk:
+            return "<rakulang.Object (released)>"
+        return f"<rakulang.Object {self._op('repr')}>"
+
+    def __eq__(self, other):
+        if isinstance(other, Object) or other is None or isinstance(
+                other, (bool, int, float, str, list, tuple, dict)):
+            return self._op("eqv", other)
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self._op("which"))
+
+    def close(self):
+        """Release the value now instead of when Python collects this."""
+        if self._h:
+            self._interp._unroot(self._h)
+            object.__setattr__(self, "_h", None)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class Module(Object):
+    """A module loaded with Interp.use(). Its attributes are what the module
+    exports (subs, classes, constants), then what its package holds (`our`
+    subs, nested classes), then, for a module that is a class, the class's
+    own methods (Module.new). dir() lists the names."""
+
+    __slots__ = ("_name",)
+
+    def __init__(self, interp, rooted, name):
+        super().__init__(interp, rooted)
+        object.__setattr__(self, "_name", name)
+
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        got = self._interp._shim("rk-py-module-get", self, name)
+        return _attr_result(self, got, name)
+
+    def __getitem__(self, name):
+        return getattr(self, name)
+
+    def __dir__(self):
+        return self._interp._shim("rk-py-module-names", self)
+
+    def __repr__(self):
+        return f"<rakulang.Module {self._name or 'MAIN'}>"
+
+    def __str__(self):
+        return self._name
+
+
+class Method:
+    """A method looked up on an Object and waiting for its call."""
+
+    __slots__ = ("_obj", "_name")
+
+    def __init__(self, obj, name):
+        self._obj = obj
+        self._name = name
+
+    def __call__(self, /, *args, **named):
+        o = self._obj
+        return o._interp._shim("rk-py-call-method", o, self._name,
+                               list(args), named)
+
+    def __repr__(self):
+        return f"<rakulang.Method {self._name}>"
+
+
+def _attr_result(obj, got, name):
+    kind = got[0]
+    if kind == "value":
+        return got[1]
+    if kind == "method":
+        return Method(got[2] if len(got) > 2 else obj, got[1])
+    what = obj._name if isinstance(obj, Module) else obj._op("name")
+    raise AttributeError(f"Raku {what} has no {name!r}")

@@ -173,15 +173,161 @@ If your Raku code is in a file, load all of it at once:
 raku.eval(open("tools.raku").read())
 ```
 
-To call a sub that takes **named** arguments, write the call in Raku:
+Keyword arguments become Raku's **named** arguments:
 
 ```python
 raku.eval('sub greet(:$name, :$age = 0) { "Hello, $name! You are $age." }')
-print(raku.eval('greet(name => "Ada", age => 36)'))
+print(raku.call("greet", name="Ada", age=36))
 ```
 
 ```
 Hello, Ada! You are 36.
+```
+
+## Using Raku modules
+
+`raku.use("Name")` loads a Raku module, as `use Name;` does in a Raku
+program, and gives it to you as a Python object. The subs and classes the
+module exports are its attributes, and the objects you get from them have
+their Raku methods.
+
+Save this module as `lib/Geo.rakumod`:
+
+```raku
+unit module Geo;
+
+class Point is export {
+    has $.x;
+    has $.y;
+
+    method distance-to(Point $other) {
+        sqrt(($!x - $other.x)² + ($!y - $other.y)²)
+    }
+
+    method moved(:$dx = 0, :$dy = 0) {
+        Point.new(x => $!x + $dx, y => $!y + $dy)
+    }
+
+    method Str { "($!x, $!y)" }
+}
+
+sub origin() is export { Point.new(x => 0, y => 0) }
+
+sub farthest(@points) is export {
+    @points.max(*.distance-to(origin()))
+}
+```
+
+Next to the `lib` folder, save `geo.py`:
+
+```python
+import rakulang
+
+raku = rakulang.interpreter()
+
+geo = raku.use("Geo")
+
+p = geo.Point.new(x=3, y=4)
+print(p)
+print(p.x, p.y)
+print(p.distance_to(geo.origin()))
+
+q = p.moved(dx=10)
+print(q)
+
+points = [p, q, geo.Point.new(x=-20, y=1)]
+print(geo.farthest(points))
+```
+
+Run `python3 geo.py` in that folder:
+
+```
+(3, 4)
+3 4
+5.0
+(13, 4)
+(-20, 1)
+```
+
+How it reads:
+
+- `raku.use("Geo")` finds `lib/Geo.rakumod` because Raku looks in the
+  `lib` folder of the folder you run Python in. The next section says how
+  to keep modules somewhere else.
+- `geo.Point` is the class, and `geo.Point.new(x=3, y=4)` is Raku's
+  `Point.new(x => 3, y => 4)`: keyword arguments are named arguments.
+- `p.x` reads the attribute that `has $.x` declares. Everything else is a
+  method, called with parentheses: `p.moved(dx=10)`.
+- A Python name cannot contain a hyphen, so write an underscore instead:
+  `p.distance_to` calls `distance-to`.
+- Raku objects can go back into Raku: `geo.farthest(points)` receives a
+  Python list of three `Point`s.
+- `print(p)` prints the object's Raku `Str`.
+
+A number, a string, a list or a dict comes back as a plain Python value, as
+it does from `eval`. Anything else, such as a `Point`, comes back as a
+`rakulang.Object` that stays alive inside the interpreter for as long as
+Python holds it.
+
+After `raku.use("Geo")`, the module's exports work in `eval` too:
+`raku.eval("origin().x")` gives `0`.
+
+### Where Raku looks for modules
+
+Without being told, Raku looks for a module in `lib/` and in `.` of the
+folder you run Python in, and then among the modules installed on your
+machine. An installed module needs nothing more: `raku.use("JSON::Fast")`
+finds it where Raku++ finds it.
+
+To keep your modules in another folder, name it in the `RAKULIB`
+environment variable when you run the program:
+
+```bash
+RAKULIB=/home/ada/raku-modules python3 geo.py
+```
+
+Separate several folders with commas. A relative folder is taken from the
+folder you run Python in, so an absolute path is the safer choice. In
+Windows PowerShell, set the variable first with
+`$env:RAKULIB = "C:\raku-modules"`, then run `python geo.py`.
+
+A program can also set the folder itself, the way a Raku program does with
+`use lib`:
+
+```python
+raku.eval("use lib '/home/ada/raku-modules'")
+geo = raku.use("Geo")
+```
+
+The `use lib` line has to come before the `raku.use` that needs it. Setting
+`os.environ["RAKULIB"]` from Python works only before the first
+`rakulang.interpreter()` call, because the interpreter reads the variable
+when it starts.
+
+### Classes you define with eval
+
+`raku.main` reaches everything declared by `eval` in the same way:
+
+```python
+import rakulang
+
+raku = rakulang.interpreter()
+
+raku.eval("""
+    class Counter {
+        has $.count = 0;
+        method bump(:$by = 1) { $!count += $by; self }
+    }
+""")
+
+c = raku.main.Counter.new()
+c.bump()
+c.bump(by=10)
+print(c.count)
+```
+
+```
+11
 ```
 
 ## Parsing text with a grammar
@@ -344,10 +490,11 @@ line 2, column 7, while trying <qty>
 | `List`, `Array` | `list` |
 | `Hash` | `dict` |
 | `Any` (no value) | `None` |
+| anything else | from `eval` and `call`: a `str`; from a module or an object: a `rakulang.Object` |
 
-Arguments to `call` convert the same way in reverse: `None`, `bool`, `int`,
-`float`, `str`, `list`, `tuple` and `dict` are accepted. Any other Python type
-raises `TypeError`.
+Arguments convert the same way in reverse: `None`, `bool`, `int`, `float`,
+`str`, `list`, `tuple`, `dict` and `rakulang.Object` are accepted. Any other
+Python type raises `TypeError`.
 
 ---
 
@@ -364,7 +511,9 @@ form of the [Raku++](https://raku.online) engine. It loads the library with
 cross through
 [`rakupp.h`](https://github.com/ash/rakupp/blob/main/include/rakupp/rakupp.h).
 The grammar support is a small Raku shim (`rakulang/grammar_shim.raku`) that
-the package evaluates into the interpreter at startup.
+the package evaluates into the interpreter at startup. Modules and objects
+have one of their own (`rakulang/object_shim.raku`), evaluated the first time
+a program uses `use`, `main`, an object, or a keyword argument to `call`.
 
 The package is named for the language, in the Raku community's disambiguated
 spelling: `raku` is an unrelated package on PyPI. Write
@@ -384,16 +533,72 @@ few or too many arguments, or a value that fails a type constraint, raise
 `RakuError` instead of binding silently. The conversion is by Python type, so
 `sub flag(Bool $b)` wants `True`, not `1`.
 
-`call` passes positional arguments only. A dict is one positional `Hash`, not
-a set of named arguments, which is why named parameters go through `eval`.
+A dict is one positional `Hash`; keyword arguments are the named ones.
 `multi` subs, slurpy `*@args`, and `our sub`s inside a package
-(`raku.call("Geo::perimeter", 3, 4)`) all resolve through `call`. Methods are
-reached through `eval`: `raku.eval("Counter.new.bump.n")`. `raku.can("area")`
-says whether a sub of that name is callable.
+(`raku.call("Geo::perimeter", 3, 4)`) all resolve through `call`.
+`raku.can("area")` says whether a sub of that name is callable. `call`
+returns plain Python data, as `eval` does; to get objects back, reach the
+sub through `raku.main` or a module instead (`raku.main.area(3, 4)`).
+
+`call` sees the subs declared in the mainline scope and imported into it.
+The core's own subs (`sprintf`, `sqrt`) are not among them; `raku.main.sprintf`
+reaches them.
 
 An integer wider than 64 bits arrives as an ordinary Python `int`: the C
 interface passes integers as `int64`, so the binding reads the digits instead
 whenever that saturates.
+
+### More about modules and objects
+
+`raku.use(spec)` takes what follows `use` in Raku, import arguments
+included: `raku.use("Geo :ALL")`, `raku.use("JSON::Fast:ver<0.19+>")`. It
+runs the `use` in the mainline scope, so `eval` sees the exports afterwards,
+and again inside a scope of the module handle's own, so the handle answers
+for exactly what that import brought in. Loading the same module twice is
+cheap: the module compiles once.
+
+A module handle's attributes are looked up in this order: the symbols the
+import brought in (exported subs, classes, constants, enum values), then the
+module's package (`our sub`s and nested classes: `geo.perimeter`), then,
+when the module is itself a class, that class's methods
+(`raku.use("Cro::HTTP::Client").new()`). `dir(geo)` lists the names, and a
+name that is none of them raises `AttributeError`. `raku.main` looks names
+up in the mainline scope instead, where the core's subs and types are
+visible too: `raku.main.Date.new(2026, 10, 5)`.
+
+On a `rakulang.Object`:
+
+- **Names.** `obj.name` tries the name as written, then with each `_` as
+  `-`. `getattr(obj, "to-json")` spells a name exactly. Keyword arguments
+  follow the same rule against the routine's signature: a name the signature
+  declares as written is passed as written, any other is dashed
+  (`sorted_keys=True` is `:sorted-keys`).
+- **Attributes and methods.** A public attribute (`has $.x`) reads as a value,
+  and an `is rw` one can be assigned: `p.label = "home"`. Anything else is a
+  `rakulang.Method` to call, even with no arguments: `circle.area()`. For
+  the core types, the public attributes are those Rakudo declares: a `Pair`'s
+  `key` and `value`, a `Range`'s `min` and `max`, a `Date`'s `year`,
+  `month` and `day`, a `Complex`'s `re` and `im`, a `Rat`'s `numerator` and
+  `denominator`, an enum value's `key` and `value`.
+- **Python protocols.** `str()` is the Raku `.Str` (`.gist` for a type
+  object), `repr()` shows `.raku`, `int()`, `float()`, `bool()` and `len()`
+  are `.Int`, `.Num`, `.Bool` and `.elems`. `obj[2]` and `obj["key"]` are
+  Raku subscripts (`obj[-1]` is `obj[*-1]`). `for x in obj` iterates one value
+  at a time, so a lazy or infinite sequence works. `==` is `eqv`, and objects
+  hash by `.WHICH`, so enum values make dict keys. Calling an object calls it:
+  `geo.origin` is the `Sub`, and `geo.origin()` its result.
+- **Results.** A list or a dict that comes back is a Python copy, with any
+  objects inside it as `rakulang.Object`s. A lazy sequence comes back as an
+  object, to iterate. A `Failure` is raised as `RakuError`.
+- **Cost.** Every attribute read and every method call is one call into the
+  engine. A loop over a million objects is better written in Raku and called
+  once.
+- **Lifetime.** An object holds its Raku value alive until Python collects
+  it. `obj.close()` lets go of it at once.
+
+`eval` and a plain `call` still convert everything to Python data: an object
+comes back as a string. The object surface is loaded the first time a
+program uses it.
 
 ### More about grammars
 
@@ -421,8 +626,9 @@ A terminal operation on a missing capture raises `RakuError`; `bool()` and
 There is one interpreter per process, created on first use. One Python thread
 talks to it at a time; Raku code inside it may start threads of its own. A
 `Match` holds values alive inside the interpreter: `close()` it, use it in a
-`with` block, or let the garbage collector release it. Values returned by
-`eval` and `call` are plain Python data and need nothing.
+`with` block, or let the garbage collector release it. A `rakulang.Object`
+does the same and has `close()` too. Values returned by `eval` and `call` are
+plain Python data and need nothing.
 
 Raku's `say` and `print` write to the same standard output as Python, through
 their own buffer. On a terminal the lines come out in order. When the output
@@ -507,7 +713,14 @@ build/rakupp tools/bindings-smoke.raku
 
 This runs both examples in every binding's language and checks the output
 against
-[bindings/examples/expected/](https://github.com/ash/rakupp/tree/main/bindings/examples/expected).
+[bindings/examples/expected/](https://github.com/ash/rakupp/tree/main/bindings/examples/expected),
+then runs this binding's own tests of modules and objects
+(`bindings/python/tests/`). Those also run on their own from the repository
+root:
+
+```bash
+RAKUPP_LIB=$PWD/build/librakupp.dylib python3 -m unittest discover -s bindings/python/tests
+```
 For the deep gate (this binding driving the same grammar and 2000-line corpus
 as the Raku reference driver, byte-compared), run
 `build/rakupp tools/grammar-smoke.raku`. Both run in CI on every push.

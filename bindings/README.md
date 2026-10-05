@@ -255,6 +255,7 @@ bindings/
     shopping.raku        the grammar the shopping example parses with
     expected/            recorded outputs, checked by tools/bindings-smoke.raku
   python/  README.md  rakulang/{__init__,_abi}.py, grammar_shim.raku   examples/{calc,shopping}.py
+                     rakulang/object_shim.raku                        tests/test_objects.py, tests/lib/
   js/      README.md  rakulang.js                                      examples/{calc,shopping}.mjs
   go/      README.md  rakulang.go                                      examples/{calc,shopping}/main.go
   rust/    README.md  src/lib.rs, build.rs                             examples/{calc,shopping}.rs

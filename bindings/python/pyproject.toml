@@ -40,8 +40,8 @@ Issues = "https://github.com/ash/rakupp/issues"
 [tool.setuptools]
 packages = ["rakulang"]
 
-# the Raku shim is the other half of the binding — it must travel in the
+# the Raku shims are the other half of the binding — they must travel in the
 # wheel; _lib/ holds the bundled librakupp when tools/build-wheel.sh builds a
 # platform wheel (absent in a source checkout)
 [tool.setuptools.package-data]
-rakulang = ["grammar_shim.raku", "_lib/*"]
+rakulang = ["grammar_shim.raku", "object_shim.raku", "_lib/*"]

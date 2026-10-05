@@ -385,6 +385,25 @@ unless $record {
     }
 }
 
+# ---- Python's object surface: modules, objects, methods ----------------------
+# Interp.use / Interp.main / rakulang.Object have no counterpart in the other
+# bindings, so they are not a shared example; their own unittest file carries
+# them, with a fixture module beside it.
+unless $record {
+    with @hosts.first(*.<name> eq 'python') -> %h {
+        if %h<here> {
+            my ($rc, $o, $e) = spawn [$PYTHON, '-m', 'unittest', 'discover', '-s',
+                                      'bindings/python/tests'],
+                                     env => %( RAKUPP_LIB => $lib.absolute );
+            # unittest reports on stderr, and ends with "OK" or "FAILED (...)"
+            my $last = ($e ~ $o).lines.grep(*.trim).tail // '';
+            check $rc == 0 && $last.starts-with('OK'),
+                  'Python: bindings/python/tests (modules and objects) pass',
+                  $e ~ $o;
+        }
+    }
+}
+
 if $record {
     say "bindings-smoke: recorded";
     exit 0;
