@@ -7,7 +7,9 @@
 # names of its own.
 
 import os
+import pathlib
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -16,8 +18,78 @@ sys.path.insert(0, os.path.dirname(HERE))
 import rakulang  # noqa: E402
 
 raku = rakulang.interpreter()
-raku.eval("use lib '%s'" % os.path.join(HERE, "lib").replace("\\", "/"))
+raku.lib(os.path.join(HERE, "lib"))
 geo = raku.use("Geo")
+
+
+def _module(folder, name, answer):
+    """Write a module NAME into FOLDER whose exported which() says ANSWER."""
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name + ".rakumod"), "w", encoding="utf-8") as f:
+        f.write("unit module %s;\nsub which() is export { '%s' }\n" % (name, answer))
+
+
+class LibTest(unittest.TestCase):
+    """raku.lib(): where `use` looks. Every test uses module names of its own,
+    because a module, once loaded, stays loaded."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def test_list_order(self):
+        a, b = os.path.join(self.dir, "a"), os.path.join(self.dir, "b")
+        _module(a, "LTwin", "a")
+        _module(b, "LTwin", "b")
+        raku.lib([a, b])                            # a is searched first
+        self.assertEqual(raku.use("LTwin").which(), "a")
+
+    def test_later_call_first(self):
+        a, b = os.path.join(self.dir, "a"), os.path.join(self.dir, "b")
+        _module(a, "LLater", "a")
+        _module(b, "LLater", "b")
+        raku.lib(a)
+        raku.lib(b)                                 # added later, searched first
+        self.assertEqual(raku.use("LLater").which(), "b")
+
+    def test_several_arguments_and_paths(self):
+        a, b = os.path.join(self.dir, "a"), pathlib.Path(self.dir) / "b"
+        _module(a, "LArgsA", "a")
+        _module(str(b), "LArgsB", "b")
+        raku.lib(a, b)
+        self.assertEqual(raku.use("LArgsA").which(), "a")
+        self.assertEqual(raku.use("LArgsB").which(), "b")
+
+    def test_relative_folder(self):
+        _module(os.path.join(self.dir, "rel"), "LRel", "rel")
+        here = os.getcwd()
+        os.chdir(self.dir)
+        try:
+            raku.lib("rel")
+        finally:
+            os.chdir(here)
+        # taken from the directory at the time of the call, not of the use
+        self.assertEqual(raku.use("LRel").which(), "rel")
+
+    def test_awkward_folder_name(self):
+        odd = os.path.join(self.dir, "it's a \\ folder" if os.sep == "/" else "it's a folder")
+        _module(odd, "LOdd", "odd")
+        raku.lib(odd)
+        self.assertEqual(raku.use("LOdd").which(), "odd")
+
+    def test_eval_sees_the_folders(self):
+        _module(os.path.join(self.dir, "e"), "LEval", "e")
+        raku.lib(os.path.join(self.dir, "e"))
+        self.assertEqual(raku.eval("use LEval; which()"), "e")
+
+    def test_bad_arguments(self):
+        with self.assertRaises(ValueError):
+            raku.lib()
+        with self.assertRaises(ValueError):
+            raku.lib([])
+        with self.assertRaises(TypeError):
+            raku.lib(42)
+        with self.assertRaises(TypeError):
+            raku.lib(["ok", 42])
 
 
 class ModuleTest(unittest.TestCase):

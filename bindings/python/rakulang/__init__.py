@@ -162,6 +162,39 @@ class Interp:
 
     # ---- modules and objects -------------------------------------------------
 
+    def lib(self, *paths):
+        """Add folders to where `use` looks for modules, as `use lib` does in
+        Raku. Takes one folder, several, or a list of them; a folder is a str
+        or a pathlib.Path:
+
+            raku.lib("lib")
+            raku.lib(["lib", "/opt/raku-modules"])
+
+        Folders are searched in the order given, and before the ones added by
+        an earlier lib() call. A relative folder is taken from the current
+        directory at the time of the call."""
+        flat = []
+        for p in paths:
+            if isinstance(p, (str, os.PathLike)):
+                flat.append(p)
+            elif isinstance(p, (list, tuple)):
+                flat.extend(p)
+            else:
+                raise TypeError(
+                    f"lib() takes folders as str or pathlib.Path, or a list "
+                    f"of them, not {type(p).__name__}")
+        if not flat:
+            raise ValueError("lib() needs at least one folder")
+        quoted = []
+        for p in flat:
+            if not isinstance(p, (str, os.PathLike)):
+                raise TypeError(f"not a folder: {p!r}")
+            path = os.path.abspath(os.fspath(p))
+            # a single-quoted Raku string: only \\ and \' are special
+            quoted.append("'" + path.replace("\\", "\\\\").replace("'", "\\'") + "'")
+        # `use lib 'a', 'b'` searches b first; Python lists read left to right
+        self._eval_raw("use lib " + ", ".join(reversed(quoted)) + ";")
+
     def use(self, module):
         """Load a Raku module, as `use` does, and return it as a Module.
 

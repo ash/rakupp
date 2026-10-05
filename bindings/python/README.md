@@ -291,18 +291,28 @@ folder you run Python in, so an absolute path is the safer choice. In
 Windows PowerShell, set the variable first with
 `$env:RAKULIB = "C:\raku-modules"`, then run `python geo.py`.
 
-A program can also set the folder itself, the way a Raku program does with
-`use lib`:
+A program can also name the folders itself, with `raku.lib`:
 
 ```python
-raku.eval("use lib '/home/ada/raku-modules'")
+raku.lib("/home/ada/raku-modules")
 geo = raku.use("Geo")
 ```
 
-The `use lib` line has to come before the `raku.use` that needs it. Setting
-`os.environ["RAKULIB"]` from Python works only before the first
+`raku.lib` takes one folder, several (`raku.lib("lib", "vendor")`), or a
+list of them (`raku.lib(["lib", "vendor"])`), as strings or `pathlib.Path`s.
+The folders are searched in the order you give them, and before any folder
+added by an earlier `raku.lib`. A relative folder is taken from the folder
+Python is in when `raku.lib` runs. Call it before the `raku.use` that needs
+it.
+
+`raku.lib(...)` does what `use lib` does in a Raku program, and
+`raku.eval("use lib '/home/ada/raku-modules'")` works as well. The one
+difference is the order: within one `use lib 'a', 'b'` line, Raku searches
+`b` first.
+
+Setting `os.environ["RAKULIB"]` from Python works only before the first
 `rakulang.interpreter()` call, because the interpreter reads the variable
-when it starts.
+when it starts. `raku.lib` works at any time.
 
 ### Classes you define with eval
 
