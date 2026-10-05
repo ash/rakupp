@@ -6956,6 +6956,14 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     tcx.cur = env;
     tcx.curStateEnv = c.state.env.get();
     tcx.dynStack.push_back(saved ? saved.get() : global_.get());
+    // A LEAVE that dies on the NORMAL exit runs outside the try below, so the
+    // hand-written restore after it never ran and the caller's frame stayed on
+    // dynStack, dangling once it was freed (S04-phasers/enter-leave.t crashed
+    // in a later `$*` lookup). Every manual restore pops dynStack with the
+    // scope, so a stack still above `base` means none ran: put both back.
+    struct DynRestore { ExecContext& t; size_t base; std::shared_ptr<Env>& s; Env* st;
+        ~DynRestore() { if (t.dynStack.size() > base) { t.dynStack.resize(base); t.cur = s; t.curStateEnv = st; } }
+    } dynRestore{tcx, tcx.dynStack.size() - 1, saved, savedState};
     const int callLine = curLine_;
     tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
@@ -8139,6 +8147,14 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (!staticEnvs_.empty() && c.body) seedStaticScope(c.body, env.get());   // see runStaticPhasers
     tcx.curStateEnv = c.state.env.get();
     tcx.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
+    // A LEAVE that dies on the NORMAL exit runs outside the try below, so the
+    // hand-written restore after it never ran and the caller's frame stayed on
+    // dynStack, dangling once it was freed (S04-phasers/enter-leave.t crashed
+    // in a later `$*` lookup). Every manual restore pops dynStack with the
+    // scope, so a stack still above `base` means none ran: put both back.
+    struct DynRestore { ExecContext& t; size_t base; std::shared_ptr<Env>& s; Env* st;
+        ~DynRestore() { if (t.dynStack.size() > base) { t.dynStack.resize(base); t.cur = s; t.curStateEnv = st; } }
+    } dynRestore{tcx, tcx.dynStack.size() - 1, saved, savedState};
     // callframe(N) walks these; RAII, because this function has many exit paths.
     // The frame also puts the CALLER's line back when it pops: the callee's
     // statements advance curLine_ into its own body — and its own FILE, when
