@@ -15,6 +15,10 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 1. Speed (v6)
 
+- [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
+  2026-10-05. Next: W1 (five wrong answers: kernel `.chars` on CR LF, `--exe`
+  parameter type checks, `^2.5` under `--exe`, `return` in `.map`, an empty-type
+  UB), then W2 (nine hot paths, among them `--cnp` turning the loop kernels off).
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and
@@ -411,6 +415,8 @@ with its tag, after the release run is green.
 - The overflow.t trade-off (partial-file sweep).
 - The precomp key (V6 P4).
 - Whether `--cnp` becomes the default.
+- Default `--exe` without `-O`: unconditional fast operators, or `-O` by
+  default (WINDFALL-PLAN.md).
 - The UUID distribution's name.
 - The rakuglaze repository's license.
 - The binding version scheme (section 4).
