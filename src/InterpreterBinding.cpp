@@ -2052,10 +2052,13 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
 }
 
 Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
-    Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
-    if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
+    return callEnvFirstAmp("&" + name, std::move(args));
+}
+Value Interpreter::callEnvFirstAmp(const std::string& ampName, ValueList args) {
+    Value* p = tctx_.cur ? tctx_.cur->find(ampName) : nullptr;
+    if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
     if (p) return callCallable(*p, std::move(args));
-    return callBuiltin(name, std::move(args));
+    return callBuiltin(ampName.substr(1), std::move(args));
 }
 
 Value Interpreter::getArgs() {
@@ -6084,7 +6087,15 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
 // f(NaN)` takes a NaN, which `==` never does). Shared by multi dispatch and by
 // binding, so a plain sub and a candidate agree on what matches.
 bool Interpreter::literalParamAccepts(const Param& p, const Value& v) {
-    Value lv = eval(p.litVal.get());
+    return literalAccepts(eval(p.litVal.get()), v);
+}
+bool Interpreter::literalAccepts(Value lv, const Value& v) {
+    // the usual pair, answered before the type's name is built and looked up:
+    // a plain Int against an Int literal, a plain Str against a Str one
+    if (lv.t == v.t && lv.hashKind.empty() && v.hashKind.empty() && v.enumName.empty()) {
+        if (v.t == VT::Int && !lv.big() && !v.big() && !v.natBits) return lv.i == v.i;
+        if (v.t == VT::Str) return lv.s.str() == v.s.str();
+    }
     // an angle literal `<1/2>`, `<−1+2i>` is the NUMBER (val gives the
     // allomorph): its numeric value is both the literal's type and what to compare
     if (lv.isAllomorph()) lv = methodCall(lv, "Numeric", {});

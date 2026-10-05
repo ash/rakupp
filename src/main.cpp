@@ -1067,6 +1067,8 @@ static void assembleModuleAot(const std::vector<BundledModule>& mods, const Modu
          "namespace rakupp {\n"
          "Value* rtAotOuter(Env*, const char*);\n"
          "Value rtAotParam(Env*, const char*);\n"
+         "Value rtAotParamAt(Env*, const std::string&, std::atomic<uint64_t>&);\n"
+         "Value rtAotSelf(Env*);\n"
          "Value& rtAotDeclDyn(Env*, const char*);\n"
          "Expr* rtAotNode(const unsigned char*, std::size_t);\n"
          "Value rtAotAttr(Interpreter&, const Value&, Expr*, bool);\n"

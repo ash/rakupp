@@ -1841,6 +1841,7 @@ public:
     // names a `use`d module exports — an `is export`ed `sub val` has to beat the
     // built-in `val` in compiled code exactly as it does in the interpreter.
     Value callEnvFirst(const std::string& name, ValueList args);
+    Value callEnvFirstAmp(const std::string& ampName, ValueList args);   // …given `&name`, as compiled call sites keep it
     // Resolve a builtin's function once (at compiled-program startup) so call
     // sites can go through the pointer directly, skipping callBuiltin's
     // per-call name hash + map lookup. Null when the name is not a registered
@@ -2465,6 +2466,7 @@ public:
     // read ONLY on the path where `p.type` does not name a real type — the rare
     // one — so an ordinary bind pays nothing for it.
     bool literalParamAccepts(const Param& p, const Value& v);   // `sub f("a")`: v is that literal
+    bool literalAccepts(Value lit, const Value& v);   // …given the literal's value (--exe multi guards)
     void typeCheckBind(const Param& p, const Value& v, bool blockParam = false,
                        bool whereVerified = false, Env* sigEnv = nullptr);
     void typeCheckBindImpl(const Param& p, const Value& v, bool blockParam, bool whereVerified, Env* sigEnv);
@@ -4498,6 +4500,28 @@ struct RtRoutineFrame {
 [[noreturn]] void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live);
 // --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
 // steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)
+// --exe multi dispatch guards: the idx-th positional argument by reference
+// (rtPos copies it), and a literal parameter's test, inline for the plain Int
+// or Str it usually is and `eqv` for anything else
+inline const Value& rtPosC(const ValueList& a, size_t idx) {
+    static const Value kAny = Value::any();
+    size_t p = 0;
+    for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) continue; if (p++ == idx) return v; }
+    return kAny;
+}
+// (a literal parameter takes what conforms to the literal's type and equals
+// it: `multi h(1)` takes True and <1>, not 1.0 — Interpreter::literalAccepts)
+template <class GetRT>
+inline bool rtLitInt(const Value& v, long long n, GetRT&& rt) {
+    if (v.t == VT::Int && !v.big() && v.enumName.empty() && v.hashKind.empty() && !v.natBits) return v.i == n;
+    if (v.t == VT::Bool) return (v.b ? 1 : 0) == n;
+    return rt().literalAccepts(Value::integer(n), v);
+}
+template <class GetRT>
+inline bool rtLitStr(const Value& v, const std::string& s, GetRT&& rt) {
+    if (v.t == VT::Str && v.enumName.empty() && v.hashKind.empty()) return v.s.str() == s;
+    return rt().literalAccepts(Value::str(s), v);
+}
 // …and what a POSTFIX one yields for an undefined Bool or Num: the type's
 // zero (S03), not the type object
 inline Value rtStepOld(Value o) {

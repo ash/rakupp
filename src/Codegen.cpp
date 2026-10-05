@@ -455,8 +455,10 @@ struct Codegen {
         // `callframe` reads the INTERPRETER's frames, and native code runs in
         // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
         if (name == "callframe") unsupported("callframe");
+        // (the `&name` key is built once per call site, not on every call)
         if (moduleExports_.count(name) || callEnvNames_.count(name))
-            return "RT.callEnvFirst(" + cesc(name) + ", " + vl + ")";
+            return "RT.callEnvFirstAmp(([]() -> const std::string& { static const std::string __k = " +
+                   cesc("&" + name) + "; return __k; }()), " + vl + ")";
         if (moduleMode_)   // no startup hook to resolve a shared pointer table from: resolve in place, once
             return "rtCallB(RT, ([&]() -> const BuiltinFn* { static const BuiltinFn* const __p = RT.builtinPtr(" +
                    cesc(name) + "); return __p; }()), " + cesc(name) + ", " + vl + ")";
@@ -5804,10 +5806,26 @@ struct Codegen {
             size_t pi = 0; // positional index (named params don't consume a slot)
             for (auto& p : c->params) {
                 if (p.slurpy || p.named) continue;
-                if (p.litVal)
-                    guard += " && applyArith(\"eqv\", rtPos(__a, " + std::to_string(pi) + "), " + ex(p.litVal.get()) + ").truthy()";
-                else if (!p.type.empty())
-                    guard += " && rtTypeMatch(rtPos(__a, " + std::to_string(pi) + "), " + cesc(p.type) + ")";
+                const std::string arg = "rtPosC(__a, " + std::to_string(pi) + ")";
+                auto staticStr = [](const std::string& t) {
+                    return "([]() -> const std::string& { static const std::string __s = " + cesc(t) + "; return __s; }())";
+                };
+                const Expr* lit = p.litVal.get();
+                const std::string rtGet = "[&]() -> Interpreter& { return RT; }";
+                if (lit && lit->kind == NK::IntLit && static_cast<const IntLit*>(lit)->big.empty())
+                    guard += " && rtLitInt(" + arg + ", " + std::to_string(static_cast<const IntLit*>(lit)->v) + "LL, " + rtGet + ")";
+                else if (lit && lit->kind == NK::StrLit)
+                    guard += " && rtLitStr(" + arg + ", " + staticStr(static_cast<const StrLit*>(lit)->v) + ", " + rtGet + ")";
+                else if (lit)
+                    guard += " && RT.literalAccepts(" + ex(p.litVal.get()) + ", " + arg + ")";
+                else if (!p.type.empty()) {
+                    // (an instance of the core type named passes without the lookup)
+                    const std::string& t = p.type;
+                    const char* fast = t == "Int" ? "RTB_INT" : t == "Str" ? "RTB_STR" : t == "Num" ? "RTB_NUM"
+                                     : t == "Rat" ? "RTB_RAT" : t == "Bool" ? "RTB_BOOL" : nullptr;
+                    guard += std::string(" && (") + (fast ? "rtTypedFast(" + arg + ", " + fast + ") || " : "") +
+                             "rtTypeMatch(" + arg + ", " + staticStr(t) + "))";
+                }
                 pi++;
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
@@ -6253,11 +6271,13 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
         std::set<std::string> own(copied.begin(), copied.end());
         g.analyzeCells(d->body, own);
         if (d->isMethod) {
-            g.line(2, "Value __self = rtAotParam(__env, \"self\"); (void)__self;");
+            g.line(2, "Value __self = rtAotSelf(__env); (void)__self;");
             g.self_ = "__self";
         }
         for (auto& n : copied) {
-            g.line(2, g.declVar(n, "rtAotParam(__env, " + cesc(n) + ")") + "; (void)" + mangleVar(n) + ";");
+            const std::string k = g.gensym("__pk"), c = g.gensym("__pc");
+            g.line(2, "static const std::string " + k + " = " + cesc(n) + "; static std::atomic<uint64_t> " + c + "{0};");
+            g.line(2, g.declVar(n, "rtAotParamAt(__env, " + k + ", " + c + ")") + "; (void)" + mangleVar(n) + ";");
             if (n == "$/" || n == "$!") g.boundSpecials.insert(n);
             if (n[0] == '&') g.codeVars.insert(n.substr(1));
         }

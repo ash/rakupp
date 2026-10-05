@@ -245,6 +245,40 @@ Value rtAotParam(Env* frame, const char* name) {
         if (Value* p = frame->local(name)) { Value v = *p; v.readonly = false; return v; }
     return Value::any();
 }
+// …the same read for a generated call site that keeps the name and, in
+// `cache`, the pad slot it found: a routine's frames share one layout, so
+// after the first call a parameter is an index, not a name to hash. One
+// atomic word holds both (the layout's address above bit 16, the slot + 1
+// below), so a racing call site never pairs one layout with another's slot.
+// A frame that binds by name (`vars`), or an address past 48 bits, reads by
+// name as above.
+Value rtAotParamAt(Env* frame, const std::string& name, std::atomic<uint64_t>& cache) {
+    if (frame && frame->layout && frame->vars.empty()) {
+        const auto L = reinterpret_cast<uintptr_t>(frame->layout.get());
+        if ((L >> 48) == 0) {
+            uint64_t k = cache.load(std::memory_order_relaxed);
+            if ((k >> 16) != L) {
+                auto it = frame->layout->byName.find(name);
+                k = ((uint64_t)L << 16) | (uint64_t)(it == frame->layout->byName.end() ? 0 : it->second + 1);
+                cache.store(k, std::memory_order_relaxed);
+            }
+            const int idx = (int)(k & 0xFFFF) - 1;
+            if (idx >= 0 && idx < 64 && ((frame->padLive.load(std::memory_order_acquire) >> idx) & 1)) {
+                Value v = *frame->pad[(size_t)idx].deref();
+                v.readonly = false;
+                return v;
+            }
+        }
+    }
+    if (frame)
+        if (Value* p = frame->local(name)) { Value v = *p; v.readonly = false; return v; }
+    return Value::any();
+}
+// `self`, by the slot the binder recorded rather than by name
+Value rtAotSelf(Env* frame) {
+    if (frame && frame->selfSlot) { Value v = *frame->selfSlot->deref(); v.readonly = false; return v; }
+    return rtAotParam(frame, "self");
+}
 
 // A subtree the native body hands to the interpreter, deserialized once.
 Expr* rtAotNode(const unsigned char* blob, size_t n) {
