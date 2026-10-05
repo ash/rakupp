@@ -194,9 +194,10 @@ which is why it is larger than any binary built with it.
   `RAKUPP_PCH_DIR` names another directory.
 - **One per build.** A header is named after the rakupp build, the compiler's
   `--version` and the compile flags (`-O3` gets its own), so an upgraded
-  rakupp or compiler makes a new one rather than reading a stale one. Making
-  one removes those an earlier rakupp build left; the directory keeps the
-  current build's headers only.
+  rakupp or compiler makes a new one rather than reading a stale one. The
+  three most recently used are kept — an installed rakupp and a checkout's
+  build can share the directory without rebuilding each other's — and making
+  a new one removes the rest.
 - **Concurrent compiles** are safe: the header is written under a temporary
   name and moved into place, so a compile beside it sees none or a whole one.
 - **Off:** `RAKUPP_NO_PCH=1` compiles without it. MSVC (`cl`, `clang-cl`) and

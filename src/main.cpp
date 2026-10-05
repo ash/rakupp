@@ -50,6 +50,7 @@
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <dirent.h>
+#include <sys/time.h>
 #endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -670,8 +671,8 @@ static std::string nativeCflags(const std::string& opt) {
 // -include-pch; GCC finds an `Interpreter.h.gch` in a directory searched ahead
 // of the real headers. It is built on the user's machine (it is tied to the
 // exact compiler), once per rakupp build, compiler and flag set, in the cache
-// (~37 MB with clang), and an entry another rakupp build made is removed when
-// a new one is. The compiler's own --version is part of the key, so an
+// (~37 MB with clang); the three most recently used are kept. The compiler's
+// own --version is part of the key, so an
 // upgraded compiler gets a new header rather than refusing a stale one.
 // RAKUPP_NO_PCH=1 compiles without it. Returns the flags to add ("" for none).
 static std::string pchFnv(const std::string& s) {
@@ -715,7 +716,8 @@ static std::string exePchFlags(const std::string& cxx, const std::string& cflags
     const std::string stem = "exe-" + build + "-" + pchFnv(cxx + "|" + version + "|" + cflags);
     const std::string target = clang ? dir + "/" + stem + ".pch" : dir + "/" + stem + "/Interpreter.h.gch";
     const std::string flags = clang ? " -include-pch " + shq(target) : " -I " + shq(dir + "/" + stem);
-    if (::stat(target.c_str(), &st) == 0) return flags;
+    // (a use marks it recent: the pruning below keeps the most recently used)
+    if (::stat(target.c_str(), &st) == 0) { ::utimes(target.c_str(), nullptr); return flags; }
     // built under a temporary name and moved into place, so a compile
     // running beside this one sees no header or a whole one
     runCommand("mkdir -p " + shq(clang ? dir : dir + "/" + stem));
@@ -730,15 +732,25 @@ static std::string exePchFlags(const std::string& cxx, const std::string& cflags
         if (!g_quiet) std::cerr << "(the precompiled header did not build; compiling without it)\n";
         return "";
     }
-    // the entries another rakupp build made are never read again
+    // Headers of earlier rakupp builds are not read again — but a machine can
+    // hold several rakupp builds in use at once (an installed one and a
+    // checkout's), and deleting each other's would rebuild them in turn. So
+    // the three most recently used are kept (a compile that uses one touches
+    // it) and the rest, the leftovers of builds gone by, are removed.
     if (DIR* h = ::opendir(dir.c_str())) {
-        std::vector<std::string> stale;
+        std::vector<std::pair<long long, std::string>> entries;
         while (struct dirent* e = ::readdir(h)) {
             std::string n = e->d_name;
-            if (n.rfind("exe-", 0) == 0 && n.compare(4, 8, build) != 0) stale.push_back(dir + "/" + n);
+            if (n.rfind("exe-", 0) != 0 || n.find(".tmp") != std::string::npos) continue;
+            std::string full = dir + "/" + n;
+            // (GCC's entry is a directory: its header inside says when it was used)
+            std::string probe = n.size() > 4 && n.compare(n.size() - 4, 4, ".pch") == 0 ? full : full + "/Interpreter.h.gch";
+            struct stat es {};
+            if (::stat(probe.c_str(), &es) == 0) entries.push_back({(long long)es.st_mtime, full});
         }
         ::closedir(h);
-        for (auto& f : stale) runCommand("rm -rf " + shq(f));
+        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (size_t i = 3; i < entries.size(); i++) runCommand("rm -rf " + shq(entries[i].second));
     }
     return flags;
 #endif
