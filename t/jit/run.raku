@@ -95,8 +95,12 @@ for @dirs -> $d {
     else       { note "no such file or directory: $d"; exit 2 }
 }
 
-sub capture($file, *@flags) {
-    my $p = run $rakupp.Str, |@flags, $file.Str, :out, :err;
+# The backend lane runs without the loop kernels (src/IntKernel.cpp): they
+# are asked first, so with them on a backend would only ever see the loops
+# a kernel declines, and most of what this gate exists to compare would go
+# untested.
+sub capture($file, *@flags, :%env = %*ENV) {
+    my $p = run $rakupp.Str, |@flags, $file.Str, :out, :err, :%env;
     my $o = $p.out.slurp(:close);
     my $e = $p.err.slurp(:close);
     ($p.exitcode, $o, $e)
@@ -108,7 +112,7 @@ my @bad;
 for @files -> $f {
     if %skip{$f.basename} -> $why { $skipped++; next }
     my ($rc0, $out0, $err0) = capture($f);
-    my ($rc1, $out1, $err1) = capture($f, |@lane);
+    my ($rc1, $out1, $err1) = capture($f, |@lane, :env(%(|%*ENV, RAKUPP_NO_KERNELS => 1)));
     if $rc0 == $rc1 && $out0 eq $out1 && $err0 eq $err1 {
         $agree++;
     }

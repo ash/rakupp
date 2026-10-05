@@ -1191,26 +1191,28 @@ struct Codegen {
     // positional bridge's `($a, $b)` and a named sub `()`, and Math::NIntegrate,
     // which matches an integrand's parameter names against its ranges, refused
     // every compiled call.
+    // one parameter's RtSigParam initializer
+    static std::string sigRow(const Param& src) {
+        auto p = signatureParamCopy(src);
+        std::string ak;
+        for (auto& k : p->aliasKeys) ak += (ak.empty() ? "" : " ") + k;
+        unsigned f = (p->named ? RSP_NAMED : 0) | (p->slurpy ? RSP_SLURPY : 0) |
+                     (p->optional ? RSP_OPTIONAL : 0) | (p->required ? RSP_REQUIRED : 0) |
+                     (p->invocant ? RSP_INVOCANT : 0) | (p->pastDoubleSemi ? RSP_PASTSEMI : 0) |
+                     (p->coerce ? RSP_COERCE : 0) | (p->isRw ? RSP_RW : 0) | (p->isCopy ? RSP_COPY : 0) |
+                     (p->hadWhere ? RSP_WHERE : 0) | (p->aliasBoth ? RSP_ALIASBOTH : 0) |
+                     (src.isRaw ? RSP_RAW : 0);
+        return "{" + cesc(p->name) + ", " + cesc(p->type) + ", " +
+               cesc(p->namedKey) + ", " + cesc(p->coerceFrom) + ", " + cesc(p->defaultRaku) + ", " +
+               cesc(ak) + ", " + std::to_string(f) + "u, " + std::to_string((int)(unsigned char)p->sigil) +
+               ", " + std::to_string((int)p->slurpyKind) + ", " + std::to_string(p->defConstraint) + "}";
+    }
     std::string sigWrap(const std::string& mk, const std::vector<Param>& ps, const std::string& name,
                         const std::string& retType, unsigned cflags) {
         std::string tbl = "nullptr";
         if (!ps.empty()) {
             std::string rows;
-            for (auto& src : ps) {
-                auto p = signatureParamCopy(src);
-                std::string ak;
-                for (auto& k : p->aliasKeys) ak += (ak.empty() ? "" : " ") + k;
-                unsigned f = (p->named ? RSP_NAMED : 0) | (p->slurpy ? RSP_SLURPY : 0) |
-                             (p->optional ? RSP_OPTIONAL : 0) | (p->required ? RSP_REQUIRED : 0) |
-                             (p->invocant ? RSP_INVOCANT : 0) | (p->pastDoubleSemi ? RSP_PASTSEMI : 0) |
-                             (p->coerce ? RSP_COERCE : 0) | (p->isRw ? RSP_RW : 0) | (p->isCopy ? RSP_COPY : 0) |
-                             (p->hadWhere ? RSP_WHERE : 0) | (p->aliasBoth ? RSP_ALIASBOTH : 0) |
-                             (src.isRaw ? RSP_RAW : 0);
-                rows += "{" + cesc(p->name) + ", " + cesc(p->type) + ", " +
-                        cesc(p->namedKey) + ", " + cesc(p->coerceFrom) + ", " + cesc(p->defaultRaku) + ", " +
-                        cesc(ak) + ", " + std::to_string(f) + "u, " + std::to_string((int)(unsigned char)p->sigil) +
-                        ", " + std::to_string((int)p->slurpyKind) + ", " + std::to_string(p->defConstraint) + "}, ";
-            }
+            for (auto& src : ps) rows += sigRow(src) + ", ";
             tbl = "([]()->const RtSigParam*{ static const RtSigParam __s[] = {" + rows + "}; return __s; }())";
         }
         return "rtSig(" + mk + ", " + tbl + ", " + std::to_string(ps.size()) + ", " + cesc(name) + ", " +
@@ -2053,7 +2055,8 @@ struct Codegen {
                 // Only for a plain single positional arg; anything else takes
                 // the generic cached-pointer path below.
                 if (optimize_ && c->args.size() == 1 && simpleArgs(c->args) &&
-                    !moduleExports_.count(c->name)) {   // a module export owns this name
+                    !moduleExports_.count(c->name) &&   // a module export owns this name
+                    !callEnvNames_.count(c->name)) {    // …and so does a module routine's own sub
                     static const std::map<std::string, const char*> fastB = {
                         {"abs", "rtBAbs"}, {"chr", "rtBChr"}, {"ord", "rtBOrd"},
                         {"say", "rtBSay"}, {"print", "rtBPrint"}, {"put", "rtBPut"}, {"note", "rtBNote"},
@@ -2786,6 +2789,11 @@ struct Codegen {
                 // so it is thrown at the routine's own frame, as the interpreter's is.
                 if (moduleMode_ && !nestKinds_.empty() && nestKinds_.back() == 'b')
                     line(ind, "throw ReturnEx{" + v + ", __fid};");
+                // A program's routines have no frame to aim one at, and a C++
+                // `return` would leave only the block: `(1, 2).map({ return 5
+                // if $_ == 2; $_ })` went on with the routine.
+                else if (!nestKinds_.empty() && nestKinds_.back() == 'b')
+                    unsupported("a `return` inside a block (it leaves the enclosing routine)");
                 else line(ind, "return " + v + ";");
                 return;
             }
@@ -3461,7 +3469,14 @@ struct Codegen {
         }
         std::string topic = f->vars.empty() ? gensym("v__t") : mangleVar(f->vars[0]);
         line(ind, "{");
-        if (f->list->kind == NK::Range) {
+        // `^N` is `0..^N`: the same counted loop, rather than a list of N
+        // elements built first (and a fractional N keeps its last element)
+        Unary* upto = nullptr;
+        if (f->list->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(f->list.get());
+            if (u->op == "^" && !u->postfix && userOpFn("prefix:<^>").empty()) upto = u;
+        }
+        if (f->list->kind == NK::Range || upto) {
             // `for A..B` counts with a raw long long — but ONLY when the range is
             // numeric. A Str range ('a'..'c', or two Str variables) used to reach
             // this loop too, where `.toInt()` made both endpoints 0 and the body
@@ -3469,12 +3484,17 @@ struct Codegen {
             // "0" natively and "a b c" interpreted. The endpoints are only known
             // at runtime ($x..$y), so the kind test is a runtime one; the counter
             // then indexes either the integers or a materialised element list.
-            auto* r = static_cast<RangeExpr*>(f->list.get());
             std::string rv = gensym("__rv"), lst = gensym("__rl"), isInt = gensym("__ri");
             std::string lo = gensym("__lo"), hi = gensym("__hi"), i = gensym("__i");
-            line(ind + 1, "Value " + rv + " = rtRangeVal(" + ex(r->from.get()) + ", " + ex(r->to.get()) +
-                          ", " + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ");");
-            line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType().empty());");
+            if (upto)
+                line(ind + 1, "Value " + rv + " = rtRangeVal(Value::integer(0), " + ex(upto->operand.get()) + ", false, true);");
+            else {
+                auto* r = static_cast<RangeExpr*>(f->list.get());
+                line(ind + 1, "Value " + rv + " = rtRangeVal(" + ex(r->from.get()) + ", " + ex(r->to.get()) +
+                              ", " + (r->exFrom ? "true" : "false") + ", " + (r->exTo ? "true" : "false") + ");");
+            }
+            // (a fractional range, `0..^2.5`, is no integer range: its elements are listed)
+            line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType().empty() && !" + rv + ".rNum());");
             line(ind + 1, "Value " + lst + "; long long " + lo + ", " + hi + ";");
             line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
                                                  + hi + " = " + rv + ".rTo() - (" + rv + ".rExTo() ? 1 : 0); }");
@@ -3637,13 +3657,14 @@ struct Codegen {
     std::map<std::string, int> kernelSubs_;   // name -> arity
     std::string kernelText_;                  // preamble + forward decls + definitions
 
+    // (an `Int` parameter is one: the entry guard's __kInt already proves it)
     static bool kernelParams(const std::vector<Param>& ps) {
         if (ps.size() > 6) return false;
         for (const Param& p : ps)
             if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy ||
                 p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
                 p.hadWhere || p.defConstraint || p.coerce || p.typeCapture || p.codeSig ||
-                !p.captureName.empty() || !p.type.empty() || p.name.size() < 2 ||
+                !p.captureName.empty() || (!p.type.empty() && p.type != "Int") || p.name.size() < 2 ||
                 (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.' || p.name[1] == '^')))
                 return false;
         return true;
@@ -4808,12 +4829,11 @@ struct Codegen {
                 LT lt = uNodeType(b->lhs.get()), rt = uNodeType(b->rhs.get());
                 LT operandT = (lt == LT::F64 || rt == LT::F64) ? LT::F64 : LT::I64;
                 static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
-                if (cmp.count(op))
-                    return "((" + uExpr(b->lhs.get(), operandT, pre) + ") " + op + " ("
-                              + uExpr(b->rhs.get(), operandT, pre) + "))";
                 std::string a = uExpr(b->lhs.get(), operandT, pre);
                 std::string c = uExpr(b->rhs.get(), operandT, pre);
+                // (an operand the lane refuses — `++$c` as a value — refuses the whole)
                 if (a.empty() || c.empty()) return "";
+                if (cmp.count(op)) return "((" + a + ") " + op + " (" + c + "))";
                 if (op == "**") {
                     // the interpreter's answers: pow() for a Num, and an exact
                     // Int power, whose Rat (a negative exponent) or BigInt leaves
@@ -5284,6 +5304,27 @@ struct Codegen {
     }
 
     // ---- sub definitions ----
+    // A parameter whose type the binding enforces: a `$` or sigilless one
+    // typed by a boxed type. Natives, type captures, and Any / Mu (which only
+    // refuse Mu, as an untyped parameter does not here) bind as before.
+    static bool checkedParam(const Param& p) {
+        if (p.type.empty() || p.slurpy || p.invocant || p.isRw || p.typeCapture || p.typeFromCapture ||
+            !p.captureName.empty() || (p.sigil != '$' && p.sigil != '\\')) return false;
+        if (p.type == "Any" || p.type == "Mu") return false;
+        return !(p.type[0] >= 'a' && p.type[0] <= 'z');
+    }
+    // the parameter's descriptor, built once (a function-local static)
+    std::string typedParamDesc(const Param& p, int ind) {
+        std::string pd = gensym("__pd");
+        line(ind, "static const Param& " + pd + " = rtParamOf(RtSigParam" + sigRow(p) + ");");
+        return pd;
+    }
+    static std::string bindTypedExpr(const std::string& got, const std::string& pd, const Param& p) {
+        const std::string& t = p.type;
+        const char* fast = t == "Int" ? "RTB_INT" : t == "Str" ? "RTB_STR" : t == "Num" ? "RTB_NUM"
+                         : t == "Rat" ? "RTB_RAT" : t == "Bool" ? "RTB_BOOL" : "RTB_NONE";
+        return "rtBindTyped(" + got + ", " + pd + ", " + fast + ", [&]() -> Interpreter& { return RT; })";
+    }
     // Emit binding lines that pull each parameter out of the call's `__a`
     // ValueList — handling positional, named, optional/default, and slurpy.
     // hasSelf: `__a[0]` is the invocant (methods), so positionals start at 1.
@@ -5310,6 +5351,12 @@ struct Codegen {
         size_t pi = hasSelf ? 1 : 0;
         int anon = 0;
         for (const Param& p : ps) {
+            // a typed parameter binds through rtBindTyped: its coercion and its
+            // type check, as the interpreter binds it
+            const bool typed = checkedParam(p);
+            std::string pd;
+            if (typed) pd = typedParamDesc(p, ind);
+            auto typedInit = [&](const std::string& got) { return typed ? bindTypedExpr(got, pd, p) : got; };
             // a param mutated by an inner closure binds as a shared cell (declVar)
             auto bind = [&](const std::string& init) {
                 if (p.name.empty()) line(ind, "Value __anon" + std::to_string(anon++) + " = " + init + ";");
@@ -5347,12 +5394,21 @@ struct Codegen {
                 for (size_t i = 0; i + 1 < keys.size(); i++)
                     chain += "rtHasNamed(__a, " + cesc(keys[i]) + ") ? rtNamed(__a, " + cesc(keys[i]) + ") : ";
                 std::string lastKey = cesc(keys.back());
-                if (p.defaultVal) bind(chain + "(rtHasNamed(__a, " + lastKey + ") ? rtNamed(__a, " + lastKey + ") : (" + ex(p.defaultVal.get()) + "))");
+                if (p.defaultVal) bind(typedInit(chain + "(rtHasNamed(__a, " + lastKey + ") ? rtNamed(__a, " + lastKey + ") : (" + ex(p.defaultVal.get()) + "))"));
+                else if (typed) {
+                    // an unpassed typed named parameter holds its type object
+                    std::string has;
+                    for (auto& k : keys) has += (has.empty() ? "" : " || ") + std::string("rtHasNamed(__a, ") + cesc(k) + ")";
+                    bind("(" + has + ") ? " + typedInit(chain + "rtNamed(__a, " + lastKey + ")") +
+                         " : Value::typeObj(" + cesc(p.type) + ")");
+                }
                 else bind(chain + "rtNamed(__a, " + lastKey + ")");
                 continue;
             }
-            if (p.defaultVal) bind("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")");
-            else bind("rtPos(__a, " + pos + ")");
+            if (p.defaultVal) bind(typedInit("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")"));
+            else if (typed && p.optional)   // …and so does an unpassed typed optional one
+                bind("rtHasPos(__a, " + pos + ") ? " + typedInit("rtPos(__a, " + pos + ")") + " : Value::typeObj(" + cesc(p.type) + ")");
+            else bind(typedInit("rtPos(__a, " + pos + ")"));
             if (p.name == "$/" || p.name == "$!") boundSpecials.insert(p.name);
             if (p.name.size() > 1 && p.name[0] == '&') codeVars.insert(p.name.substr(1)); // sub bin(&op) — op(...) calls the param
             pi++;
@@ -5586,9 +5642,19 @@ struct Codegen {
             for (size_t i = 0; i < ps.size(); i++) {
                 if (i) { sig += ", "; fwd += ", "; }
                 sig += "Value " + (anyCell ? "__p" + std::to_string(i) : mangleVar(ps[i].name));
-                fwd += "rtPos(__a, " + std::to_string(i) + ")";
+                // (an unpassed typed optional one is its type object)
+                if (ps[i].optional && checkedParam(ps[i]))
+                    fwd += "rtHasPos(__a, " + std::to_string(i) + ") ? rtPos(__a, " + std::to_string(i) +
+                           ") : Value::typeObj(" + cesc(ps[i].type) + ")";
+                else fwd += "rtPos(__a, " + std::to_string(i) + ")";
             }
             line(0, "static Value " + fnName + "(" + sig + ") {");
+            for (size_t i = 0; i < ps.size(); i++)
+                if (checkedParam(ps[i]) && !ps[i].name.empty()) {
+                    std::string nm = anyCell ? "__p" + std::to_string(i) : mangleVar(ps[i].name);
+                    std::string pd = typedParamDesc(ps[i], 1);
+                    line(1, nm + " = " + bindTypedExpr("std::move(" + nm + ")", pd, ps[i]) + ";");
+                }
             if (!kernelName.empty() && !anyCell) {
                 std::vector<std::string> ka;
                 for (auto& p : ps) ka.push_back(mangleVar(p.name));
@@ -6093,9 +6159,10 @@ std::set<std::string> declaredIdents(const std::string& t) {
 std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names,
                         const std::set<std::string>& freeNames, const std::set<std::string>& frameNames,
                         const std::set<std::string>& locals, std::set<std::string>* refsOut,
-                        std::vector<int>* delegatedOut = nullptr) {
+                        std::vector<int>* delegatedOut, bool optimize) {
     Codegen g;
     g.moduleMode_ = true;
+    g.optimize_ = optimize;
     g.callEnvNames_ = names.callEnv;
     g.rwSubNames_ = names.rwSubs;
     g.rwMethodNames_ = names.rwMethods;
@@ -6150,14 +6217,14 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
 } // namespace
 
 std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& callEnvNames,
-                                   std::vector<int>* delegatedLines) {
+                                   std::vector<int>* delegatedLines, bool optimize) {
     if (const char* why = aotIneligible(d)) throw CodegenError{why};
     // Pass one learns which names the body reads without declaring; pass two
     // emits them as outer names. `@_`/`%_` are the frame's own (the
     // interpreter binds them for a routine without a signature), so they are
     // copied out of it like parameters.
     std::set<std::string> refs;
-    std::string first = emitAotPass(d, fnName, callEnvNames, {}, {}, {}, &refs);
+    std::string first = emitAotPass(d, fnName, callEnvNames, {}, {}, {}, &refs, nullptr, optimize);
     std::set<std::string> decl = declaredIdents(first);
     std::set<std::string> outer, frame;
     for (auto& n : refs) {
@@ -6165,7 +6232,7 @@ std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const 
         if (n == "@_" || n == "%_") frame.insert(n);
         else outer.insert(n);
     }
-    return emitAotPass(d, fnName, callEnvNames, outer, frame, decl, nullptr, delegatedLines);
+    return emitAotPass(d, fnName, callEnvNames, outer, frame, decl, nullptr, delegatedLines, optimize);
 }
 
 // ---- the tier-up JIT's kernel emitter (docs/dev/plans/JIT-PLAN.md) ---------

@@ -7854,7 +7854,7 @@ int Interpreter::run(Program& prog) {
                         auto* ve0 = static_cast<VarExpr*>(e0);
                         if (e0->line > 0) curLine_ = e0->line;
                         checkBareSubsetDecl(ve0, ve0->name[0]);
-                        if (ve0->declSmiley) global_->x().varSmiley[ve0->name] = ve0->declSmiley; // `my Int:D @a …;`
+                        if (ve0->declSmiley) { global_->x().varSmiley[ve0->name] = ve0->declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D @a …;`
                         if (ve0->declWhereExpr && ve0->name[0] == '$')
                             global_->x().varWhere[ve0->name] = ve0->declWhereExpr;   // `my $x where Int;`
                         // the SHAPE is evaluated when the declaration runs — the

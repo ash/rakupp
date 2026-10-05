@@ -141,6 +141,11 @@ sub ck($got, $want, $desc) {
 { my $t = 0; my $s = "héllo"; for 1 .. 4 { $t += $s.chars; $t += $_.chars }; ck($t, 24, '.chars of a Str and an Int') }
 { my $t = 0; my $s = "e\x[301]a"; for 1 .. 2 { $t += $s.chars }; ck($t, 4, '.chars counts graphemes') }
 { my $n = 0; my $s = ""; for 1 .. 10 { $s ~= "ab"; $n = $s.chars if $_ == 7 }; ck(($n, $s.chars), (14, 20), '.chars of a growing Str') }
+{ my $n = 0; my $s = "a\r\nb"; for ^3 { $n += $s.chars }; ck($n, 9, '.chars counts CR LF as one') }
+{ my $n = 0; my $s = "x"; for ^3 { $s ~= "\r"; $n += $s.chars; $s ~= "\nz"; $n += $s.chars }; ck($n, 27, '~= joins CR and LF into one character') }
+{ my $n = 0; my $a = "ab"; my $b = ""; for ^3 { $a ~= "c"; $b = $a; $a ~= "\x[301]"; $n += $b.chars + $a.chars }; ck($n, 24, '.chars after = and a renormalizing ~=') }
+{ my $r = ""; my $s = "a\r\nbc"; for ^2 { $r = $s.substr(1, 2) }; ck($r, "\r\nb", '.substr counts CR LF as one') }
+{ my $n = 0; my $s = "ab\r\n"; for ^2 { given $s { $n += .chars } }; ck($n, 6, '.chars of a Str topic') }
 { my $t = 0; for 1 .. 3 { $t += 5 eq "5" ?? 1 !! 0 }; ck($t, 3, 'an Int compared as a Str') }
 
 # a loop whose kernel was built for other types, entered again

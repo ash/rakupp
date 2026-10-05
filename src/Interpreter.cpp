@@ -3347,6 +3347,14 @@ static Value reifyIfFinite(const Value& v) {
         forceLazy(v);
         Value r = Value::array(*v.arr()); r.isList = false; return r;
     }
+    // …and a `.map` that runs as it is read (its block can `return`) over a
+    // finite source is read whole: list assignment is eager, and a `return`
+    // in the block has to leave ITS routine here, not wherever the Array
+    // happens to be read first, or never
+    if (st->mapView && !st->infinite && !st->gatherSeq && !st->declaredLazy) {
+        forceLazy(v);
+        Value r = Value::array(*v.arr()); r.isList = false; return r;
+    }
     if (!st->gatherSeq) return v;
     // `lazy gather {…}` (or a list ending in one) stays lazy: assignment runs
     // none of it (S02-types/array.t)

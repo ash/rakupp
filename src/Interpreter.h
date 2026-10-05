@@ -1354,6 +1354,11 @@ struct ExecContext {
     // subscript reached, recorded by the Index lvalue arm so the assignment can
     // enforce it (`my Int @a; @a[1] = $*ERR` throws; roast S02-types/array.t)
     std::string lastLvalueElemType;
+    // …and when that container is a typed ARRAY, it and its size before the
+    // store, which may grow it: a refused element takes the new slots back off
+    // (checkElemTypeOrShrink). Null for anything else.
+    Value* lastLvalueGrowBase = nullptr;
+    size_t lastLvalueGrowSize = 0;
     // `$obj."$name"() = v` — the method name, computed ONCE. The assignment
     // resolves the target's sigil before it takes the lvalue, and both halves
     // need the name; an arbitrary expression must not be run twice for it.
@@ -2410,6 +2415,11 @@ public:
     void coerceParam(const struct Param& p, Value& v, const std::string* typeOverride = nullptr,   // bind a `T(F) $x` parameter
                      const std::string* fromOverride = nullptr, int defOverride = -1);
     bool coerceViaTypeVar(const struct Param& p, Value& v, Env* env);   // `T $x` with T a coercion type
+    // --exe: binding one TYPED `$` parameter of a natively compiled routine the
+    // way the slow bind path does it — a coercion type's coercion, a coercing
+    // subset's, then the type check and its X::TypeCheck::Binding::Parameter
+    // (see rtBindTyped below, which settles the common cases inline)
+    Value bindTypedParam(Value v, const struct Param& p);
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
     // assignment: assignment, slice assignment, list initialisation and the
@@ -2561,13 +2571,18 @@ public:
     Value nilAttrDefault(const ClassAttr& at, const std::string& resolvedType);
     void minmaxOperands(const ValueList& items, ValueList& each, std::vector<char>* exOf);   // what `.minmax` compares
     Value minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);
-    Value* arrayGrowGuard(Expr* target, size_t& sizeOut);                 // `@a[5] = …` refused: no growth
     void checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol, Value* growBase, size_t growSize);
     Value* newGlobalSymbolSlot(const std::string& nm);                    // `GLOBAL::<Probe> = 43`
     void publishOurExport(const std::string& name, const Value& v);       // `our &f is export = …` in EXPORT::DEFAULT
     Value hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args);
     void refuseUnknownQualifier(const std::string& qual, const std::string& method, const Value& inv);
     bool userShadowsCoreRole(const std::string& type);                    // `role Numeric { }` hides the core one
+    // whether any user role takes a core role's name, decided per symbol
+    // generation: (generation + 1) << 1 | answer, 0 = not decided
+    DecidedOnce<uint64_t> coreRoleShadowKey_{0};
+    // set once any `@`/`%` variable is declared with an element smiley
+    // (`my Int:D @a`): until then elemSmileyOf has nothing to find
+    std::atomic<bool> elemSmileyDeclared_{false};
     bool routineFromElsewhere(const Value& code);                         // an imported routine, not ours
     Value evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls);             // `is default(T)` with role params bound
     bool intRangeReduce(const std::string& op, const Value& v, Value& out);   // `[+] 1..10**12` by its ends
@@ -4441,6 +4456,29 @@ Value  rtObjHash(const Value& v);                              // `:{ … }` →
 // list (built once per `ps` table, program lifetime), the routine's name and
 // its return type to the callable `c`, and returns it.
 Value  rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags);
+// A compiled routine's TYPED parameter, bound as the interpreter binds it:
+// rtParamOf builds the Param once from its descriptor (program lifetime), and
+// rtBindTyped passes an instance of the core type the parameter names (`fast`,
+// an RTB_* code) straight through, asking the interpreter about everything
+// else. `rt` hands over the runtime interpreter only on that slow path.
+const Param& rtParamOf(const RtSigParam& d);
+enum : int { RTB_NONE = 0, RTB_INT, RTB_STR, RTB_NUM, RTB_RAT, RTB_BOOL };
+inline bool rtTypedFast(const Value& v, int fast) {
+    if (!v.hashKind.empty()) return false;   // a tagged built-in (an Instant, a Blob, …) is not its storage type
+    switch (fast) {
+        case RTB_INT: return v.t == VT::Int;
+        case RTB_STR: return v.t == VT::Str;
+        case RTB_NUM: return v.t == VT::Num;
+        case RTB_RAT: return v.t == VT::Rat;
+        case RTB_BOOL: return v.t == VT::Bool;
+        default: return false;
+    }
+}
+template <class GetRT>
+inline Value rtBindTyped(Value v, const Param& p, int fast, GetRT&& rt) {
+    if (rtTypedFast(v, fast)) return v;
+    return rt().bindTypedParam(std::move(v), p);
+}
 
 // IO::Spec::{Unix,QNX,Win32,Cygwin} class-method dispatch — pure path-string
 // algorithms. Returns true (and sets `out`) when (cls, m) is handled.

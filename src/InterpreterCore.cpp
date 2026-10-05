@@ -2172,13 +2172,13 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             const bool bareCond = ws->params.empty() && ws->var.empty();
+            // a body of plain Int / Str arithmetic runs as a loop kernel
+            // (IntKernel.cpp), as a `for` over a Range does
+            if (!col && bareCond && !ws->modifier && tryLoopKernel(s, std::string(), 0, 0)) return Value::nil();
             // --jit (JIT-PLAN.md). Everything below is unreachable without the
             // flag: jit::on() is a plain bool that is false in every default
             // run, so the loop pays one never-taken branch per iteration.
             jit::LoopGuard __jg(jit::on() ? jit::siteFor(s) : nullptr);
-            // a body of plain Int / Str arithmetic runs as a loop kernel
-            // (IntKernel.cpp), as a `for` over a Range does
-            if (!col && bareCond && !ws->modifier && tryLoopKernel(s, std::string(), 0, 0)) return Value::nil();
             for (;;) {
                 if (__jg.site) {
                     // A while loop keeps its whole state in variables, so the
@@ -2808,8 +2808,12 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // `STMT for A .. B` over machine integers: a loop kernel, on the test
         // the block form's integer-Range path makes, for a range whose ends
         // are machine integers (a BigInt end rides in ext()), and only for a
-        // range written in place — a `$r` holding one is a single item
-        if (fs->list->kind == NK::Range && lv.t == VT::Range && !lvRaw.itemized && !lv.rNum() &&
+        // range written in place — a `$r` holding one is a single item — or
+        // a `^N`, which is `0 ..^ N`
+        if ((fs->list->kind == NK::Range ||
+             (fs->list->kind == NK::Unary && !static_cast<const Unary*>(fs->list.get())->postfix &&
+              static_cast<const Unary*>(fs->list.get())->op == "^")) &&
+            lv.t == VT::Range && !lvRaw.itemized && !lv.rNum() &&
             !lv.ext() && !lv.big() && lv.ofType() != "Str" && !col &&
             tryLoopKernel(fs, "$_", lv.rFrom() + (lv.rExFrom() ? 1 : 0), lv.rTo() - (lv.rExTo() ? 1 : 0)))
             return forResult();
@@ -3958,8 +3962,10 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
     // and Mu parameters take it without asking; everything else goes through
     // the same matcher an instance does, below.
     if (v.t == VT::Nil) return;
-    if ((v.t == VT::Type || v.t == VT::Any) &&
-        (p.type.empty() || p.type == "Any" || p.type == "Mu")) return;
+    // an untyped parameter (a literal one included, already checked above)
+    // takes every value the Mu check let through
+    if (p.type.empty()) return;
+    if ((v.t == VT::Type || v.t == VT::Any) && (p.type == "Any" || p.type == "Mu")) return;
     if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
                              v.enumName == "one" || v.enumName == "none")) {
         // …except a SUBSET that takes the junction whole (one refining Mu): its
@@ -4928,7 +4934,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // The OTHER '\\' params are the slurpies — `|c` and `+xs` — which
             // bind anything, Mu included, so they stay outside the gate.
             else if ((p.sigil == '$' || (p.sigil == '\\' && !p.slurpy)) &&
-                     !p.invocant && (!p.type.empty() || isMuTypeObject(v) || p.litVal))
+                     !p.invocant && (!p.type.empty() || isMuTypeObject(v) || (p.litVal && !whereVerified)))
                 typeCheckBind(p, v, blockParams, whereVerified, env.get()); // a lone typed candidate REJECTS a mismatch (like Rakudo)
             // `&code:(Int)` — the callable's own signature must fit
             else if (p.sigil == '&' && p.codeSig && !codeSigAccepts(p, v, env.get()))
@@ -7630,10 +7636,17 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             rc.sameArgs = as;
             rc.next = [&self_](ValueList na) -> Value { return self_(self_, std::move(na)); };
             rc.restart = [this, &codeVal, rwArgs](ValueList na) -> Value { return callCallable(codeVal, std::move(na), rwArgs); };
-            rc.hasNext = [this, &c, &visited, as]() {
-                for (auto& cand : c.candidates)
+            // whether `next` would find a candidate, asked with the arguments
+            // this frame redispatches with (its sameArgs). One pointer of state:
+            // building it on every call neither copies the arguments nor
+            // allocates. The frame is popped before `probe` goes out of scope.
+            struct NextProbe { Interpreter* I; decltype(&c) cs; VisitedCands* visited; size_t at; };
+            const NextProbe probe{this, &c, &visited, redispatchStack_.size()};
+            rc.hasNext = [p = &probe]() {
+                const ValueList& sa = redispatchStack_[p->at].sameArgs;
+                for (auto& cand : p->cs->candidates)
                     if (cand.code() && !cand.code()->isProto && !cand.code()->isProtoBody &&
-                        !visited.contains(&cand) && scoreCandidate(cand, as) >= 0) return true;
+                        !p->visited->contains(&cand) && p->I->scoreCandidate(cand, sa) >= 0) return true;
                 return false;
             };
             redispatchStack_.push_back(std::move(rc));
@@ -10265,7 +10278,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 else if (sigil == '@' && ve->containerIs == "List") init.isList = true;
             }
             if (!ve->declType.empty()) checkDeclTypeSane(ve);
-            if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
+            if (ve->declSmiley) { de->x().varSmiley[ve->name] = ve->declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D $x` / `my Int:D @a`
             if (ve->declWhereExpr && !ve->name.empty() && ve->name[0] == '$')
                 de->x().varWhere[ve->name] = ve->declWhereExpr;   // `my $x where Int|Num`
                 if (ve->declDefault) { // `is default(v)`: initial AND reset value
@@ -10624,7 +10637,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // assignment that follows this lvalue is the only place that knows the
         // value, so hand it the constraint here (the twin of
         // lastLvalueAttrType). Cleared by the assignment before it asks.
-        if (base) tcx.lastLvalueElemType = elemTypeOf(*base);
+        if (base) {
+            tcx.lastLvalueElemType = elemTypeOf(*base);
+            if (!tcx.lastLvalueElemType.empty() && !idx->isHash && base->t == VT::Array && base->arr()) {
+                tcx.lastLvalueGrowBase = base;
+                tcx.lastLvalueGrowSize = base->arr()->size();
+            }
+        }
         // assignment to an adverbed multidim subscript (`%h{a;b;c}:!exists = v`)
         // has no postcircumfix candidate — it dies
         if (idx->multiDim && !idx->adverb.empty())
@@ -14796,6 +14815,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
+        tctx_.lastLvalueGrowBase = nullptr;
         tctx_.lastLvalueAttrDefault = nullptr;
         tctx_.lastLvalueAttr = nullptr;
         // `$y := :$y` — the right side can itself make $y a cell (the Pair
@@ -14811,8 +14831,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *traw = std::move(fresh);
             }
         }
-        size_t growSize = 0; Value* growBase = arrayGrowGuard(a->target.get(), growSize);   // (undone on refusal)
         Value* lv = lvalue(a->target.get());
+        // a typed array the store may have grown (undone on refusal)
+        Value* const growBase = tctx_.lastLvalueGrowBase;
+        const size_t growSize = tctx_.lastLvalueGrowSize;
+        tctx_.lastLvalueGrowBase = nullptr;
         // Whatever this assignment writes must ALSO land in the rw-linked
         // parameter copies the lvalue travelled past on its way to the caller's
         // container (see lvalueThroughRw). An RAII guard covers every branch
@@ -29151,7 +29174,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undeclared name '" + tn + "'"};
         }
     }
-    if (ve->declSmiley) de->x().varSmiley[ve->name] = ve->declSmiley; // `my Int:D $x` / `my Int:D @a`
+    if (ve->declSmiley) { de->x().varSmiley[ve->name] = ve->declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D $x` / `my Int:D @a`
     if (ve->declWhereExpr && !ve->name.empty() && ve->name[0] == '$')
         de->x().varWhere[ve->name] = ve->declWhereExpr;   // `my $x where Int|Num`
         if (ve->declDefault) { // `is default(v)`: initial AND reset value

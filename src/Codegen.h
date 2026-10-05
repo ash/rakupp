@@ -57,9 +57,10 @@ struct AotNames {
     std::set<std::string> callEnv, rwSubs, rwMethods, types;
 };
 // `delegatedLines`, when given, receives the source line of every statement
-// the body hands to the interpreter (RAKUPP_AOT_REPORT).
+// the body hands to the interpreter (RAKUPP_AOT_REPORT). `optimize` is the
+// program's `-O`.
 std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& names,
-                                   std::vector<int>* delegatedLines = nullptr);
+                                   std::vector<int>* delegatedLines = nullptr, bool optimize = false);
 
 // ---- the tier-up JIT's entry point (docs/dev/plans/JIT-PLAN.md) -------------
 //

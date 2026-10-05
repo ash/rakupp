@@ -28,6 +28,49 @@ were re-run independently of the reviewer that found them.*
    the commit message. A task whose gain does not show in its probe is
    reverted, not kept for tidiness.
 
+## Where it stands
+
+W1, W2 and W3 are done, except that `perf-guard --check` is still owed. W3-5
+and W3-6 were left as they are: each was under 1% of samples, and moving
+`loopNest_` into ExecContext changes how it travels across a gather's
+coroutine switch, which is no low-hanging change. W3-1 to W3-4, with kernels
+off on both sides (1M iterations): element assignment 219 → 190 ms, a `Numeric`
+parameter 243 → 222 ms, `~~ C` 260 → 250 ms, `~~ Real` 333 → 326 ms.
+Measured against a build of `a3b7644c`, best of 5 interleaved unless noted:
+
+| Task | Before | After |
+|---|---:|---:|
+| C1 + W2-6, kernel `.chars` / `.substr` (a per-slot cache) | CR LF counted twice; 100k-char scanner 1.7 s | right; 2 ms (kernels off: 84 ms) |
+| C2, `--exe` typed parameters | unchecked, `Int()` not coerced, unpassed `Int $x?` Any | the interpreter's bind (inline test for Int/Str/Num/Rat/Bool) |
+| C3 + W2-8, literal parameters | empty-type walk per bind, UB | literal multi fib(24) 102 → 87 ms |
+| C4 + W2-5, `--exe` `for ^N` | `^2.5` stopped at 1; list built | counted; 3M calls 99 → 64 ms, `-O` 69 → 27 ms |
+| C5, `return` in a `.map` assigned to an array | the map never ran | eager; `--exe` refuses the construct |
+| W2-1, loop kernels under `--cnp` | `%% 7` loop 1.18 s | 0.07 s, as without `--cnp` |
+| W2-2, `EXPR for ^$n` | 0.204 s | 0.004 s |
+| W2-3, `--exe` `fib(Int $n)` | 90 ms | 7 ms |
+| W2-4, `-O` for module bodies | `applyArithValue("*", …)` | `rtMul(…)` |
+| W2-7, element `~=` | 1M appends 9.6 s | 0.015 s (kernels off: 0.155 s) |
+| W2-9, multi-call argument copy | 2 copies + an allocation | 1 copy |
+
+Found and fixed on the way:
+
+- **The undo log built every entry before asking whether it was needed.**
+  An entry copies the element and its key, so a write to a container
+  already saved whole still copied a long string. W2-7's gain is mostly this.
+- **`--exe` comparison lane.** `last if ++$c > 3` in a loop lane emitted C++
+  that did not compile (`(() > (3LL))`): a refused operand did not refuse
+  the comparison.
+- **`--exe` fractional range.** `for 0..^$n` with `$n = 2.5` stopped at 1.
+- **`--exe -O` module bodies.** A module routine's call to its own `sub uc`
+  took the built-in `uc` once `-O` reached module bodies.
+- **`--exe` `return` in a block.** It compiled to a C++ return from the block,
+  so it left the block rather than the routine. It is refused now, and the
+  program runs bundled.
+
+Still open from these: `--exe` native typed parameters (`int $n` takes a
+Str), and a real `--exe` `return` from a block (a frame to throw at, as module
+bodies have).
+
 ## W1 — wrong answers (do first)
 
 | # | What | Where | Probe → Rakudo | Raku++ | Fix |

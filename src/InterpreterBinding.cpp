@@ -1239,6 +1239,7 @@ void Interpreter::checkDeclDefault(const std::string& declType, char sigil, cons
 // The `:D`/`:U` smiley a declared `@`/`%` variable puts on its ELEMENTS
 // (`my Int:D @a`), or 0. `symbol` is the variable's own name.
 char Interpreter::elemSmileyOf(const std::string& symbol) {
+    if (!elemSmileyDeclared_.load(std::memory_order_relaxed)) return 0;
     if (symbol.size() < 2 || (symbol[0] != '@' && symbol[0] != '%')) return 0;
     for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
         auto si = en->xr().varSmiley.find(symbol);
@@ -4485,6 +4486,33 @@ bool rtHasNamed(const ValueList& a, const std::string& key) {
     for (auto& v : a) if (isNamedArg(v) && v.s == key) return true;
     return false;
 }
+static Param paramFromDesc(const RtSigParam& d) {
+    Param p;
+    p.name = d.name; p.sigil = d.sigil; p.type = d.type; p.namedKey = d.namedKey;
+    p.coerceFrom = d.coerceFrom; p.defaultRaku = d.defaultRaku;
+    for (const char* q = d.aliasKeys; *q; ) {
+        const char* e = q; while (*e && *e != ' ') e++;
+        if (e > q) p.aliasKeys.emplace_back(q, e);
+        q = *e ? e + 1 : e;
+    }
+    p.named = d.flags & RSP_NAMED; p.slurpy = d.flags & RSP_SLURPY;
+    p.optional = d.flags & RSP_OPTIONAL; p.required = d.flags & RSP_REQUIRED;
+    p.invocant = d.flags & RSP_INVOCANT; p.pastDoubleSemi = d.flags & RSP_PASTSEMI;
+    p.coerce = d.flags & RSP_COERCE; p.isRw = d.flags & RSP_RW; p.isCopy = d.flags & RSP_COPY;
+    p.hadWhere = d.flags & RSP_WHERE; p.aliasBoth = d.flags & RSP_ALIASBOTH;
+    p.isRaw = d.flags & RSP_RAW;
+    p.slurpyKind = d.slurpyKind; p.defConstraint = d.defConstraint;
+    return p;
+}
+const Param& rtParamOf(const RtSigParam& d) { return *new Param(paramFromDesc(d)); }   // (a function-local static holds it)
+Value Interpreter::bindTypedParam(Value v, const Param& p) {
+    if (p.coerce) coerceParam(p, v);
+    else {
+        v = coerceViaSubset(v, p.type);
+        typeCheckBind(p, v, /*blockParam=*/false, /*whereVerified=*/false, nullptr);
+    }
+    return v;
+}
 Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
     if (c.t != VT::Code || !c.code()) return c;
     // one Param list per descriptor table: every evaluation of the closure
@@ -4498,25 +4526,7 @@ Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const cha
         if (!slot) {
             slot = std::make_unique<std::vector<Param>>();
             slot->reserve(n);
-            for (size_t k = 0; k < n; k++) {
-                const RtSigParam& d = ps[k];
-                Param p;
-                p.name = d.name; p.sigil = d.sigil; p.type = d.type; p.namedKey = d.namedKey;
-                p.coerceFrom = d.coerceFrom; p.defaultRaku = d.defaultRaku;
-                for (const char* q = d.aliasKeys; *q; ) {
-                    const char* e = q; while (*e && *e != ' ') e++;
-                    if (e > q) p.aliasKeys.emplace_back(q, e);
-                    q = *e ? e + 1 : e;
-                }
-                p.named = d.flags & RSP_NAMED; p.slurpy = d.flags & RSP_SLURPY;
-                p.optional = d.flags & RSP_OPTIONAL; p.required = d.flags & RSP_REQUIRED;
-                p.invocant = d.flags & RSP_INVOCANT; p.pastDoubleSemi = d.flags & RSP_PASTSEMI;
-                p.coerce = d.flags & RSP_COERCE; p.isRw = d.flags & RSP_RW; p.isCopy = d.flags & RSP_COPY;
-                p.hadWhere = d.flags & RSP_WHERE; p.aliasBoth = d.flags & RSP_ALIASBOTH;
-                p.isRaw = d.flags & RSP_RAW;
-                p.slurpyKind = d.slurpyKind; p.defConstraint = d.defConstraint;
-                slot->push_back(std::move(p));
-            }
+            for (size_t k = 0; k < n; k++) slot->push_back(paramFromDesc(ps[k]));
         }
         list = slot.get();
     }
@@ -6377,6 +6387,8 @@ Value Interpreter::nilAttrDefault(const ClassAttr& at, const std::string& resolv
     return Value::any();
 }
 
+extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp
+
 // `42 ~~ C` where class C (or a role mixed into the type, `Int but R`)
 // declares ACCEPTS: that method decides. A candidate that refuses a type
 // object for its invocant (`multi method ACCEPTS(D:D: $)`) leaves the plain
@@ -6384,7 +6396,16 @@ Value Interpreter::nilAttrDefault(const ClassAttr& at, const std::string& resolv
 bool Interpreter::typeObjectUserAccepts(const Value& l, const Value& r, Value& out) {
     auto it = classes_.find(r.s);
     if (it == classes_.end() || !it->second || it->second->isRole) return false;
-    if (!it->second->findMethod("ACCEPTS")) return false;
+    // whether the class declares ACCEPTS, asked once per symbol generation
+    // (every `~~ C` asked, walking the MRO)
+    ClassInfo& ci = *it->second;
+    const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 1;
+    uint64_t k = ci.userAcceptsKey;
+    if ((k & ~uint64_t(1)) != key) {
+        k = key | (ci.findMethod("ACCEPTS") ? 1 : 0);
+        ci.userAcceptsKey = k;
+    }
+    if (!(k & 1)) return false;
     try { out = methodCall(r, "ACCEPTS", ValueList{l}); }
     catch (RakuError& e) {
         const std::string tn = e.payload.t == VT::Type ? e.payload.s.str()
@@ -6440,19 +6461,6 @@ Value Interpreter::minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs
     return out;
 }
 
-// `@a[5] = "s"` into an `Int @a` that refuses it must not grow the array: the
-// size before the lvalue made the slot, to restore on refusal.
-Value* Interpreter::arrayGrowGuard(Expr* target, size_t& sizeOut) {
-    if (!target || target->kind != NK::Index || static_cast<Index*>(target)->isHash) return nullptr;
-    Expr* gb = static_cast<Index*>(target)->base.get();
-    if (!gb || gb->kind != NK::VarExpr || static_cast<VarExpr*>(gb)->name.size() < 2 ||
-        static_cast<VarExpr*>(gb)->name[0] != '@') return nullptr;
-    Value* bp = tctx_.cur->find(static_cast<VarExpr*>(gb)->name);
-    if (!bp || bp->t != VT::Array || !bp->arr()) return nullptr;
-    sizeOut = bp->arr()->size();
-    return bp;
-}
-
 // `GLOBAL::<Probe> = 43` — a SIGILLESS package symbol springs into being
 // (nullptr: the name has a sigil, or is already something).
 Value* Interpreter::newGlobalSymbolSlot(const std::string& nm) {
@@ -6463,7 +6471,8 @@ Value* Interpreter::newGlobalSymbolSlot(const std::string& nm) {
 }
 
 // checkElemType for an element assignment that may have GROWN the array
-// (arrayGrowGuard): a refusal takes the new slots back off.
+// (ExecContext::lastLvalueGrowBase): a refusal takes the new slots back off,
+// so `@a[5] = "s"` into an `Int @a` leaves it as it was.
 void Interpreter::checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol,
                                         Value* growBase, size_t growSize) {
     try { checkElemType(want, v, symbol); }
@@ -6538,9 +6547,22 @@ bool Interpreter::userShadowsCoreRole(const std::string& type) {
     static const std::set<std::string> kCoreRoles = {
         "Numeric", "Real", "Stringy", "Positional", "Associative", "Callable", "Iterable",
         "Rational", "Dateish", "QuantHash", "Setty", "Baggy", "Mixy"};
-    if (!kCoreRoles.count(type)) return false;
-    auto it = classes_.find(type);
-    return it != classes_.end() && it->second && it->second->isRole && it->second->decl;
+    auto shadows = [&](const std::string& t) {
+        auto it = classes_.find(t);
+        return it != classes_.end() && it->second && it->second->isRole && it->second->decl;
+    };
+    // Every type check asks, and almost no program declares such a role: so
+    // first whether ANY does, decided once per symbol generation.
+    const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 1;
+    uint64_t k = coreRoleShadowKey_;
+    if ((k & ~uint64_t(1)) != key) {
+        bool any = false;
+        for (auto& r : kCoreRoles) if (shadows(r)) { any = true; break; }
+        k = key | (any ? 1 : 0);
+        coreRoleShadowKey_ = k;
+    }
+    if (!(k & 1)) return false;
+    return kCoreRoles.count(type) && shadows(type);
 }
 
 // Was this routine declared somewhere ELSE — imported from a module — rather

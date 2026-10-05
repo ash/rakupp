@@ -1501,6 +1501,12 @@ struct KConts {
     std::vector<std::unique_ptr<ValueList>> savedList;   // per container: its state before the loop
     std::vector<std::unique_ptr<ValueHash>> savedHash;
     std::string key;              // a hash key being built
+    // Per string slot, what `.chars` and `.substr` need of a variable's text,
+    // so a scanner does not rescan it on every call: -1 not yet known, else
+    // the grapheme count shifted left by one, with bit 0 set when the text is
+    // plain — all ASCII and no CR, so a byte index is a grapheme index (CR LF
+    // is the one ASCII pair that clusters). SSet, SApp and SGiven keep it.
+    int64_t* sinfo = nullptr;
 };
 [[gnu::always_inline]] inline bool stopped(const KRun& R) { return R.bail | R.ret | R.next | R.last | R.succeed; }
 
@@ -1726,6 +1732,7 @@ int64_t givenFn(const KNode* n, int64_t* fr, KRun& R) {
 int64_t sgivenFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& t = srun(n->a, fr, R);
     if (&t != &R.sfr[n->slot]) R.sfr[n->slot] = t;
+    R.cc->sinfo[n->slot] = -1;
     const int64_t v = krun(n->c, fr, R);
     R.succeed = false;
     return R.ret ? v : 0;
@@ -1786,10 +1793,16 @@ const std::string& sintFn(const KNode* n, int64_t* fr, KRun& R) {
 const std::string& scondFn(const KNode* n, int64_t* fr, KRun& R) {
     return krun(n->a, fr, R) != 0 ? srun(n->b, fr, R) : srun(n->c, fr, R);
 }
-int64_t charsFn(const KNode* n, int64_t* fr, KRun& R) {
-    const std::string& s = srun(n->a, fr, R);
-    return allAscii(s) ? (int64_t)s.size() : (int64_t)graphemeCount(s);
+inline int64_t textInfo(const std::string& s) {
+    return byteIsGraphemeIndex(s) ? ((int64_t)s.size() << 1 | 1) : ((int64_t)graphemeCount(s) << 1);
 }
+inline int64_t slotInfo(int32_t slot, KRun& R) {
+    int64_t& c = R.cc->sinfo[slot];
+    if (c < 0) c = textInfo(R.sfr[slot]);
+    return c;
+}
+int64_t charsFn(const KNode* n, int64_t* fr, KRun& R) { return textInfo(srun(n->a, fr, R)) >> 1; }
+int64_t charsVarFn(const KNode* n, int64_t*, KRun& R) { return slotInfo(n->a->slot, R) >> 1; }
 int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->a, fr, R);
     std::string& dst = R.sfr[n->slot];
@@ -1798,13 +1811,21 @@ int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
     if (ao == KOp::SCat || ao == KOp::SInt || ao == KOp::SNum || ao == KOp::Uc || ao == KOp::Lc || ao == KOp::Substr)
         std::swap(dst, R.sfr[n->a->slot]);
     else if (&v != &dst) dst = v;
+    R.cc->sinfo[n->slot] = ao == KOp::SVar ? R.cc->sinfo[n->a->slot] : -1;
     return 0;
 }
 int64_t sappFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->a, fr, R);
     std::string& dst = R.sfr[n->slot];
-    if (allAscii(v)) dst += v;
-    else dst = nfcNormalize(dst + v);
+    int64_t& info = R.cc->sinfo[n->slot];
+    if (allAscii(v)) {
+        // plain text joined to plain text stays plain, one character a byte
+        if (info >= 0 && (info & 1) && std::memchr(v.data(), '\r', v.size()) == nullptr)
+            info += (int64_t)v.size() << 1;
+        else info = -1;
+        dst += v;
+    }
+    else { info = -1; dst = nfcNormalize(dst + v); }
     return 0;
 }
 
@@ -1917,14 +1938,15 @@ const std::string& caseFn(const KNode* n, int64_t* fr, KRun& R) {
     for (char& ch : out) ch = UP ? (char)ascii::toupper((unsigned char)ch) : (char)ascii::tolower((unsigned char)ch);
     return out;
 }
-// `.substr(FROM)` / `.substr(FROM, CHARS)` of an ASCII string; a start
-// outside it or a negative length is a Failure, so it bails
+// `.substr(FROM)` / `.substr(FROM, CHARS)` of plain text (see KConts::sinfo);
+// a start outside it or a negative length is a Failure, so it bails
 const std::string& substrFn(const KNode* n, int64_t* fr, KRun& R) {
     std::string& out = R.sfr[n->slot];
     const std::string& s = srun(n->a, fr, R);
     const int64_t from = krun(n->b, fr, R);
     const int64_t len = n->c ? krun(n->c, fr, R) : INT64_MAX;
-    if (R.bail || !allAscii(s) || from < 0 || from > (int64_t)s.size() || len < 0) { R.bail = true; return out; }
+    const bool plain = n->a->op == KOp::SVar ? (slotInfo(n->a->slot, R) & 1) : byteIsGraphemeIndex(s);
+    if (R.bail || !plain || from < 0 || from > (int64_t)s.size() || len < 0) { R.bail = true; return out; }
     const size_t cnt = (size_t)std::min<int64_t>(len, (int64_t)s.size() - from);
     if (&s == &out) out = s.substr((size_t)from, cnt);
     else out.assign(s, (size_t)from, cnt);
@@ -2064,8 +2086,12 @@ const std::string& sexactFn(const KNode* n, int64_t* fr, KRun& R) {
 
 void compactUndo(KConts& cc);
 // Log a write to container `ci` — unless it has been saved whole already
+// whether a write to container `ci` still needs an entry: once the container
+// is saved whole, none does — asked BEFORE the entry is built, since building
+// one copies the element (all of a long string) and its key
+inline bool logging(const KConts& cc, int ci) { return !(cc.savedList[ci] || cc.savedHash[ci]); }
 inline void logWrite(KConts& cc, int ci, CUndo&& u) {
-    if (cc.savedList[ci] || cc.savedHash[ci]) return;
+    if (!logging(cc, ci)) return;
     u.ci = (uint16_t)ci;
     cc.logged[ci] = 1;
     cc.undo.push_back(std::move(u));
@@ -2154,12 +2180,12 @@ Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
         auto it = h.find(key);
         if (it == h.end()) {
             if (!write) return nullptr;
-            logWrite(*R.cc, (int)n->lit, {CUndo::HNew, 0, &h, 0, key, Value()});
+            if (logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::HNew, 0, &h, 0, key, Value()});
             Value& slot = h[key];
             slot = Value::any();
             return &slot;
         }
-        if (write) logWrite(*R.cc, (int)n->lit, {CUndo::HSet, 0, &it->second, 0, key, it->second});
+        if (write && logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::HSet, 0, &it->second, 0, key, it->second});
         return &it->second;
     }
     ValueList& a = *c.arr();
@@ -2171,11 +2197,11 @@ Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
     if ((uint64_t)i >= a.size()) {
         if (!write) return nullptr;
         const size_t was = a.size();
-        logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, was, {}, Value()});
+        if (logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, was, {}, Value()});
         a.resize((size_t)i + 1);
         for (size_t j = was; j <= (size_t)i; j++) a[j] = Value::any();
     }
-    if (write) logWrite(*R.cc, (int)n->lit, {CUndo::Elem, 0, &a, (size_t)i, {}, a[(size_t)i]});
+    if (write && logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::Elem, 0, &a, (size_t)i, {}, a[(size_t)i]});
     return &a[(size_t)i];
 }
 // …and the element a store may replace: a plain Int, a plain Str or a hole.
@@ -2245,16 +2271,18 @@ int64_t cmodFn(const KNode* n, int64_t* fr, KRun& R) {
     return (OP == KOp::CPostInc || OP == KOp::CPostDec) ? old : z;
 }
 int64_t csappFn(const KNode* n, int64_t* fr, KRun& R) {
+    // (a copy: the store below may write the very string `v` was read from)
     std::string v = srun(n->b, fr, R);
     if (R.bail) return 0;
     Value* el = contStore(n, fr, R);
     if (!el) return 0;
     if (el->t == VT::Any) { *el = Value::str(std::move(v)); return 0; }
     if (el->t != VT::Str) { R.bail = true; return 0; }
-    std::string cur = el->s.str();
+    // appended in place: the element's own text, detached once from any
+    // other Value that shares it, then grown, not rebuilt each time
+    std::string& cur = el->s.mut();
     if (allAscii(v)) cur += v;
     else cur = nfcNormalize(cur + v);
-    *el = Value::str(std::move(cur));
     return 0;
 }
 int64_t cpushFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -2325,7 +2353,7 @@ void link(KNode* n) {
         case KOp::CLoop: n->fn = cloopFn; break;
         case KOp::SInt: n->sfn = sintFn; break;
         case KOp::SCond: n->sfn = scondFn; break;
-        case KOp::Chars: n->fn = charsFn; break;
+        case KOp::Chars: n->fn = n->a->op == KOp::SVar ? charsVarFn : charsFn; break;
         case KOp::SVar: n->sfn = svarFn; break;
         case KOp::SLit: n->sfn = slitFn; break;
         case KOp::SCat: n->sfn = scatFn; break;
@@ -2634,7 +2662,9 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
 // run. False: nothing ran and nothing changed — run the loop the ordinary way.
 bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo, long long hi) {
     const bool isFor = loop->kind == NK::ForStmt;
-    if (g_noKernels || g_traceStmts || jit::on() || (isFor && lo > hi)) return false;
+    // (`--cnp` / `--jit` sites see only the loops a kernel declines: the kernel
+    // is asked first, and it caches a refusal)
+    if (g_noKernels || g_traceStmts || (isFor && lo > hi)) return false;
     // the kernel holds the loop's variables in its frame until the loop is
     // done, which only this thread may do
     if (liveWorkers_.load(std::memory_order_acquire) > 0 || cuedLoads_.load(std::memory_order_acquire) > 0)
@@ -2841,6 +2871,10 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     std::unique_ptr<int64_t[]> heapInts;
     int64_t* fr = 1 + (L->nint <= 32 ? stackInts : (heapInts.reset(new int64_t[L->nint + 1]), heapInts.get()));
     std::unique_ptr<std::string[]> strs(L->nstr ? new std::string[L->nstr] : nullptr);
+    int64_t stackInfo[16];
+    std::unique_ptr<int64_t[]> heapInfo;
+    int64_t* sinfo = L->nstr <= 16 ? stackInfo : (heapInfo.reset(new int64_t[L->nstr]), heapInfo.get());
+    std::fill(sinfo, sinfo + L->nstr, -1);
     fr[kLoSlot] = lo;
     fr[kHiSlot] = hi;
     for (size_t i = 0; i < no; i++) {
@@ -2870,6 +2904,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     KConts kc;
     kc.conts = conts;
     kc.n = nc;
+    kc.sinfo = sinfo;
     if (nc) { kc.logged.assign(nc, 0); kc.savedList.resize(nc); kc.savedHash.resize(nc); }
     R.cc = &kc;
     krun(L->k.body, fr, R);

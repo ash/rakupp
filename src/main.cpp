@@ -987,7 +987,7 @@ static std::string aotStrLit(const std::string& v) {
     return o + "\"";
 }
 static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
-                                const std::set<std::string>& exports) {
+                                const std::set<std::string>& exports, bool optimize = false) {
     ModuleAot r;
     if (aotEnvOn("RAKUPP_NO_AOT")) { r.disabled = true; return r; }
     const bool verbose = aotEnvOn("RAKUPP_AOT_VERBOSE");
@@ -1037,7 +1037,7 @@ static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
             SubDecl* sd = routines[k];
             try {
                 std::vector<int> delegated;
-                std::string code = transpileModuleRoutine(sd, fn, names, &delegated);
+                std::string code = transpileModuleRoutine(sd, fn, names, &delegated, optimize);
                 if (aotFaultCxx(sd->name)) {   // after the function's opening line, inside its `// aot:` region
                     size_t nl = code.find('\n', code.find("static bool " + fn + "("));
                     if (nl != std::string::npos) code.insert(nl + 1, "    rakupp_aot_injected_fault();\n");
@@ -1580,7 +1580,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         if (!mods.empty()) {
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls);
-            aot = buildModuleAot(mods, moduleExports);
+            aot = buildModuleAot(mods, moduleExports, optimize);
             modDecls = decls.str(); modCalls = calls.str(); cppProgram = cpp;
             std::string ad, ac;
             assembleModuleAot(mods, aot, ad, ac);

@@ -16,9 +16,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 ## 1. Speed (v6)
 
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
-  2026-10-05. Next: W1 (five wrong answers: kernel `.chars` on CR LF, `--exe`
-  parameter type checks, `^2.5` under `--exe`, `return` in `.map`, an empty-type
-  UB), then W2 (nine hot paths, among them `--cnp` turning the loop kernels off).
+  2026-10-05. W1 (five wrong answers) and W2 (nine hot paths) done; owed:
+  `perf-guard --check` on a quiet machine. Next: W3 (this week's per-operation
+  checks), then W4.
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and

@@ -1658,6 +1658,8 @@ struct ClassInfo {
     // (plainNewClass in Builtins.cpp), decided per symbol generation:
     // (generation + 1) << 1 | answer, 0 = not decided
     mutable DecidedOnce<uint64_t> plainNewKey{0};
+    // …and whether it declares ACCEPTS (typeObjectUserAccepts), the same way
+    mutable DecidedOnce<uint64_t> userAcceptsKey{0};
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`
     // so the construction protocol's explicit BUILD/TWEAK walks still find them
     // (Rakudo runs a role's BUILD under 6.e too), but ordinary dispatch hides
