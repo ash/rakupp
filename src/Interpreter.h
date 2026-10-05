@@ -2421,6 +2421,7 @@ public:
     // (see rtBindTyped below, which settles the common cases inline)
     Value bindTypedParam(Value v, const struct Param& p);
     void bindNativeParam(const struct Param& p, Value& v);   // a native param's wrap / refusal, after the type check
+    Value stepValue(const Value& cur, bool up);              // what `++` / `--` store (.succ / .pred)
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its
     // assignment: assignment, slice assignment, list initialisation and the
@@ -4495,6 +4496,23 @@ struct RtRoutineFrame {
     ~RtRoutineFrame();
 };
 [[noreturn]] void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live);
+// --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
+// steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)
+// …and what a POSTFIX one yields for an undefined Bool or Num: the type's
+// zero (S03), not the type object
+inline Value rtStepOld(Value o) {
+    if (o.t == VT::Type && o.s == "Bool") return Value::boolean(false);
+    if (o.t == VT::Type && o.s == "Num") return Value::number(0.0);
+    return o;
+}
+template <class GetRT>
+inline Value rtStep(const Value& v, bool up, GetRT&& rt) {
+    long long z;
+    if (v.t == VT::Int && !v.big() && !v.natBits && v.enumName.empty() &&
+        !(up ? rakupp::add_ovf(v.i, 1, &z) : rakupp::sub_ovf(v.i, 1, &z)))
+        return Value::integer(z);
+    return rt().stepValue(v, up);
+}
 
 // IO::Spec::{Unix,QNX,Win32,Cygwin} class-method dispatch — pure path-string
 // algorithms. Returns true (and sets `out`) when (cls, m) is handled.

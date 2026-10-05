@@ -4555,6 +4555,33 @@ void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live) {
             "is outside the dynamic scope of the Routine where `return` was used)"};
     throw ReturnEx{std::move(v), id};
 }
+// What `++` / `--` store: they ARE .succ / .pred. A Str always steps as a
+// string in Rakudo — even a numeric-looking one ("42"++ is Str "43", "10"--
+// keeps its width, "09") — and strSucc/strPred pick the magic window
+// themselves. Bool saturates (True++ stays True), an object whose class
+// defines succ/pred dispatches there (autoincrement.t's Incrementor), an
+// undefined Num steps from 0e0, and everything else is numeric, a native
+// wrapping at its width.
+Value Interpreter::stepValue(const Value& cur, bool up) {
+    if (cur.t == VT::Bool || (cur.t == VT::Type && cur.s == "Bool")) return Value::boolean(up);
+    if (cur.t == VT::Str) {
+        if (up) return Value::str(strSucc(cur.s));
+        bool ok; std::string r = strPred(cur.s, ok);
+        return ok ? Value::str(r) : armedFailure("X::AdHoc", "Decrement out of range");
+    }
+    if (cur.t == VT::Object && cur.obj() && cur.obj()->cls) {
+        const char* m = up ? "succ" : "pred";
+        for (ClassInfo* c = cur.obj()->cls.get(); c; c = c->parent ? c->parent.get() : nullptr) {
+            bool has = c->methods.count(m) > 0;
+            for (auto& ep : c->extraParents) if (ep && ep->methods.count(m)) has = true;
+            if (has) return methodCall(cur, m, {});
+        }
+    }
+    if (cur.t == VT::Type && cur.s == "Num") return Value::number(up ? 1.0 : -1.0);
+    Value n = applyArith(up ? "+" : "-", cur, Value::integer(1));
+    if (cur.natBits) wrapNative(n, cur.natBits, cur.natSigned, cur.natFloat);   // native int wraparound
+    return n;
+}
 Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
     if (c.t != VT::Code || !c.code()) return c;
     // one Param list per descriptor table: every evaluation of the closure

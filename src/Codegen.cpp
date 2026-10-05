@@ -1784,19 +1784,19 @@ struct Codegen {
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
                     checkWritable(u->operand.get());
                     std::string delta = u->op == "++" ? "1" : "-1";
-                    std::string add = optimize_ ? "rtAdd(_o, Value::integer(" + delta + "))"
-                                                : "applyArith(\"+\", _o, Value::integer(" + delta + "))";
+                    std::string add = "rtStep(_o, " + std::string(u->op == "++" ? "true" : "false") +
+                                      ", [&]() -> Interpreter& { return RT; })";
                     if (auto* nv = nativeScalarRef(u->operand.get()))   // a native wraps, and stays native
                         add = "rtNativeValueLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
-                           "; Value _o=_r; _r=" + add + "; return _o; }())";
+                           "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())";
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     checkWritable(u->operand.get());
                     std::string delta = u->op == "++" ? "1" : "-1";
-                    std::string add = optimize_ ? "rtAdd(_r, Value::integer(" + delta + "))"
-                                                : "applyArith(\"+\", _r, Value::integer(" + delta + "))";
+                    std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
+                                      ", [&]() -> Interpreter& { return RT; })";
                     if (auto* nv = nativeScalarRef(u->operand.get()))
                         add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
@@ -2738,6 +2738,23 @@ struct Codegen {
                 // -O int lanes: statement-position int assignment / ++ / -- on plain scalars
                 if (optimize_ && e->kind == NK::Assign && tryLaneAssign(static_cast<Assign*>(e), ind)) return;
                 if (optimize_ && e->kind == NK::Unary && tryLaneIncDec(static_cast<Unary*>(e), ind)) return;
+                // `$x++;` / `++$x;` as a statement: the value nobody reads — the
+                // old one a postfix form copies out, the new one either form
+                // returns — is not made at all
+                if (e->kind == NK::Unary) {
+                    auto* u = static_cast<Unary*>(e);
+                    if ((u->op == "++" || u->op == "--") && u->operand) {
+                        checkWritable(u->operand.get());
+                        std::string delta = u->op == "++" ? "1" : "-1";
+                        std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
+                                          ", [&]() -> Interpreter& { return RT; })";
+                        if (auto* nv = nativeScalarRef(u->operand.get()))
+                            add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
+                                  cesc(nv->name) + ", true)";
+                        line(ind, "{ Value& _r = " + lvalueExpr(u->operand.get()) + "; _r = " + add + "; }");
+                        return;
+                    }
+                }
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
                     auto* dv = static_cast<VarExpr*>(e);

@@ -888,6 +888,13 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 if (vt != tt && !(tt == KT::Exact && vt == KT::Int)) return refuse("an assignment that would change a variable's type");
                 if (tt == KT::Exact) v = asExact(k, v, vt);
                 kop = tt == KT::Str ? KOp::SSet : tt == KT::Exact ? KOp::XSet : KOp::Set;
+                // `$s = $s ~ X` is `$s ~= X`: the same text (an NFC string
+                // stays NFC with ASCII appended, and anything else is
+                // renormalized either way), without copying all of $s first
+                if (kop == KOp::SSet && v->op == KOp::SCat && v->a->op == KOp::SVar && v->a->slot == tn->slot) {
+                    v = v->b;
+                    kop = KOp::SApp;
+                }
             }
             else if (a->op == "~=" && tt == KT::Str && (vt == KT::Str || vt == KT::Int)) {
                 v = asStr(k, v, vt);
@@ -1472,7 +1479,8 @@ struct CUndo {
     void* c;              // Elem, Size: the ValueList; HSet: the element (a hash entry never moves
                           // while the hash lives, ValueHash's contract); HNew: the ValueHash
     size_t idx;           // Elem: the element; Size: the length before
-    std::string key;      // HSet, HNew
+    const std::string* key;   // HSet, HNew: the live entry's own key (ValueHash never moves or
+                              // destroys an entry before clear(), an erased one included)
     Value old;            // Elem, HSet: what the element held
 };
 
@@ -2106,7 +2114,10 @@ void compactUndo(KConts& cc) {
             const Value& c = *cc.conts[i];
             total += c.t == VT::Hash ? c.hash()->size() : c.arr()->size();
         }
-    if (cc.undo.size() < total) { cc.check = cc.undo.size() * 2; return; }
+    // compact once the log would take more room than a saved copy of the
+    // containers it covers (an entry is larger than an element)
+    const size_t worth = total * sizeof(Value) / sizeof(CUndo) + 1;
+    if (cc.undo.size() < worth) { cc.check = std::max(cc.undo.size() + 1, std::min(cc.undo.size() * 2, worth)); return; }
     for (size_t i = 0; i < cc.n; i++)
         if (cc.logged[i]) {
             const Value& c = *cc.conts[i];
@@ -2119,8 +2130,8 @@ void compactUndo(KConts& cc) {
             else l->resize(it->idx);
         }
         else if (auto* h = cc.savedHash[it->ci].get()) {
-            if (it->kind == CUndo::HSet) { auto f = h->find(it->key); if (f != h->end()) f->second = std::move(it->old); }
-            else h->erase(it->key);
+            if (it->kind == CUndo::HSet) { auto f = h->find(*it->key); if (f != h->end()) f->second = std::move(it->old); }
+            else h->erase(*it->key);
         }
     }
     cc.undo.clear();
@@ -2135,7 +2146,7 @@ void undoContainers(KConts& cc) {
             case CUndo::Elem: (*static_cast<ValueList*>(it->c))[it->idx] = std::move(it->old); break;
             case CUndo::Size: static_cast<ValueList*>(it->c)->resize(it->idx); break;
             case CUndo::HSet: *static_cast<Value*>(it->c) = std::move(it->old); break;
-            case CUndo::HNew: static_cast<ValueHash*>(it->c)->erase(it->key); break;
+            case CUndo::HNew: static_cast<ValueHash*>(it->c)->erase(*it->key); break;
         }
     }
     cc.undo.clear();
@@ -2180,12 +2191,13 @@ Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
         auto it = h.find(key);
         if (it == h.end()) {
             if (!write) return nullptr;
-            if (logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::HNew, 0, &h, 0, key, Value()});
-            Value& slot = h[key];
-            slot = Value::any();
-            return &slot;
+            auto ins = h.emplace(key, Value::any());
+            // (logged once the entry exists, for its key; nothing can bail in between)
+            if (logging(*R.cc, (int)n->lit))
+                logWrite(*R.cc, (int)n->lit, {CUndo::HNew, 0, &h, 0, &ins.first->first, Value()});
+            return &ins.first->second;
         }
-        if (write && logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::HSet, 0, &it->second, 0, key, it->second});
+        if (write && logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::HSet, 0, &it->second, 0, &it->first, it->second});
         return &it->second;
     }
     ValueList& a = *c.arr();
@@ -2197,11 +2209,11 @@ Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
     if ((uint64_t)i >= a.size()) {
         if (!write) return nullptr;
         const size_t was = a.size();
-        if (logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, was, {}, Value()});
+        if (logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, was, nullptr, Value()});
         a.resize((size_t)i + 1);
         for (size_t j = was; j <= (size_t)i; j++) a[j] = Value::any();
     }
-    if (write && logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::Elem, 0, &a, (size_t)i, {}, a[(size_t)i]});
+    if (write && logging(*R.cc, (int)n->lit)) logWrite(*R.cc, (int)n->lit, {CUndo::Elem, 0, &a, (size_t)i, nullptr, a[(size_t)i]});
     return &a[(size_t)i];
 }
 // …and the element a store may replace: a plain Int, a plain Str or a hole.
@@ -2289,7 +2301,7 @@ int64_t cpushFn(const KNode* n, int64_t* fr, KRun& R) {
     const int64_t v = krun(n->a, fr, R);
     if (R.bail) return 0;
     ValueList& a = *R.cc->conts[n->lit]->arr();
-    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), {}, Value()});
+    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), nullptr, Value()});
     a.push_back(Value::integer(v));
     return 0;
 }
@@ -2297,7 +2309,7 @@ int64_t scpushFn(const KNode* n, int64_t* fr, KRun& R) {
     std::string v = srun(n->a, fr, R);
     if (R.bail) return 0;
     ValueList& a = *R.cc->conts[n->lit]->arr();
-    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), {}, Value()});
+    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), nullptr, Value()});
     a.push_back(Value::str(std::move(v)));
     return 0;
 }

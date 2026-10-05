@@ -23504,43 +23504,12 @@ Value Interpreter::evalUnary(Unary* u) {
             }
         }
         Value oldv = *lv;
-        Value newv;
-        // A Str always increments/decrements as a string in Rakudo — even
-        // numeric-looking ones ("42"++ is Str "43", "10"-- keeps width: "09",
-        // "-5"++ is "-6"). strSucc/strPred pick the magic window themselves
-        // and leave strings with nothing incrementable unchanged.
-        bool strMagic = lv->t == VT::Str;
-        // ++/-- IS .succ/.pred: Bool saturates (True++ stays True, --$b is
-        // False), and an object whose class defines succ/pred dispatches there
-        // (autoincrement.t's Incrementor). Everything else goes numeric.
-        auto classHas = [&](const char* m) -> bool {
-            if (lv->t != VT::Object || !lv->obj() || !lv->obj()->cls) return false;
-            for (ClassInfo* c = lv->obj()->cls.get(); c; c = c->parent ? c->parent.get() : nullptr) {
-                if (c->methods.count(m)) return true;
-                for (auto& ep : c->extraParents) if (ep && ep->methods.count(m)) return true;
-            }
-            return false;
-        };
-        if (lv->t == VT::Bool || (lv->t == VT::Type && lv->s == "Bool")) {
-            newv = Value::boolean(opEq(u->op, "++"));
-            // postfix on an undefined Bool returns False (the S03 "postfix on
-            // undefined returns the type's zero" rule), not the type object
-            if (oldv.t == VT::Type) oldv = Value::boolean(false);
-        } else if (strMagic && opEq(u->op, "++")) {
-            newv = Value::str(strSucc(lv->s));
-        } else if (strMagic && opEq(u->op, "--")) {
-            bool ok; std::string r = strPred(lv->s, ok);
-            newv = ok ? Value::str(r) : armedFailure("X::AdHoc", "Decrement out of range");
-        } else if (classHas(opEq(u->op, "++") ? "succ" : "pred")) {
-            newv = methodCall(*lv, opEq(u->op, "++") ? "succ" : "pred", {});
-        } else if (lv->t == VT::Type && lv->s == "Num") {
-            // an undefined `my Num $v` steps from 0e0 and stays a Num
-            newv = Value::number(opEq(u->op, "++") ? 1.0 : -1.0);
-            oldv = Value::number(0.0);
-        } else {
-            newv = applyArith(opEq(u->op, "++") ? "+" : "-", *lv, Value::integer(1));
-            if (lv->natBits) wrapNative(newv, lv->natBits, lv->natSigned, lv->natFloat); // native int wraparound
-        }
+        Value newv = stepValue(*lv, opEq(u->op, "++"));
+        // postfix on an undefined Bool returns False (the S03 "postfix on
+        // undefined returns the type's zero" rule), not the type object, and
+        // an undefined `my Num $v` steps from 0e0
+        if (lv->t == VT::Type && lv->s == "Bool") oldv = Value::boolean(false);
+        else if (lv->t == VT::Type && lv->s == "Num") oldv = Value::number(0.0);
         // `++` is an assignment, so the container's declared type applies to
         // what it stores. It did not: an UNDEFINED `my Str $s` counts as 0
         // here and `$s++` quietly put an Int in a Str container — the one

@@ -3790,8 +3790,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             cmpSwapped = sh < 0;
                         }
                     }
+                    // every item a plain Str, under `cmp` or `leg`: what applyArith
+                    // answers for two plain Strs is a byte compare (UTF-8 bytes
+                    // order as code points), so it is made directly
+                    auto plainStrs = [&]() {
+                        for (auto& v : items)
+                            if (v.t != VT::Str || !v.hashKind.empty() || !v.enumName.empty()) return false;
+                        return true;
+                    };
                     if (cmpOp && cmpOp != 3 && sortByNativeInt(items, order, cmpSwapped)) {
                         // (ordered as the operator orders them)
+                    }
+                    else if ((cmpOp == 2 || cmpOp == 3) && plainStrs()) {
+                        std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                            const int c = items[x].s.str().compare(items[y].s.str());
+                            return cmpSwapped ? c > 0 : c < 0;
+                        });
                     }
                     else if (cmpOp) {
                         static const std::string kOps[] = {"", "<=>", "cmp", "leg"};

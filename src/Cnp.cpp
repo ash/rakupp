@@ -196,6 +196,44 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
                 if (op == (uint64_t)RK_OP_POW && f->r[b] < 0) { setReg(f, d, Value::integer(0)); return 0; }
             }
         }
+        // Two machine Ints and an operator with no stencil of its own: the
+        // answers applyArith gives, without boxing both sides and finding the
+        // operator by its spelling. Anything at an edge — a zero divisor, an
+        // overflow, a shift out of range — is left to applyArith.
+        if (f->t[a] == RK_T_INT && f->t[b] == RK_T_INT) {
+            const long long x = (long long)f->r[a], y = (long long)f->r[b];
+            switch (op) {
+                case RK_OP_MOD: case RK_OP_MODOP:
+                    if (y != 0 && !(y == -1 && x == LLONG_MIN)) {
+                        long long m = x % y;
+                        if (m != 0 && ((m < 0) != (y < 0))) m += y;
+                        setReg(f, d, Value::integer(m)); return 0;
+                    }
+                    break;
+                case RK_OP_DIVIS:
+                    if (y != 0) { setReg(f, d, Value::boolean(y == -1 || x % y == 0)); return 0; }
+                    break;
+                case RK_OP_IDIV:
+                    if (y != 0 && !(y == -1 && x == LLONG_MIN)) {
+                        long long q = x / y;
+                        if ((x % y != 0) && ((x < 0) != (y < 0))) q--;
+                        setReg(f, d, Value::integer(q)); return 0;
+                    }
+                    break;
+                case RK_OP_BAND: setReg(f, d, Value::integer(x & y)); return 0;
+                case RK_OP_BOR:  setReg(f, d, Value::integer(x | y)); return 0;
+                case RK_OP_BXOR: setReg(f, d, Value::integer(x ^ y)); return 0;
+                case RK_OP_SHL:
+                    if (y >= 0 && y < 63 && x >= 0 && (x >> (62 - y)) == 0) { setReg(f, d, Value::integer(x << y)); return 0; }
+                    break;
+                case RK_OP_SHR:
+                    if (y >= 0 && y < 64) { setReg(f, d, Value::integer(x >> y)); return 0; }
+                    break;
+                case RK_OP_MIN: setReg(f, d, Value::integer(x < y ? x : y)); return 0;
+                case RK_OP_MAX: setReg(f, d, Value::integer(x > y ? x : y)); return 0;
+                default: break;
+            }
+        }
         Value va = regValue(f, a), vb = regValue(f, b);
         setReg(f, d, applyArith(std::string(kOpNames[op]), va, vb));
         return 0;
