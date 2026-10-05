@@ -4633,6 +4633,17 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         ci->second->methods[sname] = code;
                     }
                 }
+                // a routine IMPORTED into this scope may be replaced only when it is
+                // a stub (`sub f { ... }` exported by the module): overriding a real
+                // one is X::Redeclaration, as it is for a local one
+                if (!sd->isMulti && !sd->isProto && !sd->isMethod && !hoistingSubs_)
+                    if (Value* prev = tctx_.cur->local("&" + sname))
+                        if (prev->t == VT::Code && prev->code() && code.code() && routineFromElsewhere(*prev) &&
+                            !prev->code()->isStub && !prev->code()->isMultiDispatcher &&
+                            prev->code()->body && prev->code()->body != code.code()->body)
+                            throwTypedV("X::Redeclaration",
+                                {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
+                                "Redeclaration of routine '" + sname + "'");
                 tctx_.cur->define("&" + sname, code);
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
@@ -7843,6 +7854,11 @@ int Interpreter::run(Program& prog) {
                                 global_->vars[ve0->name] = c;
                             } else {
                                 global_->x().varDefault[ve0->name] = dv;
+                                // a TYPE default on an untyped (Mu/Any) variable is a reset value,
+                                // no constraint: `my $v is default(Int); $v = Num` holds Num
+                                if (dv.t == VT::Type && (ve0->declType.empty() || ve0->declType == "Mu" ||
+                                                         ve0->declType == "Any"))
+                                    global_->x().varDefaultUntyped.insert(ve0->name);
                                 global_->vars[ve0->name] = dv;
                             }
                         }

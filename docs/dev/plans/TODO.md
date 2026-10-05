@@ -320,7 +320,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,035 mutsu files and 194 Rakudo files that Rakudo passes and
+  The work: 2,033 mutsu files and 185 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Parked from the audited LANG work: typed shaped arrays report unassigned
     cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices
@@ -337,7 +337,10 @@ with its tag, after the release run is green.
     an operator declared LATER in a block is not seen by uses before it
     (`$i++` then `sub postfix:<++>`); a generic `T $x is copy` does not check
     assignments against the instantiated T; a native passed to a raw (`\v`)
-    parameter or put in a Pair is not snapshotted.
+    parameter or put in a Pair is not snapshotted; `my Int $x is default(5);
+    $x = "s"` is not refused (the default value displaces the type record in
+    `varDefault`); a compile-time error is not `~~ X::Comp` (Rakudo mixes it in);
+    `.does` ignores a user role that shadows a core one.
   - `t/02-rakudo/attribute-typeobject-default.t` SEGFAULTS (rc 139) in its last
     test, a lock-free `cas` queue fed by 4 `start`s — every run, on the 5.2.1
     build as well, so not a regression.

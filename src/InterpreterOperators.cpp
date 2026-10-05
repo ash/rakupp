@@ -1166,7 +1166,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.bindRawTails, b.bindRawTails); swap(a.tailVarSlot, b.tailVarSlot); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
     swap(a.lvalueImmutableGist, b.lvalueImmutableGist); swap(a.lvalueImmutableVal, b.lvalueImmutableVal); swap(a.lvalueOutLocal, b.lvalueOutLocal); swap(a.lvalueOut, b.lvalueOut);
     swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.protoDepth, b.protoDepth);
-    swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueAttr, b.lastLvalueAttr); swap(a.lastLvalueElemType, b.lastLvalueElemType);
+    swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueAttrCls, b.lastLvalueAttrCls); swap(a.lastLvalueAttr, b.lastLvalueAttr); swap(a.lastLvalueElemType, b.lastLvalueElemType);
     swap(a.dynMethodNode, b.dynMethodNode); swap(a.dynMethodName, b.dynMethodName); swap(a.curGather, b.curGather);
     swap(a.ctorCatchSkip, b.ctorCatchSkip); swap(a.ctorCatchDepth, b.ctorCatchDepth);
     swap(a.topicWriteback, b.topicWriteback); swap(a.pendingRwSlots, b.pendingRwSlots);
@@ -1177,7 +1177,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT)
-static_assert(sizeof(ExecContext) == 1344,
+static_assert(sizeof(ExecContext) == 1352,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif

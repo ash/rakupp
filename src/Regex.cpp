@@ -4674,7 +4674,13 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     // forms wrap in a Seq.
                     // (Not for a capture-scoping group: there the subrule is a CHILD of
                     // the capture — `$<params><rule>` — which the pass above put in place.)
-                    if (!n->nestNames) for (auto& ce : st.children) {
+                    // (Nor for a BRACKET group, `$<x>=[<al>]`: the subrule there is the
+                    // ENCLOSING match's, and `$<x>` is a plain span — Rakudo's shape.)
+                    const Node* bc = child;   // (through a `[…]:` ratchet's one-time wrapper)
+                    while (bc && (bc->k == K::Rep || bc->k == K::Seq) && bc->kids.size() == 1 &&
+                           (bc->k == K::Seq || (bc->min == 1 && bc->max == 1))) bc = bc->kids[0].get();
+                    const bool bracketAlias = bc && bc->k == K::Group && bc->capIndex < 0 && bc->capName.empty();
+                    if (!n->nestNames && !bracketAlias) for (auto& ce : st.children) {
                         if (ce.first == cn || ce.second.empty()) continue;
                         const ParseNode& sub = ce.second.back();
                         if (sub.from != pos || sub.to != np) continue;

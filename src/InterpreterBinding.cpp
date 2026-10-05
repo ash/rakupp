@@ -1318,6 +1318,8 @@ const std::string& Interpreter::typeAliasTarget(const std::string& name) {
 }
 
 bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
+    // a USER role named like a core one (`role Numeric { }`) SHADOWS it
+    if (v.t != VT::Object && v.t != VT::Type && userShadowsCoreRole(type)) return false;
     // Distribution::Path, ::Hash and a repository's own dists report their own
     // names, and every one of them does Distribution
     if (v.t == VT::Hash && v.hashKind == "Distribution" && type == "Distribution") return true;
@@ -6508,6 +6510,62 @@ void Interpreter::publishOurExport(const std::string& name, const Value& v) {
     if (!global_ || tctx_.pkgPrefix.empty() || name.size() < 2 || name[0] != '&') return;
     for (const char* tg : {"DEFAULT", "ALL"})
         global_->define(name.substr(0, 1) + tctx_.pkgPrefix + "EXPORT::" + tg + "::" + name.substr(1), v);
+}
+
+// `(HB.new, HB.new)>>.HA::m` — the qualified call, per element.
+Value Interpreter::hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args) {
+    Value out = Value::array(); out.isList = true;
+    for (auto& el : (inv.t == VT::Array && inv.arr()) ? *inv.arr() : inv.flatten())
+        out.arr()->push_back(invokeMethodChain(method, qual, el, args, nullptr));
+    return out;
+}
+
+// `self.No::Such::Type::foo` — a qualifier that names NOTHING (no class, no
+// package-relative one, no built-in type, no package) is refused when the
+// call runs, as Rakudo does.
+void Interpreter::refuseUnknownQualifier(const std::string& qual, const std::string& method, const Value& inv) {
+    if (isKnownTypeName(qual) || classes_.count(tctx_.pkgPrefix + qual) || pkgKind_.count(qual)) return;
+    throwTypedV("X::Method::InvalidQualifier",
+        {{"method", Value::str(method)}, {"invocant", inv}, {"qualifier-type", Value::typeObj(qual)}},
+        "Cannot dispatch to method " + method + " on " + qual +
+        " because it is not inherited or done by " + inv.typeName());
+}
+
+// A user ROLE declared with a core role's name (`role Numeric { }`) shadows
+// it: the built-in values do not do the new role (`3.5 ~~ Numeric` is False).
+bool Interpreter::userShadowsCoreRole(const std::string& type) {
+    if (type.empty() || !ascii::isupper((unsigned char)type[0])) return false;
+    static const std::set<std::string> kCoreRoles = {
+        "Numeric", "Real", "Stringy", "Positional", "Associative", "Callable", "Iterable",
+        "Rational", "Dateish", "QuantHash", "Setty", "Baggy", "Mixy"};
+    if (!kCoreRoles.count(type)) return false;
+    auto it = classes_.find(type);
+    return it != classes_.end() && it->second && it->second->isRole && it->second->decl;
+}
+
+// Was this routine declared somewhere ELSE — imported from a module — rather
+// than in the current scope chain? Its closure is not one of our scopes.
+bool Interpreter::routineFromElsewhere(const Value& code) {
+    if (code.t != VT::Code || !code.code() || !code.code()->closure) return false;
+    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        if (e == code.code()->closure.get()) return false;
+    return true;
+}
+
+// An attribute's `is default(T)`, evaluated where the role's parameters are
+// bound — on the composing class, as construction binds them — so
+// `$obj.v = Nil` resets to the INSTANTIATED default (Int), not the name T.
+Value Interpreter::evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls) {
+    bool any = false;
+    for (ClassInfo* c = cls; c && !any; c = c->parent.get()) any = !c->roleParamBindings.empty();
+    if (!any) return eval(const_cast<Expr*>(dflt));
+    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    for (ClassInfo* c = cls; c; c = c->parent.get())
+        for (auto& b : c->roleParamBindings)
+            if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);
+    auto saved = tctx_.cur; tctx_.cur = env;
+    try { Value v = eval(const_cast<Expr*>(dflt)); tctx_.cur = saved; return v; }
+    catch (...) { tctx_.cur = saved; throw; }
 }
 
 } // namespace rakupp

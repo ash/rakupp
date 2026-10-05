@@ -509,6 +509,7 @@ concurrency/concurrency-basic.t
 concurrency/concurrent-array-index-assign.t
 concurrency/concurrent-cell-writeback-coherence.t
 concurrency/concurrent-hash-assign.t
+concurrency/concurrent-nested-subscript-store.t
 concurrency/concurrent-shared-cell.t
 concurrency/concurrent-state-var.t
 concurrency/io-socket-async-listen-tap-close-backlog.t
@@ -2168,6 +2169,7 @@ oo/role/qualified-role-new-keeps-invocant.t
 oo/role/qualified-runtime-role-default.t
 oo/role/rational-role.t
 oo/role/role-attribute-built-bind.t
+oo/role/role-attribute-custom-trait.t
 oo/role/role-attribute-is-default-nil-restore.t
 oo/role/role-attribute-type-constraint.t
 oo/role/role-augment-method-deprecated-message.t

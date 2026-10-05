@@ -3881,6 +3881,17 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 else {
                     advance(); // '<'
                     std::vector<std::string> words = readAngleWords(">");
+                    // `»<>` — a ZEN angle slice has no element-wise form: Rakudo's
+                    // map over the postcircumfix refuses it, so it dies when run
+                    if (words.empty()) {
+                        auto dc = std::make_unique<Call>(); dc->name = "die";
+                        dc->args.push_back(std::make_unique<StrLit>("A hyper zen <> slice has no element-wise form"));
+                        hes->e = std::move(dc);
+                        hblk->body.push_back(std::move(hes));
+                        hm->args.push_back(std::move(hblk));
+                        base = std::move(hm);
+                        continue;
+                    }
                     if (words.size() == 1) hix->index = std::make_unique<StrLit>(words[0]);
                     else {
                         auto al = std::make_unique<ArrayLit>();
@@ -15389,6 +15400,17 @@ StmtPtr Parser::parseStatementImpl() {
                 return false; }())) {
         std::string lbl = cur().text;
         labelLines_.emplace(lbl, cur().line);
+        // `.gist` shows the source around it: the line up to the label, then
+        // 23 characters from it — `'my $x = 1;   <HERE>BAR: loop { say BAR.gis'`
+        if (src_ && cur().off >= lbl.size() && cur().off <= src_->size()) {
+            const size_t at = cur().off - lbl.size();
+            size_t ls = src_->rfind('\n', at ? at - 1 : 0);
+            ls = (ls == std::string::npos || at == 0) ? 0 : ls + 1;
+            if (at > 0 && (*src_)[at - 1] == '\n') ls = at;
+            size_t le = src_->find('\n', at);
+            const std::string post = src_->substr(at, std::min<size_t>(23, (le == std::string::npos ? src_->size() : le) - at));
+            labelContext_.emplace(lbl, src_->substr(ls, at - ls) + "<HERE>" + post);
+        }
         advance(); advance(); // consume LABEL and ':'
         labelNames_.insert(lbl); // `:label(L)` names it as a term
         auto st = parseStatement();
@@ -16691,7 +16713,14 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                 if (e && e->kind == NK::Call) {
                     const auto* c = static_cast<const Call*>(e);
                     if ((c->name == "..." || c->name == "!!!" || c->name == "???") &&
-                        c->args.empty() && !c->callee) continue;
+                        c->args.empty() && !c->callee) {
+                        // …but it does not replace a REAL one declared before it
+                        if (!sd->isMulti && subs.count(sd->name) && (subs[sd->name] & 1))
+                            throw ParseError("Redeclaration of routine '" + sd->name +
+                                             "'. Did you mean to declare a multi-sub?", sd->line,
+                                             "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+                        continue;
+                    }
                 }
             }
             int& f = subs[sd->name];
@@ -16852,6 +16881,7 @@ Program Parser::parseProgram() {
     prog.declaredTermNames = sigilless_;
     prog.labelNames = labelNames_;
     prog.labelLines = labelLines_;
+    prog.labelContext = labelContext_;
     prog.typeNamesOpaque = declTypesOpaque_;
     prog.importsModules = importsModules_;
     prog.mayHaveEnd = sawEndPhaser_;

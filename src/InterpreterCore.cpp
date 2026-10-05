@@ -693,126 +693,6 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
     if (cache) *cache = found ? 1 : 0;
 }
 
-// Loop-body flatness (the pads batch's second lever). The asg/loopsum profile
-// put the per-iteration cost not in variable LOOKUP (pads fixed that) but in
-// the iteration scope itself: a vars.clear() plus a topic re-emplace, two
-// million times. When nothing in the body can define a name into the
-// iteration scope, the loop may keep one scope and overwrite the topic Value
-// in place — perl's foreach aliasing its loop variable to one pad cell.
-//
-// The scan only needs the SCOPE-SHARING positions: the body's direct
-// statements, statements wrapped by modifier forms (`X if C` shares the
-// scope), and their expressions (which evaluate with tctx_.cur = scope).
-// Nested non-modifier statement bodies (if branches, inner loops, bare
-// blocks, given/when) all build child envs of their own — a declare there
-// never touches the iteration scope. Closures and gather capture the scope,
-// but capture is handled DYNAMICALLY (use_count forks the scope), so they
-// need no static exclusion here.
-static bool flatScanExpr(const Expr* e) {
-    if (!e) return true;
-    switch (e->kind) {
-        case NK::VarExpr: {
-            auto* v = static_cast<const VarExpr*>(e);
-            if (v->declare) return false;             // `(my $t = …)` mid-expression
-            return flatScanExpr(v->declDefault.get());
-        }
-        case NK::SymbolicRef: return false;           // `::('$x') = …` defines by name
-        case NK::Call: {
-            auto* c = static_cast<const Call*>(e);
-            if (nameEvalsCode(c->name)) return false; // declares into the scope
-            if (!flatScanExpr(c->callee.get())) return false;
-            for (auto& x : c->args) if (!flatScanExpr(x.get())) return false;
-            return true;
-        }
-        case NK::MethodCall: {
-            auto* m = static_cast<const MethodCall*>(e);
-            if (nameEvalsCode(m->method)) return false; // $path.EVALFILE used to slip this guard
-            if (!flatScanExpr(m->inv.get())) return false;
-            for (auto& x : m->args) if (!flatScanExpr(x.get())) return false;
-            return true;
-        }
-        case NK::Assign: { auto* a = static_cast<const Assign*>(e); return flatScanExpr(a->target.get()) && flatScanExpr(a->value.get()); }
-        case NK::Binary: { auto* b = static_cast<const Binary*>(e); return flatScanExpr(b->lhs.get()) && flatScanExpr(b->rhs.get()); }
-        case NK::Unary: return flatScanExpr(static_cast<const Unary*>(e)->operand.get());
-        case NK::Index: { auto* i = static_cast<const Index*>(e); return flatScanExpr(i->base.get()) && flatScanExpr(i->index.get()); }
-        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); return flatScanExpr(t->cond.get()) && flatScanExpr(t->then.get()) && flatScanExpr(t->els.get()); }
-        case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
-        case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
-        case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
-        case NK::InterpStr: for (auto& x : static_cast<const InterpStr*>(e)->parts) if (!flatScanExpr(x.get())) return false; return true;
-        case NK::NqpOp: for (auto& x : static_cast<const NqpOp*>(e)->args) if (!flatScanExpr(x.get())) return false; return true;
-        case NK::ChainExpr: for (auto& x : static_cast<const ChainExpr*>(e)->operands) if (!flatScanExpr(x.get())) return false; return true;
-        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); return flatScanExpr(r->from.get()) && flatScanExpr(r->to.get()); }
-        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); return flatScanExpr(p->keyExpr.get()) && flatScanExpr(p->value.get()); }
-        default: return true; // literals, closures (dynamic fork), regexes ($/ scopes to the routine frame)
-    }
-}
-static bool flatScanStmt(const Stmt* s) {
-    if (!s) return true;
-    switch (s->kind) {
-        case NK::ExprStmt: return flatScanExpr(static_cast<const ExprStmt*>(s)->e.get());
-        case NK::VarDecl: case NK::SubDecl: case NK::ClassDecl: case NK::EnumDecl:
-        case NK::SubsetDecl: case NK::NamedRegexDecl: case NK::UseStmt:
-            return false;                              // all define names in the scope
-        case NK::Block: {
-            auto* b = static_cast<const Block*>(s);
-            // CATCH/CONTROL bind $_/$! here; phasers register per entry; a
-            // plain nested block runs in a child env — nothing lands in ours.
-            return !b->isCatch && b->phaser.empty();
-        }
-        case NK::IfStmt: {
-            auto* is = static_cast<const IfStmt*>(s);
-            for (auto& br : is->branches) {
-                if (!flatScanExpr(br.first.get())) return false;
-                if (is->modifier && br.second)         // shares this scope
-                    for (auto& bs : br.second->stmts) if (!flatScanStmt(bs.get())) return false;
-            }
-            return true;
-        }
-        case NK::WhileStmt: {
-            auto* w = static_cast<const WhileStmt*>(s);
-            if (!flatScanExpr(w->cond.get())) return false;
-            if (w->modifier && w->body)
-                for (auto& bs : w->body->stmts) if (!flatScanStmt(bs.get())) return false;
-            return true;
-        }
-        case NK::ForStmt: {
-            auto* f = static_cast<const ForStmt*>(s);
-            if (!flatScanExpr(f->list.get())) return false;
-            if (f->modifier && f->body)
-                for (auto& bs : f->body->stmts) if (!flatScanStmt(bs.get())) return false;
-            return true;
-        }
-        case NK::GivenStmt: {
-            auto* g = static_cast<const GivenStmt*>(s);
-            if (!flatScanExpr(g->topic.get())) return false;
-            if (g->modifier && g->body)
-                for (auto& bs : g->body->stmts) if (!flatScanStmt(bs.get())) return false;
-            return true;
-        }
-        case NK::LoopStmt: {
-            auto* l = static_cast<const LoopStmt*>(s);
-            // C-style init runs in the LOOP STATEMENT's scope — a `my` there
-            // would land in ours when this loop is a direct body statement
-            return flatScanExpr(l->init.get()) && flatScanExpr(l->cond.get()) && flatScanExpr(l->incr.get());
-        }
-        case NK::WhenStmt: return flatScanExpr(static_cast<const WhenStmt*>(s)->cond.get());
-        case NK::RepeatStmt: return flatScanExpr(static_cast<const RepeatStmt*>(s)->cond.get());
-        case NK::ReturnStmt: return flatScanExpr(static_cast<const ReturnStmt*>(s)->value.get());
-        case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt:
-            return true;
-        default: return false;                          // unknown statement: assume it defines
-    }
-}
-bool Interpreter::flatLoopBody(Block* b) {
-    if (!b) return false;
-    signed char f = b->flatLoop;
-    if (f >= 0) return f == 1;
-    bool flat = true;
-    for (auto& s : b->stmts) if (!flatScanStmt(s.get())) { flat = false; break; }
-    b->flatLoop = flat ? 1 : 0;
-    return flat;
-}
 
 // A class/grammar/role declaration is visible across its whole scope, like a
 // sub: `say f("x"); grammar G {…}; sub f($s) { G.parse($s) }` runs in Rakudo,
@@ -10368,7 +10248,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     init.elemDefaultM() = std::make_shared<Value>(dv);
                 else {
                     init = dv; de->x().varDefault[ve->name] = dv;
-                    if (dv.t == VT::Type && ve->declType.empty()) de->x().varDefaultUntyped.insert(ve->name);
+                    if (dv.t == VT::Type && (ve->declType.empty() || ve->declType == "Mu" || ve->declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
                 }
             }
             else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint")) {
@@ -11621,7 +11501,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             (ascii::isupper((unsigned char)at.type[0]) || isNativeTypeName(at.type)))
                             tcx.lastLvalueAttrType = at.type;
                         if (at.sigil == '$') tcx.lastLvalueAttrWhere = at.where;
-                        if (at.sigil == '$') tcx.lastLvalueAttrDefault = at.defaultTrait;
+                        if (at.sigil == '$') { tcx.lastLvalueAttrDefault = at.defaultTrait; tcx.lastLvalueAttrCls = base->obj()->cls.get(); }
                         goto attrTypeDone;
                     }
             attrTypeDone:
@@ -15147,7 +15027,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         };
         if (opEq(a->op, "=") && rhs.t == VT::Nil && a->target->kind == NK::MethodCall) {
             const std::string aty = tctx_.lastLvalueAttrType;
-            rhs = tctx_.lastLvalueAttrDefault ? eval(const_cast<Expr*>(tctx_.lastLvalueAttrDefault))
+            rhs = tctx_.lastLvalueAttrDefault ? evalAttrDefaultIn(tctx_.lastLvalueAttrDefault, tctx_.lastLvalueAttrCls)
                 : (!aty.empty() && aty != "Mu" && aty != "Any")
                       ? Value::typeObj(aty) : Value::any();
             tctx_.lastLvalueAttrDefault = nullptr;
@@ -18665,6 +18545,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 if (g_subsetCheck(r.s, l, sres))
                     return Value::boolean(opEq(op, "~~") ? sres : !sres);
             }
+            if (l.t != VT::Object && l.t != VT::Type && g_cbInterp && g_cbInterp->userShadowsCoreRole(r.s))
+                return Value::boolean(!opEq(op, "~~"));   // `role Numeric { }` shadows the core role
             // `$x ~~ Foo:D` is the type test AND a definedness test
             if (r.i == 1 && !isDefined(l)) return Value::boolean(!opEq(op, "~~"));
             if (r.i == 2 && isDefined(l))  return Value::boolean(!opEq(op, "~~"));
@@ -27738,6 +27620,8 @@ struct RatLitParts {
                     (*lv.hash())["file"] = Value::str(fileConstNow());
                     auto li = unit->labelLines.find(n);
                     (*lv.hash())["line"] = Value::integer(li != unit->labelLines.end() ? li->second : 0);
+                    if (auto lc = unit->labelContext.find(n); lc != unit->labelContext.end())
+                        (*lv.hash())["context"] = Value::str(lc->second);
                     return lv;
                 }
             // package-relative short name: bare `Path` answers `URI::Path` when no
@@ -29255,7 +29139,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                                                 // its slot; vars[] would split it
             }
             de->x().varDefault[ve->name] = dv;
-            if (dv.t == VT::Type && ve->declType.empty()) de->x().varDefaultUntyped.insert(ve->name);
+            if (dv.t == VT::Type && (ve->declType.empty() || ve->declType == "Mu" || ve->declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
             return de->define(ve->name, dv);
         }
         if (ve->declShape && sigil == '@') { // shaped array `my @a[2;3]`
@@ -30130,6 +30014,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 if (!conc) conc = qualifiedConcretization(inv, qual->name);
                 if (conc) qual = conc;
             }
+            if (mc->hyper) return hyperQualifiedCall(mc->method, qual, inv, ma);   // `@objs>>.HA::m`
             return invokeMethodChain(mc->method, qual, inv, ma, &mc->args);
         }
         // A BUILT-IN qualifier (`self.Mu::Str`, `self.Any::gist`) names a
@@ -30150,6 +30035,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             ValueList ma = evalArgs(mc->args);
             return methodCall(inv, mc->method, std::move(ma), &mc->args, /*skipOwn=*/true);
         }
+        if (cit == classes_.end()) refuseUnknownQualifier(mc->methodQual, mc->method, inv);
         // any other unknown qualifier falls through to ordinary dispatch
         // on the bare method name.
     }

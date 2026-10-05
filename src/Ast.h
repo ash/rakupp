@@ -1303,6 +1303,7 @@ struct Program {
     std::set<std::string> declaredTermNames;
     std::set<std::string> labelNames;   // `L:` statement labels — a bare `L` is the Label
     std::map<std::string, int> labelLines; // … and the line each one was written on
+    std::map<std::string, std::string> labelContext; // … and the source around it (`.gist`)
     bool typeNamesOpaque = true;
     // Does this unit `use`/`need`/`import` a MODULE (as opposed to a pragma)?
     // An import brings in type names this unit never spells, and a top-level

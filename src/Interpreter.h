@@ -1348,6 +1348,7 @@ struct ExecContext {
     std::string lastLvalueAttrType;
     const void* lastLvalueAttrWhere = nullptr; // the attr's `where {…}` Expr, checked beside the type
     const Expr* lastLvalueAttrDefault = nullptr; // the attr's `is default(…)`: what `.attr = Nil` resets to
+    ClassInfo* lastLvalueAttrCls = nullptr;      // …and the object's class, whose role parameters it may name
     const ClassAttr* lastLvalueAttr = nullptr;    // …and the attribute itself: its name and `:D`/`:U` smiley
     // `@a[0] = v` / `%h<k> = v` — the ELEMENT type of the container the
     // subscript reached, recorded by the Index lvalue arm so the assignment can
@@ -2563,6 +2564,11 @@ public:
     void checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol, Value* growBase, size_t growSize);
     Value* newGlobalSymbolSlot(const std::string& nm);                    // `GLOBAL::<Probe> = 43`
     void publishOurExport(const std::string& name, const Value& v);       // `our &f is export = …` in EXPORT::DEFAULT
+    Value hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args);
+    void refuseUnknownQualifier(const std::string& qual, const std::string& method, const Value& inv);
+    bool userShadowsCoreRole(const std::string& type);                    // `role Numeric { }` hides the core one
+    bool routineFromElsewhere(const Value& code);                         // an imported routine, not ours
+    Value evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls);             // `is default(T)` with role params bound
     bool typeObjectUserAccepts(const Value& l, const Value& r, Value& out);   // `42 ~~ C` with a user ACCEPTS                          // `has T $.x = Nil`
     // does a bare type-like name resolve to a type, package, constant or term
     // here — pure lookups, for the gobbled-block check of a unit about to run

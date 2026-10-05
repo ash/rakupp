@@ -294,6 +294,7 @@ private:
     std::set<std::string> userInfixRight_;   // user infixes declared `is assoc<right>`
     std::set<std::string> labelNames_;       // statement labels, which are terms too
     std::map<std::string, int> labelLines_;  // … and their lines (`L.line`)
+    std::map<std::string, std::string> labelContext_;   // … and `'pre<HERE>post'` around them
     std::vector<std::set<std::string>> constNamesScoped_{1}; // constants declared per block scope
     std::string retTypeSpecHere() const;     // the `--> T` / `--> T(S)` / `--> T:D()` at cur()
     std::string newlineSeq_ = "\n";        // what `\n` means (`use newline :cr`)

@@ -3759,4 +3759,125 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
 }
 
 
+// Loop-body flatness (the pads batch's second lever). The asg/loopsum profile
+// put the per-iteration cost not in variable LOOKUP (pads fixed that) but in
+// the iteration scope itself: a vars.clear() plus a topic re-emplace, two
+// million times. When nothing in the body can define a name into the
+// iteration scope, the loop may keep one scope and overwrite the topic Value
+// in place — perl's foreach aliasing its loop variable to one pad cell.
+//
+// The scan only needs the SCOPE-SHARING positions: the body's direct
+// statements, statements wrapped by modifier forms (`X if C` shares the
+// scope), and their expressions (which evaluate with tctx_.cur = scope).
+// Nested non-modifier statement bodies (if branches, inner loops, bare
+// blocks, given/when) all build child envs of their own — a declare there
+// never touches the iteration scope. Closures and gather capture the scope,
+// but capture is handled DYNAMICALLY (use_count forks the scope), so they
+// need no static exclusion here.
+static bool flatScanExpr(const Expr* e) {
+    if (!e) return true;
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->declare) return false;             // `(my $t = …)` mid-expression
+            return flatScanExpr(v->declDefault.get());
+        }
+        case NK::SymbolicRef: return false;           // `::('$x') = …` defines by name
+        case NK::Call: {
+            auto* c = static_cast<const Call*>(e);
+            if (nameEvalsCode(c->name)) return false; // declares into the scope
+            if (!flatScanExpr(c->callee.get())) return false;
+            for (auto& x : c->args) if (!flatScanExpr(x.get())) return false;
+            return true;
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (nameEvalsCode(m->method)) return false; // $path.EVALFILE used to slip this guard
+            if (!flatScanExpr(m->inv.get())) return false;
+            for (auto& x : m->args) if (!flatScanExpr(x.get())) return false;
+            return true;
+        }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e); return flatScanExpr(a->target.get()) && flatScanExpr(a->value.get()); }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e); return flatScanExpr(b->lhs.get()) && flatScanExpr(b->rhs.get()); }
+        case NK::Unary: return flatScanExpr(static_cast<const Unary*>(e)->operand.get());
+        case NK::Index: { auto* i = static_cast<const Index*>(e); return flatScanExpr(i->base.get()) && flatScanExpr(i->index.get()); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); return flatScanExpr(t->cond.get()) && flatScanExpr(t->then.get()) && flatScanExpr(t->els.get()); }
+        case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::InterpStr: for (auto& x : static_cast<const InterpStr*>(e)->parts) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::NqpOp: for (auto& x : static_cast<const NqpOp*>(e)->args) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::ChainExpr: for (auto& x : static_cast<const ChainExpr*>(e)->operands) if (!flatScanExpr(x.get())) return false; return true;
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); return flatScanExpr(r->from.get()) && flatScanExpr(r->to.get()); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); return flatScanExpr(p->keyExpr.get()) && flatScanExpr(p->value.get()); }
+        default: return true; // literals, closures (dynamic fork), regexes ($/ scopes to the routine frame)
+    }
+}
+static bool flatScanStmt(const Stmt* s) {
+    if (!s) return true;
+    switch (s->kind) {
+        case NK::ExprStmt: return flatScanExpr(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::VarDecl: case NK::SubDecl: case NK::ClassDecl: case NK::EnumDecl:
+        case NK::SubsetDecl: case NK::NamedRegexDecl: case NK::UseStmt:
+            return false;                              // all define names in the scope
+        case NK::Block: {
+            auto* b = static_cast<const Block*>(s);
+            // CATCH/CONTROL bind $_/$! here; phasers register per entry; a
+            // plain nested block runs in a child env — nothing lands in ours.
+            return !b->isCatch && b->phaser.empty();
+        }
+        case NK::IfStmt: {
+            auto* is = static_cast<const IfStmt*>(s);
+            for (auto& br : is->branches) {
+                if (!flatScanExpr(br.first.get())) return false;
+                if (is->modifier && br.second)         // shares this scope
+                    for (auto& bs : br.second->stmts) if (!flatScanStmt(bs.get())) return false;
+            }
+            return true;
+        }
+        case NK::WhileStmt: {
+            auto* w = static_cast<const WhileStmt*>(s);
+            if (!flatScanExpr(w->cond.get())) return false;
+            if (w->modifier && w->body)
+                for (auto& bs : w->body->stmts) if (!flatScanStmt(bs.get())) return false;
+            return true;
+        }
+        case NK::ForStmt: {
+            auto* f = static_cast<const ForStmt*>(s);
+            if (!flatScanExpr(f->list.get())) return false;
+            if (f->modifier && f->body)
+                for (auto& bs : f->body->stmts) if (!flatScanStmt(bs.get())) return false;
+            return true;
+        }
+        case NK::GivenStmt: {
+            auto* g = static_cast<const GivenStmt*>(s);
+            if (!flatScanExpr(g->topic.get())) return false;
+            if (g->modifier && g->body)
+                for (auto& bs : g->body->stmts) if (!flatScanStmt(bs.get())) return false;
+            return true;
+        }
+        case NK::LoopStmt: {
+            auto* l = static_cast<const LoopStmt*>(s);
+            // C-style init runs in the LOOP STATEMENT's scope — a `my` there
+            // would land in ours when this loop is a direct body statement
+            return flatScanExpr(l->init.get()) && flatScanExpr(l->cond.get()) && flatScanExpr(l->incr.get());
+        }
+        case NK::WhenStmt: return flatScanExpr(static_cast<const WhenStmt*>(s)->cond.get());
+        case NK::RepeatStmt: return flatScanExpr(static_cast<const RepeatStmt*>(s)->cond.get());
+        case NK::ReturnStmt: return flatScanExpr(static_cast<const ReturnStmt*>(s)->value.get());
+        case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt:
+            return true;
+        default: return false;                          // unknown statement: assume it defines
+    }
+}
+bool Interpreter::flatLoopBody(Block* b) {
+    if (!b) return false;
+    signed char f = b->flatLoop;
+    if (f >= 0) return f == 1;
+    bool flat = true;
+    for (auto& s : b->stmts) if (!flatScanStmt(s.get())) { flat = false; break; }
+    b->flatLoop = flat ? 1 : 0;
+    return flat;
+}
+
 } // namespace rakupp

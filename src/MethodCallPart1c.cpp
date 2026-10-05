@@ -41,9 +41,12 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                                                    const std::vector<ExprPtr>* rwArgs) {
     // a Label answers its name and where it was written: `L.line`, `L.file`
     if (inv.t == VT::Hash && inv.hashKind == "Label" && inv.hash() && args.empty() &&
-        (m == "name" || m == "file" || m == "line" || m == "raku")) {
+        (m == "name" || m == "file" || m == "line" || m == "raku" || m == "gist")) {
         auto& h = *inv.hash();
         auto field = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second : Value::any(); };
+        if (m == "gist")
+            return Value::str("Label<" + field("name").toStr() + ">(at " + field("file").toStr() + ":" +
+                              field("line").toStr() + ", '" + field("context").toStr() + "')");
         if (m != "raku") return field(m.c_str());
         auto q = [](std::string v) {
             std::string o = "\"";

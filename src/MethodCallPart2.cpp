@@ -578,7 +578,17 @@ static bool isContainerMethodName(const std::string& mn) {
 }
 
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
-    if (a.metaObj.t == VT::Hash && a.metaObj.hash()) return a.metaObj;
+    if (a.metaObj.t == VT::Hash && a.metaObj.hash()) {
+        // a ROLE's attribute composed into a class belongs to the CLASS: the
+        // copy the class holds gets its own meta-object (traits and all)
+        auto pk = a.metaObj.hash()->find("package");
+        if (pk == a.metaObj.hash()->end() || pk->second.s == ownerName) return a.metaObj;
+        Value own = Value::makeHash(); own.hashKind = a.metaObj.hashKind;
+        for (auto& kv : *a.metaObj.hash()) (*own.hash())[kv.first] = kv.second;
+        (*own.hash())["package"] = Value::typeObj(ownerName);
+        a.metaObj = own;
+        return own;
+    }
     Value at = Value::makeHash(); at.hashKind = "Attribute";
     (*at.hash())["name"] = Value::str(std::string(1, a.sigil) + "!" + a.name);
     (*at.hash())["type"] = attrTypeValue(a);
@@ -7007,14 +7017,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& a : args) if (a.t == VT::Pair && a.s == "local") local = a.pairVal() ? a.pairVal()->truthy() : true;
                 Value out = Value::array(); out.isList = true;
                 std::set<ClassInfo*> visited;
-                std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
+                // (a ROLE reached from a class is composed INTO it: its
+                // attributes belong to that class, `.package` says so)
+                std::function<void(ClassInfo*, const std::string&)> walk = [&](ClassInfo* c, const std::string& via) {
                     if (!c || !visited.insert(c).second) return;
-                    for (auto& a : c->attrs) out.arr()->push_back(attributeMetaObject(a, c->name));
+                    const std::string owner = c->isRole && !via.empty() ? via : c->name;
+                    for (auto& a : c->attrs) out.arr()->push_back(attributeMetaObject(a, owner));
                     if (local) return;
-                    walk(c->parent.get());
-                    for (auto& p : c->extraParents) walk(p.get());
+                    walk(c->parent.get(), owner);
+                    for (auto& p : c->extraParents) walk(p.get(), owner);
                 };
-                walk(ci.get());
+                walk(ci.get(), std::string());
                 return out;
             }
             // `.^get_attribute_for_usage('$!x')` — ONE attribute's meta-object,

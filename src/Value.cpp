@@ -728,6 +728,10 @@ std::string Value::toStr() const {
         case VT::Hash: {
             // a bare `Mu.new` / `Any.new` instance has no attributes to show
             if (hashKind == "Mu" || hashKind == "Any") return hashKind + ".new";
+            if (hashKind == "Label" && hash()) {   // `FOO -e:1`
+                auto f = [&](const char* k) { auto it = hash()->find(k); return it != hash()->end() ? it->second.toStr() : std::string(); };
+                return f("name") + " " + f("file") + ":" + f("line");
+            }
             // an Attribute Strs as its declaration ("Int $!private"), like its
             // gist — the key\tvalue dump below leaked into Data::Dump's output
             if (hashKind == "Attribute" && hash()) {
@@ -1162,6 +1166,11 @@ std::string Value::gist() const {
             if ((hashKind == "Signature" || hashKind == "Parameter") && hash()) {
                 auto it = hash()->find("str");
                 if (it != hash()->end()) return it->second.s;
+            }
+            // a Label: `Label<FOO>(at -e:1, '<HERE>FOO: for 1 { …')`
+            if (hashKind == "Label" && hash()) {
+                auto f = [&](const char* k) { auto it = hash()->find(k); return it != hash()->end() ? it->second.toStr() : std::string(); };
+                return "Label<" + f("name") + ">(at " + f("file") + ":" + f("line") + ", '" + f("context") + "')";
             }
             return toStr();
         }
