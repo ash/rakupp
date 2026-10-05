@@ -2160,6 +2160,27 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             throwTypedV("X::Cannot::Empty", {{"action", Value::str("get sequence start value")},
                                              {"what", Value::str("list")}},
                         "Cannot get sequence start value from an empty list");
+        // An ENUM seed (Bool among them) steps by its own `.succ` (`.pred` when the
+        // endpoint lies before it), and every element is SMARTMATCHED against the
+        // endpoint: `E::a...E::c` is (a b c), `False...True` is (False) — any
+        // value `~~ True`.
+        if (!hasGen && !infinite && !endCode && !seed.empty() &&
+            (seed.back().t == VT::Bool || !seed.back().enumType.empty())) {
+            Value cur = seed.back();
+            if (!boolify(smartmatchValue("~~", cur, r))) {
+                const bool down = r.t != VT::Bool && applyArith("cmp", cur, r).toInt() > 0;
+                for (int guard = 0; guard < 1000000; guard++) {
+                    Value nx = methodCall(cur, down ? "pred" : "succ", ValueList{});
+                    if (boolify(smartmatchValue("===", nx, cur))) break;   // nothing further
+                    out.arr()->push_back(nx);
+                    cur = nx;
+                    if (boolify(smartmatchValue("~~", cur, r))) break;
+                }
+            }
+            if (exclusive && !out.arr()->empty() && boolify(smartmatchValue("~~", out.arr()->back(), r)))
+                out.arr()->pop_back();
+            return out;
+        }
         // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
         if (!hasGen && !infinite && r.t == VT::Str && seed.back().t == VT::Str) {
             std::string end = r.s, cur = seed.back().s;

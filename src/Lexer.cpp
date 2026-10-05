@@ -919,8 +919,16 @@ bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
                 return true;
             }
     }
+    // the longest BUILT-IN operator spelled here: a declared `infix:<..>` must
+    // not cut the `..^` of `1..^5` in two
+    size_t builtinLen = 0;
+    for (const char* op : kLexOps) {
+        const size_t n = std::strlen(op);
+        if (n > builtinLen && src_.compare(pos_, n, op) == 0) builtinLen = n;
+    }
     for (const std::string& uo : userOps_) {
         if (src_.compare(pos_, uo.size(), uo) != 0) continue;
+        if (builtinLen > uo.size()) continue;
         if (afterWord && wordish0(uo)) continue;
         bool isTerm = userTerms_.count(uo) != 0;
         // `$v **= 3` in a file that redeclares `infix:<**>`: an ASCII spelling
@@ -3868,11 +3876,19 @@ Token Lexer::lexOperator(bool termBefore) {
     }
     // a spelling this file DECLARED (`sub infix:<%%%>`) wins over the table,
     // longest first — otherwise the table's `%%` would take a bite out of it
-    for (const std::string& uo : userOps_)
-        if (src_.compare(pos_, uo.size(), uo) == 0 && !userOpIsAssignPrefix(uo)) {
-            for (size_t k = 0; k < uo.size(); k++) advance();
-            return make(Tok::Op, uo);
+    // (…unless a LONGER built-in one is spelled here: `..` declared, `..^` written)
+    {
+        size_t builtinLen = 0;
+        for (const char* op : kLexOps) {
+            const size_t n = std::strlen(op);
+            if (n > builtinLen && src_.compare(pos_, n, op) == 0) builtinLen = n;
         }
+        for (const std::string& uo : userOps_)
+            if (src_.compare(pos_, uo.size(), uo) == 0 && !userOpIsAssignPrefix(uo) && builtinLen <= uo.size()) {
+                for (size_t k = 0; k < uo.size(); k++) advance();
+                return make(Tok::Op, uo);
+            }
+    }
     // `+<` / `~<` shifts: only when `<` clearly isn't opening a word list
     // (`+<a b>` stays prefix-plus on a QwList). Shift uses follow with space,
     // a digit, `$`, `(` or `=` (compound assign).

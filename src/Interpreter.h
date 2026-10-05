@@ -2569,6 +2569,7 @@ public:
     bool userShadowsCoreRole(const std::string& type);                    // `role Numeric { }` hides the core one
     bool routineFromElsewhere(const Value& code);                         // an imported routine, not ours
     Value evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls);             // `is default(T)` with role params bound
+    bool intRangeReduce(const std::string& op, const Value& v, Value& out);   // `[+] 1..10**12` by its ends
     bool typeObjectUserAccepts(const Value& l, const Value& r, Value& out);   // `42 ~~ C` with a user ACCEPTS                          // `has T $.x = Nil`
     // does a bare type-like name resolve to a type, package, constant or term
     // here — pure lookups, for the gobbled-block check of a unit about to run

@@ -6568,4 +6568,18 @@ Value Interpreter::evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls) {
     catch (...) { tctx_.cur = saved; throw; }
 }
 
+// `[+]` / `[min]` / `[max]` over a plain Int Range, from its endpoints (an
+// excluded end steps in by one; an empty range is 0 / Inf / -Inf).
+bool Interpreter::intRangeReduce(const std::string& op, const Value& v, Value& out) {
+    if (v.t != VT::Range || v.itemized || v.rNum() || v.ofType() == "Str" || rangeEnds(v) || v.big()) return false;
+    // (an operator DECLARED in scope folds with itself)
+    if (tctx_.cur && tctx_.cur->find("&infix:<" + op + ">")) return false;
+    const long long lo = v.rFrom() + (v.rExFrom() ? 1 : 0), hi = v.rTo() - (v.rExTo() ? 1 : 0);
+    if (v.rTo() == 9223372036854775807LL) return false;   // endless: endlessReduce's
+    if (op == "+") { out = methodCall(v, "sum", ValueList{}); return true; }
+    if (lo > hi) { out = Value::number(op == "min" ? INFINITY : -INFINITY); return true; }
+    out = Value::integer(op == "min" ? lo : hi);
+    return true;
+}
+
 } // namespace rakupp

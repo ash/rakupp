@@ -35,6 +35,7 @@
 02-rakudo/25-min-max-by-key.t
 02-rakudo/25-regex-unspace.t
 02-rakudo/26-channel-closed-promise-race.t
+02-rakudo/27-array-bind-pos.t
 02-rakudo/anon-method-in-role-invocant.t
 02-rakudo/attr-default-code-value.t
 02-rakudo/attr-default-nil-typed.t
@@ -52,6 +53,7 @@
 02-rakudo/begintime-loop-side-effects.t
 02-rakudo/block-type-capture.t
 02-rakudo/capture-var-adverb.t
+02-rakudo/capture-var-sigil.t
 02-rakudo/charclass-enum-merge.t
 02-rakudo/cmp-collections.t
 02-rakudo/coercion-sigil-param-dispatch.t
@@ -73,6 +75,7 @@
 02-rakudo/eval-begin-match-var-assignable.t
 02-rakudo/fatal-flatten-arg.t
 02-rakudo/fatal-sorry-no-worries.t
+02-rakudo/for-range-native-loop.t
 02-rakudo/for-scalar-slip.t
 02-rakudo/forward-sub-lookup.t
 02-rakudo/gather-take-lazy-value.t
@@ -154,6 +157,7 @@
 02-rakudo/stub-routine-redefinition.t
 02-rakudo/sub-signature-special-var.t
 02-rakudo/superscript-power-macron.t
+02-rakudo/term-adverbs.t
 02-rakudo/term-now-time-shadow.t
 02-rakudo/test-assign-metaop-mu.t
 02-rakudo/topic-call-bind.t

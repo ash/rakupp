@@ -22592,6 +22592,10 @@ Value Interpreter::evalUnary(Unary* u) {
                           ? eval(static_cast<ListExpr*>(u->operand.get())->items[0].get())
                           : eval(u->operand.get());
             if (!listInfix && !scanForm && endlessReduce(op, v, endless)) return endless;
+            // a plain Int RANGE answers `[+]`/`[min]`/`[max]` from its endpoints:
+            // `[+] 1..10**12` is Gauss, never a walk
+            if (!listInfix && !scanForm && (opEq(op, "+") || opEq(op, "min") || opEq(op, "max")))
+                if (Value fast; intRangeReduce(op, v, fast)) return fast;
             // a TRIANGLE reduce over an endless source is itself endless and
             // lazy: `([\*] 1..*)[^10]` computes ten running products
             if (scanForm && !listInfix) {

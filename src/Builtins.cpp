@@ -6483,7 +6483,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Array && inv.arr() && args.size() == 2 && m == "BIND-POS" && !inv.isList && !inv.shape() &&
         !isNativeElemType(inv.ofType())) {
         long long i = writeIndexInt(args[0]);
-        if (i < 0) i += (long long)inv.arr()->size();
+        // a NEGATIVE position (or a uint past the int range) is out of range —
+        // BIND-POS counts from the start only. (Asked BEFORE anything grows: a
+        // uint 2**64-1 read as a huge position would allocate without end.)
+        if (args[0].big() || args[0].toNum() >= 9.2e18 || args[0].toNum() < 0) i = -1;
+        if (i < 0)
+            throwTypedV("X::OutOfRange",
+                {{"what", Value::str("Index")}, {"got", args[0]}, {"range", Value::str("0..^Inf")}},
+                "Index out of range. Is: " + args[0].toStr() + ", should be in 0..^Inf");
+        // a LAZY array reifies up to the position first, so the bind lands there
+        if (inv.ext()) materializeLazy(inv, (size_t)i + 1);
         if (i >= 0) {
             while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
             (*inv.arr())[(size_t)i] = args[1];

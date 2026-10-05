@@ -315,6 +315,7 @@ private:
     std::vector<std::string> circumfixClosers_; // innermost user circumfix being parsed: its closer ends the operand
     std::map<std::string, std::string> supersedeHow_; // `EXPORTHOW::SUPERSEDE::class` — block-scoped
     std::set<std::string> sigilless_; // names declared sigilless (my \x, \a params, -> \d) — parse as terms, not listops
+    std::set<std::string> termSubs_;  // names declared as `sub term:<name>`: `name:adv(…)` passes the adverb
     std::set<std::string> declaredSubNames_; // plain `sub name` declarations seen so far (a listop, for `?? f !!`)
     std::set<std::string> sigillessRO_; // …of those, the `my \x = …` ones: a value, not a container (assigning dies)
     bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
@@ -637,6 +638,7 @@ private:
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits(bool onVarDecl = false, ExprPtr* defaultOut = nullptr);
     ExprPtr parseColonPair();
+    ExprPtr termAdverbCall(const std::string& name, int line);  // `FOO:of(5)` on a declared term
     // adverbs written after a call's `)`: `f($x):12size` passes `size => 12`
     void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`

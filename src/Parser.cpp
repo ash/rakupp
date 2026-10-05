@@ -1016,7 +1016,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             size_t close = src.find('>', pos + needle.size());
             if (close == std::string::npos) continue;
             const std::string name = src.substr(pos + needle.size(), close - pos - needle.size());
-            if (!name.empty() && name.find(' ') == std::string::npos) sigilless_.insert(name);
+            if (!name.empty() && name.find(' ') == std::string::npos) { sigilless_.insert(name); termSubs_.insert(name); }
         }
     }
     for (const char* cat : {"infix", "prefix", "postfix", "circumfix", "postcircumfix"}) {
@@ -1710,6 +1710,19 @@ static void checkLiteralDeclType(const Expr* target, const Expr* value, int line
 // call takes it as one more argument; a user-declared prefix or infix becomes a
 // call of its routine with it. Anything else is left for the caller (the
 // subscript adverbs, `@a[0..2] :kv`, are the postfix parser's).
+// `FOO:of(5)` — tight adverbs on a declared term are its named arguments, so
+// the term nests: `FOO:to(FOO:of(5))`. Called with the term's name current.
+ExprPtr Parser::termAdverbCall(const std::string& name, int line) {
+    if (!termSubs_.count(name) || peek().kind != Tok::Op || peek().text != ":" ||
+        peek().spaceBefore || peek(2).kind != Tok::Ident || peek(2).spaceBefore)
+        return nullptr;
+    advance();
+    auto c = std::make_unique<Call>();
+    c->name = name; c->line = line;
+    while (!cur().spaceBefore && spacedAdverbAhead(true)) c->args.push_back(parseColonPair());
+    return c;
+}
+
 bool Parser::spacedAdverbAhead(bool allowTight) {
     return isOp(":") && (cur().spaceBefore || allowTight) && !peek().spaceBefore &&
            (peek().kind == Tok::Ident || peek().kind == Tok::IntLit ||
@@ -3211,6 +3224,14 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
             if (a->op == "=" && !a->containerSigil) lhs = keyBeforeValue(std::move(a));
             else lhs = curryCompoundAssign(std::move(a));
+        } else if ((in.isRange || in.op == "..." || in.op == "...^" || in.op == "^..." || in.op == "^...^") &&
+                   userInfix_.count(in.op)) {
+            // the file declares its own `infix:<..>`: call it by name, which finds
+            // the lexical one where it is in scope and the built-in elsewhere
+            auto c = std::make_unique<Call>();
+            c->name = "infix:<" + in.op + ">"; c->line = lhs->line;
+            c->args.push_back(std::move(lhs)); c->args.push_back(std::move(rhs));
+            lhs = std::move(c);
         } else if (in.isRange) {
             auto r = std::make_unique<RangeExpr>();
             r->from = std::move(lhs); r->to = std::move(rhs);
@@ -4255,6 +4276,16 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 u->op = std::string("ctx") + sigilCtx;
                 u->operand = std::move(base);
                 base = std::move(u);
+                // `@<p>:exists` — in list/hash context a tight adverb is
+                // dropped, as Rakudo does, rather than applied to the subscript
+                while (isOp(":") && !cur().spaceBefore && !peek().spaceBefore &&
+                       (peek().kind == Tok::Ident ||
+                        (peek().kind == Tok::Op && peek().text == "!" && peek(2).kind == Tok::Ident))) {
+                    advance();
+                    if (isOp("!")) advance();
+                    advance();
+                    if (isKind(Tok::LParen) && !cur().spaceBefore) { advance(); parseCallArgs(); }
+                }
             }
         } else if ((isOp("\xC2\xBB") || isOp(">>")) && !cur().spaceBefore &&
                    peek().kind == Tok::Op && peek().text == "!" && !peek().spaceBefore &&
@@ -8389,6 +8420,7 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::Ident: {
             std::string name = t.text;
+            if (ExprPtr c = termAdverbCall(name, t.line)) return c;   // `FOO:of(5)`
             // `meow:foo<bar>()` — a routine declared with an EXTENDED name is
             // called by it: the colon pair is part of the name, not an argument
             if (peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
@@ -12509,6 +12541,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         if (!w.empty() && !w[0].empty()) {
             s->name = w[0];
             sigilless_.insert(w[0]);     // so it parses as a TERM, not a listop
+            termSubs_.insert(w[0]);
         }
     }
     if (s->name == "trait_mod" && isOp(":")) {
