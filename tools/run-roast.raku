@@ -95,6 +95,11 @@ if $SUITE && !$ROOT.IO.d {
 # runner puts its fixtures and Roast's Test::Helpers on the path implicitly, so
 # the same two directories are handed over here, absolute.
 my %CHILD-ENV = %*ENV;
+# Rakudo's suite runs from Rakudo's checkout root (its `use lib` lines are
+# relative to it), and that root's own `lib/` holds Rakudo's copies of
+# NativeCall, experimental and the like — not modules for the engine under
+# test. Raku++ searches `./lib` by default; this keeps it out.
+%CHILD-ENV<RAKUPP_NO_CWD_LIB> = '1' if $SUITE eq 'rakudo';
 if $SUITE eq 'mutsu' {
     %CHILD-ENV<RAKULIB> = ($SUITE-HOME.IO.add('t/lib').absolute,
                            $SUITE-HOME.IO.add('roast/packages/Test-Helpers').absolute,

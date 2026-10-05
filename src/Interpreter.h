@@ -2634,7 +2634,7 @@ public:
     // modules whose source registers a slang; their EXPORT runs for real only in
     // the host, so its failing to find `$*LANG` in THIS interpreter is expected
     std::set<std::string> slangModules_;
-    std::vector<std::string> libPaths_{"lib", "rakulib"}; // + env-derived paths, filled in the ctor
+    std::vector<std::string> libPaths_ = defaultCwdLibPaths(); // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
     // …and the ones whose body is running right now: a `use` of one of THESE is
     // a cycle (A uses B, B uses A), which Rakudo refuses as circular loading

@@ -328,6 +328,10 @@ with its tag, after the release run is green.
     sequence's seed is stored before it is pulled (`(1, {…} ... *).join` is
     `...` in Rakudo); `IO::Path.add` does not deep-flatten (methodCallPart3 is at
     its size ceiling); an enum member named `q` does not shadow the `q{…}` quote.
+  - Rakudo t/ classified 2026-10-05 (145 LANG, 38 RakuAST, 5 6.e; 41 excluded).
+    Parse gaps it found inside excluded files: `SETTING::{'x'}:exists` (adverb on
+    a pseudo-stash subscript); an anonymous multi as an expression with a
+    required named (`my $x := multi foo(Int $r, :$n!) {}`).
   - Known open: `our native size_t is Int is ctype<…> is repr<P6int> { }`
     (native type declarations) does not parse; the 12 wrapped "You have to
     pass an explicitly typed …" binding hints are not produced.

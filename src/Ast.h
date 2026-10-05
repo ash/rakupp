@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 
 // A decided-once cache slot on a node SHARED between threads: under
@@ -793,6 +794,17 @@ struct Param {
 
 // The name a binding error shows: an anonymous `$`/`@`/`%`/`&` (or no name at
 // all) is `<anon>`, as Rakudo reports it; a sigilless `\x` keeps its bare name.
+// The module search directories relative to the CURRENT directory, searched by
+// default (`lib`, `rakulib`; docs/guide/MODULES.md). RAKUPP_NO_CWD_LIB=1 turns
+// them off — for running another project's test suite from its checkout root,
+// whose own `lib/` (Rakudo's copies of NativeCall, experimental, …) is not
+// meant for this engine.
+inline std::vector<std::string> defaultCwdLibPaths() {
+    const char* e = std::getenv("RAKUPP_NO_CWD_LIB");
+    if (e && *e && std::string(e) != "0") return {};
+    return {"lib", "rakulib"};
+}
+
 inline std::string paramShownName(const Param& p) {
     if (p.name.empty() || (p.sigil != '\\' && p.name.size() == 1)) return "<anon>";
     return p.name;

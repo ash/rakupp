@@ -59,10 +59,19 @@ files (2026-10-04) classed what their FAILING assertions need: 85 language
 behaviour, 6 the RakuAST node API, 3 Rakudo internals, 4 Rakudo quirks, 2 only
 Rakudo's exact message wording.
 
+Rakudo's `t/` was classified whole the same way (2026-10-05): of its 229 gap
+files, 145 are language behaviour, 38 RakuAST, 5 6.e-only, 30 Rakudo internals
+(CORE symbol lists, `Rakudo::Internals`, nqp/QAST, dump formats, precomp), 6
+quirks and 5 prose. Those 41 are listed in `rakudo-t.excluded.tsv`.
+
 The work is the language behaviour, RakuAST and anything 6.e. A file whose
 failures are only Rakudo's prose, a Rakudo quirk or a Rakudo internal is listed
 in `mutsu-t.excluded.tsv` with the reason, and is not chased. A file that mixes
 the two is fixed for its language part.
+
+Rakudo's suite runs from Rakudo's checkout root, whose own `lib/` holds Rakudo's
+copies of NativeCall, experimental and the like; `--suite=rakudo` sets
+`RAKUPP_NO_CWD_LIB=1` so Raku++ does not pick those up from its default `./lib`.
 
 ## Measuring again
 

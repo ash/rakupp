@@ -1,0 +1,44 @@
+# Rakudo t/ files Rakudo passes that Raku++ does not aim to pass: what their failing
+# assertions need is Rakudo prose, a Rakudo quirk or a Rakudo internal (README).
+# path	class	why
+01-sanity/53-transpose.t	INTERNAL	Calls Rakudo::Internals.TRANSPOSE, a Rakudo-internal helper method absent from Raku++.
+02-rakudo/03-corekeys-6c.t	INTERNAL	Exact CORE:: symbol list per revision; also parse of SETTING::{'x'}:exists adverb on pseudo-stash subscript.
+02-rakudo/03-corekeys-6d.t	INTERNAL	Exact CORE:: symbol list per revision; also parse of SETTING::{'x'}:exists adverb on pseudo-stash subscript.
+02-rakudo/03-corekeys-6e.t	INTERNAL	Exact CORE:: symbol list per revision; also parse of SETTING::{'x'}:exists adverb on pseudo-stash subscript.
+02-rakudo/03-corekeys.t	INTERNAL	Compares CORE::v6c/v6d/v6e key lists against Rakudo's exact setting symbol list.
+02-rakudo/04-settingkeys-6c.t	INTERNAL	Exact SETTING:: symbol list per revision; also parse of SETTING::{'x'}:exists adverb.
+02-rakudo/04-settingkeys-6d.t	INTERNAL	Exact SETTING:: symbol list per revision; also parse of SETTING::{'x'}:exists adverb.
+02-rakudo/04-settingkeys-6e.t	INTERNAL	Exact SETTING:: symbol list per revision; also parse of SETTING::{'x'}:exists adverb.
+02-rakudo/07-implementation-detail-6.c.t	INTERNAL	Checks which CORE/SETTING subs are marked `is implementation-detail`.
+02-rakudo/07-implementation-detail-6.d.t	INTERNAL	Checks which CORE/SETTING subs are marked `is implementation-detail`.
+02-rakudo/07-implementation-detail-6.e.t	INTERNAL	Checks which CORE/SETTING subs are marked `is implementation-detail`.
+02-rakudo/08-repeat.t	INTERNAL	Concatenating two 2^31-char strings must die from Rakudo's string-length limit; an implementation limit, not language semantics.
+02-rakudo/08-slangs.t	INTERNAL	Uses $?LANG.refine_slang with grammar and actions roles at BEGIN; this is Rakudo's slang API, which the file itself says is not spec.
+02-rakudo/11-deprecated.t	INTERNAL	Calls Rakudo::Deprecations.DEPRECATED with :lang-vers; Rakudo-internal deprecation machinery.
+02-rakudo/12-proto-arity-count.t	INTERNAL	Checks arity/Mu params of every setting proto vs candidates; also stopped compiling Rakudo's lib/experimental.rakumod (native int1 is repr).
+02-rakudo/14-revisions.t	INTERNAL	Asserts CORE-SETTING-REV numbers, PseudoStash.^ver, and v6.d.TEST/TESTDEPR/NOMOD modifiers, which are Rakudo setting internals.
+02-rakudo/17-cli.t	INTERNAL	`-V` output must contain Raku::implementation=Rakudo, a Rakudo-specific CLI flag and config dump.
+02-rakudo/21-begin-time-compile-sub.t	INTERNAL	Uses nqp::getcomp('Raku').compile with outer_ctx, ForeignCode and nqp::forceouterctx at BEGIN time.
+02-rakudo/compiler-frontend-id.t	INTERNAL	Needs $*RAKU.compiler.id as a 40-hex digest distinct between RAKUDO_RAKUAST frontends; Rakudo frontend/precomp internals.
+02-rakudo/constant-nonconstant-lexical.t	QUIRK	Rakudo makes an unbound runtime lexical read as Mu inside a BEGIN-time constant; Raku++ sees the value, an accidental Rakudo artifact.
+02-rakudo/custom-declarator-naming.t	INTERNAL	A Raku-level HOW doing Metamodel::Naming reads the role's private $!name attribute; depends on Rakudo metamodel internals.
+02-rakudo/dd.t	INTERNAL	dd of a Failure must not mark it handled/throw at exit and must print Rakudo's dd format only.
+02-rakudo/dependency-specification-raku.t	INTERNAL	Needs CompUnit::DependencySpecification with .raku round-trip of auth/version/api matchers; precomp-store implementation class.
+02-rakudo/dump.t	INTERNAL	Needs Rakudo's DUMP() routine and its output format.
+02-rakudo/enum-variable-nyi.t	PROSE	`enum $foo <...>` already dies; test needs the exception type to be X::Comp::NYI.
+02-rakudo/generated-populate.t	INTERNAL	Starts with introspecting the Rakudo-generated POPULATE submethod; crash at test 3 hides later construction-semantics assertions.
+02-rakudo/grammar-6e-parse-sanity.t	PROSE	Already dies for a non-Match TOP/rule return; needs Rakudo's "'TOP' returned a Int object (42) rather than a Match object" message.
+02-rakudo/init-phaser-decont.t	QUIRK	Wants INIT of a not-yet-bound alias, and `constant K = INIT 42`, to yield Mu, which is a Rakudo VMNull artefact.
+02-rakudo/keyed-hash-explicit-base.t	QUIRK	Wants `my %h{C} is Hash[Int]` to be named 'Hash[Int][Any,C]', a doubly-parameterized name that looks like a Rakudo artefact.
+02-rakudo/native-arg-compile-errors.t	PROSE	Raku++ already rejects str to int/num params at runtime; tests want Rakudo's compile-time 'will never work' wording.
+02-rakudo/native-copy-param.t	PROSE	Postfix ++ on a read-only native parameter dies, but Raku++ gives a multi-NoMatch where the test wants an immutability ('mutable') message.
+02-rakudo/proc-async-spawn-failure.t	QUIRK	Raku++ already quits with the spawn error (X::OS); the test wants Rakudo's X::AdHoc as the exception type.
+02-rakudo/rakuast-suspend-precomp-deps.t	INTERNAL	-I with a custom CompUnit::Repository class spec, then scans precomp dependency headers through Rakudo::Internals.DIR-RECURSE.
+02-rakudo/reproducible-builds.t	INTERNAL	Precompiles Rakudo's NativeCall via CompUnit::PrecompilationRepository internals and compares bytecode checksums for reproducibility.
+02-rakudo/require-indirect-multi-part.t	INTERNAL	Remaining tests require compiling Rakudo's own lib/NativeCall/Types.rakumod (`our native long ... is repr<P6int>`); the require logic itself passes.
+02-rakudo/split-adverb-count.t	QUIRK	Mostly relies on Rakudo numifying adverbs' .Bool results (strings, Nil) to count :v/:k/:kv/:p; type-object adverb parts are LANG.
+02-rakudo/subsig-nominal-type.t	QUIRK	Rakudo discards the Int in `Int [$a, $b]`, typing the parameter as bare Positional so a plain Array binds.
+02-rakudo/supply-sequencer.t	INTERNAL	Tests Rakudo::Internals::SupplySequencer directly.
+05-messages/01-errors.t	PROSE	Asserts Rakudo's exact error-message text, typo suggestions and hints across many exception cases.
+05-messages/11-overflow.t	INTERNAL	Expects .roll/.indent with huge bigint counts to die with a native-unbox error; a MoarVM int-width limit, not language.
+08-performance/17-rakuast-dot-assign.t	INTERNAL	Loads Test::Helpers::QAST using nqp::getcomp; asserts QAST shape of .= codegen.

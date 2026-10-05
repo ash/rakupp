@@ -180,7 +180,7 @@ lowest:
 | `use lib` in the program | `use lib 'my/libs';` | added to the front, wins over everything |
 | `-I` on the command line | `rakupp -I lib app.raku` | Rakudo-compatible, including the repo spellings — `-I file#/dir` for a plain directory of module files, `-I inst#/path` for an installation store |
 | `RAKULIB` environment variable | `RAKULIB=libs,more rakupp app.raku` | paths separated by `,` or `:` — both accepted |
-| the current directory | `lib/`, `.`, `rakulib/` | the defaults, relative to where you run from |
+| the current directory | `lib/`, `.`, `rakulib/` | the defaults, relative to where you run from; `RAKUPP_NO_CWD_LIB=1` turns them off |
 | installed modules | `~/.raku`, Homebrew Rakudo | the shared store described above |
 
 The name maps to a path in the obvious way — `use My::Shapes;` looks for
