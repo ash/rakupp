@@ -4218,7 +4218,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         coerceViaTypeVar(params[i], v, env.get())) { /* converted and checked */ }
                     else if (!params[i].type.empty() || isMuTypeObject(v) || params[i].codeSig)
                         typeCheckBind(params[i], v, blockParams, whereVerified, env.get());
-                    bindNativeParam(params[i], v);
+                    // (only a native parameter, or a value carrying native tags,
+                    // has anything for it to do: the common call skips the call)
+                    if (v.natBits || paramIsNative(params[i])) bindNativeParam(params[i], v);
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
@@ -14797,7 +14799,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
-        tctx_.lastLvalueGrowBase = nullptr;
+        // (an element store's own: no other target touches it, and each
+        // touch of the thread's context costs a lookup)
+        const bool elemTarget = a->target->kind == NK::Index;
+        if (elemTarget) tctx_.lastLvalueGrowBase = nullptr;
         tctx_.lastLvalueAttrDefault = nullptr;
         tctx_.lastLvalueAttr = nullptr;
         // `$y := :$y` — the right side can itself make $y a cell (the Pair
@@ -14815,9 +14820,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         Value* lv = lvalue(a->target.get());
         // a typed array the store may have grown (undone on refusal)
-        Value* const growBase = tctx_.lastLvalueGrowBase;
-        const size_t growSize = tctx_.lastLvalueGrowSize;
-        tctx_.lastLvalueGrowBase = nullptr;
+        Value* growBase = nullptr;
+        size_t growSize = 0;
+        if (elemTarget) {
+            growBase = tctx_.lastLvalueGrowBase;
+            growSize = tctx_.lastLvalueGrowSize;
+            tctx_.lastLvalueGrowBase = nullptr;
+        }
         // Whatever this assignment writes must ALSO land in the rw-linked
         // parameter copies the lvalue travelled past on its way to the caller's
         // container (see lvalueThroughRw). An RAII guard covers every branch
