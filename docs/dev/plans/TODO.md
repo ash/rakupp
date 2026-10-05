@@ -16,9 +16,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 ## 1. Speed (v6)
 
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
-  2026-10-05. W1 (five wrong answers) and W2 (nine hot paths) done; owed:
-  `perf-guard --check` on a quiet machine. Next: W3 (this week's per-operation
-  checks), then W4.
+  2026-10-05. W1–W4 done; owed: `perf-guard --check` on a quiet machine. Left:
+  `--cnp` kernel entry's slot lookups, the interpreter's own `$s = $s ~ X`, and
+  three interpreter divergences from Rakudo on native parameters (in the plan).
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and
@@ -417,6 +417,8 @@ with its tag, after the release run is green.
 - Whether `--cnp` becomes the default.
 - Default `--exe` without `-O`: unconditional fast operators, or `-O` by
   default (WINDFALL-PLAN.md).
+- A precompiled header for `--exe` compiles: −0.3 s per compile, 37 MB per
+  build in the cache (WINDFALL-PLAN.md).
 - The UUID distribution's name.
 - The rakuglaze repository's license.
 - The binding version scheme (section 4).

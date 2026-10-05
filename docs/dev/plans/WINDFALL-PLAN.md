@@ -30,7 +30,8 @@ were re-run independently of the reviewer that found them.*
 
 ## Where it stands
 
-W1, W2 and W3 are done, except that `perf-guard --check` is still owed. W3-5
+W1 to W4 are done, except that `perf-guard --check` is still owed and three
+W4 pieces are left (below). W3-5
 and W3-6 were left as they are: each was under 1% of samples, and moving
 `loopNest_` into ExecContext changes how it travels across a gather's
 coroutine switch, which is no low-hanging change. W3-1 to W3-4, with kernels
@@ -63,13 +64,55 @@ Found and fixed on the way:
 - **`--exe` fractional range.** `for 0..^$n` with `$n = 2.5` stopped at 1.
 - **`--exe -O` module bodies.** A module routine's call to its own `sub uc`
   took the built-in `uc` once `-O` reached module bodies.
-- **`--exe` `return` in a block.** It compiled to a C++ return from the block,
-  so it left the block rather than the routine. It is refused now, and the
-  program runs bundled.
+- **`--exe` `return` in a block**, and in `try { }` / `do { }`. It compiled to
+  a C++ return from the block's lambda, so the routine went on. A routine with
+  such a block is now an interpreter frame for its call (RtRoutineFrame) and
+  the return is thrown at it; one from a block that outlived its routine is
+  X::ControlFlow::Return.
+- **`--exe` native parameters** bound as boxed and unchecked (`int8` took
+  300, `uint8` -1, `int` a Str): they bind by the interpreter's rules now.
+- **`--cnp` and `where`.** A `where`-constrained variable was written back
+  unchecked (`my $w where * < 5` counted to 20); the cnp container guard now
+  refuses what the loop kernels refuse.
+- **`--exe` `++` / `--`** added 1: `"aa"++` died, a Bool did not saturate, a
+  class's succ was never called. One rule now (Interpreter::stepValue).
+- **`--exe` literal multi candidates** compared with `eqv`: `multi h(1)`
+  refused True. One rule now (Interpreter::literalAccepts).
 
-Still open from these: `--exe` native typed parameters (`int $n` takes a
-Str), and a real `--exe` `return` from a block (a frame to throw at, as module
-bodies have).
+W4, against the commit before each round:
+
+| Task | Before | After |
+|---|---:|---:|
+| W4-1, `$i++ while $i < 3M` / the same `repeat` | 0.22 s / 0.113 s | 7 ms / 3.5 ms |
+| W4-2, `$s = $s ~ "x"` 100k in a kernel | 1.01 s | 1.6 ms |
+| W4-3, undo log: 1M array stores / 1M hash updates (peak RSS) | 365 MB / 157 MB | 308 MB / 125 MB |
+| W4-4, kernel entry, inner loop over an array, 200k entries | 205 ms | 187 ms |
+| W4-5, `--cnp` `%%` / `+^` loop | 0.65 s | 0.087 s |
+| W4-6, `--cnp` hot inner loop in a once-run outer one | 0.48 s | 0.043 s |
+| W4-7, `--cnp` `.abs` with seven live variables | 0.165 s | 0.105 s |
+| W4-8, `--exe` module sub, 1M calls | 73 ms | 64 ms |
+| W4-9, `--exe` module sub with 3 params / method | 44 / 115 ms | 39.5 / 107 ms |
+| W4-10, `--exe` literal multi fib(25) | 50 ms | 9.5 ms |
+| W4-11, `--exe` `$x++;` as a statement | old value copied | not made |
+| W4-12, interpreted literal multi fib(24) | 95 ms | 82 ms |
+| W4-13, `.sort({ $^a cmp $^b })` over 200k Strs | 0.63 s | 0.086 s |
+| W4-14, one-byte regex search, 2,000-char subject | 15.4 ms | 3.6 ms |
+
+Tried and reverted, the gain did not show: hoisting long string literals in
+`--exe` (W4-11's second half), and an inline register file for `--cnp`
+kernel entry (W4-4's second half — the entry's cost is the slot lookups in
+`runIfReady`, not the allocations).
+
+Still open:
+- `--cnp` kernel entry: `runIfReady` looks every slot up by name, per Env
+  level, on every entry (about 2 µs for a 200k-entry inner loop).
+- The interpreter's own `$s = $s ~ X` is O(n) per iteration (W4-2 fixed the
+  kernel only).
+- Three interpreter divergences from Rakudo, seen while fixing `--exe`
+  natives: `int $x * 2` at 2**62 does not wrap; a BigInt into an `int`
+  parameter says "72 bit wide" where Rakudo says 71; a wrong kind into a
+  native parameter is X::TypeCheck::Binding::Parameter where Rakudo raises
+  X::AdHoc ("cannot unbox").
 
 ## W1 — wrong answers (do first)
 
@@ -127,6 +170,12 @@ bodies have).
 | 15 | `--exe` compile time: header parse is 0.65 s of ~1.1 s `clang -O2 -c` | — | Reuse `--jit`'s PCH mode |
 
 ## For the maintainer
+
+- **A precompiled header for `--exe` compiles (W4-15).** Measured: a trivial
+  program's C++ compile 1.00 → 0.68 s with a PCH of Interpreter.h built with
+  the same flags (0.77 s once, 37 MB). `--jit`'s PCH is opt-in for exactly this
+  size; on by default it would leave 37 MB per build of rakupp in the cache.
+  Not built: opt-in, default-on with pruning, or neither.
 
 - **Default `--exe` dispatches every operator by string.** `fastBin` returns
   nothing without `-O` (`Codegen.cpp:3942`): a loop with `if $i %% 3` is
