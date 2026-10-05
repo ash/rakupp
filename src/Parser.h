@@ -531,6 +531,7 @@ private:
     StmtPtr parseStatement();
     StmtPtr parseStatementInner();
     void enforceStmtSep(); // same-line statement juxtaposition is "two terms in a row"
+    void refuseTraitAfterInit(bool anyLine); // `has $.x = 0 is rw`: the trait belongs before the `=`
 public:
     bool strictSep_ = false; // set by EVAL: strict statement separation in snippets
     bool evalSelfInScope_ = false;   // set by EVAL: `self` is in scope where the code runs

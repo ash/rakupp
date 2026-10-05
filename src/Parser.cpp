@@ -9098,6 +9098,7 @@ ExprPtr Parser::parsePrimary() {
                                              {{"what", "initializer"}});
                         as->value = parseExpr(listTarget ? BP_ZIP : BP_ASSIGN); // list decls include Z/X
                         unmarkSigillessContainer(as.get());
+                        refuseTraitAfterInit(false);   // `my $x = 5 is rw`
                         // `my $z = $z`: the variable is not there yet to read
                         if (as->target->kind == NK::VarExpr) {
                             auto* dv = static_cast<VarExpr*>(as->target.get());
@@ -14475,6 +14476,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         a.def = parseExpr((a.sigil == '@' || a.sigil == '%') ? BP_ZIP : BP_ASSIGN);
                         checkVirtualCallInDefault(defStart);
                     }
+                    refuseTraitAfterInit(true);
                 }
                 // `has $.a syntax error;` — a bare word straight after the
                 // declaration, on its line, is two terms in a row
@@ -16965,6 +16967,24 @@ std::string Parser::runawayQuoteHint(const Token& pv) {
         }
     }
     return "";
+}
+
+// A trait written after a declaration's initializer: `has $.s = '' is rw`.
+// Nothing parses `is` as an infix, so it is two terms in a row; taken as a
+// trait it would be silently dropped, and the read-only accessor surfaces far
+// from the declaration. A variable's check stays on the initializer's line:
+// whole files keep the tolerant split at a newline (see enforceStmtSep).
+void Parser::refuseTraitAfterInit(bool anyLine) {
+    if (cur().kind != Tok::Ident || pos_ == 0) return;
+    if (!anyLine && cur().line != toks_[pos_ - 1].line) return;
+    const std::string& w = cur().text;
+    const bool named = peek().kind == Tok::Ident;
+    if (!(w == "where" || w == "handles" || ((w == "is" || w == "will" || w == "of") && named))) return;
+    std::string trait = w;
+    if (named) trait += " " + peek().text;
+    const std::string msg = "Two terms in a row (the trait '" + trait +
+                            "' comes after the initializer; put it before the '=')";
+    throw ParseError(msg, cur().line, "X::Syntax::Confused", {{"reason", msg}});
 }
 
 void Parser::enforceStmtSep() {
