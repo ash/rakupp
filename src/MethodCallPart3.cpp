@@ -227,6 +227,18 @@ static void refuseNumericOnCode(Interpreter& I, const Value& inv, const std::str
                       "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
 }
 
+// A bare `{ … }` block takes its implicit `$_`: no argument or one positional
+// (`{ $_ }.cando(\("x"))` finds it).
+static bool implicitTopicBlock(const Value& c) {
+    return c.code()->isBlock && !c.code()->hadSig && !c.code()->isSigLiteral &&
+           c.code()->placeholders.empty() && (!c.code()->params || c.code()->params->empty());
+}
+static bool takesImplicitTopic(const ValueList& call) {
+    size_t npos = 0;
+    for (auto& x : call) { if (x.t == VT::Pair && x.namedArg) return false; npos++; }
+    return npos <= 1;
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -1326,7 +1338,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (scoreCandidate(c, forCand(c)) >= 0) out.arr()->push_back(c);
             }
         }
-        else if (scoreCandidate(inv, forCand(inv)) >= 0) out.arr()->push_back(inv);
+        else if (implicitTopicBlock(inv) ? takesImplicitTopic(call) : scoreCandidate(inv, forCand(inv)) >= 0) out.arr()->push_back(inv);
         return out;
     }
     if (m == "package" && inv.t == VT::Code && inv.code())

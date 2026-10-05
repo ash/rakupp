@@ -434,7 +434,8 @@ static InfixInfo classifyInfix(const Token& t) {
         if (o == "div" || o == "mod" || o == "gcd" || o == "lcm") {
             in.valid = true; in.lbp = BP_MUL; return in;
         }
-        if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_MUL; return in; }
+        // `but`/`does` are STRUCTURAL too: `48 but 1 + 2` mixes in 3
+        if (o == "does" || o == "but") { in.valid = true; in.lbp = BP_RANGE; return in; }
         if (o == "o") { in.valid = true; in.lbp = BP_RANGE; return in; } // ASCII alias for ∘ (function composition)
         if (o == "Z" || o == "X") { in.valid = true; in.lbp = BP_ZIP; return in; } // zip / cross: list infix, looser than comma
         {   // A zip/cross carrying a SYMBOLIC inner operator, arriving as one
@@ -3423,6 +3424,26 @@ ExprPtr Parser::parsePrefix(bool tight) {
             // ${:k(1)} is an itemized hash, $[1,2].elems counts the itemized array.
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 advance();
+                // 6.c: an EMPTY `$()` / `@()` / `%()` is the current match —
+                // its made value (else its Str), its positional captures, its
+                // named ones
+                if (langRev_ == 0 && isKind(Tok::RParen)) {
+                    advance();
+                    auto onMatch = [](const char* m) {
+                        auto mc = std::make_unique<MethodCall>();
+                        mc->inv = std::make_unique<VarExpr>("$/"); mc->method = m;
+                        return mc;
+                    };
+                    ExprPtr r;
+                    if (o == "@") r = onMatch("list");
+                    else if (o == "%") r = onMatch("hash");
+                    else {
+                        auto dor = std::make_unique<Binary>();
+                        dor->op = "//"; dor->lhs = onMatch("made"); dor->rhs = onMatch("Str");
+                        r = std::move(dor);
+                    }
+                    return bareOperand ? std::move(r) : parsePostfix(std::move(r), tight);
+                }
                 // `$(;)` — only empty statements: the empty list, like `$()`
                 while (isKind(Tok::Semicolon) &&
                        (peek().kind == Tok::RParen || peek().kind == Tok::Semicolon)) advance();
@@ -3959,6 +3980,17 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             }
             else base = mkApply(std::move(base));
             continue;
+        }
+        // `$0:exists` — a capture variable is `$/[0]` under a subscript adverb
+        if (isOp(":") && base->kind == NK::VarExpr && peek().kind == Tok::Ident) {
+            const std::string& vn = static_cast<VarExpr*>(base.get())->name;
+            if (vn.size() > 1 && vn[0] == '$' && vn.find_first_not_of("0123456789", 1) == std::string::npos) {
+                auto ix = std::make_unique<Index>();
+                ix->line = base->line;
+                ix->base = std::make_unique<VarExpr>("$/");
+                ix->index = std::make_unique<IntLit>(std::stoll(vn.substr(1)));
+                base = std::move(ix);
+            }
         }
         // subscript adverb: %h{k}:exists / :delete / :!exists / :kv / :k / :v / :p
         // and the variable form %h{k}:$delete (applied when the variable is true)
@@ -7218,7 +7250,13 @@ ExprPtr Parser::parsePrimary() {
             rejectPackagedDynamic(raw, ln);
             // `$today:foo<a b>` — the adverbs are part of the NAME (the four
             // value spellings canonicalise to one), not a pair after the term
-            raw += readExtendedNameSuffix();
+            // (…except a SUBSCRIPT adverb on a capture variable: `$0:exists` is
+            // `$/[0]:exists`, taken by parsePostfix)
+            const bool captureVar = raw.size() > 1 && raw[0] == '$' &&
+                                    raw.find_first_not_of("0123456789", 1) == std::string::npos;
+            static const std::set<std::string> kSubscriptAdv = {"exists", "k", "kv", "v", "p", "delete"};
+            if (!(captureVar && isOp(":") && peek().kind == Tok::Ident && kSubscriptAdv.count(peek().text)))
+                raw += readExtendedNameSuffix();
             // `$?NL` is the newline in force where it is written (`use newline`)
             if (raw == "$?NL") return std::make_unique<StrLit>(newlineSeq_);
             // `$.name(ARGS)` is `self.name(ARGS)` — a method call that TAKES those
@@ -12565,9 +12603,24 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                              "X::Syntax::Reserved", {{"reserved", ":sym<> colonpair"}});
         advance(); advance(); // : sym
         std::vector<std::string> w;
-        if (isOp("<")) { advance(); w = readAngleWords(">"); }
-        else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }
-        s->name += ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
+        if (isKind(Tok::LParen) && !cur().spaceBefore) {
+            // `method tok:sym(MARK)` — the sym is an EXPRESSION, named when the
+            // declaration runs: "tok:sym<" ~ (MARK) ~ ">"
+            advance();
+            ExprPtr symE = parseExpression();
+            expectKind(Tok::RParen, ")");
+            auto l = std::make_unique<Binary>(); l->op = "~";
+            l->lhs = std::make_unique<StrLit>(s->name + ":sym<"); l->rhs = std::move(symE);
+            auto r = std::make_unique<Binary>(); r->op = "~";
+            r->lhs = std::move(l); r->rhs = std::make_unique<StrLit>(">");
+            s->nameExpr = std::move(r);
+            s->name.clear();   // named when it runs, as `method ::(EXPR)` is
+        }
+        else {
+            if (isOp("<")) { advance(); w = readAngleWords(">"); }
+            else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }
+            s->name += ":sym<" + (w.empty() ? std::string() : w[0]) + ">";
+        }
     }
     if (isKind(Tok::LParen)) {
         s->hadSig = true;
@@ -14480,6 +14533,19 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     // builds its precedence climber out of exactly this
                     // (`expr(0)` is the base case that stops `<expr($p-1)>`).
                     std::vector<std::string> lits;
+                    // `token tok:sym(MARK)` — the sym is an EXPRESSION, evaluated
+                    // when the grammar is declared: it rides in the name as
+                    // `:sym<\x02HEX>` (hex, so its parens are no signature)
+                    if (size_t sp = nm.find(":sym("); sp != std::string::npos) {
+                        size_t q = sp + 5; int depth = 1;
+                        while (q < nm.size() && depth) { if (nm[q] == '(') depth++; else if (nm[q] == ')') depth--; if (depth) q++; }
+                        if (q < nm.size()) {
+                            static const char* hx = "0123456789abcdef";
+                            std::string ex = nm.substr(sp + 5, q - sp - 5), enc;
+                            for (unsigned char ch : ex) { enc += hx[ch >> 4]; enc += hx[ch & 15]; }
+                            nm = nm.substr(0, sp) + ":sym<\x02" + enc + ">" + nm.substr(q + 1);
+                        }
+                    }
                     auto lp = nm.find('(');
                     if (lp != std::string::npos) {
                         std::string sig = nm.substr(lp);
@@ -16305,9 +16371,39 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             // optional loop label:  `last OUTER`
             std::string tgt;
+            // (a declared label, or an ALL-CAPS word not called: `next slip(…)`
+            // and `next Slip` are payloads)
+            auto labelish = [&](const std::string& w) {
+                if (labelNames_.count(w)) return true;
+                if (peek().kind == Tok::LParen) return false;
+                for (char ch : w) if (ascii::islower((unsigned char)ch)) return false;
+                return true;
+            };
             if (cur().kind == Tok::Ident && !kBlockKeywords.count(cur().text) &&
                 !kStmtModifiers.count(cur().text) &&
-                peek().kind != Tok::Op) { tgt = cur().text; advance(); }
+                peek().kind != Tok::Op && labelish(cur().text)) { tgt = cur().text; advance(); }
+            // `next slip($_, -$_) if …` / `last 42` — a PAYLOAD for the loop's
+            // result (6.e): the call form `next(…)` the evaluator already knows.
+            // Reading the payload as a statement of its own made the `next`
+            // unconditional.
+            if (tgt.empty() && kw != "redo" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
+                !isKind(Tok::RBrace) && startsTermToken(cur()) && !kBlockKeywords.count(cur().text) &&
+                !kStmtModifiers.count(cur().text)) {
+                const int at = cur().line;
+                auto ctl = std::make_unique<Unary>(); ctl->op = kw; ctl->line = at;
+                auto call = std::make_unique<Call>(); call->callee = std::move(ctl); call->line = at;
+                call->args.push_back(parseExpression());
+                // before 6.e a payload can only be an empty capture (`last |c`);
+                // a LITERAL one never fits, and Rakudo says so while compiling
+                {
+                    const NK pk = call->args.back()->kind;
+                    if (langRev_ < 2 && (pk == NK::IntLit || pk == NK::StrLit || pk == NK::NumLit))
+                        throw ParseError("'" + kw + "' takes a value only from 6.e on (use v6.e.PREVIEW)", at,
+                                         "X::TypeCheck::Argument", {});
+                }
+                auto es = std::make_unique<ExprStmt>(); es->e = std::move(call);
+                return applyModifiers(std::move(es));
+            }
             StmtPtr cs;
             if (kw == "last") { auto c = std::make_unique<LastStmt>(); c->target = tgt; cs = std::move(c); }
             else if (kw == "next") { auto c = std::make_unique<NextStmt>(); c->target = tgt; cs = std::move(c); }
@@ -16381,6 +16477,8 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "CATCH" || kw == "CONTROL") {
             std::string which = kw;
             advance();
+            if (!isKind(Tok::LBrace))   // a handler is a BLOCK: no statement or pointy form
+                throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             auto blk = parseBlock();
             blk->isCatch = true;
             blk->phaser = which; // distinguishes CATCH from CONTROL (one of each is fine)
@@ -16402,6 +16500,10 @@ StmtPtr Parser::parseStatementImpl() {
             b->phaser = kw; // run-timing handled by the interpreter
             b->srcPos = (int)pos_;                 // source order, finer than the line
             if (kw == "END") sawEndPhaser_ = true; // the unit needs the END walk
+            // QUIT receives the exception as its topic: a BLOCK only (Rakudo's
+            // "Missing block" for `QUIT say 1` and `QUIT -> $e { }` alike)
+            if (kw == "QUIT" && !isKind(Tok::LBrace))
+                throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             if (isKind(Tok::LBrace)) {
                 auto blk = parseBlock(); b->stmts = std::move(blk->stmts);
                 // `END { … } // ""` — a phaser is a TERM, and an infix after its

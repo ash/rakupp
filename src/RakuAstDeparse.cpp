@@ -825,6 +825,21 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
             Value list = Value::array();
             for (auto& p : positionals) list.arr()->push_back(p);
             od->attrs[slot] = std::move(list);
+        } else if (cls.compare(0, 17, "StatementPrefix::") == 0 && rakuAstAncestry(qualifiedName).size() > 3) {
+            // a statement prefix takes its block-or-statement positionally;
+            // QUIT receives an exception as its topic and takes a BLOCK only
+            if (cls == "StatementPrefix::Phaser::Quit") {
+                const Value& b = positionals[0];
+                bool isBlock = false;
+                if (b.t == VT::Object && b.obj() && b.obj()->cls)
+                    for (auto& a : rakuAstAncestry(b.obj()->cls->name))
+                        if (a == "RakuAST::Block") { isBlock = true; break; }
+                if (!isBlock)
+                    throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                        "Type check failed in binding to parameter '$blorst'; expected RakuAST::Block but got " +
+                        b.typeName()};
+            }
+            od->attrs["blorst"] = positionals[0];
         } else {
             auto ps = positionalSlot().find(cls);
             if (ps == positionalSlot().end())

@@ -4436,7 +4436,7 @@ Value makeSignature(const Callable* c) {
         c->placeholders.empty()) {
         Value s = Value::makeHash(); s.hashKind = "Signature";
         (*s.hash())["str"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
-        (*s.hash())["rakustr"] = Value::str("(;; Mu $_? is raw = OUTER::<$_>)");
+        (*s.hash())["rakustr"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
         (*s.hash())["arity"] = Value::integer(0);
         (*s.hash())["count"] = Value::integer(1);
         Value params = Value::array(); params.isList = true;

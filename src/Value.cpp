@@ -1794,6 +1794,23 @@ static int valueCmpImpl(const Value& a, const Value& b) {
         }
         return a.arr()->size() < b.arr()->size() ? -1 : a.arr()->size() > b.arr()->size() ? 1 : 0;
     }
+    // …and Hashes as their SORTED pairs, each by key and then by value — so
+    // `{:a(10)} cmp {:a(9)}` is More, the values compared as values
+    if (a.t == VT::Hash && b.t == VT::Hash && a.hash() && b.hash() &&
+        (a.hashKind.empty() || a.hashKind == "Map") && (b.hashKind.empty() || b.hashKind == "Map")) {
+        auto sorted = [](const Value& h) {
+            std::vector<std::pair<std::string, const Value*>> v;
+            for (auto& kv : *h.hash()) v.emplace_back(kv.first, &kv.second);
+            std::sort(v.begin(), v.end(), [](auto& x, auto& y) { return x.first < y.first; });
+            return v;
+        };
+        auto sa = sorted(a), sb = sorted(b);
+        for (size_t k = 0; k < sa.size() && k < sb.size(); k++) {
+            if (sa[k].first != sb[k].first) return sa[k].first < sb[k].first ? -1 : 1;
+            if (int c = valueCmp(*sa[k].second, *sb[k].second)) return c;
+        }
+        return sa.size() < sb.size() ? -1 : sa.size() > sb.size() ? 1 : 0;
+    }
     std::string x = a.toStr(), y = b.toStr();
     return x < y ? -1 : x > y ? 1 : 0;
 }

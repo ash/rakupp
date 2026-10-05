@@ -6084,6 +6084,13 @@ static void sinkScanGather(Expr* e, std::vector<std::string>& out) {
                 else sinkWarnOne(u->operand.get(), u->line, false, out);
                 return;
             }
+            // `try { 42; 1 }` — every statement but the last is sunk (that one
+            // is the try's value)
+            if (u->op == "try" && u->operand && u->operand->kind == NK::BlockExpr) {
+                auto& body = static_cast<BlockExpr*>(u->operand.get())->body;
+                for (size_t i = 0; i + 1 < body.size(); i++) sinkWarnStmt(body[i].get(), false, out);
+                return;
+            }
             sinkScanGather(u->operand.get(), out);
             return;
         }

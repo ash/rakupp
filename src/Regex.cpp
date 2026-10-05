@@ -168,9 +168,9 @@ void Regex::firstOf(const Node* n, FirstInfo& out) const {
             // `:m <[\x[e1]]>` takes a plain "a" — which the table does not know)
             if (!n->uprop.empty() || !n->clusterMembers.empty() || n->imark) { out.any = true; return; }
             for (unsigned c = 0; c < 0x80; c++) if (classMatch(n, (char)c)) add(c);
-            // a CRLF grapheme is a member when LF is, and it BEGINS with a CR:
-            // `"\r\n" ~~ /^<-[\r]>$/` must not be skipped at its first byte
-            if (classMatch(n, '\n')) add('\r');
+            // a CRLF grapheme may be a member (crlfInClass), and it BEGINS with a
+            // CR: `"\r\n" ~~ /^<-[\v]>$/` must not be skipped at its first byte
+            add('\r');
             addHigh();
             return;
         }
@@ -1496,6 +1496,7 @@ Regex::NodePtr Regex::parseQuant() {
     // bare `a*:` is the ratchet. Consuming the `:` without looking at what follows
     // turned `xa*:!` into a possessive `a*` followed by a literal `!`.
     // After `** { … }` there is none: its modifier goes before the braces.
+    const size_t modAt = pos_;   // (an explicit modifier moves past here)
     if (!haveBlockBounds) {
         if (peek() == '?') { rep->greedy = false; pos_++; }
         else if (peek() == '+' || peek() == '!') { pos_++; rep->forceBack = true; }   // explicit greedy
@@ -1506,6 +1507,7 @@ Regex::NodePtr Regex::parseQuant() {
             else rep->possessive = true;                   // `a*:` — no backtracking into it
         }
     }
+    const bool explicitMod = pos_ != modAt;
     // Sigspace with whitespace before the quantifier: <.ws> joins each iteration —
     // `rule { <num> + }` matches "1 2" (Rakudo: the space distributes into the repetition).
     rep->kids.push_back(wsBeforeQuant ? wsWrap(std::move(atom)) : std::move(atom));
@@ -1533,6 +1535,12 @@ Regex::NodePtr Regex::parseQuant() {
         return q < pat_.size() && pat_[q] == '=' && (q + 1 >= pat_.size() || pat_[q + 1] != '=');
     };
     const bool aliasNext = peek() == '%' && hashAliasAhead();
+    // In a `rule`, a quantifier with no modifier of its own that is FOLLOWED by
+    // significant whitespace backtracks (Rakudo): `rule { <word>? <val> }`
+    // matches "FALSE" — the optional word gives the text back. `<word>?:`
+    // keeps its ratchet; a token has no such whitespace.
+    const bool plainQuant = !explicitMod;
+    if (sigspace_ && plainQuant && pos_ > sepSave && !aliasNext && peek() != '%') rep->forceBack = true;
     if (aliasNext || (sigspace_ && peek() != '%')) pos_ = sepSave;
     if (!aliasNext && peek() == '%') {
         pos_++;
@@ -1573,6 +1581,7 @@ Regex::NodePtr Regex::parseQuant() {
             // i.e. when the quantifier had a leading space — Rakudo matches
             // "1 , 2" with `<num> * % \,` but not with `<num>* % \,`.
             if (sepSpace) sep = wsWrap(std::move(sep));
+            if (sepSpace && plainQuant) rep->forceBack = true;   // (as above, past its separator)
         }
         rep->sep = std::move(sep);
         // …and a separated quantifier ALWAYS ends in a <.ws> call, source
@@ -2764,6 +2773,7 @@ Regex::NodePtr Regex::parseAtom() {
         if (e == 'v' || e == 'V') { // vertical whitespace includes NEL, LS and PS
             n->k = K::Class; n->icase = curIcase_; n->negate = (e=='V'); n->ranges.push_back({'\n','\n'}); n->ranges.push_back({'\r','\r'}); n->ranges.push_back({'\f','\f'}); n->ranges.push_back({'\v','\v'});
             n->cpRanges.push_back({0x85, 0x85}); n->cpRanges.push_back({0x2028, 0x2029});
+            n->crlfIn = 1;   // a STANDALONE \v takes the CR LF grapheme (inside <[…]> it does not)
             return n;
         }
         // \X[HH] / \O[OO] / \C[NAME] — match ONE codepoint that is NOT the given one(s).
@@ -2901,11 +2911,10 @@ void Regex::parseClassBodyMember(Node* node) {
                 node->cpRanges.push_back({0x2000, 0x200A}); node->cpRanges.push_back({0x202F, 0x202F});
                 node->cpRanges.push_back({0x205F, 0x205F}); node->cpRanges.push_back({0x3000, 0x3000});
             }
-            else if (e == 'v') { // vertical whitespace: LF CR FF VT NEL LS PS
-                node->ranges.push_back({'\n', '\n'}); node->ranges.push_back({'\r', '\r'});
-                node->ranges.push_back({'\f', '\f'}); node->ranges.push_back({'\v', '\v'});
-                node->cpRanges.push_back({0x85, 0x85}); node->cpRanges.push_back({0x2028, 0x2029});
-            }
+            // vertical whitespace (LF CR FF VT NEL LS PS) and its negation — FLAGS,
+            // so the CR LF grapheme is judged as Rakudo does (crlfInClass)
+            else if (e == 'v' || e == 'V') node->classFlags += e;
+            else if (e == 'H') node->classFlags += 'B';   // not horizontal whitespace: \h is :Zs ∪ tab
             else if (e == 'e') ent.push_back({0x1B, 0});
             else if (e == 'f') ent.push_back({'\f', 0});
             else if (e == 'a') ent.push_back({0x07, 0});
@@ -3257,8 +3266,10 @@ static bool charClassCp(char flag, uint32_t cp) {
         // (Nl) are NOT word characters, though both are :N.
         case 'w': return cp == '_' || uniMatchesProp(cp, "L") || uniMatchesProp(cp, "Nd");
         case 's': return isUnicodeSpace(cp);
-        case 'n': return cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D ||
-                         cp == 0x85 || cp == 0x2028 || cp == 0x2029; // the logical newline
+        // the logical newline — and `\v` in a class, the same set (the two part
+        // only on the CR LF grapheme: see crlfInClass)
+        case 'n': case 'v': return cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D ||
+                                   cp == 0x85 || cp == 0x2028 || cp == 0x2029;
         case 'u': return uniMatchesProp(cp, "Lu");
         case 'l': return uniMatchesProp(cp, "Ll");
         case 'p': return uniMatchesProp(cp, "P");
@@ -3538,6 +3549,22 @@ static bool endsGrapheme(const std::string& s, long e, long len) {
     long b = e - 1;
     while (b > 0 && ((unsigned char)s[b] & 0xC0) == 0x80) b--;
     return (long)uniClusterEndUtf8(s, (size_t)b, (size_t)len) <= e;
+}
+
+// Is the CR LF grapheme a member of class node `n` (before its negation)?
+// Rakudo answers by the class's FLAGS alone: `\n` and `\s` take it, `\v`
+// inside brackets does not, a negated flag (`\D`, `\V`, `\H`) does unless it
+// negates a newline or a space; an enumerated codepoint (`<[\x0A]>`,
+// `<[\x0A..\x0D]>`) never equals a two-codepoint grapheme. A standalone `\v`
+// is the exception, forced by crlfIn.
+static bool crlfInClass(signed char crlfIn, const std::string& classFlags) {
+    if (crlfIn >= 0) return crlfIn == 1;
+    for (char f : classFlags) {
+        const char lo = (char)ascii::tolower((unsigned char)f);
+        const bool hit = lo == 'n' || lo == 's';
+        if (f != lo ? !hit : hit) return true;
+    }
+    return false;
 }
 
 bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const {
@@ -3888,6 +3915,14 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // like `<!>` (Rakudo)
             if (n->negate && n->ranges.empty() && n->cpRanges.empty() && n->clusterMembers.empty() &&
                 n->classFlags.empty() && n->negClassFlags.empty() && n->uprop.empty()) return false;
+            // NFG: the CR LF grapheme is one character, and only a class's FLAGS
+            // can take it — never an enumerated codepoint (crlfInClass)
+            if (st.s[pos] == '\r' && pos + 1 < len && st.s[pos + 1] == '\n' && n->uprop.empty() && !n->imark) {
+                bool in = crlfInClass(n->crlfIn, n->classFlags);
+                if (n->negate) in = !in;
+                for (char f : n->negClassFlags) if (f == 'n' || f == 's') in = false;   // `-[\n]` subtracts it
+                return in ? k(pos + 2) : false;
+            }
             // :ignoremark — the class tests the input grapheme's BASE character
             // (its first NFD starter) and consumes the grapheme whole, as a
             // literal does. Only an ASCII base is handled here; anything else

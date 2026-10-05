@@ -1687,6 +1687,7 @@ public:
                        bool doImport, const std::string& verReq);
     std::string shadowLibDir_;                             // the binary-relative rakulib/, once found
     std::shared_ptr<ClassInfo> howRoleClsInfo_;            // Metamodel::ParametricRoleGroupHOW, shared by every role
+    std::shared_ptr<ClassInfo> howParamRoleClsInfo_;       // Metamodel::ParametricRoleHOW: a role seen from its own body
     std::shared_ptr<ClassInfo> howCurriedClsInfo_, howConcreteClsInfo_;   // …CurriedRoleHOW (R[Int]), …ConcreteRoleHOW
     std::unordered_map<std::string, Value> typeHowCache_;   // a pun's / a concretization handle's .HOW, by type name
     std::unordered_map<std::string, ValueList> punArgs_;     // R[Int]'s arguments, by pun name (.^role_arguments)
@@ -2546,6 +2547,15 @@ public:
     std::pair<long, long> dynQuantLimits(const Value& v, bool unboundedHint); // `** { … }` bounds
     Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr,
                      bool checkOnly = false);
+    void installRuleResolved(ClassInfo* ci, const GrammarRuleDecl& r);   // `token t:sym(EXPR)`
+    Value matchSubscriptAdverb(const Value& base, Index* idx, bool& done);  // `$<a>:exists`, `$0:kv`, …
+    bool cmpEndlessLazy(const Value& l, const Value& r, Value& out);      // `(1..Inf).Seq cmp (1, 2)`
+    Value roleBodyHow(const Value& inv);                                  // `$*PACKAGE.HOW` in a role body
+    void refuseValueMixin(const Value& v, const Value& base);            // `5 but Any`
+    Value fatalCheckedMethodCall(Expr* e);                                // a method call under `use fatal`
+    Value inlineBlockValue();                                             // `&?BLOCK` in an inline block
+    bool tryBodySaysNoFatal(const Expr* operand);                         // `try { no fatal; … }`
+    Value nilAttrDefault(const ClassAttr& at, const std::string& resolvedType);                          // `has T $.x = Nil`
     // does a bare type-like name resolve to a type, package, constant or term
     // here — pure lookups, for the gobbled-block check of a unit about to run
     bool bareNameResolves(const std::string& n, const Program& unit);
@@ -3927,6 +3937,7 @@ private:
 // helpers
 Value listToArray(const ValueList& items);
 Value applyArith(const std::string& op, const Value& l, const Value& r); // binary op dispatch (also used by codegen)
+void pushLoopValue(ValueList& out, const Value& v);   // a 6.e `next`/`last` payload into a loop's values
 
 // Compiled code's half of user-defined operator overloading — see the long note
 // on the definitions in Interpreter.cpp. The emitter reaches for these only when

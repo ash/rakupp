@@ -38,6 +38,7 @@
 02-rakudo/attribute-typeobject-default.t
 02-rakudo/attributive-param-in-nested-sub.t
 02-rakudo/attributive-param-nested-alias.t
+02-rakudo/bare-block-topic-signature.t
 02-rakudo/begin-clone-wrap.t
 02-rakudo/begin-is-container-store.t
 02-rakudo/begin-time-call-in-want-or-regex.t
@@ -46,7 +47,9 @@
 02-rakudo/begin-time-native-return-box.t
 02-rakudo/begintime-loop-side-effects.t
 02-rakudo/block-type-capture.t
+02-rakudo/capture-var-adverb.t
 02-rakudo/charclass-enum-merge.t
+02-rakudo/cmp-collections.t
 02-rakudo/colonpair-smiley-key-value.t
 02-rakudo/compose-added-method-precomp.t
 02-rakudo/compose-operator-precedence.t
@@ -55,6 +58,7 @@
 02-rakudo/constant-from-gather-precomp.t
 02-rakudo/constant-gather.t
 02-rakudo/constant-native-value.t
+02-rakudo/contextualizer-6c-topic.t
 02-rakudo/core-pseudo-package-precomp.t
 02-rakudo/doc-block-statement-owner.t
 02-rakudo/doc-param-declarator-once.t
@@ -64,6 +68,7 @@
 02-rakudo/eval-begin-match-var-assignable.t
 02-rakudo/fatal-flatten-arg.t
 02-rakudo/fatal-sorry-no-worries.t
+02-rakudo/for-scalar-slip.t
 02-rakudo/forward-sub-lookup.t
 02-rakudo/gather-take-lazy-value.t
 02-rakudo/generic-stash-lookup.t
@@ -80,6 +85,7 @@
 02-rakudo/loop-next-phaser.t
 02-rakudo/metaop-assign-concat-blob.t
 02-rakudo/method-literal-package.t
+02-rakudo/mixin-value-hash-index.t
 02-rakudo/multi-coercion-comparable.t
 02-rakudo/multi-redeclaration-accepts.t
 02-rakudo/native-return-coercion.t
@@ -94,21 +100,26 @@
 02-rakudo/pseudo-package-nested.t
 02-rakudo/qualified-call-shared-module-state.t
 02-rakudo/qualified-lookup-parent-package-sc.t
+02-rakudo/quit-phaser-block.t
 02-rakudo/redeclared-special-variable.t
 02-rakudo/regex-boundary-assertion.t
 02-rakudo/regex-constant-interpolation.t
 02-rakudo/regex-crlf-grapheme.t
+02-rakudo/regex-expr-sym.t
 02-rakudo/regex-interpolation-backtrack.t
 02-rakudo/regex-token-arg-backtrack.t
+02-rakudo/regex-vspace-class-crlf.t
 02-rakudo/repr-trait-after-pod.t
 02-rakudo/return-method-in-sunk-for.t
 02-rakudo/role-forward-lexical-default.t
 02-rakudo/role-parameterization-hash-pair-args.t
 02-rakudo/role-typed-hash-attr-hang.t
 02-rakudo/role-whatever-param-precomp.t
+02-rakudo/rule-quantifier-whitespace-backtrack.t
 02-rakudo/signature-array-elem-definedness.t
 02-rakudo/signature-literal-declaration.t
 02-rakudo/sink-postfix-call-failure.t
+02-rakudo/slip-control-payload-6.e.t
 02-rakudo/slurpy-callable-param.t
 02-rakudo/smartmatch-declaration-matcher.t
 02-rakudo/smartmatch-match-matcher.t
@@ -128,6 +139,8 @@
 02-rakudo/trait-arg-block-capture.t
 02-rakudo/trait-arg-declares-var.t
 02-rakudo/trait-error-complex-arg.t
+02-rakudo/trait-package-metaclass.t
+02-rakudo/try-fatalizes-block.t
 02-rakudo/try-statement-backtrace-frame.t
 02-rakudo/unit-class-export-compose.t
 02-rakudo/unit-lexical-precomp-repossess.t

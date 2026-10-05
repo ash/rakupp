@@ -3,6 +3,14 @@
 #include "Coro.h"
 
 namespace rakupp {
+
+// A `next`/`last` PAYLOAD (6.e) joins the loop's results as a value — a Slip
+// as its elements (`next slip($_, -$_)`), the Slip TYPE as itself.
+static void pushLoopPayload(ValueList& out, const Value& v) {
+    if (v.t == VT::Array && v.arr() && v.s == "Slip") { for (auto& e : *v.arr()) out.push_back(e); return; }
+    out.push_back(v);
+}
+
 Value arrayMissingDefaultPublic(const Value& base);
 Value coerceHash(const Value& v, bool store, bool objKeyed);
 Value coerceArray(const Value& v, bool nativeTarget);
@@ -1090,12 +1098,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         if (!le.label.empty()) throw;
                         if (auto s = stw.lock()) s->infinite = false;
                         *ended = true;   // nothing more, whatever the source still holds
-                        if (le.hasVal) { cache.push_back(le.val); return true; }
+                        if (le.hasVal) { pushLoopPayload(cache, le.val); return true; }
                         return false;
                     }
                     catch (NextEx& ne) {
                         if (!ne.label.empty()) throw;
-                        if (ne.hasVal) { cache.push_back(ne.val); return true; }
+                        if (ne.hasVal) { pushLoopPayload(cache, ne.val); return true; }
                     }
                 }
             };
@@ -4078,12 +4086,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         catch (LastEx& le) {
                             if (!le.label.empty()) throw;
                             *pos = src->size();
-                            if (le.hasVal) { cache.push_back(le.val); return true; }
+                            if (le.hasVal) { pushLoopPayload(cache, le.val); return true; }
                             return false;
                         }
                         catch (NextEx& ne) {
                             if (!ne.label.empty()) throw;
-                            if (ne.hasVal) { cache.push_back(ne.val); return true; }
+                            if (ne.hasVal) { pushLoopPayload(cache, ne.val); return true; }
                             continue;
                         }
                         if (r.t == VT::Array && r.isList && r.s == "Slip") {   // a Slip spreads
@@ -4149,10 +4157,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // 6.e: `next $v` / `last $v` supply the value for the
                     // iteration they end; a bare next/last still skips or stops.
                     catch (LastEx& le) { tctx_.topicWriteback = nullptr;
-                                         if (le.hasVal) out.arr()->push_back(le.val);
+                                         if (le.hasVal) pushLoopPayload(*out.arr(), le.val);
                                          break; }
                     catch (NextEx& ne) { tctx_.topicWriteback = nullptr;
-                                         if (ne.hasVal) out.arr()->push_back(ne.val);
+                                         if (ne.hasVal) pushLoopPayload(*out.arr(), ne.val);
                                          continue; }
                     // post-GLR: map keeps each block result as ONE element; only a
                     // Slip (or flatmap, which flattens one level by design) spreads.

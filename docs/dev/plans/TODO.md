@@ -320,7 +320,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,045 mutsu files and 212 Rakudo files that Rakudo passes and
+  The work: 2,036 mutsu files and 199 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Parked from the audited LANG work: typed shaped arrays report unassigned
     cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices
@@ -333,7 +333,11 @@ with its tag, after the release run is green.
     install their name (subsets live in one global table); a nested block's
     `constant T` does not overwrite `OUR::<T>` (the GLOBAL frame is also the
     mainline's lexical scope); takes from the thunk of a sunk `xx *` inside a
-    gather; a Label's `.gist` with its source excerpt; `Format.handle-iterator`.
+    gather; a Label's `.gist` with its source excerpt; `Format.handle-iterator`;
+    an operator declared LATER in a block is not seen by uses before it
+    (`$i++` then `sub postfix:<++>`); a generic `T $x is copy` does not check
+    assignments against the instantiated T; a native passed to a raw (`\v`)
+    parameter or put in a Pair is not snapshotted.
   - `t/02-rakudo/attribute-typeobject-default.t` SEGFAULTS (rc 139) in its last
     test, a lock-free `cas` queue fed by 4 `start`s — every run, on the 5.2.1
     build as well, so not a regression.

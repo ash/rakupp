@@ -1741,6 +1741,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
         catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
         catch (NextEx& e) {
             if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+            if (collect && e.hasVal) pushLoopValue(*collect, e.val);   // 6.e `next 9`: the iteration's value
             if (hasNext) {
                 try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
                 catch (LastEx& le) { // `last` from a NEXT phaser ends the loop: LAST runs
@@ -1765,6 +1766,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
         }
         catch (LastEx& e) {
             if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+            if (collect && e.hasVal) pushLoopValue(*collect, e.val);   // 6.e `last 9`: the loop's final value
             // `last` ends the loop here, so LAST phasers run — on WHATEVER
             // iteration it happened (a label targeting an outer loop rethrows
             // above instead: that outer loop's LAST runs, this one's is skipped)
@@ -3063,7 +3065,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // $_ is exempt from the sigil rule: it BINDS what it topicalizes,
             // so its container-ness rides in on the value's own flag
             // (`given @a { … for $_ }` iterates, `given $x { … }` does not)
-            bool oneItem = !viaIterator &&
+            // (…but a Slip is never one item, held in a scalar or not)
+            bool oneItem = !viaIterator && !(lv.t == VT::Array && lv.arr() && lv.s == "Slip") &&
                 (lv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                  static_cast<VarExpr*>(fs->list.get())->name[0] == '$' &&
@@ -3180,7 +3183,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         }
         return false;
     };
-    bool scalarItem = !viaIterator &&
+    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.arr() && listv.s == "Slip") &&
         (listv.itemized ||
         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
          && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'
@@ -16525,6 +16528,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (opEq(op, "cmp")) {
             if (declLazyLive(l)) forceLazy(l);
             if (declLazyLive(r)) forceLazy(r);
+            // …and an ENDLESS one against a finite list is read only as far as
+            // the comparison needs (`(1..Inf).Seq cmp (1, 2, 3)` is More)
+            if (Value out; g_cbInterp && g_cbInterp->cmpEndlessLazy(l, r, out)) return out;
         }
     }
     // A NUMERIC TYPE OBJECT in an order comparison (`Int < 0`) has no value
@@ -21545,14 +21551,19 @@ Value Interpreter::evalBinary(Binary* b) {
         // `"foo" but Type<words>`), while `R<v>` on its own is an ordinary
         // subscript answering Any. Rewrite it into the call form and take that
         // path; the evaluated word stands in for the argument.
+        // (`R<a b>` hands over the LIST, itemized: `$("a", "b")`)
         std::unique_ptr<Call> angleCall;
+        Value angleVal;
         if (b->rhs->kind == NK::Index) {
             auto* ix = static_cast<Index*>(b->rhs.get());
             if (ix->isHash && ix->base && ix->base->kind == NK::NameTerm && ix->index) {
                 angleCall = std::make_unique<Call>();
                 angleCall->name = static_cast<NameTerm*>(ix->base.get())->name;
                 angleCall->line = b->line;
-                angleCall->args.push_back(std::make_unique<StrLit>(eval(ix->index.get()).toStr()));
+                angleVal = eval(ix->index.get());
+                if (angleVal.t == VT::Array && angleVal.arr()) { angleVal.isList = true; angleVal.itemized = true; }
+                else angleVal = Value::str(angleVal.toStr());
+                angleCall->args.push_back(std::make_unique<StrLit>(angleVal.toStr()));
             }
         }
         if (b->rhs->kind == NK::Call || angleCall) {
@@ -21616,7 +21627,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // (attribute name, value) for each preset the form carries
                 std::vector<std::pair<std::string, Value>> presets;
                 if (onePositional)
-                    presets.emplace_back(rolePub->name, eval(rc->args[0].get()));
+                    presets.emplace_back(rolePub->name, angleCall ? angleVal : eval(rc->args[0].get()));
                 else
                     for (auto& a : rc->args) {
                         auto* pe = static_cast<PairExpr*>(a.get());
@@ -21664,6 +21675,7 @@ Value Interpreter::evalBinary(Binary* b) {
         {
             std::function<void(const Value&)> checkComposable = [&](const Value& v) {
                 if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) checkComposable(e); return; }
+                refuseValueMixin(v, base);   // an undefined value, a plain value class
                 if (v.t != VT::Type) return;                  // a plain value is fine for `but`
                 auto ci = classes_.find(v.s);
                 if (ci == classes_.end() || !ci->second || ci->second->isRole) return;
@@ -23065,6 +23077,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 if (s->kind == NK::Block && static_cast<Block*>(s.get())->isCatch &&
                     static_cast<Block*>(s.get())->phaser != "CONTROL")
                     { explicitCatch = true; break; }
+        const bool noFatal = tryBodySaysNoFatal(u->operand.get());   // a Failure it ends on is its VALUE
         // registered as a handler that takes everything, so an error the
         // handlers further out would see first stops here (dispatchBeforeUnwind)
         CatchReg tryReg{tctx_, nullptr, nullptr, nullptr, /*isTry=*/!explicitCatch};
@@ -23081,7 +23094,7 @@ Value Interpreter::evalUnary(Unary* u) {
             // the failure is still what happened. Without this `try { 1 % 0 }`
             // handed back an undefined value with `$!` cleared to Nil, so there was
             // no way to ask what went wrong.
-            if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash()) {
+            if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash() && !noFatal) {
                 setBang(failureException(r));
                 // …and the try CONSUMES it: Rakudo's `try { 1 div 0 }` is Nil with
                 // `$!` set, not the live Failure. Handing the Failure back left it
@@ -26062,14 +26075,8 @@ Value Interpreter::evalIndex(Index* idx) {
 
     // Match object indexing: $/[n] positional, $/{key} / $/<key> named
     if (base.t == VT::Match) {
-        // `$<p>:exists`, `$/[1]:!exists` — whether the capture is there
-        if ((idx->adverb == "exists" || idx->adverb == "!exists") && idx->index) {
-            Value kv = eval(idx->index.get());
-            bool has = false;
-            if (idx->isHash) has = base.hash() && base.hash()->count(hashSubKey(kv));
-            else { long long n = kv.toInt(); has = n >= 0 && base.arr() && n < (long long)base.arr()->size(); }
-            return Value::boolean(idx->adverb == "exists" ? has : !has);
-        }
+        // `$<p>:exists`, `$0:kv`, … — a subscript adverb over one capture
+        { bool done = false; Value av = matchSubscriptAdverb(base, idx, done); if (done) return av; }
         if (idx->isHash) {
             Value kv = eval(idx->index.get());
             // `$<w1 w2 w3>` / `$/{'x','y'}` — a SLICE of the named captures
@@ -28660,7 +28667,7 @@ Value Interpreter::eval(Expr* e) {
             return r;
         }
         case NK::Index: return evalIndex(static_cast<Index*>(e));
-        case NK::MethodCall: return evalMethodCallExpr(e); // out of this frame: see there
+        case NK::MethodCall: return fatalCheckedMethodCall(e); // out of this frame (and `use fatal`)
         case NK::Ternary: {
             auto* t = static_cast<Ternary*>(e);
             // `$n < 2 ?? …` over machine Ints answers without building a Bool
@@ -29091,6 +29098,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     }
     if (ve->name == "$*INIT-INSTANT") return initInstantVal();
     if (ve->name == "&?BLOCK" && tctx_.curBlockVal) return *tctx_.curBlockVal;
+    if (ve->name == "&?BLOCK") return inlineBlockValue();   // `with 5 { … }`: no Block of its own
     if (ve->name == "&?ROUTINE" && tctx_.curRoutineVal) return *tctx_.curRoutineVal;
     if (ve->name == "&?ROUTINE" && g_rxRoutine) return *g_rxRoutine;   // a regex's code block
     if (ve->name == "$*TMPDIR") { Value p = Value::str(tmpDirPath()); p.hashKind = "IO"; return p; }

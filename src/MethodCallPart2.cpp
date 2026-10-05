@@ -1277,15 +1277,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                               ? (ensureEnv(), callCallable(at.buildFn, ValueList{selfEarly}))
                               : seed;   // `.set_build(&closure)`, added at runtime
             dv.readonly = dv.immutableBind = false;   // `has $.x = CONST` (see nilResetForAttr)
-            // `has IO::Handle $.x = Nil` ASSIGNS Nil, which resets the attribute
-            // to its default: the `is default` value, else the declared type
-            if (at.sigil == '$' && at.def && dv.t == VT::Nil) {
-                if (at.defaultTrait) dv = eval(const_cast<Expr*>(at.defaultTrait));
-                else if (!at.type.empty() && ascii::isupper((unsigned char)at.type[0]) &&
-                         at.type.find('[') == std::string::npos && at.type.find('(') == std::string::npos)
-                    dv = Value::typeObj(resolveRoleType(at.type));
-                else dv = Value::any();
-            }
+            if (at.sigil == '$' && at.def && dv.t == VT::Nil) dv = nilAttrDefault(at, at.type.empty() ? at.type : resolveRoleType(at.type));   // `has T $.x = Nil`
             // …and what a `.set_build` closure answers is ASSIGNED to the
             // attribute, so the declared type is checked at run time
             // (S12-attributes/defaults.t)
@@ -10282,6 +10274,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
                 return Value::typeObj("Metamodel::EnumHOW");
         }
+        // a role's own body sees the ROLE, made by ParametricRoleHOW (see
+        // rolePackageValue) — its group is what the bare role name answers
+        if (inv.t == VT::Type && inv.hashKind == "\x01role-body") return roleBodyHow(inv);
         // …and a COERCION type object (`Foo(Str)`) answers a CoercionHOW, which
         // is how a module tells a coercion apart from a plain type before
         // asking for its two halves (Getopt::Long's coercion-converter branch).

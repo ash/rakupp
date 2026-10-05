@@ -329,6 +329,7 @@ private:
         std::string negClassFlags;       // `-rule` difference members: char must NOT match these
         std::string uprop;               // Unicode property for <:Nd>/<:L>/… (Class node, codepoint-aware)
         bool negate = false;
+        signed char crlfIn = -1;         // Class: is the CR LF grapheme a member (before negate)? -1 = by its flags
         // `<~~>` — recurse into the pattern this node was WRITTEN in. Null means
         // the whole regex being matched; a sub-pattern spliced in from a Regex
         // value points at its own root, so `my $re = rx/ '(' <~~>* ')' /` recurses

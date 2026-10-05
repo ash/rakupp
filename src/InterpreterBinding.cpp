@@ -6238,4 +6238,131 @@ Value Interpreter::lazyTailOver(const ValueList& prefix, const Value& src) {
     return out;
 }
 
+
+// `$<p>:exists`, `$/[1]:!exists`, `$<a>:kv` / `:k` / `:v` / `:p` on a Match:
+// whether the capture is there, and the forms over that one capture (nothing
+// when it is absent). `done` says whether the adverb was one of these.
+Value Interpreter::matchSubscriptAdverb(const Value& base, Index* idx, bool& done) {
+    if ((idx->adverb == "exists" || idx->adverb == "!exists") && idx->index) {
+        Value kv = eval(idx->index.get());
+        bool has = false;
+        if (idx->isHash) has = base.hash() && base.hash()->count(hashSubKey(kv));
+        else { long long n = kv.toInt(); has = n >= 0 && base.arr() && n < (long long)base.arr()->size(); }
+        done = true; return Value::boolean(idx->adverb == "exists" ? has : !has);
+    }
+    // `$<a>:kv` / `:k` / `:v` / `:p` — over the one capture, nothing when it is absent
+    if ((idx->adverb == "kv" || idx->adverb == "k" || idx->adverb == "v" || idx->adverb == "p") && idx->index) {
+        Value kv = eval(idx->index.get());
+        Value key = idx->isHash ? Value::str(hashSubKey(kv)) : Value::integer(kv.toInt());
+        Value got; bool has = false;
+        if (idx->isHash) {
+            if (base.hash()) { auto it = base.hash()->find(hashSubKey(kv)); if (it != base.hash()->end()) { got = it->second; has = true; } }
+        }
+        else { long long n = kv.toInt(); if (n >= 0 && base.arr() && n < (long long)base.arr()->size()) { got = (*base.arr())[n]; has = true; } }
+        Value out = Value::array(); out.isList = true;
+        done = true;
+        if (!has) return out;
+        if (idx->adverb == "k") return key;
+        if (idx->adverb == "v") return got;
+        if (idx->adverb == "p") return Value::pair(key.toStr(), got);
+        out.arr()->push_back(key); out.arr()->push_back(got);
+        return out;
+    }
+    return Value();
+}
+
+// `cmp` of an ENDLESS lazy list and a finite one: the endless side is read
+// only as far as the comparison needs, and equal so far it is the longer.
+bool Interpreter::cmpEndlessLazy(const Value& l, const Value& r, Value& out) {
+    const bool le = endlessLazy(l), re = endlessLazy(r);
+    if (le != re) {
+        const Value& fin = le ? r : l;
+        const Value& inf = le ? l : r;
+        if (fin.t == VT::Array && fin.arr() && fin.enumName.empty()) {
+            const size_t n = fin.arr()->size();
+            materializeLazy(inf, n + 1);
+            for (size_t k = 0; k < n && k < inf.arr()->size(); k++) {
+                int c = valueCmp(le ? (*inf.arr())[k] : (*fin.arr())[k],
+                                 le ? (*fin.arr())[k] : (*inf.arr())[k]);
+                if (c) { out = Value::orderVal(c); return true; }
+            }
+            out = Value::orderVal(le ? 1 : -1);
+            return true;
+        }
+    }
+    return false;
+}
+
+
+// A role seen from its own body (rolePackageValue) is made by
+// ParametricRoleHOW; the bare role name answers its group's HOW.
+Value Interpreter::roleBodyHow(const Value& inv) {
+    if (!howParamRoleClsInfo_) {
+        howParamRoleClsInfo_ = std::make_shared<ClassInfo>();
+        howParamRoleClsInfo_->name = "Metamodel::ParametricRoleHOW";
+    }
+    Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
+    h.obj()->cls = howParamRoleClsInfo_;
+    h.obj()->attrs["__type"] = Value::typeObj(inv.s);
+    return h;
+}
+
+
+// A `next`/`last` PAYLOAD (6.e) joins a collecting loop's values — a Slip as
+// its elements, the Slip TYPE as itself.
+void pushLoopValue(ValueList& out, const Value& v) {
+    if (v.t == VT::Array && v.arr() && v.s == "Slip") { for (auto& e : *v.arr()) out.push_back(e); return; }
+    out.push_back(v);
+}
+
+// `but`: an UNDEFINED value (`$r<and>` on a type object) and the plain value
+// classes are no roles (X::Mixin::NotComposable, as Rakudo).
+void Interpreter::refuseValueMixin(const Value& v, const Value& base) {
+    const bool undef = v.t == VT::Any || v.t == VT::Nil;
+    if (undef || (v.t == VT::Type && (v.s == "Any" || v.s == "Mu" || v.s == "Int" || v.s == "Str" ||
+                                      v.s == "Num" || v.s == "Rat" || v.s == "Complex")))
+        throwTypedV("X::Mixin::NotComposable",
+                    {{"target", base}, {"rolish", undef ? Value::typeObj("Any") : v}},
+                    "Cannot mix in non-composable type " + (undef ? std::string("Any") : v.s.str()) +
+                    " into object of type " + base.typeName());
+}
+
+// A method call — and under `use fatal` (a `try` block's scope is) one handing
+// back a Failure throws it, as a sub call does.
+Value Interpreter::fatalCheckedMethodCall(Expr* e) {
+    Value r = evalMethodCallExpr(e);
+    if (RAKUPP_UNLIKELY(r.t == VT::Hash && r.hashKind == "Failure") &&
+        !static_cast<MethodCall*>(e)->fatalExempt && fatalHere())
+        failureDetonate(r);
+    return r;
+}
+
+// `&?BLOCK` in an INLINE block (`with 5 { … }`, a bare `{ … }` at the top
+// level), which has no Block value of its own: a plain one, implicit `$_`.
+Value Interpreter::inlineBlockValue() {
+    Value b; b.t = VT::Code; b.setCode(makePayload<Callable>());
+    b.code()->isBlock = true;
+    return b;
+}
+
+// `try { no fatal; … }` — the block turns `use fatal` back off.
+bool Interpreter::tryBodySaysNoFatal(const Expr* operand) {
+    if (!operand || operand->kind != NK::BlockExpr) return false;
+    for (auto& s : static_cast<const BlockExpr*>(operand)->body)
+        if (s->kind == NK::UseStmt && static_cast<UseStmt*>(s.get())->isNo &&
+            static_cast<UseStmt*>(s.get())->module == "fatal")
+            return true;
+    return false;
+}
+
+// `has IO::Handle $.x = Nil` ASSIGNS Nil, which resets the attribute to its
+// default: the `is default` value, else the declared type, else Any.
+Value Interpreter::nilAttrDefault(const ClassAttr& at, const std::string& resolvedType) {
+    if (at.defaultTrait) return eval(const_cast<Expr*>(at.defaultTrait));
+    if (!at.type.empty() && ascii::isupper((unsigned char)at.type[0]) &&
+        at.type.find('[') == std::string::npos && at.type.find('(') == std::string::npos)
+        return Value::typeObj(resolvedType);
+    return Value::any();
+}
+
 } // namespace rakupp

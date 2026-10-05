@@ -4694,7 +4694,7 @@ function ccFlag(f, cp, ch) {
         case 'x': return (cp >= 48 && cp <= 57) || ((cp | 32) >= 97 && (cp | 32) <= 102);
         case 'g': return ccFlag('a', cp, ch) || ccFlag('d', cp, ch) || ccFlag('p', cp, ch);   // <graph> is alnum ∪ punct: symbols and :No are out
         case 'r': return !(cp < 32 || (cp >= 127 && cp < 160));
-        case 'n': return NL_CPS.has(cp);
+        case 'n': case 'v': return NL_CPS.has(cp);   // \v in a class: the same set as \n
         default: return false;
     }
 }

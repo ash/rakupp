@@ -907,6 +907,7 @@ exceptions/exception-str-via-user-message.t
 exceptions/exceptions-comp-group-unknown-parent.t
 exceptions/fail.t
 exceptions/failure-fatal-mode-call-argument.t
+exceptions/failure-fatal-mode-creation-time.t
 exceptions/failure-string-interpolation.t
 exceptions/gather-lazy-consume-propagates-exception.t
 exceptions/get-out.t
@@ -947,7 +948,9 @@ exceptions/trusts-undeclared.t
 exceptions/try-block-implicit-use-fatal.t
 exceptions/try-failure-bang.t
 exceptions/try-fatal-does-not-retroactively-flag-closure-seq.t
+exceptions/try-fatal-is-lexical.t
 exceptions/try-prefix-statement-modifier-next-line.t
+exceptions/try-return-failure-fatal.t
 exceptions/try-tail-assign-value.t
 exceptions/two-terms-in-a-row-initializer-listop.t
 exceptions/two-terms-in-a-row-undeclared-word-infix.t
@@ -1052,6 +1055,7 @@ grammar/regex-charclass-token-fold.t
 grammar/regex-classitem-token-fallback.t
 grammar/regex-crosspkg-charclass-token.t
 grammar/regex-negated-token-class-multichar.t
+grammar/regex-rule-separated-quantifier-backtrack.t
 grammar/role-proto-regex-reinstantiate.t
 grammar/rule-sigspace-before-alternation.t
 grammar/rule-sigspace-charclass-brace.t
@@ -1059,6 +1063,7 @@ grammar/rule-sigspace-escaped-brace.t
 grammar/rule-sigspace-inline-modifier.t
 grammar/rule-sigspace-line-comment-quantifier.t
 grammar/rule-sigspace-quantified-alternation.t
+grammar/rule-sigspace-quantifier-backtracks.t
 grammar/rule-sigspace-quote-in-charclass.t
 grammar/rule-sigspace-trailing-whitespace.t
 grammar/slurpy-single-argument-rule.t
@@ -1194,6 +1199,7 @@ lang/eval-private-and-stubs.t
 lang/eval-undeclared-block-assign.t
 lang/exec-call-mixed-block.t
 lang/exec-call-pairs.t
+lang/fatal-mode-composite-literal-failure.t
 lang/hyphenated-imported-type-block-no-gobble.t
 lang/hyphenated-type-block-no-gobble.t
 lang/issue-7749-adjacent-colonpairs.t
@@ -1808,6 +1814,7 @@ oo/class/date-subclass-qualified-and-inherited-new.t
 oo/class/deep-mro-dispatch.t
 oo/class/defer-inherited-chain.t
 oo/class/eval-type-capture-inheritance-compile-check.t
+oo/class/eval-unit-does-not-inherit-fatal.t
 oo/class/mro.t
 oo/class/namespaced-class.t
 oo/class/nested-class-named-like-enclosing.t
@@ -1867,11 +1874,13 @@ oo/construct/set-quant-family-and-constructors.t
 oo/construct/tweak-fail-returns-failure.t
 oo/decl-does-mixin.t
 oo/decl-mixin-begin.t
+oo/does-but-type-errors.t
 oo/does-mixin-reaches-the-caller.t
 oo/does-mutates-the-object.t
 oo/does-writes-through-the-assignment-store.t
 oo/eval-does-not-leak-use-fatal.t
 oo/exists-adverb-on-mixin.t
+oo/fatal-mode-does-not-leak-into-callee.t
 oo/free-var-bind-does-not-alias-caller-lexical.t
 oo/given-readonly-topic-does-not-leak-into-routine.t
 oo/grep-promotion-does-not-hide-frames.t
@@ -2121,6 +2130,7 @@ oo/role/issue-8145-parametric-role-my-enum.t
 oo/role/iterator-role-default-methods.t
 oo/role/method-trait-proto-and-role-dispatch.t
 oo/role/method-trait-role-introspection.t
+oo/role/mixin-but-role-angle-value.t
 oo/role/mixin-method-reaches-enclosing-role-multi-sub.t
 oo/role/mixin-role-application-order.t
 oo/role/mixin-role-transitive-does.t
@@ -2302,6 +2312,7 @@ rakuast/rakuast-leaf-accessors.t
 rakuast/rakuast-pointy-slurpy-params.t
 rakuast/rakuast-semantic-hierarchy.t
 rakuast/rakuast-smartmatch.t
+rakuast/rakuast-statement-prefix-blorst.t
 regex/contains-regex.t
 regex/dir-test-bare-regex-predicate.t
 regex/gate-b-regex-interp-env-sync.t

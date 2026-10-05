@@ -782,8 +782,18 @@ void Interpreter::registerBuiltins() {
         };
         if (exp.t == VT::Array && exp.arr() &&
             (exp.enumName == "any" || exp.enumName == "all" || exp.enumName == "one" || exp.enumName == "none")) {
+            // (…a junction GOT threads inside each branch: `is $x cmp any(…),
+            // any(Same, Less)` holds when any pair matches)
+            auto gotEq = [&](const Value& e) {
+                if (!(got.t == VT::Array && got.arr() && (got.enumName == "any" || got.enumName == "all" ||
+                                                           got.enumName == "one" || got.enumName == "none")))
+                    return scalarEq(got, e);
+                JunctionCollapse gj(got.enumName);
+                for (auto& g : *got.arr()) { gj.feed(scalarEq(g, e)); if (gj.done()) break; }
+                return gj.verdict();
+            };
             JunctionCollapse jc(exp.enumName);     // short-circuits; see Value.h
-            for (auto& br : *exp.arr()) { jc.feed(scalarEq(got, br)); if (jc.done()) break; }
+            for (auto& br : *exp.arr()) { jc.feed(gotEq(br)); if (jc.done()) break; }
             return jc.verdict();
         }
         // …and a junction GOT autothreads the same way: `is any(@names), 'a'`

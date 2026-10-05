@@ -3809,6 +3809,32 @@ bool mayHaveStateDecl(const Stmt* s) {
     }
 }
 
+// `token tok:sym(EXPR)` arrives named `tok:sym<\x02HEX>` (the parser's
+// encoding of EXPR): evaluate it now, in the declaring scope, and install the
+// rule as `tok:sym<VALUE>`.
+// `$*PACKAGE` as a trait in a package body sees it. In a ROLE body that is
+// the role itself, whose metaobject is a ParametricRoleHOW — not the group's
+// (`given $*PACKAGE.HOW { when Metamodel::ParametricRoleHOW {…} }`); the mark
+// tells `.HOW` which one is asked for.
+static Value rolePackageValue(const std::string& clsName, bool isRole) {
+    Value v = Value::typeObj(clsName);
+    if (isRole) v.hashKind = "\x01role-body";
+    return v;
+}
+
+static void installRule(ClassInfo* ci, const GrammarRuleDecl& r);
+void Interpreter::installRuleResolved(ClassInfo* ci, const GrammarRuleDecl& r) {
+    size_t at = r.name.find(":sym<\x02");
+    if (at == std::string::npos) { installRule(ci, r); return; }
+    size_t end = r.name.find('>', at);
+    std::string hex = r.name.substr(at + 6, end - at - 6), src;
+    auto nib = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) src += (char)(nib(hex[i]) * 16 + nib(hex[i + 1]));
+    GrammarRuleDecl rr = r;
+    rr.name = r.name.substr(0, at) + ":sym<" + evalString(src).toStr() + ">" + r.name.substr(end + 1);
+    installRule(ci, rr);
+}
+
 // A `multi rule NAME(0)` candidate is stored under a mangled key, because every
 // candidate of the group shares NAME. The key is NAME \x1f lit \x1e lit …, so it
 // can never collide with a rule name the parser could produce.
@@ -4988,7 +5014,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         if (ca.inlined) { ca.inlineCls = ncInlineClass(ca.type); haveInlineAttrs_ = true; }
                         ci->attrs.push_back(ca);
                     }
-                    for (auto& r : cd->rules) installRule(ci, r);
+                    for (auto& r : cd->rules) installRuleResolved(ci, r);
                     noteSymbolMutation("augment (user type)");
                 } else {
                     // augment a built-in type — park methods in the extension
@@ -6068,7 +6094,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         "Placeholder variable '" + ph +
                         "' may not be used here because the surrounding block does not take a signature");
             }
-            for (auto& r : cd->rules) installRule(ci.get(), r);
+            for (auto& r : cd->rules) installRuleResolved(ci.get(), r);
             for (auto& a : cd->attrs) {
                 // a placeholder in an attribute default has no block to bind to
                 if (a.def) {
@@ -6675,10 +6701,23 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         Value pr = Value::pair(tn, Value::boolean(true));
                         pr.namedArg = true;
                         ValueList ta; ta.push_back(Value::typeObj(clsName)); ta.push_back(pr);
+                        // the trait sees the package it is applied to as `$*PACKAGE`
+                        // (`$*PACKAGE.HOW does R` reaches THIS type, not its outer one)
+                        Env* pe = tctx_.cur.get();
+                        Value* prevPkg = pe->local("$*PACKAGE");
+                        const bool hadPkg = prevPkg != nullptr;
+                        Value savedPkg = hadPkg ? *prevPkg : Value::nil();
+                        pe->define("$*PACKAGE", rolePackageValue(clsName, cd->isRole));
+                        auto restorePkg = [&] {
+                            if (hadPkg) pe->define("$*PACKAGE", savedPkg); else pe->vars.erase("$*PACKAGE");
+                        };
                         try { callCallable(*tm, ta); handled = true; }
                         catch (RakuError& te) {
+                            restorePkg();
                             if (te.message.rfind("Cannot resolve caller", 0) != 0) throw;
                         }
+                        catch (...) { restorePkg(); throw; }
+                        if (handled) restorePkg();
                     }
                 }
                 // a PACKAGE or MODULE is a namespace, not a class: it can be named
@@ -6738,7 +6777,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (tm->t == VT::Code) {
                         Value* prevPkg = bodyEnv->find("$*PACKAGE");
                         Value savedPkg = prevPkg ? *prevPkg : Value::nil();
-                        bodyEnv->define("$*PACKAGE", Value::typeObj(clsName));
+                        bodyEnv->define("$*PACKAGE", rolePackageValue(clsName, cd->isRole));
                         for (auto& mq : methodTraitQueue) {
                             SubDecl* md = std::get<0>(mq);
                             // A trait on a `proto` belongs to the DISPATCHER — that is
@@ -7077,7 +7116,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (tm && tm->t == VT::Code) {
                     Value* prevPkg = bodyEnv->find("$*PACKAGE");
                     Value savedPkg = prevPkg ? *prevPkg : Value::nil();
-                    bodyEnv->define("$*PACKAGE", Value::typeObj(clsName));
+                    bodyEnv->define("$*PACKAGE", rolePackageValue(clsName, cd->isRole));
                     for (auto& ca2 : ci->attrs) {
                         if (ca2.userTraits.empty()) continue;
                         Value am = attributeMetaObject(ca2, clsName);
