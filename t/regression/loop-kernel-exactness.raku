@@ -124,6 +124,14 @@ sub ck($got, $want, $desc) {
   ck($n, 110, 'nested `given`') }
 
 # while / until / loop at the top of a kernel
+{ my $i = 0; repeat { $i++ } while $i < 0; ck($i, 1, 'repeat runs its body once') }
+{ my $k = 10; repeat { $k-- } until $k <= 3; ck($k, 3, 'repeat … until') }
+{ my $s = ""; my $c = 0; repeat { $c++; next if $c == 2; $s ~= $c } while $c < 5; ck($s, '1345', 'next in a repeat goes on to the condition') }
+{ my $d = 0; repeat { $d++; last if $d == 3 } while True; ck($d, 3, 'last in a repeat') }
+{ my $e = 0; $e += 2 until $e >= 7; ck($e, 8, 'STMT until COND') }
+{ my $i = 0; $i++ while $i < 1000; ck($i, 1000, 'STMT while COND') }
+{ my $h = 0; for 1..3 { my $q = 0; $q++ while $q < $_; $h += $q }; ck($h, 6, 'a modifier while nested in a for') }
+{ my $o = 2**62; my $p = 0; $o *= 2 while $p++ < 2; ck($o, 18446744073709551616, 'a modifier while that outgrows int64') }
 { my $t = 0; my $i = 0; while $i < 1000 { $i++; $t += $i }; ck(($t, $i), (500500, 1000), 'a top-level while') }
 { my $i = 10; until $i <= 0 { $i -= 3 }; ck($i, -2, 'a top-level until') }
 { my $t = 0; loop (my $i = 1; $i <= 100; $i++) { next if $i %% 2; $t += $i }; ck(($t, $i), (2500, 101), 'a C-style loop: `next` still steps, and its `my` outlives it') }

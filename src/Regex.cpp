@@ -284,6 +284,9 @@ void Regex::buildPrefilter() {
     if (!fi.any && !fi.nullable) {
         pfFirstOn_ = true;
         for (int i = 0; i < 8; i++) pfFirst_[i] = fi.set[i];
+        int n = 0, b = -1;
+        for (int c = 0; c < 256; c++) if (pfStart((unsigned char)c)) { n++; b = c; }
+        if (n == 1 && b < 0x80) pfSingle_ = b;
     }
     if (!hasEffects(root_.get())) pfReqLits_ = requiredLits(root_.get());
 }
@@ -4803,6 +4806,18 @@ bool Regex::search(const std::string& subject, long startPos, RxMatch& out, cons
         // grapheme as before, without an attempt (and the end of the subject,
         // which has no byte, cannot begin a non-empty match)
         if (pfFirstOn_) {
+            // one possible first byte: memchr jumps to the next one. A hit is
+            // taken only where it is certainly a grapheme boundary — after an
+            // ASCII character other than a CR before an LF, which nothing
+            // joins (no Prepend or CR is ASCII but CR) — and otherwise the
+            // stepping below goes on from here, as without the jump.
+            if (pfSingle_ >= 0 && start < slen && (unsigned char)subject[start] != (unsigned char)pfSingle_) {
+                const void* q = std::memchr(subject.data() + start, pfSingle_, (size_t)(slen - start));
+                if (!q) break;
+                const long qi = (long)(static_cast<const char*>(q) - subject.data());
+                const unsigned char pb = (unsigned char)subject[qi - 1];
+                if (pb < 0x80 && !(pb == '\r' && pfSingle_ == '\n')) start = qi;
+            }
             while (start < slen && !pfStart((unsigned char)subject[start])) start = nextStart(start);
             if (start >= slen) break;
         }

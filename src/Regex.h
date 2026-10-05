@@ -465,6 +465,7 @@ private:
     void buildPrefilter();
     bool pfFirstOn_ = false;             // pfFirst_ is a usable start-byte filter
     uint32_t pfFirst_[8] = {0};          // the bytes a match can start with
+    int pfSingle_ = -1;                  // …when that is one ASCII byte: memchr finds the candidates
     std::vector<std::string> pfReqLits_; // one of these is in every match (empty = none known)
     bool pfStart(unsigned char c) const { return (pfFirst_[c >> 5] >> (c & 31)) & 1; }
     bool ok_ = true;

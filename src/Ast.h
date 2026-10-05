@@ -1282,6 +1282,8 @@ struct RepeatStmt : Stmt { // repeat { } while/until cond
     bool isUntil = false;
     std::unique_ptr<Block> body;
     std::string var; // `repeat until COND -> $x { }` — the previous condition's value (Any at first)
+    PublishedOnce<void*> loopKernel{nullptr};       // as ForStmt's (IntKernel.cpp)
+    DecidedOnce<unsigned char> loopKernelTries{0};
     RepeatStmt(): Stmt(NK::RepeatStmt) {}
 };
 

@@ -94,6 +94,7 @@ enum class KOp : uint8_t {
     PreInc, PreDec, PostInc, PostDec,
     For,      // for a .. b { c } with the loop variable in slot
     While,    // while a { c }
+    Repeat,   // repeat { c } while a
     Last, Next,
     Given,    // given a { c }: the topic a in slot (SGiven: a string topic)
     SGiven,
@@ -1279,7 +1280,7 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
         }
         case NK::WhileStmt: {
             auto* w = static_cast<WhileStmt*>(s);
-            if (w->modifier || w->asExpr || !w->var.empty() || !w->params.empty())
+            if (w->asExpr || !w->var.empty() || !w->params.empty() || !w->label.empty())
                 return refuse("a `while` of this shape");
             KT ct;
             KNode* cn = cexpr(k, nullptr, w->cond.get(), ct);
@@ -1289,11 +1290,33 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
             L->loops++;
             const int sg = L->givens;
             L->givens = 0;
-            KNode* body = lbody(k, w->body.get(), true);
+            // `STMT while COND` declares into the enclosing scope: no `my` there
+            const bool sm = L->inModifier;
+            L->inModifier = sm || w->modifier;
+            KNode* body = lbody(k, w->body.get(), !w->modifier);
+            L->inModifier = sm;
             L->givens = sg;
             L->loops--;
             if (!body) return nullptr;
             KNode* n = k.node(KOp::While); n->a = cn; n->c = body;
+            return n;
+        }
+        case NK::RepeatStmt: {
+            auto* r = static_cast<RepeatStmt*>(s);
+            if (!r->var.empty() || !r->label.empty() || !r->cond) return refuse("a `repeat` of this shape");
+            KT ct;
+            KNode* cn = cexpr(k, nullptr, r->cond.get(), ct);
+            if (!cn) return nullptr;
+            if (ct == KT::Str || ct == KT::Void) return refuse("a Str as a condition");
+            if (r->isUntil) { KNode* nn = k.node(KOp::Not); nn->a = cn; cn = nn; }
+            L->loops++;
+            const int sg = L->givens;
+            L->givens = 0;
+            KNode* body = lbody(k, r->body.get(), true);
+            L->givens = sg;
+            L->loops--;
+            if (!body) return nullptr;
+            KNode* n = k.node(KOp::Repeat); n->a = cn; n->c = body;
             return n;
         }
         case NK::ReturnStmt: {
@@ -1505,9 +1528,26 @@ struct KConts {
     size_t n = 0;
     std::vector<CUndo> undo;
     size_t check = 1024;          // the log length at which compacting is next considered
-    std::vector<uint8_t> logged;  // per container: has entries in the log
-    std::vector<std::unique_ptr<ValueList>> savedList;   // per container: its state before the loop
-    std::vector<std::unique_ptr<ValueHash>> savedHash;
+    uint8_t* logged = nullptr;    // per container: has entries in the log
+    std::unique_ptr<ValueList>* savedList = nullptr;   // per container: its state before the loop
+    std::unique_ptr<ValueHash>* savedHash = nullptr;
+    // …kept here for the few containers a loop usually has, so that entering
+    // a kernel (an inner loop, entered once per outer iteration) allocates
+    // nothing for them
+    static constexpr size_t kInline = 8;
+    uint8_t loggedIn[kInline] = {};
+    std::unique_ptr<ValueList> savedListIn[kInline];
+    std::unique_ptr<ValueHash> savedHashIn[kInline];
+    std::unique_ptr<uint8_t[]> loggedHeap;
+    std::unique_ptr<std::unique_ptr<ValueList>[]> savedListHeap;
+    std::unique_ptr<std::unique_ptr<ValueHash>[]> savedHashHeap;
+    void size(size_t nc) {
+        if (nc <= kInline) { logged = loggedIn; savedList = savedListIn; savedHash = savedHashIn; return; }
+        loggedHeap.reset(new uint8_t[nc]());
+        savedListHeap.reset(new std::unique_ptr<ValueList>[nc]);
+        savedHashHeap.reset(new std::unique_ptr<ValueHash>[nc]);
+        logged = loggedHeap.get(); savedList = savedListHeap.get(); savedHash = savedHashHeap.get();
+    }
     std::string key;              // a hash key being built
     // Per string slot, what `.chars` and `.substr` need of a variable's text,
     // so a scanner does not rescan it on every call: -1 not yet known, else
@@ -1727,6 +1767,16 @@ int64_t whileFn(const KNode* n, int64_t* fr, KRun& R) {
         if (R.bail || !c) break;
         const int64_t v = krun(n->c, fr, R);
         if (stopped(R) && loopStop(R)) return R.ret ? v : 0;
+    }
+    return 0;
+}
+// (a `next` goes on to the condition, as it does in the generic loop)
+int64_t repeatFn(const KNode* n, int64_t* fr, KRun& R) {
+    for (;;) {
+        const int64_t v = krun(n->c, fr, R);
+        if (stopped(R) && loopStop(R)) return R.ret ? v : 0;
+        const int64_t c = krun(n->a, fr, R);
+        if (R.bail || !c) break;
     }
     return 0;
 }
@@ -2357,6 +2407,7 @@ void link(KNode* n) {
         case KOp::PostDec: n->fn = stepFn<-1, true>; break;
         case KOp::For: n->fn = forFn; break;
         case KOp::While: n->fn = whileFn; break;
+        case KOp::Repeat: n->fn = repeatFn; break;
         case KOp::Last: n->fn = lastFn; break;
         case KOp::Next: n->fn = nextFn; break;
         case KOp::Given: n->fn = givenFn; break;
@@ -2509,6 +2560,7 @@ PublishedOnce<void*>* loopSlot(Stmt* s, DecidedOnce<unsigned char>*& tries) {
         case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s); tries = &f->loopKernelTries; return &f->loopKernel; }
         case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s); tries = &w->loopKernelTries; return &w->loopKernel; }
         case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s); tries = &l->loopKernelTries; return &l->loopKernel; }
+        case NK::RepeatStmt: { auto* r = static_cast<RepeatStmt*>(s); tries = &r->loopKernelTries; return &r->loopKernel; }
         default: return nullptr;
     }
 }
@@ -2737,17 +2789,34 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                     // there belongs to the enclosing block, after the loop too)
                     auto* ws = static_cast<WhileStmt*>(loop);
                     cx.scopes.emplace_back();
-                    if (ws->modifier || ws->asExpr || !ws->var.empty() || !ws->params.empty() || !ws->label.empty())
+                    if (ws->asExpr || !ws->var.empty() || !ws->params.empty() || !ws->label.empty())
                         cx.why = "a `while` of this shape";
                     else {
                         KT ct;
                         cx.inModifier = true;
                         KNode* cn = cc.cexpr(lk2->k, nullptr, ws->cond.get(), ct);
-                        cx.inModifier = false;
                         if (cn && (ct == KT::Str || ct == KT::Void)) { cn = nullptr; cx.why = "a Str as a condition"; }
                         if (cn && ws->isUntil) { KNode* nn = lk2->k.node(KOp::Not); nn->a = cn; cn = nn; }
-                        if (cn) body = cc.lbody(lk2->k, ws->body.get(), true);
+                        // (`STMT while COND`: the statement has no block of its own)
+                        cx.inModifier = ws->modifier;
+                        if (cn) body = cc.lbody(lk2->k, ws->body.get(), !ws->modifier);
+                        cx.inModifier = false;
                         if (body) { root = lk2->k.node(KOp::While); root->a = cn; root->c = body; }
+                    }
+                }
+                else if (loop->kind == NK::RepeatStmt) {
+                    auto* rs = static_cast<RepeatStmt*>(loop);
+                    cx.scopes.emplace_back();
+                    if (!rs->var.empty() || !rs->label.empty() || !rs->cond) cx.why = "a `repeat` of this shape";
+                    else {
+                        KT ct;
+                        cx.inModifier = true;
+                        KNode* cn = cc.cexpr(lk2->k, nullptr, rs->cond.get(), ct);
+                        cx.inModifier = false;
+                        if (cn && (ct == KT::Str || ct == KT::Void)) { cn = nullptr; cx.why = "a Str as a condition"; }
+                        if (cn && rs->isUntil) { KNode* nn = lk2->k.node(KOp::Not); nn->a = cn; cn = nn; }
+                        if (cn) body = cc.lbody(lk2->k, rs->body.get(), true);
+                        if (body) { root = lk2->k.node(KOp::Repeat); root->a = cn; root->c = body; }
                     }
                 }
                 else {
@@ -2882,7 +2951,10 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     int64_t stackInts[33];   // kDenSlot first
     std::unique_ptr<int64_t[]> heapInts;
     int64_t* fr = 1 + (L->nint <= 32 ? stackInts : (heapInts.reset(new int64_t[L->nint + 1]), heapInts.get()));
-    std::unique_ptr<std::string[]> strs(L->nstr ? new std::string[L->nstr] : nullptr);
+    // (the string slots too: inline for a few)
+    std::string stackStrs[8];
+    std::unique_ptr<std::string[]> heapStrs;
+    std::string* strs = L->nstr <= 8 ? stackStrs : (heapStrs.reset(new std::string[L->nstr]), heapStrs.get());
     int64_t stackInfo[16];
     std::unique_ptr<int64_t[]> heapInfo;
     int64_t* sinfo = L->nstr <= 16 ? stackInfo : (heapInfo.reset(new int64_t[L->nstr]), heapInfo.get());
@@ -2912,12 +2984,12 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         R.depthLeft = 100000 - tctx_.callDepth - 1;
         if (R.depthLeft <= 0) return false;
     }
-    R.sfr = strs.get();
+    R.sfr = strs;
     KConts kc;
     kc.conts = conts;
     kc.n = nc;
     kc.sinfo = sinfo;
-    if (nc) { kc.logged.assign(nc, 0); kc.savedList.resize(nc); kc.savedHash.resize(nc); }
+    if (nc) kc.size(nc);
     R.cc = &kc;
     krun(L->k.body, fr, R);
     if (R.bail) {

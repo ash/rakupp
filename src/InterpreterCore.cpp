@@ -2174,7 +2174,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             const bool bareCond = ws->params.empty() && ws->var.empty();
             // a body of plain Int / Str arithmetic runs as a loop kernel
             // (IntKernel.cpp), as a `for` over a Range does
-            if (!col && bareCond && !ws->modifier && tryLoopKernel(s, std::string(), 0, 0)) return Value::nil();
+            if (!col && bareCond && tryLoopKernel(s, std::string(), 0, 0)) return Value::nil();
             // --jit (JIT-PLAN.md). Everything below is unreachable without the
             // flag: jit::on() is a plain bool that is false in every default
             // run, so the loop pays one never-taken branch per iteration.
@@ -2340,6 +2340,8 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             if (r->hasStateCache < 0)
                 r->hasStateCache = (mayHaveStateDecl(r->cond.get()) || mayHaveStateDecl(r->body.get())) ? 1 : 0;
             LoopStateFrame lsf{tctx_, r->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
+            // a body of plain Int / Str arithmetic runs as a loop kernel, as a `while` does
+            if (r->var.empty() && tryLoopKernel(s, std::string(), 0, 0)) return Value::nil();
             bool firstIter = true;
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             Value lastCond = Value::any();   // what `-> $x` binds: the previous condition
