@@ -5392,6 +5392,17 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == "\\" &&
                 (peek(2).kind == Tok::Ident || peek(2).kind == Tok::Var))
                 advance();
+            // a TYPE CAPTURE: `my (::T, $x) := (Int, 5)` binds T for the scope
+            if (isOp("::") && peek().kind == Tok::Ident && !peek().spaceBefore) {
+                advance();
+                std::string nm = advance().text;
+                declTypeNames_.insert(nm); typeCaptureNames_.insert(nm);
+                auto ve = std::make_unique<VarExpr>(nm);
+                ve->declare = true; ve->declScope = scope;
+                list->items.push_back(std::move(ve));
+                if (!matchKind(Tok::Comma)) break;
+                continue;
+            }
             if (matchOp("\\")) { // sigilless item:  my (\x, $y) = …
                 std::string nm = (isKind(Tok::Ident) || isKind(Tok::Var)) ? advance().text : "";
                 if (!nm.empty()) sigilless_.insert(nm);
@@ -5515,6 +5526,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // ("expected )"), which took all fifteen tests of
             // S02-names-vars/signature.t with it.
             if (isOp("?") || isOp("!")) advance();
+            // `my ($a, @b is copy) := …` — a parameter trait; the item is a
+            // fresh container either way
+            while (isIdent("is") && (peek().text == "copy" || peek().text == "rw" || peek().text == "raw")) { advance(); advance(); }
             // A type written BEFORE the parenthesis applies to every variable in
             // the list — `my Int ($a, $b)` declares two Int, and `my uint32
             // ($a, $b)` two 32-bit natives that wrap on assignment. Only the

@@ -2096,6 +2096,15 @@ void Interpreter::registerBuiltinsPart2() {
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
         if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->setPairVal(makePayload<Value>(v));
+        else {
+            // outside an action: the `$/` in scope takes it, and with no
+            // Match there `make` has nothing to attach to
+            Value* m = I.tctx_.cur ? I.tctx_.cur->find("$/") : nullptr;
+            if (m && m->t == VT::Match) m->setPairVal(makePayload<Value>(v));
+            else I.throwTypedV("X::Make::MatchRequired", {{"got", m ? *m : Value::nil()}},
+                     "The make function expects $/ to contain a Match, but it contains " +
+                     (m && m->t != VT::Nil ? m->typeName() : std::string("Nil")));
+        }
         return v;
     };
     B["take"] = [](Interpreter& I, ValueList& a) -> Value {

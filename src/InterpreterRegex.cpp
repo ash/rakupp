@@ -197,6 +197,14 @@ std::string Interpreter::closedRegexSource(const Value& v) {
 // Base64 decodes via `$str.comb(/@alpha/)`. Left untouched: `@<name>` list
 // captures, escaped `\@`, '…' literal spans, and unknown/empty arrays.
 std::string Interpreter::rxInterpArrays(const std::string& pat) {
+    // `<%h>` — a hash as a regex assertion is reserved
+    for (size_t p = pat.find("<%"); p != std::string::npos && tctx_.cur; p = pat.find("<%", p + 2)) {
+        if (p > 0 && pat[p - 1] == '\\') continue;
+        size_t j = p + 2;
+        while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
+        if (j > p + 2 && j < pat.size() && pat[j] == '>' && tctx_.cur->find("%" + pat.substr(p + 2, j - p - 2)))
+            throw RakuError{Value::typeObj("X::Syntax::Reserved"), "The use of a hash as a regex assertion is reserved"};
+    }
     if (pat.find('@') == std::string::npos || !tctx_.cur) return pat;
     std::string out;
     bool inSq = false; // inside '…': a literal span — no interpolation
@@ -317,6 +325,10 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 // alternation of LITERALS (issue #15). Same positional rule as
                 // the scalar form.
                 bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
+                if (inAngle)   // `<@a>` holding a hash — reserved, whichever element it is
+                    for (auto& e : *v->arr())
+                        if (e.t == VT::Hash && (e.hashKind.empty() || e.hashKind == "Hash"))
+                            throw RakuError{Value::typeObj("X::Syntax::Reserved"), "The use of a hash as a regex assertion is reserved"};
                 // `<alias=@arr>` — the aliased assertion, found by the same
                 // leftward scan the scalar `<alias=$var>` does. Without it the
                 // `<alias=` stayed put and the substituted alternation read as an
@@ -469,6 +481,8 @@ static std::string spliceRegexValueP5(const std::string& src) { // …into a PER
 // A Regex hands over its own pattern text (with a `:P5` prefix peeled off; the
 // flavour travels beside the source, not inside it); anything else, its Str.
 static std::string rxSourceOf(const Value& v, bool& p5) {
+    if (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Hash"))   // `<$h>` — reserved
+        throw RakuError{Value::typeObj("X::Syntax::Reserved"), "The use of a hash as a regex assertion is reserved"};
     std::string src = v.t == VT::Regex ? v.s.str() : v.toStr();
     p5 = isP5Pattern(src);
     if (p5) src = src.substr(src.find(' ') + 1);

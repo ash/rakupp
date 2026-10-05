@@ -3553,6 +3553,8 @@ static const std::set<std::string> kTermAfterIdent = {
     // { make /<-[\/]>*?/ } }` (Path::Finder's glob parser). Dividing
     // what `make` returns is not a thing, so this cannot cost a division.
     "make",
+    // a value-answering phaser takes a term: `BEGIN / ^ \w+ $ /`
+    "BEGIN", "CHECK", "INIT", "ENTER",
     // junction constructors take matchers: `.grep(none /a/)`
     "any", "all", "one", "none",
     // the set-family constructors take a word list: `set <m l c v y h re>`

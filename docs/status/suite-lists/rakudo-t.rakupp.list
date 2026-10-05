@@ -46,6 +46,7 @@
 02-rakudo/bare-block-topic-signature.t
 02-rakudo/begin-clone-wrap.t
 02-rakudo/begin-is-container-store.t
+02-rakudo/begin-regex-precomp.t
 02-rakudo/begin-time-call-in-want-or-regex.t
 02-rakudo/begin-time-call-regex-arg.t
 02-rakudo/begin-time-call-whatever-arg.t
@@ -57,6 +58,7 @@
 02-rakudo/charclass-enum-merge.t
 02-rakudo/cmp-collections.t
 02-rakudo/coercion-sigil-param-dispatch.t
+02-rakudo/coercion-subset-value-check.t
 02-rakudo/colonpair-smiley-key-value.t
 02-rakudo/compose-added-method-precomp.t
 02-rakudo/compose-operator-precedence.t
@@ -121,6 +123,7 @@
 02-rakudo/regex-crlf-grapheme.t
 02-rakudo/regex-expr-sym.t
 02-rakudo/regex-group-named-capture.t
+02-rakudo/regex-hash-assertion-reserved.t
 02-rakudo/regex-interpolation-backtrack.t
 02-rakudo/regex-slurpy-hash.t
 02-rakudo/regex-token-arg-backtrack.t
@@ -156,6 +159,7 @@
 02-rakudo/str-raku-prepend.t
 02-rakudo/stub-routine-redefinition.t
 02-rakudo/sub-signature-special-var.t
+02-rakudo/subsig-type-capture.t
 02-rakudo/superscript-power-macron.t
 02-rakudo/term-adverbs.t
 02-rakudo/term-now-time-shadow.t

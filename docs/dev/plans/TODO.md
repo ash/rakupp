@@ -320,7 +320,7 @@ with its tag, after the release run is green.
 - [ ] **Extra suites as gates**: Rakudo's own t/ and mutsu's t/, run by
   `tools/run-roast.raku --suite=rakudo|mutsu`; pass lists for both engines in
   [docs/status/suite-lists/](../../status/suite-lists/README.md) (2026-10-04).
-  The work: 2,033 mutsu files and 174 Rakudo files that Rakudo passes and
+  The work: 2,031 mutsu files and 170 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Parked from the audited LANG work: typed shaped arrays report unassigned
     cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices

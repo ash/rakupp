@@ -2549,6 +2549,7 @@ public:
     Value evalString(const std::string& src, bool mainlinePH = false, bool* incompleteOut = nullptr,
                      bool checkOnly = false);
     void installRuleResolved(ClassInfo* ci, const GrammarRuleDecl& r);   // `token t:sym(EXPR)`
+    Value subsetCoerceCall(const std::string& name, const Value& v);  // `Even(56)`
     Value matchSubscriptAdverb(const Value& base, Index* idx, bool& done);  // `$<a>:exists`, `$0:kv`, …
     bool cmpEndlessLazy(const Value& l, const Value& r, Value& out);      // `(1..Inf).Seq cmp (1, 2)`
     Value roleBodyHow(const Value& inv);                                  // `$*PACKAGE.HOW` in a role body

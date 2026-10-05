@@ -24970,6 +24970,7 @@ Value Interpreter::evalCall(Call* c) {
     // e.g. Promise(supply {…}) == $supply.Promise, Supply($chan) == $chan.Supply.
     // Only reached after the specialized coercers above, so it just upgrades former
     // "Undefined routine" errors into real coercions (or a clearer "No such method").
+    if (args.size() == 1 && (subsets_.count(coerceName) || coerceName == "UInt")) return subsetCoerceCall(coerceName, args[0]);   // `Even(56)`
     {
         auto cit = classes_.find(coerceName);
         if (!args.empty() && (cit != classes_.end() || isKnownTypeName(c->name))) {

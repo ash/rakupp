@@ -2332,6 +2332,7 @@ regex/match/enum-type-object-smartmatches-itself.t
 regex/match/frugal-quantifier-global-match.t
 regex/match/instance-regex-smartmatch.t
 regex/match/io-path-smartmatch-permissions.t
+regex/match/make-requires-match.t
 regex/match/match-caps-chunks.t
 regex/match/match-caps.t
 regex/match/match-capture-exists.t
@@ -2455,6 +2456,7 @@ regex/regex-ltm-measured-branch-rank.t
 regex/regex-ltm-recursion-cut.t
 regex/regex-ltm-sibling-termination-leak.t
 regex/regex-m-s.t
+regex/regex-make.t
 regex/regex-modifier-only.t
 regex/regex-my-embedded-block-persist.t
 regex/regex-my-initializer-and-escaping-sub.t

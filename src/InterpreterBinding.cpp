@@ -6582,4 +6582,33 @@ bool Interpreter::intRangeReduce(const std::string& op, const Value& v, Value& o
     return true;
 }
 
+// `Even(56)` — a subset called as a coercer: a value it already accepts is
+// itself; else the value is coerced to the subset's nominal type (`.Int` for
+// `subset Even of UInt`) and must then pass the subset, or the coercion is
+// impossible.
+Value Interpreter::subsetCoerceCall(const std::string& name, const Value& v) {
+    auto accepts = [&](const Value& x) {
+        try { return boolify(smartmatchValue("~~", x, Value::typeObj(name))); } catch (RakuError&) { return false; }
+    };
+    if (accepts(v)) return v;
+    std::string base = name;
+    for (int hop = 0; hop < 32; hop++) {
+        auto it = subsets_.find(base);
+        if (it == subsets_.end()) break;
+        base = it->second.base;
+    }
+    if (base == "UInt") base = "Int";
+    std::string why = "no acceptable coercion method found";
+    if (!base.empty() && base != "Any" && base != "Mu") {
+        Value cv;
+        bool got = false;
+        try { cv = methodCall(v, base, ValueList{}); got = true; } catch (RakuError&) {}
+        if (got && accepts(cv)) return cv;
+        if (got) why = "method " + base + " returned " + (cv.t == VT::Type ? "a type object " : "an instance of ") + cv.typeName();
+    }
+    throwTypedV("X::Coerce::Impossible",
+        {{"target-type", Value::typeObj(name)}, {"from-type", Value::typeObj(v.typeName())}},
+        "Impossible coercion from '" + v.typeName() + "' into '" + name + "': " + why);
+}
+
 } // namespace rakupp
