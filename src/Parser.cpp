@@ -1602,6 +1602,27 @@ static bool termEndsHere(const Token& prev) {
            prev.kind == Tok::StrLit || prev.kind == Tok::StrInterp;
 }
 
+// A code block in a regex is no routine of its own: `@_` has nothing to name,
+// and neither has `%_` — except in a grammar's token/rule/regex, which IS a
+// method and holds its named arguments there (X::Placeholder::Block).
+static void checkRegexPlaceholders(const std::string& pat, int line, bool methodBody) {
+    int depth = 0;   // inside `{ … }` code only: `/ @_ /` interpolates the routine's own
+    for (size_t i = 0; i + 1 < pat.size(); i++) {
+        if (pat[i] == '\\') { i++; continue; }
+        if (pat[i] == '{') { depth++; continue; }
+        if (pat[i] == '}') { if (depth) depth--; continue; }
+        if (!depth || (pat[i] != '@' && pat[i] != '%') || pat[i + 1] != '_') continue;
+        if (i > 0 && (ascii::isalnum((unsigned char)pat[i - 1]) || pat[i - 1] == '_' || pat[i - 1] == '\\' ||
+                      pat[i - 1] == '\'' || pat[i - 1] == '"')) continue;
+        if (i + 2 < pat.size() && (ascii::isalnum((unsigned char)pat[i + 2]) || pat[i + 2] == '_' ||
+                                   pat[i + 2] == '-' || pat[i + 2] == '\'' || pat[i + 2] == '"')) continue;
+        if (methodBody && pat[i] == '%') continue;
+        const std::string ph = pat.substr(i, 2);
+        throw ParseError("Placeholder variable '" + ph + "' may not be used here because the surrounding "
+                         "block does not take a signature", line, "X::Placeholder::Block", {{"placeholder", ph}});
+    }
+}
+
 // `anon class C {…}` names its type C but installs the symbol NOWHERE, so the
 // bare `C` is undeclared afterwards and inside the body alike. The declaration
 // may arrive as a statement or as an expression, so both spellings route here.
@@ -3981,6 +4002,16 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             else base = mkApply(std::move(base));
             continue;
         }
+        // `$p::` — the package the variable's VALUE designates: the value itself
+        // (`$p::.WHO`, `$p:: === Int`, `$p::<sym>`); a name after it is no part
+        if (isOp("::") && !cur().spaceBefore && base->kind == NK::VarExpr &&
+            static_cast<VarExpr*>(base.get())->name.size() > 1 &&
+            static_cast<VarExpr*>(base.get())->name[0] == '$' &&
+            !(peek().kind == Tok::Ident && !peek().spaceBefore) &&
+            !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
+            advance();
+            continue;
+        }
         // `$0:exists` — a capture variable is `$/[0]` under a subscript adverb
         if (isOp(":") && base->kind == NK::VarExpr && peek().kind == Tok::Ident) {
             const std::string& vn = static_cast<VarExpr*>(base.get())->name;
@@ -5606,6 +5637,17 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                              "be written as 'CALLERS::<" + vname + ">' if that's what you meant.",
                              cur().line, "X::Dynamic::Postdeclaration", {{"symbol", vname}});
         if (scope == "my" || scope == "state") noteLexDecl(vname, pos_ > 0 ? pos_ - 1 : 0, cur().line);
+        // `our &infix:<qq> = &c` declares the OPERATOR too: `(1, 2) qq (3, 4)`
+        if (vname.size() > 3 && vname[0] == '&' && vname.back() == '>') {
+            auto opOf = [&](const char* cat) -> std::string {
+                const std::string pre = std::string("&") + cat + ":<";
+                return vname.compare(0, pre.size(), pre) == 0 ? vname.substr(pre.size(), vname.size() - pre.size() - 1)
+                                                               : std::string();
+            };
+            if (std::string o = opOf("infix"); !o.empty()) regInfix(o, BP_ADD);
+            else if (std::string o2 = opOf("prefix"); !o2.empty()) regSet('p', userPrefix_, o2);
+            else if (std::string o3 = opOf("postfix"); !o3.empty()) regSet('P', userPostfix_, o3);
+        }
         auto ve = std::make_unique<VarExpr>(vname);
         ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
         ve->declStubType = stubType;
@@ -6382,6 +6424,30 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
     return nullptr;
 }
 
+// `Foo::{'&f'}` — the brace spelling of `Foo::<&f>`, with a LITERAL key: the
+// qualified name the angle form names. (Not before an adverb: `:exists` asks
+// the stash itself.) nullptr when this is not that shape.
+ExprPtr Parser::pkgBraceKeyTerm(const std::string& name, std::string& pseudoPkg) {
+    if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
+        !isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
+        isKind(Tok::LBrace) && !cur().spaceBefore &&
+        (peek().kind == Tok::StrLit || peek().kind == Tok::StrInterp) && peek(2).kind == Tok::RBrace &&
+        peek().text.find('$') == std::string::npos &&
+        !peek().text.empty() && std::strchr("&$@%", peek().text[0]) &&   // (a bare key may be a type's: `T::{"Emu"}`)
+        !(peek(3).kind == Tok::Op && peek(3).text == ":" && !peek(3).spaceBefore)) {   // (`:exists` asks the stash)
+        advance();                                    // {
+        const std::string key = advance().text;       // '&f'
+        advance();                                    // }
+        const std::string pkg = name.substr(0, name.size() - 2);
+        const bool sigilled = !key.empty() && std::strchr("$@%&", key[0]);
+        auto ve = std::make_unique<VarExpr>(sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1)
+                                                     : pkg + "::" + key);
+        ve->pkgSymbol = true;
+        return parsePostfix(std::move(ve), false);
+    }
+    return nullptr;
+}
+
 // `proto sub NAME(|) {*}` / `multi sub NAME(…) {…}` / `multi NAME(…) {…}` as a
 // TERM (parsePrimary): the declaration in a do-block whose value is `&NAME`, or
 // for a multi the candidate just declared. `cur()` is the proto/multi keyword.
@@ -6954,6 +7020,7 @@ ExprPtr Parser::parsePrimary() {
             }
             g_rxReservedHash = false;
             checkNullRegex(full.substr(i), tk.line, !p5);
+            if (!p5) checkRegexPlaceholders(full.substr(i), tk.line, /*methodBody=*/false);
             if (!p5 && rxUsesSym(full.substr(i)))   // no proto candidate here either
                 throw ParseError("Can only use <sym> token in a proto regex", tk.line, "X::Comp::AdHoc", {});
             checkRegexBoundaries(tk.text, tk.line);
@@ -9147,7 +9214,7 @@ ExprPtr Parser::parsePrimary() {
                                   peek(2).kind == Tok::Ident &&
                                   (peek(2).text == "exists" || peek(2).text == "p");
                     if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL" || pseudoPkg == "UNIT" ||
-                         pseudoPkg == "SETTING") &&
+                         pseudoPkg == "SETTING" || pseudoPkg == "GLOBAL") &&
                         isOp(":") && !cur().spaceBefore &&
                         (negAdv || (peek().kind == Tok::Ident &&
                                     (peek().text == "exists" || peek().text == "p")))) {
@@ -9210,7 +9277,8 @@ ExprPtr Parser::parsePrimary() {
                     // `CORE::<Int>` — a sigilless key is a type or package name,
                     // looked up as `CORE::{'Int'}` is (a VarExpr found no such
                     // variable and answered Any)
-                    if (pseudoPkg == "CORE" && !sym.empty() && !std::strchr("$@%&", sym[0])) {
+                    if ((pseudoPkg == "CORE" || pseudoPkg == "GLOBAL") && !sym.empty() &&
+                        !std::strchr("$@%&", sym[0])) {
                         auto sr = std::make_unique<SymbolicRef>();
                         sr->nameExpr = std::make_unique<StrLit>(sym);
                         return sr;
@@ -9228,6 +9296,7 @@ ExprPtr Parser::parsePrimary() {
             // whole thing parsed as a call to a routine named `EXPORTHOW::`, so
             // the module would not load. The slot is just the qualified global
             // `Foo::bar`, which is where `our`-scoped symbols already live.
+            if (ExprPtr bk = pkgBraceKeyTerm(name, pseudoPkg)) return bk;   // `M::EXPORT::DEFAULT::{'&f'}`
             if (name.size() > 2 && name.compare(name.size() - 2, 2, "::") == 0 &&
                 !isPseudoPkgPath(name.substr(0, name.size() - 2), pseudoPkg) &&
                 isOp("<") && !cur().spaceBefore) {
@@ -14517,6 +14586,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
                     if (kind == "regex" && !wasProtoMulti)
                         checkNullRegex(pat, cur().line);
+                    checkRegexPlaceholders(pat, cur().line, /*methodBody=*/true);
                     // `<sym>` names the `:sym<…>` of a proto CANDIDATE — anywhere else it
                     // has nothing to match (Rakudo refuses it while compiling)
                     if (nm.find(":sym") == std::string::npos && rxUsesSym(pat))
@@ -14858,7 +14928,8 @@ std::string Parser::placeholderIn(size_t openAt) {
 static bool pointyParamNeedsBinding(const Param& p) {
     return p.subSig || p.isCopy || p.coerce || !p.type.empty() ||
            p.defConstraint != 0 || p.whereExpr || p.hadWhere ||
-           p.defaultVal || p.optional;   // a short last chunk binds these
+           p.defaultVal || p.optional ||   // a short last chunk binds these
+           p.slurpy;                       // `-> *@x` takes one value per iteration
 }
 
 StmtPtr Parser::parseFor() {

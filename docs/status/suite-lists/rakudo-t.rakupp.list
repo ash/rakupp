@@ -30,6 +30,7 @@
 02-rakudo/21-trial-bind-generic.t
 02-rakudo/23-self-call-loop-modifier.t
 02-rakudo/24-qualified-our-anchor.t
+02-rakudo/25-min-max-by-key.t
 02-rakudo/25-regex-unspace.t
 02-rakudo/anon-method-in-role-invocant.t
 02-rakudo/attr-default-code-value.t
@@ -92,6 +93,7 @@
 02-rakudo/object-hash-default-value-type.t
 02-rakudo/once-in-phasers.t
 02-rakudo/once-in-role-sub.t
+02-rakudo/our-operator-var-container.t
 02-rakudo/our-twigil-package-key.t
 02-rakudo/package-adopts-imported-stub-who.t
 02-rakudo/phaser-once-state.t
@@ -107,6 +109,7 @@
 02-rakudo/regex-crlf-grapheme.t
 02-rakudo/regex-expr-sym.t
 02-rakudo/regex-interpolation-backtrack.t
+02-rakudo/regex-slurpy-hash.t
 02-rakudo/regex-token-arg-backtrack.t
 02-rakudo/regex-vspace-class-crlf.t
 02-rakudo/repr-trait-after-pod.t
@@ -127,10 +130,12 @@
 02-rakudo/smartmatch-parenthesized-matcher.t
 02-rakudo/smartmatch-return-and-native-type.t
 02-rakudo/smartmatch-topic-rhs.t
+02-rakudo/smartmatch-user-accepts.t
 02-rakudo/split-trans-capture-markers.t
 02-rakudo/sprintf-6e-e.t
 02-rakudo/sprintf-6e-g.t
 02-rakudo/sprintf-6e-s.t
+02-rakudo/str-raku-prepend.t
 02-rakudo/sub-signature-special-var.t
 02-rakudo/superscript-power-macron.t
 02-rakudo/term-now-time-shadow.t

@@ -239,6 +239,38 @@ static bool takesImplicitTopic(const ValueList& call) {
     return npos <= 1;
 }
 
+// `.minpairs(&key)` / `.maxpairs(&cmp)`: a ONE-argument callable is a key,
+// called once per value; a TWO-argument one compares a value with the best so
+// far, once per value after the first. Every value tying for the end is kept.
+Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn,
+                                         bool wantMax) {
+    const long long ar = methodCall(fn, "arity", {}).toInt();
+    std::vector<size_t> ties{0};
+    if (ar >= 2) {
+        for (size_t i = 1; i < kvs.size(); i++) {
+            const long long c = callCallable(fn, ValueList{kvs[i].second, kvs[ties[0]].second}).toInt();
+            if (wantMax ? c > 0 : c < 0) ties.assign(1, i);
+            else if (c == 0) ties.push_back(i);
+        }
+    }
+    else {
+        std::vector<Value> keys;
+        for (auto& kv : kvs) keys.push_back(callCallable(fn, ValueList{kv.second}));
+        for (size_t i = 1; i < kvs.size(); i++) {
+            const long long c = applyArith("cmp", keys[i], keys[ties[0]]).toInt();
+            if (wantMax ? c > 0 : c < 0) ties.assign(1, i);
+            else if (c == 0) ties.push_back(i);
+        }
+    }
+    Value out = Value::array(); out.isList = true;
+    for (size_t i : ties) {
+        Value p = Value::pair(kvs[i].first.toStr(), kvs[i].second);
+        if (kvs[i].first.t == VT::Int) p.pairKeyM() = std::make_shared<Value>(kvs[i].first);
+        out.arr()->push_back(p);
+    }
+    return out;
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -1212,19 +1244,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 const Value& v = kv.second;
                 return v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type;
             }), kvs.end());
-        if (kvs.empty()) return out;
-        Value best = kvs[0].second;
-        bool wantMax = (m == "maxpairs");
-        for (auto& kv : kvs) {
-            Value c = applyArith("cmp", kv.second, best);
-            if (wantMax ? c.toInt() > 0 : c.toInt() < 0) best = kv.second;
-        }
-        for (auto& kv : kvs)
-            if (applyArith("cmp", kv.second, best).toInt() == 0) {
-                Value p = Value::pair(kv.first.toStr(), kv.second);
-                out.arr()->push_back(p);
-            }
-        return out;
+        return minMaxPairsOf(kvs, args.empty() ? Value() : args[0], m == "maxpairs");
     }
     if (m == "isa" && !args.empty()) {
         // Foo.isa(Foo) / $obj.isa("Any") / 5.isa(Int) — walk the class chain, then

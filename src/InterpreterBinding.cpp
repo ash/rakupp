@@ -1262,6 +1262,16 @@ void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& 
 }
 
 void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {
+    // Nil RESETS the element to its default — the bare type, which a `:D`
+    // element type refuses (`my Int:D @a; @a[2] = Nil` dies)
+    if (v.t == VT::Nil && want.size() > 2 && want.compare(want.size() - 2, 2, ":D") == 0) {
+        const std::string base = want.substr(0, want.size() - 2);
+        throwTypedV("X::TypeCheck::Assignment",
+                    {{"got", Value::typeObj(base)}, {"expected", Value::typeObj(want)}},
+                    "Type check failed for an element of " +
+                        (symbol.empty() ? std::string("the container") : symbol) +
+                        "; expected " + want + " but got " + base + " (" + base + ")");
+    }
     if (v.t == VT::Nil) return;
     // A PARAMETERISED element type constrains TWICE: the value must be that
     // base type AND carry the same parameterisation. `my Array[Int] @a` takes
@@ -6363,6 +6373,141 @@ Value Interpreter::nilAttrDefault(const ClassAttr& at, const std::string& resolv
         at.type.find('[') == std::string::npos && at.type.find('(') == std::string::npos)
         return Value::typeObj(resolvedType);
     return Value::any();
+}
+
+// `42 ~~ C` where class C (or a role mixed into the type, `Int but R`)
+// declares ACCEPTS: that method decides. A candidate that refuses a type
+// object for its invocant (`multi method ACCEPTS(D:D: $)`) leaves the plain
+// type check in charge.
+bool Interpreter::typeObjectUserAccepts(const Value& l, const Value& r, Value& out) {
+    auto it = classes_.find(r.s);
+    if (it == classes_.end() || !it->second || it->second->isRole) return false;
+    if (!it->second->findMethod("ACCEPTS")) return false;
+    try { out = methodCall(r, "ACCEPTS", ValueList{l}); }
+    catch (RakuError& e) {
+        const std::string tn = e.payload.t == VT::Type ? e.payload.s.str()
+                             : e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls
+                                 ? e.payload.obj()->cls->name : std::string();
+        if (tn == "X::Multi::NoMatch" || tn == "X::Parameter::InvalidConcreteness" ||
+            e.message.rfind("Cannot resolve caller", 0) == 0 ||
+            e.message.find("Invocant of method") != std::string::npos)
+            return false;
+        throw;
+    }
+    return true;
+}
+
+// What `.minmax` compares: a RANGE element stands for its two ends (`.minmax`
+// results combine that way; the empty one, Inf..-Inf, for nothing) and a nested
+// LIST for its elements (`(4, [5, 6]).minmax` is 4..6). With `exOf` — the KEYED
+// form — every Range counts, and each end carries its own exclusion, so
+// `(1^..5, 7).minmax(*.self)` is 1^..7.
+void Interpreter::minmaxOperands(const ValueList& items, ValueList& each, std::vector<char>* exOf) {
+    std::function<void(const Value&, int)> add = [&](const Value& v, int depth) {
+        if (v.t == VT::Array && v.arr() && !v.ext() && v.hashKind.empty() && v.enumName.empty() && depth < 64) {
+            for (auto& e : *v.arr()) add(e, depth + 1);
+            return;
+        }
+        if (v.t != VT::Range) { each.push_back(v); if (exOf) exOf->push_back(0); return; }
+        Value mn = methodCall(v, "min", ValueList{}), mx = methodCall(v, "max", ValueList{});
+        if (!exOf && valueCmp(mn, mx) > 0) return;
+        each.push_back(mn); each.push_back(mx);
+        if (exOf) { exOf->push_back(v.rExFrom()); exOf->push_back(v.rExTo()); }
+    };
+    for (auto& v : items) add(v, 0);
+}
+
+// `.minpairs` / `.maxpairs` over (key, value) pairs: by `cmp` on the values, or
+// through `fn` (see byCallableMinMaxPairs); every value tying for the end is
+// kept, an Int key as an Int.
+Value Interpreter::minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax) {
+    if (fn.t == VT::Code && fn.code()) return byCallableMinMaxPairs(kvs, fn, wantMax);
+    Value out = Value::array(); out.isList = true;
+    if (kvs.empty()) return out;
+    Value best = kvs[0].second;
+    for (auto& kv : kvs) {
+        Value c = applyArith("cmp", kv.second, best);
+        if (wantMax ? c.toInt() > 0 : c.toInt() < 0) best = kv.second;
+    }
+    for (auto& kv : kvs)
+        if (applyArith("cmp", kv.second, best).toInt() == 0) {
+            Value p = Value::pair(kv.first.toStr(), kv.second);
+            if (kv.first.t == VT::Int) p.pairKeyM() = std::make_shared<Value>(kv.first);
+            out.arr()->push_back(p);
+        }
+    return out;
+}
+
+// `@a[5] = "s"` into an `Int @a` that refuses it must not grow the array: the
+// size before the lvalue made the slot, to restore on refusal.
+Value* Interpreter::arrayGrowGuard(Expr* target, size_t& sizeOut) {
+    if (!target || target->kind != NK::Index || static_cast<Index*>(target)->isHash) return nullptr;
+    Expr* gb = static_cast<Index*>(target)->base.get();
+    if (!gb || gb->kind != NK::VarExpr || static_cast<VarExpr*>(gb)->name.size() < 2 ||
+        static_cast<VarExpr*>(gb)->name[0] != '@') return nullptr;
+    Value* bp = tctx_.cur->find(static_cast<VarExpr*>(gb)->name);
+    if (!bp || bp->t != VT::Array || !bp->arr()) return nullptr;
+    sizeOut = bp->arr()->size();
+    return bp;
+}
+
+// `GLOBAL::<Probe> = 43` — a SIGILLESS package symbol springs into being
+// (nullptr: the name has a sigil, or is already something).
+Value* Interpreter::newGlobalSymbolSlot(const std::string& nm) {
+    if (nm.empty() || std::strchr("$@%&", nm[0]) || !global_ || tctx_.cur->find(nm) || classes_.count(nm))
+        return nullptr;
+    global_->define(nm, Value::any());
+    return &global_->vars[nm];
+}
+
+// checkElemType for an element assignment that may have GROWN the array
+// (arrayGrowGuard): a refusal takes the new slots back off.
+void Interpreter::checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol,
+                                        Value* growBase, size_t growSize) {
+    try { checkElemType(want, v, symbol); }
+    catch (...) {
+        if (growBase && growBase->arr() && growBase->arr()->size() > growSize) growBase->arr()->resize(growSize);
+        throw;
+    }
+}
+
+// An attribute's .type carries the CONTAINER shape, as in Rakudo:
+// `has License @.licenses` answers Positional[License] (and %-attrs
+// Associative[T]) — JSON::Unmarshal's array multi dispatches on exactly
+// that, and flattening to the element type sent typed-array attributes
+// to the Mu fallback (the Test::META chain's last wall).
+Value attrTypeValue(const ClassAttr& a) {
+    // `has Int @.a is Array` is typed by the container it names: Array[Int]
+    // (`is Hash[Int]` as written; `has @.a is List`, List)
+    if ((a.sigil == '@' || a.sigil == '%') && !a.containerIs.empty()) {
+        const std::string& ci = a.containerIs;
+        const size_t br = ci.find('[');
+        Value v = Value::typeObj(br == std::string::npos ? ci : ci.substr(0, br));
+        if (br != std::string::npos && ci.back() == ']') v.ofTypeM() = ci.substr(br + 1, ci.size() - br - 2);
+        else if (!a.type.empty()) v.ofTypeM() = a.type;
+        return v;
+    }
+    if (a.sigil == '@') {
+        Value v = Value::typeObj("Positional");
+        v.ofTypeM() = a.type;
+        return v;
+    }
+    if (a.sigil == '%') {
+        Value v = Value::typeObj("Associative");
+        v.ofTypeM() = a.type;
+        return v;
+    }
+    return Value::typeObj(a.type.empty() ? "Mu" : a.type);
+}
+
+// `our &infix:<qq> is export = &c` is in its package's EXPORT::DEFAULT and
+// EXPORT::ALL as the routine it was given, as an exported `sub` is
+// (`M::EXPORT::DEFAULT::{'&infix:<qq>'}`). Only a `&` one: an exported `our $x`
+// is imported as the module's own container, which a copy here would shadow.
+void Interpreter::publishOurExport(const std::string& name, const Value& v) {
+    if (!global_ || tctx_.pkgPrefix.empty() || name.size() < 2 || name[0] != '&') return;
+    for (const char* tg : {"DEFAULT", "ALL"})
+        global_->define(name.substr(0, 1) + tctx_.pkgPrefix + "EXPORT::" + tg + "::" + name.substr(1), v);
 }
 
 } // namespace rakupp

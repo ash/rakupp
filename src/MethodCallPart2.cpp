@@ -561,24 +561,6 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
     }
 }
 
-// An attribute's .type carries the CONTAINER shape, as in Rakudo:
-// `has License @.licenses` answers Positional[License] (and %-attrs
-// Associative[T]) — JSON::Unmarshal's array multi dispatches on exactly
-// that, and flattening to the element type sent typed-array attributes
-// to the Mu fallback (the Test::META chain's last wall).
-static Value attrTypeValue(const ClassAttr& a) {
-    if (a.sigil == '@') {
-        Value v = Value::typeObj("Positional");
-        v.ofTypeM() = a.type;
-        return v;
-    }
-    if (a.sigil == '%') {
-        Value v = Value::typeObj("Associative");
-        v.ofTypeM() = a.type;
-        return v;
-    }
-    return Value::typeObj(a.type.empty() ? "Mu" : a.type);
-}
 
 // The Attribute meta-object for `a`, declared by `ownerName`. ONE builder — the
 // `.^attributes` and `.^attribute_table` copies had drifted apart (only one of

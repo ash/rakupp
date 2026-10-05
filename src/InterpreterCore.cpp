@@ -3807,7 +3807,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // used to pass a single element however many parameters there
         // were, which was invisible while only 1-param signatures
         // (`-> $ (:$k)`) reached here.
-        size_t np = fs->params.size();
+        size_t np = 0; for (auto& pp : fs->params) np += !pp.named && !pp.slurpy; np += !np;   // `-> *@x`: one a time
         for (size_t i = 0; haveItem(i); i += np) {
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
             // a short LAST chunk binds what there is: defaults fill in,
@@ -10564,6 +10564,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (sr->pkg == "CALLER") break;
             }
         }
+        if (Value* gs = newGlobalSymbolSlot(nm)) return gs;   // `GLOBAL::<Probe> = 43`
         VarExpr tmp(nm); tmp.line = e->line;
         return lvalue(&tmp);
     }
@@ -12598,6 +12599,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         }
                 if (ourOwner) global_->define(qual, makeEnvSlotProxy(ourOwner, ve->name));
                 else global_->define(qual, *p);
+                if (ve->declExport) publishOurExport(ve->name, *p);   // `M::EXPORT::DEFAULT::<&f>`
                 // `our %x is export` — the importer sees the BARE name too. In a
                 // `unit class` the declaration lives in the CLASS body, so the
                 // module-load republish never saw it (Date::Names keeps its
@@ -14902,6 +14904,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *traw = std::move(fresh);
             }
         }
+        size_t growSize = 0; Value* growBase = arrayGrowGuard(a->target.get(), growSize);   // (undone on refusal)
         Value* lv = lvalue(a->target.get());
         // Whatever this assignment writes must ALSO land in the rw-linked
         // parameter copies the lvalue travelled past on its way to the caller's
@@ -14935,7 +14938,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             std::string want = tctx_.lastLvalueElemType;
             tctx_.lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(a->target.get());
-            checkElemType(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
+            checkElemTypeOrShrink(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'), growBase, growSize);
         }
         // …and `%h.AT-KEY(k) = v` / `@a.AT-POS(i) = v`, the method spelling
         if (opEq(a->op, "=") && a->target->kind == NK::MethodCall && !tctx_.lastLvalueElemType.empty()) {
@@ -16528,8 +16531,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (opEq(op, "cmp")) {
             if (declLazyLive(l)) forceLazy(l);
             if (declLazyLive(r)) forceLazy(r);
-            // …and an ENDLESS one against a finite list is read only as far as
-            // the comparison needs (`(1..Inf).Seq cmp (1, 2, 3)` is More)
+            // …and an ENDLESS one against a finite one is read only as far as needed
             if (Value out; g_cbInterp && g_cbInterp->cmpEndlessLazy(l, r, out)) return out;
         }
     }
@@ -16967,6 +16969,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         Value hooked;
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
     }
+    if (Value got; r.t == VT::Type && g_cbInterp && (opEq(op, "~~") || opEq(op, "!~~")) && !isJunction(l) &&
+        g_cbInterp->typeObjectUserAccepts(l, r, got)) return Value::boolean(opEq(op, "~~") == got.truthy());   // C's ACCEPTS
     if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) { // simple integer sequence (closure/list seeds handled in evalBinary)
         // …but `[...]`, `>>...<<` and `&infix:<...>` reach THIS arm with a list
         // seed, which read as its element count (`[...] 1, 3, 9` answered 3..9):
@@ -26075,8 +26079,7 @@ Value Interpreter::evalIndex(Index* idx) {
 
     // Match object indexing: $/[n] positional, $/{key} / $/<key> named
     if (base.t == VT::Match) {
-        // `$<p>:exists`, `$0:kv`, … — a subscript adverb over one capture
-        { bool done = false; Value av = matchSubscriptAdverb(base, idx, done); if (done) return av; }
+        { bool done = false; Value av = matchSubscriptAdverb(base, idx, done); if (done) return av; }   // `$<p>:exists`
         if (idx->isHash) {
             Value kv = eval(idx->index.get());
             // `$<w1 w2 w3>` / `$/{'x','y'}` — a SLICE of the named captures

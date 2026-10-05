@@ -630,7 +630,8 @@ private:
     ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);
     ExprPtr parsePrimary();
     ExprPtr routineDeclTerm(const std::string& name, bool impliedSub); // `multi sub f(…) {…}` as a term
-    ExprPtr subsetTerm();                                               // `subset S of … where …` as a term
+    ExprPtr subsetTerm();
+    ExprPtr pkgBraceKeyTerm(const std::string& name, std::string& pseudoPkg);   // `Foo::{'&f'}`                                               // `subset S of … where …` as a term
     ExprPtr parseDeclarator(const std::string& scope);
     void skipTraits(bool onVarDecl = false, ExprPtr* defaultOut = nullptr);
     ExprPtr parseColonPair();

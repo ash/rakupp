@@ -3039,33 +3039,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             Value lo, hi, loK, hiK; bool started = false;
             ValueList each;
+            std::vector<char> exOf;   // with a KEY, an endpoint's own exclusion rides along
+            bool exLo = false, exHi = false;
             if (inv.t == VT::Range) each = inv.flatten();
-            else if (mapper.t == VT::Code) each = items;
-            else
-                // a RANGE element stands for its two ends — `.minmax` results
-                // combine that way — and the empty one (Inf..-Inf) for nothing
-                // …and a nested LIST for its elements: `(4, [5, 6]).minmax` is 4..6
-                {
-                    std::function<void(const Value&, int)> add = [&](const Value& v, int depth) {
-                        if (v.t == VT::Array && v.arr() && !v.ext() && v.hashKind.empty() &&
-                            v.enumName.empty() && depth < 64) {
-                            for (auto& e : *v.arr()) add(e, depth + 1);
-                            return;
-                        }
-                        if (v.t != VT::Range) { each.push_back(v); return; }
-                        Value mn = methodCall(v, "min", ValueList{}), mx = methodCall(v, "max", ValueList{});
-                        if (valueCmp(mn, mx) > 0) return;
-                        each.push_back(mn); each.push_back(mx);
-                    };
-                    for (auto& v : items) add(v, 0);
-                }
-            for (auto& v : each) {
+            else if (mapper.t == VT::Code && comparator) each = items;
+            // a Range stands for its two ends and a nested list for its
+            // elements (minmaxOperands); with a KEY the ends keep their exclusions
+            else minmaxOperands(items, each, mapper.t == VT::Code ? &exOf : nullptr);
+            for (size_t ei = 0; ei < each.size(); ei++) {
+                const Value& v = each[ei];
                 if (v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type) continue;
+                const bool ex = ei < exOf.size() && exOf[ei];
                 Value k = v;
                 if (mapper.t == VT::Code && !comparator) { ValueList one{v}; k = callCallable(mapper, one); }
-                if (!started) { lo = hi = v; loK = hiK = k; started = true; continue; }
-                if (cmp(v, k, lo, loK) < 0) { lo = v; loK = k; }
-                if (cmp(v, k, hi, hiK) > 0) { hi = v; hiK = k; }
+                if (!started) { lo = hi = v; loK = hiK = k; exLo = exHi = ex; started = true; continue; }
+                if (cmp(v, k, lo, loK) < 0) { lo = v; loK = k; exLo = ex; }
+                if (cmp(v, k, hi, hiK) > 0) { hi = v; hiK = k; exHi = ex; }
             }
             if (!started) { // no defined elements: Rakudo's empty minmax is Inf..-Inf
                 Value rr = Value::range(0, -1, false, false);
@@ -3073,7 +3062,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 return rr;
             }
             if (lo.t == VT::Int && hi.t == VT::Int)
-                return Value::range(lo.toInt(), hi.toInt(), false, false);
+                return Value::range(lo.toInt(), hi.toInt(), exLo, exHi);
             // two STRING ends make a string Range (`<one two three>.minmax` is
             // "one".."two"), carried as its endpoints
             if (lo.t == VT::Str && hi.t == VT::Str && lo.hashKind.empty() && hi.hashKind.empty()) {

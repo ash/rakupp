@@ -2065,6 +2065,18 @@ bool Lexer::quoteWordShadowedAt(const std::string& w, size_t at) const {
     return false;
 }
 
+static bool prevIsClearTerm(const std::vector<Token>& out);
+// After a term, a word this file declares as an INFIX is that operator, never
+// a quote: with `our &infix:<qq> = …` (or `sub infix:<qq>`), `(1, 2) qq (3, 4)`
+// is the call, where `qq (…)` in term position stays a string.
+bool Lexer::declaredInfixWordAfterTerm(const std::vector<Token>& out) const {
+    if (out.empty() || !prevIsClearTerm(out)) return false;
+    size_t e = pos_;
+    while (e < src_.size() && (ascii::isalnum((unsigned char)src_[e]) || src_[e] == '_' || src_[e] == '-')) e++;
+    if (e == pos_) return false;
+    return src_.find("infix:<" + src_.substr(pos_, e - pos_) + ">") != std::string::npos;
+}
+
 bool Lexer::tryQuoteForm(Token& out) {
     size_t p = pos_;
     std::string w;
@@ -2222,6 +2234,17 @@ bool Lexer::tryQuoteForm(Token& out) {
             adverbs.find(":ww ") != std::string::npos ||
             adverbs.find(":quotewords ") != std::string::npos)) {
             out = make(Tok::QwList, raw);
+            // a BRACE delimiter makes inner braces nesting, not closures (as
+            // `qq{…}` has it): `qqw{a {1+1} c}` is ("a", "{1+1}", "c")
+            if ((w == "qq" || w == "qqw" || w == "qqww") && pos_ > 0 && src_[pos_ - 1] == '}') {
+                std::string esc;
+                for (size_t k = 0; k < raw.size(); k++) {
+                    if (raw[k] == '\\' && k + 1 < raw.size()) { esc += raw[k]; esc += raw[++k]; continue; }
+                    if (raw[k] == '{' || raw[k] == '}') esc += '\\';
+                    esc += raw[k];
+                }
+                out.text = esc;
+            }
             // the FORM decides quote protection (ww) and interpolation (qq):
             // the parser splits the words differently for each — qqww{ "\n" || }
             // is two words, the first a real newline (Text::Utils' suite)
@@ -2811,6 +2834,23 @@ bool Lexer::tryQuoteForm(Token& out) {
                                      "X::Syntax::Regex::Adverb",
                                      {{"adverb", name}, {"construct", "substitution"}});
         }
+        // tr: a range is `a..c`; Perl's `a-c` is refused, and so is a `..` with
+        // nothing on its left (a hyphen at either end, or escaped, is literal)
+        if (isTrans)
+            for (const std::string* side : {&raw, &repl}) {
+                const std::string& t = *side;
+                for (size_t k = 0; k < t.size(); k++) {
+                    if (t[k] == '\\') { k++; continue; }
+                    if (k == 0 && t.compare(0, 2, "..") == 0)
+                        throw ParseError("Range missing start character on the left", line_, "X::AdHoc", {});
+                    if (t[k] == '-' && k > 0 && k + 1 < t.size() && t[k - 1] != '.' && t[k + 1] != '.' &&
+                        t[k - 1] != '-' && t[k + 1] != '-' && t[k - 1] != ' ' && t[k + 1] != ' ')
+                        throw ParseError("Unsupported use of - as character range; in Raku please use .. "
+                                         "(or \\- if you mean a literal hyphen)", line_, "X::Obsolete",
+                                         {{"old", "- as character range"},
+                                          {"replacement", ".. (or \\- if you mean a literal hyphen)"}});
+                }
+            }
         // tr/y: tag the pattern with a sentinel so the interpreter transliterates
         out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
         out.text2 = repl;
@@ -4481,6 +4521,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                    isIdentStart(peek(2))))) {
                 t = lexOperator(prevIsClearTerm(out));
             } else if (isIdentStart(c) && !inAngle && !quoteBlockedHere(out, spaced) &&
+                       !declaredInfixWordAfterTerm(out) &&
                        (refreshTermNames(out), tryQuoteForm(t))) {
                 // t set by tryQuoteForm
             } else {

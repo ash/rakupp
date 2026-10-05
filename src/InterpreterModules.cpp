@@ -4515,6 +4515,17 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             "Placeholder variable '" + c.code()->placeholders[0] +
                             "' cannot override existing signature");
                 }
+                // …and so does a NON-empty one on a sub (`sub f($a) { %_ }`); a
+                // method's `%_` is its own implicit slurpy
+                else if (sd->hadSig && !sd->isMethod && !sd->isSubmethod) {
+                    std::set<std::string> pnames;
+                    for (auto& pp : *prms) pnames.insert(pp.name);
+                    const std::string ph = firstOwnPlaceholder(sd->body, pnames);
+                    if (!ph.empty())
+                        throwTyped("X::Signature::Placeholder",
+                            {{"placeholder", ph}, {"line", std::to_string(sd->line > 0 ? sd->line : 1)}},
+                            "Placeholder variable '" + ph + "' cannot override existing signature");
+                }
                 return c;
             };
             Value code = makeCand(&sd->params);

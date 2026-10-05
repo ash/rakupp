@@ -548,6 +548,14 @@ static inline void gbAdvance(GbState& st, int cur, int ip, bool brk) {
 }
 
 // Indices (into cps) where a new grapheme cluster starts; front() is always 0.
+// A codepoint that cannot BEGIN an ordinary grapheme — an Extend (combining
+// marks among them), ZWJ, SpacingMark or Prepend — so a cluster led by one is
+// written as its codepoints by `.raku` (`"\x[600,61]"`, `"\x[200D]"`).
+bool uniGraphemeLeadIsOdd(uint32_t cp) {
+    const int g = gbProp(cp);
+    return g == GB_Extend || g == GB_ZWJ || g == GB_SpacingMark || g == GB_Prepend;
+}
+
 std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
     std::vector<size_t> starts;
     if (cps.empty()) return starts;

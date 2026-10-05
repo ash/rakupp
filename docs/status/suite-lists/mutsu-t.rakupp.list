@@ -2918,6 +2918,7 @@ routines/placeholder-block-alias.t
 routines/placeholder-block-topic.t
 routines/placeholder-in-nested-whatevercode.t
 routines/placeholder-index-assign-target.t
+routines/placeholder-nested-block-scope.t
 routines/placeholder-outer-alias-writeback.t
 routines/placeholder-sub-rejects-extra-positionals.t
 routines/placeholder.t

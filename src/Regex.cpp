@@ -5032,7 +5032,9 @@ Regex* GrammarMatcher::compiledFor(const Rule& rule, const std::string& name, co
         if (rule.litOnly) return nullptr;
     }
     std::string key = name;
-    if (!rule.params.empty()) {
+    // (a body that reads `%_` gets the call's named arguments no parameter took)
+    const bool wantsSlurpyHash = rule.pattern.find("%_") != std::string::npos;
+    if (!rule.params.empty() || wantsSlurpyHash) {
         // Sort the call's arguments the way a method call would: `name => v`,
         // `:name(v)` / `:name<w>` / `:name` / `:$name` are NAMED and bind the
         // `:$name` parameter of that name; `|[…]` / `|(…)` spread into
@@ -5083,6 +5085,7 @@ Regex* GrammarMatcher::compiledFor(const Rule& rule, const std::string& name, co
         };
         for (auto& a : splitArgs(argstr)) sortArg(a, false);
         size_t pi = 0;
+        std::set<std::string> claimed;   // named arguments a parameter took
         for (size_t i = 0; i < rule.params.size(); i++) {
             // a param entry is "NAME" or "NAME\x1fDEFAULT-EXPR" (token value($*STOPPER = '"'));
             // a leading ':' marks a NAMED parameter (`token t(:$a)`)
@@ -5094,12 +5097,19 @@ Regex* GrammarMatcher::compiledFor(const Rule& rule, const std::string& name, co
                 pname.erase(0, 1);
                 size_t b = pname.find_first_not_of("$@%*");
                 auto nit = b == std::string::npos ? nameds.end() : nameds.find(pname.substr(b));
-                if (nit != nameds.end()) given = &nit->second;
+                if (nit != nameds.end()) { given = &nit->second; claimed.insert(nit->first); }
             } else if (pi < args.size()) given = &args[pi++];
             std::string v = given ? evalArg(*given)
                           : !dflt.empty()  ? evalArg(dflt) : std::string();
             key += '\x1f'; key += v;
             boundOut[pname] = std::move(v);
+        }
+        // `%_`: NAME \x1d VALUE \x1e … after a \x03 mark (decoded by the hook's overlay)
+        if (wantsSlurpyHash) {
+            std::string enc = "\x03";
+            for (auto& kv : nameds)
+                if (!claimed.count(kv.first)) { enc += kv.first; enc += '\x1d'; enc += evalArg(kv.second); enc += '\x1e'; }
+            boundOut["%_"] = std::move(enc);
         }
     }
     auto cit = cache_.find(key);

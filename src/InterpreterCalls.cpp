@@ -3705,6 +3705,38 @@ void collectPHStmt(const Stmt* s, std::set<std::string>& out) {
     }
 }
 
+// The first placeholder written in a routine's OWN statements — nested blocks
+// keep theirs — counting `@_` and `%_`, which a signature also forbids
+// (`sub f($a) { %_ }` is X::Signature::Placeholder). "" when there is none.
+std::string firstOwnPlaceholder(const std::vector<StmtPtr>& body, const std::set<std::string>& paramNames) {
+    std::set<std::string> ph;
+    auto* savedOrder = phNamedOrder_;
+    std::vector<std::string> namedOrder;
+    phNamedOrder_ = &namedOrder;
+    try {
+        for (auto& s : body) {
+            if (!s || s->kind == NK::Block || s->kind == NK::ForStmt || s->kind == NK::WhileStmt ||
+                s->kind == NK::LoopStmt || s->kind == NK::RepeatStmt || s->kind == NK::IfStmt ||
+                s->kind == NK::GivenStmt || s->kind == NK::WhenStmt) continue;
+            collectPHStmt(s.get(), ph);
+        }
+    }
+    catch (...) { phNamedOrder_ = savedOrder; throw; }
+    phNamedOrder_ = savedOrder;
+    // (a body that DECLARES `my @_` / `my %_` names its own variable)
+    std::set<std::string> declared = paramNames;   // `sub MAIN(*@_, *%_)` names them
+    for (auto& s : body) {
+        Expr* e = s && s->kind == NK::ExprStmt ? static_cast<ExprStmt*>(s.get())->e.get() : nullptr;
+        if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+        if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare)
+            declared.insert(static_cast<VarExpr*>(e)->name);
+        if (s && s->kind == NK::VarDecl) for (auto& dn : static_cast<VarDecl*>(s.get())->names) declared.insert(dn);
+    }
+    for (auto& n : ph)
+        if (((n == "@_" || n == "%_") && !declared.count(n)) || (n.size() > 2 && n[1] == '^')) return n;
+    return "";
+}
+
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     std::set<std::string> ph;
     std::vector<std::string> namedOrder;

@@ -10,6 +10,7 @@ std::vector<uint32_t> uniNormalize(const std::vector<uint32_t>& cps, int mode);
 int uniCombiningClass(uint32_t cp);
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps); // UAX #29 grapheme cluster count
 std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps); // cluster start indices (front()==0)
+bool uniGraphemeLeadIsOdd(uint32_t cp);   // Extend / ZWJ / SpacingMark / Prepend: `.raku` writes such a cluster as codepoints
 // Raku string indices are GRAPHEME indices, but a decoded string is a vector of
 // CODEPOINTS, and the two coincide only while every cluster is one codepoint long.
 // GraphemeMap is the translation, and exists so that `substr`/`index`/`flip` do not

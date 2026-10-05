@@ -1938,7 +1938,7 @@ static std::string rakuStrLit(const std::string& s) {
     for (size_t g = 0; g < starts.size(); g++) {
         size_t from = starts[g], to = g + 1 < starts.size() ? starts[g + 1] : cps.size();
         if (to - from == 1 && cps[from] < 0x80) { ascii1((unsigned char)cps[from]); continue; }
-        if (uniCombiningClass(cps[from]) > 0) {
+        if (uniCombiningClass(cps[from]) > 0 || uniGraphemeLeadIsOdd(cps[from])) {
             o += "\\x[";
             for (size_t k = from; k < to; k++) { if (k > from) o += ','; o += hex(cps[k]); }
             o += ']';

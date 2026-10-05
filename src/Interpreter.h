@@ -2555,7 +2555,15 @@ public:
     Value fatalCheckedMethodCall(Expr* e);                                // a method call under `use fatal`
     Value inlineBlockValue();                                             // `&?BLOCK` in an inline block
     bool tryBodySaysNoFatal(const Expr* operand);                         // `try { no fatal; … }`
-    Value nilAttrDefault(const ClassAttr& at, const std::string& resolvedType);                          // `has T $.x = Nil`
+    Value byCallableMinMaxPairs(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);
+    Value nilAttrDefault(const ClassAttr& at, const std::string& resolvedType);
+    void minmaxOperands(const ValueList& items, ValueList& each, std::vector<char>* exOf);   // what `.minmax` compares
+    Value minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);
+    Value* arrayGrowGuard(Expr* target, size_t& sizeOut);                 // `@a[5] = …` refused: no growth
+    void checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol, Value* growBase, size_t growSize);
+    Value* newGlobalSymbolSlot(const std::string& nm);                    // `GLOBAL::<Probe> = 43`
+    void publishOurExport(const std::string& name, const Value& v);       // `our &f is export = …` in EXPORT::DEFAULT
+    bool typeObjectUserAccepts(const Value& l, const Value& r, Value& out);   // `42 ~~ C` with a user ACCEPTS                          // `has T $.x = Nil`
     // does a bare type-like name resolve to a type, package, constant or term
     // here — pure lookups, for the gobbled-block check of a unit about to run
     bool bareNameResolves(const std::string& n, const Program& unit);
@@ -3938,6 +3946,7 @@ private:
 Value listToArray(const ValueList& items);
 Value applyArith(const std::string& op, const Value& l, const Value& r); // binary op dispatch (also used by codegen)
 void pushLoopValue(ValueList& out, const Value& v);   // a 6.e `next`/`last` payload into a loop's values
+Value attrTypeValue(const ClassAttr& a);              // an Attribute's .type (Positional[T], Array[T], …)
 
 // Compiled code's half of user-defined operator overloading — see the long note
 // on the definitions in Interpreter.cpp. The emitter reaches for these only when
@@ -4346,6 +4355,7 @@ Value  rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value&
 // `when` and the native backend's both run this, so the two cannot drift.
 bool   rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond);
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // $^a/$^b names, sorted (also used by codegen)
+std::string firstOwnPlaceholder(const std::vector<StmtPtr>& body, const std::set<std::string>& paramNames);              // `sub f($a) { %_ }` refuses it
 std::vector<std::string> collectAttrRefs(const std::vector<StmtPtr>& body); // $!x/@!x/%!x references in a body
 std::string firstBlockPlaceholder(const std::vector<StmtPtr>& body); // first $^/$:/@_ in a signature-less body
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out); // expr-level placeholder walk

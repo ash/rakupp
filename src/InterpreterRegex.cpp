@@ -2438,6 +2438,20 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             // match scope — overlaying "" there made `<?{ $*extended }>` read an
             // empty string for a Bool the caller had supplied.
             if (p.second.empty() && tctx_.cur->find(p.first)) continue;
+            if (p.first == "%_" && !p.second.empty() && p.second[0] == '\x03') {   // (GrammarMatcher::compiledFor)
+                Value h = Value::makeHash();
+                for (size_t q = 1; q < p.second.size();) {
+                    size_t ks = p.second.find('\x1d', q), ve = p.second.find('\x1e', q);
+                    if (ks == std::string::npos || ve == std::string::npos) break;
+                    const std::string k = p.second.substr(q, ks - q), v = p.second.substr(ks + 1, ve - ks - 1);
+                    (*h.hash())[k] = v == "True" ? Value::boolean(true) : v == "False" ? Value::boolean(false)
+                                   : !v.empty() && v.find_first_not_of("-0123456789") == std::string::npos
+                                       ? Value::integer(std::stoll(v)) : Value::str(v);
+                    q = ve + 1;
+                }
+                overlay(p.first, h);
+                continue;
+            }
             overlay(p.first, Value::str(p.second));
         }
         Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`

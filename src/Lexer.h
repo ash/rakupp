@@ -199,7 +199,8 @@ private:
     void skipWhitespaceAndComments();
     Token lexNumber();
     Token lexQuoted(char quote);
-    bool tryQuoteForm(Token& out); // q// qq// Q// with bracketing/char delimiters
+    bool tryQuoteForm(Token& out);
+    bool declaredInfixWordAfterTerm(const std::vector<Token>& out) const; // q// qq// Q// with bracketing/char delimiters
     void refreshTermNames(const std::vector<Token>& out); // `constant X` / `my \x` names in scope
     bool isTermName(const std::string& n) const;
     bool trySetOp(Token& out);     // (|) (&) (elem) ... ASCII set operators
