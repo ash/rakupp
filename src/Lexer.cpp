@@ -4892,7 +4892,7 @@ std::vector<Token> Lexer::tokenize() {
     if (src_.find("sub") != std::string::npos || src_.find("role") != std::string::npos ||
         src_.find("class") != std::string::npos || src_.find("grammar") != std::string::npos)
         scanQuoteWordSubs(src_, notQuoteWords_);
-    if (!tolerant_) { tokenizeImpl(out); return out; }
+    if (!tolerant_) { tokenizeImpl(out); aliasTypeNames(out); return out; }
     try { tokenizeImpl(out); }
     catch (ParseError& e) {
         g_storedLexErrors.push_back(e);
@@ -4902,7 +4902,32 @@ std::vector<Token> Lexer::tokenize() {
         end.ival = (long long)(g_storedLexErrors.size() - 1);
         out.push_back(end);
     }
+    aliasTypeNames(out);
     return out;
+}
+
+// NativeCall's `OpaquePointer` is another name for `Pointer` (in Rakudo the
+// one is a constant bound to the other: `OpaquePointer === Pointer`), and the
+// names a type is compared by downstream are spellings — so it is spelled
+// `Pointer` from here on. Not after `.` or `!`, where it would name a method,
+// nor after `method` / `sub` / … declaring a routine of that name.
+// Compress::Zlib's `sub inflateBack(z_stream, Callable, OpaquePointer, …)`
+// died "Invalid typename" whenever it was compiled from source.
+void Lexer::aliasTypeNames(std::vector<Token>& out) {
+    if (src_.find("OpaquePointer") == std::string::npos) return;
+    for (size_t i = 0; i < out.size(); i++) {
+        Token& t = out[i];
+        if (t.kind != Tok::Ident || t.text != "OpaquePointer") continue;
+        if (i > 0 && out[i - 1].kind == Tok::Op && !out[i - 1].text.empty() &&
+            (out[i - 1].text[0] == '.' || out[i - 1].text == "!")) continue;
+        // …nor where a routine of that name is declared
+        if (i > 0 && out[i - 1].kind == Tok::Ident) {
+            const std::string& d = out[i - 1].text;
+            if (d == "method" || d == "submethod" || d == "sub" || d == "token" || d == "rule" || d == "regex")
+                continue;
+        }
+        t.text = "Pointer";
+    }
 }
 
 void Lexer::processHeredocs(std::vector<Token>& out) {

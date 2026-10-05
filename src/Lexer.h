@@ -45,6 +45,7 @@ public:
     // anything running the program wants the rewrite, which is the default.
     explicit Lexer(std::string src, bool honourFudge = true);
     std::vector<Token> tokenize();
+    void aliasTypeNames(std::vector<Token>& out);   // `OpaquePointer` is `Pointer`
     // FUDGE: the roast-directive rewrite (applyRakudoFudge, Lexer.cpp) has to
     // know whether a line that reads like `#?rakudo …` IS a comment or is the
     // inside of a heredoc that looks like one, and only the lexer knows. It runs
