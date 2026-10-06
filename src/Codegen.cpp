@@ -3152,6 +3152,31 @@ struct Codegen {
             return "RT.methodCall(" + lvalueExpr(ix->base.get()) + ", \"ASSIGN-POS\", ValueList{"
                  + multiDimArgs(ix) + ", " + rhs + "})";
         }
+        // `$s = $s ~ X` is `$s ~= X` for a Str in $s: the same text, appended in
+        // place instead of copying all of $s first (issue #130: 40,000 of them
+        // 0.7 s compiled, where the interpreter's loop kernel already did this).
+        // X is a literal or a variable, so evaluating it after $s is read
+        // cannot change what $s held; anything else in $s takes the ordinary `~`.
+        if (a->op == "=" && tgt->kind == NK::VarExpr && a->value->kind == NK::Binary) {
+            auto* tv = static_cast<VarExpr*>(tgt);
+            auto* b = static_cast<Binary*>(a->value.get());
+            const NK xk = b->rhs ? b->rhs->kind : NK::Binary;
+            if (b->op == "~" && b->lhs && b->lhs->kind == NK::VarExpr &&
+                !static_cast<VarExpr*>(b->lhs.get())->declare &&
+                static_cast<VarExpr*>(b->lhs.get())->name == tv->name &&
+                !static_cast<VarExpr*>(b->lhs.get())->nativeStrRead &&   // a `str` keeps its native store
+                !static_cast<VarExpr*>(b->lhs.get())->nativeIntRead &&
+                !static_cast<VarExpr*>(b->lhs.get())->nativeNumRead &&
+                tv->name.size() > 1 && tv->name[0] == '$' &&
+                (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_') &&
+                (xk == NK::StrLit || xk == NK::IntLit || xk == NK::NumLit || xk == NK::VarExpr) &&
+                userOpFn("infix:<~>").empty() && coerceFor(tgt, rhs, a->value.get()) == rhs) {
+                return "([&]()->Value&{ Value& __l = " + lvalueExpr(tgt) + ";"
+                       " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName.empty())"
+                       " rtCatAssign(__l, " + exArg(b->rhs.get()) + ");"
+                       " else __l = " + rhs + "; return __l; }())";
+            }
+        }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
         // `@a[$y; $x] += 1` — a multi-dim slot is not a reference into a buffer, so
@@ -5163,6 +5188,20 @@ struct Codegen {
         std::vector<std::string> pre;
         std::string rhs;
         if (t == LT::STR) {
+            // `$s = $s ~ X` is `$s ~= X`: the same text, without building a new
+            // string from all of $s each time (issue #130: 40,000 of them 0.74 s)
+            if (a->op == "=" && a->value->kind == NK::Binary &&
+                !(a->target->kind == NK::VarExpr && static_cast<VarExpr*>(a->target.get())->declare)) {
+                auto* b = static_cast<Binary*>(a->value.get());
+                std::string ln;
+                if (b->op == "~" && uScalar(b->lhs.get(), ln) && ln == nm) {
+                    std::string x = uExpr(b->rhs.get(), LT::STR, pre);
+                    if (x.empty()) return false;
+                    for (auto& p2 : pre) line(ind, p2);
+                    line(ind, "rtLaneAppend(" + lv + ", " + x + ");");
+                    return true;
+                }
+            }
             rhs = uExpr(a->value.get(), LT::STR, pre);
             if (rhs.empty() || (a->op != "=" && a->op != "~=")) return false;
             for (auto& p2 : pre) line(ind, p2);

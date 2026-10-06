@@ -4292,16 +4292,23 @@ inline bool rtGeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlai
 // An undefined accumulator (`my Str $s; $s ~= "x"`) starts from the empty
 // string, as the interpreter's compound assignment does — not from a
 // stringified type object with an "uninitialized" warning.
-// A plain Str grows in place by a plain Str or Int: ASCII text joins as it is
-// (an NFC string stays NFC), anything else is renormalized as the
-// interpreter's `~` does — `"e" ~= "\x[301]"` is one character, é. Only a plain
-// Str took the in-place path, so `$s ~= $_` over Ints rebuilt the whole string
-// every time (issue #130: 40,000 appends 0.7 s).
+// A plain Str grows in place by a plain Str, a number or a Bool: ASCII text
+// joins as it is (an NFC string stays NFC), anything else is renormalized as
+// the interpreter's `~` does — `"e" ~= "\x[301]"` is one character, é. Only a
+// plain Str took the in-place path, so `$s ~= $_` over Ints rebuilt the whole
+// string every time (issue #130: 40,000 appends 0.7 s), and over Nums or Bools
+// still did.
 void rtCatAppendText(Value& l, const std::string& r);
 inline void rtCatAssign(Value& l, const Value& r) {
-    if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && r.hashKind.empty() && r.enumName.empty()) {
-        if (r.t == VT::Str) { rtCatAppendText(l, r.s.str()); return; }
-        if (r.t == VT::Int && !r.natBits) { l.s += r.toStr(); return; }   // (digits: ASCII)
+    if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && r.hashKind.empty()) {
+        if (r.enumName.empty()) {
+            if (r.t == VT::Str) { rtCatAppendText(l, r.s.str()); return; }
+            if (r.t == VT::Int && !r.natBits) { l.s += r.toStr(); return; }   // (digits: ASCII)
+        }
+        if (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.t == VT::Bool) {
+            rtCatAppendText(l, r.toStr());   // the text applyArith's `~` takes
+            return;
+        }
     }
     if ((l.t == VT::Any || l.t == VT::Nil || l.t == VT::Type) && l.hashKind.empty()) {
         l = applyArith("~", Value::str(""), r);

@@ -64,6 +64,15 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
     mutable std::atomic<const std::vector<uint32_t>*> cpIndex{nullptr}; // byte offset of codepoint i, +end sentinel
     mutable std::atomic<const std::vector<uint32_t>*> gIndex{nullptr};  // byte offset of grapheme g, +end sentinel
     explicit StrBody(std::string t) : text(std::move(t)) {}
+    // Its sole owner is about to rewrite the text (CowStr::mut): every cached
+    // property describes the old one.
+    void invalidate() {
+        allAscii.store(-1, std::memory_order_relaxed);
+        crFree.store(-1, std::memory_order_relaxed);
+        nGraphemes.store(-1, std::memory_order_relaxed);
+        delete cpIndex.exchange(nullptr, std::memory_order_acq_rel);
+        delete gIndex.exchange(nullptr, std::memory_order_acq_rel);
+    }
     ~StrBody() {
         delete cpIndex.load(std::memory_order_relaxed);
         delete gIndex.load(std::memory_order_relaxed);
@@ -131,11 +140,26 @@ public:
         return b->text.empty() ? nullptr : &b->text[0];
     }
 
-    // Write access. Detaches from the shared body first, so a mutation never
-    // reaches another Value holding the same text. The result stays inline
-    // until it is next assigned — which is where promotion happens again.
+    // Write access. A SHARED body is detached from first, so a mutation never
+    // reaches another Value holding the same text; the copy stays inline until
+    // it is next assigned — which is where promotion happens again.
+    //
+    // A body nothing else holds is not shared, so there is nothing to protect:
+    // it is written where it is, keeping the string promoted (a later copy of
+    // the value stays a count bump). Detaching it anyway copied the whole text
+    // on every `~=` past kPromote and left it inline, and from then on every
+    // copy of the value — the result of a closure, a method or an rw sub that
+    // ends in `$s ~= …` — copied the text again: 40,000 appends through a
+    // closure took 0.07 s, through an `is rw` parameter 0.27 s (issue #130).
     std::string& mut() {
-        if (p_) { s_ = p_->text; p_.reset(); }
+        if (p_) {
+            if (p_->refs_.load(std::memory_order_acquire) == 1) {
+                StrBody* b = const_cast<StrBody*>(p_.get());
+                b->invalidate();
+                return b->text;
+            }
+            s_ = p_->text; p_.reset();
+        }
         return s_;
     }
     // The cache lives on the shared body, so it survives only for promoted
@@ -170,16 +194,29 @@ public:
     void resize(size_t n, char c) { mut().resize(n, c); }
     void erase(size_t p, size_t n = std::string::npos) { mut().erase(p, n); }
     void replace(size_t p, size_t n, const std::string& x) { mut().replace(p, n, x); }
-    CowStr& operator+=(const std::string& x) { mut() += x; return *this; }
-    CowStr& operator+=(const char* x) { mut() += x; return *this; }
-    CowStr& operator+=(char x) { mut() += x; return *this; }
+    // An append is how a string grows past kPromote without ever being
+    // assigned, so it promotes there too. Left inline, the accumulator of
+    // `$s ~= …` stayed a plain std::string however long it grew, and every copy
+    // of its value — a closure's or a method's result, an argument — copied the
+    // whole text (issue #130). Moving it into a body costs no copy, and the
+    // next append writes into that body in place (mut, above).
+    CowStr& operator+=(const std::string& x) { mut() += x; grown(); return *this; }
+    CowStr& operator+=(const char* x) { mut() += x; grown(); return *this; }
+    CowStr& operator+=(char x) { mut() += x; grown(); return *this; }
+private:
+    void grown() { if (!p_ && s_.size() >= kPromote) promote(); }
 };
 
 // The implicit CowStr -> const std::string& conversion does not apply when BOTH
 // operands are CowStr (no conversion is considered for a built-in operator with
 // no candidate), so the comparisons and concatenation are spelled out.
-inline bool operator==(const CowStr& a, const CowStr& b) { return a.str() == b.str(); }
-inline bool operator!=(const CowStr& a, const CowStr& b) { return a.str() != b.str(); }
+// Two copies of one value share its body: equal without reading a byte of it
+// (binding an `is rw` argument compared the whole text of the caller's string
+// with the parameter's copy of it, on every call).
+inline bool operator==(const CowStr& a, const CowStr& b) {
+    return (a.body() && a.body() == b.body()) || a.str() == b.str();
+}
+inline bool operator!=(const CowStr& a, const CowStr& b) { return !(a == b); }
 inline bool operator<(const CowStr& a, const CowStr& b)  { return a.str() <  b.str(); }
 inline bool operator>(const CowStr& a, const CowStr& b)  { return a.str() >  b.str(); }
 inline bool operator<=(const CowStr& a, const CowStr& b) { return a.str() <= b.str(); }

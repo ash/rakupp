@@ -7058,6 +7058,19 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     return last;
 }
 
+// An `is rw` parameter bound to the caller's own container (bindArgCell) reads
+// and writes the caller's variable; the argument list's copy of its value is
+// dead from then on. While it lived, the string it shares a body with could not
+// be appended to in place: `sub add($x is rw, $y) { $x ~= $y }` copied the
+// caller's whole string on every call (issue #130: 40,000 calls 0.27 s). Only a
+// string is let go — the copy that costs something; nothing reads a positional
+// argument after binding (a method's %_ looks at the named Pairs only).
+static void releaseCelledArgCopies(const std::shared_ptr<Env>& env, ValueList& args) {
+    if (!env->ex || env->ex->rwCelled.empty()) return;
+    for (auto& a : args)
+        if (a.t == VT::Str && a.s.body()) a = Value::any();
+}
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // A plain sub called plainly takes the lean path. The per-call half of the
@@ -7999,8 +8012,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     }
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
-        if (rwArgs || tctx_.rwInvocantExpr) setupRwLinks(c.params, env, rwArgs,
-                                 !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
+        if (rwArgs || tctx_.rwInvocantExpr) {
+            setupRwLinks(c.params, env, rwArgs,
+                         !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
+            releaseCelledArgCopies(env, args);
+        }
         if (rwSlots) setupRwSlots(c.params, env, rwSlots); // hyper element slots
     } else if (!c.placeholders.empty()) {
         // $:name placeholders bind from :name(…) pair args; only when they are
@@ -9756,8 +9772,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     if (c.params && !c.params->empty()) {
         bindParams(*c.params, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
                    whereVerified);
-        if (rwArgs || tctx_.rwInvocantExpr) setupRwLinks(c.params, env, rwArgs,
-                                 !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
+        if (rwArgs || tctx_.rwInvocantExpr) {
+            setupRwLinks(c.params, env, rwArgs,
+                         !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
+            releaseCelledArgCopies(env, args);
+        }
     }
     else if (!c.placeholders.empty()) {
         size_t posK = 0;   // the positional ones take the positional args in order
@@ -12006,14 +12025,18 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 if (asciiRhs) slot->s += rhs.s;
                                 else slot->s = nfcNormalize(slot->s + rhs.s);
-                            } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() && rhs.t == VT::Int &&
-                                       rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() &&
-                                       !rhs.natBits) {
-                                // an Int's text is ASCII digits: it appends in place too.
-                                // Through applyArith every append renormalized a copy of
-                                // the whole string (issue #130: 40,000 `$s ~= $_` 0.7 s)
+                            } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() &&
+                                       (rhs.t == VT::Int || rhs.t == VT::Num || rhs.t == VT::Rat || rhs.t == VT::Bool) &&
+                                       rhs.hashKind.empty()) {
+                                // a number or a Bool appends its text in place too. Through
+                                // applyArith every append built a copy of the whole string
+                                // (issue #130: 40,000 `$s ~= $_` 0.7 s, `$s ~= 1.5e0` 0.67 s)
+                                const bool plainInt = rhs.t == VT::Int && rhs.enumName.empty() &&
+                                                      rhs.enumType.empty() && !rhs.natBits;
+                                std::string txt = rhs.toStr();   // the text applyArith's `~` takes
                                 ParStripe ws(*this, slot);
-                                slot->s += rhs.toStr();
+                                if (plainInt) slot->s += txt;   // (digits: ASCII)
+                                else rtCatAppendText(*slot, txt);
                             } else if ((sv == 2 || sv == 3) &&
                                        (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
                                 // `$t += $d` keeps the Duration a Duration, as `+` does
