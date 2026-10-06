@@ -4610,6 +4610,11 @@ Value Interpreter::stepValue(const Value& cur, bool up) {
     if (cur.natBits) wrapNative(n, cur.natBits, cur.natSigned, cur.natFloat);   // native int wraparound
     return n;
 }
+void rtCatAppendText(Value& l, const std::string& r) {
+    for (unsigned char c : r)
+        if (c >= 0x80) { l.s = nfcNormalize(l.s.str() + r); return; }
+    l.s += r;
+}
 void rtViewSyncSlow(const Value& base) {
     const ElemView* vw = base.elemView();
     if (!vw || !vw->src || !base.arr() || vw->src->size() != vw->srcSize) return;
