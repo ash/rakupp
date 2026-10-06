@@ -819,7 +819,9 @@ diag("--cnp is not live in this build, so its tier-up checks are skipped: $CNP-W
             skip("$name enters a kernel for a counted `for`");
             next;
         }
-        my $p = run($*EXECUTABLE, $lane, $case, :out, :err);
+        # with the interpreter's own loop kernels off, as t/jit/run.raku's lanes
+        # run: they take every loop in this case before a tier-up is asked for
+        my $p = run($*EXECUTABLE, $lane, $case, :out, :err, :env(%(|%*ENV, RAKUPP_NO_KERNELS => 1)));
         $p.out.slurp(:close);
         my $e = $p.err.slurp(:close);
         my $entered = $e ~~ / 'kernels entered ' (\d+) / ?? +$0 !! 0;
@@ -1753,6 +1755,10 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     {
         my $jdir = $work.add('jitcache');
         my %e = %*ENV; %e<RAKUPP_JIT_DIR> = $jdir.Str;
+        # The interpreter's own loop kernels (IntKernel.cpp) run a loop this
+        # plain before a tier-up is ever asked for, so the JIT is left nothing
+        # to compile; t/jit/run.raku turns them off for its lanes too.
+        %e<RAKUPP_NO_KERNELS> = 1;
         sub jit-run(*@a) {
             my $p = run($*EXECUTABLE, |@a, :out, :err, :env(%e));
             ($p.out.slurp(:close), $p.err.slurp(:close), $p.exitcode)
@@ -1786,7 +1792,7 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         my @f = $jdir.e ?? $jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat !! ();
         ok(!@f.grep(*.extension eq 'pch'), '--jit writes no precompiled header unless asked');
         jit-run('--jit=sync,pch,nocache,threshold=0', '-e', $prog);
-        my @g = $jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat;
+        my @g = $jdir.e ?? $jdir.dir(:!all).map({ .d ?? .dir.Slip !! $_ }).flat !! ();
         # The lane is clang-only, and not by oversight: a .pch is what
         # `-include-pch` takes, and GCC's own precompiled headers are a
         # different mechanism under a different name. So a machine whose `c++`
@@ -1826,6 +1832,7 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         my $cdir = $work.add('cnpcache');
         my %e = %*ENV;
         %e<RAKUPP_JIT_DIR> = $cdir.Str;
+        %e<RAKUPP_NO_KERNELS> = 1;   # (the interpreter's loop kernels would run it first; see --jit above)
         # The copy-and-patch backend must not consult a C++ compiler at all. An
         # impossible $CXX proves it: --jit would refuse the run, --cnp cannot
         # notice.

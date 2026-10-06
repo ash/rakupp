@@ -79,10 +79,12 @@ static inline char** rakupp_environ() { return environ; }
 
 // A branch that is almost never taken (a warning path in a hot operator).
 // MSVC has no __builtin_expect, so there it is only the condition.
+#ifndef RAKUPP_UNLIKELY   // (Interpreter.h defines it too)
 #if defined(__GNUC__) || defined(__clang__)
 #define RAKUPP_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #else
 #define RAKUPP_UNLIKELY(x) (x)
+#endif
 #endif
 
 namespace rakupp {

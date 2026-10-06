@@ -63,6 +63,8 @@ my $ansi = $p.out.slurp(:close); $p.err.slurp(:close);
     if $ansi.contains("\e[3;36m");
 $hd.unlink;
 
-if @fail { .say for @fail; say "FAIL ({+@fail})"; exit 1 }
+# each reason on a `FAIL:` line: t/run.raku echoes only the lines that start
+# with FAIL, and a bare "FAIL (6)" on a CI leg said nothing about which files
+if @fail { say "FAIL: $_" for @fail; say "FAIL ({+@fail})"; exit 1 }
 note "$n files scanned, all byte-lossless";   # the count is context, not the verdict
 say "PASS";

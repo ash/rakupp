@@ -37,6 +37,17 @@
 #define RAKUPP_CONSTINIT
 #endif
 
+// A branch that is almost never taken. MSVC has no __builtin_expect, so there
+// it is only the condition — and this header reaches the MSVC build (the
+// inline rtSinkStmt below), which a bare __builtin_expect broke.
+#ifndef RAKUPP_UNLIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define RAKUPP_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define RAKUPP_UNLIKELY(x) (x)
+#endif
+#endif
+
 namespace rakupp {
 
 // A string against a literal spelling: the length first, then a memcmp of a
@@ -4345,7 +4356,7 @@ inline Value rtForList(const Value& v) {
 // (a native int kernel's result) has nothing to sink.
 template <class T> inline void rtSinkStmt(Interpreter&, const T&) {}
 inline void rtSinkStmt(Interpreter& I, const Value& v) {
-    if (__builtin_expect((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext()), 0)) I.sinkValue(v);
+    if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext()))) I.sinkValue(v);
 }
 bool rtForPull(const Value& lst, size_t i);   // the cold half: grow a lazy source
 inline bool rtForHas(const Value& lst, size_t i) {
