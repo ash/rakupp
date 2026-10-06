@@ -4646,7 +4646,13 @@ Value Interpreter::stepValue(const Value& cur, bool up) {
 void rtCatAppendText(Value& l, const std::string& r) {
     for (unsigned char c : r)
         if (c >= 0x80) { l.s = nfcNormalize(l.s.str() + r); return; }
-    l.s += r;
+    l.s.appendText(r);   // (a body others hold grows a buffer, not a copy: APPEND-PLAN.md)
+}
+void rtCatPrependText(Value& l, const std::string& x) {
+    // ASCII at the join (the string's own first byte) cannot combine with what
+    // goes in front of it; anything else is renormalized as `~` does
+    if (l.s.firstByte() >= 0x80) { l.s = nfcNormalize(x + l.s.str()); return; }
+    l.s.prependText(x);
 }
 void rtViewSyncSlow(const Value& base) {
     const ElemView* vw = base.elemView();
@@ -5273,7 +5279,7 @@ long long Interpreter::ncRawAddr(const Value& v) {
             std::lock_guard<std::mutex> lk(m);
             retained.push_back(body);
             if (retained.size() > 256) retained.pop_front();
-            return (long long)(intptr_t)body->text.data();
+            return (long long)(intptr_t)body->str().data();
         }
         return (long long)(intptr_t)v.s.data();
     }
@@ -5812,7 +5818,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // lives as long as the Raku object does, which is exactly the
             // lifetime Rakudo gives the callee — and it costs no copy at all.
             const StrBody* sb = (v.hashKind == "Buf") ? nullptr : v.s.body();
-            if (sb) putPtr(s, (void*)sb->text.data());
+            if (sb) putPtr(s, (void*)sb->str().data());
             else {
                 // Short buffers are held inline, so there is no shared body to
                 // point at and the copy is all we have. A retained pointer to a

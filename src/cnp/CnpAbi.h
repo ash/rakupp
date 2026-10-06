@@ -136,8 +136,9 @@ enum RkCnpOp {
 // Or'd into an operator index for a NATIVE int operation: its cold path wraps
 // at 64 bits instead of growing into a big Int (Interpreter nativeIntArith).
 #define RK_OP_NATIVE 0x80
-// Or'd into RK_OP_CONCAT for `$s = $s ~ X` (destination = left operand): the
-// append is made in place only into a plain Str. Anything else in $s takes the
-// general `~` — which, unlike `~=`, warns about an undefined left side.
+// Or'd into RK_OP_CONCAT for `$s = $s ~ X` (destination = left operand) and
+// `$s = X ~ $s` (destination = right operand): the append or prepend is made in
+// place only into a plain Str. Anything else in $s takes the general `~` —
+// which, unlike `~=`, warns about an undefined left side.
 #define RK_OP_SELFCAT 0x40
 

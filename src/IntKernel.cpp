@@ -896,6 +896,15 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     v = v->b;
                     kop = KOp::SApp;
                 }
+                // `$s = X ~ $s` and `$s = $s.substr(…)` need the old text kept
+                // while the new one is made from it: a std::string slot copies
+                // all of it every step, and the boxed path does not (a shared
+                // buffer's views, APPEND-PLAN.md)
+                else if (kop == KOp::SSet && v->op == KOp::SCat && v->b->op == KOp::SVar && v->b->slot == tn->slot)
+                    return refuse("a string prepended to itself (runs boxed, in a shared buffer)");
+                else if (kop == KOp::SSet && v->op == KOp::Substr && v->a && v->a->op == KOp::SVar &&
+                         v->a->slot == tn->slot)
+                    return refuse("a string cut down to its own substr (runs boxed, as a view)");
             }
             else if (a->op == "~=" && tt == KT::Str && (vt == KT::Str || vt == KT::Int)) {
                 v = asStr(k, v, vt);

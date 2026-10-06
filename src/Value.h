@@ -44,8 +44,45 @@ struct Value;
 // Because the promoted body is immutable, it is also the right place to cache
 // the two string properties the scanning ops recompute per character (see
 // asciiState/nGraphemes below).
+// ---- strings that share a growable buffer (docs/dev/plans/APPEND-PLAN.md) ----
+//
+// Three ways of building a string need the OLD text to survive unchanged while
+// a new one is made from it — `$k = $s; $s ~= x`, `$s = "x" ~ $s`, and
+// `$s = $s.substr(5)` — and a flat string can only do that by copying all of it
+// every step (issue #130's second round: quadratic on every engine, linear in
+// Rakudo). A VIEW is a range of a StrBuf instead. Bytes inside a buffer's
+// written region are never moved or changed, so any number of views (and
+// threads) may read them; a view whose end is the region's end may CLAIM the
+// free space after it with one compare-and-swap and write there — and the same
+// at the front. `$k`'s view keeps its range while `$s`'s grows past it. When
+// the space runs out, the view's bytes move to a new buffer twice the size,
+// with room on both sides, so each step is O(1) on average.
+//
+// Views are made only by the Str-building paths that ask (CowStr::appendText,
+// joinPrepend/joinAppend, sub), never by `+=`: a Buf's storage is handed to C
+// and must stay one flat std::string.
+struct StrBuf : RefCounted {
+    char* data;
+    size_t cap;
+    std::atomic<size_t> lo, hi;       // the written region [lo, hi); outside it is free
+    std::atomic<bool> clean{true};    // every byte ever written is ASCII and not CR
+    StrBuf(size_t c, size_t l, size_t h) : data(new char[c]), cap(c), lo(l), hi(h) {}
+    StrBuf(const StrBuf&) = delete;
+    StrBuf& operator=(const StrBuf&) = delete;
+    ~StrBuf() { delete[] data; }
+};
+struct StrView {
+    Ref<StrBuf> buf;
+    size_t off, len;
+    // a contiguous copy, made the first time something needs one (StrBody::str)
+    mutable std::atomic<const std::string*> flat{nullptr};
+    StrView(Ref<StrBuf> b, size_t o, size_t l) : buf(std::move(b)), off(o), len(l) {}
+    ~StrView() { delete flat.load(std::memory_order_relaxed); }
+};
+
 struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
-    std::string text;
+    std::string text;           // the text — empty for a view, which reads `view`
+    StrView* view = nullptr;    // owned; set for a range of a StrBuf
     // All -1 until computed, then 0/1. Racing threads may each compute one of
     // these, but the text is immutable so they compute the same answer — the
     // store is idempotent and needs no lock.
@@ -64,6 +101,14 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
     mutable std::atomic<const std::vector<uint32_t>*> cpIndex{nullptr}; // byte offset of codepoint i, +end sentinel
     mutable std::atomic<const std::vector<uint32_t>*> gIndex{nullptr};  // byte offset of grapheme g, +end sentinel
     explicit StrBody(std::string t) : text(std::move(t)) {}
+    explicit StrBody(StrView* v) : view(v) {}
+    // The text, contiguous: a view's is flattened once and kept (the same
+    // publish-once CAS as cpIndex — racing threads build identical copies).
+    const std::string& str() const { return view ? flatView() : text; }
+    size_t size() const { return view ? view->len : text.size(); }
+    // (out of line on purpose: inlined into each of the ~2,000 readers of
+    // str(), it cost every string read ~1% in code size alone)
+    const std::string& flatView() const;
     // Its sole owner is about to rewrite the text (CowStr::mut): every cached
     // property describes the old one.
     void invalidate() {
@@ -76,8 +121,14 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
     ~StrBody() {
         delete cpIndex.load(std::memory_order_relaxed);
         delete gIndex.load(std::memory_order_relaxed);
+        delete view;
     }
 };
+
+// RAKUPP_APPEND=force: every promoted string is a view of a buffer, so every
+// reader of a string's text goes through the flatten (APPEND-PLAN.md A1) — the
+// debug mode that proves the readers, as RAKUPP_NO_KERNELS does the kernels.
+extern bool g_strViewsForced;
 
 class CowStr {
     // Exactly one of these carries the value: `p_` when set, otherwise `s_`.
@@ -89,9 +140,13 @@ class CowStr {
     static constexpr size_t kPromote = 23;
 
     void take(std::string x) {
-        if (x.size() >= kPromote) { p_ = makeRef<const StrBody>(std::move(x)); s_.clear(); }
+        if (x.size() >= kPromote) {
+            p_ = g_strViewsForced ? forcedView(x) : makeRef<const StrBody>(std::move(x));
+            s_.clear();
+        }
         else { s_ = std::move(x); p_.reset(); }
     }
+    static Ref<const StrBody> forcedView(const std::string& x);
 
 public:
     CowStr() = default;
@@ -109,7 +164,7 @@ public:
     CowStr& operator=(std::string x) { take(std::move(x)); return *this; }
     CowStr& operator=(const char* x) { take(std::string(x)); return *this; }
 
-    const std::string& str() const { return p_ ? p_->text : s_; }
+    const std::string& str() const { return p_ ? p_->str() : s_; }
     operator const std::string&() const { return str(); }         // NOLINT(google-explicit-constructor)
     // The shared body, when the string is promoted (null for inline smalls).
     // NativeHelpers::Blob's pointer-to retains it so a pointer handed to C
@@ -133,6 +188,7 @@ public:
     // positional STRING ops, which no byte buffer runs.
     char* mutInPlace() {
         if (!p_) return s_.empty() ? nullptr : &s_[0];
+        if (p_->view) p_ = makeRef<const StrBody>(std::string(p_->str()));   // (a Buf is never a view)
         StrBody* b = const_cast<StrBody*>(p_.get());
         b->allAscii.store(-1, std::memory_order_relaxed);
         b->crFree.store(-1, std::memory_order_relaxed);
@@ -153,12 +209,12 @@ public:
     // closure took 0.07 s, through an `is rw` parameter 0.27 s (issue #130).
     std::string& mut() {
         if (p_) {
-            if (p_->refs_.load(std::memory_order_acquire) == 1) {
+            if (!p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
                 StrBody* b = const_cast<StrBody*>(p_.get());
                 b->invalidate();
                 return b->text;
             }
-            s_ = p_->text; p_.reset();
+            s_ = p_->str(); p_.reset();
         }
         return s_;
     }
@@ -168,8 +224,8 @@ public:
     const StrBody* body() const { return p_.get(); }
 
     // const std::string forwarding — keeps the ~1,100 read sites unchanged.
-    size_t size()  const { return str().size(); }
-    bool   empty() const { return str().empty(); }
+    size_t size()  const { return p_ ? p_->size() : s_.size(); }   // (a view is not flattened for it)
+    bool   empty() const { return size() == 0; }
     const char* c_str() const { return str().c_str(); }
     const char* data()  const { return str().data(); }
     char   back()  const { return str().back(); }
@@ -203,6 +259,42 @@ public:
     CowStr& operator+=(const std::string& x) { mut() += x; grown(); return *this; }
     CowStr& operator+=(const char* x) { mut() += x; grown(); return *this; }
     CowStr& operator+=(char x) { mut() += x; grown(); return *this; }
+    // The Str-building paths, which may answer with a view (see StrBuf above).
+    // appendText is `+=` for a Str: in place into a sole-owned flat body as
+    // before, into the free space after a view, and — for a body others hold —
+    // into a new buffer rather than a copy that the next shared append would
+    // make again. The others answer false for "do it the flat way", with `out`
+    // untouched: joinPrepend is `x ~ r`, joinAppend is `l ~ x` (only when `l` is
+    // a view already), sub is a byte range of a promoted string. The caller
+    // keeps Raku's text rules (NFC at the join, grapheme indexing): these only
+    // move bytes.
+    void appendText(const char* x, size_t n) {
+        // the common case first, inline: a flat body nothing else holds grows
+        // where it is, exactly as `+=` does
+        if (p_ && !p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
+            StrBody* b = const_cast<StrBody*>(p_.get());
+            b->invalidate();
+            b->text.append(x, n);
+            return;
+        }
+        appendTextSlow(x, n);
+    }
+    void appendText(const std::string& x) { appendText(x.data(), x.size()); }
+    void appendTextSlow(const char* x, size_t n);
+    // `$s = x ~ $s`: into the free space before a view; a flat body (whose
+    // front cannot grow) moves into a buffer with room in front, once.
+    void prependText(const char* x, size_t n);
+    void prependText(const std::string& x) { prependText(x.data(), x.size()); }
+    // the first byte, 0 for an empty string — without flattening a view
+    unsigned char firstByte() const {
+        if (p_ && p_->view) return p_->view->len ? (unsigned char)p_->view->buf->data[p_->view->off] : 0;
+        const std::string& s = str();
+        return s.empty() ? 0 : (unsigned char)s[0];
+    }
+    static bool joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r);
+    static bool joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n);
+    static bool sub(CowStr& out, const CowStr& s, size_t off, size_t len);
+    bool isView() const { return p_ && p_->view; }
 private:
     void grown() { if (!p_ && s_.size() >= kPromote) promote(); }
 };

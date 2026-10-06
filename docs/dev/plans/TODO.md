@@ -17,8 +17,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
   2026-10-05. W1–W4 done; owed: `perf-guard --check` on a quiet machine. Left:
-  `--cnp` kernel entry's slot lookups, the interpreter's own `$s = $s ~ X`, and
-  three interpreter divergences from Rakudo on native parameters (in the plan).
+  `--cnp` kernel entry's slot lookups and three interpreter divergences from
+  Rakudo on native parameters (in the plan).
+- [ ] **Append — strings made of pieces**: [APPEND-PLAN.md](APPEND-PLAN.md),
+  2026-10-06. Long strings may be views of a shared growable buffer, so
+  prepending, `$k = $s` before each append and a `.substr` loop are linear on
+  every engine (all 13 shapes of `tools/bench/append-shapes.raku`). A0–A6 done;
+  owed: `perf-guard` A/B against `a124d91a` on a quiet machine. Left in the
+  plan: `eq`/printing reading views directly, and a non-ASCII grapheme table
+  for views (a non-ASCII `.substr` loop still flattens each view).
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and

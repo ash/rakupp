@@ -1,8 +1,9 @@
-# Regression: every string-building shape of issue #130 that is linear stays
-# linear. The same cases as tools/bench/append-shapes.raku (which prints the
-# timings, and also the three shapes still quadratic everywhere — prepending,
-# `$k = $s` before each append, repeated .substr — that this test leaves out
-# until a string representation makes them linear).
+# Regression: every string-building shape of issue #130 stays linear. The same
+# cases as tools/bench/append-shapes.raku, which prints the timings. The last
+# three — prepending, `$k = $s` before each append, repeated .substr — need the
+# old text kept while a new one is made from it, which a flat string can only
+# do by copying; they are linear since strings may be views of a shared buffer
+# (docs/dev/plans/APPEND-PLAN.md).
 #
 # The output carries no timings: the --jit/--cnp and --exe gates compare it
 # byte for byte between lanes. Each case runs at 20k and at 160k steps, best of
@@ -32,7 +33,11 @@ my @cases =
     '$!attr, Int'            => -> $n { my $o = Acc.new; $o.add($_) for ^$n; $o.b },
     '$s = $s ~ "abcde"'      => -> $n { my $s = ''; $s = $s ~ 'abcde' for ^$n; $s },
     '$s = $s ~ X, no kernel' => -> $n { my $s = ''; for ^$n { $s = $s ~ 'abcde'; $s.say if False }; $s },
-    'is rw param, Str'       => -> $n { my $s = ''; add-rw($s, 'abcde') for ^$n; $s };
+    'is rw param, Str'       => -> $n { my $s = ''; add-rw($s, 'abcde') for ^$n; $s },
+    '$s = "abcde" ~ $s'      => -> $n { my $s = ''; $s = 'abcde' ~ $s for ^$n; $s },
+    'prepend, no kernel'     => -> $n { my $s = ''; for ^$n { $s = "abcde" ~ $s; $s.say if False }; $s },
+    '$k = $s; $s ~= "abcde"' => -> $n { my $s = ''; my $k; for ^$n { $k = $s; $s ~= 'abcde' }; $s },
+    '$s = $s.substr(5)'      => -> $n { my $s = 'abcde' x $n; $s = $s.substr(5) while $s.chars; $s };
 
 sub ms(&case, $n) {
     my $best = Inf;

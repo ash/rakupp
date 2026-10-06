@@ -110,6 +110,188 @@ static PtrCensusDump g_ptrCensusDump;
 
 namespace rakupp {
 
+// ---- strings that share a growable buffer (StrBuf in Value.h) -------------
+namespace {
+// Shorter results stay flat: a view costs a body, a view record and a later
+// flatten, which only pays for itself on text worth not copying.
+constexpr size_t kViewMin = 256;
+// …and a slice of a big buffer that keeps only a small part of it is copied
+// out, so a short `.substr` of a huge string does not keep the huge one alive.
+constexpr size_t kRetainMin = 64 * 1024;
+
+bool cleanBytes(const char* p, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        const unsigned char c = (unsigned char)p[i];
+        if (c >= 0x80 || c == '\r') return false;
+    }
+    return true;
+}
+// A view of [off, off+len) of `buf`. A clean buffer makes its every view
+// ASCII without CR, so the grapheme count is the byte count: `.chars` and the
+// substr fast lane answer without reading (or flattening) the text.
+Ref<const StrBody> viewBody(Ref<StrBuf> buf, size_t off, size_t len) {
+    const bool clean = buf->clean.load(std::memory_order_acquire);
+    Ref<const StrBody> b = makeRef<const StrBody>(new StrView(std::move(buf), off, len));
+    if (clean) {
+        b->allAscii.store(1, std::memory_order_relaxed);
+        b->crFree.store(1, std::memory_order_relaxed);
+        b->nGraphemes.store((long long)len, std::memory_order_relaxed);
+    }
+    return b;
+}
+// A new buffer holding a then b, with as much free space again split over both
+// sides — so growing either way is O(1) on average.
+Ref<const StrBody> freshView(const char* a, size_t na, const char* b, size_t nb) {
+    const size_t need = na + nb, cap = 2 * need + 64, lo = (cap - need) / 2;
+    Ref<StrBuf> buf = makeRef<StrBuf>(cap, lo, lo + need);
+    if (na) std::memcpy(buf->data + lo, a, na);
+    if (nb) std::memcpy(buf->data + lo + na, b, nb);
+    if (!cleanBytes(a, na) || !cleanBytes(b, nb)) buf->clean.store(false, std::memory_order_release);
+    return viewBody(std::move(buf), lo, need);
+}
+// Claim n bytes of free space just past [off, off+len): the region must end
+// exactly there (nobody claimed it before), and the claim is one CAS.
+bool claimBack(StrBuf& B, size_t end, const char* x, size_t n) {
+    size_t expect = end;
+    if (n > B.cap - end || !B.hi.compare_exchange_strong(expect, end + n, std::memory_order_acq_rel)) return false;
+    std::memcpy(B.data + end, x, n);
+    if (!cleanBytes(x, n)) B.clean.store(false, std::memory_order_release);
+    return true;
+}
+bool claimFront(StrBuf& B, size_t start, const char* x, size_t n) {
+    size_t expect = start;
+    if (n > start || !B.lo.compare_exchange_strong(expect, start - n, std::memory_order_acq_rel)) return false;
+    std::memcpy(B.data + start - n, x, n);
+    if (!cleanBytes(x, n)) B.clean.store(false, std::memory_order_release);
+    return true;
+}
+Ref<const StrBody> viewAppend(const StrView& v, const char* x, size_t n) {
+    if (claimBack(*v.buf, v.off + v.len, x, n)) return viewBody(v.buf, v.off, v.len + n);
+    return freshView(v.buf->data + v.off, v.len, x, n);
+}
+Ref<const StrBody> viewPrepend(const char* x, size_t n, const StrView& v) {
+    if (claimFront(*v.buf, v.off, x, n)) return viewBody(v.buf, v.off - n, v.len + n);
+    return freshView(x, n, v.buf->data + v.off, v.len);
+}
+} // namespace
+
+const std::string& StrBody::flatView() const {
+    const std::string* f = view->flat.load(std::memory_order_acquire);
+    if (f) return *f;
+    auto* mine = new std::string(view->buf->data + view->off, view->len);
+    const std::string* expect = nullptr;
+    if (view->flat.compare_exchange_strong(expect, mine, std::memory_order_acq_rel)) return *mine;
+    delete mine;
+    return *expect;
+}
+
+bool g_strViewsForced = [] {
+    const char* e = std::getenv("RAKUPP_APPEND");
+    return e && std::strcmp(e, "force") == 0;
+}();
+Ref<const StrBody> CowStr::forcedView(const std::string& x) { return freshView(x.data(), x.size(), nullptr, 0); }
+
+void CowStr::appendTextSlow(const char* x, size_t n) {
+    if (!p_) { s_.append(x, n); grown(); return; }
+    if (p_->view) {
+        const StrView& v = *p_->view;
+        // a view nothing else holds grows where it is, without a new body
+        if (p_->refs_.load(std::memory_order_acquire) == 1 && claimBack(*v.buf, v.off + v.len, x, n)) {
+            StrBody* b = const_cast<StrBody*>(p_.get());
+            b->invalidate();
+            delete b->view->flat.exchange(nullptr, std::memory_order_acq_rel);
+            b->view->len += n;
+            if (v.buf->clean.load(std::memory_order_acquire)) {
+                b->allAscii.store(1, std::memory_order_relaxed);
+                b->crFree.store(1, std::memory_order_relaxed);
+                b->nGraphemes.store((long long)b->view->len, std::memory_order_relaxed);
+            }
+            return;
+        }
+        p_ = viewAppend(v, x, n);
+        return;
+    }
+    if (p_->refs_.load(std::memory_order_acquire) == 1) {   // the flat case, as `+=` has it
+        StrBody* b = const_cast<StrBody*>(p_.get());
+        b->invalidate();
+        b->text.append(x, n);
+        return;
+    }
+    // a body others hold keeps its text for them
+    if (p_->text.size() + n >= kViewMin) { p_ = freshView(p_->text.data(), p_->text.size(), x, n); return; }
+    s_ = p_->text;
+    s_.append(x, n);
+    p_.reset();
+    grown();
+}
+
+void CowStr::prependText(const char* x, size_t n) {
+    if (!p_) {
+        if (s_.size() + n < kViewMin) { s_.insert(0, x, n); grown(); return; }
+        p_ = freshView(x, n, s_.data(), s_.size());
+        s_.clear();
+        return;
+    }
+    if (p_->view) {
+        const StrView& v = *p_->view;
+        if (p_->refs_.load(std::memory_order_acquire) == 1 && claimFront(*v.buf, v.off, x, n)) {
+            StrBody* b = const_cast<StrBody*>(p_.get());
+            b->invalidate();
+            delete b->view->flat.exchange(nullptr, std::memory_order_acq_rel);
+            b->view->off -= n;
+            b->view->len += n;
+            if (v.buf->clean.load(std::memory_order_acquire)) {
+                b->allAscii.store(1, std::memory_order_relaxed);
+                b->crFree.store(1, std::memory_order_relaxed);
+                b->nGraphemes.store((long long)b->view->len, std::memory_order_relaxed);
+            }
+            return;
+        }
+        p_ = viewPrepend(x, n, v);
+        return;
+    }
+    p_ = freshView(x, n, p_->text.data(), p_->text.size());
+}
+
+bool CowStr::joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r) {
+    if (!r.p_ || r.p_->size() + n < kViewMin) return false;
+    const StrBody& b = *r.p_;
+    Ref<const StrBody> nb = b.view ? viewPrepend(x, n, *b.view) : freshView(x, n, b.text.data(), b.text.size());
+    out.s_.clear();
+    out.p_ = std::move(nb);
+    return true;
+}
+
+bool CowStr::joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n) {
+    if (!l.p_ || !l.p_->view || l.p_->view->len + n < kViewMin) return false;
+    Ref<const StrBody> nb = viewAppend(*l.p_->view, x, n);
+    out.s_.clear();
+    out.p_ = std::move(nb);
+    return true;
+}
+
+bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
+    if (!s.p_ || len < kViewMin) return false;
+    const StrBody& b = *s.p_;
+    if (off > b.size() || len > b.size() - off) return false;
+    Ref<const StrBody> nb;
+    if (b.view) {
+        const StrBuf& B = *b.view->buf;
+        const size_t used = B.hi.load(std::memory_order_acquire) - B.lo.load(std::memory_order_acquire);
+        if (B.cap > kRetainMin && len * 4 < used) return false;   // copy it out: let the buffer go
+        nb = viewBody(b.view->buf, b.view->off + off, len);
+    }
+    else {
+        // a flat source: a buffer is worth it when the slice is most of it — the
+        // copy is the one `.substr` makes anyway, and the next slice is free
+        if (len * 4 < b.text.size()) return false;
+        nb = freshView(b.text.data() + off, len, nullptr, 0);
+    }
+    out.s_.clear();
+    out.p_ = std::move(nb);
+    return true;
+}
+
 // A packed array unpacks once (PACKED-ARRAY-PLAN): the first arr()/arrS() on
 // it builds the Values every element would have been stored as — a plain Int
 // or Num — under one lock, since two threads may ask at once, and from then on

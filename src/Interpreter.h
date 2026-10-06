@@ -4311,11 +4311,23 @@ inline bool rtGeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlai
 // string every time (issue #130: 40,000 appends 0.7 s), and over Nums or Bools
 // still did.
 void rtCatAppendText(Value& l, const std::string& r);
+void rtCatPrependText(Value& l, const std::string& x);
+// `$s = x ~ $s` (native codegen, cnp): in front of a plain Str in place — into a
+// shared buffer's free space (APPEND-PLAN.md) — and the ordinary `~` otherwise.
+inline void rtCatPrepend(Value& l, const Value& x) {
+    if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && !l.natBits && x.hashKind.empty() &&
+        ((x.t == VT::Str && x.enumName.empty()) || x.t == VT::Int || x.t == VT::Num || x.t == VT::Rat ||
+         x.t == VT::Bool)) {
+        rtCatPrependText(l, x.t == VT::Str ? x.s.str() : x.toStr());
+        return;
+    }
+    l = applyArith("~", x, l);
+}
 inline void rtCatAssign(Value& l, const Value& r) {
     if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && r.hashKind.empty()) {
         if (r.enumName.empty()) {
             if (r.t == VT::Str) { rtCatAppendText(l, r.s.str()); return; }
-            if (r.t == VT::Int && !r.natBits) { l.s += r.toStr(); return; }   // (digits: ASCII)
+            if (r.t == VT::Int && !r.natBits) { l.s.appendText(r.toStr()); return; }   // (digits: ASCII)
         }
         if (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.t == VT::Bool) {
             rtCatAppendText(l, r.toStr());   // the text applyArith's `~` takes

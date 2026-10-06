@@ -212,6 +212,13 @@ my %kernels =
     #   in place. tools/bench/intcat.raku is the same work, with a Perl twin.
     intcat    => 'my $s = ""; $s ~= $_ for ^1_000_000;
                   my $t = ""; for ^1_000_000 -> $i { $t ~= $i; $t ~= "," }; say $s.chars, " ", $t.chars;',
+    # prepend, sharedappend, substrloop (2026-10-06) — the three string-building
+    #   shapes a flat string makes quadratic: each step needs the old text to
+    #   survive while a new one is made from it (docs/dev/plans/APPEND-PLAN.md,
+    #   issue #130). Rakudo is linear on all three. 100,000 steps each.
+    prepend   => 'my $s = ""; $s = "abcde" ~ $s for ^100_000; say $s.chars;',
+    sharedappend => 'my $s = ""; my $k; for ^100_000 { $k = $s; $s ~= "abcde" }; say $s.chars, " ", $k.chars;',
+    substrloop => 'my $s = "abcde" x 100_000; my $n = 0; while $s.chars { $s = $s.substr(5); $n++ }; say $n;',
     junctionwide => 'my $j = any(1 .. 1000); my $needle = 500;
                   my int $n = 0; my $c = 0;
                   while $n < 2_000 { $c = $c + 1 if $needle ~~ $j; $n = $n + 1 }; say $c;';
@@ -220,7 +227,7 @@ my %kernels =
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
                 method attrread privmeth multimeth multiwhere objnew mainnext mainwhen
-                junction junctionwide intcat>;
+                junction junctionwide intcat prepend sharedappend substrloop>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as

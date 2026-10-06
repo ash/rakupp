@@ -5283,9 +5283,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         const bool cowOk = cowStr && m == "substr";
         std::string rawCopy;
         if (!cowOk) rawCopy = inv.toStr();
-        const std::string& raw = cowOk ? inv.s.str() : rawCopy;
+        // The invocant's text is read only by the lanes that need it whole: a
+        // view of a shared buffer answers the ASCII lane without being
+        // flattened, and its slice is a view too (APPEND-PLAN.md) — so
+        // `$s = $s.substr(5) while $s.chars` stops copying the rest each time.
+        const std::string* rawp = cowOk ? nullptr : &rawCopy;
+        auto rawText = [&]() -> const std::string& { if (!rawp) rawp = &inv.s.str(); return *rawp; };
         const bool plain = cowStr ? cowByteIsGraphemeIndex(inv.s)
-                                  : byteIsGraphemeIndex(raw);
+                                  : byteIsGraphemeIndex(rawText());
         // Non-ASCII text: take the grapheme→byte table cached on the body
         // (built once) rather than decoding the string and building a
         // GraphemeMap PER CALL — which made a `.substr($i, 1)` loop over a
@@ -5295,18 +5300,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         const std::vector<uint32_t>* gt = (!plain && cowOk) ? cowGraphemeIndex(inv.s) : nullptr;
         std::vector<uint32_t> cps;
         std::unique_ptr<GraphemeMap> gm;
-        if (!plain && !gt) { cps = utf8cp(raw); gm.reset(new GraphemeMap(cps)); }
-        long long n = plain ? (long long)raw.size()
+        if (!plain && !gt) { cps = utf8cp(rawText()); gm.reset(new GraphemeMap(cps)); }
+        long long n = plain ? (long long)(cowOk ? inv.s.size() : rawText().size())
                     : gt    ? (long long)gt->size() - 1
                             : (long long)gm->count();
-        auto slice = [&](long long lo, long long hi) { // [lo, hi) in graphemes
+        auto sliceText = [&](long long lo, long long hi) { // [lo, hi) in graphemes
             std::string r;
             if (hi <= lo) return r;
-            if (plain) return raw.substr((size_t)lo, (size_t)(hi - lo));
-            if (gt) { size_t a = (*gt)[(size_t)lo]; return raw.substr(a, (*gt)[(size_t)hi] - a); }
+            if (plain) return rawText().substr((size_t)lo, (size_t)(hi - lo));
+            if (gt) { size_t a = (*gt)[(size_t)lo]; return rawText().substr(a, (*gt)[(size_t)hi] - a); }
             size_t a = gm->cpAt((size_t)lo), b = gm->cpAt((size_t)hi);
             for (size_t k = a; k < b; k++) r += cpToUtf8(cps[k]);
             return r;
+        };
+        auto slice = [&](long long lo, long long hi) -> Value {
+            if (plain && cowOk && hi - lo >= 256) {   // (CowStr::sub's own floor: a short slice copies)
+                Value v; v.t = VT::Str;
+                if (CowStr::sub(v.s, inv.s, (size_t)lo, (size_t)(hi - lo))) return v;
+            }
+            return Value::str(sliceText(lo, hi));
         };
         // a RANGE gives both ends at once: `substr("Long string", 3..6)`
         if (!args.empty() && args[0].t == VT::Range) {
@@ -5318,7 +5330,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     std::to_string(lo < 0 ? lo : hi) + ", should be in 0.." + std::to_string(n) +
                     "; use *" + std::to_string(lo < 0 ? lo : hi) + " if you want to index relative to the end");
             if (hi >= n) hi = n - 1;
-            return Value::str(slice(lo, hi + 1)); // the Range end is INCLUSIVE
+            return slice(lo, hi + 1); // the Range end is INCLUSIVE
         }
         // the START may be a Whatever/WhateverCode too — `*-3` counts from the end
         long long start;
@@ -5362,7 +5374,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 std::to_string(len) + ", should be in 0.." + std::to_string(n - start) +
                 "; use *" + std::to_string(len) + " if you want to index relative to the end");
         if (start + len > n) len = n - start;
-        return Value::str(slice(start, start + len));
+        return slice(start, start + len);
     }
     if (m == "index" || m == "rindex") {
         // …and the same warning `.contains` carries below: an `.index` on an

@@ -2653,7 +2653,7 @@ bool cowAllAscii(const CowStr& s) {
     if (!b) return allAscii(s.str());
     signed char c = b->allAscii.load(std::memory_order_relaxed);
     if (c < 0) {
-        c = allAscii(b->text) ? 1 : 0;
+        c = allAscii(b->str()) ? 1 : 0;
         b->allAscii.store(c, std::memory_order_relaxed);
     }
     return c == 1;
@@ -2664,7 +2664,7 @@ bool cowByteIsGraphemeIndex(const CowStr& s) {
     if (!cowAllAscii(s)) return false;
     signed char c = b->crFree.load(std::memory_order_relaxed);
     if (c < 0) {
-        c = std::memchr(b->text.data(), '\r', b->text.size()) == nullptr ? 1 : 0;
+        c = std::memchr(b->str().data(), '\r', b->str().size()) == nullptr ? 1 : 0;
         b->crFree.store(c, std::memory_order_relaxed);
     }
     return c == 1;
@@ -2674,8 +2674,8 @@ long long cowGraphemeCount(const CowStr& s) {
     if (!b) return graphemeCount(s.str());
     long long n = b->nGraphemes.load(std::memory_order_relaxed);
     if (n < 0) {
-        n = cowByteIsGraphemeIndex(s) ? (long long)b->text.size()
-                                      : (long long)uniGraphemeCount(utf8cp(b->text));
+        n = cowByteIsGraphemeIndex(s) ? (long long)b->size()
+                                      : (long long)uniGraphemeCount(utf8cp(b->str()));
         b->nGraphemes.store(n, std::memory_order_relaxed);
     }
     return n;
@@ -2693,7 +2693,7 @@ const std::vector<uint32_t>* cowCpIndex(const CowStr& s) {
     if (!b) return nullptr;
     const std::vector<uint32_t>* t = b->cpIndex.load(std::memory_order_acquire);
     if (t) return t;
-    const std::string& x = b->text;
+    const std::string& x = b->str();
     auto* mine = new std::vector<uint32_t>;
     mine->reserve(x.size() / 2 + 2);
     for (size_t i = 0; i < x.size(); i++)
@@ -2710,7 +2710,7 @@ const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s) {
     if (!b) return nullptr;
     const std::vector<uint32_t>* t = b->gIndex.load(std::memory_order_acquire);
     if (t) return t;
-    const std::string& x = b->text;
+    const std::string& x = b->str();
     const std::vector<uint32_t>* ci = cowCpIndex(s); // byte offset per codepoint
     auto cps = utf8cp(x);
     auto* mine = new std::vector<uint32_t>;

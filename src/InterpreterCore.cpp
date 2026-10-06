@@ -7112,31 +7112,41 @@ static void releaseCelledArgCopies(const std::shared_ptr<Env>& env, ValueList& a
 // not FETCHed) and nothing X does can change $s; any other X, or a value `~`
 // would treat specially, is left to the ordinary path, untouched.
 bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
-    if (b->op != "~" || !b->lhs || !b->rhs || b->lhs->kind != NK::VarExpr) return false;
+    if (b->op != "~" || !b->lhs || !b->rhs) return false;
     if (!slot->hashKind.empty() || !slot->enumName.empty() || slot->natBits) return false;
-    if (padPtrIn(static_cast<VarExpr*>(b->lhs.get()), cur) != slot) return false;
+    // `$s = $s ~ X` appends; `$s = X ~ $s` PREPENDS — into the free space in
+    // front of a shared buffer (APPEND-PLAN.md), where a flat string had to
+    // move every byte, every time (40,000 of them 0.7 s)
+    const bool front = b->rhs->kind == NK::VarExpr && padPtrIn(static_cast<VarExpr*>(b->rhs.get()), cur) == slot;
+    if (!front && (b->lhs->kind != NK::VarExpr || padPtrIn(static_cast<VarExpr*>(b->lhs.get()), cur) != slot))
+        return false;
     if (g_lexShadowMask.load(std::memory_order_relaxed) && lexShadowPossible("~")) return false;
+    Expr* xe = front ? b->lhs.get() : b->rhs.get();
     Value lit;
     const Value* x = nullptr;
-    switch (b->rhs->kind) {
+    switch (xe->kind) {
+        case NK::InterpStr:   // "abcde": a constant when nothing in it interpolates
+            for (auto& part : static_cast<InterpStr*>(xe)->parts)
+                if (!part || part->kind != NK::StrLit) return false;
+            [[fallthrough]];
         case NK::StrLit: case NK::IntLit: case NK::NumLit:
-            lit = eval(b->rhs.get()); x = &lit; break;
+            lit = eval(xe); x = &lit; break;
         case NK::VarExpr:
-            x = padPtrIn(static_cast<VarExpr*>(b->rhs.get()), cur); break;
+            x = padPtrIn(static_cast<VarExpr*>(xe), cur); break;
         default: return false;
     }
     if (!x || !x->hashKind.empty() || x->natBits) return false;
+    std::string txt;
     if (x->t == VT::Str) {
         if (!x->enumName.empty() || x->itemized) return false;
-        const std::string txt = x->s.str();   // (X may be $s itself)
-        ParStripe ws(*this, slot);
-        rtCatAppendText(*slot, txt);
-        return true;
+        txt = x->s.str();   // (X may be $s itself)
     }
-    if (x->t != VT::Int && x->t != VT::Num && x->t != VT::Rat && x->t != VT::Bool) return false;
-    const std::string txt = x->toStr();   // the text applyArith's `~` takes
+    else if (x->t == VT::Int || x->t == VT::Num || x->t == VT::Rat || x->t == VT::Bool)
+        txt = x->toStr();   // the text applyArith's `~` takes
+    else return false;
     ParStripe ws(*this, slot);
-    rtCatAppendText(*slot, txt);
+    if (front) rtCatPrependText(*slot, txt);
+    else rtCatAppendText(*slot, txt);
     return true;
 }
 
@@ -12097,7 +12107,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 bool asciiRhs = true;
                                 for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
                                 ParStripe ws(*this, slot);
-                                if (asciiRhs) slot->s += rhs.s;
+                                if (asciiRhs) slot->s.appendText(rhs.s.str());
                                 else slot->s = nfcNormalize(slot->s + rhs.s);
                             } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() &&
                                        (rhs.t == VT::Int || rhs.t == VT::Num || rhs.t == VT::Rat || rhs.t == VT::Bool) &&
@@ -12109,7 +12119,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                                       rhs.enumType.empty() && !rhs.natBits;
                                 std::string txt = rhs.toStr();   // the text applyArith's `~` takes
                                 ParStripe ws(*this, slot);
-                                if (plainInt) slot->s += txt;   // (digits: ASCII)
+                                if (plainInt) slot->s.appendText(txt);   // (digits: ASCII)
                                 else rtCatAppendText(*slot, txt);
                             } else if ((sv == 2 || sv == 3) &&
                                        (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
@@ -16252,7 +16262,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // whole string — `$s ~= $_ % 10` over 300k iterations took 8.5 s.
     if (!overloaded && binop == "~" && lv->t == VT::Str && lv->hashKind.empty() && rhs.t == VT::Int &&
         !rhs.x_ && rhs.pk_ == PK::None && rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() && !rhs.natBits) {
-        lv->s += std::to_string(rhs.i);
+        lv->s.appendText(std::to_string(rhs.i));
         return sink ? Value::any() : *lv;
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
@@ -16276,7 +16286,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         bool asciiRhs = true;
         for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
-        if (asciiRhs) lv->s += rhs.s;
+        if (asciiRhs) lv->s.appendText(rhs.s.str());
         else lv->s = nfcNormalize(lv->s + rhs.s);
         return sink ? Value::any() : *lv;
     }
@@ -16772,7 +16782,16 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
         char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
         switch (c0) {
-            case '~': if (c1 == '\0') return Value::str(nfcNormalize(l.s + r.s)); break;
+            case '~':
+                if (c1 != '\0') break;
+                // a view on the left claims the space after it (APPEND-PLAN.md):
+                // `$t = $s ~ x` costs x, not $s — ASCII at the join, as ever
+                if (l.s.isView() && r.s.firstByte() < 0x80) {
+                    Value out; out.t = VT::Str;
+                    const std::string& rt = r.s.str();
+                    if (CowStr::joinAppend(out.s, l.s, rt.data(), rt.size())) return out;
+                }
+                return Value::str(nfcNormalize(l.s + r.s));
             case 'e': if (c1 == 'q') return Value::boolean(l.s == r.s); break;
             case 'n': if (c1 == 'e') return Value::boolean(l.s != r.s); break;
             case 'l': if (c1 == 't') return Value::boolean(l.s <  r.s);

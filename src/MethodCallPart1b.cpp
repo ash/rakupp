@@ -382,7 +382,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             if (auto body = b.s.bodyPtr()) {
                 retained.push_back(body);
                 if (retained.size() > 256) retained.pop_front();
-                p = body->text.data();
+                p = body->str().data();
             }
             else {
                 smalls.push_back(b.s.str());

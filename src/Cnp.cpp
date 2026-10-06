@@ -186,6 +186,17 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
                 return 0;
             }
         }
+        // `$s = X ~ $s` (RK_OP_SELFCAT with the destination on the right): in
+        // front of a plain Str in place; anything else takes the general `~`
+        if (d == b && d != a && op == (uint64_t)(RK_OP_CONCAT | RK_OP_SELFCAT) && f->t[b] == RK_T_BOX) {
+            Value* boxes = static_cast<Value*>(f->boxes);
+            const Value& acc = boxes[d];
+            if (acc.t == VT::Str && acc.hashKind.empty() && acc.enumName.empty() && !acc.natBits) {
+                const Value va = regValue(f, a);
+                rtCatPrepend(boxes[d], va);
+                return 0;
+            }
+        }
         op &= ~(uint64_t)RK_OP_SELFCAT;
         // A native int operation wraps where the general one would grow: the
         // interpreter's own definition (nativeIntArith), on the two machine ints
@@ -877,20 +888,34 @@ int Lower::expr(Expr* e) {
             // is what a bind is
             // `$s = $s ~ X` is `$s ~= X` when $s holds a Str: appended into
             // its box (rk_cnp_binop) instead of a whole new string each time
-            // (issue #130). X is a literal or a variable, so reading it after
-            // the append starts cannot see a different $s.
+            // (issue #130); `$s = X ~ $s` is prepended into the free space in
+            // front of a shared buffer (APPEND-PLAN.md) — the destination is
+            // then the RIGHT operand. X is a literal or a variable, so reading
+            // it after the append starts cannot see a different $s.
             if (a->op == "=" && !tv->declare && natKind(tv) == 0 && a->value->kind == NK::Binary) {
                 auto* b = static_cast<Binary*>(a->value.get());
-                const NK xk = b->rhs ? b->rhs->kind : NK::Binary;
-                if (b->op == "~" && b->lhs && b->lhs->kind == NK::VarExpr &&
-                    !static_cast<VarExpr*>(b->lhs.get())->declare &&
-                    static_cast<VarExpr*>(b->lhs.get())->name == tv->name &&
-                    (xk == NK::StrLit || xk == NK::IntLit || xk == NK::NumLit || xk == NK::VarExpr)) {
+                auto self = [&](const ExprPtr& e) {
+                    return e && e->kind == NK::VarExpr && !static_cast<VarExpr*>(e.get())->declare &&
+                           static_cast<VarExpr*>(e.get())->name == tv->name;
+                };
+                auto plainX = [](const ExprPtr& e) {
+                    if (!e) return false;
+                    if (e->kind == NK::InterpStr) {   // "abcde": a constant when nothing in it interpolates
+                        for (auto& part : static_cast<InterpStr*>(e.get())->parts)
+                            if (!part || part->kind != NK::StrLit) return false;
+                        return true;
+                    }
+                    return e->kind == NK::StrLit || e->kind == NK::IntLit || e->kind == NK::NumLit ||
+                           e->kind == NK::VarExpr;
+                };
+                const bool back = self(b->lhs) && plainX(b->rhs);
+                const bool front = !back && self(b->rhs) && plainX(b->lhs);
+                if (b->op == "~" && (back || front)) {
                     int dst = lookup(tv->name);
                     if (bad()) return 0;
-                    int src = expr(b->rhs.get());
+                    int src = expr((back ? b->rhs : b->lhs).get());
                     if (bad()) return 0;
-                    emit(ids().binop, (uint64_t)dst, (uint64_t)dst, (uint64_t)src,
+                    emit(ids().binop, (uint64_t)dst, (uint64_t)(back ? dst : src), (uint64_t)(back ? src : dst),
                          (uint64_t)(RK_OP_CONCAT | RK_OP_SELFCAT));
                     return dst;
                 }
