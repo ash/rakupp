@@ -2832,11 +2832,20 @@ public:
         auto it = requireScoped_.find(n);
         if (it == requireScoped_.end()) return false;
         auto sp = it->second.lock();
-        if (!sp) return true;
         // …and code a MODULE declared sees every package: JSON::Tiny loaded in
         // a test's block still reaches JSON::Tiny::Actions from its from-json
-        for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
-            if (e == sp.get() || loadedModuleEnvSet_.count(e)) return false;
+        if (sp)
+            for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+                if (e == sp.get() || loadedModuleEnvSet_.count(e)) return false;
+        // What stays lexical is the top-level NAME; the package's contents merge
+        // into GLOBAL. `A::B` from a nested load is reached through an `A` this
+        // scope sees some other way — `use G; { use G::Path }; G::Path` — and
+        // Graph::Classes loads its subclasses inside its `sub EXPORT`.
+        size_t c = n.find("::");
+        if (c != std::string::npos && c > 0) {
+            const std::string top = n.substr(0, c);
+            if ((classes_.count(top) || pkgMeta_.count(top)) && !requireHidden(top)) return false;
+        }
         return true;
     }
     // Does a TYPE THIS PROGRAM DECLARED carry the name `n`, in scope here?

@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-06.*
+*Started 2026-10-03. Last updated 2026-10-07.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -80,6 +80,19 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - B4: ecosystem and MOP clusters (custom HOW, Attribute MOP, Red #77).
   - B5: JS gate disagreements to 0, the `--slim` size gate.
   - B6: measure and tag.
+- [ ] **Construction does not track which attributes BUILD initialized**:
+  `has $.x is required; submethod BUILD() {}` with `.new(:x(5))` lives
+  (Rakudo: X::Attribute::Required), and `has Int:D $.x is required;
+  submethod BUILD(:$!x) {}` with no argument is X::Attribute::Required where
+  Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
+  the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
+  slot, set by binding and assignment.
+- [ ] **A `use` inside a routine runs when the routine is CALLED**: `sub f {
+  use G::Path }; G::Path` is unknown unless `f` ran (Rakudo loads at compile
+  time). Found 2026-10-07; not started.
+- [ ] **`*@a` handed `1..*` is not lazy**: `sub f(*@a) { @a.is-lazy }; f(1..*)`
+  is False (Rakudo True); the binder keeps only a lazy Array lazy, not a
+  Range. Found 2026-10-07; not started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.

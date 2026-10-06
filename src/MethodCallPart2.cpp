@@ -7575,10 +7575,28 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (!at.required) continue;
                         // `is required` means SUPPLIED AT CONSTRUCTION — a default
                         // of its own does not excuse it
-                        bool gotArg = false;
+                        const Value* argV = nullptr;
                         for (auto& arg : args)
-                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
-                        if (gotArg) continue;
+                            if (arg.t == VT::Pair && arg.s == at.name) { argV = &arg; break; }
+                        // …but a `T:D` attribute of a class with its own BUILD was
+                        // not judged before that BUILD ran (see the smiley check
+                        // below): judge it now, on what BUILD left in the slot
+                        if (at.defConstraint == 1 && !at.def && !at.hasDefVal &&
+                            rc->methods.count("BUILD")) {
+                            auto ait = od->attrs.find(at.name);
+                            if (ait != od->attrs.end() && defined(ait->second)) continue;
+                            if (argV && argV->pairVal() && !defined(*argV->pairVal())) {
+                                const Value& got = *argV->pairVal();
+                                throwTypedV("X::TypeCheck::Assignment",
+                                            {{"symbol", Value::str("$!" + at.name)}, {"got", got},
+                                             {"expected", Value::typeObj(at.type)}},
+                                            "Type check failed in assignment to $!" + at.name +
+                                            "; expected " + at.type + ":D but got " + got.typeName() +
+                                            " (" + got.typeName() + ")");
+                            }
+                            argV = nullptr;   // the argument never reached the slot
+                        }
+                        if (argV) continue;
                         // …or filled by a custom BUILD. A default of the
                         // attribute's OWN does not excuse it (Rakudo: `has $.d
                         // is required = 7` still demands the argument), so only
@@ -7621,12 +7639,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (!gotArg) { checkRequiredFor(rc); break; }
                     }
                 }
-                for (size_t ci2 = nChain; ci2-- > 0;)
+                for (size_t ci2 = nChain; ci2-- > 0;) {
+                    // (a class with a BUILD of its own binds its arguments THERE,
+                    // later: an argument alone has not filled the slot yet —
+                    // Graph::Grid's `has Int:D $.rows is required` + BUILD(:$!rows!))
+                    const bool ownBuild = chainAt(ci2)->methods.count("BUILD") > 0;
                     for (auto& at : chainAt(ci2)->attrs) {
                         if (!at.defConstraint) continue;
                         bool gotArg = false;
-                        for (auto& arg : args)
-                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+                        if (!ownBuild)
+                            for (auto& arg : args)
+                                if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
                         if (!(at.def || at.hasDefVal || gotArg)) continue;
                         Value cur = od->attrs.count(at.name) ? od->attrs[at.name] : Value::any();
                         bool defd = defined(cur);
@@ -7638,6 +7661,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                         (at.defConstraint == 1 ? ":D but got " : ":U but got ") +
                                         cur.typeName());
                     }
+                }
                 // `where {…}` attribute constraints hold at construction too:
                 // a DEFINED slot value (arg-provided or defaulted) must satisfy
                 // its attr's constraint (Date::Event's lat/lon bounds)
@@ -9451,6 +9475,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Match && m == "Capture") return inv; // a Match already IS one
     if (m == "Slip") { // a Slip flattens into any list-building context (from-list, list literals)
         if (inv.t == VT::Array) {
+            // a gather not yet pulled has an EMPTY buffer, and what splices a
+            // Slip reads the buffer: `(gather {…},).map(*.Slip)` spliced nothing
+            // (Graph's neighborhood-graph). An endless source stays as it is.
+            if (inv.ext()) forceLazy(inv);
             Value r = inv; r.isList = true; r.s = "Slip";
             // a snapshot: pushing onto the Array afterwards leaves the Slip as it was
             if (!inv.ext() && inv.arr()) {

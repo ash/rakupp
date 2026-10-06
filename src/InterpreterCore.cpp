@@ -4162,6 +4162,37 @@ static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::s
     return Value::any();
 }
 
+// `*@a` — what one argument contributes to a flattening slurpy (see the
+// binder's 'f' arm, and scoreCandidate, whose `where` on the slurpy must see
+// the same list). Flattening walks THROUGH lists and stops at ARRAYS, because
+// an Array's elements each sit in their own Scalar container: `f([[1,2],[3,4]])`
+// binds two Arrays, not four Ints, while `f((1,(2,3)))` binds three Ints. A
+// SLIP flattens even when itemized — that is the whole of what a Slip is for.
+// Every other itemized value is left whole.
+static void slurpySpread(const Value& x, ValueList& out) {
+    auto isSlip = [](const Value& e) { return e.t == VT::Array && e.arr() && e.s == "Slip"; };
+    if (!(isSlip(x) || (!x.itemized && (x.t == VT::Array || x.t == VT::Range)))) {
+        out.push_back(x);
+        return;
+    }
+    std::function<void(const Value&)> spread = [&](const Value& v) {
+        forceLazy(v);                                // a gather: its elements
+        if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
+            for (auto& e : v.flatten()) out.push_back(e);
+            return;
+        }
+        // A SHAPED array's elements are its LEAVES, not its rows: `my @m[3;2]`
+        // binds six values to `*@a`, the same six `my @flat = @m` stores.
+        if (isMultiDimShaped(v)) { shapedLeaves(v, out); return; }
+        for (auto& e : *v.arr()) {                   // one level, then decide
+            if (isSlip(e) || (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr() && e.isList))))
+                spread(e);
+            else out.push_back(e);
+        }
+    };
+    spread(x);
+}
+
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                              std::shared_ptr<Env>& env, bool methodCtx, bool blockParams,
                              bool whereVerified) {
@@ -4485,50 +4516,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                             continue;
                         }
                     }
-                    // *@a — flatten: dissolve every Iterable arg into the slurpy.
-                    //
-                    // …but only as far as Rakudo does. Flattening walks THROUGH
-                    // lists and stops at ARRAYS, because an Array's elements each
-                    // sit in their own Scalar container: `f([[1,2],[3,4]])` binds
-                    // two Arrays, not four Ints, while `f((1,(2,3)))` binds three
-                    // Ints. Flattening everything made a test helper taking
-                    // `*@exp` compare a flat list of strings against the rows it
-                    // was handed (Text::CSV's 67_emptrow).
-                    // A SLIP flattens even when itemized — that is the whole of
-                    // what a Slip is for, and `my $s = @a.Slip` itemizes it the
-                    // moment it lands in a scalar. Every other itemized value is
-                    // left whole. Without this `f($s)` bound ONE element where
-                    // Rakudo binds three, which is how BinaryHeap's `.new` and
-                    // `.push` Slip candidates built a heap holding one nested
-                    // list instead of its elements.
-                    auto walksThrough = [&](const Value& e) {
-                        return isSlip(e) ||
-                               (!e.itemized &&
-                                (e.t == VT::Range ||
-                                 (e.t == VT::Array && e.arr() && e.isList)));
-                    };
-                    std::function<void(const Value&)> spread = [&](const Value& v) {
-                        forceLazy(v);                                // a gather: its elements
-                        if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
-                            for (auto& e : v.flatten()) a.arr()->push_back(e);
-                            return;
-                        }
-                        // A SHAPED array's elements are its LEAVES, not its rows
-                        // (see isMultiDimShaped): `my @m[3;2]` binds six values
-                        // to `*@a`, the same six `my @flat = @m` stores. Stopping
-                        // at the rows here handed the slurpy three.
-                        if (isMultiDimShaped(v)) { shapedLeaves(v, *a.arr()); return; }
-                        for (auto& e : *v.arr()) {                   // one level, then decide
-                            if (walksThrough(e)) spread(e);
-                            else a.arr()->push_back(e);
-                        }
-                    };
-                    for (; pi < positional.size(); pi++) {
-                        auto& x = positional[pi];
-                        if (isSlip(x) || (!x.itemized && (x.t == VT::Array || x.t == VT::Range)))
-                            spread(x);
-                        else a.arr()->push_back(x);
-                    }
+                    // *@a — flatten: dissolve every Iterable arg into the slurpy,
+                    // but only as far as Rakudo does (slurpySpread). Flattening
+                    // everything made a test helper taking `*@exp` compare a flat
+                    // list of strings against the rows it was handed (Text::CSV's
+                    // 67_emptrow); not spreading an itemized Slip made BinaryHeap's
+                    // `.new` and `.push` Slip candidates build a heap holding one
+                    // nested list instead of its elements.
+                    for (; pi < positional.size(); pi++) slurpySpread(positional[pi], *a.arr());
                 } else if (p.slurpyKind == 'n' || capture) {
                     // **@a — no flatten: keep every arg as-is.
                     //
@@ -5858,8 +5853,34 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
     // a `where` on the slurpy is checked against the list it would bind
     // (`multi MAIN(*@ints where { .elems > 0 })` must lose to MAIN() bare)
     if (slurpyParam && slurpyParam->whereExpr) {
+        // …the list the BINDER would build: `*@gs` handed `[$a, $b]` sees two
+        // elements, not one Array (Graph's `disjoint-union(*@gs where @gs.all ~~
+        // Graph:D)`). A lone lazy argument is bound as it stands.
         Value lst = Value::array();
-        for (size_t i = total; i < pos.size(); i++) lst.arr()->push_back(pos[i]);
+        const char kind = slurpyParam->slurpyKind;
+        const bool capture = slurpyParam->sigil == '\\' && kind == 0;
+        const size_t rest = pos.size() > total ? pos.size() - total : 0;
+        auto isSlip = [](const Value& e) { return e.t == VT::Array && e.arr() && e.s == "Slip"; };
+        auto iterable = [&](const Value& e) {
+            return isSlip(e) || (!e.itemized && (e.t == VT::Array || e.t == VT::Range));
+        };
+        if (!capture && rest == 1 && kind != 'n' && pos[total].t == VT::Array && !pos[total].itemized &&
+            seqIsLazy(pos[total]))
+            lst = pos[total];
+        else if (kind == 'f' && !capture)
+            for (size_t i = total; i < pos.size(); i++) slurpySpread(pos[i], *lst.arr());
+        else if (kind != 'n' && !capture && rest == 1 && iterable(pos[total])) {
+            const Value& only = pos[total];   // the single-argument rule: its elements, one level
+            forceLazy(only);
+            if (only.t == VT::Array && only.arr() && !isMultiDimShaped(only))
+                for (auto& x : *only.arr()) lst.arr()->push_back(x);
+            else
+                for (auto& x : only.flatten()) lst.arr()->push_back(x);
+        } else
+            for (size_t i = total; i < pos.size(); i++) {
+                if (!capture && isSlip(pos[i])) for (auto& e : *pos[i].arr()) lst.arr()->push_back(e);
+                else lst.arr()->push_back(pos[i]);
+            }
         auto env = std::make_shared<Env>(); env->parent = whereScope;
         if (!slurpyParam->name.empty()) env->define(slurpyParam->name, lst);
         env->define("$_", lst);
