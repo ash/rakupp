@@ -9664,10 +9664,27 @@ ExprPtr Parser::parsePrimary() {
                 if (whateverListops.count(name)) listopOk = true;
             }
             if (listopOk && cur().kind == Tok::Op &&
-                (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|" || cur().text == "!!") &&
+                (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|") &&
                 peek(1).spaceBefore)
-                listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip;
-                                   // and `Nil !! Any` (space after !!) is a ternary else-marker, not `Nil(!!Any)`
+                listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip
+            // `1 ?? Nil !! Any` — a spaced `!!` is the ternary's else-marker, not
+            // `Nil(!!Any)`, but only while a `??` at this bracket depth is still
+            // waiting for one. Anywhere else it is prefix boolify: `say !! "Hi"`.
+            if (listopOk && cur().kind == Tok::Op && cur().text == "!!" && peek(1).spaceBefore) {
+                int depth = 0, open = 0;
+                for (size_t k = pos_; k-- > 0;) {
+                    const Token& tk = toks_[k];
+                    if (tk.kind == Tok::RParen || tk.kind == Tok::RBracket || tk.kind == Tok::RBrace) depth++;
+                    else if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket || tk.kind == Tok::LBrace) {
+                        if (depth == 0) break;
+                        depth--;
+                    } else if (depth == 0 && tk.kind == Tok::Semicolon) break;
+                    else if (depth == 0 && tk.kind == Tok::Op && tk.text == "??") open++;
+                    else if (depth == 0 && tk.kind == Tok::Op && tk.text == "!!" &&
+                             k + 1 < toks_.size() && toks_[k + 1].spaceBefore) open--;
+                }
+                if (open > 0) listopOk = false;
+            }
             // A TYPE name is no listop: `Int ~ "x"` and even `Int ~"x"` are the
             // infix on the type object (Rakudo), not the coercion `Int(~"x")`
             if (listopOk && cur().kind == Tok::Op &&
