@@ -5596,7 +5596,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             substSelect(subj, needle, nullptr, sargs, nsub, true, nullptr, &mres);
             return mres;
         }
-        size_t p = subj.find(needle);
+        size_t p = graphemeFind(subj, needle, 0); // whole characters: no "\n" inside a "\r\n"
         if (p == std::string::npos) return Value::nil();
         Value mv = Value::matchVal(needle, (long)p, (long)(p + needle.size()));
         // .orig is the whole SUBJECT, so .prematch/.postmatch cut it: after
@@ -6165,21 +6165,25 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (squash && haveLast && lastOut == r) return;
             out += r; haveLast = true; lastOut = r;
         };
+        // The scan steps a CHARACTER (grapheme) at a time, and a string needle
+        // must end on a character boundary: "\r" names no part of "\r\n", so
+        // `"a\r\nb".trans("\r" => "")` leaves the CR LF alone (#132)
         for (size_t pos = 0; pos < s.size(); ) {
+            size_t clen = 1;
+            while (pos + clen < s.size() && !atGraphemeBoundary(s, pos + clen)) clen++;
             long bestLen = 0; long bestEnt = -1;
             for (size_t ei = 0; ei < ents.size(); ei++) {
                 long len;
                 if (ents[ei].isRx()) len = rxAt(ei, pos);
                 else {
                     const std::string& nd = ents[ei].needle;
-                    len = !nd.empty() && s.compare(pos, nd.size(), nd) == 0 ? (long)nd.size() : -1;
+                    len = !nd.empty() && s.compare(pos, nd.size(), nd) == 0 &&
+                          atGraphemeBoundary(s, pos + nd.size()) ? (long)nd.size() : -1;
                 }
                 if (len > bestLen) { bestLen = len; bestEnt = (long)ei; }
             }
             if (complement) {
                 // the left side names what to KEEP; everything else is replaced
-                size_t clen = 1; // one CHARACTER, not one byte
-                while (pos + clen < s.size() && ((unsigned char)s[pos + clen] & 0xC0) == 0x80) clen++;
                 if (bestEnt >= 0) { out.append(s, pos, (size_t)bestLen); pos += (size_t)bestLen; haveLast = false; continue; }
                 if (haveComp) emit(pinText(compTo, Value::str(s.substr(pos, clen))));
                 // an EMPTY replacement side drops what it does not name, as
@@ -6195,7 +6199,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else emit(pinText(e.pin, e.isRx() ? rxNext[(size_t)bestEnt].m : Value::str(s.substr(pos, (size_t)bestLen))));
                 pos += (size_t)bestLen;
             } else {
-                out += s[pos]; pos++; haveLast = false;
+                out.append(s, pos, clen); pos += clen; haveLast = false;
             }
         }
         return Value::str(out);
@@ -6257,8 +6261,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
             return Value::boolean(from <= s.size() && graphemeFind(s, n, from) != std::string::npos);
         }
-        if (m == "starts-with") return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0);
-        return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0);
+        // …and the prefix/suffix must be whole characters: "a\r\nb" does not
+        // start with "a\r", nor "q\x[301]" end with "\x[301]"
+        if (m == "starts-with")
+            return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0 &&
+                                  atGraphemeBoundary(s, n.size()));
+        return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0 &&
+                              atGraphemeBoundary(s, s.size() - n.size()));
     }
     if (m == "substr-eq") { // does the substring starting at pos equal the needle?
         if (args.empty() || (args[0].t == VT::Type && args.size() < 2))

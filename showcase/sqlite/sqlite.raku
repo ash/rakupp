@@ -401,7 +401,7 @@ sub emit-table(Result $r) {
     my @shown = $r.rows.map(-> @row {
         @row.kv.map(-> $i, $v {
             $v.defined
-                ?? cell($v).subst("\n", '\n', :g).subst("\r", '\r', :g).subst("\t", '\t', :g)
+                ?? cell($v).subst("\r\n", '\r\n', :g).subst("\n", '\n', :g).subst("\r", '\r', :g).subst("\t", '\t', :g)
                 !! 'NULL'
         }).List
     });

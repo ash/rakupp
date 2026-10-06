@@ -85,6 +85,7 @@ sub parse-json(Str $src) {
 # ---------- serializer --------------------------------------------------
 sub esc-string(Str $s --> Str) {
     my $out = $s.subst('\\', '\\\\', :g).subst('"', '\\"', :g)
+               .subst("\r\n", '\\r\\n', :g)         # one character, matched by neither of the two below
                .subst("\n", '\\n', :g).subst("\t", '\\t', :g).subst("\r", '\\r', :g);
     '"' ~ $out ~ '"';
 }

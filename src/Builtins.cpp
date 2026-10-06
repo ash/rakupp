@@ -2748,13 +2748,19 @@ uint32_t cpAtByte(const std::string& s, size_t b) {
 // is one codepoint), and no CR, because CR LF is the one ASCII sequence that
 // clusters (GB3, which is why "a\r\nb".chars is 3). When it holds, .chars is a
 // byte count and .substr is a byte slice, with nothing to decode.
-// Is byte offset `p` of `s` a GRAPHEME boundary? Only a following non-ASCII
-// byte (at or past U+0300) can extend a cluster, so ASCII text never pays.
+// Is byte offset `p` of `s` a GRAPHEME boundary? After ASCII, only a non-ASCII
+// byte at or past U+0300 can extend a cluster — and the LF of a CR LF (GB3:
+// "\r\n" is ONE character, so "\n" is not found inside it). After a non-ASCII
+// codepoint even an ASCII one may join: a Prepend (U+0600…) takes the next
+// base into its cluster (GB9b), so that case goes the long way. ASCII text
+// with no CR never pays.
 bool atGraphemeBoundary(const std::string& s, size_t p) {
     const size_t len = s.size();
-    if (p == 0 || p >= len || (unsigned char)s[p] < 0x80 ||
-        ((unsigned char)s[p] >= 0xC2 && (unsigned char)s[p] <= 0xCB)) return true;
-    if (((unsigned char)s[p] & 0xC0) == 0x80) return false;   // mid-codepoint
+    if (p == 0 || p >= len) return true;
+    const unsigned char c = (unsigned char)s[p], prev = (unsigned char)s[p - 1];
+    if (prev < 0x80 && (c < 0x80 || (c >= 0xC2 && c <= 0xCB)))
+        return !(c == '\n' && prev == '\r');
+    if ((c & 0xC0) == 0x80) return false;   // mid-codepoint
     size_t b = p - 1;
     while (b > 0 && ((unsigned char)s[b] & 0xC0) == 0x80) b--;
     return uniClusterEndUtf8(s, b, len) <= p;

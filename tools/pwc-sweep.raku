@@ -45,7 +45,7 @@ sub run-capture(Str() $exe, IO::Path $file, Int $secs = TIMEOUT) {
 
 sub esc(Str $s) {
     $s.subst('\\', '\\\\', :g).subst('"', '\\"', :g)
-      .subst("\n", '\\n', :g).subst("\t", '\\t', :g).subst("\r", '', :g)
+      .subst("\r\n", '\\n', :g).subst("\n", '\\n', :g).subst("\t", '\\t', :g).subst("\r", '', :g)
 }
 
 sub MAIN(Int :$from = 371, Int :$to = 386,

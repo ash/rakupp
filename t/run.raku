@@ -428,18 +428,19 @@ section('showcase/kvstore (a key-value protocol)');
         # NB replies are read per LINE through a buffer — two back-to-back
         # commands can coalesce into one recv, and a raw recv here would eat
         # the next command's reply (the INCR check flapped on exactly that).
+        # The replies end in "\r\n", ONE character with no "\n" inside it
+        # (#132), so the line end is found with a regex `\n`, which matches it.
         my $s = IO::Socket::INET.new(:host('127.0.0.1'), :port($port));
         $s.recv;                                   # greeting
         my $rbuf = '';
         sub cmd(Str $c --> Str) {
             $s.print("$c\r\n");
-            until $rbuf.contains("\n") {
+            until $rbuf ~~ /\n/ {
                 my $r = $s.recv // '';
                 last if $r eq '';
                 $rbuf ~= $r;
             }
-            my $i = $rbuf.index("\n");
-            with $i { my $line = $rbuf.substr(0, $i); $rbuf = $rbuf.substr($i + 1); return $line.trim }
+            if $rbuf ~~ /\n/ { my $line = $/.prematch; $rbuf = $/.postmatch; return $line.trim }
             my $line = $rbuf; $rbuf = ''; $line.trim
         }
         ok(cmd('SET name ada') eq 'OK',            "kvstore: SET replies OK");
