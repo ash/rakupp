@@ -3611,6 +3611,11 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         }
         return out;
     }
+    // An object with its OWN AT-POS / AT-KEY answers its subscripts, as the
+    // interpreter's does: a native module body reading `$o[1]` got Nil.
+    if (base.t == VT::Object && base.obj() && base.obj()->cls && g_cbInterp &&
+        base.obj()->cls->findMethod(isHash ? "AT-KEY" : "AT-POS"))
+        return g_cbInterp->methodCall(base, isHash ? "AT-KEY" : "AT-POS", ValueList{key});
     if (isHash) {
         if ((base.t == VT::Hash || base.t == VT::Match) && base.hash()) { // Match: named captures
             // type-object keys follow the object-keyed rule (hashSubKey)
@@ -3670,6 +3675,34 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
                 return arrayMissingDefault(base);
             return v;
         }
+    }
+    // A Blob/Buf and a NativeCall CArray index their ELEMENTS, as the
+    // interpreter's subscript does. Native module bodies fell through to the
+    // missing-element default here, so NativeHelpers::Array's copy-to-array —
+    // `$carray[$_] for ^$items` — read back all Nils under --exe and every
+    // Math::SparseMatrix::Native matrix printed as zeros.
+    if (base.t == VT::Str && (base.hashKind == "Blob" || base.hashKind == "Buf")) {
+        long long i = key.toInt();
+        if (i < 0) return negIndexFailure(i);
+        if (i < base.blobElems()) return base.blobElemAt(i);
+    }
+    if (base.t == VT::Str && base.hashKind == "CArray") {
+        long long i = key.toInt();
+        std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
+        int w = Interpreter::ncElemSize(et);
+        if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
+        Value el = Interpreter::ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+        if (Interpreter::ncIsPointerElem(et) && el.t == VT::Int && g_cbInterp)
+            return g_cbInterp->ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
+        return el;
+    }
+    if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
+        base.hash() && base.hash()->count("addr")) {
+        std::string of = base.hash()->count("of") ? base.hash()->at("of").toStr() : "int64";
+        Value el = Interpreter::ncReadElem(base.hash()->at("addr").toInt(), of, key.toInt());
+        if (Interpreter::ncIsPointerElem(of) && el.t == VT::Int && g_cbInterp)
+            return g_cbInterp->ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
+        return el;
     }
     return arrayMissingDefault(base);
 }

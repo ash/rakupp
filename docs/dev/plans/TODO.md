@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-05.*
+*Started 2026-10-03. Last updated 2026-10-06.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -97,6 +97,12 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   Also `my \y = $s; y.VAR` is Int (a parameter's is Scalar now), and a `my
   class` used earlier in its OWN block is no longer reported as a
   post-declaration.
+- [ ] **NativeCall CArray gaps** (found with Math::SparseMatrix::Native,
+  2026-10-06; its binding, dispatch and `--exe` subscript bugs are fixed):
+  a Raku-built CArray has no `.AT-POS` method; `.clone` returns the same
+  object; a CArray read back from a CStruct field forgets its length, so
+  `.elems` dies where Rakudo answers. Also: an `@` parameter binds a Range
+  as an Array (Rakudo keeps the Range).
 - [ ] **#110 constructor type checks**: the module battery gate was never run.
   Open: `A.new ~~ Cool` is True; a List is accepted into Array-typed slots; Mu
   and Junction are accepted into `Any`; native width is not enforced;
@@ -176,6 +182,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - 18 AOT differences in the corpus.
   - Two `-O` differences in t/exe.
   - `--exe` refuses multidim slices.
+  - A natively compiled sub binds Nil, Any, a type object, or (named) a
+    plain scalar to an `@` parameter as a one-element list, and a `:@x!`
+    candidate takes `x => Nil`; the interpreter and Rakudo refuse all of them.
   - Refused since 2026-10-03, so these programs are bundled rather than wrong:
     `state` variables (they compiled as `my`, and `$++` did not compile at
     all) and assignment to a slice (`@a[0, 1] = 7, 8` filled one element).

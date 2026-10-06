@@ -1242,6 +1242,10 @@ std::string Value::typeName() const {
                         // a connected async socket is an IO::Socket::Async (Rakudo's
                         // type); the internal "AsyncSocket" kind only drives dispatch.
                         if (hashKind == "AsyncSocket") return "IO::Socket::Async";
+                        // a LIVE CArray (a CStruct field, a native return) names its
+                        // element type as the owned one does: CArray[num64]
+                        if (hashKind == "CArray" && hash() && hash()->count("of") && !hash()->at("of").toStr().empty())
+                            return "CArray[" + hash()->at("of").toStr() + "]";
                         // …and the synchronous one is an IO::Socket::INET, which
                         // it never said. A socket bound as `IO::Socket::INET $s`
                         // was rejected with "expected IO::Socket::INET but got

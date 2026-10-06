@@ -35,6 +35,12 @@ bool rtIsDefined(const Value& v) {
     if (v.t == VT::Array && v.s == "Slip" && (!v.arr() || v.arr()->empty())) return false;
     return v.t != VT::Nil && v.t != VT::Any && v.t != VT::Type && !(v.t == VT::Hash && v.hashKind == "Failure");
 }
+// A CArray in either form: one Raku built (its buffer in the Str), or a LIVE
+// one over C memory (a field read, a native return) carrying `addr`.
+static bool isCArrayValue(const Value& v) {
+    if (v.hashKind != "CArray") return false;
+    return v.t == VT::Str || (v.t == VT::Hash && v.hash() && v.hash()->count("addr"));
+}
 static void markPairValueRO(Value& pr, const Expr* valueExpr) {
     if (!exprNamesContainer(valueExpr)) pr.pairValRO = true;
 }
@@ -4169,6 +4175,19 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         for (auto& a : args) if (!isNamedArg(a)) na++;
         return na > np;
     };
+    // What an `@` parameter refuses: a definite scalar, Nil, Any, or a type
+    // object that is not Positional. (A CArray, owned or live, is handled
+    // before this is asked.)
+    auto notPositionalArg = [&](const Value& v) {
+        if (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
+            v.t == VT::Pair || v.t == VT::Code ||
+            v.t == VT::Nil || v.t == VT::Any) return true;
+        if (v.t == VT::Hash) return !typeMatchesArg(v, "Positional");
+        if (v.t == VT::Str) return v.hashKind.empty();
+        if (v.t == VT::Type)
+            return !(v.s == "Positional" || v.s == "Array" || v.s == "List" || typeMatchesArg(v, "Positional"));
+        return false;
+    };
     // Fast path: every parameter is a plain mandatory positional scalar and no
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
@@ -4715,7 +4734,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 Value bv = it->second;
                 if (p.sigil == '@') {
                     // a CArray binds AS ITSELF here too (see the positional arm)
-                    if (bv.t == VT::Str && bv.hashKind == "CArray") { bv.itemized = false; }
+                    if (isCArrayValue(bv)) { bv.itemized = false; }
+                    // …and the same refusal: `sub f(:@a)` given 42, a Str or Nil
+                    // is a binding failure, not a one-element array
+                    else if (!p.isCopy && notPositionalArg(bv))
+                        throwTypedV("X::TypeCheck::Binding::Parameter",
+                            {{"got", bv}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
+                            "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Positional but got " +
+                            bv.typeName() + " (" + typeCheckRepr(bv) + ")");
                     // …and the same List-vs-Array rule as the positional arm below:
                     // binding never itemises, so `sub f(:@c)` called with a List
                     // keeps a List, whose slots are bare and therefore spread under
@@ -4808,7 +4834,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // plain Array threw away its type (`@v ~~ CArray:D` is how
                 // Math::DistanceFunctions picks the native fast path) and copied
                 // the buffer a C callee was expected to see.
-                else if (v.t == VT::Str && v.hashKind == "CArray") { v.itemized = false; /* bind raw, decont */ }
+                // A LIVE CArray — read from a CStruct field or returned by C — is
+                // the same Positional over memory C owns, and binds as itself too:
+                // wrapped as one element, Math::SparseMatrix::Native's `clone`
+                // copied the handle's address in place of each value.
+                else if (isCArrayValue(v)) { v.itemized = false; /* bind raw, decont */ }
                 else if (v.t == VT::Array && v.itemized) {
                     // An itemized Positional binds as the Positional it is, and as
                     // WHICH one: `$(1,2,3)` is a List and stays a List, `$[1,2,3]`
@@ -4835,10 +4865,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     if (v.s == "Seq") v.s.clear();
                 }
                 // a definite scalar is no Positional: `sub f(@a) {}; f(1)` is a
-                // binding failure, not a one-element array
-                else if (!p.isCopy && !laxOverflow() && ((v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
-                                        v.t == VT::Pair || v.t == VT::Code || v.t == VT::Hash) ||
-                                       (v.t == VT::Str && v.hashKind.empty())))
+                // binding failure, not a one-element array — and nor is Nil, Any
+                // or a non-Positional type object (`f(Nil)` refuses in Rakudo)
+                else if (!p.isCopy && !laxOverflow() && notPositionalArg(v))
                     throwTypedV("X::TypeCheck::Binding::Parameter",
                         {{"got", v}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
                         "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Positional but got " +
@@ -6363,6 +6392,10 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if ((p.sigil == '@' || p.sigil == '%') && isDefined(sval) &&
                 !(p.sigil == '@' ? (typeMatchesArg(sval, "Positional") || sval.t == VT::Range)
                                  : typeMatchesArg(sval, "Associative"))) return -1;
+            // Nil and Any are no Positional either: `new(values => Nil, …)`
+            // must pass over a `:@values!` candidate (Rakudo falls through to
+            // Mu.new — Math::SparseMatrix::Native builds its targets that way)
+            if (p.sigil == '@' && (sval.t == VT::Nil || sval.t == VT::Any)) return -1;
             if (p.defConstraint == 1 && !isDefined(sval)) return -1;
             if (p.defConstraint == 2 && isDefined(sval)) return -1;
             // A named with a SUB-SIGNATURE (`:$referencing! (&code, Str
@@ -25437,6 +25470,20 @@ Value Interpreter::evalIndex(Index* idx) {
     if (idx->multiDim) {
         multiDimRead = [&](const Value& baseV) -> Value {
             auto* dims = static_cast<ListExpr*>(idx->index.get());
+            // an object with its own AT-POS, given one key per dimension, is
+            // asked once with all of them — Rakudo's `$m[1;0]` is
+            // `$m.AT-POS(1, 0)`; walking it as nested arrays answered Any
+            if (baseV.t == VT::Object && baseV.obj() && baseV.obj()->cls &&
+                baseV.obj()->cls->findMethod("AT-POS")) {
+                ValueList keys; bool scalarKeys = true;
+                for (auto& de : dims->items) {
+                    if (de->kind == NK::Whatever) { scalarKeys = false; break; }
+                    Value k = eval(de.get());
+                    if (k.t == VT::Whatever || k.t == VT::Range || k.t == VT::Code || k.t == VT::Array) { scalarKeys = false; break; }
+                    keys.push_back(k);
+                }
+                if (scalarKeys) return methodCall(baseV, "AT-POS", keys);
+            }
             auto shape = baseV.shape(); // fixed dimensions, if this is a shaped array
             Value out = Value::array(); out.isList = true;
             bool anyMulti = false; // all-scalar dims yield the lone element, not a 1-list
