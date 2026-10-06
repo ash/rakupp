@@ -9,7 +9,14 @@ comes from, and what is still missing.
 **Measured standing (S15, Unicode / strings / NFG):** 92,454 of 92,454
 assertions pass without skip/todo (92,523 / 92,523 counting them); all 83 files
 pass fully and nothing times out. The UCA collation conformance suite (S32-str)
-passes 8,337 / 8,337. _(Measured against the Unicode-18.0 Roast files.)_
+passes 8,337 / 8,337. _(Measured against Roast's Unicode-18.0 test files, which
+are still the open pull request
+[Raku/roast#923](https://github.com/Raku/roast/pull/923); see
+[running an unmerged Roast change](../status/ROAST.md#running-an-unmerged-roast-change).
+Against Roast main, still generated from 17.0, seven assertions differ by
+design: four in `GraphemeBreakTest` (the 18.0 GB9c rule) and three in
+`CollationTest_NON_IGNORABLE-3.t` (U+FFFE, U+FFFF, and U+2B81E, assigned in
+18.0).)_
 
 ## The five subsystems
 

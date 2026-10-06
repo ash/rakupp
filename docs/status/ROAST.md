@@ -145,6 +145,23 @@ the 8-core machine of record, most of it `S17-supply/batch.t` and
 The run ends with the summary: the file buckets, the assertion ratios, a table
 of Roast's skip and todo directives by source, and the by-synopsis table above.
 
+### Running an unmerged Roast change
+
+A Roast pull request can be measured before it merges, without touching the
+`~/roast` checkout: clone its branch into a scratch directory and point `ROAST`
+at the clone. Name the files the pull request changes as path substrings.
+
+```sh
+gh pr view 923 --repo Raku/roast --json headRefName,headRepositoryOwner,files
+git clone --depth 1 -b unicode-18.0 https://github.com/Raku/roast /tmp/roast-pr
+ROAST=/tmp/roast-pr build/rakupp tools/run-roast.raku S15- S32-str
+```
+
+A branch in a fork is cloned from the fork's URL (`headRepositoryOwner`). A
+full sweep of the clone does not compare with the numbers above: the branch
+forks from an older Roast, so it lacks whatever main has gained since. Keep
+`--list=` pointed at a scratch file there, never at [roast-lists/](roast-lists/).
+
 The dated per-sitting notes that used to follow this section are in
 [findings/ROAST-SNAPSHOTS.md](../dev/findings/ROAST-SNAPSHOTS.md); what each
 release measured is in the [CHANGELOG](../../CHANGELOG.md).
