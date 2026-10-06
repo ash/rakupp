@@ -43,6 +43,11 @@
 #                          load — the row to read when the operation is small.
 #     --no-native          skip the `--exe` lane (compiling 40 foreign files
 #                          is most of a --suite run's wall time)
+#     --no-cnp             skip the `--cnp` lane (the interpreter with its
+#                          copy-and-patch JIT on; loop kernels still go first);
+#                          a binary without `--cnp` skips it on its own
+#     --no-mutsu           skip the mutsu lane even when mutsu is installed
+#                          (some kernels take it minutes a run: intcat ~160 s)
 #
 # Override the binaries via environment:
 #     RAKUPP=/path/to/rakupp RAKUDO=rakudo ./build/rakupp tools/run-bench.raku
@@ -69,12 +74,16 @@ my @only;
 my $rusage = False;
 my $suite  = '';
 my $want-native = True;
+my $want-mutsu  = True;
+my $want-cnp    = True;
 for @*ARGS -> $a {
     if $a.starts-with('--tsv=') { $tsv-path = $a.substr(6) }
     elsif $a.starts-with('--only=') { @only = $a.substr(7).split(',')>>.trim }
     elsif $a.starts-with('--suite=') { $suite = $a.substr(8) }
     elsif $a eq '--rusage' { $rusage = True }
     elsif $a eq '--no-native' { $want-native = False }
+    elsif $a eq '--no-mutsu'  { $want-mutsu = False }
+    elsif $a eq '--no-cnp'    { $want-cnp = False }
     else { note "run-bench: unknown argument $a"; exit 2 }
 }
 if $suite && $suite ne 'mutsu' {
@@ -94,6 +103,11 @@ require-native(%PICK, :tool<run-bench>,
     :consequence('It would be measured under translation, which costs 1.7-2x uniformly.'));
 my $RAKUPP = %PICK<path>;
 note provenance-line('run-bench', %PICK);
+
+# A release before the JIT has no `--cnp` (rakupp-bench-sweep.sh runs this
+# harness over every old tag): the lane is left out, as with --no-cnp, rather
+# than flagging every row "cnp did not run".
+$want-cnp = False if $want-cnp && !capture([$RAKUPP, '--cnp=on', '-e', 'print 1']).defined;
 
 my $RUNS   = 7;   # 1 warm-up round (discarded) + 6 measured
 
@@ -222,7 +236,7 @@ sub resolve-mutsu(--> Str) {
     }
     return Str;
 }
-my $MUTSU = resolve-mutsu();
+my $MUTSU = $want-mutsu ?? resolve-mutsu() !! Str;
 
 # CPU time (ms, user+sys) and peak RSS (KiB) for ONE run of @cmd, read out of
 # `/usr/bin/time`. Two incompatible formats are in play and both are parsed:
@@ -334,13 +348,13 @@ if $tfh {
                'interp_min_ms', 'interp_med_ms', 'native_min_ms', 'native_med_ms',
                'mutsu_min_ms', 'mutsu_med_ms',
                'rakudo_min_ms', 'rakudo_med_ms', 'perl_min_ms', 'perl_med_ms',
-               'flags').join("\t");
+               'flags', 'cnp_min_ms', 'cnp_med_ms').join("\t");
 }
 
 my $mismatch = False;
 my $W = $suite ?? max(12, |@benches.map({ .<name>.chars + 8 })) !! 12;   # room for a name@section row
 my @rusage-rows;   # one per kernel, filled only under --rusage
-printf "%-{$W}s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'mutsu', 'rakudo', 'perl', 'note';
+printf "%-{$W}s %10s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'cnp', 'mutsu', 'rakudo', 'perl', 'note';
 for @benches -> %b {
     my $path = $bench.add(%b<file>).Str;
     my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
@@ -352,6 +366,7 @@ for @benches -> %b {
     my $built = $want-native && compile-native($path, $nbin);
     my $oi = capture([$RAKUPP, $path]);
     my $on = $built ?? capture([$nbin]) !! Str;
+    my $oc = $want-cnp ?? capture([$RAKUPP, '--cnp=on', $path]) !! Str;
     my $or = $RAKUDO-OK ?? capture([$RAKUDO, $path]) !! Str;
     my $om = $MUTSU.defined ?? capture([$MUTSU, $path]) !! Str;
     my $op = $ppath.defined ?? capture([$PERL, $ppath]) !! Str;
@@ -363,6 +378,8 @@ for @benches -> %b {
     @bad.push('perl did not run')          if $ppath.defined && !$op.defined;
     @bad.push("interp ≠ $oracle")          if $oi.defined && $or.defined && $oi ne $or;
     @bad.push("native ≠ $oracle")          if $on.defined && $ref.defined && $on ne $ref;
+    @bad.push('cnp did not run')           if $want-cnp && !$oc.defined;
+    @bad.push("cnp ≠ $oracle")             if $oc.defined && $ref.defined && $oc ne $ref;
     @bad.push("perl ≠ $oracle")            if $op.defined && $ref.defined && $op ne $ref;
     # A third-party engine's disagreement is recorded next to the row and stays
     # out of @bad: it must not turn our own correctness gate red.
@@ -378,6 +395,7 @@ for @benches -> %b {
     my @lanes;
     @lanes.push: 'interp' => [$RAKUPP, $path]              if $oi.defined;
     @lanes.push: 'native' => [$nbin]                       if $built && $on.defined;
+    @lanes.push: 'cnp'    => [$RAKUPP, '--cnp=on', $path]  if $oc.defined;
     @lanes.push: 'mutsu'  => [$MUTSU, $path]               if $om.defined;
     @lanes.push: 'rakudo' => [$RAKUDO, $path]              if $or.defined;
     @lanes.push: 'perl'   => [$PERL, $ppath]               if $ppath.defined && $op.defined;
@@ -417,16 +435,18 @@ for @benches -> %b {
     my sub cell(Str $k) { %times{$k} ?? sprintf('%.1fms', %times{$k}.min) !! 'n/a' }
     my $interp = cell('interp');
     my $native = cell('native');
+    my $cnp    = $want-cnp ?? cell('cnp') !! '—';
     my $mutsu  = $MUTSU.defined ?? cell('mutsu') !! '—';
     my $rakudo = cell('rakudo');
     my $perl   = $ppath.defined ?? cell('perl') !! '—';
-    printf "%-{$W}s %10s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $mutsu, $rakudo, $perl, %b<note>, $flag;
+    printf "%-{$W}s %10s %10s %10s %10s %10s %10s   %s%s\n", %b<name>, $interp, $native, $cnp, $mutsu, $rakudo, $perl, %b<note>, $flag;
     # The @section row only when every measured run of a lane reported one.
     my %sec = %sections.grep({ .value.elems == $RUNS - 1 });
     if %sec {
         my sub scell(Str $k) { %sec{$k} ?? sprintf('%.1fms', %sec{$k}.min) !! 'n/a' }
-        printf "%-{$W}s %10s %10s %10s %10s %10s   %s\n", %b<name> ~ '@section', scell('interp'), scell('native'),
-               ($MUTSU.defined ?? scell('mutsu') !! '—'), scell('rakudo'), '—', 'in-process time of the measured operation';
+        printf "%-{$W}s %10s %10s %10s %10s %10s %10s   %s\n", %b<name> ~ '@section', scell('interp'), scell('native'),
+               ($want-cnp ?? scell('cnp') !! '—'), ($MUTSU.defined ?? scell('mutsu') !! '—'), scell('rakudo'), '—',
+               'in-process time of the measured operation';
     }
 
     if $tfh {
@@ -438,13 +458,13 @@ for @benches -> %b {
         $tfh.say: (%b<name>,
                    |pair('interp'), |pair('native'), |pair('mutsu'),
                    |pair('rakudo'), |pair('perl'),
-                   (@all ?? @all.join('; ') !! 'ok')).join("\t");
+                   (@all ?? @all.join('; ') !! 'ok'), |pair('cnp')).join("\t");
         if %sec {
             my sub spair(Str $k) {
                 %sec{$k} ?? (sprintf('%.1f', %sec{$k}.min), sprintf('%.1f', median(%sec{$k}))) !! ('', '')
             }
             $tfh.say: (%b<name> ~ '@section', |spair('interp'), |spair('native'), |spair('mutsu'),
-                       |spair('rakudo'), '', '', 'ok').join("\t");
+                       |spair('rakudo'), '', '', 'ok', |spair('cnp')).join("\t");
         }
     }
 }
@@ -455,7 +475,7 @@ if @rusage-rows {
     # core reads ABOVE its own wall time — that is the point of showing it next
     # to the first table rather than instead of it. Peak RSS is the high-water
     # mark of the process, which for the native lane includes no interpreter.
-    my @lanes = <interp native mutsu rakudo perl>;
+    my @lanes = <interp native cnp mutsu rakudo perl>;
     say '';
     say '# CPU time (user+sys) and peak RSS — min of 3 runs, measured separately';
     printf "%-{$W}s %s\n", 'benchmark',
