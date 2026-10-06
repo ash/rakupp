@@ -114,6 +114,10 @@ my @benches =
     %( :name<streq>,    :file("streq.raku"),    :note('1M string eq/lt comparisons') ),
     %( :name<textsplit>,:file("textsplit.raku"),:perl("textsplit.pl"),
        :note('20k lines split into fields, reordered, rejoined') ),
+    # intcat (2026-10-06): a string built by appending Ints, issue #130's
+    # shape — every append copied the whole string until 775a15e1/b6b38a6a.
+    %( :name<intcat>,   :file("intcat.raku"),   :perl("intcat.pl"),
+       :note('2M Int appends into two strings, one with a separator') ),
     %( :name<rats>,     :file("rats.raku"),     :note('200k short-lived Rats summed and read') ),
     # multiwhere (2026-09-15): a `where`-constrained multi candidate, 400k calls.
     # Nothing else here dispatches on a constrained signature, which is where

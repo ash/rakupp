@@ -206,6 +206,12 @@ my %kernels =
     #                  ever removed this kernel doubles, and nothing else moves.
     junction  => 'my $x = 5; my int $n = 0; my $c = 0;
                   while $n < 200_000 { $c = $c + 1 if $x ~~ 1 | 3 | 5; $n = $n + 1 }; say $c;',
+    # intcat (2026-10-06) — a string grown by appending Ints, the shape of
+    #   issue #130: every append copied the whole string (quadratic) in the
+    #   interpreter's own `~=` and in --exe's, until each appended an Int's digits
+    #   in place. tools/bench/intcat.raku is the same work, with a Perl twin.
+    intcat    => 'my $s = ""; $s ~= $_ for ^1_000_000;
+                  my $t = ""; for ^1_000_000 -> $i { $t ~= $i; $t ~= "," }; say $s.chars, " ", $t.chars;',
     junctionwide => 'my $j = any(1 .. 1000); my $needle = 500;
                   my int $n = 0; my $c = 0;
                   while $n < 2_000 { $c = $c + 1 if $needle ~~ $j; $n = $n + 1 }; say $c;';
@@ -214,7 +220,7 @@ my %kernels =
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
                 method attrread privmeth multimeth multiwhere objnew mainnext mainwhen
-                junction junctionwide>;
+                junction junctionwide intcat>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as
