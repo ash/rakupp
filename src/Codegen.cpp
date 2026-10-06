@@ -183,6 +183,226 @@ struct Codegen {
         return phParams_.emplace(d, std::move(ps)).first->second;
     }
     std::map<std::string, std::vector<int>> rwSubs; // sub name -> positional indices that are `is rw`
+    // What may run while an `is rw` call holds its argument (scanRwReach). A
+    // compiled call copies a variable into the argument list and back out
+    // after, so the callee's `$x ~= …` found the string shared and copied all
+    // of it on every call (issue #130). Moved in instead, the variable is empty
+    // until the call returns — which only code that names it could notice: a
+    // routine or closure reaching it from outside itself, a regex interpolating
+    // it, a string spelling its name (`MY::<$s>`). Those names stay copied, and
+    // so does everything when the program can look names up (EVAL, `::(…)`) or
+    // holds a node this walk does not know.
+    // The walk resolves each use to the declaration it names, so a closure that
+    // captures one `$s` does not keep every other `$s` in the program copied.
+    std::set<std::string> rwReach_;                  // by NAME: no declaration found, or spelled in a string
+    std::set<const void*> rwReachDecl_;              // declarations a routine or closure reaches into
+    std::map<const VarExpr*, const void*> rwUseDecl_; // each use → its declaration
+    std::set<std::string> rwAmbiguous_;              // declared twice in one scope: decided by name
+    std::vector<std::string> rwReachText_;   // regex and subst source: interpolated by name at run time
+    bool rwReachUnknown_ = false;
+    void scanRwReach(const std::vector<StmtPtr>& prog) {
+        // the mainline, then one per block, routine or closure entered; only a
+        // routine or closure between a use and its declaration can run later
+        struct Scope { std::map<std::string, const void*> names; bool routine; };
+        std::vector<Scope> scopes{{{}, false}};
+        std::function<void(Expr*)> ex;
+        std::function<void(Stmt*)> st;
+        auto body = [&](const std::vector<StmtPtr>& b) { for (auto& s : b) st(s.get()); };
+        auto scoped = [&](bool routine, const std::function<void()>& fn) {
+            scopes.push_back({{}, routine}); fn(); scopes.pop_back();
+        };
+        auto block = [&](Block* b) { if (b) scoped(false, [&] { body(b->stmts); }); };
+        auto declare = [&](const std::string& n, const void* id) {
+            if (!scopes.back().names.emplace(n, id).second) rwAmbiguous_.insert(n);
+        };
+        std::function<void(const std::vector<Param>&)> params = [&](const std::vector<Param>& ps) {
+            for (auto& p : ps) {
+                if (!p.name.empty()) declare(p.name, &p);
+                ex(p.whereExpr.get()); ex(p.litVal.get()); ex(p.defaultVal.get());
+                for (auto& d : p.shapeDimExprs) ex(d.get());
+                for (auto& tr : p.userTraits) ex(tr.second.get());
+                if (p.subSig) params(*p.subSig);
+                if (p.codeSig) params(*p.codeSig);
+            }
+        };
+        auto inner = [&](const std::function<void()>& fn) { scoped(true, fn); };
+        auto use = [&](const VarExpr* v) {
+            const std::string& n = v->name;
+            bool viaRoutine = false;   // a routine or closure lies between the use and the declaration
+            for (size_t i = scopes.size(); i-- > 0;) {
+                auto it = scopes[i].names.find(n);
+                if (it == scopes[i].names.end()) { viaRoutine |= scopes[i].routine; continue; }
+                rwUseDecl_[v] = it->second;
+                if (viaRoutine) rwReachDecl_.insert(it->second);
+                return;
+            }
+            rwReach_.insert(n);   // declared nowhere this walk saw: decided by name
+        };
+        // `* ~ $s` is a closure with no block written: a node with a `*`
+        // operand is walked as a scope of its own, like a BlockExpr
+        auto curried = [](Expr* e) {
+            auto star = [](const ExprPtr& x) { return x && x->kind == NK::Whatever; };
+            switch (e->kind) {
+                case NK::Binary: return star(static_cast<Binary*>(e)->lhs) || star(static_cast<Binary*>(e)->rhs);
+                case NK::Unary: return star(static_cast<Unary*>(e)->operand);
+                case NK::MethodCall: return star(static_cast<MethodCall*>(e)->inv);
+                case NK::Index: return star(static_cast<Index*>(e)->base) || star(static_cast<Index*>(e)->index);
+                case NK::ChainExpr:
+                    for (auto& x : static_cast<ChainExpr*>(e)->operands) if (star(x)) return true;
+                    return false;
+                default: return false;
+            }
+        };
+        std::function<void(Expr*)> ex0;
+        ex = [&](Expr* e) {
+            if (e && curried(e)) inner([&] { ex0(e); });
+            else ex0(e);
+        };
+        ex0 = [&](Expr* e) {
+            if (!e) return;
+            switch (e->kind) {
+                case NK::IntLit: case NK::NumLit: case NK::BoolLit: case NK::Whatever:
+                case NK::SelfTerm: case NK::NameTerm: case NK::AllomorphLit: return;
+                case NK::StrLit: {
+                    const std::string& v = static_cast<StrLit*>(e)->v;
+                    if (v.size() > 1 && std::strchr("$@%&", v[0])) rwReach_.insert(v);
+                    return; }
+                case NK::InterpStr: for (auto& x : static_cast<InterpStr*>(e)->parts) ex(x.get()); return;
+                case NK::VarExpr: {
+                    auto* v = static_cast<VarExpr*>(e);
+                    if (v->declare) {
+                        declare(v->name, v);
+                        if (v->declDynamic) rwAmbiguous_.insert(v->name);   // a callee reaches it as CALLER::
+                    }
+                    else use(v);
+                    ex(v->declDefault.get()); ex(v->declShape.get()); ex(v->declTypeExpr.get());
+                    return; }
+                case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) ex(x.get()); return;
+                case NK::ArrayLit: for (auto& x : static_cast<ArrayLit*>(e)->items) ex(x.get()); return;
+                case NK::HashLit: for (auto& x : static_cast<HashLit*>(e)->items) ex(x.get()); return;
+                case NK::Assign: ex(static_cast<Assign*>(e)->target.get()); ex(static_cast<Assign*>(e)->value.get()); return;
+                case NK::Binary: ex(static_cast<Binary*>(e)->lhs.get()); ex(static_cast<Binary*>(e)->rhs.get()); return;
+                case NK::Unary: ex(static_cast<Unary*>(e)->operand.get()); return;
+                case NK::Call: {
+                    auto* c = static_cast<Call*>(e);
+                    if (c->name == "EVAL" || c->name == "EVALFILE") rwReachUnknown_ = true;
+                    ex(c->callee.get());
+                    for (auto& x : c->args) ex(x.get());
+                    return; }
+                case NK::MethodCall: {
+                    auto* m = static_cast<MethodCall*>(e);
+                    if (m->method == "EVAL" || m->method == "EVALFILE") rwReachUnknown_ = true;
+                    ex(m->inv.get()); ex(m->methodExpr.get());
+                    for (auto& x : m->args) ex(x.get());
+                    return; }
+                case NK::Index: ex(static_cast<Index*>(e)->base.get()); ex(static_cast<Index*>(e)->index.get()); return;
+                case NK::Ternary: { auto* t = static_cast<Ternary*>(e); ex(t->cond.get()); ex(t->then.get()); ex(t->els.get()); return; }
+                case NK::Range: ex(static_cast<RangeExpr*>(e)->from.get()); ex(static_cast<RangeExpr*>(e)->to.get()); return;
+                case NK::Pair: ex(static_cast<PairExpr*>(e)->keyExpr.get()); ex(static_cast<PairExpr*>(e)->value.get()); return;
+                case NK::BlockExpr: {
+                    auto* b = static_cast<BlockExpr*>(e);
+                    inner([&] { params(b->params); body(b->body); });
+                    return; }
+                case NK::RegexLit: rwReachText_.push_back(static_cast<RegexLit*>(e)->pattern); return;
+                case NK::SubstLit:
+                    rwReachText_.push_back(static_cast<SubstLit*>(e)->pattern);
+                    rwReachText_.push_back(static_cast<SubstLit*>(e)->repl);
+                    return;
+                case NK::ChainExpr: for (auto& x : static_cast<ChainExpr*>(e)->operands) ex(x.get()); return;
+                case NK::NqpOp: for (auto& x : static_cast<NqpOp*>(e)->args) ex(x.get()); return;
+                default: rwReachUnknown_ = true; return;   // SymbolicRef, and whatever comes later
+            }
+        };
+        st = [&](Stmt* s) {
+            if (!s) return;
+            switch (s->kind) {
+                case NK::ExprStmt: ex(static_cast<ExprStmt*>(s)->e.get()); return;
+                case NK::VarDecl: {
+                    auto* d = static_cast<VarDecl*>(s);
+                    for (auto& n : d->names) declare(n, d);
+                    ex(d->init.get());
+                    return; }
+                case NK::SubDecl: {
+                    auto* d = static_cast<SubDecl*>(s);
+                    ex(d->nameExpr.get());
+                    for (auto& x : d->immediateArgs) ex(x.get());
+                    inner([&] {
+                        params(d->params);
+                        for (auto& alt : d->altParams) params(alt);
+                        body(d->body);
+                        ex(d->retLiteral.get()); ex(d->deprecatedWith.get());
+                        ex(d->nativeLibExpr.get()); ex(d->nativeSymExpr.get());
+                    });
+                    return; }
+                case NK::IfStmt: {
+                    auto* f = static_cast<IfStmt*>(s);
+                    for (size_t k = 0; k < f->branches.size(); k++) {
+                        ex(f->branches[k].first.get());
+                        scoped(false, [&] {
+                            if (k < f->branchParams.size()) params(f->branchParams[k]);
+                            block(f->branches[k].second.get());
+                        });
+                    }
+                    scoped(false, [&] { params(f->elseParams); block(f->elseBlock.get()); });
+                    return; }
+                case NK::WhileStmt: {
+                    auto* w = static_cast<WhileStmt*>(s);
+                    ex(w->cond.get());
+                    scoped(false, [&] { params(w->params); block(w->body.get()); });
+                    return; }
+                case NK::ForStmt: {
+                    auto* f = static_cast<ForStmt*>(s);
+                    ex(f->list.get());
+                    scoped(false, [&] { params(f->params); block(f->body.get()); });
+                    return; }
+                case NK::LoopStmt: {
+                    auto* l = static_cast<LoopStmt*>(s);
+                    ex(l->init.get()); ex(l->cond.get()); ex(l->incr.get()); block(l->body.get());
+                    return; }
+                case NK::RepeatStmt: { auto* r = static_cast<RepeatStmt*>(s); ex(r->cond.get()); block(r->body.get()); return; }
+                case NK::Block: block(static_cast<Block*>(s)); return;
+                case NK::ReturnStmt: ex(static_cast<ReturnStmt*>(s)->value.get()); return;
+                case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt: return;
+                case NK::UseStmt: {
+                    auto* u = static_cast<UseStmt*>(s);
+                    ex(u->ifCond.get()); ex(u->fileExpr.get()); ex(u->argExpr.get());
+                    return; }
+                case NK::GivenStmt: {
+                    auto* g = static_cast<GivenStmt*>(s);
+                    ex(g->topic.get());
+                    scoped(false, [&] { params(g->params); block(g->body.get()); });
+                    scoped(false, [&] { params(g->elseParams); block(g->elseBody.get()); });
+                    return; }
+                case NK::WhenStmt: { auto* w = static_cast<WhenStmt*>(s); ex(w->cond.get()); block(w->body.get()); return; }
+                case NK::ClassDecl: {
+                    auto* c = static_cast<ClassDecl*>(s);
+                    ex(c->nameExpr.get()); ex(c->verExpr.get()); ex(c->authExpr.get()); ex(c->apiExpr.get());
+                    inner([&] {
+                        params(c->roleParams);
+                        for (auto& ra : c->roleArgs) for (auto& x : ra.second) ex(x.get());
+                        for (auto& tr : c->userTraits) ex(tr.second.get());
+                        body(c->body);
+                    });
+                    return; }
+                case NK::EnumDecl: ex(static_cast<EnumDecl*>(s)->values.get()); return;
+                case NK::NamedRegexDecl: rwReachText_.push_back(static_cast<NamedRegexDecl*>(s)->pattern); return;
+                case NK::SubsetDecl: inner([&] { ex(static_cast<SubsetDecl*>(s)->where.get()); }); return;
+                default: rwReachUnknown_ = true; return;
+            }
+        };
+        body(prog);
+    }
+    // Can this variable be moved into an `is rw` call's argument list?
+    bool rwMovable(const VarExpr* v) const {
+        if (rwReachUnknown_ || v->declare || v->nativeIntRead || v->nativeNumRead || v->nativeStrRead) return false;
+        const std::string& n = v->name;
+        if (n.size() < 2 || n[0] != '$' || !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false;
+        if (rwReach_.count(n) || rwAmbiguous_.count(n)) return false;
+        auto it = rwUseDecl_.find(v);
+        if (it == rwUseDecl_.end() || rwReachDecl_.count(it->second)) return false;
+        for (auto& t : rwReachText_) if (t.find(n) != std::string::npos) return false;
+        return true;
+    }
     std::map<std::string, int> fastSubs; // -O: fixed-arity subs with direct Value params (name -> arity)
     bool optimize_ = false;              // -O codegen pass enabled
     std::set<std::string> enumKeys;      // enum value names (bound as globals)
@@ -2062,17 +2282,40 @@ struct Codegen {
                     if (auto rit = rwSubs.find(c->name); rit != rwSubs.end()) {
                         bool anyPair = false;
                         for (auto& a : c->args) if (a->kind == NK::Pair) anyPair = true;
-                        std::string o = "([&]()->Value{ ValueList __rw = " + vl + "; Value __r = "
-                                      + mangleSub(c->name) + "(__rw);";
-                        if (!slip && !anyPair)
+                        // A variable nothing else can reach during the call (rwMovable)
+                        // is MOVED into the list and back, so the callee holds its
+                        // string alone and appends in place; the rest are copied in
+                        // and out. A move comes back even when the call throws: the
+                        // parameter IS the variable, so what the callee did to it
+                        // before the throw stays done, as in Rakudo.
+                        std::vector<std::pair<int, std::string>> moved, copied;
+                        if (!slip && !anyPair) {
+                            std::map<std::string, int> seen;
+                            for (int i : rit->second)
+                                if (i < (int)c->args.size() && c->args[i]->kind == NK::VarExpr)
+                                    seen[static_cast<VarExpr*>(c->args[i].get())->name]++;
                             for (int i : rit->second)
                                 if (i < (int)c->args.size()) {
                                     Expr* a = c->args[i].get();
                                     bool lv = (a->kind == NK::VarExpr && !static_cast<VarExpr*>(a)->declare)
                                            || a->kind == NK::Index;
-                                    if (lv) checkWritable(a);   // Rakudo: "expected a writable container"
-                                    if (lv) o += " " + lvalueExpr(a) + " = __rw[" + std::to_string(i) + "];";
+                                    if (!lv) continue;
+                                    checkWritable(a);   // Rakudo: "expected a writable container"
+                                    const bool mv = a->kind == NK::VarExpr && rwMovable(static_cast<VarExpr*>(a)) &&
+                                                    seen[static_cast<VarExpr*>(a)->name] == 1;
+                                    (mv ? moved : copied).push_back({i, lvalueExpr(a)});
                                 }
+                        }
+                        std::string o = "([&]()->Value{ ValueList __rw = " + vl + ";";
+                        for (auto& [i, lv] : moved) o += " __rw[" + std::to_string(i) + "] = std::move(" + lv + ");";
+                        if (moved.empty()) o += " Value __r = " + mangleSub(c->name) + "(__rw);";
+                        else {
+                            std::string back;
+                            for (auto& [i, lv] : moved) back += " " + lv + " = std::move(__rw[" + std::to_string(i) + "]);";
+                            o += " Value __r; try { __r = " + mangleSub(c->name) + "(__rw); } catch (...) {" + back +
+                                 " throw; }" + back;
+                        }
+                        for (auto& [i, lv] : copied) o += " " + lv + " = __rw[" + std::to_string(i) + "];";
                         return o + " return __r; }())";
                     }
                     // -O: call the direct-Value overload when the arity/args line up
@@ -5971,6 +6214,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             for (auto& it : static_cast<ListExpr*>(e)->items) one(it.get());
         else one(e);
     };
+    g.scanRwReach(prog.stmts);
     MyDeclFn asTopVar = [&](const std::string& nm, const std::string& dt) {
         g.topVars_.insert(nm);
         if (!dt.empty()) g.topVarTypes_[nm] = dt;
