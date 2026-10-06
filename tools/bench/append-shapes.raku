@@ -36,7 +36,13 @@ sub ms(&case, $n) {
     $best
 }
 
-my $engine = $*RAKU.compiler.name ~ ' ' ~ $*RAKU.compiler.version;
+# Raku++'s `$*RAKU.compiler.version` is the Rakudo release it matches and its
+# `.id` its own version; Rakudo's `.id` is a build hash, so it shows `.version`.
+# A compiled program is not running as the `rakupp` binary.
+my $c = $*RAKU.compiler;
+my $engine = $*VM.name eq 'cpp'
+    ?? "$c.name() $c.id()" ~ ($*EXECUTABLE.basename ~~ / ^ rakupp ['.exe']? $ / ?? '' !! ' (compiled)')
+    !! "$c.name() $c.version()";
 say "engine: $engine";
 say '';
 printf "%-24s %8s %8s %8s   %7s  %s\n", 'case', '10k', '20k', '40k', '20k→40k', 'verdict';
