@@ -76,7 +76,7 @@ function clusterEnd(s, i) {
     if (cp === 0x0D && s.charCodeAt(j) === 0x0A) return j + 1;
     if (cp < 0x300 && (j >= s.length || s.charCodeAt(j) < 0x300)) return j;   // the ASCII fast path
     // walk while the next codepoint does not start a new cluster
-    let prev = gbProp(cp), pictSeq = prev === GB_ExtPict, riRun = prev === GB_RI ? 1 : 0, incbState = incbProp(cp) === 2 ? 1 : 0;
+    let prev = gbProp(cp), pictSeq = prev === GB_ExtPict, riRun = prev === GB_RI ? 1 : 0, incbState = incbProp(cp) === 1 ? 2 : 0;
     while (j < s.length) {
         const c2 = s.codePointAt(j), cur = gbProp(c2), ip = incbProp(c2);
         let brk;
@@ -96,7 +96,7 @@ function clusterEnd(s, i) {
         if (brk) break;
         riRun = (cur === GB_RI) ? riRun + 1 : 0;
         if (cur === GB_ExtPict) pictSeq = true; else if (pictSeq && (cur === GB_Extend || cur === GB_ZWJ)) pictSeq = true; else pictSeq = false;
-        if (ip === 2) incbState = 1; else if (incbState >= 1 && ip === 1) incbState = 2; else if (!(incbState >= 1 && ip === 3)) incbState = 0;
+        incbState = (ip === 1 || (incbState === 2 && ip === 3)) ? 2 : 0;   // GB9c, Unicode 18
         prev = cur;
         j += c2 > 0xFFFF ? 2 : 1;
     }
@@ -801,7 +801,7 @@ function make(mt, v) { if (mt instanceof RMatch) { mt.made = v; if (mt.st) mt.st
 function matchAt(mt, i) { return mt instanceof RMatch ? mt.pos(i) : Nil; }
 function matchNamed(mt, k) { return mt instanceof RMatch ? mt.name(k) : Nil; }
 // grapheme offsets for .from/.to/.pos
-function gOff(s, i) { return isAscii(s) ? i : graphemes(s.slice(0, i)).length; }
+function gOff(s, i) { return unitIsGrapheme(s) ? i : graphemes(s.slice(0, i)).length; }
 function matchGist(mt, depth) {
     let out = '｢' + mt.Str() + '｣';
     const entries = [];

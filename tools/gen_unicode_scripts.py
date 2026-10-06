@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # Generate src/unicode_scripts_gen.cpp — the Unicode Script property, from the
-# PINNED 16.0 Scripts.txt.  Re-run: python3 tools/gen_unicode_scripts.py
+# PINNED 18.0 Scripts.txt.  Re-run: python3 tools/gen_unicode_scripts.py
 import re
 
-SRC = "tools/ucd/Scripts-17.0.0.txt"
-VER = "17.0.0"
+SRC = "tools/ucd/Scripts-18.0.0.txt"
+VER = "18.0.0"
 
 ranges = []  # (lo, hi, ScriptName) — proper case, as in Scripts.txt
 for line in open(SRC):
@@ -30,6 +30,7 @@ with open("src/unicode_scripts_gen.cpp", "w") as f:
     f.write("};\n")
     f.write(f"extern const size_t SCRIPTS_N = {len(ranges)};\n")
     # The SLIM seam (src/ucd_seam.h)
+    f.write("\n// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.\n")
     f.write("const ScriptEnt* scriptsTable(size_t* n) { *n = SCRIPTS_N; return SCRIPTS; }\n")
     f.write("}} // namespace rakupp::ucd\n")
 

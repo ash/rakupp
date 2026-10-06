@@ -6,7 +6,7 @@
 #   Decomposition_Type, Numeric_Type   — and the Bidi_Mirroring_Glyph map.
 #
 # Dogfooding: run by rakupp —  build/rakupp tools/gen_unicode_props2.raku
-my $VER = '17.0.0';
+my $VER = '18.0.0';
 sub p($f) { "tools/ucd/$f-$VER.txt" }
 
 # Parse a "CODE(..CODE)? ; VALUE" file → list of [lo, hi, value-string].

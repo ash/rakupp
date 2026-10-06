@@ -120,11 +120,11 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Match adverbs `:g(lobal) :ex(haustive)` (every match at every position and length) `:x :nth :p :c :i :samecase/:ii :sigspace :samespace/:ss :ignoremark/:m :samemark/:mm`, ordinals `:2nd`, assignment forms `s[…] = … / OP= …`, `$var`/`$^a`/`@a` interpolation in pattern & replacement
 - **Gaps:** subtraction directly after a bare property class is read as part of the property NAME, so `<:L-[b]>` matches anything — write `<+:L-[b]>`, which is correct. Backtracking control (`::`) parses but does not cut; Rakudo refuses it outright (`:: not yet implemented`), so neither engine has it
 
-## Unicode (generated from UCD/UCA 17.0 — see [UNICODE.md](UNICODE.md))
+## Unicode (generated from UCD/UCA 18.0 — see [UNICODE.md](UNICODE.md))
 - Normalization **NFC / NFD / NFKC / NFKD** (+ Hangul), `Uni`/`NFC`/`NFD` types; `Uni.new(…).Str` is NFC (NFG semantics) — all `nf*-*.t` + `mass-equality.t` pass
 - Grapheme clusters (full UAX #29 incl. **GB9c** Indic conjuncts, emoji ZWJ/skin-tones, flags 🇦🇧): `.chars`/`.comb`/`.flip` — `GraphemeBreakTest-*` and `emoji-test.t` (3,825) fully pass
 - **UCA collation** — `unicmp`/`coll` from DUCET 17.0 (contractions incl. discontiguous matching, implicit weights): all 8,271 conformance tests pass
-- Character names both directions — `\c[NAME]`, `uniname` — incl. control aliases and algorithmic CJK/Tangut/Nushu/**Hangul syllable** names; numeric values `unival`/`univals` as exact Rats, incl. Unihan numerals (`千` = 1000)
+- Character names both directions — `\c[NAME]`, `uniname` — incl. name aliases and algorithmic CJK/Tangut/Jurchen/Small Seal/**Hangul syllable** names; numeric values `unival`/`univals` as exact Rats, incl. Unihan numerals (`千` = 1000)
 - Regex properties: general category (short `<:L>`/`<:Nd>` and long forms), **scripts** `<:Latin>`/`<:Script<Greek>>` (real Scripts.txt), **blocks** `<:InArabic>`, **bidi** `<:bc<L>>`, binary props (`<:Math>`, `<:Soft_Dotted>`, …); negated/inverted `<:!P>`/`<-:P>`
 
 ## Data Types & Built-ins

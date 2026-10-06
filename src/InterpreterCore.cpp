@@ -13693,7 +13693,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // into the middle of a cluster: `"ŕ̥tḱos".substr-rw(1,1) = 'X'`
                 // replaced the combining ring rather than the "t".
                 auto cps = utf8cp(bp->s);
-                GraphemeMap gm(cps);
+                GraphemeMap gm(cps, bp->s);
                 long long nch = (long long)gm.count();
                 auto byteAt = [&](long long g) -> size_t {
                     size_t want = gm.cpAt((size_t)g), b = 0, n = 0;

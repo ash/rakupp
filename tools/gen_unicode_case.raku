@@ -9,7 +9,7 @@
 # Conditional / language-tailored SpecialCasing rules (Final_Sigma, lt/tr/az …)
 # are intentionally skipped: Raku's uc/lc/tc/fc use the language-neutral mapping.
 
-my $VER = '17.0.0';
+my $VER = '18.0.0';
 my $UD  = "tools/ucd/UnicodeData-$VER.txt";
 my $SC  = "tools/ucd/SpecialCasing-$VER.txt";
 my $CF  = "tools/ucd/CaseFolding-$VER.txt";

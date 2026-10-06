@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # Generate src/unicode_props_gen.cpp — Unicode binary properties (DerivedCoreProperties
-# + PropList) as a prop-indexed range table, from PINNED 16.0 UCD files.
+# + PropList) as a prop-indexed range table, from PINNED 18.0 UCD files.
 # Re-run: python3 tools/gen_unicode_props.py
 import re
 
-FILES = ["tools/ucd/DerivedCoreProperties-17.0.0.txt", "tools/ucd/PropList-17.0.0.txt",
-         "tools/ucd/emoji-data-17.0.0.txt"]
-VER = "17.0.0"
+FILES = ["tools/ucd/DerivedCoreProperties-18.0.0.txt", "tools/ucd/PropList-18.0.0.txt",
+         "tools/ucd/emoji-data-18.0.0.txt"]
+VER = "18.0.0"
 
 props = {}   # normalized-name -> list of (lo, hi)
 for path in FILES:
@@ -24,7 +24,7 @@ for path in FILES:
 
 # Full_Composition_Exclusion is the only binary flag we take from DerivedNormalizationProps
 # (the file's other rows carry a value field, e.g. NFC_QC; No — those are enum, not binary).
-for line in open("tools/ucd/DerivedNormalizationProps-17.0.0.txt"):
+for line in open("tools/ucd/DerivedNormalizationProps-18.0.0.txt"):
     line = line.split('#', 1)[0].strip()
     if not line:
         continue
@@ -37,7 +37,7 @@ for line in open("tools/ucd/DerivedNormalizationProps-17.0.0.txt"):
     props.setdefault(re.sub(r'[^a-z0-9]', '', parts[1].lower()), []).append((lo, hi))
 
 # Bidi_Mirrored is UnicodeData.txt field 9 == 'Y' (not in the derived files above).
-for line in open("tools/ucd/UnicodeData-17.0.0.txt"):
+for line in open("tools/ucd/UnicodeData-18.0.0.txt"):
     f = line.rstrip('\n').split(';')
     if len(f) > 9 and f[9] == 'Y':
         cp = int(f[0], 16)

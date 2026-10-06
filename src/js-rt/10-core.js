@@ -642,6 +642,15 @@ function cmpNum(a, b) {         // the -1/0/1 of `cmp`, for sorting
 
 // -------------------------------------------------------------- strings ----
 function isAscii(s) { for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 127) return false; return true; }
+// One UTF-16 unit per grapheme: ASCII with no CR LF pair, which GB3 joins into one
+// grapheme ("a\r\nb".chars is 3). The grapheme fast paths test this, not isAscii.
+function unitIsGrapheme(s) {
+    for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c > 127 || (c === 13 && s.charCodeAt(i + 1) === 10)) return false;
+    }
+    return true;
+}
 // numToStr: Rakudo's Num.Str — the shortest %g that round-trips, as Value.cpp does it.
 function numToStr(n) {
     if (n === Infinity) return 'Inf';

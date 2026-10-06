@@ -9,7 +9,7 @@ ACCENT]".chars` is 1. Sorting respects the Unicode Collation Algorithm.
 character database.
 
 None of that is optional, and Raku++ implements all of it from the pinned
-Unicode 17.0 data with no external library.
+Unicode 18.0 data with no external library.
 
 ## Storage: UTF-8 bytes, grapheme semantics
 
@@ -136,7 +136,7 @@ dotless i are language-sensitive.
 ## The tables are generated, and one generator is written in Raku
 
 ```
-tools/ucd/                 pinned UCD + UCA 17.0 data files
+tools/ucd/                 pinned UCD + UCA 18.0 data files
 tools/gen_unicode_*.py     table generators
 tools/gen-unicode.raku     …and the ones written in Raku
 src/unicode_*_gen.cpp      the output: 79,400 lines

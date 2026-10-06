@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # Generate src/unicode_bidi_gen.cpp — the Bidi_Class property, from the PINNED
-# 16.0 extracted/DerivedBidiClass.txt.  Re-run: python3 tools/gen_unicode_bidi.py
+# 18.0 extracted/DerivedBidiClass.txt.  Re-run: python3 tools/gen_unicode_bidi.py
 import re
 
-SRC = "tools/ucd/DerivedBidiClass-17.0.0.txt"
-VER = "17.0.0"
+SRC = "tools/ucd/DerivedBidiClass-18.0.0.txt"
+VER = "18.0.0"
 
 ranges = []  # (lo, hi, BidiClass) e.g. "L", "EN", "WS"
 for line in open(SRC):
@@ -30,6 +30,7 @@ with open("src/unicode_bidi_gen.cpp", "w") as f:
     f.write("};\n")
     f.write(f"extern const size_t BIDI_N = {len(ranges)};\n")
     # The SLIM seam (src/ucd_seam.h)
+    f.write("\n// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.\n")
     f.write("const BidiEnt* bidiTable(size_t* n) { *n = BIDI_N; return BIDI; }\n")
     f.write("}} // namespace rakupp::ucd\n")
 

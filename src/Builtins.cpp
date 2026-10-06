@@ -1934,7 +1934,7 @@ static std::string rakuStrLit(const std::string& s) {
     };
     if (!high) { for (unsigned char c : s) ascii1(c); return o + "\""; }
     auto cps = utf8cp(s);
-    auto starts = uniGraphemeStarts(cps);
+    auto starts = uniGraphemeStarts(cps, s);
     for (size_t g = 0; g < starts.size(); g++) {
         size_t from = starts[g], to = g + 1 < starts.size() ? starts[g + 1] : cps.size();
         if (to - from == 1 && cps[from] < 0x80) { ascii1((unsigned char)cps[from]); continue; }
@@ -2675,7 +2675,7 @@ long long cowGraphemeCount(const CowStr& s) {
     long long n = b->nGraphemes.load(std::memory_order_relaxed);
     if (n < 0) {
         n = cowByteIsGraphemeIndex(s) ? (long long)b->text.size()
-                                      : (long long)uniGraphemeCount(utf8cp(b->text));
+                                      : (long long)uniGraphemeCount(utf8cp(b->text), b->text);
         b->nGraphemes.store(n, std::memory_order_relaxed);
     }
     return n;
@@ -2715,7 +2715,7 @@ const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s) {
     auto cps = utf8cp(x);
     auto* mine = new std::vector<uint32_t>;
     if (ci && cps.size() + 1 == ci->size()) {
-        auto starts = uniGraphemeStarts(cps); // cluster starts, codepoint space
+        auto starts = uniGraphemeStarts(cps, x); // cluster starts, codepoint space
         mine->reserve(starts.size() + 1);
         for (size_t g : starts) mine->push_back((*ci)[g]);
         mine->push_back((uint32_t)x.size());
@@ -2857,7 +2857,7 @@ std::string mapCase(const std::string& s, int kind, int tcMode) {
     }
     auto cps = utf8cp(s);
     if (cps.empty()) return s;
-    auto starts = uniGraphemeStarts(cps);
+    auto starts = uniGraphemeStarts(cps, s);
     std::vector<uint32_t> out;
     out.reserve(cps.size());
     for (size_t gi = 0; gi < starts.size(); gi++) {
@@ -2946,7 +2946,7 @@ long long graphemeCount(const std::string& s) {
     // once per character it decoded the whole text AND ran the full UAX #29 walk
     // over it, 11.5 s for a 30k scan. A byte count answers it outright.
     if (byteIsGraphemeIndex(s)) return (long long)s.size();
-    return (long long)uniGraphemeCount(utf8cp(s));
+    return (long long)uniGraphemeCount(utf8cp(s), s);
 }
 
 // Rakudo dies opening a missing file for reading ("Failed to open file

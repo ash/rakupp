@@ -10,6 +10,12 @@ std::vector<uint32_t> uniNormalize(const std::vector<uint32_t>& cps, int mode);
 int uniCombiningClass(uint32_t cp);
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps); // UAX #29 grapheme cluster count
 std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps); // cluster start indices (front()==0)
+// The same, for `cps = utf8cp(src)`: a byte of `src` that starts no well-formed
+// sequence — a UTF8-C8 synthetic, which utf8cp passes through as its own value —
+// is a cluster of its own, the way a Control is (it never combines, and nothing
+// combines with it). Pass the string whenever the codepoints came from one.
+size_t uniGraphemeCount(const std::vector<uint32_t>& cps, const std::string& src);
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, const std::string& src);
 bool uniGraphemeLeadIsOdd(uint32_t cp);   // Extend / ZWJ / SpacingMark / Prepend: `.raku` writes such a cluster as codepoints
 // Raku string indices are GRAPHEME indices, but a decoded string is a vector of
 // CODEPOINTS, and the two coincide only while every cluster is one codepoint long.
@@ -24,6 +30,7 @@ bool uniGraphemeLeadIsOdd(uint32_t cp);   // Extend / ZWJ / SpacingMark / Prepen
 class GraphemeMap {
 public:
     explicit GraphemeMap(const std::vector<uint32_t>& cps);
+    GraphemeMap(const std::vector<uint32_t>& cps, const std::string& src); // cps = utf8cp(src)
     bool trivial() const { return starts_.empty(); }
     size_t count() const { return starts_.empty() ? ncps_ : starts_.size(); } // graphemes
     // codepoint index where grapheme `g` starts; count() maps to the end of the string

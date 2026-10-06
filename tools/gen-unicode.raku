@@ -9,7 +9,7 @@
 # Ideographic names (CJK/Tangut) and Hangul syllable names are NOT emitted —
 # they are algorithmic and synthesized in C++ (see uniNameOf / uniCharByName).
 
-my $VER   = '17.0.0';
+my $VER   = '18.0.0';
 my $UD    = "tools/ucd/UnicodeData-$VER.txt";
 my $ALIAS = "tools/ucd/NameAliases-$VER.txt";
 
@@ -61,7 +61,7 @@ for $UD.IO.lines -> $line {
     add-cat($cp, $cp, $cat);
 
     unless $name.starts-with('<') {
-        @names.push($name ~ "\t" ~ $cp);
+        @names.push($name ~ "\t" ~ $cp ~ "\t0");
         %seen-name{$name} = 1;
     }
 }
@@ -91,7 +91,7 @@ for $ALIAS.IO.lines -> $line {
     my $typ   = @p[2].trim;
     next unless $typ eq 'control' | 'abbreviation' | 'alternate' | 'correction' | 'figment';
     unless %seen-name{$alias} {
-        @names.push($alias ~ "\t" ~ :16(@p[0]));
+        @names.push($alias ~ "\t" ~ :16(@p[0]) ~ "\t1");   # 1: an alias, never what .uniname answers
         %seen-name{$alias} = 1;
     }
 }
@@ -112,11 +112,11 @@ my @out;
 @out.push: '#include <cstdint>';
 @out.push: '#include <cstddef>';
 @out.push: 'namespace rakupp { namespace ucd {';
-@out.push: 'struct NameEnt { const char* name; uint32_t cp; };';
+@out.push: 'struct NameEnt { const char* name; uint32_t cp; uint8_t alias; };';
 @out.push: 'extern const NameEnt NAMES[] = {';
 for @names -> $e {
-    my ($name, $cp) = $e.split("\t");
-    @out.push: '  {"' ~ $name ~ '",0x' ~ $cp.Int.base(16) ~ '},';
+    my ($name, $cp, $alias) = $e.split("\t");
+    @out.push: '  {"' ~ $name ~ '",0x' ~ $cp.Int.base(16) ~ ',' ~ $alias ~ '},';
 }
 @out.push: '};';
 @out.push: "extern const size_t NAMES_N = {@names.elems};";
@@ -129,10 +129,13 @@ for @numv -> $v {
 @out.push: $line;
 @out.push: '};';
 @out.push: "extern const size_t NUMV_N = {@numv.elems};";
-# The SLIM seam (src/ucd_seam.h): accessors beside the data, so a build links
-# this file or a stub — never both.
+@out.push: '';
+@out.push: '// The SLIM seam (src/ucd_seam.h): the only way the runtime reaches these';
+@out.push: "// tables. Defined beside the data so a build links this file or a stub, never";
+@out.push: "// both, and nothing can reach the data behind the accessor's back.";
 @out.push: 'const NameEnt* namesTable(size_t* n) { *n = NAMES_N; return NAMES; }';
 @out.push: 'const int64_t* numvTable(size_t* n) { *n = NUMV_N; return NUMV; }';
+@out.push: 'const int64_t* numvTableOrNull(size_t* n) { return numvTable(n); }';
 @out.push: '} }';
 'src/unicode_names.cpp'.IO.spurt(@out.join("\n") ~ "\n");
 
