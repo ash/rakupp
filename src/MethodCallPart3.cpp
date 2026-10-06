@@ -5156,8 +5156,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(r);
     }
     if (m == "flip") { // reverses GRAPHEMES: a combining mark stays behind its base
-        auto cps = utf8cp(inv.toStr());
-        GraphemeMap gm(cps);
+        const std::string flipSrc = inv.toStr();
+        auto cps = utf8cp(flipSrc);
+        GraphemeMap gm(cps, flipSrc);
         std::string r;
         for (size_t g = gm.count(); g-- > 0; )
             for (size_t k = gm.cpAt(g), e = gm.cpAt(g + 1); k < e; k++) r += cpToUtf8(cps[k]);
@@ -5300,7 +5301,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         const std::vector<uint32_t>* gt = (!plain && cowOk) ? cowGraphemeIndex(inv.s) : nullptr;
         std::vector<uint32_t> cps;
         std::unique_ptr<GraphemeMap> gm;
-        if (!plain && !gt) { cps = utf8cp(rawText()); gm.reset(new GraphemeMap(cps)); }
+        if (!plain && !gt) { cps = utf8cp(rawText()); gm.reset(new GraphemeMap(cps, rawText())); }
         long long n = plain ? (long long)(cowOk ? inv.s.size() : rawText().size())
                     : gt    ? (long long)gt->size() - 1
                             : (long long)gm->count();
@@ -5498,7 +5499,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // Positions are GRAPHEME indices, on the way in (the start argument) and on
         // the way out (the answer) — and a match must begin on a cluster boundary,
         // so a lone combining mark does not "find" the inside of a cluster.
-        GraphemeMap hg(cps), ng(ncps);
+        GraphemeMap hg(cps, hay), ng(ncps, ndl);
         long long n = (long long)hg.count(), k = (long long)ng.count();
         long long from = m == "index" ? 0 : n;
         if (args.size() > 1 && args[1].isNumeric()) {
@@ -6520,8 +6521,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     partial = !args[i].pairVal() || args[i].pairVal()->truthy();
                 else if (args[i].isNumeric() && args[i].t != VT::Whatever) limit = args[i].toInt();
             }
-            auto cps = utf8cp(inv.toStr());
-            auto starts = uniGraphemeStarts(cps);
+            const std::string combSrc = inv.toStr();
+            auto cps = utf8cp(combSrc);
+            auto starts = uniGraphemeStarts(cps, combSrc);
             for (size_t gi = 0; gi < starts.size(); gi += (size_t)stride) {
                 if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 if (!partial && gi + (size_t)size > starts.size()) break; // a short tail is dropped
@@ -6562,8 +6564,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (args.size() > 1 && args[1].t != VT::Pair)
                 limit = combLimit(*this, args[1], false, none);
             if (none) return out;
-            auto cps = utf8cp(inv.toStr());
-            auto starts = uniGraphemeStarts(cps);
+            const std::string combSrc = inv.toStr();
+            auto cps = utf8cp(combSrc);
+            auto starts = uniGraphemeStarts(cps, combSrc);
             for (size_t gi = 0; gi < starts.size(); gi += (size_t)chunk) {
                 if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 size_t endGi = std::min(gi + (size_t)chunk, starts.size());
@@ -6580,8 +6583,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (args.size() > 1 && args[1].t != VT::Pair)
                 limit = combLimit(*this, args[1], false, none);
             if (none) return out;
-            auto cps = utf8cp(inv.toStr());
-            auto starts = uniGraphemeStarts(cps);
+            const std::string combSrc = inv.toStr();
+            auto cps = utf8cp(combSrc);
+            auto starts = uniGraphemeStarts(cps, combSrc);
             for (size_t gi = 0; gi < starts.size(); gi++) {
                 if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 size_t from = starts[gi], to = gi + 1 < starts.size() ? starts[gi + 1] : cps.size();

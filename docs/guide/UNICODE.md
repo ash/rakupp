@@ -2,15 +2,14 @@
 
 Raku is one of the most Unicode-capable languages there is — grapheme-based
 strings, normalization, collation, and character introspection are all part of
-the language, and Roast tests them hard (S15 alone is ~91k assertions). This
+the language, and Roast tests them hard (S15 alone is ~92k assertions). This
 document describes how Raku++ implements that: what works, where the data
 comes from, and what is still missing.
 
-**Measured standing (S15, Unicode / strings / NFG):** 80 of 81 files fully
-pass, one partial; of the assertions that run, 91,805 / 91,807 pass (100%), and
-nothing times out. The UCA collation conformance suite
-(S32-str, 8,271 tests) passes 8,271 / 8,271 (verified). _(Measured with the
-current build against the pinned Unicode-17.0 Roast files.)_
+**Measured standing (S15, Unicode / strings / NFG):** 92,454 of 92,454
+assertions pass without skip/todo (92,523 / 92,523 counting them); all 83 files
+pass fully and nothing times out. The UCA collation conformance suite (S32-str)
+passes 8,337 / 8,337. _(Measured against the Unicode-18.0 Roast files.)_
 
 ## The five subsystems
 
@@ -25,15 +24,17 @@ combining acute) is one character, and so is `👨‍👩‍👧` (a ZWJ sequenc
   the single shared segmentation routine), and `\N` in a regex consumes a
   whole grapheme.
 - All rules GB1–GB999 including Hangul syllables (GB6–8), emoji ZWJ sequences
-  (GB11), regional-indicator pairs (GB12/13), and **GB9c** — Indic conjunct
-  breaks (Devanagari विराम chains; Unicode 17 extends this to Myanmar, Khmer
-  and Balinese).
+  (GB11), regional-indicator pairs (GB12/13), and **GB9c** in its Unicode 18 form,
+  `InCB=Linker InCB=Extend* × InCB=Consonant` — Indic conjunct breaks
+  (Devanagari विराम chains, Myanmar, Khmer, Balinese).
 - Break classes come from the real `GraphemeBreakProperty.txt` +
   `emoji-data.txt` (Extended_Pictographic), not a general-category
   approximation — this is what gets skin-tone modifiers (category Sk but
   break-class Extend) and ZWNJ (Cf but Extend) right.
-- Roast: `GraphemeBreakTest-{0..3}.t` (Unicode's own break-test data) and
-  `emoji-test.t` (3,825 emoji sequences) fully pass.
+- A byte that `utf8-c8` could not decode is a cluster of its own, broken around
+  like a Control: it never combines, and nothing combines with it.
+- Roast: `GraphemeBreakTest-{0..4}.t` (Unicode's own break-test data) and
+  `emoji-test.t` (3,835 emoji sequences) fully pass.
 
 ```raku
 say "e\x[301]".chars;        # 1        (e + combining acute = one grapheme)
@@ -54,7 +55,7 @@ NFC, matching Raku's NFG rule that canonically-equivalent codepoint sequences
 yield the same `Str`.
 
 The tables (CCC, canonical/compat decompositions, composition pairs) are
-generated **directly from `UnicodeData.txt` 17.0** by
+generated **directly from `UnicodeData.txt` 18.0** by
 `tools/gen_unicode_norm.py` — not from a host language's Unicode library,
 whose data typically lags by several versions. Roast: all
 `nf{c,d,kc,kd}-*.t` files and `mass-equality.t` (500 canonical-equivalence
@@ -74,8 +75,8 @@ say Uni.new(0x44, 0x323, 0x307).Str
 ### 3. Collation (UCA / DUCET)
 
 The infix operators `unicmp` and `coll` implement the Unicode Collation
-Algorithm (UTS #10) with the DUCET 17.0 table (`allkeys.txt`: 38,785
-single-codepoint entries, 964 contractions, 45,860 collation elements):
+Algorithm (UTS #10) with the DUCET 18.0 table (`allkeys.txt`: 39,493
+single-codepoint entries, 974 contractions, 46,651 collation elements):
 
 - NFD input, three-level sort keys (base letter → accents → case).
 - Longest-first contiguous contraction matching (a 3-codepoint contraction's
@@ -101,8 +102,9 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
 
 ### 4. Character knowledge
 
-- `uniname`/`.uniname` and `\c[NAME]` — names in both directions, including
-  control-character aliases from `NameAliases.txt`. An unassigned codepoint
+- `uniname`/`.uniname` and `\c[NAME]` — names in both directions. `\c[]` and
+  `uniparse` also take the aliases in `NameAliases.txt` (`\c[MVS]`, `\c[BEL]`);
+  `.uniname` always answers the formal Name (`MONGOLIAN VOWEL SEPARATOR`). An unassigned codepoint
   answers `<reserved-XXXX>`, a noncharacter `<noncharacter-XXXX>`, and one out
   of range `<unassigned>` — as Rakudo does. `uniparse` is lenient about the
   numeric tail of an algorithmic name: `CJK UNIFIED IDEOGRAPH-ZZZZ` answers a
@@ -163,20 +165,21 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 
 | Generator | Output | Source data | Version |
 |---|---|---|---|
-| **`tools/gen-unicode.raku`** (Raku, run by rakupp itself) | `src/unicode_gen.cpp`, `src/unicode_names.cpp` | UnicodeData, NameAliases, DerivedNumericValues (names, categories, numeric values incl. Unihan numerals) | **17.0** |
-| `tools/gen_unicode_gb.py` | `src/unicode_gb_gen.cpp` | GraphemeBreakProperty, emoji-data, DerivedCoreProperties (InCB) | **17.0** |
-| `tools/gen_unicode_norm.py` | `src/unicode_norm_gen.cpp` | UnicodeData, DerivedNormalizationProps | **17.0** |
-| `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **17.0** |
-| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **17.0** |
-| **`tools/gen_unicode_case.raku`** (Raku) | `src/unicode_case_gen.cpp` | UnicodeData (simple), SpecialCasing (full 1:N), CaseFolding | **17.0** |
-| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, BidiMirroring | **17.0** |
+| **`tools/gen-unicode.raku`** (Raku, run by rakupp itself) | `src/unicode_gen.cpp`, `src/unicode_names.cpp` | UnicodeData, NameAliases, DerivedNumericValues (names, categories, numeric values incl. Unihan numerals) | **18.0** |
+| `tools/gen_unicode_gb.py` | `src/unicode_gb_gen.cpp` | GraphemeBreakProperty, emoji-data, DerivedCoreProperties (InCB) | **18.0** |
+| `tools/gen_unicode_norm.py` | `src/unicode_norm_gen.cpp` | UnicodeData, DerivedNormalizationProps | **18.0** |
+| `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **18.0** |
+| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **18.0** |
+| **`tools/gen_unicode_case.raku`** (Raku) | `src/unicode_case_gen.cpp` | UnicodeData (simple), SpecialCasing (full 1:N), CaseFolding | **18.0** |
+| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, BidiMirroring | **18.0** |
 
-Every table is pinned at **Unicode 17.0** — the version Roast's generated test
+Every table is pinned at **Unicode 18.0**, the version Roast's generated test
 files (GraphemeBreakTest, emoji-test, CollationTest) assert against. The
 names/categories generator is written in Raku and executed by rakupp itself
 (dogfooding): parsing `UnicodeData.txt` directly ended the dependency on the
 host Python's `unicodedata`, whose UCD version lags by years. Ideographic
-names (`CJK UNIFIED IDEOGRAPH-*`, `TANGUT IDEOGRAPH-*`, `NUSHU CHARACTER-*`)
+names (`CJK UNIFIED IDEOGRAPH-*`, `TANGUT IDEOGRAPH-*`, `JURCHEN CHARACTER-*`,
+`SMALL SEAL CHARACTER-*`)
 and Hangul syllable names (`HANGUL SYLLABLE GA` … composed from Jamo short
 names) are algorithmic and synthesized in C++ rather than stored.
 

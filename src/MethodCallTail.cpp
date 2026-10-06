@@ -545,11 +545,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (m == "chop" && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Complex))
         return methodCall(Value::str(inv.toStr()), "chop", std::move(args), rwArgs);
     if (m == "chop" && (inv.t == VT::Str || inv.t == VT::Match)) {
-        auto cps = utf8cp(inv.toStr());
+        const std::string chopSrc = inv.toStr();
+        auto cps = utf8cp(chopSrc);
         long long n = args.empty() ? 1 : a0().toInt();
         if (n < 0) n = 0;
         // by GRAPHEME, as .flip/.substr/.comb count: "x\x[301]".chop is "" (one cluster), not "x"
-        auto starts = uniGraphemeStarts(cps);
+        auto starts = uniGraphemeStarts(cps, chopSrc);
         size_t keep = n == 0 ? cps.size() : (size_t)n >= starts.size() ? 0 : starts[starts.size() - (size_t)n];
         std::string r;
         for (size_t k = 0; k < keep; k++) r += cpToUtf8(cps[k]);

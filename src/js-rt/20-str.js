@@ -47,13 +47,13 @@ function incbProp(cp) {
 }
 // Split into grapheme clusters. ASCII strings are their own characters.
 function graphemes(s) {
-    if (isAscii(s)) return s.split('');
+    if (unitIsGrapheme(s)) return s.split('');
     const out = [];
     let start = 0, i = 0;
     const n = s.length;
     let first = s.codePointAt(0);
     let prev = gbProp(first), pictSeq = prev === GB_ExtPict, riRun = prev === GB_RI ? 1 : 0,
-        incbState = incbProp(first) === 2 ? 1 : 0;
+        incbState = incbProp(first) === 1 ? 2 : 0;
     i = first > 0xFFFF ? 2 : 1;
     while (i < n) {
         const cp = s.codePointAt(i);
@@ -77,21 +77,18 @@ function graphemes(s) {
         if (cur === GB_ExtPict) pictSeq = true;
         else if (!brk && pictSeq && (cur === GB_Extend || cur === GB_ZWJ)) pictSeq = true;
         else pictSeq = false;
-        if (brk) incbState = (ip === 2) ? 1 : 0;
-        else if (ip === 2) incbState = 1;
-        else if (incbState >= 1 && ip === 1) incbState = 2;
-        else if (!(incbState >= 1 && ip === 3)) incbState = 0;
+        incbState = (ip === 1 || (incbState === 2 && ip === 3)) ? 2 : 0;   // GB9c, Unicode 18
         prev = cur;
         i += cp > 0xFFFF ? 2 : 1;
     }
     out.push(s.slice(start));
     return out;
 }
-function chars(s) { s = str(s); return isAscii(s) ? s.length : graphemes(s).length; }
+function chars(s) { s = str(s); return unitIsGrapheme(s) ? s.length : graphemes(s).length; }
 function codes(s) { let n = 0; for (const _ of str(s)) n++; return n; }
 function substr(s, from, len) {
     s = str(s);
-    const g = isAscii(s) ? null : graphemes(s);
+    const g = unitIsGrapheme(s) ? null : graphemes(s);
     const total = g ? g.length : s.length;
     let f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
     if (f < 0) f += total;
@@ -100,7 +97,7 @@ function substr(s, from, len) {
     if (l < 0) l = 0;
     return g ? g.slice(f, f + l).join('') : s.substr(f, l);
 }
-function flip(s) { s = str(s); return isAscii(s) ? s.split('').reverse().join('') : graphemes(s).reverse().join(''); }
+function flip(s) { s = str(s); return unitIsGrapheme(s) ? s.split('').reverse().join('') : graphemes(s).reverse().join(''); }
 function uc(s) { return str(s).toUpperCase(); }
 function lc(s) { return str(s).toLowerCase(); }
 function tc(s) { s = str(s); if (s === '') return s; const g = graphemes(s); return g[0].toUpperCase() + g.slice(1).join(''); }
@@ -118,7 +115,7 @@ function ords(s) { return mkList(Array.from(str(s), c => c.codePointAt(0))); }
 function chrs(l) { return arr(l).map(chr).join(''); }
 function strIndex(s, needle, start) {
     s = str(s); needle = str(needle);
-    if (isAscii(s)) { const i = s.indexOf(needle, start === undefined ? 0 : toInt(start)); return i < 0 ? Nil : i; }
+    if (unitIsGrapheme(s)) { const i = s.indexOf(needle, start === undefined ? 0 : toInt(start)); return i < 0 ? Nil : i; }
     const g = graphemes(s), ng = graphemes(needle);
     const from = start === undefined ? 0 : toInt(start);
     outer: for (let i = from; i + ng.length <= g.length; i++) {
@@ -131,7 +128,7 @@ function strRindex(s, needle, start) {
     s = str(s); needle = str(needle);
     const i = s.lastIndexOf(needle, start === undefined ? Infinity : toInt(start));
     if (i < 0) return Nil;
-    return isAscii(s) ? i : graphemes(s.slice(0, i)).length;
+    return unitIsGrapheme(s) ? i : graphemes(s.slice(0, i)).length;
 }
 function contains(s, needle, start) {
     if (needle instanceof RJunction) return junctionOp(x => contains(s, x, start), needle, null);

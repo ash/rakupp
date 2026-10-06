@@ -8,7 +8,7 @@ later chapter names a file and you want to know what else lives near it.
 `src/` holds about **274,000 lines** of C++. That figure is misleading on its
 own, because **93,000 of them are generated**: the Unicode tables — character
 names, properties, collation weights, normalization data, emitted from the
-pinned UCD and UCA 17.0 files in `tools/ucd/` — and the JavaScript runtime,
+pinned UCD and UCA 18.0 files in `tools/ucd/` — and the JavaScript runtime,
 which is written as JavaScript in `src/js-rt/` and baked into one C++ file so a
 binary carries the runtime it was built with. Nobody reads those, and nobody
 edits them where they land.

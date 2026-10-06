@@ -9701,8 +9701,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         size_t b = std::min((size_t)byteOff, orig.size());
         long long n = (long long)b;                // pure ASCII: byte == grapheme,
         for (size_t i = 0; i < b; i++) {           // except "\r\n", ONE grapheme (#102)
-            if ((unsigned char)orig[i] >= 0x80)
-                return Value::integer((long long)uniGraphemeCount(utf8cp(orig.substr(0, b))));
+            if ((unsigned char)orig[i] >= 0x80) {
+                const std::string pre = orig.substr(0, b);
+                return Value::integer((long long)uniGraphemeCount(utf8cp(pre), pre));
+            }
             if (orig[i] == '\r' && i + 1 < b && orig[i + 1] == '\n') n--;
         }
         return Value::integer(n);

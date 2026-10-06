@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# Generate src/unicode_blocks_gen.cpp from a PINNED Unicode Blocks.txt (17.0.0),
+# Generate src/unicode_blocks_gen.cpp from a PINNED Unicode Blocks.txt (18.0.0),
 # NOT from Python's unicodedata (which has no block data and tracks a different
-# version). Keeps the block table version-consistent with the rest of the 15.1
+# version). Keeps the block table version-consistent with the rest of the 18.0
 # tables in unicode_gen.cpp.  Re-run: python3 tools/gen_unicode_blocks.py
 import re
 
-SRC = "tools/ucd/Blocks-17.0.0.txt"
-VER = "17.0.0"
+SRC = "tools/ucd/Blocks-18.0.0.txt"
+VER = "18.0.0"
 
 blocks = []  # (lo, hi, normalized-name)
 for line in open(SRC):
@@ -33,6 +33,7 @@ with open("src/unicode_blocks_gen.cpp", "w") as f:
     f.write("};\n")
     f.write(f"extern const size_t BLOCKS_N = {len(blocks)};\n")
     # The SLIM seam (src/ucd_seam.h)
+    f.write("\n// The SLIM seam (src/ucd_seam.h) — see unicode_names.cpp for the note.\n")
     f.write("const BlockEnt* blocksTable(size_t* n) { *n = BLOCKS_N; return BLOCKS; }\n")
     f.write("}} // namespace rakupp::ucd\n")
 

@@ -277,7 +277,7 @@ bool uniIsSpaceCp(uint32_t cp) {
     return !cat.empty() && cat[0] == 'Z';
 }
 
-// Real Script property, from the pinned 16.0 Scripts.txt range table.
+// Real Script property, from the pinned 18.0 Scripts.txt range table.
 std::string uniScript(uint32_t c) {
     size_t n; const ucd::ScriptEnt* T = ucd::scriptsTable(&n); // seam: hoisted once
     size_t lo = 0, hi = n;
@@ -452,7 +452,13 @@ bool uniPropNeedsCutTables(const std::string& p) {
 enum GB { GB_Other, GB_CR, GB_LF, GB_Control, GB_Extend, GB_ZWJ, GB_RI, GB_Prepend,
           GB_SpacingMark, GB_L, GB_V, GB_T, GB_LV, GB_LVT, GB_ExtPict };
 
+// A UTF8-C8 synthetic (a byte that starts no well-formed UTF-8 sequence) enters
+// the rules as this value, which no codepoint has. It breaks like a Control:
+// never part of anyone's cluster, and never the start of a longer one.
+static constexpr uint32_t GB_SYNTHETIC = 0xFFFFFFFFu;
+
 static int gbProp(uint32_t cp) {
+    if (cp == GB_SYNTHETIC) return GB_Control;
     if (cp == 0x0D) return GB_CR;
     if (cp == 0x0A) return GB_LF;
     if (cp == 0x200D) return GB_ZWJ;
@@ -461,7 +467,7 @@ static int gbProp(uint32_t cp) {
     if ((cp >= 0x1160 && cp <= 0x11A7) || (cp >= 0xD7B0 && cp <= 0xD7C6)) return GB_V;
     if ((cp >= 0x11A8 && cp <= 0x11FF) || (cp >= 0xD7CB && cp <= 0xD7FB)) return GB_T;
     if (cp >= 0xAC00 && cp <= 0xD7A3) return ((cp - 0xAC00) % 28 == 0) ? GB_LV : GB_LVT;
-    // Real UCD 16.0 data (unicode_gb_gen.cpp, from GraphemeBreakProperty.txt +
+    // Real UCD 18.0 data (unicode_gb_gen.cpp, from GraphemeBreakProperty.txt +
     // emoji-data.txt): (start, end, class) ranges — 1=Extend 2=SpacingMark
     // 3=Control 4=Prepend 5=Extended_Pictographic. This gets the cases a
     // general-category approximation misses: skin-tone modifiers (Sk but Extend),
@@ -509,10 +515,10 @@ struct GbState {
     int prev;          // gbProp of the previous codepoint
     bool pictSeq;      // inside an emoji ZWJ sequence (GB11)
     int riRun;         // consecutive regional indicators (GB12/13)
-    int incbState;     // 0 none, 1 Consonant seen, 2 Consonant+Linker (GB9c)
+    int incbState;     // 2 = a Linker, then only InCB=Extend, so far (GB9c); else 0
     explicit GbState(uint32_t first)
         : prev(gbProp(first)), pictSeq(prev == GB_ExtPict),
-          riRun(prev == GB_RI ? 1 : 0), incbState(incbProp(first) == 2 ? 1 : 0) {}
+          riRun(prev == GB_RI ? 1 : 0), incbState(incbProp(first) == 1 ? 2 : 0) {}
 };
 
 // Does a cluster boundary fall between the previous codepoint and `cur`?
@@ -539,11 +545,8 @@ static inline void gbAdvance(GbState& st, int cur, int ip, bool brk) {
     if (cur == GB_ExtPict) st.pictSeq = true;
     else if (!brk && st.pictSeq && (cur == GB_Extend || cur == GB_ZWJ)) st.pictSeq = true;
     else st.pictSeq = false;
-    // conjunct chain: a Consonant anchors, Linker upgrades, InCB-Extend carries
-    if (brk) st.incbState = (ip == 2) ? 1 : 0;
-    else if (ip == 2) st.incbState = 1;
-    else if (st.incbState >= 1 && ip == 1) st.incbState = 2;
-    else if (!(st.incbState >= 1 && ip == 3)) st.incbState = 0;
+    // GB9c (UAX #29 rev 49, Unicode 18): a Linker opens, InCB-Extend carries
+    st.incbState = (ip == 1 || (st.incbState == 2 && ip == 3)) ? 2 : 0;
     st.prev = cur;
 }
 
@@ -556,18 +559,54 @@ bool uniGraphemeLeadIsOdd(uint32_t cp) {
     return g == GB_Extend || g == GB_ZWJ || g == GB_SpacingMark || g == GB_Prepend;
 }
 
-std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
+// Which codepoints of utf8cp(s) are UTF8-C8 synthetics. Walks the bytes exactly
+// as utf8cp (Builtins.cpp) does — a lead byte that is no lead, or whose
+// continuation bytes are not all there, is a codepoint of its own — so index i
+// here is index i there. Empty when there are none, which is found without
+// allocating: the common case.
+static std::vector<bool> syntheticMask(const std::string& s) {
+    std::vector<bool> mask;
+    size_t i = 0, n = s.size(), idx = 0;
+    while (i < n) {
+        unsigned char c = (unsigned char)s[i];
+        int len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xe ? 3 : (c >> 3) == 0x1e ? 4 : 0;
+        for (int k = 1; k < len; k++)
+            if (i + k >= n || ((unsigned char)s[i + k] & 0xC0) != 0x80) { len = 0; break; }
+        if (len == 0) {
+            if (mask.empty()) mask.resize(n);   // >= the codepoint count
+            mask[idx] = true;
+            len = 1;
+        }
+        i += len; idx++;
+    }
+    if (!mask.empty()) mask.resize(idx);
+    return mask;
+}
+
+static std::vector<size_t> graphemeStarts(const std::vector<uint32_t>& cps, const std::vector<bool>& synth) {
     std::vector<size_t> starts;
     if (cps.empty()) return starts;
+    auto at = [&](size_t i) { return !synth.empty() && synth[i] ? GB_SYNTHETIC : cps[i]; };
     starts.push_back(0);
-    GbState st(cps[0]);
+    GbState st(at(0));
     for (size_t i = 1; i < cps.size(); i++) {
-        int cur = gbProp(cps[i]), ip = incbProp(cps[i]);
+        uint32_t cp = at(i);
+        int cur = gbProp(cp), ip = incbProp(cp);
         bool brk = gbBreakBefore(st, cur, ip);
         if (brk) starts.push_back(i);
         gbAdvance(st, cur, ip, brk);
     }
     return starts;
+}
+
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
+    return graphemeStarts(cps, {});
+}
+
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, const std::string& src) {
+    std::vector<bool> synth = syntheticMask(src);
+    if (synth.size() != cps.size()) synth.clear();   // not utf8cp(src) after all
+    return graphemeStarts(cps, synth);
 }
 
 // Byte offset of the end of the grapheme cluster beginning at UTF-8 byte `pos`
@@ -576,8 +615,10 @@ std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
 size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len) {
     auto dec = [&](size_t p, uint32_t& cp) -> size_t { // -> byte length
         unsigned char c0 = (unsigned char)s[p];
-        int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 1;
-        if (p + clen > len) clen = 1;
+        int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 0;
+        for (int i = 1; i < clen; i++)   // the same well-formedness utf8cp checks
+            if (p + i >= len || ((unsigned char)s[p + i] & 0xC0) != 0x80) { clen = 0; break; }
+        if (clen == 0) { cp = GB_SYNTHETIC; return 1; }   // a UTF8-C8 synthetic
         cp = clen == 1 ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
         for (int i = 1; i < clen; i++) cp = (cp << 6) | ((unsigned char)s[p + i] & 0x3F);
         return (size_t)clen;
@@ -599,6 +640,10 @@ size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
     return uniGraphemeStarts(cps).size();
 }
 
+size_t uniGraphemeCount(const std::vector<uint32_t>& cps, const std::string& src) {
+    return uniGraphemeStarts(cps, src).size();
+}
+
 GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps) : ncps_(cps.size()) {
     // Cheap pre-check. Nothing below U+0300 extends a cluster — the combining
     // marks start there — with one exception: CR, because CR LF is a single
@@ -606,6 +651,15 @@ GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps) : ncps_(cps.size()) {
     // cannot cluster, and its grapheme indices ARE its codepoint indices.
     for (uint32_t cp : cps) {
         if (cp >= 0x300 || cp == 0x0D) { starts_ = uniGraphemeStarts(cps); return; }
+    }
+}
+
+// A synthetic sits below U+0300 itself, but only clusters differently when
+// something at or above U+0300 (or a CR) is around it — so the same pre-check
+// decides whether the walk is needed at all.
+GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps, const std::string& src) : ncps_(cps.size()) {
+    for (uint32_t cp : cps) {
+        if (cp >= 0x300 || cp == 0x0D) { starts_ = uniGraphemeStarts(cps, src); return; }
     }
 }
 
@@ -617,17 +671,30 @@ size_t GraphemeMap::graphemeAt(size_t cp) const {
 }
 
 
-// ---- UCA collation (DUCET, allkeys 17.0) — powers `unicmp` / `coll` ----
+// ---- UCA collation (DUCET, allkeys 18.0) — powers `unicmp` / `coll` ----
 namespace {
 struct CE { uint16_t l1, l2, l3; };
-// Implicit-weight primaries (UTS #10 §10.1.3): siniform scripts get fixed bases;
-// Han uses the real Unified_Ideograph property (block-split core vs extensions);
-// everything else (unassigned/reserved) gets the FBC0 series.
+// Implicit-weight primaries (UTS #10 §10.1.3, Table 16 — the @implicitweights
+// lines of allkeys.txt): ASSIGNED code points of a siniform block get that
+// script's fixed base; Han uses the real Unified_Ideograph property (block-split
+// core vs extensions); everything else (unassigned/reserved) gets the FBC0 series.
 void ucaImplicit(uint32_t cp, uint16_t& aaaa, uint16_t& bbbb) {
-    if (cp >= 0x17000 && cp <= 0x18AFF) { aaaa = 0xFB00; bbbb = (uint16_t)((cp - 0x17000) | 0x8000); return; } // Tangut (+components)
-    if (cp >= 0x18D00 && cp <= 0x18D8F) { aaaa = 0xFB00; bbbb = (uint16_t)((cp - 0x17000) | 0x8000); return; } // Tangut Supplement
-    if (cp >= 0x1B170 && cp <= 0x1B2FF) { aaaa = 0xFB01; bbbb = (uint16_t)((cp - 0x1B170) | 0x8000); return; } // Nushu
-    if (cp >= 0x18B00 && cp <= 0x18CFF) { aaaa = 0xFB02; bbbb = (uint16_t)((cp - 0x18B00) | 0x8000); return; } // Khitan Small Script
+    struct Sin { uint32_t lo, hi; uint16_t base; uint32_t from; };
+    static const Sin SINIFORM[] = {
+        {0x17000, 0x187FF, 0xFB00, 0x17000}, // Tangut
+        {0x18D00, 0x18D7F, 0xFB00, 0x17000}, // Tangut Supplement
+        {0x18800, 0x18AFF, 0xFB01, 0x18800}, // Tangut Components
+        {0x18D80, 0x18DFF, 0xFB01, 0x18800}, // Tangut Components Supplement
+        {0x1B170, 0x1B2FF, 0xFB02, 0x1B170}, // Nushu
+        {0x18B00, 0x18CFF, 0xFB03, 0x18B00}, // Khitan Small Script
+        {0x18E00, 0x191DF, 0xFB04, 0x18E00}, // Jurchen + Jurchen Radicals
+        {0x3D000, 0x3FC3F, 0xFB05, 0x3D000}, // Small Seal
+    };
+    for (const Sin& s : SINIFORM)
+        if (cp >= s.lo && cp <= s.hi) {
+            if (uniGeneralCategory(cp) == "Cn") break; // unassigned: FBC0 below
+            aaaa = s.base; bbbb = (uint16_t)((cp - s.from) | 0x8000); return;
+        }
     bool han = uniBinProp(cp, "unifiedideograph") == 1;
     uint16_t base = !han ? 0xFBC0
                   : ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF)) ? 0xFB40 : 0xFB80;
@@ -882,6 +949,8 @@ int32_t uniCharByName(const std::string& name) {
     if ((a = algo("TANGUT IDEOGRAPH-")) >= 0) return a;
     if ((a = algo("KHITAN SMALL SCRIPT CHARACTER-")) >= 0) return a;
     if ((a = algo("NUSHU CHARACTER-")) >= 0) return a;
+    if ((a = algo("JURCHEN CHARACTER-")) >= 0) return a;
+    if ((a = algo("SMALL SEAL CHARACTER-")) >= 0) return a;
     if (name.compare(0, 16, "HANGUL SYLLABLE ") == 0) {
         static const std::unordered_map<std::string, uint32_t> hangul = [] {
             std::unordered_map<std::string, uint32_t> m;
@@ -907,26 +976,32 @@ std::string uniNameOf(uint32_t cp) {
     static const std::unordered_map<uint32_t, const char*> rev = [] {
         std::unordered_map<uint32_t, const char*> m;
         size_t tn; const ucd::NameEnt* T = ucd::namesTable(&tn); // seam: hoisted once
-        for (size_t i = 0; i < tn; i++) m[T[i].cp] = T[i].name;
+        // the formal Name only: an alias (MVS, ZWSP, a correction) resolves through
+        // uniCharByName, but .uniname answers the Name property, as Rakudo does
+        for (size_t i = 0; i < tn; i++) if (!T[i].alias) m[T[i].cp] = T[i].name;
         return m;
     }();
     auto it = rev.find(cp);
     if (it != rev.end()) return it->second;
-    if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) ||
-        (cp >= 0x20000 && cp <= 0x2A6DF) || (cp >= 0x2A700 && cp <= 0x2EE5D) ||
-        (cp >= 0x30000 && cp <= 0x323AF)) {
-        char b[40]; std::snprintf(b, sizeof b, "CJK UNIFIED IDEOGRAPH-%04X", cp); return b;
-    }
     if (cp >= 0xAC00 && cp <= 0xD7A3) return hangulSyllableName(cp);
-    if ((cp >= 0x17000 && cp <= 0x187FF) || (cp >= 0x18D00 && cp <= 0x18D8F)) {
-        char b[32]; std::snprintf(b, sizeof b, "TANGUT IDEOGRAPH-%05X", cp); return b;
-    }
-    if (cp >= 0x18B00 && cp <= 0x18CFF) {
-        char b[40]; std::snprintf(b, sizeof b, "KHITAN SMALL SCRIPT CHARACTER-%05X", cp); return b;
-    }
-    if (cp >= 0x1B170 && cp <= 0x1B2FF) {
-        char b[32]; std::snprintf(b, sizeof b, "NUSHU CHARACTER-%05X", cp); return b;
-    }
+    // Rule NR2: the ranges UnicodeData.txt gives as <..., First>/<..., Last>
+    // pairs, exactly as extracted/DerivedName.txt 18.0 lists them (Khitan and
+    // Nushu are named row by row, so the table above already holds them).
+    struct Nr2 { uint32_t lo, hi; const char* fmt; };
+    static const Nr2 NR2[] = {
+        {0x3400, 0x4DBF, "CJK UNIFIED IDEOGRAPH-%04X"},   {0x4E00, 0x9FFF, "CJK UNIFIED IDEOGRAPH-%04X"},
+        {0x17000, 0x187FF, "TANGUT IDEOGRAPH-%05X"},      {0x18D00, 0x18D20, "TANGUT IDEOGRAPH-%05X"},
+        {0x18E00, 0x19191, "JURCHEN CHARACTER-%05X"},
+        {0x20000, 0x2A6DF, "CJK UNIFIED IDEOGRAPH-%04X"}, {0x2A700, 0x2B81E, "CJK UNIFIED IDEOGRAPH-%04X"},
+        {0x2B820, 0x2CEAD, "CJK UNIFIED IDEOGRAPH-%04X"}, {0x2CEB0, 0x2EBE0, "CJK UNIFIED IDEOGRAPH-%04X"},
+        {0x2EBF0, 0x2EE5D, "CJK UNIFIED IDEOGRAPH-%04X"}, {0x30000, 0x3134A, "CJK UNIFIED IDEOGRAPH-%04X"},
+        {0x31350, 0x33479, "CJK UNIFIED IDEOGRAPH-%04X"},
+        {0x3D000, 0x3FC3F, "SMALL SEAL CHARACTER-%05X"},
+    };
+    for (const Nr2& r : NR2)
+        if (cp >= r.lo && cp <= r.hi) {
+            char b[40]; std::snprintf(b, sizeof b, r.fmt, cp); return b;
+        }
     return "";
 }
 

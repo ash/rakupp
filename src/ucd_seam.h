@@ -36,7 +36,7 @@ namespace rakupp {
 
 namespace ucd {
 
-struct NameEnt { const char* name; uint32_t cp; };
+struct NameEnt { const char* name; uint32_t cp; uint8_t alias; }; // alias: a NameAliases.txt name
 struct SeqEnt { const char* name; uint32_t off, len; };
 struct BlockEnt { uint32_t lo, hi; const char* name; };
 struct ScriptEnt { uint32_t lo, hi; const char* name; };

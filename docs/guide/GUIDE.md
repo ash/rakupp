@@ -97,7 +97,7 @@ Raku defines strings as sequences of *graphemes*, and getting that right is one
 of Raku++'s strongest areas — the Unicode synopsis (S15) is its highest
 assertion coverage, and it passes 100% of the assertions that run (91,805 of
 91,807; see [ROAST.md](../status/ROAST.md)). Everything here is driven by tables
-generated from **Unicode 17.0**:
+generated from **Unicode 18.0**:
 
 - **Normalization** — NFC / NFD / NFKC / NFKD (canonical and compatibility,
   including algorithmic Hangul composition), plus the `Uni` type.
@@ -416,7 +416,7 @@ src/
   Interpreter*           Tree-walking evaluator, scopes, calls, control flow (the hot paths in InterpreterCore.cpp).
   Builtins*.cpp          Named builtins (BuiltinsRegister*), the Test module (TAP), supplies, nqp:: ops, and method dispatch.
   Regex.*                Regex/grammar engine (recursive-descent + backtracking matcher).
-  Unicode.* / unicode_*_gen.cpp Graphemes (UAX #29), normalization, UCA collation, names/properties (UCD/UCA 17.0 — see UNICODE.md).
+  Unicode.* / unicode_*_gen.cpp Graphemes (UAX #29), normalization, UCA collation, names/properties (UCD/UCA 18.0 — see UNICODE.md).
   Runtime.*              Shared entry point (parse + interpret); the static library.
   Codegen.*              Native backend: transpiles the AST to C++ (`--exe`).
   codegen/Js.* / js-rt/  JavaScript backend: AST to JS, plus its runtime (`--target=js`).
