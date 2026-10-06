@@ -283,8 +283,11 @@ bool isSpecialVar(const std::string& n) {
                                              // &?ROUTINE/&?BLOCK exist only inside callables
     char c = n[1];
     if (c == '*' || c == '?' || c == '.' || c == '!' || c == '<' ||
-        c == '=' || c == '~' || c == ':' || c == '^' || c == '/' || c == '_')
-        return true;                        // twigils, $_, $/, $!, attribute/placeholder
+        c == '=' || c == '~' || c == ':' || c == '^' || c == '/')
+        return true;                        // twigils, $/, $!, attribute/placeholder
+    // `$_` alone: `_` also starts an identifier, so `$_foo` and `"$_-x"` (one
+    // name, `-x` included) are ordinary variables the program must declare
+    if (c == '_' && n.size() == 2) return true;
     if (ascii::isdigit((unsigned char)c)) return true; // $0, $1, ... match vars
     if (n.find("::") != std::string::npos) return true; // package-qualified $Foo::bar (may be undefined)
     // (`$a`/`$b` are NOT special in Raku — `sort { $a <=> $b }` is an
