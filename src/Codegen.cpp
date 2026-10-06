@@ -1791,8 +1791,8 @@ struct Codegen {
                     if (auto* nv = nativeScalarRef(u->operand.get()))   // a native wraps, and stays native
                         add = "rtNativeValueLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
-                    return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
-                           "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())";
+                    return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
+                           "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())");
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     checkWritable(u->operand.get());
@@ -1802,8 +1802,8 @@ struct Codegen {
                     if (auto* nv = nativeScalarRef(u->operand.get()))
                         add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
-                    return "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
-                           "; _r=" + add + "; return _r; }())";
+                    return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
+                           "; _r=" + add + "; return _r; }())");
                 }
                 if (u->op == "quietly") { // suppress warn() output in the operand
                     std::string body = u->operand->kind == NK::BlockExpr
@@ -2754,6 +2754,8 @@ struct Codegen {
                             add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                                   cesc(nv->name) + ", true)";
                         line(ind, "{ Value& _r = " + lvalueExpr(u->operand.get()) + "; _r = " + add + "; }");
+                        if (std::string w = viewSyncWrap(u->operand.get(), "Value()"); w != "Value()")
+                            line(ind, w + ";");
                         return;
                     }
                 }
@@ -3049,7 +3051,20 @@ struct Codegen {
         return k.count(t) > 0;
     }
 
-    std::string assign(Assign* a) {
+    // A write into an element of a `$` variable — which may hold a list of an
+    // Array's elements (ElemView, `my $r = @a.reverse`) — copies the list back
+    // into its array afterwards, as the interpreter mirrors it; one test when
+    // the variable holds anything else. (An `@` array is never such a view.)
+    std::string viewSyncWrap(Expr* tgt, const std::string& inner) {
+        if (!tgt || tgt->kind != NK::Index) return inner;
+        auto* ix = static_cast<Index*>(tgt);
+        if (ix->isHash || ix->multiDim || !ix->base || ix->base->kind != NK::VarExpr) return inner;
+        auto* bv = static_cast<VarExpr*>(ix->base.get());
+        if (bv->declare || bv->name.size() < 2 || bv->name[0] != '$') return inner;
+        return "rtViewSync(" + lvalueExpr(ix->base.get()) + ", " + inner + ")";
+    }
+    std::string assign(Assign* a) { return viewSyncWrap(a->target.get(), assignImpl(a)); }
+    std::string assignImpl(Assign* a) {
         Expr* tgt = a->target.get();
         // `$!x = v` in a module routine: stored as the interpreter stores it
         // (rtAotAttrAssign) — Nil resets the attribute to its default, a `$`

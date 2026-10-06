@@ -3583,7 +3583,32 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
     if (key.t == VT::Range || (key.t == VT::Array && key.arr())) {
         Value out = Value::array(); out.isList = true;
-        for (auto& k : key.flatten()) out.arr()->push_back(rtIndexGet(base, k, isHash));
+        const ValueList ks = key.flatten();
+        for (auto& k : ks) out.arr()->push_back(rtIndexGet(base, k, isHash));
+        // a slice of an Array's elements, every index one it has, writes
+        // through to the array (ElemView), as the interpreter's slice does
+        if (!isHash && base.t == VT::Array && base.arr() && !ks.empty() && out.arr()->size() == ks.size()) {
+            bool all = true, run = true;
+            long long prev = 0;
+            for (size_t q = 0; q < ks.size(); q++) {
+                if (ks[q].t != VT::Int || ks[q].big()) { all = false; break; }
+                const long long k = ks[q].i;
+                if (k < 0 || k >= (long long)base.arr()->size() || k > 0xFFFFFFFFLL) { all = false; break; }
+                if (q && k != prev + 1) run = false;
+                prev = k;
+            }
+            if (all) {
+                ElemView o;
+                if (run) { o.kind = ElemView::Contig; o.a = (size_t)ks[0].i; }
+                else {
+                    auto vi = std::make_shared<std::vector<uint32_t>>();
+                    vi->reserve(ks.size());
+                    for (auto& k : ks) vi->push_back((uint32_t)k.i);
+                    o.kind = ElemView::Explicit; o.idx = std::move(vi);
+                }
+                attachElemView(out, base, std::move(o));
+            }
+        }
         return out;
     }
     if (isHash) {
@@ -4584,6 +4609,21 @@ Value Interpreter::stepValue(const Value& cur, bool up) {
     Value n = applyArith(up ? "+" : "-", cur, Value::integer(1));
     if (cur.natBits) wrapNative(n, cur.natBits, cur.natSigned, cur.natFloat);   // native int wraparound
     return n;
+}
+void rtViewSyncSlow(const Value& base) {
+    const ElemView* vw = base.elemView();
+    if (!vw || !vw->src || !base.arr() || vw->src->size() != vw->srcSize) return;
+    // a typed array refuses what its type does not take, as a store into it
+    // does — before anything is copied back
+    if (!vw->elemType.empty())
+        for (auto& v : *base.arr())
+            if (isDefined(v) && !rtTypeMatch(v, vw->elemType))
+                throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
+                    "Type check failed in assignment; expected " + vw->elemType + " but got " + v.typeName()};
+    for (size_t i = 0; i < base.arr()->size(); i++) {
+        const size_t si = vw->at(i);
+        if (si < vw->src->size()) (*vw->src)[si] = (*base.arr())[i];
+    }
 }
 Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
     if (c.t != VT::Code || !c.code()) return c;

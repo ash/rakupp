@@ -1359,6 +1359,13 @@ struct ExecContext {
     // (checkElemTypeOrShrink). Null for anything else.
     Value* lastLvalueGrowBase = nullptr;
     size_t lastLvalueGrowSize = 0;
+    // An element write through a list of an Array's elements (ElemView): the
+    // array and the index there the write is mirrored to, set by lvalue() and
+    // taken by the assignment, `op=` or `++` that asked (element targets only;
+    // each clears it before its lvalue, so a write nobody took is never applied)
+    PRef<ValueList> viewMirrorArr;
+    size_t viewMirrorIdx = 0;
+
     // `$obj."$name"() = v` — the method name, computed ONCE. The assignment
     // resolves the target's sigil before it takes the lvalue, and both halves
     // need the name; an arbitrary expression must not be run twice for it.
@@ -4529,6 +4536,21 @@ inline Value rtStepOld(Value o) {
     if (o.t == VT::Type && o.s == "Num") return Value::number(0.0);
     return o;
 }
+// --exe: after a write into an element of a list of an Array's elements
+// (ElemView), the list copied back into the array (Codegen's viewSyncWrap)
+void rtViewSyncSlow(const Value& base);
+// (the assignment's own result passes straight through — no copy of it)
+template <class T>
+inline T&& rtViewSync(const Value& base, T&& r) {
+    if (base.elemView()) rtViewSyncSlow(base);
+    return std::forward<T>(r);
+}
+// Applies, when it goes out of scope, the ElemView mirror an element write
+// left (ExecContext::viewMirrorArr): whatever the target holds by then.
+struct ViewMirrorWrite {
+    PRef<ValueList> arr; size_t idx = 0; const Value* lv = nullptr;
+    ~ViewMirrorWrite() { if (arr && lv && idx < arr->size()) (*arr)[idx] = *lv; }
+};
 template <class GetRT>
 inline Value rtStep(const Value& v, bool up, GetRT&& rt) {
     long long z;

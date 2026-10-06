@@ -33,6 +33,52 @@ static std::optional<Value> plainContainerStore(const Value& inv, const ValueLis
     return inv;
 }
 
+// A list of `src`'s ELEMENTS, element i being src's element `idx[i]`, carries
+// where they came from (ElemView), so a write through it reaches the array as
+// it does in Rakudo, whose list holds the array's own containers. `src` is a
+// writable Array, or a list that already is such a view (the indices compose:
+// `@a.reverse.reverse`, `.reverse.List`). A typed, defaulted or lazy array
+// keeps its own checks on every store, which a mirrored write would skip: no
+// view, and the list stays read-only as before.
+void attachElemView(Value& out, const Value& src, ElemView order) {
+    if (src.t != VT::Array || !src.arr() || !out.arr()) return;
+    const size_t n = out.arr()->size();
+    if (!src.isList) {
+        // (a native array's elements are native, a defaulted one resets on Nil:
+        // neither is a plain store, so neither gets a view)
+        if (src.ext() || src.elemDefault() || src.holdsContainers() ||
+            (!src.ofType().empty() && isNativeTypeName(src.ofType()))) return;
+        order.src = src.arrS();
+        order.srcSize = src.arr()->size();
+        order.elemType = src.ofType();
+        out.xw().view = std::move(order);
+        return;
+    }
+    const ElemView* sv = src.elemView();
+    if (!sv || src.arr()->size() == 0) return;
+    // the same order over the same list: the source's view as it is
+    if (order.kind == ElemView::Contig && order.a == 0 && n == src.arr()->size()) {
+        out.xw().view = *sv;
+        return;
+    }
+    if (n > 0xFFFFFFFFull) return;
+    auto idx = std::make_shared<std::vector<uint32_t>>();
+    idx->reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        const size_t j = order.at(i);
+        if (j >= src.arr()->size()) return;
+        const size_t k = sv->at(j);
+        if (k > 0xFFFFFFFFull) return;
+        idx->push_back((uint32_t)k);
+    }
+    ElemView v;
+    v.src = sv->src; v.srcSize = sv->srcSize; v.kind = ElemView::Explicit; v.idx = std::move(idx);
+    out.xw().view = std::move(v);
+}
+static ElemView orderOf(ElemView::Kind k, size_t a = 0, size_t b = 0) {
+    ElemView v; v.kind = k; v.a = a; v.b = b; return v;
+}
+
 // BagHash.add(items): ONE onto each item's count (a new key at 1), an
 // Iterable argument iterated one level, answering Nil. The counts come from
 // a bag built of the items, so each key keeps its own type (an Int stays one).
@@ -2239,6 +2285,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (m == "lazy") out.b = true; // `.lazy` MARKS it: `.is-lazy` says True after
             // …and the mark survives the list views: `@a.lazy.List.is-lazy` is True
             else if (inv.t == VT::Array && inv.b && m != "eager") out.b = true;
+            // an Array's `.Seq` is its elements (`@a.Seq.List` takes writes, as
+            // in Rakudo — `@a.List` does not), and a list of an Array's elements
+            // stays one through these views
+            if (inv.t == VT::Array && inv.arr() && out.arr() && out.arr()->size() == inv.arr()->size() &&
+                ((m == "Seq" && !inv.isList) || (inv.isList && inv.elemView())))
+                attachElemView(out, inv, orderOf(ElemView::Contig));
             return out;
         }
         if (m == "reverse") {
@@ -2247,7 +2299,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.t == VT::Array && (inv.elemDefault() || !inv.ofType().empty()))
                 for (auto& e : items)
                     if (e.t == VT::Any || e.t == VT::Nil) e = arrayMissingDefaultPublic(inv);
-            return Value::list(items);
+            Value out = Value::list(items);
+            if (inv.t == VT::Array && inv.arr() && inv.arr()->size() == items.size() && !items.empty())
+                attachElemView(out, inv, orderOf(ElemView::Reverse, items.size() - 1));
+            return out;
         }
         if (m == "rotate") {
             // the rotation count binds an Int; an undefined one is a binding
@@ -2258,7 +2313,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     args[0].typeName() + " (" + args[0].gist() + ")"};
             long n = args.empty() ? 1 : args[0].toInt(); long sz = (long)items.size();
             if (sz) { n = ((n % sz) + sz) % sz; std::rotate(items.begin(), items.begin() + n, items.end()); }
-            return Value::list(items); }
+            Value out = Value::list(items);
+            if (inv.t == VT::Array && inv.arr() && (long)inv.arr()->size() == sz && sz > 0)
+                attachElemView(out, inv, orderOf(ElemView::Rotate, (size_t)n, (size_t)sz));
+            return out; }
         if (m == "permutations") {
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             std::vector<size_t> idx(items.size());
@@ -3846,7 +3904,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             ValueList out;
             out.reserve(order.size());
             for (size_t i : order) out.push_back(wantK ? Value::integer((long long)i) : items[i]);
-            return Value::list(out);
+            Value res = Value::list(out);
+            // (the sorted list is of the array's own elements)
+            if (!wantK && inv.t == VT::Array && inv.arr() && inv.arr()->size() == items.size() &&
+                items.size() <= 0xFFFFFFFFull) {
+                auto idx = std::make_shared<std::vector<uint32_t>>();
+                idx->reserve(order.size());
+                for (size_t i : order) idx->push_back((uint32_t)i);
+                ElemView o = orderOf(ElemView::Explicit);
+                o.idx = std::move(idx);
+                attachElemView(res, inv, std::move(o));
+            }
+            return res;
         }
         if (m == "tree") {
             // .tree — a nested view of the list. No arg: identity (already nested).

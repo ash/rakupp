@@ -605,6 +605,32 @@ struct ValueContExt {
 };
 inline const ValueContExt emptyValueContExt{};
 
+// A list of an Array's own ELEMENTS — `@a.reverse`, `.rotate`, `.sort`,
+// `.Seq` — and where each came from: in Rakudo such a list holds the array's
+// element containers, so a write through it (`$r[0] = 9`, `.List` of it, `$r[0]++`)
+// lands in the array. Here the list holds values, and this record says where
+// to mirror a write: element i is `src[at(i)]`. A source whose size has
+// changed since is not written (its elements may have moved). Reads read the
+// list as before. The common orders are arithmetic — contiguous (`start + i`),
+// reversed, rotated — so only a sort or a scattered slice keeps an index list.
+struct ElemView {
+    enum Kind : uint8_t { Contig, Reverse, Rotate, Explicit };
+    PRef<ValueList> src;                        // null: no view
+    size_t srcSize = 0;
+    Kind kind = Contig;
+    size_t a = 0, b = 0;                        // Contig: start; Reverse: last; Rotate: shift, size
+    std::shared_ptr<const std::vector<uint32_t>> idx;   // Explicit
+    std::string elemType;                       // the array's element type, checked on a write ("" none)
+    size_t at(size_t i) const {
+        switch (kind) {
+            case Contig:  return a + i;
+            case Reverse: return a - i;
+            case Rotate:  return (i + a) % b;
+            default:      return idx && i < idx->size() ? (*idx)[i] : (size_t)-1;
+        }
+    }
+};
+
 struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     double im = 0; // imaginary part for VT::Complex (real part is Value::n)
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
@@ -623,6 +649,7 @@ struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     // readers that walk elements raw — every built-in method and operator —
     // see a decontainerized copy instead (Interpreter::decontList).
     bool holdsCells = false;
+    ElemView view;   // a list of an Array's elements (ElemView); view.src null otherwise
     std::shared_ptr<ValueContExt> cont;   // the container fields (ValueContExt), null until one is set
     const ValueContExt& cr() const { return cont ? *cont : emptyValueContExt; }
     ValueContExt& cw() {   // copy-on-write, as Value::xw() does for this block
@@ -893,6 +920,7 @@ struct Value {
     // Value every bound name reads and writes is the one it points to.
     bool isCell() const { return pk_ == PK::Cell; }
     bool holdsContainers() const { return x_ && x_->holdsCells; }
+    const ElemView* elemView() const { return x_ && x_->view.src ? &x_->view : nullptr; }
     void markHoldsContainers() { xw().holdsCells = true; }
     // A PAIR whose value slot IS a live container someone else holds too — a
     // hash entry (hashEntryPair) or a variable's cell (`$k => $v`) — so writing

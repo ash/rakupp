@@ -76,13 +76,14 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
-- [ ] **Rakuglaze**: 2175 of 2176 pass (round 5, 2026-10-03). Open:
-  `@a.reverse` hands out copies where Rakudo's List holds the array's own
-  containers (`@a.reverse.List[0] = 'x'` writes into `@a`); this needs
-  containers in arrays, so it waits for the container-model work (Roast
-  tracks A3). `('A'..∞).is-lazy` is ruled True in the suite (Rakudo answers
-  False, yet treats the range as lazy everywhere else). Seen during round 5,
-  not fixed:
+- [ ] **Rakuglaze**: 2176 of 2176 pass (2026-10-06: lists of an Array's
+  elements write through, ElemView). `('A'..∞).is-lazy` is ruled True in the
+  suite (Rakudo answers False, yet treats the range as lazy everywhere else).
+  Open from the write-through work: a list of an Array's elements is a copy
+  that a write is MIRRORED from, so a later change to the array is not seen
+  through it (`my $r = @a.reverse; @a[0] = 9; $r` still shows the old value);
+  and compiled code does not refuse a write into an immutable List
+  (`my $l = (1,2,3); $l[0] = 5` under --exe). Seen during round 5, not fixed:
   - `%m{$i}{$i} = $i++` stores `0 => Any` as well as `1 => {1 => 0}`
     (Rakudo: `{0 => {1 => 0}}`).
   - `for $l.list` over a quit Supply's list raises before the values;

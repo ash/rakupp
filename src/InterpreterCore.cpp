@@ -10972,6 +10972,34 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 catch (RakuError&) { rangeElem = Value::any(); }
                 return &rangeElem;
             }
+            // a list of an Array's elements (ElemView, `@a.reverse`): the write
+            // lands in the list, and the assignment mirrors it into the array
+            if (base->t == VT::Array && base->isList && base->enumName.empty() && base->arr() &&
+                base->elemView()) {
+                Value kv0 = eval(idx->index.get());
+                if (kv0.t == VT::Code && kv0.code() && kv0.code()->isWhateverCode)
+                    kv0 = callCallable(kv0, ValueList{Value::integer((long long)base->arr()->size())});
+                const long long li = kv0.toInt();
+                const ElemView& vw = *base->elemView();
+                const size_t si = li >= 0 ? vw.at((size_t)li) : (size_t)-1;
+                if (li >= 0 && li < (long long)base->arr()->size() && vw.src &&
+                    vw.src->size() == vw.srcSize && si < vw.srcSize) {
+                    tcx.viewMirrorArr = vw.src;
+                    tcx.viewMirrorIdx = si;
+                    // a typed array's type checks the write, as a store into it does
+                    if (!vw.elemType.empty()) tcx.lastLvalueElemType = vw.elemType;
+                    return &(*base->arr())[li];
+                }
+                if (base->s != "Seq") {
+                    tcx.lvalueImmutable = "List";
+                    tcx.lvalueImmutableGist = base->gist();
+                    tcx.lvalueImmutableVal = *base;
+                }
+                if (li >= 0 && li < (long long)base->arr()->size()) return &(*base->arr())[li];
+                static thread_local Value viewMiss;
+                viewMiss = Value::any();
+                return &viewMiss;
+            }
             if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty()) {
                 Value kv0 = eval(idx->index.get());
                 if (kv0.t == VT::Code && kv0.code() && kv0.code()->isWhateverCode)
@@ -14802,7 +14830,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // (an element store's own: no other target touches it, and each
         // touch of the thread's context costs a lookup)
         const bool elemTarget = a->target->kind == NK::Index;
-        if (elemTarget) tctx_.lastLvalueGrowBase = nullptr;
+        if (elemTarget) { tctx_.lastLvalueGrowBase = nullptr; tctx_.viewMirrorArr.reset(); }
         tctx_.lastLvalueAttrDefault = nullptr;
         tctx_.lastLvalueAttr = nullptr;
         // `$y := :$y` — the right side can itself make $y a cell (the Pair
@@ -14822,10 +14850,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // a typed array the store may have grown (undone on refusal)
         Value* growBase = nullptr;
         size_t growSize = 0;
+        ViewMirrorWrite viewMirror;
         if (elemTarget) {
             growBase = tctx_.lastLvalueGrowBase;
             growSize = tctx_.lastLvalueGrowSize;
             tctx_.lastLvalueGrowBase = nullptr;
+            if (tctx_.viewMirrorArr) {
+                viewMirror.arr = std::move(tctx_.viewMirrorArr);
+                viewMirror.idx = tctx_.viewMirrorIdx;
+                viewMirror.lv = lv;
+            }
         }
         // Whatever this assignment writes must ALSO land in the rw-linked
         // parameter copies the lvalue travelled past on its way to the caller's
@@ -15929,7 +15963,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
     }
     g_lvAttrSigil = 0;
+    const bool opElemTarget = a->target->kind == NK::Index;
+    if (opElemTarget) tctx_.viewMirrorArr.reset();
     Value* lv = lvalue(a->target.get());
+    ViewMirrorWrite opViewMirror;   // (a write through a list of an Array's elements: see ElemView)
+    if (opElemTarget && tctx_.viewMirrorArr) {
+        opViewMirror.arr = std::move(tctx_.viewMirrorArr);
+        opViewMirror.idx = tctx_.viewMirrorIdx;
+        opViewMirror.lv = lv;
+    }
     const char lvAttrSigil = g_lvAttrSigil;   // an `@.a` accessor: list-assigns (below)
     // …and the same mirror for the OP= path (see the `=` arm above)
     struct MirrorG2 {
@@ -23474,7 +23516,15 @@ Value Interpreter::evalUnary(Unary* u) {
                             ":<" + u->op + ">(" + sl->typeName() + ":D); the following candidates match the type but "
                             "require mutable arguments"};
         }
+        const bool incElemTarget = u->operand->kind == NK::Index;
+        if (incElemTarget) tctx_.viewMirrorArr.reset();
         Value* lv = lvalue(u->operand.get());
+        ViewMirrorWrite incViewMirror;   // (a step through a list of an Array's elements: see ElemView)
+        if (incElemTarget && tctx_.viewMirrorArr) {
+            incViewMirror.arr = std::move(tctx_.viewMirrorArr);
+            incViewMirror.idx = tctx_.viewMirrorIdx;
+            incViewMirror.lv = lv;
+        }
         // a NativeCall Pointer steps by ELEMENTS through `.succ`/`.pred`, as
         // Rakudo's `++` does for any object that answers them (NativeHelpers::
         // Pointer's suite walks a CArray with `$p++`)
@@ -26975,6 +27025,31 @@ Value Interpreter::evalIndex(Index* idx) {
                 isNativeScalarName(base.ofType())) {
                 out.isList = false;
                 out.ofTypeM() = base.ofType();
+            }
+            // …and a slice of an Array's elements, every index one it has, is a
+            // view a write through reaches the array by (`my $s = @h[0,1];
+            // $s[0] = 42` writes @h[0], as in Rakudo)
+            else if (base.t == VT::Array && junctionKind.empty() && out.arr() &&
+                     out.arr()->size() == indices.size() && base.arr() && !indices.empty()) {
+                // (a run of consecutive indices — `@a[2..5]`, `@a[^3]` — is
+                // arithmetic; anything else lists its indices)
+                bool all = true, run = true;
+                for (size_t q = 0; q < indices.size(); q++) {
+                    const long long k = indices[q];
+                    if (k < 0 || k >= (long long)base.arr()->size() || k > 0xFFFFFFFFLL) { all = false; break; }
+                    if (q && k != indices[q - 1] + 1) run = false;
+                }
+                if (all) {
+                    ElemView o;
+                    if (run) { o.kind = ElemView::Contig; o.a = (size_t)indices[0]; }
+                    else {
+                        auto vi = std::make_shared<std::vector<uint32_t>>();
+                        vi->reserve(indices.size());
+                        for (long long k : indices) vi->push_back((uint32_t)k);
+                        o.kind = ElemView::Explicit; o.idx = std::move(vi);
+                    }
+                    attachElemView(out, base, std::move(o));
+                }
             }
             return out;
         }

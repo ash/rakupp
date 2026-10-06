@@ -948,6 +948,10 @@ static inline bool isAdHocKind(const std::string& tn) {
 // calling it per bind allocated a std::string for every typed parameter of every
 // call. Answer encoded as bits<<1 | signed (0 = not a native-width type).
 int paramNatSpec(const Param& p);
+// marks `out`, a list of `src`'s elements in the order `order` names (its
+// `src` unset; `at(i)` an index into `src`), as a view a write through reaches
+// the array by (ElemView; MethodCallTail.cpp)
+void attachElemView(Value& out, const Value& src, ElemView order);
 // isNativeTypeName(p.type), memoised per parameter (see Param::nativeName)
 inline bool paramIsNative(const Param& p) {
     signed char n = p.nativeName;

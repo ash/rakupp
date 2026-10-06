@@ -104,6 +104,14 @@ Tried and reverted, the gain did not show: hoisting long string literals in
 kernel entry (W4-4's second half — the entry's cost is the slot lookups in
 `runIfReady`, not the allocations).
 
+After the round, rakuglaze's one open snippet (App::RaCoCo's
+`@parts.reverse.List[0] = 'x'`) was fixed with it: a list of an Array's own
+elements — `.reverse`, `.rotate`, `.sort`, `.Seq`, a slice — carries where they
+came from (ElemView in Value.h), and a write through it is mirrored into the
+array, interpreted and compiled, with a typed array's check. The cost, accepted:
+about 50–100 ns per such list (a slice loop +4.7%, `.reverse`/`.sort` +8%), and
+~1 ns per compiled write into a `$` variable's element.
+
 Still open:
 - `--cnp` kernel entry: `runIfReady` looks every slot up by name, per Env
   level, on every entry (about 2 µs for a 200k-entry inner loop).
