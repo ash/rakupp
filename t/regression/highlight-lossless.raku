@@ -17,11 +17,24 @@
 my $root = $?FILE.IO.parent.parent.parent;
 my @fail;
 
+my %last;   # the latest highlighter run, for the failure report
+
 sub stripped($file) {
     my $p = run($*EXECUTABLE.Str, '--highlight', '--ansi', $file, :out, :err);
     my $o = $p.out.slurp(:close);
-    $p.err.slurp(:close);
+    %last = err => $p.err.slurp(:close), exit => $p.exitcode, signal => $p.signal;
     $o.subst(/ \e '[' <[0..9;]>* 'm' /, '', :g)
+}
+
+# What the highlighter did, on one line: a bare "not lossless" on a macOS-only
+# CI failure could not tell an empty output from a crash from a wrong span.
+sub why(Str $got, Str $want --> Str) {
+    my $i = 0;
+    $i++ while $i < $got.chars && $i < $want.chars && $got.substr($i, 1) eq $want.substr($i, 1);
+    my $err = %last<err>.lines.head // '';
+    "exit=%last<exit> signal=%last<signal> got {$got.chars} chars, want {$want.chars}; "
+      ~ "first difference at $i: got {$got.substr($i, 40).raku} want {$want.substr($i, 40).raku}"
+      ~ ($err ?? "; stderr: {$err.substr(0, 200)}" !! '')
 }
 
 sub walk($dir, @out) {
@@ -37,8 +50,9 @@ my $n = 0;
 for @files -> $f {
     $n++;
     my $got = stripped($f.Str);
-    unless $got eq $f.slurp {
-        @fail.push("not lossless: {$f.relative($root)}");
+    my $want = $f.slurp;
+    unless $got eq $want {
+        @fail.push("not lossless: {$f.relative($root)} — {why($got, $want)}");
         last if @fail >= 5;
     }
 }
@@ -54,7 +68,7 @@ $hd.spurt: Q:to/PROBE/;
     say $t;
     PROBE
 my $lit = stripped($hd.Str);
-@fail.push("heredoc probe is not lossless") unless $lit eq $hd.slurp;
+@fail.push("heredoc probe is not lossless — {why($lit, $hd.slurp)}") unless $lit eq $hd.slurp;
 # the body must carry ONE colour run, so the `#` line is not split off as a
 # comment: an un-stripped render has no comment-italic escape inside it.
 my $p = run($*EXECUTABLE.Str, '--highlight', '--ansi', $hd.Str, :out, :err);
@@ -65,6 +79,11 @@ $hd.unlink;
 
 # each reason on a `FAIL:` line: t/run.raku echoes only the lines that start
 # with FAIL, and a bare "FAIL (6)" on a CI leg said nothing about which files
-if @fail { say "FAIL: $_" for @fail; say "FAIL ({+@fail})"; exit 1 }
+if @fail {
+    say "FAIL: $_" for @fail;
+    say "FAIL: (the highlighter was {$*EXECUTABLE.Str})";
+    say "FAIL ({+@fail})";
+    exit 1
+}
 note "$n files scanned, all byte-lossless";   # the count is context, not the verdict
 say "PASS";
