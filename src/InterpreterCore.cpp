@@ -12006,6 +12006,14 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 ParStripe ws(*this, slot);
                                 if (asciiRhs) slot->s += rhs.s;
                                 else slot->s = nfcNormalize(slot->s + rhs.s);
+                            } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() && rhs.t == VT::Int &&
+                                       rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() &&
+                                       !rhs.natBits) {
+                                // an Int's text is ASCII digits: it appends in place too.
+                                // Through applyArith every append renormalized a copy of
+                                // the whole string (issue #130: 40,000 `$s ~= $_` 0.7 s)
+                                ParStripe ws(*this, slot);
+                                slot->s += rhs.toStr();
                             } else if ((sv == 2 || sv == 3) &&
                                        (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
                                 // `$t += $d` keeps the Duration a Duration, as `+` does

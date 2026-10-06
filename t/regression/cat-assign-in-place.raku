@@ -3,7 +3,9 @@
 # sides were Strs, so `$s ~= $_ for ^$n` over Ints rebuilt the whole string on
 # every append: 40,000 appends took 0.7 s under --exe and 1 ms interpreted.
 # Its Str + Str path also skipped renormalization, so `"e" ~= "\x[301]"` was
-# two codepoints compiled and one (é) interpreted and in Rakudo.
+# two codepoints compiled and one (é) interpreted and in Rakudo. The
+# interpreter's own `~=` of an Int copied the string as well (a loop kernel hid
+# it for the simplest loops; any other loop, and --aot, paid it).
 #
 # Expectations checked against Rakudo 2026.09 via /opt/homebrew/bin/rakudo.
 
@@ -25,5 +27,9 @@ sub ck($got, $want, $desc) {
 # when every append rebuilt the string), so the bound is far from both
 { my $t = now; my $s = ''; $s ~= $_ for ^100_000; my $ms = (now - $t) * 1000;
   ck(($s.chars, $ms < 2000), (488890, True), '100,000 appends in well under 2 s') }
+# …and in a loop the interpreter runs itself (the `.say` keeps it from being a
+# loop kernel): its own `~=` copied too, at the same cost
+{ my $t = now; my $s = ''; for ^100_000 { $s ~= $_; $s.say if False }; my $ms = (now - $t) * 1000;
+  ck(($s.chars, $ms < 2000), (488890, True), 'the same, interpreted outside a kernel') }
 
 say $fails ?? "FAILED $fails" !! "PASS";
