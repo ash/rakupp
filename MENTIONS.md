@@ -34,6 +34,8 @@ say something worth quoting.
 | 14 September 2026 | [Raku Weekly 2026.36/7](https://rakuweekly.blog/2026/09/14/2026-36-7-multiplicity/) | Elizabeth Mattijsen | CSV::Native |
 | 21 September 2026 | [Raku Weekly 2026.38](https://rakuweekly.blog/2026/09/21/2026-38-italiano-per-favore/) | Elizabeth Mattijsen | the module-manager post, and the three new L10N localizations |
 | 29 September 2026 | [Raku Weekly 2026.39](https://rakuweekly.blog/2026/09/29/2026-39-mainstreamed/) | Elizabeth Mattijsen | the v5.0.0 post: 100.00% of Roast |
+| 5 October 2026 | [Raku Weekly 2026.40](https://rakuweekly.blog/2026/10/05/2026-40-pythonesque/) | Elizabeth Mattijsen | Raku++ as a Python module, the Junctions post; the rename credits three viable implementations |
+| 5 October 2026 | [Is generative AI killing or saving Raku?](https://dev.to/2colours/is-generative-ai-killing-or-saving-raku-37ai) on dev.to | 2colours | Raku++ and Mutsu as the end of Rakudo's monopoly; Junctions as a language problem; questions to the implementors |
 
 ## Raku Weekly News
 
@@ -91,6 +93,17 @@ After that it has been steady, roughly a mention per release or per post:
   of the Raku Programming Language. The issue's closing words put it next to
   RakuAST becoming Rakudo's default as one of the week's two headlines —
   Raku++ reaching parity with Rakudo spectest-wise.
+- [**2026.40 Pythonesque**](https://rakuweekly.blog/2026/10/05/2026-40-pythonesque/)
+  (5 October 2026) — the issue opens on Raku++
+  [as a Python module](https://pypi.org/project/rakulang/), with Raku
+  grammars named as the reason a Python program would want it, and links the
+  [Using Raku in Python](https://andrewshitov.com/2026/10/03/using-raku-in-python/)
+  post and the second
+  [Junctions post](https://andrewshitov.com/2026/10/03/raku-a-language-where-a-value-can-have-several-values-at-once-part-2/).
+  The next section explains the rename: there are now three viable
+  implementations of the language, Rakudo only one of them, and the
+  developers of Raku++ and Mutsu have promised to send their news in.
+  L10N::RU, L10N::LV and L10N::UK are in the module list again.
 
 ## perlancar, August 2026
 
@@ -116,6 +129,44 @@ perl's 81.8 in the same sitting. `perl` is now a column in
 
 An outside remark became a kernel, and the kernel reached perl. That is what
 this file is for.
+
+## 2colours, October 2026
+
+[Is generative AI killing or saving Raku?](https://dev.to/2colours/is-generative-ai-killing-or-saving-raku-37ai)
+(dev.to, 5 October 2026) is by 2colours, a Raku contributor since 2021 who
+writes from outside the official Raku venues after a ban. It is the first
+longer piece by somebody else that takes Raku++ as one of its subjects, and
+it is mixed in the useful way.
+
+The article opens on Raku++ and [Mutsu](https://github.com/tokuhirom/mutsu)
+as two "vibe-coded but ambitious" runtimes, and puts them next to the
+AI-written patches arriving in Rakudo and MoarVM. Its argument about Raku++
+runs in three steps:
+
+- **The end of Rakudo's monopoly.** For as long as Rakudo was the only usable
+  runtime, Rakudo's behaviour was the language and Rakudo's developers were
+  its stakeholders. Competing runtimes can break that loop. It notes that
+  Raku++ treats Rakudo as a reference (quoting [the Long Read](LONGREAD.md)),
+  and that passing a module's own tests is a weaker claim than actually using
+  the module.
+- **A plan bigger than a runtime.** A section of its own about Andrew and
+  [raku.online](https://raku.online): the guides, the training tasks, the
+  showcases, and the [Rakudo bugs page](https://raku.online/deep/rakudo-bugs/)
+  in particular, which surprised the author with how much context it carries.
+  It reads the whole as a project with commercial intent, and says that if
+  anyone in the community can sell Raku once the technical side holds up, it
+  is him.
+- **Junctions.** The reservation: some of Raku's problems are in the language
+  design, not in any runtime, so a new runtime cannot fix them. The example
+  is a `first` over a list holding a junction, which returns a junction;
+  Raku++ and Mutsu both return `any(1, 222)`, as Rakudo does, because that
+  is how Junctions are designed to work — which is the author's point.
+
+It ends on questions, three of them to the implementors of Raku++ and Mutsu:
+how authoritative Rakudo's behaviour is to them, short and long term, and
+what they do where Raku leaves behaviour unspecified; what the primary
+motive was; and how string and regex performance look. It also asks whether
+the use of the raku.online domain was discussed in the community.
 
 ## Adding an entry
 
