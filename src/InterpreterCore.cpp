@@ -7104,6 +7104,42 @@ static void releaseCelledArgCopies(const std::shared_ptr<Env>& env, ValueList& a
         if (a.t == VT::Str && a.s.body()) a = Value::any();
 }
 
+// `$s = $s ~ X` is `$s ~= X` for a plain Str in $s: the same text, appended in
+// place rather than copying all of $s into a new string first. The loop kernels
+// did this for the loops they take; any other loop (one with a call in it, or
+// RAKUPP_NO_KERNELS) copied — 250,000 appends 33 s (issue #130). X is a literal
+// or a variable read straight from its pad, so nothing runs twice (a Proxy is
+// not FETCHed) and nothing X does can change $s; any other X, or a value `~`
+// would treat specially, is left to the ordinary path, untouched.
+bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
+    if (b->op != "~" || !b->lhs || !b->rhs || b->lhs->kind != NK::VarExpr) return false;
+    if (!slot->hashKind.empty() || !slot->enumName.empty() || slot->natBits) return false;
+    if (padPtrIn(static_cast<VarExpr*>(b->lhs.get()), cur) != slot) return false;
+    if (g_lexShadowMask.load(std::memory_order_relaxed) && lexShadowPossible("~")) return false;
+    Value lit;
+    const Value* x = nullptr;
+    switch (b->rhs->kind) {
+        case NK::StrLit: case NK::IntLit: case NK::NumLit:
+            lit = eval(b->rhs.get()); x = &lit; break;
+        case NK::VarExpr:
+            x = padPtrIn(static_cast<VarExpr*>(b->rhs.get()), cur); break;
+        default: return false;
+    }
+    if (!x || !x->hashKind.empty() || x->natBits) return false;
+    if (x->t == VT::Str) {
+        if (!x->enumName.empty() || x->itemized) return false;
+        const std::string txt = x->s.str();   // (X may be $s itself)
+        ParStripe ws(*this, slot);
+        rtCatAppendText(*slot, txt);
+        return true;
+    }
+    if (x->t != VT::Int && x->t != VT::Num && x->t != VT::Rat && x->t != VT::Bool) return false;
+    const std::string txt = x->toStr();   // the text applyArith's `~` takes
+    ParStripe ws(*this, slot);
+    rtCatAppendText(*slot, txt);
+    return true;
+}
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // A plain sub called plainly takes the lean path. The per-call half of the
@@ -12005,6 +12041,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if ((!nb || (nb == 64 && nsg && !nfl)) && a->value->kind == NK::Binary &&
                                 (fusedIntAssign(static_cast<Binary*>(a->value.get()), slot) ||
                                  (!nb && fusedTypedAssign(static_cast<Binary*>(a->value.get()), slot)))) {
+                                if (anyRwLinks_) rwWriteThrough(a->target.get());
+                                return sink ? Value::any() : *slot;
+                            }
+                            if (!nb && slot->t == VT::Str && a->value->kind == NK::Binary &&
+                                selfCatAssign(static_cast<Binary*>(a->value.get()), slot, cur)) {
                                 if (anyRwLinks_) rwWriteThrough(a->target.get());
                                 return sink ? Value::any() : *slot;
                             }

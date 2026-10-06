@@ -7,7 +7,7 @@
 #   - an `is rw` parameter compared the caller's whole string with its own copy
 #     on every call, and the argument list's copy kept the body shared, so the
 #     append inside copied it again;
-#   - `$s = $s ~ X` compiled (the interpreter's loop kernel already appended).
+#   - `$s = $s ~ X`, compiled, and interpreted in a loop no kernel takes.
 # Building by prepending, `$k = $s` before each append and repeated `.substr`
 # still copy: a flat string has no other way, where Rakudo's strands do.
 #
@@ -54,6 +54,7 @@ class Acc { has Str $.b is rw = ''; method add($x) { $!b ~= $x } }
 { my str $n = 'q'; $n = $n ~ 'r'; ck($n, 'qr', 'a native str') }
 { my $w = 'e'; $w = $w ~ "\x[301]"; ck($w.chars, 1, 'renormalized') }
 { my $k = 'x' x 30; my $c = $k; $k = $k ~ 'q'; ck(($c.chars, $k.chars), (30, 31), 'a copy keeps its text') }
+{ my $t = 'x'; my $u = 5; for ^2 { $t = $t ~ $u; $t = $t ~ $t; $t.say if False }; ck($t, 'x5x55x5x55', 'outside a loop kernel, X = $s itself') }
 
 # linear: 250,000 of each in about 0.1 s at most; while they copied, the
 # closure and `$!attr` took ~2.5 s, a Num ~17 s (Apple M-series, 2026-10-06)
@@ -65,6 +66,9 @@ ck(linear(-> $n { my $o = Acc.new; $o.add('abcde') for ^$n; $o.b.chars }, 250_00
    1_250_000, '$!attr: the length');
 ck(linear(-> $n { my $s = ''; $s = $s ~ 'abcde' for ^$n; $s.chars }, 250_000, '$s = $s ~ X'),
    1_250_000, '$s = $s ~ X: the length');
+# …and in a loop no kernel takes (the `.say`): the interpreter's own `=` lane
+ck(linear(-> $n { my $s = ''; for ^$n { $s = $s ~ 'abcde'; $s.say if False }; $s.chars }, 250_000,
+          '$s = $s ~ X outside a kernel'), 1_250_000, '$s = $s ~ X outside a kernel: the length');
 # (an `is rw` parameter is linear interpreted, but compiled it still passes a
 # copy in and out, so no time bound here: 100,000 calls take ~0.6 s compiled)
 { my $s = ''; add-rw($s, 'abcde') for ^20_000; ck($s.chars, 100_000, 'is rw: 20,000 appends') }

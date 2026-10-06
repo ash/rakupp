@@ -2340,6 +2340,7 @@ public:
     Value* padPtr(const VarExpr* ve) { return padPtrIn(ve, tctx_.cur.get()); }
     // …from a scope the caller already holds (one thread_local read for
     // several lookups)
+    bool selfCatAssign(Binary* b, Value* slot, Env* cur);   // `$s = $s ~ X` in place
     static Value* padPtrIn(const VarExpr* ve, Env* cur) {
         int ps = ve->padSlot;
         if (ps < 0) return nullptr;

@@ -176,12 +176,17 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
         // the interpreter and `--exe` already use for `~=` — the comment on it
         // in Interpreter.h says "one definition for the interpreter and both
         // compiling backends", and this is the caller that was missing.
-        if (d == a && op == (uint64_t)RK_OP_CONCAT && f->t[a] == RK_T_BOX) {
+        if (d == a && (op & ~(uint64_t)RK_OP_SELFCAT) == (uint64_t)RK_OP_CONCAT && f->t[a] == RK_T_BOX) {
             Value* boxes = static_cast<Value*>(f->boxes);
-            const Value vb = regValue(f, b);
-            rtCatAssign(boxes[d], vb);
-            return 0;
+            const Value& acc = boxes[d];
+            if (!(op & RK_OP_SELFCAT) ||
+                (acc.t == VT::Str && acc.hashKind.empty() && acc.enumName.empty() && !acc.natBits)) {
+                const Value vb = regValue(f, b);
+                rtCatAssign(boxes[d], vb);
+                return 0;
+            }
         }
+        op &= ~(uint64_t)RK_OP_SELFCAT;
         // A native int operation wraps where the general one would grow: the
         // interpreter's own definition (nativeIntArith), on the two machine ints
         if (op & RK_OP_NATIVE) {
@@ -870,6 +875,26 @@ int Lower::expr(Expr* e) {
             // `=`, and the `-> @row` bind a `for @a` kernel makes (Jit.cpp
             // kBindOp): a register move shares the element's storage, which
             // is what a bind is
+            // `$s = $s ~ X` is `$s ~= X` when $s holds a Str: appended into
+            // its box (rk_cnp_binop) instead of a whole new string each time
+            // (issue #130). X is a literal or a variable, so reading it after
+            // the append starts cannot see a different $s.
+            if (a->op == "=" && !tv->declare && natKind(tv) == 0 && a->value->kind == NK::Binary) {
+                auto* b = static_cast<Binary*>(a->value.get());
+                const NK xk = b->rhs ? b->rhs->kind : NK::Binary;
+                if (b->op == "~" && b->lhs && b->lhs->kind == NK::VarExpr &&
+                    !static_cast<VarExpr*>(b->lhs.get())->declare &&
+                    static_cast<VarExpr*>(b->lhs.get())->name == tv->name &&
+                    (xk == NK::StrLit || xk == NK::IntLit || xk == NK::NumLit || xk == NK::VarExpr)) {
+                    int dst = lookup(tv->name);
+                    if (bad()) return 0;
+                    int src = expr(b->rhs.get());
+                    if (bad()) return 0;
+                    emit(ids().binop, (uint64_t)dst, (uint64_t)dst, (uint64_t)src,
+                         (uint64_t)(RK_OP_CONCAT | RK_OP_SELFCAT));
+                    return dst;
+                }
+            }
             if (a->op == "=" || a->op == "\x01bind") {
                 // The VALUE first, so that `my $x = $x` reads the OUTER `$x`
                 // before the declaration shadows it — Raku's own order, and the
