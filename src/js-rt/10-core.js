@@ -478,7 +478,13 @@ function arith(op, a, b) {
         }
         case '**': {
             if (q >= 0n) {
-                if (q > 100000n && p !== 0n && p !== 1n && p !== -1n) return numResult(Math.pow(Number(p), Number(q)));
+                // Exact while the answer stays under 2**25 bits, about where the
+                // interpreter's work budget stops making powers exactly (it makes
+                // 3 ** 20_000_000, 31.7M bits); a Num past that. The cut was an
+                // exponent over 100,000, so `3 ** 631_000` was Inf here.
+                const ap = p < 0n ? -p : p;
+                const lg = ap < 9007199254740992n ? Math.log2(Number(ap)) : bigBitLength(ap);
+                if (ap > 1n && lg * Number(q) > 33554432) return numResult(Math.pow(Number(p), Number(q)));
                 return normBig(p ** q);
             }
             const e = -q;

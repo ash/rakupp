@@ -176,12 +176,12 @@ static inline BigInt fromMagU128(unsigned __int128 m, int sign) {
 }
 #endif
 
-// Multiply a magnitude by a SINGLE limb. The general schoolbook loop below
-// routes each limb's carry through r.mag[i+1] — a store the next iteration must
-// load back — and needs a second inner pass per limb to place it, so a
-// big-by-small product runs at two iterations and two store-to-load round trips
-// per limb. Keeping the carry in a register does both in one pass, and a running
-// product (`$f *= $_`, factorials, radix scaling) is entirely this shape.
+// Multiply a magnitude by a SINGLE limb. The general kernel below
+// (mulSchoolLimbs) sums its products into 64-bit columns and carries them in a
+// second pass, through a scratch array; with one limb on one side there is
+// nothing to batch, and keeping the carry in a register does the whole product
+// in one pass. A running product (`$f *= $_`, factorials, radix scaling) is
+// entirely this shape.
 //
 // One limb of that pass: `d[i] = s[i]*m + carry`, base 1e9.
 //
@@ -295,12 +295,190 @@ void BigInt::mulLimbInPlace(uint32_t m) {
     trim();
 }
 
+// ---------------------------------------------------------------------------
+// Multiplication past a limb: schoolbook below KARATSUBA_LIMBS_MIN limbs,
+// Karatsuba above it, the longer operand in slices when the two differ.
+//
+// Measured on an M3 against the schoolbook loop this replaces, which split
+// every product with a `% BASE` and a `/ BASE`: 1.2x at 12 limbs, 4x at 32,
+// 6.5x at 64 (the kernel alone), then 17x at 1,000 limbs, 36x at 7,000 and
+// 54x at 20,000 as Karatsuba takes over. `2 ** 1_000_000` went from 1.46 s
+// to 0.04 s.
+//
+// The `**` work budget (g_bigIntBudget) is paid in mulSchoolLimbs, before each
+// block of products runs: every limb product any multiplication makes is made
+// there, at the Karatsuba leaves too, so it counts the work actually done.
+// ---------------------------------------------------------------------------
+namespace {
+
+typedef std::vector<uint32_t> Limbs;
+const uint32_t LBASE = BigInt::BASE;
+
+// r[0, n) += a[0, n), base 1e9; returns the carry out
+uint32_t addLimbs(uint32_t* r, const uint32_t* a, std::size_t n) {
+    uint32_t c = 0;
+    for (std::size_t i = 0; i < n; i++) {
+        const uint32_t t = r[i] + a[i] + c;
+        c = t >= LBASE;
+        r[i] = c ? t - LBASE : t;
+    }
+    return c;
+}
+
+// r[0, n) -= a[0, n); returns the borrow out
+uint32_t subLimbs(uint32_t* r, const uint32_t* a, std::size_t n) {
+    uint32_t b = 0;
+    for (std::size_t i = 0; i < n; i++) {
+        const uint32_t s = a[i] + b;
+        b = r[i] < s;
+        r[i] = b ? r[i] + LBASE - s : r[i] - s;
+    }
+    return b;
+}
+
+// a carry of 0 or 1 added at r[0] and carried up through r[0, n); returns
+// what carries out
+uint32_t rippleLimbs(uint32_t* r, std::size_t n, uint32_t c) {
+    for (std::size_t i = 0; c && i < n; i++) {
+        if (++r[i] == LBASE) r[i] = 0;
+        else c = 0;
+    }
+    return c;
+}
+
+// r[0, na + nb) = a·b, with acc scratch of na + nb words. Columns are summed
+// in 64 bits and carried once every 18 rows instead of once per product: a
+// row adds at most one product under 1e18 to a column, and 18 of them on top
+// of a carried limb stay under 1.8e19 < 2^64. The inner loop is then a bare
+// widening multiply-add, which vectorises — fast enough that Karatsuba only
+// pays from about a hundred limbs.
+void mulSchoolLimbs(uint32_t* r, const uint32_t* a, std::size_t na,
+                    const uint32_t* b, std::size_t nb, uint64_t* acc) {
+    if (unsigned long long* const budget = g_bigIntBudget) {   // paid before it runs
+        const unsigned long long cost = (unsigned long long)na * nb;
+        if (*budget < cost) throw BigIntBudgetExceeded{};
+        *budget -= cost;
+    }
+    const std::size_t n = na + nb;
+    std::fill(acc, acc + n, (uint64_t)0);
+    std::size_t from = 0;                            // the first row not carried yet
+    for (std::size_t i = 0; i < na; i++) {
+        const uint64_t x = a[i];
+        uint64_t* p = acc + i;
+        for (std::size_t j = 0; j < nb; j++) p[j] += x * b[j];
+        if (i + 1 == na || i + 1 - from == 18) {
+            uint64_t c = 0;
+            for (std::size_t k = from; k < n && (k < i + nb || c); k++) {
+                const uint64_t t = acc[k] + c;
+                c = t / LBASE;
+                acc[k] = t - c * LBASE;
+            }
+            from = i + 1;
+        }
+    }
+    for (std::size_t k = 0; k < n; k++) r[k] = (uint32_t)acc[k];
+}
+
+// Converting 1M and 10M random bits back, 96 and 128 measured alike and
+// best; 64 and 192 were 5-10% slower, 32 and 256 slower still. Over plain
+// products of 100 to 20,000 limbs (48 to 160 tried), 96 was best or within a
+// few percent at every size but 3,000 limbs, where it was 15% behind.
+const std::size_t KARATSUBA_LIMBS_MIN = 96;
+
+std::size_t karatsubaLimbsScratch(std::size_t n) {
+    if (n < KARATSUBA_LIMBS_MIN) return 0;
+    const std::size_t h = (n + 1) / 2;
+    return 4 * h + std::max(2 * h + 1, karatsubaLimbsScratch(h));
+}
+
+// d = |x - y| over n limbs; true when x < y
+bool absDiffLimbs(uint32_t* d, const uint32_t* x, const uint32_t* y, std::size_t n) {
+    std::size_t i = n;
+    while (i > 0 && x[i - 1] == y[i - 1]) i--;
+    const bool neg = i > 0 && x[i - 1] < y[i - 1];
+    if (neg) std::swap(x, y);
+    std::copy(x, x + n, d);
+    subLimbs(d, y, n);
+    return neg;
+}
+
+// r[0, 2n) = a·b for two n-limb operands, s scratch of karatsubaLimbsScratch(n)
+// limbs: karatsuba() below (in the binary section), step for step, in base 1e9
+void karatsubaLimbs(uint32_t* r, const uint32_t* a, const uint32_t* b, std::size_t n, uint32_t* s) {
+    if (n < KARATSUBA_LIMBS_MIN) {
+        uint64_t acc[2 * KARATSUBA_LIMBS_MIN];
+        mulSchoolLimbs(r, a, n, b, n, acc);
+        return;
+    }
+    const std::size_t h = (n + 1) / 2, l = n - h;
+    uint32_t* da = s;
+    uint32_t* db = s + h;
+    uint32_t* t = s + 2 * h;
+    uint32_t* rest = s + 4 * h;
+    std::copy(a + h, a + n, t);
+    if (l < h) t[l] = 0;
+    const bool negA = absDiffLimbs(da, a, t, h);
+    std::copy(b + h, b + n, t);
+    if (l < h) t[l] = 0;
+    const bool negB = absDiffLimbs(db, b, t, h);
+    karatsubaLimbs(r, a, b, h, rest);
+    karatsubaLimbs(r + 2 * h, a + h, b + h, l, rest);
+    karatsubaLimbs(t, da, db, h, rest);
+    uint32_t* mid = rest;
+    std::copy(r, r + 2 * h, mid);
+    mid[2 * h] = 0;
+    rippleLimbs(mid + 2 * l, 2 * h + 1 - 2 * l, addLimbs(mid, r + 2 * h, 2 * l));
+    if (negA == negB) mid[2 * h] -= subLimbs(mid, t, 2 * h);
+    else mid[2 * h] += addLimbs(mid, t, 2 * h);
+    const std::size_t len = std::min(2 * h + 1, 2 * n - h);
+    rippleLimbs(r + h + len, 2 * n - h - len, addLimbs(r + h, mid, len));
+}
+
+// r[0, na + nb) = a·b for na, nb >= 1: below the Karatsuba size the shorter
+// operand in rows of the schoolbook kernel; above it, the longer operand in
+// slices the length of the shorter, each a balanced Karatsuba product added
+// in at its offset
+void mulMag(uint32_t* r, const uint32_t* a, std::size_t na, const uint32_t* b, std::size_t nb) {
+    if (na < nb) { std::swap(a, b); std::swap(na, nb); }
+    if (nb < KARATSUBA_LIMBS_MIN) {
+        uint64_t small[4 * KARATSUBA_LIMBS_MIN];
+        if (na + nb <= 4 * KARATSUBA_LIMBS_MIN) { mulSchoolLimbs(r, b, nb, a, na, small); return; }
+        std::vector<uint64_t> acc(na + nb);
+        mulSchoolLimbs(r, b, nb, a, na, acc.data());
+        return;
+    }
+    std::fill(r, r + na + nb, 0u);
+    Limbs scratch(karatsubaLimbsScratch(nb)), prod(2 * nb), slice(nb);
+    for (std::size_t at = 0; at < na; at += nb) {
+        const std::size_t k = std::min(nb, na - at);
+        const uint32_t* as = a + at;
+        if (k < nb) {
+            std::copy(as, as + k, slice.begin());
+            std::fill(slice.begin() + k, slice.end(), 0u);
+            as = slice.data();
+        }
+        karatsubaLimbs(prod.data(), as, b, nb, scratch.data());
+        const std::size_t len = std::min(2 * nb, na + nb - at);
+        rippleLimbs(r + at + len, na + nb - at - len, addLimbs(r + at, prod.data(), len));
+    }
+}
+
+// a·b at any sizes, with no leading zero limbs
+Limbs mulLimbs(const Limbs& a, const Limbs& b) {
+    if (a.empty() || b.empty()) return Limbs();
+    Limbs r(a.size() + b.size());
+    mulMag(r.data(), a.data(), a.size(), b.data(), b.size());
+    while (!r.empty() && r.back() == 0) r.pop_back();
+    return r;
+}
+
+} // namespace
+
 BigInt BigInt::operator*(const BigInt& o) const {
     if (sign == 0 || o.sign == 0) return BigInt();
 #if defined(__SIZEOF_INT128__)
     // (2^64-1)^2 < 2^128, so two u64 magnitudes always multiply exactly into a
-    // u128 — one hardware multiply in place of the base-1e9 schoolbook loop and
-    // its per-limb `% BASE` / `/ BASE`.
+    // u128 — one hardware multiply in place of any base-1e9 loop.
     if (fitsU64() && o.fitsU64())
         return fromMagU128((unsigned __int128)magU64(*this) * magU64(o), sign * o.sign);
 #endif
@@ -308,21 +486,8 @@ BigInt BigInt::operator*(const BigInt& o) const {
     if (o.mag.size() == 1) { BigInt r = mulLimb(*this, o.mag[0]); if (r.sign) r.sign = sign * o.sign; return r; }
     if (mag.size() == 1)   { BigInt r = mulLimb(o, mag[0]);       if (r.sign) r.sign = sign * o.sign; return r; }
     BigInt r;
-    r.mag.assign(mag.size() + o.mag.size(), 0);
-    unsigned long long* const budget = g_bigIntBudget;   // (one thread-local read, not one per row)
-    for (size_t i = 0; i < mag.size(); i++) {
-        if (budget) {   // one row of limb products, paid for before it runs
-            if (*budget < o.mag.size()) throw BigIntBudgetExceeded{};
-            *budget -= o.mag.size();
-        }
-        uint64_t carry = 0;
-        for (size_t j = 0; j < o.mag.size() || carry; j++) {
-            uint64_t cur = r.mag[i + j] + carry +
-                (j < o.mag.size() ? (uint64_t)mag[i] * o.mag[j] : 0);
-            r.mag[i + j] = (uint32_t)(cur % BASE);
-            carry = cur / BASE;
-        }
-    }
+    r.mag.resize(mag.size() + o.mag.size());
+    mulMag(r.mag.data(), mag.data(), mag.size(), o.mag.data(), o.mag.size());
     r.sign = sign * o.sign;
     r.trim();
     return r;
@@ -415,8 +580,8 @@ BigInt BigInt::pow(long long e) const {
     BigInt result(1), base = *this;
     while (e > 0) {
         if (e & 1) result = result * base;
-        base = base * base;
         e >>= 1;
+        if (e) base = base * base;   // not past the top bit: that square was never used
     }
     return result;
 }
@@ -648,157 +813,10 @@ long long lowestBit(const Words& w) {
 // Binary back to base 1e9.
 //
 // The same split run the other way: convert the low h words and the rest,
-// and join them as hi·2^(WORD_BITS·h) + lo. The joins are base-1e9 products
-// now, and they need Karatsuba for the same reason ToBinary's do — BigInt's
-// operator* is schoolbook, and the top join alone would make the conversion
-// quadratic. A million bits converts back in about 51 ms on an M3 (against
-// 24 ms forward), ten million in 1.9 s.
+// and join them as hi·2^(WORD_BITS·h) + lo. The joins are base-1e9 products,
+// the Karatsuba ones operator* makes (mulLimbs). A million bits converts back
+// in about 51 ms on an M3 (against 24 ms forward), ten million in 1.9 s.
 // ---------------------------------------------------------------------------
-typedef std::vector<uint32_t> Limbs;
-const uint32_t LBASE = BigInt::BASE;
-
-// r[0, n) += a[0, n), base 1e9; returns the carry out
-uint32_t addLimbs(uint32_t* r, const uint32_t* a, std::size_t n) {
-    uint32_t c = 0;
-    for (std::size_t i = 0; i < n; i++) {
-        const uint32_t t = r[i] + a[i] + c;
-        c = t >= LBASE;
-        r[i] = c ? t - LBASE : t;
-    }
-    return c;
-}
-
-// r[0, n) -= a[0, n); returns the borrow out
-uint32_t subLimbs(uint32_t* r, const uint32_t* a, std::size_t n) {
-    uint32_t b = 0;
-    for (std::size_t i = 0; i < n; i++) {
-        const uint32_t s = a[i] + b;
-        b = r[i] < s;
-        r[i] = b ? r[i] + LBASE - s : r[i] - s;
-    }
-    return b;
-}
-
-// a carry of 0 or 1 added at r[0] and carried up through r[0, n); returns
-// what carries out
-uint32_t rippleLimbs(uint32_t* r, std::size_t n, uint32_t c) {
-    for (std::size_t i = 0; c && i < n; i++) {
-        if (++r[i] == LBASE) r[i] = 0;
-        else c = 0;
-    }
-    return c;
-}
-
-// r[0, na + nb) = a·b, with acc scratch of na + nb words. Columns are summed
-// in 64 bits and carried once every 18 rows instead of once per product: a
-// row adds at most one product under 1e18 to a column, and 18 of them on top
-// of a carried limb stay under 1.8e19 < 2^64. The inner loop is then a bare
-// widening multiply-add, which vectorises — fast enough that Karatsuba only
-// pays from about a hundred limbs.
-void mulSchoolLimbs(uint32_t* r, const uint32_t* a, std::size_t na,
-                    const uint32_t* b, std::size_t nb, uint64_t* acc) {
-    const std::size_t n = na + nb;
-    std::fill(acc, acc + n, (uint64_t)0);
-    std::size_t from = 0;                            // the first row not carried yet
-    for (std::size_t i = 0; i < na; i++) {
-        const uint64_t x = a[i];
-        uint64_t* p = acc + i;
-        for (std::size_t j = 0; j < nb; j++) p[j] += x * b[j];
-        if (i + 1 == na || i + 1 - from == 18) {
-            uint64_t c = 0;
-            for (std::size_t k = from; k < n && (k < i + nb || c); k++) {
-                const uint64_t t = acc[k] + c;
-                c = t / LBASE;
-                acc[k] = t - c * LBASE;
-            }
-            from = i + 1;
-        }
-    }
-    for (std::size_t k = 0; k < n; k++) r[k] = (uint32_t)acc[k];
-}
-
-// Converting 1M and 10M random bits back, 96 and 128 measured alike and
-// best; 64 and 192 were 5-10% slower, 32 and 256 slower still.
-const std::size_t KARATSUBA_LIMBS_MIN = 96;
-
-std::size_t karatsubaLimbsScratch(std::size_t n) {
-    if (n < KARATSUBA_LIMBS_MIN) return 0;
-    const std::size_t h = (n + 1) / 2;
-    return 4 * h + std::max(2 * h + 1, karatsubaLimbsScratch(h));
-}
-
-// d = |x - y| over n limbs; true when x < y
-bool absDiffLimbs(uint32_t* d, const uint32_t* x, const uint32_t* y, std::size_t n) {
-    std::size_t i = n;
-    while (i > 0 && x[i - 1] == y[i - 1]) i--;
-    const bool neg = i > 0 && x[i - 1] < y[i - 1];
-    if (neg) std::swap(x, y);
-    std::copy(x, x + n, d);
-    subLimbs(d, y, n);
-    return neg;
-}
-
-// karatsuba() above, step for step, in base 1e9
-void karatsubaLimbs(uint32_t* r, const uint32_t* a, const uint32_t* b, std::size_t n, uint32_t* s) {
-    if (n < KARATSUBA_LIMBS_MIN) {
-        uint64_t acc[2 * KARATSUBA_LIMBS_MIN];
-        mulSchoolLimbs(r, a, n, b, n, acc);
-        return;
-    }
-    const std::size_t h = (n + 1) / 2, l = n - h;
-    uint32_t* da = s;
-    uint32_t* db = s + h;
-    uint32_t* t = s + 2 * h;
-    uint32_t* rest = s + 4 * h;
-    std::copy(a + h, a + n, t);
-    if (l < h) t[l] = 0;
-    const bool negA = absDiffLimbs(da, a, t, h);
-    std::copy(b + h, b + n, t);
-    if (l < h) t[l] = 0;
-    const bool negB = absDiffLimbs(db, b, t, h);
-    karatsubaLimbs(r, a, b, h, rest);
-    karatsubaLimbs(r + 2 * h, a + h, b + h, l, rest);
-    karatsubaLimbs(t, da, db, h, rest);
-    uint32_t* mid = rest;
-    std::copy(r, r + 2 * h, mid);
-    mid[2 * h] = 0;
-    rippleLimbs(mid + 2 * l, 2 * h + 1 - 2 * l, addLimbs(mid, r + 2 * h, 2 * l));
-    if (negA == negB) mid[2 * h] -= subLimbs(mid, t, 2 * h);
-    else mid[2 * h] += addLimbs(mid, t, 2 * h);
-    const std::size_t len = std::min(2 * h + 1, 2 * n - h);
-    rippleLimbs(r + h + len, 2 * n - h - len, addLimbs(r + h, mid, len));
-}
-
-// a·b in base 1e9 at any sizes, sliced as mulWords slices
-Limbs mulLimbs(const Limbs& a, const Limbs& b) {
-    if (a.empty() || b.empty()) return Limbs();
-    const Limbs& x = a.size() >= b.size() ? a : b;
-    const Limbs& y = a.size() >= b.size() ? b : a;
-    const std::size_t nx = x.size(), ny = y.size();
-    Limbs r(nx + ny, 0);
-    if (ny < KARATSUBA_LIMBS_MIN) {
-        std::vector<uint64_t> acc(nx + ny);          // the long operand as the inner loop
-        mulSchoolLimbs(r.data(), y.data(), ny, x.data(), nx, acc.data());
-    } else {
-        Limbs scratch(karatsubaLimbsScratch(ny)), prod(2 * ny), slice(ny);
-        for (std::size_t at = 0; at < nx; at += ny) {
-            const std::size_t k = std::min(ny, nx - at);
-            const uint32_t* xs = x.data() + at;
-            if (k < ny) {
-                std::copy(xs, xs + k, slice.begin());
-                std::fill(slice.begin() + k, slice.end(), 0u);
-                xs = slice.data();
-            }
-            karatsubaLimbs(prod.data(), xs, y.data(), ny, scratch.data());
-            const std::size_t len = std::min(2 * ny, nx + ny - at);
-            rippleLimbs(r.data() + at + len, nx + ny - at - len,
-                        addLimbs(r.data() + at, prod.data(), len));
-        }
-    }
-    while (!r.empty() && r.back() == 0) r.pop_back();
-    return r;
-}
-
 // Binary words to base-1e9 limbs: of(at, n) is the sum of W[at + i]·2^(WORD_BITS·i)
 // for i < n, with no leading zero limbs (empty for zero).
 class FromBinary {

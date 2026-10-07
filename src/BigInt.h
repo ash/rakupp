@@ -186,8 +186,9 @@ struct BigInt {
 };
 
 // A WORK BUDGET for one operation that could otherwise run for hours — the
-// interpreter sets it around `**`: the limb products the schoolbook multiply may
-// still spend, or null for no limit. Spending past it throws
+// interpreter sets it around `**`: the limb products multiplication may still
+// spend (all of them are made in its schoolbook kernel, Karatsuba's leaves
+// included), or null for no limit. Spending past it throws
 // BigIntBudgetExceeded, from the middle of a multiplication if need be.
 extern thread_local unsigned long long* g_bigIntBudget;
 struct BigIntBudgetExceeded {};

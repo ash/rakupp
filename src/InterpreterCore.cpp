@@ -16719,6 +16719,41 @@ static BigInt bigBitwise(const BigInt& a, const BigInt& b, char which) {
     return sx == 0 ? tv : sx > 0 ? x + tv : tv - x;
 }
 
+// `+>` past the 128-bit window: floor(x / 2**sh), the arithmetic shift.
+//
+// Long division by 2**sh costs about (n - m)·m for n limbs of x and m of the
+// divisor, so a shift by half the bits was quadratic: 2.3 s at a million
+// bits. Through binary it is two subquadratic conversions and a word shift,
+// 43 ms there, but those cost the same whatever the count, where division by
+// a one- or two-limb power is a single pass: 1.8 ms against 76 for `+> 1` on
+// a million bits. Division wins while m < n/2 and (n - m + 1)·m < 0.3·n^1.585,
+// which every measured case from ten thousand to a million bits agreed with.
+static BigInt bigShiftRight(const BigInt& x, long long sh) {
+    const double n = (double)x.mag.size(), m = (double)sh / 29.897352853986263 + 1;
+    if ((double)sh >= 29.897352853986263 * n)        // n limbs are under 2**(29.9·n)
+        return x.sign < 0 ? BigInt(-1) : BigInt(0);
+    if (m < n / 2 && (n - m + 1) * m < 0.3 * std::pow(n, 1.585)) {
+        BigInt q, rem;
+        BigInt::divmod(x, BigInt(2).pow(sh), q, rem);
+        if (x.sign < 0 && !rem.isZero()) q = q - BigInt(1);   // floor
+        return q;
+    }
+    const std::vector<uint64_t> w = x.toBinary();
+    const size_t ws = (size_t)(sh / 64);
+    const int bs = (int)(sh % 64);
+    if (ws >= w.size()) return x.sign < 0 ? BigInt(-1) : BigInt(0);
+    bool dropped = false;                            // a set bit shifted out: a negative floors past it
+    for (size_t i = 0; i < ws && !dropped; i++) dropped = w[i] != 0;
+    if (bs && (w[ws] & ((1ull << bs) - 1))) dropped = true;
+    std::vector<uint64_t> out(w.size() - ws);
+    for (size_t i = 0; i < out.size(); i++)
+        out[i] = bs ? (w[ws + i] >> bs) | (ws + i + 1 < w.size() ? w[ws + i + 1] << (64 - bs) : 0)
+                    : w[ws + i];
+    BigInt q = BigInt::fromBinary(out.data(), out.size(), x.sign);
+    if (x.sign < 0 && dropped) q = q - BigInt(1);
+    return q;
+}
+
 // List-context expansion of an operand for a list-infix op (Z/X/hyper/minmax):
 // a Blob/Buf yields its ELEMENTS; everything else flattens as usual. (Distinct
 // from flatten(), which keeps a Blob whole — matching Rakudo's `flat`/`reduce`.)
@@ -18060,8 +18095,12 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // grinds on for minutes. Spent, a power whose answer is a Num anyway
             // (a Rat's, its denominator past 64 bits) is computed straight as that
             // Num; any other is X::Numeric::Overflow. A01-limits/overflow.t needs
-            // `1.0000001 ** 10**8` still at work when its two-second timer fires;
-            // what fits in the budget grows with a faster multiply.
+            // `1.0000001 ** 10**8` still at work when its two-second timer fires
+            // (it gives up at 5.5 s). The products counted are the ones the
+            // multiplication makes: since it went Karatsuba, about 0.37 ns each
+            // with the carrying, so 1.5e10 of them, where the schoolbook loop
+            // before it took 1.9 ns and had 3e9. What fits grew: `3 ** 2_000_000`
+            // is exact in 0.19 s, where it ran out after 5.6 s.
             // --hints (RAKUPP_HINTS): an exact Rat power whose answer is bound to
             // become a Num, and big enough to cost real time, says so once per
             // line: `(1 + 1/$n) ** $n` builds (n+1)**n and n**n exactly to hand
@@ -18079,7 +18118,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                            std::to_string((long long)partDigits) + " digits each, and the result becomes a Num anyway; "
                            "write the base with a Num (1e0 instead of 1) to compute in Num directly");
             }
-            static constexpr unsigned long long kPowerBudget = 3000000000ULL;
+            static constexpr unsigned long long kPowerBudget = 15000000000ULL;
             unsigned long long budget = kPowerBudget;
             struct BudgetG { unsigned long long* prev; ~BudgetG() { g_bigIntBudget = prev; } } budgetG{g_bigIntBudget};
             g_bigIntBudget = &budget;
@@ -18484,9 +18523,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (valU128(l, ua)) return boxU128(sh >= 128 ? (unsigned __int128)0 : ua >> (int)sh);
         }
 #endif
-        BigInt q, rem;
-        BigInt::divmod(*l.big(), BigInt(2).pow(sh), q, rem);
-        if (l.big()->sign < 0 && !rem.isZero()) q = q - BigInt(1); // arithmetic shift = floor
+        BigInt q = bigShiftRight(*l.big(), sh);
         return q.fitsLL() ? Value::integer(q.toLL()) : Value::bigint(q);
     }
     // boolean bitwise (return Bool)
