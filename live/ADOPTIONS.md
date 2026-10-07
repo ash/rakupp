@@ -121,10 +121,11 @@ checksum — v4.0.1 when this entry was written — and moves to a newer release
 only after re-running every koan on it. Every Raku++ release candidate runs
 that same check first: gate 6b in [RELEASING.md](../docs/dev/RELEASING.md).
 
-**Where it meets our plans.** Three koans teach code this engine accepts and
-Rakudo refuses: two calls Rakudo rejects at compile time as ones that "will
-never work", and a `next OUTER` that Rakudo resolves differently. They are in
-the v5 error work ([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3). What the
+**Where it meets our plans.** Three koans teach code Rakudo refuses: two calls
+it rejects at compile time as ones that "will never work", and a `next OUTER`
+that it resolves differently. Builds after v5.2.1 refuse all three the same way
+([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3), so those koans fail on them
+until the course changes them. What the
 course had to build around — a Raku.js that runs only in a browser, no way to
 stop a running program, shallow recursion in a Web Worker — is under "A fresh
 WebAssembly build" in [V5-IDEAS.md](../docs/dev/plans/V5-IDEAS.md).

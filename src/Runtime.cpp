@@ -1,4 +1,5 @@
 #include "Runtime.h"
+#include "CallCheck.h"
 #include "DeclCheck.h"
 #include "Interpreter.h"
 #include "Lexer.h"
@@ -258,11 +259,21 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
     // asked about before ANY of it runs — otherwise `say $x; say $typo;` prints
     // a line first and dies second. Answers -1 when the program may proceed.
     auto declCheckRc = [&](const Program& prog) -> int {
-        if (!declCheck || !declCheckEnabled()) return -1;
-        // The loader's own path, so an imported name is looked for where the
-        // import will actually find it.
-        auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
-        return us.empty() ? -1 : reportUndeclaredVars(us, fileName, src);
+        if (!declCheck) return -1;
+        if (declCheckEnabled()) {
+            // The loader's own path, so an imported name is looked for where the
+            // import will actually find it.
+            auto us = findUndeclaredVars(prog, src, effectiveSearchPath(libPaths));
+            if (!us.empty()) return reportUndeclaredVars(us, fileName, src);
+        }
+        // …and so is a call that can never bind: `sub f(Str $x) {}; try f(42)`
+        // runs nothing on Rakudo ("Calling f(Int) will never work").
+        if (callCheckEnabled()) {
+            auto dc = findDoomedCalls(prog, effectiveSearchPath(libPaths),
+                                      [&](const std::string& n) { return interp.builtinRef(n) != nullptr; });
+            if (!dc.empty()) return reportDoomedCalls(dc, fileName, src);
+        }
+        return -1;
     };
     StageClock stage;   // --stagestats: reports from its destructor, whichever way this returns
     try {

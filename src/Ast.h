@@ -183,6 +183,10 @@ std::string nfcNormalize(std::string in);
 struct StrLit : Expr {
     std::string v;
     bool nfcDone = true;    // vestigial: kept so the precomp cache format is unchanged
+    // A one-word `<x>` / `«x»` / `qw<x>` list, which comes out as the word
+    // itself. Rakudo's optimizer does not treat it as a typed constant the way
+    // it does 'x', so the compile-time call check (CallCheck.cpp) must not.
+    bool wordQuote = false;
     explicit StrLit(std::string s): Expr(NK::StrLit), v(nfcNormalize(std::move(s))) {}
     // For the deserialiser, which fills `v` in after construction.
     void normalize() { v = nfcNormalize(std::move(v)); nfcDone = true; }

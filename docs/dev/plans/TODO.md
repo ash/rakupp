@@ -379,11 +379,15 @@ with its tag, after the release run is green.
   steps 5 and 6.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.
-- [ ] **Gate 6b is red on one koan by design**: `next OUTER` under a label
+- [ ] **Gate 6b is red on three koans by design**: `next OUTER` under a label
   named OUTER now dies as on Rakudo, so Raku Koans'
   control-flow/loop-control-and-phasers fails `tools/koans-gate.raku` until
-  the course renames that label. How to tell the course is the maintainer's
-  call. Found 2026-10-07.
+  the course renames that label. And a call that can never bind is now a
+  compile-time error as on Rakudo, so 08-subroutines/02-signature
+  (`dies-ok { say-hello(42) }`) and 05-slurpy-and-named-parameters
+  (`dies-ok { needs() }`) no longer compile; their solutions need an argument
+  the compiler cannot type (`my $n = 42; say-hello($n)`) or an EVAL. How to
+  tell the course is the maintainer's call. Found 2026-10-07.
 - [ ] **`.deb`**: `tools/make-deb.raku` plus release.yml's "Debian package
   (Linux)" step, tested in Ubuntu 24.04 against the 5.2.0 layout, not yet run
   in CI. The first release that carries it makes the README and INSTALL.md

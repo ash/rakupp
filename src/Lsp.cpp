@@ -14,6 +14,7 @@
 // protocol uses: framed `Content-Length` headers wrapping a JSON body.
 
 #include "Lsp.h"
+#include "CallCheck.h"
 #include "DeclCheck.h"
 #include "Lexer.h"
 #include "Lint.h"
@@ -363,6 +364,22 @@ Json computeDiagnostics(const std::string& src) {
         } catch (...) {
             addDiag(1, 3, "declcheck-unavailable",
                     "the undeclared-variable check did not run");
+        }
+    }
+    // A call that can never bind, as `--lint` reports it. The server has no
+    // interpreter to ask what the setting declares, so a multi with no proto
+    // of the unit's own is left unjudged — it may be meeting the setting's.
+    if (callCheckEnabled()) {
+        try {
+            for (const auto& d : findDoomedCalls(prog, effectiveSearchPath({}),
+                                                 [](const std::string&) { return true; })) {
+                std::string msg = d.message();
+                for (size_t p; (p = msg.find("\n    ")) != std::string::npos; )
+                    msg.replace(p, 5, msg[p - 1] == ':' ? " " : ", ");
+                findings.push_back({d.line, 'E', "will-never-work", msg, d.name});
+            }
+        } catch (...) {
+            addDiag(1, 3, "callcheck-unavailable", "the will-never-work check did not run");
         }
     }
     std::stable_sort(findings.begin(), findings.end(),

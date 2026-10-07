@@ -24,8 +24,10 @@ try { nosuchsub(1) }
 check($!.^name,  'X::Undeclared::Symbols',      'an undeclared routine is typed');
 check($!.message, "Undefined routine 'nosuchsub'", 'and has a message');
 
+# (through a variable: `rgm("s")` is refused before the file runs, as on Rakudo)
 multi rgm(Int $x) { 1 }
-try { rgm("s") }
+my $notInt = "s";
+try { rgm($notInt) }
 check($!.^name, 'X::Multi::NoMatch', 'a multi with no candidate');
 check(($!.message.chars > 0).gist, 'True', 'with a message');
 

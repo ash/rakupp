@@ -12,9 +12,13 @@
 #      (capture.t), and TIGHT foo[10] indexes the call RESULT, it is not a
 #      listop argument (advent2009-day23.t died mid-file on gate ar2).
 # FIXED: same leg (ar3 gate clean).
+# (The arguments go through an untyped variable: with only literals both calls
+# are COMPILE-time errors, as on Rakudo — will-never-work-compile-time.raku —
+# and this file is about what the binder lets through.)
 sub strict($a, $b) { $a + $b }
-die 'too-few must throw'  unless (try strict(1)) === Nil;
-die 'too-many must throw' unless (try strict(1, 2, 3)) === Nil;
+my $one = 1;
+die 'too-few must throw'  unless (try strict($one)) === Nil;
+die 'too-many must throw' unless (try strict($one, 2, 3)) === Nil;
 die 'exact still works'   unless strict(1, 2) == 3;
 sub implicit { @_.elems }
 die 'implicit @_ slurpy broken' unless implicit(1, 2, 3) == 3;

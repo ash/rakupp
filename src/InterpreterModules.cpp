@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include "InterpreterParts.h"
 #include "AotModules.h"
+#include "CallCheck.h"
 
 namespace rakupp {
 extern std::atomic<bool> g_lexTypeAlias;   // InterpreterOperators.cpp: a type was bound under another name
@@ -1832,6 +1833,24 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             if (verdict == 1 || (verdict == 0 && tctx_.cur && tctx_.cur->find(u.name))) continue;
             if (verdict == 2) { tctx_.cur->define(u.name, typedDefault("", u.name[0])); continue; }
             throwUndeclaredVar(u.name, &u.inScope);
+        }
+    }
+    // A call that can never bind is a compile error of the snippet too:
+    // `EVAL 'sub f(Str $x) {}; say "x"; f(42)'` prints nothing. Only the
+    // snippet's own subs are judged — one the caller declared is the binder's
+    // to refuse when the call runs.
+    if (mainlinePH && callCheckEnabled()) {
+        auto dc = findDoomedCalls(*prog, libPaths_, [this](const std::string& n) { return builtinRef(n) != nullptr; });
+        if (!dc.empty()) {
+            const DoomedCall& d = dc.front();
+            Value argTypes = Value::array(); argTypes.isList = true;
+            for (auto& a : d.arguments) argTypes.arr()->push_back(Value::str(a));
+            std::string sig;
+            for (auto& s : d.signatures) sig += (d.multi && !d.protoguilt ? "\n    " : "") + s;
+            throwTypedV("X::TypeCheck::Argument",
+                {{"objname", Value::str(d.name)}, {"signature", Value::str(sig)},
+                 {"arguments", argTypes}, {"protoguilt", Value::boolean(d.protoguilt)}},
+                d.message());
         }
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within

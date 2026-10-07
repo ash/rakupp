@@ -4177,6 +4177,14 @@ static std::string renderDefault(const Param& p) {
         }
         case NK::NumLit:  return rakuRepr(Value::number(static_cast<const NumLit*>(d)->v));
         case NK::StrLit:  return rakuStrLit(static_cast<const StrLit*>(d)->v);
+        case NK::InterpStr: {   // `"a"` interpolates nothing: a constant like 'a'
+            std::string s;
+            for (auto& part : static_cast<const InterpStr*>(d)->parts) {
+                if (!part || part->kind != NK::StrLit) return "Code.new";
+                s += static_cast<const StrLit*>(part.get())->v;
+            }
+            return rakuStrLit(s);
+        }
         case NK::BoolLit: return static_cast<const BoolLit*>(d)->v ? "Bool::True" : "Bool::False";
         case NK::NameTerm: {
             const std::string& n = static_cast<const NameTerm*>(d)->name;
@@ -4196,7 +4204,11 @@ static std::string renderDefault(const Param& p) {
 // parameter read `(Int $, …)` where every other implementation writes `(Int, …)`.
 static std::string renderParam(const Param& p, bool inSignature = false) {
     std::string o;
-    if (!p.type.empty()) {
+    // An explicit `Any` on a `$` parameter is the default spelled out, and
+    // Rakudo leaves it out: `sub (Any $x)` is `($x)` (`Any:D` and `Any @a` stay).
+    const bool anyOmitted = p.type == "Any" && p.typeShown.empty() && p.sigil == '$' && !p.coerce &&
+                            !p.defConstraint;
+    if (!p.type.empty() && !anyOmitted) {
         o += p.typeShown.empty() ? p.type : p.typeShown;
         // A COERCION renders both halves — `Int(Cool) $a`, and `Int()` as
         // `Int(Any)`, which is what it means. Only the target was printed, so
@@ -4224,8 +4236,9 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
     if (p.slurpy) o += p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+" : "*";
     // the anonymous-but-typed case: `Int` in a signature, `Int $` alone. An
     // anonymous UNTYPED one is `$` either way — there would be nothing left.
-    if (inSignature && p.name.empty() && !p.type.empty() && !p.named && !p.slurpy && p.sigil == '$' &&
-        !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
+    // (The parser keeps a bare `$` as the anonymous parameter's name.)
+    if (inSignature && (p.name.empty() || p.name == "$") && !p.type.empty() && !anyOmitted && !p.named &&
+        !p.slurpy && p.sigil == '$' && !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
         renderDefault(p).empty()) {
         o.pop_back();   // the space renderParam put after the type name
         return o;
@@ -4254,6 +4267,10 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
     if (!def.empty()) o += " = " + def;
     return o;
 }
+
+// The same rendering for the compile-time call check (CallCheck.cpp), whose
+// "will never work" message quotes the signature as `.signature.gist` does.
+std::string renderSignatureParam(const Param& p, bool inSignature) { return renderParam(p, inSignature); }
 
 // Param owns unique_ptr expressions, so a residual signature can't hold copies of
 // them — snapshot the plain fields and pre-render what the exprs contribute.

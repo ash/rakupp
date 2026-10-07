@@ -227,7 +227,7 @@ template <class IO> void visit(IO& io, NumLit& n)   { F(io, n.v); F(io, n.imagin
 // `v` is written after construction here, so the constructor's normalization
 // missed it — normalize on the way in. (Both fields stay in the format so an
 // existing cache still reads.)
-template <class IO> void visit(IO& io, StrLit& n)   { F(io, n.v); F(io, n.nfcDone);
+template <class IO> void visit(IO& io, StrLit& n)   { F(io, n.v); F(io, n.nfcDone); F(io, n.wordQuote);
                                                       if (IO::reading) n.normalize(); }
 template <class IO> void visit(IO& io, BoolLit& n)  { F(io, n.v); }
 template <class IO> void visit(IO& io, AllomorphLit& n) { ioExpr(io, n.num); F(io, n.str); }

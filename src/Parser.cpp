@@ -7266,7 +7266,10 @@ ExprPtr Parser::parsePrimary() {
             }
             if (qq) return qqwwFinish(std::move(arr), qqFlags, allomorph);
             // a single `<word>` is that element itself, not a one-item list
-            if (arr->items.size() == 1) return std::move(arr->items[0]);
+            if (arr->items.size() == 1) {
+                if (arr->items[0]->kind == NK::StrLit) static_cast<StrLit*>(arr->items[0].get())->wordQuote = true;
+                return std::move(arr->items[0]);
+            }
             return arr;
         }
         case Tok::Var: {
@@ -8354,7 +8357,11 @@ ExprPtr Parser::parsePrimary() {
                     throw ParseError("Unsupported use of <STDIN>. In Raku please use: $*IN.lines (or add "
                                      "whitespace to suppress warning).", t.line, "X::Obsolete",
                                      {{"old", "<STDIN>"}, {"replacement", "$*IN.lines (or add whitespace to suppress warning)"}});
-                if (words.size() == 1) return mkWord(words[0], true); // <42> is the value itself, not a list
+                if (words.size() == 1) {   // <42> is the value itself, not a list
+                    ExprPtr w = mkWord(words[0], true);
+                    if (w->kind == NK::StrLit) static_cast<StrLit*>(w.get())->wordQuote = true;
+                    return w;
+                }
                 auto arr = std::make_unique<ArrayLit>();
                 for (auto& w : words) arr->items.push_back(mkWord(w, false));
                 arr->isList = true;
@@ -10008,6 +10015,7 @@ ExprPtr Parser::qqwwFinish(std::unique_ptr<ArrayLit> arr, const std::string& fla
             // a lone colonpair is a Pair VALUE, not a named argument: `f(«:a(1)»)`
             if (arr->items[0]->kind == NK::Pair)
                 static_cast<PairExpr*>(arr->items[0].get())->parenned = true;
+            if (arr->items[0]->kind == NK::StrLit) static_cast<StrLit*>(arr->items[0].get())->wordQuote = true;
             return std::move(arr->items[0]);
         }
         return arr;

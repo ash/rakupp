@@ -26,6 +26,7 @@
 #include "SlimScan.h"
 #include "RakuAstClasses.h"
 #include "Interpreter.h"
+#include "CallCheck.h"
 #include "DeclCheck.h"
 #include "Lint.h"
 #include "Ffi.h"
@@ -1491,9 +1492,21 @@ static void applyL10N(const std::string& src, std::vector<Token>& toks,
     I.applyL10NSlang(src, toks);
 }
 
+// The compile-time call check for the modes that run nothing. They have no
+// interpreter of their own, so one is made only when a finding needs the
+// setting asked whether it has a routine of that name.
+static std::vector<DoomedCall> doomedCallsOf(const Program& prog, const std::vector<std::string>& searchPath) {
+    if (!callCheckEnabled()) return {};
+    std::unique_ptr<Interpreter> setting;
+    return findDoomedCalls(prog, searchPath, [&](const std::string& n) {
+        if (!setting) setting = std::make_unique<Interpreter>();
+        return setting->builtinRef(n) != nullptr;
+    });
+}
+
 static int declCheckGate(const std::string& src, const std::string& fileName,
                          const std::vector<std::string>& searchPath) {
-    if (!declCheckEnabled()) return -1;
+    if (!declCheckEnabled() && !callCheckEnabled()) return -1;
     Program prog;
     try {
         Lexer lexer(src);
@@ -1506,8 +1519,12 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
         parser.src_ = &src;
         prog = parser.parseProgram();
     } catch (const ParseError&) { return -1; }
-    auto us = findUndeclaredVars(prog, src, searchPath);
-    return us.empty() ? -1 : reportUndeclaredVars(us, fileName, src);
+    if (declCheckEnabled()) {
+        auto us = findUndeclaredVars(prog, src, searchPath);
+        if (!us.empty()) return reportUndeclaredVars(us, fileName, src);
+    }
+    auto dc = doomedCallsOf(prog, searchPath);
+    return dc.empty() ? -1 : reportDoomedCalls(dc, fileName, src);
 }
 
 // ---- --target=js ------------------------------------------------------------
@@ -3835,6 +3852,15 @@ int main(int argc, char** argv) {
                 return 1;   // the exit code reportUndeclaredVars answers
             }
         }
+        // …and so is a call that can never bind (Rakudo's "will never work")
+        auto dc = doomedCallsOf(prog, effectiveSearchPath(libPaths));
+        if (!dc.empty()) {
+            if (!jsonOut) return reportDoomedCalls(dc, fileName, src);
+            std::vector<std::string> items;
+            for (auto& d : dc) items.push_back(jsonFinding(fileName, d.line, "error", "will-never-work", d.message()));
+            printJsonFindings(items);
+            return 1;
+        }
         if (jsonOut) { std::cout << "[]\n"; return 0; }  // the empty list IS the verdict
         if (!g_quiet) std::cout << "Syntax OK\n";   // -q: the exit code is the verdict
         return 0;
@@ -3842,7 +3868,8 @@ int main(int argc, char** argv) {
 
     // --lint : static analysis only — parse, analyse, report; never execute.
     // Prints `FILE:LINE: error|warning|note: message [rule]`. Exits 2 if the
-    // file will not compile (a parse error, or an undeclared variable), 1 if
+    // file will not compile (a parse error, an undeclared variable, or a call
+    // that can never bind), 1 if
     // there were only warnings, 0 for notes or nothing.
     if (mode == Mode::Lint) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --lint (FILE | -e CODE) [-q]\n"; return 4; }
@@ -3871,6 +3898,14 @@ int main(int argc, char** argv) {
             for (auto& u : findUndeclaredVars(prog, src, effectiveSearchPath(libPaths)))
                 findings.push_back({u.line, 'E', "undeclared-variable",
                                     "'" + u.name + "' is not declared"});
+        // A call that can never bind is the compiler's refusal too. A multi's
+        // candidate list goes on the same line, as the finding format needs.
+        for (auto& d : doomedCallsOf(prog, effectiveSearchPath(libPaths))) {
+            std::string msg = d.message();
+            for (size_t p; (p = msg.find("\n    ")) != std::string::npos; )
+                msg.replace(p, 5, msg[p - 1] == ':' ? " " : ", ");
+            findings.push_back({d.line, 'E', "will-never-work", msg});
+        }
         std::stable_sort(findings.begin(), findings.end(),
                          [](const LintFinding& a, const LintFinding& b) {
                              if (a.line != b.line) return a.line < b.line;

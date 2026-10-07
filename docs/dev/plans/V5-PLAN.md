@@ -282,11 +282,15 @@ Everything under "Silent wrong answers" above.
 - New strictness, such as "Strange text after block", lands only with a clean
   battery scan.
 - Two divergences an adopter's course teaches (Raku Koans,
-  [live/ADOPTIONS.md](../../../live/ADOPTIONS.md)). Rakudo refuses a call that
+  [live/ADOPTIONS.md](../../../live/ADOPTIONS.md)). ~~Rakudo refuses a call that
   can never bind when it compiles the file (`Calling f(Int) will never work
   with declared signature (Str $x)`, and the same for a missing required
   named); rakupp raises that error only when the call runs, so
-  `dies-ok { f(42) }` passes here and never compiles there. ~~And under a label
+  `dies-ok { f(42) }` passes here and never compiles there.~~ **Done**
+  2026-10-07: src/CallCheck.cpp asks Rakudo's trial-bind
+  and compile-time multi-dispatch questions of the whole unit before it runs,
+  on the run path, EVAL, `-c`, `--lint`, the compile modes and the LSP
+  (t/regression/will-never-work-compile-time.raku). ~~And under a label
   named `OUTER`, Rakudo reads `next OUTER` as the pseudo-package and dies;
   rakupp takes the label.~~ **Done** 2026-10-07: the
   thirteen pseudo-packages Rakudo reads ahead of a label of the same name win

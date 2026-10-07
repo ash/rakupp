@@ -658,6 +658,26 @@ bool clearedByImports(std::vector<UndeclaredVar>& cands,
 
 } // namespace
 
+// The same blunt scan for a ROUTINE name, for the compile-time call check
+// (CallCheck.cpp): could an imported module be what supplies `name` — a
+// shadowing sub, or multi candidates beside the unit's own? Any doubt answers
+// yes: a module whose source cannot be found, or one with a `sub EXPORT`.
+bool importsMaySupplyName(const std::set<std::string>& imports, const std::vector<std::string>& searchPath,
+                          bool sixE, const std::string& name) {
+    for (auto& mod : imports) {
+        if (rakuppCompilerAnswersModule(mod)) {
+            std::set<std::string> given;
+            rakuppCompilerAnsweredNames(mod, given);
+            if (given.count(name) || given.count("&" + name)) return true;
+            continue;
+        }
+        std::string path, src;
+        if (!rakuppFindModuleSource(mod, searchPath, path, src, sixE)) return true;
+        if (src.find("sub EXPORT") != std::string::npos || wordAt(src, name)) return true;
+    }
+    return false;
+}
+
 std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::string& src,
                                               const std::vector<std::string>& searchPath) {
     Checker C;
