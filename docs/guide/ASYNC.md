@@ -62,7 +62,7 @@ global-interpreter-lock mode — the pre-v3 default, kept as the escape hatch.
 | How to select | set the env var | *(nothing — this is the default)* |
 | Pure-Raku CPU work | one thread at a time | runs on all cores |
 | `sleep`/`await`/subprocess waits | overlap (GIL released) | overlap |
-| `Lock` / `Semaphore` | no-ops (the GIL already serialises) | real mutual exclusion |
+| `Lock` / `Semaphore` | no-ops — a section that waits (`sleep`, `await`, I/O) is **not** exclusive | real mutual exclusion |
 | Unsynchronised shared mutation | safe (serialised) | **your race** — guard it with a `Lock`, as in Rakudo |
 
 Select the mode from the shell:
@@ -128,7 +128,7 @@ fan-out to the performance cores you actually have.
 ### Sharing state safely
 
 ```raku
-# A Lock actually enforces mutual exclusion in parallel mode (a no-op under the GIL).
+# A Lock enforces mutual exclusion in parallel mode (under the GIL it is a no-op).
 my $lock = Lock.new;
 my $total = 0;
 await (^8).map: { start { for ^10000 { $lock.protect({ $total++ }) } } };
@@ -136,14 +136,19 @@ say $total;                               # → 80000   (no lost updates in eith
 ```
 
 `Semaphore` likewise is a real counting semaphore in parallel mode, and a no-op
-under `RAKUPP_GIL=1`.
+under `RAKUPP_GIL=1`. A no-op is only safe while the protected section never
+waits: a thread that sleeps, awaits or blocks on I/O hands the GIL over, and
+the next thread walks into the same section. Two workers that each log, sleep
+0.2 s and log again inside one `$lock.protect` (or between `.acquire` and
+`.release`) print `in 0, out 0, in 1, out 1` by default — and on Rakudo — but
+`in 0, in 1, out 0, out 1` under `RAKUPP_GIL=1`.
 
 ### When it helps
 
 CPU-bound fan-out (parsing, transforms, number crunching across `start` blocks)
 scales with the number of **full-speed cores**, but *how close to that ceiling
 you get is a property of the loop, not of the machine*. Four `start` blocks on
-the four performance cores above measure anywhere from **0.38× to 3.76×**
+the four performance cores above measure anywhere from **0.38× to 3.75×**
 depending on what is inside them — 3.75× for the compiled `work` above, 3.25×
 for an interpreted loop over native `int` arithmetic, and 0.38× for a loop the
 plain run compiles and the workers cannot. Interpreted code also runs about 15%
@@ -151,13 +156,14 @@ slower on every thread while a worker is live, which is part of why four cores
 do not buy four times: see [PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md). Quote a
 speed-up for your workload, not a number from a page like this one.
 
-Three things decide whether you see it: keep the fan-out at or below the
-performance-core count (oversubscribing onto efficiency cores or hyperthreads
-gives diminishing, then negative, returns); make sure the parallel unit is a
-real `start` thunk rather than a single serialised bottleneck; and keep shared
-mutable state out of the inner loop — N workers incrementing one shared counter
-lose most of the gain to contention, where N workers each incrementing their own
-and summing after the `await` keep it. Work dominated by external processes or
+Four things decide whether you see it: keep the fan-out at or below the
+performance-core count (eight workers on this 4P+4E machine are a tenth faster
+than four, for twice the threads); make sure the parallel unit is a real
+`start` thunk rather than a single serialised bottleneck; keep shared mutable
+state out of the inner loop — N workers incrementing one shared counter lose
+the whole gain to contention, where N workers each incrementing their own and
+summing after the `await` keep it; and check with `RAKUPP_KERNEL_TRACE=1` that
+the plain run is not running a compiled loop the workers cannot. Work dominated by external processes or
 I/O overlaps under `RAKUPP_GIL=1` as well (the waits release the lock), so
 parallel mode adds less there.
 

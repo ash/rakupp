@@ -162,6 +162,13 @@ printed 400000 in five runs of five under `RAKUPP_GIL=1`. A result that is
 wrong by default and right under the lock means two threads are writing the
 same thing.
 
+It is a diagnosis, not a fix. `Lock` and `Semaphore` do nothing under it, and
+a thread that waits — `sleep`, `await`, I/O — hands the lock to the next one,
+so a protected section that waits stops being exclusive: two workers that log,
+sleep and log again inside one `$lock.protect` print
+`in 0, out 0, in 1, out 1` by default and on Rakudo, and
+`in 0, in 1, out 0, out 1` under `RAKUPP_GIL=1`.
+
 **Not for speed.** A CPU-bound fan-out gains nothing under it, and work that
 mostly waits — on `sleep`, a child process, a socket — overlaps in both modes,
 because a thread that waits lets the others run.
