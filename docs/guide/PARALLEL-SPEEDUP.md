@@ -1,5 +1,7 @@
 # Raku++ — Measuring a parallel speed-up
 
+> **Note! This document is work in progress.**
+
 How to show, with numbers you can defend, that a program runs faster *because*
 of `start`. This is the measurement companion to
 [ASYNC.md](ASYNC.md#the-two-modes-true-parallelism-default-and-the-gil), which
@@ -108,22 +110,35 @@ rakupp tools/bench/parallel/cpu-fanout.raku 4 300000 serial
 rakupp tools/bench/parallel/cpu-fanout.raku 4 300000 parallel
 ```
 
-M=300 000, both modes:
+**How to read these tables.** A row does N units of work, M=300 000
+iterations each, so the work doubles from one row to the next. The plain loop
+runs the N units one after another on one thread, and its time doubles with
+the work. The `start` column runs them as N `start` blocks at once; a fan-out
+that scales keeps that column *flat* while the work grows, and the speed-up is
+the plain time divided by the `start` time.
 
-| N | mode | plain loop | with `start` | speed-up |
+Parallel mode (the default):
+
+| N | work (iterations) | plain loop, one thread | N `start` blocks | speed-up |
 |---|---|---|---|---|
-| 1 | parallel (default) | 0.061s | 0.072s | 0.85× |
-| 2 | parallel (default) | 0.123s | 0.074s | 1.66× |
-| 4 | parallel (default) | 0.250s | 0.077s | **3.25×** |
-| 8 | parallel (default) | 0.491s | 0.137s | 3.58× |
-| 1 | GIL (`RAKUPP_GIL=1`) | 0.062s | 0.062s | 1.00× |
-| 2 | GIL (`RAKUPP_GIL=1`) | 0.123s | 0.125s | 0.98× |
-| 4 | GIL (`RAKUPP_GIL=1`) | 0.246s | 0.252s | 0.98× |
-| 8 | GIL (`RAKUPP_GIL=1`) | 0.492s | 0.501s | 0.98× |
+| 1 | 300 000 | 0.061s | 0.072s | 0.85× |
+| 2 | 600 000 | 0.123s | 0.074s | 1.66× |
+| 4 | 1 200 000 | 0.250s | 0.077s | **3.25×** |
+| 8 | 2 400 000 | 0.491s | 0.137s | 3.58× |
 
-Reading the table:
+`RAKUPP_GIL=1`, the same runs — here the `start` column grows with the work,
+because the N blocks take turns:
 
-- **The whole GIL half sits at 0.98×–1.00×.** Four threads, eight threads, it
+| N | work (iterations) | plain loop, one thread | N `start` blocks | speed-up |
+|---|---|---|---|---|
+| 1 | 300 000 | 0.062s | 0.062s | 1.00× |
+| 2 | 600 000 | 0.123s | 0.125s | 0.98× |
+| 4 | 1 200 000 | 0.246s | 0.252s | 0.98× |
+| 8 | 2 400 000 | 0.492s | 0.501s | 0.98× |
+
+Reading the tables:
+
+- **The whole GIL table sits at 0.98×–1.00×.** Four threads, eight threads, it
   makes no difference: the mode is the difference, not the fan-out.
 - **N=1 at 0.85× is the control, and it is not 1.00×.** One `start` block with
   nothing to contend with is *slower* than no `start` block. It is not thread
@@ -219,7 +234,7 @@ rakupp tools/bench/parallel/atomic-counter.raku 4 300000 counters  parallel
 
 N=4, M=300 000:
 
-| strategy | mode | plain loop | with `start` | speed-up |
+| strategy | mode | plain loop, one thread | 4 `start` blocks | speed-up |
 |---|---|---|---|---|
 | contended | GIL | 0.373s | 0.378s | 0.99× |
 | contended | parallel | 0.373s | 0.490s | **0.76×** |
@@ -293,7 +308,7 @@ rakupp -e 'my atomicint $a = 0; my $t = now; await (^4).map: { start { $a⚛++ f
 rakupp -e 'my atomicint $a = 0; my $t = now; for ^4 { $a⚛++ for ^500_000 }; say "{ (now - $t).round(0.001) }s $a";'
 ```
 
-| mode | plain loop | with `start` | speed-up |
+| mode | plain loop, one thread | 4 `start` blocks | speed-up |
 |---|---|---|---|
 | GIL | 0.248s | 0.371s | 0.67× |
 | parallel | 0.248s | 0.747s | **0.33×** |
@@ -348,7 +363,10 @@ sub work($seed, $m) {             # everything passed in: a whole-routine kernel
 }
 ```
 
-| N | `work` | plain loop | with `start` | speed-up |
+As in example 1, a row does N units of M iterations, as a plain loop on one
+thread or as N `start` blocks:
+
+| N | `work` | plain loop, one thread | N `start` blocks | speed-up |
 |---|---|---|---|---|
 | 1 | reads `$M` from outside | 0.036s | 0.355s | 0.10× |
 | 4 | reads `$M` from outside | 0.143s | 0.372s | **0.38×** |
