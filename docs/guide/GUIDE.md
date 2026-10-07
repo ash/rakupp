@@ -279,11 +279,12 @@ integer fast-path and direct `rtAdd`/`rtSub` calls, plus a thin `ValueList`
 trampoline for generic call sites. See [OPTIMIZATION.md](../internals/OPTIMIZATION.md) for the
 full catalogue of what `-O` does.
 
-By default rakupp runs concurrency under a GIL (correct semantics, no CPU
-parallelism for pure-Raku work). Set `RAKUPP_GIL=1` to make `start`/worker
-threads run interpreter code on all cores — CPU-bound fan-out scales ~3× on 8
-cores, 0 Roast regressions. See [ASYNC.md](ASYNC.md#the-two-modes-true-parallelism-default-and-the-gil)
-for the trade-offs (chiefly: guard your own shared mutable data with a `Lock`).
+By default `start`/worker threads run interpreter code on all cores;
+`RAKUPP_GIL=1` selects the cooperative GIL, where one thread runs Raku at a
+time. See [ASYNC.md](ASYNC.md#the-two-modes-true-parallelism-default-and-the-gil)
+for the trade-offs (chiefly: guard your own shared mutable data with a `Lock`),
+and [PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md) for what a fan-out measures and
+how to measure your own.
 
 ```sh
 build/rakupp program.raku              # parallel mode (the default)

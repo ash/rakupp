@@ -10,12 +10,14 @@ A focused companion to [RECIPES.md](RECIPES.md) for the concurrency features.
 
 ## The model
 
-Raku++ runs concurrency on **real `std::thread`s coordinated by a global
-interpreter lock (GIL)**, CPython-style. By default only one thread executes Raku
-at a time, so semantics are correct and single-threaded code needs no locks.
+Raku++ runs concurrency on **real `std::thread`s, in parallel by default**:
+`start` blocks and worker threads execute Raku on all cores at once.
+`RAKUPP_GIL=1` selects the other mode, where a global interpreter lock (GIL)
+lets one thread run Raku at a time — see
+[the two modes](#the-two-modes-true-parallelism-default-and-the-gil).
 Each worker gets a 256 MiB stack (a quarter of the mainline's recursion budget —
 [MEMORY.md](MEMORY.md) has the measured depths).
-Blocking operations *release* the GIL, so tasks genuinely interleave in time:
+Blocking operations never hold up the other threads, in either mode:
 `sleep`/`await` let workers overlap (enough for [sleep-sort](#concurrent-timing-sleep-sort)
 to actually sort), and external-process waits (`run`/`shell`) run in real parallel
 wall-clock — N concurrent `run('sleep','1')` finish in ~1 s, not N:
@@ -26,8 +28,9 @@ my $t0 = now;
 run('sleep', '1', :out).out.slurp(:close) for ^4;
 say "sequential:  {(now - $t0).round(0.1)} s";      # → sequential:  4 s
 
-# Concurrent: four workers, each blocked on its own child process. Each waiting
-# `run` releases the GIL, so the four sleeps elapse at the same time.
+# Concurrent: four workers, each blocked on its own child process, so the four
+# sleeps elapse at the same time (under RAKUPP_GIL=1 each waiting `run` releases
+# the lock).
 my $t1 = now;
 await (^4).map: { start { run('sleep', '1', :out).out.slurp(:close) } };
 say "concurrent:  {(now - $t1).round(0.1)} s";       # → concurrent:  1 s
@@ -39,9 +42,9 @@ a subprocess-heavy pipeline (e.g. shelling out to `pandoc` per page) is already
 near-parallel under `RAKUPP_GIL=1`, and gains little from the parallel default;
 parallelism helps when the bottleneck is Raku-level CPU (see below).
 
-Promises, Supplies, Channels, and `react` loops all behave as specified. For work
-that is genuinely CPU-bound, an **opt-in mode drops the GIL entirely** so worker
-threads run interpreter code in parallel — see the next section.
+Promises, Supplies, Channels, and `react` loops all behave as specified. Work
+that is genuinely CPU-bound runs on all cores by default — the next section
+sets the two modes side by side.
 
 ---
 
@@ -61,7 +64,6 @@ global-interpreter-lock mode — the pre-v3 default, kept as the escape hatch.
 | `sleep`/`await`/subprocess waits | overlap (GIL released) | overlap |
 | `Lock` / `Semaphore` | no-ops (the GIL already serialises) | real mutual exclusion |
 | Unsynchronised shared mutation | safe (serialised) | **your race** — guard it with a `Lock`, as in Rakudo |
-| Roast, S17 concurrency | 45 of 99 files | 44 of 99 — the gap is which timeout-prone files finished, not behaviour |
 
 Select the mode from the shell:
 
@@ -82,14 +84,19 @@ without a `Lock` is a data race, exactly as it is under Rakudo.
 sub work($n) { my $s = 0; $s += $_ for 1 .. 4_000_000; $s + $n }
 my @p = (^4).map(-> $n { start work($n) });
 say (await @p).elems;                     # → 4
-#   On an M3 (4P+4E), 2026-09-07: 0.82 s by default, against 1.99 s for the same
-#   four calls in a plain loop — 2.4×. Under `RAKUPP_GIL=1`: 2.01 s with
-#   `start`, 1.97 s without it — the thread setup, bought and not paid back.
+#   On an M3 (4P+4E), 2026-10-07: 5.7 ms by default, against 21.4 ms for the
+#   same four calls in a plain loop — 3.75×. Under `RAKUPP_GIL=1`: 20.9 ms with
+#   `start`, 21.3 ms without it — one thread at a time.
 ```
 
-The number that means something is **1.99 s → 0.82 s**: the same work, same mode,
+The number that means something is **21.4 ms → 5.7 ms**: the same work, same mode,
 with and without `start`. Comparing parallel mode against GIL mode instead
-folds two different changes into one ratio.
+folds two different changes into one ratio. (`work` here takes only an `Int`
+and its own locals, so it runs as a compiled kernel on every thread; with
+kernels off, `RAKUPP_NO_KERNELS=1`, the same fan-out is 1.09 s → 0.41 s, 2.67×.
+A loop that is compiled only on its own is a different case —
+[PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md#example-3--when-the-plain-loop-is-compiled)
+has both.)
 
 `start EXPR` thunks `EXPR` and runs it *on the worker* (it is not evaluated eagerly
 on the spawning thread), so `start work($n)` parallelises just like `start { work($n) }`.
@@ -111,11 +118,12 @@ say @squares;                             # → [0 1 4 9 16 25]
 
 **Match the fan-out to the physical *performance* cores.** The speed-up tops out
 at the number of full-speed cores, not the logical-CPU count. On the 4P+4E
-machine above, eight `start` blocks do *not* reach ~5×: the extra work spills
-onto the efficiency cores (~⅓ the speed) and scheduling contention grows, so
-eight land at 1.4× (3.94 s → 2.84 s) against four at 2.4× — more total threads,
-*less* speed-up. `$*KERNEL.cpu-cores` reports the logical count (8 on this
-machine); size the fan-out to the performance cores you actually have.
+machine above, eight `start` blocks do *not* reach anywhere near 8×: the extra
+work spills onto the efficiency cores (~⅓ the speed), so eight land at 3.58×
+against four at 3.25× — twice the threads for a tenth more speed
+([PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md#example-1--the-contention-free-control)).
+`$*KERNEL.cpu-cores` reports the logical count (8 on this machine); size the
+fan-out to the performance cores you actually have.
 
 ### Sharing state safely
 
@@ -135,13 +143,13 @@ under `RAKUPP_GIL=1`.
 CPU-bound fan-out (parsing, transforms, number crunching across `start` blocks)
 scales with the number of **full-speed cores**, but *how close to that ceiling
 you get is a property of the loop, not of the machine*. Four `start` blocks on
-the four performance cores above measure anywhere from **2.4× to 2.9×** depending
-on what is inside them — 2.4× for the `$s += $_ for 1 .. 4_000_000` above, 2.9×
-for the same fan-out over native `int` arithmetic. A worker thread also runs its
-own loop about 15% slower than the main thread does in parallel mode, which is
-part of why four cores do not buy four times: see
-[PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md). Quote a speed-up for your
-workload, not a number from a page like this one.
+the four performance cores above measure anywhere from **0.38× to 3.76×**
+depending on what is inside them — 3.75× for the compiled `work` above, 3.25×
+for an interpreted loop over native `int` arithmetic, and 0.38× for a loop the
+plain run compiles and the workers cannot. Interpreted code also runs about 15%
+slower on every thread while a worker is live, which is part of why four cores
+do not buy four times: see [PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md). Quote a
+speed-up for your workload, not a number from a page like this one.
 
 Three things decide whether you see it: keep the fan-out at or below the
 performance-core count (oversubscribing onto efficiency cores or hyperthreads
@@ -150,15 +158,16 @@ real `start` thunk rather than a single serialised bottleneck; and keep shared
 mutable state out of the inner loop — N workers incrementing one shared counter
 lose most of the gain to contention, where N workers each incrementing their own
 and summing after the `await` keep it. Work dominated by external processes or
-I/O already overlaps in the default GIL mode (the waits release the lock), so
+I/O overlaps under `RAKUPP_GIL=1` as well (the waits release the lock), so
 parallel mode adds less there.
 
 [PARALLEL-SPEEDUP.md](PARALLEL-SPEEDUP.md) turns this into a measurement: how to
 set the comparison up so `start` is the only variable, two runnable benchmarks
 in [tools/bench/parallel/](../../tools/bench/parallel), and the numbers they
-produce (3.72× at N=4 contention-free, 3.51× for N per-worker counters summed at
-the end, 2.93× for one shared `atomicint`, and 1.45× for a shared-counter loop
-with nothing else in it — all on this machine).
+produce (3.25× at N=4 contention-free, 3.13× for N per-worker counters summed at
+the end, 0.76× for one shared `atomicint`, 0.33× for a shared-counter loop with
+nothing else in it, and 0.38× for a loop the plain run compiles — all on this
+machine).
 
 ## The memory model — what is guaranteed, what is yours to guard
 

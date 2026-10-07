@@ -75,6 +75,10 @@ only way these can drift.
 - **[performance.md](performance.md)** — "my program is slow": what compiling
   does and does not speed up, with measured numbers, and the things that are slow
   in any Raku.
+- **[threads.md](threads.md)** — is there a GIL? Not by default: what
+  `RAKUPP_GIL=1` does, how to tell that threads really ran at once, why a
+  `start` can make a program slower, what is yours to guard, and why `.hyper`
+  runs serially where `hyper for` does not.
 
 ## When something goes wrong
 

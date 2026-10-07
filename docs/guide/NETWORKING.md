@@ -6,9 +6,10 @@ shutdown, and — with a matching system OpenSSL — `IO::Socket::Async::SSL` fo
 TLS. Every example below was run against `rakupp` and its output is shown as
 produced.
 
-The async model is cooperative: only one thread runs interpreter code at a time,
-and workers yield the GIL at blocking points (`await`, `sleep`, socket reads).
-`await` and a `react { whenever … }` block are the two ways to wait for I/O.
+Worker threads run in parallel by default; under `RAKUPP_GIL=1` only one runs
+interpreter code at a time, and workers yield the lock at blocking points
+(`await`, `sleep`, socket reads). `await` and a `react { whenever … }` block
+are the two ways to wait for I/O.
 
 ---
 

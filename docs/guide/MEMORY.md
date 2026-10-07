@@ -34,7 +34,7 @@ program's data plus its deepest live recursion actually touch.
 **Interpreter.** The mainline never runs on the OS main thread: `onBigStack`
 (src/Runtime.cpp) moves it to a thread with a **1 GiB** stack. Every `start`
 block / Promise worker gets its own **256 MiB** stack (`BigStackThread`).
-The GIL serializes execution, but each parked worker keeps its reservation.
+Each worker keeps its reservation for as long as it lives, running or parked.
 
 **`--exe` native.** Identical layout since the generated `main()` routes the
 whole program through `rakuppMainOnBigStack` — the same 1 GiB thread. (The
