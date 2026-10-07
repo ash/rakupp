@@ -7,6 +7,7 @@
 namespace rakupp {
 
 extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
+extern std::atomic<bool> g_lexTypeAlias;    // InterpreterOperators.cpp: a type was bound under another name
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -4233,6 +4234,9 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
         if (sit != subsets_.end() && !sit->second.coerce) return;
     }
     if (typeOrSubsetMatches(v, p.type)) return;
+    // …or the name, read where the signature was written, is an alias of a type
+    // the value conforms to (see lexicalAliasAccepts)
+    if (lexicalAliasAccepts(sigEnv, p.type, v)) return;
     // …carrying `expected` and `got` (a `Nil` parameter expects Nil itself);
     // a SUBSET's failure is its constraint's (Rakudo: "Constraint type check…")
     throwTypedV("X::TypeCheck::Binding::Parameter",
@@ -6310,7 +6314,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         }
         else if (!typeMatchesArg(pos[i],
                  p->aliasTarget ? *p->aliasTarget
-                                : *(p->aliasTarget = &typeAliasTarget(p->type)))) return -1;
+                                : *(p->aliasTarget = &typeAliasTarget(p->type))) &&
+                 // …the name as the candidate's declaring scope reads it, once the
+                 // program has bound a type under another name at all
+                 !(g_lexTypeAlias.load(std::memory_order_relaxed) &&
+                   lexicalAliasAccepts(cand.code()->closure.get(), p->type, pos[i]))) return -1;
         // an untyped (Any) scalar parameter refuses the Mu and Junction TYPE
         // objects: `multi foo($) {}; foo(Junction)` finds no candidate
         if ((p->type.empty() || p->type == "Any") && p->sigil == '$' && !p->subSig &&
@@ -12808,8 +12816,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // asks for the library path, and `Compress::Zlib::Raw::Z_OK` the same.
         // Constants are not `our`, but Rakudo installs them in the package's
         // symbol table all the same, and we published nothing.
-        if (ve->declare && ve->declScope == "constant" && !ve->name.empty())
+        if (ve->declare && ve->declScope == "constant" && !ve->name.empty()) {
             constantNames_.insert(ve->name.c_str());
+            // `constant Bar = Foo` is a lexical alias (see lexicalAliasAccepts)
+            if (!g_lexTypeAlias.load(std::memory_order_relaxed))
+                if (Value* p = tctx_.cur->find(ve->name); p && p->t == VT::Type && p->s.str() != ve->name)
+                    g_lexTypeAlias.store(true, std::memory_order_relaxed);
+        }
         // a TYPED constant checks its value: `my IO::Path constant C = 42` dies
         if (ve->declare && ve->declScope == "constant" && !ve->declType.empty() &&
             ve->declType != "Mu" && ve->declType != "Any" && !ve->name.empty()) {
@@ -16161,7 +16174,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 ((kChecked.count(di->second.s) &&
                                   (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
                                                   : !undefOk(di->second.s))) ||
-                                 userTypeRefuses(rhs, di->second.s)))
+                                 // …the name as the declaring scope reads it
+                                 (userTypeRefuses(rhs, di->second.s) &&
+                                  !lexicalAliasAccepts(en, di->second.s, rhs))))
                                 throwTypedV("X::TypeCheck::Assignment",
                                     {{"got", rhs},
                                      {"expected", Value::typeObj(di->second.s)},
@@ -24646,7 +24661,8 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
             }
             if ((kChecked.count(want) &&
                  (isDefined(rhs) ? !rtTypeMatch(rhs, want) : !undefOk(want))) ||
-                userTypeRefuses(rhs, want) ||
+                // …read as the scope that declared the variable reads the name
+                (userTypeRefuses(rhs, want) && !lexicalAliasAccepts(en, want, rhs)) ||
                 // a SUBSET's where-clause is late-bound: asked on every write
                 (rhs.t != VT::Nil && subsets_.count(want) && !isCoercionSubset(want) &&
                  !subsetMatches(want, rhs, 0)))

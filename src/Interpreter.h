@@ -3490,6 +3490,7 @@ public:
     std::map<std::string, std::string> rolePunCache_;
     std::string roleArgsDisplay(const std::string& roleName, const ValueList& argv);
     bool userTypeRefuses(const Value& rhs, const std::string& want);
+    bool lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v);
     void varWhereCheck(const std::string& nm, const Value& rhs);
     std::shared_ptr<Env> curPkgEnv_; // package scope `our` installs into (global_, or a module's env during load)
     // True when the code being executed was written for 6.e or later. Every

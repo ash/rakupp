@@ -6,6 +6,7 @@
 #include "AotModules.h"
 
 namespace rakupp {
+extern std::atomic<bool> g_lexTypeAlias;   // InterpreterOperators.cpp: a type was bound under another name
 static thread_local int t_stageDepth = 0;
 namespace {
 struct StageLoadTimer {
@@ -569,8 +570,11 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 Value res = callCallable(it->second, eargs);
                 if (res.t == VT::Hash && res.hash())
                     for (auto& kv : *res.hash())
-                        if (!importWouldShadowRoutine(kv.first, kv.second))
+                        if (!importWouldShadowRoutine(kv.first, kv.second)) {
                             tctx_.cur->define(kv.first, kv.second);
+                            if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
+                                g_lexTypeAlias.store(true, std::memory_order_relaxed);   // (see the first-load site)
+                        }
             } catch (RakuError& e) {
                 // For `use`/`need` a module's own refusal is the `use` failing,
                 // and it propagates — Rakudo aborts compilation and exits 1.
@@ -1130,6 +1134,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                                 continue;
                             if (importWouldShadowRoutine(kv.first, kv.second)) continue;
                             tctx_.cur->define(kv.first, kv.second);
+                            // …under another name it is a lexical alias (see lexicalAliasAccepts)
+                            if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
+                                g_lexTypeAlias.store(true, std::memory_order_relaxed);
                             // (a TYPE it hands over is the importer's lexical)
                             if (!kv.first.empty() && ascii::isupper((unsigned char)kv.first[0])) {
                                 auto& sl = unitStash_[stashUnitHere()].lexical[kv.first];

@@ -2238,6 +2238,26 @@ bool Interpreter::userTypeRefuses(const Value& rhs, const std::string& want) {
     return !typeMatchesArg(rhs, asked);
 }
 
+// …and a type NAME means what it means in the scope that wrote it. classes_ is
+// keyed by short name, so an unrelated `class Bar` anywhere in the program
+// answers for `Bar`, while a lexical import (`sub EXPORT { 'Bar' => Foo }`) or
+// a `my constant Bar = Foo` has made the name another type there. A check whose
+// global reading REFUSED a value asks this before it reports, so a check that
+// passes never pays for the walk: true when `ty` is, in `scope`, an alias of a
+// type `v` conforms to. checkAttrStore asks the same of a class's declaring
+// scope (S11-modules/export.t).
+// Multi dispatch refuses candidates on its HOT path, so it asks only once
+// g_lexTypeAlias is set: a scope has bound a type under another name (an
+// import's `'Bar' => Foo`, a `constant Bar = Foo`). A program without one never
+// walks a scope for it.
+std::atomic<bool> g_lexTypeAlias{false};
+bool Interpreter::lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v) {
+    if (!scope || ty.empty()) return false;
+    Value* tv = scope->find(ty);
+    return tv && tv->t == VT::Type && !tv->s.empty() && tv->s.str() != ty &&
+           typeOrSubsetMatches(v, tv->s.str());
+}
+
 // A step or compound assignment on a SUBSET-typed scalar asks the subset
 // about the new value, as `=` does: `my Even $x = 2; $x++` dies and keeps 2.
 // Only programs that declare a subset pay for the lookup.
