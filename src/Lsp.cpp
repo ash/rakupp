@@ -388,73 +388,91 @@ public:
         std::ios::sync_with_stdio(false);
         std::string body;
         while (readMessage(body)) {
-            Json msg;
-            try { JsonParser p(body); msg = p.parse(); }
-            catch (std::exception&) { continue; } // hostile input is dropped, never a crash
-            if (!msg.isObj()) continue;
-            const Json& method = msg["method"];
-            bool hasId = msg.obj.count("id") != 0;
-
-            if (method.type != Json::Str) continue; // responses to our requests: ignore
-            const std::string& m = method.str;
-
-            if (m == "initialize") {
-                readClientCapabilities(msg["params"]["capabilities"]);
-                reply(msg["id"], initializeResult());
-            } else if (m == "initialized") {
-                // notification, nothing to do
-            } else if (m == "shutdown") {
-                reply(msg["id"], Json()); // null result
-                shuttingDown_ = true;
-            } else if (m == "exit") {
-                return shuttingDown_ ? 0 : 1;
-            } else if (m == "textDocument/didOpen") {
-                const Json& doc = msg["params"]["textDocument"];
-                docs_[doc["uri"].str] = doc["text"].str;
-                publish(doc["uri"].str, doc["text"].str);
-            } else if (m == "textDocument/didChange") {
-                const Json& params = msg["params"];
-                const std::string& uri = params["textDocument"]["uri"].str;
-                // Full sync (we advertise TextDocumentSyncKind.Full): the last
-                // content change carries the whole new document.
-                const Json& changes = params["contentChanges"];
-                if (changes.type == Json::Arr && !changes.arr.empty()) {
-                    docs_[uri] = changes.arr.back()["text"].str;
-                    publish(uri, docs_[uri]);
-                }
-            } else if (m == "textDocument/didClose") {
-                const std::string& uri = msg["params"]["textDocument"]["uri"].str;
-                // Clear this file's squiggles on close.
-                docs_.erase(uri);
-                Json empty = Json::makeArr();
-                sendDiagnostics(uri, empty);
-            } else if (m == "textDocument/hover" || m == "textDocument/completion" ||
-                       m == "textDocument/definition") {
-                // A query may never take the server down: whatever goes wrong
-                // in the index, the client gets an empty answer.
-                Json result;
-                try {
-                    result = m == "textDocument/hover"      ? hover(msg["params"])
-                           : m == "textDocument/completion" ? completion(msg["params"])
-                                                            : definition(msg["params"]);
-                } catch (...) {
-                    result = Json();
-                }
-                if (hasId) reply(msg["id"], std::move(result));
-            } else if (hasId) {
-                // Unknown request: MethodNotFound so the client isn't left hanging.
-                Json err = Json::makeObj();
-                err.set("code", Json::N(-32601)).set("message", Json::S("method not found: " + m));
-                Json resp = Json::makeObj();
-                resp.set("jsonrpc", Json::S("2.0")).set("id", msg["id"]).set("error", std::move(err));
-                write(resp);
-            }
-            // Unknown notifications (no id): silently ignore, per LSP.
+            int rc = handle(body);
+            if (rc >= 0) return rc;
         }
         return 0;
     }
 
+    // Handle one message body (no framing) and return every body the server
+    // sends in answer, in order. For a host that carries the messages itself.
+    std::vector<std::string> exchange(const std::string& body) {
+        std::vector<std::string> out;
+        sink_ = &out;
+        handle(body);
+        sink_ = nullptr;
+        return out;
+    }
+
 private:
+    // One message. Returns the exit code after `exit`, otherwise -1.
+    int handle(const std::string& body) {
+        Json msg;
+        try { JsonParser p(body); msg = p.parse(); }
+        catch (std::exception&) { return -1; } // hostile input is dropped, never a crash
+        if (!msg.isObj()) return -1;
+        const Json& method = msg["method"];
+        bool hasId = msg.obj.count("id") != 0;
+
+        if (method.type != Json::Str) return -1; // responses to our requests: ignore
+        const std::string& m = method.str;
+
+        if (m == "initialize") {
+            readClientCapabilities(msg["params"]["capabilities"]);
+            reply(msg["id"], initializeResult());
+        } else if (m == "initialized") {
+            // notification, nothing to do
+        } else if (m == "shutdown") {
+            reply(msg["id"], Json()); // null result
+            shuttingDown_ = true;
+        } else if (m == "exit") {
+            return shuttingDown_ ? 0 : 1;
+        } else if (m == "textDocument/didOpen") {
+            const Json& doc = msg["params"]["textDocument"];
+            docs_[doc["uri"].str] = doc["text"].str;
+            publish(doc["uri"].str, doc["text"].str);
+        } else if (m == "textDocument/didChange") {
+            const Json& params = msg["params"];
+            const std::string& uri = params["textDocument"]["uri"].str;
+            // Full sync (we advertise TextDocumentSyncKind.Full): the last
+            // content change carries the whole new document.
+            const Json& changes = params["contentChanges"];
+            if (changes.type == Json::Arr && !changes.arr.empty()) {
+                docs_[uri] = changes.arr.back()["text"].str;
+                publish(uri, docs_[uri]);
+            }
+        } else if (m == "textDocument/didClose") {
+            const std::string& uri = msg["params"]["textDocument"]["uri"].str;
+            // Clear this file's squiggles on close.
+            docs_.erase(uri);
+            Json empty = Json::makeArr();
+            sendDiagnostics(uri, empty);
+        } else if (m == "textDocument/hover" || m == "textDocument/completion" ||
+                   m == "textDocument/definition") {
+            // A query may never take the server down: whatever goes wrong
+            // in the index, the client gets an empty answer.
+            Json result;
+            try {
+                result = m == "textDocument/hover"      ? hover(msg["params"])
+                       : m == "textDocument/completion" ? completion(msg["params"])
+                                                        : definition(msg["params"]);
+            } catch (...) {
+                result = Json();
+            }
+            if (hasId) reply(msg["id"], std::move(result));
+        } else if (hasId) {
+            // Unknown request: MethodNotFound so the client isn't left hanging.
+            Json err = Json::makeObj();
+            err.set("code", Json::N(-32601)).set("message", Json::S("method not found: " + m));
+            Json resp = Json::makeObj();
+            resp.set("jsonrpc", Json::S("2.0")).set("id", msg["id"]).set("error", std::move(err));
+            write(resp);
+        }
+        // Unknown notifications (no id): silently ignore, per LSP.
+        return -1;
+    }
+
+    std::vector<std::string>* sink_ = nullptr; // set by exchange(): bodies go here, not to stdout
     bool shuttingDown_ = false;
     std::map<std::string, std::string> docs_; // uri -> the text the client last sent
     bool hoverMarkdown_ = false;               // the client renders Markdown in a hover
@@ -570,6 +588,7 @@ private:
 
     void write(const Json& msg) {
         std::string payload = dump(msg);
+        if (sink_) { sink_->push_back(std::move(payload)); return; }
         std::cout << "Content-Length: " << payload.size() << "\r\n\r\n" << payload;
         std::cout.flush();
     }
@@ -636,6 +655,20 @@ int runLsp(const std::string& reference) {
     lsp::setReference(reference);
     Server srv;
     return srv.run();
+}
+
+std::string lspExchange(const std::string& body, const std::string& reference) {
+    static Server* srv = nullptr;
+    if (!srv) {
+        lsp::setReference(reference);
+        srv = new Server;
+    }
+    std::string out = "[";
+    for (const std::string& b : srv->exchange(body)) {
+        if (out.size() > 1) out += ',';
+        out += b;
+    }
+    return out + "]";
 }
 
 } // namespace rakupp

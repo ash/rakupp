@@ -24,6 +24,7 @@
 // before it overflows, so this is safe.
 
 #include "Highlight.h"
+#include "Lsp.h"
 #include <rakupp/rakupp.h>
 
 #include <emscripten/emscripten.h>
@@ -87,6 +88,19 @@ EMSCRIPTEN_KEEPALIVE
 const char* rakupp_highlight(const char* src) {
     static std::string out;
     out = rakupp::highlight(src ? src : "", "html");
+    return out.c_str();
+}
+
+// The language server, one message at a time, for the LSP demo page: `body` is
+// a JSON-RPC message without its Content-Length header; the result is a JSON
+// array of the bodies the server sends back (replies, publishDiagnostics).
+// `reference` is docs/guide/REFERENCE.md for hover and completion on built-ins,
+// read on the first call only (the CLI bakes it in; the WASM build does not).
+// Same static-string lifetime as rakupp_highlight.
+EMSCRIPTEN_KEEPALIVE
+const char* rakupp_lsp(const char* body, const char* reference) {
+    static std::string out;
+    out = rakupp::lspExchange(body ? body : "", reference ? reference : "");
     return out.c_str();
 }
 
