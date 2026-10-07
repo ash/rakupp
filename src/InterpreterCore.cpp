@@ -25013,16 +25013,14 @@ Value Interpreter::evalCall(Call* c) {
         }
     }
     if (c->callee) {
-        // `next($v)` / `last($v)` (6.e): the parse is a Call over `Unary next`,
-        // so evaluating the callee first would throw before the argument was
-        // ever looked at — which is exactly why the value used to vanish.
-        if (sixE() && c->callee->kind == NK::Unary) {
+        // `next($v)` / `last($v)` (6.e), `next(L)`, `redo $label`, `next OUTER`:
+        // the parse is a Call over `Unary next`, so evaluating the callee first
+        // would throw before the argument was ever looked at — which is exactly
+        // why the value, and the Label, used to vanish.
+        if (c->callee->kind == NK::Unary) {
             auto* cu = static_cast<const Unary*>(c->callee.get());
-            if ((opEq(cu->op, "next") || opEq(cu->op, "last")) && !cu->operand && c->args.size() == 1) {
-                Value v = eval(c->args[0].get());
-                if (opEq(cu->op, "next")) throw NextEx{"", v, true};
-                throw LastEx{"", v, true};
-            }
+            if (!cu->operand && (opEq(cu->op, "next") || opEq(cu->op, "last") || opEq(cu->op, "redo")))
+                loopControlWith(opEq(cu->op, "next") ? 1 : opEq(cu->op, "last") ? 2 : 3, evalArgs(c->args));
         }
         Value f = eval(c->callee.get());
         // `&*chdir(…)` — PROCESS's chdir, which moves the process as well as

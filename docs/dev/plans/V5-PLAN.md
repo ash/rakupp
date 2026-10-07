@@ -286,10 +286,13 @@ Everything under "Silent wrong answers" above.
   can never bind when it compiles the file (`Calling f(Int) will never work
   with declared signature (Str $x)`, and the same for a missing required
   named); rakupp raises that error only when the call runs, so
-  `dies-ok { f(42) }` passes here and never compiles there. And under a label
+  `dies-ok { f(42) }` passes here and never compiles there. ~~And under a label
   named `OUTER`, Rakudo reads `next OUTER` as the pseudo-package and dies;
-  rakupp takes the label. The first is new strictness, so the battery scan
-  applies.
+  rakupp takes the label.~~ **Done** 2026-10-07: the
+  thirteen pseudo-packages Rakudo reads ahead of a label of the same name win
+  here too, and `next`/`last`/`redo` dispatch on their argument
+  (t/regression/pseudo-package-beats-label.raku). The first is new
+  strictness, so the battery scan applies.
 
 ### B4 — the ecosystem clusters
 

@@ -407,6 +407,7 @@ struct Codegen {
     bool optimize_ = false;              // -O codegen pass enabled
     std::set<std::string> enumKeys;      // enum value names (bound as globals)
     std::set<std::string> classNames;    // user class/role names (resolve as type objects)
+    std::set<std::string> labelNames;    // statement labels (Program::labelNames): a bare `L` is the Label
     std::map<std::string, ClassDecl*> classDecls_; // name → declaration, for ancestry questions
     std::set<std::string> multiNames;    // names that are multi subs (dispatched at runtime)
 
@@ -1891,6 +1892,11 @@ struct Codegen {
                 if (multiNames.count(n)) return mangleSub(n) + "(ValueList{})";     // zero-arg multi dispatch
                 if (envSubs.count(n))    return "RT.callCallable(RT.dynVar(" + cesc("&" + n) + "), ValueList{})"; // lexical sub
                 if (classNames.count(n)) return "Value::typeObj(" + cesc(n) + ")";  // a user class: a type object
+                // a statement label as a term (`next(L)`, `L.last`, `:label(L)`):
+                // the interpreter builds the Label from the unit's label table,
+                // which compiled code does not carry, and rtNameTerm would mint a
+                // type object named L — so the program is bundled instead
+                if (labelNames.count(n)) unsupported("the statement label '" + n + "' used as a term");
                 // anything else resolves at runtime like the interpreter's NameTerm:
                 // env value, zero-arg &routine/builtin call, else a type object
                 return "RT.rtNameTerm(" + cesc(n) + ")";
@@ -2271,6 +2277,15 @@ struct Codegen {
                 bool slip = false;
                 for (auto& a : c->args) if (isSlip(a.get())) slip = true;
                 std::string vl = argsVL(c->args);
+                // `next(L)`, `last $v`, `redo OUTER`: the argument picks the
+                // candidate (Interpreter::loopControlWith); the bare callee
+                // would throw first and drop it
+                if (c->callee && c->callee->kind == NK::Unary) {
+                    auto* cu = static_cast<Unary*>(c->callee.get());
+                    if (!cu->operand && (cu->op == "next" || cu->op == "last" || cu->op == "redo"))
+                        return "RT.loopControlWith(" + std::string(cu->op == "next" ? "1" : cu->op == "last" ? "2" : "3") +
+                               ", " + vl + ")";
+                }
                 // The CALLEE composes on its own — `(1 < * < 5)(3)` and
                 // `(* < 1)(0)` are calls OF that WhateverCode, not a bigger
                 // curry. Emitted as a plain term the chain ran eagerly and the
@@ -6211,6 +6226,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     const std::string mainSig = mainSigBlob(prog);
     Codegen g;
     g.optimize_ = optimize;
+    g.labelNames = prog.labelNames;
     g.moduleExports_ = moduleExports;
     { // what `no strict` makes legal here — see Codegen::laxVars_
         LaxVars lv = findLaxVars(prog, srcText);

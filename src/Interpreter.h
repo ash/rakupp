@@ -2510,6 +2510,9 @@ public:
     [[noreturn]] void throwInvalidParamType(const std::string& type);
     bool paramTypeUndeclared(const std::string& t);
     std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    // `next`/`last`/`redo` (kind 1/2/3) called WITH arguments — `next(L)`,
+    // `last $label`, `next OUTER`, 6.e's `last $value`: always throws
+    [[noreturn]] Value loopControlWith(int kind, const ValueList& as);
     bool codeSigAccepts(const struct Param& p, const Value& code, Env* sigEnv = nullptr);
     std::vector<std::string> routineSuggestions(const std::string& name); // …for a routine
     void checkNativeArrayParam(const std::string& t);

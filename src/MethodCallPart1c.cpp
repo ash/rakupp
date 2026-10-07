@@ -56,6 +56,10 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         return Value::str("Label.new(name => " + q(field("name").toStr()) + ", file => " + q(field("file").toStr()) +
                           ", line => " + field("line").toStr() + ")");
     }
+    // …and `L.next` / `L.last` / `L.redo` are `next L` and the rest
+    if (inv.t == VT::Hash && inv.hashKind == "Label" && inv.hash() && args.empty() &&
+        (m == "next" || m == "last" || m == "redo"))
+        loopControlWith(m == "next" ? 1 : m == "last" ? 2 : 3, ValueList{inv});
     if (inv.t == VT::Hash && inv.hashKind == "Cancellation" && m == "can")
         return Value::boolean(!args.empty() && (args[0].toStr() == "cancel" || args[0].toStr() == "cancelled"));
     if (inv.t == VT::Hash && inv.hashKind == "Cancellation") {

@@ -127,6 +127,17 @@ static const std::unordered_set<std::string> kStmtModifiers = {
     "if", "unless", "while", "until", "for", "given", "when", "with", "without",
 };
 
+// Pseudo-packages a statement label cannot shadow. A label is a lexical name,
+// so `Int: for …` makes `next Int` mean the label; but these words are the
+// pseudo-package wherever a term is read. Under `OUTER: for …`, `next OUTER`
+// hands `next` the OUTER package, which no candidate takes, and a bare `OUTER`
+// is the package, not the Label. COMPILING, PROCESS and PARENT are not on the
+// list: a label of one of those names is found.
+static const std::unordered_set<std::string> kPseudoPkgOverLabel = {
+    "MY", "OUR", "GLOBAL", "CORE", "SETTING", "UNIT", "OUTER", "OUTERS",
+    "CALLER", "CALLERS", "DYNAMIC", "LEXICAL", "CLIENT",
+};
+
 struct InfixInfo {
     bool valid = false;
     int lbp = 0;
@@ -15514,7 +15525,8 @@ StmtPtr Parser::parseStatementImpl() {
             labelContext_.emplace(lbl, src_->substr(ls, at - ls) + "<HERE>" + post);
         }
         advance(); advance(); // consume LABEL and ':'
-        labelNames_.insert(lbl); // `:label(L)` names it as a term
+        // `:label(L)` names it as a term (unless a pseudo-package has the name)
+        if (!kPseudoPkgOverLabel.count(lbl)) labelNames_.insert(lbl);
         auto st = parseStatement();
         if (st) st->label = lbl;
         return st;
@@ -16567,8 +16579,9 @@ StmtPtr Parser::parseStatementImpl() {
             // optional loop label:  `last OUTER`
             std::string tgt;
             // (a declared label, or an ALL-CAPS word not called: `next slip(…)`
-            // and `next Slip` are payloads)
+            // and `next Slip` are payloads, and so is `next OUTER`)
             auto labelish = [&](const std::string& w) {
+                if (kPseudoPkgOverLabel.count(w)) return false;
                 if (labelNames_.count(w)) return true;
                 if (peek().kind == Tok::LParen) return false;
                 for (char ch : w) if (ascii::islower((unsigned char)ch)) return false;
@@ -16580,21 +16593,37 @@ StmtPtr Parser::parseStatementImpl() {
             // `next slip($_, -$_) if …` / `last 42` — a PAYLOAD for the loop's
             // result (6.e): the call form `next(…)` the evaluator already knows.
             // Reading the payload as a statement of its own made the `next`
-            // unconditional.
-            if (tgt.empty() && kw != "redo" && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
+            // unconditional. `redo` has no payload, but it takes a Label the
+            // same way (`redo $label`), and `redo OUTER` must reach the
+            // evaluator to be refused.
+            if (tgt.empty() && !isKind(Tok::Semicolon) && !isKind(Tok::End) &&
                 !isKind(Tok::RBrace) && startsTermToken(cur()) && !kBlockKeywords.count(cur().text) &&
                 !kStmtModifiers.count(cur().text)) {
                 const int at = cur().line;
                 auto ctl = std::make_unique<Unary>(); ctl->op = kw; ctl->line = at;
                 auto call = std::make_unique<Call>(); call->callee = std::move(ctl); call->line = at;
                 call->args.push_back(parseExpression());
-                // before 6.e a payload can only be an empty capture (`last |c`);
-                // a LITERAL one never fits, and Rakudo says so while compiling
+                // before 6.e a payload can only be an empty capture (`last |c`)
+                // or a Label; a LITERAL one never fits, nor does GLOBAL, and
+                // Rakudo says so while compiling. `redo` never takes a value.
                 {
-                    const NK pk = call->args.back()->kind;
-                    if (langRev_ < 2 && (pk == NK::IntLit || pk == NK::StrLit || pk == NK::NumLit))
+                    const Expr* pe = call->args.back().get();
+                    const NK pk = pe->kind;
+                    const bool literal = pk == NK::IntLit || pk == NK::StrLit || pk == NK::NumLit;
+                    const bool global = pk == NK::NameTerm && static_cast<const NameTerm*>(pe)->name == "GLOBAL";
+                    if (kw != "redo" && langRev_ < 2 && literal)
                         throw ParseError("'" + kw + "' takes a value only from 6.e on (use v6.e.PREVIEW)", at,
                                          "X::TypeCheck::Argument", {});
+                    if ((kw == "redo" || langRev_ < 2) && (literal || global)) {
+                        std::string ty = global ? "GLOBAL" : pk == NK::IntLit ? "Int" : pk == NK::StrLit ? "Str" : "Num";
+                        if (pk == NK::NumLit) {
+                            auto* nl = static_cast<const NumLit*>(pe);
+                            ty = nl->isRat ? "Rat" : nl->imaginary ? "Complex" : "Num";
+                        }
+                        throw ParseError("Calling " + kw + "(" + ty + ") will never work with any of these "
+                                         "multi signatures:\n    ( --> Nil)\n    (Label:D $x --> Nil)", at,
+                                         "X::TypeCheck::Argument", {});
+                    }
                 }
                 auto es = std::make_unique<ExprStmt>(); es->e = std::move(call);
                 return applyModifiers(std::move(es));

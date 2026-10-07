@@ -3228,6 +3228,42 @@ Value rtThrowNext(const std::string& label) { throw NextEx{label}; }
 Value rtThrowLast(const std::string& label) { throw LastEx{label}; }
 Value rtThrowRedo(const std::string& label) { throw RedoEx{label}; }
 
+// `next`/`last`/`redo` with arguments: the candidates are `( --> Nil)` and
+// `(Label:D $x --> Nil)`, and from 6.e `next`/`last` add `(\x --> Nil)`, the
+// iteration's value. Anything else matches none — a pseudo-package
+// (`next OUTER` under a label named OUTER), a type object, a string.
+Value Interpreter::loopControlWith(int kind, const ValueList& as) {
+    const Value* arg = nullptr;
+    size_t npos = 0, nnamed = 0;
+    for (auto& a : as) {
+        if (a.t == VT::Pair && a.namedArg) nnamed++;
+        else { npos++; arg = &a; }
+    }
+    if (nnamed == 0 && npos == 0) {   // `last |c` over an empty capture
+        if (kind == 1) throw NextEx{};
+        if (kind == 2) throw LastEx{};
+        throw RedoEx{};
+    }
+    if (nnamed == 0 && npos == 1) {
+        if (arg->t == VT::Hash && arg->hashKind == "Label" && arg->hash() && arg->hash()->count("name")) {
+            Value lv = *arg;
+            const std::string label = (*lv.hash())["name"].toStr();
+            if (kind == 1) throw NextEx{label};
+            if (kind == 2) throw LastEx{label};
+            throw RedoEx{label};
+        }
+        if (kind != 3 && sixE()) {
+            if (kind == 1) throw NextEx{"", *arg, true};
+            throw LastEx{"", *arg, true};
+        }
+    }
+    const char* kw = kind == 1 ? "next" : kind == 2 ? "last" : "redo";
+    throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                    std::string("Cannot resolve caller ") + kw + "(" + noMatchProfile(Value(), as, false) +
+                    "); none of these signatures matches:\n    ( --> Nil)\n    (Label:D $x --> Nil)" +
+                    (kind != 3 && sixE() ? "\n    (\\x --> Nil)" : "")};
+}
+
 // { k => v, … } for native codegen — mirrors the interpreter's HashLit eval
 // (arrays splice one level, then hash coercion).
 Value rtHashLit(const ValueList& items) {

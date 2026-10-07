@@ -1324,6 +1324,14 @@ struct JsGen {
     // ----------------------------------------------------------------- calls --
     string call(Call* c) {
         if (c->callee) {
+            // `next(L)`, `last $v`, `redo OUTER`: the argument picks the candidate
+            // (a Label, a 6.e value, or none at all); the bare control below
+            // would drop it
+            if (c->callee->kind == NK::Unary && !c->args.empty()) {
+                auto* cu = static_cast<Unary*>(c->callee.get());
+                if (!cu->operand && (cu->op == "next" || cu->op == "last" || cu->op == "redo"))
+                    refuse("loop control with an argument (" + cu->op + " …)", c->line);
+            }
             string callee = exArg(c->callee.get());   // `(1 < * < 5)(3)`: the callee composes alone
             return "R.callCode(" + callee + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         }

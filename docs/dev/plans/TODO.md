@@ -107,6 +107,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   class missing several of a role's stub methods is told the alphabetically
   first (`requiredMethods` is a `std::set`), where Rakudo names the first
   declared. Found 2026-10-07; not started.
+- [ ] **Left from the pseudo-package-over-label fix**: a bare `OUR` is a
+  type named OUR (Rakudo: the current package, so `next OUR` names
+  `GLOBAL:U`); `next Int` dies when it runs (Rakudo: while compiling);
+  `MY::<$x>` and `$CALLER::y` inside a loop block find an outer variable
+  (Rakudo: Nil); X::Multi::NoMatch has no `.dispatcher`/`.capture`;
+  `&next` is Any (no `.candidates`); a label named `EXPORT` is accepted
+  (Rakudo: X::Redeclaration). Found 2026-10-07; not started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
@@ -372,6 +379,11 @@ with its tag, after the release run is green.
   steps 5 and 6.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.
+- [ ] **Gate 6b is red on one koan by design**: `next OUTER` under a label
+  named OUTER now dies as on Rakudo, so Raku Koans'
+  control-flow/loop-control-and-phasers fails `tools/koans-gate.raku` until
+  the course renames that label. How to tell the course is the maintainer's
+  call. Found 2026-10-07.
 - [ ] **`.deb`**: `tools/make-deb.raku` plus release.yml's "Debian package
   (Linux)" step, tested in Ubuntu 24.04 against the 5.2.0 layout, not yet run
   in CI. The first release that carries it makes the README and INSTALL.md
