@@ -4205,6 +4205,15 @@ Interpreter::Interpreter() {
         }
         for (const char* rn : {"CompUnit::Repository", "CompUnit::Repository::Installable", "CompUnit::Repository::Locally"})
             inst->doneRoles.insert(rn);
+        // CompUnit::Repository::Staging — an Installation at a scratch prefix
+        // that `.deploy` copies into the repository its `name` names. zef 1.x
+        // installs through one: stage, test against the staged copy, deploy.
+        {
+            auto stg = std::make_shared<ClassInfo>();
+            stg->name = "CompUnit::Repository::Staging"; stg->parent = inst;
+            stg->doneRoles = inst->doneRoles;
+            classes_["CompUnit::Repository::Staging"] = stg;
+        }
         fs->doneRoles.insert("CompUnit::Repository");
         fs->doneRoles.insert("CompUnit::Repository::Locally");
         // the registry is a bare type object; its methods are handled in methodCall.
@@ -4252,6 +4261,10 @@ Interpreter::Interpreter() {
         }
     }
     registerBuiltins();
+    // `&*EXIT` is the process-level `exit` until something rebinds it: a
+    // program (zef's CLI) can call `&*EXIT(1)` without declaring it, and a
+    // caller's `my &*EXIT = …` intercepts the exits made below it
+    if (const Value* ex = builtinRef("exit")) global_->define("&*EXIT", *ex);
 }
 
 void Interpreter::keepMatchOrig(Value& m, const Value& topic) {

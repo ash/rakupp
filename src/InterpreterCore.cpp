@@ -563,11 +563,24 @@ bool coreEnumValue(const std::string& n, Value& out) {
 // One hash entry as iteration yields it: the Pair's key is the entry's REAL key
 // (hashEntryKey — a Set element's pairKey, an object hash's objKey), so `for
 // :{ Foo::Bar => 5 } -> $p` sees the type object and not its index string.
-static Value iterEntryPair(const Value& h, const std::string& k, const Value& stored) {
+// A plain Hash's Pair holds the entry's own container, as `.pairs` does
+// (hashEntryPair): `%h{.key} = …` in the body shows through `.value`, and
+// `.value = …` writes the hash (zef's config expansion re-reads `$node.value`
+// after each `%config{$node.key} = …`).
+static Value iterEntryPair(const Value& h, const std::string& k, Value& stored) {
     Value rk = hashEntryKey(h, k, stored);
-    Value sv = stored;
-    if (sv.pairKey()) sv.pairKeyM() = nullptr;   // the element rides on the Pair, not its value
-    Value p = Value::pair(rk.t == VT::Str ? rk.s.str() : k, std::move(sv));
+    const std::string& pk = rk.t == VT::Str ? rk.s.str() : k;
+    Value p;
+    if (h.t == VT::Hash && h.hashKind.empty() && h.hash() && !stored.pairKey()) {
+        p.t = VT::Pair; p.s = pk;
+        p.setPairVal(h.hash()->aliasOf(stored));
+        p.setPairLive();
+    }
+    else {
+        Value sv = stored;
+        if (sv.pairKey()) sv.pairKeyM() = nullptr;   // the element rides on the Pair, not its value
+        p = Value::pair(pk, std::move(sv));
+    }
     if (!(rk.t == VT::Str && rk.hashKind.empty())) p.pairKeyM() = std::make_shared<Value>(rk);
     return p;
 }
@@ -2964,7 +2977,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 (lv.itemized ||
                 (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                  static_cast<VarExpr*>(fs->list.get())->name[0] == '$' &&
-                 static_cast<VarExpr*>(fs->list.get())->name != "$_"));
+                 static_cast<VarExpr*>(fs->list.get())->name != "$_" &&
+                 !valueBoundVar(static_cast<VarExpr*>(fs->list.get())->name)));   // `$x := <value>` is no container
             // an ENDLESS lazy source iterates LIVE, growing just-in-time —
             // a snapshot would freeze `.say for (1 xx *)` at the cached
             // prefix (issue #30); finite lazies were drained above.
@@ -3069,11 +3083,12 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // scalar container does not flatten in list context. `@a`, ranges, and lists still
     // flatten. $_ is exempt from the sigil rule: it BINDS what it topicalizes, so its
     // container-ness rides in on the value's own flag (`given @a { for $_ {} }` iterates).
-    // (A `constant $c` is no container either: `for $c` iterates it.)
+    // (A `constant $c` is no container either: `for $c` iterates it — nor is a
+    // `$x := <value>`: zef's `my $all := self!list-plugins; for $all -> @group`.)
     auto isConstantVar = [&](const std::string& nm) {
         for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
             if (en->xr().varConstant.count(nm)) return true;
-            if (en->local(nm)) return false;
+            if (en->local(nm)) return en->xr().varValueBound.count(nm) > 0;
         }
         return false;
     };
@@ -15319,6 +15334,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             opEq(a->op, "=") && (a->target->kind == NK::MethodCall || selfAttrTarget)
                 ? tctx_.lastLvalueAttr : nullptr;
         tctx_.lastLvalueAttr = nullptr;
+        // a COERCION-typed attribute converts what it is assigned, as `.new`
+        // does: `has Str() $.uri is rw; $c.uri = $path.IO` stores a Str (zef's
+        // Candidate). Before the `where` and type checks, which see the result.
+        if (lvAttr && lvAttr->coerce && rhs.t != VT::Nil && !lvAttr->type.empty() &&
+            !typeOrSubsetMatches(rhs, lvAttr->type))
+            rhs = coerceToType(rhs, lvAttr->type);
         auto attrTarget = [&]() -> std::string {
             return lvAttr ? " to $!" + lvAttr->name : std::string();
         };

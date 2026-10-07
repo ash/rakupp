@@ -1140,7 +1140,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList one{ (*src.arr())[si] };
                     // `last` ends the map and `next` skips the element, as in the
                     // eager loop: `(^Inf).map({ last if $_ > 2; $_ })` is (0 1 2)
-                    try { cache.push_back(self->callCallable(fn, one)); return true; }
+                    // a Slip the block answers joins as its elements, as in the
+                    // eager map — `$plugin-groups.map(*.Slip)` is zef's flatten —
+                    // and an EMPTY one adds nothing, so the next element is asked for
+                    try {
+                        Value r = self->callCallable(fn, one);
+                        if (r.t == VT::Array && r.arr() && r.s == "Slip" && !r.ext()) {
+                            if (r.arr()->empty()) continue;
+                            for (auto& e : *r.arr()) cache.push_back(e);
+                            return true;
+                        }
+                        cache.push_back(std::move(r)); return true;
+                    }
                     catch (LastEx& le) {
                         if (!le.label.empty()) throw;
                         if (auto s = stw.lock()) s->infinite = false;

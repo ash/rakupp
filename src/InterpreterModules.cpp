@@ -7523,9 +7523,12 @@ int Interpreter::run(Program& prog) {
     }
     tctx_.curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
     {
+        // @*ARGS is the PROCESS's: bound at the top level even for a program
+        // run-script starts from inside an installed wrapper, so a module's
+        // mainline that rewrites it and the MAIN dispatch read the same one
         Value args = Value::array();
         for (auto& s : argv_) args.arr()->push_back(Value::str(s));
-        tctx_.cur->define("@*ARGS", args);
+        (global_ ? global_ : tctx_.cur)->define("@*ARGS", args);
     }
     // Partition top-level phasers (BEGIN/CHECK/INIT run before the mainline).
     // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they

@@ -6644,6 +6644,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     // the caller (an installed bin wrapper) has a &MAIN of its
                     // own in scope; the nested run() must not auto-invoke it
                     inheritedMainBarrier_ = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+                    // …and the script is the PROGRAM: it runs in a scope of its own
+                    // under the top level, not inside the wrapper's MAIN frame. Its
+                    // @*ARGS is then the one a module's mainline rewrites and MAIN
+                    // dispatches on — zef's Zef::CLI moves options ahead of
+                    // positionals, and from the wrapper's frame `zef list
+                    // --installed` lost the option.
+                    struct CurG { std::shared_ptr<Env>& c; std::shared_ptr<Env> saved; ~CurG() { c = saved; } }
+                        curG{tctx_.cur, tctx_.cur};
+                    if (global_) { auto top = std::make_shared<Env>(); top->parent = global_; tctx_.cur = top; }
                     int code = 0;
                     try {
                         Lexer lx(content);
@@ -6689,7 +6698,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
         // `CompUnit::Repository::Installation.new(:prefix, :next-repo, :name)` — a
         // store at that directory, which is made if it is not there yet
-        if (inv.t == VT::Type && inv.s == "CompUnit::Repository::Installation" && m == "new") {
+        const bool staging = inv.t == VT::Type && inv.s == "CompUnit::Repository::Staging";
+        if (inv.t == VT::Type && (inv.s == "CompUnit::Repository::Installation" || staging) && m == "new") {
             std::string pfx, nm; Value next = Value::any();
             for (auto& a : args)
                 if (a.t == VT::Pair && a.pairVal()) {
@@ -6704,7 +6714,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (i < pfx.size()) acc += pfx[i];
                 }
             }
-            return makeCuri(nm, pfx, next);
+            Value r = makeCuri(nm, pfx, next);
+            if (staging && r.t == VT::Object && r.obj()) r.obj()->cls = classes_["CompUnit::Repository::Staging"];
+            return r;
         }
         // A FileSystem repo is the non-installed sibling: it serves a source tree
         // directly. rakupp does not enumerate its dists either, so `.files` answers
@@ -6878,10 +6890,55 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return cu;
         }
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-            inv.obj()->cls->name == "CompUnit::Repository::Installation") {
+            (inv.obj()->cls->name == "CompUnit::Repository::Installation" ||
+             inv.obj()->cls->name == "CompUnit::Repository::Staging")) {
             auto& at = inv.obj()->attrs;
             std::string prefix = at.count("prefix") ? at["prefix"].toStr() : "";
             std::string name = at.count("name") ? at["name"].toStr() : "";
+            if (inv.obj()->cls->name == "CompUnit::Repository::Staging") {
+                namespace fs = std::filesystem;
+                std::error_code ec;
+                if (m == "short-id") return Value::str("staging");
+                // every file under the staging prefix, copied to the same place
+                // under the prefix of the repository it stages for (the store
+                // layout does not depend on where it lives). That is the
+                // next-repo it was built over — what zef passes, and the repo
+                // Rakudo finds by `name` — and only without one the name: here
+                // every name answers ~/.raku, so a staging repo made over some
+                // other store must not deploy into the user's own.
+                if (m == "deploy") {
+                    Value parent = at.count("next-repo") ? at["next-repo"] : Value::any();
+                    if (!(parent.t == VT::Object && parent.obj()))
+                        parent = methodCall(Value::typeObj("CompUnit::RepositoryRegistry"),
+                                            "repository-for-name", ValueList{Value::str(name)});
+                    if (!(parent.t == VT::Object && parent.obj()))
+                        throw RakuError{Value::typeObj("X::AdHoc"),
+                            "deploy: no repository named '" + name + "' to deploy into"};
+                    const fs::path from(prefix), to(methodCall(parent, "prefix", ValueList{}).toStr());
+                    for (auto it = fs::recursive_directory_iterator(from, ec);
+                         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+                        if (!it->is_regular_file(ec)) continue;
+                        const fs::path dest = to / fs::relative(it->path(), from, ec);
+                        fs::create_directories(dest.parent_path(), ec);
+                        fs::copy_file(it->path(), dest, fs::copy_options::overwrite_existing, ec);
+                        if (ec)
+                            throw RakuError{Value::typeObj("X::AdHoc"),
+                                "deploy: cannot copy " + it->path().string() + " to " + dest.string() + ": " + ec.message()};
+                    }
+                    return Value::nil();
+                }
+                // what must not travel to the parent: the store's version stamp and its locks
+                if (m == "remove-artifacts") {
+                    fs::remove(fs::path(prefix) / "version", ec);
+                    std::vector<fs::path> locks;
+                    for (auto it = fs::recursive_directory_iterator(prefix, ec);
+                         !ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+                        if (it->is_regular_file(ec) && it->path().extension() == ".lock") locks.push_back(it->path());
+                    for (auto& l : locks) fs::remove(l, ec);
+                    return Value::nil();
+                }
+                if (m == "self-destruct") { fs::remove_all(prefix, ec); return Value::nil(); }
+            }
             if (m == "prefix") { Value p = Value::str(prefix); p.hashKind = "IO"; return p; }
             if (m == "name") return Value::str(name);
             if (m == "loaded") {
