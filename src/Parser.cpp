@@ -1376,6 +1376,10 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // reports "Calling withargs() will never work", i.e. no arguments).
             // parsePostfix owns the tight form, as it does for `foo[10]`.
             if (t.text == "<") return t.spaceBefore;
+            // …and so is one whose first word starts with `=`, which the lexer
+            // fused into `<=` / `<==`: `say <= a>` says (= a), and Rakudo reads
+            // `f <= 3` as an unterminated word list too (not `≤`, kept in text2)
+            if ((t.text == "<=" || t.text == "<==") && t.text2.empty()) return t.spaceBefore;
             // a `\` TIGHT against the name is no capture argument: `b\n` is a
             // term and then bogus code (ternary.t) — in EVAL'd snippets only,
             // as for the tight quote above
@@ -3173,6 +3177,10 @@ ExprPtr Parser::parseExpr(int minbp) {
             // only a `$` VARIABLE takes item assignment: `$o.h = a => 1, b => 2`
             // (an rw accessor) assigns the whole list, as in Rakudo
             else if (lhs->kind == NK::MethodCall && in.op == "=") listAssign = true;
+            // …and so does a SIGILLESS name: `a = 4, 5, 6` fills the Array `a`
+            // is bound to, and a Scalar takes the List as one item
+            else if (lhs->kind == NK::NameTerm && in.op == "=" &&
+                     sigilless_.count(static_cast<NameTerm*>(lhs.get())->name)) listAssign = true;
             // …and so does a CALL: `f() = 7, 8`, `$obj('k') = 7, 8` (CALL-ME)
             else if (lhs->kind == NK::Call && in.op == "=") listAssign = true;
         }
@@ -5094,15 +5102,20 @@ std::string Parser::readExtendedNameSuffix() {
 // `my \p = @a[1]` / `my \p = $x` binds a CONTAINER, which stays assignable
 // through the name; only a bound VALUE (`my \x = 1`) is immutable. The
 // declarator marks the name read-only before its initializer is parsed, so
-// the mark is lifted here once the initializer turns out to be a container.
+// the mark is lifted here once the initializer turns out to be a container:
+// an element, a variable, one the initializer declares (`$ = 5`, `my $y = 3`),
+// an Array or Hash composer, or a sigilless name (which may hold one — the
+// interpreter knows). A call's result stays a value.
 void Parser::unmarkSigillessContainer(Assign* a) {
     if (!a || a->op != "=" || !a->target || a->target->kind != NK::VarExpr || !a->value) return;
     auto* tv = static_cast<VarExpr*>(a->target.get());
     if (!tv->declare || tv->name.empty() || std::strchr("$@%&", tv->name[0])) return;
     const Expr* rv = a->value.get();
-    const bool container = rv->kind == NK::Index ||
+    if (rv->kind == NK::Assign && static_cast<const Assign*>(rv)->op == "=") rv = static_cast<const Assign*>(rv)->target.get();
+    const bool container = rv->kind == NK::Index || rv->kind == NK::ArrayLit || rv->kind == NK::HashLit ||
+        rv->kind == NK::NameTerm ||
         (rv->kind == NK::VarExpr && !static_cast<const VarExpr*>(rv)->name.empty() &&
-         static_cast<const VarExpr*>(rv)->name[0] == '$' && !static_cast<const VarExpr*>(rv)->declare);
+         std::strchr("$@%", static_cast<const VarExpr*>(rv)->name[0]));
     if (container) sigillessRO_.erase(tv->name);
 }
 
@@ -8288,10 +8301,19 @@ ExprPtr Parser::parsePrimary() {
                 }
                 return parsePrefix();
             }
-            if (t.text == "<") {
+            // `<= a>` is the word list ("=", "a"): the lexer fused `<=` (`<==`)
+            // as one infix, and no infix stands in term position. (`≤` arrives
+            // as `<=` too, with its own spelling in text2 — not a list.)
+            const bool fusedAngle = t.text.size() > 1 && t.text.compare(0, 2, "<=") == 0 &&
+                                    t.text.back() != '>' && t.text2.empty();
+            if (t.text == "<" || fusedAngle) {
                 // qw word list  < a b c > — a numeric word is an allomorph
                 // (<42> IntStr, <1/3> RatStr, <1e5> NumStr), in a multi-word list too
-                advance();
+                if (fusedAngle) {   // the `=` is the first word's start
+                    toks_[pos_].text = toks_[pos_].text.substr(1);
+                    toks_[pos_].spaceBefore = false;
+                }
+                else advance();
                 // `< 1/3>` / `<3+5i >` — whitespace inside the brackets makes it a
                 // WORD list, and a word that spells a number is an allomorph
                 // (RatStr, ComplexStr); only the tight `<1/3>` is the plain literal
@@ -15056,7 +15078,7 @@ StmtPtr Parser::parseFor() {
             // `<->` makes EVERY parameter rw, and says so nowhere on the Params
             unsigned char tr = 0;
             if (p.isRw || doubly) tr |= ForStmt::VT_RW;
-            if (p.isRaw)          tr |= ForStmt::VT_RAW;
+            if (p.isRaw || (p.sigil == '\\' && !p.slurpy)) tr |= ForStmt::VT_RAW;   // `-> \e` is raw by nature
             s->varTraits.push_back(tr);
         }
     }

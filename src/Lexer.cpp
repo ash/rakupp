@@ -3281,6 +3281,8 @@ Token Lexer::lexIdentOrVar() {
 bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     // method-call position (.token) is not a rule declaration
     if (!out.empty() && out.back().kind == Tok::Op && out.back().text == ".") return false;
+    // …and neither is a PRIVATE method's name: `method !regex()` / `self!rule`
+    if (!out.empty() && out.back().kind == Tok::Op && out.back().text == "!") return false;
     // Nor is it one after a routine declarator: in `sub rule($n) {…}` the word is
     // the routine's NAME. Reading it as a rule declaration swallowed the signature
     // and body, and every routine declared after it went missing.

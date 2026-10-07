@@ -3125,6 +3125,12 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             if (pn.size() > 2 && pn[1] == '^') phVars.push_back(pn);
     }
     const std::vector<std::string>& loopVars = phVars.empty() ? fs->vars : phVars;
+    // Does the loop variable ALIAS the element? `$_` does, `is rw` / `<->`
+    // do, and so does a lone RAW parameter (`-> \e`, `-> $e is raw`): it
+    // binds the element's own container, so `e *= 2` writes into the array.
+    const bool aliasVars = fs->vars.empty() || fs->rwVars ||
+        (phVars.empty() && fs->vars.size() == 1 && !fs->varTraits.empty() &&
+         (fs->varTraits[0] & ForStmt::VT_RAW));
     // WHAT A WRITE TO THE LOOP VARIABLE MEANS. All three answers live in
     // markTopic below, because the loop binds its own variables and none
     // of this reaches bindParams: typed, `is copy` and sub-signature
@@ -3166,6 +3172,11 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
             (arrayElemSrc || nm != "$_"))
             v.itemized = true;
+        // …and a SIGILLESS one binds the element's own Scalar, itemized as
+        // `$_` is: `for [[1,2],[3,4]] -> \row { … for row }` runs once a row
+        if (v.t == VT::Array && !v.itemized && arrayElemSrc && !nm.empty() &&
+            (ascii::isalpha((unsigned char)nm[0]) || nm[0] == '_'))
+            v.itemized = true;
         // …and an `@` or `%` parameter binds the array or hash ITSELF,
         // not the item container it came in: `for %h.kv -> $k, @rows`
         // then iterates @rows' elements, as a sub's `@rows` would
@@ -3186,10 +3197,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             v.readonly = v.immutableBind = true;
         return v;
     };
-    // `for $a -> $v is rw` / `for ($a) -> $v is rw`: one item, and the
+    // `for $a -> $v is rw` / `for ($a) -> $v is rw` / `for $a -> \v`: one item, and the
     // loop variable IS $a's container — bound to its cell, so the body's
     // writes land in $a with nothing to copy back.
-    if (scalarItem && fs->rwVars && loopVars.size() == 1 && !fs->destructure &&
+    if (scalarItem && aliasVars && !fs->vars.empty() && loopVars.size() == 1 && !fs->destructure &&
         fs->params.empty() && fs->list->kind == NK::VarExpr) {
         const std::string& sn = static_cast<VarExpr*>(fs->list.get())->name;
         Env* own = nullptr;
@@ -3225,6 +3236,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // shape this fast path exists for.
         Value probe = Value::integer(0);
         if (!var.empty() && var[0] == '$') markTopic(probe, 0);
+        // (a sigilless `-> \i` over bare Ints has nothing to write to, as asTopic says)
+        else if (immSrc && !var.empty() && (ascii::isalpha((unsigned char)var[0]) || var[0] == '_'))
+            probe.readonly = probe.immutableBind = true;
         const bool roInt = probe.readonly, immInt = probe.immutableBind;
         auto topicInt = [&](long long n) {
             Value v = Value::integer(n);
@@ -3322,7 +3336,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // `for $a, $b { $_ = … }` writes back into each container
         {
             std::vector<Value*> aliasSlots;
-            if ((fs->vars.empty() || fs->rwVars) &&
+            if (aliasVars &&
                 scalarListAlias(fs->list.get(), aliasSlots)) {
                 for (size_t i = 0; i < aliasSlots.size(); i++) {
                     freshScope();
@@ -3422,7 +3436,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
             return forResult();
         }
-        if (auto valueAlias = (fs->vars.empty() || fs->rwVars)
+        if (auto valueAlias = aliasVars
                                   ? valuesAliasSource(gsrcB) : nullptr) {
             size_t i = 0, n = valueAlias->size();
             for (auto& kv : *valueAlias) {
@@ -3454,7 +3468,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             static_cast<VarExpr*>(fs->list.get())->name.size() > 1 &&
             static_cast<VarExpr*>(fs->list.get())->name[0] == '@') {
             PackedArr* pa = listv.packed();
-            const bool rw = fs->vars.empty() || fs->rwVars;
+            const bool rw = aliasVars;
             auto elemAt = [&](size_t k, Value& out) -> bool {   // false past the end
                 if (listv.packedLive()) {
                     if (k >= pa->w.size()) return false;
@@ -3515,7 +3529,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // `$_` is rw-aliased to the elements when the source is a mutable
             // `@`-variable, so `for @a { $_ *= 10 }` writes back into @a.
             // `<-> $i` / `-> $i is rw` params alias the same way.
-            bool rw = (fs->vars.empty() || fs->rwVars) && fs->list->kind == NK::VarExpr &&
+            bool rw = aliasVars && fs->list->kind == NK::VarExpr &&
                       !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
                       static_cast<VarExpr*>(fs->list.get())->name[0] == '@';
             // `for @a.reverse { $_ = … }` — the reversed view hands out the
@@ -3526,7 +3540,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // walked in the real storage (grep hands out the containers)
             std::vector<size_t> pick;
             bool picked = false;
-            if (!rw && (fs->vars.empty() || fs->rwVars)) {
+            if (!rw && aliasVars) {
                 if (auto d = derefArrayAlias(fs->list.get())) { arr = d; rw = true; }
                 // `@a.values` / `@a.list` — the view IS the array, so walk
                 // the real storage. fs->list, not the grep-peeled gsrcB:
@@ -9106,6 +9120,25 @@ static bool bindsBareValue(const Expr* e) {
     return argIsNeverContainer(e);
 }
 
+// An expression naming a SCALAR container: an element, or a `$` variable.
+// What one vivifies sits in that Scalar, itemized (`my $x; $x.push(1)` is `$[1]`).
+static bool scalarSlotExpr(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::Index) return true;
+    if (e->kind != NK::VarExpr) return false;
+    const std::string& n = static_cast<const VarExpr*>(e)->name;
+    return n.size() > 1 && n[0] == '$';
+}
+
+// `my \x = …` / `my \x := …`: a SIGILLESS declarator, whose `=` is a bind —
+// x names whatever the right side leaves, a container or a bare value.
+static bool sigillessDeclBind(const Assign* a) {
+    if (!a || !a->target || !a->value || a->target->kind != NK::VarExpr ||
+        !(opEq(a->op, "=") || opEq(a->op, ":="))) return false;
+    auto* v = static_cast<const VarExpr*>(a->target.get());
+    return v->declare && v->declScope == "my" && !v->name.empty() && !std::strchr("$@%&", v->name[0]);
+}
+
 
 // A `$` parameter that is `is rw` wants a SCALAR container: an array or hash
 // variable, a composer (`[1,2]`, `{a => 1}`), a list or an itemized `$[…]` is a
@@ -11031,7 +11064,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 std::string kind = base->s.str();
                 *base = Value::makeHash(); base->hashKind = kind;
             }
-            if (base->t != VT::Hash || !base->hash()) *base = Value::makeHash();
+            if (base->t != VT::Hash || !base->hash()) {
+                *base = Value::makeHash();
+                // (a `$` variable holds what it vivifies in its Scalar: `$h<k> = 1` is `${:k(1)}`)
+                if (idx->base->kind == NK::VarExpr && scalarSlotExpr(idx->base.get())) base->itemized = true;
+            }
             Value subKey = eval(idx->index.get());                      // key eval BEFORE the stripe (user code)
             checkObjHashKey(*base, subKey);
             // a coercive QuantHash key type (`SetHash[Int()]`): the element
@@ -11261,7 +11298,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                      {"range", Value::str("0..0")}},
                     "Index out of range. Is: " + std::to_string(ki) + ", should be in 0..0");
             }
-            if (base->t != VT::Array) *base = Value::array();
+            if (base->t != VT::Array) {
+                *base = Value::array();
+                if (idx->base->kind == NK::VarExpr && scalarSlotExpr(idx->base.get())) base->itemized = true;
+            }
             // `@a[*-1] = v` / `@a[*-1]++`: a WhateverCode index resolves against the
             // current length (like the read path), not eagerly to 0.
             Value keyV = eval(idx->index.get());
@@ -12692,8 +12732,21 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // an immutable value") — as for `-> \v` handed a literal. A type name is a
     // value too: `my $x := Int; $x = 5` dies in Rakudo ("assign requires a
     // concrete object"), so a name term that produced a type object counts.
-    const bool bareBind = isBind && a->target->kind == NK::VarExpr && bindsBareValue(a->value.get());
-    if (bareBind || (isBind && a->target->kind == NK::VarExpr && a->value &&
+    // (…and so is `my \x = 42`: a sigilless declarator's `=` binds too)
+    const bool bareBind = (isBind || sigillessDeclBind(a)) && a->target->kind == NK::VarExpr &&
+                          bindsBareValue(a->value.get());
+    // A sigilless name bound to ANOTHER one that holds a bare value
+    // (`my \x = 5; my \y = x`) holds that value, immutable — but one holding a
+    // container shares it (a cell, or a slot's Proxy), and an Array or Hash is
+    // a container of its own.
+    if (sigillessDeclBind(a) && a->value->kind == NK::NameTerm && tctx_.cur) {
+        Value* traw = tctx_.cur->findRaw(static_cast<VarExpr*>(a->target.get())->name);
+        if (traw && !traw->isCell() && !(traw->t == VT::Hash && traw->hashKind == "Proxy") &&
+            !(traw->t == VT::Array && !traw->isList && !traw->itemized) &&
+            !(traw->t == VT::Hash && traw->hashKind.empty() && !traw->itemized))
+            traw->readonly = traw->immutableBind = true;
+    }
+    if (bareBind || ((isBind || sigillessDeclBind(a)) && a->target->kind == NK::VarExpr && a->value &&
                      a->value->kind == NK::NameTerm)) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
         const std::string& n = ve->name;
@@ -13711,6 +13764,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         const std::string& ss = static_cast<SymbolicRef*>(a->target.get())->sigil;
         if (!ss.empty() && (ss[0] == '$' || ss[0] == '@' || ss[0] == '%')) sigil = ss[0];
     }
+    // …and a SIGILLESS name bound to an Array or a Hash takes LIST assignment
+    // into that very container: `my \a = [1,2,3]; a = 4, 5, 6` replaces its
+    // contents, and an `@b` it aliases sees them
+    // (A parameter LINKED to the caller's argument holds a copy of what is
+    // there: only an `@`/`%` variable argument is that container itself —
+    // `f(@a[0;0;2])` handed an element holding [314] assigns the element.)
+    if (a->target->kind == NK::NameTerm && opEq(a->op, "=") && tctx_.cur) {
+        const std::string& tn = static_cast<NameTerm*>(a->target.get())->name;
+        Env* own = nullptr;
+        const Value* raw = tctx_.cur->findRaw(tn, &own);
+        const Value* p = raw ? raw->deref() : nullptr;
+        bool linkedItem = false;
+        if (p && own && own->ex)
+            if (auto li = own->ex->rwLinks.find(tn); li != own->ex->rwLinks.end()) {
+                const Expr* ae = li->second.first;
+                linkedItem = !(ae && ae->kind == NK::VarExpr &&
+                               !static_cast<const VarExpr*>(ae)->name.empty() &&
+                               std::strchr("@%", static_cast<const VarExpr*>(ae)->name[0]));
+            }
+        if (p && !linkedItem && !p->itemized && !p->readonly) {
+            if (p->t == VT::Array && !p->isList) sigil = '@';
+            else if (p->t == VT::Hash && p->hashKind.empty()) sigil = '%';
+        }
+    }
     auto targetName = [&](char sg) { return containerNameOf(a->target.get(), sg); };
     // The container is the TARGET's; the VALUE's shape is the operator's when it
     // named one. Split them here, after the target has had its say.
@@ -14711,10 +14788,39 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             *lv = b;
             return sink ? Value::any() : *lv;
         }
+        // `my \x = $ = 5` / `my \x = my $y = 3`: the right side DECLARES the
+        // container it leaves, and x binds to it — a writable anonymous Scalar,
+        // or an alias of $y. (Run first: the arm below would look $y up before
+        // the declaration made it.)
+        const bool sigilDeclBind = sigillessDeclBind(a);
+        if (sigilDeclBind) {
+            Expr* v = a->value.get();
+            auto declaresScalar = [](const Expr* e) {
+                if (e->kind != NK::VarExpr) return false;
+                auto* ve = static_cast<const VarExpr*>(e);
+                return ve->declare && ve->name.size() > 1 && ve->name[0] == '$';
+            };
+            if ((v->kind == NK::Assign && opEq(static_cast<Assign*>(v)->op, "=") &&
+                 declaresScalar(static_cast<Assign*>(v)->target.get())) || declaresScalar(v)) {
+                Value r = eval(v);
+                PRef<Value> cell = exprVarCell(v);
+                Value* blv = lvalue(a->target.get());
+                if (cell) {
+                    Value* traw = tctx_.cur->findRaw(static_cast<VarExpr*>(a->target.get())->name);
+                    if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
+                    else *blv = makeSharedCellProxy(cell);
+                    return sink ? Value::any() : *cell;
+                }
+                r.readonly = r.immutableBind = false;
+                *blv = r;
+                return sink ? Value::any() : r;
+            }
+        }
         // `$y := $x` ALIASES the container: reads and writes on $y reach $x's slot.
         // Implemented as a Proxy over the source's owning Env (Env value slots are
         // node-stable; the shared_ptr keeps the Env alive for escaped closures).
-        if (opEq(a->op, ":=") && a->target->kind == NK::VarExpr &&
+        // `my \x = $y` and `my \x := $y` alias it the same way.
+        if ((opEq(a->op, ":=") || sigilDeclBind) && a->target->kind == NK::VarExpr &&
             (a->value->kind == NK::VarExpr || a->value->kind == NK::NameTerm)) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
             // (a sigilless source parses as a bare NAME: only its name is read here)
@@ -14731,11 +14837,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value* sr = tctx_.cur->findRaw(sv->name);
                 sigillessCell = sr && sr->isCell();
             }
-            if (tv->name.size() > 1 && tv->name[0] == '$' &&
+            if (((tv->name.size() > 1 && tv->name[0] == '$' &&
+                  (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_' ||
+                   tv->name[1] == '!')) || sigilDeclBind) &&
                 ((sv->name.size() > 1 && sv->name[0] == '$' &&
-                  (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) || sigillessCell) &&
-                (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_' ||
-                 tv->name[1] == '!')) {
+                  (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) || sigillessCell)) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
@@ -14821,7 +14927,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         const bool bindsSlot = (opEq(a->op, ":=") || sigillessDecl(a));
         const bool slotTarget = a->target->kind == NK::VarExpr &&
             !static_cast<VarExpr*>(a->target.get())->name.empty() &&
-            (static_cast<VarExpr*>(a->target.get())->name[0] == '$' || sigillessDecl(a));
+            (static_cast<VarExpr*>(a->target.get())->name[0] == '$' || sigillessDecl(a) || sigilDeclBind);
         // `$x := %h{key}` binds the hash SLOT, not its value: a later `$x = v`
         // writes into the hash. Config walks a nested config with
         // `$index := $index{$_}` and then assigns through the last binding.
@@ -14883,6 +14989,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value* base = nullptr;
                 try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
                 PRef<ValueMap> h;
+                Value hv;   // the hash itself: an object hash keys by identity
                 if (base) {
                     Value* real = base;
                     // the base may itself be a bound slot: reach the container it holds
@@ -14918,11 +15025,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             real = base;
                         }
                     }
-                    if (real && real->t == VT::Hash && real->hashKind.empty()) h = real->hashS();
+                    if (real && real->t == VT::Hash && real->hashKind.empty()) { h = real->hashS(); hv = *real; }
                 }
                 if (h) {
-                    std::string key = hashSubKey(eval(ix->index.get()));
-                    h->emplace(key, Value::any());           // the slot exists from now on
+                    // keyed as every other write keys it, so `my \t := %type2allo{Int}`
+                    // finds the entry an object hash (`%h{Any}`) stored under Int
+                    Value kv = eval(ix->index.get());
+                    checkObjHashKey(hv, kv);
+                    std::string key = hashSubKey(kv, &hv);
+                    if (h->emplace(key, Value::any()).second && !objHashKeyType(hv).empty()) {
+                        Value stored = kv; stored.itemized = false;
+                        h->setObjKey(key, stored);
+                    }                                        // the slot exists from now on
                     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
                     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                     fetch.code()->builtin = [h, key](Interpreter&, ValueList&) -> Value {
@@ -30682,8 +30796,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 *lv = Value::array(); lv->ofTypeM() = et;
             }
             // an ELEMENT slot holds the vivified Array in its Scalar, as an
-            // assigned element does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]`
-            if (mc->inv->kind == NK::Index && lv->t == VT::Array) lv->itemized = true;
+            // assigned element does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]` —
+            // and so does a `$` variable: `my $x; $x.push(1); $x.raku` is `$[1]`
+            if (lv->t == VT::Array && scalarSlotExpr(mc->inv.get())) lv->itemized = true;
             inv = *lv;
         }
         else inv = Value::array(); // no container: still act on a fresh Array
@@ -30900,9 +31015,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             if (Value* slot = lvalue(mc->inv.get())) {
                 if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
                     *slot = hashy ? Value::makeHash() : Value::array();
-                    // …and an ELEMENT holds it in its Scalar, as an assigned one
-                    // does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]`
-                    if (mc->inv->kind == NK::Index) slot->itemized = true;
+                    // …and an ELEMENT (or a `$` variable) holds it in its Scalar,
+                    // as an assigned one does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]`
+                    if (scalarSlotExpr(mc->inv.get())) slot->itemized = true;
                 }
                 inv = *slot; // shares the arr/hash shared_ptr; the write goes through
             }
