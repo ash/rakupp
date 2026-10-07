@@ -1,0 +1,44 @@
+#!/usr/bin/env raku
+# sigilless [--show | --explain] program.raku [arguments…]
+#
+# Runs a sigil-free Raku program on the engine running this script: translates
+# it, writes the result beside the temp directory and hands it to $*EXECUTABLE.
+#   --show     print the translated program instead of running it
+#   --explain  print each variable, the sigil it got and why
+need Acme::Sigilless;
+
+my @args = @*ARGS;
+my $mode = 'run';
+while @args && @args[0].starts-with('--') {
+    given @args.shift {
+        when '--show'    { $mode = 'show' }
+        when '--explain' { $mode = 'explain' }
+        default          { note "sigilless: unknown option $_"; exit 2 }
+    }
+}
+unless @args {
+    note 'usage: sigilless [--show | --explain] program.raku [arguments…]';
+    exit 2;
+}
+my $file = @args.shift;
+my $src  = $file.IO.slurp;
+
+if $mode eq 'explain' {
+    say Acme::Sigilless::explain($src);
+    exit 0;
+}
+
+my $code = try Acme::Sigilless::translate($src);
+without $code {
+    note $!.message;
+    exit 1;
+}
+if $mode eq 'show' {
+    print $code;
+    exit 0;
+}
+my $out = $*TMPDIR.add("sigilless-{$*PID}-{$file.IO.basename}");
+$out.spurt: $code;
+my $p = run $*EXECUTABLE, $out, |@args;
+$out.unlink;
+exit $p.exitcode;

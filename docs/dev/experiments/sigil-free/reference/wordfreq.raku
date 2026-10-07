@@ -1,0 +1,4 @@
+my $text = 'the cat and the hat and the bat';
+my %freq;
+%freq{$_}++ for $text.words;
+for %freq.sort({ -.value, .key }) -> $p { say $p.key, ' ', $p.value }
