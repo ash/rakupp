@@ -1,5 +1,7 @@
 # Raku++ — Concurrency & Async
 
+> **Note! This document is work in progress.**
+
 A focused companion to [RECIPES.md](RECIPES.md) for the concurrency features.
 **Every snippet below has been run on `rakupp` and produces the output shown**
 (`# → …`). Run any of them with:
