@@ -352,6 +352,12 @@ with its tag, after the release run is green.
 
 ## 6. Tooling, release and CI
 
+- [ ] **IDE: language server, then debugger**: [IDE-PLAN.md](IDE-PLAN.md),
+  2026-10-07, nothing built yet. Next: L0 (a Raku LSP client for the tests,
+  one `try` around every handler, JsonLite, one lex per document version,
+  `tools/lsp-bench.raku`). The debugger (Part D) must not slow a normal run:
+  D0 reuses the existing `--trace` branch and is checked by disassembly as
+  well as timing.
 - [ ] **v5.2.1 after the tag**: tagged and on PyPI 2026-10-03. Left: bump
   the Homebrew tap, and republish raku.online (the release's dashboard point
   from the artifact, the front page's version, the Roast map). RELEASING.md

@@ -71,6 +71,11 @@ Next up:
   tables, because `Intl.Segmenter` is 150× apart between hosts), the
   whole-program tiering with the WASM engine as the fallback, `use JS` interop,
   the gates, and the `Backend` seam a Rust target would reuse.
+- **[plans/IDE-PLAN.md](plans/IDE-PLAN.md)** — editor support built into the
+  engine (2026-10-07): the language server completed (`--lsp`, phases L0–L6),
+  then a debugger over the Debug Adapter Protocol (`--dap`, D0–D6) whose
+  hooks add nothing to a normal run, with the codegen and timing checks that
+  prove it.
 
 - **[plans/SLIM-PLAN.md](plans/SLIM-PLAN.md)** — the **v3.14.0** campaign
   (planned 2026-08-09, starts after v3.0.1): `--exe` output stops carrying
