@@ -140,10 +140,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **#110 constructor type checks**: the module battery gate was never run,
   for #110 or for the nominal-check fixes of 2026-10-07. Open: native width is
   not enforced; `has Array[Int]` is not checked. Seen beside those fixes:
-  dispatch ranks two matching nominal types only by "exact type +2", so the
-  first declared wins (`multi f(Animal)` over `multi f(Dog)` for a Puppy,
-  `Numeric` over `Real`, `Cool` over `Numeric`); `hashKindIsAssociative` calls
-  every hash-backed object (Promise, Lock, Signature, IO::Handle) a
+  multi dispatch ranks by type only between candidates that tie on every score
+  (candidateNarrowerByType), so a WIDER type carrying a `where` or a smiley
+  still beats a narrower plain one (`Numeric $x where * > 0` over `Int $x` for
+  5, `Cool:D` over `Numeric`; Rakudo ranks by type first), and two matching
+  unrelated types (Positional and Iterable for an Array) go to the first
+  declared where Rakudo reports X::Multi::Ambiguous; `hashKindIsAssociative`
+  calls every hash-backed object (Promise, Lock, Signature, IO::Handle) a
   Hash/Map/Associative; a Seq bound to `Positional $p` stays a Seq (Rakudo's
   binder caches it into a List); a Capture binds `Array` and `List`.
 - [ ] **Supply closers on aarch64**: three closers of the class fixed in

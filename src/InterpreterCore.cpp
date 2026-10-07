@@ -5582,9 +5582,10 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (!arg.enumName.empty() && (type == arg.enumName || type == arg.enumType ||
         type == "Enumeration" ||
         (!arg.enumType.empty() && type == arg.enumType + "::" + arg.enumName))) return true;
-    // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params and its own name
+    // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params, its own
+    // name and the Allomorph class they all derive from (`sub f(Allomorph $a)`)
     if (arg.isAllomorph() && (type == "Str" || type == "str" || type == "Stringy" ||
-                              type == "Cool" || type == arg.typeName()))
+                              type == "Cool" || type == "Allomorph" || type == arg.typeName()))
         return true;
     // a tagged built-in value (IO::Path, Version, Duration, Promise, …) matches
     // its own reported type — hashKind is empty for plain values, so this
@@ -6912,6 +6913,62 @@ static bool betterCandidate(const std::vector<int>& candIn, int candScore,
     }
     return candScore > bestScore;            // identical per parameter: the bands decide
 }
+
+// …and two candidates the scores cannot tell apart at all are ranked by TYPE,
+// as Rakudo sorts its candidates: one whose every positional type is the
+// other's or conforms to it, and is strictly narrower somewhere, wins whatever
+// the declaration order. The scores give a nominal type the same 8 whether it
+// is `Animal` or `Dog`, `Numeric` or `Real`, so the earlier declaration used
+// to keep the call: `multi f(Animal)` beat `multi f(Dog)` for a Puppy. Types
+// that do not conform either way (Positional and Iterable for an Array) stay
+// with declaration order — Rakudo calls those ambiguous — and a subset, a
+// coercion, a type capture or a parameterized type is not judged here.
+static bool candidateNarrowerByType(Interpreter& I, const Value& cand, const Value& best) {
+    const Callable* ca = cand.code();
+    const Callable* cb = best.code();
+    if (!ca || !cb || !ca->params || !cb->params) return false;
+    auto positional = [](const Callable* c, std::vector<const Param*>& out) {
+        for (auto& p : *c->params)
+            if (!p.invocant && !p.named && !p.slurpy) out.push_back(&p);
+    };
+    std::vector<const Param*> pa, pb;
+    positional(ca, pa);
+    positional(cb, pb);
+    auto judgeable = [&](const Param& p) {
+        return !p.coerce && !p.typeCapture && !p.subSig && !p.litVal && p.captureName.empty() &&
+               p.type.find('[') == std::string::npos && !I.subsets_.count(p.type) && p.type != "UInt";
+    };
+    auto isRole = [&](const std::string& t) {
+        if (isBuiltinRole(t)) return true;
+        auto it = I.classes_.find(t);
+        return it != I.classes_.end() && it->second && it->second->isRole;
+    };
+    // (Rakudo's type check says a ROLE's type object is Cool, so a role
+    // outranks Cool: `multi c(Cool)` / `multi c(Stringy)` send "x" to Stringy)
+    auto conforms = [&](const std::string& a, const std::string& b) {
+        if (b == "Mu") return true;
+        if (b == "Any") return a != "Mu" && a != "Junction";
+        if (a == "Mu" || a == "Any") return false;
+        return typeNameConforms(a, b, std::string(), std::string()) || (b == "Cool" && isRole(a));
+    };
+    bool narrower = false, wider = false;
+    for (size_t i = 0; i < pa.size() && i < pb.size(); i++) {
+        const Param& x = *pa[i];
+        const Param& y = *pb[i];
+        const std::string xt = x.type.empty() ? std::string("Any") : x.aliasTarget ? *x.aliasTarget : x.type;
+        const std::string yt = y.type.empty() ? std::string("Any") : y.aliasTarget ? *y.aliasTarget : y.type;
+        // (an `@`, `%` or `|` parameter is ranked by its sigil, and `Int @a` names
+        // the ELEMENT type: only two identical ones are judged, as equal)
+        if (x.sigil != y.sigil) return false;
+        if (x.sigil != '$' && x.sigil != '\\') { if (x.type == y.type) continue; return false; }
+        if (xt == yt) continue;
+        if (!judgeable(x) || !judgeable(y)) return false;
+        const bool down = conforms(xt, yt), up = conforms(yt, xt);
+        if (down == up) return false;            // unrelated, or two names for one type
+        (down ? narrower : wider) = true;
+    }
+    return narrower && !wider;
+}
 static size_t currentThreadStackSize() {
 #if defined(_WIN32)
     ULONG_PTR low = 0, high = 0;
@@ -7862,10 +7919,16 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (s >= 0 && visited.empty() && rwCandidateRejects(cand, as.size(), rwArgs, &as)) s = -1;
                 // a tie goes to the candidate binding a container `is rw`
                 bool candRw = s >= 0 && rwArgs && visited.empty() && rwCandidateBinds(cand, rwArgs);
+                // (a tie by every score goes to the narrower TYPE, and the `is default`
+                // and `is rw` tie rules never take a call from a narrower candidate:
+                // see candidateNarrowerByType)
                 if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore) ||
+                               (s == bestScore && vec == bestVec && candidateNarrowerByType(*this, cand, *best)) ||
                                (cand.code() && cand.code()->isDefaultCand && best->code() &&
-                                !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s)) ||
-                               (candRw && !bestRw && !betterCandidate(bestVec, bestScore, vec, s))))
+                                !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s) &&
+                                !candidateNarrowerByType(*this, *best, cand)) ||
+                               (candRw && !bestRw && !betterCandidate(bestVec, bestScore, vec, s) &&
+                                !candidateNarrowerByType(*this, *best, cand))))
                     { bestScore = s; best = &cand; bestVec = vec; bestRw = candRw; }
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
@@ -9906,9 +9969,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         break;
                     }
                 vec.insert(vec.begin(), invocantSlot);
+                // (ties by type as the sub dispatch does: see candidateNarrowerByType)
                 if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore) ||
+                               (s == bestScore && vec == bestVec && candidateNarrowerByType(*this, cand, *best)) ||
                                (cand.code() && cand.code()->isDefaultCand && best->code() &&
-                                !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s))))
+                                !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s) &&
+                                !candidateNarrowerByType(*this, *best, cand))))
                     { bestScore = s; best = &cand; bestVec = vec; }
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
