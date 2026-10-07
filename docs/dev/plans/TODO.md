@@ -34,6 +34,12 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   merge step). Next: a lean `invokeMethod` path like callPlainSub (typed `$`
   positionals, no phasers), then a block variant for closures; `Less` as a
   term walks every scope looking for a shadowing lexical.
+- [ ] **Parallel scaling**: [PARALLEL-SCALING-PLAN.md](PARALLEL-SCALING-PLAN.md),
+  written 2026-10-07. While any worker is live, every lexical read and write
+  takes one of 64 shared stripes, and loop kernels refuse, so 4 workers reach
+  2.8× where C threads reach 3.5×. The plan marks the variables that no other
+  thread can reach and lets them skip both. Not started; next: P0, the
+  baseline on a quiet machine.
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and

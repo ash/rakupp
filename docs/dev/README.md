@@ -129,6 +129,11 @@ The three v3.0.0 pillar plans, smallest first:
   (memory model → TSan CI → runtime hardening → container strategy →
   scheduler → flip), and the gates. Executes the Option-2 design chosen in
   PLAN-gil-removal.md.
+- **[plans/PARALLEL-SCALING-PLAN.md](plans/PARALLEL-SCALING-PLAN.md)** — making
+  `start` scale as far as the hardware allows: a per-slot "may be shared" bit
+  computed from the source, plus a per-frame escape mask set at run time. A
+  variable no other thread can reach skips the lexical stripe, and loops that
+  use only such variables stay compiled inside `start`.
 - **[plans/LTM-PLAN.md](plans/LTM-PLAN.md)** — true Longest-Token Matching:
   what LTM and the declarative prefix are, the two oracle-verified
   divergences the current probe-and-rank approach has, and the design — a
