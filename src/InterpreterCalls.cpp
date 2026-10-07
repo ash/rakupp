@@ -1339,10 +1339,14 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     // a user type coerces through its own COERCE, then through a `new` of its OWN
     // that takes the value (coerceThroughType) — never the default constructor:
     // `-> Foo() $x {…}("42")` is an error in Rakudo when Foo says nothing about
-    // coercing, and answering `Foo.new("42")` would hide it
-    auto ci = classes_.find(type);
+    // coercing, and answering `Foo.new("42")` would hide it. The type is looked
+    // up under its registered name: an exported nested class (`class N-Error is
+    // export` inside `unit class Gnome::Glib::T-error`) is spelled `N-Error()`
+    // by its importer and registered as Gnome::Glib::T-error::N-Error (#90).
+    const std::string& reg = resolveClassAlias(type);
+    auto ci = classes_.find(reg);
     if (ci != classes_.end() && ci->second && (ci->second->findMethod("COERCE") || ci->second->findMethod("new")))
-        return coerceThroughType(v, type, "");
+        return coerceThroughType(v, reg, "");
     if (size_t sep = type.rfind("::"); sep != std::string::npos) {
         try { return methodCall(v, type.substr(sep + 2), ValueList{}); }
         catch (RakuError&) {}

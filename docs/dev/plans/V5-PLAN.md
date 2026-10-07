@@ -139,7 +139,9 @@ Also in the scan, and not yet reduced to a snippet:
   Three native-array Roast files.
 - **`.lazy` returns a List.** 3 distributions.
 - **A user-defined `method can` is overridden** by the builtin.
-- **Issue #90:** nested exported `CStruct` classes coerce wrongly.
+- ~~**Issue #90:** nested exported `CStruct` classes coerce wrongly.~~ **Done**
+  2026-10-07: `coerceToType` looked the short imported name up
+  verbatim; t/regression/exported-nested-class-coercion.raku.
 - **rakupp accepts code Rakudo refuses.** `class A { method a { 1 } method b {
   2 } }` on one line runs here; Rakudo says "Strange text after block". Being
   stricter is exactly how the regressions above happened, so this goes through
