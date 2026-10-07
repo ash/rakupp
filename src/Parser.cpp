@@ -9717,7 +9717,12 @@ ExprPtr Parser::parsePrimary() {
                 listopOk = false;
             // `foo < 1` (space after `<`) is infix less-than, not the word-list `foo(< 1 >)` —
             // UNLESS a matching `>` actually closes a word-list first (`is < foo bar >, exp`).
-            if (listopOk && cur().kind == Tok::Op && cur().text == "<" && peek(1).spaceBefore) {
+            // A spaced `<=` / `<==` (a list whose first word starts with `=`, which
+            // startsListopArg lets in for `say <= a>`) needs the same proof: without it,
+            // `X <= $v;` with X a name the parser cannot place read `<= $v; … >` up to the
+            // next `>` in the file as one word list.
+            if (listopOk && cur().kind == Tok::Op && peek(1).spaceBefore &&
+                (cur().text == "<" || ((cur().text == "<=" || cur().text == "<==") && cur().text2.empty()))) {
                 bool wordlist = false; int depth = 0;
                 for (size_t k = 1; peek(k).kind != Tok::End; k++) {
                     const Token& tk = peek(k);
@@ -13430,10 +13435,17 @@ StmtPtr Parser::parseEnum() {
     // enum MEMBERS are bare-name terms too. A word-list (`<Red Green>`) is
     // statically visible; anything computed makes the whole unit opaque —
     // over-lenient beats a false "Undeclared name".
+    //
+    // …and TERMS, not listops, as a constant is: `LO <= $v` compares, where the
+    // listop reading took `<= $v; … >` for a word list (CBOR::Simple), and
+    // `LO -1`, `LO ~ "x"` and `north <= $v` called a routine nobody declared.
+    // Rakudo reads a member as a term even when it shadows one: after
+    // `enum Mode <print write>`, `print "x"` is two terms in a row there.
+    auto member = [&](const std::string& m) { declTypeNames_.insert(m); sigilless_.insert(m); };
     if (ed->values && ed->values->kind == NK::ArrayLit) {
         for (auto& it : static_cast<ArrayLit*>(ed->values.get())->items) {
             if (it->kind == NK::StrLit)
-                declTypeNames_.insert(static_cast<StrLit*>(it.get())->v);
+                member(static_cast<StrLit*>(it.get())->v);
             else { declTypesOpaque_ = true; break; }
         }
     }
@@ -13444,9 +13456,9 @@ StmtPtr Parser::parseEnum() {
         for (auto& it : static_cast<ListExpr*>(ed->values.get())->items) {
             if (!it) continue;
             if (it->kind == NK::StrLit)
-                declTypeNames_.insert(static_cast<StrLit*>(it.get())->v);
+                member(static_cast<StrLit*>(it.get())->v);
             else if (it->kind == NK::Pair && !static_cast<PairExpr*>(it.get())->keyExpr)
-                declTypeNames_.insert(static_cast<PairExpr*>(it.get())->key);
+                member(static_cast<PairExpr*>(it.get())->key);
             else if (it->kind == NK::NameTerm) continue;
             else { declTypesOpaque_ = true; break; }
         }
