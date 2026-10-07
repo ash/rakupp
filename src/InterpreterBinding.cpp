@@ -2934,8 +2934,15 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     // Top1 needed; no `Mod::EXPORT::…`).
     const UnitStash* progView = nullptr;
     { auto pv = unitStash_.find(""); if (pv != unitStash_.end()) progView = &pv->second; }
+    // the PROCESS dynamics the runtime itself installs in that frame are no
+    // lexicals of the program's either (Rakudo's MY:: has none of them; a
+    // `my $*x` the program declares is listed)
+    static const std::set<std::string> kProcessDynamics = {
+        "%*ENV", "@*ARGS", "&*EXIT", "$*REPO", "$*LANG", "$*IN-DECL", "%*DATA-NATIVE-CLAIMED",
+    };
     auto notProgLexical = [&](Env* f, const std::string& k, const Value& v) {
         if (f != global_.get()) return false;
+        if (kProcessDynamics.count(k)) return true;
         // a QUALIFIED global (`Mod::EXPORT::…`, `&Pkg::sub`) is not a lexical;
         // `&term:<A::B>` is — its `::` is inside the name's own brackets
         const size_t c = k.find("::");

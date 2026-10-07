@@ -64,6 +64,7 @@ namespace rakupp {
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
 Value arrayMissingDefaultPublic(const Value& base);   // InterpreterBinding.cpp
+extern const char* kCellKey;   // the Proxy key a shared cell rides on (InterpreterParts.h; `.clone` reads it)
 
 // The per-class step alone, least-derived first down the primary parent chain
 // — what the construction protocol reduces to when no class in the ancestry
@@ -7962,7 +7963,6 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // variable (`$!a := $v`, or a `my $x := $!a` alias) holds a Proxy
             // over a shared cell, and the clone takes its value, not the cell
             // (Rakudo: a later write to $v reaches the original only)
-            extern const char* kCellKey;   // (InterpreterParts.h's cellOfProxy, by hand)
             for (auto& kv : ni->attrs) {
                 Value& sv = kv.second;
                 if (sv.t != VT::Hash || sv.hashKind != "Proxy" || !sv.hash()) continue;
