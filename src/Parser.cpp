@@ -1271,6 +1271,8 @@ bool Parser::startsTermToken(const Token& t) const {
             return true;
         case Tok::Op:
             return t.text == "!" || t.text == "~" || t.text == "\\" || t.text == "<" ||
+                   // `<= a>`: a word list the lexer fused (parsePrimary's fusedAngle)
+                   ((t.text == "<=" || t.text == "<==") && t.text2.empty()) ||
                    t.text == "+" || t.text == "-" || t.text == "?" || t.text == ":" ||
                    t.text == "+^" || t.text == "~^" || t.text == "?^" || // prefix bitwise/bool NOT: `f 0, +^$x`
                    t.text == "++" || t.text == "--" || // prefix incr/decr: `f 0, ++$x`

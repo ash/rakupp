@@ -2251,6 +2251,7 @@ public:
     bool isContainerElem(const Value& v);    // …is this element one?
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
+    bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
     const void* containerId(const Value* slot); // what `=:=` compares (see InterpreterCalls.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);

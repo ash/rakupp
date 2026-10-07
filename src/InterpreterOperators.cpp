@@ -223,6 +223,9 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     for (auto& rn : roleNames) suffix += (suffix.empty() ? "" : ",") + rn;
     nc->name = obj->cls->name + "+{" + suffix + "}";
     for (ClassInfo* role : roleInfos) {
+        // what the mixin brings was declared where the ROLE was: its rules'
+        // code calls the role's lexical subs (a slang's `^mixin`ed tokens)
+        if (!nc->declEnv && role->declEnv) nc->declEnv = role->declEnv;
         for (auto& kv : role->methods) {
             // two roles mixed in together that both bring `multi method m`
             // contribute ONE dispatch group with every candidate — the second

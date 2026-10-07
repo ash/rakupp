@@ -3731,6 +3731,33 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // were, which was invisible while only 1-param signatures
         // (`-> $ (:$k)`) reached here.
         size_t np = 0; for (auto& pp : fs->params) np += !pp.named && !pp.slurpy; np += !np;   // `-> *@x`: one a time
+        // A lone TYPED parameter that aliases (`-> Int $e is rw`, `-> Int \e`,
+        // `is raw`) over an `@` variable writes back into its element, as the
+        // untyped paths above do: real binding hands it a copy.
+        PRef<ValueList> backArr;
+        std::string backName;
+        if (fs->params.size() == 1 && np == 1 && !liveArr && !fs->destructure) {
+            const Param& bp = fs->params[0];
+            if ((bp.isRw || bp.isRaw || bp.sigil == '\\') && !bp.isCopy && !bp.slurpy && !bp.subSig &&
+                !bp.named && !bp.name.empty() && bp.name != "$" &&
+                listv.t == VT::Array && listv.arr() && arrayElemSrc &&
+                fs->list->kind == NK::VarExpr && static_cast<VarExpr*>(fs->list.get())->name.size() > 1 &&
+                static_cast<VarExpr*>(fs->list.get())->name[0] == '@') {
+                backArr = listv.arrS();
+                backName = bp.name;
+            }
+        }
+        auto writeBack = [&](const std::shared_ptr<Env>& sc, size_t at) {
+            if (!backArr) return;
+            Value* nv = sc->local(backName);
+            if (!nv) return;
+            ParStripe es(*this, backArr.get());
+            if (at < backArr->size()) {
+                (*backArr)[at] = *nv;
+                (*backArr)[at].readonly = (*backArr)[at].immutableBind = false;
+                if ((*backArr)[at].t == VT::Array) (*backArr)[at].itemized = false;
+            }
+        };
         for (size_t i = 0; haveItem(i); i += np) {
             auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
             // a short LAST chunk binds what there is: defaults fill in,
@@ -3781,8 +3808,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // S04-statements/redo.t summed 220 where Rakudo's 201 needs
             // the refresh.
             std::function<void()> rb = [&] { bindParams(fs->params, row, scope, false, /*blockParams=*/true); };
-            if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
-                             atEnd(i + np), col, rb)) break;
+            const bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, atEnd(i + np), col, rb);
+            writeBack(scope, i);
+            if (!cont) break;
         }
         return forResult();
     }
@@ -14913,6 +14941,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
             }
         }
+        // `my $x := $!a` / `my \x = $!a`: the ATTRIBUTE's container (bindAttrAlias)
+        if (bindAttrAlias(a, sigilDeclBind)) return sink ? Value::any() : eval(a->value.get());
         // `my \p = @a[i]` is a BIND in Raku, not an assignment — the term ALIASES
         // the element, which is how BinaryHeap reads a heap node
         // (`my \parent = @!array[$pos]`) and then shifts it down through the
@@ -15197,6 +15227,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     }
             }
         }
+        // a SIGILLESS name aliasing a typed attribute (`my \x = $!a` on a
+        // `has Int $.a`) checks what is assigned through it, as `$!a` would
+        if (opEq(a->op, "=") && a->target->kind == NK::NameTerm)
+            enforceTypedAssign(static_cast<NameTerm*>(a->target.get())->name, rhs);
         tctx_.lastLvalueAttrType.clear();
         tctx_.lastLvalueElemType.clear();
         // (an element store's own: no other target touches it, and each

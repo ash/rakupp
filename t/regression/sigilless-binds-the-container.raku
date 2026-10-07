@@ -10,6 +10,10 @@
 # `for @a -> \e { e *= 2 }` lost the write (the aliasing paths were gated on
 # `$_` and `is rw` only — `-> $e is raw` lost it too), and `-> \row` over an
 # Array of Arrays iterated each row's elements instead of the row as one item.
+# A TYPED raw/rw pointy parameter (`-> Int \e`, `-> Int $e is rw`) lost the
+# write too (real signature binding hands it a copy); `my \x = $!a` and `my $x
+# := $!a` copied the attribute; and `.clone` shared an attribute bound to a
+# variable with the original.
 # Found by the sigil-free R&D (Acme::Sigilless translator).
 #
 # Runs under both engines: Rakudo passes every check natively.
@@ -63,6 +67,33 @@ dies-with { my \x = Int; x = 3 }, "Cannot modify an immutable 'Int' type object"
 { my $s = 0; for ^5 -> \i { $s += i }; check $s, 10, 'over a Range, read only' }
 dies-with { for 1, 2, 3 -> \e { e = 5 } }, 'Cannot modify an immutable Int (1)', 'over bare values';
 dies-with { for ^3 -> \i { i = 5 } }, 'Cannot modify an immutable Int (0)', 'over an Int Range';
+
+# --- typed raw / rw pointy parameters write through too -----------------------
+{ my @a = 1, 2, 3; for @a -> Int \e { e = 0 }; check @a, [0, 0, 0], '`-> Int \e`' }
+{ my @a = 1, 2, 3; for @a -> Int $e is rw { $e = 0 }; check @a, [0, 0, 0], '`-> Int $e is rw`' }
+{ my @a = 1, 2, 3; for @a -> Int $e is raw { $e = 0 }; check @a, [0, 0, 0], '`-> Int $e is raw`' }
+{ my @a = 1, 2, 3; for @a -> Int $e is copy { $e = 0 }; check @a, [1, 2, 3], '…but not `is copy`' }
+{ my @a = 1, 2, 3; for @a -> Int $e is rw { last if $e == 2; $e = 0 }; check @a, [0, 2, 3], '…and `last` keeps the writes so far' }
+
+# --- an attribute's container ---------------------------------------------------
+class Attr {
+    has Int $.a is rw = 1;
+    method bind-sigilless { my \x = $!a; x = 5; $!a }
+    method bind-scalar { my $x := $!a; $x = 6; $!a }
+    method seen { my $x := $!a; $!a = 9; $x }
+    method typed-sigilless { my \x = $!a; x = "s" }
+    method typed-scalar { my $x := $!a; $x = "s" }
+    method keep { my $x := $!a; self }
+    method set($v) { $!a = $v }
+    method bind-to(\v) { $!a := v }
+}
+check Attr.new.bind-sigilless, 5, '`my \x = $!a` aliases the attribute';
+check Attr.new.bind-scalar, 6, '`my $x := $!a` aliases the attribute';
+check Attr.new.seen, 9, '…and sees writes to it';
+{ my $t = 'lived'; try { Attr.new.typed-sigilless; CATCH { default { $t = .^name } } }; check $t, 'X::TypeCheck::Assignment', 'the attribute\'s type, through `\x`' }
+{ my $t = 'lived'; try { Attr.new.typed-scalar; CATCH { default { $t = .^name } } }; check $t, 'X::TypeCheck::Assignment', 'the attribute\'s type, through `$x`' }
+{ my $o = Attr.new.keep; my $p = $o.clone; $p.set(7); check ($o.a, $p.a), (1, 7), 'a clone gets its own container' }
+{ my $s = 1; my $o = Attr.new; $o.bind-to($s); my $p = $o.clone; $s = 5; check ($o.a, $p.a), (5, 1), '…also when the attribute is bound to a variable' }
 
 # --- already agreeing: keep them green ----------------------------------------
 { sub f(\v) { v = 5 }; my $w = 1; f($w); check $w, 5, 'a sigilless parameter writes the caller\'s variable' }

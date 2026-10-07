@@ -2980,6 +2980,45 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     {
         auto matchScope = std::make_shared<Env>();
         matchScope->parent = tctx_.cur;
+        // A rule's code is LEXICAL to the grammar: `<?{ h($/) }>` calls the
+        // `my sub h` beside the grammar's declaration. When that scope is not
+        // on the caller's chain — a grammar from a module, or a slang's role
+        // mixed in there — the match scope hangs off the declaration instead,
+        // and the caller's scope becomes a DYNAMIC frame, so its `$*` variables
+        // still reach the rules. (Slang::Nogil's `check-keywords`.)
+        // (The grammar's own declaration first, then its parents' and the
+        // roles it composed — a `^mixin` class made at run time has its home
+        // in the caller's world, and the tokens' home is the role's.)
+        Env* callerDyn = nullptr;
+        if (g && tctx_.cur) {
+            auto onChain = [&](const Env* d) {
+                for (Env* w = tctx_.cur.get(); w; w = w->parent.get()) if (w == d) return true;
+                return false;
+            };
+            std::shared_ptr<Env> home;
+            std::set<const ClassInfo*> seen;
+            std::function<void(const ClassInfo*)> look = [&](const ClassInfo* c) {
+                if (!c || home || !seen.insert(c).second) return;
+                if (c->declEnv && !onChain(c->declEnv.get())) { home = c->declEnv; return; }
+                for (auto& r : c->composedRoles) look(r.get());
+                look(c->parent.get());
+                for (auto& p : c->extraParents) look(p.get());
+            };
+            look(g);
+            if (home) {
+                matchScope->parent = home;
+                // …and the match is a ROUTINE frame (a rule is a method): a `$*`
+                // lookup stops here and goes on to the caller, instead of walking
+                // the declaration's chain out to the unit's own top level
+                matchScope->routineFrame = true;
+                callerDyn = tctx_.cur.get();
+            }
+        }
+        struct CallerDynG {
+            std::vector<Env*>& st; Env* e;
+            ~CallerDynG() { if (e && !st.empty() && st.back() == e) st.pop_back(); }
+        } callerDynG{tctx_.dynStack, callerDyn};
+        if (callerDyn) tctx_.dynStack.push_back(callerDyn);
         // `.parse($s, :rule<TOP>, args => (…))` binds the START RULE's parameters.
         // They land in the match scope as real VALUES rather than as the textual
         // params a `<rule($x)>` call passes, so a `$*`-sigil one is a genuine

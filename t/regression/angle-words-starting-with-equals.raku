@@ -19,6 +19,7 @@ check (words <= a>), '=|a', 'after a listop';
 check (words <== a>), '==|a', '`<==`';
 check <=a b>, ("=a", "b"), 'glued to the first word';
 my @x = <=x>; check @x, ["=x"], 'after `=`';
+check (1, <= a>), (1, ("=", "a")), 'after a comma';
 # …and every infix spelling still is one
 my $two = 2;
 check 1 <= $two, True, '`<=` infix';

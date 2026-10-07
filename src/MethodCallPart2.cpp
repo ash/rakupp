@@ -7958,6 +7958,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         "    (Mu:U $:: *%_)\n    (Mu:D $:: *%twiddles)"};
             Value nv = inv; auto ni = makePayload<ObjectData>();
             ni->cls = inv.obj()->cls; ni->attrs = inv.obj()->attrs;
+            // …and each attribute gets a container of its OWN: one BOUND to a
+            // variable (`$!a := $v`, or a `my $x := $!a` alias) holds a Proxy
+            // over a shared cell, and the clone takes its value, not the cell
+            // (Rakudo: a later write to $v reaches the original only)
+            extern const char* kCellKey;   // (InterpreterParts.h's cellOfProxy, by hand)
+            for (auto& kv : ni->attrs) {
+                Value& sv = kv.second;
+                if (sv.t != VT::Hash || sv.hashKind != "Proxy" || !sv.hash()) continue;
+                auto c = sv.hash()->find(kCellKey);
+                if (c != sv.hash()->end() && c->second.ext())
+                    sv = Value(**std::static_pointer_cast<PRef<Value>>(c->second.ext()));
+            }
             // A twiddle names a PUBLIC attribute — one with an accessor. Rakudo
             // walks `self.^attributes` and twiddles only those, so `$!private`
             // keeps the value it was cloned with (even under `is built`, which

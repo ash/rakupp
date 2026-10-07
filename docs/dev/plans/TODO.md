@@ -95,20 +95,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
   slot, set by binding and assignment.
-- [ ] **Rule code does not see its own lexical scope**: a token's `<?{ … }>`
-  / `{ … }` is parsed from text and run in the scope live at MATCH time, so a
-  grammar (or a role's token) from a module cannot call that module's `my
-  sub`: `my sub h { True }; grammar G is export { token TOP { a <?{ h }> } }`
-  in a module, then `G.parse("a")` from a script, dies "Undefined routine
-  'h'" (fine in one file). Slang::Nogil's `check-keywords` is this, so its
-  t/01-basic dies at `my 👍 = 42` despite SLANG-PLAN's 27/27. Found
-  2026-10-07. Next: give rule code the declaring ClassInfo's `declEnv` (the
-  role's, for a mixed-in token) without losing the caller's `$*` dynamics.
-- [ ] **Sigilless/raw binding leftovers** (2026-10-07, after the `my \x =`
-  container fix): a typed pointy parameter (`-> Int \e`, `-> Int $e is raw`,
-  `-> Int $e is rw`) goes to full signature binding and does not write
-  through; `my $x := $!a` / `my \x = $!a` copy the attribute instead of
-  aliasing it; `--exe` loops over `-> \e` copy too.
 - [ ] **A `use` inside a routine runs when the routine is CALLED**: `sub f {
   use G::Path }; G::Path` is unknown unless `f` ran (Rakudo loads at compile
   time). Found 2026-10-07; not started.

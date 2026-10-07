@@ -1514,6 +1514,48 @@ PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
     return varCell(own, n);
 }
 
+// `my $x := $!a` / `my \x = $!a` (sigilDeclBind): the ATTRIBUTE's container.
+// Its slot becomes a Proxy over a shared cell — attribute reads see through
+// one, as the `$!str := $s` target arm of evalAssignInner relies on — and the
+// name holds the cell, so a write through either reaches both; a typed
+// attribute's type goes with it. False: not this shape, nothing done.
+bool Interpreter::bindAttrAlias(Assign* a, bool sigilDeclBind) {
+    if (!(opEq(a->op, ":=") || sigilDeclBind) || a->target->kind != NK::VarExpr ||
+        a->value->kind != NK::VarExpr)
+        return false;
+    auto* tv = static_cast<VarExpr*>(a->target.get());
+    auto* sv = static_cast<VarExpr*>(a->value.get());
+    const std::string& sn = sv->name;
+    const bool lexTarget = tv->name.size() > 1 && tv->name[0] == '$' &&
+        (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_');
+    if (!(sn.size() > 2 && sn[0] == '$' && sn[1] == '!' && (lexTarget || sigilDeclBind) && !sv->declare))
+        return false;
+    Value* srcSlot = nullptr;
+    try { srcSlot = lvalue(sv); } catch (RakuError&) { srcSlot = nullptr; }
+    tctx_.rwMirror.clear();
+    tctx_.rwMirrorSigil = 0;
+    const std::string attrType = tctx_.lastLvalueAttrType;   // `has Int $.a`: the alias checks it too
+    tctx_.lastLvalueAttr = nullptr;
+    tctx_.lastLvalueAttrType.clear();
+    tctx_.lastLvalueAttrDefault = nullptr;
+    PRef<Value> cell = srcSlot ? cellOfProxy(srcSlot) : nullptr;
+    if (!cell && srcSlot && !srcSlot->isCell() && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
+        cell = makePayload<Value>(*srcSlot);
+        *srcSlot = makeSharedCellProxy(cell);
+    }
+    if (!cell) return false;
+    Value* blv = lvalue(tv);
+    Value* traw = tctx_.cur->findRaw(tv->name);
+    if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
+    else *blv = makeSharedCellProxy(cell);
+    if (!attrType.empty() && attrType != "Mu" && attrType != "Any") {
+        Env* own = nullptr;
+        if (tctx_.cur->findRaw(tv->name, &own) && own)
+            own->x().varDefault[tv->name] = Value::typeObj(attrType);
+    }
+    return true;
+}
+
 // `($a, 42)[k]` with a single, in-range Int subscript: the literal's item k.
 Expr* Interpreter::listLiteralItem(Index* ix) {
     if (!ix || ix->isHash || !ix->index || !ix->adverb.empty() || ix->multiDim || !ix->base ||

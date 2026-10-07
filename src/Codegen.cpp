@@ -1319,6 +1319,11 @@ struct Codegen {
         // Only the top level's are globals the term lookup knows (topVars_).
         if (!rakuName.empty() && !atTopLevel_ && !std::strchr("$@%&", rakuName[0]))
             unsupported("a sigilless variable inside a routine");
+        // …and a top-level one that is not such a global — a loop's `-> \k`,
+        // a `given X -> \y` — would be read as `k` the term: `e` the number,
+        // `i` the imaginary unit, anything else the runtime's Nil
+        if (!rakuName.empty() && !std::strchr("$@%&", rakuName[0]) && !topVars_.count(rakuName))
+            unsupported("a sigilless loop or block parameter");
         std::string v = mangleVar(rakuName);
         if (cellVars_.count(rakuName)) {
             if (std::find(cellsLive_.begin(), cellsLive_.end(), rakuName) == cellsLive_.end())
@@ -3780,6 +3785,16 @@ struct Codegen {
         if (f->rwVars) {
             if (rwKvForStmt(f, ind)) return;
             unsupported("a read-write (<->) loop parameter"); // every branch below binds a COPY
+        }
+        // …and so does a RAW one: `-> $e is raw` binds the element itself, and
+        // a write through it reaches the array. (A sigilless `-> \e` needs no
+        // check here: a write to a bare name is not compiled natively at all.)
+        if (!f->destructure) {
+            bool raw = false;
+            for (size_t k = 0; k < f->vars.size() && k < f->varTraits.size(); k++)
+                if ((f->varTraits[k] & ForStmt::VT_RAW) && f->vars[k].size() > 1 && f->vars[k][0] == '$') raw = true;
+            for (auto& p : f->params) if (p.isRaw && !p.isCopy && p.sigil == '$') raw = true;
+            if (raw) unsupported("a raw (`is raw`) loop parameter");
         }
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             // names live in f->vars, or — when the parser produced a real signature
