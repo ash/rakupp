@@ -15,11 +15,14 @@
 # `known` line starts passing, the gate says so: delete the line.
 
 adopter 321 https://github.com/nige123/cli.321.do 39ddf8a8957d54b3dd12e74e86cf9ad086a93560 bin/321 DO321_TEST_BIN
-# Behind Shape.rakumod (lines 47, 54, 64, 138) there are three more of the same
-# kind, all refused by Rakudo as well, found with --dirty on a patched checkout
-# (2026-10-03): `$a && (…){$k}:exists` (Trust.rakumod:221), `without … else`
-# (Run.rakumod:260, 464), and `try $proc.in.close` sinking a failed Proc
-# (t/lib/Do321Test.rakumod:68), which throws when the CLI exits non-zero.
+# Behind Shape.rakumod (lines 47, 54, 64, 138) there are four more of the same
+# kind, each behaving the same way on Rakudo, found with --dirty on a patched
+# checkout (2026-10-03): `$a && (…){$k}:exists` (Trust.rakumod:221),
+# `without … else` (Run.rakumod:260, 464), `try $p.in.close` sinking a failed
+# Proc (Run.rakumod:534, t/lib/Do321Test.rakumod:68), and Arrays assigned into
+# %args before `Summary.new(|%args)`, which itemizes them so `@.denials` gets
+# one element (Adapter.rakumod:719, 726). With all five fixed, 886 of 887 pass;
+# t/03-trust test 38 links to /etc/hostname, which this macOS lacks.
 known   321 build,t/01-protocol.rakutest,t/02-digest.rakutest,t/03-trust.rakutest,t/04-tool.rakutest,t/05-adapter.rakutest,t/06-run.rakutest,t/07-run-tool.rakutest,t/08-claudecode.rakutest,t/09-wire.rakutest,t/10-cli.rakutest,t/11-hooks.rakutest,t/12-iz4-policy.rakutest lib/Do321/Shape.rakumod:47 passes a lone Pair, `(k => 'v')`, to `@fields`; Rakudo refuses it too (needs a trailing comma). Raku++ v4.0.1, their pin, accepted it.
 
 adopter iz4 https://github.com/nige123/cli.iz4.you 2eb86ab720658a682ecc14d0b68aa906ad867c3a bin/iz4 IZ4_TEST_BIN
