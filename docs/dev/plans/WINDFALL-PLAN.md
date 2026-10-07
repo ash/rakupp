@@ -115,10 +115,12 @@ about 50–100 ns per such list (a slice loop +4.7%, `.reverse`/`.sort` +8%), an
 Still open:
 - `--cnp` kernel entry: `runIfReady` looks every slot up by name, per Env
   level, on every entry (about 2 µs for a 200k-entry inner loop).
-- The interpreter's own `$s = $s ~ X` is O(n) per iteration (W4-2 fixed the
-  kernel only).
+- ~~The interpreter's own `$s = $s ~ X` is O(n) per iteration (W4-2 fixed the
+  kernel only).~~ **Done** in 6fed577d (#130): interpreted and `--cnp` append
+  in place; 200k appends well under a second.
 - Three interpreter divergences from Rakudo, seen while fixing `--exe`
-  natives: `int $x * 2` at 2**62 does not wrap; a BigInt into an `int`
+  natives: `int $x * 2` at 2**62 does not wrap when `$x` is a parameter (a
+  `my int` does); a BigInt into an `int`
   parameter says "72 bit wide" where Rakudo says 71; a wrong kind into a
   native parameter is X::TypeCheck::Binding::Parameter where Rakudo raises
   X::AdHoc ("cannot unbox").
