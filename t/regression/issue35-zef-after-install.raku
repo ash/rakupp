@@ -202,4 +202,54 @@ check((gather { take [1, 2]; take [3] }).map({ $_ }).List, ([1, 2], [3]), 'an Ar
     run 'rm', '-rf', $root.absolute if $root.absolute.contains('rakupp-issue35rs-');
 }
 
+# -- zef's own suite, from a checkout (`zef install .` runs it) -----------------
+# `my $b := @a` binds the Array itself: `for $b` iterates it, and two names
+# bound to one Array are =:= (distinct Arrays are not)
+{
+    my @a = 1, 2, 3; my %h = x => 1, y => 2;
+    my $b := @a; my $k := @a; my $g := %h;
+    my $n = 0;
+    for $b { $n++ }
+    check($n, 3, '`my $b := @a; for $b` iterates the Array');
+    $n = 0;
+    $n++ for $b;
+    check($n, 3, '…in the statement-modifier form too');
+    $n = 0;
+    for $g { $n++ }
+    check($n, 2, '…and `$g := %h` iterates the Hash');
+    check($b =:= $k, True, 'two names bound to one Array are =:=');
+    check($b =:= @a, True, '…and each is =:= the Array');
+    my @c = 1, 2, 3; my $d := @c;
+    check($b =:= $d, False, 'names bound to different Arrays are not');
+    sub via-param(@x) { my $y := @x; my $m = 0; for $y { $m++ }; $m }
+    check(via-param(@a), 3, 'a bind to an @-parameter iterates too');
+}
+# a curried subscript reads a Pair on its one key, and an object through AT-KEY
+# (zef's `.grep(*.<requires>)` over the pairs of a `depends` hash)
+{
+    my %h = requires => [3];
+    check(%h.grep(*.<requires>).map(*.<requires>).List, ([3],), '`*.<k>` reads a hash entry Pair');
+    check((r => 1, s => 2).map(*<r>).List, (1, Nil), '`*<k>` is Nil on a Pair with another key');
+    check((r => 1, s => 2).map(*<r s>).List, ((1, Nil), (Nil, 2)), '…and a curried slice reads each key');
+    class AtKey35 does Associative { method AT-KEY($k) { "at-$k" } }
+    check((AtKey35.new,).map(*<z>).List, ('at-z',), 'an object answers a curried subscript through AT-KEY');
+    check((r => 7).AT-KEY('r'), 7, 'Pair.AT-KEY');
+    check((r => 7).AT-KEY('q'), Nil, '…Nil for another key');
+    check((r => 7).EXISTS-KEY('r'), True, 'Pair.EXISTS-KEY');
+    check((r => 7).EXISTS-KEY('q'), False, '…False for another key');
+}
+# CompUnit::Repository requires need, loaded and id; `load` has a default
+{
+    my $ok = True;
+    try { EVAL 'class :: does CompUnit::Repository { method need { }; method loaded { }; method id { } }'; CATCH { default { $ok = False } } }
+    check($ok, True, 'a repository class needs no `load` of its own');
+    my $refused = False;
+    try { EVAL 'class :: does CompUnit::Repository { method need { }; method loaded { } }'; CATCH { default { $refused = True } } }
+    check($refused, True, '…but still must supply `id`');
+}
+# .resolve drops `.` segments, even past a directory that does not exist
+check(IO::Path.new('.', :CWD('/nope35/q')).resolve.Str, '/nope35/q', '`.` under a missing CWD resolves to the CWD');
+check('/nope35/a/./b'.IO.resolve.Str, '/nope35/a/b', 'a `.` mid-path goes');
+check('/nope35/a/../b'.IO.resolve.Str, '/nope35/a/../b', '`..` past a missing directory stays');
+
 if @fail { .say for @fail; say 'FAIL' } else { say 'PASS' }

@@ -740,6 +740,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return v;
         }
         if (m == "kv") { Value o = Value::array({inv.pairKey() ? *inv.pairKey() : Value::str(inv.s), inv.pairVal() ? *inv.pairVal() : Value::any()}); o.isList = true; return o; }
+        // a Pair is Associative on its one key: the value there, Nil elsewhere
+        if ((m == "AT-KEY" || m == "EXISTS-KEY") && args.size() == 1) {
+            const bool hit = args[0].toStr() == inv.s.str();
+            if (m == "EXISTS-KEY") return Value::boolean(hit);
+            return hit ? (inv.pairVal() ? *inv.pairVal() : Value::any()) : Value::nil();
+        }
         if (m == "antipair") {
             // The VALUE becomes the key, as itself — `(a => 1).antipair` is
             // `1 => "a"`, an Int key, not the string "1" (sheet HM-17). Same

@@ -12341,7 +12341,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             // variable holding a container)
             Value* sr = vk == NK::NameTerm ? tctx_.cur->findRaw(static_cast<NameTerm*>(a->value.get())->name) : nullptr;
             const bool sigilless = sr && sr->isCell();
-            valueBindNote.value = !(vk == NK::VarExpr || sigilless || vk == NK::Index || vk == NK::SymbolicRef);
+            // (an `@`/`%` variable is no item container either: `$b := @a`
+            // binds the Array itself, and `for $b` iterates it)
+            const bool listVar = vk == NK::VarExpr && !static_cast<VarExpr*>(a->value.get())->name.empty() &&
+                (static_cast<VarExpr*>(a->value.get())->name[0] == '@' ||
+                 static_cast<VarExpr*>(a->value.get())->name[0] == '%');
+            valueBindNote.value = listVar || !(vk == NK::VarExpr || sigilless || vk == NK::Index || vk == NK::SymbolicRef);
             valueBindNote.unc = std::uncaught_exceptions();
         }
     }
@@ -21571,6 +21576,9 @@ Value Interpreter::evalBinary(Binary* b) {
                 Value l = *lp, r = *rp;
                 if (l.t == VT::Type && r.t == VT::Type) same = l.s == r.s && l.ofType() == r.ofType();
                 else if (l.t == VT::Object && r.t == VT::Object) same = l.obj() && l.obj() == r.obj();
+                // two names bound to one Array or Hash (`$b := @a; $k := @a`)
+                else if ((l.t == VT::Array || l.t == VT::Hash) && l.t == r.t)
+                    same = l.pk_ == r.pk_ && l.p_ && l.p_ == r.p_;
                 else same = false;
             }
             // two slots bound to one CONTAINER share its cell (`$b := $a`)
@@ -26156,6 +26164,19 @@ Value Interpreter::evalIndex(Index* idx) {
             Value arg = a.empty() ? Value::any() : a[0];
             Value b = arg;
             if (inner.t == VT::Code && inner.code() && inner.code()->isWhateverCode) b = I.callCallable(inner, ValueList{arg});
+            // one associative read: a Hash or Match by its key, a Pair on its
+            // ONE key (zef's `.grep(*.<requires>)` over a hash's pairs), an
+            // object through its AT-KEY; `missing` for anything else
+            auto atKey = [&I](const Value& b, const std::string& k, const Value& missing) -> Value {
+                if ((b.t == VT::Hash || b.t == VT::Match) && b.hash()) {
+                    auto it = b.hash()->find(k);
+                    return it != b.hash()->end() ? it->second : missing;
+                }
+                if (b.t == VT::Pair)
+                    return b.s == k ? (b.pairVal() ? *b.pairVal() : Value::any()) : Value::nil();   // Pair.AT-KEY: Nil
+                if (b.t == VT::Object && b.obj()) return I.methodCall(b, "AT-KEY", ValueList{Value::str(k)});
+                return missing;
+            };
             // A LIST subscript is a SLICE, curried the same as anywhere else:
             // `*<A B>` answers two values and `*[0,1]` two elements. Only the
             // single-key form was implemented, so `.map(*<A B>)` — the idiom for
@@ -26163,12 +26184,8 @@ Value Interpreter::evalIndex(Index* idx) {
             if (keyv.t == VT::Array || keyv.t == VT::Range) {
                 Value out = Value::array(); out.isList = true;
                 for (auto& k : keyv.flatten()) {
-                    if (isHash) {
-                        if ((b.t == VT::Hash || b.t == VT::Match) && b.hash()) {
-                            auto it = b.hash()->find(k.toStr());
-                            out.arr()->push_back(it != b.hash()->end() ? it->second : Value::any());
-                        } else out.arr()->push_back(Value::any());
-                    } else {
+                    if (isHash) out.arr()->push_back(atKey(b, k.toStr(), Value::any()));
+                    else {
                         long long n = k.toInt();
                         if ((b.t == VT::Array || b.t == VT::Match) && b.arr()) {
                             if (n < 0) negIndexThrow(n); // a SLICE with a negative index throws (Rakudo), a single read is a Failure
@@ -26181,8 +26198,7 @@ Value Interpreter::evalIndex(Index* idx) {
             }
             if (isHash) {
                 std::string k = keyv.toStr();
-                if ((b.t == VT::Hash || b.t == VT::Match) && b.hash()) { auto it = b.hash()->find(k); return it != b.hash()->end() ? it->second : Value::nil(); }
-                return Value::nil();
+                return atKey(b, k, Value::nil());
             }
             long long n = keyv.toInt();
             // `*.[* - $x]` — the index is a WhateverCode of the list's own length

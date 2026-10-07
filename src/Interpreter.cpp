@@ -4151,7 +4151,7 @@ Interpreter::Interpreter() {
         classes_["X::Wrapper"] = xwrap;
         auto repoRole = std::make_shared<ClassInfo>();
         repoRole->name = "CompUnit::Repository"; repoRole->isRole = true;
-        repoRole->requiredMethods = {"id", "need", "load", "loaded"};
+        repoRole->requiredMethods = {"need", "loaded", "id"};   // `load` has a default (Rakudo)
         classes_["CompUnit::Repository"] = repoRole;
         auto fs = std::make_shared<ClassInfo>();
         fs->name = "CompUnit::Repository::FileSystem"; fs->parent = repoRole;

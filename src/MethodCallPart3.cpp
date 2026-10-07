@@ -2513,10 +2513,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 while (base.size() > 1 && base.back() == '/') base.pop_back();
                 s = (base == "/" ? "" : base) + "/" + s;
             }
+            // (a `.` segment names nothing, so it goes, even past a missing
+            // directory: `IO::Path.new(".", :CWD($d)).resolve` is $d — zef's
+            // copy-paths copies one file to exactly that)
             std::vector<std::string> segs;
             { std::string cur;
-              for (char c : s) { if (c == '/') { if (!cur.empty()) segs.push_back(cur); cur.clear(); } else cur += c; }
-              if (!cur.empty()) segs.push_back(cur); }
+              for (char c : s) { if (c == '/') { if (!cur.empty() && cur != ".") segs.push_back(cur); cur.clear(); } else cur += c; }
+              if (!cur.empty() && cur != ".") segs.push_back(cur); }
             // `:completely` means every component that has to be TRAVERSED must
             // exist: what cannot be resolved is a FAILURE (X::IO::Resolve), not
             // a path with the unresolved tail glued on. A single missing LAST

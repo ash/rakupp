@@ -101,6 +101,12 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **`*@a` handed `1..*` is not lazy**: `sub f(*@a) { @a.is-lazy }; f(1..*)`
   is False (Rakudo True); the binder keeps only a lazy Array lazy, not a
   Range. Found 2026-10-07; not started.
+- [ ] **Two lenient answers met with zef (#35)**: an `IO()` parameter takes
+  any object, through its `.Str` (`class C {}; sub f(IO() $x) {…}; f(C.new)`
+  is `"C<…>".IO`; Rakudo: "Impossible coercion from 'C' into 'IO'"), and a
+  class missing several of a role's stub methods is told the alphabetically
+  first (`requiredMethods` is a `std::set`), where Rakudo names the first
+  declared. Found 2026-10-07; not started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
@@ -333,16 +339,6 @@ with its tag, after the release run is green.
   - A role value parameter inside a sub.
   - AttrX::Mooish.
   - Cro::HTTP and HTTP::UserAgent block about 40 in a cold store.
-- [ ] **zef's own suite from a checkout (#35)**: `rakupp install zef`, then
-  `zef install`/`list --installed`/`uninstall` work (2026-10-07,
-  `t/regression/issue35-zef-after-install.raku`), but `zef install .` in a
-  zef checkout stops on its own tests: 3 of 11 files fail, as on v5.2.1.
-  `install.rakutest` (an anonymous `does CompUnit::Repository` class with no
-  `load` is refused; Rakudo accepts it and passes the file),
-  `distribution-depends-parsing.rakutest` (10 of 35, `:any[]` alternatives)
-  and `repository-ecosystems.rakutest` (FetchPath never writes the index;
-  2 of 3). Also seen: `my $b := @a; for $b {…}` runs once (Rakudo iterates;
-  a bind to a `$` value now iterates, a bind to an `@` variable does not).
 - [ ] **Slangs**: Slang::Kazu 8 of 25 (a positional-capture subrule loses
   `.made`); Text::CSV 31 of 33; tier 4 (Otherwise, Qwiratry) not started.
   [SLANG-PLAN.md](SLANG-PLAN.md).
