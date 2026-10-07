@@ -1445,6 +1445,311 @@ static Value containerPlaceholder(ValueMap& h) {
     return c;
 }
 
+// `$!name = EXPR` in a method of a plain class (evalAssign's attribute lane):
+// the store construction makes for a named argument — a Nil resets to the
+// attribute's default, anything else is checked as the assignment it is
+// (nilResetForAttr, checkAttrStore) — straight into the slot, past
+// evalAssignInner's ladder. Null, with NOTHING evaluated, when the shape is one
+// the lane does not take: a class with a repr or shadowed private names, an
+// attribute with `where`, a shape, a coercion, a native or parameterized type,
+// or a slot that is bound, readonly, a Proxy or carries a cold block.
+Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
+    Value* selfp = tctx_.cur->findSelf();
+    if (!selfp || selfp->t != VT::Object || !selfp->obj() || !selfp->obj()->cls) return nullptr;
+    ObjectData* od = selfp->obj();
+    ClassInfo* ci = od->cls.get();
+    if (!ci->repr.empty() || ci->isRole) return nullptr;
+    if (ci->shadowsAttrs != 0) {
+        std::string buf;
+        if (ci->shadowsAttrs < 0) attrSlotFor(od, tv->attrBare, buf);   // decides it
+        if (ci->shadowsAttrs != 0) return nullptr;
+    }
+    const ClassAttr* at = ci->findAttr(tv->attrBare);
+    if (!at || at->sigil != '$' || at->where || at->shape || at->coerce) return nullptr;
+    const std::string& ty = at->type;
+    if (!ty.empty() && (!ascii::isupper((unsigned char)ty[0]) || ty.find_first_of("[(") != std::string::npos))
+        return nullptr;
+    auto it = od->attrs.find(tv->attrBare);
+    if (it == od->attrs.end()) return nullptr;
+    {
+        const Value& s = it->second;
+        if (s.isCell() || s.x_ || s.readonly || s.natBits || !s.hashKind.empty()) return nullptr;
+    }
+    Value rv = evalValueOf(value);
+    const bool wasNil = rv.t == VT::Nil;
+    Value v = nilResetForAttr(rv, *at);
+    if (wasNil && at->defaultTrait) v = eval(const_cast<Expr*>(at->defaultTrait));
+    // Two refusals an ASSIGNMENT makes that checkAttrStore (lenient on
+    // construction's behalf) does not: a type object that is not of the
+    // attribute's type (`has Cool $.c; $!c = Any`), and a Failure, named as
+    // the value it is
+    if (!wasNil && !ty.empty() && ty != "Mu") {
+        const std::string& rt = roleTypeIn(ci, ty);
+        const bool failure = v.t == VT::Hash && v.hashKind == "Failure";
+        if (failure || ((v.t == VT::Type || v.t == VT::Any) && rt != "Any" && !typeOrSubsetMatches(v, rt))) {
+            const std::string got = failure ? std::string("Failure") : v.typeName();
+            const char* smiley = at->defConstraint == 1 ? ":D" : at->defConstraint == 2 ? ":U" : "";
+            throwTypedV("X::TypeCheck::Assignment",
+                        {{"got", v}, {"expected", Value::typeObj(rt)}, {"symbol", Value::str("$!" + at->name)}},
+                        "Type check failed in assignment to $!" + at->name + "; expected " + rt + smiley +
+                        " but got " + got + " (" + got + ")");
+        }
+    }
+    checkAttrStore(*this, v, *at, roleTypeIn(ci, ty), wasNil, ci->declEnv.get());
+    if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; }   // a boxed slot takes the VALUE
+    // a `$` container itemizes what it holds
+    if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
+    // (the right-hand side ran code: the slot is looked up again, not reused,
+    // and a container it was bound to meanwhile is written through)
+    Value* slot = od->attrs[tv->attrBare].deref();
+    {
+        ParStripe ws(*this, slot); // torn-copy contract
+        *slot = std::move(v);
+    }
+    return slot;
+}
+
+// The default constructor's build, once the class is known to take it: the
+// attribute walk, the argument checks (positionals, `is required`, the type
+// smileys, `where`, shapes) and the BUILD/TWEAK chain. Reached from the
+// `.new`/`.bless` arm below and, for a class that needs nothing else of that
+// arm, straight from methodCall (plainNewClass). `nb` is the nearest built-in
+// ancestor (empty for none).
+Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueList& args, const std::string& nb) {
+    auto od = makePayload<ObjectData>();
+    od->cls = ci;
+    runAttrDefaults(od, ci, args);
+    // A class deriving a built-in SCALAR inherits that type's storage:
+    // Rakudo's Str carries a `value` attribute, so `class S is Str`
+    // constructed with `value => …` answers it from `~$s` and from a
+    // qualified `self.Str::Str()`. The branch above boxes such a class
+    // only when it adds NOTHING of its own; one that also declares
+    // attributes or methods is an ordinary object here, and the
+    // `value` argument — naming no attribute it declares — was
+    // silently dropped, leaving it to stringify as its own gist.
+    // Terminal::Table's `String is Str` is exactly that shape.
+    //
+    // A class declaring its OWN `value` keeps it (roast's
+    // `class DifferentReal is Real { has $.value }`), and with no
+    // `value` argument nothing changes.
+    //
+    // …with one exception, measured against Rakudo: deriving `Str`,
+    // the argument fills BOTH — the subclass's attribute and the
+    // string the instance IS. (`Real` is a role with no storage, so
+    // the roast case above still keeps the box empty.) PDF's
+    // TextString is `class … is Str { has $.value }` and passes
+    // itself to a `Str $str` routine to encode; without the string
+    // behind it every author, title and date in a document was
+    // written out as the object's own gist.
+    if (!nb.empty() && (!ci->findAttr("value") || nb == "Str") &&
+        (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
+         nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
+         nb == "Complex" || nb == "Bool"))
+        for (auto& a : args)
+            if (a.t == VT::Pair && a.s == "value" && a.pairVal()) {
+                od->hasBoxed = true;
+                od->boxed() = *a.pairVal();
+                break;
+            }
+    // the checks below walk it too — on the stack, since it is one or
+    // two pointers on any ordinary hierarchy and this ran per construction
+    ClassInfo* chainBuf[8];
+    std::vector<ClassInfo*> chainSpill;
+    size_t nChain = 0;
+    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
+        if (nChain < 8) chainBuf[nChain] = c; else chainSpill.push_back(c);
+        nChain++;
+    }
+    auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
+    // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
+    // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.
+    // Only when the attr actually received a value (an explicit default or a
+    // construction arg); a bare `has T:D $.x` with neither is a compile-time
+    // concern (X::Syntax::Variable::MissingInitializer) we don't model here.
+    // the DEFAULT constructor takes named arguments only — a class
+    // that wants positionals writes its own .new or a BUILD
+    // …but a class deriving a BUILT-IN (`is Num`, `is Str`) inherits
+    // that type's constructor, which does take a positional
+    // `nb` empty means NO ancestor carries a nativeParent at all, so the
+    // walk below cannot find one either — skip it rather than re-walking
+    // the whole chain to prove what the search above already established.
+    bool nativeBased = false;
+    if (!nb.empty())
+        for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get())
+            // the implicit Grammar ancestor brings no positional
+            // constructor — Rakudo's G.new(42) refuses like any class
+            if (!c2->nativeParent.empty() && c2->nativeParent != "Grammar") { nativeBased = true; break; }
+    // The two lookups are ordered LAST on purpose: they hash a name and
+    // walk the inheritance chain, while the thing they guard only
+    // matters when a positional argument is actually present — which,
+    // for the default constructor, is the error case and not the
+    // common one.
+    // (a Pair passed POSITIONALLY — `Plain.new($pair)` — is a
+    // positional too: only a named argument is one)
+    bool anyPositional = false;
+    for (auto& arg : args)
+        if (!(arg.t == VT::Pair && arg.namedArg)) { anyPositional = true; break; }
+    // (a BUILD does not change that: Mu.new passes it NAMED arguments only)
+    // …and neither does a user `multi method new` none of whose
+    // candidates took these arguments: the call falls through to
+    // Mu.new, which refuses the positionals (workout.t's Vector)
+    if (anyPositional && !nativeBased)
+        for (auto& arg : args)
+            if (!(arg.t == VT::Pair && arg.namedArg))
+                throwTypedV("X::Constructor::Positional",
+                            {{"type", Value::typeObj(ci->name)}},
+                            "Default constructor for '" + ci->name +
+                            "' only takes named arguments");
+    // `is required` is checked DURING the construction walk below, after
+    // a class's own BUILD and before its own TWEAK — Rakudo raises it
+    // from BUILDALL, so a custom `submethod BUILD` that fills the
+    // attribute itself satisfies it (DBDish::Pg's DBError::Pg reads
+    // every one of its `is required` fields off the PGresult) while a
+    // TWEAK that would fill it comes too late and still throws.
+    auto checkRequiredFor = [&](ClassInfo* rc) {
+        for (auto& at : rc->attrs) {
+            if (!at.required) continue;
+            // `is required` means SUPPLIED AT CONSTRUCTION — a default
+            // of its own does not excuse it
+            const Value* argV = nullptr;
+            for (auto& arg : args)
+                if (arg.t == VT::Pair && arg.s == at.name) { argV = &arg; break; }
+            // …but a `T:D` attribute of a class with its own BUILD was
+            // not judged before that BUILD ran (see the smiley check
+            // below): judge it now, on what BUILD left in the slot
+            if (at.defConstraint == 1 && !at.def && !at.hasDefVal &&
+                rc->methods.count("BUILD")) {
+                auto ait = od->attrs.find(at.name);
+                if (ait != od->attrs.end() && defined(ait->second)) continue;
+                if (argV && argV->pairVal() && !defined(*argV->pairVal())) {
+                    const Value& got = *argV->pairVal();
+                    throwTypedV("X::TypeCheck::Assignment",
+                                {{"symbol", Value::str("$!" + at.name)}, {"got", got},
+                                 {"expected", Value::typeObj(at.type)}},
+                                "Type check failed in assignment to $!" + at.name +
+                                "; expected " + at.type + ":D but got " + got.typeName() +
+                                " (" + got.typeName() + ")");
+                }
+                argV = nullptr;   // the argument never reached the slot
+            }
+            if (argV) continue;
+            // …or filled by a custom BUILD. A default of the
+            // attribute's OWN does not excuse it (Rakudo: `has $.d
+            // is required = 7` still demands the argument), so only
+            // an attribute with no default can be satisfied this way.
+            if (!at.def && !at.hasDefVal) {
+                auto ait = od->attrs.find(at.name);
+                // (an Array/Hash attribute is always "defined": it
+                // counts as filled once it holds something)
+                if (ait != od->attrs.end() && defined(ait->second)) {
+                    const Value& av = ait->second;
+                    if (!((at.sigil == '@' && av.t == VT::Array && av.arr() && av.arr()->empty()) ||
+                          (at.sigil == '%' && av.t == VT::Hash && av.hash() && av.hash()->empty())))
+                        continue;
+                }
+            }
+            throwTypedV("X::Attribute::Required",
+                        {{"name", Value::str("$!" + at.name)},
+                         {"why", Value::str(at.requiredWhy)}},
+                        "The attribute '$!" + at.name + "' is required" +
+                        (at.requiredWhy.empty()
+                             ? std::string(", ")
+                             : " because " + at.requiredWhy + ",\n") +
+                        "but you did not provide a value for it.");
+        }
+    };
+    // `is required` is asked BEFORE the defaults are judged: `has Int:D $.y =
+    // self.x` must not complain about y when the real fault is the
+    // missing x (only a class with no BUILD of its own can be judged now)
+    for (size_t ci2 = nChain; ci2-- > 0;) {
+        ClassInfo* rc = chainAt(ci2);
+        if (rc->methods.count("BUILD")) continue;
+        bool anyDefConstraint = false;
+        for (auto& at : rc->attrs) if (at.defConstraint) anyDefConstraint = true;
+        if (!anyDefConstraint) continue;
+        for (auto& at : rc->attrs) {
+            if (!at.required || at.def || at.hasDefVal) continue;
+            bool gotArg = false;
+            for (auto& arg : args)
+                if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+            if (!gotArg) { checkRequiredFor(rc); break; }
+        }
+    }
+    for (size_t ci2 = nChain; ci2-- > 0;) {
+        // (a class with a BUILD of its own binds its arguments THERE,
+        // later: an argument alone has not filled the slot yet —
+        // Graph::Grid's `has Int:D $.rows is required` + BUILD(:$!rows!))
+        const bool ownBuild = chainAt(ci2)->methods.count("BUILD") > 0;
+        for (auto& at : chainAt(ci2)->attrs) {
+            if (!at.defConstraint) continue;
+            bool gotArg = false;
+            if (!ownBuild)
+                for (auto& arg : args)
+                    if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
+            if (!(at.def || at.hasDefVal || gotArg)) continue;
+            Value cur = od->attrs.count(at.name) ? od->attrs[at.name] : Value::any();
+            bool defd = defined(cur);
+            if ((at.defConstraint == 1 && !defd) || (at.defConstraint == 2 && defd))
+                throwTypedV("X::TypeCheck::Attribute::Default",
+                            {{"name", Value::str("$!" + at.name)}},
+                            "Type check failed on attribute '$!" + at.name +
+                            "'; expected " + at.type +
+                            (at.defConstraint == 1 ? ":D but got " : ":U but got ") +
+                            cur.typeName());
+        }
+    }
+    // `where {…}` attribute constraints hold at construction too:
+    // a DEFINED slot value (arg-provided or defaulted) must satisfy
+    // its attr's constraint (Date::Event's lat/lon bounds)
+    for (size_t ci2 = nChain; ci2-- > 0;)
+        for (auto& at : chainAt(ci2)->attrs) {
+            if (!at.where) continue;
+            auto wit = od->attrs.find(at.name);
+            if (wit == od->attrs.end() || !defined(wit->second)) continue;
+            if (!attrWhereOk(at.where, wit->second))
+                throwTypedV("X::TypeCheck::Assignment", {{"got", wit->second}},
+                    "Type check failed on attribute '$!" + at.name +
+                    "'; the value does not satisfy its where constraint");
+        }
+    // a SHAPED array attribute (`has @.a[3;3]`) is that shape,
+    // filled from whatever it was given
+    for (size_t ci2 = nChain; ci2-- > 0;)
+        for (auto& at : chainAt(ci2)->attrs) {
+            if (!at.shape || at.sigil != '@') continue;
+            std::vector<long long> dims = evalShapeDims(const_cast<Expr*>(at.shape));
+            if (dims.empty()) continue;
+            ValueList flat;
+            auto ait = od->attrs.find(at.name);
+            if (ait != od->attrs.end()) {
+                std::function<void(const Value&)> fl = [&](const Value& v) {
+                    if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) fl(e); }
+                    else flat.push_back(v);
+                };
+                if (ait->second.t == VT::Array && ait->second.arr())
+                    for (auto& e : *ait->second.arr()) fl(e);
+            }
+            long long cap = 1;
+            for (auto d : dims) cap *= d;
+            if ((long long)flat.size() > cap)
+                throwTypedV("X::OutOfRange", {},
+                            "Index " + std::to_string(cap) + " for dimension 1 out of range (must be 0.." +
+                            std::to_string(cap - 1) + ")");
+            od->attrs[at.name] = makeShapedContainer(dims, at.type, &flat);
+        }
+    Value self = Value::object(od);
+    // bless does not re-run BUILD-from-new args the same way, but running
+    // BUILD here matches the common `self.bless(:attr(...))` usage.
+    // the lambda is passed as a pointer pair, not wrapped in a
+    // std::function — see BuildStep
+    BuildStep reqStep{[](void* p, ClassInfo* rc) {
+                          (*static_cast<decltype(checkRequiredFor)*>(p))(rc);
+                      },
+                      &checkRequiredFor};
+    runBuildChain(ci.get(), self, args, reqStep);
+    maybeRegisterDestroy(self);
+    return self;
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     // The Variable a variable's user trait is handed (`trait_mod:<is>(Variable:D
@@ -7480,238 +7785,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                     return p;
                 }
-                auto od = makePayload<ObjectData>();
-                od->cls = ci;
-                runAttrDefaults(od, ci, args);
-                // A class deriving a built-in SCALAR inherits that type's storage:
-                // Rakudo's Str carries a `value` attribute, so `class S is Str`
-                // constructed with `value => …` answers it from `~$s` and from a
-                // qualified `self.Str::Str()`. The branch above boxes such a class
-                // only when it adds NOTHING of its own; one that also declares
-                // attributes or methods is an ordinary object here, and the
-                // `value` argument — naming no attribute it declares — was
-                // silently dropped, leaving it to stringify as its own gist.
-                // Terminal::Table's `String is Str` is exactly that shape.
-                //
-                // A class declaring its OWN `value` keeps it (roast's
-                // `class DifferentReal is Real { has $.value }`), and with no
-                // `value` argument nothing changes.
-                //
-                // …with one exception, measured against Rakudo: deriving `Str`,
-                // the argument fills BOTH — the subclass's attribute and the
-                // string the instance IS. (`Real` is a role with no storage, so
-                // the roast case above still keeps the box empty.) PDF's
-                // TextString is `class … is Str { has $.value }` and passes
-                // itself to a `Str $str` routine to encode; without the string
-                // behind it every author, title and date in a document was
-                // written out as the object's own gist.
-                if (!nb.empty() && (!ci->findAttr("value") || nb == "Str") &&
-                    (nb == "Int" || nb == "Num" || nb == "Rat" || nb == "FatRat" ||
-                     nb == "Str" || nb == "Cool" || nb == "Real" || nb == "Numeric" ||
-                     nb == "Complex" || nb == "Bool"))
-                    for (auto& a : args)
-                        if (a.t == VT::Pair && a.s == "value" && a.pairVal()) {
-                            od->hasBoxed = true;
-                            od->boxed() = *a.pairVal();
-                            break;
-                        }
-                // the checks below walk it too — on the stack, since it is one or
-                // two pointers on any ordinary hierarchy and this ran per construction
-                ClassInfo* chainBuf[8];
-                std::vector<ClassInfo*> chainSpill;
-                size_t nChain = 0;
-                for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
-                    if (nChain < 8) chainBuf[nChain] = c; else chainSpill.push_back(c);
-                    nChain++;
-                }
-                auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
-                // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
-                // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.
-                // Only when the attr actually received a value (an explicit default or a
-                // construction arg); a bare `has T:D $.x` with neither is a compile-time
-                // concern (X::Syntax::Variable::MissingInitializer) we don't model here.
-                // the DEFAULT constructor takes named arguments only — a class
-                // that wants positionals writes its own .new or a BUILD
-                // …but a class deriving a BUILT-IN (`is Num`, `is Str`) inherits
-                // that type's constructor, which does take a positional
-                // `nb` empty means NO ancestor carries a nativeParent at all, so the
-                // walk below cannot find one either — skip it rather than re-walking
-                // the whole chain to prove what the search above already established.
-                bool nativeBased = false;
-                if (!nb.empty())
-                    for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get())
-                        // the implicit Grammar ancestor brings no positional
-                        // constructor — Rakudo's G.new(42) refuses like any class
-                        if (!c2->nativeParent.empty() && c2->nativeParent != "Grammar") { nativeBased = true; break; }
-                // The two lookups are ordered LAST on purpose: they hash a name and
-                // walk the inheritance chain, while the thing they guard only
-                // matters when a positional argument is actually present — which,
-                // for the default constructor, is the error case and not the
-                // common one.
-                // (a Pair passed POSITIONALLY — `Plain.new($pair)` — is a
-                // positional too: only a named argument is one)
-                bool anyPositional = false;
-                for (auto& arg : args)
-                    if (!(arg.t == VT::Pair && arg.namedArg)) { anyPositional = true; break; }
-                // (a BUILD does not change that: Mu.new passes it NAMED arguments only)
-                // …and neither does a user `multi method new` none of whose
-                // candidates took these arguments: the call falls through to
-                // Mu.new, which refuses the positionals (workout.t's Vector)
-                if (anyPositional && !nativeBased)
-                    for (auto& arg : args)
-                        if (!(arg.t == VT::Pair && arg.namedArg))
-                            throwTypedV("X::Constructor::Positional",
-                                        {{"type", Value::typeObj(ci->name)}},
-                                        "Default constructor for '" + ci->name +
-                                        "' only takes named arguments");
-                // `is required` is checked DURING the construction walk below, after
-                // a class's own BUILD and before its own TWEAK — Rakudo raises it
-                // from BUILDALL, so a custom `submethod BUILD` that fills the
-                // attribute itself satisfies it (DBDish::Pg's DBError::Pg reads
-                // every one of its `is required` fields off the PGresult) while a
-                // TWEAK that would fill it comes too late and still throws.
-                auto checkRequiredFor = [&](ClassInfo* rc) {
-                    for (auto& at : rc->attrs) {
-                        if (!at.required) continue;
-                        // `is required` means SUPPLIED AT CONSTRUCTION — a default
-                        // of its own does not excuse it
-                        const Value* argV = nullptr;
-                        for (auto& arg : args)
-                            if (arg.t == VT::Pair && arg.s == at.name) { argV = &arg; break; }
-                        // …but a `T:D` attribute of a class with its own BUILD was
-                        // not judged before that BUILD ran (see the smiley check
-                        // below): judge it now, on what BUILD left in the slot
-                        if (at.defConstraint == 1 && !at.def && !at.hasDefVal &&
-                            rc->methods.count("BUILD")) {
-                            auto ait = od->attrs.find(at.name);
-                            if (ait != od->attrs.end() && defined(ait->second)) continue;
-                            if (argV && argV->pairVal() && !defined(*argV->pairVal())) {
-                                const Value& got = *argV->pairVal();
-                                throwTypedV("X::TypeCheck::Assignment",
-                                            {{"symbol", Value::str("$!" + at.name)}, {"got", got},
-                                             {"expected", Value::typeObj(at.type)}},
-                                            "Type check failed in assignment to $!" + at.name +
-                                            "; expected " + at.type + ":D but got " + got.typeName() +
-                                            " (" + got.typeName() + ")");
-                            }
-                            argV = nullptr;   // the argument never reached the slot
-                        }
-                        if (argV) continue;
-                        // …or filled by a custom BUILD. A default of the
-                        // attribute's OWN does not excuse it (Rakudo: `has $.d
-                        // is required = 7` still demands the argument), so only
-                        // an attribute with no default can be satisfied this way.
-                        if (!at.def && !at.hasDefVal) {
-                            auto ait = od->attrs.find(at.name);
-                            // (an Array/Hash attribute is always "defined": it
-                            // counts as filled once it holds something)
-                            if (ait != od->attrs.end() && defined(ait->second)) {
-                                const Value& av = ait->second;
-                                if (!((at.sigil == '@' && av.t == VT::Array && av.arr() && av.arr()->empty()) ||
-                                      (at.sigil == '%' && av.t == VT::Hash && av.hash() && av.hash()->empty())))
-                                    continue;
-                            }
-                        }
-                        throwTypedV("X::Attribute::Required",
-                                    {{"name", Value::str("$!" + at.name)},
-                                     {"why", Value::str(at.requiredWhy)}},
-                                    "The attribute '$!" + at.name + "' is required" +
-                                    (at.requiredWhy.empty()
-                                         ? std::string(", ")
-                                         : " because " + at.requiredWhy + ",\n") +
-                                    "but you did not provide a value for it.");
-                    }
-                };
-                // `is required` is asked BEFORE the defaults are judged: `has Int:D $.y =
-                // self.x` must not complain about y when the real fault is the
-                // missing x (only a class with no BUILD of its own can be judged now)
-                for (size_t ci2 = nChain; ci2-- > 0;) {
-                    ClassInfo* rc = chainAt(ci2);
-                    if (rc->methods.count("BUILD")) continue;
-                    bool anyDefConstraint = false;
-                    for (auto& at : rc->attrs) if (at.defConstraint) anyDefConstraint = true;
-                    if (!anyDefConstraint) continue;
-                    for (auto& at : rc->attrs) {
-                        if (!at.required || at.def || at.hasDefVal) continue;
-                        bool gotArg = false;
-                        for (auto& arg : args)
-                            if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
-                        if (!gotArg) { checkRequiredFor(rc); break; }
-                    }
-                }
-                for (size_t ci2 = nChain; ci2-- > 0;) {
-                    // (a class with a BUILD of its own binds its arguments THERE,
-                    // later: an argument alone has not filled the slot yet —
-                    // Graph::Grid's `has Int:D $.rows is required` + BUILD(:$!rows!))
-                    const bool ownBuild = chainAt(ci2)->methods.count("BUILD") > 0;
-                    for (auto& at : chainAt(ci2)->attrs) {
-                        if (!at.defConstraint) continue;
-                        bool gotArg = false;
-                        if (!ownBuild)
-                            for (auto& arg : args)
-                                if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
-                        if (!(at.def || at.hasDefVal || gotArg)) continue;
-                        Value cur = od->attrs.count(at.name) ? od->attrs[at.name] : Value::any();
-                        bool defd = defined(cur);
-                        if ((at.defConstraint == 1 && !defd) || (at.defConstraint == 2 && defd))
-                            throwTypedV("X::TypeCheck::Attribute::Default",
-                                        {{"name", Value::str("$!" + at.name)}},
-                                        "Type check failed on attribute '$!" + at.name +
-                                        "'; expected " + at.type +
-                                        (at.defConstraint == 1 ? ":D but got " : ":U but got ") +
-                                        cur.typeName());
-                    }
-                }
-                // `where {…}` attribute constraints hold at construction too:
-                // a DEFINED slot value (arg-provided or defaulted) must satisfy
-                // its attr's constraint (Date::Event's lat/lon bounds)
-                for (size_t ci2 = nChain; ci2-- > 0;)
-                    for (auto& at : chainAt(ci2)->attrs) {
-                        if (!at.where) continue;
-                        auto wit = od->attrs.find(at.name);
-                        if (wit == od->attrs.end() || !defined(wit->second)) continue;
-                        if (!attrWhereOk(at.where, wit->second))
-                            throwTypedV("X::TypeCheck::Assignment", {{"got", wit->second}},
-                                "Type check failed on attribute '$!" + at.name +
-                                "'; the value does not satisfy its where constraint");
-                    }
-                // a SHAPED array attribute (`has @.a[3;3]`) is that shape,
-                // filled from whatever it was given
-                for (size_t ci2 = nChain; ci2-- > 0;)
-                    for (auto& at : chainAt(ci2)->attrs) {
-                        if (!at.shape || at.sigil != '@') continue;
-                        std::vector<long long> dims = evalShapeDims(const_cast<Expr*>(at.shape));
-                        if (dims.empty()) continue;
-                        ValueList flat;
-                        auto ait = od->attrs.find(at.name);
-                        if (ait != od->attrs.end()) {
-                            std::function<void(const Value&)> fl = [&](const Value& v) {
-                                if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) fl(e); }
-                                else flat.push_back(v);
-                            };
-                            if (ait->second.t == VT::Array && ait->second.arr())
-                                for (auto& e : *ait->second.arr()) fl(e);
-                        }
-                        long long cap = 1;
-                        for (auto d : dims) cap *= d;
-                        if ((long long)flat.size() > cap)
-                            throwTypedV("X::OutOfRange", {},
-                                        "Index " + std::to_string(cap) + " for dimension 1 out of range (must be 0.." +
-                                        std::to_string(cap - 1) + ")");
-                        od->attrs[at.name] = makeShapedContainer(dims, at.type, &flat);
-                    }
-                Value self = Value::object(od);
-                // bless does not re-run BUILD-from-new args the same way, but running
-                // BUILD here matches the common `self.bless(:attr(...))` usage.
-                // the lambda is passed as a pointer pair, not wrapped in a
-                // std::function — see BuildStep
-                BuildStep reqStep{[](void* p, ClassInfo* rc) {
-                                      (*static_cast<decltype(checkRequiredFor)*>(p))(rc);
-                                  },
-                                  &checkRequiredFor};
-                runBuildChain(ci.get(), self, args, reqStep);
-                maybeRegisterDestroy(self);
-                return self;
+                return constructDefault(ci, args, nb);
             }
             // `SubDateTime.now` / `.today` — a type-level method not on the user class
             // dispatches to its built-in parent; box the result to keep the subclass.

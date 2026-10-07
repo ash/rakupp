@@ -26,6 +26,14 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   owed: `perf-guard` A/B against `a124d91a` on a quiet machine. Left in the
   plan: `eq`/printing reading views directly, and a non-ASCII grapheme table
   for views (a non-ASCII `.substr` loop still flattens each view).
+- [ ] **Graph.diameter (#47)**: 20×20 grid 17.4 s against Rakudo's 19.1 s
+  (was 28.8 s), 2026-10-07: accessors before the built-in ladder, an
+  `$!attr = …` lane, checked default construction, cached class/Mu/Bool type
+  accepts for parameters and returns. What is left is per-call cost: a method
+  or closure call is ~0.2 µs against Rakudo's ~0.08 (LeftistHeap makes ~6 per
+  merge step). Next: a lean `invokeMethod` path like callPlainSub (typed `$`
+  positionals, no phasers), then a block variant for closures; `Less` as a
+  term walks every scope looking for a shadowing lexical.
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and

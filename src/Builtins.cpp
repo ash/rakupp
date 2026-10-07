@@ -5764,21 +5764,72 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 // such a class the general path's special cases cannot apply, and its `.new`
 // is runAttrDefaults and the build chain.
 extern std::atomic<uint64_t> g_symbolGen;
-static bool plainNewClass(Interpreter& I, ClassInfo& ci) {
+static int plainNewClass(Interpreter& I, ClassInfo& ci) {
     if (!ci.decl || ci.isRole || !ci.repr.empty() || ci.awaitingCompose || !ci.roleVariants.empty())
-        return false;
+        return 0;
     const std::string& n = ci.name;
-    if (n.find_first_of("\x01[") != std::string::npos || isKnownTypeName(n)) return false;
+    if (n.find_first_of("\x01[") != std::string::npos || isKnownTypeName(n)) return 0;
     if (ci.findMethod("new") || ci.findMethod("bless") || ci.findMethod("^new") || ci.methodHandles.count("new"))
-        return false;
+        return 0;
+    // `is required`, a type smiley, `where` or a shape: still the default
+    // construction, but with the checks that come with it (constructDefault)
+    bool checked = false;
     for (ClassInfo* c = &ci; c; c = c->parent.get()) {
-        if (!c->nativeParent.empty()) return false;
+        if (!c->nativeParent.empty()) return 0;
         for (auto& at : c->attrs)
-            if (at.required || at.defConstraint || at.where || at.shape) return false;
+            if (at.required || at.defConstraint || at.where || at.shape) checked = true;
         for (auto& r : c->doneRoles)
-            if (r == "Rational" || r.rfind("Rational[", 0) == 0) return false;
+            if (r == "Rational" || r.rfind("Rational[", 0) == 0) return 0;
     }
-    return !I.typeOrSubsetMatches(Value::typeObj(n), "Rational");
+    if (I.typeOrSubsetMatches(Value::typeObj(n), "Rational")) return 0;
+    return checked ? 2 : 1;
+}
+
+// Whether `$obj.name` on an instance may read a public attribute straight
+// after the user-method lookup misses (methodCallInner), skipping the built-in
+// ladder that the accessor arm in methodCallPart2 sits at the bottom of. Only
+// for a class none of whose ancestors is a built-in or answers an accessor
+// name specially there: X::AdHoc (`message`/`payload`), RakuAST nodes and the
+// PseudoStash, which all live on that slow path.
+static bool plainAccessorClass(ClassInfo& ci) {
+    if (!ci.decl || ci.isRole || !ci.repr.empty() || ci.awaitingCompose) return false;
+    const std::string& n = ci.name;
+    if (isKnownTypeName(n) || isRakuAstName(n) || n == "PseudoStash") return false;
+    std::function<bool(const ClassInfo*)> plain = [&](const ClassInfo* c) -> bool {
+        if (!c) return true;
+        if (!c->nativeParent.empty() || c->name == "X::AdHoc") return false;
+        if (!plain(c->parent.get())) return false;
+        for (auto& p : c->extraParents) if (!plain(p.get())) return false;
+        return true;
+    };
+    return plain(&ci);
+}
+
+// `$obj.name` with no arguments, answered as the public attribute's generated
+// accessor when that is what dispatch would reach: no method of that name
+// (user, role, or `handles`-delegated) and a plain class (plainAccessorClass).
+// Names that are not methods (WHAT, HOW, …: all upper-case) and the few
+// lower-case ones an arm above the accessor answers for any object keep the
+// full path. Null when the full path has to decide.
+const Value* Interpreter::plainAccessorSlot(const Value& inv, const std::string& m) {
+    ClassInfo* ci = inv.obj()->cls.get();
+    if (m.empty() || (m[0] >= 'A' && m[0] <= 'Z') || m == "new" || m == "clone" || m == "bless" ||
+        m == "parse" || m == "subparse" || m == "parsefile")
+        return nullptr;
+    const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 1;
+    uint64_t k = ci->plainAccKey;
+    if ((k & ~uint64_t(1)) != key) {
+        k = key | (plainAccessorClass(*ci) ? 1 : 0);
+        ci->plainAccKey = k;
+    }
+    if (!(k & 1)) return nullptr;
+    const ClassAttr* at = ci->findAttr(m);
+    if (!at || !at->pub || at->deprecated) return nullptr;
+    if (!ci->delegatedNames.empty() && ci->delegatedNames.count(m)) return nullptr;
+    if (ci->findMethodForCall(m, langRev_ < 2)) return nullptr;
+    static const Value kAny = Value::any();
+    auto it = inv.obj()->attrs.find(m);
+    return it != inv.obj()->attrs.end() ? &it->second : &kAny;
 }
 
 // The Iterator role's default methods for a user class that does it, each
@@ -5887,13 +5938,14 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         auto cit = classes_.find(inv.s);
         if (cit != classes_.end() && cit->second) {
             ClassInfo& ci = *cit->second;
-            const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 1;
+            const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 2;
             uint64_t k = ci.plainNewKey;
-            if ((k & ~uint64_t(1)) != key) {
-                k = key | (plainNewClass(*this, ci) ? 1 : 0);
+            if ((k & ~uint64_t(3)) != key) {
+                k = key | (uint64_t)plainNewClass(*this, ci);
                 ci.plainNewKey = k;
             }
-            bool named = k & 1;
+            const unsigned kind = k & 3;   // 0 the general path, 1 plain, 2 plain with checks
+            bool named = kind != 0;
             // (a Pair passed POSITIONALLY is not a named argument: the general
             // path refuses it, as Rakudo's default constructor does)
             for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) { named = false; break; }
@@ -5902,6 +5954,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 const bool armed = t.ctorCatchSkip;   // an outer `.new` of this same call armed it
                 t.ctorCatchSkip = false;
                 auto build = [&]() -> Value {
+                    if (kind == 2) return constructDefault(cit->second, args, std::string());
                     auto od = makePayload<ObjectData>();
                     od->cls = cit->second;
                     runAttrDefaults(od, cit->second, args);
@@ -6419,11 +6472,22 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto ci = inv.obj()->cls;
         if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m)) {
             ClassInfo* owner = nullptr;
-            if (Value* um = ci->findMethodForCall(m, langRev_ < 2, &owner))
+            if (Value* um = ci->findMethodForCall(m, langRev_ < 2, &owner)) {
                 if (!(um->t == VT::Code && um->code() && um->code()->isStub))
                     // hand the resolution on — invokeMethodChain would otherwise
                     // hash and walk for the same name all over again
                     return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
+            }
+            // …and a public attribute's generated ACCESSOR is a method of the
+            // class too, so it is answered here as well: it used to walk the
+            // whole built-in ladder down to its arm in methodCallPart2, 3.75x
+            // Rakudo per `$node.left`, and LeftistHeap makes ~15 such calls per
+            // merge step (Graph.diameter, #47). The names that are not methods
+            // (WHAT, HOW, …) and those an arm above the accessor's answers for
+            // any object keep the slow path.
+            else if (args.empty()) {
+                if (const Value* slot = plainAccessorSlot(inv, m)) return *slot;
+            }
         }
     }
     // A grammar CURSOR — the `self` of a method reached through `<.method>`

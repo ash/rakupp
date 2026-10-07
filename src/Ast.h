@@ -518,6 +518,11 @@ struct MethodCall : Expr {
     bool hyper = false;  // >>.method  (apply to each element)
     bool meta = false;   // .^method  (metamodel call, e.g. .^name)
     bool curryClosed = false; // written in DOUBLE parens: a method call on it does not extend a WhateverCode
+    // `$x.name` with nothing else about it — no arguments, no `.^`/`!`/`».`/
+    // `.?`/`.+`/`.=`, no computed or qualified name: such a call may be an
+    // attribute ACCESSOR, answered before evalMethodCallExpr's special arms.
+    // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
+    mutable DecidedOnce<signed char> plainShape{-1};
     MethodCall(): Expr(NK::MethodCall) {}
 };
 
@@ -791,6 +796,12 @@ struct Param {
     //   user subset/class shadows the name is re-checked per call (two hash
     //   counts), so a late `subset Int` still gets the full matcher.
     mutable DecidedOnce<signed char> acceptClass{-1};
+    //   objAcceptKey/objAcceptCls — the same for a USER CLASS and for Mu, resolved
+    //   per symbol generation: (generation + 1) << 2 | kind (0 none, 1 the class
+    //   in objAcceptCls — a ClassInfo* — and its subclasses, 2 Mu: anything).
+    //   Accept-only, before any other check (typeCheckBindImpl).
+    mutable DecidedOnce<uint64_t> objAcceptKey{0};
+    mutable DecidedOnce<const void*> objAcceptCls{nullptr};
 };
 
 // The name a binding error shows: an anonymous `$`/`@`/`%`/`&` (or no name at

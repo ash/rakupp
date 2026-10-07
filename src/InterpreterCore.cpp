@@ -5,6 +5,8 @@
 #include "AotModules.h"
 
 namespace rakupp {
+
+extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -3830,6 +3832,43 @@ static Value unpassedDefault(const std::string& type, char sigil, bool blockPara
 
 void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockParam,
                                     bool whereVerified, Env* sigEnv) {
+    // Fast-ACCEPT for a parameter typed by a user class (`HeapNode $left`) or Mu:
+    // the name resolved once per symbol generation (Param::objAcceptKey), then an
+    // instance of the class or a subclass binds with no further question — every
+    // check below passes such a value, the last one by walking the same chain by
+    // name. Anything else falls through to them and their exact errors.
+    if (!p.type.empty()) {
+        const uint64_t gen = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 2;
+        uint64_t k = p.objAcceptKey;
+        if ((k & ~uint64_t(3)) != gen) {
+            unsigned kind = 0;
+            const std::string& t = p.type;
+            if (!p.litVal && !p.codeSig && !p.typeCapture && !p.typeFromCapture && !p.coerce &&
+                p.defConstraint != 2 && ascii::isupper((unsigned char)t[0]) &&
+                t.find_first_of("[(") == std::string::npos && !subsets_.count(t)) {
+                if (t == "Mu") kind = p.defConstraint ? 0 : 2;
+                else if (auto it = classes_.find(t); it != classes_.end() && it->second) {
+                    p.objAcceptCls = (const void*)it->second.get();
+                    kind = 1;
+                }
+            }
+            k = gen | kind;
+            p.objAcceptKey = k;
+        }
+        if ((k & 3) == 2) return;
+        if ((k & 3) == 1 && v.t == VT::Object && v.obj() && v.obj()->cls) {
+            if (const ClassInfo* want = (const ClassInfo*)(const void*)p.objAcceptCls) {
+                std::function<bool(const ClassInfo*)> isa = [&](const ClassInfo* x) -> bool {
+                    for (; x; x = x->parent.get()) {
+                        if (x == want) return true;
+                        for (auto& pp : x->extraParents) if (isa(pp.get())) return true;
+                    }
+                    return false;
+                };
+                if (isa(v.obj()->cls.get()) && (p.defConstraint != 1 || isDefined(v))) return;
+            }
+        }
+    }
     // …and BINDING enforces it too: a plain `sub f("a")` called with "b" dies,
     // where it bound anything (dispatch had already checked a candidate's)
     if (p.litVal && !whereVerified && !literalParamAccepts(p, v)) {
@@ -8216,8 +8255,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             env->define("@_", Value::array(slurpyArgs(rest)));
             if (c.implicitArgs & 2) env->define("%_", h);
         }
-        else
-            env->define("@_", Value::array(slurpyArgs(args)));
+        // (and a body that reads neither has no `@_` — its signature is the
+        // placeholders alone, as in Rakudo. Building one per call was an array
+        // and a map node on every `{ $^a <=> $^b }` a sort or a heap ran.)
         // placeholders bound: implicitTopic_local stays false
     } else {
         implicitTopic_local = true;
@@ -8670,9 +8710,60 @@ resumeBody:
     return c.retType.empty() ? std::move(last) : checkRetType(c, std::move(last));
 }
 
+// What checkRetType's shortcut may accept for `c.retType`: 1 a user class
+// (stored in retFastCls), 2 Bool, 0 nothing (coercion, `:U`, a parameterized
+// or captured type — the full check every time); | 4 for a `:D`. The bare name
+// must itself be a registered class (or Bool), so no type capture of the
+// signature can stand for it (capturedType refuses a class name).
+unsigned Interpreter::retFastDecide(const Callable& c) {
+    if (retTypeCoerces(c.retType)) return 0;
+    const char sm = retTypeSmiley(c.retType);
+    if (sm && sm != 'D') return 0;
+    const std::string base = retTypeName(c.retType);
+    if (base.empty() || base.find_first_of("[(\x01") != std::string::npos) return 0;
+    const unsigned d = sm == 'D' ? 4 : 0;
+    if (base == "Bool") return classes_.count("Bool") || subsets_.count("Bool") ? 0 : 2 | d;
+    if (!classes_.count(base)) return 0;
+    const std::string rn = resolveClassAlias(qualifyDeclType(base, c.pkg));
+    if (subsets_.count(rn)) return 0;
+    auto it = classes_.find(rn);
+    if (it == classes_.end() || !it->second) return 0;
+    c.retFastCls = it->second.get();
+    return 1 | d;
+}
+
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
     if (c.retType.empty()) return v;
+    // The shortcut (Callable::retFastKey): `--> HeapNode` / `--> Bool:D` resolved
+    // once per symbol generation instead of from its name on every return —
+    // LeftistHeap's four typed private methods made this a quarter of a call.
+    // It only ACCEPTS: an instance of the class (or a subclass), a Bool value.
+    // Anything else falls through to the full check, which decides it.
+    {
+        const uint64_t gen = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 3;
+        uint64_t k = c.retFastKey;
+        if ((k & ~uint64_t(7)) != gen) {
+            k = gen | retFastDecide(c);
+            c.retFastKey = k;
+        }
+        const unsigned kind = k & 3;
+        bool fits = false;
+        if (kind == 1 && v.t == VT::Object && v.obj() && v.obj()->cls) {
+            if (ClassInfo* want = c.retFastCls) {
+                std::function<bool(const ClassInfo*)> isa = [&](const ClassInfo* x) -> bool {
+                    for (; x; x = x->parent.get()) {
+                        if (x == want) return true;
+                        for (auto& p : x->extraParents) if (isa(p.get())) return true;
+                    }
+                    return false;
+                };
+                fits = isa(v.obj()->cls.get());
+            }
+        }
+        else if (kind == 2) fits = v.t == VT::Bool;
+        if (fits && (!(k & 4) || isDefined(v))) return v;
+    }
     // `--> T` where T is a type capture of the signature is the type it bound
     // for this call (the routine's own scope is still curRoutineEnv here):
     // `ret_T(Rat:D, Rat)` fails the definedness, `--> T:D()` coerces into it
@@ -12013,6 +12104,10 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         else if (opEq(a->op, "*=")) cls = 4;
                         else if (opEq(a->op, "~=")) cls = 5;
                     }
+                    // `$!name = EXPR`: the attribute lane (attrAssignLane)
+                    else if (!tv->declare && opEq(a->op, "=") && tv->name.size() > 2 && tv->name[0] == '$' &&
+                             tv->name[1] == '!' && tv->attrTwin.empty() && tv->declCoerce.empty())
+                        cls = 8;
                 }
                 a->simpleSlot = cls;
                 sv = cls;
@@ -12020,6 +12115,13 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             if (sv == 7) {
                 Value out;
                 if (packedElemStore(a, out)) return sink ? Value::any() : out;
+            }
+            else if (sv == 8) {
+                // (null: nothing was evaluated, and the full path below decides)
+                if (Value* slot = attrAssignLane(static_cast<VarExpr*>(a->target.get()), a->value.get())) {
+                    if (anyRwLinks_) rwWriteThrough(a->target.get());
+                    return sink ? Value::any() : *slot;
+                }
             }
             else if (sv == 6) {
                 if (Value* slot = declLane(a)) return sink ? Value::any() : *slot;
@@ -24053,6 +24155,9 @@ void rtSpreadSlipArg(ValueList& args, const Value& v) { forceLazy(v); spreadSlip
 
 ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
     ValueList args;
+    // one allocation for the common case (a slip may still grow it): growing
+    // from empty went 1 → 2 → 4, two allocations for every two-argument call
+    args.reserve(exprs.size());
     for (auto& a : exprs) {
         if (a->kind == NK::RegexLit && !static_cast<RegexLit*>(a.get())->isM) {
             // a regex literal passed as an argument is a Regex object, not a match
@@ -29839,6 +29944,31 @@ Value Interpreter::uninitMethodCall(const MethodCall* mc, const Value& inv) {
 
 Value Interpreter::evalMethodCallExpr(Expr* e) {
     auto* mc = static_cast<MethodCall*>(e);
+    // `$node.left` — an attribute ACCESSOR on a plain user object is answered
+    // here, before the special arms below, none of which a call of this shape
+    // can meet (plainShape; `.value` only while a binding's raw tail is
+    // pending). A miss keeps the evaluated invocant: the arms read it below.
+    std::optional<Value> preInv;
+    if (mc->plainShape != 0) {
+        if (mc->plainShape < 0) {
+            const std::string& mn = mc->method;
+            mc->plainShape = mc->inv && mc->inv->kind != NK::RegexLit && mc->args.empty() &&
+                             !mc->methodExpr && !mc->bang && !mc->meta && !mc->hyper && !mc->allMode &&
+                             !mc->maybe && !mc->mutate && mc->methodQual.empty() && !mn.empty() &&
+                             !(mn[0] >= 'A' && mn[0] <= 'Z') && mn != "name" && mn != "dynamic"
+                ? 1 : 0;
+        }
+        if (mc->plainShape == 1 && !(tctx_.bindRawTails && opEq(mc->method, "value"))) {
+            preInv.emplace(eval(mc->inv.get()));
+            const Value& iv = *preInv;
+            if (iv.t == VT::Object && iv.obj() && iv.obj()->cls)
+                if (const Value* slot = plainAccessorSlot(iv, mc->method)) {
+                    Value res = *slot;
+                    seqMint(res, iv);
+                    return res;
+                }
+        }
+    }
     // `%h.values.map({ $_ = 0 })` — Rakudo's `.values` hands out the hash's
     // own containers, so a write to the topic lands in the hash; in a
     // SetHash/BagHash/MixHash a weight of 0 deletes the key (quanthash.t).
@@ -30043,7 +30173,8 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // position matches $_ (so the invocant must not auto-match here) —
     // but an explicit `m//` DOES match, so `(m:g/b/).elems` counts the
     // matches instead of asking a Regex for its elems
-    Value inv = (mc->inv && mc->inv->kind == NK::RegexLit &&
+    Value inv = preInv ? std::move(*preInv)
+              : (mc->inv && mc->inv->kind == NK::RegexLit &&
                  !static_cast<RegexLit*>(mc->inv.get())->isM)
         ? regexLitValue(static_cast<RegexLit*>(mc->inv.get()))
         : eval(mc->inv.get());

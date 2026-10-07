@@ -458,6 +458,7 @@ struct KernelSlot {
     }
 };
 
+struct ClassInfo;   // (checkRetType's shortcut below names one)
 // A callable: either a user sub (params+body+closure) or a builtin.
 struct Callable {
     std::string pkg; // enclosing package name ("" = GLOBAL) — &?ROUTINE.package
@@ -587,6 +588,13 @@ struct Callable {
     // dispatchCacheN candidates
     DecidedOnce<signed char> dispatchCacheable{-1};
     DecidedOnce<uint32_t> dispatchCacheN{0};
+    // checkRetType's ACCEPTING shortcut for `--> T` / `--> T:D`, resolved once
+    // per symbol generation: retFastKey is (generation + 1) << 3 | kind | 'D'
+    // bit — kind 0 none (the full check), 1 a user class (retFastCls), 2 Bool.
+    // Only a value that plainly fits returns early; everything else, every
+    // refusal included, takes the full check.
+    mutable DecidedOnce<uint64_t> retFastKey{0};
+    mutable DecidedOnce<ClassInfo*> retFastCls{nullptr};
     PRef<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
                                                    // dispatch group is synthesized; .dispatcher reads it)
     bool isMultiDispatcher = false;
@@ -1813,8 +1821,11 @@ struct ClassInfo {
     signed char rationalNew = -1;
     // whether `.new` is the default construction with nothing around it
     // (plainNewClass in Builtins.cpp), decided per symbol generation:
-    // (generation + 1) << 1 | answer, 0 = not decided
+    // (generation + 1) << 2 | answer (0 no, 1 plain, 2 plain with checks), 0 = not decided
     mutable DecidedOnce<uint64_t> plainNewKey{0};
+    // …whether a public attribute's accessor may be answered straight after
+    // the user-method lookup (plainAccessorClass in Builtins.cpp), the same way
+    mutable DecidedOnce<uint64_t> plainAccKey{0};
     // …and whether it declares ACCEPTS (typeObjectUserAccepts), the same way
     mutable DecidedOnce<uint64_t> userAcceptsKey{0};
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`

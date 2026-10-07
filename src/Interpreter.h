@@ -2051,6 +2051,9 @@ public:
     }
     void uninitBinaryOperands(struct Binary* b, const std::string& op, Value& l, Value& r);
     bool uninitMethodShape(const struct MethodCall* mc, const Value& inv);
+    // `$obj.name`, no arguments, answered as the public attribute's accessor when
+    // that is what dispatch would reach (Builtins.cpp); null: the full path decides
+    const Value* plainAccessorSlot(const Value& inv, const std::string& m);
     [[gnu::noinline]] Value uninitMethodCall(const struct MethodCall* mc, const Value& inv);
     struct UninitNameScope {
         Interpreter& I; std::string saved;
@@ -2516,6 +2519,12 @@ public:
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // same, attribute values as Values
     Value checkRetType(const Callable& c, Value v); // enforce declared return type
+    unsigned retFastDecide(const Callable& c);       // …and its accepting shortcut (InterpreterCore.cpp)
+    // the default constructor's build: attributes, argument checks, BUILD/TWEAK
+    // (MethodCallPart2.cpp)
+    Value constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueList& args, const std::string& nb);
+    // `$!name = EXPR` straight into the slot (MethodCallPart2.cpp); null: the full path
+    Value* attrAssignLane(const struct VarExpr* tv, Expr* value);
     Value makeTypedEx(const std::string& type,
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // build (don't throw) a typed exception object

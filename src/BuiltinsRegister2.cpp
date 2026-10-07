@@ -33,7 +33,19 @@ void Interpreter::registerBuiltinsPart3() {
     // `min((1,2),(3,4))` compares the two sublists.
     for (const char* mm : {"min", "max"}) {
         std::string mname = mm;
-        B[mname] = [mname](Interpreter& I, ValueList& a) -> Value {
+        const bool isMax = mname == "max";
+        B[mname] = [mname, isMax](Interpreter& I, ValueList& a) -> Value {
+            // two plain machine Ints — LeftistHeap's TWEAK takes `max(…, …)` of
+            // two depths per node built — compare directly; the method would
+            // answer the same element after building a list to ask it
+            if (a.size() == 2) {
+                auto plainInt = [](const Value& v) {
+                    return v.t == VT::Int && !v.big() && !v.natBits && v.enumName.empty() &&
+                           v.enumType.empty() && !v.namedArg && v.hashKind.empty();
+                };
+                if (plainInt(a[0]) && plainInt(a[1]))
+                    return (isMax ? a[1].i > a[0].i : a[1].i < a[0].i) ? a[1] : a[0];
+            }
             ValueList pos, named;
             for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) named.push_back(v); else pos.push_back(v); }
             // COMPARING candidates uses them, so a Failure among two or more
