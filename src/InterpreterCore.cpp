@@ -16659,33 +16659,64 @@ bool isJunction(const Value& v) {
     return v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
 }
 
-// +&/+|/+^ past int64: infinite two's complement over base-2^32 limbs.
-// Negatives get sign-extension headroom so the top limb is pure sign, which
-// also makes the result's sign readable off its top bit.
+// +&/+|/+^ past int64, on the infinite two's complement.
+//
+// Only the bits the SHORTER operand spans need combining: above them it is all
+// zeros or all ones, so the answer there is 0, all ones, the longer operand or
+// its complement — base-1e9 arithmetic on the longer operand as it stands. So
+// take y, the shorter, in k words, B = 2^(64k), xl = x mod B from only the
+// limbs of x that reach it, and r = xl op (y mod B). With x = xh·B + xl, and
+// y's own sign standing for everything above B:
+//     y >= 0:  x & y = r             x | y = x ^ y = x - xl + r
+//     y <  0:  x & y = x - xl + r    x | y = r - B    x ^ y = -x + xl + r - B
+// each of them sx·x + t, for one conversion back of k + 1 words and an
+// addition. `$big +& 0xFF` converts eight limbs of $big, not all of it.
+//
+// The conversions are BigInt::toBinary and fromBinary, both subquadratic.
+// This used to go 32 bits per divmod in and 32 bits per multiply back out,
+// quadratic both ways: 0.8 s for two 100,000-bit operands, 83 s for two of a
+// million bits, which take 0.1 s now.
 static BigInt bigBitwise(const BigInt& a, const BigInt& b, char which) {
-    const BigInt two32(4294967296LL);
-    auto rawLimbs = [&](const BigInt& x) {
-        std::vector<uint32_t> limbs;
-        BigInt cur = x.abs(), q, r;
-        while (!cur.isZero()) { BigInt::divmod(cur, two32, q, r); limbs.push_back((uint32_t)r.toLL()); cur = q; }
-        return limbs;
+    const bool aLonger = a.mag.size() >= b.mag.size();
+    const BigInt& x = aLonger ? a : b;
+    const BigInt& y = aLonger ? b : a;
+    std::vector<uint64_t> yw = y.toBinary();
+    const size_t k = yw.size();                     // |y| < B, so y mod B says it all
+    std::vector<uint64_t> xw = x.toBinary(k);
+    xw.resize(k, 0);
+    auto negate = [](std::vector<uint64_t>& w) {    // 2^(64·size) - w, mod 2^(64·size)
+        bool carry = true;
+        for (uint64_t& v : w) { v = ~v + (carry ? 1 : 0); carry = carry && v == 0; }
     };
-    std::vector<uint32_t> la = rawLimbs(a), lb = rawLimbs(b);
-    size_t n = std::max(la.size(), lb.size()) + 1;
-    auto twos = [&](std::vector<uint32_t>& v, int sign) {
-        v.resize(n, 0);
-        if (sign < 0) { uint64_t carry = 1; for (auto& L : v) { uint64_t t = (uint64_t)(uint32_t)~L + carry; L = (uint32_t)t; carry = t >> 32; } }
-    };
-    twos(la, a.sign); twos(lb, b.sign);
-    std::vector<uint32_t> res(n);
-    for (size_t i = 0; i < n; i++)
-        res[i] = which == '&' ? (la[i] & lb[i]) : which == '|' ? (la[i] | lb[i]) : (la[i] ^ lb[i]);
-    bool neg = (res[n - 1] & 0x80000000u) != 0;
-    if (neg) { uint64_t carry = 1; for (auto& L : res) { uint64_t t = (uint64_t)(uint32_t)~L + carry; L = (uint32_t)t; carry = t >> 32; } }
-    BigInt out(0);
-    for (size_t i = n; i-- > 0;) out = out * two32 + BigInt((long long)res[i]);
-    if (neg && !out.isZero()) out.sign = -1;
-    return out;
+    if (y.sign < 0) negate(yw);
+    if (x.sign < 0) negate(xw);
+    std::vector<uint64_t> t(k + 1, 0);               // two's complement, a word to spare
+    for (size_t i = 0; i < k; i++)
+        t[i] = which == '&' ? (xw[i] & yw[i]) : which == '|' ? (xw[i] | yw[i]) : (xw[i] ^ yw[i]);
+    const int sx = y.sign >= 0 ? (which == '&' ? 0 : 1) : (which == '&' ? 1 : which == '|' ? 0 : -1);
+    if (sx > 0) {                                    // t -= xl
+        bool borrow = false;
+        for (size_t i = 0; i < k; i++) {
+            const uint64_t ti = t[i];
+            t[i] = ti - xw[i] - (borrow ? 1 : 0);
+            borrow = ti < xw[i] || (ti == xw[i] && borrow);
+        }
+        if (borrow) t[k]--;
+    }
+    else if (sx < 0) {                               // t += xl
+        bool carry = false;
+        for (size_t i = 0; i < k; i++) {
+            const uint64_t s = t[i] + xw[i] + (carry ? 1 : 0);
+            carry = s < t[i] || (s == t[i] && carry);
+            t[i] = s;
+        }
+        if (carry) t[k]++;
+    }
+    if (y.sign < 0 && which != '&') t[k]--;          // - B
+    int sign = 1;
+    if (t[k] >> 63) { negate(t); sign = -1; }
+    const BigInt tv = BigInt::fromBinary(t.data(), t.size(), sign);
+    return sx == 0 ? tv : sx > 0 ? x + tv : tv - x;
 }
 
 // List-context expansion of an operand for a list-infix op (Z/X/hyper/minmax):

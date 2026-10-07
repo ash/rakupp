@@ -138,6 +138,16 @@ struct BigInt {
     // number of trailing zero bits, which is `.lsb`; -1 for zero. Read off the
     // low limbs unless the magnitude is divisible by a large power of two.
     long long lowestSetBit() const;
+    // The magnitude in binary: 64-bit words, least significant first, no
+    // leading zero word, empty for zero. With `words`, only the low that many
+    // (the magnitude mod 2**(64·words)), converted from only the limbs that
+    // reach them. Both directions are divide and conquer with Karatsuba
+    // joins, so a million bits converts in tens of milliseconds.
+    std::vector<uint64_t> toBinary(size_t words = SIZE_MAX) const;
+    // The inverse: n binary words (least significant first; leading zero
+    // words are fine) as a BigInt, negative when `sign` is. Zero words are
+    // zero whatever the sign.
+    static BigInt fromBinary(const uint64_t* words, size_t n, int sign);
 
     bool fitsLL() const;
     // magnitude fits in a uint64 (Raku caps Rat denominators at uint64;

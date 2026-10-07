@@ -3796,12 +3796,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
             else { double d = val.toNum(); std::memcpy(raw, &d, 8); }
         } else {
             unsigned long long u;
-            if (val.big()) { // low 64 bits (toInt would saturate past int64)
-                BigInt v = *val.big(); if (v.sign < 0) v = v + BigInt(2).pow(64);
-                BigInt q, lo; BigInt::divmod(v, BigInt(4294967296LL), q, lo);
-                BigInt q2, hi; BigInt::divmod(q, BigInt(4294967296LL), q2, hi);
-                u = ((unsigned long long)hi.toLL() << 32) | (unsigned long long)lo.toLL();
-            }
+            if (val.big()) u = val.big()->toU64Wrap(); // low 64 bits (toInt would saturate past int64)
             else u = (unsigned long long)val.toInt();
             std::memcpy(raw, &u, nb <= 8 ? nb : 8);
         }
