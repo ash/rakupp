@@ -785,13 +785,18 @@ static void checkAttrStore(Interpreter& I, Value& v, const ClassAttr& at,
     }
     // a Junction is stored whole, never threaded, so only a Junction slot takes one
     else if (isJunction(v)) ok = ty == "Junction";
+    // …and the Mu type object is no Any (`has Any $.a` refuses `a => Mu`)
+    else if (ty == "Any" && v.t == VT::Type && v.s == "Mu" && v.ofType().empty()) ok = false;
+    // a Seq binds a Positional PARAMETER (the binder caches it) but is no
+    // Positional to assign: `has Positional $.p` refuses a `.map` result
+    else if (ty == "Positional" && v.t == VT::Array && v.isList &&
+             (v.s == "Seq" || v.s == "HyperSeq" || v.s == "RaceSeq")) ok = false;
     else {
         // The nominal predicate does not know every built-in's place in the type
-        // graph — an Array is Cool, a utf8 Stringy, a ValueObjAt an ObjAt — so a
-        // refusal of a BUILT-IN value is put to a smartmatch before it stands.
-        // That errs only toward taking a value, which is what the constructor
-        // always did. A user object or type is left to the predicate, which
-        // walks its class exactly (and the smartmatch calls any object Cool).
+        // graph — a utf8 is Stringy — so a refusal of a BUILT-IN value is put to
+        // a smartmatch before it stands. That errs only toward taking a value,
+        // which is what the constructor always did. A user object or type is
+        // left to the predicate, which walks its class exactly.
         auto conforms = [&](const std::string& t) {
             if (I.typeOrSubsetMatches(v, t)) return true;
             if (v.t == VT::Object || (v.t == VT::Type && I.classes_.count(v.s.str())) ||

@@ -137,10 +137,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   object; a CArray read back from a CStruct field forgets its length, so
   `.elems` dies where Rakudo answers. Also: an `@` parameter binds a Range
   as an Array (Rakudo keeps the Range).
-- [ ] **#110 constructor type checks**: the module battery gate was never run.
-  Open: `A.new ~~ Cool` is True; a List is accepted into Array-typed slots; Mu
-  and Junction are accepted into `Any`; native width is not enforced;
-  `has Array[Int]` is not checked.
+- [ ] **#110 constructor type checks**: the module battery gate was never run,
+  for #110 or for the nominal-check fixes of 2026-10-07. Open: native width is
+  not enforced; `has Array[Int]` is not checked. Seen beside those fixes:
+  dispatch ranks two matching nominal types only by "exact type +2", so the
+  first declared wins (`multi f(Animal)` over `multi f(Dog)` for a Puppy,
+  `Numeric` over `Real`, `Cool` over `Numeric`); `hashKindIsAssociative` calls
+  every hash-backed object (Promise, Lock, Signature, IO::Handle) a
+  Hash/Map/Associative; a Seq bound to `Positional $p` stays a Seq (Rakudo's
+  binder caches it into a List); a Capture binds `Array` and `List`.
 - [ ] **Supply closers on aarch64**: three closers of the class fixed in
   925260b1 are still unlocked (the inner-tap closers and tapSupply's `ended`
   write). The fix needs the supplier lock key passed through tapSupply.

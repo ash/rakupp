@@ -246,19 +246,20 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         // does Positional/Iterable — `"x".NFD ~~ Uni` is True on Rakudo, and
         // JSON::Fast binds `Uni:D \codes` to exactly such a value.
         // The byte-buffer family: `Buf` DOES `Blob`, and both are Positional +
-        // Stringy. `utf8` is a Blob but not Cool. Missing, `Buf ~~ Blob` was
+        // Stringy, and none of them is Cool (`Buf.new.isa(Cool)` is False on
+        // Rakudo; `.^mro` is Buf, Any, Mu). Missing, `Buf ~~ Blob` was
         // False — which is how DBDish::mysql decided a BLOB column needed
         // .decode and choked on the first byte over 0x7F.
-        {"Blob",  {"Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"Buf",   {"Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"blob8", {"blob8","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"blob16",{"blob16","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"blob32",{"blob32","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"blob64",{"blob64","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"buf8",  {"buf8","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"buf16", {"buf16","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"buf32", {"buf32","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
-        {"buf64", {"buf64","Buf","Blob","Positional","Stringy","Cool","Any","Mu"}},
+        {"Blob",  {"Blob","Positional","Stringy","Any","Mu"}},
+        {"Buf",   {"Buf","Blob","Positional","Stringy","Any","Mu"}},
+        {"blob8", {"blob8","Blob","Positional","Stringy","Any","Mu"}},
+        {"blob16",{"blob16","Blob","Positional","Stringy","Any","Mu"}},
+        {"blob32",{"blob32","Blob","Positional","Stringy","Any","Mu"}},
+        {"blob64",{"blob64","Blob","Positional","Stringy","Any","Mu"}},
+        {"buf8",  {"buf8","Buf","Blob","Positional","Stringy","Any","Mu"}},
+        {"buf16", {"buf16","Buf","Blob","Positional","Stringy","Any","Mu"}},
+        {"buf32", {"buf32","Buf","Blob","Positional","Stringy","Any","Mu"}},
+        {"buf64", {"buf64","Buf","Blob","Positional","Stringy","Any","Mu"}},
         {"utf8",  {"utf8","Blob","Positional","Stringy","Any","Mu"}},
         // The list family is Cool — `(1, 2, 3, (1, 2, 3)).are` is Cool, not Any
         // (Nil-Any sheet NA-31, roast S32-list/are.t) — and Mu is the ROOT, so

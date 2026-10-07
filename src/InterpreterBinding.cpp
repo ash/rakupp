@@ -830,7 +830,9 @@ bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"array", {"array", "Positional", "Iterable", "Cool"}},
         {"Array", {"Array", "List", "Positional", "Iterable", "Cool"}},
         {"List",  {"List", "Positional", "Iterable", "Cool"}},
-        {"Seq",   {"Seq", "List", "Positional", "Iterable", "Cool"}},
+        // (a Seq is no List and, to `~~`, no Positional: it does Sequence and
+        // PositionalBindFailover, which is how it reaches an `@` parameter)
+        {"Seq",   {"Seq", "Sequence", "PositionalBindFailover", "Iterable", "Cool"}},
         {"Slip",  {"Slip", "List", "Positional", "Iterable", "Cool"}},
         // `.backtrace` answers a Backtrace (a List of frames here)
         {"Backtrace", {"Backtrace", "List", "Positional", "Iterable", "Cool"}},
@@ -868,23 +870,24 @@ bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         // The Uni family: each normalisation form is a Uni SUBCLASS, and Uni
         // does Positional/Iterable — `"x".NFD ~~ Uni` is True on Rakudo, and
         // JSON::Fast binds `Uni:D \codes` to exactly such a value.
-        // The byte-buffer family: a Buf DOES Blob, both are Positional + Stringy
-        // (utf8 is a Blob but not Cool). Without the Buf→Blob step `Buf ~~ Blob`
-        // was False, and DBDish::mysql then decided a BLOB column needed .decode.
-        {"Blob",  {"Blob", "Positional", "Stringy", "Cool"}},
+        // The byte-buffer family: a Buf DOES Blob, both are Positional + Stringy,
+        // and neither is Cool (an instance answers False on Rakudo). Without the
+        // Buf→Blob step `Buf ~~ Blob` was False, and DBDish::mysql then decided a
+        // BLOB column needed .decode.
+        {"Blob",  {"Blob", "Positional", "Stringy"}},
         // a CArray does Positional/Iterable (NativeCall's class declares both) —
         // absent here, `$carray ~~ Positional:D` was False and every module
         // guarding its native path on it fell through (Math::DistanceFunctions)
         {"CArray", {"CArray", "Positional", "Iterable"}},
-        {"Buf",   {"Buf", "Blob", "Positional", "Stringy", "Cool"}},
-        {"blob8", {"blob8", "Blob", "Positional", "Stringy", "Cool"}},
-        {"blob16",{"blob16", "Blob", "Positional", "Stringy", "Cool"}},
-        {"blob32",{"blob32", "Blob", "Positional", "Stringy", "Cool"}},
-        {"blob64",{"blob64", "Blob", "Positional", "Stringy", "Cool"}},
-        {"buf8",  {"buf8", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
-        {"buf16", {"buf16", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
-        {"buf32", {"buf32", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
-        {"buf64", {"buf64", "Buf", "Blob", "Positional", "Stringy", "Cool"}},
+        {"Buf",   {"Buf", "Blob", "Positional", "Stringy"}},
+        {"blob8", {"blob8", "Blob", "Positional", "Stringy"}},
+        {"blob16",{"blob16", "Blob", "Positional", "Stringy"}},
+        {"blob32",{"blob32", "Blob", "Positional", "Stringy"}},
+        {"blob64",{"blob64", "Blob", "Positional", "Stringy"}},
+        {"buf8",  {"buf8", "Buf", "Blob", "Positional", "Stringy"}},
+        {"buf16", {"buf16", "Buf", "Blob", "Positional", "Stringy"}},
+        {"buf32", {"buf32", "Buf", "Blob", "Positional", "Stringy"}},
+        {"buf64", {"buf64", "Buf", "Blob", "Positional", "Stringy"}},
         {"utf8",  {"utf8", "Blob", "Positional", "Stringy"}},
         {"utf16", {"utf16", "Blob", "Positional", "Stringy"}},
         {"utf32", {"utf32", "Blob", "Positional", "Stringy"}},

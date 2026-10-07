@@ -5370,6 +5370,118 @@ static bool classOutsideAny(const Value& arg) {
         if (ci->nativeParent == "Mu" && !ci->parent) return true;
     return false;
 }
+
+// `$x ~~ Cool`. Cool is the base of the VALUE types — the numbers, strings,
+// lists, arrays, Seqs, hashes, maps, ranges, Match, Nil and Failure, IO::Path,
+// Instant and Duration — and of nothing else: a Pair, every Code, the
+// QuantHashes, Date and DateTime, the concurrency objects, Exception, Capture,
+// Signature, Version, a Blob or Buf, an ObjAt and a Whatever are all plain Any.
+// So is a user class, unless a built-in parent makes it Cool (`is Int`, `is
+// Hash`, a grammar's Match): the role it does never does. The `~~` arm said
+// True to everything but three tags, so `A.new ~~ Cool` held for any class.
+// One quirk is kept because Rakudo has it: a ROLE's type object answers True
+// (`Positional ~~ Cool`, `R ~~ Cool`, `Blob ~~ Cool`), while its instances
+// answer for what they are.
+static bool isCoolValue(const Value& v) {
+    switch (v.t) {
+        case VT::Int: case VT::Num: case VT::Rat: case VT::Complex: case VT::Bool:
+        case VT::Nil: case VT::Range: case VT::Match:
+            return true;
+        case VT::Str:
+            return !(v.hashKind == "Version" || v.hashKind == "IO::Special" ||
+                     v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "CArray" ||
+                     v.hashKind == "ObjAt" || v.hashKind == "ValueObjAt");
+        case VT::Array:
+            // a Capture and the Uni family are Any; every list, array and Seq is Cool
+            return v.hashKind != "Capture" &&
+                   !(v.s == "Uni" || v.s == "NFC" || v.s == "NFD" || v.s == "NFKC" || v.s == "NFKD");
+        case VT::Hash: {
+            // the Map family and the kinds that ride a Cool value; a container
+            // (Proxy, Scalar) keeps the old answer
+            const std::string& k = v.hashKind;
+            if (k.empty() || k == "Map" || k == "Hash" || k == "Stash" || k == "Failure" ||
+                k == "Instant" || k == "Duration" || k == "Format" || k == "StrDistance" ||
+                k == "Proxy" || k == "Scalar")
+                return true;
+            for (auto& a : typeAncestry(v.typeName())) if (a == "Cool") return true;
+            return false;
+        }
+        case VT::Object:
+            // MY::, CALLER:: … are a Map
+            if (v.obj() && v.obj()->cls && v.obj()->cls->name == "PseudoStash") return true;
+            return typeMatchesArg(v, "Cool");
+        case VT::Type: {
+            const std::string& n = v.s;
+            if (g_cbInterp) {
+                auto it = g_cbInterp->classes_.find(n);
+                if (it != g_cbInterp->classes_.end() && it->second && !isKnownTypeName(n))
+                    return it->second->isRole ||
+                           typeNameConforms(n, "Cool", std::string(), std::string());
+            }
+            // the built-in classes that are not Cool; any other name keeps True
+            static const std::set<std::string> kNotCool = {
+                "Any", "Mu", "Junction", "Pair", "Code", "Block", "Routine", "Sub", "Method",
+                "Submethod", "WhateverCode", "Regex", "Whatever", "HyperWhatever", "Exception",
+                "Promise", "Channel", "Supply", "Supplier", "Tap", "Thread",
+                "Scheduler", "Lock", "Lock::Async", "Semaphore", "Proc", "Proc::Async",
+                "Date", "DateTime", "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash",
+                "Capture", "Signature", "Parameter", "Attribute", "Version", "Label",
+                "Uni", "NFC", "NFD", "NFKC", "NFKD", "ObjAt", "ValueObjAt",
+                "utf8", "utf16", "utf32", "IO::Handle", "IO::Pipe", "IO::Special",
+                "IO::Socket::INET", "IO::Socket::Async",
+                "Encoding", "Iterator", "Kernel", "VM", "Distro", "Compiler", "Variable"};
+            return !kNotCool.count(n) && n.rfind("X::", 0) != 0;
+        }
+        // a Pair, every Code and Regex, a Whatever, the undefined Any
+        default:
+            return false;
+    }
+}
+
+// A `$` variable typed with a BUILT-IN type refuses what does not conform,
+// as Rakudo's assignment does: `my Array $a = (1, 2)`, `my Hash $h = 42`,
+// `my Any $x = Mu` and `my Any $x = 1|2` all die there. Only seven core
+// types and the user's own were asked before (kChecked, userTypeRefuses),
+// and every other annotation took anything. The types judged here are the
+// ones whose values this engine reports faithfully; a refusal needs BOTH the
+// nominal predicate and `~~` to say no, so a value this engine represents its
+// own way errs toward being taken. Nil resets the slot, and a Failure or a
+// Proxy keeps the old leniency.
+static bool builtinTypeRefuses(Interpreter& I, const std::string& nm, const Value& rhs,
+                               const std::string& want) {
+    if (nm.empty() || nm[0] != '$' || rhs.t == VT::Nil) return false;
+    if (rhs.t == VT::Hash && (rhs.hashKind == "Failure" || rhs.hashKind == "Proxy")) return false;
+    // Any is everything but Mu and Junction, and a class declared `is Mu`
+    if (want == "Any") {
+        if (isJunction(rhs)) return true;
+        if (rhs.t == VT::Type && rhs.s == "Mu" && rhs.ofType().empty()) return true;
+        return (rhs.t == VT::Object || rhs.t == VT::Type) && classOutsideAny(rhs);
+    }
+    static const std::set<std::string> kJudged = {
+        "Array", "List", "Seq", "Slip", "Hash", "Map", "Pair", "Range", "Code", "Callable",
+        "Block", "Routine", "Sub", "Method", "Regex", "Numeric", "Real", "Rational", "FatRat",
+        "Cool", "Stringy", "Positional", "Associative", "Iterable", "Match", "Capture", "Junction"};
+    // Every typed store asks, so most names (the program's own classes) leave
+    // on a (first letter, length) bit before the set is searched: a
+    // user-typed store loop paid 7% for the lookup alone.
+    static const std::array<uint16_t, 26> kShape = [] {
+        std::array<uint16_t, 26> m{};
+        for (auto& n : kJudged) m[n[0] - 'A'] |= uint16_t(1u << n.size());
+        return m;
+    }();
+    if (want.size() < 3 || want.size() > 11 || want[0] < 'A' || want[0] > 'Z' ||
+        !(kShape[want[0] - 'A'] & (1u << want.size())) || !kJudged.count(want)) return false;
+    // (a program's own class of the same name is userTypeRefuses' to judge)
+    auto mine = [&] { return I.classes_.count(want) > 0; };
+    // a junction is stored whole, never threaded, so only Junction (and Mu) takes one
+    if (isJunction(rhs)) return want != "Junction" && !mine();
+    // a Seq binds a Positional PARAMETER (the binder caches it) but is no
+    // Positional to assign: `my Positional $p = (1, 2).map(*)` dies on Rakudo
+    if (want == "Positional" && rhs.t == VT::Array && rhs.isList &&
+        (rhs.s == "Seq" || rhs.s == "HyperSeq" || rhs.s == "RaceSeq")) return !mine();
+    if (typeMatchesArg(rhs, want) || mine()) return false;
+    return !I.boolify(I.smartmatchValue("~~", rhs, Value::typeObj(want)));
+}
 bool typeMatchesArg(const Value& arg, const std::string& type) {
     if (type == "Any" && (arg.t == VT::Object || arg.t == VT::Type) && classOutsideAny(arg)) return false;
     if (type.empty() || type == "Any" || type == "Mu") return true;
@@ -5515,28 +5627,37 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             return type == "Bool" || type == "Int" || type == "UInt" || type == "Cool" ||
                    type == "Numeric" || type == "Real" || type == "Enumeration";
         case VT::Str:
-            // a byte buffer is NOT Stringy: Blob/Buf bind only buffer-typed
+            // a byte buffer is NOT a Str: Blob/Buf bind only buffer-typed
             // params (`multi sha1(Str)` vs `multi sha1(blob8)` — Digest's
-            // `samewith $str.encode` looped forever when Blob re-matched Str)
+            // `samewith $str.encode` looped forever when Blob re-matched Str).
+            // It IS Stringy, which Rakudo's Blob role does (`sub f(Stringy $s)`
+            // takes 'x'.encode); a CArray is neither. (A buffer-typed candidate
+            // still outranks a Stringy one: see scoreCandidate.)
             if (arg.hashKind == "Blob" || arg.hashKind == "Buf" || arg.hashKind == "CArray") {
                 static const std::set<std::string> bufTypes = {
                     "Blob", "Buf", "blob8", "buf8", "blob16", "buf16", "blob32", "buf32",
                     "blob64", "buf64", "utf8", "utf16", "utf32", "Positional"};
-                return bufTypes.count(type) > 0;
+                return bufTypes.count(type) > 0 || (type == "Stringy" && arg.hashKind != "CArray");
             }
             // an IO::Path is Cool but NOT Stringy — a `Str:D $path` candidate must
             // refuse it, or Config's read(Str:D) re-dispatches to itself forever
             // ($path.IO is already an IO::Path). Version/IO::Special are Any-based.
             if (arg.hashKind == "IO") return type == "Cool";
             if (arg.hashKind == "Version" || arg.hashKind == "IO::Special") return false;
+            // an identity is no string either: `.WHICH` binds `ObjAt $o` (a
+            // ValueObjAt is one) and refuses Str, Stringy and Cool, as Rakudo's does
+            if (arg.hashKind == "ObjAt" || arg.hashKind == "ValueObjAt") return type == "ObjAt";
             return type == "Str" || type == "Cool" || type == "Stringy" || type == "str";
         case VT::Array:
             // The Uni family: NFC/NFD/NFKC/NFKD are Uni SUBCLASSES, so each
             // form binds a `Uni` parameter as well as its own name (JSON::Fast
             // hands nqp::strtocodes output to `Uni:D \codes`).
-            if ((type == "Uni" || type == arg.s) &&
-                (arg.s == "Uni" || arg.s == "NFC" || arg.s == "NFD" ||
-                 arg.s == "NFKC" || arg.s == "NFKD")) return true;
+            // A Uni does Positional and Stringy, and is no List, Array, Iterable
+            // or Cool (Rakudo: `my Stringy $s = "a".NFC` takes it, `my List $l`
+            // does not).
+            if (arg.s == "Uni" || arg.s == "NFC" || arg.s == "NFD" ||
+                arg.s == "NFKC" || arg.s == "NFKD")
+                return type == "Uni" || type == arg.s || type == "Positional" || type == "Stringy";
             // A NATIVE array (`my uint64 @a`, `array[uint8]`) IS an `array`, and
             // is NOT an Array or a List — Rakudo's native array is its own type,
             // Positional and Iterable and Cool but nothing in the Array family.
@@ -5550,8 +5671,19 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
                 return type == "array" || type == "Positional" ||
                        type == "Iterable" || type == "Cool";
             // (List and Seq are Cool, and an Array is a List: `Cool $c` and
-            // `Str(Cool) $s` take [1, 2], as Rakudo's do)
-            return type == "Array" || type == "List" || type == "Positional" || type == "Iterable" || type == "Cool" || (arg.isList && arg.s == "Seq" && type == "Seq") ||
+            // `Str(Cool) $s` take [1, 2], as Rakudo's do.) …but a List is no
+            // Array and a Seq is no List: `sub f(Array $a)` refuses (1, 2), and
+            // `sub f(List $l)` a `.map` result. A Seq does Sequence and
+            // PositionalBindFailover instead, and still binds a `Positional`
+            // parameter, which Rakudo's binder caches it into (only `~~
+            // Positional` says no to it).
+            {
+                const bool seq = arg.isList && (arg.s == "Seq" || arg.s == "HyperSeq" || arg.s == "RaceSeq");
+                if (type == "Array") return !arg.isList;
+                if (type == "List") return !seq;
+                if (seq && (type == "Sequence" || type == "PositionalBindFailover")) return true;
+            }
+            return type == "Positional" || type == "Iterable" || type == "Cool" || (arg.isList && arg.s == "Seq" && type == "Seq") ||
                    (type == "Slip" && arg.s == "Slip");   // `--> Slip` (highlighter's matches)
         case VT::Hash:
             if (arg.hashKind == "FileHandle" && (type == "IO::Handle" || type == "IO" || type == "Handle")) return true;
@@ -5592,6 +5724,9 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             // declares exactly that pair of candidates, and the Bag one was
             // unreachable.
             if (typeNameConforms(arg.hashKind.str(), type, arg.ofType(), "")) return true;
+            // a Hash, a Map and a Stash are Cool (`sub f(Cool $c)` takes %h on
+            // Rakudo); a Set, a Date, a Promise … are not
+            if (type == "Cool") return isCoolValue(arg);
             if (!hashKindIsAssociative(arg.hashKind)) return false;
             return type == "Hash" || type == "Map" || type == "Associative";
         // a Pair DOES Associative in Raku: `(a => 1) ~~ Associative` is True,
@@ -5659,6 +5794,12 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             // :error($_)`), where `$_ ~~ Exception` said True.
             if (type == "Exception" && arg.obj() && arg.obj()->cls &&
                 arg.obj()->cls->name.rfind("X::", 0) == 0) return true;
+            // MY::, CALLER:: … are a Map, so Associative, Iterable and Cool (see
+            // isCoolValue); OUR:: is one too here, where Rakudo's is a Stash,
+            // which is a Hash
+            if (arg.obj() && arg.obj()->cls && arg.obj()->cls->name == "PseudoStash")
+                return type == "Map" || type == "Hash" || type == "Associative" ||
+                       type == "Iterable" || type == "Cool";
             return false;
         }
         // The undefined value conforms to Any and Mu only — both already answered
@@ -6361,8 +6502,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         }
         // `Cool` is the widest a LIST can match short of Any — a bare `@x`
         // (Positional) says more about it: `multi m(Cool $x)` / `multi m(@x)`
-        // sends [1] to the @x candidate, as Rakudo does
-        else if (p->type == "Cool" && pos[i].t == VT::Array) {
+        // sends [1] to the @x candidate, as Rakudo does. A HASH the same: `%x`,
+        // `Associative $x` and `Hash $x` all beat `Cool $x` for %h on Rakudo.
+        else if (p->type == "Cool" && (pos[i].t == VT::Array || pos[i].t == VT::Hash)) {
             score += 5;
         }
         else if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
@@ -6387,6 +6529,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                  isNativeScalarName(pos[i].ofType())))
                 score += 2;                            // exact type beats a supertype
                                                        // (so multi f(Int) beats multi f(Numeric) for an Int)
+            // …and a BUFFER type is narrower than the two roles every buffer
+            // does: `multi g(Blob)` beats `multi g(Stringy)` and `multi
+            // g(Positional)` for 'x'.encode, whichever is declared first (Rakudo)
+            else if (pos[i].t == VT::Str && (pos[i].hashKind == "Blob" || pos[i].hashKind == "Buf") &&
+                     p->type != "Stringy" && p->type != "Positional")
+                score += 1;
             // a NATIVE argument (`my int $i`) is exactly a native parameter:
             // `multi f(int)` beats `multi f(Int)` for it, and loses for a boxed one
             if ((pos[i].natBits || pos[i].natFloat) && paramIsNative(*p) && pos[i].t != VT::Str) {
@@ -16170,13 +16318,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             if (di->second.t == VT::Type && isDefined(rhs) && !subsets_.empty() &&
                                 isCoercionSubset(std::string(di->second.s.c_str())))
                                 rhs = coerceViaSubset(rhs, std::string(di->second.s.c_str()));
+                            // (one of the seven core types needs nothing past rtTypeMatch)
+                            const bool core = di->second.t == VT::Type && kChecked.count(di->second.s);
                             if (di->second.t == VT::Type &&
-                                ((kChecked.count(di->second.s) &&
+                                ((core &&
                                   (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
                                                   : !undefOk(di->second.s))) ||
                                  // …the name as the declaring scope reads it
                                  (userTypeRefuses(rhs, di->second.s) &&
-                                  !lexicalAliasAccepts(en, di->second.s, rhs))))
+                                  !lexicalAliasAccepts(en, di->second.s, rhs)) ||
+                                 (!core && builtinTypeRefuses(*this, nm, rhs, di->second.s))))
                                 throwTypedV("X::TypeCheck::Assignment",
                                     {{"got", rhs},
                                      {"expected", Value::typeObj(di->second.s)},
@@ -19179,10 +19330,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                   (l.t == VT::Regex && (r.s == "Code" || r.s == "Callable" || r.s == "Method" ||
                                         r.s == "Routine" || r.s == "Block")) ||
                   (r.s == "Numeric" && l.isNumeric()) ||
-                  // Cool is broad but not universal: Version, IO::Special and
-                  // IO::Handle descend from Any, not Cool (Rakudo-verified)
-                  (r.s == "Cool" && l.hashKind != "Version" &&
-                   l.hashKind != "IO::Special" && l.hashKind != "FileHandle") ||
+                  // Cool is broad but not universal (see isCoolValue)
+                  (r.s == "Cool" && isCoolValue(l)) ||
                   // UInt is a CONSTRAINED subset of Int, so it cannot be a plain
                   // name match — ask typeMatchesArg, which owns the rule (rakupp#11)
                   (r.s == "UInt" && typeMatchesArg(l, "UInt")) ||
@@ -19222,7 +19371,13 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
-                if ((r.s == "Positional" || r.s == "Iterable") && l.t == VT::Array) res = true;
+                // (a Seq is Iterable, but no Positional: `(1, 2).map(*) ~~ Positional`
+                // is False on Rakudo, though its binder takes one for `@a`)
+                if (l.t == VT::Array &&
+                    (r.s == "Iterable" ||
+                     (r.s == "Positional" && !(l.isList && (l.s == "Seq" || l.s == "HyperSeq" ||
+                                                            l.s == "RaceSeq")))))
+                    res = true;
                 else if (r.s == "Iterable" && l.t == VT::Range) res = true;
                 // ...but only for kinds that really are hashes: DateTime/Date ride
                 // on VT::Hash and are NOT Associative (same shape as the Stringy
@@ -19233,10 +19388,12 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                          hashKindIsAssociative(l.hashKind)) res = true;
                 else if (r.s == "Callable" && l.t == VT::Code) res = true;
                 // ...but only for actual strings: an IO::Path/Version/IO::Special
-                // rides on VT::Str and is NOT Stringy (Blob/Buf genuinely are)
+                // or an ObjAt rides on VT::Str and is NOT Stringy (Blob/Buf
+                // genuinely are)
                 else if (r.s == "Stringy" && l.t == VT::Str &&
                          l.hashKind != "IO" && l.hashKind != "Version" &&
-                         l.hashKind != "IO::Special" && l.hashKind != "CArray") res = true;
+                         l.hashKind != "IO::Special" && l.hashKind != "CArray" &&
+                         l.hashKind != "ObjAt" && l.hashKind != "ValueObjAt") res = true;
                 else if (r.s == "Real" && l.isNumeric() && l.t != VT::Complex) res = true;
                 // Buf does Blob; the sized views (buf8/blob8/utf8…) share our
                 // byte representation, so a Buf answers any buf* type
@@ -24659,10 +24816,13 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
                     try { rhs = coerceToType(rhs, si.base); } catch (RakuError&) {}
                 }
             }
-            if ((kChecked.count(want) &&
+            // (one of the seven core types needs nothing past rtTypeMatch)
+            const bool core = kChecked.count(want) > 0;
+            if ((core &&
                  (isDefined(rhs) ? !rtTypeMatch(rhs, want) : !undefOk(want))) ||
                 // …read as the scope that declared the variable reads the name
                 (userTypeRefuses(rhs, want) && !lexicalAliasAccepts(en, want, rhs)) ||
+                (!core && builtinTypeRefuses(*this, nm, rhs, want)) ||
                 // a SUBSET's where-clause is late-bound: asked on every write
                 (rhs.t != VT::Nil && subsets_.count(want) && !isCoercionSubset(want) &&
                  !subsetMatches(want, rhs, 0)))
