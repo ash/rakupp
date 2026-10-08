@@ -1605,13 +1605,19 @@ bool Interpreter::containerElemFor(const Expr* e, Value& out) {
     out = makeSharedCellProxy(std::move(c));
     return true;
 }
-// A list literal that is KEPT — assigned or bound to a scalar, or passed as an
-// argument — holds the containers of the VARIABLES among its items, as Rakudo's
-// List does: `my $m = ($c, 2); $m[0] = 5` writes $c, while element 1, a value,
-// still refuses. Only variables: their cell is a real container. An element
-// (`(@a[0], 2)`, `(%h<k>, 2)`) is not — a proxy over its slot reads whatever
-// sits there NOW, so it would follow a `.shift` or a `:delete` that Rakudo's
-// container survives (S32-hash/delete-adverb.t keeps the deleted value).
+// A list literal that is KEPT — assigned or bound to a scalar, passed as an
+// argument, pushed — holds the containers of the variables and elements among
+// its items, as Rakudo's List does: `my $m = ($c, 2); $m[0] = 5` writes $c,
+// while element 1, a value, still refuses.
+//
+// An ELEMENT (`(@a[0], 2)`, `(%h<k>, 2)`) gets a container of its own first:
+// the slot's value moves into a cell that the slot and the List both proxy, as
+// `@a[0] := $x` leaves it. The cell is the container, not the position, so the
+// List keeps it through a later `.shift` or `:delete` as Rakudo's does
+// (S32-hash/delete-adverb.t keeps the deleted value). The key is evaluated a
+// second time to find the slot, so only one that reads the same again — a
+// literal, a variable — is taken; a typed or native container, whose stores
+// check what they take, keeps the value.
 void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
     if (!list.arr() || list.arr()->size() != l->items.size() || !tctx_.cur) return; // a slip moved positions
     bool holds = false;
@@ -1621,7 +1627,26 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
         if ((it->kind == NK::VarExpr || it->kind == NK::Assign) && containerElemFor(it, c)) {
             (*list.arr())[i] = std::move(c);
             holds = true;
+            continue;
         }
+        if (it->kind != NK::Index) continue;
+        auto* ix = const_cast<Index*>(static_cast<const Index*>(it));
+        if (!ix->index || !ix->base || ix->base->kind != NK::VarExpr ||
+            (ix->index->kind != NK::IntLit && ix->index->kind != NK::StrLit && ix->index->kind != NK::VarExpr))
+            continue;
+        if (Value* bv = tctx_.cur->find(static_cast<const VarExpr*>(ix->base.get())->name);
+            !bv || !bv->ofType().empty() || bv->objKeyed || (bv->t == VT::Array && bv->isList))
+            continue;
+        Value* slot = peekElemSlot(ix);
+        if (!slot) continue;
+        PRef<Value> cell = cellOfProxy(slot);
+        if (!cell) {
+            if (slot->t == VT::Hash && slot->hashKind == "Proxy") continue;   // a user's Proxy: its own container
+            cell = makePayload<Value>(*slot);
+            *slot = makeSharedCellProxy(cell);
+        }
+        (*list.arr())[i] = makeSharedCellProxy(std::move(cell));
+        holds = true;
     }
     if (holds) list.markHoldsContainers();
 }

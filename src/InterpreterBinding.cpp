@@ -4542,7 +4542,7 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
     return l;
 }
 
-Value rtReduce(Interpreter& I, const std::string& op, const Value& list) {
+Value rtReduce(Interpreter& I, const std::string& op, const Value& list, bool operands) {
     // The fold itself is applyReduce — the same implementation the interpreter
     // uses, so a compiled binary chains comparisons, runs scan forms and honors
     // the R-metaop exactly as the interpreted program does. This used to be a
@@ -4554,7 +4554,18 @@ Value rtReduce(Interpreter& I, const std::string& op, const Value& list) {
         if (list.t == VT::Array && list.arr())
             for (auto& v : *list.arr()) if (endlessReduce(op, v, r)) return r;
     }
-    ValueList items = list.flatten();
+    // SEVERAL comma items are that many operands, each as it is — `[Z] $l, $m`
+    // zips the two Lists, `[+] (1,2), (3,4)` adds the counts — a Slip spreading
+    // into them, as the interpreter's reduce takes them (+@list). Flattening
+    // them merged the Lists into one.
+    ValueList items;
+    if (operands && list.t == VT::Array && list.arr()) {
+        for (auto& v : *list.arr()) {
+            if (v.t == VT::Array && v.arr() && v.s == "Slip") { for (auto& x : *v.arr()) items.push_back(x); }
+            else items.push_back(v);
+        }
+    }
+    else items = list.flatten();
     return I.applyReduce(op, items); // empty-list identities live there too
 }
 

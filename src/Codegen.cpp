@@ -14,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>   // std::exchange
 
 namespace rakupp {
 
@@ -411,32 +412,57 @@ struct Codegen {
     // builds it. A native variable is no such container, so a program that both
     // keeps one (keptListVar_) and writes through a subscript of something that
     // could hold it (listWriteVia_) is refused once emitted, and bundled.
+    // Two ways a kept List shows its containers, so two things refuse:
+    //   * a write through the List (`$m[0] = 5`) — keptListVar_ with
+    //     listWriteVia_, a subscript write through anything that could hold it;
+    //   * a write to what it holds, read back through it (`$c = 7; say $m`) —
+    //     a name in keptNames_ that is also in writtenNames_: `$c`, or `@a`
+    //     for an element `@a[0]` (written as `@a[…] = …`).
+    // By NAME, across the whole program: a shadowing `$c` elsewhere refuses
+    // too, which costs native speed and never correctness.
     bool keptListVar_ = false;
     bool listWriteVia_ = false;
+    std::set<std::string> keptNames_, writtenNames_;
     const std::vector<Param>* curParams_ = nullptr;   // the routine bodyDef is emitting
-    // a list literal with a `$name` (or `my $name = …`) item: what keeping it shares
-    static bool listHoldsScalarVar(const Expr* e) {
+    // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}`
+    // items: what keeping it shares. Records them; true when there was one.
+    bool noteKeptItems(const Expr* e) {
         if (!e || e->kind != NK::ListExpr) return false;
+        bool any = false;
         for (auto& it : static_cast<const ListExpr*>(e)->items) {
             const Expr* x = it.get();
             if (x && x->kind == NK::Assign && static_cast<const Assign*>(x)->target &&
                 static_cast<const Assign*>(x)->target->kind == NK::VarExpr &&
                 static_cast<const VarExpr*>(static_cast<const Assign*>(x)->target.get())->declare)
                 x = static_cast<const Assign*>(x)->target.get();
+            if (x && x->kind == NK::Index && static_cast<const Index*>(x)->base &&
+                static_cast<const Index*>(x)->base->kind == NK::VarExpr)
+                x = static_cast<const Index*>(x)->base.get();     // the element's container: by its base
             if (!x || x->kind != NK::VarExpr) continue;
             const std::string& n = static_cast<const VarExpr*>(x)->name;
-            if (n.size() > 1 && n[0] == '$' && n != "$_" && (ascii::isalpha((unsigned char)n[1]) || n[1] == '_'))
-                return true;
+            if (n.size() > 1 && std::strchr("$@%", n[0]) && n != "$_" &&
+                (ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) {
+                keptNames_.insert(n);
+                any = true;
+            }
         }
-        return false;
+        if (any) keptListVar_ = true;
+        return any;
     }
-    // `my $m = (…)` / `$m := (…)` / `my \m = (…)`: the assignment keeps the List
+    // `my $m = (…)` / `$m := (…)` / `my \m = (…)` / `@o[0] = (…)`: the
+    // assignment keeps the List (as the interpreter's evalAssign marks it)
     void noteKeptList(const Assign* a) {
-        if (keptListVar_ || !a->target || a->target->kind != NK::VarExpr || (a->op != "=" && a->op != ":=")) return;
+        if (!a->target || (a->op != "=" && a->op != ":=")) return;
+        if (a->target->kind == NK::Index) { noteKeptItems(a->value.get()); return; }
+        if (a->target->kind != NK::VarExpr) return;
         const std::string& tn = static_cast<const VarExpr*>(a->target.get())->name;
-        if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_') &&
-            listHoldsScalarVar(a->value.get()))
-            keptListVar_ = true;
+        if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_'))
+            noteKeptItems(a->value.get());
+    }
+    // a write to a variable (not its declaration): what a kept List would show
+    void noteVarWrite(const Expr* t) {
+        if (t && t->kind == NK::VarExpr && !static_cast<const VarExpr*>(t)->declare)
+            writtenNames_.insert(static_cast<const VarExpr*>(t)->name);
     }
     // A subscript write whose base is `base`: through a scalar, a sigilless name
     // or an `@` parameter it may reach a kept List. Into a SLURPY parameter's
@@ -447,6 +473,7 @@ struct Codegen {
         if (!base || base->kind != NK::VarExpr) { listWriteVia_ = true; return; }
         const std::string& n = static_cast<const VarExpr*>(base)->name;
         if (n.empty()) return;
+        writtenNames_.insert(n);   // `@a[0] = 10` writes the container `(@a[0], 3)` shares
         if (n[0] == '@' && curParams_)
             for (const Param& p : *curParams_)
                 if (p.name == n) {
@@ -888,7 +915,7 @@ struct Codegen {
     // a quoted key or parens around the pair make it positional); everything
     // else is exArg.
     std::string emitArg(Expr* a) {
-        if (a->kind == NK::ListExpr && static_cast<ListExpr*>(a)->parenned && listHoldsScalarVar(a)) keptListVar_ = true;
+        if (a->kind == NK::ListExpr && static_cast<ListExpr*>(a)->parenned) noteKeptItems(a);
         if (a->kind == NK::Pair) {
             auto* pr = static_cast<PairExpr*>(a);
             if (!pr->keyExpr && syntacticNamedPair(pr)) { // f('a' => 1), f((a => 1)) stay positional
@@ -1996,7 +2023,11 @@ struct Codegen {
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
                 if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') // reduce metaop [+] [*] …
-                    return "rtReduce(RT, " + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) + ")";
+                    return "rtReduce(RT, " + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) +
+                           // (each comma item ONE operand, as the interpreter takes them: see rtReduce)
+                           (u->operand->kind == NK::ListExpr &&
+                                    static_cast<ListExpr*>(u->operand.get())->items.size() != 1
+                                ? ", true)" : ")");
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
@@ -3252,6 +3283,7 @@ struct Codegen {
     std::string lvalueExpr(Expr* e) {
         // only the outermost place a step resolves is the one it writes
         const std::string stepOp = std::exchange(stepOp_, std::string());
+        noteVarWrite(e);
         if (e->kind == NK::VarExpr) {
             auto* v = static_cast<VarExpr*>(e);
             if (v->declare) refuseDeclTraits(v);
@@ -4524,6 +4556,7 @@ struct Codegen {
         if (a->target->kind != NK::VarExpr) return false;
         auto* tv = static_cast<VarExpr*>(a->target.get());
         if (tv->declare) return false;                 // `my $x = …` declares a C++ var
+        noteVarWrite(tv);   // (a lane writes without lvalueExpr)
         if (readonlyVars_.count(tv->name)) return false;   // assign() refuses it
         if (tv->nativeIntRead || tv->nativeNumRead) return false;   // a native store checks and wraps (coerceFor)
         std::string lv = laneVar(tv);
@@ -5761,6 +5794,7 @@ struct Codegen {
     bool tryLaneIncDec(Unary* u, int ind) {
         if (u->op != "++" && u->op != "--") return false;
         if (u->operand->kind != NK::VarExpr) return false;
+        noteVarWrite(u->operand.get());   // (a lane writes without lvalueExpr)
         if (readonlyVars_.count(static_cast<VarExpr*>(u->operand.get())->name)) return false;   // ex() refuses it
         std::string lv = laneVar(static_cast<VarExpr*>(u->operand.get()));
         if (lv.empty()) return false;
@@ -6611,6 +6645,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     // (see keptListVar_: only known once every statement is emitted)
     if (g.keptListVar_ && g.listWriteVia_)
         unsupported("a List that holds a variable's container, written through a subscript");
+    for (const std::string& n : g.keptNames_)
+        if (g.writtenNames_.count(n))
+            unsupported("a List that holds " + n + "'s container, read after " + n + " is written");
     return g.out.str();
 }
 

@@ -442,7 +442,10 @@ void Interpreter::registerBuiltinsPart5() {
             }
         };
         for (auto& v : a) {
-            if (v.itemized) { out.arr()->push_back(v); continue; }
+            // an itemized argument stays whole — unless it is the ONLY one, which
+            // the single-argument rule spreads: `flat($l)` is (5 7), `flat($l, 1)`
+            // keeps (5 7) as one element
+            if (v.itemized && v.s != "Seq" && a.size() > 1) { out.arr()->push_back(v); continue; }
             // a shaped array contributes its leaves: `flat @a[3;2]` is six values
             if (isMultiDimShaped(v)) { for (auto& e : shapedLeaves(v)) out.arr()->push_back(e); continue; }
             if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) deeper(e, !v.isList); continue; }
@@ -635,8 +638,16 @@ void Interpreter::registerBuiltinsPart5() {
         // and `zip @fitted.map(*.[^$max])` transposes the rows. Treating that one
         // argument as the only list wrapped every element a level too deep, and
         // Text::MiscUtils' text-columns handed `("",)` to a Str:D parameter.
-        if (items.size() == 1 && items[0].t == VT::Array && items[0].arr())
+        if (items.size() == 1 && items[0].t == VT::Array && items[0].arr() && (!items[0].itemized || items[0].s == "Seq"))
             items = *items[0].arr();
+        // …and an ITEMIZED argument is one value, a one-element list to zip:
+        // `zip($l, $m)` pairs the two Lists whole, where `[Z] $l, $m` (the
+        // meta-operator, which flattens) pairs their elements
+        else
+            for (auto& it : items)
+                if (it.itemized && it.s != "Seq" && (it.t == VT::Array || it.t == VT::Hash)) {
+                    Value one = Value::array(ValueList{it}); one.isList = true; it = one;
+                }
         Value z = I.applyReduce("Z", items);
         if (with.t == VT::Code && z.arr()) { // zip(:with(&f)) folds each tuple with &f
             Value out = Value::seq();

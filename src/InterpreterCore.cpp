@@ -12402,11 +12402,24 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my $m = ($c, 2)` / `$l := (…)` / `my \l = (…)` keep the List, which holds
     // its items' containers (keepListContainers)
-    if (a->value && a->value->kind == NK::ListExpr && a->target && a->target->kind == NK::VarExpr &&
+    if (a->value && a->value->kind == NK::ListExpr && a->target && (a->target->kind == NK::VarExpr || a->target->kind == NK::Index) &&
         (opEq(a->op, "=") || opEq(a->op, ":="))) {
-        const std::string& tn = static_cast<VarExpr*>(a->target.get())->name;
-        if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_'))
-            tctx_.keepListOf = a->value.get();
+        // (…and so does `@o[0] = ($w, 0)` / `%h<k> = ($w, 0)`: the element holds the List)
+        // — ONE element: a slice's targets take the List's items one by one, which
+        // must be values, so only a key that cannot be several is taken
+        if (a->target->kind == NK::Index) {
+            auto* tix = static_cast<Index*>(a->target.get());
+            const NK kk = tix->index ? tix->index->kind : NK::Whatever;
+            if (!tix->multiDim && tix->adverb.empty() &&
+                (kk == NK::IntLit || kk == NK::StrLit || kk == NK::Binary ||
+                 (kk == NK::VarExpr && static_cast<VarExpr*>(tix->index.get())->name.rfind('$', 0) == 0)))
+                tctx_.keepListOf = a->value.get();
+        }
+        else {
+            const std::string& tn = static_cast<VarExpr*>(a->target.get())->name;
+            if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_'))
+                tctx_.keepListOf = a->value.get();
+        }
     }
     // TARG lever A (TARG-PLAN.md): the simple-assign lane. A plain
     // `$padvar = EXPR` pays ~108 ns of ceremony on the full path — the
@@ -28902,17 +28915,18 @@ struct RatLitParts {
     return Value::any();   // unreachable: eval dispatches only the ten above
 }
 
-// A variable READ of a List that holds containers (`my $m = ($c, 2)`,
-// `List.new($b, my $ = 3)`) gives its VALUES. A write reaches the containers
-// through lvalue(), which never comes here; everything that reads the List
-// whole — `blob8.new($m)`, `%($m)`, `|$m`, `@$m` — walked the elements raw and
-// met the Proxy objects instead. Only a `$` or sigilless name: what an `@` name
-// holds is read as the positional it is (`*@v is raw`: `for @v { $_++ }` steps the
-// caller's variables), and an Array's own containers stay for `.push`. One
-// predicted branch for any other value.
-static inline Value listOfContainersRead(Interpreter& I, Value&& v, const std::string& name) {
+// A READ of a List that holds containers (`my $m = ($c, 2)`, `List.new($b, my
+// $ = 3)`), from a variable or an element (`@o[0]` after `@o.push(($w, 0))`),
+// gives its VALUES. A write reaches the containers through lvalue(), which
+// never comes here; everything that reads the List whole — `blob8.new($m)`,
+// `%($m)`, `|$m`, `@$m` — walked the elements raw and met the Proxy objects
+// instead. Not through an `@` name: what it holds is read as the positional it
+// is (`*@v is raw`: `for @v { $_++ }` steps the caller's variables), and an
+// Array's own containers stay for `.push`. One predicted branch for any other
+// value.
+static inline Value listOfContainersRead(Interpreter& I, Value&& v, char sigil) {
     if (RAKUPP_UNLIKELY(v.t == VT::Array && v.isList) && v.holdsContainers() && v.hashKind.empty() &&
-        !name.empty() && name[0] != '@')
+        sigil != '@')
         return I.decontList(v);
     return std::move(v);
 }
@@ -29016,7 +29030,7 @@ Value Interpreter::eval(Expr* e) {
                         SlotStripe rs(*this, p);   // torn-copy contract, as in evalVarExpr
                         Value out = *p;
                         out.readonly = out.immutableBind = false;
-                        return listOfContainersRead(*this, std::move(out), ve->name);
+                        return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                     }
                 }
                 else if (ve->name.size() > 1 &&
@@ -29026,7 +29040,7 @@ Value Interpreter::eval(Expr* e) {
                             ParStripe rs(*this, p);
                             Value out = *p;
                             out.readonly = out.immutableBind = false;
-                            return listOfContainersRead(*this, std::move(out), ve->name);
+                            return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                         }
                     }
                 }
@@ -29475,7 +29489,7 @@ Value Interpreter::eval(Expr* e) {
                 failureDetonate(r);
             return r;
         }
-        case NK::Index: return evalIndex(static_cast<Index*>(e));
+        case NK::Index: return listOfContainersRead(*this, evalIndex(static_cast<Index*>(e)), '$');
         case NK::MethodCall: return fatalCheckedMethodCall(e); // out of this frame (and `use fatal`)
         case NK::Ternary: {
             auto* t = static_cast<Ternary*>(e);
@@ -29613,7 +29627,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 SlotStripe rs(*this, p); // torn-copy contract, as below
                 Value out = *p;
                 out.readonly = out.immutableBind = false;
-                return listOfContainersRead(*this, std::move(out), ve->name);
+                return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
         }
     }
@@ -29639,7 +29653,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 // their slot directly, so they still see the flag.)
                 Value out = *p;
                 out.readonly = out.immutableBind = false;
-                return listOfContainersRead(*this, std::move(out), ve->name);
+                return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
         }
     }

@@ -2733,7 +2733,13 @@ void Interpreter::registerBuiltinsPart2() {
                 (items[0].t == VT::Array || items[0].t == VT::Range ||
                  (items[0].t == VT::Hash && (items[0].hashKind.empty() || items[0].hashKind == "Map"))))
                 return I.methodCall(items[0], nm, ValueList(items.begin() + 1, items.end()));
-            Value v = items.size() == 1 ? items[0] : Value::array(items);
+            // (+values: a lone ITEMIZED list is one value — `unique($l)` for
+            // `my $l = (5, 7)` is `((5 7))`, as Rakudo answers)
+            const bool plusValues = std::string(nm) == "unique" || std::string(nm) == "repeated" ||
+                                    std::string(nm) == "squish";
+            Value v = items.size() == 1 && !(plusValues && items[0].itemized && items[0].s != "Seq" &&
+                                             (items[0].t == VT::Array || items[0].t == VT::Hash))
+                ? items[0] : Value::array(items);
             return I.methodCall(v, nm, opts);
         };
     // Same-named-method routines that forward the REMAINING args, invocant first:

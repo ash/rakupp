@@ -3,15 +3,16 @@
 # a plain value, still refuses. rakupp copied every item, so the write was
 # refused as X::Assignment::RO (and `$m[0]++` as X::Multi::NoMatch).
 #
-# Only variables: `(@a[0], 2)` and `(%h<k>, 2)` still hold values here, because
-# rakupp has no per-element container a List could keep — a proxy over the
-# slot would follow a later `.shift` or `:delete`, which Rakudo's container
-# survives (S32-hash/delete-adverb.t).
+# An ELEMENT item, `(@a[0], 2)` or `(%h<k>, 2)`, holds the element's container
+# too: a write through the List reaches the element, and a later `.shift` or
+# `:delete` leaves the List holding the container it had (as
+# S32-hash/delete-adverb.t expects). A List PUSHED (`@o.push(($w, 0))`) or stored
+# in an element (`@o[0] = ($w, 0)`) keeps its containers as well.
 #
-# The native backend has no such container either, so `--exe` bundles a program
-# that keeps one and writes through a subscript; it also bundles a write into a
-# slurpy parameter's element, which the native Array took where the interpreter
-# refuses it. Rakudo passes every check.
+# The native backend has no such container, so `--exe` bundles a program that
+# keeps one and writes through a subscript, or writes what one holds; it also
+# bundles a write into a slurpy parameter's element, which the native Array
+# took where the interpreter refuses it. Rakudo passes every check.
 #
 # Contract: exit 0 + last line PASS.
 my @fail;
@@ -56,6 +57,40 @@ check $b, 40, '…into an @ parameter too';
 my $s = (my $ = 7, 8);
 $s[0] = 9;
 check $s, (9, 8), 'an anonymous `my $` item is a container';
+
+# --- elements -----------------------------------------------------------------
+my @arr = 1, 2;
+my $la = (@arr[0], 3);
+$la[0] = 40;
+check @arr, [40, 2], 'a write through the List reaches an Array element';
+@arr[0] = 41;
+check $la, (41, 3), '…and the List reads the element as it is now';
+my $gone = @arr.shift;
+@arr.unshift(0);
+check $la, (41, 3), 'after a shift the List keeps the container it had';
+my %h = k => 1, j => 2;
+my $lh = (%h<k>, 3);
+$lh[0] = 50;
+check %h<k>, 50, 'a write through the List reaches a Hash element';
+%h<k>:delete;
+check $lh, (50, 3), 'after a :delete the List keeps the container it had';
+my $kk = 'j';
+my $lv = (%h{$kk}, 4);
+$lv[0] = 60;
+check %h<j>, 60, 'a key in a variable names the element too';
+
+# --- stored by a push, or into an element ------------------------------------
+my $w = 0;
+my @o;
+for 1..3 { $w = $_; @o.push(($w, 0)) }
+check @o, [(3, 0), (3, 0), (3, 0)], 'a pushed List shows its variable as it is now';
+@o[0][0] = 9;
+check $w, 9, '…and a write through it reaches the variable';
+my @e;
+@e[0] = ($w, 1);
+$w = 10;
+check @e[0], (10, 1), 'a List stored into an element keeps its variable';
+check blob8.new(@o[0]), blob8.new(10, 0), 'read whole from an element, it gives values';
 
 # --- what still holds values ------------------------------------------------
 my $lit = (1, 2);

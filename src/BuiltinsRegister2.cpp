@@ -56,8 +56,11 @@ void Interpreter::registerBuiltinsPart3() {
                 for (auto& v : pos)
                     if (v.t == VT::Hash && v.hashKind == "Failure") I.methodCall(v, "throw", {});
             if (pos.size() == 1 && pos[0].t == VT::Hash && pos[0].hashKind == "Failure") return pos[0];
+            // (…but an ITEMIZED one — `max($l)` for `my $l = (5, 7)` — is one
+            // candidate, and the answer is that List, as Rakudo's +args has it)
             Value list;
-            if (pos.size() == 1 && (pos[0].t == VT::Array || pos[0].t == VT::Hash || pos[0].t == VT::Range))
+            if (pos.size() == 1 && (((!pos[0].itemized || pos[0].s == "Seq") && (pos[0].t == VT::Array || pos[0].t == VT::Hash)) ||
+                                    pos[0].t == VT::Range))
                 list = pos[0];
             else { list = Value::array(pos); list.isList = true; }
             return I.methodCall(list, mname, named);
@@ -262,7 +265,7 @@ void Interpreter::registerBuiltinsPart3() {
         // `cross(%h<>:v.map: *.flat)` crosses what the Seq holds
         ValueList pos;
         for (auto& v : a) if (!(v.t == VT::Pair && v.namedArg)) pos.push_back(v);
-        if (pos.size() == 1 && pos[0].t == VT::Array && pos[0].arr() && !pos[0].itemized) {
+        if (pos.size() == 1 && pos[0].t == VT::Array && pos[0].arr() && (!pos[0].itemized || pos[0].s == "Seq")) {
             ValueList rest;
             for (auto& v : a) if (v.t == VT::Pair && v.namedArg) rest.push_back(v);
             ValueList spread = *pos[0].arr();
@@ -271,6 +274,8 @@ void Interpreter::registerBuiltinsPart3() {
         }
         for (auto& v : a) {
             if (v.t == VT::Pair && v.s == "with" && v.pairVal()) { withF = *v.pairVal(); continue; }
+            // (an itemized argument is one value: `cross($l, $m)` crosses the Lists whole)
+            if (v.itemized && v.s != "Seq" && (v.t == VT::Array || v.t == VT::Hash)) { rows.push_back(ValueList{v}); continue; }
             if (v.t == VT::Array && v.arr()) rows.push_back(*v.arr());
             else if (v.t == VT::Range) rows.push_back(v.flatten());
             else rows.push_back(ValueList{v});

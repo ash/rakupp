@@ -4611,7 +4611,9 @@ Value& rtDerefRef(Value& v, bool isHash);   // `@$h[…] = v`: the Array (Hash) 
 Value* rtRwSource(Value& v, bool isHash, Value& hold);   // native rw loops (Codegen::forStmt): the source container
 Value  rtRwKeys(const Value& src);                       // …its keys (indices for an Array)
 Value* rtRwSlot(Value& src, const Value& key);           // …one slot by key, nullptr once gone
-Value  rtReduce(Interpreter& I, const std::string& op, const Value& list);  // [+] / [*] / … reduction metaop — folds via applyReduce
+Value  rtReduce(Interpreter& I, const std::string& op, const Value& list,
+                bool operands = false);  // [+] / [*] / … reduction metaop — folds via applyReduce
+                                         // (operands: `[Z] $l, $m` — each element is ONE operand)
 // Endless operands — an infinite Range (1..Inf / 1..*, which carries the
 // ±LLONG_MAX sentinel in its integer endpoints) or a lazy list with no end.
 bool isEndlessRange(const Value& v);
