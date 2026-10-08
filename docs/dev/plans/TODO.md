@@ -15,6 +15,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 1. Speed (v6)
 
+- [ ] **Call-path cost shipped in v5.3.0**: against a v5.2.1 build, `privmeth`
+  +9.5%, `strpass` +9.0%, `method` +8.6%, `attrread` +5.8% (2026-10-08, two
+  interleaved rounds; retired instructions +6-7%), built up over ~120 commits.
+  The profile names a `thread_local` loopNest_ touched twice per iteration in
+  runLoopBody, setupRwLinks on calls with no rw parameter, and SlotStripe on
+  single-threaded access. Next: remove those three, A/B against v5.2.1, then
+  `perf-guard --record` (v5.3.0 kept v5.2.0's baseline).
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
   2026-10-05. W1–W4 done; owed: `perf-guard --check` on a quiet machine. Left:
   `--cnp` kernel entry's slot lookups and three interpreter divergences from
@@ -108,6 +115,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **Battery regressions since v5.0.1**: Color (t/04-new-invalid,
+  `Color.new(rgb => [22, 42])` no longer dies), Encode (t/01-basic,
+  `X::Encode::Unknown` undeclared where the test names it) and Trap
+  (t/02-tee, the tee writes its string twice). Fail on v5.2.1 too; battery
+  44/59 at v5.3.0. Next: bisect v5.0.1..v5.2.1 per dist.
 - [ ] **V5 batches B1–B6**: only B0 (the instruments) has landed.
   [V5-PLAN.md](V5-PLAN.md).
   - B1: regressions (battery scan to 0).

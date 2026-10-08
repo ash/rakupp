@@ -43,21 +43,21 @@ The long-term goal, in order:
 
 ## Status
 
-Against the 1,424 files of Roast's `spectest.data` (Rakudo's own run list, at
-Roast `1f749e338`), as of v5.2.0:
+Against the 1,425 files of Roast's `spectest.data` (Rakudo's own run list, at
+Roast `da425eb92`), as of v5.3.0:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **1,424** | **100.00%** |
+| **Fully passing** | **1,425** | **100.00%** |
 | Partially passing | 0 | 0% |
 | No TAP output (parse error / unimplemented) | 0 | 0% |
 | Timeouts | 0 | 0% |
 
-- **Tests — 100.00% pass (218,420 / 218,420)** with the tests Roast marks skip
-  or todo left out. Counting those as passes, as TAP does, it is 220,055 of
-  220,055, and that figure includes the tests of any file that aborts before
+- **Tests — 100.00% pass (219,207 / 219,207)** with the tests Roast marks skip
+  or todo left out. Counting those as passes, as TAP does, it is 220,845 of
+  220,845, and that figure includes the tests of any file that aborts before
   running (read from its source), so a parse error cannot hide them.
-- **Files — 1,424 / 1,424 fully pass.** v5.0.0's one partial file,
+- **Files — 1,425 / 1,425 fully pass.** v5.0.0's one partial file,
   `S16-io/eof.t`, passes since Roast `1f749e338` marks its TTY test todo on
   every macOS rather than on macOS 14–26 by name.
 
@@ -331,7 +331,7 @@ checking — pick `--bundle` for fast builds, `--exe` for fast execution.
 implements it directly (calling the runtime only for `Value` semantics), then
 compiles that to native code. **No interpreter inside** — real ahead-of-time
 compilation, so hot code (loops, recursion, arithmetic) runs faster: `fib(29)`
-takes 5.8 ms compiled, 13.7 ms interpreted and 305 ms on Rakudo
+takes 5.8 ms compiled, 13.9 ms interpreted and 303 ms on Rakudo
 ([BENCHMARKS.md](../status/BENCHMARKS.md)).
 
 `--exe` handles the **whole supported language**: it native-compiles nearly

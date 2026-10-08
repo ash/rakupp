@@ -3,6 +3,199 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.3.0 (2026-10-08) — Unicode 18, linear string building, `--sandbox`, and spreadsheets
+
+Roast: **all 1,425 files** of `spectest.data` and **all 219,207** of its tests
+with skip and todo left out (220,845 of 220,845 counting them as passes), in
+three runs of three, on Roast `da425eb92`. Roast moved since v5.2.1: it carries
+Unicode 18.0's generated tests (roast#923) and one new file,
+`S15-nfg/GraphemeBreakTest-4.t`. The v5.2.1 release binary passes 1,405 files
+of that Roast (218,715 tests); the 20 it fails are the Unicode 18.0 tables.
+
+### Faster
+
+Against the v5.2.1 release binary in the same sitting
+([BENCHMARKS.md](docs/status/BENCHMARKS.md)), interpreted: `arraypush` −86%,
+`rats` −85%, `hashfill` −52%, `hash` −48%, `objects` −40%, `multiwhere`
+−36%, `regex` −12%. Compiled: `multiwhere` −35%, `regex` −19%, `objects`
+−13%. `intcat`, 2M Int appends into a string, takes 50 ms interpreted; v5.2.1
+did not finish it in a minute. The other kernels moved by less than an
+artifact and a local build differ by. `arraypush`, `rats` and `intcat` now run
+faster interpreted than compiled.
+
+**Method calls are slower**, and this release ships it measured rather than
+fixed. Against a local build of v5.2.1 in two interleaved perf-guard rounds:
+`privmeth` +9.5%, `strpass` +9.0%, `method` +8.6%, `attrread` +5.8%,
+`subcall`, `multimeth` and `junctionwide` about +4.5%. Retired instructions
+grew 6-7% on the first three, so it is work added, not layout. A bisect found
+no single commit: it built up over about 120 commits, a percent or two at a
+time. The profile names three per-call costs — a thread-local loop counter
+touched twice an iteration, the rw-link setup running on calls with no rw
+parameter, and the variable-stripe check on single-threaded access — and
+removing them is the next piece of work.
+
+- **Kernels take Nums, Rats, `**` and pure methods** (46601ec4). A double
+  travels in the integer frame as its bits; a Rat is a numerator and a
+  denominator slot with 128-bit arithmetic. `rats` 176 → 25 ms.
+- **Loop kernels use arrays and hashes in place** (a9c99fa3): `@a[i]`,
+  `%h{k}`, `op=`, `++`, `.push` and `.elems` on plain containers, with an undo
+  log that takes the writes back if the loop bails. `arraypush` −87%,
+  `hashfill` −56%, `hash` −48% in that commit.
+- **`multiwhere` −38%, `objects` −41%** (944fda3b): the multi-dispatch cache
+  covers `where`-constrained candidates, and `.new` on a plain class goes
+  straight to the attribute defaults and the build chain.
+- **Regex search skips start positions that cannot match** (f05192c6): the
+  bytes a match can begin with, and literals every match contains, are worked
+  out when the pattern compiles. A comparator `sort` runs without calls, and
+  `mod` is in the integer kernel.
+- **Building a string is linear** (#130): `~=` appends in place for every
+  value type, in the interpreter, `--exe` and `--cnp`; `$s = $s ~ X` does too;
+  and a long string may be a view of a shared buffer, so prepending,
+  `$k = $s; $s ~= x` and `.substr` loops no longer copy the whole string
+  (895a370f).
+- **Big Ints** (2c7d3dbd, d84a0914): products are Karatsuba past 96 limbs,
+  and `+&`, `+|`, `+^`, `+<` and `+>` convert through binary in
+  subquadratic time. `2 ** 1_000_000` 1.46 → 0.04 s; `+&` on a million bits
+  83 → 0.1 s.
+- **Threads** (458886c2): a variable no other thread can reach skips the
+  lexical stripe lock, and loops over such variables stay compiled inside
+  `start`. A CPU-bound fan-out on 8 workers went from 3.16× to 5.32×, on 4
+  from 3.26× to 3.65× ([PARALLEL-SCALING-PLAN.md](docs/dev/plans/PARALLEL-SCALING-PLAN.md)).
+  [PARALLEL-SPEEDUP.md](docs/guide/PARALLEL-SPEEDUP.md) was measured on 5.2.1, before it.
+- **`--exe` keeps a precompiled runtime header** (6d957605), which takes about
+  a third off each compile: `say 42` 1.10 → 0.77 s with clang.
+- `===` on two Ints compares the numbers (1a559d1f); `Graph.diameter` on a
+  20×20 grid 28.8 → 17.4 s (#47).
+
+### New
+
+- **`rakupp --sandbox`** (f2af612d): the program may compute, print and read
+  its standard input, and nothing else. Files, processes, sockets and native
+  calls throw `X::SecurityPolicy::Sandbox`, `%*ENV` starts empty, and the
+  kernel confines the process as well (Seatbelt on macOS, Landlock and seccomp
+  on Linux). Where it cannot, `--sandbox` refuses to run; `--sandbox=language`
+  runs on the interpreter's checks alone. `--mcp --sandbox` serves an agent
+  that should only compute. [SANDBOX.md](docs/guide/SANDBOX.md).
+- **Unicode 18.0** (d0698d82): every UCD and UCA table regenerated, the new
+  scripts named, and UAX #29's new GB9c rule.
+- **Spreadsheet formulas in Raku** (67a49c76, 2e3af2fc): `=RAKU(code,
+  values…)` in Google Sheets and `=RAKU.EVAL(code, values…)` in Excel, on
+  Raku.js, with nothing to install. The tag's wasm job builds both
+  ([bindings/spreadsheets](bindings/spreadsheets/README.md)).
+- **The language server** answers hover, completion and go-to-definition
+  (8e9fa588), and works on a file that does not parse. The VS Code extension
+  is on the Marketplace (publisher DeepSoft); Emacs has init files and a guide.
+- **Python**: `raku.use("Module")`, `raku.main`, and Raku objects as
+  `rakulang.Object` with attributes and methods (96190147); `raku.lib()` adds
+  module folders.
+- **zef works** after `rakupp install zef`: install, list, uninstall, and its
+  own test suite passes (#35).
+- **Downloads**: a `.deb` for each Linux architecture, and a Linux riscv64
+  archive cross-compiled in CI (7c1c8d9d, aa7b2ab9). A WordPress plugin makes
+  Raku blocks in posts runnable.
+- `run-roast.raku --suite=rakudo|mutsu` and `run-bench.raku --suite=mutsu` run
+  Rakudo's and mutsu's own tests and benchmarks; their pass lists are in
+  [docs/status/suite-lists](docs/status/suite-lists/README.md).
+
+### Behaves like Rakudo
+
+Each was checked against Rakudo 2026.09. The first three refuse code that
+v5.2.1 ran, as Rakudo does, and so does `my Any $x = Mu` in the fourth.
+
+- **A call that can never bind is a compile-time error** (d78d1cb0):
+  `sub f(Str $x) { }; try f(42)` stops with "Calling f(Int) will never work
+  with declared signature (Str $x)" before anything runs.
+- **A label cannot shadow a pseudo-package** (3f57ed3c): under
+  `OUTER: for …`, `next OUTER` names the `OUTER` package.
+- `next(42)` and `last(99)` before 6.e, and `redo(1)` anywhere, are refused
+  while compiling (b70bc60d).
+- **Nominal type checks follow Rakudo's type graph** (b2678f14):
+  `A.new ~~ Cool` is False, a List does not bind `Array`, and
+  `my Any $x = Mu` dies. A plain class has none of Cool's methods (#135).
+  Two multi candidates that tie go to the narrower type (fdaf3dc4).
+- **A List holds the containers of what it was made from** (5db9e33a,
+  425d70df): `my $m = ($c, 2); $m[0] = 5` writes `$c`, and `(@a[0], 3)`
+  writes the element.
+- **Rakuglaze**, the module-snippet suite: 2,132 → 2,176 of 2,176. A `try`
+  block runs under `use fatal`.
+- Language gaps found by an audit and by running Rakudo's own `t/`, fixed in
+  eleven batches: signature binding, method-call shapes, core types' roles and
+  ancestry, labels, quoting, lazy tails, role variants and more.
+- Issues: `.trans` named arguments, `$*IN.read`, `@$h[$i]` assignment and rw
+  `.kv` loops (#120-#124); a trait after an initializer (#127);
+  `"item-$_-x"` (#131); `"\r\n"` is one character for every string method
+  (#132); `say !! "Hi"` (#134); a coercion type by its imported short name
+  (#90); `{ }` blocks in double-quoted regex atoms and in qq strings, escaped
+  quotes and parse errors inside them (#137, #138).
+
+### Fixed
+
+- Outer variables read by `start` workers no longer come back `""` or `Any`,
+  and no longer crash (1a4d250e).
+- Spawned pipes are close-on-exec before the fork, so a child started on one
+  thread no longer holds another child's output open (fb7a9b13).
+- `Proc::Async.close-stdin` right after `.start` no longer races its worker
+  (72adfc52); `.slurp` leaves a handle at its end (5e758f19); `'-'` is the
+  standard stream in every spelling (452e775a); `$*IN` is one handle however
+  it is reached (a59a0283).
+- An error leaving a `react` is `X::React::Died` and names the react
+  (f8119890).
+- `--exe -O` no longer compiles a sub with a `where` or `:D`/`:U` parameter
+  with the constraint dropped (6b5758a8); natively compiled code handles a
+  Pair as the interpreter does (e9e11f91).
+- Math::SparseMatrix::Native, Compress::Zlib, Graph and CBOR::Simple load and
+  pass again (7b3bb3cf, 7fff03ca, 59a5f3e1, fcbc61d4).
+- `gather` is lazy on riscv64 (d62b1a7a).
+- `do return False unless $x if $y;` parses again (1305af21): a statement
+  prefix gives the second modifier to the statement around it, as Rakudo
+  does. f3b1fe01 had made it "Missing semicolon"; this release's battery scan
+  found it in Pakku.
+
+### Gates
+
+Roast as above: three runs, each 1,425 / 1,425 files and 219,207 / 219,207
+assertions, every file on v5.2.1's list still passing, and a fourth run after
+1305af21 alike. The local suite is 1,365 of 1,365 (two cases skip for modules
+not installed here), after its CLI section was made to start from an empty
+directory: a PID that came round again had found an older run's JIT cache
+(c35128d3). `run-optbench` finds the interpreter, `--exe`, `--exe -O` and
+Rakudo in agreement on all nine programs; `t/aot` passes 16 of 16; the 59 C++
+files changed since v5.2.1 pass the MinGW syntax check; the adopters gate is
+green (iz4 21 / 21 from source and compiled; 321's known failures unchanged).
+
+**perf-guard fails** against the v5.2.0 baseline on the call kernels, as
+described under Faster: the minima of three runs are `strpass` +7.7%,
+`junctionwide` +7.2%, `strscan` +6.9%, `method` +6.2%, `multimeth` +5.9%,
+`attrread` and `privmeth` +5.5%. The same runs have `rats` −86%, `hash`
+−65%, `objnew` −45%, `multiwhere` −34% and `fib`, `asg`, `loopsum`,
+`mainnext`, `mainwhen` −2% to −4%. **The baseline stays at v5.2.0's.**
+`perf-guard --record --for=v5.3.0` refused three times on noise, each time on
+other kernels (`loopsum` 26.5%, then `method` 6.2%, then `asg` 9.6%), and was
+not forced.
+
+**The module battery is 44 / 59**, 48 at v5.0.1. Color, Encode and Trap each
+fail one test file, and a v5.2.1 build fails them the same way, so they broke
+between v5.0.1 and v5.2.1 and are not fixed in this release. YAMLish counts
+as ENV now because Rakudo 2026.09 fails its suite; Raku++ passes all five
+files. The battery's compile scan against v5.2.1 found the `do` regression
+above; after the fix it is green: 2,741 of 2,775 module files compile, and
+the other 34 fail under both binaries. Every one of the 2,769 battery modules
+loads or refuses with an error, and none crashes or hangs on `use`. The
+installed-binary gate passes its 13 offline checks; its DBIish run was not
+made.
+
+**The Raku Koans gate is red on three koans**, and Rakudo 2026.09 refuses the
+same three solutions: `next OUTER` under an `OUTER:` label, and two
+`dies-ok { f(…) }` calls that can never bind (control-flow/loop-control,
+subroutines/signature, subroutines/slurpy-and-named-parameters). The course
+pins v5.0.1 and moves only after its own check passes, so it stays there
+until those koans change.
+
+Not re-run for this release: the documentation-example comparison (1,006 at
+v5.0.0), the ecosystem sweep (1,019 of 2,547 at v5.0.0), the slim
+differential, `cpp-build-check`, the second-toolchain build and the
+module-suite `--exe` battery. Rakuglaze is 2,176 of 2,176 at 97399de2.
+
 ## v5.2.1 (2026-10-03) — Cro at full scale, native module bodies in `--exe`, and `pip install rakulang`
 
 A patch release on v5.2.0. Roast is where v5.2.0 left it: **all 1,424 files**

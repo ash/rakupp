@@ -142,9 +142,10 @@ reversed it: 6.6 ms interpreted and 5.1 compiled against mutsu's 8.6 at the
 v5.0.0 sitting. The honest version of the prediction
 is narrower than the one that was written here: what an off-the-shelf library
 buys you is *everything at once*, not any particular kernel. `num-bigint`'s
-base-2^64 limbs are still about 10× ahead of our base-1e9 ones on a general
-n×n product — we simply have not needed that shape enough to pay for it, and
-base 1e9 is what makes printing a large integer O(n) instead of O(n²). Every one
+base-2^64 limbs were about 10× ahead of our base-1e9 ones on a general n×n
+product until v5.3.0 made large products Karatsuba; that gap has not been
+measured again. We keep base 1e9 because it is what makes printing a large
+integer O(n) instead of O(n²). Every one
 of those trades is ours to make and to get wrong; that is the actual cost of
 taking no dependencies.
 
@@ -162,7 +163,7 @@ and the whole ecosystem behind `zef`.
 Measured on this machine (macOS Darwin 25.5, Apple M1), 2026-08-31 — rakupp
 3.23.0, mutsu 0.23.0, Rakudo v2026.08 on MoarVM 2026.08. These are start-up and
 footprint figures, which are stable across machines in *shape* if not in exact
-value; the throughput tables, with a mutsu column on all seventeen kernels, are in
+value; the throughput tables, with a mutsu column on seventeen of the eighteen kernels, are in
 [BENCHMARKS.md](../../status/BENCHMARKS.md) and are measured on a different,
 dedicated box.
 

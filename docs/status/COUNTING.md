@@ -8,28 +8,28 @@ prints it on every run.
 
 ## The one-line summary
 
-> **100.00% of Roast's assertions pass, with skipped and todo tests left out (218,420 / 218,420).**
+> **100.00% of Roast's assertions pass, with skipped and todo tests left out (219,207 / 219,207).**
 
 That is the number to quote first. Second comes the same count with skip and
 todo counted as passes, and third the files that fully pass. The file count is
 the strictest bar and the least informative, because one failing assertion
 fails a whole file.
 
-The figures on this page were measured on 2026-10-02, on the v5.2.0 release
-build, against Roast `1f749e338` and the 1,424 files `spectest.data` lists
-(three runs, all three alike).
+The figures on this page were measured on 2026-10-08, on the v5.3.0
+candidate (`8c48b00c`), against Roast `da425eb92` and the 1,425 files
+`spectest.data` lists (three runs, all three alike).
 
 ## The measures
 
 The harness's summary prints five ratios. In order of importance:
 
-| Rank | Measure | Current (1,424 files) | Definition |
+| Rank | Measure | Current (1,425 files) | Definition |
 |---|---|---:|---|
-| **1st** | **Assertions passed without skip/todo** | **218,420 / 218,420 (100.00%)** | every declared test except the skipped and todo-marked ones, which leave both sides |
-| 2nd | Assertions of all declared tests (measure 4) | 220,055 / 220,055 (100.00%) | the same, with `# skip` and `# todo` lines counted as passes |
-| 3rd | Files fully passing (measure 1) | 1,424 / 1,424 (100.00%) | every planned assertion passes, or the file legitimately `plan skip-all`s |
-| diagnostic | Assertions of tests planned (measure 3) | 220,055 / 220,055 (100.00%) | ÷ the plan `N` of every file that emitted one |
-| diagnostic | Assertions of tests that ran (measure 2) | 220,055 / 220,055 (100.00%) | ÷ assertions the files actually emitted |
+| **1st** | **Assertions passed without skip/todo** | **219,207 / 219,207 (100.00%)** | every declared test except the skipped and todo-marked ones, which leave both sides |
+| 2nd | Assertions of all declared tests (measure 4) | 220,845 / 220,845 (100.00%) | the same, with `# skip` and `# todo` lines counted as passes |
+| 3rd | Files fully passing (measure 1) | 1,425 / 1,425 (100.00%) | every planned assertion passes, or the file legitimately `plan skip-all`s |
+| diagnostic | Assertions of tests planned (measure 3) | 220,845 / 220,845 (100.00%) | ÷ the plan `N` of every file that emitted one |
+| diagnostic | Assertions of tests that ran (measure 2) | 220,845 / 220,845 (100.00%) | ÷ assertions the files actually emitted |
 
 Measures 1 to 4 are the harness's original four ratios. The rest of this page
 and the harness's own comments use those names.
@@ -47,10 +47,10 @@ the pass count and the declared total, including a todo that passes. What is
 left is the share of the tests Roast expects to pass that actually do:
 
 ```
-Assertions passed without skip/todo: 218420 / 218420  (100.00%)  left out: 1167 skipped + 283 todo-failed + 185 todo-passed = 1635
+Assertions passed without skip/todo: 219207 / 219207  (100.00%)  left out: 1167 skipped + 287 todo-failed + 184 todo-passed = 1638
 ```
 
-The table printed under that line splits the same 1,635 tests by where each
+The table printed under that line splits the same 1,638 tests by where each
 skip or todo came from, and its Total row equals the line. It counts tests, not
 directive lines (`#?rakudo 3 skip` is three), and it credits a TAP line to a
 directive when the reasons match:
@@ -61,8 +61,8 @@ directive when the reasons match:
 | #?rakudo todo              |   175 |       0 |         256 |         168 |   424 |        50 |
 | #?rakudo eval              |     5 |      48 |           0 |           0 |    48 |         0 |
 | #?rakudo emit              |     5 |       — |           — |           — |     — |         — |
-| skip()/todo() in test code |    71 |     391 |          27 |          17 |   435 |         — |
-| Total                      |     — |    1167 |         283 |         185 |  1635 |       136 |
+| skip()/todo() in test code |    71 |     391 |          31 |          16 |   438 |         — |
+| Total                      |     — |    1167 |         287 |         184 |  1638 |       136 |
 
 Todo-passed is a todo the engine has outgrown. No-result counts directive
 lines, not tests: directives whose tests never appeared in the output.
@@ -77,16 +77,17 @@ a figure is on:
 
 | Set | Flag | Files | Fully passing | Partial | No TAP | Timeout |
 |---|---|---:|---:|---:|---:|---:|
-| **`spectest.data`, every entry** | *(default)* | **1,424** | 1,424 / 1,424 (100.00%) | 0 | 0 | 0 |
-| `make spectest`'s set | `--skip-marker=stress` | 1,364 | 1,364 / 1,364 (100.00%) | 0 | 0 | 0 |
-| the whole checkout | `--all` | 1,454 | 1,435 / 1,454 (98.69%) | 9 | 10 | 0 |
+| **`spectest.data`, every entry** | *(default)* | **1,425** | 1,425 / 1,425 (100.00%) | 0 | 0 | 0 |
+| `make spectest`'s set | `--skip-marker=stress` | 1,365 | 1,365 / 1,365 (100.00%) | 0 | 0 | 0 |
+| the whole checkout | `--all` | 1,455 | 1,436 / 1,455 (98.69%) | 8 | 10 | 1 |
 
-The `--skip-marker=stress` row is the second of two runs; the first lost
-`S17-promise/nonblocking-await.t` to the crash
-[ROAST.md](ROAST.md#the-one-file-that-flaps) describes.
+Each row is one run. The `--all` timeout is `S17-supply/watch-path.t`, one of
+the files the list leaves out.
+`S17-promise/nonblocking-await.t` can be lost to the crash
+[ROAST.md](ROAST.md#the-one-file-that-flaps) describes on any of them.
 
 - **The default runs every listed file, whatever marker its line carries**
-  (`stress` 60, `moar` 117, `slow` 38, `Perl` 13, `rakuast` 2). The markers
+  (`stress` 60, `moar` 118, `slow` 48, `Perl` 13, `rakuast` 2). The markers
   are Rakudo's build knobs, not the language's.
 - **`--skip-marker=stress`** drops the 60 stress files, which is exactly the set
   Rakudo's `make spectest` (t/harness5) runs.
@@ -94,10 +95,11 @@ The `--skip-marker=stress` row is the second of two runs; the first lost
   under `t/`, files the 6.c cut left on master outside the specification, and
   seven tests added since 2020 that the list has not taken up. They carry 467
   declared tests (0.2% of the suite). On `--all` the headline is
-  218,711 / 218,865 (99.93%).
+  219,497 / 219,652 (99.93%).
 
-The file count in a figure says its set. At Roast `1f749e338`, as at `1f521d798`, the list is 1,424
-files and `--all` is 1,454; at `b2cbe8a42`, before Roast removed its eleven
+The file count in a figure says its set. At Roast `da425eb92` the list is 1,425
+files and `--all` is 1,455; at `1f749e338`, as at `1f521d798`, they were 1,424
+and 1,454; at `b2cbe8a42`, before Roast removed its eleven
 `:P5` files and added `sprintf-a.t`, they were 1,434 and 1,464. Figures
 published before the default changed (`5a08968d`, 2026-09-26) — including every
 per-release list in [roast-lists/](roast-lists/) up to v4.0.1 — are on 1,464.
@@ -121,7 +123,7 @@ common denominator, which is one reason the regression gate is on the file list.
 
 On the list today measures 2, 3 and 4 coincide: every file emits its plan and
 none times out, so tests that ran, tests planned and tests declared are the
-same 220,055.
+same 220,845.
 
 ## Exactly how the denominators are built
 
@@ -185,13 +187,13 @@ raw `.t` files.** For any other engine the harness runs Roast's `fudge` itself
 ### Comparing our figure with another implementation's
 
 **A file count measured with fudge applied and one measured without it are not
-comparable.** Of the list's 1,424 files, 275 carry directives, and one shielded
+comparable.** Of the list's 1,425 files, 275 carry directives, and one shielded
 test decides whether a file fully passes. Measured 2026-09-26, on the 280 files
 that carried directives at Roast `b2cbe8a42`: Rakudo 2026.08 fails 260 of them
 raw and passes 277 of them fudged.
 
-**At the assertion level the directives barely matter.** They shield 1,635 of
-the list's 220,055 declared tests (0.7%). The headline leaves them out of both
+**At the assertion level the directives barely matter.** They shield 1,638 of
+the list's 220,845 declared tests (0.7%). The headline leaves them out of both
 sides and measure 4 counts them as passes, and both read 100.00%.
 
 For a file count, record the bar next to the number. Ours is always the fudged
@@ -286,7 +288,7 @@ on that engine first.
 ## Reproducing
 
 ```sh
-build/rakupp tools/run-roast.raku                        # the files spectest.data lists (1,424)
+build/rakupp tools/run-roast.raku                        # the files spectest.data lists (1,425)
 build/rakupp tools/run-roast.raku --skip-marker=stress   # make spectest's set (1,364)
 build/rakupp tools/run-roast.raku --all                  # every .t in the checkout (1,454)
 build/rakupp tools/run-roast.raku S05                    # a path substring, within the chosen set

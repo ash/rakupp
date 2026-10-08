@@ -52,9 +52,9 @@ compiler, validated against Roast and tracked with `tools/run-roast.raku`.
 ## Landed since the MVP
 
 All of the original "next" list has landed; the interpreter now covers whole
-synopses rather than isolated features. Current standing, at v5.2.0: **100.00%
-of Roast's tests pass** (218,420 / 218,420 with skip and todo left out), and
-**all 1,424 files** of `spectest.data` pass completely — run the harness for
+synopses rather than isolated features. Current standing, at v5.3.0: **100.00%
+of Roast's tests pass** (219,207 / 219,207 with skip and todo left out), and
+**all 1,425 files** of `spectest.data` pass completely — run the harness for
 live numbers; definitions in [COUNTING.md](COUNTING.md).
 Major subsystems now in:
 

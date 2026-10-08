@@ -10,27 +10,39 @@ two ever disagree.
 
 ## Current standing
 
-**Headline: 100.00% of Roast's tests pass** — 218,420 of 218,420 with the tests Roast marks skip or todo left out, and all declared tests (220,055 / 220,055) with those counted as passes, as TAP counts them. **Every one of the 1,424 files passes.**
+**Headline: 100.00% of Roast's tests pass** — 219,207 of 219,207 with the tests Roast marks skip or todo left out, and all declared tests (220,845 / 220,845) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
 
-Measured 2026-10-02 on the v5.2.0 release build, against Roast `1f749e338`
-(2026-09-29) and the 1,424 files its `spectest.data` lists: three runs, all
-three 1,424 / 1,424, with v5.1.0's file list. `S17-promise/nonblocking-await.t`
+Measured 2026-10-08 on the v5.3.0 candidate (`8c48b00c`; the release commit
+changes only the version number), against Roast `da425eb92` (2026-10-07) and
+the 1,425 files its `spectest.data` lists: three runs, all three 1,425 / 1,425,
+with every file on v5.2.1's list. `S17-promise/nonblocking-await.t`
 still crashes now and then (see [the note below](#the-one-file-that-flaps));
 it did not in these three runs. On a loaded
 machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
 s alone against the 10-second ceiling — can also time out with its tests
 passing.
 
-Full suite — **1,424 files** (Roast's `spectest.data`):
+Full suite — **1,425 files** (Roast's `spectest.data`):
 
 | Files | Count | Share of suite |
 |---|---:|---:|
-| **Fully passing** | **1,424** | **100.00%** |
+| **Fully passing** | **1,425** | **100.00%** |
 | Partially passing | 0 | 0% |
 | No TAP output | 0 | 0% |
 | Timeouts | 0 | 0% |
 
-**What changed since v5.0.0 is Roast, not the engine.** v5.0.0's one failing
+**Since v5.2.1, Roast has moved to Unicode 18.0.** Roast `da425eb92` carries
+roast#923: the generated normalization, grapheme-break and collation tests are
+18.0's, and `S15-nfg/GraphemeBreakTest-4.t` is a new file. That is 790 more
+declared tests (787 without skip/todo), all in S15 and S32. The v5.2.1 release
+binary, run on the same Roast, passes 1,405 files and 218,715 / 219,207; the 20
+files it fails are those Unicode 18.0 tables, which v5.3.0's regenerated UCD
+and UCA data pass. The other Roast commits mark the `sprintf` files and
+`S29-os/system.t` `slow`, which the default run does not skip, and move todos
+in and out; net, three more tests are left out of the skip/todo-free count
+(1,638, was 1,635).
+
+**What changed from v5.0.0 to v5.1.0 was Roast, not the engine.** v5.0.0's one failing
 test was test 3 of `S16-io/eof.t`, `.eof on TTY STDIN works right`: it runs the
 child under `script(1)`, macOS `script` breaks it, and Roast marked it todo on
 macOS by release *name*, a list that did not include macOS 27. Roast
@@ -83,7 +95,7 @@ and todo left out, from the by-synopsis table the harness prints.
 | S12 | Objects & classes | 97 / 97 | 1,989 / 1,989 | 1,843 / 1,843 |
 | S13 | Overloading | 5 / 5 | 81 / 81 | 76 / 76 |
 | S14 | Roles | 24 / 24 | 413 / 413 | 407 / 407 |
-| S15 | Unicode / strings / NFG | 81 / 81 | 91,807 / 91,807 | 91,738 / 91,738 |
+| S15 | Unicode / strings / NFG | 82 / 82 | 92,521 / 92,521 | 92,452 / 92,452 |
 | S16 | I/O | 37 / 37 | 766 / 766 | 747 / 747 |
 | S17 | Concurrency (supply/promise/async) | 95 / 95 | 1,567 / 1,567 | 1,538 / 1,538 |
 | S19 | Command-line | 7 / 7 | 24 / 24 | 18 / 18 |
@@ -92,15 +104,15 @@ and todo left out, from the by-synopsis table the harness prints.
 | S26 | Documentation (POD) | 27 / 27 | 832 / 832 | 771 / 771 |
 | S28 | Special variables | 3 / 3 | 8 / 8 | 8 / 8 |
 | S29 | Builtins & context | 14 / 14 | 465 / 465 | 462 / 462 |
-| S32 | Standard types (str/list/num/…) | 261 / 261 | 46,455 / 46,455 | 46,292 / 46,292 |
+| S32 | Standard types (str/list/num/…) | 261 / 261 | 46,531 / 46,531 | 46,365 / 46,365 |
 | integration | Cross-feature programs | 119 / 119 | 1,401 / 1,401 | 1,382 / 1,382 |
 | 6.c | v6.c language snapshot | 18 / 18 | 1,041 / 1,041 | 964 / 964 |
 | 6.d | v6.d language snapshot | 18 / 18 | 20,310 / 20,310 | 20,310 / 20,310 |
 | APPENDICES | — | 6 / 6 | 57 / 57 | 53 / 53 |
 | MISC / t | — | 3 / 3 | 9 / 9 | 9 / 9 |
-| Total | — | 1,424 / 1,424 | 220,055 / 220,055 | 218,420 / 218,420 |
+| Total | — | 1,425 / 1,425 | 220,845 / 220,845 | 219,207 / 219,207 |
 
-S15 (Unicode, grapheme and normalization tables) holds 91,807 of the 220,055
+S15 (Unicode, grapheme and normalization tables) holds 92,521 of the 220,845
 declared tests, and the `sprintf` conversion files hold most of 6.d's 20,310,
 so the whole-suite percentage is dominated by those two; every other row is
 now at 100% as well.
