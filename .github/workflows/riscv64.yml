@@ -13,11 +13,10 @@ name: riscv64
 # `gh workflow run riscv64.yml --repo ash/rakupp`), and a workflow of its own
 # rather than a row in release.yml's matrix, so a riscv64 failure never holds
 # up a push or a release.
-# The tree builds with no riscv64-specific code: the interpreter is portable
-# C++, `gather` uses the re-running fallback instead of the hand-written
-# coroutine switch (Coro.h covers x86-64 and aarch64 only), and `--cnp` finds
-# an ELF machine the stencil extractor does not know and ships an empty table,
-# so it runs interpreted.
+# The interpreter is portable C++; the one riscv64-specific piece is the
+# coroutine switch under `gather` (Coro.cpp, LP64D). `--cnp` finds an ELF
+# machine the stencil extractor does not know and ships an empty table, so it
+# runs interpreted.
 #
 # Built on the runner's own Ubuntu 24.04, not in a manylinux container, so the
 # artifact needs glibc 2.39. It is a test build, not a release asset.

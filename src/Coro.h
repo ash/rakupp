@@ -16,16 +16,19 @@
 #include <cstddef>
 #include <thread>
 
-// Is there a native context switch for this target? x86-64 and arm64 use a
-// hand-written one (Coro.cpp) on every ELF and Mach-O system; Windows uses
-// Fibers. Anything else — WebAssembly (Raku.js) among them — keeps the old
-// re-running gather (InterpreterOperators.cpp). `-DRAKUPP_HAVE_CORO=0` forces that form
-// anywhere, which is how the fallback gets compiled and tested on a desktop.
+// Is there a native context switch for this target? x86-64, arm64 and riscv64
+// (the LP64D ABI every riscv64 Linux distribution uses) have a hand-written
+// one (Coro.cpp) on every ELF and Mach-O system; Windows uses Fibers. Anything
+// else — WebAssembly (Raku.js) among them — keeps the old re-running gather
+// (InterpreterOperators.cpp), which runs the block ahead of the consumer and
+// so is not lazy. `-DRAKUPP_HAVE_CORO=0` forces that form anywhere, which is
+// how the fallback gets compiled and tested on a desktop.
 #ifndef RAKUPP_HAVE_CORO
 #  if defined(_WIN32)
 #    define RAKUPP_HAVE_CORO 1
-#  elif (defined(__x86_64__) || defined(__aarch64__)) && (defined(__GNUC__) || defined(__clang__)) && \
-        !defined(__EMSCRIPTEN__)
+#  elif (defined(__x86_64__) || defined(__aarch64__) || \
+         (defined(__riscv) && __riscv_xlen == 64 && defined(__riscv_float_abi_double))) && \
+        (defined(__GNUC__) || defined(__clang__)) && !defined(__EMSCRIPTEN__)
 #    define RAKUPP_HAVE_CORO 1
 #  else
 #    define RAKUPP_HAVE_CORO 0

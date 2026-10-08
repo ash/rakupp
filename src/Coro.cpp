@@ -220,6 +220,97 @@ static void* coroFreshContext(char* top, CoroStack* s) {
     f[7] = reinterpret_cast<uint64_t>(&rakupp_coro_trampoline); // return address
     return f;
 }
+
+#elif defined(__riscv)
+// RISC-V LP64D: ra (the return address), s0–s11 and fs0–fs11 survive a call.
+// 25 registers, padded to 208 bytes so sp stays 16-aligned. gp is the same for
+// the whole program and tp belongs to the thread, which a coroutine never
+// leaves (Coro.h), so neither is switched.
+__asm__(
+    ".text\n"
+    ".p2align 2\n"
+    ".globl " RKC_SYM(rakupp_coro_switch) "\n"
+    RKC_HIDE(rakupp_coro_switch)
+    RKC_TYPE(rakupp_coro_switch)
+    RKC_SYM(rakupp_coro_switch) ":\n"
+    "    addi sp, sp, -208\n"
+    "    sd   ra,  0(sp)\n"
+    "    sd   s0,  8(sp)\n"
+    "    sd   s1,  16(sp)\n"
+    "    sd   s2,  24(sp)\n"
+    "    sd   s3,  32(sp)\n"
+    "    sd   s4,  40(sp)\n"
+    "    sd   s5,  48(sp)\n"
+    "    sd   s6,  56(sp)\n"
+    "    sd   s7,  64(sp)\n"
+    "    sd   s8,  72(sp)\n"
+    "    sd   s9,  80(sp)\n"
+    "    sd   s10, 88(sp)\n"
+    "    sd   s11, 96(sp)\n"
+    "    fsd  fs0,  104(sp)\n"
+    "    fsd  fs1,  112(sp)\n"
+    "    fsd  fs2,  120(sp)\n"
+    "    fsd  fs3,  128(sp)\n"
+    "    fsd  fs4,  136(sp)\n"
+    "    fsd  fs5,  144(sp)\n"
+    "    fsd  fs6,  152(sp)\n"
+    "    fsd  fs7,  160(sp)\n"
+    "    fsd  fs8,  168(sp)\n"
+    "    fsd  fs9,  176(sp)\n"
+    "    fsd  fs10, 184(sp)\n"
+    "    fsd  fs11, 192(sp)\n"
+    "    sd   sp, 0(a0)\n"
+    "    mv   sp, a1\n"
+    "    ld   ra,  0(sp)\n"
+    "    ld   s0,  8(sp)\n"
+    "    ld   s1,  16(sp)\n"
+    "    ld   s2,  24(sp)\n"
+    "    ld   s3,  32(sp)\n"
+    "    ld   s4,  40(sp)\n"
+    "    ld   s5,  48(sp)\n"
+    "    ld   s6,  56(sp)\n"
+    "    ld   s7,  64(sp)\n"
+    "    ld   s8,  72(sp)\n"
+    "    ld   s9,  80(sp)\n"
+    "    ld   s10, 88(sp)\n"
+    "    ld   s11, 96(sp)\n"
+    "    fld  fs0,  104(sp)\n"
+    "    fld  fs1,  112(sp)\n"
+    "    fld  fs2,  120(sp)\n"
+    "    fld  fs3,  128(sp)\n"
+    "    fld  fs4,  136(sp)\n"
+    "    fld  fs5,  144(sp)\n"
+    "    fld  fs6,  152(sp)\n"
+    "    fld  fs7,  160(sp)\n"
+    "    fld  fs8,  168(sp)\n"
+    "    fld  fs9,  176(sp)\n"
+    "    fld  fs10, 184(sp)\n"
+    "    fld  fs11, 192(sp)\n"
+    "    addi sp, sp, 208\n"
+    "    mv   a0, a2\n"
+    "    ret\n"
+    ".p2align 2\n"
+    ".globl " RKC_SYM(rakupp_coro_trampoline) "\n"
+    RKC_HIDE(rakupp_coro_trampoline)
+    RKC_TYPE(rakupp_coro_trampoline)
+    RKC_SYM(rakupp_coro_trampoline) ":\n"
+    "    mv   a0, s1\n"
+    "    jalr s2\n"
+    "    unimp\n"
+);
+
+// The frame a fresh stack's first switch pops: ra = the trampoline, which
+// `ret` jumps to, s0 = 0 (ends the frame-pointer chain for unwinders and
+// debuggers), s1 = the stack, s2 = the boot function.
+static void* coroFreshContext(char* top, CoroStack* s) {
+    auto* f = reinterpret_cast<uint64_t*>(top - 208);
+    for (int i = 0; i < 26; i++) f[i] = 0;
+    f[0] = reinterpret_cast<uint64_t>(&rakupp_coro_trampoline); // ra
+    f[1] = 0;                                                   // s0
+    f[2] = reinterpret_cast<uint64_t>(s);                       // s1
+    f[3] = reinterpret_cast<uint64_t>(&rakupp_coro_boot);       // s2
+    return f;
+}
 #endif
 
 static size_t pageSize() {

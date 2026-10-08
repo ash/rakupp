@@ -72,16 +72,14 @@ binary needs at run time — and what the programs it compiles need — is one
 table in [COMPILERS.md](COMPILERS.md#what-runs-where).
 
 On **RISC-V** (riscv64) there is no archive yet, and the one-liner says so
-and prints the commands to [build from source](#build-from-source). The tree
-builds there with no architecture-specific code: a user has built it on a
-Milk-V Pioneer (64 cores at 2 GHz), and an on-demand CI job on RISC-V hardware
-builds it and passes the smoke tests. It also
+and prints the commands to [build from source](#build-from-source). A user
+has built it on a Milk-V Pioneer (64 cores at 2 GHz), and an on-demand CI job
+on RISC-V hardware builds it and passes the smoke tests. It also
 [cross-compiles on a Mac](COMPILERS.md#linux-on-risc-v-built-on-a-mac), to
-copy to the board as one file. Two things differ from x86-64 and ARM64:
-`gather` uses the portable fallback instead of the hand-written coroutine
-switch, so its block runs further ahead of the consumer than it does
-elsewhere, and `--cnp` has no native stencils for the architecture, so its
-kernels run interpreted.
+copy to the board as one file. `gather` runs on the same hand-written
+coroutine switch as on x86-64 and ARM64, so it is just as lazy. One thing
+differs: `--cnp` has no native stencils for the architecture, so its kernels
+run interpreted.
 
 ### Debian and Ubuntu: a `.deb`
 
