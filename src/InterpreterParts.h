@@ -1427,6 +1427,10 @@ Value composeCode(const Value& fV, const Value& gV);
 // A `:P5`/`:Perl5` adverb among the leading `:adv ` tokens the lexer bakes into
 // a regex literal — the whole pattern is Perl 5 syntax.
 bool isP5Pattern(const std::string& pat);
+// Whether interpRegexPattern has anything to do in a pattern: a `$` (a variable,
+// `$( … )`), or a `{` after a `"` (a qq `{ … }` inside a double-quoted atom).
+// Every caller that skips the pass for a cheap reason asks this one question.
+bool rxNeedsScalarPass(const std::string& pat);
 
 // What `:temp $x = …;` inside a pattern overwrote, to be put back when the
 // outermost match that reached it is done (see RxTempGuard in regexMatch).

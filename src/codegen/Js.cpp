@@ -1240,9 +1240,23 @@ struct JsGen {
     // Raku text inside a regex, as a closure. kind: "run" (a `{…}` block), "assert"
     // (`<?{…}>`), "var" (`$x`), "args" (`<name(args)>`), "range" (`** {…}`).
     string embedRegexCode(const string& kind, const string& text, int lineNo) {
-        if (kind == "var") {
+        // A `{ … }` inside a double-quoted atom arrives here too, and only a NAME
+        // (`$x`, `$*x`, `@x`, a constant) is a variable; `{~NAME}`, `{NAME.Str}`,
+        // `{1+2}` are expressions, compiled below (issue #138)
+        auto isName = [](const string& t) {
+            if (t.size() == 2 && t[0] == '$' && (t[1] == '/' || t[1] == '!')) return true;
+            size_t i = !t.empty() && std::strchr("$@%&", t[0]) ? 1 : 0;
+            if (i && i < t.size() && std::strchr("*?!.^:", t[i])) i++;
+            if (i >= t.size() || !(ascii::isalpha((unsigned char)t[i]) || t[i] == '_')) return false;
+            for (; i < t.size(); i++)
+                if (!(ascii::isalnum((unsigned char)t[i]) || t[i] == '_' || t[i] == '-' || t[i] == '\'')) return false;
+            return true;
+        };
+        if (kind == "var" && !text.empty() && text[0] == '$') {
             if (text.size() > 2 && (text[1] == '<' || ascii::isdigit((unsigned char)text[1]))) return "null";   // a backreference: the matcher resolves it
             if (text.size() < 2) refuse("a placeholder variable inside a regex", lineNo);
+        }
+        if (kind == "var" && isName(text)) {
             VarExpr v(text);
             return "() => " + varRef(&v);
         }

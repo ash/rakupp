@@ -50,6 +50,43 @@ static size_t rxCodeBraceEnd(const std::string& p, size_t i) {
     return 0;
 }
 
+// The end of a character-class assertion opened by the `<` at `i` — `<[…]>`,
+// `<-[…]>`, `<+[…]>`, `<?[…]>`, `<![…]>`, `<:L>`, `<-alpha>`, `<[a..z] - [q]>` —
+// the index just past its `>`, or 0 when the `<` opens something else. The
+// scans over a pattern copy one through whole: a quote or a brace inside is a
+// MEMBER, so `<+["]>` opens no quoted span and `<[{]>` no code block. Only `<[`
+// and `<-` were known, and `/ a <+["]> { … } /` read its block as qq text.
+static size_t rxClassEnd(const std::string& p, size_t i) {
+    size_t j = i + 1;
+    if (j < p.size() && (p[j] == '?' || p[j] == '!')) j++;
+    const bool sign = j < p.size() && (p[j] == '+' || p[j] == '-');
+    if (sign) j++;
+    if (j >= p.size()) return 0;
+    if (!(p[j] == '[' || (p[j] == ':' && j + 1 < p.size() && p[j + 1] != ':') ||
+          (sign && (ascii::isalpha((unsigned char)p[j]) || p[j] == '_')))) return 0;
+    bool inBr = false;   // brackets do not nest in a class: `[` inside one is a member
+    for (; j < p.size(); j++) {
+        char c = p[j];
+        if (c == '\\') { j++; continue; }
+        if (c == '[' && !inBr) inBr = true;
+        else if (c == ']' && inBr) inBr = false;
+        else if (c == '>' && !inBr) return j + 1;
+    }
+    return 0;
+}
+
+// The value of a `{ … }` inside a double-quoted atom, as text of that atom.
+// `$`, `{` and `@` are escaped as well as `\` and `"`: the scalar pass repeats
+// until the pattern is stable, and an unescaped one in the VALUE was read again
+// as a variable or a block — `{$v}` with $v = 'a$w' matched "a" followed by
+// $w's value instead of the text "a$w".
+static void rxAppendQqText(std::string& out, const std::string& s) {
+    for (char c : s) {
+        if (c == '\\' || c == '"' || c == '$' || c == '{' || c == '@') out += '\\';
+        out += c;
+    }
+}
+
 // …and of a `:my …;` / `:temp …;` / `:let …;` declaration, which is code with a
 // `;` for a terminator instead of braces. 0 when it never terminates.
 static size_t rxDeclEnd(const std::string& p, size_t i) {
@@ -178,7 +215,7 @@ std::string Interpreter::closedRegexSource(const Value& v) {
     if (!v.ext() || isP5Pattern(src)) return src;
     // (a declared `token {…}` keeps its $vars for the match-time hook)
     const bool arr = src.find('@') != std::string::npos,
-               sc = v.hashKind.empty() && src.find('$') != std::string::npos;
+               sc = v.hashKind.empty() && rxNeedsScalarPass(src);
     if (!arr && !sc) return src;
     auto savedOuter = tctx_.cur;
     tctx_.cur = std::static_pointer_cast<Env>(v.ext());
@@ -217,14 +254,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
         // inside it cannot open a false code span and swallow the pattern after
         // it. (The scalar pass a few functions down has always done this; the
         // two are the same scan and should read the same.)
-        if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
-            size_t j = i;
-            while (j + 1 < pat.size() && !(pat[j] == ']' && pat[j + 1] == '>')) out += pat[j++];
-            while (j < pat.size() && pat[j] != '>') out += pat[j++];
-            if (j < pat.size()) out += pat[j];
-            i = j;
-            continue;
-        }
+        if (size_t e = pat[i] == '<' ? rxClassEnd(pat, i) : 0) { out += pat.substr(i, e - i); i = e - 1; continue; }
         // A brace region is Raku CODE, not pattern — a `{…}` block, a `<?{…}>`
         // or `<!{…}>` assertion, an interpolated `<{…}>`, a `**{…}` bound — and
         // `@a` in code is the ARRAY the code reads, not an alternation to
@@ -448,6 +478,15 @@ bool isP5Pattern(const std::string& pat) {
         p = j;
     }
     return false;
+}
+
+// A `{ … }` inside a double-quoted atom is evaluated by the same pass as `$var`,
+// so a pattern with no `$` in it still needs the pass: `/"x {NAME} y"/` over a
+// constant was handed to the engine unevaluated and never matched (issue #138).
+bool rxNeedsScalarPass(const std::string& pat) {
+    if (pat.find('$') != std::string::npos) return true;
+    size_t q = pat.find('"');
+    return q != std::string::npos && pat.find('{', q + 1) != std::string::npos;
 }
 
 // How a regex VALUE goes into another regex's pattern. Same-flavour, its source
@@ -745,7 +784,18 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
     }
     struct DeclRestore { std::shared_ptr<Env>& cur; std::shared_ptr<Env> saved;
         ~DeclRestore() { if (saved) cur = saved; } } declRestore{tctx_.cur, declSaved};
-    for (int pass = 0; pass < 8 && pat.find('$') != std::string::npos && tctx_.cur; pass++) {
+    // The source a `<$r>` / `<alias=$r>` calls. A regex VALUE reads its own
+    // variables where it was written, as it does spliced bare (`/ $r /`): the
+    // raw source left `sub g { my $x = 'abc'; rx/$x/ }` to look for $x here,
+    // and `<$r>` over g() matched nothing.
+    auto calleeSource = [this](const Value& v, bool& p5) {
+        if (v.t != VT::Regex || !v.ext()) return rxSourceOf(v, p5);
+        std::string s = closedRegexSource(v);
+        p5 = isP5Pattern(s);
+        if (p5) s = s.substr(s.find(' ') + 1);
+        return s;
+    };
+    for (int pass = 0; pass < 8 && rxNeedsScalarPass(pat) && tctx_.cur; pass++) {
         std::string out;
         bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
         bool inDq = false; // inside "…": a qq span — $vars AND {…} interpolate
@@ -762,37 +812,20 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 if (size_t e = rxDeclEnd(pat, i)) { out += pat.substr(i, e - i); i = e - 1; continue; }
             }
             if (pat[i] == '\\' && i + 1 < pat.size()) { out += pat[i]; out += pat[i + 1]; i++; continue; }
-            if (pat[i] == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || pat[i + 1] == '-')) {
-                // a character class: copy it through so a literal `{` inside cannot
-                // open a false code span
-                size_t j = i;
-                while (j + 1 < pat.size() && !(pat[j] == ']' && pat[j + 1] == '>')) out += pat[j++];
-                while (j < pat.size() && pat[j] != '>') out += pat[j++];
-                if (j < pat.size()) out += pat[j];
-                i = j; continue;
-            }
+            // a character class: copy it through so a literal `{` or `"` inside
+            // cannot open a false code span or quoted span (rxClassEnd)
+            if (size_t e = pat[i] == '<' && !inDq ? rxClassEnd(pat, i) : 0) { out += pat.substr(i, e - i); i = e - 1; continue; }
             // inside a DOUBLE-quoted span, `{…}` is qq-interpolation, not a
             // code block: evaluate now and splice the Str (escaped for the
             // quoted-literal parser) — /"warning!{$nl}"/ is Test::Output's
             // spelling, and Rakudo matches it
             if (pat[i] == '"' && !braces && !inSq) { inDq = !inDq; out += pat[i]; continue; }
             if (inDq) {
-                if (pat[i] == '{') {
-                    int depth = 0;
-                    size_t j = i;
-                    for (; j < pat.size(); j++) {
-                        if (pat[j] == '{') depth++;
-                        else if (pat[j] == '}' && --depth == 0) { j++; break; }
-                    }
-                    if (depth == 0) {
-                        Value v = evalString(pat.substr(i + 1, j - i - 2));
-                        for (char c : v.toStr()) {
-                            if (c == '\\' || c == '"') out += '\\';
-                            out += c;
-                        }
-                        i = j - 1;
-                        continue;
-                    }
+                // (the block's end steps over its own quoted spans: `{'a}b'}`)
+                if (size_t j = pat[i] == '{' ? rxCodeBraceEnd(pat, i) : 0) {
+                    rxAppendQqText(out, evalString(pat.substr(i + 1, j - i - 2)).toStr());
+                    i = j - 1;
+                    continue;
                 }
                 // $vars fall through to the interpolation below, everything
                 // else is literal text of the quoted span
@@ -862,7 +895,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                     // renumbers onto the host's — Rakudo discards it entirely for
                     // the unaliased form, since nothing names the sub-match.
                     bool vp5 = false;
-                    std::string vsrc = rxSourceOf(*v, vp5);
+                    std::string vsrc = calleeSource(*v, vp5);
                     if (v->t == VT::Str && !vp5 && rxRestricted()) rxRestrictedCheck(vsrc);
                     // A `$name` in that string is compiled HERE, so it names a
                     // variable of this scope, which must exist — Rakudo reports
@@ -911,7 +944,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                         // `$<alias>` reported the whole span, so Sparrow6 read
                         // "ABCDCBA" where Rakudo reads "BCDCB".
                         bool vp5 = false;
-                        std::string vsrc = rxSourceOf(*v, vp5);
+                        std::string vsrc = calleeSource(*v, vp5);
                         out += Regex::subSpliceOf(alias, vsrc, vp5);
                         i = j;                      // skip the '>'
                         continue;
@@ -1147,7 +1180,7 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
         // the declaration), exactly as for a regex matched directly.
         // …and a `$var` atom reads the variable as it is NOW (`my $a = 1;
         // my regex ma { $a $a }` matched through `<ma>` read nothing)
-        auto sub = compileRegexCached(rxInterpArrays(it->second.find('$') != std::string::npos
+        auto sub = compileRegexCached(rxInterpArrays(rxNeedsScalarPass(it->second)
                                                          ? interpRegexPattern(it->second) : it->second), flags);
         // useHooks: a `my regex` body still runs its {…} blocks / <?{…}>
         return sub->matchAt(subj, pos, out, resolver, &lexNames, useHooks);
@@ -1613,25 +1646,32 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         // reads its own variables when it runs, and a '…' span is literal text:
         // neither is pattern for this pass. Pasting the value in turned
         // `<{ $p }>` into `<{ b }>`, a call to a routine named b.
+        // A double-quoted span is the exception: there `{ … }` is qq
+        // interpolation, evaluated now and spliced in as text, as `~~` does
+        // (interpRegexPattern) — `s/"{NAME}"/…/` left the block to an engine
+        // that has no one to ask about it here, and replaced nothing.
         std::string ip;
         int braces = 0;
-        bool inSq = false;
+        bool inSq = false, inDq = false;
         for (size_t i = 0; i < realPat.size(); i++) {
             if (size_t sp = Regex::spliceSpan(realPat, i)) { ip += realPat.substr(i, sp); i += sp - 1; continue; }
             if (realPat[i] == '\\' && i + 1 < realPat.size()) { ip += realPat[i]; ip += realPat[i + 1]; i++; continue; }
-            if (!p5 && !inSq && !braces && realPat[i] == '<' && i + 1 < realPat.size() &&
-                (realPat[i + 1] == '[' || realPat[i + 1] == '-')) {
-                // a character class: a `{` or `'` inside it is a member
-                size_t j = i;
-                while (j + 1 < realPat.size() && !(realPat[j] == ']' && realPat[j + 1] == '>')) ip += realPat[j++];
-                while (j < realPat.size() && realPat[j] != '>') ip += realPat[j++];
-                if (j < realPat.size()) ip += realPat[j];
-                i = j; continue;
+            // a character class: a `{`, `'` or `"` inside it is a member (rxClassEnd)
+            if (size_t e = !p5 && !inSq && !inDq && !braces && realPat[i] == '<' ? rxClassEnd(realPat, i) : 0) {
+                ip += realPat.substr(i, e - i); i = e - 1; continue;
             }
             if (!p5) {
-                if (realPat[i] == '{' && !inSq) { braces++; ip += realPat[i]; continue; }
-                if (realPat[i] == '}' && !inSq) { if (braces) braces--; ip += realPat[i]; continue; }
-                if (realPat[i] == '\'' && !braces) { inSq = !inSq; ip += realPat[i]; continue; }
+                if (realPat[i] == '"' && !inSq && !braces) { inDq = !inDq; ip += realPat[i]; continue; }
+                if (inDq && realPat[i] == '{') {
+                    if (size_t e = rxCodeBraceEnd(realPat, i)) {
+                        rxAppendQqText(ip, evalString(realPat.substr(i + 1, e - i - 2)).toStr());
+                        i = e - 1;
+                        continue;
+                    }
+                }
+                if (realPat[i] == '{' && !inSq && !inDq) { braces++; ip += realPat[i]; continue; }
+                if (realPat[i] == '}' && !inSq && !inDq) { if (braces) braces--; ip += realPat[i]; continue; }
+                if (realPat[i] == '\'' && !braces && !inDq) { inSq = !inSq; ip += realPat[i]; continue; }
                 if (inSq || braces) { ip += realPat[i]; continue; }
             }
             if (realPat[i] == '$' && i + 1 < realPat.size()) {

@@ -690,7 +690,7 @@ static void rejectObsoleteRegex(const std::string& pat) {
 }
 static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
     Value v = Value::regex(std::move(pat));
-    if (sc && (v.s.find('$') != std::string::npos || v.s.find('@') != std::string::npos))
+    if (sc && (rxNeedsScalarPass(v.s.str()) || v.s.find('@') != std::string::npos))
         v.extM() = std::static_pointer_cast<void>(sc);
     else rejectObsoleteRegex(v.s.str());
     return v;
@@ -706,7 +706,7 @@ Value Interpreter::regexLitValue(RegexLit* rl) {
     if (const void* p = rl->closedPat.get())
         return Value::regex(*static_cast<const std::string*>(p));
     Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
-    if (!v.ext() && rl->pattern.find('$') == std::string::npos &&
+    if (!v.ext() && !rxNeedsScalarPass(rl->pattern) &&
         rl->pattern.find('@') == std::string::npos) {
         auto* mine = new std::string(v.s.str());
         if (rl->closedPat.publish(mine) != mine) delete mine; // another thread won

@@ -43,6 +43,7 @@ static bool hashTypeParam(const Value& inv, bool key, Value& out) {
     return true;
 }
 bool isP5Pattern(const std::string& pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
+bool rxNeedsScalarPass(const std::string& pat);   // InterpreterRegex.cpp: a `$` or a qq `{ … }` to interpolate
 
 namespace {
 
@@ -5771,7 +5772,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return p5pat ? interpP5Pattern(p) : rxInterpArrays(interpRegexPattern(p));
         };
         if (args[rxIdx].t == VT::Regex && args[rxIdx].ext() && args[rxIdx].hashKind.empty() &&
-            (pat.find('$') != std::string::npos || pat.find('@') != std::string::npos)) {
+            (rxNeedsScalarPass(pat) || pat.find('@') != std::string::npos)) {
             auto savedOuter = tctx_.cur;
             tctx_.cur = std::static_pointer_cast<Env>(args[rxIdx].ext());
             try { pat = interp(pat); }

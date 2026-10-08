@@ -19965,7 +19965,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // nothing at all once `f` had returned. Path::Finder's glob grammar builds
     // every `{a,b}` and `[a-z]` matcher exactly that way, inside a `make`.
     if (!wired && rxVal && rxVal->t == VT::Regex && rxVal->ext() &&
-        (pat.find('$') != std::string::npos ||
+        (rxNeedsScalarPass(pat) ||
          (!p5pat && pat.find('@') != std::string::npos))) {
         auto savedOuter = tctx_.cur;
         tctx_.cur = std::static_pointer_cast<Env>(rxVal->ext());
@@ -20401,7 +20401,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (it == namedRegex_.end()) return nullptr;
             auto kit = namedRegexKind_.find(name);
             if (kit != namedRegexKind_.end() && !kit->second.empty() && kit->second != "regex") return nullptr;
-            return compileRegexCached(rxInterpArrays(it->second.find('$') != std::string::npos
+            return compileRegexCached(rxInterpArrays(rxNeedsScalarPass(it->second)
                                                          ? interpRegexPattern(it->second) : it->second), "");
         };
         wantHooks = true;
@@ -31258,8 +31258,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
             // matched the literal characters "$q" and changed nothing —
             // Text::CSV escapes its quotes exactly that way.
+            // (and a regex value reads its own variables where it was written first)
             if (!posArgs.empty() && posArgs[0].t == VT::Regex)
-                pat = rxInterpArrays(interpRegexPattern(posArgs[0].s));
+                pat = rxInterpArrays(interpRegexPattern(closedRegexSource(posArgs[0])));
             else if (!posArgs.empty()) { pat = posArgs[0].toStr(); literal = true; }
             Value replArg = posArgs.size() > 1 ? posArgs[1] : Value::str("");
             long nsub = 0; Value mres;

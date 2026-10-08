@@ -2599,6 +2599,16 @@ Regex::NodePtr Regex::parseAtom() {
                 int depth = 1;
                 while (!eof()) {
                     char p = pat_[pos_++];
+                    // a string in the block is text: its braces do not count (`{'a}b'}`)
+                    if (p == '\'' || p == '"') {
+                        expr += p;
+                        while (!eof() && pat_[pos_] != p) {
+                            if (pat_[pos_] == '\\' && pos_ + 1 < pat_.size()) expr += pat_[pos_++];
+                            expr += pat_[pos_++];
+                        }
+                        if (!eof()) expr += pat_[pos_++];
+                        continue;
+                    }
                     if (p == '{') depth++;
                     else if (p == '}' && --depth == 0) break;
                     expr += p;
