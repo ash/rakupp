@@ -3,6 +3,7 @@
 #include "Token.h"   // TokenXform — P1-L10N's `.AST($lang)` seam
 #include "Value.h"
 #include "IntOps.h"
+#include "ConstInit.h"  // RAKUPP_CONSTINIT on the thread_local declarations below
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -23,19 +24,6 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-// On a thread_local DECLARATION: its definition is constant-initialized (a
-// scalar or pointer set to a constant, or left to zero). A file that does not
-// define a thread_local cannot see that, so it calls a wrapper function on
-// every access in case the definition needs dynamic initialization. Saying so
-// turns each access into a bare TLS load. The attribute is checked at the
-// definition: one that is not constant-initialized fails to compile, so it
-// cannot lie. (C++20 spells it `constinit`.)
-#if defined(__clang__)
-#define RAKUPP_CONSTINIT [[clang::require_constant_initialization]]
-#else
-#define RAKUPP_CONSTINIT
-#endif
 
 // A branch that is almost never taken. MSVC has no __builtin_expect, so there
 // it is only the condition — and this header reaches the MSVC build (the

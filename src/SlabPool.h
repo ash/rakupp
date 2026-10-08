@@ -29,22 +29,11 @@
 // shared and nothing needs a lock.
 #pragma once
 
+#include "ConstInit.h"
+
 #include <cstddef>
 #include <memory>
 #include <new>
-
-// `constinit` is C++20 and this project builds at C++17 (CMakeLists.txt sets
-// CMAKE_CXX_STANDARD 17). The keyword only ASSERTS what the initialisers below
-// already are — constant — so dropping it costs the compile-time check and
-// nothing else: a thread_local with a constant initialiser has no dynamic
-// initialisation, and therefore no per-access guard, in either standard. Kept
-// behind the feature test so the assertion comes back for free if the project
-// moves to C++20.
-#if defined(__cpp_constinit)
-#define RAKUPP_CONSTINIT constinit
-#else
-#define RAKUPP_CONSTINIT
-#endif
 
 namespace rakupp {
 
@@ -119,9 +108,11 @@ public:
     }
 
 private:
-    inline static RAKUPP_CONSTINIT thread_local FreeBlock* tlHead[kClasses]  = {};
-    inline static RAKUPP_CONSTINIT thread_local std::size_t tlCount[kClasses] = {};
-    inline static RAKUPP_CONSTINIT thread_local bool        tlArmed           = false;
+    // Inline definitions, so every file already sees the constant initialisers
+    // and needs no per-access guard; RAKUPP_CONSTINIT only checks them.
+    RAKUPP_CONSTINIT inline static thread_local FreeBlock* tlHead[kClasses]  = {};
+    RAKUPP_CONSTINIT inline static thread_local std::size_t tlCount[kClasses] = {};
+    RAKUPP_CONSTINIT inline static thread_local bool        tlArmed           = false;
 };
 
 inline void SlabPool::drain() noexcept {
