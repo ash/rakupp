@@ -12,8 +12,8 @@
 # container's toolchain rotates.
 #
 # What it reads, from the install layout (bin/ + lib/):
-#   bin/rakupp        needs glibc <= GLIBC-FLOOR, carries its libstdc++
-#   lib/librakupp.so  needs glibc <= GLIBC-FLOOR, libstdc++ <= GLIBCXX-FLOOR
+#   bin/rakupp        needs glibc <= the glibc floor, carries its libstdc++
+#   lib/librakupp.so  needs glibc <= the glibc floor, libstdc++ <= its floor
 #                     (built from the same sources with the same headers as
 #                     the runtime archive, so this is the archive's floor too)
 #   lib/*.a           reference no __isoc23_* symbol (the glibc 2.38 tell)
@@ -29,8 +29,15 @@
 # with prefixed binutils (a downloaded release archive on a Mac, say) and
 # skips the compile checks, which need the layout's own rakupp to run.
 
-constant GLIBC-FLOOR   = '2.28';    # manylinux_2_28: RHEL 8, Debian 10, Ubuntu 18.10 (2018) and newer
-constant GLIBCXX-FLOOR = '3.4.29';  # GCC 11's libstdc++, the container's gcc-toolset-11
+# riscv64 has no manylinux image, so release.yml cross-compiles it against an
+# Ubuntu 22.04 sysroot instead, and that sysroot sets both of its floors. Its
+# libstdc++.so is GCC 12's whatever the headers' version, so librakupp.so
+# binds std::condition_variable::wait at GLIBCXX_3.4.30, which every 22.04 has.
+# The machine field of bin/rakupp's ELF header says which pair applies.
+constant GLIBC-FLOOR           = '2.28';    # manylinux_2_28: RHEL 8, Debian 10, Ubuntu 18.10 (2018) and newer
+constant GLIBCXX-FLOOR         = '3.4.29';  # GCC 11's libstdc++, the container's gcc-toolset-11
+constant GLIBC-FLOOR-RISCV64   = '2.35';    # the Ubuntu 22.04 sysroot: Ubuntu 22.04, Debian 13 and newer
+constant GLIBCXX-FLOOR-RISCV64 = '3.4.30';  # GCC 12's libstdc++, Ubuntu 22.04's libstdc++6
 
 my $dist  = @*ARGS[0] // 'dist/rakupp';
 my $tools = %*ENV<FLOOR_GATE_TOOLS> // '';
@@ -77,7 +84,11 @@ for $objdump, $readelf, $nm -> $t {
         exit 1;
     }
 }
-say "floor gate on $dist: glibc <= {GLIBC-FLOOR}, libstdc++ <= GLIBCXX_{GLIBCXX-FLOOR}";
+my ($elf-header)  = sh($readelf, '-h', "$dist/bin/rakupp");
+my $riscv64       = $elf-header.contains('RISC-V');
+my $glibc-floor   = $riscv64 ?? GLIBC-FLOOR-RISCV64   !! GLIBC-FLOOR;
+my $glibcxx-floor = $riscv64 ?? GLIBCXX-FLOOR-RISCV64 !! GLIBCXX-FLOOR;
+say "floor gate on $dist: glibc <= $glibc-floor, libstdc++ <= GLIBCXX_$glibcxx-floor";
 
 # ---- bin/rakupp -----------------------------------------------------------
 my $bin = "$dist/bin/rakupp";
@@ -87,7 +98,7 @@ my $bin = "$dist/bin/rakupp";
     check $rc == 0, "$objdump reads bin/rakupp";
     my $g = glibc-of($dyn);
     say "  bin/rakupp needs glibc {$g || '?'}";
-    check $g && vkey($g) <= vkey(GLIBC-FLOOR), "bin/rakupp: glibc floor within {GLIBC-FLOOR}";
+    check $g && vkey($g) <= vkey($glibc-floor), "bin/rakupp: glibc floor within $glibc-floor";
     my ($d, $rc2, $e2) = sh($readelf, '-d', $bin);
     my @needed = needed-of($d);
     say "  bin/rakupp NEEDED: {@needed.join(' ')}";
@@ -104,9 +115,9 @@ my $bin = "$dist/bin/rakupp";
         my $g = glibc-of($dyn);
         my $x = glibcxx-of($dyn);
         say "  {$so.basename} needs glibc {$g || '?'}, libstdc++ GLIBCXX {$x || '(none: static)'}";
-        check $g && vkey($g) <= vkey(GLIBC-FLOOR), "{$so.basename}: glibc floor within {GLIBC-FLOOR}";
-        check !$x || vkey($x) <= vkey(GLIBCXX-FLOOR),
-              "{$so.basename}: libstdc++ floor within GLIBCXX_{GLIBCXX-FLOOR} (GCC 11)";
+        check $g && vkey($g) <= vkey($glibc-floor), "{$so.basename}: glibc floor within $glibc-floor";
+        check !$x || vkey($x) <= vkey($glibcxx-floor),
+              "{$so.basename}: libstdc++ floor within GLIBCXX_$glibcxx-floor";
     }
 }
 

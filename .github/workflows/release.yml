@@ -1166,6 +1166,131 @@ jobs:
         with:
           files: rakupp-openbsd-x86_64.tar.gz*
 
+  # Linux on RISC-V (riscv64), cross-compiled. GitHub has no RISC-V runner,
+  # and building for one does not need one: Clang on this x86-64 runner targets
+  # riscv64 and links against a riscv64 sysroot, the same recipe
+  # docs/guide/COMPILERS.md gives for a Mac. Running the result does need
+  # riscv64, so every gate runs in a riscv64 Ubuntu container under QEMU
+  # user-mode emulation: slower than hardware, but the real binary on a real
+  # riscv64 userland. (riscv64.yml builds natively on RISC-V hardware.)
+  #
+  # Ubuntu 22.04 for the sysroot and the gates both. There is no manylinux
+  # image for riscv64 at 2.28 (AlmaLinux 8 has no riscv64), and 22.04 is the
+  # oldest riscv64 release in use. A binary needs the glibc it was linked
+  # against, so 2.35 is this archive's floor, and the gates run on that same
+  # release, where a newer one would hide a miss: --exe passed `-Wl,-w` to
+  # GNU ld, which 22.04's binutils refuses, and the 24.04 runners never saw
+  # it. 22.04's libstdc++.so is GCC 12's, whatever the -dev package's version,
+  # so librakupp.so needs GLIBCXX_3.4.30 where the other two need 3.4.29; the
+  # floor gate holds both numbers.
+  #
+  # Its own job, not a row in the build matrix: every step there builds and
+  # tests natively, and here the build is cross and the tests are emulated, so
+  # sharing them would put an `if:` on nearly every step. The gates are the
+  # ones an emulator answers in minutes: smoke, --exe, the floor. The example
+  # suite is not one of them: under QEMU it ran 39 minutes without finishing
+  # (on a Mac, 2026-10-08), its wall-clock bounds fail there
+  # (cat-assign-shapes), and the bare container lacks the sqlite3 and the
+  # non-root user two regression files need. It and the concurrency stress
+  # matrix stay with riscv64.yml on real hardware.
+  linux-riscv64:
+    name: linux-riscv64 (cross-compiled, gated under QEMU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # one gate command, run in the riscv64 image against this workspace
+      RV: docker run --rm --platform linux/riscv64 -v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} rakupp-riscv64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: QEMU (riscv64 binfmt)
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: riscv64
+
+      # One container makes both. Its headers and libraries are the sysroot,
+      # and committed as an image it is the machine the gates run on: g++ for
+      # --exe, binutils for the floor gate. `symlinks -rc` turns the
+      # system's absolute symlinks into relative ones, so they resolve inside
+      # the sysroot. riscv64/ubuntu, not ubuntu with --platform: COMPILERS.md
+      # says why.
+      - name: Sysroot + gate image (Ubuntu 22.04, riscv64)
+        run: |
+          docker run --name rv --platform linux/riscv64 riscv64/ubuntu:22.04 sh -ec '
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends g++ symlinks
+            symlinks -rc /usr/lib/riscv64-linux-gnu /usr/lib/gcc /usr/include >/dev/null
+            ldd --version | head -1'
+          mkdir -p "$RUNNER_TEMP/riscv64-sysroot"
+          docker export rv | tar -x -C "$RUNNER_TEMP/riscv64-sysroot" \
+            lib usr/include usr/lib/gcc usr/lib/riscv64-linux-gnu usr/lib/ld-linux-riscv64-lp64d.so.1
+          docker commit rv rakupp-riscv64
+          docker rm rv
+
+      # Ubuntu's Clang has the RISC-V backend, as every LLVM build does;
+      # tools/riscv64-toolchain.cmake finds it, ld.lld and llvm-ar on PATH.
+      - name: Toolchain (Clang, lld)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang lld llvm
+          clang++ --version
+          cmake --version
+
+      # The Linux legs' flags: libstdc++ and libgcc inside rakupp, and a
+      # librakupp.so for the embedding API. No -fPIE here: Clang makes PIE by
+      # default for Linux targets (the manylinux leg passes it because
+      # AlmaLinux's Clang turns that default off), and the --exe gates below
+      # link the archive into a PIE with Ubuntu's g++, which a non-PIC archive
+      # would fail.
+      - name: Configure + build + install layout (cross, Clang, Ubuntu 22.04 sysroot)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON \
+                -DCMAKE_TOOLCHAIN_FILE=tools/riscv64-toolchain.cmake \
+                -DCMAKE_SYSROOT="$RUNNER_TEMP/riscv64-sysroot" \
+                "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+          cmake --build build -j 4
+          cmake --install build --prefix dist/rakupp
+          file build/rakupp
+
+      - name: Smoke test
+        run: $RV build/rakupp tools/smoke.raku
+
+      - name: Smoke test -e
+        run: |
+          out=$($RV build/rakupp -e 'say 6 * 7')
+          echo "got: [$out]"
+          test "$out" = "42"
+
+      - name: Smoke test --exe
+        run: $RV sh -ec 'build/rakupp --exe tools/smoke.raku -o smoke-native; ./smoke-native'
+
+      - name: Smoke test --exe from install layout
+        run: $RV sh -ec 'dist/rakupp/bin/rakupp --exe -e "say 6 * 7" -o dist-native; test "$(./dist-native)" = 42'
+
+      # Run by the riscv64 rakupp itself, so its --exe --static checks compile
+      # and run on Ubuntu 22.04 too.
+      - name: Floor gate
+        run: $RV build/rakupp tools/floor-gate.raku dist/rakupp
+
+      - name: Package
+        run: |
+          cp README.md LICENSE dist/rakupp/
+          tar -C dist -czf rakupp-linux-riscv64.tar.gz rakupp
+          sha256sum rakupp-linux-riscv64.tar.gz > rakupp-linux-riscv64.tar.gz.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rakupp-linux-riscv64
+          path: rakupp-linux-riscv64.tar.gz*
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: rakupp-linux-riscv64.tar.gz*
+
   # `curl -fsSL https://raku.online/install.sh | sh` is the headline install
   # command in the README, in docs/guide/INSTALL.md and on the front page — and
   # it is served from a COPY of tools/install.sh in the raku.online repo, which

@@ -420,6 +420,13 @@ with its tag, after the release run is green.
   `tools/lsp-bench.raku`). The debugger (Part D) must not slow a normal run:
   D0 reuses the existing `--trace` branch and is checked by disassembly as
   well as timing.
+- [ ] **riscv64 release archive**: `linux-riscv64` in release.yml, 2026-10-08.
+  Cross-compiled on an x86-64 runner against an Ubuntu 22.04 sysroot (glibc
+  2.35), gated on Ubuntu 22.04 riscv64 under QEMU. The same recipe passed
+  every gate on the Mac (Homebrew Clang, Docker QEMU); the job has never run
+  in CI. Next: push and read its first run. On the release after that, copy
+  tools/install.sh to raku.online (it now maps riscv64 to the archive) and
+  add the archive to raku.online/install/.
 - [ ] **v5.2.1 after the tag**: tagged and on PyPI 2026-10-03. Left: bump
   the Homebrew tap, and republish raku.online (the release's dashboard point
   from the artifact, the front page's version, the Roast map). RELEASING.md

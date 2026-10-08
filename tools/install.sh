@@ -131,6 +131,7 @@ detect_asset() {
             case "$_arch" in
                 x86_64|amd64)  echo 'rakupp-linux-x86_64.tar.gz' ;;
                 aarch64|arm64) echo 'rakupp-linux-aarch64.tar.gz' ;;
+                riscv64)       echo 'rakupp-linux-riscv64.tar.gz' ;;
                 *) echo '' ;;
             esac ;;
         OpenBSD)

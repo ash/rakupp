@@ -146,9 +146,11 @@ all, so its `--exe` looks for `g++` and then `clang++` and never considers `cl`
 
 ## Linux on RISC-V, built on a Mac
 
-There is no riscv64 release archive. `rakupp` builds natively on a riscv64
-machine like on any other Linux ([above](#linux--gcc-and-clang-both-fine)), and
-it also cross-compiles on a Mac: build there, copy one file to the board.
+The release has a riscv64 archive, which CI cross-compiles the way this
+section does on a Mac (`linux-riscv64` in `.github/workflows/release.yml`).
+`rakupp` also builds natively on a riscv64 machine like on any other Linux
+([above](#linux--gcc-and-clang-both-fine)), and it cross-compiles on a Mac:
+build there, copy one file to the board.
 
 Apple Clang has no RISC-V target, so the compiler is Homebrew's LLVM, with its
 linker:
@@ -159,11 +161,11 @@ brew install llvm lld
 
 The build also needs a **sysroot**: the headers and libraries of a riscv64
 Linux system, for the binary to compile and link against. Docker makes one from
-Ubuntu 24.04, running the riscv64 image under emulation:
+Ubuntu 22.04, as the release does, running the riscv64 image under emulation:
 
 ```sh
-docker run --name rv-sysroot --platform linux/riscv64 riscv64/ubuntu:24.04 sh -c \
-  'apt-get update && apt-get install -y --no-install-recommends libc6-dev libstdc++-13-dev symlinks &&
+docker run --name rv-sysroot --platform linux/riscv64 riscv64/ubuntu:22.04 sh -c \
+  'apt-get update && apt-get install -y --no-install-recommends libc6-dev libstdc++-11-dev symlinks &&
    symlinks -rc /usr/lib/riscv64-linux-gnu /usr/lib/gcc /usr/include'
 mkdir -p "$HOME/riscv64-sysroot"
 docker export rv-sysroot | tar -x -C "$HOME/riscv64-sysroot" \
@@ -174,7 +176,7 @@ docker rm rv-sysroot
 `symlinks -rc` turns the system's absolute symlinks into relative ones, so they
 resolve inside the sysroot and not on the Mac. The image is `riscv64/ubuntu`
 rather than `ubuntu` with `--platform`: on a Docker without the containerd image
-store, the second form re-points the local `ubuntu:24.04` tag at the riscv64
+store, the second form re-points the local `ubuntu:22.04` tag at the riscv64
 image.
 
 Then configure with `tools/riscv64-toolchain.cmake`, which finds Homebrew's
@@ -190,8 +192,8 @@ file build-riscv64/rakupp     # ELF 64-bit LSB pie executable, UCB RISC-V, ...
 ```
 
 The linker flags put libstdc++ inside the binary, as in the release builds, so
-the board needs only glibc: **the sysroot's or newer**, which is 2.39 for
-Ubuntu 24.04. `ldd --version` on the board tells which it has. For an older
+the board needs only glibc: **the sysroot's or newer**, which is 2.35 for
+Ubuntu 22.04. `ldd --version` on the board tells which it has. For an older
 one, make the sysroot from the board's own distribution and release instead:
 an image of it, or the same directories copied off the board after installing
 its `libc6-dev` and libstdc++ development package.
@@ -209,7 +211,7 @@ Without a board, Docker runs the binary on the Mac under QEMU emulation:
 
 ```sh
 docker run --rm --platform linux/riscv64 -v "$PWD:$PWD" -w "$PWD" \
-  riscv64/ubuntu:24.04 build-riscv64/rakupp -e 'say 6 * 7'
+  riscv64/ubuntu:22.04 build-riscv64/rakupp -e 'say 6 * 7'
 ```
 
 A cross-compiled `rakupp` has no `--cnp` stencils, the same as a native riscv64
@@ -291,7 +293,7 @@ does not work from a static executable).
 | **Windows**, MSVC build | Windows only (static CRT) | Windows only (the output is `/MT` too) | the same |
 | **Windows**, MinGW build | Windows only (`-static`) | the MinGW DLLs beside it or on `PATH`: `libstdc++-6`, `libgcc_s_seh-1`, `libwinpthread-1` | Windows only |
 | **OpenBSD** | the OpenBSD release it was built on | the same | the same — no effect |
-| **Linux** riscv64 | no archive: built from source, it needs the glibc of the machine that built it, or of the sysroot of a [cross-compile](#linux-on-risc-v-built-on-a-mac) | the same, and that machine's libstdc++ | that glibc |
+| **Linux** riscv64 | glibc 2.35+; libstdc++ inside | glibc 2.35+ **and** the machine's libstdc++, GCC 11's or newer (`GLIBCXX_3.4.29`) | glibc 2.35+ |
 
 Two things decide the Linux numbers, and neither is the machine that runs
 `--exe`:
@@ -300,7 +302,9 @@ Two things decide the Linux numbers, and neither is the machine that runs
   against, so the release is built in a `quay.io/pypa/manylinux_2_28`
   container (AlmaLinux 8, glibc 2.28, Clang, GCC 11's libstdc++), and every
   compiled program inherits that floor from the runtime archive it links —
-  whatever built it. `tools/floor-gate.raku` reads the numbers back from the
+  whatever built it. riscv64 has no manylinux image, so its archive is
+  cross-compiled against an Ubuntu 22.04 sysroot instead (glibc 2.35, GCC 11's
+  libstdc++ headers). `tools/floor-gate.raku` reads the numbers back from the
   packaged binaries in CI and fails the build when they move.
 - **Compiled programs link `libstdc++` dynamically by default**, like every
   other C++ program on the machine, so a binary built on one distribution can

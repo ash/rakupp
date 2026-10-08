@@ -791,7 +791,14 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
 #endif
         return c;
     }
-    std::string c = cxx + nativeCflags(opt) + " -Wl,-w";
+    std::string c = cxx + nativeCflags(opt);
+#ifdef __APPLE__
+    // ld64's warnings off. Apple only: GNU ld has -w from binutils 2.40
+    // (2023), and an older one refuses the whole link over it, so --exe
+    // failed on Ubuntu 22.04 (2.38) and RHEL 8 (2.30), inside the glibc floor
+    // the Linux archives promise.
+    c += " -Wl,-w";
+#endif
     // (the precompiled header's flags go first: GCC's is a directory that has
     // to be searched ahead of the real headers)
     c += pchFlags;

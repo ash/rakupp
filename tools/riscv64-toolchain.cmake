@@ -13,8 +13,9 @@
 # a Mac") makes one with Docker and says how to run the result.
 #
 # A cross-compile ships an empty `--cnp` stencil table (CMakeLists.txt says why),
-# as the native riscv64 build does too. CI builds natively on riscv64 hardware
-# (riscv64.yml).
+# as the native riscv64 build does too. release.yml's linux-riscv64 job builds
+# the release archive with this file on an x86-64 runner; riscv64.yml builds
+# natively on riscv64 hardware.
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR riscv64)
 

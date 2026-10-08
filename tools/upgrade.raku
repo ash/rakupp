@@ -44,6 +44,7 @@ my constant ASSETS = <
     rakupp-macos-universal.tar.gz
     rakupp-linux-x86_64.tar.gz
     rakupp-linux-aarch64.tar.gz
+    rakupp-linux-riscv64.tar.gz
     rakupp-openbsd-x86_64.tar.gz
     rakupp-windows-x64.zip
     rakupp-windows-x64-mingw.zip
@@ -158,9 +159,10 @@ sub asset-for-platform(--> Str) {
         when 'darwin'  { return 'rakupp-macos-universal.tar.gz' }
         when 'win32'   { return 'rakupp-windows-x64.zip' }
         when 'linux'   {
-            return $*KERNEL.hardware ~~ /^ [aarch64 | arm64] $/
-                ?? 'rakupp-linux-aarch64.tar.gz'
-                !! 'rakupp-linux-x86_64.tar.gz';
+            my $hw = $*KERNEL.hardware;
+            return $hw ~~ /^ [aarch64 | arm64] $/ ?? 'rakupp-linux-aarch64.tar.gz'
+                !! $hw eq 'riscv64'               ?? 'rakupp-linux-riscv64.tar.gz'
+                !!                                   'rakupp-linux-x86_64.tar.gz';
         }
         when 'openbsd' { return 'rakupp-openbsd-x86_64.tar.gz' }
     }

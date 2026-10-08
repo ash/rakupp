@@ -71,15 +71,15 @@ or newer, so there is no dependency to satisfy first. What each platform's
 binary needs at run time — and what the programs it compiles need — is one
 table in [COMPILERS.md](COMPILERS.md#what-runs-where).
 
-On **RISC-V** (riscv64) there is no archive yet, and the one-liner says so
-and prints the commands to [build from source](#build-from-source). A user
-has built it on a Milk-V Pioneer (64 cores at 2 GHz), and an on-demand CI job
-on RISC-V hardware builds it and passes the smoke tests. It also
-[cross-compiles on a Mac](COMPILERS.md#linux-on-risc-v-built-on-a-mac), to
-copy to the board as one file. `gather` runs on the same hand-written
-coroutine switch as on x86-64 and ARM64, so it is just as lazy. One thing
-differs: `--cnp` has no native stencils for the architecture, so its kernels
-run interpreted.
+**RISC-V** (riscv64) has an archive too, with a higher floor: glibc 2.35,
+which is Ubuntu 22.04, Debian 13 or newer. CI cross-compiles it against
+Ubuntu 22.04 and runs its tests on that release under emulation. It also
+builds from source on the board itself — a user has built it on a Milk-V
+Pioneer (64 cores at 2 GHz) — and
+[cross-compiles on a Mac](COMPILERS.md#linux-on-risc-v-built-on-a-mac).
+`gather` runs on the same hand-written coroutine switch as on x86-64 and
+ARM64, so it is just as lazy. One thing differs: `--cnp` has no native
+stencils for the architecture, so its kernels run interpreted.
 
 ### Debian and Ubuntu: a `.deb`
 
@@ -375,16 +375,17 @@ docker build --build-arg RAKUPP_VERSION=v5.0.1 -t rakupp:5.0.1 .
 
 ## Prebuilt archives
 
-Every release ships six self-contained archives on the
+Every release ships seven self-contained archives on the
 [Releases page](https://github.com/ash/rakupp/releases/latest), each with a
 `.sha256` beside it, and each built and smoke-tested in CI on the platform it
-targets:
+targets — except RISC-V, which is cross-compiled and tested under emulation:
 
 | Platform | Archive |
 |---|---|
 | macOS 11+, Apple Silicon and Intel | `rakupp-macos-universal.tar.gz` — one universal binary for both |
 | Linux, x86-64 | `rakupp-linux-x86_64.tar.gz` — static libstdc++, glibc 2.28+ |
 | Linux, ARM64 | `rakupp-linux-aarch64.tar.gz` — Raspberry Pi, Graviton, Ampere; glibc 2.28+ |
+| Linux, RISC-V | `rakupp-linux-riscv64.tar.gz` — static libstdc++, glibc 2.35+ (Ubuntu 22.04, Debian 13) |
 | OpenBSD, x86-64 | `rakupp-openbsd-x86_64.tar.gz` — base clang, for the OpenBSD release it was built on |
 | Windows, x64 | `rakupp-windows-x64.zip` — MSVC, static CRT, no redistributable |
 | Windows, x64 (MinGW) | `rakupp-windows-x64-mingw.zip` — for a MinGW-w64 / MSYS2 toolchain |

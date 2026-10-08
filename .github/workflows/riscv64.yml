@@ -19,7 +19,9 @@ name: riscv64
 # runs interpreted.
 #
 # Built on the runner's own Ubuntu 24.04, not in a manylinux container, so the
-# artifact needs glibc 2.39. It is a test build, not a release asset.
+# artifact needs glibc 2.39. It is a test build: the release archive is
+# cross-compiled against Ubuntu 22.04 by release.yml's linux-riscv64 job, which
+# can only emulate RISC-V, so this is where the build meets real hardware.
 
 on:
   workflow_dispatch:
