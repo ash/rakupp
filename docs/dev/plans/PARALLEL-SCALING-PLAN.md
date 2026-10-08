@@ -81,6 +81,48 @@ absolute times:
   0 differ. `t/race/evalcall.raku`: 0 deaths in 4,000 runs. Not yet run:
   `t/run.raku`, the module battery, the adopters gate and the TSan job.
 
+### A second machine: equal cores
+
+The M3 mixes 4 performance cores with 4 efficiency cores, which run this loop
+at about 0.6 of a performance core's speed. So its numbers above 4 threads
+mix two effects: how well the engine scales, and how unequal the hardware
+is. The same sweep was run on an Intel Core i7-6700: 4 identical cores with
+2 hyperthreads each, Ubuntu 24.04, g++ 13.3, Release builds of `e4ee17cd` and
+`c2de1666`. It was interleaved best of 9, at a load average of about 2. Its
+times are not comparable with the M3's, only its ratios are, and the
+benchmark series in BENCHMARKS.md stays on the M3.
+
+| | before | after | C threads, same sitting |
+|---|---|---|---|
+| `cpu-fanout` N=1 | 0.92× | 0.95× | 0.98× |
+| `cpu-fanout` N=2 | 1.82× | 1.85× | 1.95× |
+| `cpu-fanout` N=4 | 2.00× | 3.58× | 3.91× |
+| `cpu-fanout` N=8, two threads per core | 1.52× | 3.48× | 6.51× |
+| the slowest worker at N=4 (0.176 s alone) | 0.357 s | 0.191 s | |
+| `atomic-counter` contended / sharded / counters, N=4 | 1.46× / 2.80× / 2.67× | 1.53× / 3.72× / 3.51× | |
+| example 3, `$M` from outside, N=4 | 0.42× | 3.93× | |
+| example 3, `$m` a parameter, N=4 | 3.94× | 3.94× | |
+| a compiled loop beside one idle worker (0.110 s alone) | 0.818 s | 0.121 s | |
+| the FAQ program, its `start` side | 1.895 s | 0.568 s | |
+
+- **The stripes cost more on this machine.** Before, each worker at N=4 took
+  twice its solo time, against 1.21–1.45× on the M3. Now it takes 1.085×, and
+  N=4 reaches 0.92 of the C ceiling.
+- **What is left per worker belongs to the engine.** The cores are equal and
+  the run takes 8 stripe acquisitions, as on the M3. So the remaining 8% per
+  worker cannot be put down to efficiency cores. It is the next thing to find.
+- **Single-threaded speed is level.** Every serial row reads 0.99–1.01× of
+  the baseline. That supports reading the M3's 2–4% serial differences as
+  code layout in that build, not as cost added by this plan.
+- **Hyperthreads help C and not the interpreter.** C goes from 3.91× to 6.51×
+  with two threads per core: its loop is one chain of dependent multiplies
+  and modulos, which leaves room in the core for a second thread. Raku++ goes
+  from 3.58× to 3.48×. Either the interpreter fills a core on its own, or
+  something shared slows down past 4 threads. A run at N=6 would tell the two
+  apart; it has not been done.
+- **This build has no `--cnp`:** its stencils need clang, and the machine has
+  only g++.
+
 ---
 
 ## Why `start` scales badly today
