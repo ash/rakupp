@@ -119,12 +119,15 @@ async function raku(p, code, ...values) {
 
 // ---- what Apps Script's parser refuses -----------------------------------------------
 // It reads every file when the project is saved, with a parser older than V8:
-// logical assignment and class fields are a syntax error there, though V8,
-// and so this test, runs them. build.raku rewrites both out of the engine.
+// logical assignment, class fields and BigInt literals are a syntax error
+// there, though V8, and so this test, runs them. build.raku rewrites all
+// three out of the engine.
 for (const f of files) {
+  if (/^RakuWasm\d+\.gs$/.test(f)) continue;   // one string each, of base64
   const src = fs.readFileSync(path.join(dir, f), 'utf8');
   check(`${f}: no ??=, ||= or &&=`, (src.match(/\?\?=|\|\|=|&&=/g) ?? []).length, 0);
   check(`${f}: no class fields`, (src.match(/\bclass\b[\w$\s.]*\{\s*[\w$]+\s*=/g) ?? []).length, 0);
+  check(`${f}: no BigInt literals`, (src.match(/(?<![\w$.])(?:0[xXoObB][\da-fA-F]+|\d+)n\b/g) ?? []).length, 0);
 }
 
 // ---- a cold load, timed ------------------------------------------------------------

@@ -308,13 +308,14 @@ with its tag, after the release run is green.
 - [ ] **Spreadsheets**: `=RAKU(...)` in Google Sheets and `=RAKU.EVAL(...)` in
   Excel, on Raku.js rather than `librakupp`:
   [bindings/spreadsheets/README.md](../../../bindings/spreadsheets/README.md),
-  started 2026-10-08. Built and tested off the platforms only:
-  `test/sheets.mjs` runs the Apps Script project in a bare V8, and
-  `test/excel-harness.html` the add-in in a browser with stand-ins for Excel.
-  Excel runs sideloaded on a Mac from raku.online/embed/excel/. Apps Script's
-  save-time parser refused the glue's `??=` and class fields; `build.raku`
-  rewrites them now, and a real Sheets run is next (time to load the engine,
-  memory). Then: does a `RAKU.EVAL` cell calculate in a new Excel session
+  started 2026-10-08. `test/sheets.mjs` runs the Apps Script project in a
+  bare V8, and `test/excel-harness.html` the add-in in a browser with
+  stand-ins for Excel. Excel runs sideloaded on a Mac from
+  raku.online/embed/excel/, and the pasted script in a real Google Sheet
+  (`=RAKU("1+2")` is 3), once `build.raku` rewrote the glue's `??=`, class
+  fields and `0n`, which Apps Script's save-time parser refuses. Next in
+  Sheets: the time to load the engine, the menu, the Raku sheet, a range,
+  the add-on as a test deployment. Then: does a `RAKU.EVAL` cell calculate in a new Excel session
   without the pane click (if not, start the add-in with the document); a
   template spreadsheet to copy; the store listings, whose material is in
   [store/README.md](../../../bindings/spreadsheets/store/README.md) — the

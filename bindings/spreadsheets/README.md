@@ -227,8 +227,9 @@ the answer back into cells.
   gzip CRC. `RakuSheet.installShims` adds the `TextDecoder`, `performance`,
   `crypto` and `Array.prototype.at` that the Emscripten glue expects. Apps
   Script reads every file with a parser of its own when the project is saved,
-  and that parser refuses logical assignment (`a ??= b`) and class fields,
-  which the glue has; `build.raku` rewrites both into what they mean.
+  and that parser refuses logical assignment (`a ??= b`), class fields and
+  BigInt literals (`0n`), which the glue has; `build.raku` rewrites all three
+  into what they mean.
 - **The Marketplace add-on** (`dist/google-sheets-addon`) is the same project
   with the add-on's own entry points, [`google-sheets/RakuAddon.js`](google-sheets/RakuAddon.js)
   in place of the marked region of `Raku.js`: its menu is under **Extensions**,

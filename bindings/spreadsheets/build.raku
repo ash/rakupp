@@ -160,13 +160,27 @@ sub base64(Blob $b --> Str) {
 }
 
 # ---- Apps Script's syntax. Apps Script reads every file with a parser of its
-# ---- own when the project is saved, and that parser refuses two things the
+# ---- own when the project is saved, and that parser refuses three things the
 # ---- engine's Emscripten glue has: logical assignment (a ??= b, a ||= b,
-# ---- a &&= b) and class fields (class C { name = "C"; … }). V8 runs both, so
-# ---- Node's test does too; these rewrite them into what they mean.
+# ---- a &&= b), class fields (class C { name = "C"; … }) and BigInt literals
+# ---- (0n). It takes ?. and ??, async and await, and a catch with no
+# ---- binding. V8 runs all of them, so Node's test does too; these rewrite
+# ---- the three into what they mean.
 
 sub apps-script-syntax(Str $js --> Str) {
-    lower-class-fields(lower-logical-assignment($js))
+    lower-bigint-literals(lower-class-fields(lower-logical-assignment($js)))
+}
+
+# 0n is BigInt("0"), and 0xFFn is BigInt("0xFF"): the string keeps every digit.
+sub lower-bigint-literals(Str $js --> Str) {
+    my $s = $js;
+    my @t = js-tokens($s);
+    for @t.reverse.grep({ .[0] eq 'num' && $s.substr(.[2] - 1, 1) eq 'n' }) -> ($, $from, $to, $) {
+        my $digits = $s.substr($from, $to - $from - 1);
+        die "a BigInt literal this does not rewrite: {$digits}n\n" if $digits.contains('_') || $digits.contains('.');
+        $s = $s.substr(0, $from) ~ "BigInt(\"$digits\")" ~ $s.substr($to);
+    }
+    $s
 }
 
 my constant PUNCT3 = set '===', '!==', '**=', '<<=', '>>=', '>>>', '&&=', '||=', '??=', '...';
