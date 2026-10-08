@@ -333,15 +333,19 @@ void Interpreter::rwWriteThrough(Expr* target) {
                         "Cannot modify an immutable value"};
     auto dit = e->xr().rwDirect.find(name);
     if (dit != e->xr().rwDirect.end()) {
-        Value v = *e->local(name);
-        *dit->second = v;
+        // the copy and the store under their slots' stripes (torn-copy contract):
+        // the parameter may be written from a worker the callee started
+        Value v;
+        { Value* src = e->local(name); ParStripe rs(*this, src); v = *src; }
+        { ParStripe ws(*this, dit->second); *dit->second = v; }
         e->x().rwSynced[name] = v;
         return;
     }
     if (!e->ex || e->ex->rwLinks.empty()) return;
     auto it = e->ex->rwLinks.find(name);
     if (it == e->ex->rwLinks.end()) return;
-    Value v = *e->local(name);
+    Value v;
+    { Value* src = e->local(name); ParStripe rs(*this, src); v = *src; }   // as above
     auto savedCur = tctx_.cur;
     tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
     // ONE hop only: write through to the caller's slot. Chaining further up on
@@ -355,7 +359,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     try {
         Expr* tgt = peelIncDec(it->second.first);
         if (!assignMultiDimSlice(tgt, v))
-            if (Value* lv = lvalue(tgt)) *lv = v;
+            if (Value* lv = lvalue(tgt)) { ParStripe ws(*this, lv); *lv = v; }
     } catch (...) {}
     tctx_.cur = savedCur;
     // …and the ORIGINAL container behind the chain, when the hop above is not
@@ -368,7 +372,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     auto rt = e->ex->rwRoots.find(name);
     if (rt != e->ex->rwRoots.end()) {
         tctx_.cur = rt->second.second;
-        try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) *lv = v; } catch (...) {}
+        try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) { ParStripe ws(*this, lv); *lv = v; } } catch (...) {}
         tctx_.cur = savedCur;
     }
     e->x().rwSynced[name] = v;
@@ -1399,6 +1403,7 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
 }
 
 Value Interpreter::makePathProxy(std::shared_ptr<Env> scope, Expr* path) {
+    escapeRefs(path, scope.get());   // PARALLEL-SCALING-PLAN P2: it re-reads the path from anywhere
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
         [scope, path](Interpreter& I, ValueList&) -> Value {
@@ -1469,7 +1474,8 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
     // promoted one outer `$tmp` eight times over — so while workers are live
     // a slot not yet promoted stays as it is, and the caller holds the value
     // (a Pair's .value then does not write back; `given` writes back at exit).
-    if (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0) return nullptr;
+    // A private slot is safe: no other thread can be reading it (promotionSafe).
+    if (!promotionSafe(owner, raw)) return nullptr;
     return raw->promoteToCell();
 }
 
@@ -1634,6 +1640,7 @@ Value* Interpreter::peekElemSlot(Index* ix) {
 }
 
 Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src) {
+    escapeName(owner.get(), src);   // PARALLEL-SCALING-PLAN P2: read and written by name from anywhere
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
         [owner, src](Interpreter& I, ValueList&) -> Value {
@@ -1644,6 +1651,9 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
                 auto f2 = op->hash()->find("FETCH");
                 if (f2 != op->hash()->end()) { ValueList none; return I.callCallable(f2->second, none); }
             }
+            // the copy under the slot's stripe (torn-copy contract): a Proxy
+            // travels, and the frame's own thread may be storing meanwhile
+            ParStripe rs(I, op);
             return *op;
         },
         [owner, src](Interpreter& I, ValueList& sa) -> Value {
@@ -1653,7 +1663,8 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
                 auto s2 = op->hash()->find("STORE");
                 if (s2 != op->hash()->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
             }
-            if (op) *op = nv; else owner->define(src, nv);
+            if (op) { ParStripe ws(I, op); *op = nv; }   // as FETCH
+            else owner->define(src, nv);
             return nv;
         });
     return proxy;
@@ -1688,9 +1699,13 @@ Value Interpreter::spliceStr(const Value& s, long long from, long long len, cons
 // keeps pointing at the same place when this one changes the string's length.
 Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& vname, long long from,
                                  long long len) {
+    escapeName(owner.get(), vname);   // PARALLEL-SCALING-PLAN P2, as makeEnvSlotProxy
     auto cur = [owner, vname](Interpreter& I) -> Value {
         Value* p = owner->local(vname);
-        return p ? I.deproxy(*p) : Value::str("");
+        if (!p) return Value::str("");
+        Value v;
+        { ParStripe rs(I, p); v = *p; }   // torn-copy contract, as makeEnvSlotProxy
+        return I.deproxy(v);
     };
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
@@ -1705,7 +1720,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
     store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
         Value nv = sa.empty() ? Value::str("") : sa.back();
         Value out = I.spliceStr(cur(I), from, len, nv);
-        if (Value* p = owner->local(vname)) *p = out;
+        if (Value* p = owner->local(vname)) { ParStripe ws(I, p); *p = out; }
         return nv;
     };
     (*proxy.hash())["FETCH"] = fetch;

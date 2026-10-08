@@ -33,6 +33,53 @@ workers, each worker takes 0.26 s; with 4 workers, 0.29–0.33 s. A
 contention-free fan-out should leave each worker at its solo time. Rakudo's
 workers run at solo time.
 
+## Status, 2026-10-08
+
+P0, P1, P2, P3, P5 and P6 are implemented. P4 turned out not to be needed. P7 and P8 are open. Measured on
+the same M3, interleaved best of 9 under `nice -n 10`, with
+`tools/bench/parallel/sweep.raku`. The baseline is a binary built at
+`e4ee17cd`. The load average was 3.4, so ratios matter more than the
+absolute times:
+
+| | before | after | C threads, same sitting |
+|---|---|---|---|
+| `cpu-fanout` N=1 | 0.86× | 0.94× | 1.00× |
+| `cpu-fanout` N=2 | 1.70× | 1.88× | 1.97× |
+| `cpu-fanout` N=4 | 3.26× | 3.65× | 3.81× |
+| `cpu-fanout` N=8 | 3.16× | 5.32× | 6.13× |
+| each worker at N=4, against its solo time | 1.21–1.45× | 1.09–1.13× | |
+| `atomic-counter` contended / sharded / counters, N=4 | 0.82× / 3.28× / 3.24× | 0.93× / 3.49× / 3.30× | |
+| example 3, `$M` from outside, N=4 | 0.41× | 3.84× | |
+| example 3, `$m` a parameter, N=4 | 3.76× | 3.84× | |
+| the same, first call from four workers at once, runs over 0.1 s | 47 of 50 | 0 of 50 | |
+| a compiled loop beside one idle worker (0.036 s alone) | 0.347 s | 0.037 s | |
+| an interpreted loop beside one idle worker (0.062 s alone) | 0.074 s | 0.070 s | |
+| the FAQ program, its `start` side | 0.244 s | 0.224 s | |
+
+- **What is left per worker is not the stripe.** In `cpu-fanout` at N=4
+  `RAKUPP_STRIPE_STATS=1` counts 8 stripe acquisitions in the whole run, where
+  `RAKUPP_PRIVATE_SLOTS=0` counts 3,600,024. The FAQ program also counts 8.
+  The C loop on the same machine pays 5% per thread at N=4.
+- **The targets in P3's exit.** N=4 within 10% of the C ceiling is met: 0.96
+  of it. A max/min spread of 1.10 over 9 runs is met at N=4 (1.10) and N=8
+  (1.11). N=1 at 0.97× is not met: 0.94×. Each worker within 5% of its solo
+  time is not met: 9–13%, against C's 5%.
+- **Single-threaded speed is level, within the layout noise of this binary.**
+  `perf-guard` A/B, best of 3 pairs: 15 of 19 kernels within ±2%. `fib` read
+  +6.5%, `strscan` +3.2%, `hash` +2.5% and `loopsum` +1.8%. The code `fib`
+  runs is a routine kernel no change of this plan touches per call, and
+  100 never-called lines in `IntKernel.cpp` alone moved it +7%. A `my int`
+  interpreted loop read +2–4% in four sittings; the same padding in
+  `InterpreterCore.cpp` moved it +1.2%. One real cost was found and removed:
+  an `Env` 8 bytes larger cost 3% on that loop, so `Env::layout` became a raw
+  pointer (see P2). The official gate is `perf-guard --check` in release
+  conditions.
+- **The gates run:** Roast unchanged (218,413 / 218,420 assertions without
+  skip/todo, 1,421 / 1,424 files, the same three files failing). `t/stress`:
+  54 / 54 in both modes. The `--cnp` lane of `t/jit/run.raku`: 987 agree,
+  0 differ. `t/race/evalcall.raku`: 0 deaths in 4,000 runs. Not yet run:
+  `t/run.raku`, the module battery, the adopters gate and the TSan job.
+
 ---
 
 ## Why `start` scales badly today
@@ -147,6 +194,14 @@ non-goal.
 
 ### P0 — Measure first (no engine change)
 
+**Done** 2026-10-08. The benches are
+`per-worker.raku`, `idle-worker.raku`, `faq.raku`, `kernel-fanout.raku`
+(example 3), `ceiling.c` and the driver `sweep.raku`, which interleaves
+configurations inside rounds and A/Bs a second binary (`--vs`) or an
+environment (`--vs-env`). `RAKUPP_STRIPE_STATS=1` landed with P6. The
+baseline was measured beside the result, interleaved, rather than first: the
+status table above.
+
 - **Benches**, in `tools/bench/parallel/`:
   - `per-worker.raku`: each worker's own time against one unit run alone.
     This is the direct measure of the tax.
@@ -166,6 +221,49 @@ non-goal.
 Exit: the baseline table, written into this plan.
 
 ### P1 — The analysis, with no consumer yet
+
+**Done** 2026-10-08, in a different shape from the one
+below. Collecting mentions at each point where the annotation walk skips a
+node depends on that list being complete. Instead, a second pass over the
+WHOLE owner body (`ShareSweep` in Interpreter.cpp) sees every child of every
+node, signatures, class bodies and regex text included. It marks a slot
+shared when:
+
+- a mention of its name is not annotated, since it is then looked up by name
+  and may run on any thread;
+- an annotated mention sits where the runtime keeps the expression and
+  evaluates it later in the creating scope: a statement with a curried `*`
+  (WhateverCode keeps `scope` and the expression, InterpreterCore.cpp:13371),
+  the left side of `xx` (a thunk, lazy for `*` and for an Inf count),
+  sequence operators, `take-rw`/`lazy`/`.BIND-POS` arguments, phasers, and
+  `hyper for`/`race for` bodies;
+- the owner reaches names at run time (EVAL, a computed symbolic name or
+  method name, a pseudo-stash). Then every slot it can name is marked.
+
+A name marks the owner's layout and the inline blocks around the mention, not
+sibling blocks: marking every layout by name made the `--cnp` case
+`inline.raku` lose all eight of its kernels.
+
+Two corrections to the route table:
+
+- Statement-level `hyper for` parses as `do { for … }`, so its body is a
+  closure of its own and reaches the routine's variables by name. Route 3
+  through annotated slots does not occur in any shape the parser makes today.
+  The sweep's rule for it stays.
+- **Route 16 is real.** A module's unit scope chains to `global_`, so
+  `::('$secret')` in a module reads the mainline's `my $secret`. Raku++ also
+  accepts a bare `$secret` there, which Rakudo refuses at compile time. A
+  module's sweep records the names it mentions (`unitSharingScan`), and
+  `applyModuleEscapes` sets those mainline slots escaped. That happens when
+  the module loads, or when the mainline layout is made, for a `use`
+  executed while parsing.
+
+The program-wide switch is set by the sweeps (resolvePads, a module's or an
+EVAL's unit) rather than by the parser, so precompiled and `--slim` ASTs get
+it too. `RAKUPP_SLOT_TRACE=1` prints one line per slot.
+`t/regression/slot-sharing.raku` checks a snippet per route, and fails 24
+checks on a binary without the trace. Not done: the dynamic-variable fallback
+(InterpreterBinding.cpp:3219) is still unverified.
 
 - `PadLayout::sharedMask`, plus a reason per set bit for the trace.
 - The walk, in `resolvePads`
@@ -201,6 +299,39 @@ since nothing reads the mask yet.
 
 ### P2 — The runtime escape mask
 
+**Done** 2026-10-08, except the raw-pointer audit.
+`Env::padEscaped` is set by `setupRwLinks` (three sites, through
+`escapeRefs`), `makeEnvSlotProxy`, `substrRwProxy`, `makePathProxy`, the
+hash-element Proxy of `:=`, `makePseudoStash`, an EVAL'd unit, and a module
+that names a mainline variable. A promotion to a cell needs no mask bit: the
+`isCell` backstop covers the slot from then on. Pooled frames and reused loop
+scopes clear the mask, under the existing `use_count() == 1` rules.
+
+- **Hazard 1 is fixed.** `promotionSafe` lets `bindArgCell`, `:=`, for-rw and
+  `varCell` promote while workers are live only for a private slot. The first
+  three fall back to their link or Proxy path. `varCell` now promotes a
+  private slot where it used to refuse every one.
+- **Hazard 2 is fixed.** The rw write-through copies and stores under the
+  stripes.
+- **Three more holes, each crashing the baseline binary, are fixed:** the
+  Env-slot Proxy's FETCH and STORE (`take-rw`), `substr-rw`'s, and the
+  pseudo-stash's key reads and `ASSIGN-KEY`, which all copied or stored with
+  no stripe.
+- **`makeTypedEx` registered a new exception class in `classes_`, and
+  extended an existing one's attributes, from any thread.** Four workers
+  failing one bind at once died 6 times in 3,000 runs of
+  `t/race/evalcall.raku` (macOS crash report, then lldb: three workers in
+  `makeTypedEx`). While workers are live a throw now carries a class of its
+  own instead. 0 deaths in 4,000 runs.
+- **`Env::layout` is a raw pointer now.** Every layout lives as long as the
+  program (the `padLayouts_` cache, or its Block in a kept AST). The 8 bytes
+  the mask needed made `Env` 168 bytes, which measured 3% on an interpreted
+  loop wherever the field went. Back at 160, with two fewer atomic
+  reference-count updates per frame.
+
+Open: the audit of `localRaw`/`findRaw`/`padPtr` callers that hand a raw slot
+pointer outward.
+
 - `Env::padEscaped`, set with a relaxed `fetch_or` at:
   - cell promotion: `promoteToCell` callers, i.e. `varCell`, `bindArgCell`,
     `:=` and for-rw;
@@ -220,6 +351,23 @@ since nothing reads the mask yet.
 Exit: the escape mask is set on every route 4–11. The audit list is complete.
 
 ### P3 — Private slots skip the stripe
+
+**Done** 2026-10-08, with one simplification. Only its
+own thread can touch a private slot, so ANY access to it may skip the stripe,
+whatever path produced the pointer. `SlotStripe(I, p)` therefore takes the
+pointer alone, as `ParStripe` does. In the live-workers branch,
+out of line, it finds the frame on the current scope chain whose pad holds
+`p`. Passing the reference and the frame through the store helpers kept them
+live across the store in `evalAssign`, so the helpers keep their old
+signatures.
+
+The contract programs are `t/stress/private-*.raku`, 13 of them. Under
+`RAKUPP_PRIVATE_SLOTS=all` 12 fail within a few runs (the two EVAL ones in
+about half), and by default all pass. `private-hyper-for` cannot fail under
+`=all`: its body reaches `$v` by name (see P1). The `CALLERS::` program was
+dropped. `$CALLERS::v` in a `start` block finds no frame of the spawner's
+(X::Undeclared), so that route does not reach anything here. The switch
+stays.
 
 - **The predicate** is evaluated only inside the live-workers branch, so a
   single-threaded program does not run it:
@@ -262,6 +410,10 @@ or less over 9 runs.
 
 ### P4 — Loop variables and `$_`
 
+**Not needed**, measured 2026-10-08. After P3 the FAQ program takes 8 stripe
+acquisitions in its whole run (`RAKUPP_STRIPE_STATS=1`). Its `-> $i` costs no
+stripe, and the program reaches 3.50×.
+
 Loop variables, pointy parameters and `$_` live in the iteration scope's map,
 not in slots. So the FAQ program's `-> $i` still pays the stripe after P3.
 
@@ -279,6 +431,22 @@ Exit: the FAQ program's workers run at solo time. Its contract test is
 `for ^N -> $i { start { … $i … } }`, plus `start { .say }` inside a loop.
 
 ### P5 — Kernels under threads
+
+**Done** 2026-10-08, except the reentrancy audit and the
+TSan pass. `tryLoopKernel` checks every `LOuter` with `cellPrivate` before
+reading it. While threads are live, a compile reads a variable another thread
+can reach under its stripe, and a loop with a container declines.
+`kThreadsDeclined`, the high bit of `loopKernelTries`, keeps such a loop from
+being recompiled on every entry until the threads are gone. The first-call
+race is fixed for both routes: a caller that sees state 2 waits on
+`g_compileMu` (`awaitKernelVerdict`), including the borrowed path's lost
+compare-exchange. `--cnp` applies the same per-variable rule. It refuses an
+array or a call while threads are live, and it holds a kernel that calls out
+to the per-variable rule even with no thread live, which closes hazard 6.
+
+The polling tests are `t/cnp/cases/shared-int-flag.raku` and
+`t/regression/kernel-shared-flag.raku`. The latter runs three programs by
+default, under `--cnp` and with kernels off, and hangs under `=all`.
 
 - **`tryLoopKernel`:** while workers are live, replace the blanket refusal
   with a check at entry of each `LOuter`.
@@ -314,6 +482,10 @@ first-call race is gone in 50 runs of 50.
 
 ### P6 — The stripe pool, for what stays shared
 
+**Done** 2026-10-08: 256 stripes, `alignas(128)`,
+Fibonacci hashing of the address, still recursive mutexes, and
+`RAKUPP_STRIPE_STATS=1`.
+
 - **The stripes:** a multiplicative hash of the address, `alignas(128)` per
   stripe (the Apple cache line), 256 stripes. Keep `recursive_mutex`, because
   `cas` re-enters its own stripe.
@@ -325,6 +497,8 @@ wanted.
 
 ### P7 — `--exe` and the C++ `--jit` (probe first)
 
+Open.
+
 - **Two shapes to probe:**
   - a top-level Int flag that a `start` loop polls, under `--exe` and
     `--exe -O`;
@@ -335,6 +509,8 @@ wanted.
   threads, which `--exe` already does.
 
 ### P8 — Docs
+
+Open, apart from this plan.
 
 - **PARALLEL-SPEEDUP.md:** every table re-measured. Rewrite example 3 and the
   "N=1 is 0.85×" bullet. Remove the checklist items about kernels and the
@@ -353,14 +529,17 @@ All were read in the code and none has been reproduced yet. Each needs a probe
 before it is called a bug. Hazard 1 is fixed in P2 and hazard 6 in P5; the
 rest go to TODO.md.
 
-1. **Unguarded promotion of a shared slot.** `bindArgCell`
+1. ~~**Unguarded promotion of a shared slot.** `bindArgCell`
    (InterpreterBinding.cpp:6314, 6330), `:=` (InterpreterCore.cpp:15124) and
    for-rw (3201–3217) call `promoteToCell` with workers live. `varCell` refuses
    in exactly that case, because promotion rewrites a multi-word Value in
-   place (InterpreterCalls.cpp:1465–1472).
-2. **rw-link write-through with no stripe.** A worker's write through an rw
+   place (InterpreterCalls.cpp:1465–1472).~~ **Done** 2026-10-08:
+   `promotionSafe` (P2).
+2. ~~**rw-link write-through with no stripe.** A worker's write through an rw
    parameter stores into the caller's slot with no stripe
-   (InterpreterCalls.cpp:341–358).
+   (InterpreterCalls.cpp:341–358).~~ **Done** 2026-10-08.
+   Reproduced first: `t/stress/private-rw-link.raku` crashed the baseline
+   binary in every run (P2).
 3. **Element and structural stripes don't exclude each other.** An element
    read keyed on the element (InterpreterCore.cpp:26094, 27708) does not
    exclude a reallocating push keyed on the container
@@ -372,8 +551,10 @@ rest go to TODO.md.
    `evalAssignInner` (16714–16855) stores unstriped.
 5. **A stale comment.** `cuedLoads_ > 0` implies `liveWorkers_ > 0`, so the
    comment at Jit.cpp:1494–1496 is wrong.
-6. **A `--cnp` loop can spawn after its gate.** `--cnp` admits calls (Jit.cpp
-   440–478), so a callee can spawn a worker after the entry check has passed.
+6. ~~**A `--cnp` loop can spawn after its gate.** `--cnp` admits calls (Jit.cpp
+   440–478), so a callee can spawn a worker after the entry check has passed.~~
+   **Done** 2026-10-08: a kernel that calls out holds only
+   private variables (P5).
 7. **`--exe` lanes ignore top-level `my`s that `start` captures.**
    `analyzeCells` excludes them (Codegen.cpp:1173, 1185), and the C++ `--jit`
    `tryUnboxedLoop` has no worker gate (Codegen.cpp:5612–5663).

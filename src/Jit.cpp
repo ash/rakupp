@@ -114,6 +114,9 @@ struct Site {
     // set, and which one is decided once, by the command line.
     std::atomic<cnp::Kernel*> cnpKernel{nullptr};
     std::atomic<bool> notedThreads{false};   // the "a worker is live" line, said once
+    // a variable another thread can reach refused it while workers were live;
+    // asked again only once they are gone (see runIfReady)
+    std::atomic<bool> threadsRefused{false};
     // The slot the kernel OWNS: a counted `for`'s loop variable, which the
     // synthetic `$i++` writes. -1 for every other loop shape. See the entry
     // guard in runIfReady for why it is singled out.
@@ -1494,13 +1497,29 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
     // Both counters, because that pair is what the rest of the engine means by
     // "is there concurrent work": a cued job is not a live worker yet, but it
     // becomes one without this thread doing anything.
-    if (isCnp && (I.liveWorkers_.load(std::memory_order_acquire) > 0 ||
-                  I.cuedLoads_.load(std::memory_order_acquire) > 0)) {
-        if (!s->notedThreads.exchange(true, std::memory_order_relaxed))
-            note("loop at line " + std::to_string(s->loop->line) +
-                 " not entered while another thread is live — its variables are shared");
-        return false;
+    //
+    // PARALLEL-SCALING-PLAN P5: while another thread is live, the kernel may
+    // still hoist variables that no other thread can reach (cellPrivate), as
+    // the loop kernels do, provided it indexes no array (another thread may
+    // hold the same one) and calls nothing. A kernel that calls is held to
+    // the per-variable rule even with no other thread live: the callee may
+    // start one after this gate, and that thread may reach what it shares.
+    const bool threads = isCnp && (I.liveWorkers_.load(std::memory_order_acquire) > 0 ||
+                                   I.cuedLoads_.load(std::memory_order_acquire) > 0);
+    if (threads) {
+        const char* why = s->threadsRefused.load(std::memory_order_relaxed) ? "its variables are shared"
+                        : !s->arrays.empty() ? "it indexes an array"
+                        : !s->callNames.empty() || cnp::makesCalls(ck) ? "it makes a call" : nullptr;
+        if (why) {
+            if (!s->notedThreads.exchange(true, std::memory_order_relaxed))
+                note("loop at line " + std::to_string(s->loop->line) +
+                     " not entered while another thread is live — " + why);
+            return false;
+        }
     }
+    else if (s->threadsRefused.load(std::memory_order_relaxed))
+        s->threadsRefused.store(false, std::memory_order_relaxed);
+    const bool mustBePrivate = threads || (isCnp && (!s->callNames.empty() || cnp::makesCalls(ck)));
 
     // A user-declared `infix:<+>` SHADOWS the built-in for the operand shapes it
     // has candidates for, and a kernel emits the built-in: `--exe` learned to
@@ -1560,6 +1579,18 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
             if (e->layout) if (Value* p = e->padFind(n)) { cell = p->deref(); owner = e; break; }
         }
         if (!cell) return refuse(s, "slot " + n + " is not in scope at kernel entry");
+        if (mustBePrivate) {
+            std::string why;
+            if (!I.cellPrivate(owner, cell, &why)) {
+                if (!threads)   // a static verdict, or an escape that stays: for good
+                    return refuse(s, "the loop calls out and " + n + " may be shared (" + why + ")");
+                s->threadsRefused.store(true, std::memory_order_relaxed);
+                if (!s->notedThreads.exchange(true, std::memory_order_relaxed))
+                    note("loop at line " + std::to_string(s->loop->line) +
+                         " not entered while another thread is live — " + n + " may be shared (" + why + ")");
+                return false;
+            }
+        }
         // An array the kernel indexes must be a plain one: typed, native,
         // shaped, lazy or `is default` arrays store differently, and a List is
         // immutable. Anything else keeps the loop interpreted.

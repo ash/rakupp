@@ -656,6 +656,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                                         nm.c_str(), how, pms, now() - t0); }
         } tg{traceLoad, name, howMs, tRun, nowMs, howLabel};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
+        unitSharingScan(prog->stmts, /*module=*/true);   // PARALLEL-SCALING-PLAN P1, before any of it runs
         // this module is now the executing unit (bare-name forward references
         // resolve against ITS declarations while its top level runs)
         unitPush(prog.get());
@@ -1854,6 +1855,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         }
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
+    if (!checkOnly) unitSharingScan(prog->stmts, /*module=*/false);   // PARALLEL-SCALING-PLAN P1
     // this EVAL/REPL line is its own unit for the bare-name fallback
     unitPush(prog.get());
     struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
@@ -7720,9 +7722,10 @@ int Interpreter::run(Program& prog) {
         // defines land in the pad — pre-declared-and-live from the start,
         // which is exactly the visibility the map gave them.
         if (!global_->layout && unitIsOutermost(&prog)) {
-            if (auto L = resolvePads(prog.stmts, nullptr)) {
-                global_->layout = L;
+            if (auto L = resolvePads(prog.stmts, nullptr, false, "<mainline>")) {
+                global_->layout = L.get();   // (owned by the padLayouts_ cache)
                 global_->pad.resize(L->names.size());
+                applyModuleEscapes();   // PARALLEL-SCALING-PLAN P1: modules `use`d while parsing
             }
         }
         // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.

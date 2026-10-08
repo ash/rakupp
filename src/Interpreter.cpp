@@ -4053,6 +4053,10 @@ Interpreter::Interpreter() {
         bool gilWanted = (g && *g && std::string(g) != "0") ||
                          (p && std::string(p) == "0");
         parallelMode_ = !gilWanted;
+        // PARALLEL-SCALING-PLAN P3: RAKUPP_PRIVATE_SLOTS=0 stripes every slot
+        // (the A/B instrument); =all is the debug mode that strips them all
+        if (const char* ps = std::getenv("RAKUPP_PRIVATE_SLOTS"))
+            privateSlots_ = std::string(ps) == "0" ? 0 : std::string(ps) == "all" ? 2 : 1;
     }
     global_ = std::make_shared<Env>();
     curPkgEnv_ = global_;
@@ -4316,6 +4320,511 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
     m.pairKeyM() = orig;
 }
 
+// ---- PARALLEL-SCALING-PLAN P1: which slots another thread may reach ----
+//
+// Run by resolvePads after the annotation walk, over the WHOLE owner body:
+// every child of every node, closure bodies, signatures, class bodies and
+// regex text included. A slot is marked shared when
+//   - a reference to its name was NOT annotated by this walk: it is looked up
+//     by name at run time, which is how closures, deferred operands, nested
+//     subs and methods reach an outer frame, from whatever thread runs them;
+//   - an annotated reference sits where the runtime keeps the expression and
+//     evaluates it later in the creating scope: a statement with a curried `*`
+//     (WhateverCode), the left side of `xx` (a thunk, lazy for `*` and Inf), a
+//     sequence operator, `take-rw`/`lazy`/`.BIND-POS` arguments, a phaser (END
+//     and the supply phasers run elsewhere), or a `hyper for`/`race for` body,
+//     whose iterations run on workers in the spawner's scope;
+//   - the owner reaches names at run time: EVAL, a computed symbolic name or
+//     method name, a pseudo-stash. Then every slot of the owner is shared.
+// `CALLER::`, `CALLERS::`, `DYNAMIC::`, `CLIENT::`, `callframe` and `&EVAL` as
+// a value reach frames that are not lexically around them, so any of them
+// turns private slots off for the whole program (Interpreter::privateSlotsOff).
+// A mention marks the owner's layout and the inline blocks around it, by name:
+// a closure inside one block cannot name a sibling block's `my`. Shadowing is
+// ignored, which only ever marks more.
+namespace {
+bool shareSlottable(const std::string& n) {   // resolvePads' `slottable`
+    return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
+           (ascii::isalpha((unsigned char)n[1]) || (n[1] == '_' && n.size() > 2));
+}
+bool shareIsDynScopePkg(const std::string& p) {
+    return p == "CALLER" || p == "CALLERS" || p == "DYNAMIC" || p == "CLIENT";
+}
+// `CALLER::OUTER::…`, `MY::CALLER` — any component a dynamic-scope pseudo-package
+bool shareChainHasDynScope(const std::string& chain) {
+    size_t b = 0;
+    for (;;) {
+        size_t c = chain.find("::", b);
+        if (shareIsDynScopePkg(chain.substr(b, c == std::string::npos ? std::string::npos : c - b))) return true;
+        if (c == std::string::npos) return false;
+        b = c + 2;
+    }
+}
+struct ShareSweep {
+    std::vector<PadLayout*> layouts;        // this walk's: the owner's, and each inline block's
+    std::unordered_set<const void*> own;    // …by address, to tell our annotations from a nested owner's
+    std::vector<const void*> open;          // inline block layouts the sweep is inside, outermost first
+    const PadLayout* ownerL = nullptr;      // the owner's own (null: none, or a unit with no pads)
+    // a layout a name at this point can resolve to: the owner's, or a block around it
+    bool around(const PadLayout* L) const {
+        return L == ownerL || std::find(open.begin(), open.end(), (const void*)L) != open.end();
+    }
+    bool off = false; std::string offWhy; int offLine = 0;
+    std::string ctx;                        // the deferred construct a mention sits in, for the trace
+    bool force = false;                     // annotated references count too
+    size_t exemptFrom = SIZE_MAX;           // …except against layouts opened at this depth or deeper
+    const char* forceWhy = "";
+    int line = 0;
+
+    std::unordered_set<std::string>* collect = nullptr;   // every name marked, for a unit with no pads
+    std::string where() const { return line > 0 ? " (line " + std::to_string(line) + ")" : std::string(); }
+    void markName(const std::string& n, const char* what) {
+        if (collect) collect->insert(n);
+        for (PadLayout* L : layouts) {
+            if (!around(L)) continue;
+            auto it = L->byName.find(n);
+            if (it == L->byName.end() || ((L->sharedMask >> it->second) & 1)) continue;
+            L->markShared(it->second, std::string(what) + (ctx.empty() ? std::string() : " " + ctx) + where());
+        }
+    }
+    void markExact(int ps, const void* po, const char* what) {
+        for (PadLayout* L : layouts)
+            if ((const void*)L == po && ps >= 0 && ps < (int)L->names.size()) {
+                L->markShared(ps, std::string(what) + where());
+                return;
+            }
+    }
+    bool sawAll = false;                    // a run-time name reach, whether or not we own slots
+    // a run-time name reach (EVAL, a computed name, a stash): what it can name
+    // from here, the owner's slots and the blocks' around it
+    void markAll(const char* what) {
+        sawAll = true;
+        for (PadLayout* L : layouts)
+            if (around(L))
+                for (size_t i = 0; i < L->names.size(); i++)
+                    if (!((L->sharedMask >> i) & 1)) L->markShared((int)i, std::string(what) + where());
+    }
+    // …and a node the sweep does not know: everything
+    void markEverything(const char* what) {
+        sawAll = true;
+        for (PadLayout* L : layouts)
+            for (size_t i = 0; i < L->names.size(); i++)
+                if (!((L->sharedMask >> i) & 1)) L->markShared((int)i, std::string(what) + where());
+    }
+    void programOff(const char* what) {
+        if (!off) { off = true; offWhy = what; offLine = line; }
+        markEverything(what);
+    }
+    // a forced stretch of the walk, restored on scope exit. Nested, a layout
+    // is exempt only when every enclosing stretch exempts it: a curried `*`
+    // inside a hyper body can leave the iteration, so it exempts nothing.
+    struct Force {
+        ShareSweep& S; bool f; size_t ex; const char* w;
+        Force(ShareSweep& s, const char* why, size_t exempt) : S(s), f(s.force), ex(s.exemptFrom), w(s.forceWhy) {
+            S.exemptFrom = S.force ? std::max(S.exemptFrom, exempt) : exempt;
+            S.force = true;
+            S.forceWhy = why;
+        }
+        ~Force() { S.force = f; S.exemptFrom = ex; S.forceWhy = w; }
+    };
+    struct Ctx {
+        ShareSweep& S; std::string saved;
+        Ctx(ShareSweep& s, std::string c) : S(s), saved(std::move(s.ctx)) { S.ctx = std::move(c); }
+        ~Ctx() { S.ctx = std::move(saved); }
+    };
+
+    void mention(const VarExpr* v) {
+        const std::string& n = v->name;
+        if (!shareSlottable(n)) return;
+        int ps = v->padSlot;
+        const void* po = v->padOwner;
+        if (ps < 0 || !own.count(po)) { markName(n, "mentioned by"); return; }
+        if (!force) return;
+        // inside a `hyper for` body, a layout opened there is one frame per
+        // iteration, on the worker that runs it: private to that iteration
+        auto it = std::find(open.begin(), open.end(), po);
+        if (it != open.end() && (size_t)(it - open.begin()) >= exemptFrom) return;
+        markExact(ps, po, forceWhy);
+    }
+    // the text of a regex, a substitution or a grammar rule: its code blocks
+    // and interpolations are compiled when it runs, so every sigilled word in
+    // it is a mention, and the dynamic-name words mark everything
+    void text(const std::string& t) {
+        static const char* const kAll[] = {"EVAL", "::(", "MY::", "OUTER", "LEXICAL", "UNIT::", "SETTING",
+                                           "callframe", "CALLER", "DYNAMIC", "CLIENT::"};
+        for (const char* k : kAll)
+            if (t.find(k) != std::string::npos) {
+                if (!std::strcmp(k, "CALLER") || !std::strcmp(k, "DYNAMIC") || !std::strcmp(k, "callframe") ||
+                    !std::strcmp(k, "CLIENT::"))
+                    programOff("a regex reaches a caller's frame");
+                else markAll("a regex reaches names at run time");
+                return;
+            }
+        for (size_t i = 0; i + 1 < t.size(); i++) {
+            char c = t[i];
+            if (c != '$' && c != '@' && c != '%') continue;
+            size_t j = i + 1;
+            auto identCh = [](unsigned char ch) { return ascii::isalnum(ch) || ch == '_' || ch == '-' || ch == '\'' || ch >= 0x80; };
+            if (j >= t.size() || !(ascii::isalpha((unsigned char)t[j]) || t[j] == '_' || (unsigned char)t[j] >= 0x80)) continue;
+            while (j < t.size() && identCh((unsigned char)t[j])) j++;
+            markName(std::string(1, c) + t.substr(i + 1, j - i - 1), "mentioned by a regex");
+        }
+    }
+    static bool hasWhatever(const Expr* e) {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::Whatever: return true;
+            case NK::BlockExpr: return false;   // its own statements, swept on their own
+            case NK::VarExpr: return false;
+            case NK::Assign: { auto* a = static_cast<const Assign*>(e); return hasWhatever(a->target.get()) || hasWhatever(a->value.get()); }
+            case NK::Binary: { auto* b = static_cast<const Binary*>(e); return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
+            case NK::Unary: return hasWhatever(static_cast<const Unary*>(e)->operand.get());
+            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) if (hasWhatever(o.get())) return true; return false;
+            case NK::Call: { auto* c = static_cast<const Call*>(e); if (hasWhatever(c->callee.get())) return true;
+                for (auto& x : c->args) if (hasWhatever(x.get())) return true; return false; }
+            case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); if (hasWhatever(m->inv.get()) || hasWhatever(m->methodExpr.get())) return true;
+                for (auto& x : m->args) if (hasWhatever(x.get())) return true; return false; }
+            case NK::Index: { auto* i = static_cast<const Index*>(e); return hasWhatever(i->base.get()) || hasWhatever(i->index.get()); }
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
+            case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) if (hasWhatever(x.get())) return true; return false;
+            case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) if (hasWhatever(x.get())) return true; return false;
+            case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) if (hasWhatever(x.get())) return true; return false;
+            case NK::InterpStr: for (auto& x : static_cast<const InterpStr*>(e)->parts) if (hasWhatever(x.get())) return true; return false;
+            case NK::NqpOp: for (auto& x : static_cast<const NqpOp*>(e)->args) if (hasWhatever(x.get())) return true; return false;
+            case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); return hasWhatever(r->from.get()) || hasWhatever(r->to.get()); }
+            case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); return hasWhatever(p->keyExpr.get()) || hasWhatever(p->value.get()); }
+            default: return false;
+        }
+    }
+    // a statement-level expression: one with a curried `*` keeps itself
+    void root(const Expr* e) {
+        if (!e) return;
+        if (hasWhatever(e)) { Force f(*this, "a curried * expression uses it", SIZE_MAX); expr(e); }
+        else expr(e);
+    }
+    void each(const std::vector<ExprPtr>& v) { for (auto& x : v) expr(x.get()); }
+    void forced(const Expr* e, const char* why) { Force f(*this, why, SIZE_MAX); expr(e); }
+    void params(const std::vector<Param>& ps) {
+        for (auto& p : ps) {
+            expr(p.whereExpr.get()); expr(p.litVal.get()); expr(p.defaultVal.get());
+            for (auto& d : p.shapeDimExprs) expr(d.get());
+            for (auto& t : p.userTraits) expr(t.second.get());
+            if (p.subSig) params(*p.subSig);
+            if (p.codeSig) params(*p.codeSig);
+        }
+    }
+    void expr(const Expr* e) {
+        if (!e) return;
+        int savedLine = line;
+        if (e->line > 0) line = e->line;
+        switch (e->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::BoolLit: case NK::Whatever: case NK::SelfTerm: break;
+            case NK::StrLit: {
+                const std::string& v = static_cast<const StrLit*>(e)->v;
+                if (v == "EVAL" || v == "EVALFILE") programOff("EVAL named by a string");
+                break;
+            }
+            case NK::AllomorphLit: expr(static_cast<const AllomorphLit*>(e)->num.get()); break;
+            case NK::VarExpr: {
+                auto* v = static_cast<const VarExpr*>(e);
+                if (v->viaPseudoPkg && shareIsDynScopePkg(v->pseudoPkg)) programOff("a dynamic-scope pseudo-package");
+                if (!v->declare && v->name.size() > 1 && v->name[0] == '&' &&
+                    (v->name.find("EVAL") != std::string::npos || v->name.find("callframe") != std::string::npos))
+                    programOff("&EVAL or &callframe as a value");
+                if (!v->declare) mention(v);
+                expr(v->declDefault.get()); expr(v->declShape.get()); expr(v->declTypeExpr.get());
+                expr(v->declWhereExpr);
+                break;
+            }
+            case NK::Assign: { auto* a = static_cast<const Assign*>(e); expr(a->target.get()); expr(a->value.get()); break; }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                const std::string& op = b->op;
+                if (op == "xx") { forced(b->lhs.get(), "the thunk of an xx uses it"); expr(b->rhs.get()); }
+                else if (op == "..." || op == "...^" || op == "^..." || op == "^...^") {
+                    forced(b->lhs.get(), "a sequence operator uses it"); forced(b->rhs.get(), "a sequence operator uses it");
+                }
+                else { expr(b->lhs.get()); expr(b->rhs.get()); }
+                break;
+            }
+            case NK::Unary: expr(static_cast<const Unary*>(e)->operand.get()); break;
+            case NK::ChainExpr: each(static_cast<const ChainExpr*>(e)->operands); break;
+            case NK::Call: {
+                auto* c = static_cast<const Call*>(e);
+                const std::string& n = c->name;
+                if (n == "callframe" || n == "__client-lookup") programOff("callframe or CLIENT::");
+                else if (n == "__pseudo-stash") {
+                    const Expr* a0 = c->args.empty() ? nullptr : c->args[0].get();
+                    if (!a0 || a0->kind != NK::StrLit || shareChainHasDynScope(static_cast<const StrLit*>(a0)->v))
+                        programOff("a dynamic-scope pseudo-stash");
+                    else markAll("a pseudo-stash hands out the scope");
+                }
+                else if (n == "__sym-lookup") {
+                    // `OUTER::<$x>`: a name lookup, by the literal it carries
+                    const Expr* a0 = c->args.empty() ? nullptr : c->args[0].get();
+                    if (a0 && a0->kind == NK::StrLit) markName(static_cast<const StrLit*>(a0)->v, "looked up by name");
+                    else markAll("a computed name lookup");
+                    if (c->args.size() > 2 && c->args[2]->kind == NK::StrLit &&
+                        shareChainHasDynScope(static_cast<const StrLit*>(c->args[2].get())->v))
+                        programOff("a dynamic-scope pseudo-package");
+                }
+                else if (n == "__stash__") markAll("the scope's names are read at run time");
+                else if (nameEvalsCode(n) || (n.compare(0, 6, "CORE::") == 0 && nameEvalsCode(n.substr(6))))
+                    markAll("EVAL reaches names at run time");
+                expr(c->callee.get());
+                if (n == "take-rw" || n == "lazy") { for (auto& x : c->args) forced(x.get(), "a take-rw or lazy argument"); }
+                else each(c->args);
+                break;
+            }
+            case NK::MethodCall: {
+                auto* m = static_cast<const MethodCall*>(e);
+                if (nameEvalsCode(m->method)) markAll("EVAL reaches names at run time");
+                if (m->methodExpr) markAll("a method named at run time");
+                expr(m->inv.get()); expr(m->methodExpr.get());
+                if (m->method == "BIND-POS" || m->method == "BIND-KEY") { for (auto& x : m->args) forced(x.get(), "bound into a container"); }
+                else each(m->args);
+                break;
+            }
+            case NK::Index: { auto* i = static_cast<const Index*>(e); expr(i->base.get()); expr(i->index.get()); break; }
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); expr(t->cond.get()); expr(t->then.get()); expr(t->els.get()); break; }
+            case NK::ListExpr: each(static_cast<const ListExpr*>(e)->items); break;
+            case NK::ArrayLit: each(static_cast<const ArrayLit*>(e)->items); break;
+            case NK::HashLit: each(static_cast<const HashLit*>(e)->items); break;
+            case NK::InterpStr: each(static_cast<const InterpStr*>(e)->parts); break;
+            case NK::NqpOp: each(static_cast<const NqpOp*>(e)->args); break;
+            case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); expr(r->from.get()); expr(r->to.get()); break; }
+            case NK::Pair: {
+                auto* p = static_cast<const PairExpr*>(e);
+                expr(p->keyExpr.get());
+                // `k => my $x`: the Pair hands out the new slot itself
+                if (p->value && p->value->kind == NK::VarExpr && static_cast<const VarExpr*>(p->value.get())->declare)
+                    markName(static_cast<const VarExpr*>(p->value.get())->name, "bound into a Pair");
+                expr(p->value.get());
+                break;
+            }
+            case NK::BlockExpr: {
+                auto* be = static_cast<const BlockExpr*>(e);
+                Ctx c(*this, be->isSub ? "an anonymous sub" : "a block");
+                params(be->params);
+                for (auto& t : be->userTraits) expr(t.arg.get());
+                stmts(be->body);
+                break;
+            }
+            case NK::RegexLit: text(static_cast<const RegexLit*>(e)->pattern); break;
+            case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e); text(sl->pattern); text(sl->repl); break; }
+            case NK::SymbolicRef: {
+                auto* sr = static_cast<const SymbolicRef*>(e);
+                if (shareIsDynScopePkg(sr->pkg)) programOff("a caller's variable by name");
+                else if (sr->nameExpr && sr->nameExpr->kind == NK::StrLit && sr->segs.empty())
+                    markName(sr->sigil + static_cast<const StrLit*>(sr->nameExpr.get())->v, "looked up by name");
+                else markAll("a symbol named at run time");
+                expr(sr->nameExpr.get()); each(sr->segs);
+                break;
+            }
+            case NK::NameTerm: {
+                const std::string& n = static_cast<const NameTerm*>(e)->name;
+                if (n == "callframe" || n == "&callframe") programOff("callframe");
+                else if (nameEvalsCode(n)) markAll("EVAL reaches names at run time");
+                break;
+            }
+            default: markEverything("an expression the sweep does not know"); break;
+        }
+        line = savedLine;
+    }
+    void block(const Block* b) {
+        if (!b) return;
+        bool opened = b->padLayout && own.count((const void*)b->padLayout.get());
+        if (opened) open.push_back((const void*)b->padLayout.get());
+        if (!b->phaser.empty() && !b->isCatch) {
+            Force f(*this, "a phaser uses it", SIZE_MAX);
+            stmts(b->stmts);
+        }
+        else stmts(b->stmts);
+        if (opened) open.pop_back();
+    }
+    void stmts(const std::vector<StmtPtr>& ss) { for (auto& s : ss) stmt(s.get()); }
+    void stmt(const Stmt* s) {
+        if (!s) return;
+        int savedLine = line;
+        if (s->line > 0) line = s->line;
+        switch (s->kind) {
+            case NK::ExprStmt: root(static_cast<const ExprStmt*>(s)->e.get()); break;
+            case NK::VarDecl: root(static_cast<const VarDecl*>(s)->init.get()); break;
+            case NK::ReturnStmt: root(static_cast<const ReturnStmt*>(s)->value.get()); break;
+            case NK::Block: block(static_cast<const Block*>(s)); break;
+            case NK::IfStmt: {
+                auto* is = static_cast<const IfStmt*>(s);
+                for (auto& br : is->branches) { root(br.first.get()); block(br.second.get()); }
+                for (auto& bp : is->branchParams) params(bp);
+                params(is->elseParams);
+                block(is->elseBlock.get());
+                break;
+            }
+            case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s); root(w->cond.get()); params(w->params); block(w->body.get()); break; }
+            case NK::ForStmt: {
+                auto* f = static_cast<const ForStmt*>(s);
+                root(f->list.get());
+                if (f->hyper) {
+                    // the body's own pad (and any inside it) is per iteration
+                    Force fo(*this, "a hyper/race for body uses it", open.size());
+                    params(f->params);
+                    block(f->body.get());
+                }
+                else { params(f->params); block(f->body.get()); }
+                break;
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<const LoopStmt*>(s);
+                root(l->init.get()); root(l->cond.get()); root(l->incr.get()); block(l->body.get());
+                break;
+            }
+            case NK::GivenStmt: {
+                auto* g = static_cast<const GivenStmt*>(s);
+                root(g->topic.get()); params(g->params); params(g->elseParams);
+                block(g->body.get()); block(g->elseBody.get());
+                break;
+            }
+            case NK::WhenStmt: { auto* w = static_cast<const WhenStmt*>(s); root(w->cond.get()); block(w->body.get()); break; }
+            case NK::RepeatStmt: { auto* r = static_cast<const RepeatStmt*>(s); block(r->body.get()); root(r->cond.get()); break; }
+            case NK::SubDecl: sub(static_cast<const SubDecl*>(s)); break;
+            case NK::ClassDecl: {
+                auto* cd = static_cast<const ClassDecl*>(s);
+                Ctx c(*this, "class " + cd->name);
+                expr(cd->nameExpr.get()); expr(cd->verExpr.get()); expr(cd->authExpr.get()); expr(cd->apiExpr.get());
+                params(cd->roleParams);
+                for (auto& ra : cd->roleArgs) each(ra.second);
+                for (auto& t : cd->userTraits) expr(t.second.get());
+                for (auto& a : cd->attrs) {
+                    expr(a.whereExpr.get()); expr(a.def.get()); expr(a.defaultTrait.get()); expr(a.shape.get());
+                    for (auto& t : a.userTraits) expr(t.second.get());
+                }
+                for (auto& m : cd->methods) sub(m.get());
+                for (auto& r : cd->rules) text(r.pattern);
+                stmts(cd->body);
+                break;
+            }
+            case NK::EnumDecl: root(static_cast<const EnumDecl*>(s)->values.get()); break;
+            case NK::SubsetDecl: { Ctx c(*this, "a subset's where"); expr(static_cast<const SubsetDecl*>(s)->where.get()); break; }
+            case NK::UseStmt: {
+                auto* u = static_cast<const UseStmt*>(s);
+                expr(u->ifCond.get()); expr(u->fileExpr.get()); expr(u->argExpr.get());
+                break;
+            }
+            case NK::NamedRegexDecl: text(static_cast<const NamedRegexDecl*>(s)->pattern); break;
+            case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt: break;
+            default: markEverything("a statement the sweep does not know"); break;
+        }
+        line = savedLine;
+    }
+    void sub(const SubDecl* sd) {
+        Ctx c(*this, (sd->isMethod ? "method " : "sub ") + (sd->name.empty() ? std::string("<anon>") : sd->name));
+        expr(sd->nameExpr.get());
+        params(sd->params);
+        for (auto& alt : sd->altParams) params(alt);
+        for (auto& t : sd->traits) expr(t.arg.get());
+        expr(sd->retLiteral.get()); expr(sd->deprecatedWith.get());
+        each(sd->immediateArgs);
+        expr(sd->nativeLibExpr.get()); expr(sd->nativeSymExpr.get());
+        stmts(sd->body);
+    }
+};
+bool slotTraceOn() {
+    static const bool on = [] { const char* e = std::getenv("RAKUPP_SLOT_TRACE"); return e && *e && *e != '0'; }();
+    return on;
+}
+} // namespace
+
+// …and for a unit no pad walk sees whole: an EVAL's or a module's own
+// statements, scanned on the thread about to run them, before any of them
+// runs. A dynamic-scope reach turns private slots off. An EVAL runs in the
+// scope it was called from and reaches names in it by name, so every frame on
+// that chain escapes (each enclosing owner's own sweep already marked it, for
+// a direct EVAL; this covers `.EVAL` and EVALFILE). A module's unit scope
+// chains to the mainline's frame, so a mainline slot named anywhere in the
+// module — or every one of them, after a run-time name reach — escapes.
+void Interpreter::unitSharingScan(const std::vector<StmtPtr>& stmts, bool module) {
+    if (!parallelMode_ || privateSlots_ != 1 || privateSlotsOff_.load(std::memory_order_relaxed)) return;
+    ShareSweep sw;
+    std::unordered_set<std::string> named;
+    if (module) sw.collect = &named;   // every name the module mentions
+    sw.stmts(stmts);
+    if (sw.off) { privateSlotsOff(sw.offWhy.c_str(), sw.offLine); return; }
+    if (!module) { escapeChain(tctx_.cur.get()); return; }
+    // A `use` can run while the main program is still being parsed, before
+    // its layout exists: kept, and applied when the layout is made too.
+    {
+        std::lock_guard<std::mutex> lk(padMu_);
+        moduleNamed_.insert(named.begin(), named.end());
+        if (sw.sawAll) moduleNamedAll_ = true;
+    }
+    applyModuleEscapes();
+}
+
+void Interpreter::applyModuleEscapes() {
+    const PadLayout* L = global_ ? global_->layout : nullptr;
+    if (!L) return;
+    uint64_t mask = 0;
+    {
+        std::lock_guard<std::mutex> lk(padMu_);
+        if (moduleNamedAll_) mask = ~0ull;
+        else
+            for (auto& n : moduleNamed_) {
+                auto it = L->byName.find(n);
+                if (it != L->byName.end()) mask |= (uint64_t)1 << it->second;
+            }
+    }
+    uint64_t before = global_->padEscaped.fetch_or(mask, std::memory_order_relaxed);
+    if (slotTraceOn())
+        for (size_t i = 0; i < L->names.size(); i++)
+            if (((mask & ~before) >> i) & 1)
+                std::fprintf(stderr, "slot: <mainline> %s escaped — %s\n", L->names[i].c_str(),
+                             moduleNamedAll_ ? "a module reaches names at run time" : "named in a module");
+}
+
+void Interpreter::escapeRefs(const Expr* e, Env* cur) {
+    if (!e || !cur) return;
+    switch (e->kind) {
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->viaPseudoPkg || v->pkgSymbol) { escapeChain(cur); return; }
+            if (int ps = v->padSlot; ps >= 0) {
+                for (Env* pf = cur; pf; pf = pf->parent.get()) {
+                    if (!pf->layout) continue;
+                    if ((const void*)pf->layout == (const void*)v->padOwner) {
+                        pf->padEscaped.fetch_or((uint64_t)1 << ps, std::memory_order_relaxed);
+                        return;
+                    }
+                    if (!pf->layout->inlineBlock) break;
+                }
+            }
+            Env* owner = nullptr;
+            if (cur->findRaw(v->name, &owner) && owner) escapeName(owner, v->name);
+            return;
+        }
+        case NK::Index: {
+            auto* ix = static_cast<const Index*>(e);
+            escapeRefs(ix->base.get(), cur);
+            escapeRefs(ix->index.get(), cur);
+            return;
+        }
+        case NK::IntLit: case NK::StrLit: case NK::NumLit: case NK::BoolLit: return;
+        default: escapeChain(cur); return;   // anything else: every frame it could reach
+    }
+}
+
+void Interpreter::escapeChain(Env* e) {
+    for (; e; e = e->parent.get())
+        if (e->layout && e->padEscaped.load(std::memory_order_relaxed) != ~0ull)
+            e->padEscaped.store(~0ull, std::memory_order_relaxed);
+}
+
+void Interpreter::privateSlotsOff(const char* why, int line) {
+    if (privateSlotsOff_.exchange(true)) return;
+    if (slotTraceOn())
+        std::fprintf(stderr, "slot: private slots off for the whole program: %s%s\n", why,
+                     line > 0 ? (" (line " + std::to_string(line) + ")").c_str() : "");
+}
+
 // Pads (PADS-PLAN.md). Build the slot layout for one owner body — params plus
 // top-level plain `my` statements — and one for each inline statement block in
 // it that declares plain `my`s of its own (Block::padLayout), and annotate the
@@ -4331,7 +4840,7 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
 // activation boundary, so they are safe to enter.
 std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<StmtPtr>& stmts,
                                                           const std::vector<Param>* params,
-                                                          bool withSelf) {
+                                                          bool withSelf, const char* who) {
     std::lock_guard<std::mutex> lk(padMu_);
     auto hit = padLayouts_.find(&stmts);
     if (hit != padLayouts_.end()) return hit->second;
@@ -4412,7 +4921,14 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
         }
     };
     collectDecls(*layout, stmts);
-    if (layout->names.size() > 64) return nullptr; // cacheSlot stays null
+    if (layout->names.size() > 64) {   // cacheSlot stays null
+        // no pads here, but the program-wide switch still needs this body's look
+        ShareSweep sw;
+        if (params) sw.params(*params);
+        sw.stmts(stmts);
+        if (sw.off) privateSlotsOff(sw.offWhy.c_str(), sw.offLine);
+        return nullptr;
+    }
     // An owner with no slots of its own still has its inline blocks', so the
     // pass runs; only the owner's frame goes without a layout.
     const bool ownerSlots = !layout->names.empty();
@@ -4422,6 +4938,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     // ENTRY, so a closure made in one loop iteration keeps that iteration's
     // variable, as with the map. A block whose `my`s overflow the mask keeps
     // the map.
+    std::vector<std::pair<PadLayout*, int>> blockLayouts;   // (layout, line), for the sharing sweep
     auto blockLayout = [&](Block* b) -> const PadLayout* {
         if (!b) return nullptr;
         auto L = std::make_shared<PadLayout>();
@@ -4429,6 +4946,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
         collectDecls(*L, b->stmts);
         if (L->names.empty() || L->names.size() > 64) return nullptr;
         b->padLayout = L;
+        blockLayouts.emplace_back(L.get(), b->line);
         return L.get();
     };
 
@@ -4671,6 +5189,35 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
         }
     };
     annStmts(annStmts, stmts, ownerSlots ? layout.get() : nullptr);
+
+    // PARALLEL-SCALING-PLAN P1: which of these slots another thread may reach
+    // (see ShareSweep). Here, under padMu_, before any frame of the body runs.
+    {
+        ShareSweep sw;
+        if (ownerSlots) { sw.layouts.push_back(layout.get()); sw.own.insert(layout.get()); sw.ownerL = layout.get(); }
+        for (auto& bl : blockLayouts) { sw.layouts.push_back(bl.first); sw.own.insert(bl.first); }
+        if (!sw.layouts.empty() || !privateSlotsOff_.load(std::memory_order_relaxed)) {
+            if (params) sw.params(*params);
+            sw.stmts(stmts);
+        }
+        if (sw.off) privateSlotsOff(sw.offWhy.c_str(), sw.offLine);
+        if (slotTraceOn() && !sw.layouts.empty()) {
+            const std::string owner = who && *who ? who : "<block>";
+            for (PadLayout* L : sw.layouts) {
+                std::string at = owner;
+                if (L != layout.get())
+                    for (auto& bl : blockLayouts)
+                        if (bl.first == L) { at += " block at line " + std::to_string(bl.second); break; }
+                for (size_t i = 0; i < L->names.size(); i++) {
+                    if (L->names[i] == "self") continue;
+                    bool shared = (L->sharedMask >> i) & 1;
+                    std::fprintf(stderr, "slot: %s %s %s%s%s\n", at.c_str(), L->names[i].c_str(),
+                                 shared ? "shared" : "private", shared ? " — " : "",
+                                 shared && i < L->sharedWhy.size() ? L->sharedWhy[i].c_str() : "");
+                }
+            }
+        }
+    }
 
     if (!ownerSlots) return nullptr; // cacheSlot stays null: the frame carries no layout
     cacheSlot = layout;

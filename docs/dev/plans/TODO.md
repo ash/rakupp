@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-07.*
+*Started 2026-10-03. Last updated 2026-10-08.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -34,12 +34,14 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   merge step). Next: a lean `invokeMethod` path like callPlainSub (typed `$`
   positionals, no phasers), then a block variant for closures; `Less` as a
   term walks every scope looking for a shadowing lexical.
-- [ ] **Parallel scaling**: [PARALLEL-SCALING-PLAN.md](PARALLEL-SCALING-PLAN.md),
-  written 2026-10-07. While any worker is live, every lexical read and write
-  takes one of 64 shared stripes, and loop kernels refuse, so 4 workers reach
-  2.8× where C threads reach 3.5×. The plan marks the variables that no other
-  thread can reach and lets them skip both. Not started; next: P0, the
-  baseline on a quiet machine.
+- [ ] **Parallel scaling**: [PARALLEL-SCALING-PLAN.md](PARALLEL-SCALING-PLAN.md).
+  P0–P3, P5 and P6 landed 2026-10-08. A variable no other thread can reach
+  skips the stripe, and a loop kernel may run while workers are live.
+  `cpu-fanout` N=4 went from 3.26× to 3.65× (C: 3.81×), N=8 from 3.16× to
+  5.32×, and example 3 from 0.41× to 3.84×. Next:
+  the gates not yet run (`t/run.raku`, the module battery, the adopters gate,
+  TSan); then P7 (`--exe` probes), P8 (PARALLEL-SPEEDUP.md, faq/threads.md,
+  ASYNC.md, JIT.md, CNP.md, the book), and P2's raw-pointer audit.
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and
@@ -101,6 +103,24 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
   slot, set by binding and assignment.
+- [ ] **`t/race/varcell.raku` fails again**: 4–17 wrong answers in 200 runs at
+  `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
+  reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,
+  `($listed, 1)` on eight fresh workers). Found 2026-10-08; not started.
+- [ ] **A `start` Promise answers False to `.Bool` once kept**: `my $w = start
+  { 1 }; await $w; say so $w` is False (Rakudo True), so `until $w { … }` never
+  ends. A kept `Promise.new` answers True. Found 2026-10-08; not started.
+- [ ] **`$*THREAD.id` inside `hyper for` names the spawner**: every iteration
+  reports one id although the batches run on workers (the loop is 2× faster).
+  Found 2026-10-08; not started.
+- [ ] **Module code can name the program's lexicals**: a module's
+  `sub peek() { $secret2 }` compiles and reads the program's `my $secret2`, and
+  `::('$secret')` finds one (Rakudo: X::Undeclared at compile time, and no
+  such symbol). The module unit scope chains to `global_`. Found 2026-10-08;
+  the parallel-scaling sweep accounts for it, the semantics are not fixed.
+- [ ] **An odd hash initializer counts its pairs wrong**: `my %e = %x, $item`
+  with two pairs in `%x` says "Found 2 (implicit) elements" where Rakudo says
+  5. Found 2026-10-08; not started.
 - [ ] **A `use` inside a routine runs when the routine is CALLED**: `sub f {
   use G::Path }; G::Path` is unknown unless `f` ran (Rakudo loads at compile
   time). Found 2026-10-07; not started.

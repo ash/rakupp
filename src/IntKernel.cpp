@@ -210,6 +210,10 @@ struct LOuter { std::string name; KT t; int slot; bool written; };
 struct LCont { std::string name; bool hash; KT elem; bool written; };
 struct LoopCx {
     Env* env = nullptr;                      // where the loop's free names resolve (this entry)
+    // other threads are live (PARALLEL-SCALING-PLAN P5): a variable another
+    // thread can reach is read under its stripe, and a container declines
+    bool threads = false;
+    const Interpreter* interp = nullptr;
     const Callable* sub = nullptr;           // set for a sub body compiled as statements: no free names
     std::vector<std::vector<LSym>> scopes;   // the kernel's own: loop variables and `my`s
     std::vector<LOuter> outer;               // variables of the program, copied in and out
@@ -467,6 +471,8 @@ int Compiler::cont(const std::string& name, bool hash, std::string& why) {
     for (size_t i = 0; i < L->conts.size(); i++)
         if (L->conts[i].name == name) return (int)i;
     if (!plainContName(name, hash ? '%' : '@')) { why = "container " + name; return -1; }
+    // (another thread may hold the same Array: see tryLoopKernel)
+    if (L->threads) { why = "container " + name + " while other threads are live"; return -1; }
     Value* raw = L->env->findRaw(name);
     if (!raw) { why = "container " + name + " is not in scope"; return -1; }
     const Value& cv = *raw->deref();
@@ -601,9 +607,19 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 for (auto& x : L->outer) if (x.name == v->name) o = &x;
                 if (!o) {
                     if (!plainScalarName(v->name)) return refuse("variable " + v->name);
-                    Value* raw = L->env->findRaw(v->name);
+                    Env* owner = nullptr;
+                    Value* raw = L->env->findRaw(v->name, &owner);
                     if (!raw) return refuse("variable " + v->name + " is not in scope");
-                    const Value& cv = *raw->deref();
+                    // while other threads are live, one that can reach the
+                    // variable may be storing into it: looked at under its stripe
+                    const Value* cvp = raw->deref();
+                    Value cvCopy;
+                    if (L->threads && !L->interp->cellPrivate(owner, cvp)) {
+                        auto sl = Interpreter::lockStripe(cvp);
+                        cvCopy = *cvp;
+                        cvp = &cvCopy;
+                    }
+                    const Value& cv = *cvp;
                     KT vt;
                     if (plainIntValue(cv) && L->promoted(v->name)) { vt = KT::Exact; slot = exactSlot(); }
                     else if (plainIntValue(cv)) { vt = KT::Int; slot = L->nint++; }
@@ -2544,6 +2560,29 @@ const bool g_kernelTrace = [] {
 }();
 
 std::mutex g_compileMu;
+// …and whether THIS thread holds it, compiling (see awaitKernelVerdict)
+thread_local bool t_compiling = false;
+struct CompilingHere {
+    CompilingHere() { t_compiling = true; }
+    ~CompilingHere() { t_compiling = false; }
+};
+// A routine another thread is compiling right now (state 2): wait for its
+// verdict — the compile holds g_compileMu until the state settles — instead
+// of running the whole call interpreted. 1 call in 10 at N=4 lost its kernel
+// that way when four workers made the first call at once.
+signed char awaitKernelVerdict(std::atomic<signed char>& state) {
+    signed char st = state.load(std::memory_order_acquire);
+    if (t_compiling) return st;   // this thread's own compile: not one to wait for
+    for (int i = 0; st == 2 && i < 64; i++) {
+        { std::lock_guard<std::mutex> lk(g_compileMu); }
+        st = state.load(std::memory_order_acquire);
+        if (st == 2) std::this_thread::yield();   // (a borrowed kernel is settled without the lock)
+    }
+    return st;
+}
+// LoopStmt::loopKernelTries' high bit: a compile declined only because other
+// threads were live, so entries while they are skip it until they are gone
+constexpr unsigned char kThreadsDeclined = 0x80;
 
 // Stmt::kernelHome's "this body can never be a kernel"
 void* const kNeverKernel = reinterpret_cast<void*>(uintptr_t(1));
@@ -2645,6 +2684,7 @@ void intKernelFree(void* k) { delete static_cast<IKernel*>(k); }
 bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out) {
     if (g_noKernels || g_traceStmts) return false;
     signed char st = c.intKernel.state.load(std::memory_order_acquire);
+    if (st == 2) st = awaitKernelVerdict(c.intKernel.state);
     if (st == 0 || st == 2) return false;
     if (st < 0) {
         // most routines fail the static test: settle those without the lock
@@ -2656,12 +2696,14 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
         if (void* h = home.get()) {
             if (h == kNeverKernel) { c.intKernel.state.store(0, std::memory_order_relaxed); return false; }
             signed char expect = -1;
-            if (!c.intKernel.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) return false;
-            c.intKernel.borrowed.store(true, std::memory_order_relaxed);
-            c.intKernel.k.store(h, std::memory_order_relaxed);
-            c.intKernel.state.store(1, std::memory_order_release);
-            if (g_kernelTrace)
-                std::fprintf(stderr, "kernel: %s shared\n", c.name.empty() ? "<anon>" : c.name.c_str());
+            if (c.intKernel.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) {
+                c.intKernel.borrowed.store(true, std::memory_order_relaxed);
+                c.intKernel.k.store(h, std::memory_order_relaxed);
+                c.intKernel.state.store(1, std::memory_order_release);
+                if (g_kernelTrace)
+                    std::fprintf(stderr, "kernel: %s shared\n", c.name.empty() ? "<anon>" : c.name.c_str());
+            }
+            else if (expect == 2) awaitKernelVerdict(c.intKernel.state);   // another thread is deciding
         }
         std::unique_lock<std::mutex> lk(g_compileMu, std::defer_lock);
         st = c.intKernel.state.load(std::memory_order_acquire);
@@ -2670,6 +2712,7 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
             st = c.intKernel.state.load(std::memory_order_acquire);
         }
         if (st < 0) {
+            CompilingHere ch;
             Compiler cc;
             cc.global = global_.get();
             IKernel* root = nullptr;
@@ -2688,6 +2731,10 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
                 std::fprintf(stderr, "kernel: %s %s\n", c.name.empty() ? "<anon>" : c.name.c_str(),
                              ok ? "compiled" : "declined");
             st = c.intKernel.state.load(std::memory_order_acquire);
+        }
+        if (st == 2) {   // another thread's compile, under way: its verdict
+            if (lk.owns_lock()) lk.unlock();
+            st = awaitKernelVerdict(c.intKernel.state);
         }
         if (st != 1) return false;
     }
@@ -2738,21 +2785,28 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     // (`--cnp` / `--jit` sites see only the loops a kernel declines: the kernel
     // is asked first, and it caches a refusal)
     if (g_noKernels || g_traceStmts || (isFor && lo > hi)) return false;
-    // the kernel holds the loop's variables in its frame until the loop is
-    // done, which only this thread may do
-    if (liveWorkers_.load(std::memory_order_acquire) > 0 || cuedLoads_.load(std::memory_order_acquire) > 0)
-        return false;
+    // The kernel holds the loop's variables in its frame until the loop is
+    // done. While another thread is live (PARALLEL-SCALING-PLAN P5) it may
+    // hold only variables no other thread can reach, checked at entry below;
+    // a loop over a container stays out meanwhile, since another thread may
+    // hold the same Array, and a compile that only that refused waits for the
+    // threads to be gone before it is tried again.
+    const bool threads = liveWorkers_.load(std::memory_order_acquire) > 0 ||
+                         cuedLoads_.load(std::memory_order_acquire) > 0;
     DecidedOnce<unsigned char>* tries = nullptr;
     PublishedOnce<void*>* slot = loopSlot(loop, tries);
     if (!slot) return false;
     void* h = slot->get();
     if (h == kNeverKernel) return false;
+    if (!h && threads && (*tries & kThreadsDeclined)) return false;
     Env* env = tctx_.cur.get();
     if (!h) {
         // Decided on the first entry, from the syntax and from the types the
         // loop's variables hold now. Body checks that do not depend on the
         // values come first, so a loop that can never qualify says so for good.
         std::lock_guard<std::mutex> lk(g_compileMu);
+        CompilingHere ch;
+        if (!threads && (*tries & kThreadsDeclined)) *tries = (unsigned char)(*tries & ~kThreadsDeclined);
         if (!(h = slot->get())) {
             LKernel* lk2 = nullptr;
             LoopCx cx;
@@ -2767,6 +2821,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                 cx = LoopCx{};
                 cx.promote = promote;
                 cx.env = env;
+                cx.threads = threads;
+                cx.interp = this;
                 cx.nint = 3;   // a `for`'s bounds and loop variable
                 cx.loops = 1;
                 cc = Compiler{};
@@ -2871,8 +2927,12 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                     std::fprintf(stderr, "kernel: loop at line %d declined: %s\n", loop->line,
                                  cx.why.empty() ? "?" : cx.why.c_str());
                 delete lk2;
+                if (cx.why.find("while other threads are live") != std::string::npos) {
+                    *tries = (unsigned char)(*tries | kThreadsDeclined);
+                    return false;
+                }
                 if (valueDependent) {
-                    const unsigned char t = *tries;
+                    const unsigned char t = *tries & ~kThreadsDeclined;
                     *tries = (unsigned char)(t + 1);
                     if (t + 1 < 4) return false;
                 }
@@ -2898,8 +2958,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             slot->publish(lk2);
             h = lk2;
             if (g_kernelTrace)
-                std::fprintf(stderr, "kernel: loop at line %d compiled (%zu variable(s))\n", loop->line,
-                             lk2->outer.size());
+                std::fprintf(stderr, "kernel: loop at line %d compiled (%zu variable(s))%s\n", loop->line,
+                             lk2->outer.size(), threads ? " while other threads are live" : "");
         }
         if (h == kNeverKernel) return false;
     }
@@ -2934,6 +2994,11 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         Env* owner = nullptr;
         Value* cell = outerCell(env, o.name, &owner);
         if (!cell) return notEntered("no variable", o.name);
+        if (threads) {   // before anything reads it: another thread may be writing it
+            std::string why;
+            if (!cellPrivate(owner, cell, &why))
+                return notEntered("while other threads are live:", o.name + " may be shared (" + why + ")");
+        }
         if (o.t == KT::Int ? !plainIntValue(*cell) : o.t == KT::Num ? !plainNumValue(*cell)
             : o.t == KT::Exact ? !(plainIntValue(*cell) || plainRatValue(*cell)) : !plainStrValue(*cell))
             return notEntered("a value of another type in", o.name);
@@ -2946,6 +3011,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     // …and its containers: still plain ones (two names for one container are
     // fine here — every write goes to the container itself)
     const size_t nc = L->conts.size();
+    if (threads && nc) return notEntered("while other threads are live: a container,", L->conts[0].name);
     Value* stackConts[8];
     std::unique_ptr<Value*[]> heapConts;
     Value** conts = nc <= 8 ? stackConts : (heapConts.reset(new Value*[nc]), heapConts.get());

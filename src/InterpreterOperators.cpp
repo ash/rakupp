@@ -2303,9 +2303,88 @@ Value Interpreter::coerceVarValue(const Value& rhs, const std::string& target,
 // The stripe pool for cas and the atomic-* family: real mutual exclusion in
 // parallel (no-GIL) mode, negligible uncontended cost under the GIL. Hashed by
 // the container's ADDRESS so ops on the same atomicint always share a lock.
+//
+// 256 stripes, each on a 128-byte line of its own (Apple Silicon's line; two
+// lines on x86), picked by a multiplicative hash of the address. The pool was
+// 64 bare mutexes indexed by address bits 4-9: two 64-byte mutexes shared each
+// line, and frames malloc placed a multiple of 1 KiB apart landed on the same
+// stripe, so two workers with no data in common took turns on one lock.
+namespace {
+constexpr unsigned kStripeBits = 8;
+struct alignas(128) Stripe { std::recursive_mutex m; };
+// function-local, as before: constructed on first use, whatever order the
+// translation units' static initialisers run in
+inline Stripe* stripes() {
+    static Stripe s[1u << kStripeBits];
+    return s;
+}
+inline unsigned stripeIndex(const void* p) {
+    // Fibonacci hashing: the multiply carries every address bit into the top byte
+    return (unsigned)(((uint64_t)reinterpret_cast<uintptr_t>(p) * 0x9E3779B97F4A7C15ull) >> (64 - kStripeBits));
+}
+// RAKUPP_STRIPE_STATS=1: how often a ParStripe found its stripe already held,
+// per stripe, printed at exit. Counts only acquisitions made while workers are
+// live (ParStripe takes no lock otherwise).
+struct StripeStats {
+    std::atomic<uint64_t> taken[1u << kStripeBits];
+    std::atomic<uint64_t> waited[1u << kStripeBits];
+};
+StripeStats* stripeStats() {
+    static StripeStats* s = [] () -> StripeStats* {
+        const char* e = std::getenv("RAKUPP_STRIPE_STATS");
+        if (!e || !*e || *e == '0') return nullptr;
+        auto* st = new StripeStats();   // never freed: the atexit hook reads it
+        for (auto& a : st->taken) a.store(0, std::memory_order_relaxed);
+        for (auto& a : st->waited) a.store(0, std::memory_order_relaxed);
+        std::atexit([] {
+            StripeStats* st = stripeStats();
+            uint64_t t = 0, w = 0, busiest = 0; unsigned bi = 0;
+            for (unsigned i = 0; i < (1u << kStripeBits); i++) {
+                uint64_t ti = st->taken[i].load(), wi = st->waited[i].load();
+                t += ti; w += wi;
+                if (wi > busiest) { busiest = wi; bi = i; }
+            }
+            std::fprintf(stderr, "stripes: %llu acquisitions, %llu waited (%.2f%%); busiest stripe %u waited %llu times\n",
+                         (unsigned long long)t, (unsigned long long)w, t ? 100.0 * (double)w / (double)t : 0.0, bi,
+                         (unsigned long long)busiest);
+        });
+        return st;
+    }();
+    return s;
+}
+} // namespace
+
 std::recursive_mutex& Interpreter::atomicStripe(const void* p) {
-    static std::recursive_mutex stripes[64];
-    return stripes[(reinterpret_cast<uintptr_t>(p) >> 4) & 63];
+    return stripes()[stripeIndex(p)].m;
+}
+
+// SlotStripe's slow half: no lock for a private slot (PARALLEL-SCALING-PLAN P3)
+[[gnu::noinline]] std::unique_lock<std::recursive_mutex> Interpreter::lockSlotStripe(const void* p) const {
+    for (const Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
+        if (!e->layout || e->pad.empty()) continue;
+        const Value* b = &e->pad[0];
+        const size_t n = e->pad.size();
+        if (p >= (const void*)b && p < (const void*)(b + n)) {
+            if (slotPrivate(e, (int)((const Value*)p - b))) return {};
+            return lockStripe(p);
+        }
+        // =all, the contract tests' mode: a cell's inside counts as its slot
+        if (privateSlots_ == 2)
+            for (size_t i = 0; i < n; i++)
+                if (b[i].isCell() && (const void*)b[i].deref() == p) return {};
+    }
+    return lockStripe(p);
+}
+
+std::unique_lock<std::recursive_mutex> Interpreter::lockStripe(const void* p) {
+    unsigned i = stripeIndex(p);
+    std::recursive_mutex& m = stripes()[i].m;
+    if (StripeStats* st = stripeStats()) {
+        st->taken[i].fetch_add(1, std::memory_order_relaxed);
+        if (!m.try_lock()) { st->waited[i].fetch_add(1, std::memory_order_relaxed); m.lock(); }
+        return std::unique_lock<std::recursive_mutex>(m, std::adopt_lock);
+    }
+    return std::unique_lock<std::recursive_mutex>(m);
 }
 
 // A private call needs a `self` in scope — OR a routine declared inside the

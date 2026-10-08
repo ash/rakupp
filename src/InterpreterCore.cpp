@@ -1035,7 +1035,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
 // map path, which is where those declarations are.
 static inline void attachBlockPad(Block* b, Env* env) {
     if (!b->padLayout || env->layout) return;
-    env->layout = b->padLayout;
+    env->layout = b->padLayout.get();
     env->pad.resize(b->padLayout->names.size());
 }
 
@@ -1836,9 +1836,10 @@ struct FramePool {
         e->strictPragma = e->fatalPragma = 0;
         e->declStmts = nullptr;
         e->ex.reset();
-        e->layout.reset();        // pads: next call re-attaches its own layout;
+        e->layout = nullptr;        // pads: next call re-attaches its own layout;
         e->pad.clear();           // clear() keeps the vector's capacity, the
         e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
+        e->padEscaped.store(0, std::memory_order_relaxed); // use_count 1: nothing kept an alias
         free.push_back(std::move(e));
     }
 };
@@ -3208,7 +3209,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         Value* raw = sn.size() > 1 && (ascii::isalpha((unsigned char)sn[1]) || sn[1] == '_')
                    ? tctx_.cur->findRaw(sn, &own) : nullptr;
         if (raw && !(own->ex && own->ex->rwLinks.count(sn)) &&
-            (raw->isCell() || !(raw->t == VT::Hash && raw->hashKind == "Proxy"))) {
+            (raw->isCell() || (!(raw->t == VT::Hash && raw->hashKind == "Proxy") && promotionSafe(own, raw)))) {
             auto scope = std::make_shared<Env>();
             scope->parent = tctx_.cur;
             scope->define(loopVars[0], Value::cellHolder(raw->promoteToCell()));
@@ -4383,7 +4384,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     int ps = params[i].padSlot;
                     Env* e = env.get();
                     if (ps >= 0 && e->layout &&
-                        (const void*)e->layout.get() == params[i].padOwner) {
+                        (const void*)e->layout == params[i].padOwner) {
                         e->pad[ps] = std::move(v);
                         e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
                         if (!e->vars.empty()) e->vars.erase(params[i].name);
@@ -4393,7 +4394,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     int ps = params[i].padSlot;
                     Env* e = env.get();
                     if (ps >= 0 && e->layout &&
-                        (const void*)e->layout.get() == params[i].padOwner) {
+                        (const void*)e->layout == params[i].padOwner) {
                         e->pad[ps] = unpassedDefault(params[i].type, '$', blockParams);
                         e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
                         if (!e->vars.empty()) e->vars.erase(params[i].name);
@@ -7210,14 +7211,15 @@ void Interpreter::attachPads(Callable& c, Env& env) {
     if (!c.body) return;
     if (c.padReady != 1) {
         {
-            auto L = resolvePads(*c.body, c.params, c.isMethod && !c.subAsMethod);
+            auto L = resolvePads(*c.body, c.params, c.isMethod && !c.subAsMethod,
+                                 c.name.empty() ? nullptr : c.name.c_str());
             std::lock_guard<std::mutex> lk(padMu_);
             if (c.padReady != 1) c.padLayout = std::move(L);
         }
         c.padReady = 1;
     }
     if (c.padLayout) {
-        env.layout = c.padLayout;
+        env.layout = c.padLayout.get();
         env.pad.resize(c.padLayout->names.size());
     }
 }
@@ -7288,7 +7290,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         c.state.env->stateFrame = true;
     });
     env->parent = c.state.env;
-    env->layout = c.padLayout;
+    env->layout = c.padLayout.get();
     env->pad.resize(c.padLayout->names.size());
     // bindParams' simple path, for a parameter with no type and no trait
     uint64_t live = 0;
@@ -7474,7 +7476,7 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
     else if (x->t == VT::Int || x->t == VT::Num || x->t == VT::Rat || x->t == VT::Bool)
         txt = x->toStr();   // the text applyArith's `~` takes
     else return false;
-    ParStripe ws(*this, slot);
+    SlotStripe ws(*this, slot);
     if (front) rtCatPrependText(*slot, txt);
     else rtCatAppendText(*slot, txt);
     return true;
@@ -9429,6 +9431,7 @@ void Interpreter::linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
                         "(variable, element or attribute)"};
     if (argIsNeverContainer(ae)) return;
     if (bindArgCell(p, ae, env)) return;
+    escapeRefs(ae, tctx_.cur.get());   // PARALLEL-SCALING-PLAN P2: the link writes these from anywhere
     env->x().rwLinks[p.name] = { ae, tctx_.cur };
     Value* ip = env->local(p.name);
     env->x().rwSynced[p.name] = ip ? *ip : Value::any();
@@ -9467,6 +9470,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             // same way an `is rw` parameter does: an assignment to `$_` writes
             // straight into the caller's container.
             if (p.isRw && !p.name.empty() && tctx_.rwInvocantExpr) {
+                escapeRefs(tctx_.rwInvocantExpr, tctx_.cur.get());   // P2, as below
                 env->x().rwLinks[p.name] = { tctx_.rwInvocantExpr, tctx_.cur };
                 Value* ip = env->local(p.name);
                 env->x().rwSynced[p.name] = ip ? *ip : Value::any();
@@ -9551,6 +9555,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             // a coercion made a new value, and a misaligned argument list (a
             // named or flattened argument ahead of it) names another variable.
             if (bindArgCell(p, ae, env)) { pi++; continue; }
+            escapeRefs(ae, tctx_.cur.get());   // PARALLEL-SCALING-PLAN P2: the link writes these from anywhere
             env->x().rwLinks[p.name] = { ae, tctx_.cur };
             // A CHAIN of `is rw` parameters must ALSO reach the ORIGINAL
             // container. `outer($x is rw)` handing $x on to `inner($y is rw)`
@@ -12366,7 +12371,7 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
       : sv == 3 ? rakupp::sub_ovf(slot->i, rhs.i, &z)
                 : rakupp::mul_ovf(slot->i, rhs.i, &z))
         return false;
-    Interpreter::ParStripe ws(I, slot); // torn-copy contract, as the general store
+    Interpreter::SlotStripe ws(I, slot); // torn-copy contract, as the general store
     slot->i = z;
     return true;
 }
@@ -12503,7 +12508,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if (nb && nativeNeedsCheck(rv, nfl))
                                 nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
                             {
-                                ParStripe ws(*this, slot); // torn-copy contract
+                                SlotStripe ws(*this, slot); // torn-copy contract
                                 *slot = std::move(rv);
                             }
                             if (nb) wrapNative(*slot, nb, nsg, nfl);
@@ -12534,7 +12539,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 rhs.hashKind.empty() && !rhs.itemized) {
                                 bool asciiRhs = true;
                                 for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
-                                ParStripe ws(*this, slot);
+                                SlotStripe ws(*this, slot);
                                 if (asciiRhs) slot->s.appendText(rhs.s.str());
                                 else slot->s = nfcNormalize(slot->s + rhs.s);
                             } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() &&
@@ -12546,7 +12551,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 const bool plainInt = rhs.t == VT::Int && rhs.enumName.empty() &&
                                                       rhs.enumType.empty() && !rhs.natBits;
                                 std::string txt = rhs.toStr();   // the text applyArith's `~` takes
-                                ParStripe ws(*this, slot);
+                                SlotStripe ws(*this, slot);
                                 if (plainInt) slot->s.appendText(txt);   // (digits: ASCII)
                                 else rtCatAppendText(*slot, txt);
                             } else if ((sv == 2 || sv == 3) &&
@@ -12555,12 +12560,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 Value l0 = *slot;
                                 Value nv = applyArith(bop, l0, rhs);
                                 tagTemporal(bop, l0, rhs, nv);
-                                ParStripe ws(*this, slot);
+                                SlotStripe ws(*this, slot);
                                 *slot = std::move(nv);
                             } else if (!(sv <= 4 && !nb && intOpAssignInPlace(*this, slot, rhs, sv)) &&
                                        !applyArithIntoTry(bop, *slot, rhs)) {
                                 Value nv = applyArith(bop, *slot, rhs);
-                                ParStripe ws(*this, slot);
+                                SlotStripe ws(*this, slot);
                                 *slot = std::move(nv);
                             }
                             if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
@@ -12588,7 +12593,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                          : applyArith(bop2, *slot, rhs);
                         }
                         {
-                            ParStripe ws(*this, slot);
+                            SlotStripe ws(*this, slot);
                             *slot = std::move(nv);
                         }
                         if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
@@ -15119,7 +15124,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // take the path below.
                     Value* srcRaw = owner->localRaw(sv->name);
                     if (sv->name != "$_" && srcRaw && !(owner->ex && owner->ex->rwLinks.count(sv->name)) &&
-                        (srcRaw->isCell() || !(srcRaw->t == VT::Hash && srcRaw->hashKind == "Proxy"))) {
+                        (srcRaw->isCell() || (!(srcRaw->t == VT::Hash && srcRaw->hashKind == "Proxy") &&
+                                              promotionSafe(owner.get(), srcRaw)))) {
                         tctx_.rwMirror.clear();
                         tctx_.rwMirrorSigil = 0;
                         PRef<Value> cell = srcRaw->promoteToCell();
@@ -15214,6 +15220,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         if (!present) {
                             auto scope = tctx_.cur;
                             Index* path = ix;
+                            escapeRefs(path, scope.get());   // P2: the Proxy re-reads the path from anywhere
                             Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
                             Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                             fetch.code()->builtin = [scope, path](Interpreter& I, ValueList&) -> Value {
@@ -16438,7 +16445,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (nb && opEq(a->op, "=") && a->target->kind == NK::VarExpr && nativeNeedsCheck(rhs, nf))
                 nativeAssignCheck(rhs, nb, nf, static_cast<VarExpr*>(a->target.get())->name, ns);
             if (!nb && opEq(a->op, "=") && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
-            ParStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
+            SlotStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;
         }
         // A plain `=` into a native refuses what it cannot unbox (a Str, a
@@ -16575,7 +16582,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return sink ? Value::any() : *lv;
                 }
             }
-            { ParStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
+            { SlotStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
             if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : itemize(*lv);
         }
@@ -20956,7 +20963,7 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
       : op[0] == '-' ? rakupp::sub_ovf(lp->i, rp->i, &z)
                      : rakupp::mul_ovf(lp->i, rp->i, &z))
         return false;
-    ParStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+    SlotStripe ws(*this, slot);   // torn-copy contract, as the lane's store
     slot->i = z;   // (`i` and `n` share one word: no `n` to clear)
     return true;
 }
@@ -21244,7 +21251,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r) ||
         !typedArith(op[0], l, r, o))
         return false;
-    ParStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+    SlotStripe ws(*this, slot);   // torn-copy contract, as the lane's store
     if (o.isNum) { slot->t = VT::Num; slot->n = o.n; }
     else { slot->t = VT::Int; slot->i = o.i; }
     return true;
@@ -21299,7 +21306,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
             const Value* p = padPtrIn(ve, cur);
             if (!p) p = cur->find(ve->name);
             if (!p) return false;
-            ParStripe rs(*this, p);
+            SlotStripe rs(*this, p);
             if (p->isCell() || p->natBits || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
                 !p->enumName.empty() || !p->enumType.empty() || p->isList || p->itemized)
                 return false;
@@ -24099,7 +24106,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     Value old;
                     if (u->postfix) old = *slot;
                     {
-                        ParStripe ws(*this, slot);   // torn-copy contract, as the full store
+                        SlotStripe ws(*this, slot);   // torn-copy contract, as the full store
                         slot->i = z;   // (`i` and `n` share one word: no `n` to clear)
                     }
                     return u->postfix ? old : *slot;
@@ -28942,7 +28949,7 @@ Value Interpreter::eval(Expr* e) {
             if (ExecContext& tc = tctx_; !tc.bindRawTails) {
                 if (Value* p = padPtrIn(ve, tc.cur.get())) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
-                        ParStripe rs(*this, p);   // torn-copy contract, as in evalVarExpr
+                        SlotStripe rs(*this, p);   // torn-copy contract, as in evalVarExpr
                         Value out = *p;
                         out.readonly = out.immutableBind = false;
                         return out;
@@ -29535,7 +29542,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // ancestor of the CURRENT scope (padPtr) — see PADS-PLAN.md.
         if (Value* p = padPtr(ve)) {
             if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
-                ParStripe rs(*this, p); // torn-copy contract, as below
+                SlotStripe rs(*this, p); // torn-copy contract, as below
                 Value out = *p;
                 out.readonly = out.immutableBind = false;
                 return out;

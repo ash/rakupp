@@ -519,6 +519,22 @@ struct PadLayout {
     // block's scope, between a reference and its owner's frame, so the frame
     // lookup steps past it (see padPtrIn); a routine layout ends the walk.
     bool inlineBlock = false;
+    // PARALLEL-SCALING-PLAN P1: bit i set = another thread may reach slot i —
+    // a closure, a curried `*`, a `hyper for` body, … mentions it, or the
+    // owner reaches names at run time (EVAL, a computed symbolic name). Set
+    // by resolvePads, under padMu_, before any frame of the body runs, and
+    // never cleared. A slot whose bit is clear, and whose frame has not
+    // escaped it at run time either (Env::padEscaped), is read and written
+    // without the stripe while workers are live (Interpreter::slotPrivate).
+    // `sharedWhy` holds the first reason, for RAKUPP_SLOT_TRACE.
+    uint64_t sharedMask = 0;
+    std::vector<std::string> sharedWhy;
+    void markShared(int s, const std::string& why) {
+        if ((sharedMask >> s) & 1) return;
+        sharedMask |= (uint64_t)1 << s;
+        if (sharedWhy.size() < names.size()) sharedWhy.resize(names.size());
+        sharedWhy[s] = why;
+    }
     int add(const std::string& n, bool simpleSlot = false) {
         auto it = byName.find(n);
         if (it != byName.end()) {
@@ -622,9 +638,15 @@ struct Env {
     // grows (lvalue() hands out Value* into it — the ValueHash stability
     // contract). A slot answers lookups only after its declaration executed
     // (the padLive bit), which keeps the outer variable visible before an
-    // inner `my` of the same name runs. The layout is owned (shared_ptr): a
-    // frame captured by a closure can outlive the Callable it came from.
-    std::shared_ptr<const PadLayout> layout;
+    // inner `my` of the same name runs. The layout is NOT owned: a frame
+    // captured by a closure can outlive the Callable it came from, but never
+    // its layout, which lives as long as the program — an owner's in the
+    // interpreter's padLayouts_ cache, which resolvePads fills and nothing
+    // empties, an inline block's on its Block, in an AST that is kept. A raw
+    // pointer keeps Env at 160 bytes with padEscaped below (one more word
+    // measured 3% on an interpreted loop) and saves two atomic reference-count
+    // updates per call frame.
+    const PadLayout* layout = nullptr;
     ValueList pad;
     // ATOMIC, because a frame can be SHARED under RAKUPP_PARALLEL (two start
     // blocks closing over the mainline both reach global_'s layout) and the
@@ -635,6 +657,12 @@ struct Env {
     // the bit set BEFORE the value write on top. Under the GIL the ordering
     // is free; under parallel it is the contract.
     std::atomic<uint64_t> padLive{0};
+    // PARALLEL-SCALING-PLAN P2: slots this frame has exposed at run time —
+    // promoted to a shared cell, bound rw, linked, handed out by a Proxy or a
+    // pseudo-stash. Set on the frame's own thread before the alias can reach
+    // another one (relaxed: the owner sees its own write), never cleared while
+    // the frame lives; a reused frame starts clean (FramePool::release).
+    std::atomic<uint64_t> padEscaped{0};
 
     // A loop's iteration scope, reused for the next iteration (only when
     // nothing else holds it): drop every binding, keep the buckets and the
@@ -643,6 +671,7 @@ struct Env {
         vars.clear();
         if (layout) {
             padLive.store(0, std::memory_order_relaxed);
+            padEscaped.store(0, std::memory_order_relaxed);
             for (auto& v : pad) v = Value();
         }
     }
@@ -657,6 +686,7 @@ struct Env {
         else vars.clear();
         if (layout) {
             padLive.store(0, std::memory_order_relaxed);
+            padEscaped.store(0, std::memory_order_relaxed);
             for (auto& v : pad) v = Value();
         }
     }
@@ -2315,7 +2345,8 @@ public:
     // has no slot candidates (or too many for the 64-bit liveness mask).
     std::shared_ptr<const PadLayout> resolvePads(const std::vector<StmtPtr>& stmts,
                                                  const std::vector<Param>* params,
-                                                 bool withSelf = false);
+                                                 bool withSelf = false,
+                                                 const char* who = nullptr);   // for RAKUPP_SLOT_TRACE
     // …and put a Callable's layout on a fresh call frame, resolving it at the
     // first call. Before any define: the params are the first slots to land.
     void attachPads(Callable& c, Env& env);
@@ -2339,7 +2370,7 @@ public:
         const void* owner = ve->padOwner;
         for (Env* pf = cur; pf; pf = pf->parent.get()) {
             if (!pf->layout) continue;
-            if ((const void*)pf->layout.get() == owner)
+            if ((const void*)pf->layout == owner)
                 return ((pf->padLive.load(std::memory_order_acquire) >> ps) & 1) ? pf->pad[ps].deref() : nullptr;
             // An inline block's pad between here and the owner: step past it.
             // A routine's or the mainline's decides — never skip past one.
@@ -2357,6 +2388,8 @@ public:
     // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended
     // cost under the GIL. Recursive so a holder may re-enter its own stripe.
     static std::recursive_mutex& atomicStripe(const void* p);
+    // …and that stripe, locked: what ParStripe takes (RAKUPP_STRIPE_STATS counts here)
+    static std::unique_lock<std::recursive_mutex> lockStripe(const void* p);
     // Parallel-mode-only stripe over a USER container's structural op (Array
     // growth, Hash find-or-insert) — the no-crash half of the memory model
     // (P3). Under the GIL it constructs to nothing, so the single-threaded
@@ -2373,9 +2406,90 @@ public:
             // the stripe tax was pushing big compute files past the roast
             // timeout with zero threads in them).
             if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)
-                l = std::unique_lock<std::recursive_mutex>(atomicStripe(p));
+                l = lockStripe(p);
         }
     }; // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
+    // PARALLEL-SCALING-PLAN P3: a lexical slot no other thread can reach skips
+    // the stripe. Private = the layout's static mask (resolvePads) and the
+    // frame's run-time mask (Env::padEscaped) both clear, the slot not a shared
+    // cell, and the program not reaching frames through dynamic scope.
+    // RAKUPP_PRIVATE_SLOTS=0 stripes every slot, as before; =all treats every
+    // slot as private (debug only: it is how a contract test proves it can fail).
+    int privateSlots_ = 1;                       // 0 off, 1 on, 2 all
+    std::atomic<bool> privateSlotsOff_{false};   // set once, never cleared
+    void privateSlotsOff(const char* why, int line);
+    void unitSharingScan(const std::vector<StmtPtr>& stmts, bool module);   // an EVAL's or a module's unit
+    void applyModuleEscapes();                     // …a module's names, once the mainline has its layout
+    std::unordered_set<std::string> moduleNamed_;  // (both under padMu_)
+    bool moduleNamedAll_ = false;
+    // P2: every slot of every frame from `e` outwards may now be reached from elsewhere
+    static void escapeChain(Env* e);
+    // …only the slot `n` names in frame `e` (a Proxy that reads it by name)
+    static void escapeName(Env* e, const std::string& n) {
+        if (!e || !e->layout) return;
+        auto it = e->layout->byName.find(n);
+        if (it != e->layout->byName.end())
+            e->padEscaped.fetch_or((uint64_t)1 << it->second, std::memory_order_relaxed);
+    }
+    // …every slot an argument expression reaches, as seen from `cur` (an rw
+    // link re-evaluates it later, from whatever thread writes the parameter)
+    void escapeRefs(const Expr* e, Env* cur);
+    bool slotPrivate(const Env* pf, int ps) const {
+        if (privateSlots_ != 1) return privateSlots_ == 2;
+        if (privateSlotsOff_.load(std::memory_order_relaxed)) return false;
+        const uint64_t bit = (uint64_t)1 << ps;
+        return !(pf->layout->sharedMask & bit) &&
+               !(pf->padEscaped.load(std::memory_order_relaxed) & bit) && !pf->pad[ps].isCell();
+    }
+    // P2: may `raw`, a slot of frame `owner`, be promoted to a shared cell in
+    // place? Promotion rewrites a several-word Value, so not while another
+    // thread can be reading it: workers live and the slot not private (a map
+    // entry, which this cannot prove private, counts as reachable).
+    bool promotionSafe(const Env* owner, const Value* raw) const {
+        if (!(parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0)) return true;
+        if (!owner || !owner->layout || owner->pad.empty()) return false;
+        const Value* b = &owner->pad[0];
+        if (raw < b || raw >= b + owner->pad.size()) return false;
+        return slotPrivate(owner, (int)(raw - b));
+    }
+    // P5: is `cell`, the container a name resolved to in frame `owner`, a
+    // private pad slot? `why` gets the reason when it is not, for the trace.
+    bool cellPrivate(const Env* owner, const Value* cell, std::string* why = nullptr) const {
+        if (owner && owner->layout && !owner->pad.empty()) {
+            const Value* b = &owner->pad[0];
+            if (cell >= b && cell < b + owner->pad.size()) {
+                const int ps = (int)(cell - b);
+                if (slotPrivate(owner, ps)) return true;
+                if (why) {
+                    const PadLayout& L = *owner->layout;
+                    if (privateSlots_ == 0 || privateSlotsOff_.load(std::memory_order_relaxed))
+                        *why = "private slots are off";
+                    else if ((L.sharedMask >> ps) & 1)
+                        *why = ps < (int)L.sharedWhy.size() && !L.sharedWhy[ps].empty() ? L.sharedWhy[ps] : "shared";
+                    else if ((owner->padEscaped.load(std::memory_order_relaxed) >> ps) & 1)
+                        *why = "escaped at run time";
+                    else *why = "a shared cell";
+                }
+                return false;
+            }
+        }
+        if (why) *why = "not a slot of its own frame";   // a map entry, a cell's inside
+        return false;
+    }
+    // ParStripe for a lexical slot: the same two branches when no worker is
+    // live, and when one is, no lock for a slot that is private. Only its own
+    // thread can touch a private slot, so ANY access to it may skip the stripe
+    // (through the pad or by name): the pointer alone decides, found in the
+    // pad of a frame on the current scope chain. The search is out of line,
+    // as lockStripe is: inlined, it grew the frames of the hot paths.
+    struct SlotStripe {
+        std::unique_lock<std::recursive_mutex> l;
+        SlotStripe(const Interpreter& I, const void* p) {
+            if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)
+                l = I.lockSlotStripe(p);
+        }
+    };
+    std::unique_lock<std::recursive_mutex> lockSlotStripe(const void* p) const;
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     void applyParamTraits(const std::vector<Param>& params, const Value& fn); // …and a signature's PARAMETER traits
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~

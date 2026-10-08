@@ -316,14 +316,21 @@ std::pair<long, long> Interpreter::dynQuantLimits(const Value& v, bool unbounded
 Value Interpreter::makeTypedEx(const std::string& type,
                                std::vector<std::pair<std::string, Value>> attrs,
                                const std::string& message) {
+    // While workers are live, other threads read classes_ and every ClassInfo
+    // without a lock (the symbol-table freeze, see symbolsFrozen_), so a throw
+    // then neither registers a class nor extends one: it carries a class of
+    // its own. Four workers failing one bind at once inserted the same name
+    // into classes_ concurrently and died (t/race/evalcall.raku).
+    const bool shared = parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0;
+    std::shared_ptr<ClassInfo> cls;
     auto it = classes_.find(type);
     if (it == classes_.end()) {
         auto ci = std::make_shared<ClassInfo>();
         ci->name = type;
         for (auto& kv : attrs) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
         { ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
-        classes_[type] = ci;
-        it = classes_.find(type);
+        if (!shared) classes_[type] = ci;
+        cls = ci;
     }
     else {
         // The class may already exist WITHOUT the attributes this throw carries —
@@ -331,14 +338,18 @@ Value Interpreter::makeTypedEx(const std::string& type,
         // by a bare `Value::typeObj(name)` throw that carries none. The object
         // below would then hold the attribute while the class declared no
         // accessor, so `$!.method` died with an X::Method::NotFound of its own.
+        cls = it->second;
+        bool copied = false;
         for (auto& kv : attrs) {
             bool have = false;
-            for (auto& a : it->second->attrs) if (a.name == kv.first) { have = true; break; }
-            if (!have) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; it->second->attrs.push_back(a); }
+            for (auto& a : cls->attrs) if (a.name == kv.first) { have = true; break; }
+            if (have) continue;
+            if (shared && !copied) { cls = std::make_shared<ClassInfo>(*cls); copied = true; }
+            ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; cls->attrs.push_back(a);
         }
     }
     Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>());
-    ex.obj()->cls = it->second;
+    ex.obj()->cls = cls;
     for (auto& kv : attrs) ex.obj()->attrs[kv.first] = kv.second;
     ex.obj()->attrs["message"] = Value::str(message);
     if (isAdHocKind(type) && !ex.obj()->attrs.count("payload"))
@@ -2873,6 +2884,7 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     while (chain.size() >= 2 && chain.compare(chain.size() - 2, 2, "::") == 0) chain.resize(chain.size() - 2);
     if (chain.compare(0, 2, "::") == 0) chain = chain.substr(2);
     std::shared_ptr<Env> env = tctx_.cur;
+    escapeChain(env.get());   // PARALLEL-SCALING-PLAN P2: a stash can travel, and it reads by name
     Env* raw = nullptr;                       // set once a CALLER step is taken
     long dynIdx = (long)tctx_.dynStack.size();
     char mode = 'F';
@@ -3001,7 +3013,7 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
 
 bool Interpreter::frameSymbol(Env* f, const std::string& key, Value& out) {
     if (!f) return false;
-    if (Value* p = f->local(key)) { out = *p; return true; }
+    if (Value* p = f->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
     if (f->declStmts) {
         std::vector<const VarExpr*> decls;
         spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
@@ -3050,7 +3062,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     // undeclared-variable check already rules
     auto findWithPending = [&](Env* from, Value& o) -> bool {
         for (Env* f = from; f; f = f->parent.get()) {
-            if (Value* p = f->local(key)) { o = *p; return true; }
+            if (Value* p = f->local(key)) { ParStripe rs(*this, p); o = *p; return true; }
             if (f->declStmts) {
                 std::vector<const VarExpr*> decls;
                 spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
@@ -3062,24 +3074,24 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     };
     switch (mode) {
         case 'F':
-            if (e) if (Value* p = e->local(key)) { out = *p; return true; }
+            if (e) if (Value* p = e->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
             // a loop body's `state` names live in the loop's own state frame,
             // just outside the body's
             if (e && e->parent && e->parent->loopFrame)
-                if (Value* p = e->parent->local(key)) { out = *p; return true; }
+                if (Value* p = e->parent->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         case 'C':
             if (e && !dynName && findWithPending(e, out)) return true;
-            if (e) if (Value* p = e->find(key)) { out = *p; return true; }
+            if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         case 'L':
-            if (e) if (Value* p = e->find(key)) { out = *p; return true; }
+            if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *p; return true; }
             // the root stash names the pseudo-packages too: `::.<MY>`
             if (!key.empty() && !std::strchr("$@%&", key[0]) && isPseudoChain(key)) {
                 out = makePseudoStash(key);
                 return true;
             }
-            if (dynName) if (Value* p = findDynamicLenient(key)) { out = *p; return true; }
+            if (dynName) if (Value* p = findDynamicLenient(key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         case 'S': {
             // an INLINE block (`if 1 { … }`) is called by the block around it:
@@ -3087,27 +3099,27 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
             if (e)
                 for (Env* w = e->parent.get(); w; w = w->parent.get()) {
                     if (Value* p = w->local(key)) {
-                        if (dynName || w->xr().varDynamic.count(key)) { out = *p; return true; }
+                        if (dynName || w->xr().varDynamic.count(key)) { ParStripe rs(*this, p); out = *p; return true; }
                         break;
                     }
                     if (w->routineFrame) break;
                 }
             long d = at.count("dyn") ? (long)at["dyn"].toInt() : (long)tctx_.dynStack.size();
             for (long k = std::min(d, (long)tctx_.dynStack.size() - 1); k >= 0; k--)
-                if (Env* f = tctx_.dynStack[k]) if (Value* p = dynInFrame(f, key)) { out = *p; return true; }
+                if (Env* f = tctx_.dynStack[k]) if (Value* p = dynInFrame(f, key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         }
         case 'P':
             if (key.size() > 1 && key[1] != '*') {
                 std::string dk = key.substr(0, 1) + "*" + key.substr(1);
-                if (Value* p = findDynamicLenient(dk)) { out = *p; return true; }
+                if (Value* p = findDynamicLenient(dk)) { ParStripe rs(*this, p); out = *p; return true; }
                 out = dynVar(dk);
                 return !(out.t == VT::Nil || out.t == VT::Any);
             }
-            if (Value* p = findDynamicLenient(key)) { out = *p; return true; }
+            if (Value* p = findDynamicLenient(key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         case 'D':
-            if (dynName) if (Value* p = findDynamicViaGlobal(key)) { out = *p; return true; }
+            if (dynName) if (Value* p = findDynamicViaGlobal(key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         default: break;
     }
@@ -3177,7 +3189,7 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
                                 "Cannot modify an immutable '" + key + "' (it is not dynamic)"};
         }
-        *slot = v;
+        { ParStripe ws(*this, slot); *slot = v; }   // torn-copy contract: a stash travels
         return v;
     }
     if (m == "DELETE-KEY")
@@ -6326,6 +6338,8 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     if (!craw || !praw || !own || praw->isCell()) return false;
     if (own->ex && (own->ex->rwLinks.count(an) || own->ex->rwDirect.count(an))) return false;
     if (!craw->isCell() && craw->t == VT::Hash && craw->hashKind == "Proxy") return false;
+    // (a worker may be reading the caller's slot: an rw link instead, see promotionSafe)
+    if (!craw->isCell() && !promotionSafe(own, craw)) return false;
     if (!sameBoundValue(*craw->deref(), *praw)) return false;
     *praw = Value::cellHolder(craw->promoteToCell());
     env->x().rwCelled.insert(p.name);

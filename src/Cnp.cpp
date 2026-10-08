@@ -502,6 +502,8 @@ struct Kernel {
     size_t                nops  = 0;
 };
 
+bool makesCalls(const Kernel* k) { return k && !k->calls.empty(); }
+
 namespace {
 
 // ---- lowering --------------------------------------------------------------

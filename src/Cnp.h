@@ -43,6 +43,9 @@ const char* unavailableReason();
 // What the table was extracted for, for `--cnp=verbose` and `--version`.
 const char* arch();
 
+// Does the kernel call out of itself (a routine, an interpolation's .Str)?
+// A callee may start a thread (see runIfReady in Jit.cpp).
+bool makesCalls(const Kernel* k);
 // Lower a loop the eligibility walk has already accepted. Null on refusal,
 // with `why` naming what the lowering could not express. `slots` is the
 // harness's slot list, in order; registers 0..slots.size()-1 mirror it.
