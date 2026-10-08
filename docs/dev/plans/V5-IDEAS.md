@@ -188,7 +188,7 @@ exact `Rat` arithmetic.
 from a loadable extension, gated; then a `plraku` function passing its own
 `pg_regress` suite.
 
-## 12. Places to put it
+## 12. Random ideas beyond the current scope
 
 A list of 2026-10-08: hosts where a property the engine already has is the
 reason to choose it. Those properties are one file from `--exe --standalone`,
