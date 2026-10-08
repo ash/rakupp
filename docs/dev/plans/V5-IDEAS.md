@@ -188,6 +188,69 @@ exact `Rat` arithmetic.
 from a loadable extension, gated; then a `plraku` function passing its own
 `pg_regress` suite.
 
+## 12. Places to put it
+
+A list of 2026-10-08: hosts where a property the engine already has is the
+reason to choose it. Those properties are one file from `--exe --standalone`,
+a start-up of a few milliseconds (§11), the C API, Raku.js, grammars that
+report the line, column and rule where a parse fails, and exact `Rat` and
+`Int` arithmetic. The spreadsheet formulas from the same list are built
+([bindings/spreadsheets](../../../bindings/spreadsheets/README.md)). The
+databases are §11, the sandboxed hosts wait for §6, and Node, Swift and
+Android are in §7.
+
+- **Slots that run any executable.** Each starts a program per event, which a
+  standalone file that starts in milliseconds fits. Each is a cookbook recipe
+  first.
+  - An AWS Lambda custom runtime: a `bootstrap` that loops on the Runtime API,
+    built with `--exe`.
+  - Pandoc filters: the document tree arrives as JSON on stdin and goes back on
+    stdout. A `Pandoc::Filter` module, and a filter that runs code blocks and
+    pastes in their output.
+  - `kubectl`, `git` and `gh` subcommands, Ansible modules and Terraform
+    `external` data sources, all of which take an executable that reads
+    arguments or JSON.
+  - pre-commit hooks for `--fmt` and `--lint`.
+  - `FROM scratch` images holding only the binary.
+- **Grammars as the product.**
+  - **Grammar → language server.** A user's grammar for their own format gives
+    diagnostics (line, column, failing rule) in any LSP editor. The MCP
+    `raku-parse` tool already reports the failure, and `rakupp --lsp` has the
+    transport ([IDE-PLAN.md](IDE-PLAN.md)).
+  - A grammar workbench in the browser: the tree as you type, the failing rule
+    marked. It grows from `showcase/web/regex.html`.
+  - Grammar → GBNF for llama.cpp's constrained decoding, so that a model's
+    output parses with the same grammar. Speculative: only a subset of
+    grammars would translate.
+- **Exact arithmetic as the reason.**
+  - Plain-text accounting: a Ledger/hledger journal parser and balance report
+    on `Rat`, as a showcase.
+  - A launcher calculator: a Raycast or Alfred extension, or a macOS Shortcuts
+    action, where `1/3 + 1/6` is `0.5` and `2**200` has all its digits.
+- **More hosts on the C API**, beyond §7's: Julia through `ccall`, with no
+  compiled glue; TIC-80, the fantasy console that takes its languages as C
+  modules (check the size with `--slim` first).
+- **In the browser, with no server.**
+  - A browser extension that puts a Run button on Raku code blocks (Rosetta
+    Code, GitHub READMEs, Stack Overflow), with Raku.js as released.
+  - Quarto takes any Jupyter kernel, so Raku in Quarto documents may need only
+    docs and a test. An Obsidian plugin would need a small Raku.js wrapper.
+  - A Unicode inspector: paste text, see its graphemes, codepoints, names and
+    properties.
+  - *Crafting Interpreters, Raku edition*: the showcase's Lisp, Forth,
+    JavaScript, Perl and Python interpreters as a book whose every stage runs
+    in the page.
+- **Small hardware.** GPIO on a Raspberry Pi through NativeCall to libgpiod;
+  an OpenWrt package for ARM and RISC-V routers.
+- **After the sandbox (§6).** A grader image for courses and self-hosted
+  judges (Raku Koans in [live/ADOPTIONS.md](../../../live/ADOPTIONS.md) has
+  the test-driven shape already); a Discord or Matrix bot that runs snippets;
+  user scripting inside other applications.
+
+**The number:** each item picked up leaves one runnable recipe or showcase
+whose output was captured from a real run, and its line moves to the plan
+that built it.
+
 ---
 
 *Keeping this current: when an item lands or is decided against, move it to the
