@@ -2047,6 +2047,15 @@ public:
                                          const std::vector<ExprPtr>* rwArgs);
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
+    // …and what happens to a name no segment claimed: FALLBACK, `.^add_fallback`,
+    // Any's last-resort answers, else X::Method::NotFound. Also entered directly
+    // for a name the invocant's type does not have at all (a Cool method on a
+    // plain class), so no built-in arm answers it first.
+    Value methodCallUnresolved(const Value& inv, const struct MName& m, ValueList& args,
+                               const std::vector<ExprPtr>* rwArgs);
+    // `has $.b handles *`, which the tail and that direct route both consult
+    std::optional<Value> catchAllDelegation(const Value& inv, const struct MName& m, ValueList& args,
+                                            const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
     // A Failure stores its exception as a bare TYPE plus a message; anything
     // that hands the exception to user code (`$!`, `.exception`, `.throw`) must

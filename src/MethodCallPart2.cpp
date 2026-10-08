@@ -1780,6 +1780,62 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
     return self;
 }
 
+// A user class with nothing above it but other user classes, Any and Mu: no
+// built-in parent (`is Str`, `is Exception`, a grammar's Grammar), no Cool, no
+// numeric role, not an exception. Rakudo gives such a type none of Cool's
+// methods.
+static bool plainUserClass(const ClassInfo* c) {
+    if (!c) return true;
+    if (!c->nativeParent.empty() && c->nativeParent != "Any" && c->nativeParent != "Mu") return false;
+    if (c->isGrammar || c->name == "Cool" || c->name == "Exception" || c->name.rfind("X::", 0) == 0)
+        return false;
+    for (auto& r : c->doneRoles)
+        if (r == "Numeric" || r == "Real" || r == "Rational" || r == "Cool") return false;
+    if (!plainUserClass(c->parent.get())) return false;
+    for (auto& p : c->extraParents) if (!plainUserClass(p.get())) return false;
+    for (auto& r : c->composedRoles) if (!plainUserClass(r.get())) return false;
+    return true;
+}
+
+// The methods Cool has and Any and Mu do not: on a plain class each one is
+// X::Method::NotFound in Rakudo (checked name by name), and a FALLBACK gets it.
+// The built-in arms answer them for ANY invocant, on its stringification or
+// numification, so a plain class must be stopped before it reaches them
+// (issue #135: `A.index` was 0). `split`, `fmt` and `chrs` are multis that
+// Any declares with no candidate for it — X::Multi::NoMatch, FALLBACK or not.
+static bool coolOnlyMethod(const std::string& m) {
+    static const std::set<std::string> k = {
+        "Complex", "Date", "DateTime", "FatRat", "IO", "NFC", "NFD", "NFKC", "NFKD", "Num",
+        "Rat", "UInt", "abs", "acos", "acosec", "acosech", "acosh", "acotan", "acotanh",
+        "asec", "asech", "asin", "asinh", "atan", "atan2", "atanh", "base", "byte", "bytes",
+        "ceiling", "chars", "chomp", "chop", "chr", "chrs", "cis", "codes", "comb", "conj",
+        "contains", "cos", "cosec", "cosech", "cosh", "cotan", "cotanh", "encode", "ends-with",
+        "exp", "expmod", "fc", "flip", "floor", "fmt", "indent", "index", "indices", "int",
+        "int16", "int32", "int64", "int8", "is-prime", "is-whitespace", "isNaN", "lc",
+        "leading-whitespace", "lines", "log", "log10", "log2", "lsb", "msb", "naive-word-wrapper",
+        "narrow", "ord", "ords", "parse-base", "parse-names", "path", "polar", "polymod", "pred",
+        "printf", "rand", "rindex", "roots", "round", "samecase", "samemark", "samespace", "sec",
+        "sech", "sign", "sin", "sinh", "split", "sprintf", "sqrt", "starts-with", "subst",
+        "subst-mutate", "substr", "substr-eq", "substr-rw", "succ", "tan", "tanh", "tc", "tclc",
+        "trailing-whitespace", "trans", "trim", "trim-leading", "trim-trailing", "truncate", "uc",
+        "uint", "uint16", "uint32", "uint64", "uint8", "unimatch", "uniname", "uninames",
+        "uniparse", "uniprop", "uniprops", "unival", "univals", "unpolar", "wordcase", "words"};
+    return k.count(m) != 0;
+}
+
+// …and what such a call does instead: what an unknown name gets
+static Value coolOnlyOnPlainClass(Interpreter& I, const Value& inv, const MName& m, ValueList& args,
+                                  const std::vector<ExprPtr>* rwArgs) {
+    if (m == "split" || m == "fmt" || m == "chrs") {
+        std::string prof = inv.typeName() + (inv.t == VT::Type ? ":U" : ":D");
+        std::string rest = I.noMatchProfile(Value(), args, false);
+        if (!rest.empty()) prof += ", " + rest;
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller " + m.s + "(" + prof + "); none of these signatures matches"};
+    }
+    return I.methodCallUnresolved(inv, m, args, rwArgs);
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     // The Variable a variable's user trait is handed (`trait_mod:<is>(Variable:D
@@ -7430,6 +7486,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (at->pub) throw RakuError{Value::typeObj("X::Method::NotFound"),
                     "Cannot look up attributes in a " + inv.s + " type object"};
             }
+            // …and a name only Cool has is no method of a plain class's type
+            // object either: `my A $a; $a.index` (see coolOnlyMethod)
+            // (`.new` and `.bless`, the calls that come here most, skip the lookup)
+            if (!m.skipOwn && m != "new" && m != "bless" && coolOnlyMethod(m) &&
+                !ci->findMethod("Bridge") && plainUserClass(ci.get()))
+                return coolOnlyOnPlainClass(*this, inv, m, args, rwArgs);
             if (m == "new" || m == "bless") {
                 // Punning a role composes it into a class, and a class cannot
                 // keep a stub: `role Basic { method auth { ... } }; Basic.new`
@@ -8145,6 +8207,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (Value* br = ci->findMethod("Bridge")) {
                 Value bv = invokeMethod(*br, inv, {});
                 return methodCall(bv, m, std::move(args), rwArgs);
+            }
+        }
+        // A name only Cool has is no method of a plain class (see coolOnlyMethod):
+        // a `handles *` delegation takes it, else it is an unknown name. A class
+        // with a `.Bridge` keeps the bridge it has in the tail, and one that
+        // delegates a capitalized name that is no user class is left as it was:
+        // `handles Str` (every Str method) and `handles <Str>` (the coercer
+        // alone) are recorded alike, so which names it takes is not known here.
+        if (!m.skipOwn && coolOnlyMethod(m) && !inv.obj()->hasBoxed && !ci->findMethod("Bridge") &&
+            plainUserClass(ci.get())) {
+            bool builtinType = false;
+            for (ClassInfo* c = ci.get(); c && !builtinType; c = c->parent.get())
+                for (auto& a : c->attrs)
+                    for (auto& h : a.handles)
+                        if (!h.empty() && ascii::isupper((unsigned char)h[0]) && !classes_.count(h))
+                            builtinType = true;
+            if (!builtinType) {
+                if (auto r = catchAllDelegation(inv, m, args, rwArgs)) return r;
+                return coolOnlyOnPlainClass(*this, inv, m, args, rwArgs);
             }
         }
         // else fall through to universal methods (.defined/.WHAT/.gist/...)
@@ -9117,6 +9198,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         };
         return Value::complex(f(inv.n), f(inv.im()));
     }
+    // A plain user object has no number in it: Rakudo's Mu gives no .Num, and
+    // .Int/.Numeric/.Real have only a type-object candidate (`Numeric(A:D: )`
+    // is "Cannot resolve caller"). Numifying one to 0 hid real bugs. Ahead of
+    // the .Int arm, which would numify it.
+    if ((m == "Num" || m == "Int" || m == "Numeric" || m == "Real") && args.empty() &&
+        inv.t == VT::Object && inv.obj() && !inv.obj()->hasBoxed && inv.obj()->cls &&
+        !inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findMethod("Bridge")) {
+        if (plainUserClass(inv.obj()->cls.get())) {
+            std::string tn = inv.typeName();
+            if (m == "Num")
+                throwTypedV("X::Method::NotFound",
+                            {{"typename", Value::str(tn)}, {"method", Value::str("Num")}, {"invocant", inv}},
+                            "No such method 'Num' for invocant of type '" + tn + "'");
+            throwTypedV("X::Multi::NoMatch", {},
+                        "Cannot resolve caller " + m + "(" + tn + ":D: ); none of these signatures matches:\n"
+                        "    (Mu:U \\v: *%_)");
+        }
+    }
     if (m == "Int") {
         // ±Inf / NaN cannot convert to Int — a FAILURE, not a throw, exactly
         // like the zero-denominator Rat below it. Rakudo hands back an
@@ -9180,34 +9279,6 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Num) return Value::boolean(std::isnan(inv.n));
         if (inv.t == VT::Rat) return Value::boolean(inv.ratD() && inv.ratD()->isZero() && inv.ratN() && inv.ratN()->isZero()); // 0/0
         if (inv.t == VT::Int || inv.t == VT::Bool) return Value::boolean(false);
-    }
-    // A plain user object has no number in it: Rakudo's Mu gives no .Num, and
-    // .Numeric/.Real have only a type-object candidate (`Numeric(A:D: )` is
-    // "Cannot resolve caller"). Numifying one to 0 hid real bugs.
-    if ((m == "Num" || m == "Numeric" || m == "Real") && args.empty() &&
-        inv.t == VT::Object && inv.obj() && !inv.obj()->hasBoxed && inv.obj()->cls &&
-        !inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findMethod("Bridge")) {
-        bool plain = true;
-        std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
-            if (!c || !plain) return;
-            if (!c->nativeParent.empty() && c->nativeParent != "Any" && c->nativeParent != "Mu") plain = false;
-            for (auto& r : c->doneRoles)
-                if (r == "Numeric" || r == "Real" || r == "Rational" || r == "Cool") plain = false;
-            if (c->name.rfind("X::", 0) == 0 || c->name == "Exception") plain = false;
-            walk(c->parent.get());
-            for (auto& ep : c->extraParents) walk(ep.get());
-        };
-        walk(inv.obj()->cls.get());
-        if (plain) {
-            std::string tn = inv.typeName();
-            if (m == "Num")
-                throwTypedV("X::Method::NotFound",
-                            {{"typename", Value::str(tn)}, {"method", Value::str("Num")}, {"invocant", inv}},
-                            "No such method 'Num' for invocant of type '" + tn + "'");
-            throwTypedV("X::Multi::NoMatch", {},
-                        "Cannot resolve caller " + m + "(" + tn + ":D: ); none of these signatures matches:\n"
-                        "    (Mu:U \\v: *%_)");
-        }
     }
     if (m == "Num") {
         if ((inv.t == VT::Str && inv.hashKind.empty() && !inv.isAllomorph()) || inv.t == VT::Match) {

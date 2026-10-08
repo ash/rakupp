@@ -9690,6 +9690,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Segment continues in MethodCallPart3.cpp — same ordered chain.
     if (auto r = methodCallPart3(inv, m, args, rwArgs)) return std::move(*r);
     if (auto r = methodCallTail(inv, m, args, rwArgs)) return std::move(*r);
+    return methodCallUnresolved(inv, m, args, rwArgs);
+}
+
+Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueList& args,
+                                        const std::vector<ExprPtr>* rwArgs) {
     // fallthrough: unknown method — but any method call on Nil returns Nil
     if (inv.t == VT::Nil) return Value::nil();
     // FALLBACK: a class may catch every unresolved method itself, receiving the

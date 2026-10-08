@@ -346,6 +346,38 @@ static bool mapBlockReturnsOut(const Value& fn) {
     return r;
 }
 
+// `has $.b handles *`: the object hands a name it has no method for to the
+// attribute. nullopt when no attribute of its class delegates everything.
+std::optional<Value> Interpreter::catchAllDelegation(const Value& inv, const MName& m, ValueList& args,
+                                                     const std::vector<ExprPtr>* rwArgs) {
+    if (!(inv.t == VT::Object && inv.obj() && inv.obj()->cls)) return std::nullopt;
+    for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get()) {
+        for (auto& a : c->attrs)
+            for (auto& h : a.handles)
+                if (h == "*") {
+                    auto ait = inv.obj()->attrs.find(a.name);
+                    Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
+                    // an unset typed attr delegates to its type object
+                    if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
+                        target = Value::typeObj(a.type);
+                    // …and only for what the delegate CAN do: the rest is
+                    // the class's own FALLBACK's (delegation beats FALLBACK,
+                    // FALLBACK catches what delegation does not)
+                    ClassInfo* tcls = target.t == VT::Object && target.obj() ? target.obj()->cls.get()
+                                    : target.t == VT::Type && classes_.count(target.s) ? classes_[target.s].get()
+                                    : nullptr;
+                    if (inv.obj()->cls->findMethod("FALLBACK") && tcls && !tcls->findMethod(m)) {
+                        Value* fb = inv.obj()->cls->findMethod("FALLBACK");
+                        ValueList fa; fa.push_back(Value::str(m));
+                        for (auto& x : args) fa.push_back(x);
+                        return invokeMethod(*fb, inv, fa);
+                    }
+                    return methodCall(target, m, std::move(args), rwArgs);
+                }
+    }
+    return std::nullopt;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -5125,32 +5157,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // fallback for names nothing else answers, so it belongs at the end of the
     // ladder. Named delegations (`handles <m1 m2>`) are real methods and are
     // resolved up front, in methodCallPart2's user-object block.
-    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
-        for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get()) {
-            for (auto& a : c->attrs)
-                for (auto& h : a.handles)
-                    if (h == "*") {
-                        auto ait = inv.obj()->attrs.find(a.name);
-                        Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
-                        // an unset typed attr delegates to its type object
-                        if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
-                            target = Value::typeObj(a.type);
-                        // …and only for what the delegate CAN do: the rest is
-                        // the class's own FALLBACK's (delegation beats FALLBACK,
-                        // FALLBACK catches what delegation does not)
-                        ClassInfo* tcls = target.t == VT::Object && target.obj() ? target.obj()->cls.get()
-                                        : target.t == VT::Type && classes_.count(target.s) ? classes_[target.s].get()
-                                        : nullptr;
-                        if (inv.obj()->cls->findMethod("FALLBACK") && tcls && !tcls->findMethod(m)) {
-                            Value* fb = inv.obj()->cls->findMethod("FALLBACK");
-                            ValueList fa; fa.push_back(Value::str(m));
-                            for (auto& x : args) fa.push_back(x);
-                            return invokeMethod(*fb, inv, fa);
-                        }
-                        return methodCall(target, m, std::move(args), rwArgs);
-                    }
-        }
-    }
+    if (auto r = catchAllDelegation(inv, m, args, rwArgs)) return r;
     // Real-role bridge: an object whose class defines .Bridge (`class F does Real
     // { method Bridge() {…} }`) answers unknown methods through the bridged
     // value — .succ/.Int/.Bool/.sqrt/… all come from Real via the bridge.
