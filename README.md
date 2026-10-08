@@ -13,7 +13,7 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v5.3.0** (2026-10-08) — **100.00% of Roast.**
+**Status:** current release **v5.3.0** (2026-10-09) — **100.00% of Roast.**
 Of the tests Roast expects an implementation to pass, **all 219,207** pass, and
 **all 1,425 files** in Roast's `spectest.data` pass completely (Roast
 `da425eb92`, which carries Unicode 18.0's tests). On Roast `1f521d798`, which

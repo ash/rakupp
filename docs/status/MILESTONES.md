@@ -56,7 +56,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-09-30 | **v5.1.0** | **Every file of Roast passes** (1,424 / 1,424, on Roast `1f749e338`) — the interpreter up to 29% faster on sixteen of eighteen kernels, native `int`/`num` semantics, `--cnp` kernels that call and index, `--hints` |
 | 2026-10-02 | **v5.2.0** | **Integer and loop kernels** — every benchmark kernel faster interpreted, `fib` by 97% and `loopsum` by 93%; a Value of 80 bytes instead of 128; `cro run`, DBIish from an installed binary, a Docker image; Roast unchanged at 1,424 / 1,424 |
 | 2026-10-03 | **v5.2.1** | Cro at full scale, native module bodies in `--exe`, `pip install rakulang` — a patch release; Roast unchanged at 1,424 / 1,424 |
-| 2026-10-08 | **v5.3.0** | Unicode 18.0, linear string building, `--sandbox`, spreadsheet formulas — loop kernels over arrays, hashes, Nums and Rats (`arraypush` −86%, `rats` −85%); Roast 1,425 / 1,425 on a Roast that moved to Unicode 18 |
+| 2026-10-09 | **v5.3.0** | Unicode 18.0, linear string building, `--sandbox`, spreadsheet formulas — loop kernels over arrays, hashes, Nums and Rats (`arraypush` −86%, `rats` −85%); Roast 1,425 / 1,425 on a Roast that moved to Unicode 18 |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -269,7 +269,7 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   nine engine fixes; `--exe` compiles the routines of embedded modules to
   native code (Math::NIntegrate 1.5–1.6× faster); and `pip install rakulang`
   installs the Python binding with the engine inside it.
-- **Oct 8 — v5.3.0.** Roast moved to Unicode 18.0 and gained a file, and all
+- **Oct 9 — v5.3.0.** Roast moved to Unicode 18.0 and gained a file, and all
   **1,425 of 1,425** pass (219,207 / 219,207 without skip/todo); v5.2.1 passes
   1,405 of them. The loop kernels reach arrays, hashes, Nums and Rats, a long
   string can be a view of a shared buffer so building one is linear, big-Int

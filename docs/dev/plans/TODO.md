@@ -120,6 +120,17 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `X::Encode::Unknown` undeclared where the test names it) and Trap
   (t/02-tee, the tee writes its string twice). Fail on v5.2.1 too; battery
   44/59 at v5.3.0. Next: bisect v5.0.1..v5.2.1 per dist.
+- [ ] **Raku.js runs worker bodies inline, on the main registers**: with no
+  pthreads, BigStackThread runs a `start`/`react` worker body on the caller,
+  and the body's `loadCtx(empty)` + `dynStack.push_back(spawnScope)` replace
+  the main thread's registers for the rest of that program. 19ed905f stops it
+  leaking into the NEXT program; within one program it remains. Next: save
+  and restore tctx_ around the inline run.
+- [ ] **`rk_run` skips the CLI's compile-time checks** (decision): rakuppRunOn
+  is called without declCheck, so Raku.js and every embedder run programs the
+  CLI refuses (undeclared variables, #32; calls that can never bind,
+  d78d1cb0). Turning it on changes the browser's behaviour, including two
+  Raku Koans solutions.
 - [ ] **V5 batches B1–B6**: only B0 (the instruments) has landed.
   [V5-PLAN.md](V5-PLAN.md).
   - B1: regressions (battery scan to 0).

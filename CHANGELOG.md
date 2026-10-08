@@ -3,7 +3,7 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
-## v5.3.0 (2026-10-08) — Unicode 18, linear string building, `--sandbox`, and spreadsheets
+## v5.3.0 (2026-10-09) — Unicode 18, linear string building, `--sandbox`, and spreadsheets
 
 Roast: **all 1,425 files** of `spectest.data` and **all 219,207** of its tests
 with skip and todo left out (220,845 of 220,845 counting them as passes), in
@@ -146,6 +146,14 @@ v5.2.1 ran, as Rakudo does, and so does `my Any $x = Mu` in the fourth.
 - Math::SparseMatrix::Native, Compress::Zlib, Graph and CBOR::Simple load and
   pass again (7b3bb3cf, 7fff03ca, 59a5f3e1, fcbc61d4).
 - `gather` is lazy on riscv64 (d62b1a7a).
+- **Raku.js: a program that ran a `start` block no longer crashes the next
+  program on the same engine** with "memory access out of bounds" (19ed905f). A
+  single-threaded build runs the block inline, and the block's dynamic frame
+  stayed on the thread's registers after the interpreter was freed, so the
+  next program's `$*` lookup read through it. Every later run on that engine
+  failed. A new interpreter now starts from empty registers. v5.2.1 had it too;
+  the Raku Koans gate on the new bundle found it, because the playground and
+  the spreadsheet add-ins run many programs on one engine.
 - `do return False unless $x if $y;` parses again (1305af21): a statement
   prefix gives the second modifier to the statement around it, as Rakudo
   does. f3b1fe01 had made it "Missing semicolon"; this release's battery scan
@@ -189,7 +197,11 @@ same three solutions: `next OUTER` under an `OUTER:` label, and two
 `dies-ok { f(…) }` calls that can never bind (control-flow/loop-control,
 subroutines/signature, subroutines/slurpy-and-named-parameters). The course
 pins v5.0.1 and moves only after its own check passes, so it stays there
-until those koans change.
+until those koans change. On the Raku.js bundle the course's own check
+crashed partway until 19ed905f (under Fixed); with it, only the `next OUTER`
+koan fails there. The other two pass in the browser because `rk_run`, which
+Raku.js and every embedder use, does not run the CLI's compile-time checks:
+neither the undeclared-variable check (#32) nor the new can-never-bind check.
 
 Not re-run for this release: the documentation-example comparison (1,006 at
 v5.0.0), the ecosystem sweep (1,019 of 2,547 at v5.0.0), the slim

@@ -356,8 +356,9 @@ stripes took a CPU-bound fan-out on 8 workers from 3.16× to 5.32×
   architecture.
 - **This sitting:** re-measured 2026-10-08 at `v5.3.0` — the local build is
   `5.3.0-g042a74ad`, the version commit. It carries all of v5.3.0's code but
-  1305af21, a parser fix for a statement prefix with two modifiers, which no
-  kernel here goes through.
+  two fixes made after it, which no kernel here goes through: 1305af21 (a
+  statement prefix with two modifiers, in the parser) and 19ed905f (a reset when
+  an interpreter is created).
   `intcat` ran in three passes of its own after the other five, without the
   mutsu lane. The 1-minute load stayed between about 3 and 4.5: WindowServer
   held about a third of a core throughout, and `ecosystemd`, `biomesyncd` and an
