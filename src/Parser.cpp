@@ -8987,7 +8987,7 @@ ExprPtr Parser::parsePrimary() {
                     // `do EXPR for LIST` collects one value per iteration, which is how
                     // JSON::Fast's test builds a list (`List.new(|do … for 10 ... 1)`).
                     // Without this the `for` ended the argument and the parse died.
-                    u->operand = applyExprModifiers(std::move(u->operand));
+                    u->operand = applyExprModifiers(std::move(u->operand), /*leaveRest=*/true);
                 }
                 return u;
             }
@@ -15149,20 +15149,26 @@ static std::unique_ptr<Block> wrapStmt(StmtPtr s) {
 // Trailing statement modifiers on an EXPRESSION (inside `@(…)` / `$(…)` etc.):
 // `@(EXPR for LIST)`, `@(EXPR if COND)`, … — chains, wrapping the value so far.
 // Mirrors the desugars the plain-paren path uses (list-comprehension semantics).
-ExprPtr Parser::applyExprModifiers(ExprPtr e) {
-    // at most ONE conditional modifier, then at most one loop: `do 1 if $x if $x`
-    // is Rakudo's "Missing semicolon", as the statement form already is
+ExprPtr Parser::applyExprModifiers(ExprPtr e, bool leaveRest) {
+    // at most ONE conditional modifier, then at most one loop: `(1 if $x if $x)`
+    // is Rakudo's "Missing semicolon", as the statement form already is. Under
+    // `do` (leaveRest) the one too many belongs to what encloses the `do`:
+    // `do return 1 unless $x if $y;` is the statement `(do …) if $y` (Pakku).
     int conds = 0, loops = 0;
     auto chained = [&](bool loop) {
-        if (loop ? loops++ : (loops || conds++))
-            throw ParseError("Missing semicolon", cur().line, "X::Syntax::Confused",
-                             {{"reason", "Missing semicolon"}});
+        if (!(loop ? loops++ : (loops || conds++))) return true;
+        if (leaveRest) return false;
+        throw ParseError("Missing semicolon", cur().line, "X::Syntax::Confused",
+                         {{"reason", "Missing semicolon"}});
     };
     for (;;) {
         if (isIdent("when") || isIdent("if") || isIdent("unless") ||
-            ((isIdent("with") || isIdent("without")) && !(peek().kind == Tok::LParen && !peek().spaceBefore)))
-            chained(false);
-        else if (isIdent("for") || isIdent("while") || isIdent("until")) chained(true);
+            ((isIdent("with") || isIdent("without")) && !(peek().kind == Tok::LParen && !peek().spaceBefore))) {
+            if (!chained(false)) return e;
+        }
+        else if (isIdent("for") || isIdent("while") || isIdent("until")) {
+            if (!chained(true)) return e;
+        }
         // `(EXPR when X)` — EXPR if the topic smartmatches X, else nothing
         if (isIdent("when")) {
             advance();

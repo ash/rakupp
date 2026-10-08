@@ -553,7 +553,7 @@ private:
 private:
     StmtPtr parseStatementImpl();
     StmtPtr applyModifiers(StmtPtr s);
-    ExprPtr applyExprModifiers(ExprPtr e); // trailing stmt modifiers inside (…)/@(…)/…
+    ExprPtr applyExprModifiers(ExprPtr e, bool leaveRest = false); // trailing stmt modifiers inside (…)/@(…)/…
     std::unique_ptr<Block> parseBlock();
     void checkPlaceholderOrder(size_t openAt);
     std::string placeholderIn(size_t openAt);   // the first `$^x` directly in a block, as `$x`
