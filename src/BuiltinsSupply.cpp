@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "Sandbox.h"
 #if defined(__APPLE__)
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
@@ -2775,6 +2776,10 @@ std::string logicalJoin(const std::string& base, const std::string& p) {
 // the overwhelmingly common case — keep the user's own spelling, so error
 // texts and dir listings read the way they were written.
 std::string Interpreter::ioFsPath(const Value& v) {
+    // --sandbox's backstop: every file-touching operation turns its path into
+    // an OS path here, so one that got past its own check (src/Sandbox.h) is
+    // still refused before it can open anything. `-` is standard input.
+    if (g_sandboxChecks && v.toStr() != "-") sandboxRefuse(*this, "file access", SandboxCap::Read);
     if (v.hashKind != "IO" || v.t != VT::Str) return v.toStr();
     const std::string& p = v.s;
     if (p.empty() || p[0] == '/') return p;

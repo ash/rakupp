@@ -100,6 +100,14 @@ typedef struct {
     /* Flush std::cout/std::cerr after each evaluation. Off means the host owns
      * when its own streams flush. Irrelevant when rk_set_output is in use. */
     int own_stdout;
+    /* Run Raku code in the sandbox, as `rakupp --sandbox` does: it may not
+     * read or write files, start processes, open sockets or call native code,
+     * and %*ENV starts empty; a refused operation throws
+     * X::SecurityPolicy::Sandbox. Only the Raku code is confined, not your
+     * process. The switch is PROCESS-wide and one-way: once an interpreter has
+     * been created with it, every later interpreter in this process is
+     * sandboxed too. */
+    int sandbox;
 } RkConfig;
 
 /* NULL config = every field above off, which is what most hosts want. */

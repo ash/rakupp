@@ -414,6 +414,12 @@ with its tag, after the release run is green.
 
 ## 6. Tooling, release and CI
 
+- [ ] **`--sandbox`**: [SANDBOX-PLAN.md](SANDBOX-PLAN.md), 2026-10-08. S0–S2
+  committed (on top of `425d70df`, not pushed): the interpreter's checks, `RkConfig.sandbox`,
+  `--mcp --sandbox`, and the OS layer (Seatbelt; Landlock + seccomp), fail
+  closed with `--sandbox=language` as the explicit opt-down. Gate 341/341 on
+  macOS and Linux. Owed: a full `t/run.raku`, `perf-guard --check` on a quiet
+  machine. Next: S3 (limits); OpenBSD pledge + unveil when there is a machine.
 - [ ] **IDE: language server, then debugger**: [IDE-PLAN.md](IDE-PLAN.md),
   2026-10-07, nothing built yet. Next: L0 (a Raku LSP client for the tests,
   one `try` around every handler, JsonLite, one lex per document version,

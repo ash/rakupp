@@ -1619,6 +1619,17 @@ section('the CLI surface (goldens for the v3 parser refactor)');
            '--seed outside a run is illegal');
     }
 
+    # --sandbox: the flag at the command line (t/sandbox/run.raku is its gate)
+    {
+        my ($o, $e, $x) = run-rakupp-err('--sandbox', '-e', 'say 6 * 7; slurp $*PROGRAM');
+        ok($o eq "42\n" && $x != 0 && $e.contains('slurp is not allowed in the sandbox: it needs read access'),
+           '--sandbox computes and refuses a file read');
+        is(run-rakupp('--sandbox', '-e', 'say %*ENV.elems')[0], "0\n", '--sandbox hides the environment');
+        ok(run-rakupp-err('--lint', '--sandbox', '-e', '1')[1].contains('Illegal option --sandbox'),
+           '--sandbox outside a run is illegal');
+        ok(run-rakupp-err('--sandbox', '--jit', '-e', '1')[2] == 4, '--sandbox refuses --jit');
+    }
+
     # --stack-size: the recursion ceiling, exposed
     #
     # 128M, not the 64M this was written with. What the pair below proves is

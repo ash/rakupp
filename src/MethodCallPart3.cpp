@@ -1,4 +1,5 @@
 #include "CNumeric.h"
+#include "Sandbox.h"
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -1717,6 +1718,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return p;
     }
+    // --sandbox (src/Sandbox.h): every IO::Path and IO::Handle arm from here
+    // down is behind this one check, which refuses by method name the ones
+    // that would reach the file system.
+    if (g_sandboxChecks && (inv.t == VT::Str || (inv.t == VT::Hash && inv.hashKind == "FileHandle")))
+        sandboxMethodGate(*this, inv, (const std::string&)m, args);
     // `.slurp` belongs to IO::Path (IO::Handle has its own, below) — a Str is NOT
     // a path in Rakudo, `"file".slurp` is "no such method". rakupp accepted any
     // invocant, which made `$value.^lookup('slurp')` true for a plain string and

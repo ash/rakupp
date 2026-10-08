@@ -36,6 +36,8 @@
 #include "JupyterKernel.h"
 #include "McpServer.h"
 #include "Repl.h"
+#include "Sandbox.h"
+#include "SandboxOs.h"
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
@@ -2225,6 +2227,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--fallback", 1, "wasm", "accept a program outside the JavaScript core"},
     {"--profile", 1, "FILE", "routine-level wall-time profile"},
     {"--seed", 1, nullptr, "pin the random generator"},
+    {"--sandbox", 1, "language", "no files, processes, network, native code or environment for the program"},
     {"--stack-size", 1, nullptr, "the stack of the program thread, the recursion ceiling"},
     {"--env-file", 1, "FILE", "load KEY=VALUE lines into the environment"},
     {"--color", 1, "auto always never", "ANSI colour on stderr and in the REPL"},
@@ -2465,6 +2468,31 @@ static std::string envOptRefused(const std::vector<std::string>& toks) {
     return "";
 }
 
+// What a sandboxed program may still READ under the OS layer (SandboxOs.h):
+// the program file — a backtrace quotes its lines — and every directory the
+// module loader searches: the host's -I, RAKULIB and ROAST, the binary's own
+// rakulib/ (as the Interpreter constructor finds it), and the ~/.raku store.
+static std::vector<std::string> sandboxReadable(const std::string& fileName, bool haveSrc,
+                                                const std::vector<std::string>& dashI,
+                                                const std::string& exePath) {
+    std::vector<std::string> r;
+    if (haveSrc && fileName != "-e" && fileName != "-") r.push_back(fileName);
+    auto addSpec = [&](const std::string& spec) {         // `inst#/dir`, `file#/dir` are /dir
+        r.push_back(spec.rfind("inst#", 0) == 0 || spec.rfind("file#", 0) == 0 ? spec.substr(5) : spec);
+    };
+    for (auto& d : dashI) addSpec(d);
+    if (const char* rl = std::getenv("RAKULIB"))
+        for (auto& d : rakupp::splitSearchPath(rl)) addSpec(d);
+    if (const char* ro = std::getenv("ROAST")) r.push_back(std::string(ro) + "/packages/Test-Helpers/lib");
+    auto slash = exePath.rfind('/');
+    if (slash != std::string::npos)
+        for (const char* rel : {"/../rakulib", "/../libexec/rakupp/rakulib"})
+            r.push_back(exePath.substr(0, slash) + rel);
+    std::string home = platHomeDir();
+    if (!home.empty()) r.push_back(home + "/.raku");
+    return r;
+}
+
 int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
@@ -2635,6 +2663,9 @@ int main(int argc, char** argv) {
     long recMode = -1;                    // -0[octal]: 0 = NUL records, 0777 = slurp
     bool quiet = false;                   // -q / --quiet: any mode (see g_quiet)
     bool optX = false;                    // -x: skip leading text up to the #! line (perl)
+    bool sandboxFlag = false;             // --sandbox: run code you did not write (SANDBOX-PLAN.md)
+    bool sandboxLanguageOnly = false;     // --sandbox=language: without the OS layer
+    bool sawJitFlag = false;              // --jit given (it writes a cache and runs a compiler)
     bool seedSet = false, seedAnnounce = false; // --seed[=N]: pin the RNG (bare: pick and say)
     long long seedVal = 0;
     size_t stackBytes = 0;                // --stack-size=N[K|M|G]: the program thread (0 = 1 GiB)
@@ -2740,6 +2771,19 @@ int main(int argc, char** argv) {
                 else if (v == "auto") dropEnv("RAKUPP_COLOR");
                 else { std::cerr << "--color wants auto, always or never\n"; return 4; }
                 continue;
+            }
+            // --sandbox: the program may not read or write files, start
+            // processes, open sockets, call native code or see the environment
+            // (src/Sandbox.h). Set before the interpreter exists, never undone.
+            // The OS layer under the checks is part of it wherever the platform
+            // has one (src/SandboxOs.h); --sandbox=language asks for the checks
+            // alone, where it has none or cannot apply it.
+            if (a == "--sandbox" || a.rfind("--sandbox=", 0) == 0) {
+                if (a != "--sandbox" && a != "--sandbox=language") {
+                    std::cerr << "--sandbox takes no value, or =language (the interpreter's own checks only)\n";
+                    return 4;
+                }
+                sandboxFlag = true; sandboxLanguageOnly = a != "--sandbox"; continue;
             }
             // --seed[=N] (rspec --seed, PYTHONHASHSEED): pin rand/pick/roll/
             // shuffle for the run. Bare --seed picks one and announces it on
@@ -2935,7 +2979,7 @@ int main(int argc, char** argv) {
             if (a == "--jit" || a.rfind("--jit=", 0) == 0) {
                 std::string err = rakupp::jit::parseSpec(a.size() > 5 ? a.substr(6) : "", g_jitOpt);
                 if (!err.empty()) { std::cerr << err << "\n"; return 4; }
-                g_jitAsked = true; continue;
+                g_jitAsked = sawJitFlag = true; continue;
             }
             if (a == "--cnp" || a.rfind("--cnp=", 0) == 0) {
                 std::string err = rakupp::jit::parseCnpSpec(a.size() > 5 ? a.substr(6) : "", g_jitOpt);
@@ -3131,6 +3175,9 @@ int main(int argc, char** argv) {
         // session); the source tools and the compilers have nothing to shape
         bool runsCode = mode == Mode::Run || mode == Mode::Mcp || mode == Mode::Jupyter;
         if (seedSet && !runsCode) return illegalOpt("--seed");
+        // --sandbox confines code that RUNS: a program, -e, the REPL, an MCP
+        // session. The Jupyter kernel is not confined yet (SANDBOX-PLAN S1).
+        if (sandboxFlag && (!runsCode || mode == Mode::Jupyter)) return illegalOpt("--sandbox");
         if (stackBytes && !runsCode) return illegalOpt("--stack-size");
         if (jsonOut && mode != Mode::Check && mode != Mode::Lint) return illegalOpt("--json");
         if (stageStats && mode != Mode::Run) return illegalOpt("--stagestats");
@@ -3191,6 +3238,37 @@ int main(int argc, char** argv) {
     if (optI && recMode == 0) {
         std::cerr << "-0 (NUL records) does not combine with -i; use line mode or -0777\n";
         return 4;
+    }
+    if (optI && sandboxFlag) {
+        std::cerr << "-i writes the argument files, which --sandbox does not allow\n";
+        return 4;
+    }
+    if (sawJitFlag && sandboxFlag) {
+        std::cerr << "--jit writes a cache and runs the C++ compiler, which --sandbox does not allow\n";
+        return 4;
+    }
+    if (sandboxFlag && !profileDest.empty() && profileDest != "-") {
+        std::cerr << "--profile=FILE writes a file, which --sandbox does not allow; --profile prints to stderr\n";
+        return 4;
+    }
+    if (sandboxFlag) {
+        rakupp::sandboxEnable();
+        // The OS layer goes on HERE, on the main thread, before any thread
+        // exists and before a byte of the program is parsed — and if it cannot,
+        // nothing runs (SANDBOX-PLAN.md: --sandbox fails closed).
+        if (!sandboxLanguageOnly) {
+            std::string why = rakupp::sandboxOsEnter(sandboxReadable(fileName, haveSrc, libPaths, exePath));
+            if (!why.empty()) {
+                std::cerr << "rakupp: --sandbox: " << why << ".\n"
+                          << "  --sandbox=language runs with the interpreter's own checks only.\n";
+                return 4;
+            }
+            // t/sandbox/run.raku's look at the OS layer alone: the checks off,
+            // so what is refused now, the kernel refused. Honoured only here,
+            // with the OS layer already in force.
+            if (const char* st = std::getenv("RAKUPP_SANDBOX_SELFTEST"); st && std::string(st) == "os-only")
+                rakupp::sandboxChecksOffForSelftest();
+        }
     }
     if (haveF) { // -F/RE/ is a Raku regex; anything else is a literal separator
         if (fieldSep.size() >= 2 && fieldSep.front() == '/' && fieldSep.back() == '/') {
@@ -3534,6 +3612,14 @@ int main(int argc, char** argv) {
                   << "Cnp     " << (rakupp::cnp::available()
                         ? std::string("copy-and-patch stencils for ") + rakupp::cnp::arch()
                         : std::string("none — ") + rakupp::cnp::unavailableReason()) << "\n"
+                  // What --sandbox confines with on THIS machine: where the OS
+                  // layer is missing, plain --sandbox refuses to run.
+                  << "Sandbox " << [] {
+                        std::string os = rakupp::sandboxOsDescribe();
+                        return os.rfind("none", 0) == 0
+                            ? "built-in checks only (--sandbox=language)" + os.substr(4)
+                            : "built-in checks + " + os;
+                     }() << "\n"
                   << "Exe     " << exePath << "\n"
                   << "Home    https://raku.online\n";
         return 0;

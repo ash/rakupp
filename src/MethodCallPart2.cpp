@@ -1,4 +1,5 @@
 #include "CNumeric.h"
+#include "Sandbox.h"
 #include "AsciiCtype.h"
 #include "Coro.h" // RAKUPP_HAVE_CORO: which form a Seq over a user iterator takes
 #include "BuiltinsShared.h" // timerRemainingSecs — Promise.in/.at state is time-derived
@@ -1382,7 +1383,9 @@ static const MacDistro& macDistro() {
     static MacDistro d;
     if (d.loaded) return d;
     d.loaded = true;
-    if (FILE* p = popen("sw_vers 2>/dev/null", "r")) {
+    // --sandbox starts no process, this one included: $*DISTRO answers what
+    // it answers when sw_vers is missing
+    if (FILE* p = g_sandboxed ? nullptr : popen("sw_vers 2>/dev/null", "r")) {
         char line[512];
         auto trim = [](std::string& t) {
             size_t a = t.find_first_not_of(" \t\r\n"), b = t.find_last_not_of(" \t\r\n");
@@ -3583,7 +3586,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // are answers we can stand behind rather than a copy of Rakudo's.
         if (m == "config" && inv.hashKind == "VM") {
             auto envOr = [](const char* var, const char* dflt) -> std::string {
-                const char* e = std::getenv(var);
+                const char* e = g_sandboxed ? nullptr : std::getenv(var);   // --sandbox hides the environment
                 return e && *e ? std::string(e) : std::string(dflt);
             };
 #if defined(_WIN32)
@@ -5363,6 +5366,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             else if (!haveFirst) { first = a; haveFirst = true; }
         }
         if (inv.s == "Distribution::Path") {
+            if (g_sandboxChecks) sandboxRefuse(*this, "Distribution::Path.new", SandboxCap::Read);
             prefix = first.toStr();
             bool givenMeta = false;
             for (auto& a : args) if (a.t == VT::Pair && a.namedArg && a.s == "meta-file") givenMeta = true;
@@ -6398,6 +6402,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return r;
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
+                    if (g_sandboxChecks) sandboxRefuse(*this, "Grammar.parsefile", SandboxCap::Read);
                     std::string input = args.empty() ? "" : args[0].toStr();
                     std::ifstream in(input);
                     if (!in)

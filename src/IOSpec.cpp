@@ -5,6 +5,7 @@
 // resolves to a VT::Type value, and methodCall routes IO::Spec::* invocants
 // here. Semantics mirror Rakudo's IO::Spec and are pinned by S32-io/io-spec-*.t.
 #include "AsciiCtype.h"
+#include "Sandbox.h"
 #include "Interpreter.h"
 #include "Platform.h"
 #include <cstdlib>
@@ -27,14 +28,15 @@ namespace rakupp {
 // Defined ABOVE the anonymous namespace below on purpose: inside it the symbol
 // has internal linkage and the other three call sites will not link.
 std::string tmpDirPath() {
-    const char* t = getenv("TMPDIR");
+    // --sandbox hides the environment: the default, as when TMPDIR is unset
+    const char* t = g_sandboxed ? nullptr : getenv("TMPDIR");
 #if defined(_WIN32)
     // TEMP and TMP are consulted on WINDOWS ONLY. Rakudo's Unix spec reads
     // TMPDIR and nothing else — measured — so honouring TEMP there as well
     // would be a divergence invented on the way past, in the one place a
     // program is most likely to notice.
-    if (!t || !*t) t = getenv("TEMP");
-    if (!t || !*t) t = getenv("TMP");
+    if (!g_sandboxed && (!t || !*t)) t = getenv("TEMP");
+    if (!g_sandboxed && (!t || !*t)) t = getenv("TMP");
     std::string d = (t && *t) ? t : "C:\\Windows\\Temp";
     while (d.size() > 1 && (d.back() == '/' || d.back() == '\\')) d.pop_back();
 #else

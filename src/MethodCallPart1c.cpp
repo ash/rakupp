@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "Sandbox.h"
 
 namespace rakupp {
 static long long g_spawnedSeq = 0;
@@ -1371,6 +1372,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         }
     }
     if (inv.t == VT::Type && inv.s == "Proc::Async") {
+        if (g_sandboxChecks) sandboxRefuse(*this, "Proc::Async." + (const std::string&)m, SandboxCap::Run);
         if (m == "new") {
             Value p = Value::makeHash(); p.hashKind = "Proc::Async";
             Value argv = Value::array();

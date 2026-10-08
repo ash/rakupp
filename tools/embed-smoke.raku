@@ -98,6 +98,31 @@ if $rt.e {
     }
 }
 
+# ---- 1c. a sandboxed C host (RkConfig.sandbox, SANDBOX-PLAN S1) -------------
+
+if $rt.e {
+    $checked++;
+    my $cc   = %*ENV<CC> // 'cc';
+    my $cxx  = %*ENV<CXX> // 'c++';
+    my $obj  = $BUILD.add('embed-sandbox.o');
+    my $host = $BUILD.add('embed-sandbox');
+    my $cp = run $cc, '-std=c99', '-c', "-I{$ROOT.add('include')}",
+                 $ROOT.add('tools/embed/embed-sandbox.c').Str, '-o', $obj.Str, :err;
+    check $cp.exitcode == 0, "embed-sandbox.c compiles as plain C against rakupp.h",
+          $cp.err.slurp(:close);
+    if $cp.exitcode == 0 {
+        my $lp = run $cxx, $obj.Str, |@rtlink, '-lpthread', '-o', $host.Str, :err;
+        check $lp.exitcode == 0, "…and links against the runtime", $lp.err.slurp(:close);
+        if $lp.exitcode == 0 {
+            my $p = run $host.Str, :out, :err;
+            my $out = $p.out.slurp(:close);
+            check $p.exitcode == 0 && $out.contains('embed sandbox: ok'),
+                  "a sandboxed host's Raku is refused files, processes and the environment",
+                  $out ~ $p.err.slurp(:close);
+        }
+    }
+}
+
 # ---- 2. an extension that calls back into Raku ------------------------------
 
 # The extension says `#include <rakupp/rakupp_ext.h>`, so the include path has

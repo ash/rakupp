@@ -21,10 +21,12 @@
 #include "Interpreter.h"
 #include "Parser.h"     // ParseError
 #include "Runtime.h"
+#include "Sandbox.h"
 #include "Value.h"
 #include "rakupp.h"
 
 #include <atomic>
+#include <cstddef>
 #include <csignal>
 #include <thread>
 #include <fstream>
@@ -252,6 +254,14 @@ extern "C" {
 RkInterp rk_new(const RkConfig* cfg) {
     bool expected = false;
     if (!g_live.compare_exchange_strong(expected, true)) return nullptr;
+    // The sandbox goes on BEFORE the interpreter is built, so nothing the
+    // constructor sets up (%*ENV among it) ever sees the host's environment.
+    // A host built against a header older than the field never asks (the same
+    // size rule as the copy below: 0 means "the whole struct").
+    if (cfg) {
+        size_t n = cfg->size && cfg->size < sizeof(RkConfig) ? cfg->size : sizeof(RkConfig);
+        if (n >= offsetof(RkConfig, sandbox) + sizeof(cfg->sandbox) && cfg->sandbox) sandboxEnable();
+    }
     Interp* p = nullptr;
     try {
         p = new Interp();

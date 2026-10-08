@@ -17,7 +17,9 @@ Where each theme went:
 | 3. speed | **V6-PLAN** in full — issue #47, the representation endgame, inline caches, native math phases 2–3, exceptions (a P0 measurement), the regex residue, reference cycles |
 | 4. the compiler stops falling back | **V6-PLAN P5/P6** — the `--exe` fallback table (re-measured: 773 of 1,189 on `spectest.data`), `--cnp`, `--target=js`; its disagreements → **V5-PLAN B5** |
 | 5. language surface | the parallel Roast campaign that v5 is tagged on; what Roast does not test stays below |
-| 6–10 | unchanged, below |
+| 6. a capability sandbox | picked up 2026-10-08 → **[SANDBOX-PLAN.md](SANDBOX-PLAN.md)**; the entry below stays until it lands |
+| 7–10 | unchanged, below |
+| 11. Raku inside the database | added 2026-10-08, below |
 
 ---
 
@@ -61,6 +63,9 @@ reports; two interpreters in one process, gated.
 **The number:** each item closed with a probe that matches Rakudo.
 
 ## 6. A capability sandbox
+
+*Picked up 2026-10-08: [SANDBOX-PLAN.md](SANDBOX-PLAN.md) answers both design
+questions below.*
 
 [CLI-BORROW-PLAN.md](CLI-BORROW-PLAN.md) calls this "the most differentiating
 item in this file": `--allow-net`, `--allow-read=PATH`, `--allow-run`, deny by
@@ -153,6 +158,35 @@ went to V5-PLAN B3. Left here:
 
 Outside the engine and not release material, but open: the print edition, the
 JavaScript tutorial, the deck on GitHub Pages, short-video outreach.
+
+## 11. Raku inside the database
+
+PostgreSQL serves each connection from its own single-threaded backend
+process. That is the shape `rakupp.h` already has: one interpreter per process
+([EMBEDDING.md](../../guide/EMBEDDING.md), "One interpreter per process"). An
+interpreter costs about 7 MB of resident memory and a few milliseconds to start
+(`rakupp -e 'say 1'`, measured 2026-10-08 on an Apple M3), so every backend can
+carry one. What a query gains: grammars over text columns
+(`SELECT (parse_invoice(body)).* FROM inbox`), grapheme-level strings, and
+exact `Rat` arithmetic.
+
+- **SQLite first.** A loadable extension is one C file:
+  `sqlite3_create_function_v2` registers `raku(code, args…)` and user-defined
+  functions, each one an `rk_call`. SQLite has no exact decimal type, so `Rat`
+  sums are the clearest gain there. It is the reverse direction of
+  [showcase/sqlite](../../../showcase/sqlite), where Raku calls SQLite.
+- **PostgreSQL: `plraku`.** A procedural-language handler —
+  `CREATE FUNCTION … LANGUAGE plraku`, inline `DO` blocks, a validator —
+  mapping `numeric`↔`Rat`, `text`↔`Str`, `jsonb`↔`Hash`, arrays↔`List` and
+  `NULL`↔ a type object. Without a sandbox it can only be an untrusted
+  language (`plrakuu`, superuser only, as `plperlu` is); the embedding switch
+  in [SANDBOX-PLAN.md](SANDBOX-PLAN.md) is what a trusted `plraku` stands on.
+- **DuckDB** runs many threads inside one process, so it waits for concurrent
+  interpreters ([EMBED-PLAN.md](EMBED-PLAN.md), E5).
+
+**The number:** `SELECT raku('1/10 + 2/10 == 3/10')` answers `1` in `sqlite3`
+from a loadable extension, gated; then a `plraku` function passing its own
+`pg_regress` suite.
 
 ---
 

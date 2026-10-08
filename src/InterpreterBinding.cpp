@@ -2,6 +2,7 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "Sandbox.h"
 
 namespace rakupp {
 
@@ -2160,6 +2161,9 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
 }
 
 void Interpreter::syncEnvToProcess() {
+    // --sandbox: %*ENV is the program's own; the process keeps the host's
+    // environment, which is also where the engine reads its own switches
+    if (sandboxed()) return;
     auto it = global_->vars.find("%*ENV");
     if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash()) return;
     for (auto& kv : *it->second.hash()) {
@@ -2517,6 +2521,9 @@ Value Interpreter::dynVar(const std::string& name) {
                 if (!all.empty() && all.back() != '\n') all += '\n';
                 // `-` is standard input, in its place among the files
                 if (fn.toStr() == "-") { std::ostringstream ss; ss << std::cin.rdbuf(); all += ss.str(); raw += ss.str(); noteStdinAtEnd(); continue; }
+                // --sandbox: standard input, yes (`-` above, or no @*ARGS); a
+                // file the program names in @*ARGS, no
+                if (g_sandboxChecks) sandboxRefuse(*this, "$*ARGFILES", SandboxCap::Read);
                 std::ifstream in(fn.toStr(), std::ios::binary);
                 // An unopenable file is FATAL, as in Rakudo — skipping it
                 // silently turned a mistyped path into an empty result, which
@@ -5595,6 +5602,9 @@ static ffi::Type* ncFfiRetType(const std::string& rt) {
 // and CStruct/CPointer/CArray/Pointer returns are boxed as live handles.
 // Still unsupported on both paths: C structs passed or returned BY VALUE.
 Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs, size_t rwArgOff) {
+    // --sandbox: native code can do anything the process can (src/Sandbox.h)
+    if (g_sandboxChecks) sandboxRefuse(*this, (c.name.empty() ? std::string("a routine") : c.name) + " (is native)",
+                                   SandboxCap::Ffi);
     // Resolve the symbol ONCE per Callable and cache the function pointer. This
     // used to run on every call, and the dlopen candidate loop is the expensive
     // part: each candidate that does NOT match (e.g. "sqlite3" before

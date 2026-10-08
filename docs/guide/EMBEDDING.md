@@ -141,6 +141,10 @@ All default off. `SIGPIPE` in particular is a **process-wide** disposition: it i
 your signal handling, not ours, so you have to ask. Set `size` and the struct can
 gain fields without breaking you.
 
+One more field confines the Raku instead of sparing the host:
+`cfg.sandbox = 1` runs it as `rakupp --sandbox` does, with no files, processes,
+sockets, native code or environment ([SANDBOX.md](SANDBOX.md)).
+
 ## Threads
 
 One interpreter, one thread, unless you serialise access yourself.
@@ -157,8 +161,13 @@ created, and by more than one at once. Make those re-entrant.
   would quietly break the first. Sequential create/free is fine. Concurrent
   instances are a separate piece of work
   ([EMBED-PLAN](../dev/plans/EMBED-PLAN.md)'s E5).
-- **No sandbox.** An embedded Raku++ has the host's privileges. Pretending
-  otherwise would be worse than saying so.
+- **The host's privileges, unless you ask.** An embedded Raku++ can do
+  whatever your process can. Set `RkConfig.sandbox` and the Raku code it runs
+  is refused files, processes, sockets and native code, with an empty
+  `%*ENV` ([SANDBOX.md](SANDBOX.md)). That confines the Raku code, not your
+  process: it is the interpreter's checks alone, without the OS layer
+  `rakupp --sandbox` adds, because your process still needs its own files and
+  sockets. The switch is process-wide and one-way.
 
 ## Bindings
 

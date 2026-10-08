@@ -1,4 +1,5 @@
 #include "CNumeric.h"
+#include "Sandbox.h"
 #include "AsciiCtype.h"
 #include "Parser.h"
 #include <iostream>
@@ -16254,7 +16255,9 @@ StmtPtr Parser::parseStatementImpl() {
             // The path this statement adds has to be on the search path for the
             // REST of this parse: a `use` below it names a module that lives there,
             // and its operators are harvested now (see staticUsePath).
-            if (u->module == "lib" && !u->isNo) {
+            // (Not under --sandbox: the statement is refused when it runs, and
+            // the harvest must not read that directory in the meantime.)
+            if (u->module == "lib" && !u->isNo && !sandboxed()) {
                 std::vector<std::string> paths;
                 if (!u->arg.empty()) paths.push_back(u->arg);
                 else if (u->argExpr) staticUsePaths(u->argExpr.get(), srcFile_, paths);

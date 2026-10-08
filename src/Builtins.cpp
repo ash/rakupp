@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "Sandbox.h"
 
 namespace rakupp {
 
@@ -140,6 +141,10 @@ static const char* rakuppOnlyExceptionParent(const std::string& n) {
         // …and rakupp's recursion cap, which Rakudo does not have — it grows
         // the stack until the OS stops it, with no exception to copy.
         {"X::Recursion",                "X::AdHoc"},
+        // --sandbox refusing an operation (src/Sandbox.h). Under Rakudo's own
+        // X::SecurityPolicy, beside X::SecurityPolicy::Eval, so a `when
+        // X::SecurityPolicy` written for either engine catches it.
+        {"X::SecurityPolicy::Sandbox",  "X::SecurityPolicy"},
     };
     auto it = only.find(n);
     return it == only.end() ? nullptr : it->second;
@@ -362,6 +367,7 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
                                     bool ownPgroup) {
     SpawnedChild sc;
     if (argv.empty()) return sc;
+    if (g_sandboxChecks) sandboxRefuseBare("run", SandboxCap::Run);   // behind run/shell/Proc::Async's own checks
     // Anything we have written but not yet handed to the OS must go out BEFORE
     // the child starts. A child that inherits our stdout writes to the same fd
     // directly, so whatever is still sitting in std::cout's buffer would land
@@ -810,6 +816,7 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     out.clear(); exitCode = -1;
     if (errOut) errOut->clear();
     if (argv.empty()) return;
+    if (g_sandboxChecks) sandboxRefuseBare("run", SandboxCap::Run);   // behind run/shell's own checks
     const bool capOut = outMode == 1, capErr = errOut != nullptr;
 #if defined(_WIN32)
     SECURITY_ATTRIBUTES sa; sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = nullptr; sa.bInheritHandle = TRUE;
@@ -7042,6 +7049,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     return e;
                 }
                 if (m == "uninstall") {
+                    if (g_sandboxChecks) sandboxRefuse(*this, "CompUnit::Repository.uninstall", SandboxCap::Write);
                     Value dist = args.empty() ? Value::any() : args[0];
                     std::string distId;
                     if (dist.t == VT::Hash && dist.hash() && dist.hash()->count("dist-id")) distId = dist.hash()->at("dist-id").toStr();
@@ -7326,6 +7334,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return cu;
             }
             if (m == "install") {
+                if (g_sandboxChecks) sandboxRefuse(*this, "CompUnit::Repository.install", SandboxCap::Write);
                 // $cur.install($dist, :$force) — write the CURI layout under `prefix`
                 // (sources/<sha>, short/<sha1(name)>/<dist-id>, dist/<dist-id> JSON,
                 // resources/, bin/). rakupp reads exactly this to resolve `use`.
@@ -9511,6 +9520,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // Pair.new($key, $value) or Pair.new(:key(...), :value(...)) — same shape as `=>`.
     // IO::Socket::INET.new — a TCP client (:host/:port) or a listener (:listen).
     if (inv.t == VT::Type && inv.s == "IO::Socket::INET" && m == "new") {
+        if (g_sandboxChecks) sandboxRefuse(*this, "IO::Socket::INET.new", SandboxCap::Net);
         std::string host = "localhost", localhost; long port = 0, localport = 0; bool listen = false;
         long family = -2; // -2 = unspecified
         for (auto& a : args) {

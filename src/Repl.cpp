@@ -15,6 +15,7 @@
 #include "Platform.h"   // platHomeDir(): the history file has no home on Windows without it
 #include "Repl.h"
 #include "Interpreter.h"
+#include "Sandbox.h"
 #include "Runtime.h"
 #include "Highlight.h"
 #include "Parser.h"
@@ -455,6 +456,7 @@ private:
     }
 
     void loadHistory() {
+        if (sandboxed()) return;                  // --sandbox: no history file, read or written
         const char* env = std::getenv("RAKUPP_HISTORY");
         if (env && !*env) return;                 // RAKUPP_HISTORY= (empty) disables it
         if (env) histPath_ = env;

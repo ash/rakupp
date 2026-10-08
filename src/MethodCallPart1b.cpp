@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "Sandbox.h"
 
 namespace rakupp {
 
@@ -13,6 +14,10 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     // NativeCall Pointer[T]: `Pointer.new($addr)` / `Pointer[int32].new(...)`.
     if (inv.t == VT::Type && (inv.s == "Pointer" || inv.s.rfind("Pointer[", 0) == 0) &&
         (m == "new" || m == "allocate")) {
+        // --sandbox: an address made from a number is a way to read any byte
+        // of the process; the NULL `Pointer.new` is harmless
+        if (g_sandboxChecks && (!args.empty() || m == "allocate"))
+            sandboxRefuse(*this, "Pointer." + (const std::string&)m, SandboxCap::Ffi);
         std::string et = inv.s.rfind("Pointer[", 0) == 0 ? inv.s.substr(8, inv.s.size() - 9) : inv.ofType();
         void* p = args.empty() ? nullptr : (void*)(intptr_t)ncRawAddr(args[0]);
         return ncMakePointer(et.empty() ? "Pointer" : "Pointer[" + et + "]", p);
@@ -43,6 +48,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         // type check — the last thing between that dist (and thirteen behind it)
         // and its test suite. A scalar element type keeps reading a scalar.
         if (m == "deref") {
+            if (g_sandboxChecks) sandboxRefuse(*this, "Pointer.deref", SandboxCap::Ffi);
             if (!of.empty() && ascii::isupper((unsigned char)of[0])) {
                 auto cit = classes_.find(of);
                 if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(of));
@@ -358,6 +364,8 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     // actually need is a data pointer into a Blob/CArray and bytes back from
     // a pointer, and those are engine primitives here.
     if (inv.t == VT::Type && inv.s == "Rakupp::Internals::Blob") {
+        // --sandbox: raw addresses in and out, so native code's business
+        if (g_sandboxChecks) sandboxRefuse(*this, "Rakupp::Internals::Blob." + (const std::string&)m, SandboxCap::Ffi);
         // Pointers handed to C must outlive the Value COPY they were taken
         // from: a promoted CowStr's body is retained in a ring (sharing the
         // caller's buffer, so C sees the same bytes), an inline small is
@@ -591,6 +599,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     // Supply that binds/accepts when tapped (see tapSupply); connect() returns a
     // kept Promise of a connected socket.
     if (inv.t == VT::Type && inv.s == "IO::Socket::Async") {
+        if (g_sandboxChecks) sandboxRefuse(*this, "IO::Socket::Async." + (const std::string&)m, SandboxCap::Net);
         // UDP: bind-udp binds now, so a taken port dies here; a `udp` client
         // gets its descriptor with the first datagram it sends (or its first tap)
         if (m == "bind-udp" || m == "udp") {
@@ -849,6 +858,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         (m == "load-source" || m == "load-source-file")) {
         std::string text = args.empty() ? std::string() : args[0].toStr(); // a Blob's bytes ARE its UTF-8
         if (m == "load-source-file") {
+            if (g_sandboxChecks) sandboxRefuse(*this, "CompUnit::Loader.load-source-file", SandboxCap::Read);
             std::ifstream in(text);
             if (!in) throwFailedOpen(text);
             std::ostringstream ss; ss << in.rdbuf();

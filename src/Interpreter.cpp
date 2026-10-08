@@ -2,6 +2,7 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "Sandbox.h"
 
 namespace rakupp {
 
@@ -4109,9 +4110,11 @@ Interpreter::Interpreter() {
     // Perl). Test::When's harness sets every flag it is not testing to 0 and the
     // module asks `unless %*ENV<ALL_TESTING>` — read as Str, that turned the skip
     // off and ran every test it was supposed to skip.
+    // Under --sandbox it starts EMPTY: the program sees none of the host's
+    // variables, and what it sets stays in this hash (syncEnvToProcess).
     {
         Value envh = Value::makeHash();
-        for (char** ep = rakupp_environ(); ep && *ep; ++ep) {
+        for (char** ep = sandboxed() ? nullptr : rakupp_environ(); ep && *ep; ++ep) {
             std::string kv = *ep; auto eq = kv.find('=');
             if (eq == std::string::npos) continue;
             (*envh.hash())[kv.substr(0, eq)] = valAllomorph(Value::str(kv.substr(eq + 1)));
@@ -4301,6 +4304,8 @@ Interpreter::Interpreter() {
         }
     }
     registerBuiltins();
+    if (g_sandboxChecks)                      // before anything looks one up
+        for (auto& kv : builtins_) sandboxWrapBuiltin(kv.first, kv.second);
     // `&*EXIT` is the process-level `exit` until something rebinds it: a
     // program (zef's CLI) can call `&*EXIT(1)` without declaring it, and a
     // caller's `my &*EXIT = …` intercepts the exits made below it
@@ -6888,6 +6893,10 @@ Value Interpreter::makeCuri(const std::string& name, const std::string& prefix, 
 // repository chain — `$*REPO` is it from here on, and what was the head is
 // its next-repo — besides adding the store to the module search.
 void Interpreter::useLibPath(const std::string& path) {
+    // --sandbox: modules come from the search path the HOST gave (-I,
+    // RAKULIB, the store); a program pointing the loader at a directory of
+    // its choosing is reading files there
+    if (g_sandboxChecks) sandboxRefuse(*this, "use lib", SandboxCap::Read);
     libPaths_.insert(libPaths_.begin(), path);
     std::string pre;
     if (path.rfind("inst#", 0) != 0 || !global_) return;
@@ -7459,6 +7468,7 @@ static const char* precompHalfSource(const char* envName, const char* key) {
 }
 
 static bool precompHalf(const char* envName, const char* key, bool dflt) {
+    if (sandboxed()) return false;                          // a sandboxed run leaves no files
     if (precompDir().empty()) return false;                 // nowhere to put it
     if (std::getenv("RAKUPP_NO_PRECOMP")) return false;
     if (const char* e = std::getenv(envName)) return truthySetting(e);

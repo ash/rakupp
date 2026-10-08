@@ -237,7 +237,7 @@ std::vector<std::string> effectiveSearchPath(const std::vector<std::string>& das
 
 static std::vector<std::string> precompSearchPath(const std::vector<std::string>& dashI) {
     std::vector<std::string> sp = dashI;
-    sp.push_back("lib"); sp.push_back("."); sp.push_back("rakulib");
+    if (!g_sandboxed) { sp.push_back("lib"); sp.push_back("."); sp.push_back("rakulib"); }   // (defaultCwdLibPaths)
     if (const char* rl = std::getenv("RAKULIB"))
         for (auto& d : splitSearchPath(rl)) sp.push_back(d);
     return sp;

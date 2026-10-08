@@ -153,9 +153,20 @@ The `raku` tool executes arbitrary Raku **with your privileges** — file system
 network, `run`. Registering this server grants an agent exactly the trust
 that giving it a shell does; on a machine where the agent already runs
 commands (Claude Code's default), that is no new exposure, but it is worth
-saying out loud. There is no sandbox in this server. A sandboxed, remotely
-hosted variant is a separate piece of work (the Raku.js WebAssembly build is
-the natural cage for it), deliberately out of scope here.
+saying out loud.
+
+`rakupp --mcp --sandbox` is the server for an agent that should only compute.
+Every call runs in the [sandbox](../SANDBOX.md): no files, no processes, no
+network, no native code, an empty `%*ENV`. The agent keeps the persistent
+session, exact arithmetic and `raku-parse`; a call that reaches outside comes
+back as a tool error naming what it needed, and the session carries on. On
+macOS and Linux the kernel confines the server process as well; where it
+cannot, `--mcp --sandbox` refuses to start and names the reason
+([SANDBOX.md](../SANDBOX.md), "Two layers").
+
+```json
+{ "mcpServers": { "raku": { "command": "rakupp", "args": ["--mcp", "--sandbox"] } } }
+```
 
 ## Testing
 

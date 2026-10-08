@@ -815,7 +815,12 @@ struct Param {
 // them off — for running another project's test suite from its checkout root,
 // whose own `lib/` (Rakudo's copies of NativeCall, experimental, …) is not
 // meant for this engine.
+extern bool g_sandboxed;   // Sandbox.h, which cannot be included from here
 inline std::vector<std::string> defaultCwdLibPaths() {
+    // …and under --sandbox: a sandboxed program loads modules only from where
+    // the host said they live (-I, RAKULIB, the store), not from wherever it
+    // happens to be started
+    if (g_sandboxed) return {};
     const char* e = std::getenv("RAKUPP_NO_CWD_LIB");
     if (e && *e && std::string(e) != "0") return {};
     return {"lib", "rakulib"};

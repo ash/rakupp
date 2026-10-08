@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "Sandbox.h"
 
 namespace rakupp {
 
@@ -212,6 +213,14 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.empty()) return Value::nil();
             Value pathv = eval(a[0].get());
             std::string mode = a.size() > 1 ? eval(a[1].get()).toStr() : "r";
+            // --sandbox: the one file it may read is the entropy device, which
+            // tells the program nothing about the host
+            if (g_sandboxChecks) {
+                const bool writes = mode.find('w') != std::string::npos || mode.find('a') != std::string::npos;
+                const std::string p = pathv.toStr();
+                if (writes || (p != "/dev/urandom" && p != "/dev/random"))
+                    sandboxRefuse(*this, "nqp::open", writes ? SandboxCap::Write : SandboxCap::Read);
+            }
 #ifdef _WIN32
             int flags = mode.find('w') != std::string::npos ? (_O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY)
                       : mode.find('a') != std::string::npos ? (_O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY)
@@ -269,6 +278,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         // Path::Finder matches on inode/device/uid/gid/nlinks/blocks/blocksize/
         // devtype and keys its symlink-loop guard on inode+device.
         case O::Stat: case O::Lstat: case O::StatTime: case O::LstatTime: {
+            if (g_sandboxChecks) sandboxRefuse(*this, "nqp::stat", SandboxCap::Read);
             if (a.size() < 2) return Value::integer(-1);
             const std::string path = eval(a[0].get()).toStr();
             const long long field = eval(a[1].get()).toInt();
@@ -1153,6 +1163,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // one at a time; nqp's null (Nil here) says the directory is done.
         // Failure to open THROWS: the caller wraps the op in nqp::handle.
         case O::OpenDir: {
+            if (g_sandboxChecks) sandboxRefuseBare("nqp::opendir", SandboxCap::Read);
             const std::string path = S(0).str();
             DIR* d = ::opendir(path.c_str());
             if (!d) throw RakuError{Value::typeObj("X::AdHoc"),
@@ -1183,10 +1194,12 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::CloseDir: return Value::nil();
         // the file tests path-utils asks of the OS directly
         case O::FileReadable: case O::FileWritable: case O::FileExecutable: {
+            if (g_sandboxChecks) sandboxRefuseBare("nqp::filereadable", SandboxCap::Read);
             int mode = op == O::FileReadable ? R_OK : op == O::FileWritable ? W_OK : X_OK;
             return Value::integer(::access(S(0).str().c_str(), mode) == 0 ? 1 : 0);
         }
         case O::FileIsLink: {
+            if (g_sandboxChecks) sandboxRefuseBare("nqp::fileislink", SandboxCap::Read);
 #ifdef _WIN32
             // no lstat on Windows — the same answer the Stat case gives there,
             // where S_ISLNK is a no-op macro and a symlink cannot be told apart
@@ -1417,6 +1430,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
         }
         case O::ReadLink: {
+            if (g_sandboxChecks) sandboxRefuseBare("nqp::readlink", SandboxCap::Read);
             const std::string path = v.empty() ? std::string() : v[0].toStr();
             char buf[4096];
             // platform_readlink, not ::readlink: Windows has no POSIX readlink

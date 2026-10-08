@@ -61,6 +61,13 @@ compatibility.
   anything runs; see [The environment](#the-environment) below.
 - `--seed[=N]`, `--stack-size=N` — pin the random generator, size the
   recursion ceiling; see [Pinning a run](#pinning-a-run---seed-and---stack-size).
+- `--sandbox[=language]` — run code you did not write: the program computes,
+  prints and reads standard input, and is refused files, processes, sockets
+  and native code, with `%*ENV` empty. The interpreter's checks and, under
+  them, the OS layer (Seatbelt on macOS, Landlock and seccomp on Linux); where
+  there is no OS layer, plain `--sandbox` refuses to run and `=language` runs
+  with the checks alone. `rakupp -V` names the layer. With a program, `-e`,
+  the REPL and `--mcp`; see [SANDBOX.md](SANDBOX.md).
 - `--color=auto|always|never` — ANSI colour on stderr and in the REPL; see
   [When something dies](#when-something-dies).
 - `--hints` — performance hints on stderr (`RAKUPP_HINTS=1`); see
@@ -673,8 +680,9 @@ described [above](#--lsp-the-language-server)), `--mcp` and `--jupyter`.
 `--mcp` turns the process into a [Model Context Protocol](integrations/MCP.md) server on
 stdio, so AI agent clients get `raku` (a persistent session) and
 `raku-parse` (grammars) as tools. `--timeout=SECS` bounds a stuck call
-(default 120, `0` = never), `-M` preloads modules into the session, and
-`RAKULIB` — not `-I` — adds module directories. The whole story is
+(default 120, `0` = never), `-M` preloads modules into the session,
+`RAKULIB` — not `-I` — adds module directories, and `--sandbox` confines
+every call ([SANDBOX.md](SANDBOX.md)). The whole story is
 [MCP.md](integrations/MCP.md).
 
 `--jupyter FILE` runs the process as a [Jupyter kernel](integrations/JUPYTER.md) against

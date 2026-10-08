@@ -3,6 +3,7 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include <unordered_set>
 #include "InterpreterParts.h"
+#include "Sandbox.h"
 #include "AotModules.h"
 #include "CallCheck.h"
 
