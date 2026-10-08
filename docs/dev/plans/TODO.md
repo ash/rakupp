@@ -35,7 +35,7 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   positionals, no phasers), then a block variant for closures; `Less` as a
   term walks every scope looking for a shadowing lexical.
 - [ ] **Parallel scaling**: [PARALLEL-SCALING-PLAN.md](PARALLEL-SCALING-PLAN.md).
-  P0–P3, P5 and P6 landed 2026-10-08. A variable no other thread can reach
+  P0–P3, P5 and P6 landed in 458886c2. A variable no other thread can reach
   skips the stripe, and a loop kernel may run while workers are live.
   `cpu-fanout` N=4 went from 3.26× to 3.65× (C: 3.81×), N=8 from 3.16× to
   5.32×, and example 3 from 0.41× to 3.84×. Next:

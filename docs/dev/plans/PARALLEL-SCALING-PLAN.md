@@ -35,7 +35,8 @@ workers run at solo time.
 
 ## Status, 2026-10-08
 
-P0, P1, P2, P3, P5 and P6 are implemented. P4 turned out not to be needed. P7 and P8 are open. Measured on
+P0, P1, P2, P3, P5 and P6 are implemented, in 458886c2. P4 turned out not to
+be needed. P7 and P8 are open. Measured on
 the same M3, interleaved best of 9 under `nice -n 10`, with
 `tools/bench/parallel/sweep.raku`. The baseline is a binary built at
 `e4ee17cd`. The load average was 3.4, so ratios matter more than the
@@ -194,7 +195,7 @@ non-goal.
 
 ### P0 — Measure first (no engine change)
 
-**Done** 2026-10-08. The benches are
+**Done** in 458886c2 (2026-10-08). The benches are
 `per-worker.raku`, `idle-worker.raku`, `faq.raku`, `kernel-fanout.raku`
 (example 3), `ceiling.c` and the driver `sweep.raku`, which interleaves
 configurations inside rounds and A/Bs a second binary (`--vs`) or an
@@ -222,7 +223,7 @@ Exit: the baseline table, written into this plan.
 
 ### P1 — The analysis, with no consumer yet
 
-**Done** 2026-10-08, in a different shape from the one
+**Done** in 458886c2 (2026-10-08), in a different shape from the one
 below. Collecting mentions at each point where the annotation walk skips a
 node depends on that list being complete. Instead, a second pass over the
 WHOLE owner body (`ShareSweep` in Interpreter.cpp) sees every child of every
@@ -299,7 +300,7 @@ since nothing reads the mask yet.
 
 ### P2 — The runtime escape mask
 
-**Done** 2026-10-08, except the raw-pointer audit.
+**Done** in 458886c2 (2026-10-08), except the raw-pointer audit.
 `Env::padEscaped` is set by `setupRwLinks` (three sites, through
 `escapeRefs`), `makeEnvSlotProxy`, `substrRwProxy`, `makePathProxy`, the
 hash-element Proxy of `:=`, `makePseudoStash`, an EVAL'd unit, and a module
@@ -352,7 +353,7 @@ Exit: the escape mask is set on every route 4–11. The audit list is complete.
 
 ### P3 — Private slots skip the stripe
 
-**Done** 2026-10-08, with one simplification. Only its
+**Done** in 458886c2 (2026-10-08), with one simplification. Only its
 own thread can touch a private slot, so ANY access to it may skip the stripe,
 whatever path produced the pointer. `SlotStripe(I, p)` therefore takes the
 pointer alone, as `ParStripe` does. In the live-workers branch,
@@ -432,7 +433,7 @@ Exit: the FAQ program's workers run at solo time. Its contract test is
 
 ### P5 — Kernels under threads
 
-**Done** 2026-10-08, except the reentrancy audit and the
+**Done** in 458886c2 (2026-10-08), except the reentrancy audit and the
 TSan pass. `tryLoopKernel` checks every `LOuter` with `cellPrivate` before
 reading it. While threads are live, a compile reads a variable another thread
 can reach under its stripe, and a loop with a container declines.
@@ -482,7 +483,7 @@ first-call race is gone in 50 runs of 50.
 
 ### P6 — The stripe pool, for what stays shared
 
-**Done** 2026-10-08: 256 stripes, `alignas(128)`,
+**Done** in 458886c2 (2026-10-08): 256 stripes, `alignas(128)`,
 Fibonacci hashing of the address, still recursive mutexes, and
 `RAKUPP_STRIPE_STATS=1`.
 
@@ -533,11 +534,11 @@ rest go to TODO.md.
    (InterpreterBinding.cpp:6314, 6330), `:=` (InterpreterCore.cpp:15124) and
    for-rw (3201–3217) call `promoteToCell` with workers live. `varCell` refuses
    in exactly that case, because promotion rewrites a multi-word Value in
-   place (InterpreterCalls.cpp:1465–1472).~~ **Done** 2026-10-08:
+   place (InterpreterCalls.cpp:1465–1472).~~ **Done** in 458886c2 (2026-10-08):
    `promotionSafe` (P2).
 2. ~~**rw-link write-through with no stripe.** A worker's write through an rw
    parameter stores into the caller's slot with no stripe
-   (InterpreterCalls.cpp:341–358).~~ **Done** 2026-10-08.
+   (InterpreterCalls.cpp:341–358).~~ **Done** in 458886c2 (2026-10-08).
    Reproduced first: `t/stress/private-rw-link.raku` crashed the baseline
    binary in every run (P2).
 3. **Element and structural stripes don't exclude each other.** An element
@@ -553,7 +554,7 @@ rest go to TODO.md.
    comment at Jit.cpp:1494–1496 is wrong.
 6. ~~**A `--cnp` loop can spawn after its gate.** `--cnp` admits calls (Jit.cpp
    440–478), so a callee can spawn a worker after the entry check has passed.~~
-   **Done** 2026-10-08: a kernel that calls out holds only
+   **Done** in 458886c2 (2026-10-08): a kernel that calls out holds only
    private variables (P5).
 7. **`--exe` lanes ignore top-level `my`s that `start` captures.**
    `analyzeCells` excludes them (Codegen.cpp:1173, 1185), and the C++ `--jit`
