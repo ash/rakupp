@@ -1076,50 +1076,69 @@ void Interpreter::registerBuiltinsPart4() {
     // Synchronous react/whenever/supply: eager, deterministic model.
     B["react"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty() || a.back().t != VT::Code) return Value::nil();
-        auto ctx = std::make_shared<ReactCtx>();
-        I.reactStack_.push_back(ctx);
-        try { I.callCallable(a.back(), {}); }
-        catch (DoneEx&) {} // `done` in the react body: normal completion (ctx already closed)
-        catch (...) { I.reactStack_.pop_back(); throw; }
-        I.reactStack_.pop_back();
-        // Deferred whenever activations (issue #18): the body has finished, so
-        // statements after a `whenever` have run — now drain the synchronous
-        // sources, in registration order. A die inside a drained body kills
-        // the react with that exception, exactly like the body itself dying.
-        try {
-            for (;;) {
-                std::vector<std::function<void()>> ds;
-                { std::lock_guard<std::mutex> lk(ctx->m); ds.swap(ctx->deferred); }
-                if (ds.empty()) break;
-                for (auto& d : ds) d();
+        // Where this react stands. An error that leaves it — its body or a
+        // whenever body dying, on this thread or a worker, or a source
+        // quitting — does X::React::Died and carries these frames, and its
+        // gist names the react (S17-supply/syntax-nonblocking-await.t): a body
+        // that died on a worker has no frame of the react in its own chain.
+        // A copy, as await makes one; an error an inner react already marked
+        // keeps that react's frames.
+        auto reactBt = btCaptureHere();
+        auto reactDied = [&I, &reactBt](RakuError& e) {
+            Value ex = I.exceptionFor(e);
+            if (ex.t != VT::Object || !ex.obj() || ex.obj()->attrs.count("__reactbt")) return;
+            Value mixed;
+            try { mixed = I.mixinValue(ex, Value::typeObj("X::React::Died"), /*copy=*/true); }
+            catch (...) { return; }
+            if (mixed.t != VT::Object || !mixed.obj()) return;
+            Value h = Value::any();
+            if (reactBt && !reactBt->frames.empty()) h.extM() = reactBt;
+            mixed.obj()->attrs["__reactbt"] = std::move(h);
+            e.payload = mixed;
+        };
+        auto run = [&I, &a]() -> Value {
+            auto ctx = std::make_shared<ReactCtx>();
+            I.reactStack_.push_back(ctx);
+            try { I.callCallable(a.back(), {}); }
+            catch (DoneEx&) {} // `done` in the react body: normal completion (ctx already closed)
+            catch (...) { I.reactStack_.pop_back(); throw; }
+            I.reactStack_.pop_back();
+            // Deferred whenever activations (issue #18): the body has finished, so
+            // statements after a `whenever` have run — now drain the synchronous
+            // sources, in registration order. A die inside a drained body kills
+            // the react with that exception, exactly like the body itself dying.
+            try {
+                for (;;) {
+                    std::vector<std::function<void()>> ds;
+                    { std::lock_guard<std::mutex> lk(ctx->m); ds.swap(ctx->deferred); }
+                    if (ds.empty()) break;
+                    for (auto& d : ds) d();
+                }
             }
-        }
-        catch (DoneEx&) {}
-        I.runReactLoop(ctx); // block until every live whenever source is done
-        {   // react is over: tear down externally-wired taps (OS-signal taps) so
-            // their dispatcher stops firing the handler once the block is gone.
-            std::vector<std::shared_ptr<TapHandle>> extTaps;
-            { std::lock_guard<std::mutex> lk(ctx->m); extTaps.swap(ctx->extTaps); }
-            for (auto& h : extTaps) if (h) I.closeTapHandle(h);
-        }
-        {   // react is over: its whenever taps close — run on-close callbacks
-            ValueList closers;
-            { std::lock_guard<std::mutex> lk(ctx->m); closers.swap(ctx->closers); }
-            for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
-        }
-        if (ctx->quitFlag) { // a whenever'd supply quit unhandled: the react dies with it
-            std::string qm = "Supply quit";
-            try { ValueList na; Value mv = I.methodCall(ctx->quitErr, "message", na); if (mv.t == VT::Str) qm = mv.s; } catch (...) {}
-            // …and the exception says so: the original is handed on with
-            // X::React::Died mixed in, so a CATCH can tell a death that came out
-            // of a react from one raised where it stands (Roast
-            // syntax-nonblocking-await.t asks `.does(X::React::Died)`).
-            Value err = ctx->quitErr;
-            if (err.t == VT::Object)
-                try { err = I.mixinValue(err, Value::typeObj("X::React::Died"), /*copy=*/true); } catch (...) {}
-            throw RakuError{err, qm};
-        }
-        return Value::nil();
+            catch (DoneEx&) {}
+            I.runReactLoop(ctx); // block until every live whenever source is done
+            {   // react is over: tear down externally-wired taps (OS-signal taps) so
+                // their dispatcher stops firing the handler once the block is gone.
+                std::vector<std::shared_ptr<TapHandle>> extTaps;
+                { std::lock_guard<std::mutex> lk(ctx->m); extTaps.swap(ctx->extTaps); }
+                for (auto& h : extTaps) if (h) I.closeTapHandle(h);
+            }
+            {   // react is over: its whenever taps close — run on-close callbacks
+                ValueList closers;
+                { std::lock_guard<std::mutex> lk(ctx->m); closers.swap(ctx->closers); }
+                for (auto& cb : closers) if (cb.t == VT::Code) { try { I.callCallable(cb, {}); } catch (...) {} }
+            }
+            if (ctx->quitFlag) { // a whenever'd supply quit unhandled: the react dies with it
+                std::string qm = "Supply quit";
+                try { ValueList na; Value mv = I.methodCall(ctx->quitErr, "message", na); if (mv.t == VT::Str) qm = mv.s; } catch (...) {}
+                // the original goes on, and leaving the react marks it
+                // X::React::Died like any other error (reactDied above)
+                throw RakuError{ctx->quitErr, qm};
+            }
+            return Value::nil();
+        };
+        try { return run(); }
+        catch (RakuError& e) { reactDied(e); throw; }
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
         // S-60: `whenever` coerces its argument with `Supply()`. An Iterable is

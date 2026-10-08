@@ -901,6 +901,9 @@ struct BtFrame { PRef<Callable> code; int line = 0; unsigned char kind = 0; };
 // as an extra map entry (measured: the entry alone cost ~6% of making a
 // Failure). `originFile` is empty when it is simply the program being run.
 struct BtRecord { std::vector<BtFrame> frames; std::string originFile; };
+// The live call chain, captured as a RakuError captures it — for a position an
+// error may be reported against later (a `react` block: see B["react"]).
+std::shared_ptr<BtRecord> btCaptureHere();
 // Set by `die` (2: die, then throw) and `.throw` (1) just before they raise:
 // the capture that raising makes lists that many setting frames first, and
 // clears it. Zero everywhere else.

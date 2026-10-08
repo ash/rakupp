@@ -1842,6 +1842,25 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
                 return "An operation first awaited:\n" + renderFrames(*rec, plain) +
                        "\nDied with the exception:\n" + ind;
             }
+            // X::React::Died: the death as it happened, then the react it
+            // ended, labelled as the uncaught-error printer labels a second
+            // position. A whenever body that died on a worker has no frame of
+            // that react in its own chain (see B["react"]).
+            auto rb = v.obj()->attrs.find("__reactbt");
+            if (rb != v.obj()->attrs.end()) {
+                Value inner = v;
+                auto od = makePayload<ObjectData>(*v.obj());
+                od->attrs.erase("__reactbt");
+                inner.setObj(od);
+                std::string g = gistOf(inner);
+                if (!rb->second.ext()) return g;
+                auto rec = std::static_pointer_cast<BtRecord>(rb->second.ext());
+                BtStyle plain; plain.excerpt = plain.typeLine = plain.colour = false;
+                std::string fr = renderFrames(*rec, plain);
+                if (fr.empty()) return g;
+                if (!g.empty() && g.back() != '\n') g += '\n';
+                return g + "\nIn the react block at:\n" + fr;
+            }
             auto it = v.obj()->attrs.find("message");
             // a hand-built `X::AdHoc.new(payload => …)` has no message attribute:
             // its message IS the payload (see the .message accessor)

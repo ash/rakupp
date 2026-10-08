@@ -3935,6 +3935,8 @@ RakuError::RakuError(Value p, std::string m)
     bt = btCaptureNow();
 }
 
+std::shared_ptr<BtRecord> btCaptureHere() { return btCaptureNow(); }
+
 // A Failure remembers where it was MADE — see the declaration in Interpreter.h.
 // Failures are made in BULK by ordinary code (every failed coercion is one), so
 // this pays for itself in allocations, not in the walk: the chain is two or
