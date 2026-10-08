@@ -1192,6 +1192,10 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ($p.out.slurp(:close), $p.err.slurp(:close), $p.exitcode)
     }
     my $work = $*TMPDIR.add("rakupp-cli-$*PID");
+    # Fresh every time: macOS keeps $*TMPDIR across runs, and a PID that comes
+    # round again found an older run's jitcache/ here, which failed the
+    # "writes nothing to the cache directory unasked" check below.
+    run('rm', '-rf', $work.Str);
     mkdir $work;
 
     # -e, both spellings, and where the program's own args begin
