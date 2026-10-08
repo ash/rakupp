@@ -36,7 +36,7 @@ cells. Shots that show what the formulas are for:
 - `=FACT(30)` beside `=RAKU("[*] 1..$^n", 30)`: `2.65253E+32`, then all 33 digits.
 - In Excel, `=(43.1-43.2)+1` beside `=RAKU.EVAL("($^a - $^b) + 1", 43.1, 43.2)`: `0.899999999999999`, then `0.9`.
 - The Raku sheet with `iban-ok`, and a column of IBANs with TRUE and FALSE beside them.
-- In Excel, the Raku pane open beside a sheet of formulas.
+- The Raku pane in Excel, and the Raku sidebar in Sheets, open beside a sheet of formulas.
 
 ## Google Workspace Marketplace
 
@@ -62,9 +62,12 @@ cells. Shots that show what the formulas are for:
    job to push each release.
 4. **A test, unpublished.** **Deploy → Test deployments**, type **Editor
    Add-on**, a test with **Latest code** in a spreadsheet, then **Execute**.
-   Under **Extensions → Raku formulas** there are three items; `=RAKU("6 * 7")`
-   is 42, **Add the Raku sheet** adds it, `=RAKU("iban-ok($^s)", "GB82 WEST 1234 5698 7654 32")`
-   is TRUE, and **How RAKU formulas work** opens the help.
+   Under **Extensions → Raku formulas** there are three items. **Open the
+   Raku sidebar** opens it, and with it open `=RAKU("6 * 7")` is 42 within a
+   few seconds; the sidebar's **Add the Raku sheet** adds it,
+   `=RAKU("iban-ok($^s)", "GB82 WEST 1234 5698 7654 32")` is TRUE, an
+   example's **Insert** fills the selected cell, and **How RAKU formulas
+   work** opens the help.
 5. **A version.** `clasp create-version "rakupp 5.2.1"` prints its number;
    **Deploy → Manage deployments** shows it too.
 6. **The OAuth consent screen** (Google Auth Platform):
@@ -75,11 +78,13 @@ cells. Shots that show what the formulas are for:
      privacy policy and terms as in the table; authorized domain
      `raku.online`; developer contact email `mail@deepsoft.online`.
    - **Audience:** External, then **Publish app**.
-   - **Data Access:** `https://www.googleapis.com/auth/spreadsheets.currentonly`,
-     the add-on's only scope (`appsscript.json`).
+   - **Data Access:** `https://www.googleapis.com/auth/spreadsheets.currentonly`
+     and `https://www.googleapis.com/auth/script.container.ui`, the add-on's
+     two scopes (`appsscript.json`): the spreadsheet it is used in, and its
+     sidebar.
    - Submit the verification the console asks for. Should it ask for a demo
-     video, the video shows installing the add-on, a RAKU formula, and
-     **Add the Raku sheet**.
+     video, the video shows installing the add-on, opening the sidebar, a RAKU
+     formula, and **Add the Raku sheet**.
 7. **The Marketplace SDK.** Enable **Google Workspace Marketplace SDK** in the
    Cloud project, then on **App Configuration**:
    - **App visibility:** Public. It cannot be changed afterwards, and a
@@ -87,7 +92,7 @@ cells. Shots that show what the formulas are for:
    - **Installation settings:** Individual + Admin Install.
    - **App integration:** Editor add-on, **Sheets add-on**, the script ID and
      the version from step 5.
-   - **OAuth scopes:** the one scope above.
+   - **OAuth scopes:** the two scopes above.
    - **Developer information:** name, website, email `mail@deepsoft.online`
      (Google's reviewers write to it, and it is not shown in the listing),
      and trader status (shown to customers in the EEA).
@@ -119,13 +124,13 @@ Version** and save. By hand: build, `clasp push --force`, `clasp create-version`
 > • Arithmetic on cells and ranges. $^a, $^b, … are the values after the code, and @_ is all of them, ranges flattened: =RAKU("[+] @_", A1:A10) adds a column.
 > • Text. Regexes and grammars work on the text in your cells: =RAKU("~($^s ~~ / \d+ ' kg' /)", A2) finds "12 kg" in "Box of 12 kg flour".
 > • Lists. A list fills a column, and a list of lists fills a table: =RAKU("(1..4).map(* ** 2)") gives 1, 4, 9 and 16 down a column.
-> • Functions of your own. Write Raku subs in column A of a sheet named Raku, and every formula in the spreadsheet can call them. Extensions → Raku formulas → Add the Raku sheet makes one, with two examples: an IBAN check, and a sum split into cents that add up.
+> • Functions of your own. Write Raku subs in column A of a sheet named Raku, and every formula in the spreadsheet can call them. The sidebar's Add the Raku sheet makes one, with two examples: an IBAN check, and a sum split into cents that add up.
 >
-> The engine is Raku++, compiled to WebAssembly, and it runs inside the add-on: formulas send nothing anywhere, and the add-on keeps nothing. It asks for one permission, to see and change the spreadsheet it is used in.
+> The formulas are calculated in the Raku sidebar (Extensions → Raku formulas → Open the Raku sidebar). It loads the engine, Raku++ compiled to WebAssembly, once and keeps it in your browser; it has examples to insert, the buttons for the Raku sheet, and what formulas print. Formulas send nothing outside the spreadsheet. The add-on asks for two permissions: to see and change the spreadsheet it is used in, and to show its sidebar.
 >
 > Good to know:
-> • Every formula is a run of its own, so give one formula a whole range rather than writing one formula per cell.
-> • Sheets recalculates a formula when its arguments change. After editing the Raku sheet, choose Extensions → Raku formulas → Recalculate RAKU formulas.
+> • Keep the sidebar open while you work. A new or changed formula shows ⏳ Raku sidebar until the sidebar has calculated it; results already calculated stay in their cells.
+> • When the Raku sheet changes, the sidebar calculates the formulas again.
 > • Formulas cannot read files or use the network.
 >
 > Guide and examples: https://raku.online/embed/spreadsheets/

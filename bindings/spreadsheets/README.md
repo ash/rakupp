@@ -15,9 +15,10 @@ Raku's decimals are exact rationals, its integers have no size limit, and its
 regexes and grammars work on the text in your cells. You can also write your
 own subs on a sheet named **Raku** and call them from any formula.
 
-The Raku++ engine runs inside the spreadsheet, compiled to WebAssembly
-([Raku.js](../../rakujs/README.md)): nothing to install on your computer, no
-Python, no macros, and the formulas send nothing anywhere.
+The Raku++ engine, compiled to WebAssembly ([Raku.js](../../rakujs/README.md)),
+runs inside Excel and, for Google Sheets, in a sidebar in your browser:
+nothing to install on your computer, no Python, no macros, and the formulas
+send nothing outside the spreadsheet.
 
 ## What a formula looks like
 
@@ -41,8 +42,8 @@ Google Sheets spellings; in Excel, write `RAKU.EVAL` for `RAKU`.
 ## Your own subs: the Raku sheet
 
 Add a sheet named `Raku` and write Raku in column A, one line per row. Every
-formula in the file can call what it defines. The **Raku** menu in Sheets and
-the **Raku** pane in Excel both have a button that adds the sheet with two
+formula in the file can call what it defines. The Raku sidebar in Sheets and
+the Raku pane in Excel both have a button that adds the sheet with two
 examples on it:
 
 ```raku
@@ -64,59 +65,62 @@ A line that starts with `=`, `+` or `-` would become a formula: type `'`
 before it. When something on the sheet does not compile, every formula says
 so, with the row: `Raku sheet: … (row 7)`.
 
-The spreadsheet does not know that a formula depends on the Raku sheet. After
-you change the sheet, choose **Raku → Recalculate RAKU formulas** in Sheets, or
-press **Recalculate** in Excel's Raku pane.
+The spreadsheet does not know that a formula depends on the Raku sheet. In
+Sheets, the Raku sidebar notices a change to the sheet and calculates the
+formulas again; in Excel, press **Recalculate** in the Raku pane.
 
 ## Google Sheets
 
-### Use a spreadsheet that has it
+The engine runs in the **Raku sidebar**, a page in your browser that loads it
+once from raku.online and keeps it. `=RAKU` formulas are calculated while the
+sidebar is open.
 
-Open a spreadsheet that has the Raku script and choose **File → Make a copy**.
-The copy comes with the script, and its `=RAKU` formulas work in it.
+### Put it into a spreadsheet
 
-### Put it into a spreadsheet of your own
+The script is two files for an Apps Script project, `Raku.gs` and
+`RakuSidebar.html`, with its `appsscript.json`: `dist/google-sheets` after a
+build, or [raku-google-sheets.zip](https://raku.online/embed/spreadsheets/raku-google-sheets.zip),
+ready-built. In the spreadsheet, open **Extensions → Apps Script**, paste
+`Raku.gs` into the `Code.gs` that is there and rename it `Raku`, then choose
+**+ → HTML**, name the file `RakuSidebar`, and paste `RakuSidebar.html` into
+it. `appsscript.json` can be left out.
 
-The script is a folder of files for an Apps Script project. Build it with
-Raku++, then upload it with [clasp](https://github.com/google/clasp), Google's
-command line for Apps Script. clasp needs Node.js 20 or later, and the Apps
-Script API turned on at <https://script.google.com/home/usersettings>.
+With [clasp](https://github.com/google/clasp), Google's command line for Apps
+Script (Node.js 20 or later, and the Apps Script API turned on at
+<https://script.google.com/home/usersettings>), that is two commands; the
+spreadsheet's ID is the long part of its address, between `/d/` and `/edit`:
 
 ```bash
-cd bindings/spreadsheets && rakupp build.raku
-```
-
-```bash
-npm install -g @google/clasp
-```
-
-```bash
-cd bindings/spreadsheets && clasp login && clasp create-script --type sheets --title "Raku formulas" --rootDir dist/google-sheets
+cd bindings/spreadsheets && clasp create-script --parentId SPREADSHEET-ID --rootDir dist/google-sheets
 ```
 
 ```bash
 cd bindings/spreadsheets && clasp push
 ```
 
-`create-script` makes a new spreadsheet with the script bound to it; give it
-`--parentId` and a spreadsheet's ID instead of `--type` to use one you already
-have. Without clasp, open **Extensions → Apps Script** in the spreadsheet and
-create one script file for each `.gs` file in `dist/google-sheets`, with the
-same name and contents.
+### Use it
+
+Reload the spreadsheet and choose **Raku → Open the Raku sidebar**; the first
+time, Google asks you to let the script show the sidebar and work on this
+spreadsheet. The sidebar has examples to insert into the selected cell, the
+buttons for the Raku sheet and recalculation, the engine's version, and what
+formulas printed with `say`. **Raku → How RAKU formulas work** shows a short
+help.
 
 ### What to expect
 
-- **Every formula is its own Apps Script execution**, and each may load the
-  engine again. Loading means unpacking about 12 MB of WebAssembly. In
-  `test/sheets.mjs`, which runs the project in a bare V8 the way Apps Script
-  does, that takes about half a second, and each formula after it 10 to 25 ms.
-  Google's servers may take longer. Give one formula a whole range rather than
-  writing one formula per cell: one formula, one load, and a column or a table
-  of results.
-- A formula has 30 seconds, Google's limit for a custom function.
-- What a formula prints with `say` goes to the script's execution log
-  (**Extensions → Apps Script → Executions**), not into the cell.
-- **Raku → How RAKU formulas work** shows a short help.
+- A new or changed formula shows `⏳ Raku sidebar` and a key until the sidebar
+  has calculated it. The sidebar looks for such cells every second, runs them
+  as one batch, and enters them again, and they show their results.
+- Keep the sidebar open. Without it, a formula that is new or whose values
+  change waits; results already calculated stay in their cells, for anyone who
+  opens the spreadsheet.
+- A formula's code and values go to the sidebar, and its result comes back,
+  through the spreadsheet's cache in Apps Script, which keeps them up to six
+  hours and takes about 90,000 characters each: a larger value or result is an
+  error.
+- A batch that runs longer than 15 seconds is stopped, and its formulas are
+  run one at a time, so that only the slow one fails.
 - A date cell arrives as text in ISO 8601: `2026-10-08T00:00:00.000Z`.
 
 ## Excel
@@ -192,8 +196,8 @@ sheet and recalculation, the engine's version, and what formulas printed with
 
 ## Limits
 
-- No files, network, `run` or `start`: the engine runs in the spreadsheet's
-  own sandbox, on one thread.
+- No files, network, `run` or `start`: the engine runs in the sandbox of
+  Excel's add-in or of the browser, on one thread.
 - Recursion is limited by the JavaScript stack it runs on: about a hundred
   levels of a plain recursive sub.
 - An `exit` in a formula ends that batch with an error; the next formula gets a
@@ -220,23 +224,27 @@ the answer back into cells.
   Worker (`rakusheet-worker.js`) so that a runaway formula can be stopped. A
   batch that overflows the worker's stack is run again on the page's thread,
   which is several times deeper.
-- **Google Sheets** ([`google-sheets/`](google-sheets)) has no workers, no
-  `fetch` and no binary files, so `build.raku` stores the WebAssembly
-  gzip-compressed and base64-encoded in five `RakuWasmNN.gs` files.
-  `RakuLoader.gs` decodes and inflates it in plain JavaScript and checks the
-  gzip CRC. `RakuSheet.installShims` adds the `TextDecoder`, `performance`,
-  `crypto` and `Array.prototype.at` that the Emscripten glue expects. Apps
-  Script reads every file with a parser of its own when the project is saved,
-  and that parser refuses logical assignment (`a ??= b`), class fields and
-  BigInt literals (`0n`), which the glue has; `build.raku` rewrites all three
-  into what they mean.
+- **Google Sheets** ([`google-sheets/`](google-sheets)) keeps nothing from one
+  Apps Script run to the next, and every formula is a run of its own: a
+  formula that loaded the engine itself would pay about three seconds a cell.
+  So the engine lives in the sidebar, `RakuSidebar.html`, in a Web Worker it
+  loads from `--base` (the Excel add-in's files), and the custom function in
+  `Raku.gs` only passes messages. It looks for its result in the document's
+  cache under a key made of its code, its values and the Raku sheet; the
+  first time, it leaves its code and values there instead and shows
+  `⏳ Raku sidebar` with the key. Every second the sidebar asks for the cells
+  that show it (`rakuPending`), runs them as one batch, and hands the results
+  back (`rakuStore`), which enters those formulas again: Sheets runs a custom
+  function again only when its formula changes, and this time it finds its
+  result. The sidebar also enters every RAKU formula again when the Raku
+  sheet's key changes.
 - **The Marketplace add-on** (`dist/google-sheets-addon`) is the same project
   with the add-on's own entry points, [`google-sheets/RakuAddon.js`](google-sheets/RakuAddon.js)
   in place of the marked region of `Raku.js`: its menu is under **Extensions**,
-  `onInstall` adds it to the spreadsheet already open, and what formulas print
-  is not kept, since an add-on's log is its developer's. Its `appsscript.json`
-  asks for one scope, `spreadsheets.currentonly`, and turns exception logging
-  off. [`store/README.md`](store/README.md) has the listings in the Google
+  and `onInstall` adds it to the spreadsheet already open. Its
+  `appsscript.json` asks for two scopes, `spreadsheets.currentonly` and
+  `script.container.ui` (the sidebar), and turns exception logging off.
+  [`store/README.md`](store/README.md) has the listings in the Google
   Workspace Marketplace and Microsoft AppSource.
 
 ### Building
@@ -249,7 +257,8 @@ cd bindings/spreadsheets && rakupp build.raku --help
 addresses), `--rakujs` the Raku.js build to ship (`rakujs/playground` by
 default; [`rakujs/build.sh`](../../rakujs/build.sh) makes a fresh one), and
 `--out` the output directory (`dist`), which gets `excel`, `google-sheets`
-and `google-sheets-addon`. Each build stamps every Excel file reference with
+and `google-sheets-addon`; the Sheets sidebar loads the engine from `--base`
+too. Each build stamps every Excel file reference with
 `?v=…`, so Office's cache never mixes two builds. `--store` also draws the
 listings' icons into `store`, and `--revision` raises the fourth number of
 the manifest's version, which AppSource needs to take a changed manifest
@@ -265,12 +274,19 @@ node bindings/spreadsheets/test/sheets.mjs
 node bindings/spreadsheets/test/sheets.mjs --addon
 ```
 
-run the built Google Sheets project, and the add-on, in a bare V8 context: no
-browser or Node globals, no `Array.prototype.at`, files in a random order, a
-stand-in `SpreadsheetApp`. They check values, errors, the Raku sheet, the
-menu and its help, **Recalculate** (which puts every formula back, even when
-a write fails), damaged or missing engine files, and that no file has the
-syntax Apps Script's parser refuses.
+play the Google Sheets round trip for the built script, and for the add-on,
+with stand-ins for `SpreadsheetApp` and the cache, and the engine from
+`dist/excel` as the sidebar: values, errors, dates, the Raku sheet and a
+change to it, a request the cache lost, values too large for it, **Insert**,
+the menu and its help, and **Recalculate** (which puts every formula back,
+even when a write fails).
+
+[`test/sidebar-harness.html`](test/sidebar-harness.html) runs the built
+sidebar page in a browser, its engine from `dist/excel` and a stand-in for
+`google.script.run`: the examples, batches, a formula that never ends, `say`,
+a change to the Raku sheet, and the buttons. Serve the
+`bindings/spreadsheets` directory over HTTP and open
+`/test/sidebar-harness.html`; it takes about 35 seconds.
 
 [`test/excel-harness.html`](test/excel-harness.html) drives the built Excel
 add-in in a browser, with stand-ins for `CustomFunctions` and `Excel.run`. It

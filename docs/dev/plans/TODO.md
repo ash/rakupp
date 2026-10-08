@@ -326,13 +326,15 @@ with its tag, after the release run is green.
 - [ ] **Spreadsheets**: `=RAKU(...)` in Google Sheets and `=RAKU.EVAL(...)` in
   Excel, on Raku.js rather than `librakupp`:
   [bindings/spreadsheets/README.md](../../../bindings/spreadsheets/README.md),
-  started 2026-10-08. `test/sheets.mjs` runs the Apps Script project in a
-  bare V8, and `test/excel-harness.html` the add-in in a browser with
-  stand-ins for Excel. Excel runs sideloaded on a Mac from
-  raku.online/embed/excel/, and the pasted script in a real Google Sheet
-  (`=RAKU("1+2")` is 3), once `build.raku` rewrote the glue's `??=`, class
-  fields and `0n`, which Apps Script's save-time parser refuses. Next in
-  Sheets: the time to load the engine, the menu, the Raku sheet, a range,
+  started 2026-10-08. Excel runs sideloaded on a Mac from
+  raku.online/embed/excel/. In Sheets the engine runs in a sidebar, loaded
+  once in the browser, and `=RAKU` passes messages through the document's
+  cache: an engine inside Apps Script cost about 3.5 s a cell (measured in a
+  real spreadsheet), since every formula is a fresh run. `test/sheets.mjs`
+  plays that round trip in Node, `test/sidebar-harness.html` the sidebar page
+  in a browser, and `test/excel-harness.html` the add-in. Next in Sheets: the
+  sidebar in a real spreadsheet (its worker, a custom function writing the
+  cache, a formula entered again running again, the time a cell takes), then
   the add-on as a test deployment. Then: does a `RAKU.EVAL` cell calculate in a new Excel session
   without the pane click (if not, start the add-in with the document); a
   template spreadsheet to copy; the store listings, whose material is in

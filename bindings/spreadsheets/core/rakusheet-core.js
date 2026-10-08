@@ -1,11 +1,11 @@
-// rakusheet-core.js — what the Excel add-in and the Google Sheets script share.
+// rakusheet-core.js — what the Excel add-in and the Google Sheets sidebar share.
 //
-// A plain script that defines one global, RakuSheet, because Apps Script has
-// no modules and a Web Worker loads it with importScripts. It turns
-// spreadsheet values into the JSON request rakusheet.raku reads, runs one
-// batch of formulas through Raku.js's rakupp_run, and turns the answer back
-// into cell values. Each host keeps only what is its own: how the engine is
-// loaded, where the definitions come from, and how an error is shown.
+// A plain script that defines one global, RakuSheet, because a Web Worker
+// loads it with importScripts. It turns spreadsheet values into the JSON
+// request rakusheet.raku reads, runs one batch of formulas through Raku.js's
+// rakupp_run, and turns the answer back into cell values. Each host keeps
+// only what is its own: how the engine is loaded, where the definitions come
+// from, and how an error is shown.
 
 var RakuSheet = (function () {
   'use strict';
@@ -143,8 +143,8 @@ var RakuSheet = (function () {
 
   // Loads the engine. `factory` is the RakuJS function rakujs.js defines.
   // In a browser it fetches rakujs.wasm itself (options.locateFile says
-  // where); where there is nothing to fetch from, options.wasmBytes holds the
-  // module. The glue reads no wasmBinary option, so the bytes go in through
+  // where); a test that holds the module already passes options.wasmBytes.
+  // The glue reads no wasmBinary option, so the bytes go in through
   // its instantiateWasm hook, whose failure would otherwise leave the load
   // waiting forever.
   function start(factory, options) {
@@ -173,52 +173,9 @@ var RakuSheet = (function () {
     });
   }
 
-  // ---- what a runtime without a browser lacks -----------------------------------
-
-  // Apps Script's V8 has no TextDecoder, performance or crypto, all of which
-  // the Emscripten glue reaches for. Each is defined only where it is missing.
-  function installShims(g) {
-    // The engine's C++ exceptions rethrow through exceptionCaught.at(-1).
-    if (!g.Array.prototype.at) {
-      Object.defineProperty(g.Array.prototype, 'at', {
-        configurable: true, writable: true,
-        value: function (i) { i = Math.trunc(i) || 0; return this[i < 0 ? i + this.length : i]; }
-      });
-    }
-    if (typeof g.TextDecoder === 'undefined') g.TextDecoder = Utf8Decoder;
-    if (typeof g.performance === 'undefined') g.performance = { now: function () { return Date.now(); } };
-    if (typeof g.crypto === 'undefined') {
-      // Seeds the engine's own random numbers; nothing here needs a secure source.
-      g.crypto = {
-        getRandomValues: function (view) {
-          for (var i = 0; i < view.length; i++) view[i] = Math.floor(Math.random() * 256);
-          return view;
-        }
-      };
-    }
-  }
-
-  function Utf8Decoder() {}
-  Utf8Decoder.prototype.decode = function (bytes) {
-    if (!bytes) return '';
-    var s = '', units = [], i = 0, n = bytes.length;
-    while (i < n) {
-      var c = bytes[i++], cp;
-      if (c < 0x80) cp = c;
-      else if (c < 0xE0) cp = ((c & 0x1F) << 6) | (bytes[i++] & 0x3F);
-      else if (c < 0xF0) cp = ((c & 0x0F) << 12) | ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-      else cp = ((c & 0x07) << 18) | ((bytes[i++] & 0x3F) << 12) | ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-      if (cp > 0xFFFF) { cp -= 0x10000; units.push(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF)); }
-      else units.push(cp);
-      if (units.length >= 8192) { s += String.fromCharCode.apply(null, units); units = []; }
-    }
-    return s + String.fromCharCode.apply(null, units);
-  };
-
   return {
     start: start,
     cells: cells,
-    installShims: installShims,
     exampleDefinitions: exampleDefinitions,
     // exposed for the tests
     arg: arg,

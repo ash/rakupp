@@ -1,38 +1,122 @@
-// sheets.mjs — runs the generated Google Sheets project the way Apps Script
-// does: every .gs file in one bare V8 context, with none of the browser's or
-// Node's globals (no TextDecoder, performance, crypto, setTimeout, process),
-// in an order of its own. SpreadsheetApp is a stand-in holding a Raku sheet.
+// sheets.mjs — the Google Sheets script's round trip, with the sidebar played
+// by the engine the sidebar loads (dist/excel: rakujs.js, rakujs.wasm and
+// rakusheet-core.js): formulas in a stand-in spreadsheet wait, the sidebar's
+// calls (rakuPending, rakuStore) run against a stand-in cache, and the
+// formulas, entered again, find their results. Then the menu, the help, and
+// Recalculate. The sidebar page itself is test/sidebar-harness.html.
 //
-//   node bindings/spreadsheets/test/sheets.mjs [dist/google-sheets]
-//   node bindings/spreadsheets/test/sheets.mjs dist/google-sheets-addon --addon
+//   node bindings/spreadsheets/test/sheets.mjs [dist]
+//   node bindings/spreadsheets/test/sheets.mjs [dist] --addon
 //
 // --addon tests the Marketplace add-on's build instead of the attached
-// script's: its menu under Extensions, onInstall, and no log of what formulas
-// print.
+// script's: its menu under Extensions, and onInstall.
 
 import vm from 'node:vm';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const addon = process.argv.includes('--addon');
-const dir = process.argv.slice(2).find(a => !a.startsWith('--'))
-  ?? path.join(here, '..', 'dist', addon ? 'google-sheets-addon' : 'google-sheets');
-const files = fs.readdirSync(dir).filter(f => f.endsWith('.gs'));
+const dist = process.argv.slice(2).find(a => !a.startsWith('--')) ?? path.join(here, '..', 'dist');
 
-const RAKU_SHEET = [
-  '# the Raku sheet of this test',
-  'sub double($x) { $x * 2 }',
-  'sub iban-ok(Str $iban) {',
-  '    my $t = $iban.uc.comb(/<alnum>/).join;',
-  '    my $digits = ($t.substr(4) ~ $t.substr(0, 4)).comb.map({ /\\d/ ?? $_ !! .ord - 55 }).join;',
-  '    $digits % 97 == 1',
-  '}',
-];
+let failed = 0, passed = 0;
+function check(name, got, want) {
+  const ok = want instanceof RegExp ? typeof got === 'string' && want.test(got) : JSON.stringify(got) === JSON.stringify(want);
+  if (ok) { passed++; return; }
+  failed++;
+  console.log(`not ok - ${name}\n    got:  ${JSON.stringify(got)}\n    want: ${want instanceof RegExp ? want : JSON.stringify(want)}`);
+}
 
-// The menus a script adds and the dialogs it shows go into `ui`.
-function userInterface(ui) {
+// ---- the engine, as the sidebar holds it -----------------------------------------------
+const engineDir = path.join(dist, 'excel');
+const engineCtx = vm.createContext({
+  console: { log() {}, warn() {}, error() {}, info() {} },
+  TextDecoder, performance, crypto: globalThis.crypto, WebAssembly,
+});
+for (const f of ['rakujs.js', 'rakusheet-core.js']) {
+  vm.runInContext(fs.readFileSync(path.join(engineDir, f), 'utf8'), engineCtx, { filename: f });
+}
+const RakuSheet = vm.runInContext('RakuSheet', engineCtx);
+const engine = await RakuSheet.start(vm.runInContext('RakuJS', engineCtx),
+  { wasmBytes: fs.readFileSync(path.join(engineDir, 'rakujs.wasm')) });
+
+// What the sidebar does with what rakuPending hands it.
+function sidebar(p) {
+  const result = engine.run(p.definitions, p.requests.map(r => ({ code: r.code, args: r.args })));
+  return p.requests.map((r, i) => {
+    const a = result.answers[i];
+    if ('err' in a) return { key: r.key, err: a.err };
+    try { return { key: r.key, cells: RakuSheet.cells(a.ok) }; } catch (e) { return { key: r.key, err: e.message }; }
+  });
+}
+
+// ---- a spreadsheet, a cache and Utilities ---------------------------------------------
+function world() {
+  const cache = new Map();
+  const sheets = new Map();
+  let ctx, current = null, writes = 0, failAt = 0;
+  const ui = { menus: [], alerts: [] };
+  const evaluate = cell => {
+    if (!cell.formula) { cell.shown = ''; return; }
+    try {
+      const v = ctx.RAKU(cell.code, ...cell.args);
+      cell.value = v;
+      cell.shown = Array.isArray(v) ? String(v[0][0]) : String(v);
+    } catch (e) {
+      cell.value = { error: e.message };
+      cell.shown = '#ERROR!';
+    }
+  };
+  const sheetOf = (name, rows) => {
+    const sheet = {
+      rows,
+      getName: () => name,
+      getDataRange: () => ({
+        getDisplayValues: () => rows.map(r => r.map(c => c.shown ?? String(c.text ?? ''))),
+        getFormulas: () => rows.map(r => r.map(c => c.formula ?? '')),
+      }),
+      getRange: (row, col, n) => typeof row === 'string' ? { setFontFamily() {} } : n === undefined
+        ? {
+            getA1Notation: () => String.fromCharCode(64 + col) + row,
+            setFormula: f => {
+              if (++writes === failAt) throw new Error('Service invoked too many times');
+              rows[row - 1] ??= [];
+              const cell = rows[row - 1][col - 1] ??= {};
+              // A formula typed in, rather than built by raku(): its values are literals.
+              const typed = f && !cell.code && /^=RAKU\((.*)\)$/s.exec(f);
+              if (typed) { const a = JSON.parse(`[${typed[1]}]`); cell.code = a[0]; cell.args = a.slice(1); }
+              cell.formula = f;
+              cell.shown = '';
+              if (f) evaluate(cell);
+            },
+          }
+        : { getDisplayValues: () => rows.slice(row - 1, row - 1 + n).map(r => [String(r[0].text ?? '')]),
+            setNumberFormat() {}, setValues(v) { v.forEach((l, i) => { rows[i] = [{ text: l[0] }]; }); } },
+      getLastRow: () => rows.length,
+      setColumnWidth() {},
+    };
+    return sheet;
+  };
+  const app = {
+    getActiveSpreadsheet: () => ({
+      getSheets: () => [...sheets.values()],
+      getSheetByName: name => sheets.get(name) ?? null,
+      insertSheet: name => { const s = sheetOf(name, []); sheets.set(name, s); return s; },
+      setActiveSheet() {},
+      getCurrentCell: () => current,
+      getActiveRange: () => current,
+      toast() {},
+    }),
+    flush() {},
+    getUi: () => ({
+      createMenu: name => menu(`menu ${name}`),
+      createAddonMenu: () => menu('add-on menu'),
+      ButtonSet: { OK: 'OK' },
+      alert: (...a) => { ui.alerts.push(a); },
+    }),
+  };
   const menu = kind => {
     const m = { kind, items: [] };
     m.addItem = (label, fn) => { m.items.push([label, fn]); return m; };
@@ -40,152 +124,103 @@ function userInterface(ui) {
     m.addToUi = () => { ui.menus.push(m); };
     return m;
   };
-  return {
-    createMenu: name => menu(`menu ${name}`),
-    createAddonMenu: () => menu('add-on menu'),
-    ButtonSet: { OK: 'OK' },
-    alert: (...a) => { ui.alerts.push(a); },
+  const Utilities = {
+    DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+    computeDigest: (alg, text) => Array.from(crypto.createHash(alg).update(text, 'utf8').digest(), b => (b << 24) >> 24),
   };
-}
-
-function spreadsheet(lines, ui) {
-  const sheet = lines && {
-    getLastRow: () => lines.length,
-    getRange: (row, col, rows) => ({
-      getDisplayValues: () => lines.slice(row - 1, row - 1 + rows).map(l => [l]),
+  const CacheService = {
+    getDocumentCache: () => ({
+      get: k => (cache.has(k) ? cache.get(k) : null),
+      put: (k, v) => { cache.set(k, v); },
+      getAll: ks => Object.fromEntries(ks.filter(k => cache.has(k)).map(k => [k, cache.get(k)])),
+      putAll: o => { for (const [k, v] of Object.entries(o)) cache.set(k, v); },
     }),
   };
-  return {
-    getActiveSpreadsheet: () => ({ getSheetByName: name => (name === 'Raku' ? sheet : null) }),
-    getUi: () => userInterface(ui),
-  };
+  ctx = vm.createContext({ console: { log() {} }, SpreadsheetApp: app, Utilities, CacheService });
+  vm.runInContext(fs.readFileSync(path.join(dist, addon ? 'google-sheets-addon' : 'google-sheets', 'Raku.gs'), 'utf8'), ctx, { filename: 'Raku.gs' });
+  // A cell's formula, with the values Sheets would hand the custom function.
+  const raku = (code, ...args) => ({ formula: `=RAKU(${JSON.stringify(code)}${args.map(() => ', X').join('')})`, code, args });
+  const addSheet = (name, rows) => { const s = sheetOf(name, rows); sheets.set(name, s); rows.flat().forEach(evaluate); return s; };
+  const select = (sheet, row, col) => { current = sheet.getRange(row, col); };
+  const failWrite = n => { writes = 0; failAt = n; };
+  return { ctx, cache, sheets, raku, addSheet, select, ui, failWrite };
 }
 
-function shuffle(a) {
-  const b = a.slice();
-  for (let i = b.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [b[i], b[j]] = [b[j], b[i]];
-  }
-  return b;
-}
+// ---- the round trip -----------------------------------------------------------------
+const w = world();
+const data = w.addSheet('Data', [
+  [w.raku('6 * 7'), w.raku('($^a - $^b) + 1', 43.1, 43.2)],
+  [w.raku('[+] @_', [[0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1]]), w.raku('(1..3).map(* ** 2)')],
+  [w.raku('1/0'), w.raku('6 * 7')],
+  [{ text: 'not a formula' }, w.raku('$^d.substr(0, 10)', new Date(Date.UTC(2026, 9, 8)))],
+]);
+const cell = (r, c) => data.rows[r][c];
+check('a new formula waits for the sidebar', /^⏳ Raku sidebar [0-9a-f]{16}$/.test(cell(0, 0).shown), true);
+check('the same formula has the same key', cell(2, 1).shown, cell(0, 0).shown);
 
-// A fresh project, as a cold Apps Script execution sees it.
-function project({ lines = RAKU_SHEET, edit, app } = {}) {
-  const logs = [];
-  const ui = { menus: [], alerts: [] };
-  const ctx = vm.createContext({
-    console: { log: (...a) => logs.push(a.join(' ')), warn() {}, error() {}, info() {} },
-    SpreadsheetApp: app ?? spreadsheet(lines, ui),
-  });
-  for (const f of ['TextDecoder', 'performance', 'crypto', 'setTimeout', 'process', 'window']) {
-    if (vm.runInContext(`typeof ${f}`, ctx) !== 'undefined') throw new Error(`the sandbox has ${f}`);
-  }
-  // Newer than some Apps Script runtimes; the engine gets a shim for it.
-  vm.runInContext('delete Array.prototype.at', ctx);
-  for (const f of shuffle(files)) {
-    let src = fs.readFileSync(path.join(dir, f), 'utf8');
-    if (edit) src = edit(f, src);
-    if (src !== null) vm.runInContext(src, ctx, { filename: f });
-  }
-  return { ctx, logs, ui };
-}
+let p = w.ctx.rakuPending();
+check('rakuPending: one request a key', p.requests.length, 6);
+check('rakuPending: the request carries the code and values', p.requests.find(r => r.code === '($^a - $^b) + 1').args, [43.1, 43.2]);
+check('a date reaches the sidebar as ISO 8601 text', p.requests.find(r => r.code.startsWith('$^d')).args, ['2026-10-08T00:00:00.000Z']);
 
-// A RegExp in `want` matches a string; an engine's own wording may change
-// between releases where the test only cares about its start.
-function matches(got, want) {
-  if (want instanceof RegExp) return typeof got === 'string' && want.test(got);
-  if (want && typeof want === 'object' && !Array.isArray(want)) {
-    return got && typeof got === 'object' && Object.keys(want).length === Object.keys(got).length
-      && Object.keys(want).every(k => matches(got[k], want[k]));
-  }
-  return JSON.stringify(got) === JSON.stringify(want);
-}
+const entered = w.ctx.rakuStore(sidebar(p));
+check('rakuStore enters the waiting formulas again', entered, 7);
+check('6 * 7', cell(0, 0).value, 42);
+check('the same formula elsewhere', cell(2, 1).value, 42);
+check('the 43.1 example', cell(0, 1).value, 0.9);
+check('a column range', cell(1, 0).value, 1);
+check('a list fills a column', cell(1, 1).value, [[1], [4], [9]]);
+check('an error', cell(2, 0).value, { error: '#DIV/0: the result divides by zero' });
+check('a date', cell(3, 1).value, '2026-10-08');
+check('nothing waits now', w.ctx.rakuPending().requests.length, 0);
 
-let failed = 0, passed = 0;
-function check(name, got, want) {
-  if (matches(got, want)) { passed++; return; }
-  failed++;
-  console.log(`not ok - ${name}\n    got:  ${JSON.stringify(got)}\n    want: ${want instanceof RegExp ? want : JSON.stringify(want)}`);
-}
+// ---- the Raku sheet: its own key, so the sidebar sees it change ------------------------
+const before = w.ctx.rakuPending().definitionsKey;
+check('rakuAddSheet', w.ctx.rakuAddSheet(['sub double($x) { $x * 2 }']), 'The Raku sheet is added.');
+check('rakuAddSheet, twice', w.ctx.rakuAddSheet(['x']), 'There is a Raku sheet already.');
+check('the Raku sheet changes the definitions key', w.ctx.rakuPending().definitionsKey !== before, true);
+check('rakuRecalculate enters every RAKU formula again', w.ctx.rakuRecalculate(), 7);
+check('after it, they wait again: the key holds the Raku sheet', /^⏳/.test(cell(0, 0).shown), true);
+const uses = w.addSheet('Uses', [[w.raku('double($^a)', 21)]]);
+p = w.ctx.rakuPending();
+check('the definitions travel with the requests', p.definitions, 'sub double($x) { $x * 2 }');
+w.ctx.rakuStore(sidebar(p));
+check('a sub from the Raku sheet', uses.rows[0][0].value, 42);
+check('and the old formulas again', cell(0, 0).value, 42);
 
-async function raku(p, code, ...values) {
-  try {
-    return { value: await p.ctx.RAKU(code, ...values) };
-  } catch (e) {
-    return { error: e.message };
-  }
-}
+// ---- a request the cache lost is asked for again ---------------------------------------
+w.addSheet('Lost', [[w.raku('1 + 1')]]);
+for (const k of [...w.cache.keys()]) if (k.startsWith('raku:req:')) w.cache.delete(k);
+p = w.ctx.rakuPending();
+check('a lost request: none this time', p.requests.length, 0);
+check('a lost request: its formula is entered again, and asks again', w.ctx.rakuPending().requests.map(r => r.code), ['1 + 1']);
 
-// ---- what Apps Script's parser refuses -----------------------------------------------
-// It reads every file when the project is saved, with a parser older than V8:
-// logical assignment, class fields and BigInt literals are a syntax error
-// there, though V8, and so this test, runs them. build.raku rewrites all
-// three out of the engine.
-for (const f of files) {
-  if (/^RakuWasm\d+\.gs$/.test(f)) continue;   // one string each, of base64
-  const src = fs.readFileSync(path.join(dir, f), 'utf8');
-  check(`${f}: no ??=, ||= or &&=`, (src.match(/\?\?=|\|\|=|&&=/g) ?? []).length, 0);
-  check(`${f}: no class fields`, (src.match(/\bclass\b[\w$\s.]*\{\s*[\w$]+\s*=/g) ?? []).length, 0);
-  check(`${f}: no BigInt literals`, (src.match(/(?<![\w$.])(?:0[xXoObB][\da-fA-F]+|\d+)n\b/g) ?? []).length, 0);
-}
+// ---- what the cache cannot hold ---------------------------------------------------------
+const big = 'x'.repeat(100000);
+const t = w.addSheet('Big', [[w.raku('$^s.chars', big)]]);
+check('values too large for the cache', t.rows[0][0].value, { error: 'the values are too large to hand to the Raku sidebar' });
 
-// ---- a cold load, timed ------------------------------------------------------------
-let t0 = Date.now();
-const p = project();
-let r = await raku(p, '$^a * 2', 21);
-const cold = Date.now() - t0;
-check('first formula', r, { value: 42 });
+// ---- an example from the sidebar, into the selected cell -------------------------------
+check('rakuInsert with no cell selected', w.ctx.rakuInsert('=RAKU("1")'), 'Select a cell first.');
+w.select(data, 5, 1);
+check('rakuInsert', w.ctx.rakuInsert('=RAKU("[*] 1..$^n", 30)'), 'Inserted into A5.');
+check('the inserted formula waits', /^⏳ Raku sidebar/.test(data.rows[4][0].shown), true);
+w.ctx.rakuStore(sidebar(w.ctx.rakuPending()));
+check('and the sidebar computes it', data.rows[4][0].value, '265252859812191058636308480000000');
 
-t0 = Date.now();
-for (let i = 0; i < 20; i++) await raku(p, '$^a * 2', i);
-const warm = (Date.now() - t0) / 20;
+// ---- Recalculate puts back every formula it took out, even when a write fails ----------
+w.failWrite(2);
+let threw = false;
+try { w.ctx.rakuRecalculate(); } catch (e) { threw = /too many/.test(e.message); }
+w.failWrite(0);
+check('a failed recalculation throws', threw, true);
+check('and puts back what it took out', cell(0, 0).formula, '=RAKU("6 * 7")');
 
-// ---- values in and out ----------------------------------------------------------------
-const date = vm.runInContext('new Date(Date.UTC(2026, 9, 8))', p.ctx);
-const cases = [
-  ['the 43.1 example from Microsoft', ['($^a - $^b) + 1', 43.1, 43.2], { value: 0.9 }],
-  ['exact decimals', ['$^a - $^b - $^c', 0.5, 0.4, 0.1], { value: 0 }],
-  ['a column range', ['[+] @_', [[0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1]]], { value: 1 }],
-  ['a block range flattens in @_', ['[+] @_', [[1, 2], [3, 4]], 10], { value: 20 }],
-  ['a row is one list', ['$^a.elems ~ " " ~ $^a.sum', [[1, 2, 3]]], { value: '3 6' }],
-  ['a block is a list of rows', ['$^a.map(*.sum).join(",")', [[1, 2], [3, 4]]], { value: '3,7' }],
-  ['empty cells are Any', ['@_.grep(*.defined).elems', [[1], [''], [3]]], { value: 2 }],
-  ['a rational rounds once', ['1/3 + 1/6'], { value: 0.5 }],
-  ['exactly, as text', ['(1/3 + 1/7).raku'], { value: '<10/21>' }],
-  ['a big integer is text', ['[*] 1..$^n', 30], { value: '265252859812191058636308480000000' }],
-  ['2**53 - 1 stays a number', ['2 ** 53 - 1'], { value: 9007199254740991 }],
-  ['a list fills a column', ['(1..4).map(* ** 2)'], { value: [[1], [4], [9], [16]] }],
-  ['a list of lists fills a table', ['(1..2).map({ ($_, $_ * 10) })'], { value: [[1, 10], [2, 20]] }],
-  ['ragged rows are padded', ['((1, 2, 3), (4,))'], { value: [[1, 2, 3], [4, '', '']] }],
-  ['a hash is two columns', ['{ b => 2, a => 1 }'], { value: [['a', 1], ['b', 2]] }],
-  ['booleans', ['$^a > 1', 2], { value: true }],
-  ['Unicode', ['"élan " ~ $^a.uc', 'ünï'], { value: 'élan ÜNÏ' }],
-  ['a date arrives as ISO text', ['$^d.substr(0, 10)', date], { value: '2026-10-08' }],
-  ['a sub from the Raku sheet', ['double($^a)', 4], { value: 8 }],
-  ['an IBAN', ['iban-ok($^s)', 'GB82 WEST 1234 5698 7654 32'], { value: true }],
-  ['a wrong IBAN', ['iban-ok($^s)', 'GB82 WEST 1234 5698 7654 33'], { value: false }],
-  ['a regex', ['~($^s ~~ / \\d+ " kg" /)', 'Box of 12 kg flour'], { value: '12 kg' }],
-  ['a syntax error', ['$^a +* 2', 1], { error: 'Two terms in a row (missing semicolon?)' }],
-  ['an unknown sub', ['nope()'], { error: /^Undefined routine 'nope'/ }],
-  ['division by zero', ['1/0'], { error: '#DIV/0: the result divides by zero' }],
-  ['infinity', ['1e300 * 1e300'], { error: '#NUM: the result is Inf' }],
-  ['a lazy list', ['1..*'], { error: 'the result is a lazy list; keep part of it with .head(N)' }],
-  ['code left over', ['* + 1'], { error: 'the formula returned code, not a value (is a * left over?)' }],
-  ['die', ['die "no such account"'], { error: 'no such account' }],
-];
-for (const [name, args, want] of cases) check(name, await raku(p, ...args), want);
-
-// `say` goes to the execution log, not into the cell; the add-on keeps none,
-// since an add-on's log is its developer's.
-r = await raku(p, 'say "from the formula"; 7');
-check('say', [r, p.logs.includes('from the formula')], [{ value: 7 }, !addon]);
-
-// ---- the menu, and the help it offers ---------------------------------------------------
-const MENU = ['Add the Raku sheet', 'Recalculate RAKU formulas', '-', 'How RAKU formulas work'];
-const m = project();
+// ---- the menu, and the help it offers -------------------------------------------------
+const m = world();
 vm.runInContext('onOpen({ authMode: "NONE" })', m.ctx);
-check('the menu', m.ui.menus.map(x => [x.kind, x.items.map(i => i[0])]), [[addon ? 'add-on menu' : 'menu Raku', MENU]]);
+check('the menu', m.ui.menus.map(x => [x.kind, x.items.map(i => i[0])]),
+  [[addon ? 'add-on menu' : 'menu Raku', ['Open the Raku sidebar', 'Recalculate RAKU formulas', '-', 'How RAKU formulas work']]]);
 check('every menu item has its function',
   m.ui.menus[0].items.filter(i => i[1]).map(i => typeof m.ctx[i[1]]), ['function', 'function', 'function']);
 check('onInstall', typeof m.ctx.onInstall, addon ? 'function' : 'undefined');
@@ -196,47 +231,5 @@ if (addon && typeof m.ctx.onInstall === 'function') {
 vm.runInContext('rakuHelp()', m.ctx);
 check('the help is a dialog', m.ui.alerts.map(a => [a[0], /=RAKU\("\$\^a \* 2", A1\)/.test(a[1])]), [['RAKU formulas', true]]);
 
-// ---- Recalculate takes the RAKU formulas out and puts them back ----------------------------
-function formulaBook(grid, failAt) {
-  const done = [], toasts = [];
-  let writes = 0;
-  const sheet = {
-    getDataRange: () => ({ getFormulas: () => grid.map(row => row.slice()) }),
-    getRange: (r, c) => ({
-      setFormula: f => {
-        if (++writes === failAt) throw new Error('Service invoked too many times');
-        grid[r - 1][c - 1] = f;
-        done.push(f === '' ? `clear ${r},${c}` : `put ${r},${c}`);
-      },
-    }),
-  };
-  const app = {
-    getActiveSpreadsheet: () => ({ getSheets: () => [sheet], getSheetByName: () => null, toast: t => toasts.push(t) }),
-    flush: () => done.push('flush'),
-  };
-  return { app, grid, done, toasts };
-}
-const GRID = () => [['=RAKU("1")', '', '=SUM(A1)'], ['', '=raku("[+] @_", A1:A3)', '']];
-let book = formulaBook(GRID());
-vm.runInContext('rakuRecalculate()', project({ app: book.app }).ctx);
-check('recalculate', [book.done, book.grid, book.toasts],
-  [['clear 1,1', 'clear 2,2', 'flush', 'put 1,1', 'put 2,2'], GRID(), ['2 RAKU formulas recalculated']]);
-book = formulaBook(GRID(), 2);
-let threw = false;
-try { vm.runInContext('rakuRecalculate()', project({ app: book.app }).ctx); } catch (e) { threw = /too many/.test(e.message); }
-check('a failed recalculation puts back what it took out', [threw, book.done, book.grid], [true, ['clear 1,1', 'put 1,1'], GRID()]);
-
-// ---- the Raku sheet itself -----------------------------------------------------------
-check('no Raku sheet', await raku(project({ lines: null }), 'double(2)'), { error: /^Undefined routine 'double'/ });
-r = await raku(project({ lines: ['sub ok() { 1 }', 'sub broken( { }'] }), '1 + 1');
-check('an error on the Raku sheet names its row', /^Raku sheet: .*row 2/.test(r.error) ? 'row 2' : r, 'row 2');
-
-// ---- damaged and missing engine files --------------------------------------------------
-const flip = s => { const at = s.indexOf('"') + 5000; return s.slice(0, at) + (s[at] === 'A' ? 'B' : 'A') + s.slice(at + 1); };
-r = await raku(project({ edit: (f, s) => (f === 'RakuWasm03.gs' ? flip(s) : s) }), '1');
-check('a damaged engine file', /damaged/.test(r.error) ? 'damaged' : r, 'damaged');
-r = await raku(project({ edit: (f, s) => (f === 'RakuWasm02.gs' ? null : s) }), '1');
-check('a missing engine file', r, { error: 'the Raku engine is incomplete: file RakuWasm02 is missing' });
-
-console.log(`${failed ? 'FAIL' : 'PASS'}: ${passed} passed, ${failed} failed; cold start ${cold} ms, then ${warm.toFixed(1)} ms a formula`);
+console.log(`${failed ? 'FAIL' : 'PASS'}: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

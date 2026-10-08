@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- sidebar-harness.html — runs the built Raku sidebar (dist/google-sheets-sidebar)
+<!-- sidebar-harness.html — runs the built Raku sidebar (dist/google-sheets)
      in a frame, with its engine from this server's dist/excel/ and a stand-in
      for google.script.run that plays the spreadsheet: two batches of waiting
      formulas, the second with one that never ends, a change to the Raku
@@ -62,7 +62,7 @@
     return run;
   };
 
-  const html = (await (await fetch('../dist/google-sheets-sidebar/RakuSidebar.html')).text())
+  const html = (await (await fetch('../dist/google-sheets/RakuSidebar.html')).text())
     .replace(/var BASE = '[^']*';/, `var BASE = '${BASE}';`)
     .replace('<head>', '<head><script>window.google = { script: { get run() { return parent.__run(); } } };<\/script>');
   const frame = document.getElementById('sidebar');

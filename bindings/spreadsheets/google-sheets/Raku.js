@@ -2,66 +2,58 @@
  * @OnlyCurrentDoc
  */
 
-// Raku.gs — =RAKU(code, values...) for Google Sheets.
+// Raku.gs — =RAKU(code, values...) for Google Sheets, computed in the Raku
+// sidebar.
 //
-// Every formula is its own Apps Script execution, so each one loads the
-// engine (RakuLoader.gs) unless Sheets happens to reuse an execution. Give one
-// formula a whole range rather than writing one formula per cell: a range
-// in, a column or a table out, one load.
+// Apps Script keeps nothing from one run to the next, and every formula is a
+// run of its own, so a formula that loaded the engine itself would pay for it
+// in every cell: about three seconds. The engine runs in the sidebar instead,
+// RakuSidebar.html, a page in the browser that stays open and keeps it
+// loaded, and this project holds no engine at all. A formula looks
+// for its result in the document's cache. The first time, it leaves its code
+// and values there instead, and shows RAKU_PENDING with the key it left them
+// under. The sidebar polls for such cells (rakuPending), runs them all as one
+// batch, hands the results back (rakuStore), and enters those formulas again:
+// Sheets runs a custom function again only when its formula changes, and this
+// time it finds its result.
+
+var RAKU_PENDING = '⏳ Raku sidebar';
+var RAKU_CACHE_SECONDS = 21600;   // the longest CacheService keeps a value
+var RAKU_MAX_VALUE = 90000;       // characters; CacheService takes 100 KB a value
 
 /**
  * Runs Raku code. $^a, $^b, ... are the values after the code, in order, and
  * @_ is all of them, ranges flattened. Subs written on the sheet named Raku
- * (column A) can be called by name.
+ * (column A) can be called by name. The Raku sidebar computes it: keep it
+ * open (Raku → Open the Raku sidebar).
  *
  * @param {string} code Raku code, for example "$^a * 2" or "[+] @_".
  * @param {any} values Cells, ranges or values the code reads.
  * @return The result. A list fills a column; a list of lists fills a table.
  * @customfunction
  */
-async function RAKU(code, ...values) {
-  var engine = await rakuSheetEngine();
-  var result;
-  try {
-    result = engine.run(rakuSheetDefinitions(), [{ code: code, args: values }]);
-  } catch (e) {
-    RAKUSHEET_ENGINE = null;
-    throw new Error(/call stack/i.test(String(e))
-      ? 'the Raku code recursed deeper than Apps Script allows'
-      : 'the Raku engine stopped: ' + e);
+function RAKU(code, ...values) {
+  var key = rakuKey(code, values, rakuSheetDefinitions());
+  var cache = CacheService.getDocumentCache();
+  var hit = cache.get('raku:res:' + key);
+  if (hit !== null) {
+    var answer = JSON.parse(hit);
+    if ('err' in answer) throw new Error(answer.err);
+    var cells = answer.cells;
+    return cells.length === 1 && cells[0].length === 1 ? cells[0][0] : cells;
   }
-  rakuPrinted(result.printed);
-  var answer = result.answers[0];
-  if ('err' in answer) throw new Error(answer.err);
-  var cells = RakuSheet.cells(answer.ok);
-  return cells.length === 1 && cells[0].length === 1 ? cells[0][0] : cells;
+  var request = JSON.stringify({ code: String(code), args: values });
+  if (request.length > RAKU_MAX_VALUE) throw new Error('the values are too large to hand to the Raku sidebar');
+  cache.put('raku:req:' + key, request, RAKU_CACHE_SECONDS);
+  return RAKU_PENDING + ' ' + key;
 }
 
-// Times each step a formula pays to load the engine, and Apps Script's own
-// base64 and gunzip beside the ones in RakuLoader.gs, for the execution log.
-// Run it from the Apps Script editor: choose rakuTiming, then Run.
-async function rakuTiming() {
-  var lines = [], t = Date.now();
-  function lap(label) { var now = Date.now(); lines.push(label + ': ' + (now - t) + ' ms'); t = now; }
-  RakuSheet.installShims(globalThis);
-  var b64 = RAKUSHEET_WASM.join('');
-  lap('join the engine files');
-  var gz = rakuSheetBase64(b64);
-  lap('base64, in JavaScript (' + gz.length + ' bytes)');
-  var wasm = rakuSheetGunzip(gz);
-  lap('gunzip, in JavaScript (' + wasm.length + ' bytes)');
-  var bytes = Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(b64), 'application/x-gzip')).getBytes();
-  lap('base64 and gunzip, Utilities (' + bytes.length + ' bytes)');
-  var copy = new Uint8Array(bytes.length);
-  for (var i = 0; i < bytes.length; i++) copy[i] = bytes[i] & 255;
-  lap('Utilities\' bytes into a Uint8Array');
-  var engine = await RakuSheet.start(RakuJS, { wasmBytes: wasm });
-  lap('start the engine');
-  engine.run('', [{ code: '1 + 2', args: [] }]);
-  lap('first formula');
-  engine.run('', [{ code: '1 + 2', args: [] }]);
-  lap('second formula');
-  console.log(lines.join('\n'));
+// What a formula's result depends on: its code, its values and the Raku
+// sheet. Dates are ISO 8601 text in the JSON, as the engine receives them.
+function rakuKey(code, values, definitions) {
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
+    String(code) + '\u0000' + JSON.stringify(values) + '\u0000' + definitions, Utilities.Charset.UTF_8);
+  return digest.slice(0, 8).map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
 }
 
 // Column A of the sheet named Raku, one line per row, so that a line number
@@ -76,21 +68,96 @@ function rakuSheetDefinitions() {
     .join('\n');
 }
 
-// ---- the attached script's own: the Marketplace add-on has RakuAddon.js here instead
-// A Raku menu of its own, and what formulas print goes to the execution log
-// (Extensions → Apps Script → Executions).
-function onOpen() {
-  rakuMenu(SpreadsheetApp.getUi().createMenu('Raku'));
+// ---- for the sidebar -------------------------------------------------------------
+
+// The formulas waiting for the sidebar, with the code and values they left.
+// A request the cache has lost is asked for again by entering its formula
+// again.
+function rakuPending() {
+  var waiting = {};
+  rakuEachFormula(function (shown) {
+    if (shown.indexOf(RAKU_PENDING + ' ') === 0) waiting[shown.slice(RAKU_PENDING.length + 1)] = true;
+  });
+  var keys = Object.keys(waiting);
+  var found = keys.length ? CacheService.getDocumentCache().getAll(keys.map(function (k) { return 'raku:req:' + k; })) : {};
+  var requests = [], lost = {};
+  keys.forEach(function (k) {
+    var r = found['raku:req:' + k];
+    if (r) {
+      var q = JSON.parse(r);
+      requests.push({ key: k, code: q.code, args: q.args });
+    } else {
+      lost[k] = true;
+    }
+  });
+  if (Object.keys(lost).length) {
+    rakuReenter(function (shown) {
+      return shown.indexOf(RAKU_PENDING + ' ') === 0 && lost[shown.slice(RAKU_PENDING.length + 1)];
+    });
+  }
+  var definitions = rakuSheetDefinitions();
+  return { definitions: definitions, definitionsKey: rakuKey('', [], definitions), requests: requests };
 }
 
-function rakuPrinted(lines) {
-  lines.forEach(function (line) { console.log(line); });
+// The sidebar's answers, [{key, cells} or {key, err}], into the cache, and
+// the formulas that waited for them entered again.
+function rakuStore(answers) {
+  var put = {}, done = {};
+  answers.forEach(function (a) {
+    var json = JSON.stringify('err' in a ? { err: a.err } : { cells: a.cells });
+    if (json.length > RAKU_MAX_VALUE) json = JSON.stringify({ err: 'the result is too large for the Raku sidebar to hand back' });
+    put['raku:res:' + a.key] = json;
+    done[a.key] = true;
+  });
+  CacheService.getDocumentCache().putAll(put, RAKU_CACHE_SECONDS);
+  return rakuReenter(function (shown) {
+    return shown.indexOf(RAKU_PENDING + ' ') === 0 && done[shown.slice(RAKU_PENDING.length + 1)];
+  });
+}
+
+function rakuShowSidebar() {
+  SpreadsheetApp.getUi().showSidebar(HtmlService.createHtmlOutputFromFile('RakuSidebar').setTitle('Raku'));
+}
+
+// An example from the sidebar, into the selected cell; the sidebar computes
+// it on its next round.
+function rakuInsert(formula) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cell = ss.getCurrentCell() || ss.getActiveRange();
+  if (!cell) return 'Select a cell first.';
+  cell.setFormula(formula);
+  return 'Inserted into ' + cell.getA1Notation() + '.';
+}
+
+// The two example subs come from the sidebar, whose engine files have them.
+function rakuAddSheet(lines) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var existing = ss.getSheetByName('Raku');
+  if (existing) {
+    ss.setActiveSheet(existing);
+    return 'There is a Raku sheet already.';
+  }
+  var sheet = ss.insertSheet('Raku');
+  // Plain text, so that a line Sheets would read as a number or a date stays code.
+  var range = sheet.getRange(1, 1, lines.length, 1);
+  range.setNumberFormat('@');
+  range.setValues(lines.map(function (l) { return [l]; }));
+  sheet.setColumnWidth(1, 900);
+  sheet.getRange('A:A').setFontFamily('Roboto Mono');
+  return 'The Raku sheet is added.';
+}
+
+// ---- the menu ----------------------------------------------------------------------
+
+// ---- the attached script's own: the Marketplace add-on has RakuAddon.js here instead
+function onOpen() {
+  rakuMenu(SpreadsheetApp.getUi().createMenu('Raku'));
 }
 // ---- end of the attached script's own
 
 function rakuMenu(menu) {
   menu
-    .addItem('Add the Raku sheet', 'rakuAddSheet')
+    .addItem('Open the Raku sidebar', 'rakuShowSidebar')
     .addItem('Recalculate RAKU formulas', 'rakuRecalculate')
     .addSeparator()
     .addItem('How RAKU formulas work', 'rakuHelp')
@@ -106,41 +173,41 @@ function rakuHelp() {
     '    =RAKU("[+] @_", A1:A10)',
     '    =RAKU("(1..4).map(* ** 2)")    fills a column',
     '',
-    'Decimals are exact and integers have no size limit. Subs written in column A of a sheet named Raku can be called from any formula: Add the Raku sheet makes one, with two examples. Sheets does not know a formula uses that sheet, so after changing it, choose Recalculate RAKU formulas.',
+    'The Raku sidebar computes the formulas: keep it open (Raku → Open the Raku sidebar). A formula waiting for it shows ' + RAKU_PENDING + '.',
     '',
-    'The engine runs inside this spreadsheet: formulas send nothing anywhere. More at raku.online/embed/spreadsheets.'
+    'Subs written in column A of a sheet named Raku can be called from any formula; the sidebar can add that sheet, with two examples. When the Raku sheet changes, the sidebar calculates the formulas again.',
+    '',
+    'The engine runs in your browser, loaded from raku.online: formulas send nothing anywhere else. More at raku.online/embed/spreadsheets.'
   ].join('\n'), ui.ButtonSet.OK);
 }
 
-function rakuAddSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss.getSheetByName('Raku')) {
-    SpreadsheetApp.getUi().alert('There is a Raku sheet already.');
-    return;
-  }
-  var lines = RakuSheet.exampleDefinitions('RAKU');
-  var sheet = ss.insertSheet('Raku');
-  // Plain text, so that a line Sheets would read as a number or a date stays code.
-  var range = sheet.getRange(1, 1, lines.length, 1);
-  range.setNumberFormat('@');
-  range.setValues(lines.map(function (l) { return [l]; }));
-  sheet.setColumnWidth(1, 900);
-  sheet.getRange('A:A').setFontFamily('Roboto Mono');
+function rakuRecalculate() {
+  var n = rakuReenter(function (shown, formula) { return /\bRAKU\s*\(/i.test(formula); });
+  SpreadsheetApp.getActiveSpreadsheet().toast(n + ' RAKU formula' + (n === 1 ? '' : 's') + ' recalculated', 'Raku');
+  return n;
 }
 
-// Sheets recalculates a custom function only when its arguments change, so
-// an edit on the Raku sheet does not reach the formulas that use it. This
-// takes every RAKU formula out and puts it back, and puts back whatever it
-// took out even when something fails in between.
-function rakuRecalculate() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var hits = [];
-  ss.getSheets().forEach(function (sheet) {
-    sheet.getDataRange().getFormulas().forEach(function (row, r) {
-      row.forEach(function (f, c) {
-        if (/\bRAKU\s*\(/i.test(f)) hits.push({ cell: sheet.getRange(r + 1, c + 1), formula: f });
+// ---- formulas in the spreadsheet ------------------------------------------------------
+
+function rakuEachFormula(f) {
+  SpreadsheetApp.getActiveSpreadsheet().getSheets().forEach(function (sheet) {
+    var range = sheet.getDataRange();
+    var shown = range.getDisplayValues(), formulas = range.getFormulas();
+    formulas.forEach(function (row, r) {
+      row.forEach(function (formula, c) {
+        if (formula) f(shown[r][c], formula, sheet, r + 1, c + 1);
       });
     });
+  });
+}
+
+// Takes out the formulas `wanted` picks and puts them back, which makes
+// Sheets run them again, and puts back whatever it took out even when
+// something fails in between.
+function rakuReenter(wanted) {
+  var hits = [];
+  rakuEachFormula(function (shown, formula, sheet, row, col) {
+    if (wanted(shown, formula)) hits.push({ cell: sheet.getRange(row, col), formula: formula });
   });
   var cleared = 0;
   try {
@@ -149,5 +216,5 @@ function rakuRecalculate() {
   } finally {
     hits.slice(0, cleared).forEach(function (h) { h.cell.setFormula(h.formula); });
   }
-  ss.toast(hits.length + ' RAKU formula' + (hits.length === 1 ? '' : 's') + ' recalculated', 'Raku');
+  return hits.length;
 }
