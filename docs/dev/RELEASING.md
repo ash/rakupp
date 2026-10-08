@@ -896,7 +896,7 @@ cp ../raku++/rakujs/playground/examples.js www/play/
 #    Then check the bundle you copied, not the build — see below:
 strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'
 rakupp ../raku++/tools/koans-gate.raku --rakujs=www   # gate 6b on the bundle itself
-sites/spreadsheets/sync.sh ../raku++   # the Excel add-in, rebuilt on that engine
+sites/spreadsheets/sync.sh ../raku++   # the Excel add-in and the Sheets zip, on that engine
 
 cd sites/spec
 rakupp tools/gen-roast-map.raku /path/to/roast.txt $(date +%F)      # 2. gate 1's output
@@ -1123,10 +1123,12 @@ The cost is named so the list stays a record rather than a ritual.
       `strings www/rakujs.wasm | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$'`. *(v2.0.0
       shipped with `/play/` announcing 1.7.0; v3.0.0 with 2.0.0; v3.22.0's was
       built by a two-release-old compiler because "native" was never checked.)*
-- [ ] **Rebuild the Excel add-in on that engine:** `sites/spreadsheets/sync.sh
-      ../raku++` in the site checkout writes `www/embed/excel/`, which
-      `https://raku.online/embed/excel/manifest.xml` users load. The site's
-      `build.sh` fails while the add-in's engine is not `www/rakujs.wasm`.
+- [ ] **Rebuild the spreadsheet downloads on that engine:**
+      `sites/spreadsheets/sync.sh ../raku++` in the site checkout writes
+      `www/embed/excel/`, which `https://raku.online/embed/excel/manifest.xml`
+      users load, and `www/embed/spreadsheets/raku-google-sheets.zip`. The
+      site's `build.sh` fails while either carries an engine other than
+      `www/rakujs.wasm`.
 - [ ] **Check the Google Sheets library:** the tag's `wasm (Raku.js)` job
       pushes `bindings/spreadsheets` to the Apps Script library and freezes a
       version named after the tag. Without the `CLASPRC_JSON` secret and the
