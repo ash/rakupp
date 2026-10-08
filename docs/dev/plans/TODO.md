@@ -57,8 +57,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `perf-guard --check` on a quiet machine (inconclusive at load 4 on
   2026-10-03; in cycles `fib`/`mainwhen` level, `objnew` +1.5% from code
   placement).
-- [ ] **`--cnp` copy-and-patch**: [CNP-PLAN.md](CNP-PLAN.md). P1 on ELF waits
-  on a Linux CI run of the gate; P2 arena allocation; P3 `.kv`, the statement
+- [ ] **`--cnp` copy-and-patch**: [CNP-PLAN.md](CNP-PLAN.md). P5, the
+  platform matrix: only the linux-aarch64 release carries stencils. Next are
+  P5a (one table per architecture in the universal macOS build), P5b
+  (`-fno-jump-tables` for ELF x86-64) and P5c (the gate in CI, which closes
+  P1), then OpenBSD, riscv64 and Windows. P2 arena allocation; P3 `.kv`, the statement
   modifier, `.map`, closures, `[+]`, whole-array assignment, `given`, `return`;
   the threaded-program gap; P4 make it the default and remove `--jit`.
 - [ ] **`--types`**: paused 2026-09-29. [TYPES-PLAN.md](TYPES-PLAN.md). N1 the

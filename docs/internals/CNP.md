@@ -69,6 +69,10 @@ rakupp -V
 Cnp     copy-and-patch stencils for arm64
 ```
 
+Which builds carry a table is in
+[guide/JIT.md](../guide/JIT.md#which-snippets-your-binary-has). For each one
+that does not, [CNP-PLAN.md](../dev/plans/CNP-PLAN.md) P5 says what stops it.
+
 ---
 
 ## 2. The register file

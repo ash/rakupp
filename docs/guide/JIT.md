@@ -285,8 +285,8 @@ the compiled backends' shared limit, answered a little more usefully here.
 `--jit` needs a C++ compiler on the machine and a cache on the disk, and the run
 that benefits is the second one. `--cnp` is a second backend behind the same
 machinery that needs neither — and it is the one expected to survive: the plan
-is for it to become the default and for `--jit` to go, once it has been run on
-more than the one platform it has been run on so far.
+is for it to become the default and for `--jit` to go, once every platform the
+release ships carries its snippets ([below](#which-snippets-your-binary-has)).
 
 ```bash
 rakupp --cnp prog.raku
@@ -341,9 +341,27 @@ programs — which is most programs, and all of the ones above — are unaffecte
 rakupp -V
 ```
 
-reports the instruction set the snippets were built for, or says there are none.
-Today that is arm64; the x86-64 support is written and has not been run. A binary
-with no snippets says so once and runs interpreted.
+reports the instruction set the snippets were built for, or says there are none
+and why. A binary with no snippets says so once under `--cnp` and runs
+interpreted, so the flag is safe everywhere. It just does nothing there.
+
+The snippets are compiled for one instruction set when rakupp itself is built,
+so whether a binary has them depends on how it was built:
+
+| | `--cnp` |
+|---|---|
+| macOS, built from source (arm64 or x86-64) | runs |
+| macOS release download | no snippets: it is a universal binary, and the snippets are built for one instruction set |
+| Linux aarch64, release download or built from source with Clang | runs |
+| Linux x86-64 | no snippets |
+| Linux, built with GCC before 15 | no snippets: they need `musttail` (Clang, or GCC 15 and later) |
+| riscv64 | no snippets |
+| Windows (MSVC and MinGW) | no snippets |
+| OpenBSD | no snippets |
+| the JS and WASM backends | not applicable: there is no machine code to patch |
+
+[CNP-PLAN.md](../dev/plans/CNP-PLAN.md) P5 is the work that fills in the rest of
+the table.
 
 ### In a bundled binary
 

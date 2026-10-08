@@ -17,6 +17,10 @@ The sections below are the design as it landed; where they say "53 stencils"
 or "nothing else", read them as of 2026-09-19. What is open is the phase table
 at the end: x86-64 (P1) first.
 
+**Platforms (2026-10-08):** of the six release downloads, only linux-aarch64
+carries a stencil table; the other five run `--cnp` interpreted. The matrix and
+the work for each platform are [P5](#p5-the-platform-matrix-2026-10-08).
+
 **Both flags are provisional, and the intended end state is that neither
 survives as a flag.** `--jit` and `--cnp` are one feature with two backends,
 kept apart only so each can be measured against the interpreter on its own. The
@@ -532,11 +536,12 @@ One binary, no compiler and no rakupp on the machine running it.
 | | | |
 |---|---|---|
 | **P0** | the ABI, the stencils, the extractor, the patcher, the lowering, `--cnp`, the gate | **DONE** |
-| **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **fixed** (the GOT slot held value − 4); Mach-O verified and ungated 2026-10-01; ELF waits on a Linux CI run of the gate |
+| **P1** | x86-64: find and fix what makes a patched kernel return the wrong answer, on both object formats, then drop the startup refusal | **fixed** (the GOT slot held value − 4); Mach-O verified and ungated 2026-10-01; ELF waits on a Linux CI run of the gate, and the Linux x86-64 build has no table to run it with until P5b |
 | **P2** | arena allocation, so kernels share pages instead of taking one each | |
 | **P3** | widen the lowering toward the whitelist's edges (`ListExpr`, `min=`/`max=`), then past it — every step reopening the no-calls question | **in part**: element reads and stores, calls, methods, inlined small subs, the Rat lane (2026-09-29); `for @array` (2026-10-01, see below). Next: `.kv`, the statement modifier, `.map` — and the bodies, which are now the limit |
 | | *and*: re-read read-only slots per iteration instead of refusing a threaded program outright, if the measured cost of one inline reload turns out to be worth the generality | |
 | **P4** | make it the default and retire `--jit` | |
+| **P5** | a stencil table in every release download: one table per architecture in a universal build, an object with nothing but text on ELF x86-64, the differential gate in CI, then OpenBSD, RISC-V and Windows | open (2026-10-08); [below](#p5-the-platform-matrix-2026-10-08) |
 
 ### `for @array`, 2026-10-01
 
@@ -587,6 +592,142 @@ day), 15 programs enter a kernel (14), 1,647 kernel entries (77) —
 kernels being small and entered per row. What still refuses: closures
 (`.map({ … })` in a body), `[+]`, whole-array assignment, `given`, `return`.
 
+### P5: the platform matrix, 2026-10-08
+
+Which builds carry a stencil table. The table comes from the release workflow's
+run on c2de1666: each job's configure and extract lines, and `t/run.raku`'s two
+kernel-entry checks. Clang 22 compiles of `stencils.c` filled in the targets CI
+does not build:
+
+| build | table | what stops it |
+|---|---|---|
+| macOS arm64, from source | arm64; kernels run | — |
+| macOS x86-64, from source | x86_64; kernels run | — (P1, verified under Rosetta) |
+| **macOS release** (universal) | none | a universal build has no single instruction set to extract for |
+| **Linux aarch64 release** (Clang 21) | arm64, 63 stencils; the suite enters a kernel | — |
+| **Linux x86-64 release** (Clang 21) | none | the stencil object holds `.rodata`; with a table, the P1 startup refusal |
+| Linux x86-64, Clang 18 (the TSan job) | none | `.rodata.cst16` and `.rodata` |
+| Linux, GCC 13 (the GCC job), or any GCC before 15 | none | no `musttail`, so the configure probe fails |
+| riscv64 Linux (`riscv64.yml`) | none | an ELF machine the extractor does not know, and no patcher |
+| **Windows release, MSVC** | none | the MSVC driver cannot compile `stencils.c` |
+| **Windows release, MinGW** | none | the stencils compile; the extractor does not read COFF |
+| **OpenBSD release** (Clang 19) | none | `.note.gnu.property` and `.rodata.cst16`; with a table, the P1 refusal (it is ELF x86-64) |
+| the JS and WASM backends | — | no machine code to patch; not a goal |
+
+`stencils.c` is written once and compiled for each target, so none of the
+items below adds a stencil. The per-platform work is in the extractor, the
+patcher and the build.
+
+**P5a — the macOS release: one table per architecture.** A universal build
+compiles every source once per architecture, so the generated `CnpStencils.cpp`
+can hold both tables, one under `#if defined(__aarch64__)` and one under
+`#elif defined(__x86_64__)`. CMake compiles `stencils.c` once for each entry of
+`CMAKE_OSX_ARCHITECTURES` (`-arch arm64`, `-arch x86_64`), runs `cnp-extract` on
+each object, and joins the two outputs. Both objects are Mach-O, which the host
+reads, and a `--guard` argument to the extractor would let each output wrap
+itself. `-V` then names the architecture of the slice that is running. The check:
+the macOS job's two kernel-entry checks stop skipping, and the x86_64 slice runs
+the gate under Rosetta (`arch -x86_64`) on the arm64 runner.
+
+**P5b — ELF x86-64: an object with nothing but text.** A local compile for
+`x86_64-unknown-linux-gnu` (Apple clang and clang 22) puts a 60-byte `.rodata`
+beside the code: the lookup tables clang builds from a `switch`, referenced from
+`rk_st_not`, `rk_st_jt` and `rk_st_jf`. Mach-O x86-64 and ELF aarch64 get none.
+`-fno-jump-tables` in `RAKUPP_CNP_CFLAGS` removes it in both compilers.
+`.rodata.cst16` comes from Clang 18 and OpenBSD's Clang 19 (clang 22 produces
+none) and is a 16-byte constant. Find the stencil with one of those compilers
+and rewrite it so it needs no constant. If constants keep coming back as the
+stencils grow, the general fix is to carry a stencil's read-only data into the
+mapping beside the GOT slots and make a reference to it one more hole kind.
+Until then, refusing the object is what keeps the "no constants" rule honest.
+
+**P5c — the differential gate in CI.** No workflow runs `t/jit/run.raku --cnp`.
+CI has only `t/run.raku`'s two kernel-entry checks, and they skip where there is
+no table, so a release platform with an empty table passes unnoticed. That is
+how five of the six release downloads came to have none. Two steps:
+
+- Run the gate in every release job whose `-V` names an instruction set.
+- Make the macOS and both Linux release jobs fail when `-V` says `none`, so a
+  missing table is a red build instead of a skip.
+
+On linux-x86_64, once P5b is in, run the gate with `RAKUPP_CNP_X86=1`. When it
+agrees, delete the `#if !defined(__APPLE__)` refusal in `checkTable()`
+(`src/cnp/CnpEmit.cpp`), which closes P1.
+
+**P5d — GCC before 15.** Nothing breaks: the configure probe turns this into an
+empty table. There are two choices. The first is to state "Clang, or GCC 15 and
+later" as the requirement, which guide/JIT.md does. The second is to compile
+`stencils.c` alone with a clang found at configure time. The stencils meet the
+host only through the C ABI in `CnpAbi.h`, so the two compilers need not match,
+and the second choice gives a GCC build from source a table too.
+
+**P5e — OpenBSD.** Two of its blockers are shared: `.rodata.cst16` (P5b) and
+the ELF x86-64 refusal (P1, through P5c). The third is OpenBSD's own. Its clang
+defaults to `-fcf-protection=branch`, which adds a `.note.gnu.property` section
+(metadata, which the extractor can skip like the other non-code sections) and
+starts every stencil with `endbr64` (63 of 63 in a clang 22 compile for
+`x86_64-unknown-openbsd`). OpenBSD enforces indirect-branch targets on CPUs
+that support it. Two questions are answered only by running the gate in the
+OpenBSD job: whether a kernel entered by the trampoline's indirect call passes
+that check, and whether `mprotect` from read/write to read/execute is allowed
+there as it is on macOS and Linux.
+
+**P5f — riscv64.** The extractor needs to recognise ELF machine 243 (`EM_RISCV`)
+and skip `.riscv.attributes`. Compile the stencils with `-mno-relax`, so no
+`R_RISCV_RELAX` asks for linker relaxation. A clang 22 object then holds three
+relocation kinds:
+
+- `R_RISCV_CALL_PLT`, 206 sites: an `auipc` + `jalr` pair, for calls and tail
+  calls.
+- `R_RISCV_GOT_HI20`, 187 sites.
+- `R_RISCV_PCREL_LO12_I`, 187 sites. It points at the `auipc` it pairs with
+  rather than at a symbol, so the extractor has to resolve each pair before it
+  records a hole.
+
+The patcher needs:
+
+- the U-type hi20 and I-type lo12 encodings, with the `+0x800` rounding;
+- the `auipc` + `jalr` pair for a call;
+- the folding: `lui` + `addi` in place of the GOT load when a value fits in 32
+  bits, as `MOVZ` + `MOVK` does on arm64.
+
+After patching, `__builtin___clear_cache` reaches Linux's `riscv_flush_icache`;
+check that it flushes every hart, since a thread can move between harts. The gate
+runs on the RISC-V board and in `riscv64.yml`. A cross-compiled build
+(`tools/riscv64-toolchain.cmake`) gets no table, because CMake refuses to run
+the extractor. Building `cnp_extract` with the host compiler and `stencils.c`
+with the cross compiler fixes that: the extractor reads the target's object,
+which is ELF either way.
+
+**P5g — Windows.** Four parts:
+
+1. **Compiling the stencils.** The MSVC build compiles `stencils.c` with a clang
+   found at configure time (`--target=x86_64-pc-windows-msvc`), because MSVC has
+   no `musttail`. That target refuses `-fPIC`, so the flag has to go. MinGW's
+   GCC compiles the stencils already.
+2. **Reaching a 64-bit hole.** With no GOT, clang for the MSVC target reaches a
+   hole with `lea` + `IMAGE_REL_AMD64_REL32`: a 32-bit PC-relative address,
+   which cannot carry a 64-bit value. The holes need an indirection. Either
+   declare them `__declspec(dllimport)`, so each is loaded through an `__imp_`
+   pointer, or use `-mcmodel=large`. Compile both ways and keep the one whose
+   object the extractor can read. The MinGW target has the indirection already:
+   a clang 22 object loads each `_JIT_OPn` through a `.rdata$.refptr._JIT_OPn`
+   pointer, which is a GOT slot under another name.
+3. **The extractor:** a COFF reader for `IMAGE_REL_AMD64_REL32` and `ADDR64`
+   that reads the `.refptr` sections as GOT slots and skips the empty
+   `.data`/`.bss` and `.debug$S`.
+4. **The run-time side** is mostly there. `CnpEmit.cpp` already maps code with
+   `VirtualAlloc`/`VirtualProtect`. The stencil signature has three arguments,
+   which fit in Win64's four argument registers. No exception crosses a code
+   buffer (the no-throw rule), so the buffer should need no unwind entries
+   (`RtlAddFunctionTable`). The gate on the two Windows jobs is what confirms
+   that.
+
+Order: P5a and P5b are small and between them would give three of the six
+release downloads a table. P5c comes with them, so the new tables are checked
+from their first run. P5e then mostly follows from P5b and P5c. P5f and P5g are
+the two that need new code in the extractor and the patcher.
+
 ### What P4 needs before the flags go
 
 The end state is no flag at all: hot loops tier up because that is what the
@@ -596,7 +737,8 @@ the only large one.
 1. **P1, a platform matrix.** Making a backend the default that has run on one
    instruction set would be making it the default on trust. ELF is exercised on
    aarch64 now and passes; x86-64 is exercised and *fails*, which is why it is
-   refused rather than shipped.
+   refused rather than shipped. As of 2026-10-08 the question is wider: only
+   the linux-aarch64 release carries a table at all. That matrix is P5.
 2. **The threaded gap closed or accepted.** Today a loop reached while another
    Raku thread is live stays interpreted (see the register file above). As a
    flag, that is a documented limitation; as the default, it is a silent cliff

@@ -788,8 +788,8 @@ in registers for the loop's duration and another thread's write would not be
 seen.
 
 `rakupp -V` reports whether the binary in front of you carries any snippets, and
-for which instruction set. Today that is arm64; the x86-64 support is written
-and untested. The design is in
+for which instruction set. Which builds carry them is in
+[JIT.md](JIT.md#which-snippets-your-binary-has). The design is in
 [CNP-PLAN.md](../dev/plans/CNP-PLAN.md).
 
 `--bundle` can carry it. A bundled binary has no options of its own — everything
