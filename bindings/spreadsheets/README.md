@@ -116,6 +116,7 @@ same name and contents.
 - A formula has 30 seconds, Google's limit for a custom function.
 - What a formula prints with `say` goes to the script's execution log
   (**Extensions → Apps Script → Executions**), not into the cell.
+- **Raku → How RAKU formulas work** shows a short help.
 - A date cell arrives as text in ISO 8601: `2026-10-08T00:00:00.000Z`.
 
 ## Excel
@@ -223,8 +224,19 @@ the answer back into cells.
   `fetch` and no binary files, so `build.raku` stores the WebAssembly
   gzip-compressed and base64-encoded in five `RakuWasmNN.gs` files.
   `RakuLoader.gs` decodes and inflates it in plain JavaScript and checks the
-  gzip CRC. `RakuSheet.installShims` adds the `TextDecoder`, `performance` and
-  `crypto` that the Emscripten glue expects.
+  gzip CRC. `RakuSheet.installShims` adds the `TextDecoder`, `performance`,
+  `crypto` and `Array.prototype.at` that the Emscripten glue expects. Apps
+  Script reads every file with a parser of its own when the project is saved,
+  and that parser refuses logical assignment (`a ??= b`) and class fields,
+  which the glue has; `build.raku` rewrites both into what they mean.
+- **The Marketplace add-on** (`dist/google-sheets-addon`) is the same project
+  with the add-on's own entry points, [`google-sheets/RakuAddon.js`](google-sheets/RakuAddon.js)
+  in place of the marked region of `Raku.js`: its menu is under **Extensions**,
+  `onInstall` adds it to the spreadsheet already open, and what formulas print
+  is not kept, since an add-on's log is its developer's. Its `appsscript.json`
+  asks for one scope, `spreadsheets.currentonly`, and turns exception logging
+  off. [`store/README.md`](store/README.md) has the listings in the Google
+  Workspace Marketplace and Microsoft AppSource.
 
 ### Building
 
@@ -235,8 +247,12 @@ cd bindings/spreadsheets && rakupp build.raku --help
 `--base` is where the Excel files will be served from (the manifest's
 addresses), `--rakujs` the Raku.js build to ship (`rakujs/playground` by
 default; [`rakujs/build.sh`](../../rakujs/build.sh) makes a fresh one), and
-`--out` the output directory (`dist`). Each build stamps every Excel file
-reference with `?v=…`, so Office's cache never mixes two builds.
+`--out` the output directory (`dist`), which gets `excel`, `google-sheets`
+and `google-sheets-addon`. Each build stamps every Excel file reference with
+`?v=…`, so Office's cache never mixes two builds. `--store` also draws the
+listings' icons into `store`, and `--revision` raises the fourth number of
+the manifest's version, which AppSource needs to take a changed manifest
+between releases.
 
 ### Tests
 
@@ -244,9 +260,16 @@ reference with `?v=…`, so Office's cache never mixes two builds.
 node bindings/spreadsheets/test/sheets.mjs
 ```
 
-runs the built Google Sheets project in a bare V8 context: no browser or Node
-globals, files in a random order, a stand-in `SpreadsheetApp`. It checks
-values, errors, the Raku sheet, and damaged or missing engine files.
+```bash
+node bindings/spreadsheets/test/sheets.mjs --addon
+```
+
+run the built Google Sheets project, and the add-on, in a bare V8 context: no
+browser or Node globals, no `Array.prototype.at`, files in a random order, a
+stand-in `SpreadsheetApp`. They check values, errors, the Raku sheet, the
+menu and its help, **Recalculate** (which puts every formula back, even when
+a write fails), damaged or missing engine files, and that no file has the
+syntax Apps Script's parser refuses.
 
 [`test/excel-harness.html`](test/excel-harness.html) drives the built Excel
 add-in in a browser, with stand-ins for `CustomFunctions` and `Excel.run`. It

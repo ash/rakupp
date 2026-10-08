@@ -1134,6 +1134,14 @@ The cost is named so the list stays a record rather than a ritual.
       version named after the tag. Without the `CLASPRC_JSON` secret and the
       `SHEETS_LIBRARY_SCRIPT_ID` variable it publishes nothing and leaves a
       notice on the run saying so.
+- [ ] **Give the Google Sheets add-on its new version:** the same job pushes
+      `dist/google-sheets-addon` to the add-on's Apps Script project
+      (`SHEETS_ADDON_SCRIPT_ID`) and makes a version, and its notice names
+      the number. Users get it once that number is entered in the Marketplace
+      SDK, **App Configuration → Sheets add-on → Version**
+      ([bindings/spreadsheets/store/README.md](../../bindings/spreadsheets/store/README.md)).
+      The Excel add-in in AppSource needs nothing: its files are the ones
+      raku.online serves.
 - [ ] **Run the PyPI workflow against the tag** (Actions → PyPI → Run
       workflow). *(Nothing uploads on tagging; `pip install rakulang` serves
       the last version somebody ran it for.)*

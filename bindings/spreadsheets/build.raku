@@ -4,8 +4,10 @@
 #   rakupp bindings/spreadsheets/build.raku --base=https://example.org/raku-excel/
 #
 # writes dist/excel (the files to serve, and the manifest that points at
-# them) and dist/google-sheets (the files of an Apps Script project). Both
-# carry the same engine, a Raku.js build (rakujs/playground by default).
+# them), dist/google-sheets (the files of an Apps Script project attached to
+# a spreadsheet) and dist/google-sheets-addon (the same project as a
+# Marketplace add-on). All carry the same engine, a Raku.js build
+# (rakujs/playground by default).
 
 use JSON::Fast;
 use Data::Native :digest;
@@ -16,7 +18,9 @@ my $ROOT = $HERE.parent.parent;
 sub MAIN(
     Str :$base   = 'https://localhost:3000/',   #= HTTPS address the Excel files will be served from, ending in /
     Str :$rakujs = ~$ROOT.add('rakujs/playground'),   #= directory holding rakujs.js and rakujs.wasm
-    Str :$out    = ~$HERE.add('dist'),           #= where to write excel/ and google-sheets/
+    Str :$out    = ~$HERE.add('dist'),           #= where to write excel/, google-sheets/ and google-sheets-addon/
+    Int :$revision = 0,                          #= the fourth number of the Excel manifest's version, raised to resubmit it between releases
+    Bool :$store,                                #= also write store/: the icons the Marketplace and AppSource listings take
 ) {
     die "--base must end with a slash: $base\n" unless $base.ends-with('/');
     note "warning: Excel loads add-ins over HTTPS only; $base will not work there" unless $base.starts-with('https://');
@@ -24,7 +28,7 @@ sub MAIN(
     my $engine-wasm = $rakujs.IO.add('rakujs.wasm');
     die "no Raku.js build in $rakujs (run rakujs/build.sh)\n" unless $engine-js.e && $engine-wasm.e;
 
-    my $version = repo-version();
+    my $version = repo-version($revision);
     my $core    = $HERE.add('core/rakusheet-core.js').slurp
                     .subst("'@RAKUSHEET_DRIVER@'", to-json($HERE.add('rakusheet.raku').slurp));
     die "core/rakusheet-core.js lost its @RAKUSHEET_DRIVER@ slot\n" if $core.contains('@RAKUSHEET_DRIVER@');
@@ -37,14 +41,17 @@ sub MAIN(
                             rakusheet-worker.js>.map({ $HERE.add("excel/$_").slurp })).substr(0, 10);
 
     build-excel($out.IO.add('excel'), :$base, :$version, :$tag, :$core, :$engine-js, :$engine-wasm);
-    build-sheets($out.IO.add('google-sheets'), :$core, :$engine-js, :$engine-wasm);
+    build-sheets($out.IO, :$core, :$engine-js, :$engine-wasm);
+    build-store($out.IO.add('store')) if $store;
 }
 
 # CMakeLists.txt's VERSION, as the four numbers an Office manifest wants.
-sub repo-version(--> Str) {
+# AppSource takes a changed manifest only with a higher version, so a
+# resubmission between releases raises the fourth.
+sub repo-version(Int $revision --> Str) {
     my $cmake = $ROOT.add('CMakeLists.txt').slurp;
     my $v = ($cmake ~~ / VERSION \s+ (\d+ '.' \d+ '.' \d+) /) ?? ~$0 !! '0.0.0';
-    "$v.0"
+    "$v.$revision"
 }
 
 sub fresh(IO::Path $dir) {
@@ -79,8 +86,22 @@ sub build-excel(IO::Path $dir, :$base, :$version, :$tag, :$core, :$engine-js, :$
     say "excel:         $dir  (manifest points at $base)";
 }
 
-sub build-sheets(IO::Path $dir, :$core, :$engine-js, :$engine-wasm) {
+# The Apps Script project twice: google-sheets/, the script attached to one
+# spreadsheet, and google-sheets-addon/, the same as a Marketplace add-on.
+# They differ in Raku.gs's marked region (google-sheets/RakuAddon.js has the
+# add-on's) and in appsscript.json.
+# The listings' pictures that this can draw: the Marketplace's application
+# icons (32 and 128) and the OAuth consent screen's logo (120), and
+# AppSource's logo (216 to 350; 300). store/banner.html is the Marketplace's
+# card banner, which needs a browser to draw its words (store/README.md).
+sub build-store(IO::Path $dir) {
     fresh($dir);
+    $dir.add("icon-$_.png").spurt: icon($_) for 32, 120, 128, 300;
+    $dir.add('banner.html').spurt: $HERE.add('store/banner.html').slurp;
+    say "store:         $dir  (icons for the listings, and banner.html)";
+}
+
+sub build-sheets(IO::Path $out, :$core, :$engine-js, :$engine-wasm) {
     # gzip -n leaves the name and the time out, so that the same engine
     # always gives the same files.
     my $gz = run('gzip', '-9', '-n', '-c', ~$engine-wasm, :out, :bin).out.slurp(:close);
@@ -88,19 +109,33 @@ sub build-sheets(IO::Path $dir, :$core, :$engine-js, :$engine-wasm) {
     my constant CHUNK = 1_000_000;   # characters per file, a multiple of 4
     my @parts = (0, CHUNK ...^ * >= $b64.chars).map({ $b64.substr($_, CHUNK) });
 
-    $dir.add('appsscript.json').spurt: $HERE.add('google-sheets/appsscript.json').slurp;
-    $dir.add('Raku.gs').spurt: $HERE.add('google-sheets/Raku.js').slurp;
-    $dir.add('RakuLoader.gs').spurt: fill($HERE.add('google-sheets/RakuLoader.js').slurp, %(WASM_COUNT => @parts.elems));
-    $dir.add('RakuCore.gs').spurt: $core;
-    $dir.add('RakuEngine.gs').spurt: "// RakuEngine.gs — Raku.js, the Raku++ engine's JavaScript side. Generated by build.raku.\n" ~ $engine-js.slurp;
+    my $raku = $HERE.add('google-sheets/Raku.js').slurp;
+    my @own = $raku.match(/ ^^ '// ---- the attached script' \N* \n .*? ^^ '// ---- end of the attached script' \N* \n /, :g);
+    die "google-sheets/Raku.js should have one attached-script region, not {+@own}\n" unless @own == 1;
+    my %script =
+        'appsscript.json' => $HERE.add('google-sheets/appsscript.json').slurp,
+        'Raku.gs'         => apps-script-syntax($raku),
+        'RakuLoader.gs'   => apps-script-syntax(fill($HERE.add('google-sheets/RakuLoader.js').slurp, %(WASM_COUNT => @parts.elems))),
+        'RakuCore.gs'     => apps-script-syntax($core),
+        'RakuEngine.gs'   => "// RakuEngine.gs — Raku.js, the Raku++ engine's JavaScript side, in the syntax Apps Script takes. Generated by build.raku.\n"
+                             ~ apps-script-syntax($engine-js.slurp);
     for @parts.kv -> $i, $part {
         my $n = sprintf('%02d', $i + 1);
-        $dir.add("RakuWasm$n.gs").spurt:
+        %script{"RakuWasm$n.gs"} =
             "// RakuWasm$n.gs — part {$i + 1} of {+@parts} of the Raku engine, gzip and base64. Generated by build.raku.\n"
             ~ "var RAKUSHEET_WASM = typeof RAKUSHEET_WASM === 'undefined' ? [] : RAKUSHEET_WASM;\n"
             ~ "RAKUSHEET_WASM[$i] = \"$part\";\n";
     }
-    say "google-sheets: $dir  ({+@parts} engine files, {($gz.elems / 1048576).fmt('%.1f')} MB compressed)";
+    my %addon = %script;
+    %addon<appsscript.json> = $HERE.add('google-sheets/appsscript-addon.json').slurp;
+    %addon<Raku.gs> = apps-script-syntax($raku.substr(0, @own[0].from) ~ $HERE.add('google-sheets/RakuAddon.js').slurp ~ $raku.substr(@own[0].to));
+
+    for 'google-sheets', %script, 'google-sheets-addon', %addon -> $name, %files {
+        my $dir = fresh($out.add($name));
+        $dir.add(.key).spurt(.value) for %files.sort(*.key);
+    }
+    say "google-sheets: {$out.add('google-sheets')}  ({+@parts} engine files, {($gz.elems / 1048576).fmt('%.1f')} MB compressed)";
+    say "               {$out.add('google-sheets-addon')}  (the same, as a Marketplace add-on)";
 }
 
 sub base64(Blob $b --> Str) {
@@ -122,6 +157,284 @@ sub base64(Blob $b --> Str) {
         @quads.push: @a[$v +> 18] ~ @a[($v +> 12) +& 63] ~ @a[($v +> 6) +& 63] ~ '=';
     }
     @quads.join
+}
+
+# ---- Apps Script's syntax. Apps Script reads every file with a parser of its
+# ---- own when the project is saved, and that parser refuses two things the
+# ---- engine's Emscripten glue has: logical assignment (a ??= b, a ||= b,
+# ---- a &&= b) and class fields (class C { name = "C"; … }). V8 runs both, so
+# ---- Node's test does too; these rewrite them into what they mean.
+
+sub apps-script-syntax(Str $js --> Str) {
+    lower-class-fields(lower-logical-assignment($js))
+}
+
+my constant PUNCT3 = set '===', '!==', '**=', '<<=', '>>=', '>>>', '&&=', '||=', '??=', '...';
+my constant PUNCT2 = set '=>', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--',
+                         '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**', '<<', '>>';
+# After these words a / starts a regex; after any other word it divides.
+my constant REGEX-AFTER = set <return typeof instanceof in of new delete void throw case do else yield await>;
+my constant LOGICAL-ASSIGN = set '??=', '||=', '&&=';
+
+sub id-start(Int $c --> Bool) { 97 <= $c <= 122 || 65 <= $c <= 90 || $c == 95 || $c == 36 || $c > 127 }
+sub id-part(Int $c --> Bool)  { id-start($c) || 48 <= $c <= 57 }
+sub digit(Int $c --> Bool)    { 48 <= $c <= 57 }
+
+# The tokens of a JavaScript text, each [kind, from, to, newline-before]:
+# kind is id, num, str, tmpl (a run of a template's text), re or punct.
+# A template's ${ and the } that closes it are punct tokens of their own, so
+# that bracket depth counts them.
+sub js-tokens(Str $s) {
+    my @c = $s.comb.map(*.ord);     # by grapheme, as .substr counts
+    my $n = +@c;
+    my @t;
+    my @subst;                      # brace depth inside each open ${ … }
+    my $nl = False;
+    my $i = 0;
+    my sub emit(Str $kind, Int $from, Int $to) { @t.push: [$kind, $from, $to, $nl]; $nl = False }
+    my sub regex-may-start(--> Bool) {
+        return True unless @t;
+        my ($kind, $from, $to) = @t[*-1].list;
+        my $text = $s.substr($from, $to - $from);
+        $kind eq 'punct' ?? $text ∉ <) ] }> !! $kind eq 'id' && $text ∈ REGEX-AFTER
+    }
+    # A run of a template's text, from $from to its closing backtick or its
+    # next ${, read from $j on.
+    my sub template-run(Int $from, Int $j is copy --> Int) {
+        loop {
+            die "an unterminated template literal\n" if $j >= $n;
+            my $ch = @c[$j];
+            if $ch == 92 { $j += 2; next }
+            if $ch == 96 { emit('tmpl', $from, $j + 1); return $j + 1 }
+            if $ch == 36 && $j + 1 < $n && @c[$j + 1] == 123 {
+                emit('tmpl', $from, $j) if $j > $from;
+                emit('punct', $j, $j + 2);
+                @subst.push: 0;
+                return $j + 2;
+            }
+            $j++;
+        }
+    }
+    while $i < $n {
+        my $ch = @c[$i];
+        if $ch == 10 || $ch == 13 || $ch == 0x2028 || $ch == 0x2029 { $nl = True; $i++; next }
+        if $ch == 32 || $ch == 9 || $ch == 11 || $ch == 12 || $ch == 0xA0 || $ch == 0xFEFF { $i++; next }
+        if $ch == 47 && $i + 1 < $n && @c[$i + 1] == 47 {
+            $i++ while $i < $n && @c[$i] != 10 && @c[$i] != 13;
+            next;
+        }
+        if $ch == 47 && $i + 1 < $n && @c[$i + 1] == 42 {
+            my $end = $s.index('*/', $i + 2) // die "an unterminated comment\n";
+            $nl = True if $s.substr($i, $end - $i).contains("\n");
+            $i = $end + 2;
+            next;
+        }
+        if id-start($ch) {
+            my $j = $i + 1;
+            $j++ while $j < $n && id-part(@c[$j]);
+            emit('id', $i, $j);
+            $i = $j;
+            next;
+        }
+        if digit($ch) || $ch == 46 && $i + 1 < $n && digit(@c[$i + 1]) {
+            my $hex = $ch == 48 && $i + 1 < $n && (@c[$i + 1] == 120 || @c[$i + 1] == 88);
+            my $j = $i + 1;
+            loop {
+                last if $j >= $n;
+                my $d = @c[$j];
+                if id-part($d) || $d == 46 { $j++; next }
+                if !$hex && ($d == 43 || $d == 45) && (@c[$j - 1] == 101 || @c[$j - 1] == 69) { $j++; next }
+                last;
+            }
+            emit('num', $i, $j);
+            $i = $j;
+            next;
+        }
+        if $ch == 34 || $ch == 39 {
+            my $j = $i + 1;
+            $j += @c[$j] == 92 ?? 2 !! 1 while $j < $n && @c[$j] != $ch;
+            die "an unterminated string\n" if $j >= $n;
+            emit('str', $i, $j + 1);
+            $i = $j + 1;
+            next;
+        }
+        if $ch == 96 { $i = template-run($i, $i + 1); next }
+        if $ch == 125 && @subst {
+            if @subst[*-1] == 0 {
+                @subst.pop;
+                emit('punct', $i, $i + 1);
+                $i = template-run($i + 1, $i + 1);
+                next;
+            }
+            @subst[*-1]--;
+        }
+        @subst[*-1]++ if $ch == 123 && @subst;
+        if $ch == 47 && regex-may-start() {
+            my ($j, $class) = $i + 1, False;
+            loop {
+                die "an unterminated regex\n" if $j >= $n || @c[$j] == 10;
+                my $d = @c[$j];
+                if $d == 92 { $j += 2; next }
+                if $d == 91 { $class = True }
+                elsif $d == 93 { $class = False }
+                elsif $d == 47 && !$class { last }
+                $j++;
+            }
+            $j++;
+            $j++ while $j < $n && id-part(@c[$j]);
+            emit('re', $i, $j);
+            $i = $j;
+            next;
+        }
+        my $len = 1;
+        if $i + 4 <= $n && $s.substr($i, 4) eq '>>>=' { $len = 4 }
+        elsif $i + 3 <= $n && $s.substr($i, 3) ∈ PUNCT3 { $len = 3 }
+        elsif $i + 2 <= $n && $s.substr($i, 2) ∈ PUNCT2 {
+            # ?.5 is a ? and the number .5
+            $len = 2 unless $s.substr($i, 2) eq '?.' && $i + 2 < $n && digit(@c[$i + 2]);
+        }
+        emit('punct', $i, $i + $len);
+        $i += $len;
+    }
+    die "an unterminated template literal\n" if @subst;
+    @t
+}
+
+# The index past the last token of the expression that starts at $j: up to
+# a , ; ) ] } at the starting depth, or a : that closes no ? of its own.
+sub expression-end(@t, Int $j is copy, &text --> Int) {
+    my ($depth, $ternary) = 0, 0;
+    my $first = $j;
+    while $j < @t {
+        my $x = text($j);
+        die "a line break inside an expression this does not rewrite\n" if $j > $first && @t[$j][3] && $depth == 0;
+        if @t[$j][0] eq 'punct' {
+            if $x eq any('(', '[', '{', '${') { $depth++ }
+            elsif $x eq any(')', ']', '}') { last if $depth == 0; $depth-- }
+            elsif $depth == 0 {
+                last if $x eq ',' || $x eq ';';
+                if $x eq '?' { $ternary++ }
+                elsif $x eq ':' { last unless $ternary; $ternary-- }
+            }
+        }
+        $j++;
+    }
+    $j
+}
+
+# The index past the bracket that closes the one at $j.
+sub past-brackets(@t, Int $j is copy, &text --> Int) {
+    my $depth = 0;
+    loop {
+        die "unbalanced brackets\n" if $j >= @t;
+        my $x = text($j);
+        if $x eq any('(', '[', '{', '${') { $depth++ }
+        elsif $x eq any(')', ']', '}') { $depth--; return $j + 1 if $depth == 0 }
+        $j++;
+    }
+}
+
+# a ??= b is a ?? (a = b), and the same for ||= and &&=; the left side is a
+# name or a chain of properties, which reading twice does not change.
+sub lower-logical-assignment(Str $js --> Str) {
+    my $s = $js;
+    loop {
+        my @t = js-tokens($s);
+        my &text = -> $k { $s.substr(@t[$k][1], @t[$k][2] - @t[$k][1]) };
+        my @ops = @t.keys.grep({ @t[$_][0] eq 'punct' && text($_) ∈ LOGICAL-ASSIGN });
+        return $s unless @ops;
+        my @edits;
+        for @ops -> $k {
+            my $end = expression-end(@t, $k + 1, &text);
+            die "nothing right of a {text($k)}\n" if $end == $k + 1;
+            next if @ops.first({ $k < $_ < $end });     # holds another one: the next round
+            my $start = $k - 1;
+            loop {
+                die "a {text($k)} whose left side is not a name or a property\n" if $start < 0;
+                if text($start) eq ']' {
+                    die "a {text($k)} on an index this does not rewrite\n"
+                        unless $start >= 3 && text($start - 2) eq '[' && @t[$start - 1][0] eq any(<id str num>);
+                    $start -= 3;
+                    next;
+                }
+                die "a {text($k)} whose left side is not a name or a property\n" unless @t[$start][0] eq 'id';
+                last unless $start >= 2 && text($start - 1) eq '.';
+                $start -= 2;
+            }
+            my $lhs = $s.substr(@t[$start][1], @t[$k][1] - @t[$start][1]).trim;
+            my $rhs = $s.substr(@t[$k][2], @t[$end - 1][2] - @t[$k][2]).trim;
+            @edits.push: (@t[$start][1], @t[$end - 1][2], $lhs ~ text($k).substr(0, 2) ~ "($lhs=$rhs)");
+        }
+        for @edits.rotor(2 => -1) -> ($a, $b) { die "logical assignments that overlap\n" if $a[1] > $b[0] }
+        for @edits.reverse -> ($from, $to, $new) { $s = $s.substr(0, $from) ~ $new ~ $s.substr($to) }
+    }
+}
+
+# class C { name = "C"; constructor(x) { … } } is
+# class C { constructor(x) { this.name = "C"; … } }, for a class that extends
+# nothing: its fields are set first thing in its constructor, in the order
+# written. Assigning one rather than defining it differs only where the class
+# has an accessor of the same name, which this refuses.
+sub lower-class-fields(Str $js --> Str) {
+    my $s = $js;
+    loop {
+        my @t = js-tokens($s);
+        my &text = -> $k { $s.substr(@t[$k][1], @t[$k][2] - @t[$k][1]) };
+        my @edits;
+        for @t.keys.grep({ @t[$_][0] eq 'id' && text($_) eq 'class' && ($_ == 0 || text($_ - 1) ne any('.', '?.')) }) -> $c {
+            my $j = $c + 1;
+            $j++ if @t[$j][0] eq 'id' && text($j) ne 'extends';
+            my $extends = text($j) eq 'extends';
+            if $extends {
+                $j++;
+                $j = text($j) eq any('(', '[') ?? past-brackets(@t, $j, &text) !! $j + 1
+                    while $j < @t && text($j) ne '{';
+            }
+            next unless $j < @t && text($j) eq '{';     # `class` as a property name
+            my $body = $j++;
+            my (@fields, %accessors, $ctor);
+            until text($j) eq '}' {
+                if text($j) eq ';' { $j++; next }
+                my $start = $j;
+                my ($static, $accessor) = False, False;
+                while text($j) eq any(<static get set async>) && text($j + 1) ne any('(', '=', ';', '}') {
+                    $static = True if text($j) eq 'static';
+                    $accessor = True if text($j) eq any(<get set>);
+                    $j++;
+                }
+                $j++ if text($j) eq '*';
+                my $computed = text($j) eq '[';
+                my $name = text($j);
+                $j = $computed ?? past-brackets(@t, $j, &text) !! $j + 1;
+                if text($j) eq '(' {
+                    $j = past-brackets(@t, $j, &text);
+                    $ctor = $j if $name eq 'constructor' && !$static;
+                    %accessors{$name} = True if $accessor;
+                    $j = past-brackets(@t, $j, &text);
+                    next;
+                }
+                die "a static class field\n" if $static;
+                die "a class field this does not rewrite: $name\n" if $computed || @t[$start][0] ne 'id' || $j != $start + 1;
+                my $init = 'undefined';
+                if text($j) eq '=' {
+                    my $end = expression-end(@t, $j + 1, &text);
+                    $init = $s.substr(@t[$j + 1][1], @t[$end - 1][2] - @t[$j + 1][1]);
+                    $j = $end;
+                }
+                $j++ if text($j) eq ';';
+                @fields.push: ($name, $init, @t[$start][1], @t[$j - 1][2]);
+            }
+            next unless @fields;
+            for @fields -> ($name, $, $, $) { die "a class field beside an accessor of its name: $name\n" if %accessors{$name} }
+            my $assign = @fields.map(-> ($name, $init, $, $) { "this.$name=$init;" }).join;
+            die "a class field in a class that extends another\n" if $extends;
+            @edits.push: $ctor.defined ?? (@t[$ctor][2], @t[$ctor][2], $assign) !! (@t[$body][2], @t[$body][2], "constructor()\{$assign\}");
+            @edits.push: ($_[2], $_[3], '') for @fields;
+            last;
+        }
+        return $s unless @edits;
+        for @edits.sort(*[0]).reverse -> ($from, $to, $new) { $s = $s.substr(0, $from) ~ $new ~ $s.substr($to) }
+    }
 }
 
 # ---- the icon: a white R++ on an indigo rounded square, drawn here so that

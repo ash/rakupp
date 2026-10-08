@@ -4,6 +4,11 @@
 // in an order of its own. SpreadsheetApp is a stand-in holding a Raku sheet.
 //
 //   node bindings/spreadsheets/test/sheets.mjs [dist/google-sheets]
+//   node bindings/spreadsheets/test/sheets.mjs dist/google-sheets-addon --addon
+//
+// --addon tests the Marketplace add-on's build instead of the attached
+// script's: its menu under Extensions, onInstall, and no log of what formulas
+// print.
 
 import vm from 'node:vm';
 import fs from 'node:fs';
@@ -11,7 +16,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const dir = process.argv[2] ?? path.join(here, '..', 'dist', 'google-sheets');
+const addon = process.argv.includes('--addon');
+const dir = process.argv.slice(2).find(a => !a.startsWith('--'))
+  ?? path.join(here, '..', 'dist', addon ? 'google-sheets-addon' : 'google-sheets');
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.gs'));
 
 const RAKU_SHEET = [
@@ -24,14 +31,34 @@ const RAKU_SHEET = [
   '}',
 ];
 
-function spreadsheet(lines) {
+// The menus a script adds and the dialogs it shows go into `ui`.
+function userInterface(ui) {
+  const menu = kind => {
+    const m = { kind, items: [] };
+    m.addItem = (label, fn) => { m.items.push([label, fn]); return m; };
+    m.addSeparator = () => { m.items.push(['-']); return m; };
+    m.addToUi = () => { ui.menus.push(m); };
+    return m;
+  };
+  return {
+    createMenu: name => menu(`menu ${name}`),
+    createAddonMenu: () => menu('add-on menu'),
+    ButtonSet: { OK: 'OK' },
+    alert: (...a) => { ui.alerts.push(a); },
+  };
+}
+
+function spreadsheet(lines, ui) {
   const sheet = lines && {
     getLastRow: () => lines.length,
     getRange: (row, col, rows) => ({
       getDisplayValues: () => lines.slice(row - 1, row - 1 + rows).map(l => [l]),
     }),
   };
-  return { getActiveSpreadsheet: () => ({ getSheetByName: name => (name === 'Raku' ? sheet : null) }) };
+  return {
+    getActiveSpreadsheet: () => ({ getSheetByName: name => (name === 'Raku' ? sheet : null) }),
+    getUi: () => userInterface(ui),
+  };
 }
 
 function shuffle(a) {
@@ -44,21 +71,24 @@ function shuffle(a) {
 }
 
 // A fresh project, as a cold Apps Script execution sees it.
-function project({ lines = RAKU_SHEET, edit } = {}) {
+function project({ lines = RAKU_SHEET, edit, app } = {}) {
   const logs = [];
+  const ui = { menus: [], alerts: [] };
   const ctx = vm.createContext({
     console: { log: (...a) => logs.push(a.join(' ')), warn() {}, error() {}, info() {} },
-    SpreadsheetApp: spreadsheet(lines),
+    SpreadsheetApp: app ?? spreadsheet(lines, ui),
   });
   for (const f of ['TextDecoder', 'performance', 'crypto', 'setTimeout', 'process', 'window']) {
     if (vm.runInContext(`typeof ${f}`, ctx) !== 'undefined') throw new Error(`the sandbox has ${f}`);
   }
+  // Newer than some Apps Script runtimes; the engine gets a shim for it.
+  vm.runInContext('delete Array.prototype.at', ctx);
   for (const f of shuffle(files)) {
     let src = fs.readFileSync(path.join(dir, f), 'utf8');
     if (edit) src = edit(f, src);
     if (src !== null) vm.runInContext(src, ctx, { filename: f });
   }
-  return { ctx, logs };
+  return { ctx, logs, ui };
 }
 
 // A RegExp in `want` matches a string; an engine's own wording may change
@@ -85,6 +115,16 @@ async function raku(p, code, ...values) {
   } catch (e) {
     return { error: e.message };
   }
+}
+
+// ---- what Apps Script's parser refuses -----------------------------------------------
+// It reads every file when the project is saved, with a parser older than V8:
+// logical assignment and class fields are a syntax error there, though V8,
+// and so this test, runs them. build.raku rewrites both out of the engine.
+for (const f of files) {
+  const src = fs.readFileSync(path.join(dir, f), 'utf8');
+  check(`${f}: no ??=, ||= or &&=`, (src.match(/\?\?=|\|\|=|&&=/g) ?? []).length, 0);
+  check(`${f}: no class fields`, (src.match(/\bclass\b[\w$\s.]*\{\s*[\w$]+\s*=/g) ?? []).length, 0);
 }
 
 // ---- a cold load, timed ------------------------------------------------------------
@@ -133,9 +173,55 @@ const cases = [
 ];
 for (const [name, args, want] of cases) check(name, await raku(p, ...args), want);
 
-// `say` goes to the execution log, not into the cell.
+// `say` goes to the execution log, not into the cell; the add-on keeps none,
+// since an add-on's log is its developer's.
 r = await raku(p, 'say "from the formula"; 7');
-check('say', [r, p.logs.includes('from the formula')], [{ value: 7 }, true]);
+check('say', [r, p.logs.includes('from the formula')], [{ value: 7 }, !addon]);
+
+// ---- the menu, and the help it offers ---------------------------------------------------
+const MENU = ['Add the Raku sheet', 'Recalculate RAKU formulas', '-', 'How RAKU formulas work'];
+const m = project();
+vm.runInContext('onOpen({ authMode: "NONE" })', m.ctx);
+check('the menu', m.ui.menus.map(x => [x.kind, x.items.map(i => i[0])]), [[addon ? 'add-on menu' : 'menu Raku', MENU]]);
+check('every menu item has its function',
+  m.ui.menus[0].items.filter(i => i[1]).map(i => typeof m.ctx[i[1]]), ['function', 'function', 'function']);
+check('onInstall', typeof m.ctx.onInstall, addon ? 'function' : 'undefined');
+if (addon && typeof m.ctx.onInstall === 'function') {
+  vm.runInContext('onInstall({ authMode: "FULL" })', m.ctx);
+  check('onInstall adds the menu to the open spreadsheet', m.ui.menus.length, 2);
+}
+vm.runInContext('rakuHelp()', m.ctx);
+check('the help is a dialog', m.ui.alerts.map(a => [a[0], /=RAKU\("\$\^a \* 2", A1\)/.test(a[1])]), [['RAKU formulas', true]]);
+
+// ---- Recalculate takes the RAKU formulas out and puts them back ----------------------------
+function formulaBook(grid, failAt) {
+  const done = [], toasts = [];
+  let writes = 0;
+  const sheet = {
+    getDataRange: () => ({ getFormulas: () => grid.map(row => row.slice()) }),
+    getRange: (r, c) => ({
+      setFormula: f => {
+        if (++writes === failAt) throw new Error('Service invoked too many times');
+        grid[r - 1][c - 1] = f;
+        done.push(f === '' ? `clear ${r},${c}` : `put ${r},${c}`);
+      },
+    }),
+  };
+  const app = {
+    getActiveSpreadsheet: () => ({ getSheets: () => [sheet], getSheetByName: () => null, toast: t => toasts.push(t) }),
+    flush: () => done.push('flush'),
+  };
+  return { app, grid, done, toasts };
+}
+const GRID = () => [['=RAKU("1")', '', '=SUM(A1)'], ['', '=raku("[+] @_", A1:A3)', '']];
+let book = formulaBook(GRID());
+vm.runInContext('rakuRecalculate()', project({ app: book.app }).ctx);
+check('recalculate', [book.done, book.grid, book.toasts],
+  [['clear 1,1', 'clear 2,2', 'flush', 'put 1,1', 'put 2,2'], GRID(), ['2 RAKU formulas recalculated']]);
+book = formulaBook(GRID(), 2);
+let threw = false;
+try { vm.runInContext('rakuRecalculate()', project({ app: book.app }).ctx); } catch (e) { threw = /too many/.test(e.message); }
+check('a failed recalculation puts back what it took out', [threw, book.done, book.grid], [true, ['clear 1,1', 'put 1,1'], GRID()]);
 
 // ---- the Raku sheet itself -----------------------------------------------------------
 check('no Raku sheet', await raku(project({ lines: null }), 'double(2)'), { error: /^Undefined routine 'double'/ });

@@ -15,7 +15,7 @@
   <Description DefaultValue="Write formulas in Raku: =RAKU.EVAL(&quot;$^a * 2&quot;, A1). Exact decimals and integers of any size, regexes and grammars, your own subs on a sheet named Raku. The Raku++ engine runs inside Excel, in WebAssembly: no data leaves the workbook."/>
   <IconUrl DefaultValue="@BASE@assets/icon-32.png"/>
   <HighResolutionIconUrl DefaultValue="@BASE@assets/icon-64.png"/>
-  <SupportUrl DefaultValue="https://github.com/ash/rakupp/tree/main/bindings/spreadsheets"/>
+  <SupportUrl DefaultValue="https://raku.online/embed/spreadsheets/support/"/>
   <Hosts>
     <Host Name="Workbook"/>
   </Hosts>
@@ -96,7 +96,7 @@
         <bt:Url id="Functions.Script.Url" DefaultValue="@BASE@functions.js?v=@TAG@"/>
         <bt:Url id="Functions.Metadata.Url" DefaultValue="@BASE@functions.json?v=@TAG@"/>
         <bt:Url id="Taskpane.Url" DefaultValue="@BASE@taskpane.html?v=@TAG@"/>
-        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/ash/rakupp/tree/main/bindings/spreadsheets"/>
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://raku.online/embed/spreadsheets/"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="Functions.Namespace" DefaultValue="RAKU"/>

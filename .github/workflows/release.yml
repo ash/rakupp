@@ -1024,13 +1024,15 @@ jobs:
       # Raku formulas in spreadsheets (bindings/spreadsheets), built from the
       # engine compiled above so that nobody has to build them: the Excel add-in
       # for the address raku.online serves it from (its manifest names that
-      # address), and the Google Sheets project, tested the way Apps Script runs
-      # it — a bare V8, no browser or Node globals.
+      # address), and the Google Sheets project, attached-script and add-on
+      # builds, tested the way Apps Script runs them — a bare V8, no browser or
+      # Node globals.
       - name: Build and test the spreadsheet formulas
         run: |
           build/rakupp bindings/spreadsheets/build.raku \
               --base=https://raku.online/embed/excel/ --rakujs=rakujs/playground --out=/tmp/sheets
           node bindings/spreadsheets/test/sheets.mjs /tmp/sheets/google-sheets
+          node bindings/spreadsheets/test/sheets.mjs /tmp/sheets/google-sheets-addon --addon
 
       # Embed the wasm as base64 + inline the showcase sources into showcase/web/lib/,
       # so the apps in that folder open straight from disk.
@@ -1100,6 +1102,32 @@ jobs:
           printf '{"scriptId":"%s","rootDir":"google-sheets"}\n' "$SCRIPT_ID" > .clasp.json
           clasp push --force
           clasp create-version "rakupp $GITHUB_REF_NAME"
+
+      # The Marketplace add-on's project, the same way: pushed and frozen as a
+      # numbered version. Nobody gets that version until it is entered in the
+      # Marketplace SDK's App Configuration (Sheets add-on → Version), which
+      # has no API; the notice names the number. Needs CLASPRC_JSON and the
+      # repository variable SHEETS_ADDON_SCRIPT_ID.
+      - name: Push the Google Sheets add-on
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ vars.SHEETS_ADDON_SCRIPT_ID }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ] || [ -z "$SCRIPT_ID" ]; then
+            echo "::notice title=Google Sheets add-on::not pushed: set the CLASPRC_JSON secret and the SHEETS_ADDON_SCRIPT_ID variable"
+            exit 0
+          fi
+          command -v clasp >/dev/null || npm install -g @google/clasp@3.4.1
+          umask 077
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          cd /tmp/sheets
+          printf '{"scriptId":"%s","rootDir":"google-sheets-addon"}\n' "$SCRIPT_ID" > .clasp.json
+          clasp push --force
+          out=$(clasp create-version "rakupp $GITHUB_REF_NAME")
+          echo "$out"
+          version=$(printf '%s' "$out" | grep -o -E '[0-9]+' | tail -1)
+          echo "::notice title=Google Sheets add-on::version $version pushed; enter $version in the Marketplace SDK (App Configuration → Sheets add-on → Version) to give it to users"
 
   # The Linux release binary above is built with Clang (faster); this job keeps
   # GCC compiling cleanly too — it's what most Linux users' `cmake --build` uses.

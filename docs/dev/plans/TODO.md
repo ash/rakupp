@@ -311,12 +311,16 @@ with its tag, after the release run is green.
   started 2026-10-08. Built and tested off the platforms only:
   `test/sheets.mjs` runs the Apps Script project in a bare V8, and
   `test/excel-harness.html` the add-in in a browser with stand-ins for Excel.
-  Next: a real run in each, Apps Script (time to load the engine, memory) and
-  Excel (sideloaded on the web and on a Mac); host `dist/excel` over HTTPS; a
-  template spreadsheet to copy; then Microsoft's add-in store and the Google
-  Workspace Marketplace. It ships the 5.2.0 Raku.js in `rakujs/playground`,
-  which needs two workarounds in `rakusheet.raku`; rebuild Raku.js for the
-  current engine.
+  Excel runs sideloaded on a Mac from raku.online/embed/excel/. Apps Script's
+  save-time parser refused the glue's `??=` and class fields; `build.raku`
+  rewrites them now, and a real Sheets run is next (time to load the engine,
+  memory). Then: does a `RAKU.EVAL` cell calculate in a new Excel session
+  without the pane click (if not, start the add-in with the document); a
+  template spreadsheet to copy; the store listings, whose material is in
+  [store/README.md](../../../bindings/spreadsheets/store/README.md) — the
+  accounts, consoles and screenshots are the publisher's. It ships the 5.2.0
+  Raku.js in `rakujs/playground`, which needs two workarounds in
+  `rakusheet.raku`; rebuild Raku.js for the current engine.
 - [ ] **npm**: `rakulang` is not published. The binding is `bun:ffi`, so it
   runs on Bun only. A Node host needs the napi addon, which waits on A5
   ([EMBED-PLAN.md](EMBED-PLAN.md) E4). `package.json` still says 0.1.0.

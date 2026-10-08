@@ -30,7 +30,7 @@ async function RAKU(code, ...values) {
       ? 'the Raku code recursed deeper than Apps Script allows'
       : 'the Raku engine stopped: ' + e);
   }
-  result.printed.forEach(function (line) { console.log(line); });
+  rakuPrinted(result.printed);
   var answer = result.answers[0];
   if ('err' in answer) throw new Error(answer.err);
   var cells = RakuSheet.cells(answer.ok);
@@ -49,12 +49,40 @@ function rakuSheetDefinitions() {
     .join('\n');
 }
 
+// ---- the attached script's own: the Marketplace add-on has RakuAddon.js here instead
+// A Raku menu of its own, and what formulas print goes to the execution log
+// (Extensions → Apps Script → Executions).
 function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('Raku')
+  rakuMenu(SpreadsheetApp.getUi().createMenu('Raku'));
+}
+
+function rakuPrinted(lines) {
+  lines.forEach(function (line) { console.log(line); });
+}
+// ---- end of the attached script's own
+
+function rakuMenu(menu) {
+  menu
     .addItem('Add the Raku sheet', 'rakuAddSheet')
     .addItem('Recalculate RAKU formulas', 'rakuRecalculate')
+    .addSeparator()
+    .addItem('How RAKU formulas work', 'rakuHelp')
     .addToUi();
+}
+
+function rakuHelp() {
+  var ui = SpreadsheetApp.getUi();
+  ui.alert('RAKU formulas', [
+    '=RAKU(code, values…) runs Raku code in a cell. $^a, $^b, … are the values after the code, in order, and @_ is all of them:',
+    '',
+    '    =RAKU("$^a * 2", A1)',
+    '    =RAKU("[+] @_", A1:A10)',
+    '    =RAKU("(1..4).map(* ** 2)")    fills a column',
+    '',
+    'Decimals are exact and integers have no size limit. Subs written in column A of a sheet named Raku can be called from any formula: Add the Raku sheet makes one, with two examples. Sheets does not know a formula uses that sheet, so after changing it, choose Recalculate RAKU formulas.',
+    '',
+    'The engine runs inside this spreadsheet: formulas send nothing anywhere. More at raku.online/embed/spreadsheets.'
+  ].join('\n'), ui.ButtonSet.OK);
 }
 
 function rakuAddSheet() {
@@ -75,23 +103,24 @@ function rakuAddSheet() {
 
 // Sheets recalculates a custom function only when its arguments change, so
 // an edit on the Raku sheet does not reach the formulas that use it. This
-// takes every RAKU formula out and puts it back.
+// takes every RAKU formula out and puts it back, and puts back whatever it
+// took out even when something fails in between.
 function rakuRecalculate() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var found = 0;
+  var hits = [];
   ss.getSheets().forEach(function (sheet) {
-    var range = sheet.getDataRange();
-    var formulas = range.getFormulas();
-    var hits = [];
-    formulas.forEach(function (row, r) {
+    sheet.getDataRange().getFormulas().forEach(function (row, r) {
       row.forEach(function (f, c) {
-        if (/\bRAKU\s*\(/i.test(f)) hits.push({ row: r + 1, col: c + 1, formula: f });
+        if (/\bRAKU\s*\(/i.test(f)) hits.push({ cell: sheet.getRange(r + 1, c + 1), formula: f });
       });
     });
-    hits.forEach(function (h) { sheet.getRange(h.row, h.col).setFormula(''); });
-    SpreadsheetApp.flush();
-    hits.forEach(function (h) { sheet.getRange(h.row, h.col).setFormula(h.formula); });
-    found += hits.length;
   });
-  ss.toast(found + ' RAKU formula' + (found === 1 ? '' : 's') + ' recalculated', 'Raku');
+  var cleared = 0;
+  try {
+    hits.forEach(function (h) { h.cell.setFormula(''); cleared++; });
+    SpreadsheetApp.flush();
+  } finally {
+    hits.slice(0, cleared).forEach(function (h) { h.cell.setFormula(h.formula); });
+  }
+  ss.toast(hits.length + ' RAKU formula' + (hits.length === 1 ? '' : 's') + ' recalculated', 'Raku');
 }

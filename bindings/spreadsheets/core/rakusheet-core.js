@@ -178,6 +178,13 @@ var RakuSheet = (function () {
   // Apps Script's V8 has no TextDecoder, performance or crypto, all of which
   // the Emscripten glue reaches for. Each is defined only where it is missing.
   function installShims(g) {
+    // The engine's C++ exceptions rethrow through exceptionCaught.at(-1).
+    if (!g.Array.prototype.at) {
+      Object.defineProperty(g.Array.prototype, 'at', {
+        configurable: true, writable: true,
+        value: function (i) { i = Math.trunc(i) || 0; return this[i < 0 ? i + this.length : i]; }
+      });
+    }
     if (typeof g.TextDecoder === 'undefined') g.TextDecoder = Utf8Decoder;
     if (typeof g.performance === 'undefined') g.performance = { now: function () { return Date.now(); } };
     if (typeof g.crypto === 'undefined') {

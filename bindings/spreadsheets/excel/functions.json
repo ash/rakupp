@@ -5,7 +5,7 @@
       "id": "EVAL",
       "name": "EVAL",
       "description": "Runs Raku code. $^a, $^b, ... are the values after the code, in order, and @_ is all of them. Subs on the sheet named Raku can be called by name.",
-      "helpUrl": "https://github.com/ash/rakupp/tree/main/bindings/spreadsheets",
+      "helpUrl": "https://raku.online/embed/spreadsheets/#formulas",
       "result": {
         "type": "any",
         "dimensionality": "matrix"
