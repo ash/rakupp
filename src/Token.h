@@ -65,6 +65,7 @@ struct Token {
     // a heredoc whose marker line closes blocks after its opener: how many
     // (the body's names are declared that many scopes out — see VarExpr)
     int outerScopes = 0;
+    bool heredoc = false;     // a heredoc: its body starts on the line AFTER `line`, the opener's
 };
 
 // A pass over the token stream between the Lexer and the Parser. Its one user

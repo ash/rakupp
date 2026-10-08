@@ -29,6 +29,15 @@ static bool rxNameApostrophe(const std::string& raw, char next) {
     return b > 0 && raw[b - 1] == '<';
 }
 
+// Inside a regex's CODE block an apostrophe between a name character and a
+// letter continues an identifier (`don't`, `isn't`), as anywhere in Raku code
+// (rakuIdentStart's rule). Read as a quote it opened a string that ran to the
+// end of the file: `/ a { $z = don't } b /` could not find its closing `/`.
+static bool codeNameApostrophe(const std::string& raw, char next) {
+    return !raw.empty() && (ascii::isalnum((unsigned char)raw.back()) || raw.back() == '_') &&
+           rakuIdentStart(next);
+}
+
 // Does a `[` written now, after the pattern text `raw`, open a CHARACTER CLASS?
 // Right after `<`, `<-`, `<+` (or a `+`/`-` set operator) it does. Across blanks
 // the set operator counts only inside an assertion that began as a class —
@@ -398,11 +407,16 @@ Lexer::Lexer(std::string src, bool honourFudge)
 void Lexer::copyCodeBlock(std::string& out) {
     int depth = 1;
     while (!eof() && depth > 0) {
+        // a “…” / ‘…’ / ｢…｣ string: its quotes and braces are text
+        if (size_t e = uniQuoteSpanEnd(src_, pos_)) { while (pos_ < e) out += advance(); continue; }
         char b = advance();
         out += b;
         if (b == '\\') { if (!eof()) out += advance(); continue; }
         if (b == '{') depth++;
         else if (b == '}') depth--;
+        else if (b == '\'' && out.size() >= 2 &&
+                 (ascii::isalnum((unsigned char)out[out.size() - 2]) || out[out.size() - 2] == '_') &&
+                 rakuIdentStart(peek())) {}   // `don't`: an apostrophe inside a name
         else if (b == '"' || b == '\'') {
             const char qq = b;
             while (!eof() && peek() != qq) {
@@ -2661,7 +2675,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (blocks && bd > 0) {
                 if (q) { if (ch == q) q = 0; raw += advance(); continue; }
                 if (skipCodeCharClass(raw)) continue;
-                if (ch == '\'' || ch == '"') { q = ch; raw += advance(); continue; }
+                if ((ch == '\'' && !codeNameApostrophe(raw, peek(1))) || ch == '"') { q = ch; raw += advance(); continue; }
                 if (ch == '{') bd++;
                 else if (ch == '}') bd--;
                 raw += advance();
@@ -3404,7 +3418,7 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
             // in a string ('}' / "}") is NOT a block delimiter; track quotes too
             if (q) { if (ch == q) q = 0; body += advance(); continue; }
             if (skipCodeCharClass(body)) continue;
-            if (ch == '\'' || ch == '"') { q = ch; body += advance(); continue; }
+            if ((ch == '\'' && !codeNameApostrophe(body, peek(1))) || ch == '"') { q = ch; body += advance(); continue; }
             // …and a `#` comment runs to the end of the line, braces and all:
             // Template::Mustache's `<?{ # XXX … }>` assertion carries a `}`
             // in its commentary, which closed the block one line early.
@@ -4677,7 +4691,8 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // never found, and the whole statement failed to parse. (URI strips
                 // wrapping brackets with `/^ \s* ['<' | '"'] /`.)
                 if ((ch == '\'' || ch == '"') && !(angle > 0 && brack > 0) &&
-                    !(ch == '\'' && rxNameApostrophe(raw, peek(1))))
+                    !(ch == '\'' && (rxNameApostrophe(raw, peek(1)) ||
+                                     (brace > 0 && codeNameApostrophe(raw, peek(1))))))
                     { quote = ch; raw += advance(); continue; }
                 if ((unsigned char)ch >= 0x80 && !(angle > 0 && brack > 0) && skipUniQuote(raw)) continue;
                 if (ch == '{') { brace++; raw += advance(); continue; }
@@ -5045,6 +5060,7 @@ void Lexer::processHeredocs(std::vector<Token>& out) {
             body += "\n";
         }
         out[idx].text = body;
+        out[idx].heredoc = true;
     }
     // `q:to/…/` unescapes `\\` to one backslash. That is the whole set: a
     // heredoc has no quote DELIMITER to escape, so Rakudo leaves `\'` alone here

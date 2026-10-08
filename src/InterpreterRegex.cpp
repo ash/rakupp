@@ -31,24 +31,11 @@ static std::string quoteMetaRx(const std::string& s) {
 }
 
 // End of a Raku-CODE region inside a regex pattern: given the `{` at `i`, the
-// index just past its matching `}`, counting nesting and stepping over quoted
-// spans. 0 when the brace never closes — the caller then treats it as the
-// literal character it must be (`<[{]>`), rather than swallowing the rest.
-static size_t rxCodeBraceEnd(const std::string& p, size_t i) {
-    int depth = 0;
-    for (; i < p.size(); i++) {
-        char c = p[i];
-        if (c == '\\') { i++; continue; }
-        if (c == '\'' || c == '"') {
-            char q = c;
-            for (i++; i < p.size(); i++) { if (p[i] == '\\') { i++; continue; } if (p[i] == q) break; }
-            continue;
-        }
-        if (c == '{') depth++;
-        else if (c == '}' && --depth == 0) return i + 1;
-    }
-    return 0;
-}
+// index just past its matching `}` (Regex::codeBlockEnd — the engine's parser
+// reads the block with the same scan). 0 when the brace never closes — the
+// caller then treats it as the literal character it must be (`<[{]>`), rather
+// than swallowing the rest.
+static size_t rxCodeBraceEnd(const std::string& p, size_t i) { return Regex::codeBlockEnd(p, i); }
 
 // The end of a character-class assertion opened by the `<` at `i` — `<[…]>`,
 // `<-[…]>`, `<+[…]>`, `<?[…]>`, `<![…]>`, `<:L>`, `<-alpha>`, `<[a..z] - [q]>` —
@@ -831,7 +818,13 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // else is literal text of the quoted span
                 if (pat[i] != '$') { out += pat[i]; continue; }
             }
-            if (pat[i] == '{') { braces++; out += pat[i]; continue; }
+            // a block is CODE, copied whole: counting its braces one by one took
+            // the `}` in `{ $x = '}'; say $y }` for its end, and then pasted $y's
+            // value into the code
+            if (pat[i] == '{' && !inSq) {
+                if (size_t e = rxCodeBraceEnd(pat, i)) { out += pat.substr(i, e - i); i = e - 1; continue; }
+                braces++; out += pat[i]; continue;
+            }
             if (pat[i] == '}') { if (braces) braces--; out += pat[i]; continue; }
             if (pat[i] == '\'' && !braces && !inDq) { inSq = !inSq; out += pat[i]; continue; }
             if (inSq || braces) { out += pat[i]; continue; }
@@ -1669,7 +1662,11 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                         continue;
                     }
                 }
-                if (realPat[i] == '{' && !inSq && !inDq) { braces++; ip += realPat[i]; continue; }
+                if (realPat[i] == '{' && !inSq && !inDq) {
+                    // a block is CODE, copied whole (its strings may hold a `}`)
+                    if (size_t e = rxCodeBraceEnd(realPat, i)) { ip += realPat.substr(i, e - i); i = e - 1; continue; }
+                    braces++; ip += realPat[i]; continue;
+                }
                 if (realPat[i] == '}' && !inSq && !inDq) { if (braces) braces--; ip += realPat[i]; continue; }
                 if (realPat[i] == '\'' && !braces && !inDq) { inSq = !inSq; ip += realPat[i]; continue; }
                 if (inSq || braces) { ip += realPat[i]; continue; }

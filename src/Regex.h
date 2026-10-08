@@ -514,6 +514,7 @@ private:
     void parseClassBodyMember(Node* node);
     void skipWs();
     void skipRegexComment(); // pos_ on a `#`: to the end of the line, or an embedded #`(…) to its closer
+    std::string takeCodeBlock(); // pos_ on a `{`: the code inside (codeBlockEnd), pos_ left past its `}`
     char peek(size_t o = 0) const { return pos_ + o < pat_.size() ? pat_[pos_ + o] : '\0'; }
     bool eof() const { return pos_ >= pat_.size(); }
 
@@ -617,6 +618,12 @@ public:
         std::string payload = std::string(1, p5 ? 'P' : 'R') + capName + "\x1f" + src;
         return std::string("\x01S") + std::to_string(payload.size()) + "\x01" + payload;
     }
+    // Index just past the `}` that closes the `{` at `i` in a pattern — the CODE
+    // of a block, `<?{ }>`, `<{ }>`, `** { }`, or a `{ }` in a quoted atom — or 0
+    // when it never closes. The code is Raku: a brace in a string (`'}'`), in a
+    // `#` comment or in a nested regex's character class (`<["}]>`) is not the
+    // block's. Every scanner that has to step over such a block asks this.
+    static size_t codeBlockEnd(const std::string& p, size_t i);
     // Total byte length of the marker starting at `i`, or 0 if there is none.
     static size_t spliceSpan(const std::string& s, size_t i) {
         if (i >= s.size() || s[i] != '\x01' || i + 2 >= s.size()) return 0;

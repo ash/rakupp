@@ -497,6 +497,11 @@ void Interpreter::throwTyped(const std::string& type,
         // …and a FLAG is a Bool (X::Method::NotFound's `private`)
         else if (kv.first == "private" && (kv.second == "True" || kv.second == "False"))
             va.emplace_back(kv.first, Value::boolean(kv.second == "True"));
+        // …and a compile error's `line` is an Int, as Rakudo's X::Comp has it
+        // (`$!.line` of a failed EVAL was the Str "2")
+        else if (kv.first == "line" && !kv.second.empty() && kv.second.size() < 10 &&
+                 kv.second.find_first_not_of("0123456789") == std::string::npos)
+            va.emplace_back(kv.first, Value::integer(std::stoll(kv.second)));
         // …and X::Comp::Trait::Scope's `supported` is a LIST of scopes
         else if (kv.first == "supported" && type == "X::Comp::Trait::Scope") {
             Value l = Value::array(); l.isList = true;

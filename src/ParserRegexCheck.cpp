@@ -5,6 +5,7 @@
 // whose size it was; it rides the same `parse` archive (CMakeLists.txt).
 #include "AsciiCtype.h"
 #include "Parser.h"
+#include "Regex.h"
 #include "Unicode.h"
 #include <cstring>
 #include <cstdlib>
@@ -141,14 +142,12 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
             }
         }
         if (c == '{') {
-            int d = 0;
-            for (; i < pat.size(); i++) {
-                if (pat[i] == '{') d++;
-                else if (pat[i] == '}' && --d == 0) break;
-                else if (pat[i] == '$' && i + 2 < pat.size() && pat[i + 1] == '!' &&
-                         ascii::isalpha((unsigned char)pat[i + 2]))
+            // CODE through its own `}` — a brace in a string is the string's
+            const size_t e = Regex::codeBlockEnd(pat, i);
+            for (const size_t end = e ? e - 1 : pat.size(); i < end; i++)
+                if (pat[i] == '$' && i + 2 < pat.size() && pat[i + 1] == '!' &&
+                    ascii::isalpha((unsigned char)pat[i + 2]))
                     attrInRegex(i);
-            }
             atomStart = groupStart = afterBranch = false;
             lastKind = LkNonQuant;
             continue;
@@ -358,10 +357,9 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
         }
         if (c == '<' && i + 2 < pat.size() && (pat[i + 1] == '?' || pat[i + 1] == '!') && pat[i + 2] == '{') {
             // `<?{ … }>` / `<!{ … }>` — a code assertion: zero-width
-            int d = 0; size_t j = i + 2;
-            for (; j < pat.size(); j++) { if (pat[j] == '{') d++; else if (pat[j] == '}' && --d == 0) break; }
-            if (j + 1 < pat.size() && pat[j + 1] == '>') {
-                i = j + 1;
+            const size_t e = Regex::codeBlockEnd(pat, i + 2);
+            if (e && e < pat.size() && pat[e] == '>') {
+                i = e;
                 atomStart = groupStart = afterBranch = false;
                 lastKind = LkNonQuant;
                 continue;

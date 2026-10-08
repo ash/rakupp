@@ -162,6 +162,10 @@ inline const Value& emptySlipSingleton() {
 // The bare Failure TYPE OBJECT is never the right return for a refusal — it
 // slid through arithmetic as 0 where Rakudo's Failure detonates.
 bool isPlatformHash(const Value& v); // $*DISTRO / $*KERNEL / $*VM
+// A list ELEMENT that stringifies only through the interpreter (strOf): an
+// object (its own .Str), a Proxy container (its FETCH), or a nested list
+// holding one — `@d.push: ($x, 6)` keeps $x's container in the inner list.
+bool strNeedsElementRead(const Value& e);
 inline Value armedFailure(const char* type, const std::string& msg) {
     Value f = Value::makeHash(); f.hashKind = "Failure";
     (*f.hash())["exception"] = Value::typeObj(type);

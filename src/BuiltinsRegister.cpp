@@ -817,9 +817,11 @@ void Interpreter::registerBuiltins() {
             return e.t == VT::Hash && e.hashKind == "Proxy" && e.hash();
         };
         if (v.t == VT::Object || proxyish(v)) { v = Value::str(I.strOf(v)); return; }
+        // (an element in a NESTED list counts too: `is @done, (('p', 6),)` where
+        // @done holds `($path, 6)` with $path's container — strNeedsElementRead)
         if (v.t == VT::Array && v.arr() && v.enumName.empty())
             for (auto& e : *v.arr())
-                if (e.t == VT::Object || proxyish(e)) { v = Value::str(I.strOf(v)); return; }
+                if (strNeedsElementRead(e)) { v = Value::str(I.strOf(v)); return; }
     };
     B["is"] = [isEq, isStrify](Interpreter& I, ValueList& a) -> Value {
         Value got = a.size() > 0 ? a[0] : Value::any();

@@ -7642,8 +7642,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // list of objects with a user `method Str` renders as those strings (see strOf).
     if (inv.t == VT::Array && inv.arr() && inv.enumName.empty() &&
         (m == "Str" || m == "Stringy")) {
+        // (…and a Proxy, here or in a nested list, is READ: `@d.push: ($x, 6);
+        // @d.Str` printed $x's FETCH/STORE pair — strNeedsElementRead)
         bool anyObj = false;
-        for (auto& e : *inv.arr()) if (e.t == VT::Object) { anyObj = true; break; }
+        for (auto& e : *inv.arr()) if (strNeedsElementRead(e)) { anyObj = true; break; }
         if (anyObj) return Value::str(strOf(inv));
     }
     // A Blob's numeric value is its element count; it has no characters

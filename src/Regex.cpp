@@ -986,6 +986,64 @@ void Regex::skipRegexComment() {
     while (!eof() && peek() != '\n') pos_++;
 }
 
+size_t Regex::codeBlockEnd(const std::string& p, size_t i) {
+    const size_t n = p.size();
+    auto identCh = [](char ch) { return ascii::isalnum((unsigned char)ch) || ch == '_'; };
+    int depth = 0;
+    for (; i < n; i++) {
+        const char c = p[i];
+        if (c == '\\') { i++; continue; }
+        // a nested regex's character class — `<[…]>`, `<-[…]>`, `<+["']>`, joined
+        // by `+`/`-` to more — holds members: a quote or brace in it is no string
+        if (c == '<' && i + 1 < n) {
+            size_t j = i + 1;
+            if (std::strchr("-+?!", p[j]) && j + 1 < n && p[j + 1] == '[') j++;
+            if (p[j] == '[') {
+                for (;;) {
+                    for (j++; j < n && p[j] != ']'; j++) if (p[j] == '\\') j++;
+                    if (j >= n) return 0;
+                    size_t k = ++j;
+                    while (k < n && (p[k] == ' ' || p[k] == '\t')) k++;
+                    if (k + 1 < n && (p[k] == '+' || p[k] == '-') && p[k + 1] == '[') { j = k + 1; continue; }
+                    break;
+                }
+                i = j - 1;
+                continue;
+            }
+        }
+        // a comment: to the end of the line, or an embedded #`( … ) to its closer
+        if (c == '#') {
+            if (i + 2 < n && p[i + 1] == '`' && std::strchr("([{<", p[i + 2])) {
+                const char o = p[i + 2], cl = o == '(' ? ')' : o == '[' ? ']' : o == '{' ? '}' : '>';
+                int nest = 0;
+                for (i += 2; i < n; i++) { if (p[i] == o) nest++; else if (p[i] == cl && --nest == 0) break; }
+            }
+            else while (i < n && p[i] != '\n') i++;
+            continue;
+        }
+        if (size_t e = uniQuoteSpanEnd(p, i)) { i = e - 1; continue; }   // “…” ‘…’ ｢…｣
+        if (c == '\'' || c == '"') {
+            // `don't` — an apostrophe between letters belongs to the name
+            if (c == '\'' && i > 0 && identCh(p[i - 1]) && i + 1 < n &&
+                (ascii::isalpha((unsigned char)p[i + 1]) || p[i + 1] == '_')) continue;
+            for (i++; i < n && p[i] != c; i++) if (p[i] == '\\') i++;
+            if (i >= n) return 0;
+            continue;
+        }
+        if (c == '{') depth++;
+        else if (c == '}' && --depth == 0) return i + 1;
+    }
+    return 0;
+}
+
+std::string Regex::takeCodeBlock() {
+    // (a block that never closes takes the rest of the pattern, as it always did)
+    const size_t e = codeBlockEnd(pat_, pos_);
+    std::string code = e ? pat_.substr(pos_ + 1, e - pos_ - 2) : pat_.substr(std::min(pos_ + 1, pat_.size()));
+    pos_ = e ? e : pat_.size();
+    return code;
+}
+
 void Regex::skipWs() {
     for (;;) {
         while (!eof() && ascii::isspace((unsigned char)peek())) pos_++;
@@ -1413,8 +1471,7 @@ Regex::NodePtr Regex::parseQuant() {
             skipWs();
         }
         if (peek() == '{') { // `** { … }` — runtime bounds evaluated at match time
-            int depth = 1; pos_++;
-            while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '{') depth++; else if (d == '}') { depth--; if (!depth) break; } blockBounds += d; }
+            blockBounds = takeCodeBlock();
             haveBlockBounds = true; mn = 0; mx = -1;
         }
         else {
@@ -1611,9 +1668,7 @@ Regex::NodePtr Regex::parseAtom() {
         auto n = std::make_unique<Node>(); n->k = K::CapEnd; return n;
     }
     if (c == '{') { // bare code block { … } — execute for side effects, zero-width
-        int depth = 1; pos_++;
-        std::string code;
-        while (!eof() && depth > 0) { char d = pat_[pos_++]; if (d == '{') depth++; else if (d == '}') { depth--; if (!depth) break; } code += d; }
+        std::string code = takeCodeBlock();   // (`{ $x = '}' }`: a brace in a string is the code's)
         auto cn = std::make_unique<Node>(); cn->k = K::Code; cn->lit = code; cn->runOnly = true; cn->ltmStop = true; return cn;
     }
     auto declAt = [&](const char* kw) {
@@ -2162,18 +2217,11 @@ Regex::NodePtr Regex::parseAtom() {
             bool neg = (peek() == '!');
             pos_++; skipWs();
             if (peek() == '{') { // code assertion <?{ code }> / <!{ code }> — evaluated via the interpreter hook
-                int depth = 1; pos_++;
-                std::string code;
-                while (!eof() && depth > 0) {
-                    char d = pat_[pos_++];
-                    // the code is Raku: a `#` comment runs to the end of the line,
-                    // braces inside it included (Template::Mustache's linetag
-                    // assertion is three lines of commentary and one expression)
-                    if (d == '#') { code += d; while (!eof() && pat_[pos_] != '\n') code += pat_[pos_++]; continue; }
-                    if (d == '{') depth++;
-                    else if (d == '}') { depth--; if (depth == 0) break; }
-                    code += d;
-                }
+                // the code is Raku: a `#` comment runs to the end of the line,
+                // braces inside it included (Template::Mustache's linetag
+                // assertion is three lines of commentary and one expression),
+                // and a brace in a string is the string's (codeBlockEnd)
+                std::string code = takeCodeBlock();
                 if (peek() == '>') pos_++;
                 auto cn = std::make_unique<Node>(); cn->k = K::Code; cn->lit = code; cn->negate = neg;
                 return cn;
@@ -2249,14 +2297,7 @@ Regex::NodePtr Regex::parseAtom() {
             // This was a zero-width no-op that never ran the block, so a header
             // check like `/^ 'SPOZ2 ' <{FORMAT-VERSION}> \n/` passed against any
             // version at all (issue #81).
-            pos_++;                                   // the '{'
-            std::string code; int depth = 1;
-            while (!eof()) {
-                char d = pat_[pos_++];
-                if (d == '{') depth++;
-                else if (d == '}' && --depth == 0) break;
-                code += d;
-            }
+            std::string code = takeCodeBlock();
             skipWs();
             if (peek() == '>') pos_++;
             auto n = std::make_unique<Node>();
@@ -2594,25 +2635,8 @@ Regex::NodePtr Regex::parseAtom() {
                 // match time and matches the result's Str literally, exactly as
                 // a qq string interpolates — Test::Output writes
                 // /^ "warning!{$nl}" $/ and Rakudo matches it
-                pos_++;
-                std::string expr;
-                int depth = 1;
-                while (!eof()) {
-                    char p = pat_[pos_++];
-                    // a string in the block is text: its braces do not count (`{'a}b'}`)
-                    if (p == '\'' || p == '"') {
-                        expr += p;
-                        while (!eof() && pat_[pos_] != p) {
-                            if (pat_[pos_] == '\\' && pos_ + 1 < pat_.size()) expr += pat_[pos_++];
-                            expr += pat_[pos_++];
-                        }
-                        if (!eof()) expr += pat_[pos_++];
-                        continue;
-                    }
-                    if (p == '{') depth++;
-                    else if (p == '}' && --depth == 0) break;
-                    expr += p;
-                }
+                // (a string in the block is text: its braces do not count, `{'a}b'}`)
+                std::string expr = takeCodeBlock();
                 flush();
                 auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = expr;
                 vm->icase = curIcase_; vm->imark = curImark_;   // `:i "{NAME}"` folds like the text around it
@@ -5887,7 +5911,7 @@ std::string Regex::toJsTree(const std::function<std::string(const std::string&, 
                 if (n->recTarget) o += ",rec:1";
                 break;
             case K::Look: flag("negate", n->negate); flag("behind", n->behind); break;
-            case K::Code: o += ",code:" + jsQ(n->lit) + ",fn:" + embed(n->runOnly ? "run" : "assert", n->lit); flag("runOnly", n->runOnly); flag("ltmStop", n->ltmStop); break;
+            case K::Code: o += ",code:" + jsQ(n->lit) + ",fn:" + embed(n->runOnly ? "run" : "assert", n->lit); flag("runOnly", n->runOnly); flag("ltmStop", n->ltmStop); flag("negate", n->negate); break;   // (`<!{ … }>`: without it the JS matcher read every one as `<?{ … }>`)
             case K::VarMatch: o += ",name:" + jsQ(n->lit) + ",fn:" + embed("var", n->lit); flag("icase", n->icase); flag("imark", n->imark); break;
             case K::CondRef: o += ",lit:" + jsQ(n->lit); break;
             default: break;

@@ -10284,6 +10284,11 @@ static std::string scanInterpBlock(const std::string& raw, size_t& j,
             if (c == '\\' && j + 1 < n) { inner += c; inner += raw[j+1]; j += 2; continue; }
             if (c == q) q = 0;
         }
+        // a “…” / ‘…’ / ｢…｣ string is the code's too: `{ $x ?? “doesn't” !! '' }`
+        else if (size_t e = uniQuoteSpanEnd(raw, j)) { inner.append(raw, j, e - j); j = e; continue; }
+        // …and an apostrophe inside a NAME (`don't`) opens no string
+        else if (c == '\'' && !inner.empty() && (ascii::isalnum((unsigned char)inner.back()) || inner.back() == '_') &&
+                 j + 1 < n && rakuIdentStart(raw[j + 1])) {}
         else if (c == '\'' || c == '"') q = c;
         else if (c == open) depth++;
         else if (c == close) { depth--; if (depth == 0) break; }
@@ -10583,7 +10588,19 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 }
                 return false;
             };
+            // A block is CODE, as it is anywhere else: code that does not parse
+            // is a compile error, as in Rakudo (`"a {1 +} z"`: Missing required
+            // term after infix). It was dropped without a word, and the string
+            // read on as if the block had been empty. The error names the line
+            // the block is on, not its line within the block's own text.
             try { result->parts.push_back(parseEmbeddedExpr(inner, declares())); }
+            catch (ParseError& pe) {
+                const Token& st = pos_ > 0 ? toks_[pos_ - 1] : cur();
+                const int at = st.line + (st.heredoc ? 1 : 0) +
+                               (int)std::count(raw.begin(), raw.begin() + (long)i, '\n');
+                pe.line = at + (pe.line > 0 ? pe.line - 1 : 0);
+                throw;
+            }
             catch (...) { rethrowIfObsolete(); }
             i = j + 1;
             continue;

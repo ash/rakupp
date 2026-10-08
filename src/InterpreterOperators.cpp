@@ -1942,6 +1942,14 @@ bool isPlatformHash(const Value& v) {
     return v.t == VT::Hash && v.hash() &&
            (v.hashKind == "Distro" || v.hashKind == "Kernel" || v.hashKind == "VM");
 }
+static bool strNeedsElementRead(const Value& e, int depth) {
+    if (e.t == VT::Object || (e.t == VT::Hash && e.hashKind == "Proxy")) return true;
+    if (depth < 8 && e.t == VT::Array && e.arr() && e.enumName.empty())
+        for (auto& x : *e.arr()) if (strNeedsElementRead(x, depth + 1)) return true;
+    return false;
+}
+bool strNeedsElementRead(const Value& e) { return strNeedsElementRead(e, 0); }
+
 std::string Interpreter::strInStrContext(const Value& v) {
     std::string s;
     return strishValue(v, s) ? s : strOf(v);
@@ -1996,10 +2004,12 @@ std::string Interpreter::strOf(const Value& v) {
     if (v.t == VT::Array && v.arr() && v.enumName.empty()) {
         bool anyObj = false;
         // …and a Proxy ELEMENT is read the same way (URI::Query hands back a list
-        // of Proxy containers so the list itself stays immutable).
+        // of Proxy containers so the list itself stays immutable) — also one in a
+        // NESTED list: `@d.push: ($x, 6)` keeps $x's container in the inner list,
+        // and `~@d` printed that Proxy's FETCH/STORE pair where "a 6" belongs
+        // (iz4's write-scaffolds result, compared with `is`).
         for (auto& e : *v.arr())
-            if (e.t == VT::Object || (e.t == VT::Hash && e.hashKind == "Proxy") ||
-                uninitOperand(e)) { anyObj = true; break; }   // (an undefined element warns, naming the array)
+            if (strNeedsElementRead(e) || uninitOperand(e)) { anyObj = true; break; }   // (an undefined element warns, naming the array)
         if (anyObj) {
             std::string out;
             for (size_t k = 0; k < v.arr()->size(); k++) { if (k) out += " "; out += strOf((*v.arr())[k]); }

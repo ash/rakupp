@@ -1546,6 +1546,14 @@ struct JsGen {
         }
         int savedGen = genFnDepth; genFnDepth = -1;
         bool usesArgs = isRoutine && params.empty() && stmtsContain(be->body, [](Node* n) { return isVarNamed(n, "@_"); }, false);
+        // a block's placeholders take their arguments, `@_` the positionals left
+        // and `%_` the named ones: `{ $^a + @_.sum }(1, 2, 3)` is 6, its
+        // signature `($a, *@_)`; `{ $^a; %_ }(1, :x(2))` is {x => 2}
+        const bool restPos = !isRoutine && !placeholders.empty() && params.empty() && !implicitTopic &&
+                             stmtsContain(be->body, [](Node* n) { return isVarNamed(n, "@_"); }, false);
+        const bool restNamed = !isRoutine && !placeholders.empty() && params.empty() && !implicitTopic &&
+                               stmtsContain(be->body, [](Node* n) { return isVarNamed(n, "%_"); }, false);
+        if (restPos || restNamed) paramList += ", ..._rest";
         string body = fnBody(isRoutine, [&]() {
             scopes.emplace_back(); declareSigillessParams(params);
             for (auto& p : params) fn().params.insert(p.name);
@@ -1554,6 +1562,8 @@ struct JsGen {
             bool bindsTopic = false;
             for (auto& p : params) if (p.name == "$/") fn().slashParam = true;
             if (usesArgs) { paramList = "..._args"; line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_args)[0]);"); }
+            if (restPos) line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_rest)[0]);");
+            if (restNamed) line(2, "let " + mangleVar("%_") + " = R.mkHash(new Map(R.splitArgs(_rest)[1]));");
             if (!params.empty()) {
                 // a pointy block's / anonymous sub's params: the same binder subs use
                 if (simpleSig(params)) {
