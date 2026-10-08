@@ -145,13 +145,19 @@ check $e, 'Failure', '…and a Failure carrying X::Syntax::Confused from 6.e on'
 ($d, $e) = both 'say //42 ~ " " ~ //Any';
 check $e, 'True False', 'prefix // is .defined from 6.e on';
 
-($d, $e) = both 'say (1,2,3).map({ $_ == 2 ?? next(42) !! $_ }).List';
-check $d, '(1 3)',    'next drops its value before 6.e';
-check $e, '(1 42 3)', '…and supplies it from 6.e on';
+# Before 6.e `next` and `last` are `( --> Nil)` and `(Label:D $x --> Nil)`, so
+# a value can never bind, and Rakudo (2026.09) refuses the call while
+# compiling: nothing runs, not even the `say` in front of it. From 6.e the
+# value is the loop's.
+($d, $e) = both 'say "first"; say (1,2,3).map({ $_ == 2 ?? next(42) !! $_ }).List';
+like-check $d, 'Calling next(Int) will never work', 'next takes no value before 6.e';
+check      so($d.lines.grep(* eq 'first')), False, '…refused while compiling, so nothing runs';
+check      $e, "first\n(1 42 3)",                  '…and supplies it from 6.e on';
 
-($d, $e) = both 'say (1,2,3).map({ $_ == 2 ?? last(99) !! $_ }).List';
-check $d, '(1)',    'last drops its value before 6.e';
-check $e, '(1 99)', '…and supplies it from 6.e on';
+($d, $e) = both 'say "first"; say (1,2,3).map({ $_ == 2 ?? last(99) !! $_ }).List';
+like-check $d, 'Calling last(Int) will never work', 'last takes no value before 6.e';
+check      so($d.lines.grep(* eq 'first')), False, '…refused while compiling, so nothing runs';
+check      $e, "first\n(1 99)",                    '…and supplies it from 6.e on';
 
 ($d, $e) = both 'say so "abc" ~~ /<|f> abc/';
 check      $d, 'True', 'an unknown regex boundary is a silent no-op before 6.e';

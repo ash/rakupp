@@ -548,6 +548,7 @@ struct Checker {
     std::set<const Expr*> feedTargets;        // the call a feed (`==>`, `<==`) appends its list to
     const std::function<bool(const std::string&)>* isCore = nullptr;
     int curLine = 0;
+    int langRev = 0;                     // the unit's language revision (2 = 6.e)
 
     int lineOf(const Node* n) const { return n && n->line ? n->line : curLine; }
 
@@ -900,6 +901,13 @@ struct Checker {
                 auto* c = static_cast<const Call*>(e);
                 if (!c->callee && !c->dotAmp && !c->name.empty() && !feedTargets.count(e))
                     judge(c->name, &c->args, lineOf(c));
+                // `next(42)` / `last $x` / `redo(1)`: the parser reads the
+                // keyword as the control op and the arguments as a call on it
+                if (c->callee && c->callee->kind == NK::Unary) {
+                    auto* u = static_cast<const Unary*>(c->callee.get());
+                    if (!u->operand && (u->op == "next" || u->op == "last" || u->op == "redo"))
+                        judgeLoopControl(u->op, &c->args, lineOf(c));
+                }
                 walkExpr(c->callee.get());
                 for (auto& a : c->args) walkExpr(a.get());
                 return;
@@ -1430,10 +1438,40 @@ struct Checker {
         return true;
     }
 
+    // `next`, `last` and `redo` are the setting's multis `( --> Nil)` and
+    // `(Label:D $x --> Nil)`; from 6.e `next` and `last` also take any value
+    // (`(\x --> Nil)`), `redo` never does. An argument of a type the compiler
+    // knows, which no Label can be, never binds: Rakudo refuses `next(42)`,
+    // `last("x")` or `redo(1)` while compiling, and a program that would have
+    // printed half its output first runs nothing. A type a Label is (Mu, Any)
+    // may hold one, and is left to the binder, as Rakudo leaves it.
+    void judgeLoopControl(const std::string& name, const std::vector<ExprPtr>* argExprs, int line) {
+        if (name != "next" && name != "last" && name != "redo") return;
+        if (name != "redo" && langRev >= 2) return;
+        if (!argExprs || argExprs->size() != 1) return;
+        for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
+            if (it->subs.count(name) || it->terms.count(name)) return;
+        const Expr* ae = (*argExprs)[0].get();
+        if (!ae || ae->kind == NK::Pair) return;
+        if (ae->kind == NK::Unary && static_cast<const Unary*>(ae)->op == "|") return;
+        ArgT a;
+        if (!argType(ae, a)) return;
+        auto mayBeLabel = [](const std::string& t) { return t == "Label" || t == "Mu" || t == "Any"; };
+        if (mayBeLabel(a.type)) return;
+        for (auto& t : a.truth) if (mayBeLabel(t)) return;
+        DoomedCall d;
+        d.line = line;
+        d.name = name;
+        d.arguments.push_back(a.shown);
+        d.multi = true;
+        d.signatures = {"( --> Nil)", "(Label:D $x --> Nil)"};
+        out.push_back(std::move(d));
+    }
+
     void judge(const std::string& name, const std::vector<ExprPtr>* argExprs, int line) {
         if (name.empty() || name.find(':') != std::string::npos) return;   // a package path, an operator
         Target tg;
-        if (!resolve(name, line, tg)) return;
+        if (!resolve(name, line, tg)) { judgeLoopControl(name, argExprs, line); return; }
         std::vector<ArgT> args;
         if (argExprs)
             for (auto& ae : *argExprs) {
@@ -1517,6 +1555,7 @@ std::vector<DoomedCall> findDoomedCalls(const Program& prog, const std::vector<s
                                         const std::function<bool(const std::string&)>& isCoreRoutine) {
     Checker C;
     C.isCore = &isCoreRoutine;
+    C.langRev = prog.langRev;
     C.survey(prog.stmts);
     if (C.standDown) return {};
     C.scopes.emplace_back();   // the unit

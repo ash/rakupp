@@ -88,6 +88,21 @@ refuses 'proto', 'proto p(Int $) {*}; multi p($x) { }; p("x");',
 refuses 'a literal is no container', 'multi f(Str $x is rw) { }; f("x");',
     'Calling f(Str) will never work with any of these multi signatures';
 
+# 7. the setting's loop control: `next`/`last` are `( --> Nil)` and
+# `(Label:D $x --> Nil)` before 6.e, and `redo` is that in every revision, so a
+# value no Label can be never binds (Rakudo 2026.09 refuses each of these).
+# The call form parses as the control op with a call on it, not a named call.
+refuses 'next with a value before 6.e', 'say "ran"; say (1,2,3).map({ $_ == 2 ?? next(42) !! $_ })',
+    'Calling next(Int) will never work with any of these multi signatures';
+refuses 'last with a Str', 'say "ran"; for 1..2 { last("x") }',
+    'Calling last(Str) will never work with any of these multi signatures';
+refuses 'next with a typed variable', 'say "ran"; my Cool $x = 3; for 1..2 { next($x) }',
+    'Calling next(Cool) will never work with any of these multi signatures';
+refuses 'next with a type object', 'say "ran"; for 1..2 { next(Int) }',
+    'Calling next(Int) will never work with any of these multi signatures';
+refuses 'redo never takes a value, not even in 6.e', 'use v6.e.PREVIEW; say "ran"; for 1..2 { redo(1) }',
+    'Calling redo(Int) will never work with any of these multi signatures';
+
 # 6. EVAL'd code is compiled the same way: nothing of it runs
 {
     sub run-it { EVAL q[sub g(Str $x) { }; say "side effect"; g(42)] }
@@ -133,6 +148,14 @@ allows 'two tiers', 'multi f(Int $x) { }; multi f(Numeric $x) { }; try f("x"); s
 # out here (roast S03-junctions/misc.t wants the binder's own exceptions)
 allows 'a Junction', 'sub foo($) { }; try foo(Junction); say "ok"', 'ok';
 allows 'a Junction, multi', 'multi foo($) { }; try foo(Junction); say "ok"', 'ok';
+
+# a value that may be a Label, an empty Slip, and 6.e's value-taking loop
+# control all run, as on Rakudo
+allows 'next with an Any variable', 'my Any $x = 3; for 1..2 { try next($x) }; say "ok"', 'ok';
+allows 'next with the Label type object', 'for 1..2 { try next(Label) }; say "ok"', 'ok';
+allows 'next with an empty Slip', 'for 1..2 { next(|()) }; say "ok"', 'ok';
+allows 'next with a value in 6.e', 'use v6.e.PREVIEW; say (1,2,3).map({ $_ == 2 ?? next(42) !! $_ }).List', '(1 42 3)';
+allows 'last with a value in 6.e', 'use v6.e.PREVIEW; say (1,2,3).map({ $_ == 2 ?? last(99) !! $_ }).List', '(1 99)';
 
 # ---- rakupp's own surface ------------------------------------------------------
 
