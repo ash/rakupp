@@ -354,6 +354,9 @@ inline void storeProcStatus(const Value& proc, int code) {
 // A read took the process's stdin to its end (`slurp()`, `words()`): from
 // now on `$*IN.eof` is True (MethodCallPart3.cpp keeps the flag).
 void noteStdinAtEnd();
+// …and has the program closed it (`$*IN.close`)? Then `lines()` and `words()`
+// refuse, as `$*IN` does.
+bool stdinClosed();
 bool liveProcReadLine(Interpreter* I, long long tok, bool err, std::string& line, bool chomp);
 std::string liveProcRead(Interpreter* I, long long tok, bool err, size_t n);
 std::string liveProcReadAll(Interpreter* I, long long tok, bool err);

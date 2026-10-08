@@ -114,7 +114,8 @@ rakupp --sandbox count.raku < data.txt      # yes
 rakupp --sandbox count.raku data.txt        # refused when count.raku reads lines()
 ```
 
-`'-'.IO.slurp` reads standard input as well.
+The path `-` is standard input as well: `open('-')`, `'-'.IO.lines` and
+`'-'.IO.slurp` read it, and `open('-', :w)` writes to standard output.
 
 ## With `--mcp`
 

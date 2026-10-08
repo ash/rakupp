@@ -58,13 +58,24 @@ std::string handleEnc(const Value& h) {
     auto it = h.hash()->find("encoding");
     return it != h.hash()->end() ? it->second.toStr() : std::string();
 }
+// Standard input is one stream, but every mention of `$*IN` makes a fresh
+// handle onto it, so whether it is CLOSED is kept here, with the stream:
+// `$*IN.close` — or a read through `'-'.IO` that closes as it ends — leaves
+// every later `$*IN`, and every copy made before, closed. `open('-')` opens it
+// again. (`$*ARGFILES` with no files named is the same handle.)
+std::atomic<bool> g_stdinClosed{false};
+bool isStdinHandle(const Value& h) {
+    auto it = h.hash()->find("std");
+    return it != h.hash()->end() && it->second.toStr() == "in";
+}
 // `.close` marks the handle rather than dropping it: the object stays
 // reachable, and every read and write through it after that is an error
 // rather than a silent reopen of the path. An `IO::Handle.new(:path)` is
 // born marked — it was never opened.
 bool fhClosed(const Value& h) {
     auto it = h.hash()->find("closed");
-    return it != h.hash()->end() && it->second.truthy();
+    if (it != h.hash()->end() && it->second.truthy()) return true;
+    return g_stdinClosed.load(std::memory_order_relaxed) && isStdinHandle(h);
 }
 // Bytes read off a handle are a `Buf[uint8]`, not a bare `Buf`: the element
 // type is part of the type the caller is handed, and a signature written
@@ -122,6 +133,7 @@ Value openStdStream(Interpreter& I, const Value& dash, const ValueList& args) {
             hh.erase("closed"); hh.erase("path");
             hh["std"] = Value::str(write ? "out" : "in");
             hh["mode"] = Value::str(write ? "w" : "r");
+            if (!write) g_stdinClosed = false;
         }
         else {
             Value p = Value::pair(write ? "w" : "r", Value::boolean(true)); p.namedArg = true;
@@ -181,6 +193,7 @@ static bool succPredExact(const Value& v) {
 // by looking ahead, which on a terminal would wait for input.
 static std::atomic<bool> g_stdinHitEof{false};
 void noteStdinAtEnd() { g_stdinHitEof = true; }
+bool stdinClosed() { return g_stdinClosed.load(std::memory_order_relaxed); }
 
 #ifndef _WIN32
 // How many bytes stdio already holds for stdin — what a read can hand out
@@ -3563,6 +3576,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
             (*inv.hash())["closed"] = Value::boolean(true);  // .opened is False from here, and reads throw
+            if (isStdinHandle(inv)) g_stdinClosed = true;    // …for every `$*IN` (see g_stdinClosed)
             // A `$proc.out`/`$proc.err` pipe answers its Proc, not True (Rakudo's
             // IO::Pipe.close). A bare `$p.err.close;` statement then SINKS that
             // Proc, and the sink is what raises X::Proc::Unsuccessful for a child
@@ -3941,7 +3955,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // $*IN.lines` over a pipe wait for the writer to close before its first
         // iteration — a reader of NDJSON frames from a live process saw none
         // until the process ended. An eager context still reads it all.
-        if (m == "lines" && isStdin && args.empty() &&
+        // A limit stops the stream there, and `:close` closes $*IN when the
+        // lines run out — at the limit or the end, not before: a slice that
+        // stops early leaves it open (`'-'.IO.lines` passes :close).
+        long long stdinLimit = -1;
+        bool stdinClose = false, stdinStream = isStdin;
+        for (auto& av : args) {
+            if (!stdinStream) break;
+            if (av.t == VT::Pair && av.namedArg && av.s == "close")
+                stdinClose = !av.pairVal() || av.pairVal()->truthy();
+            else if (av.t == VT::Int && av.toInt() >= 0) stdinLimit = av.toInt();
+            else if (!(av.t == VT::Whatever || (av.t == VT::Num && std::isinf(av.toNum()) && av.toNum() > 0)))
+                stdinStream = false;   // any other argument: the general reader below
+        }
+        if (m == "lines" && stdinStream &&
             inv.hash()->find("lines") == inv.hash()->end() &&
             !inv.hash()->count("nl-in") && !inv.hash()->count("captured") &&
             !inv.hash()->count("enc") && !inv.hash()->count("chomp")) {
@@ -3949,9 +3976,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             auto st = std::make_shared<LazySeqState>();
             st->streaming = true;
             st->finiteSource = true;
-            st->appendNext = [](ValueList& cache) -> bool {
+            auto left = std::make_shared<long long>(stdinLimit);
+            Value hv = stdinClose ? inv : Value::nil();
+            Interpreter* self = this;
+            st->appendNext = [left, hv, stdinClose, self](ValueList& cache) -> bool {
                 std::string l;
-                if (!std::getline(std::cin, l)) { g_stdinHitEof = true; return false; }
+                const bool more = *left != 0 && std::getline(std::cin, l);
+                if (!more) {
+                    if (*left != 0) g_stdinHitEof = true;
+                    if (stdinClose) { Value h = hv; self->methodCall(h, "close", ValueList{}); }
+                    return false;
+                }
+                if (*left > 0) --*left;
                 if (!l.empty() && l.back() == '\r') l.pop_back();
                 cache.push_back(Value::str(l));
                 return true;
@@ -4297,11 +4333,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     }
     // `'-'.IO.lines` reads standard input: the named arguments open the path
     // (openStdStream, so :enc applies to $*IN), and the positional limit goes
-    // to $*IN's own .lines, which keeps its own chomp and nl-in
+    // to $*IN's own .lines, which keeps its own chomp and nl-in and closes
+    // $*IN when the lines run out, as every IO::Path reader but .slurp does
     if (m == "lines" && inv.hashKind == "IO" && inv.t == VT::Str && inv.toStr() == "-") {
         ValueList oa, la;
         for (auto& av : args) (av.t == VT::Pair && av.namedArg ? oa : la).push_back(av);
         Value h = methodCall(const_cast<Value&>(inv), "open", oa);
+        Value close = Value::pair("close", Value::boolean(true)); close.namedArg = true;
+        la.push_back(close);
         return methodCall(h, "lines", la);
     }
     if (m == "lines" && inv.hashKind == "IO") {
@@ -4350,6 +4389,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // answered the letters of "/tmp/…" (roast S16-io/comb.t).
     if (inv.hashKind == "IO" && (m == "comb" || m == "words" || m == "split")) {
         Value text = methodCall(const_cast<Value&>(inv), "slurp", ValueList{});
+        // …and '-' is standard input, which these leave closed (as `.lines` does)
+        if (inv.t == VT::Str && inv.toStr() == "-") {
+            Value* slot = findDynamicLenient("$*IN");
+            Value in = slot ? *slot : dynVar("$*IN");
+            methodCall(in, "close", ValueList{});
+        }
         return methodCall(text, m, args);
     }
 

@@ -270,7 +270,7 @@ hosted `--mcp --sandbox`; a trusted `plraku`.
   expose `RkConfig.sandbox` yet; OpenBSD's pledge + unveil; ~~`open('-')` and
   `'-'.IO.lines` are not standard input on rakupp at all (an existing
   divergence from Rakudo, filed separately), so the sandbox only passes them
-  through~~ **Done** 2026-10-08: they read standard input and `open('-', :w)`
+  through~~ **Done** in 452e775a: they read standard input and `open('-', :w)`
   writes standard output, as in Rakudo (t/regression/dash-path-is-standard-stream.raku),
   and the gate's "allowed" half runs six `-` spellings (347/347 on macOS).
   Next: S3, limits.

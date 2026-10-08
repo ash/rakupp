@@ -19108,10 +19108,15 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             same = kValueKinds.count(l.hashKind) ? (whichOf(l) == whichOf(r))
                                                  : (l.hash() == r.hash());
             // a STANDARD handle is one object however it was reached: each
-            // `$*IN` read hands back a fresh view of the same stream
-            if (!same && l.hash() && r.hash() && l.hash()->size() == 1 && r.hash()->size() == 1 &&
-                l.hash()->count("std") && r.hash()->count("std"))
-                same = l.hash()->begin()->second.toStr() == r.hash()->begin()->second.toStr();
+            // `$*IN` read hands back a fresh view of the same stream, and what
+            // a read leaves in that view (a line cache, a position) is not part
+            // of its identity — nor is a setting like `.nl-in`. `$*ARGFILES`
+            // with no files named is `$*IN`, and `open('-')` is too.
+            if (!same && l.hashKind == "FileHandle" && r.hashKind == "FileHandle" && l.hash() && r.hash()) {
+                auto ls = l.hash()->find("std"), rs = r.hash()->find("std");
+                if (ls != l.hash()->end() && rs != r.hash()->end())
+                    same = ls->second.toStr() == rs->second.toStr();
+            }
         }
         // …and the reference types that are NOT hashes underneath got the same
         // wrong answer from the value fallback at the bottom: a Buf is a tagged

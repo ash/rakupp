@@ -62,6 +62,15 @@ check q[say '-'.IO.comb(/\w/)], "(a b c d)\n", "ab cd\n";
 check q[say '-'.IO.slurp.raku], "\"a\\nb\\n\"\n";
 check q[say slurp('-').raku], "\"a\\nb\\n\"\n";
 
+# every IO::Path reader but .slurp leaves standard input closed, once it has
+# read to the end; open('-') opens it again
+check q[say '-'.IO.lines.elems; say $*IN.opened], "2\nFalse\n";
+check q[my $l = '-'.IO.lines; say $l[0]; say $*IN.opened; say $l.elems; say $*IN.opened], "a\nTrue\n2\nFalse\n";
+check q[say '-'.IO.words.elems; say $*IN.opened], "2\nFalse\n";
+check q[say '-'.IO.comb(/\w/).elems; say $*IN.opened], "2\nFalse\n";
+check q[say '-'.IO.slurp.chars; say $*IN.opened], "4\nTrue\n";
+check q['-'.IO.lines.elems; say open('-').opened; say $*IN.opened], "True\nTrue\n";
+
 # the deprecation report (6.d), and none for slurp('-') or under 6.c
 my $err = check q[say open('-').get], "a\n";
 @fail.push("open('-') is not reported as deprecated: [$err]") unless $err.contains('open("-") seen at');
