@@ -126,9 +126,9 @@ a file comes back as a tool error, and the session carries on.
 ## Embedding
 
 A host sets `RkConfig.sandbox` ([EMBEDDING.md](EMBEDDING.md)). The Raku code it
-evaluates is refused exactly what it is refused under `--sandbox`, by the
-interpreter's checks; there is no OS layer, because the process is the host's
-and it still needs its own files and sockets.
+evaluates follows the same rules as under `--sandbox`, enforced by the
+interpreter's checks alone. There is no OS layer, because the process belongs
+to the host, which still needs its own files and sockets.
 
 ```c
 RkConfig cfg = {0};

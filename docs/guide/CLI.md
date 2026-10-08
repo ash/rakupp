@@ -61,13 +61,14 @@ compatibility.
   anything runs; see [The environment](#the-environment) below.
 - `--seed[=N]`, `--stack-size=N` — pin the random generator, size the
   recursion ceiling; see [Pinning a run](#pinning-a-run---seed-and---stack-size).
-- `--sandbox[=language]` — run code you did not write: the program computes,
-  prints and reads standard input, and is refused files, processes, sockets
-  and native code, with `%*ENV` empty. The interpreter's checks and, under
-  them, the OS layer (Seatbelt on macOS, Landlock and seccomp on Linux); where
-  there is no OS layer, plain `--sandbox` refuses to run and `=language` runs
-  with the checks alone. `rakupp -V` names the layer. With a program, `-e`,
-  the REPL and `--mcp`; see [SANDBOX.md](SANDBOX.md).
+- `--sandbox[=language]` — run code you did not write. The program may
+  compute, print and read standard input, but it cannot touch files, start
+  processes, open sockets or call native code, and `%*ENV` starts empty. The
+  interpreter enforces this, and so does the operating system underneath it
+  (Seatbelt on macOS, Landlock and seccomp on Linux). Where the OS cannot,
+  plain `--sandbox` refuses to run, and `--sandbox=language` runs with the
+  interpreter's checks alone; `rakupp -V` shows which applies. It works with
+  a program, `-e`, the REPL and `--mcp`; see [SANDBOX.md](SANDBOX.md).
 - `--color=auto|always|never` — ANSI colour on stderr and in the REPL; see
   [When something dies](#when-something-dies).
 - `--hints` — performance hints on stderr (`RAKUPP_HINTS=1`); see

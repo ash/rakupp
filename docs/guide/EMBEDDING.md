@@ -163,11 +163,11 @@ created, and by more than one at once. Make those re-entrant.
   ([EMBED-PLAN](../dev/plans/EMBED-PLAN.md)'s E5).
 - **The host's privileges, unless you ask.** An embedded Raku++ can do
   whatever your process can. Set `RkConfig.sandbox` and the Raku code it runs
-  is refused files, processes, sockets and native code, with an empty
-  `%*ENV` ([SANDBOX.md](SANDBOX.md)). That confines the Raku code, not your
-  process: it is the interpreter's checks alone, without the OS layer
-  `rakupp --sandbox` adds, because your process still needs its own files and
-  sockets. The switch is process-wide and one-way.
+  cannot touch files, start processes, open sockets or call native code, and
+  its `%*ENV` starts empty ([SANDBOX.md](SANDBOX.md)). That confines the Raku
+  code, not your process: only the interpreter's checks apply, not the OS
+  layer that `rakupp --sandbox` adds, because your process still needs its
+  own files and sockets. The switch is process-wide and one-way.
 
 ## Bindings
 
