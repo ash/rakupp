@@ -79,6 +79,60 @@ Value binBuf(std::string bytes) {
 
 } // namespace
 
+// The path '-' is the process's standard stream: `open('-')`, `'-'.IO.open`
+// and `IO::Handle.new(:path('-')).open` answer $*IN to read and $*OUT to
+// write. The mode comes from the adverbs as Rakudo reads them: none or :r
+// reads, :w/:x/:a write, and :rw/:ra/:rx/:update, or :r beside a write, name a
+// mode no standard stream has, which dies. :create, :truncate, :append and
+// :exclusive alone choose nothing (they describe a file); :bin and :enc set
+// the stream's; :chomp and :nl-in stay the stream's own. `dash` is an unopened
+// `IO::Handle.new(:path('-'))`, opened in place; anything else stands for the
+// bare path. The caller notes the deprecated spelling (BuiltinsRegister.cpp's
+// open() uses this too).
+Value openStdStream(Interpreter& I, const Value& dash, const ValueList& args) {
+    bool r = false, w = false, rw = false, update = false, bin = false;
+    std::string mode;
+    Value enc;
+    for (auto& a : args) {
+        if (a.t != VT::Pair) continue;
+        const bool on = !a.pairVal() || a.pairVal()->truthy();
+        if (a.s == "r") r = on;
+        else if (a.s == "w" || a.s == "x" || a.s == "a") w = w || on;
+        else if (a.s == "rw" || a.s == "ra" || a.s == "rx") rw = rw || on;
+        else if (a.s == "update") update = on;
+        else if (a.s == "mode" && a.pairVal() && a.pairVal()->truthy()) mode = a.pairVal()->toStr();
+        else if (a.s == "bin") bin = on;
+        else if ((a.s == "enc" || a.s == "encoding") && a.pairVal()) enc = *a.pairVal();
+    }
+    if (mode.empty()) mode = rw || (r && w) ? "rw" : r ? "ro" : w ? "wo" : update ? "rw" : "ro";
+    if (mode != "ro" && mode != "wo")
+        throw RakuError{Value::typeObj("X::AdHoc"), "Cannot open standard stream in mode '" + mode + "'"};
+    const bool write = mode == "wo";
+    Value h = dash;
+    if (!(dash.t == VT::Hash && dash.hashKind == "FileHandle")) {
+        const char* var = write ? "$*OUT" : "$*IN";
+        Value* slot = Interpreter::findDynamicLenient(var);
+        h = slot ? *slot : I.dynVar(var);
+    }
+    if (!(h.t == VT::Hash && h.hashKind == "FileHandle" && h.hash())) return h;
+    auto& hh = *h.hash();
+    if (fhClosed(h)) {
+        auto pit = hh.find("path");
+        if (pit == hh.end() || pit->second.toStr() == "-") {   // the standard stream itself
+            hh.erase("closed"); hh.erase("path");
+            hh["std"] = Value::str(write ? "out" : "in");
+            hh["mode"] = Value::str(write ? "w" : "r");
+        }
+        else {
+            Value p = Value::pair(write ? "w" : "r", Value::boolean(true)); p.namedArg = true;
+            I.methodCall(h, "open", ValueList{p});
+        }
+    }
+    if (bin) { hh["bin"] = Value::boolean(true); hh.erase("encoding"); }
+    else if (enc.t != VT::Any && enc.t != VT::Nil) { hh.erase("bin"); hh["encoding"] = Value::str(enc.toStr()); }
+    return h;
+}
+
 // `:enc` on a file read or write. rakupp holds every Str as UTF-8, so text in
 // another encoding is converted at the edge — through `.decode`/`.encode`,
 // which already know every encoding rakupp speaks, rather than a second table
@@ -2820,42 +2874,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                 fhClosed(inv) && inv.hash()->count("path") &&
                                 (*inv.hash())["path"].toStr() == "-";
         if (dashPath || dashHandle) {
-            bool write = false, bin = false;
-            Value enc;
-            for (auto& a : args) {
-                if (a.t != VT::Pair) continue;
-                const bool on = !a.pairVal() || a.pairVal()->truthy();
-                if (on && (a.s == "w" || a.s == "a" || a.s == "x" || a.s == "rw" || a.s == "update" ||
-                           a.s == "append" || a.s == "create" || a.s == "truncate"))
-                    write = true;
-                else if (a.s == "mode" && a.pairVal() && a.pairVal()->toStr() != "ro") write = true;
-                else if (a.s == "bin") bin = on;
-                else if ((a.s == "enc" || a.s == "encoding") && a.pairVal()) enc = *a.pairVal();
-            }
-            Value h = inv;
-            if (dashPath) {
-                const std::string var = write ? "$*OUT" : "$*IN";
-                Value* slot = findDynamicLenient(var);
-                h = slot ? *slot : dynVar(var);
-                if (langRev_ >= 1) noteDeprecation("", "\"-\".IO", "", "$*IN or $*OUT", curLine_);
-            }
-            if (!(h.t == VT::Hash && h.hashKind == "FileHandle" && h.hash())) return h;
-            auto& hh = *h.hash();
-            if (fhClosed(h)) {
-                auto pit = hh.find("path");
-                if (pit == hh.end() || pit->second.toStr() == "-") {   // the standard stream itself
-                    hh.erase("closed"); hh.erase("path");
-                    hh["std"] = Value::str(write ? "out" : "in");
-                    hh["mode"] = Value::str(write ? "w" : "r");
-                }
-                else {
-                    Value p = Value::pair(write ? "w" : "r", Value::boolean(true)); p.namedArg = true;
-                    methodCall(h, "open", ValueList{p});
-                }
-            }
-            if (bin) { hh["bin"] = Value::boolean(true); hh.erase("encoding"); }
-            else if (enc.t != VT::Any && enc.t != VT::Nil) { hh.erase("bin"); hh["encoding"] = Value::str(enc.toStr()); }
-            return h;
+            if (langRev_ >= 1)
+                noteDeprecation("", dashPath ? "\"-\".IO" : "IO::Handle.new(:path(\"-\"))", "",
+                                "$*IN or $*OUT", curLine_);
+            return openStdStream(*this, inv, args);
         }
         // Delegates to the open() builtin: one implementation, one rule set.
         // This arm used to be a stripped copy that skipped the read-mode
@@ -4272,6 +4294,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash())["pos"] = Value::integer(pos + 1);
             return withEol(pos);
         }
+    }
+    // `'-'.IO.lines` reads standard input: the named arguments open the path
+    // (openStdStream, so :enc applies to $*IN), and the positional limit goes
+    // to $*IN's own .lines, which keeps its own chomp and nl-in
+    if (m == "lines" && inv.hashKind == "IO" && inv.t == VT::Str && inv.toStr() == "-") {
+        ValueList oa, la;
+        for (auto& av : args) (av.t == VT::Pair && av.namedArg ? oa : la).push_back(av);
+        Value h = methodCall(const_cast<Value&>(inv), "open", oa);
+        return methodCall(h, "lines", la);
     }
     if (m == "lines" && inv.hashKind == "IO") {
         // `:nl-in(…)` / `:chomp` shape the lines, exactly as they do on a

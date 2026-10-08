@@ -267,7 +267,10 @@ hosted `--mcp --sandbox`; a trusted `plraku`.
     `$*VM.config` not read from it;
   - precomp off (`precompHalf`); `-i` and `--jit` refused with `--sandbox`.
 - **Open:** `--jupyter --sandbox` (refused for now); the bindings do not
-  expose `RkConfig.sandbox` yet; OpenBSD's pledge + unveil; `open('-')` and
+  expose `RkConfig.sandbox` yet; OpenBSD's pledge + unveil; ~~`open('-')` and
   `'-'.IO.lines` are not standard input on rakupp at all (an existing
   divergence from Rakudo, filed separately), so the sandbox only passes them
-  through. Next: S3, limits.
+  through~~ **Done** 2026-10-08: they read standard input and `open('-', :w)`
+  writes standard output, as in Rakudo (t/regression/dash-path-is-standard-stream.raku),
+  and the gate's "allowed" half runs six `-` spellings (347/347 on macOS).
+  Next: S3, limits.

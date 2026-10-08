@@ -4,6 +4,7 @@
 #include "BuiltinsParts.h"
 
 namespace rakupp {
+Value openStdStream(Interpreter& I, const Value& dash, const ValueList& args);   // MethodCallPart3.cpp: open('-')
 
 // The child's stdin for a `:in($handle)` adverb. Rakudo hands the child the
 // handle's OWN descriptor, so a child that inspects its stdin sees the plain
@@ -2230,6 +2231,13 @@ void Interpreter::registerBuiltinsPart2() {
         // claimed ":bin routes to the method" while `slurp $p, :bin` returned
         // a CRLF-squeezed Str where `$p.IO.slurp(:bin)` returned the raw Blob.
         Value io = a[0];
+        // `slurp('-')` is $*IN.slurp, and unlike `'-'.IO.slurp` not a
+        // deprecated spelling: Rakudo reports nothing for it
+        if (io.t == VT::Str && io.hashKind.empty() && io.toStr() == "-") {
+            Value* slot = Interpreter::findDynamicLenient("$*IN");
+            Value in = slot ? *slot : I.dynVar("$*IN");
+            return I.methodCall(in, "slurp", ValueList(a.begin() + 1, a.end()));
+        }
         if (io.t != VT::Hash && io.hashKind != "IO") { // a path: dispatch as IO, not bare Str
             rejectNulPath(io.toStr());       // (a Str invocant must NOT slurp — see the method's guard)
             io = Value::str(io.toStr());     // an IO::Path passes through AS-IS: rebuilding
@@ -2330,6 +2338,24 @@ void Interpreter::registerBuiltinsPart2() {
         return out;
     };
     B["open"] = [](Interpreter& I, ValueList& a) -> Value { // sub form: open($path, :r/:w/:a)
+        // `open('-')` is $*IN and `open('-', :w)` $*OUT (openStdStream). 6.d
+        // deprecates the spelling; an IO::Path '-' is reported as Rakudo
+        // reports it, as the path and as the handle opened on it.
+        for (auto& x : a) {
+            if (x.t == VT::Pair) continue;
+            if (x.t == VT::Str && (x.hashKind.empty() || x.hashKind == "IO") && x.toStr() == "-") {
+                if (I.langRev_ >= 1) {
+                    const char* with = "$*IN or $*OUT";
+                    if (x.hashKind == "IO") {
+                        I.noteDeprecation("", "\"-\".IO", "", with, I.testLine());
+                        I.noteDeprecation("", "IO::Handle.new(:path(\"-\"))", "", with, I.testLine());
+                    }
+                    else I.noteDeprecation("", "open(\"-\")", "", with, I.testLine());
+                }
+                return openStdStream(I, Value(), a);
+            }
+            break;
+        }
         // the path is the first POSITIONAL — `open :w, $path` puts the adverb first,
         // and taking args[0] blindly opened a file literally named "w\tTrue"
         std::string path;
