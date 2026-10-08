@@ -88,7 +88,7 @@ serve over `http(s)` (a `file://` page cannot start a Web Worker). No CORS
 headers are needed for files on your own origin.
 
 Full instructions, including what changes for the ↗ button:
-**[raku.online/embed/#host-it-yourself](https://raku.online/embed/#host-it-yourself)**.
+**[raku.online/embed/js/#host-it-yourself](https://raku.online/embed/js/#host-it-yourself)**.
 
 ## 3. Call the interpreter from your own JavaScript
 
