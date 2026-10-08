@@ -106,14 +106,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
   slot, set by binding and assignment.
-- [ ] **X::React::Died loses the react's location under load**: in
-  S17-supply/syntax-nonblocking-await.t a `whenever Supply.interval(0.001)`
-  body dies inside `sub i-will-react() { react { … } }`, and the report must
-  name `i-will-react`. Alone it always does; under load (a RISC-V board with
-  8 busy loops) 4 of 12 runs report only "goodbye! in sub death": the body
-  then ran on a worker thread, and the react's own location is not added to
-  what it threw. Found 2026-10-08; not started. Next: carry the react's
-  location with the X::React::Died whichever thread the body ran on.
 - [ ] **A shaped native array takes ~160 bytes an element**: `my int
   @mat[10001;10001]` alone runs 6.8 s with a 16 GB peak footprint on arm64
   macOS, where 100M `int`s need 800 MB. On a 3.7 GB RISC-V board the kernel
@@ -423,16 +415,15 @@ with its tag, after the release run is green.
 - [ ] **Roast on slow hardware**: on a SpacemiT K1 board (Banana Pi F3,
   riscv64) interpreter work runs 10–25× slower than on an M-series Mac (glibc's
   `memcmp` and 64-bit `%` are ~20× slower there, plain integer code 3×), so 21
-  files outrun the 10 s per-file limit. With `ROAST_TIMEOUT=60` the sweep is
-  1,419/1,425 (2026-10-08). The shaped-native-array file (section 2) grows to
-  the board's whole 3.7 GB before the kernel kills it, and the swapping it
-  causes slows every file beside it: a sweep took 205–287 s depending on how
-  much ran alongside. Without that one file the sweep is 1,422/1,424 in about
-  205 s: cas-int.t at 60 s under full load (51 s alone; 1.5 s on the Mac, the
-  widest ratio of any file) and, now and then, the X::React::Died item in
-  section 2. Tests with their own wall-clock watchdog (`sleep 1`, a 5 s
-  `Supply.interval`) fail now and then under load. Next: decide whether the
-  harness scales its limit by a measured speed factor.
+  files outrun the 10 s per-file limit. With `ROAST_TIMEOUT=60` the sweep
+  passes 1,424 of the 1,425 files (2026-10-08, about 200 s). The other is the
+  shaped-native-array file (section 2): it grows to the board's whole 3.7 GB
+  before the kernel kills it, and the swapping it causes slows every file
+  beside it (a sweep took 205–287 s depending on how much ran alongside).
+  cas-int.t is the slowest file there, 25 s alone (1.1 s on the Mac). Tests
+  with their own wall-clock watchdog (`sleep 1`, a 5 s `Supply.interval`)
+  can still fail under load. Next: decide whether the harness scales its
+  limit by a measured speed factor, so the default run passes there too.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.
 - [ ] **Gate 6b is red on three koans by design**: `next OUTER` under a label

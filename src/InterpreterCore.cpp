@@ -17173,6 +17173,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
         }
     }
+    // `===` / `!===` on two plain Ints — what every `cas` asks, under its lock —
+    // is whether the numbers are equal. The general path's value-type fallback
+    // answers it by rendering both and comparing the strings, which for an Int
+    // with no tag (no allomorph, Instant or Duration kind) and no enum name is
+    // exactly this, at two to_strings and two allocations per test. Anything
+    // tagged, big or of another type still goes there.
+    if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() &&
+        l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
+        if (op.size() == 3 && op[0] == '=' && op[1] == '=' && op[2] == '=') return Value::boolean(l.i == r.i);
+        if (op.size() == 4 && op[0] == '!' && op[1] == '=' && op[2] == '=' && op[3] == '=') return Value::boolean(l.i != r.i);
+    }
     return applyArithGeneral(op, l, r);
 }
 
