@@ -960,11 +960,14 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
 
-  # Raku.js: the interpreter compiled to WebAssembly (rakujs/build.sh). Ships two
+  # Raku.js: the interpreter compiled to WebAssembly (rakujs/build.sh). Ships four
   # release assets so users don't need Emscripten:
   #   - rakujs-<tag>.zip        the reusable build + playground (embed anywhere)
   #   - showcase-web-<tag>.zip  the browser showcase apps with the wasm already
   #                             embedded — unzip and open index.html (no server)
+  #   - rakujs-excel-<tag>.zip  the Excel add-in raku.online/embed/excel/ serves
+  #   - rakujs-google-sheets-<tag>.zip  the Apps Script project of the Google
+  #                             Sheets library (bindings/spreadsheets)
   # Tag-only (+ manual dispatch): the em++ -Oz compile costs a few minutes, so
   # ordinary pushes don't pay it.
   wasm:
@@ -1018,6 +1021,17 @@ jobs:
             rakujs/playground/rakujs.wasm
           if-no-files-found: error
 
+      # Raku formulas in spreadsheets (bindings/spreadsheets), built from the
+      # engine compiled above so that nobody has to build them: the Excel add-in
+      # for the address raku.online serves it from (its manifest names that
+      # address), and the Google Sheets project, tested the way Apps Script runs
+      # it — a bare V8, no browser or Node globals.
+      - name: Build and test the spreadsheet formulas
+        run: |
+          build/rakupp bindings/spreadsheets/build.raku \
+              --base=https://raku.online/embed/excel/ --rakujs=rakujs/playground --out=/tmp/sheets
+          node bindings/spreadsheets/test/sheets.mjs /tmp/sheets/google-sheets
+
       # Embed the wasm as base64 + inline the showcase sources into showcase/web/lib/,
       # so the apps in that folder open straight from disk.
       - name: Bundle the browser showcases
@@ -1033,7 +1047,12 @@ jobs:
           # 2) ready-to-open showcase apps: wasm already embedded in web/lib/
           zip -q -X -r "rakujs-showcase-web-$tag.zip" showcase/web \
               -x 'showcase/web/.gitignore' '*.DS_Store'
-          for f in "rakujs-$tag.zip" "rakujs-showcase-web-$tag.zip"; do
+          # 3) the spreadsheet formulas: the Excel add-in exactly as
+          #    raku.online/embed/excel/ serves it, and the Google Sheets
+          #    Apps Script project the library is published from
+          ( cd /tmp/sheets/excel && zip -q -X -r "$GITHUB_WORKSPACE/rakujs-excel-$tag.zip" . )
+          ( cd /tmp/sheets/google-sheets && zip -q -X -r "$GITHUB_WORKSPACE/rakujs-google-sheets-$tag.zip" . )
+          for f in rakujs-*.zip; do
             sha256sum "$f" > "$f.sha256"
           done
           ls -lh rakujs-*.zip*
@@ -1056,6 +1075,31 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: rakujs-*.zip*
+
+      # The Google Sheets project, pushed to the Apps Script library that a
+      # spreadsheet links by its Script ID, and frozen as a numbered version
+      # named after the tag. Set up once, by the Google account that owns the
+      # library: the repository secret CLASPRC_JSON (the ~/.clasprc.json that
+      # `clasp login` writes) and the repository variable
+      # SHEETS_LIBRARY_SCRIPT_ID. Until both exist, this says so and does
+      # nothing; the release itself does not depend on it.
+      - name: Publish the Google Sheets library
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SCRIPT_ID: ${{ vars.SHEETS_LIBRARY_SCRIPT_ID }}
+        run: |
+          if [ -z "$CLASPRC_JSON" ] || [ -z "$SCRIPT_ID" ]; then
+            echo "::notice title=Google Sheets library::not published: set the CLASPRC_JSON secret and the SHEETS_LIBRARY_SCRIPT_ID variable"
+            exit 0
+          fi
+          npm install -g @google/clasp@3.4.1
+          umask 077
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          cd /tmp/sheets
+          printf '{"scriptId":"%s","rootDir":"google-sheets"}\n' "$SCRIPT_ID" > .clasp.json
+          clasp push --force
+          clasp create-version "rakupp $GITHUB_REF_NAME"
 
   # The Linux release binary above is built with Clang (faster); this job keeps
   # GCC compiling cleanly too — it's what most Linux users' `cmake --build` uses.

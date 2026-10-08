@@ -8,6 +8,7 @@
 # carry the same engine, a Raku.js build (rakujs/playground by default).
 
 use JSON::Fast;
+use Data::Native :digest;
 
 my $HERE = $*PROGRAM.IO.absolute.IO.parent;
 my $ROOT = $HERE.parent.parent;
@@ -24,10 +25,16 @@ sub MAIN(
     die "no Raku.js build in $rakujs (run rakujs/build.sh)\n" unless $engine-js.e && $engine-wasm.e;
 
     my $version = repo-version();
-    my $tag     = DateTime.now.posix.base(36).lc;
     my $core    = $HERE.add('core/rakusheet-core.js').slurp
                     .subst("'@RAKUSHEET_DRIVER@'", to-json($HERE.add('rakusheet.raku').slurp));
     die "core/rakusheet-core.js lost its @RAKUSHEET_DRIVER@ slot\n" if $core.contains('@RAKUSHEET_DRIVER@');
+    # The stamp Office's cache keys on (?v=…): a digest of everything the add-in
+    # is made from, so a new engine or a changed file gets a new one, and the
+    # same inputs build the same files, byte for byte — raku.online commits
+    # what this writes, and a rebuild with nothing new must not show up as a diff.
+    my $tag = sha256-hex(join "\0", $base, $version, $core, sha256-hex($engine-js), sha256-hex($engine-wasm),
+                         |<manifest.xml functions.json functions.js taskpane.html taskpane.css taskpane.js
+                            rakusheet-worker.js>.map({ $HERE.add("excel/$_").slurp })).substr(0, 10);
 
     build-excel($out.IO.add('excel'), :$base, :$version, :$tag, :$core, :$engine-js, :$engine-wasm);
     build-sheets($out.IO.add('google-sheets'), :$core, :$engine-js, :$engine-wasm);
