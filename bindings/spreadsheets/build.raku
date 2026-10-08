@@ -103,12 +103,14 @@ sub build-store(IO::Path $dir) {
 }
 
 # The Sheets project that holds no engine: the Raku sidebar loads it from
-# --base, where the Excel add-in's files are, and keeps it in the browser.
+# --base, where the Excel add-in's files are, and keeps it in the browser;
+# its pane looks like Excel's, whose taskpane.css it takes.
 sub build-sheets-sidebar(IO::Path $dir, :$base) {
     fresh($dir);
     $dir.add('appsscript.json').spurt: $HERE.add('google-sheets/appsscript.json').slurp;
     $dir.add('Raku.gs').spurt: apps-script-syntax($HERE.add('google-sheets/sidebar/Raku.js').slurp);
-    $dir.add('RakuSidebar.html').spurt: fill($HERE.add('google-sheets/sidebar/RakuSidebar.html').slurp, %(BASE => $base));
+    $dir.add('RakuSidebar.html').spurt: fill($HERE.add('google-sheets/sidebar/RakuSidebar.html').slurp,
+                                             %(BASE => $base, CSS => $HERE.add('excel/taskpane.css').slurp.chomp));
     say "               $dir  (the engine in a sidebar, from $base)";
 }
 

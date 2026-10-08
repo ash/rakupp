@@ -46,7 +46,7 @@ function sidebar(p) {
 function world() {
   const cache = new Map();
   const sheets = new Map();
-  let ctx;
+  let ctx, current = null;
   const evaluate = cell => {
     if (!cell.formula) { cell.shown = ''; return; }
     try {
@@ -68,8 +68,13 @@ function world() {
       }),
       getRange: (row, col, n) => typeof row === 'string' ? { setFontFamily() {} } : n === undefined
         ? {
+            getA1Notation: () => String.fromCharCode(64 + col) + row,
             setFormula: f => {
-              const cell = rows[row - 1][col - 1];
+              rows[row - 1] ??= [];
+              const cell = rows[row - 1][col - 1] ??= {};
+              // A formula typed in, rather than built by raku(): its values are literals.
+              const typed = f && !cell.code && /^=RAKU\((.*)\)$/s.exec(f);
+              if (typed) { const a = JSON.parse(`[${typed[1]}]`); cell.code = a[0]; cell.args = a.slice(1); }
               cell.formula = f;
               cell.shown = '';
               if (f) evaluate(cell);
@@ -87,6 +92,9 @@ function world() {
       getSheets: () => [...sheets.values()],
       getSheetByName: name => sheets.get(name) ?? null,
       insertSheet: name => { const s = sheetOf(name, []); sheets.set(name, s); return s; },
+      setActiveSheet() {},
+      getCurrentCell: () => current,
+      getActiveRange: () => current,
       toast() {},
     }),
     flush() {},
@@ -108,7 +116,8 @@ function world() {
   // A cell's formula, with the values Sheets would hand the custom function.
   const raku = (code, ...args) => ({ formula: `=RAKU(${JSON.stringify(code)}${args.map(() => ', X').join('')})`, code, args });
   const addSheet = (name, rows) => { const s = sheetOf(name, rows); sheets.set(name, s); rows.flat().forEach(evaluate); return s; };
-  return { ctx, cache, sheets, raku, addSheet };
+  const select = (sheet, row, col) => { current = sheet.getRange(row, col); };
+  return { ctx, cache, sheets, raku, addSheet, select };
 }
 
 // ---- the round trip -----------------------------------------------------------------
@@ -164,6 +173,14 @@ check('a lost request: its formula is entered again, and asks again', w.ctx.raku
 const big = 'x'.repeat(100000);
 const t = w.addSheet('Big', [[w.raku('$^s.chars', big)]]);
 check('values too large for the cache', t.rows[0][0].value, { error: 'the values are too large to hand to the Raku sidebar' });
+
+// ---- an example from the sidebar, into the selected cell -------------------------------
+check('rakuInsert with no cell selected', w.ctx.rakuInsert('=RAKU("1")'), 'Select a cell first.');
+w.select(data, 5, 1);
+check('rakuInsert', w.ctx.rakuInsert('=RAKU("[*] 1..$^n", 30)'), 'Inserted into A5.');
+check('the inserted formula waits', /^⏳ Raku sidebar/.test(data.rows[4][0].shown), true);
+w.ctx.rakuStore(sidebar(w.ctx.rakuPending()));
+check('and the sidebar computes it', data.rows[4][0].value, '265252859812191058636308480000000');
 
 console.log(`${failed ? 'FAIL' : 'PASS'}: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

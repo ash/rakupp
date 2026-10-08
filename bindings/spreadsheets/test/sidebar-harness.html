@@ -48,6 +48,7 @@
     rakuStore(answers) { calls.push('rakuStore'); results.push(answers); stored++; return answers.length; },
     rakuRecalculate() { calls.push('rakuRecalculate'); setTimeout(done, 0); return 7; },
     rakuAddSheet(lines) { calls.push('rakuAddSheet'); server.lines = lines; return 'The Raku sheet is added.'; },
+    rakuInsert(formula) { calls.push('rakuInsert'); server.inserted = formula; return 'Inserted into A1.'; },
   };
   window.__run = function () {
     let ok = () => {}, fail = () => {};
@@ -70,15 +71,24 @@
   const how = await Promise.race([finished, timeout]);
 
   const doc = frame.contentDocument;
-  doc.getElementById('add-sheet').click();
-  await new Promise(r => setTimeout(r, 300));
-
   const bad = [];
+  let checks = 0;
   const check = (name, got, want) => {
+    checks++;
     const ok = want instanceof RegExp ? want.test(got) : JSON.stringify(got) === JSON.stringify(want);
     log(`${ok ? 'ok' : 'NOT OK'} - ${name}${ok ? '' : `: got ${JSON.stringify(got)}, want ${want}`}`);
     if (!ok) bad.push(name);
   };
+  const examples = [...doc.querySelectorAll('#examples li')];
+  check('six examples', examples.length, 6);
+  examples[1].querySelector('button').click();
+  await new Promise(r => setTimeout(r, 300));
+  check('Insert sends the example', server.inserted, '=RAKU("[*] 1..$^n", 30)');
+  check('and says where it went', doc.getElementById('last').textContent, 'Inserted into A1.');
+  check('formulas run', doc.getElementById('formulas').textContent, '8');
+  check('batches', doc.getElementById('batches').textContent, '2');
+  doc.getElementById('add-sheet').click();
+  await new Promise(r => setTimeout(r, 300));
   const first = results[0] || [], second = results[1] || [];
   const answer = (rs, k) => (rs.find(a => a.key === k) || {});
   check('the harness finished', how === 'timeout' ? 'timeout' : 'done', 'done');
@@ -95,7 +105,7 @@
   check('Add the Raku sheet sends the examples', (server.lines || []).some(l => /^sub iban-ok/.test(l)), true);
   check('the last line', doc.getElementById('last').textContent, /^The Raku sheet is added\.$/);
 
-  const passed = 13 - bad.length;
+  const passed = checks - bad.length;
   document.getElementById('summary').textContent = `${bad.length ? 'FAIL' : 'PASS'}: ${passed} passed, ${bad.length} failed`;
   window.harness = { done: true, passed, failed: bad.length, bad, polls };
 })().catch(e => { window.harness = { done: true, crashed: String(e && e.stack || e) }; document.getElementById('summary').textContent = 'crashed: ' + e; });

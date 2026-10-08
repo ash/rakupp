@@ -118,10 +118,24 @@ function rakuShowSidebar() {
   SpreadsheetApp.getUi().showSidebar(HtmlService.createHtmlOutputFromFile('RakuSidebar').setTitle('Raku'));
 }
 
+// An example from the sidebar, into the selected cell; the sidebar computes
+// it on its next round.
+function rakuInsert(formula) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cell = ss.getCurrentCell() || ss.getActiveRange();
+  if (!cell) return 'Select a cell first.';
+  cell.setFormula(formula);
+  return 'Inserted into ' + cell.getA1Notation() + '.';
+}
+
 // The two example subs come from the sidebar, whose engine files have them.
 function rakuAddSheet(lines) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss.getSheetByName('Raku')) return 'There is a Raku sheet already.';
+  var existing = ss.getSheetByName('Raku');
+  if (existing) {
+    ss.setActiveSheet(existing);
+    return 'There is a Raku sheet already.';
+  }
   var sheet = ss.insertSheet('Raku');
   // Plain text, so that a line Sheets would read as a number or a date stays code.
   var range = sheet.getRange(1, 1, lines.length, 1);
