@@ -42,8 +42,40 @@ const CASES = [
       stdin: 'xs = [3, 1, 2]\nxs.sort()\nprint(xs)', want: '[1, 2, 3]\n' },
 ];
 
+// One module instance, several programs in a row, as the playground and the
+// spreadsheet add-ins run them. A single-threaded build runs a `start` block
+// inline, and the block left its dynamic frame on the thread's registers, so
+// the NEXT program's `$*` lookup read through a pointer into the freed
+// interpreter: memory access out of bounds, and every later run failed.
+const SEQUENCE = [
+    { name: 'sequence: a start block',            src: 'my $*LEAK = "stale"; await start { 1 }; say "a"', want: 'a\n' },
+    { name: 'sequence: the next program\'s $*CWD', src: 'say $*LEAK // "clean"; say "x".IO.e', want: 'clean\nFalse\n' },
+];
+
 (async () => {
     let fails = 0;
+    {
+        let out = '', err = '';
+        const m = await RakuJS({ print: t => { out += t + '\n' }, printErr: t => { err += t + '\n' } });
+        for (const c of SEQUENCE) {
+            out = ''; err = '';
+            let rc = -1;
+            try {
+                rc = m.ccall('rakupp_run', 'number', ['string', 'string'], [c.src, '']);
+            } catch (e) {
+                err += String(e) + '\n';
+            }
+            const ok = rc === 0 && out === c.want;
+            console.log(`${ok ? 'ok' : 'not ok'} - ${c.name}`);
+            if (!ok) {
+                fails++;
+                console.log(`#   exit ${rc}`);
+                console.log(`#   want: ${JSON.stringify(c.want)}`);
+                console.log(`#   got:  ${JSON.stringify(out.slice(0, 200))}`);
+                if (err) console.log(`#   err:  ${JSON.stringify(err.slice(0, 300))}`);
+            }
+        }
+    }
     for (const c of CASES) {
         let out = '', err = '';
         const m = await RakuJS({ print: t => { out += t + '\n' }, printErr: t => { err += t + '\n' } });
@@ -63,7 +95,8 @@ const CASES = [
             if (err) console.log(`#   err:  ${JSON.stringify(err.slice(0, 300))}`);
         }
     }
-    console.log(`1..${CASES.length}`);
-    if (fails) { console.log(`# ${fails} of ${CASES.length} failed`); process.exit(1) }
+    const total = SEQUENCE.length + CASES.length;
+    console.log(`1..${total}`);
+    if (fails) { console.log(`# ${fails} of ${total} failed`); process.exit(1) }
     console.log('# all wasm smoke cases passed');
 })();

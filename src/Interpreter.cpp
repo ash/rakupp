@@ -4061,6 +4061,14 @@ Interpreter::Interpreter() {
     }
     global_ = std::make_shared<Env>();
     curPkgEnv_ = global_;
+    // tctx_ is thread_local, so it outlives an interpreter: an embedder that
+    // runs rk_new/rk_run/rk_free over and over on one thread (Raku.js runs
+    // every program that way) had the previous program's dynamic frames on
+    // dynStack, raw Env pointers into a freed interpreter, and a later `$*CWD`
+    // lookup read through one (memory access out of bounds after a run of
+    // Raku Koans). Start from empty Raku-context registers, as a parked thread
+    // does; a scratch host (SlangTctxGuard) restores its caller's on exit.
+    { ExecContext fresh; loadCtx(fresh); }
     tctx_.cur = global_;
     rtInstallStdoutCounter();   // `$*OUT.tell` on a pipe counts bytes from here on
     // Module search paths. "lib"/"."/"rakulib" are relative to the CWD; the rest
