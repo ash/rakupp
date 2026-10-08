@@ -37,6 +37,33 @@ async function RAKU(code, ...values) {
   return cells.length === 1 && cells[0].length === 1 ? cells[0][0] : cells;
 }
 
+// Times each step a formula pays to load the engine, and Apps Script's own
+// base64 and gunzip beside the ones in RakuLoader.gs, for the execution log.
+// Run it from the Apps Script editor: choose rakuTiming, then Run.
+async function rakuTiming() {
+  var lines = [], t = Date.now();
+  function lap(label) { var now = Date.now(); lines.push(label + ': ' + (now - t) + ' ms'); t = now; }
+  RakuSheet.installShims(globalThis);
+  var b64 = RAKUSHEET_WASM.join('');
+  lap('join the engine files');
+  var gz = rakuSheetBase64(b64);
+  lap('base64, in JavaScript (' + gz.length + ' bytes)');
+  var wasm = rakuSheetGunzip(gz);
+  lap('gunzip, in JavaScript (' + wasm.length + ' bytes)');
+  var bytes = Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(b64), 'application/x-gzip')).getBytes();
+  lap('base64 and gunzip, Utilities (' + bytes.length + ' bytes)');
+  var copy = new Uint8Array(bytes.length);
+  for (var i = 0; i < bytes.length; i++) copy[i] = bytes[i] & 255;
+  lap('Utilities\' bytes into a Uint8Array');
+  var engine = await RakuSheet.start(RakuJS, { wasmBytes: wasm });
+  lap('start the engine');
+  engine.run('', [{ code: '1 + 2', args: [] }]);
+  lap('first formula');
+  engine.run('', [{ code: '1 + 2', args: [] }]);
+  lap('second formula');
+  console.log(lines.join('\n'));
+}
+
 // Column A of the sheet named Raku, one line per row, so that a line number
 // in an error message is a row number there.
 function rakuSheetDefinitions() {

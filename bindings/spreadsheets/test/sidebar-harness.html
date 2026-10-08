@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<!-- sidebar-harness.html — runs the built Raku sidebar (dist/google-sheets-sidebar)
+     in a frame, with its engine from this server's dist/excel/ and a stand-in
+     for google.script.run that plays the spreadsheet: two batches of waiting
+     formulas, the second with one that never ends, a change to the Raku
+     sheet, and the Add the Raku sheet button. Serve bindings/spreadsheets
+     over HTTP and open /test/sidebar-harness.html; it takes about 35
+     seconds, most of them for the formula that never ends. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sidebar harness</title>
+<style>body { font: 14px system-ui, sans-serif; margin: 16px; } iframe { width: 300px; height: 560px; border: 1px solid #ccc; } pre { white-space: pre-wrap; }</style>
+</head>
+<body>
+<p id="summary">Running…</p>
+<iframe id="sidebar"></iframe>
+<pre id="log"></pre>
+<script>
+(async function () {
+  const BASE = new URL('../dist/excel/', location.href).href;
+  const calls = [];
+  const results = [];
+  const log = s => { document.getElementById('log').textContent += s + '\n'; };
+  const DEFS = 'sub double($x) { $x * 2 }';
+  const batches = [
+    [ { key: 'a', code: '6 * 7', args: [] },
+      { key: 'b', code: '[+] @_', args: [[[0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1], [0.1]]] },
+      { key: 'c', code: '1/0', args: [] },
+      { key: 'd', code: '(1..3).map(* ** 2)', args: [] },
+      { key: 'e', code: 'double($^a)', args: [21] },
+      { key: 'f', code: 'say "from the formula"; 1', args: [] } ],
+    [ { key: 'slow', code: 'loop { }', args: [] },
+      { key: 'fast', code: '1 + 1', args: [] } ],
+  ];
+  let polls = 0, definitionsKey = 'one', stored = 0, done;
+  const finished = new Promise(r => { done = r; });
+
+  // The spreadsheet's side of google.script.run.
+  const server = {
+    rakuPending() {
+      polls++;
+      calls.push('rakuPending');
+      const requests = stored < batches.length && calls.filter(c => c === 'rakuPending').length === stored + 1 ? batches[stored] : [];
+      if (stored === batches.length && definitionsKey === 'one') definitionsKey = 'two';
+      return { definitions: DEFS, definitionsKey, requests };
+    },
+    rakuStore(answers) { calls.push('rakuStore'); results.push(answers); stored++; return answers.length; },
+    rakuRecalculate() { calls.push('rakuRecalculate'); setTimeout(done, 0); return 7; },
+    rakuAddSheet(lines) { calls.push('rakuAddSheet'); server.lines = lines; return 'The Raku sheet is added.'; },
+  };
+  window.__run = function () {
+    let ok = () => {}, fail = () => {};
+    const run = {
+      withSuccessHandler(f) { ok = f; return run; },
+      withFailureHandler(f) { fail = f; return run; },
+    };
+    for (const name of Object.keys(server)) {
+      run[name] = (...args) => setTimeout(() => { try { ok(server[name](...args)); } catch (e) { fail(e); } }, 5);
+    }
+    return run;
+  };
+
+  const html = (await (await fetch('../dist/google-sheets-sidebar/RakuSidebar.html')).text())
+    .replace(/var BASE = '[^']*';/, `var BASE = '${BASE}';`)
+    .replace('<head>', '<head><script>window.google = { script: { get run() { return parent.__run(); } } };<\/script>');
+  const frame = document.getElementById('sidebar');
+  frame.srcdoc = html;
+  const timeout = new Promise(r => setTimeout(() => r('timeout'), 90000));
+  const how = await Promise.race([finished, timeout]);
+
+  const doc = frame.contentDocument;
+  doc.getElementById('add-sheet').click();
+  await new Promise(r => setTimeout(r, 300));
+
+  const bad = [];
+  const check = (name, got, want) => {
+    const ok = want instanceof RegExp ? want.test(got) : JSON.stringify(got) === JSON.stringify(want);
+    log(`${ok ? 'ok' : 'NOT OK'} - ${name}${ok ? '' : `: got ${JSON.stringify(got)}, want ${want}`}`);
+    if (!ok) bad.push(name);
+  };
+  const first = results[0] || [], second = results[1] || [];
+  const answer = (rs, k) => (rs.find(a => a.key === k) || {});
+  check('the harness finished', how === 'timeout' ? 'timeout' : 'done', 'done');
+  check('the state line', doc.getElementById('state').textContent, /^Ready: Raku\+\+ \S+, loaded in \d+\.\d s$/);
+  check('6 * 7', answer(first, 'a').cells, [[42]]);
+  check('a column range', answer(first, 'b').cells, [[1]]);
+  check('1/0', answer(first, 'c').err, /^#DIV\/0/);
+  check('a list fills a column', answer(first, 'd').cells, [[1], [4], [9]]);
+  check('a sub from the Raku sheet', answer(first, 'e').cells, [[42]]);
+  check('say goes to the sidebar', doc.getElementById('printed').textContent, /from the formula/);
+  check('a formula that never ends is stopped', answer(second, 'slow').err, /ran longer than 15 seconds/);
+  check('and the one beside it still runs', answer(second, 'fast').cells, [[2]]);
+  check('a change to the Raku sheet recalculates', calls.includes('rakuRecalculate'), true);
+  check('Add the Raku sheet sends the examples', (server.lines || []).some(l => /^sub iban-ok/.test(l)), true);
+  check('the last line', doc.getElementById('last').textContent, /^The Raku sheet is added\.$/);
+
+  const passed = 13 - bad.length;
+  document.getElementById('summary').textContent = `${bad.length ? 'FAIL' : 'PASS'}: ${passed} passed, ${bad.length} failed`;
+  window.harness = { done: true, passed, failed: bad.length, bad, polls };
+})().catch(e => { window.harness = { done: true, crashed: String(e && e.stack || e) }; document.getElementById('summary').textContent = 'crashed: ' + e; });
+</script>
+</body>
+</html>

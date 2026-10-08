@@ -42,6 +42,7 @@ sub MAIN(
 
     build-excel($out.IO.add('excel'), :$base, :$version, :$tag, :$core, :$engine-js, :$engine-wasm);
     build-sheets($out.IO, :$core, :$engine-js, :$engine-wasm);
+    build-sheets-sidebar($out.IO.add('google-sheets-sidebar'), :$base);
     build-store($out.IO.add('store')) if $store;
 }
 
@@ -99,6 +100,16 @@ sub build-store(IO::Path $dir) {
     $dir.add("icon-$_.png").spurt: icon($_) for 32, 120, 128, 300;
     $dir.add('banner.html').spurt: $HERE.add('store/banner.html').slurp;
     say "store:         $dir  (icons for the listings, and banner.html)";
+}
+
+# The Sheets project that holds no engine: the Raku sidebar loads it from
+# --base, where the Excel add-in's files are, and keeps it in the browser.
+sub build-sheets-sidebar(IO::Path $dir, :$base) {
+    fresh($dir);
+    $dir.add('appsscript.json').spurt: $HERE.add('google-sheets/appsscript.json').slurp;
+    $dir.add('Raku.gs').spurt: apps-script-syntax($HERE.add('google-sheets/sidebar/Raku.js').slurp);
+    $dir.add('RakuSidebar.html').spurt: fill($HERE.add('google-sheets/sidebar/RakuSidebar.html').slurp, %(BASE => $base));
+    say "               $dir  (the engine in a sidebar, from $base)";
 }
 
 sub build-sheets(IO::Path $out, :$core, :$engine-js, :$engine-wasm) {

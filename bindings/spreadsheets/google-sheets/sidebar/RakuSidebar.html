@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<!-- RakuSidebar.html — the Raku sidebar for Google Sheets: the engine, loaded
+     once from @BASE@ and kept in a worker, computes the RAKU formulas that
+     wait for it (Raku.gs explains the round trip). build.raku fills @BASE@. -->
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #202124; margin: 12px; }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  h2 { font-size: 13px; margin: 18px 0 4px; }
+  p { margin: 6px 0; }
+  code, pre { font: 12px/1.4 "Roboto Mono", Menlo, Consolas, monospace; }
+  pre { background: #f1f3f4; padding: 6px 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  #state.error, #last.error { color: #c5221f; }
+  .note { color: #5f6368; }
+  button { margin-top: 10px; font: inherit; padding: 6px 12px; border: 1px solid #dadce0; border-radius: 4px; background: #fff; cursor: pointer; }
+  button:disabled { color: #9aa0a6; cursor: default; }
+</style>
+</head>
+<body>
+<h1>Raku</h1>
+<p id="state">Loading the engine…</p>
+<p id="last"></p>
+<p class="note">Keep this sidebar open: it computes the RAKU formulas in this spreadsheet, in your browser. A formula that waits for it shows <code>⏳ Raku sidebar</code>.</p>
+<button id="add-sheet" disabled>Add the Raku sheet</button>
+<h2>Printed by formulas</h2>
+<pre id="printed"></pre>
+
+<script type="text/plain" id="worker-source">
+var BASE = '@BASE@';
+importScripts(BASE + 'rakujs.js', BASE + 'rakusheet-core.js');
+var engine = null, ready = load();
+function load() {
+  return RakuSheet.start(RakuJS, { locateFile: function (p) { return BASE + p; } }).then(function (e) {
+    engine = e;
+    postMessage({ type: 'ready', version: e.version, examples: RakuSheet.exampleDefinitions('RAKU') });
+  }, function (err) {
+    postMessage({ type: 'loaderror', message: String(err && err.message || err) });
+  });
+}
+onmessage = function (e) {
+  var m = e.data;
+  ready.then(function () {
+    if (!engine) { postMessage({ type: 'failed', id: m.id, message: 'the Raku engine did not load' }); return; }
+    var result;
+    try {
+      result = engine.run(m.definitions, m.calls);
+    } catch (err) {
+      // A stack overflow or an `exit` leaves the instance unusable.
+      engine = null;
+      ready = load();
+      postMessage({ type: 'failed', id: m.id, message: String(err && err.message || err) });
+      return;
+    }
+    postMessage({ type: 'done', id: m.id, printed: result.printed, answers: result.answers.map(function (a) {
+      if ('err' in a) return { err: a.err };
+      try { return { cells: RakuSheet.cells(a.ok) }; } catch (x) { return { err: String(x && x.message || x) }; }
+    }) });
+  });
+};
+</script>
+
+<script>
+(function () {
+  'use strict';
+  var TIMEOUT_MS = 15000;   // one batch; a longer one is stopped
+  var POLL_MS = 1000;
+
+  var stateEl = document.getElementById('state');
+  var lastEl = document.getElementById('last');
+  var printedEl = document.getElementById('printed');
+  var addButton = document.getElementById('add-sheet');
+  var printed = [], examples = null, formulas = 0;
+
+  function say(el, text, error) { el.textContent = text; el.className = error ? 'error' : ''; }
+
+  // google.script.run as a promise.
+  function server(name, args) {
+    return new Promise(function (resolve, reject) {
+      var run = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+      run[name].apply(run, args || []);
+    });
+  }
+
+  // ---- the engine, in a worker that a runaway formula cannot take the page with ----
+
+  var worker = null, ready = null, nextId = 1, waiting = {};
+
+  function startWorker() {
+    var t0 = Date.now();
+    var source = new Blob([document.getElementById('worker-source').textContent], { type: 'text/javascript' });
+    worker = new Worker(URL.createObjectURL(source));
+    ready = new Promise(function (resolve, reject) {
+      worker.onmessage = function (e) {
+        var m = e.data;
+        if (m.type === 'ready') {
+          examples = m.examples;
+          addButton.disabled = false;
+          say(stateEl, 'Ready: Raku++ ' + m.version + ', loaded in ' + ((Date.now() - t0) / 1000).toFixed(1) + ' s');
+          resolve();
+        } else if (m.type === 'loaderror') {
+          fail('The engine did not load: ' + m.message);
+        } else if (waiting[m.id]) {
+          var w = waiting[m.id];
+          delete waiting[m.id];
+          w(m);
+        }
+      };
+      worker.onerror = function (e) { fail('The engine did not load: ' + (e.message || 'the worker failed')); };
+      function fail(text) {
+        say(stateEl, text, true);
+        if (worker) worker.terminate();
+        worker = null;
+        reject(new Error(text));
+      }
+    });
+    return ready;
+  }
+
+  function inWorker(definitions, calls) {
+    if (!worker) startWorker();
+    return ready.then(function () {
+      return new Promise(function (resolve) {
+        var id = nextId++;
+        var timer = setTimeout(function () {
+          delete waiting[id];
+          worker.terminate();
+          worker = null;
+          resolve({ type: 'timeout' });
+        }, TIMEOUT_MS);
+        waiting[id] = function (m) { clearTimeout(timer); resolve(m); };
+        worker.postMessage({ id: id, definitions: definitions, calls: calls });
+      });
+    });
+  }
+
+  function everyone(calls, message) {
+    return { printed: [], answers: calls.map(function () { return { err: message }; }) };
+  }
+
+  function runBatch(definitions, calls) {
+    return inWorker(definitions, calls).then(function (m) {
+      if (m.type === 'done') return m;
+      if (m.type === 'timeout') {
+        if (calls.length === 1) return everyone(calls, 'the Raku code ran longer than ' + TIMEOUT_MS / 1000 + ' seconds and was stopped');
+        // One at a time, so that only the slow formula fails.
+        var answers = [], out = [];
+        return calls.reduce(function (p, call) {
+          return p.then(function () {
+            return runBatch(definitions, [call]).then(function (r) { answers.push(r.answers[0]); out = out.concat(r.printed); });
+          });
+        }, Promise.resolve()).then(function () { return { answers: answers, printed: out }; });
+      }
+      return everyone(calls, /call stack|too much recursion/i.test(m.message)
+        ? 'the Raku code recursed deeper than the sidebar allows'
+        : 'the Raku engine stopped: ' + m.message);
+    }, function (e) {
+      return everyone(calls, e.message);
+    });
+  }
+
+  // ---- the round trip: waiting formulas in, results out ----------------------------
+
+  var definitionsKey = null;
+
+  function poll() {
+    server('rakuPending').then(function (p) {
+      // The Raku sheet changed: every RAKU formula may mean something else now.
+      if (definitionsKey !== null && p.definitionsKey !== definitionsKey) {
+        definitionsKey = p.definitionsKey;
+        return server('rakuRecalculate');
+      }
+      definitionsKey = p.definitionsKey;
+      if (!p.requests.length) return null;
+      var t0 = Date.now();
+      return runBatch(p.definitions, p.requests.map(function (r) { return { code: r.code, args: r.args }; })).then(function (result) {
+        var ms = Date.now() - t0;
+        if (result.printed.length) {
+          printed = printed.concat(result.printed).slice(-200);
+          printedEl.textContent = printed.join('\n');
+        }
+        var answers = p.requests.map(function (r, i) {
+          var a = result.answers[i] || { err: 'the batch came back without this formula' };
+          return 'err' in a ? { key: r.key, err: a.err } : { key: r.key, cells: a.cells };
+        });
+        return server('rakuStore', [answers]).then(function () {
+          formulas += answers.length;
+          say(lastEl, answers.length + ' formula' + (answers.length === 1 ? '' : 's') + ' in ' + ms + ' ms; ' + formulas + ' since the sidebar opened');
+        });
+      });
+    }).catch(function (e) {
+      say(lastEl, 'The spreadsheet did not answer: ' + (e && e.message || e), true);
+    }).then(function () {
+      setTimeout(poll, POLL_MS);
+    });
+  }
+
+  addButton.onclick = function () {
+    addButton.disabled = true;
+    server('rakuAddSheet', [examples]).then(function (text) { say(lastEl, text); }, function (e) { say(lastEl, String(e && e.message || e), true); })
+      .then(function () { addButton.disabled = false; });
+  };
+
+  startWorker().then(poll, function () { /* the state line says why */ });
+})();
+</script>
+</body>
+</html>
