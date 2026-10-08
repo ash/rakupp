@@ -1,0 +1,82 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1f1f1f;
+  --muted: #5f5f5f;
+  --line: #e1e1e1;
+  --panel: #f6f6f6;
+  --accent: #4338ca;
+  --accent-fg: #ffffff;
+  --ok: #107c41;
+  --bad: #c42b1c;
+  --mono: Consolas, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f1f1f;
+    --fg: #f0f0f0;
+    --muted: #b0b0b0;
+    --line: #3a3a3a;
+    --panel: #2a2a2a;
+    --accent: #8b85ff;
+    --accent-fg: #111111;
+    --ok: #5fd38d;
+    --bad: #ff8a7a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 12px 16px 24px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.45 "Segoe UI", -apple-system, system-ui, sans-serif;
+}
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 20px 0 6px; }
+h3 { font-size: 13px; margin: 12px 0 4px; color: var(--muted); font-weight: 600; }
+p { margin: 6px 0; }
+code { font-family: var(--mono); font-size: 12.5px; }
+.state { font-size: 12.5px; color: var(--muted); margin: 0; }
+.state.ready { color: var(--ok); }
+.state.error { color: var(--bad); }
+.hint { font-size: 12.5px; color: var(--muted); }
+.examples { list-style: none; padding: 0; margin: 8px 0; }
+.examples li {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 6px 0;
+  background: var(--panel);
+}
+.examples .what { font-size: 12.5px; color: var(--muted); }
+.examples .row { display: flex; gap: 8px; align-items: flex-start; margin-top: 4px; }
+.examples code { flex: 1; word-break: break-all; }
+button {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  cursor: pointer;
+}
+button.small { padding: 2px 8px; font-size: 12px; }
+button:disabled { opacity: 0.5; cursor: default; }
+.buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 13px; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; font-variant-numeric: tabular-nums; }
+.printed {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  margin: 0;
+}
+.limits ul { padding-left: 18px; margin: 4px 0; font-size: 12.5px; color: var(--muted); }

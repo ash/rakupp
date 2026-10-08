@@ -1,0 +1,4 @@
+# build.raku's output: the 12 MB engine and the files made from it
+dist/
+# clasp's link to one person's Apps Script project
+.clasp.json

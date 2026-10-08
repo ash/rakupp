@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The add-in manifest. build.raku fills in @BASE@, the HTTPS address the
+     files are served from, and @VERSION@. The Id stays the same for every
+     version: it is how Office knows an update from a different add-in. -->
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+           xsi:type="TaskPaneApp">
+  <Id>a8a8b3eb-be68-4ddc-82b4-2a0a1a6ee417</Id>
+  <Version>@VERSION@</Version>
+  <ProviderName>Raku++</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Raku formulas"/>
+  <Description DefaultValue="Write formulas in Raku: =RAKU.EVAL(&quot;$^a * 2&quot;, A1). Exact decimals and integers of any size, regexes and grammars, your own subs on a sheet named Raku. The Raku++ engine runs inside Excel, in WebAssembly: no data leaves the workbook."/>
+  <IconUrl DefaultValue="@BASE@assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="@BASE@assets/icon-64.png"/>
+  <SupportUrl DefaultValue="https://github.com/ash/rakupp/tree/main/bindings/spreadsheets"/>
+  <Hosts>
+    <Host Name="Workbook"/>
+  </Hosts>
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="SharedRuntime" MinVersion="1.1"/>
+    </Sets>
+  </Requirements>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="@BASE@taskpane.html?v=@TAG@"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <Runtimes>
+          <Runtime resid="Taskpane.Url" lifetime="long"/>
+        </Runtimes>
+        <AllFormFactors>
+          <ExtensionPoint xsi:type="CustomFunctions">
+            <Script>
+              <SourceLocation resid="Functions.Script.Url"/>
+            </Script>
+            <Page>
+              <SourceLocation resid="Taskpane.Url"/>
+            </Page>
+            <Metadata>
+              <SourceLocation resid="Functions.Metadata.Url"/>
+            </Metadata>
+            <Namespace resid="Functions.Namespace"/>
+          </ExtensionPoint>
+        </AllFormFactors>
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title"/>
+            <Description resid="GetStarted.Description"/>
+            <LearnMoreUrl resid="GetStarted.LearnMoreUrl"/>
+          </GetStarted>
+          <FunctionFile resid="Taskpane.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="RakuGroup">
+                <Label resid="Group.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16"/>
+                  <bt:Image size="32" resid="Icon.32"/>
+                  <bt:Image size="80" resid="Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="RakuPaneButton">
+                  <Label resid="Button.Label"/>
+                  <Supertip>
+                    <Title resid="Button.Label"/>
+                    <Description resid="Button.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16"/>
+                    <bt:Image size="32" resid="Icon.32"/>
+                    <bt:Image size="80" resid="Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>RakuPane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="@BASE@assets/icon-16.png"/>
+        <bt:Image id="Icon.32" DefaultValue="@BASE@assets/icon-32.png"/>
+        <bt:Image id="Icon.80" DefaultValue="@BASE@assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Functions.Script.Url" DefaultValue="@BASE@functions.js?v=@TAG@"/>
+        <bt:Url id="Functions.Metadata.Url" DefaultValue="@BASE@functions.json?v=@TAG@"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="@BASE@taskpane.html?v=@TAG@"/>
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/ash/rakupp/tree/main/bindings/spreadsheets"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Functions.Namespace" DefaultValue="RAKU"/>
+        <bt:String id="GetStarted.Title" DefaultValue="Raku formulas are ready"/>
+        <bt:String id="Group.Label" DefaultValue="Raku"/>
+        <bt:String id="Button.Label" DefaultValue="Raku"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="GetStarted.Description" DefaultValue="Type =RAKU.EVAL(&quot;$^a * 2&quot;, A1) in a cell. The Raku button on the Home tab opens examples and the Raku sheet."/>
+        <bt:String id="Button.Tooltip" DefaultValue="Open the Raku pane: examples, your own subs on the Raku sheet, recalculation and engine status."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

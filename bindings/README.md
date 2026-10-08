@@ -33,6 +33,11 @@ Nothing is re-implemented per language. The Raku is exactly what plain
 Every guide has the same nine sections in the same order, so you can read one
 and skim the rest.
 
+Spreadsheet formulas are the one host that does not load `librakupp`:
+[spreadsheets/README.md](spreadsheets/README.md) puts `=RAKU(...)` in Google
+Sheets and `=RAKU.EVAL(...)` in Excel, with the engine compiled to WebAssembly
+([Raku.js](../rakujs/README.md)) running inside the spreadsheet.
+
 ## 1. Build the library
 
 All six bindings load the same `librakupp`. From the repo root:

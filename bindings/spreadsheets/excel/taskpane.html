@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Raku formulas</title>
+  <link rel="stylesheet" href="taskpane.css?v=@TAG@">
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="rakusheet-core.js?v=@TAG@"></script>
+  <script src="functions.js?v=@TAG@"></script>
+  <script src="taskpane.js?v=@TAG@" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Raku</h1>
+    <p id="state" class="state loading">Loading the engine…</p>
+  </header>
+
+  <section>
+    <h2>Formulas</h2>
+    <p>The code comes first; <code>$^a</code>, <code>$^b</code>, … are the values after it, and <code>@_</code> is all of them.</p>
+    <ul class="examples" id="examples"></ul>
+    <p class="hint">Select a cell and press <b>Insert</b>.</p>
+  </section>
+
+  <section>
+    <h2>Your own subs</h2>
+    <p>Write Raku in column A of a worksheet named <b>Raku</b>, one line per row. Every formula in the workbook can call what it defines.</p>
+    <div class="buttons">
+      <button id="add-sheet">Add the Raku sheet</button>
+      <button id="recalc">Recalculate</button>
+    </div>
+    <p class="hint">Excel does not know that a formula depends on the Raku sheet: press <b>Recalculate</b> after you change it.</p>
+  </section>
+
+  <section>
+    <h2>Engine</h2>
+    <dl class="stats">
+      <dt>Formulas run</dt><dd id="formulas">0</dd>
+      <dt>Batches</dt><dd id="batches">0</dd>
+      <dt>Last batch</dt><dd id="last">–</dd>
+    </dl>
+    <h3>Printed by <code>say</code></h3>
+    <pre id="printed" class="printed">Nothing yet.</pre>
+  </section>
+
+  <section class="limits">
+    <h2>Limits</h2>
+    <ul>
+      <li>A batch of formulas that runs longer than 15 seconds is stopped.</li>
+      <li>No files, network, <code>start</code> or <code>run</code>: the engine runs in Excel's own sandbox.</li>
+      <li>Excel holds a result as a double: an exact rational is rounded once, at the end. Ask for <code>.raku</code> to see it exactly.</li>
+    </ul>
+  </section>
+</body>
+</html>

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/office-js/custom-functions.schema.json",
+  "functions": [
+    {
+      "id": "EVAL",
+      "name": "EVAL",
+      "description": "Runs Raku code. $^a, $^b, ... are the values after the code, in order, and @_ is all of them. Subs on the sheet named Raku can be called by name.",
+      "helpUrl": "https://github.com/ash/rakupp/tree/main/bindings/spreadsheets",
+      "result": {
+        "type": "any",
+        "dimensionality": "matrix"
+      },
+      "parameters": [
+        {
+          "name": "code",
+          "description": "Raku code, for example \"$^a * 2\" or \"[+] @_\"",
+          "type": "string",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "values",
+          "description": "Cells, ranges or values the code reads as $^a, $^b, ... or @_",
+          "type": "any",
+          "dimensionality": "matrix",
+          "repeating": true
+        }
+      ]
+    }
+  ]
+}
