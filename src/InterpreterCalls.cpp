@@ -1496,6 +1496,10 @@ PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
         e = as->target.get();
     }
     if (!e || e->kind != NK::VarExpr || !tctx_.cur) return nullptr;
+    // `SETTING::<$x>` / `PROCESS::<$x>` name ANOTHER scope's variable, by
+    // that package's rules — never the lexical `$x` the name would find here
+    if (!static_cast<const VarExpr*>(e)->pseudoPkg.empty() || static_cast<const VarExpr*>(e)->processScoped)
+        return nullptr;
     const std::string& n = static_cast<const VarExpr*>(e)->name;
     // A SIGILLESS name bound to a container (`sub f(\t)` handed `$x`) IS that
     // container — `$!t := t` and `my $z := t` alias the caller's variable. One
@@ -1600,6 +1604,26 @@ bool Interpreter::containerElemFor(const Expr* e, Value& out) {
     if (!c) return false;
     out = makeSharedCellProxy(std::move(c));
     return true;
+}
+// A list literal that is KEPT — assigned or bound to a scalar, or passed as an
+// argument — holds the containers of the VARIABLES among its items, as Rakudo's
+// List does: `my $m = ($c, 2); $m[0] = 5` writes $c, while element 1, a value,
+// still refuses. Only variables: their cell is a real container. An element
+// (`(@a[0], 2)`, `(%h<k>, 2)`) is not — a proxy over its slot reads whatever
+// sits there NOW, so it would follow a `.shift` or a `:delete` that Rakudo's
+// container survives (S32-hash/delete-adverb.t keeps the deleted value).
+void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
+    if (!list.arr() || list.arr()->size() != l->items.size() || !tctx_.cur) return; // a slip moved positions
+    bool holds = false;
+    for (size_t i = 0; i < l->items.size(); i++) {
+        const Expr* it = l->items[i].get();
+        Value c;
+        if ((it->kind == NK::VarExpr || it->kind == NK::Assign) && containerElemFor(it, c)) {
+            (*list.arr())[i] = std::move(c);
+            holds = true;
+        }
+    }
+    if (holds) list.markHoldsContainers();
 }
 // …and is this element such a container (or a real cell)?
 bool Interpreter::isContainerElem(const Value& v) {

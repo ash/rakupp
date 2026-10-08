@@ -1355,6 +1355,13 @@ struct ExecContext {
     std::string lvalueImmutable;      // "" mutable; else the type name to report
     std::string lvalueImmutableGist;  // the value's gist, for the message's "(…)" tail
     Value lvalueImmutableVal;         // …and the value itself, the exception's `.value`
+    // The list literal an assignment or a bind KEEPS (`my $m = ($a, 2)`, `$l := (…)`):
+    // its evaluation ends in keepListContainers. Consumed there. (An argument,
+    // `f(($a, 2))`, is kept where the routine binds it: setupRwLinks.)
+    const struct Expr* keepListOf = nullptr;
+    // lvalue() resolved a CONTAINER element of a List: it takes `=`, but a bind
+    // into the List refuses it (X::Bind). Cleared by the assignment before it asks.
+    bool lvalueListSlot = false;
     // lvalueOut points into the frame that is ABOUT TO DIE — a `return-rw` of a
     // routine-local with nothing linking it to the caller. The caller must copy
     // the value out rather than hand the pointer on.
@@ -2270,6 +2277,7 @@ public:
     Value decontList(const Value& v);        // a container-holding list's values, fresh
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
     bool isContainerElem(const Value& v);    // …is this element one?
+    void keepListContainers(const struct ListExpr* l, Value& list); // a kept literal holds its items' containers
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
@@ -4598,7 +4606,7 @@ Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); /
 // one only the spellings that need no scope (Bool's four) convert.
 ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere = false,
                      Interpreter* scope = nullptr);
-Value& rtIndexRef(Value& base, const Value& key, bool isHash);
+Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp = nullptr);
 Value& rtDerefRef(Value& v, bool isHash);   // `@$h[…] = v`: the Array (Hash) $h holds, or X::Assignment::RO
 Value* rtRwSource(Value& v, bool isHash, Value& hold);   // native rw loops (Codegen::forStmt): the source container
 Value  rtRwKeys(const Value& src);                       // …its keys (indices for an Array)

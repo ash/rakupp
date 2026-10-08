@@ -4757,18 +4757,48 @@ Value rtObjHash(const Value& v) {
 }
 
 // Writable element reference for native codegen (autovivifies base and slot).
-Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
+// A write into an element of an immutable Pair, List or Range, refused as the
+// interpreter refuses it: `=` is X::Assignment::RO (with its typename and value
+// attributes), and a `++`/`--` (stepOp), which binds `is rw`, matches no
+// candidate and is X::Multi::NoMatch.
+[[noreturn]] static void refuseImmutablePlace(const Value& base, const Value& elem, const char* ty,
+                                              bool withGist, const char* stepOp) {
+    if (stepOp)
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+            std::string("Cannot resolve caller ") + stepOp + "(" + elem.typeName() +
+            ":D); the following candidates match the type but require mutable arguments"};
+    const std::string msg = std::string("Cannot modify an immutable ") + ty +
+                            (withGist ? " (" + base.gist() + ")" : std::string());
+    if (g_cbInterp)
+        g_cbInterp->throwTypedV("X::Assignment::RO", {{"typename", Value::str(ty)}, {"value", base}}, msg);
+    throw RakuError{Value::typeObj("X::Assignment::RO"), msg};
+}
+// stepOp: the `postfix:<++>` / `prefix:<-->` a step site resolves the place for
+Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp) {
     if (isHash) {
         // A Pair is Associative but immutable: `$p<a> = 9` is X::Assignment::RO,
         // as the interpreter's lvalue refuses it. Vivifying below REPLACED the
         // Pair with a Hash and accepted the write. (`my $r := $p<a>` binds
         // through rtIndexGet, so no binding comes this way.)
-        if (base.t == VT::Pair)
-            throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable Pair"};
-        if (base.t != VT::Hash || !base.hash()) base = Value::makeHash();
+        if (base.t == VT::Pair) refuseImmutablePlace(base, rtIndexGet(base, key, true), "Pair", false, stepOp);
+        // what a `$` scalar vivifies is ITEMIZED, as the interpreter's is:
+        // `my $u; $u<k> = 3; say $u.raku` is `${:k(3)}`
+        if (base.t != VT::Hash || !base.hash()) { base = Value::makeHash(); base.itemized = true; }
         return (*base.hash())[key.toStr()];
     }
-    if (base.t != VT::Array || !base.arr()) base = Value::array();
+    // A Range and a List are immutable too, as the interpreter's lvalue() has
+    // them: a write REPLACED the Range with a fresh Array and wrote into the
+    // List. A list of an Array's elements (ElemView) takes the write, which
+    // rtViewSync mirrors; so does an element that IS a container.
+    if (base.t == VT::Range) refuseImmutablePlace(base, rtIndexGet(base, key, false), "Range", true, stepOp);
+    if (base.t == VT::Array && base.arr() && base.isList && base.s != "Seq" && base.enumName.empty() &&
+        !base.elemView()) {
+        const long long li = key.toInt();
+        const bool inList = li >= 0 && li < (long long)base.arr()->size();
+        if (!(inList && g_cbInterp && g_cbInterp->isContainerElem((*base.arr())[li])))
+            refuseImmutablePlace(base, inList ? (*base.arr())[li] : Value::any(), "List", true, stepOp);
+    }
+    if (base.t != VT::Array || !base.arr()) { base = Value::array(); base.itemized = true; }
     long long i = writeIndexInt(key);
     if (i < 0) negIndexThrow(i);
     if (i >= (long long)base.arr()->size())

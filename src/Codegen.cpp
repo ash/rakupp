@@ -405,6 +405,57 @@ struct Codegen {
     }
     std::map<std::string, int> fastSubs; // -O: fixed-arity subs with direct Value params (name -> arity)
     bool optimize_ = false;              // -O codegen pass enabled
+    std::string stepOp_;                 // set by stepLvalueExpr for the lvalueExpr it calls
+    // A List KEPT from a literal holds its variables' containers — `my $m =
+    // ($c, 2); $m[0] = 5` writes $c — as the interpreter's keepListContainers
+    // builds it. A native variable is no such container, so a program that both
+    // keeps one (keptListVar_) and writes through a subscript of something that
+    // could hold it (listWriteVia_) is refused once emitted, and bundled.
+    bool keptListVar_ = false;
+    bool listWriteVia_ = false;
+    const std::vector<Param>* curParams_ = nullptr;   // the routine bodyDef is emitting
+    // a list literal with a `$name` (or `my $name = …`) item: what keeping it shares
+    static bool listHoldsScalarVar(const Expr* e) {
+        if (!e || e->kind != NK::ListExpr) return false;
+        for (auto& it : static_cast<const ListExpr*>(e)->items) {
+            const Expr* x = it.get();
+            if (x && x->kind == NK::Assign && static_cast<const Assign*>(x)->target &&
+                static_cast<const Assign*>(x)->target->kind == NK::VarExpr &&
+                static_cast<const VarExpr*>(static_cast<const Assign*>(x)->target.get())->declare)
+                x = static_cast<const Assign*>(x)->target.get();
+            if (!x || x->kind != NK::VarExpr) continue;
+            const std::string& n = static_cast<const VarExpr*>(x)->name;
+            if (n.size() > 1 && n[0] == '$' && n != "$_" && (ascii::isalpha((unsigned char)n[1]) || n[1] == '_'))
+                return true;
+        }
+        return false;
+    }
+    // `my $m = (…)` / `$m := (…)` / `my \m = (…)`: the assignment keeps the List
+    void noteKeptList(const Assign* a) {
+        if (keptListVar_ || !a->target || a->target->kind != NK::VarExpr || (a->op != "=" && a->op != ":=")) return;
+        const std::string& tn = static_cast<const VarExpr*>(a->target.get())->name;
+        if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_') &&
+            listHoldsScalarVar(a->value.get()))
+            keptListVar_ = true;
+    }
+    // A subscript write whose base is `base`: through a scalar, a sigilless name
+    // or an `@` parameter it may reach a kept List. Into a SLURPY parameter's
+    // element it is refused outright: `*@a` holds the caller's containers (the
+    // interpreter's bindSlurpyContainers) — `f($x)` writes $x, `f(1)` refuses —
+    // and the native Array holds copies that took any write.
+    void noteIndexWrite(const Expr* base) {
+        if (!base || base->kind != NK::VarExpr) { listWriteVia_ = true; return; }
+        const std::string& n = static_cast<const VarExpr*>(base)->name;
+        if (n.empty()) return;
+        if (n[0] == '@' && curParams_)
+            for (const Param& p : *curParams_)
+                if (p.name == n) {
+                    if (p.slurpy) unsupported("a write into an element of a slurpy parameter");
+                    listWriteVia_ = true;
+                    return;
+                }
+        if (n[0] == '$' || ascii::isalpha((unsigned char)n[0]) || n[0] == '_') listWriteVia_ = true;
+    }
     std::set<std::string> enumKeys;      // enum value names (bound as globals)
     std::set<std::string> classNames;    // user class/role names (resolve as type objects)
     std::set<std::string> labelNames;    // statement labels (Program::labelNames): a bare `L` is the Label
@@ -837,6 +888,7 @@ struct Codegen {
     // a quoted key or parens around the pair make it positional); everything
     // else is exArg.
     std::string emitArg(Expr* a) {
+        if (a->kind == NK::ListExpr && static_cast<ListExpr*>(a)->parenned && listHoldsScalarVar(a)) keptListVar_ = true;
         if (a->kind == NK::Pair) {
             auto* pr = static_cast<PairExpr*>(a);
             if (!pr->keyExpr && syntacticNamedPair(pr)) { // f('a' => 1), f((a => 1)) stay positional
@@ -2014,7 +2066,7 @@ struct Codegen {
                     if (auto* nv = nativeScalarRef(u->operand.get()))   // a native wraps, and stays native
                         add = "rtNativeValueLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
-                    return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
+                    return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
                            "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())");
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
@@ -2025,7 +2077,7 @@ struct Codegen {
                     if (auto* nv = nativeScalarRef(u->operand.get()))
                         add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
-                    return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + lvalueExpr(u->operand.get()) +
+                    return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
                            "; _r=" + add + "; return _r; }())");
                 }
                 if (u->op == "quietly") { // suppress warn() output in the operand
@@ -3008,7 +3060,7 @@ struct Codegen {
                         if (auto* nv = nativeScalarRef(u->operand.get()))
                             add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                                   cesc(nv->name) + ", true)";
-                        line(ind, "{ Value& _r = " + lvalueExpr(u->operand.get()) + "; _r = " + add + "; }");
+                        line(ind, "{ Value& _r = " + stepLvalueExpr(u) + "; _r = " + add + "; }");
                         if (std::string w = viewSyncWrap(u->operand.get(), "Value()"); w != "Value()")
                             line(ind, w + ";");
                         return;
@@ -3191,7 +3243,15 @@ struct Codegen {
     }
 
     // A C++ lvalue expression (Value& / assignable) for a variable or index target.
+    // the place a `++`/`--` steps: as lvalueExpr, but the outermost subscript
+    // knows the operator, so a Pair refuses it as `++` does rather than as `=`
+    std::string stepLvalueExpr(Unary* u) {
+        stepOp_ = std::string(u->postfix ? "postfix" : "prefix") + ":<" + u->op + ">";
+        return lvalueExpr(u->operand.get());
+    }
     std::string lvalueExpr(Expr* e) {
+        // only the outermost place a step resolves is the one it writes
+        const std::string stepOp = std::exchange(stepOp_, std::string());
         if (e->kind == NK::VarExpr) {
             auto* v = static_cast<VarExpr*>(e);
             if (v->declare) refuseDeclTraits(v);
@@ -3225,6 +3285,7 @@ struct Codegen {
             // A multi-dim slot is not a plain reference into the top-level buffer;
             // assign() routes `@a[i;j] = v` through ASSIGN-POS before reaching here.
             if (ix->multiDim) unsupported("a multi-dimensional index in this position");
+            noteIndexWrite(ix->base->kind == NK::Unary ? nullptr : ix->base.get());
             // nested indices chain: @g[$r][$c] = v → rtIndexRef(rtIndexRef(v_g, r), c)
             // (rtIndexRef returns an autovivifying Value&, so the chain is natural)
             // `@$h[$i] = v` / `%$h<k>++`: the base is the Array (Hash) the scalar
@@ -3248,7 +3309,7 @@ struct Codegen {
             if (!ix->isHash && hasStarLit(ix->index.get()))
                 return "rtIndexRefW(" + lvalueExpr(ix->base.get()) + ", " + exArg(ix->index.get()) + ")";
             return "rtIndexRef(" + lvalueExpr(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
-                 + (ix->isHash ? "true" : "false") + ")";
+                 + (ix->isHash ? "true" : "false") + (stepOp.empty() ? "" : ", " + cesc(stepOp)) + ")";
         }
         if (e->kind == NK::MethodCall) { // $obj.accessor = v (rw accessors; RO check at runtime)
             auto* mc = static_cast<MethodCall*>(e);
@@ -3289,9 +3350,27 @@ struct Codegen {
                     return "rtNativeValue(" + rhs + ", " + cesc(v->declType) + ", " + cesc(n) + ", " + src + ")";
                 if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
                     return "rtNativeValueLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
+                // a `$` container ITEMIZES a list it holds, as the interpreter's
+                // `=` does: `my $a = [1, 2]; for $a { … }` is one iteration, and
+                // `.raku` says `$[1, 2]`. (What can only be a scalar skips it.)
+                if (!scalarOnly(value)) return "rtItemized(" + rhs + ")";
             }
         }
         return rhs;
+    }
+    // an expression that can only produce a scalar: a literal, an arithmetic or
+    // string operator
+    static bool scalarOnly(const Expr* e) {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::InterpStr: return true;
+            case NK::Binary: {
+                static const std::set<std::string> k = {"+", "-", "*", "/", "~", "%", "**", "div", "mod",
+                                                        "==", "!=", "<", "<=", ">", ">=", "eq", "ne", "lt", "gt", "le", "ge"};
+                return k.count(static_cast<const Binary*>(e)->op) > 0;
+            }
+            default: return false;
+        }
     }
     // A read of a variable declared native int or num (the parser resolved it).
     static VarExpr* nativeScalarRef(Expr* e) {
@@ -3321,6 +3400,7 @@ struct Codegen {
     std::string assign(Assign* a) { return viewSyncWrap(a->target.get(), assignImpl(a)); }
     std::string assignImpl(Assign* a) {
         Expr* tgt = a->target.get();
+        noteKeptList(a);
         // `$!x = v` in a module routine: stored as the interpreter stores it
         // (rtAotAttrAssign) — Nil resets the attribute to its default, a `$`
         // attribute itemizes, a Proxy STOREs.
@@ -6030,6 +6110,8 @@ struct Codegen {
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false,
                  const std::string& kernelName = "") {
         BodyScope __bs{this, /*closure=*/false};
+        struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
+            __cp{this, std::exchange(curParams_, &ps)};
         std::set<std::string> params;
         for (auto& p : ps) if (!p.name.empty()) params.insert(p.name);
         analyzeCells(body, params);
@@ -6526,6 +6608,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "    if (int __rc = rakupp::rakuppRefuseInterpreterEval(argc, argv)) return __rc;\n"
              "    std::pair<int, char**> __ctx{argc, argv};\n"
              "    return rakupp::rakuppMainOnBigStack(&__rakupp_main_body, &__ctx);\n}\n";
+    // (see keptListVar_: only known once every statement is emitted)
+    if (g.keptListVar_ && g.listWriteVia_)
+        unsupported("a List that holds a variable's container, written through a subscript");
     return g.out.str();
 }
 

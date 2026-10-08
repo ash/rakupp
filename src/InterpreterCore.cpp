@@ -7482,6 +7482,19 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
     return true;
 }
 
+// lvalue() marks an element of a Pair, List or Range immutable for the
+// assignment to refuse; `++` never looked, so `(a => 1)<a>++` and `(1, 2)[0]++`
+// stepped the value in place. Rakudo's `++` binds `is rw` and matches no
+// candidate, so this is X::Multi::NoMatch, not the X::Assignment::RO of `=`.
+[[noreturn]] static void refuseImmutableStep(ExecContext& tcx, const Unary& u, const Value* lv) {
+    tcx.lvalueImmutable.clear(); tcx.lvalueImmutableGist.clear();
+    tcx.lvalueImmutableVal = Value();
+    throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+        "Cannot resolve caller " + std::string(u.postfix ? "postfix" : "prefix") + ":<" + u.op + ">(" +
+        (lv ? lv->typeName() : std::string("Any")) +
+        ":D); the following candidates match the type but require mutable arguments"};
+}
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // A plain sub called plainly takes the lean path. The per-call half of the
@@ -9608,6 +9621,16 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
                 (pv->hashKind == "Buf" || pv->hashKind == "Blob"))
                 env->x().rwSynced[p.name] = *pv;
         }
+        // `f(($a, 2))`: the List a parameter of a ROUTINE holds keeps $a's
+        // container (keepListContainers). Here and not in evalArgs: a built-in
+        // reads its arguments' elements raw, and `blob32.new: (…, $bits)`
+        // handed it containers.
+        if (!p.isCopy && (p.sigil == '$' || p.sigil == '@') && pi < rwArgs->size()) {
+            const Expr* ae = (*rwArgs)[pi].get();
+            if (ae && ae->kind == NK::ListExpr && static_cast<const ListExpr*>(ae)->parenned)
+                if (Value* pv = env->local(p.name); pv && pv->t == VT::Array && pv->isList)
+                    keepListContainers(static_cast<const ListExpr*>(ae), *pv);
+        }
         pi++;
     }
 }
@@ -11526,7 +11549,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // `\($a)` keep the one they were handed — which takes the write
                 if (base->arr() && li >= 0 && li < (long long)base->arr()->size() &&
                     isContainerElem((*base->arr())[li]))
-                    return &(*base->arr())[li];
+                    { tcx.lvalueListSlot = true; return &(*base->arr())[li]; }
                 tcx.lvalueImmutable = "List";
                 tcx.lvalueImmutableGist = base->gist();
                 tcx.lvalueImmutableVal = *base;
@@ -12377,6 +12400,14 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
 }
 
 Value Interpreter::evalAssign(Assign* a, bool sink) {
+    // `my $m = ($c, 2)` / `$l := (…)` / `my \l = (…)` keep the List, which holds
+    // its items' containers (keepListContainers)
+    if (a->value && a->value->kind == NK::ListExpr && a->target && a->target->kind == NK::VarExpr &&
+        (opEq(a->op, "=") || opEq(a->op, ":="))) {
+        const std::string& tn = static_cast<VarExpr*>(a->target.get())->name;
+        if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_'))
+            tctx_.keepListOf = a->value.get();
+    }
     // TARG lever A (TARG-PLAN.md): the simple-assign lane. A plain
     // `$padvar = EXPR` pays ~108 ns of ceremony on the full path — the
     // readonly-List find, the shape probes of evalAssignInner, the
@@ -15486,6 +15517,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 *traw = std::move(fresh);
             }
         }
+        tctx_.lvalueListSlot = false;   // (set by lvalue: see the X::Bind check below)
         Value* lv = lvalue(a->target.get());
         // a typed array the store may have grown (undone on refusal)
         Value* growBase = nullptr;
@@ -15595,7 +15627,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (lv->readonly && lv->immutableBind && !opEq(a->op, ":="))
             throwNotWritable(*lv);
         // …and a BIND into an immutable List's slot has no container to replace
-        if ((tctx_.lvalueImmutable == "List" || tctx_.lvalueImmutable == "Range") && opEq(a->op, ":=") &&
+        if (// (one that holds a container is no different: the List is what refuses)
+            ((tctx_.lvalueImmutable == "List" || tctx_.lvalueImmutable == "Range") || tctx_.lvalueListSlot) && opEq(a->op, ":=") &&
             a->target->kind == NK::Index) {
             tctx_.lvalueImmutable.clear(); tctx_.lvalueImmutableGist.clear();
             tctx_.lvalueImmutableVal = Value();
@@ -24267,6 +24300,8 @@ Value Interpreter::evalUnary(Unary* u) {
         const bool incElemTarget = u->operand->kind == NK::Index;
         if (incElemTarget) tctx_.viewMirrorArr.reset();
         Value* lv = lvalue(u->operand.get());
+        // an element of a Pair, List or Range (refuseImmutableStep)
+        if (!tctx_.lvalueImmutable.empty()) refuseImmutableStep(tctx_, *u, lv);
         ViewMirrorWrite incViewMirror;   // (a step through a list of an Array's elements: see ElemView)
         if (incElemTarget && tctx_.viewMirrorArr) {
             incViewMirror.arr = std::move(tctx_.viewMirrorArr);
@@ -24608,7 +24643,10 @@ Value Interpreter::evalUnary(Unary* u) {
 static void spreadSlipArg(Interpreter& I, ValueList& args, const Value& v) {
     if (v.t == VT::Array && v.arr()) {
         // (a part that is a CONTAINER — `\($x)` — passes what it holds)
-        if (v.holdsContainers()) { for (auto& x : *I.decontList(v).arr()) args.push_back(x); }
+        // (held in a local: ranging over `*I.decontList(v).arr()` read the
+        // buffer of a temporary already destroyed — `f(|List.new($b, 7))`
+        // passed an address for $b)
+        if (v.holdsContainers()) { const Value d = I.decontList(v); for (auto& x : *d.arr()) args.push_back(x); }
         else for (auto& x : *v.arr()) args.push_back(x);
     }
     else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
@@ -28864,6 +28902,21 @@ struct RatLitParts {
     return Value::any();   // unreachable: eval dispatches only the ten above
 }
 
+// A variable READ of a List that holds containers (`my $m = ($c, 2)`,
+// `List.new($b, my $ = 3)`) gives its VALUES. A write reaches the containers
+// through lvalue(), which never comes here; everything that reads the List
+// whole — `blob8.new($m)`, `%($m)`, `|$m`, `@$m` — walked the elements raw and
+// met the Proxy objects instead. Only a `$` or sigilless name: what an `@` name
+// holds is read as the positional it is (`*@v is raw`: `for @v { $_++ }` steps the
+// caller's variables), and an Array's own containers stay for `.push`. One
+// predicted branch for any other value.
+static inline Value listOfContainersRead(Interpreter& I, Value&& v, const std::string& name) {
+    if (RAKUPP_UNLIKELY(v.t == VT::Array && v.isList) && v.holdsContainers() && v.hashKind.empty() &&
+        !name.empty() && name[0] != '@')
+        return I.decontList(v);
+    return std::move(v);
+}
+
 Value Interpreter::eval(Expr* e) {
 #ifdef RAKUPP_NODE_COUNT
     ++g_evalNodes;
@@ -28963,7 +29016,7 @@ Value Interpreter::eval(Expr* e) {
                         SlotStripe rs(*this, p);   // torn-copy contract, as in evalVarExpr
                         Value out = *p;
                         out.readonly = out.immutableBind = false;
-                        return out;
+                        return listOfContainersRead(*this, std::move(out), ve->name);
                     }
                 }
                 else if (ve->name.size() > 1 &&
@@ -28973,7 +29026,7 @@ Value Interpreter::eval(Expr* e) {
                             ParStripe rs(*this, p);
                             Value out = *p;
                             out.readonly = out.immutableBind = false;
-                            return out;
+                            return listOfContainersRead(*this, std::move(out), ve->name);
                         }
                     }
                 }
@@ -28989,6 +29042,9 @@ Value Interpreter::eval(Expr* e) {
         }
         case NK::ListExpr: {
             auto* l = static_cast<ListExpr*>(e);
+            // an assignment, bind or argument that keeps this literal (keepListContainers)
+            const bool keepIt = tctx_.keepListOf == l;
+            if (keepIt) tctx_.keepListOf = nullptr;
             // a program's own `sub infix:<,>` answers the comma it takes
             if (l->userComma && tctx_.cur)
                 if (Value* f = tctx_.cur->find("&infix:<,>"))
@@ -29099,6 +29155,7 @@ Value Interpreter::eval(Expr* e) {
             }
             Value lout = listToArray(items);
             lout.isList = true; // a comma list — parenned or bare — is a List, .WHAT (List)
+            if (keepIt) keepListContainers(l, lout);
             return lout;
         }
         case NK::ArrayLit: {
@@ -29556,7 +29613,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 SlotStripe rs(*this, p); // torn-copy contract, as below
                 Value out = *p;
                 out.readonly = out.immutableBind = false;
-                return out;
+                return listOfContainersRead(*this, std::move(out), ve->name);
             }
         }
     }
@@ -29582,7 +29639,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 // their slot directly, so they still see the flag.)
                 Value out = *p;
                 out.readonly = out.immutableBind = false;
-                return out;
+                return listOfContainersRead(*this, std::move(out), ve->name);
             }
         }
     }
