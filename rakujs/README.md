@@ -41,7 +41,7 @@ prefix on one block takes a part back from a page-wide list.
 
 | | |
 |---|---|
-| **[raku.online/embed/](https://raku.online/embed/)** | The guide — every option, in order |
+| **[raku.online/embed/js/](https://raku.online/embed/js/)** | The guide — every option, in order |
 | **[raku.online/builder/](https://raku.online/builder/)** | Paste code, tick options, copy a ready snippet |
 | **[raku.online/demo/](https://raku.online/demo/)** | Every pattern side by side, all live |
 | [COURSE-PLAY-BUTTONS.md](COURSE-PLAY-BUTTONS.md) | A worked cross-repo integration: how course.raku.org did it |

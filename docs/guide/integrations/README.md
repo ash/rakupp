@@ -23,7 +23,7 @@ Python, JavaScript, Go, Rust and C++. All of them are built on the C API in
 or C++ program.
 
 The WordPress plugin runs nothing on the server at all: it loads
-[raku.js](https://raku.online/embed/) on the posts that need it, and the
+[raku.js](https://raku.online/embed/js/) on the posts that need it, and the
 programs run in each reader's browser.
 
 The command-line flags for each mode are also in [CLI.md](../CLI.md#serving).
