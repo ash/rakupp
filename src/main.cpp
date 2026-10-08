@@ -2493,6 +2493,43 @@ static std::vector<std::string> sandboxReadable(const std::string& fileName, boo
     return r;
 }
 
+// --sandbox, once the options are read: refuse the options that write or run
+// a compiler, then turn the checks on. False means exit 4, the reason said.
+static bool sandboxStart(bool optI, bool sawJitFlag, const std::string& profileDest, bool languageOnly,
+                         const std::string& fileName, bool haveSrc,
+                         const std::vector<std::string>& libPaths, const std::string& exePath) {
+    if (optI) {
+        std::cerr << "-i writes the argument files, which --sandbox does not allow\n";
+        return false;
+    }
+    if (sawJitFlag) {
+        std::cerr << "--jit writes a cache and runs the C++ compiler, which --sandbox does not allow\n";
+        return false;
+    }
+    if (!profileDest.empty() && profileDest != "-") {
+        std::cerr << "--profile=FILE writes a file, which --sandbox does not allow; --profile prints to stderr\n";
+        return false;
+    }
+    rakupp::sandboxEnable();
+    // The OS layer goes on HERE, on the main thread, before any thread
+    // exists and before a byte of the program is parsed — and if it cannot,
+    // nothing runs (SANDBOX-PLAN.md: --sandbox fails closed).
+    if (!languageOnly) {
+        std::string why = rakupp::sandboxOsEnter(sandboxReadable(fileName, haveSrc, libPaths, exePath));
+        if (!why.empty()) {
+            std::cerr << "rakupp: --sandbox: " << why << ".\n"
+                      << "  --sandbox=language runs with the interpreter's own checks only.\n";
+            return false;
+        }
+        // t/sandbox/run.raku's look at the OS layer alone: the checks off,
+        // so what is refused now, the kernel refused. Honoured only here,
+        // with the OS layer already in force.
+        if (const char* st = std::getenv("RAKUPP_SANDBOX_SELFTEST"); st && std::string(st) == "os-only")
+            rakupp::sandboxChecksOffForSelftest();
+    }
+    return true;
+}
+
 int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
@@ -3239,37 +3276,9 @@ int main(int argc, char** argv) {
         std::cerr << "-0 (NUL records) does not combine with -i; use line mode or -0777\n";
         return 4;
     }
-    if (optI && sandboxFlag) {
-        std::cerr << "-i writes the argument files, which --sandbox does not allow\n";
+    if (sandboxFlag && !sandboxStart(optI, sawJitFlag, profileDest, sandboxLanguageOnly,
+                                     fileName, haveSrc, libPaths, exePath))
         return 4;
-    }
-    if (sawJitFlag && sandboxFlag) {
-        std::cerr << "--jit writes a cache and runs the C++ compiler, which --sandbox does not allow\n";
-        return 4;
-    }
-    if (sandboxFlag && !profileDest.empty() && profileDest != "-") {
-        std::cerr << "--profile=FILE writes a file, which --sandbox does not allow; --profile prints to stderr\n";
-        return 4;
-    }
-    if (sandboxFlag) {
-        rakupp::sandboxEnable();
-        // The OS layer goes on HERE, on the main thread, before any thread
-        // exists and before a byte of the program is parsed — and if it cannot,
-        // nothing runs (SANDBOX-PLAN.md: --sandbox fails closed).
-        if (!sandboxLanguageOnly) {
-            std::string why = rakupp::sandboxOsEnter(sandboxReadable(fileName, haveSrc, libPaths, exePath));
-            if (!why.empty()) {
-                std::cerr << "rakupp: --sandbox: " << why << ".\n"
-                          << "  --sandbox=language runs with the interpreter's own checks only.\n";
-                return 4;
-            }
-            // t/sandbox/run.raku's look at the OS layer alone: the checks off,
-            // so what is refused now, the kernel refused. Honoured only here,
-            // with the OS layer already in force.
-            if (const char* st = std::getenv("RAKUPP_SANDBOX_SELFTEST"); st && std::string(st) == "os-only")
-                rakupp::sandboxChecksOffForSelftest();
-        }
-    }
     if (haveF) { // -F/RE/ is a Raku regex; anything else is a literal separator
         if (fieldSep.size() >= 2 && fieldSep.front() == '/' && fieldSep.back() == '/') {
             fieldSep = fieldSep.substr(1, fieldSep.size() - 2);

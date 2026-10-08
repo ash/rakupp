@@ -2425,7 +2425,11 @@ public:
             // (the P5 gate: the machinery must be free when one thread runs —
             // the stripe tax was pushing big compute files past the roast
             // timeout with zero threads in them).
-            if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)
+            // The load is ACQUIRE: a worker decrements liveWorkers_ before
+            // anyone joins it, so reading 0 is the only edge from its last
+            // store to the unlocked access that follows (a relaxed 0 let the
+            // owner copy a value the worker had already released).
+            if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_acquire) > 0)
                 l = lockStripe(p);
         }
     }; // pre-declare `my` vars buried in expressions (ternary/nqp branches) — Raku block scoping
@@ -2466,7 +2470,7 @@ public:
     // thread can be reading it: workers live and the slot not private (a map
     // entry, which this cannot prove private, counts as reachable).
     bool promotionSafe(const Env* owner, const Value* raw) const {
-        if (!(parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0)) return true;
+        if (!(parallelMode_ && liveWorkers_.load(std::memory_order_acquire) > 0)) return true;   // (acquire: see ParStripe)
         if (!owner || !owner->layout || owner->pad.empty()) return false;
         const Value* b = &owner->pad[0];
         if (raw < b || raw >= b + owner->pad.size()) return false;
@@ -2505,7 +2509,7 @@ public:
     struct SlotStripe {
         std::unique_lock<std::recursive_mutex> l;
         SlotStripe(const Interpreter& I, const void* p) {
-            if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)
+            if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_acquire) > 0)   // (acquire: see ParStripe)
                 l = I.lockSlotStripe(p);
         }
     };

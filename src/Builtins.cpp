@@ -6106,13 +6106,6 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             return bit->second(*this, a2);
         }
     }
-    // A list that holds CONTAINERS is read by its VALUES: every built-in method
-    // walks elements raw. The mutators are the exception — they change the
-    // list itself, and a copy would swallow the change.
-    if (inv.t == VT::Array && inv.holdsContainers() && inv.arr()) {
-        static const std::set<std::string> kMutators = {
-            "push", "pop", "shift", "unshift", "append", "prepend", "splice",
-            "ASSIGN-POS", "BIND-POS", "DELETE-POS", "STORE", "VAR", "WHERE", "WHICH"};
     // `@o.push(($w, 0))` STORES the List whole, and it keeps $w's container as
     // a kept literal does (keepListContainers): a later `$w = 3` shows in
     // `@o[0]`. Only push/unshift — they add the argument as ONE element; every
@@ -6126,6 +6119,13 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 args[i].t == VT::Array && args[i].isList)
                 keepListContainers(static_cast<const ListExpr*>(ae), args[i]);
         }
+    // A list that holds CONTAINERS is read by its VALUES: every built-in method
+    // walks elements raw. The mutators are the exception — they change the
+    // list itself, and a copy would swallow the change.
+    if (inv.t == VT::Array && inv.holdsContainers() && inv.arr()) {
+        static const std::set<std::string> kMutators = {
+            "push", "pop", "shift", "unshift", "append", "prepend", "splice",
+            "ASSIGN-POS", "BIND-POS", "DELETE-POS", "STORE", "VAR", "WHERE", "WHICH"};
         if (!kMutators.count(m))
             return methodCall(decontList(inv), m, std::move(args), rwArgs, skipOwn);
     }

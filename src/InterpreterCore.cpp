@@ -3,6 +3,7 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
 #include "AotModules.h"
+#include <array>   // kShape in the typed-store check; MSVC does not bring it in through the headers
 
 namespace rakupp {
 
@@ -6970,6 +6971,19 @@ static bool candidateNarrowerByType(Interpreter& I, const Value& cand, const Val
     }
     return narrower && !wider;
 }
+// Whether `cand` (scored s, vec) takes the call from the best so far: a better
+// score, a tie by every score that the narrower TYPE breaks, or the `is default`
+// and `is rw` tie rules — which never take a call from a better or a narrower
+// candidate. The method dispatch has no `is rw` rule and passes false for both.
+static bool candidateBeats(Interpreter& I, const Value& cand, const std::vector<int>& vec, int s, bool candRw,
+                           const Value* best, const std::vector<int>& bestVec, int bestScore, bool bestRw) {
+    if (s < 0) return false;
+    if (!best || betterCandidate(vec, s, bestVec, bestScore)) return true;
+    if (s == bestScore && vec == bestVec && candidateNarrowerByType(I, cand, *best)) return true;
+    const bool tieRule = (cand.code() && cand.code()->isDefaultCand && best->code() && !best->code()->isDefaultCand) ||
+                         (candRw && !bestRw);
+    return tieRule && !betterCandidate(bestVec, bestScore, vec, s) && !candidateNarrowerByType(I, *best, cand);
+}
 static size_t currentThreadStackSize() {
 #if defined(_WIN32)
     ULONG_PTR low = 0, high = 0;
@@ -7934,16 +7948,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (s >= 0 && visited.empty() && rwCandidateRejects(cand, as.size(), rwArgs, &as)) s = -1;
                 // a tie goes to the candidate binding a container `is rw`
                 bool candRw = s >= 0 && rwArgs && visited.empty() && rwCandidateBinds(cand, rwArgs);
-                // (a tie by every score goes to the narrower TYPE, and the `is default`
-                // and `is rw` tie rules never take a call from a narrower candidate:
-                // see candidateNarrowerByType)
-                if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore) ||
-                               (s == bestScore && vec == bestVec && candidateNarrowerByType(*this, cand, *best)) ||
-                               (cand.code() && cand.code()->isDefaultCand && best->code() &&
-                                !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s) &&
-                                !candidateNarrowerByType(*this, *best, cand)) ||
-                               (candRw && !bestRw && !betterCandidate(bestVec, bestScore, vec, s) &&
-                                !candidateNarrowerByType(*this, *best, cand))))
+                if (candidateBeats(*this, cand, vec, s, candRw, best, bestVec, bestScore, bestRw))
                     { bestScore = s; best = &cand; bestVec = vec; bestRw = candRw; }
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }
@@ -9997,12 +10002,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         break;
                     }
                 vec.insert(vec.begin(), invocantSlot);
-                // (ties by type as the sub dispatch does: see candidateNarrowerByType)
-                if (s >= 0 && (!best || betterCandidate(vec, s, bestVec, bestScore) ||
-                               (s == bestScore && vec == bestVec && candidateNarrowerByType(*this, cand, *best)) ||
-                               (cand.code() && cand.code()->isDefaultCand && best->code() &&
-                                !best->code()->isDefaultCand && !betterCandidate(bestVec, bestScore, vec, s) &&
-                                !candidateNarrowerByType(*this, *best, cand))))
+                if (candidateBeats(*this, cand, vec, s, false, best, bestVec, bestScore, false))
                     { bestScore = s; best = &cand; bestVec = vec; }
                 if (s >= 0 && nMatched < 8) matched[nMatched++] = &cand;
             }

@@ -4089,7 +4089,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // an anyof/allof is folded from its members, nested combinators too
         std::string st;
         if (kind == "anyof" || kind == "allof") st = promiseSettled(inv) ? "Kept" : "Planned";
-        else if (ps) st = ps->done ? (ps->broken ? "Broken" : "Kept") : "Planned";
+        else if (ps) {   // (the worker settles it under ps->m: `$w.status` polls while it runs)
+            std::lock_guard<std::mutex> lk(ps->m);
+            st = ps->done ? (ps->broken ? "Broken" : "Kept") : "Planned";
+        }
         else if (kind == "timer") {
             // time-derived: nobody flips the hash when the delay elapses — but an
             // explicit keep/break (stored status) wins over the clock
