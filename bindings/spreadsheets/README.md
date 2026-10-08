@@ -140,7 +140,8 @@ yourself and load the manifest by hand.
      ([how](https://learn.microsoft.com/office/dev/add-ins/testing/sideload-office-add-ins-for-testing)).
    - **Excel for Mac:** copy `manifest.xml` into
      `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/` (make the
-     folder if it is not there), then restart Excel
+     folder if it is not there), restart Excel, then choose **Home → Add-ins**
+     and pick **Raku formulas** from the menu
      ([how](https://learn.microsoft.com/office/dev/add-ins/testing/sideload-an-office-add-in-on-mac)).
    - **Excel for Windows:** share a folder holding `manifest.xml` and add it as
      a trusted catalog under **File → Options → Trust Center → Trust Center
@@ -149,7 +150,12 @@ yourself and load the manifest by hand.
 
 ### Use it
 
-Type `=RAKU.EVAL(` in a cell. The **Raku** button on the Home tab opens a pane
+Click the **Raku** button on the Home tab once. That starts the add-in for the
+first time, which is when Excel registers `=RAKU.EVAL` — for you, and in every
+workbook from then on. Until then a formula shows `#NAME?`, and a cell that
+already does keeps it until you enter the formula again.
+
+Then type `=RAKU.EVAL(` in a cell. The **Raku** button on the Home tab opens a pane
 with examples you can insert into the selected cell, the buttons for the Raku
 sheet and recalculation, the engine's version, and what formulas printed with
 `say`.
