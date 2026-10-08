@@ -1921,6 +1921,7 @@ void Interpreter::registerBuiltinsPart4() {
                 Value pidv = Value::nil();
                 if (s.hash()->count("proc") && (*s.hash())["proc"].hash()) {
                     auto& ph = *(*s.hash())["proc"].hash();
+                    Interpreter::ParStripe g(I, &ph);   // its worker writes the pid (runProcPromise)
                     auto it = ph.find("pid"); if (it != ph.end()) pidv = it->second;
                 }
                 ValueList one{pidv};

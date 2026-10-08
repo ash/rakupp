@@ -1531,22 +1531,39 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     Value& proc = pit->second;
     std::string out, err; int code = -1; bool timedout = false;
     long long childPid = 0;
-    // Walk one stream's taps. A tap is a RECORD ({emit, done, quit, bin, lines}
-    // — MethodCallPart2's tap branch); a bare callable is tolerated for older
-    // callers. `body` decides what to do with each one.
-    auto eachTap = [&](const char* key, const std::function<void(Value& cb, Value& done, bool bin, bool lines)>& body) {
+    // The proc's hash is not this worker's alone: the main thread reads and
+    // writes it while the child runs (a tap added after the start,
+    // .close-stdin, .kill, .exitcode). In parallel mode every touch of it here
+    // takes the hash's stripe, as the Proc::Async methods do — a key inserted
+    // here could rehash the map under a lookup there (`.close-stdin` found no
+    // `w` and threw, or crashed). The taps are called from a copy of the list
+    // made under the stripe, with the stripe let go: a tap is user code, and
+    // the list may grow meanwhile.
+    // A tap is a RECORD ({emit, done, quit, bin, lines, enc} — MethodCallPart2's
+    // tap branch); a bare callable is tolerated for older callers.
+    struct TapView {
+        Value rec, cb, done, quit;
+        bool bin = false, lines = false, quitFired = false, hasEnc = false;
+        std::string enc;
+    };
+    auto viewTaps = [&](const char* key) {   // the caller holds the stripe
+        std::vector<TapView> views;
         auto taps = proc.hash()->find(key);
-        if (taps == proc.hash()->end() || !taps->second.arr()) return;
+        if (taps == proc.hash()->end() || !taps->second.arr()) return views;
         for (auto& t : *taps->second.arr()) {
-            Value cb = t, done; bool bin = false, lines = false;
+            TapView v; v.rec = t; v.cb = t;
             if (t.t == VT::Hash && t.hash()->count("emit")) {
-                cb = (*t.hash())["emit"];
-                auto d = t.hash()->find("done"); if (d != t.hash()->end()) done = d->second;
-                auto b = t.hash()->find("bin");  bin = b != t.hash()->end() && b->second.truthy();
-                auto l = t.hash()->find("lines"); lines = l != t.hash()->end() && l->second.truthy();
+                v.cb = (*t.hash())["emit"];
+                auto d = t.hash()->find("done"); if (d != t.hash()->end()) v.done = d->second;
+                auto q = t.hash()->find("quit"); if (q != t.hash()->end()) v.quit = q->second;
+                auto b = t.hash()->find("bin");  v.bin = b != t.hash()->end() && b->second.truthy();
+                auto l = t.hash()->find("lines"); v.lines = l != t.hash()->end() && l->second.truthy();
+                auto e = t.hash()->find("enc"); if (e != t.hash()->end()) { v.hasEnc = true; v.enc = e->second.toStr(); }
+                v.quitFired = t.hash()->count("quit-fired") != 0;
             }
-            body(cb, done, bin, lines);
+            views.push_back(std::move(v));
         }
+        return views;
     };
     // One chunk, straight from the pipe, to every tap on that stream. This runs
     // WHILE the child is alive — that is the whole point: `whenever
@@ -1589,36 +1606,38 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     auto emitChunk = [&](const char* key, const std::string& data1) {
         if (data1.empty()) return;
         const std::string hk = std::string("held-") + key;
-        auto taps = proc.hash()->find(key);
-        if (taps == proc.hash()->end() || !taps->second.arr() || taps->second.arr()->empty()) {
-            const bool asked = std::string(key) == "taps"
-                ? proc.hash()->count("used-stdout") != 0 : proc.hash()->count("used-stderr") != 0;
-            if (asked) {
-                Value& h = (*proc.hash())[hk];
-                h = Value::str(h.t == VT::Str ? h.s + data1 : data1);
+        // what was held and the list it goes to are taken in one step, so a tap
+        // registering now gets each chunk once: from its replay or from here
+        std::vector<TapView> taps;
+        std::string data0 = data1, procEnc;
+        {
+            ParStripe g(*this, proc.hash());
+            auto it = proc.hash()->find(key);
+            if (it == proc.hash()->end() || !it->second.arr() || it->second.arr()->empty()) {
+                const bool asked = std::string(key) == "taps"
+                    ? proc.hash()->count("used-stdout") != 0 : proc.hash()->count("used-stderr") != 0;
+                if (asked) {
+                    Value& h = (*proc.hash())[hk];
+                    h = Value::str(h.t == VT::Str ? h.s + data1 : data1);
+                }
+                return;
             }
-            return;
+            auto hit = proc.hash()->find(hk);
+            if (hit != proc.hash()->end()) { data0 = hit->second.toStr() + data1; proc.hash()->erase(hit); }
+            auto ei = proc.hash()->find("enc");
+            if (ei != proc.hash()->end()) procEnc = ei->second.toStr();
+            taps = viewTaps(key);
         }
-        std::string data0 = data1;
-        { auto hit = proc.hash()->find(hk);
-          if (hit != proc.hash()->end()) { data0 = hit->second.toStr() + data1; proc.hash()->erase(hit); } }
         std::string& carry = utf8Carry[key];
         std::string whole = carry + data0;
         const size_t cut = completeUtf8Prefix(whole);
         carry = whole.substr(cut);
         whole.resize(cut);
-        const std::string procEnc = proc.hash()->count("enc") ? (*proc.hash())["enc"].toStr() : std::string();
-        for (auto& t : *taps->second.arr()) {
-            Value cb = t; bool bin = false;
-            std::string enc = procEnc;
-            Value quitCb;
-            if (t.t == VT::Hash && t.hash()->count("emit")) {
-                cb = (*t.hash())["emit"];
-                auto b = t.hash()->find("bin");  bin = b != t.hash()->end() && b->second.truthy();
-                auto e = t.hash()->find("enc"); if (e != t.hash()->end()) enc = e->second.toStr();
-                auto q = t.hash()->find("quit"); if (q != t.hash()->end()) quitCb = q->second;
-                if (t.hash()->count("quit-fired")) continue;
-            }
+        for (auto& v : taps) {
+            if (v.quitFired) continue;
+            Value cb = v.cb; bool bin = v.bin;
+            std::string enc = v.hasEnc ? v.enc : procEnc;
+            Value quitCb = v.quit;
             if (cb.t != VT::Code && quitCb.t != VT::Code) continue;
             std::string data = data0;
             if (!bin) {
@@ -1626,7 +1645,10 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
                     data = whole;
                     if (data.empty()) continue;   // only part of a character so far
                     if (!validUtf8(data)) {
-                        if (t.t == VT::Hash) (*t.hash())["quit-fired"] = Value::boolean(true);
+                        if (v.rec.t == VT::Hash) {
+                            ParStripe g(*this, proc.hash());
+                            (*v.rec.hash())["quit-fired"] = Value::boolean(true);
+                        }
                         if (quitCb.t == VT::Code) {
                             Value ex = makeTypedEx("X::AdHoc", {{"payload", Value::str("Malformed UTF-8")}},
                                                    "Malformed UTF-8");
@@ -1660,7 +1682,8 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
         emitChunk(isErr ? "taps-err" : "taps", std::string(d, n));
     };
     long long tok = 0;
-    { auto t = proc.hash()->find("spawn-token");
+    { ParStripe g(*this, proc.hash());
+      auto t = proc.hash()->find("spawn-token");
       if (t != proc.hash()->end()) { tok = t->second.toInt(); proc.hash()->erase(t); } }
     if (tok) {
         SpawnedChild sc;
@@ -1675,49 +1698,60 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
     }
     else {
         std::vector<std::string> argv;
-        if (proc.hash()->count("argv")) for (auto& x : *(*proc.hash())["argv"].arr()) argv.push_back(x.toStr());
+        { ParStripe g(*this, proc.hash());
+          if (proc.hash()->count("argv")) for (auto& x : *(*proc.hash())["argv"].arr()) argv.push_back(x.toStr()); }
         std::string cwd;
         { auto c = promise.hash()->find("cwd"); if (c != promise.hash()->end()) cwd = c->second.toStr(); }
         spawnCapture(argv, timeoutSec, out, code, timedout, this, &err, cwd, &childPid,
                      nullptr, false, 1, &sink, &sinkErr);
     }
-    if (childPid) (*proc.hash())["pid"] = Value::integer(childPid);
     // The stream is closed once its process ended: release a line-splitter's
     // unterminated tail, then fire the tap's :done (TAP's stderr relay is
     // `.act({…}, :done({$err.done}))`) — with or without output, and whatever
     // the exit code.
-    auto finishTaps = [&](const char* key) {
+    auto finishTaps = [&](const char* key, const std::vector<TapView>& taps) {
         // an incomplete character left at the very end goes out as it is
         {
             auto ci = utf8Carry.find(key);
             if (ci != utf8Carry.end() && !ci->second.empty()) {
                 std::string rest; rest.swap(ci->second);
-                eachTap(key, [&](Value& cb, Value&, bool bin, bool) {
-                    if (bin || cb.t != VT::Code) return;
+                for (auto& v : taps) {
+                    if (v.bin || v.cb.t != VT::Code) continue;
                     ValueList ca{Value::str(rest)};
-                    callCallable(cb, ca);
-                });
+                    callCallable(v.cb, ca);
+                }
             }
         }
-        eachTap(key, [&](Value& cb, Value& done, bool, bool lines) {
-            if (lines && cb.t == VT::Code) {
+        for (auto& v : taps) {
+            if (v.lines && v.cb.t == VT::Code) {
                 ValueList fin{Value::str(""), Value::boolean(true)};
-                callCallable(cb, fin);
+                callCallable(v.cb, fin);
             }
-            if (done.t == VT::Code) { ValueList none; callCallable(done, none); }
-        });
+            if (v.done.t == VT::Code) { ValueList none; callCallable(v.done, none); }
+        }
     };
     // …and a stream nobody has tapped yet is marked ENDED, so a late first
-    // tap gets its done after the replay
-    for (const char* k : {"taps", "taps-err"}) {
-        auto t = proc.hash()->find(k);
-        if (t == proc.hash()->end() || !t->second.arr() || t->second.arr()->empty())
-            (*proc.hash())[std::string("ended-") + k] = Value::boolean(true);
+    // tap gets its done after the replay. Marking and listing are one step: a
+    // tap registering now gets its done once, from its replay or from here.
+    std::vector<TapView> outTaps, errTaps;
+    {
+        ParStripe g(*this, proc.hash());
+        if (childPid) (*proc.hash())["pid"] = Value::integer(childPid);
+        for (const char* k : {"taps", "taps-err"}) {
+            auto t = proc.hash()->find(k);
+            if (t == proc.hash()->end() || !t->second.arr() || t->second.arr()->empty())
+                (*proc.hash())[std::string("ended-") + k] = Value::boolean(true);
+        }
+        outTaps = viewTaps("taps");
+        errTaps = viewTaps("taps-err");
     }
-    finishTaps("taps");
-    finishTaps("taps-err");
-    storeProcStatus(proc, code); // exitcode + signal
-    (*proc.hash())["timedout"] = Value::boolean(timedout);
+    finishTaps("taps", outTaps);
+    finishTaps("taps-err", errTaps);
+    {
+        ParStripe g(*this, proc.hash());
+        storeProcStatus(proc, code); // exitcode + signal
+        (*proc.hash())["timedout"] = Value::boolean(timedout);
+    }
     (*promise.hash())["status"] = Value::str(timedout ? "Broken" : "Kept");
     // A tap block that died threw inside the drain loop, where letting it out
     // would have left the child unreaped and its descriptors open. It was held

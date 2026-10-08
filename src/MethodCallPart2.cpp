@@ -841,14 +841,15 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     Value proc = (*inv.hash())["proc"];
     if (!(proc.t == VT::Hash && proc.hash())) return;
     // the process can never start: its streams quit at once, with X::OS
-    if (std::string why = procSpawnMissing(proc); !why.empty()) {
+    std::string why;
+    { ParStripe g(*this, proc.hash()); why = procSpawnMissing(proc); }
+    if (!why.empty()) {
         Value ex = makeTypedEx("X::OS", {{"os-error", Value::str(why)}}, why);
         if (quit.t == VT::Code) { callCallable(quit, ValueList{ex}); return; }
         throw RakuError{ex, why};
     }
     const char* key = inv.hash()->count("stream") &&
                       (*inv.hash())["stream"].toStr() == "stderr" ? "taps-err" : "taps";
-    if (!proc.hash()->count(key)) (*proc.hash())[key] = Value::array();
     if (inv.hash()->count("split") && (*inv.hash())["split"].toStr() == "lines") {
         bool chomp = !inv.hash()->count("split-chomp") || (*inv.hash())["split-chomp"].truthy();
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
@@ -900,14 +901,13 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy())
         (*rec.hash())["bin"] = Value::boolean(true);
     if (inv.hash()->count("enc")) (*rec.hash())["enc"] = (*inv.hash())["enc"];
-    (*proc.hash())[key].arr()->push_back(rec);
     // the MERGED `.Supply` hears stderr as well (its end is announced once)
-    if (inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "Supply") {
-        Value rec2 = Value::makeHash();
+    const bool merged = inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "Supply";
+    Value rec2;
+    if (merged) {
+        rec2 = Value::makeHash();
         *rec2.hash() = *rec.hash();
         (*rec2.hash())["done"] = Value::any();
-        if (!proc.hash()->count("taps-err")) (*proc.hash())["taps-err"] = Value::array();
-        (*proc.hash())["taps-err"].arr()->push_back(rec2);
     }
     // Output the process wrote before this first tap was there: the worker that
     // drains the pipes held it on the proc ("held-taps"), and it is this tap's
@@ -915,17 +915,25 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
     // may be lost (S17-procasync/basic.t taps after a `sleep`). If the stream
     // has already ENDED, its end comes too. A held tail that stops inside a
     // character stays held until the rest of it arrives.
-    auto replay = [&](const char* k, const Value& r) {
+    // That worker may be running now (a Supply asked for before the start may
+    // be tapped after it), so joining the list and taking what was held and
+    // whether the stream ended is one step under the hash's stripe — each
+    // chunk and the end reach this tap once, from here or from the worker
+    // (runProcPromise). The replay itself runs with the stripe let go.
+    struct Replay { Value emit, done; bool bin = false, lines = false, ended = false; std::string now, enc; };
+    auto take = [&](const char* k, const Value& r) {   // the caller holds the stripe
+        Replay rp;
         std::string hk = std::string("held-") + k;
         auto hit = proc.hash()->find(hk);
         std::string held = hit != proc.hash()->end() ? hit->second.toStr() : std::string();
-        bool ended = proc.hash()->count(std::string("ended-") + k) != 0;
-        Value ecb = (*r.hash())["emit"], edone = (*r.hash())["done"];
-        bool bin = r.hash()->count("bin") && (*r.hash())["bin"].truthy();
-        bool lines = r.hash()->count("lines") != 0;
+        rp.ended = proc.hash()->count(std::string("ended-") + k) != 0;
+        rp.emit = (*r.hash())["emit"]; rp.done = (*r.hash())["done"];
+        rp.bin = r.hash()->count("bin") && (*r.hash())["bin"].truthy();
+        rp.lines = r.hash()->count("lines") != 0;
+        if (r.hash()->count("enc")) rp.enc = (*r.hash())["enc"].toStr();
         if (!held.empty()) {
             std::string now = held, rest;
-            if (!bin && !ended) {                 // whole characters only
+            if (!rp.bin && !rp.ended) {           // whole characters only
                 size_t n = now.size(), cut = n;
                 for (size_t back = 1; back <= 3 && back <= n; back++) {
                     unsigned char c = (unsigned char)now[n - back];
@@ -937,31 +945,44 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
                 rest = now.substr(cut); now.resize(cut);
             }
             if (rest.empty()) proc.hash()->erase(hk); else (*proc.hash())[hk] = Value::str(rest);
-            if (!now.empty() && ecb.t == VT::Code) {
-                Value chunk = Value::str(now);
-                if (bin) chunk.hashKind = "Blob";
-                else {
-                    if (r.hash()->count("enc")) {
-                        std::string enc = (*r.hash())["enc"].toStr();
-                        if (!(enc.empty() || enc == "utf-8" || enc == "utf8")) now = decodeTextEnc(now, enc);
-                    }
-                    std::string t; t.reserve(now.size());
-                    for (size_t i = 0; i < now.size(); i++)
-                        if (!(now[i] == '\r' && i + 1 < now.size() && now[i + 1] == '\n')) t += now[i];
-                    chunk = Value::str(t);
-                }
-                callCallable(ecb, ValueList{chunk});
-            }
+            rp.now = now;
         }
-        if (ended) {
-            proc.hash()->erase(std::string("ended-") + k);
-            if (lines && ecb.t == VT::Code) callCallable(ecb, ValueList{Value::str(""), Value::boolean(true)});
-            if (edone.t == VT::Code) callCallable(edone, ValueList{});
+        if (rp.ended) proc.hash()->erase(std::string("ended-") + k);
+        return rp;
+    };
+    auto replay = [&](Replay& rp) {
+        if (!rp.now.empty() && rp.emit.t == VT::Code) {
+            std::string now = rp.now;
+            Value chunk = Value::str(now);
+            if (rp.bin) chunk.hashKind = "Blob";
+            else {
+                if (!(rp.enc.empty() || rp.enc == "utf-8" || rp.enc == "utf8")) now = decodeTextEnc(now, rp.enc);
+                std::string t; t.reserve(now.size());
+                for (size_t i = 0; i < now.size(); i++)
+                    if (!(now[i] == '\r' && i + 1 < now.size() && now[i + 1] == '\n')) t += now[i];
+                chunk = Value::str(t);
+            }
+            callCallable(rp.emit, ValueList{chunk});
+        }
+        if (rp.ended) {
+            if (rp.lines && rp.emit.t == VT::Code) callCallable(rp.emit, ValueList{Value::str(""), Value::boolean(true)});
+            if (rp.done.t == VT::Code) callCallable(rp.done, ValueList{});
         }
     };
-    replay(key, rec);
-    if (inv.hash()->count("stream") && (*inv.hash())["stream"].toStr() == "Supply")
-        replay("taps-err", (*proc.hash())["taps-err"].arr()->back());
+    Replay first, second;
+    {
+        ParStripe g(*this, proc.hash());
+        if (!proc.hash()->count(key)) (*proc.hash())[key] = Value::array();
+        (*proc.hash())[key].arr()->push_back(rec);
+        if (merged) {
+            if (!proc.hash()->count("taps-err")) (*proc.hash())["taps-err"] = Value::array();
+            (*proc.hash())["taps-err"].arr()->push_back(rec2);
+        }
+        first = take(key, rec);
+        if (merged) second = take("taps-err", rec2);
+    }
+    replay(first);
+    if (merged) replay(second);
 }
 
 void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,

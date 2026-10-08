@@ -1145,6 +1145,7 @@ void Interpreter::registerBuiltinsPart5() {
             if (kind == "proc-ready") {
                 if (p.hash()->count("proc") && (*p.hash())["proc"].hash()) {
                     auto& ph = *(*p.hash())["proc"].hash();
+                    Interpreter::ParStripe g(I, &ph);   // its worker writes the pid (runProcPromise)
                     auto it = ph.find("pid"); if (it != ph.end()) return it->second;
                 }
                 return Value::nil();

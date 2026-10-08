@@ -1405,6 +1405,14 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         return p;
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc::Async") {
+        // From .start on, the process's worker (runProcPromise) writes this
+        // hash too — the pid, the end marks, the exit status — so in parallel
+        // mode these methods hold its stripe, as the worker does. It is let go
+        // before anything that waits: the spawn of that worker, and a write
+        // into the child's stdin (which waits for the child to read, and the
+        // child may wait for the worker to drain its stdout).
+        ParStripe procGuard(*this, inv.hash());
+        auto releaseProc = [&] { if (procGuard.l.owns_lock()) procGuard.l.unlock(); };
         // A stream is either BOUND to a handle or USED as a Supply, never both:
         // X::Proc::Async::BindOrUse whichever comes second
         auto bindOrUse = [&](const std::string& handle, const std::string& use) {
@@ -1595,6 +1603,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     procv.hashKind = "Proc";
                     return procv;
                 };
+                releaseProc();
                 return spawnPromise(drive);
             }
             return pr;
@@ -1765,6 +1774,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     if (!enc.empty() && enc != "utf-8" && enc != "utf8") data = encodeTextEnc(data, enc);
                 }
             }
+            releaseProc();
             auto ps = std::make_shared<PromiseState>();
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
             bool ok = true; size_t off = 0; int werr = 0;
