@@ -106,12 +106,14 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
   slot, set by binding and assignment.
-- [ ] **`.slurp` leaves `.eof` False**: after `$fh.slurp(:!close)` on a file,
-  or `$*IN.slurp` on a pipe or TTY, `.eof` answers False (Rakudo: True).
-  Roast reaches it only on Linux: S16-io/eof.t's `/proc` case is skipped off
-  Linux and its TTY case is todo on darwin, so the Mac sweep passes. Found
-  2026-10-08 on a RISC-V board. Next: `.slurp` marks the handle at its end,
-  as a read that finds nothing does.
+- [ ] **X::React::Died loses the react's location under load**: in
+  S17-supply/syntax-nonblocking-await.t a `whenever Supply.interval(0.001)`
+  body dies inside `sub i-will-react() { react { … } }`, and the report must
+  name `i-will-react`. Alone it always does; under load (a RISC-V board with
+  8 busy loops) 4 of 12 runs report only "goodbye! in sub death": the body
+  then ran on a worker thread, and the react's own location is not added to
+  what it threw. Found 2026-10-08; not started. Next: carry the react's
+  location with the X::React::Died whichever thread the body ran on.
 - [ ] **A shaped native array takes ~160 bytes an element**: `my int
   @mat[10001;10001]` alone runs 6.8 s with a 16 GB peak footprint on arm64
   macOS, where 100M `int`s need 800 MB. On a 3.7 GB RISC-V board the kernel
@@ -426,9 +428,10 @@ with its tag, after the release run is green.
   the board's whole 3.7 GB before the kernel kills it, and the swapping it
   causes slows every file beside it: a sweep took 205–287 s depending on how
   much ran alongside. Without that one file the sweep is 1,422/1,424 in about
-  205 s; left are S16-io/eof.t (section 2) and cas-int.t at 60 s under full
-  load (51 s alone). Tests with their own wall-clock watchdog (`sleep 1`, a
-  5 s `Supply.interval`) fail now and then under load. Next: decide whether the
+  205 s: cas-int.t at 60 s under full load (51 s alone; 1.5 s on the Mac, the
+  widest ratio of any file) and, now and then, the X::React::Died item in
+  section 2. Tests with their own wall-clock watchdog (`sleep 1`, a 5 s
+  `Supply.interval`) fail now and then under load. Next: decide whether the
   harness scales its limit by a measured speed factor.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.

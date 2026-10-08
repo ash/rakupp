@@ -2324,7 +2324,7 @@ void Interpreter::registerBuiltinsPart2() {
                 return I.methodCall(h, "words", ValueList(a.begin(), a.end()));
             }
         }
-        { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); } // words() = $*IN.words
+        { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); noteStdinAtEnd(); } // words() = $*IN.words
         std::istringstream ws(all);
         while (ws >> w) out.arr()->push_back(Value::str(w));
         return out;

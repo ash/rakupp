@@ -2516,7 +2516,7 @@ Value Interpreter::dynVar(const std::string& name) {
                 // `lines` over THE / FILES / CONTENT is three lines, not one
                 if (!all.empty() && all.back() != '\n') all += '\n';
                 // `-` is standard input, in its place among the files
-                if (fn.toStr() == "-") { std::ostringstream ss; ss << std::cin.rdbuf(); all += ss.str(); raw += ss.str(); continue; }
+                if (fn.toStr() == "-") { std::ostringstream ss; ss << std::cin.rdbuf(); all += ss.str(); raw += ss.str(); noteStdinAtEnd(); continue; }
                 std::ifstream in(fn.toStr(), std::ios::binary);
                 // An unopenable file is FATAL, as in Rakudo — skipping it
                 // silently turned a mistyped path into an empty result, which

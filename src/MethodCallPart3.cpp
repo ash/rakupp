@@ -125,6 +125,7 @@ static bool succPredExact(const Value& v) {
 // and Rakudo's `.eof` turns True only once a read has found the end — never
 // by looking ahead, which on a terminal would wait for input.
 static std::atomic<bool> g_stdinHitEof{false};
+void noteStdinAtEnd() { g_stdinHitEof = true; }
 
 #ifndef _WIN32
 // How many bytes stdio already holds for stdin — what a read can hand out
@@ -3215,10 +3216,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             auto lp = inv.hash()->find("pos");
             auto li = inv.hash()->find("lines");
             if (lp != inv.hash()->end() && li != inv.hash()->end() && li->second.arr()) {
-                long long want = lp->second.toInt(), off = 0;
+                // from where the cache starts (a `.seek` re-split it there; a
+                // `.slurp` left it at the end), plus each line read and the
+                // terminator it was read with
+                auto sb = inv.hash()->find("seekbase");
+                auto ei = inv.hash()->find("line-eols");
+                const ValueList* eols = ei != inv.hash()->end() ? ei->second.arr() : nullptr;
+                long long want = lp->second.toInt(), off = sb != inv.hash()->end() ? sb->second.toInt() : 0;
                 auto& ls = *li->second.arr();
                 for (long long i = 0; i < want && i < (long long)ls.size(); i++)
-                    off += (long long)ls[i].toStr().size() + 1; // + the separator
+                    off += (long long)ls[i].toStr().size() +
+                           (eols && i < (long long)eols->size() ? (long long)(*eols)[(size_t)i].toStr().size() : 1);
                 return Value::integer(off);
             }
             auto bufit = inv.hash()->find("buffer");
@@ -3623,6 +3631,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 std::string t = text.toStr();
                 foldCrLf(t);
+                // …and the handle is at its end: `.eof` is True and another
+                // read finds nothing (an empty line cache, as for a file)
+                (*inv.hash())["lines"] = Value::array();
+                (*inv.hash())["line-eols"] = Value::array();
+                (*inv.hash())["pos"] = Value::integer(0);
                 return Value::str(t);
             }
             // a :bin handle slurps a Buf unless told otherwise
@@ -3708,12 +3721,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     }
                     (*inv.hash())["pos"] = Value::integer((long long)ls.size());
                     std::ostringstream more; more << std::cin.rdbuf();
+                    g_stdinHitEof = true;
                     std::string tail = decodeTextEnc(more.str(), handleEnc(inv));
                     foldCrLf(tail);
                     if (sClose) methodCall(inv, "close", ValueList{});
                     return Value::str(rest + tail);
                 }
                 std::ostringstream ss; ss << std::cin.rdbuf();                          // $*IN.slurp
+                g_stdinHitEof = true;   // `.eof` is True after it, as in Rakudo
                 if (sBin) return binBuf(ss.str());   // `$*IN.encoding("bin")` / `:bin`: the bytes
                 std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
                 foldCrLf(text);
@@ -3724,6 +3739,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // decoders translate the line separator; a Buf's .decode does not)
             std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
             foldCrLf(text);
+            // The handle is at its end now: `.eof` is True, and `.get`, `.getc`
+            // and a second `.slurp` find nothing (Rakudo; S16-io/eof.t slurps a
+            // /proc file). An empty line cache at its end says so to every
+            // reader that continues from that cache, and its base is the bytes
+            // read, so `.tell` answers the size. A `.seek` drops it ("slurped")
+            // and reads the file again, as a fresh handle would.
+            (*inv.hash())["lines"] = Value::array();
+            (*inv.hash())["line-eols"] = Value::array();
+            (*inv.hash())["pos"] = Value::integer(0);
+            (*inv.hash())["seekbase"] = Value::integer((long long)ss.str().size());
+            (*inv.hash())["slurped"] = Value::boolean(true);
             return Value::str(text);
         }
         // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
@@ -3907,6 +3933,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" ||
             m == "slurp-rest" || m == "seek" || m == "tell") {
+            // after a `.slurp` the cache only says "at the end" (see .slurp): a
+            // seek reads the file again from the top, as on a fresh handle
+            if (m == "seek" && inv.hash()->count("slurped"))
+                for (const char* k : {"lines", "line-eols", "pos", "seekbase", "fulltext", "slurped"})
+                    inv.hash()->erase(k);
             if (inv.hash()->find("lines") == inv.hash()->end()) {
                 // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
                 std::string sep;
