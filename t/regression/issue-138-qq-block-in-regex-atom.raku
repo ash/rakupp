@@ -58,6 +58,8 @@ check so('a{1+1}b' ~~ /"{$bv}"/),           True, 'a { in the value';
 my @a = <q r>;
 check so('p@a' ~~ /"{'p@a'}"/),             True, 'an @ in the value';
 check so('a}b' ~~ /"{'a}b'}"/),             True, 'a } inside the block';
+grammar GB { token TOP { "{'a}b'}" } }
+check so(GB.parse('a}b')),                   True, 'a } inside the block of a token';
 
 # a regex value reads its names where it was written
 sub f1 { my constant N = 'abc'; rx/"{N}"/ }

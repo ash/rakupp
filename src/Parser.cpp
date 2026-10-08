@@ -10278,7 +10278,10 @@ static std::string scanInterpBlock(const std::string& raw, size_t& j,
     while (j < n && depth > 0) {
         char c = raw[j];
         if (q) {
-            if (c == '\\' && q == '"' && j + 1 < n) { inner += c; inner += raw[j+1]; j += 2; continue; }
+            // `\'` inside '…' is an escape too, not its closer: `"a {'it\'s'} z"`
+            // ended the quote there, ran to the end of the string looking for
+            // the `}`, and the whole rest of the string vanished (issue #137)
+            if (c == '\\' && j + 1 < n) { inner += c; inner += raw[j+1]; j += 2; continue; }
             if (c == q) q = 0;
         }
         else if (c == '\'' || c == '"') q = c;

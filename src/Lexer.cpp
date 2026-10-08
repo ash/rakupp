@@ -29,6 +29,24 @@ static bool rxNameApostrophe(const std::string& raw, char next) {
     return b > 0 && raw[b - 1] == '<';
 }
 
+// Does a `[` written now, after the pattern text `raw`, open a CHARACTER CLASS?
+// Right after `<`, `<-`, `<+` (or a `+`/`-` set operator) it does. Across blanks
+// the set operator counts only inside an assertion that began as a class —
+// `<:L + ["]>`, `<+alpha - [#]>`, `<[a] + [b]>` — since `\w+ [ ']' ]` is a
+// quantifier and a GROUP. Read as a group, the `#` in `<:L + [#]>` opened a
+// comment that ate the closing delimiter.
+static bool rxClassOpener(const std::string& raw) {
+    const char prev = raw.empty() ? '\0' : raw.back();
+    if (prev == '<' || prev == '-' || prev == '+') return true;
+    size_t k = raw.size();
+    while (k > 0 && (raw[k - 1] == ' ' || raw[k - 1] == '\t' || raw[k - 1] == '\n')) k--;
+    if (k == 0 || (raw[k - 1] != '+' && raw[k - 1] != '-')) return false;
+    const size_t lt = raw.rfind('<', k - 1);
+    if (lt == std::string::npos || lt + 1 >= raw.size() || raw.find('>', lt) < k) return false;
+    const char a = raw[lt + 1];
+    return a == ':' || a == '[' || a == '+' || a == '-';
+}
+
 // Minimal POD → text render for `--doc`: a `=headN TEXT` / `=item TEXT` line keeps
 // its text (the directive word is dropped); ordinary paragraph lines pass through.
 static std::string renderPod(const std::string& content) {
@@ -370,6 +388,30 @@ static std::string applyRakudoFudge(const std::string& src) {
 Lexer::Lexer(std::string src, bool honourFudge)
     : src_(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src)) {
     scanUserOps();
+}
+
+// A `{ … }` block of CODE inside a double-quoted span — a qq string, or a
+// `"…"` atom of a regex — from just past its `{` (which the caller has taken)
+// through its matching `}`, appended to `out` as written. A string inside the
+// block is the code's own: a quote or a brace in it ends nothing
+// (`"a {'}'} b"`, `/"{'a"b'}"/`), and a backslash protects the character after it.
+void Lexer::copyCodeBlock(std::string& out) {
+    int depth = 1;
+    while (!eof() && depth > 0) {
+        char b = advance();
+        out += b;
+        if (b == '\\') { if (!eof()) out += advance(); continue; }
+        if (b == '{') depth++;
+        else if (b == '}') depth--;
+        else if (b == '"' || b == '\'') {
+            const char qq = b;
+            while (!eof() && peek() != qq) {
+                char s = advance(); out += s;
+                if (s == '\\' && !eof()) out += advance();
+            }
+            if (!eof()) out += advance();
+        }
+    }
 }
 
 // A regex's embedded code block (`<!{ $0.Str ~~ / <["']>? $/ }>`) is Raku, so
@@ -1888,22 +1930,7 @@ Token Lexer::lexQuoted(char quote) {
             // nested string ("…"/'…') inside it doesn't prematurely close the outer
             // string. The interpolation parser re-lexes the captured content later.
             raw += c;
-            int depth = 1;
-            while (!eof() && depth > 0) {
-                char b = advance();
-                raw += b;
-                if (b == '\\') { if (!eof()) raw += advance(); continue; }
-                if (b == '{') depth++;
-                else if (b == '}') depth--;
-                else if (b == '"' || b == '\'') { // skip a nested string literal whole
-                    char qq = b;
-                    while (!eof() && peek() != qq) {
-                        char s = advance(); raw += s;
-                        if (s == '\\' && !eof()) raw += advance();
-                    }
-                    if (!eof()) raw += advance();
-                }
-            }
+            copyCodeBlock(raw);
         } else {
             litAppend(c);
         }
@@ -2640,7 +2667,12 @@ bool Lexer::tryQuoteForm(Token& out) {
                 raw += advance();
                 continue;
             }
-            if (quoteAware && q) { if (ch == q) q = 0; raw += advance(); continue; }
+            if (quoteAware && q) {
+                // `{ … }` in a "…" atom is code, whose strings may hold a `"`
+                if (q == '"' && ch == '{' && !isRepl) { raw += advance(); copyCodeBlock(raw); continue; }
+                if (ch == q) q = 0;
+                raw += advance(); continue;
+            }
             // A Perl-5 pattern has no quote construct and no group form of `[ ]`:
             // the brackets ARE the character class and everything in it — quotes
             // included — is a member. HTTP::Tinyish's header token
@@ -2685,8 +2717,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // `<+[` or `+[`/`-[` inside a set expression, and cannot nest.
             if (quoteAware && !p5 && ch == '[') {
                 if (inClass) { raw += advance(); continue; }   // a member
-                char prev = raw.empty() ? '\0' : raw.back();
-                if (prev == '<' || prev == '-' || prev == '+') inClass = true;
+                if (rxClassOpener(raw)) inClass = true;
                 sd++; raw += advance(); continue;
             }
             if (quoteAware && !p5 && ch == ']' && sd > 0) {
@@ -3381,7 +3412,12 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
             if (ch == '{') bd++; else if (ch == '}') bd--;
             body += advance(); continue;
         }
-        if (q) { if (ch == q) q = 0; body += advance(); continue; }
+        if (q) {
+            // `{ … }` in a "…" atom is code, whose strings may hold a `"`
+            if (q == '"' && ch == '{') { body += advance(); copyCodeBlock(body); continue; }
+            if (ch == q) q = 0;
+            body += advance(); continue;
+        }
         // `< word list >` (space after `<` = the enumerated-alternation form):
         // every char inside is a literal WORD member — a quote/brace/bracket
         // must not engage the scanners (HTTP::MediaType's tchar list holds
@@ -4615,7 +4651,12 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             while (!eof()) {
                 char ch = peek();
                 if (ch == '\\') { raw += advance(); if (!eof()) raw += advance(); continue; }
-                if (quote) { if (ch == quote) quote = 0; raw += advance(); continue; }
+                if (quote) {
+                    // `{ … }` in a "…" atom is code, whose strings may hold a `"`
+                    if (quote == '"' && ch == '{') { raw += advance(); copyCodeBlock(raw); continue; }
+                    if (ch == quote) quote = 0;
+                    raw += advance(); continue;
+                }
                 if (brace > 0 && skipCodeCharClass(raw)) continue;
                 // A CHARACTER CLASS holds characters, not structure: `<`, `>`, `{`,
                 // `}` and `[` inside one are members and must not move any counter.
@@ -4681,8 +4722,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     brack++;
                     // `<[`, `<-[`, `<+[` (and `+[`/`-[` in a set expression) open a
                     // CLASS; a bare `[` opens a group, which does nest.
-                    char prev = raw.empty() ? '\0' : raw.back();
-                    if (prev == '<' || prev == '-' || prev == '+') inClass = true;
+                    if (rxClassOpener(raw)) inClass = true;
                 }
                 else if (ch == ']' && brack > 0) brack--;
                 else if (ch == '/' && angle == 0 && brack == 0) break;

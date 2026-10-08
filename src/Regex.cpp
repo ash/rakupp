@@ -2615,6 +2615,7 @@ Regex::NodePtr Regex::parseAtom() {
                 }
                 flush();
                 auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = expr;
+                vm->icase = curIcase_; vm->imark = curImark_;   // `:i "{NAME}"` folds like the text around it
                 seq->kids.push_back(std::move(vm));
             } else if (q == '"' && peek() == '$' &&
                        (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) {
@@ -2629,7 +2630,9 @@ Regex::NodePtr Regex::parseAtom() {
                     else break;
                 }
                 flush();
-                auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = var; seq->kids.push_back(std::move(vm));
+                auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = var;
+                if (!ascii::isdigit((unsigned char)var[1])) { vm->icase = curIcase_; vm->imark = curImark_; }   // (a backreference stays exact)
+                seq->kids.push_back(std::move(vm));
             } else lit += pat_[pos_++];
         }
         if (peek() == q) pos_++;
@@ -2721,6 +2724,7 @@ Regex::NodePtr Regex::parseAtom() {
                 else if (p == ')' && --depth == 0) break;
             }
             auto vm = std::make_unique<Node>(); vm->k = K::VarMatch; vm->lit = expr;
+            vm->icase = curIcase_; vm->imark = curImark_;
             return vm;
         }
         // $var — match the variable's current Str value literally at match time
@@ -2756,6 +2760,10 @@ Regex::NodePtr Regex::parseAtom() {
             if (local < scopeCaps_.size() && scopeCaps_[local] >= 0)
                 var = "$" + std::to_string(scopeCaps_[local]);
         }
+        // `:i $x` / `:m $x` match the value as they match a literal; a
+        // backreference stays exact under them, as in Rakudo (`m:i/(a) $0/`
+        // does not match "aA")
+        else if (d == 1) { vm->icase = curIcase_; vm->imark = curImark_; }
         vm->lit = var; return vm;
     }
     if (c == '\\') {
@@ -4229,6 +4237,16 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             if (!st.hooks || !st.hooks->str) return false;
             const auto& params = st.grammar ? st.grammar->currentParams() : kNoParams;
             std::string v = st.hooks->str(n->lit, st.named, params);
+            // `:i $x` / `:m "{…}"` — the value matches as a literal written there
+            // would, through the same fold-aware matcher (ß against SS). A
+            // variable is no part of the declarative prefix, so the literal-run
+            // bookkeeping that matcher keeps is put back before going on.
+            if (n->icase || n->imark) {
+                Node ln; ln.k = K::Lit; ln.lit = std::move(v); ln.icase = n->icase; ln.imark = n->imark;
+                const long lp0 = st.litPrefix;
+                auto after = [&](long e) { st.litPrefix = lp0; return k(e); };
+                return matchNode(&ln, st, pos, after);
+            }
             if (pos + (long)v.size() > (long)st.s.size()) return false;
             if (st.s.compare(pos, v.size(), v) != 0) return false;
             return k(pos + (long)v.size());
@@ -5870,7 +5888,7 @@ std::string Regex::toJsTree(const std::function<std::string(const std::string&, 
                 break;
             case K::Look: flag("negate", n->negate); flag("behind", n->behind); break;
             case K::Code: o += ",code:" + jsQ(n->lit) + ",fn:" + embed(n->runOnly ? "run" : "assert", n->lit); flag("runOnly", n->runOnly); flag("ltmStop", n->ltmStop); break;
-            case K::VarMatch: o += ",name:" + jsQ(n->lit) + ",fn:" + embed("var", n->lit); break;
+            case K::VarMatch: o += ",name:" + jsQ(n->lit) + ",fn:" + embed("var", n->lit); flag("icase", n->icase); flag("imark", n->imark); break;
             case K::CondRef: o += ",lit:" + jsQ(n->lit); break;
             default: break;
         }

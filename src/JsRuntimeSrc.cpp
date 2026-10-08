@@ -5213,6 +5213,8 @@ function varMatch(n, st, pos, k) {
     if (v instanceof RRegex) return callRule({ rx: v, kind: v.tree.ratchet ? 'token' : 'regex' }, '', { noCapture: true }, st, pos, (sub, q) => k(q));
     if (v instanceof RList || v instanceof RSeq) { const alts = arr(v).map(str).sort((a, b) => b.length - a.length); for (const a of alts) if (s.startsWith(a, pos) && k(pos + a.length)) return true; return false; }
     const lit = str(v);
+    // `:i $x` / `:m "{…}"`: the value matches as a literal written there would, folds and all
+    if (n.icase || n.imark) return m({ k: 'Lit', lit, icase: n.icase, imark: n.imark }, st, pos, k);
     return s.startsWith(lit, pos) ? k(pos + lit.length) : false;
 }
 // fill a match's captures from a frame: positional (list-valued under a quantifier),
@@ -5386,15 +5388,15 @@ function runSearch(s, rxo, ctx, startPos) {
         if (ok) {
             const mt = new RMatch(s, st.capFrom >= 0 ? st.capFrom : start, st.capTo >= 0 ? st.capTo : end);
             finishMatch(mt, st, rxo.tree);
-            mt.end = end;   // where the scan continues (not the `<(` trimmed .from)
+)RKJS",
+R"RKJS(            mt.end = end;   // where the scan continues (not the `<(` trimmed .from)
             return mt;
         }
         if (start < s.length) { const cp = s.codePointAt(start); if (cp > 0xFFFF) start++; }
     }
     return null;
 }
-)RKJS",
-R"RKJS(function allMatches(s, rxo, ctx, overlap) {
+function allMatches(s, rxo, ctx, overlap) {
     const out = [];
     let pos = 0;
     while (pos <= s.length) {

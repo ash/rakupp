@@ -433,6 +433,25 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
                     throw ParseError("Missing + or - between character class elements", line,
                                      "X::Syntax::Regex::Unterminated", {});
             }
+            // `<:L + ["]>` / `<+alpha - [#]>` — named members, then a BRACKETED
+            // one: that is a class like `<[…]>`, its quotes, `#` and parens are
+            // members. Read as a group, its `"` opened a string to the end and
+            // the `[` was reported as an unclosed group.
+            j = i + 1;
+            while (j < pat.size()) {
+                if (pat[j] == '+' || pat[j] == '-') j++;
+                if (j < pat.size() && pat[j] == ':') { j++; if (j < pat.size() && pat[j] == '!') j++; }
+                const size_t nb = j;
+                while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_')) j++;
+                if (j == nb) break;
+                while (j < pat.size() && std::strchr(" \t\n", pat[j])) j++;
+                if (j >= pat.size() || (pat[j] != '+' && pat[j] != '-')) break;
+                size_t k = j + 1;
+                while (k < pat.size() && std::strchr(" \t\n", pat[k])) k++;
+                if (k < pat.size() && pat[k] == '[') { cls = 1; i = k; break; }
+                j = k;   // another named member: `<:L + :N - [x]>`
+            }
+            if (cls) continue;
         }
         // `< # ^ / >` — a quote-word list: its words are literals, a `#` among
         // them no comment and a `)` no group

@@ -180,6 +180,7 @@ private:
     bool match(char c);
     void skipRegexComment(std::string& out); // `#` in a regex: to end of line, or an embedded #`(…) to its closer
     bool skipCodeCharClass(std::string& out); // `<[…]>` met inside a regex's embedded code block: copy it whole
+    void copyCodeBlock(std::string& out);  // the rest of a `{ … }` of code inside a quote, through its `}`, its own strings and all
     uint32_t codepointHere() const;     // decode UTF-8 codepoint at pos_ (0 at eof)
     bool unicodeLetterAt(size_t off) const; // is the codepoint `off` bytes ahead a letter?
     bool unicodeLetterHere() const;     // is the codepoint at pos_ an identifier letter
