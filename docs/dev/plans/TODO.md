@@ -38,10 +38,28 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   P0–P3, P5 and P6 landed in 458886c2. A variable no other thread can reach
   skips the stripe, and a loop kernel may run while workers are live.
   `cpu-fanout` N=4 went from 3.26× to 3.65× (C: 3.81×), N=8 from 3.16× to
-  5.32×, and example 3 from 0.41× to 3.84×. Next:
-  the gates not yet run (`t/run.raku`, the module battery, the adopters gate,
-  TSan); then P7 (`--exe` probes), P8 (PARALLEL-SPEEDUP.md, faq/threads.md,
-  ASYNC.md, JIT.md, CNP.md, the book), and P2's raw-pointer audit.
+  5.32×, and example 3 from 0.41× to 3.84×. Next: the gates not yet run
+  (`t/run.raku`, the module battery, the adopters gate); then P7 (`--exe`
+  probes), P8 (PARALLEL-SPEEDUP.md, faq/threads.md, ASYNC.md, JIT.md, CNP.md,
+  the book), and P2's raw-pointer audit.
+- [ ] **TSan: the `private-*` stress programs are tolerated, not clean.**
+  12 of the 13 programs 458886c2 added to `t/stress/` report under Linux TSan
+  in parallel mode, the same with `RAKUPP_PRIVATE_SLOTS=0` and on 458886c2's
+  parent (where `private-rw-link` and `private-stash` also segfault), so the
+  private-slot work is not what they find. They hit the sites `ub-torn-values`
+  hits, which is why that program has been skipped under TSan since August.
+  `%tsan-parallel-reads` in `t/stress/run.raku` tolerates their reports and
+  still fails a case when a store held no lock (f13d2620 fixed the two
+  races of that kind: the relaxed `liveWorkers_` gate and `Promise.status`).
+  To take them off, the stripe has to cover the slot-flag reads ahead of a
+  store (`readonly`, `natBits`, `t`, `hashKind` in `evalAssign`'s lane,
+  `evalAssignInner` and `selfCatAssign`), the result copy of an unsunk
+  assignment (`*lv` in `evalAssignInner`, the lane's `*slot` returns, made
+  after the store releases the stripe), and the cell-tag read in
+  `Value::deref` from `padPtrIn`, `Env::local` and `Env::find`. The cost lands
+  only while workers are live and the slot is shared. Then the entries leave
+  `%tsan-parallel-reads` one by one, and `ub-torn-values` can come off
+  `%tsan-parallel-skip`.
 - [ ] **Interpreter at native speed**: 18 of 35 tasks open.
   [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
   `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and

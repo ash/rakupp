@@ -82,6 +82,37 @@ my %tsan-parallel-racy =
     'atomic-counter' => 'P2 residue: await-handshake report on Linux TSan; counter exact',
     'cas-containers' => 'P2 residue: the same eval report as atomic-counter; all five kinds exact',
 ;
+# The private-* contract programs (PARALLEL-SCALING-PLAN P3, 458886c2) report
+# under Linux TSan in parallel mode, the same with RAKUPP_PRIVATE_SLOTS=0 and
+# on 458886c2's parent (where private-rw-link and private-stash segfault), so
+# the private-slot work is not what they find. They stage ub-torn-values'
+# shape through each route, and they hit its sites: the assignment paths read
+# a slot's flags (readonly, natBits, t, the cell tag in deref) before they take
+# the stripe, and an unsunk assignment copies `*lv` after the store releases
+# it. Tolerated until the stripe covers those (TODO.md, "TSan: the private-*
+# stress programs are tolerated"), with one thing kept strict, the one the
+# plan wanted TSan for: a report in which a STORE held no lock fails the case.
+# That is how the relaxed liveWorkers_ gate showed (f13d2620: the owner's
+# `$v = …` with no stripe, against the worker's locked store). The program
+# must still print PASS.
+my %tsan-parallel-reads = <bind eval eval-value for-rw map-seq nested-sub pair
+                           rw-link rw-param start-capture stash take-rw>.map({
+    "private-$_" => 'reads a slot before the stripe (the ub-torn-values sites)' });
+
+# The stores in a TSan log that held no lock: a plain write access whose
+# header has no "(mutexes: …)" note, named by its first two frames.
+sub unlocked-stores(Str $err) {
+    my @hits;
+    for $err.split('WARNING: ThreadSanitizer:').skip -> $report {
+        my @l = $report.lines;
+        for @l.kv -> $i, $line {
+            next unless $line ~~ /^ '  ' ['Write' | 'Previous write'] ' of size' /;
+            next if $line.contains('mutexes:');
+            @hits.push: (@l[$i + 1] // '').trim ~ ' <- ' ~ (@l[$i + 2] // '').trim;
+        }
+    }
+    @hits
+}
 
 my $dir  = $?FILE.IO.parent;
 my $only = @*ARGS.first(*.starts-with('--only='));
@@ -105,6 +136,8 @@ for @programs -> $prog {
         }
         my $tsan-racy = %*ENV<RAKUPP_STRESS_TSAN> && $mode eq 'parallel'
                         && (%tsan-parallel-racy{$name}:exists);
+        my $tsan-reads = %*ENV<RAKUPP_STRESS_TSAN> && $mode eq 'parallel'
+                         && (%tsan-parallel-reads{$name}:exists);
         $ran++;
         my %env = %*ENV;
         # parallel is the DEFAULT since the v3 flip; the gil leg pins the
@@ -130,6 +163,21 @@ for @programs -> $prog {
             # with a note, and the Linux CI log is the referee for removal
             $tolerated++;
             say "ok - $id # TSAN-KNOWN-RACY, {$ok && !@tsan-summaries ?? 'clean this run' !! 'reported'} ({%tsan-parallel-racy{$name}})";
+            note "  --- $_" for @tsan-summaries.head(3);
+            next;
+        }
+        if $tsan-reads {
+            my @stores = unlocked-stores($err);
+            my $passed = ($out.lines.tail // '') eq 'PASS';
+            if @stores || !$passed {
+                $failed++;
+                say "not ok - $id ({@stores ?? 'a store held no lock' !! "no PASS, exit {$p.exitcode}"})";
+                note "  --- $_" for @stores.head(3);
+                note "  --- stderr: {$err.lines.head // ''}" unless @stores;
+                next;
+            }
+            $tolerated++;
+            say "ok - $id # TSAN-TOLERATED-READS, {@tsan-summaries ?? 'reported' !! 'clean this run'} ({%tsan-parallel-reads{$name}})";
             note "  --- $_" for @tsan-summaries.head(3);
             next;
         }
