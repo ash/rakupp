@@ -4323,9 +4323,13 @@ struct Codegen {
     // ---- -O fast-call eligibility ----
     // A sub qualifies for direct `Value` parameters when every param is a plain
     // required positional scalar (no named/slurpy/optional/default/destructuring).
+    // A `where` or `:D`/`:U` constraint keeps the boxed path, whose bindParams
+    // refuses it as the plain build does: the direct-Value body checked neither,
+    // so -O compiled `sub f(Int:D $n)` natively with its smiley silently absent.
     static bool simpleSig(const std::vector<Param>& ps) {
         for (const Param& p : ps)
-            if (p.named || p.slurpy || p.invocant || p.defaultVal || p.subSig || p.isRw || p.sigil != '$') return false;
+            if (p.named || p.slurpy || p.invocant || p.defaultVal || p.subSig || p.isRw || p.sigil != '$' ||
+                p.whereExpr || p.defConstraint) return false;
         return true;
     }
     // A call site can take the fast path only when it passes plain positional args
