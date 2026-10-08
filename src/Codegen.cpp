@@ -832,22 +832,14 @@ struct Codegen {
         }
         return s;
     }
-    static bool identKey(const std::string& k) {
-        // non-ASCII bytes belong to a Unicode identifier the lexer already
-        // accepted (`:μ(5)`), so they count as identifier material here too —
-        // the interpreter's evalArgs makes the same call
-        if (k.empty() || !(ascii::isalpha((unsigned char)k[0]) || k[0] == '_' ||
-                           (unsigned char)k[0] >= 0x80)) return false;
-        for (unsigned char c : k)
-            if (!(ascii::isalnum(c) || c == '-' || c == '_' || c == '\'' || c >= 0x80)) return false;
-        return true;
-    }
     // An argument expression: a syntactic `k => v` / `:k(v)` with an identifier key
-    // is a NAMED argument (mirrors evalArgs); everything else is exArg.
+    // is a NAMED argument (mirrors evalArgs, through the shared syntacticNamedPair:
+    // a quoted key or parens around the pair make it positional); everything
+    // else is exArg.
     std::string emitArg(Expr* a) {
         if (a->kind == NK::Pair) {
             auto* pr = static_cast<PairExpr*>(a);
-            if (!pr->keyExpr && !pr->quotedKey && identKey(pr->key)) { // f('a' => 1) stays positional
+            if (!pr->keyExpr && syntacticNamedPair(pr)) { // f('a' => 1), f((a => 1)) stay positional
                 std::string val = pr->value ? exArg(pr->value.get()) : "Value::boolean(true)";
                 return "rtNamedPair(" + cesc(pr->key) + ", " + val + ")";
             }

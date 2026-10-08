@@ -3644,6 +3644,10 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             auto it = base.hash()->find(hashSubKey(key, &base));
             if (it != base.hash()->end()) return it->second;
         }
+        // a Pair is associative on its ONE key; any other key is Nil, as the
+        // interpreter's lookup answers (native code read Nil for the key too)
+        if (base.t == VT::Pair)
+            return key.toStr() == base.s && base.pairVal() ? *base.pairVal() : Value::nil();
         // same rule as the interpreter path above: a defined Str/Int/… is a
         // type error rather than a silent Any
         if (base.t == VT::Str || base.t == VT::Int || base.t == VT::Num ||
@@ -4755,6 +4759,12 @@ Value rtObjHash(const Value& v) {
 // Writable element reference for native codegen (autovivifies base and slot).
 Value& rtIndexRef(Value& base, const Value& key, bool isHash) {
     if (isHash) {
+        // A Pair is Associative but immutable: `$p<a> = 9` is X::Assignment::RO,
+        // as the interpreter's lvalue refuses it. Vivifying below REPLACED the
+        // Pair with a Hash and accepted the write. (`my $r := $p<a>` binds
+        // through rtIndexGet, so no binding comes this way.)
+        if (base.t == VT::Pair)
+            throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable Pair"};
         if (base.t != VT::Hash || !base.hash()) base = Value::makeHash();
         return (*base.hash())[key.toStr()];
     }
