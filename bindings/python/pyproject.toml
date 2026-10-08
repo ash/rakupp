@@ -9,7 +9,7 @@ name = "rakulang"
 # rk_version(). Bumped with CMakeLists.txt at release time
 # (docs/dev/RELEASING.md). A binding-only fix on the same engine is a
 # post-release: "5.0.0.post1".
-version = "5.2.1"
+version = "5.3.0"
 description = "Raku grammars and an embedded Raku++ interpreter for Python, over librakupp"
 readme = "README.md"
 requires-python = ">=3.9"
