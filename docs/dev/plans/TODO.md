@@ -140,6 +140,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - B4: ecosystem and MOP clusters (custom HOW, Attribute MOP, Red #77).
   - B5: JS gate disagreements to 0, the `--slim` size gate.
   - B6: measure and tag.
+- [ ] **Array elements are itemized only when written one at a time**:
+  `my @w = [1, 2], [3, 4]; @w[0] = [5, 6]` gives `($[5, 6], [3, 4])` for
+  `@w.Seq`, `@w.Slip`, `@w.values`, `@w[*]` and `|@w` (Rakudo: `$` on both).
+  So `cross(|@w)` and `cross(@w)` cross one element whole and spread the
+  other, where Rakudo takes both as items. `@w.List` strips them now, which
+  covered Math::NIntegrate (2026-10-09). Two more seen beside it:
+  `List(@w)` flattens to `(5, 6, 3, 4)` (Rakudo: the Array unchanged), and
+  `max`/`min` return the winner without its `$` (Rakudo: `$[5, 6]`). Next:
+  decide whether an Array slot always reads as itemized.
 - [ ] **Construction does not track which attributes BUILD initialized**:
   `has $.x is required; submethod BUILD() {}` with `.new(:x(5))` lives
   (Rakudo: X::Attribute::Required), and `has Int:D $.x is required;
