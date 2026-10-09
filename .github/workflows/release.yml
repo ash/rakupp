@@ -921,7 +921,9 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          build-args: RAKUPP_VERSION=${{ steps.tags.outputs.version }}
+          build-args: |
+            RAKUPP_VERSION=${{ steps.tags.outputs.version }}
+            REGISTRY=public.ecr.aws/docker/library/
           load: true
           tags: rakupp-smoke
 
@@ -956,7 +958,9 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          build-args: RAKUPP_VERSION=${{ steps.tags.outputs.version }}
+          build-args: |
+            RAKUPP_VERSION=${{ steps.tags.outputs.version }}
+            REGISTRY=public.ecr.aws/docker/library/
           push: true
           tags: ${{ steps.tags.outputs.tags }}
 
@@ -1262,11 +1266,14 @@ jobs:
       # and committed as an image it is the machine the gates run on: g++ for
       # --exe, binutils for the floor gate. `symlinks -rc` turns the
       # system's absolute symlinks into relative ones, so they resolve inside
-      # the sysroot. riscv64/ubuntu, not ubuntu with --platform: COMPILERS.md
-      # says why.
+      # the sysroot. The image is the official ubuntu from its ECR Public mirror,
+      # not riscv64/ubuntu from Docker Hub: unauthenticated Docker Hub pulls
+      # from shared runners hit the rate limit (429). With --platform it
+      # re-points the local tag at the riscv64 image (COMPILERS.md), which is
+      # harmless on a fresh runner where nothing else uses that tag.
       - name: Sysroot + gate image (Ubuntu 22.04, riscv64)
         run: |
-          docker run --name rv --platform linux/riscv64 riscv64/ubuntu:22.04 sh -ec '
+          docker run --name rv --platform linux/riscv64 public.ecr.aws/docker/library/ubuntu:22.04 sh -ec '
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends g++ symlinks
             symlinks -rc /usr/lib/riscv64-linux-gnu /usr/lib/gcc /usr/include >/dev/null

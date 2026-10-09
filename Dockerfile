@@ -22,9 +22,15 @@
 # modules open at run time. No C++ compiler, so `--exe` is not available out of
 # the box -- `apt-get install -y g++` in a derived image brings it back, since
 # the runtime it links (lib/, include/) is in the image.
+#
+# REGISTRY prefixes the base image and is empty by default (Docker Hub). CI
+# sets it to public.ecr.aws/docker/library/, the official images' mirror on ECR
+# Public: unauthenticated Docker Hub pulls from shared runners hit the rate
+# limit (429), and BuildKit resolves FROM itself, so no daemon mirror helps.
 
+ARG REGISTRY=
 ARG DEBIAN=bookworm-slim
-FROM debian:${DEBIAN}
+FROM ${REGISTRY}debian:${DEBIAN}
 
 ARG RAKUPP_VERSION=latest
 ARG TARGETARCH
