@@ -4052,6 +4052,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (r.arr()) for (auto& y : *r.arr()) o.arr()->push_back(y);
                     return;
                 }
+                // an ARRAY result is assigned into, so a Nil leaf is the
+                // element default (`[1, 2].deepmap({ Nil })` is [Any, Any])
+                if (!o.isList && r.t == VT::Nil) r = Value::any();
                 o.arr()->push_back(std::move(r));
             };
             auto leaf = [&](Value& slot) -> Value {
@@ -4404,12 +4407,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.hash()) *h.hash() = *inv.hash();
             return h;
         }
-        if (m == "hash" && inv.t == VT::Hash) return inv;   // %h.hash() is the hash itself
+        // %h.hash() is the hash itself — out of its Scalar: `$x.Hash` is `{…}`, not `${…}`
+        if (m == "hash" && inv.t == VT::Hash) { Value r = inv; r.itemized = false; return r; }
         // %h.Hash — a Hash is already one, so it answers itself; a Map (immutable)
         // answers a mutable Hash copy. Only `.hash` was implemented, so the
         // idiomatic `(%meta<provides> // {}).Hash` died with "No such method".
         if (m == "Hash" && inv.t == VT::Hash) {
-            if (inv.hashKind.empty() || inv.hashKind == "Hash") return inv;
+            if (inv.hashKind.empty() || inv.hashKind == "Hash") { Value r = inv; r.itemized = false; return r; }
             Value h = Value::makeHash();
             if (inv.hash()) *h.hash() = *inv.hash();
             return h;

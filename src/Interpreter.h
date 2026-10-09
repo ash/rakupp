@@ -2077,6 +2077,9 @@ public:
                                          const std::vector<ExprPtr>* rwArgs);
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
+    // `.^nominalize`: the nominal type a coercion, definite type or subset
+    // wraps; nullopt for a type that is nominal already (MethodCallPart2.cpp)
+    std::optional<Value> nominalizeType(const Value& t);
     // …and what happens to a name no segment claimed: FALLBACK, `.^add_fallback`,
     // Any's last-resort answers, else X::Method::NotFound. Also entered directly
     // for a name the invocant's type does not have at all (a Cool method on a

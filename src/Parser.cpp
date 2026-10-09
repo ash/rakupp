@@ -1555,7 +1555,10 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             {
                 size_t i = 0;
                 while (i < t.text.size() && (t.text[i] == 'R' || t.text[i] == 'Z' || t.text[i] == 'X')) i++;
-                if (i > 0 && i < t.text.size() && wordInfix.count(t.text.substr(i))) return false;
+                // (…unless this unit declares a TYPE by that name: `my class Req`
+                // makes `say Req.new` a call with the type, as Bailador writes it)
+                if (i > 0 && i < t.text.size() && wordInfix.count(t.text.substr(i)) &&
+                    !declTypeNames_.count(t.text)) return false;
             }
             // a keyword directly followed by `=>` is a bareword PAIR KEY, not the
             // keyword: `register('Anna', role => 'admin')`
@@ -9782,9 +9785,15 @@ ExprPtr Parser::parsePrimary() {
                 };
                 if (whateverListops.count(name)) listopOk = true;
             }
+            // A ROUTINE wants a term, so Rakudo reads `say + (…)` and `f - 5`
+            // (f a declared sub) as a prefix on the argument. An unknown name
+            // keeps the infix reading: it may be a constant or a term a module
+            // exports, which the parser cannot see.
+            static const std::set<std::string> kIoListops = {"say", "put", "print", "note", "dd"};
             if (listopOk && cur().kind == Tok::Op &&
                 (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|") &&
-                peek(1).spaceBefore)
+                peek(1).spaceBefore &&
+                (cur().text == "|" || !(kIoListops.count(name) || declaredSubNames_.count(name))))
                 listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip
             // `1 ?? Nil !! Any` — a spaced `!!` is the ternary's else-marker, not
             // `Nil(!!Any)`, but only while a `??` at this bracket depth is still

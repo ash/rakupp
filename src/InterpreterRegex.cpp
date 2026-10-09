@@ -865,8 +865,10 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
             // `$^name` (and `$:name`) is a PLACEHOLDER — the enclosing block binds it
             // under the bare name, so the twigil is skipped for the lookup.
             // IO::Glob builds its alternation regexes as `@alts.map({ rx/$base$^alt/ })`.
-            size_t tw = (pat[i] == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':') &&
+            size_t tw = (pat[i] == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':' || pat[i + 1] == '*') &&
                          (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+            // …and `$*name` is a DYNAMIC variable, looked up by its full name
+            const bool dynTw = tw && pat[i + 1] == '*';
             if (pat[i] == '$' && i + 1 + tw < pat.size() && !(i > 0 && pat[i - 1] == '@') &&   // `@$aref` is the array pass's
                 (ascii::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
                 size_t j = i + 1 + tw;
@@ -875,7 +877,8 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
                        ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
                         ascii::isalpha((unsigned char)pat[j + 1])))) j++;
-                Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
+                Value* v = dynTw ? findDynamicLenient("$*" + pat.substr(i + 2, j - i - 2))
+                                 : tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
                 // POSITION decides the reading (issue #15): `<$p>` compiles the
                 // string AS A REGEX, a bare `$p` matches it LITERALLY. The
                 // assertion form is `<` immediately before and `>` right after

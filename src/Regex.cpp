@@ -2754,6 +2754,9 @@ Regex::NodePtr Regex::parseAtom() {
         // $var — match the variable's current Str value literally at match time
         pos_++;
         std::string var = "$";
+        // `$*name` — a DYNAMIC variable, never the end anchor quantified
+        // (Template::Mustache's `/$*LEFT '>' … $*RIGHT/`; a grammar's `:my $*Q`)
+        if (peek() == '*' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { var += '*'; pos_++; }
         while (!eof()) {
             char p = peek();
             if (ascii::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }

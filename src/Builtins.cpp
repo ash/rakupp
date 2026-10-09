@@ -8338,6 +8338,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (mm == "base_type" && inv.t == VT::Type) {
             Value b = Value::typeObj(inv.s); b.ofTypeM() = inv.ofType(); return b;
         }
+        if (mm == "nominalize") if (auto n = nominalizeType(inv)) return *n;
         // `.^array_type` — the ELEMENT type of a buffer, which is how
         // NativeHelpers::Blob decides what to allocate. A plain Blob/Buf is
         // uint8; the sized spellings carry theirs in ofType, and utf8 is uint8
