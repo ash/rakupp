@@ -298,6 +298,21 @@ skipping a gate the reader has just been told about. `uninstall` refuses a URL
 for a related reason: the store is keyed by name, and learning the name behind a
 URL would mean fetching it first, which is not a thing an uninstall should do.
 
+Two more kinds of argument arrived later, and both end in the same entry
+shape. **A directory of module files with no `META6.json`** is not a
+distribution, but it can stand for one. When it lies under the `lib/` of a
+checkout — a `META6.json` in some directory above it — the entry is that
+checkout's, and every module file found in the directory (with `-r`, below it
+too) that the META's `provides` does not list is added to it. The META is the
+only place a name, a version and a dependency list are written down. Giving the
+found files an identity of their own would put a partial second copy of the
+distribution in the store, and `use` would choose between the two by version.
+With no `META6.json` above, an identity is made: version 0, named for the
+namespace the modules share, its dependencies whatever the files `use`.
+**A program** contributes no entry at all, only wants: its `use` and `need`
+lines, read as text, because a program whose dependencies are missing is
+exactly the program that cannot be compiled to find them.
+
 **Test.** Before a distribution is installed, its own `t/` suite runs under
 rakupp — dependencies were installed first, so the tests see them. This gate
 earned its keep on its very first live run: JSON::Unmarshal 0.18's suite

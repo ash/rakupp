@@ -45,17 +45,26 @@ nothing at all. The workflow is:
 
 `rakupp install` resolves against the same ecosystem index zef uses and runs a
 distribution's own test suite before marking it installed. It also takes a
-**directory** or a **URL** instead of a name, for a module that is not in the
-ecosystem — or not in it yet:
+**directory**, a **source file** or a **URL** instead of a name, for a module
+that is not in the ecosystem — or not in it yet:
 
 ```sh
 rakupp install my-dist            # a checkout: the directory with META6.json
                                   # (./my-dist, ~/src/my-dist, C:\… all work)
+rakupp install -r lib             # module files with no META6.json beside them
+                                  # (-r: in every directory below, too)
+rakupp install app.raku           # what a program uses — its modules, not it
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
                                   # a github page URL, monorepo subdirectory
                                   # and all — the URL from the address bar
 rakupp install https://host/Foo-1.0.tar.gz         # or a release tarball
 ```
+
+A directory of module files inside a checkout's `lib/` installs that checkout's
+distribution, plus any module its `META6.json` forgot to list; with no
+`META6.json` above it, the modules install as a version-0 distribution of their
+own. A program's `use` lines are read from its source, and whatever is not
+installed yet installs. [CLI.md](CLI.md#installing-modules) has the rules.
 
 A URL is fetched and unpacked and then treated exactly as a directory would be:
 same dependency resolution, same build hook, same test suite, same store. What
