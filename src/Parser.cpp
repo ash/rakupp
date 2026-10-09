@@ -16850,9 +16850,15 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
     std::set<std::string> stubClasses;   // …and those that are not (a class is no role to compose)
     int catchBlocks = 0;
     std::set<std::string> labels;     // a label names a symbol of this scope
+    // …and so does the mainline's own EXPORT package, which a label at its top
+    // redeclares (Rakudo). After `unit module` the statements are the
+    // package's, which has none (a `unit class` holds them as its body).
+    bool mainlineTop = unitScope && !strictSep_;   // (an EVAL runs inside a scope)
     for (auto& s : stmts) {
         if (!s) continue;
-        if (!s->label.empty() && !labels.insert(s->label).second)
+        if (!s->label.empty() &&
+            (!labels.insert(s->label).second || types.count(s->label) ||
+             (mainlineTop && s->label == "EXPORT")))
             throw ParseError("Redeclaration of symbol '" + s->label + "'", s->line,
                              "X::Redeclaration", {{"symbol", s->label}});
         if (s->kind == NK::Block && static_cast<const Block*>(s.get())->isCatch &&
@@ -16915,7 +16921,11 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
         }
         else if (s->kind == NK::ClassDecl) {
             auto* cd = static_cast<const ClassDecl*>(s.get());
+            if (cd->isPackage && !cd->bracedBody) mainlineTop = false;   // `unit module M;`
             if (cd->name.empty() || cd->isAugment || cd->parameterized) continue;
+            if (labels.count(cd->name))
+                throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
+                                 "X::Redeclaration", {{"symbol", cd->name}});
             if (cd->isStubDecl) {
                 stubbed.push_back(cd->name);
                 // …a stub naming a `use`d module stands for the imported role

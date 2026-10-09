@@ -4017,7 +4017,9 @@ static bool hashIsIdentity(const Value& v) {
     static const char* const kinds[] = {
         "Promise", "Channel", "Supplier", "Supply", "Tap", "Lock", "Lock::Async",
         "LockCondition", "Semaphore", "Thread", "Cancellation", "Proc", "Proc::Async",
-        "Failure"};
+        "Failure",
+        // the handles: IO::Handle and IO::Pipe, IO::Socket::INET, IO::Socket::Async
+        "FileHandle", "ProcIn", "Socket", "AsyncSocket"};
     for (const char* k : kinds) if (v.hashKind == k) return true;
     return false;
 }

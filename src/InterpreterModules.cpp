@@ -6460,23 +6460,31 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // they inherited from roles they compose, so this is transitive) and
             // record this role's own stub methods as requirements
             std::map<std::string, std::set<std::string>> reqFrom; // req name -> role names (for the message)
-            for (ClassInfo* role : composedRoles) {
-                for (const std::string& rq : role->requiredMethods) { ci->requiredMethods.insert(rq); reqFrom[rq].insert(role->name); }
-                for (auto& kv : role->requiredMultiSigs) {
-                    auto& dst = ci->requiredMultiSigs[kv.first];
-                    for (auto& s : kv.second) if (std::find(dst.begin(), dst.end(), s) == dst.end()) dst.push_back(s);
-                    reqFrom[kv.first].insert(role->name);
-                }
-            }
+            // The order decides which missing method is reported (Rakudo's): a
+            // role's own stubs as declared, then the composed roles' requirements,
+            // the role named LAST in the `does` list first.
+            auto addReq = [&](const std::string& rq) {
+                auto& rm = ci->requiredMethods;
+                if (std::find(rm.begin(), rm.end(), rq) == rm.end()) rm.push_back(rq);
+            };
             if (cd->isRole)
                 for (auto& md : cd->methods)
                     if (stmtIsStub(md->body)) {
                         // private stubs are keyed `!name` to match how they're stored
                         // and dispatched, so a private impl (also `!name`) satisfies them
                         std::string rqKey = md->isPrivate ? "!" + md->name : md->name;
-                        ci->requiredMethods.insert(rqKey);
+                        addReq(rqKey);
                         if (md->isMulti) ci->requiredMultiSigs[rqKey].push_back(sigKeyParams(&md->params));
                     }
+            for (auto rit = composedRoles.rbegin(); rit != composedRoles.rend(); ++rit) {
+                ClassInfo* role = *rit;
+                for (const std::string& rq : role->requiredMethods) { addReq(rq); reqFrom[rq].insert(role->name); }
+                for (auto& kv : role->requiredMultiSigs) {
+                    auto& dst = ci->requiredMultiSigs[kv.first];
+                    for (auto& s : kv.second) if (std::find(dst.begin(), dst.end(), s) == dst.end()) dst.push_back(s);
+                    reqFrom[kv.first].insert(role->name);
+                }
+            }
             // role composition check: a non-role class that composes a role must
             // implement every method the role requires — via its own methods, a
             // composed/inherited implementation, a public attribute's accessor,

@@ -6095,7 +6095,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 put(items[k].pairKey() ? *items[k].pairKey() : Value::str(items[k].s),
                     items[k].pairVal() ? *items[k].pairVal() : Value::any());
             else if (k + 1 < items.size()) { put(items[k], items[k + 1]); k++; }
-            else throwHashOddNumber((long long)items.size(), items[k]); // (it dropped the key)
+            else throwHashOddNumber((long long)v.hash()->size(), items[k]); // (it dropped the key)
         }
         return v;
     }

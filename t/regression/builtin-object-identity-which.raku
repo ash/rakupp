@@ -20,6 +20,16 @@ check((Lock::Async.new xx 2).unique.elems, 2, 'two Lock::Asyncs stay two');
 check((Semaphore.new(1) xx 2).unique.elems, 2, 'two Semaphores stay two');
 check((Proc::Async.new('true') xx 2).unique.elems, 2, 'two Proc::Asyncs stay two');
 check(Promise.new.WHICH.^name, 'ObjAt', 'a Promise WHICH is an ObjAt');
+# …and the handles (2026-10-09): two fresh IO::Handles read alike field for
+# field, and two opens of one file too
+check((IO::Handle.new xx 2).unique.elems, 2, 'two IO::Handles stay two');
+{
+    my $f = open($*PROGRAM); my $g = open($*PROGRAM);
+    check($f.WHICH eq $g.WHICH, False, 'two opens of one file are two handles');
+    my $fw = $f.WHICH; $f.get;
+    check($f.WHICH eq $fw, True, 'reading a line does not move its WHICH');
+    $f.close; $g.close;
+}
 
 my $p = Promise.new;
 check(set(Promise.new, Promise.new, $p, $p).elems, 3, 'a Set keys Promises by identity');

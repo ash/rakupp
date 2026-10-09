@@ -844,7 +844,9 @@ Value extLoadModule(const std::string& path, std::string& errOut,
 // A hash store handed an odd number of plain items, or a lone Callable. Both
 // refusals are Rakudo's, attributes included (sheet HM-01); shared so that the
 // list store, `.Hash`/`.Map` and the `hash()` sub all raise the same thing.
-[[noreturn]] void throwHashOddNumber(long long found, const Value& last);
+// `stored` is how many keys the hash holds when the odd item turns up; Rakudo
+// reports twice that plus one as `.found`, whatever the list looked like.
+[[noreturn]] void throwHashOddNumber(long long stored, const Value& last);
 [[noreturn]] void throwHashCallableStore();
 
 // Dividing by zero yields a FAILURE carrying X::Numeric::DivideByZero — not a

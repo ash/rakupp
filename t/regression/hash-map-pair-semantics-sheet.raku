@@ -26,6 +26,25 @@ sub is-raku($got, $want, $what) { ok($got eq $want, "$what (got $got, want $want
     my $e = (try { my %h = ([a => 1],) }) // $!;
     is-raku($e.last.raku, '[:a(1)]', 'a lone Array element is the leftover');
 }
+# `.found` counts the HASH, not the list: two for each key stored before the
+# stray item, and one for it. Counting the list's items said 2 for `%x, $item`
+# with two pairs in `%x`, and 5 for `1, 2, 1, 3, 5` (2026-10-09).
+{
+    my %x = a => 1, b => 2;
+    is-raku(((try { my %h = %x, 3 }) // $!).found.raku,            '5', 'a merged Hash counts its pairs');
+    is-raku(((try { my %h = (c => 1), 3 }) // $!).found.raku,      '3', 'a Pair counts as its key');
+    is-raku(((try { my %h = 1, 2, 1, 3, 5 }) // $!).found.raku,    '3', 'a repeated key counts once');
+    is-raku(((try Hash.new(1, 2, (c => 1), 3)) // $!).found.raku,  '5', 'Hash.new counts the same way');
+    is-raku(((try (1, 2, (c => 1), 3).Hash) // $!).found.raku,     '5', '…and .Hash');
+}
+# …and a MAP in the list merges its pairs as a Hash does; a Set stays one item
+{
+    my %m = (c => 1, d => 2).Map, e => 3;
+    is-raku(%m.sort.raku, '(:c(1), :d(2), :e(3)).Seq', 'a Map merges into a hash store');
+    is-raku(((try { my %h = (c => 1, d => 2).Map, 3 }) // $!).found.raku, '5', '…and counts its pairs');
+    my %s = set(<x>), z => 1;
+    is-raku(%s.keys.sort.raku, '("x",).Seq', 'a Set is a key, not its pairs');
+}
 is-raku(((try { my %h = 1 }) // $!).^name, 'X::Hash::Store::OddNumber', 'one item is odd too');
 is-raku(((try %(1, 2, 3)) // $!).^name,    'X::Hash::Store::OddNumber', '%( ) stores, so it throws');
 is-raku(((try Hash.new(1, 2, 3)) // $!).^name, 'X::Hash::Store::OddNumber', 'Hash.new too');

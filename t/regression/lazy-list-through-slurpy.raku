@@ -22,9 +22,28 @@ sub one-arg-slurpy(+@a) { @a.is-lazy }
 
 check flat-slurpy(16 xx *),    True,  'a lazy repeat stays lazy through *@a';
 check one-arg-slurpy(16 xx *), True,  '…and through +@a';
-# STILL OPEN: an infinite RANGE through a slurpy is not lazy here (`1..Inf`).
-# A Range is not the same representation as a lazy sequence and takes another
-# path; `16 xx *`, which is what the distribution passes, is covered above.
+# An endless RANGE is not the representation a lazy sequence has, and the
+# binder spread it: 10,000 elements of `1..*` and no more, so `@a.is-lazy` was
+# False, `@a.elems` 10000 and `@a[20000]` Any (2026-10-09). An endless argument
+# now ends the slurpy lazily, after whatever came before it.
+check flat-slurpy(1..*),       True,  'an endless Range stays lazy through *@a';
+check one-arg-slurpy(1..*),    True,  '…and through +@a';
+check flat-slurpy(1, 2, 1..*), True,  '…behind other arguments too';
+check flat-slurpy(^Inf),       True,  '…and `^Inf`';
+check flat-slurpy('a'..*),     True,  '…and a Str range';
+check flat-slurpy(1..3),       False, 'a finite Range does not';
+sub nth(*@a)  { @a[20000] }
+sub head4(*@a) { @a[^4] }
+sub elems(*@a) { @a.elems }
+check nth(1..*),               20001, 'the slurpy reads as far as asked';
+check head4(7, 1..*),          (7, 1, 2, 3), '…the arguments ahead of it first';
+check (try elems(1..*)) // $!.^name, 'X::Cannot::Lazy', '…and counting it dies';
+# the arguments AFTER a lazy one are read too, in order, once it runs out
+sub upto7(*@a) { @a[^7].grep(*.defined).List }
+check upto7((lazy 1..3), 5),          (1, 2, 3, 5), 'a finite lazy list, then an item';
+check upto7(0, (lazy 1..3), (6, 7)),  (0, 1, 2, 3, 6, 7), '…then a list, flattened';
+check upto7((lazy 1..2), (lazy 3..4)), (1, 2, 3, 4), '…then another lazy list';
+check flat-slurpy((lazy 1..2), 5),    True, 'a slurpy holding one is lazy';
 check one-arg-slurpy((1,2,3)), False, 'an eager list is still eager';
 check flat-slurpy(1,2,3),      False, '…and so are separate arguments';
 

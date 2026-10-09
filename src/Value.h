@@ -1798,7 +1798,10 @@ struct ClassInfo {
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)
     std::string podTrail; // …its `#=` part alone
-    std::set<std::string> requiredMethods; // methods a composing class must implement (role stubs)
+    // methods a composing class must implement (role stubs), in the order the
+    // first missing one is reported: a role's own stubs as declared, then the
+    // requirements of the roles it composes
+    std::vector<std::string> requiredMethods;
     // `method loader handles <a b>` — delegated name -> the METHOD to ask for the
     // target object. An attribute's `handles` is in ClassAttr::handles instead.
     std::map<std::string, std::string> methodHandles;

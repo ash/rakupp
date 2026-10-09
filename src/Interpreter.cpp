@@ -3711,7 +3711,10 @@ std::function<bool(const Value&, ValueList&)> g_objListItems;
 // carries how many elements were seen (`.found`) and the one left over
 // (`.last`), which is what a handler reports. The two message shapes are
 // Rakudo's: a lone element "Only saw", several "Found N (implicit) elements".
-[[noreturn]] void throwHashOddNumber(long long found, const Value& last) {
+// N counts the hash, not the list: two for each key stored so far (a repeated
+// key or a merged Hash's pairs counted once each) and one for the stray item.
+[[noreturn]] void throwHashOddNumber(long long stored, const Value& last) {
+    const long long found = 2 * stored + 1;
     Value shown = last;
     if (shown.t == VT::Array || shown.t == VT::Hash) shown.itemized = true; // a hash value is itemized
     std::string repr = g_rakuRepr ? g_rakuRepr(shown) : shown.gist();
@@ -3824,9 +3827,10 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             Value realK = pk ? *pk : Value::str(items[i].s);
             if (objKeyed) pv.pairKeyM() = std::make_shared<Value>(realK);
             (*h.hash())[keyStr(realK, items[i].s)] = pv;
-        } else if (items[i].t == VT::Hash && items[i].hash() && items[i].hashKind.empty() &&
-                   !items[i].itemized) {
-            // a plain (non-itemized) Hash in the list MERGES its pairs
+        } else if (items[i].t == VT::Hash && items[i].hash() &&
+                   (items[i].hashKind.empty() || items[i].hashKind == "Map") && !items[i].itemized) {
+            // a plain (non-itemized) Hash or Map in the list MERGES its pairs (a
+            // Set or a Bag stays one item, its Str the key, as in Rakudo)
             // (`%( $<authority>.ast, path => … )` in Cro::Uri) — it is not a key.
             // An ITEMIZED $hashitem stays whole (S02 assigning-refs).
             for (auto& kv : *items[i].hash()) {
@@ -3851,7 +3855,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             (*h.hash())[k2] = std::move(stored);
             i++;
         }
-        else if (store) throwHashOddNumber((long long)items.size(), items[i]);
+        else if (store) throwHashOddNumber((long long)h.hash()->size(), items[i]);
     }
     if (store)
         for (auto& kv : *h.hash()) {
@@ -6276,6 +6280,9 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
     gil_.lock();
     loadCtx(parked);
 }
+
+extern bool (*g_promiseSettled)(const Value&);   // Value.cpp: a Promise's truth
+static const bool g_promiseSettledSet = ((g_promiseSettled = &Interpreter::promiseSettled), true);
 
 bool Interpreter::promiseSettled(const Value& p) {
     if (p.ext()) {

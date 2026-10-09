@@ -4428,7 +4428,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     std::string key = items[k].toStr(); // sequenced explicitly: in `m[f(k)] = g(++k)`
                     (*h.hash())[key] = items[++k];        // the RHS would evaluate before the key!
                 }
-                else throwHashOddNumber((long long)items.size(), items[k]); // as Hash.new and Rakudo
+                else throwHashOddNumber((long long)h.hash()->size(), items[k]); // as Hash.new and Rakudo
             }
             // `.Map` asks for a MAP: `(a => 1, b => 2).Map` is immutable and
             // reports Map, where `.Hash`/`.hash` answer a mutable Hash. All

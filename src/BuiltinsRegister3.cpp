@@ -586,13 +586,13 @@ void Interpreter::registerBuiltinsPart5() {
         ValueList items; // spread list args so hash(<a 1 b 2>) pairs up (and <1 2 3> dies)
         for (auto& v : a) {
             if (v.t == VT::Array && v.arr()) for (auto& x : *v.arr()) items.push_back(x);
-            else if (v.t == VT::Hash && !v.hashKind.size()) { for (auto& kv : *v.hash()) (*h.hash())[kv.first] = kv.second; }
+            else if (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map")) { for (auto& kv : *v.hash()) (*h.hash())[kv.first] = kv.second; }
             else items.push_back(v);
         }
         for (size_t i = 0; i < items.size(); i++) {
             if (items[i].t == VT::Pair) (*h.hash())[items[i].s] = items[i].pairVal() ? *items[i].pairVal() : Value::any();
             else if (i + 1 < items.size()) { (*h.hash())[items[i].toStr()] = items[i + 1]; i++; }
-            else throwHashOddNumber((long long)items.size(), items[i]);
+            else throwHashOddNumber((long long)h.hash()->size(), items[i]);
         }
         return h;
     };

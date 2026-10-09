@@ -334,6 +334,8 @@ DeclLazyLiveFn g_declLazyLive = nullptr; // likewise
 // Installed by InterpreterBinding.cpp beside g_forceLazy.
 void (*g_pullLazy)(const Value&, size_t) = nullptr;
 void (*g_procSettle)(const Value&) = nullptr;   // Builtins.cpp: a live run() child settles first
+// Interpreter.cpp: has a Promise settled, in whichever shape it keeps its state
+bool (*g_promiseSettled)(const Value&) = nullptr;
 DateFormatFn g_dateFormat = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
@@ -432,6 +434,10 @@ bool Value::truthy() const {
             // promise is False) — IO::Socket::Async::SSL's handshake pump relies
             // on `elsif $!connected-promise` being false while still negotiating.
             if (hashKind == "Promise" && hash()) {
+                // A start promise keeps its state in its PromiseState, a timer or a
+                // combinator in no field at all: the hash's status is only the
+                // answer for a promise kept or broken by hand.
+                if (g_promiseSettled && (ext() || hash()->count("kind"))) return g_promiseSettled(*this);
                 auto it = hash()->find("status");
                 if (it != hash()->end()) return it->second.toStr() != "Planned";
             }

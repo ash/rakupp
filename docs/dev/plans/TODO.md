@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-08.*
+*Started 2026-10-03. Last updated 2026-10-09.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -157,9 +157,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
   reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,
   `($listed, 1)` on eight fresh workers). Found 2026-10-08; not started.
-- [ ] **A `start` Promise answers False to `.Bool` once kept**: `my $w = start
-  { 1 }; await $w; say so $w` is False (Rakudo True), so `until $w { … }` never
-  ends. A kept `Promise.new` answers True. Found 2026-10-08; not started.
 - [ ] **`$*THREAD.id` inside `hyper for` names the spawner**: every iteration
   reports one id although the batches run on workers (the loop is 2× faster).
   Found 2026-10-08; not started.
@@ -168,28 +165,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `::('$secret')` finds one (Rakudo: X::Undeclared at compile time, and no
   such symbol). The module unit scope chains to `global_`. Found 2026-10-08;
   the parallel-scaling sweep accounts for it, the semantics are not fixed.
-- [ ] **An odd hash initializer counts its pairs wrong**: `my %e = %x, $item`
-  with two pairs in `%x` says "Found 2 (implicit) elements" where Rakudo says
-  5. Found 2026-10-08; not started.
 - [ ] **A `use` inside a routine runs when the routine is CALLED**: `sub f {
   use G::Path }; G::Path` is unknown unless `f` ran (Rakudo loads at compile
   time). Found 2026-10-07; not started.
-- [ ] **`*@a` handed `1..*` is not lazy**: `sub f(*@a) { @a.is-lazy }; f(1..*)`
-  is False (Rakudo True); the binder keeps only a lazy Array lazy, not a
-  Range. Found 2026-10-07; not started.
-- [ ] **Two lenient answers met with zef (#35)**: an `IO()` parameter takes
-  any object, through its `.Str` (`class C {}; sub f(IO() $x) {…}; f(C.new)`
-  is `"C<…>".IO`; Rakudo: "Impossible coercion from 'C' into 'IO'"), and a
-  class missing several of a role's stub methods is told the alphabetically
-  first (`requiredMethods` is a `std::set`), where Rakudo names the first
-  declared. Found 2026-10-07; not started.
 - [ ] **Left from the pseudo-package-over-label fix**: a bare `OUR` is a
   type named OUR (Rakudo: the current package, so `next OUR` names
   `GLOBAL:U`); `next Int` dies when it runs (Rakudo: while compiling);
   `MY::<$x>` and `$CALLER::y` inside a loop block find an outer variable
   (Rakudo: Nil); X::Multi::NoMatch has no `.dispatcher`/`.capture`;
-  `&next` is Any (no `.candidates`); a label named `EXPORT` is accepted
-  (Rakudo: X::Redeclaration). Found 2026-10-07; not started.
+  `&next` is Any (no `.candidates`). Found 2026-10-07; not started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
@@ -286,8 +270,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     its `where`: `multi wr(Int $n where * > 0)` beside `multi wr(Int $n)`,
     the first wrapped, answers `wr(-1)` from the second; Rakudo dies binding
     the wrapped candidate ("Constraint type check failed").
-  - Two `IO::Handle.new` share one WHICH (the handle payload is shared), and
-    `$supplier.Supply` answers the same Supply each call (Rakudo: a new one).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair
@@ -582,9 +564,15 @@ with its tag, after the release run is green.
   `"STRASSE" ~~ / :i 'straße' /` matches `STRASSE` here and `STRASS` there,
   and `"a\r\nb" ~~ / \r\n /` matches here but not there (the CRLF is one
   grapheme, which a two-atom pattern cannot match).
-- [ ] **A lazy list inside a sequence's seed list** gists as its elements:
-  `(@f, 2, 3 ... 8)` with `@f = lazy 0, 1, 1` shows `[0 1 1]` where Rakudo
-  shows `[...]` (the seed list is read out to find the start values).
+- [ ] **An Array in a sequence's seed list**: the endpoint check reads it.
+  With `@f = lazy 0, 1, 1`, `(@f, 2, 3 ... 8)` leaves `@f` reified, so it
+  shows `[0 1 1]` where Rakudo shows `[...]`; the cause is that `@f ~~ 8`
+  reads a lazy `@f` whole (Rakudo: False, `@f` still lazy). Worse, `(@f, 2 ...
+  2)` is `()` whether `@f` is lazy or not (Rakudo `($[...], 2)` and `($[0, 1,
+  1], 2)`), and `(@f, 2 ... 3)` stops after the Array (Rakudo `([...], 2,
+  3)`). Rakudo meets the
+  endpoint with an Array seed by its element count: `([0, 1], 2 ... 2)` is
+  `($[0, 1],)`. In `seqOp` (src/Interpreter.cpp). Found 2026-10-09.
 - [ ] **Roast harness**: run Rakudo at the 120 s budget; COUNTING.md's figures
   are from the 60 s budget. The Lock around spawns in tools/run-roast.raku can
   go now that the engine's pipes are close-on-exec before the fork

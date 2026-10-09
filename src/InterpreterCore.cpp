@@ -4295,6 +4295,69 @@ static void slurpySpread(const Value& x, ValueList& out) {
     spread(x);
 }
 
+// A slurpy argument that is lazy as Rakudo means it, an endless Range or a
+// lazy list: the list to pull its elements from, and whether it ever ends.
+static bool slurpyLazySource(Interpreter& I, const Value& x, Value& src, bool& endless) {
+    if (x.itemized) return false;
+    if (x.t == VT::Range) {
+        // a plain finite Int range (`1..3`) answers without a method call
+        if (!x.b && !x.rNum() && !x.ext() && x.rTo() < 9000000000000000000LL) return false;
+        if (!I.methodCall(x, "is-lazy", {}).truthy()) return false;
+        src = I.methodCall(x, "list", {});
+        endless = true;
+    }
+    else if (x.t == VT::Array && seqIsLazy(x)) { src = x; endless = isEndlessLazy(x); }
+    else return false;
+    return src.t == VT::Array && src.arr();
+}
+
+// A lazy argument makes a flattening slurpy LAZY. What came before it is the
+// reified prefix in `into`; it and the arguments after it are pulled in order
+// as the slurpy is read. Spreading it read 10,000 elements of `1..*` and
+// stopped there, so `@a.elems` answered 10000 and `@a.is-lazy` False. False,
+// and `into` left alone, when `args[from]` is not lazy.
+static bool slurpyLazyTail(Interpreter& I, const ValueList& args, size_t from, Value& into) {
+    Value src;
+    bool endless = false;
+    if (!slurpyLazySource(I, args[from], src, endless)) return false;
+    struct Chain {
+        ValueList rest;        // the arguments after the current source
+        size_t restAt = 0;
+        Value src;             // the lazy source being read, while hasSrc
+        bool hasSrc = true;
+        size_t srcAt = 0;
+        ValueList spread;      // an eager argument's elements, being handed out
+        size_t spreadAt = 0;
+    };
+    auto ch = std::make_shared<Chain>();
+    ch->src = src;
+    ch->rest.assign(args.begin() + from + 1, args.end());
+    for (size_t k = 0; !endless && k < ch->rest.size(); k++) {
+        Value s; bool e = false;
+        if (slurpyLazySource(I, ch->rest[k], s, e) && e) endless = true;
+    }
+    auto st = std::make_shared<LazySeqState>();
+    st->infinite = endless;
+    Interpreter* ip = &I;
+    st->appendNext = [ip, ch](ValueList& out) -> bool {
+        for (;;) {
+            if (ch->hasSrc) {
+                ip->materializeLazy(ch->src, ch->srcAt + 1);
+                if (ch->srcAt < ch->src.arr()->size()) { out.push_back((*ch->src.arr())[ch->srcAt++]); return true; }
+                ch->hasSrc = false;
+            }
+            if (ch->spreadAt < ch->spread.size()) { out.push_back(ch->spread[ch->spreadAt++]); return true; }
+            if (ch->restAt >= ch->rest.size()) return false;
+            const Value& x = ch->rest[ch->restAt++];
+            bool e = false;
+            if (slurpyLazySource(*ip, x, ch->src, e)) { ch->hasSrc = true; ch->srcAt = 0; }
+            else { ch->spread.clear(); ch->spreadAt = 0; slurpySpread(x, ch->spread); }
+        }
+    };
+    into.extM() = st;
+    return true;
+}
+
 void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                              std::shared_ptr<Env>& env, bool methodCtx, bool blockParams,
                              bool whereVerified) {
@@ -4625,7 +4688,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // 67_emptrow); not spreading an itemized Slip made BinaryHeap's
                     // `.new` and `.push` Slip candidates build a heap holding one
                     // nested list instead of its elements.
-                    for (; pi < positional.size(); pi++) slurpySpread(positional[pi], *a.arr());
+                    // …up to an argument that never ends, which ends it lazily
+                    for (; pi < positional.size(); pi++) {
+                        if (slurpyLazyTail(*this, positional, pi, a)) { pi = positional.size(); break; }
+                        slurpySpread(positional[pi], *a.arr());
+                    }
                 } else if (p.slurpyKind == 'n' || capture) {
                     // **@a — no flatten: keep every arg as-is.
                     //
@@ -4664,13 +4731,17 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         pi = positional.size();
                         continue;
                     }
+                    // …and a lone endless Range is read as the slurpy is
+                    const bool lazyTail = remaining == 1 && !capture && p.sigil == '@' &&
+                                          slurpyLazyTail(*this, positional, pi, a);
                     // …and `+@a` handed one SEQ binds the List of its values, in a
                     // `$` container or not: a Seq reaches an `@` parameter as its
                     // cache, which is a List (`sub f(+@a) { @a }; f(@x.grep(…))`
                     // is `(1, 2, 3)`, and pushing onto it is X::Immutable)
                     const bool loneSeq = remaining == 1 && !capture && positional[pi].t == VT::Array &&
                                          positional[pi].isList && positional[pi].s == "Seq";
-                    if (remaining == 1 && (isSlip(positional[pi]) || loneSeq ||
+                    if (lazyTail) pi++;
+                    else if (remaining == 1 && (isSlip(positional[pi]) || loneSeq ||
                                            (!positional[pi].itemized &&
                                             (positional[pi].t == VT::Array || positional[pi].t == VT::Range)))) {
                         // the lone Iterable's ELEMENTS, one level: `f((1, (2, 3)))`
@@ -6112,7 +6183,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             seqIsLazy(pos[total]))
             lst = pos[total];
         else if (kind == 'f' && !capture)
-            for (size_t i = total; i < pos.size(); i++) slurpySpread(pos[i], *lst.arr());
+            for (size_t i = total; i < pos.size(); i++) {
+                if (slurpyLazyTail(*this, pos, i, lst)) break;
+                slurpySpread(pos[i], *lst.arr());
+            }
+        else if (kind == '1' && slurpyParam->sigil == '@' && rest == 1 && slurpyLazyTail(*this, pos, total, lst)) {}
         else if (kind != 'n' && !capture && rest == 1 && iterable(pos[total])) {
             const Value& only = pos[total];   // the single-argument rule: its elements, one level
             forceLazy(only);
