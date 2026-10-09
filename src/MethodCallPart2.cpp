@@ -4982,6 +4982,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                            fld("hour") * 3600 + fld("minute") * 60 + whole - fld("timezone");
             Value frac = applyArith("-", sec, Value::integer(whole));
             Value v = applyArith("+", Value::integer(ep + taiOffsetForPosix(ep, whole >= 60)), frac);
+            // a Rat underneath even on a whole second, as from-posix makes it
+            // (`DateTime.new(0).Instant.raku` is `Instant.from-posix(0.0)`)
+            if (v.t == VT::Int) v = methodCall(v, "Rat", ValueList{});
             v.hashKind = "Instant"; return identify(v);
         }
         if ((m == "timezone" || m == "offset") && inv.hashKind == "DateTime") return Value::integer(fld("timezone"));

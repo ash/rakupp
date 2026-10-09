@@ -2047,6 +2047,13 @@ static Value arrayHoleFill(const Value& arr, const Value& e) {
 }
 
 std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen) {
+    // an Instant or a Duration renders as its own `.raku` does, nested as at
+    // the top: `:a(Instant.from-posix(0.0))`, not the bare number underneath
+    // (a Rat-based one) or the `Instant:10` its .Str gives
+    if (v.isNumeric() && (v.hashKind == "Instant" || v.hashKind == "Duration") && g_cbInterp) {
+        try { return g_cbInterp->methodCall(v, "raku", ValueList{}).toStr(); }
+        catch (RakuError&) {}
+    }
     // a FAILURE renders as the constructor call that rebuilds it, `handled`
     // flag included: `.raku.EVAL` round-trips it
     if (v.t == VT::Hash && v.hashKind == "Failure" && v.hash()) {

@@ -261,6 +261,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         Value p = args.empty() ? Value::integer(0) : args[0];
         if (!p.isNumeric()) p = Value::number(p.toNum());
         p.hashKind = "";
+        // …and a Rat underneath, whatever it was given, as Rakudo's `.Rat` makes
+        // it: `Instant.from-posix(10)` and `Instant.from-posix(10.0)` are the
+        // same Instant (`eqv`, and `.raku` says `from-posix(10.0)` for both)
+        if (p.t == VT::Int || (p.t == VT::Num && std::isfinite(p.n)))
+            p = methodCall(p, "Rat", ValueList{});
         bool prefer = args.size() > 1 && !args[1].namedArg && args[1].truthy();
         Value v = applyArith("+", p, Value::integer(
             taiOffsetForPosix(floorSecsLL(p.toNum()), prefer)));
