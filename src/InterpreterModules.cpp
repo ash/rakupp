@@ -7960,6 +7960,9 @@ int Interpreter::run(Program& prog) {
                                 if (dv.t == VT::Type && (ve0->declType.empty() || ve0->declType == "Mu" ||
                                                          ve0->declType == "Any"))
                                     global_->x().varDefaultUntyped.insert(ve0->name);
+                                // …and a typed one keeps its type beside the reset value
+                                else if (!ve0->declType.empty() && ascii::isupper((unsigned char)ve0->declType[0]))
+                                    global_->x().varDefaultType[ve0->name] = Value::typeObj(ve0->declType);
                                 global_->vars[ve0->name] = dv;
                             }
                         }

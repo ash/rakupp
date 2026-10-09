@@ -1309,6 +1309,16 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
     return r;
 }
 
+void Interpreter::checkBoxedStrSource(const ClassInfo* cls, const Value& v) {
+    for (const ClassInfo* c = cls; c; c = c->parent.get()) {
+        if (c->nativeParent.empty()) continue;
+        if (c->nativeParent != "Str") return;      // an Int, Num or Rat box takes what numifies
+        if (v.isAllomorph() || (v.t == VT::Str && v.hashKind.empty())) return;
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "This type cannot unbox to a native string: P6opaque, " + v.typeName()};
+    }
+}
+
 Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     // A value that IS already the target type is not coerced at all — Rakudo's
     // coercion protocol only runs when it has to. Without this, `Mu:D(Int) $a`
@@ -1330,6 +1340,11 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
         const Value& p = e.payload;
         bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
                         (p.t == VT::Object && p.obj() && p.obj()->cls && p.obj()->cls->name == "X::Method::NotFound");
+        // (an `Int()` given a type object says so in Rakudo's own words)
+        if (type == "Int" && v.t == VT::Type && p.t == VT::Object && p.obj() && p.obj()->cls &&
+            p.obj()->cls->name == "X::Parameter::InvalidConcreteness")
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Cannot create an Int from a '" + v.typeName() + "' type object"};
         if (!notFound && (type == "Date" || type == "DateTime" || type == "Int" || type == "Num" ||
                           type == "Rat" || type == "Numeric" || type == "Real" || type == "Complex"))
             throw;
@@ -1360,8 +1375,10 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     if (ci != classes_.end() && ci->second) {
         static const std::set<std::string> kBoxedBase = {"Str", "Int", "Num", "Rat"};
         for (const ClassInfo* c2 = ci->second.get(); c2; c2 = c2->parent.get())
-            if (kBoxedBase.count(c2->nativeParent))
+            if (kBoxedBase.count(c2->nativeParent)) {
+                checkBoxedStrSource(ci->second.get(), v);
                 return methodCall(Value::typeObj(reg), "new", ValueList{v});
+            }
     }
     if (size_t sep = type.rfind("::"); sep != std::string::npos) {
         try { return methodCall(v, type.substr(sep + 2), ValueList{}); }
@@ -2291,6 +2308,18 @@ Value Interpreter::whateverPos(const Value& code, long long n) {
 }
 
 ValueList Interpreter::dimKeysAt(const Value& dv, long long n) {
+    // a Range with a FRACTIONAL endpoint indexes by what it iterates, each
+    // member truncated: `@a[0..^2.5]` is 0, 1, 2 and `@a[0.5..2]` is 0, 1
+    if (dv.t == VT::Range && dv.ofType().empty()) {
+        const RangeEnds* re = rangeEnds(dv);
+        if (re && re->from.isNumeric() && re->to.isNumeric() &&
+            (re->from.t == VT::Rat || re->to.t == VT::Rat || re->from.t == VT::Num || re->to.t == VT::Num) &&
+            std::isfinite(re->from.toNum()) && std::isfinite(re->to.toNum())) {
+            ValueList out;
+            for (auto& e : dv.flatten()) out.push_back(Value::integer(e.toInt()));
+            return out;
+        }
+    }
     if (dv.t == VT::Range && !dv.rNum() && dv.ofType().empty()) { // an integer Range
         long long lo = dv.rFrom() + (dv.rExFrom() ? 1 : 0);
         long long hi = dv.rTo() - (dv.rExTo() ? 1 : 0);

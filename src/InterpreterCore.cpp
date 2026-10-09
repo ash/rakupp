@@ -2753,6 +2753,15 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 }
             }
         }
+        // a LIST's elements are values, not containers: `for @$list.kv -> $i,
+        // $x is rw` cannot bind $x (Rakudo: X::Parameter::RW at the first one)
+        if (kvMode && src && src->t == VT::Array && src->arr() && src->isList && !src->ext() &&
+            !src->arr()->empty() && fs->varTraits.size() > 1 && (fs->varTraits[1] & ForStmt::VT_RW)) {
+            const Value& v0 = (*src->arr())[0];
+            throw RakuError{Value::typeObj("X::Parameter::RW"),
+                            "Parameter '" + fs->vars[1] + "' expects a writable container (variable) as an argument,\n"
+                            "but got '" + v0.gist() + "' (" + v0.typeName() + ") as a value without a container."};
+        }
         if (src && src->t == VT::Array && src->arr() && !src->isList && !src->ext()) {
             auto arr = src->arrS();
             const size_t n = fs->vars.size();
@@ -3008,7 +3017,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             if (oneItem) items.push_back(lv);
             else if (lv.t == VT::Array && lv.arr()) {
                 if (!liveArr) { ParStripe cs(*this, lv.arr());
-                    items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr(); } } // snapshot under the stripe (torn-copy contract)
+                    items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr(); }  // snapshot under the stripe (torn-copy contract)
+                fillArrayHoles(lv, items); }
             else if (lv.t == VT::Range) items = lv.flatten();
             // a non-itemized Blob/Buf iterates its ELEMENTS (see the block
             // form below; Digest::MD5's digest loop is this modifier shape)
@@ -3657,6 +3667,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                                 srcVar->name.size() > 1 && srcVar->name[0] == '@'
                                     ? jit::siteFor(s) : nullptr);
             std::shared_ptr<Env> kframe;
+            // a HOLE of an `is default(v)` array reads as v, and stays a hole
+            // unless the body writes something else into it
+            const Value* holeDflt = arr == listv.arrS() && listv.elemDefault() ? listv.elemDefault().get() : nullptr;
+            bool wasHole = false;
             for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
                 if (__jg.site && jit::isReady(__jg.site)) {
                     if (!kframe) { kframe = std::make_shared<Env>(); kframe->parent = tctx_.cur; }
@@ -3669,19 +3683,22 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (flat && topic && scope.use_count() == 1) {
                     ParStripe es(*this, arr.get());
                     if (pi >= arr->size()) break;
-                    *topic = asTopic((*arr)[pi], var, 0);
+                    wasHole = holeDflt && (*arr)[pi].t == VT::Any;
+                    *topic = asTopic(wasHole ? *holeDflt : (*arr)[pi], var, 0);
                 } else {
                     freshScope();
                     ParStripe es(*this, arr.get());
                     if (pi >= arr->size()) break;
-                    topic = &scope->define(var, asTopic((*arr)[pi], var, 0));
+                    wasHole = holeDflt && (*arr)[pi].t == VT::Any;
+                    topic = &scope->define(var, asTopic(wasHole ? *holeDflt : (*arr)[pi], var, 0));
                 }
                 taf.at(scope.get(), pi);
                 bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
                                         fixedWalk ? i + 1 == n0 : atEnd(i + 1), col, rb);
                 if (rw) {
                     auto it = scope->vars.find(var);
-                    if (it != scope->vars.end()) { ParStripe es3(*this, arr.get());
+                    if (it != scope->vars.end() && !(wasHole && sameBoundValue(*it->second.deref(), *holeDflt))) {
+                        ParStripe es3(*this, arr.get());
                         if (pi < arr->size()) { (*arr)[pi] = *it->second.deref();
                             // the topic was itemized on the way IN (the element is a
                             // container); don't stamp that flag onto the element itself
@@ -3717,7 +3734,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     }
     else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
     else if (listv.t == VT::Array && listv.arr()) {
-        if (!liveArr) { ParStripe cs(*this, listv.arr()); items = *listv.arr(); } } // one-level, snapshot under the stripe
+        if (!liveArr) { ParStripe cs(*this, listv.arr()); items = *listv.arr(); } // one-level, snapshot under the stripe
+        fillArrayHoles(listv, items); }
     else if (listv.t == VT::Range) items = listv.flatten();
     else if (listv.t == VT::Hash && listv.hash() &&
              (listv.hashKind.empty() || listv.hashKind == "Map" ||
@@ -10955,6 +10973,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 else {
                     init = dv; de->x().varDefault[ve->name] = dv;
                     if (dv.t == VT::Type && (ve->declType.empty() || ve->declType == "Mu" || ve->declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
+                    else if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
+                        de->x().varDefaultType[ve->name] = Value::typeObj(ve->declType);
                 }
             }
             else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint")) {
@@ -16573,31 +16593,34 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         auto di = en->xr().varDefault.find(nm);
                         if (di != en->xr().varDefault.end()) {
                             if (en->xr().varDefaultUntyped.count(nm)) break;   // a reset value, no constraint
+                            // (the declared type, where `is default` holds the reset value)
+                            auto dti = en->xr().varDefaultType.find(nm);
+                            const Value& dty = dti != en->xr().varDefaultType.end() ? dti->second : di->second;
                             // a COERCION subset (`subset S of Int()`) converts what
                             // it is given: `my S $v; $v = "42"` holds 42
-                            if (di->second.t == VT::Type && isDefined(rhs) && !subsets_.empty() &&
-                                isCoercionSubset(std::string(di->second.s.c_str())))
-                                rhs = coerceViaSubset(rhs, std::string(di->second.s.c_str()));
+                            if (dty.t == VT::Type && isDefined(rhs) && !subsets_.empty() &&
+                                isCoercionSubset(std::string(dty.s.c_str())))
+                                rhs = coerceViaSubset(rhs, std::string(dty.s.c_str()));
                             // (one of the seven core types needs nothing past rtTypeMatch)
-                            const bool core = di->second.t == VT::Type && kChecked.count(di->second.s);
-                            if (di->second.t == VT::Type &&
+                            const bool core = dty.t == VT::Type && kChecked.count(dty.s);
+                            if (dty.t == VT::Type &&
                                 ((core &&
-                                  (isDefined(rhs) ? !rtTypeMatch(rhs, di->second.s)
-                                                  : !undefOk(di->second.s))) ||
+                                  (isDefined(rhs) ? !rtTypeMatch(rhs, dty.s)
+                                                  : !undefOk(dty.s))) ||
                                  // …the name as the declaring scope reads it
-                                 (userTypeRefuses(rhs, di->second.s) &&
-                                  !lexicalAliasAccepts(en, di->second.s, rhs)) ||
-                                 (!core && builtinTypeRefuses(*this, nm, rhs, di->second.s))))
+                                 (userTypeRefuses(rhs, dty.s) &&
+                                  !lexicalAliasAccepts(en, dty.s, rhs)) ||
+                                 (!core && builtinTypeRefuses(*this, nm, rhs, dty.s))))
                                 throwTypedV("X::TypeCheck::Assignment",
                                     {{"got", rhs},
-                                     {"expected", Value::typeObj(di->second.s)},
+                                     {"expected", Value::typeObj(dty.s)},
                                      {"symbol", Value::str(nm)}},
                                     "Type check failed in assignment to " + nm +
-                                    "; expected " + di->second.s + " but got " + rhs.typeName() +
+                                    "; expected " + dty.s + " but got " + rhs.typeName() +
                                     (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")"
                                                     : " " + rhs.gist())); // undef gist has its own parens
                             // a `Nil`-typed variable holds nothing but Nil
-                            if (di->second.t == VT::Type && di->second.s == "Nil" && rhs.t != VT::Nil)
+                            if (dty.t == VT::Type && dty.s == "Nil" && rhs.t != VT::Nil)
                                 throwTypedV("X::TypeCheck::Assignment",
                                     {{"got", rhs}, {"expected", Value::nil()}, {"symbol", Value::str(nm)}},
                                     "Type check failed in assignment to " + nm + "; expected Nil but got " +
@@ -16605,9 +16628,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             // a SUBSET-typed variable asks the subset — its base
                             // type and its `where` — on every assignment:
                             // `my Int::Odd $b = 3; $b = 4` dies and keeps the 3
-                            if (di->second.t == VT::Type && subsets_.count(std::string(di->second.s.c_str())) &&
-                                isDefined(rhs) && !typeOrSubsetMatches(rhs, std::string(di->second.s.c_str()))) {
-                                const std::string st = di->second.s.c_str();
+                            if (dty.t == VT::Type && subsets_.count(std::string(dty.s.c_str())) &&
+                                isDefined(rhs) && !typeOrSubsetMatches(rhs, std::string(dty.s.c_str()))) {
+                                const std::string st = dty.s.c_str();
                                 throwTypedV("X::TypeCheck::Assignment",
                                     {{"got", rhs}, {"expected", Value::typeObj(st)}, {"symbol", Value::str(nm)}},
                                     "Type check failed in assignment to " + nm + "; expected " + st +
@@ -23242,6 +23265,7 @@ static Value slipOf(const Value& v) {
     if (v.t == VT::Array && v.arr()) {
         Value out = Value::array();
         *out.arr() = isMultiDimShaped(v) ? shapedLeaves(v) : *v.arr(); // a shaped array slips its LEAVES
+        fillArrayHoles(v, *out.arr());   // (an `is default` array's holes slip as the default)
         out.isList = true; out.s = "Slip";
         return out;
     }
@@ -24813,6 +24837,7 @@ static void spreadSlipArg(Interpreter& I, ValueList& args, const Value& v) {
         // buffer of a temporary already destroyed — `f(|List.new($b, 7))`
         // passed an address for $b)
         if (v.holdsContainers()) { const Value d = I.decontList(v); for (auto& x : *d.arr()) args.push_back(x); }
+        else if (v.elemDefault()) { ValueList f = *v.arr(); fillArrayHoles(v, f); for (auto& x : f) args.push_back(x); }
         else for (auto& x : *v.arr()) args.push_back(x);
     }
     else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
@@ -25076,8 +25101,11 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
         }
         auto di = en->xr().varDefault.find(nm);
         if (di != en->xr().varDefault.end()) {
-            if (di->second.t != VT::Type || en->xr().varDefaultUntyped.count(nm)) break;
-            const std::string& want = di->second.s;
+            // (the declared type, where `is default` holds the reset value)
+            auto dti = en->xr().varDefaultType.find(nm);
+            const Value& dty = dti != en->xr().varDefaultType.end() ? dti->second : di->second;
+            if (dty.t != VT::Type || en->xr().varDefaultUntyped.count(nm)) break;
+            const std::string& want = dty.s;
                 // A TYPED container cannot hold a Failure quietly: checking the type
                 // means looking at the value, and looking at a Failure detonates it.
                 // (`my $x = "abc".Rat` keeps the Failure — no type to check — which
@@ -26023,6 +26051,7 @@ Value Interpreter::evalCall(Call* c) {
                                  {"hint", Value::str("no acceptable coercion method found")}},
                                 "Impossible coercion from '" + args[0].typeName() + "' into '" +
                                 coerceName + "': no acceptable coercion method found");
+                if (boxedBase) checkBoxedStrSource(cit->second.get(), a0);
                 return methodCall(Value::typeObj(coerceName), "new", std::move(args));
             }
             return methodCall(a0, c->name, ValueList{});
@@ -27789,8 +27818,22 @@ Value Interpreter::evalIndex(Index* idx) {
         if (idx->index->kind == NK::Range) {
             auto* re = static_cast<RangeExpr*>(idx->index.get());
             // `*` in an endpoint resolves to the list length: `@a[0 .. *-2]`, `@a[*-3 .. *-1]`.
-            long long from = resolveWhat(eval(re->from.get()));
+            Value fromV = eval(re->from.get());
+            long long from = resolveWhat(fromV);
             Value toV = eval(re->to.get());
+            // a FRACTIONAL endpoint: the range's own members, each truncated —
+            // `@a[0..^2.5]` is 0, 1, 2 and `@a[0.5..2]` is 0, 1 (Rakudo)
+            auto frac = [](const Value& v) {
+                return (v.t == VT::Rat || v.t == VT::Num) && std::isfinite(v.toNum()) &&
+                       v.toNum() != std::floor(v.toNum());
+            };
+            const bool fracRange = (frac(fromV) || frac(toV)) && fromV.isNumeric() && toV.isNumeric() &&
+                                   std::isfinite(toV.toNum());
+            if (fracRange) {
+                const double lo = fromV.toNum() + (re->exFrom ? 1 : 0), hi = toV.toNum();
+                for (double k = lo; re->exTo ? k < hi : k <= hi; k += 1) indices.push_back((long long)k);
+                isSlice = true;
+            } else {
             // An OPEN end means "through the last index" whether or not the range
             // excludes it: `@a[2..*]` and `@a[2..^*]` are the same slice (Rakudo
             // resolves `*` to .elems, so the excluded endpoint is one PAST the
@@ -27808,6 +27851,7 @@ Value Interpreter::evalIndex(Index* idx) {
             // stop at: `'foo'[2..*]` fails on index 2 (the loop below)
             if (openEnd && indices.empty() && base.t == VT::Str && base.hashKind.empty() && from >= n)
                 indices.push_back(from);
+            }
         } else {
             Value iv = eval(idx->index.get());
             // A Range held in a `$` container is ONE item, and an item index is
@@ -29715,6 +29759,19 @@ Value Interpreter::evalVarExpr(Expr* e) {
             }
         }
     }
+    // `MY::<$x>` is THIS block's own lexical, never an outer one: inside a
+    // loop body or a routine the mainline's `my $x` is not MY:: (Rakudo: Nil
+    // before 6.e, a Failure after). Only a scope that has an Env of its own
+    // can be asked; one run in its parent's still sees the parent's.
+    if (ve->viaPseudoPkg && ve->pseudoPkg == "MY" && !ve->declare && ve->name.size() > 1 &&
+        std::strchr("$@%", ve->name[0]) && !std::strchr("*?!.^:", ve->name[1]) && tctx_.cur &&
+        !tctx_.cur->local(ve->name)) {
+        if (!sixE()) return Value::nil();
+        Value f = rakuppNewFailure();
+        (*f.hash())["exception"] = makeTypedEx("X::NoSuchSymbol", {{"symbol", Value::str(ve->name)}}, "No such symbol '" + ve->name + "'");
+        (*f.hash())["message"]   = Value::str("No such symbol '" + ve->name + "'");
+        return f;
+    }
     // From 6.e, LEXICAL:: means what it says. A `$*dyn` is not a lexical
     // — it is found by walking the caller chain — so asking for one
     // through LEXICAL:: is an error there, where before it quietly
@@ -30226,6 +30283,8 @@ Value Interpreter::evalVarExpr(Expr* e) {
             }
             de->x().varDefault[ve->name] = dv;
             if (dv.t == VT::Type && (ve->declType.empty() || ve->declType == "Mu" || ve->declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
+            else if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
+                de->x().varDefaultType[ve->name] = Value::typeObj(ve->declType);
             return de->define(ve->name, dv);
         }
         if (ve->declShape && sigil == '@') { // shaped array `my @a[2;3]`

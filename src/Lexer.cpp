@@ -4355,6 +4355,14 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // (S32-num/power.t's `*⁰(0)`). A parenthesised base (`(-1)¹²³`)
                 // is already a term of its own and is left as it is.
                 bool call = peek() == '(' && lk != Tok::RParen && lk != Tok::RBracket;
+                // …and so does a POSTFIX after it — a `!` or a method call:
+                // `3²!` is (3²)!, `4².sqrt` is (4²).sqrt (a single-token base
+                // only; the flat form put the postfix on the exponent)
+                if (!call && (lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var) &&
+                    !(out.size() >= 2 && out[out.size() - 2].kind == Tok::Op && out[out.size() - 2].text == ".") &&
+                    ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
+                     (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^'))))
+                    call = true;
                 if (call) { Token lp = make(Tok::LParen, "("); lp.spaceBefore = out.back().spaceBefore; out.back().spaceBefore = false; out.insert(out.end() - 1, lp); }
                 Token op = make(Tok::Op, "**"); op.spaceBefore = false; out.push_back(op);
                 Token num = make(Tok::IntLit, digits); num.ival = std::strtoll(digits.c_str(), nullptr, 10);

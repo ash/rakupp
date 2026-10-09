@@ -212,6 +212,12 @@ std::string joinValues(const ValueList& items, const std::string& sep);
 Value makeInfArray(long long start);
 std::string markFold(const std::string& in);
 ValueList toList(const Value& v);
+// A HOLE of an `is default(v)` array reads as v: replace the unset slots of a
+// snapshot `items` taken from `arr` (nothing to do for any other array).
+inline void fillArrayHoles(const Value& arr, ValueList& items) {
+    if (arr.t != VT::Array || !arr.elemDefault()) return;
+    for (auto& e : items) if (e.t == VT::Any) e = *arr.elemDefault();
+}
 // A negative (or int64-overflowing) START POSITION for a string search is out of
 // range: a returned X::OutOfRange Failure naming the method (Str sheet ST-27).
 Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,

@@ -436,6 +436,9 @@ struct EnvExtras {
     // on an UNTYPED variable: a reset value, not a constraint
     // (`my $a is default(Int) = "foo"` lives — advent2013-day20.t)
     std::set<std::string> varDefaultUntyped;
+    // …and the declared TYPE of a typed scalar whose `is default(v)` took its
+    // varDefault entry: `my Int $x is default(5); $x = "s"` still refuses
+    std::map<std::string, Value> varDefaultType;
     // Variables declared with a COERCION type (`my Int() $x`). The declaration
     // site carries it on the VarExpr, but a later `$x = "7"` is a different
     // VarExpr with nothing on it, so the coercion has to live with the variable
@@ -2245,6 +2248,9 @@ public:
     Value deproxy(Value v);
     // `T($v)` coercion — see the definition in InterpreterCalls.cpp.
     Value coerceToType(const Value& v, const std::string& type);
+    // `Sym(42)` with `class Sym is Str`: a non-string cannot be the string a
+    // Str-derived class holds (Rakudo dies unboxing it). Throws, or returns.
+    void checkBoxedStrSource(const ClassInfo* cls, const Value& v);
     Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param

@@ -1221,6 +1221,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (m == "join" || m == "Str") {
                 std::string sep = m == "join" && !args.empty() ? args[0].toStr()
                                 : m == "join" ? "" : " ";
+                // (a SEQ shows none of what it has cached: `(1, {…} ... *).join`
+                // and `(1, 2 ... *).join` are just `...`, prefix pulled or not)
+                if (inv.isList) return Value::str("...");
                 std::string out;
                 if (inv.arr()) for (auto& e : *inv.arr()) { out += e.toStr(); out += sep; }
                 return Value::str(out + "...");
@@ -1262,6 +1265,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // 1:1 map → cache index == source index
+            if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
             st->infinite = infinite; // a view over an endless source is endless too
             // …and one over a gather is what a gather is: not reified yet, and
@@ -1317,6 +1321,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // until the predicate matches, so `(^Inf).grep(…).head(3)` terminates.
             Value pred = args[0], src = inv;
             Value out = Value::array(); out.isList = true; out.s = "Seq";   // a lazy grep is a Seq, as an eager one
+            if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
             // NOT marked infinite even over an endless source: a grep can still
@@ -2300,13 +2305,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `.map` / `.grep` on what `.hyper` / `.race` answered run over worker
         // threads (hyperSeqCall). One that has to stay serial takes the
         // ordinary arm, and still answers a HyperSeq / RaceSeq.
-        if (inv.t == VT::Array && !inv.ext() && (m == "map" || m == "grep") &&
+        if (inv.t == VT::Array && (m == "map" || m == "grep") &&
             (inv.s == "HyperSeq" || inv.s == "RaceSeq")) {
             Value po;
-            if (hyperSeqCall(inv, m, args, items, po)) return po;
+            // (an ENDLESS one runs serially, lazily, and answers its kind too)
+            if (!inv.ext() && hyperSeqCall(inv, m, args, items, po)) return po;
             Value plain = inv; plain.s = std::string();
             Value r = methodCall(plain, m, std::move(args), rwArgs);
-            if (r.t == VT::Array && !r.ext()) {
+            // (a lazy answer too: `(1..Inf).hyper.map(…)` is a HyperSeq)
+            if (r.t == VT::Array) {
                 r.s = inv.s;
                 const auto cfg = hyperCfgOf(inv);
                 if (cfg.first >= 0 || cfg.second >= 0) hyperCfgSet(r, cfg);
@@ -4411,7 +4418,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         throw RakuError{Value::typeObj("X::AdHoc"),
                             "Too few positionals passed; expected " + std::to_string(required) +
                                 " arguments but got " + std::to_string(ca.size())};
-                    if (aliasable) tctx_.topicWriteback = &(*inv.arr())[i]; // $_ mutations alias the element
+                    if (aliasable && !(inv.elemDefault() && (*inv.arr())[i].t == VT::Any))
+                        tctx_.topicWriteback = &(*inv.arr())[i]; // $_ mutations alias the element (a hole stays one)
                     if (loopPh)
                         tctx_.loopPhaserCtl = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
@@ -4498,12 +4506,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (mt.t == VT::Code) {
                     ValueList ca;
                     for (size_t k = 0; k < ar && gi + k < items.size(); k++) ca.push_back(items[gi + k]);
-                    if (aliasable && ar == 1) tctx_.topicWriteback = &(*inv.arr())[gi]; // $_ mutations alias the element
+                    if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any))
+                        tctx_.topicWriteback = &(*inv.arr())[gi]; // $_ mutations alias the element (a hole stays one)
                     try { match = predAnswerTruthy(*this, callCallable(mt, ca), v); }
                     catch (LastEx&) { tctx_.topicWriteback = nullptr; break; }   // `last` in the block ends the grep
                     catch (NextEx&) { tctx_.topicWriteback = nullptr; continue; } // `next` skips the element
                     catch (RedoEx&) { tctx_.topicWriteback = nullptr; gi -= ar; continue; } // `redo` retries it
-                    if (aliasable && ar == 1) v = (*inv.arr())[gi];
+                    // (a hole of an `is default` array still reads as its default)
+                    if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any))
+                        v = (*inv.arr())[gi];
                     // an N-at-a-time block keeps each matching GROUP whole:
                     // `(1,1,2,3).grep({ ($^a + $^b) %% 2 })` is ((1 1),)
                     if (match && ar > 1 && adv == "v") {
@@ -4837,6 +4848,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                            out.arr()->push_back(std::move(p)); }
                 }
             } else {
+                // an ARRAY's element is a container, so a nested Array or Hash
+                // comes out itemized: `[[1, 2], 3].kv` is (0, $[1, 2], 1, 3)
+                // (a List's elements are bare values, and stay as they are)
+                if (inv.t == VT::Array && !inv.isList)
+                    for (auto& e : items)
+                        if ((e.t == VT::Array || e.t == VT::Hash) && !e.itemized) e.itemized = true;
                 for (size_t i = 0; i < items.size(); i++) {
                     if (m == "kv") { out.arr()->push_back(Value::integer((long long)i)); out.arr()->push_back(items[i]); }
                     else if (m == "antipairs") { // value => index

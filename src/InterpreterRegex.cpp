@@ -882,6 +882,13 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                         ascii::isalpha((unsigned char)pat[j + 1])))) j++;
                 Value* v = dynTw ? findDynamicLenient("$*" + pat.substr(i + 2, j - i - 2))
                                  : tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
+                // a `$*name` nothing declares — and the pattern does not declare
+                // either (`:my $*name`) — is X::Dynamic::NotFound when the regex
+                // runs, as reading it anywhere else would be
+                if (dynTw && !v && pat.find(":my") == std::string::npos &&
+                    pat.find(":our") == std::string::npos && pat.find(":temp") == std::string::npos &&
+                    pat.find(":let") == std::string::npos && !isBuiltinDynamic("$*" + pat.substr(i + 2, j - i - 2)))
+                    dynNotFoundThrow("$*" + pat.substr(i + 2, j - i - 2));
                 // POSITION decides the reading (issue #15): `<$p>` compiles the
                 // string AS A REGEX, a bare `$p` matches it LITERALLY. The
                 // assertion form is `<` immediately before and `>` right after
@@ -2582,13 +2589,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (code.find("make") != std::string::npos) (*pendingMakeCode)[{from, to}].push_back(code);
         else runCode(code, from, to, nm, pm, &caps, &cc);
     };
-    gm.hooks.str = [runCode](const std::string& expr, const NamedMap& nm, const ParamMap& pm) -> std::string {
+    gm.hooks.str = [this, runCode](const std::string& expr, const NamedMap& nm, const ParamMap& pm) -> std::string {
         // Fast path: a bare `$param` atom (e.g. `$indent`) is by far the most common
         // VarMatch in real grammars and is matched constantly. Resolve it straight from
         // the rule's param bindings, skipping parse/Match-build/overlay/exec entirely.
         auto it = pm.find(expr);
         if (it != pm.end()) return it->second;
-        return runCode(expr, 0, 0, nm, pm).toStr();
+        Value r = runCode(expr, 0, 0, nm, pm);
+        // a `$*name` nothing declares reads as a Failure, and interpolating it
+        // into the pattern throws its X::Dynamic::NotFound (it matched nothing)
+        if (r.t == VT::Hash && r.hashKind == "Failure" && expr.size() > 2 && expr[1] == '*')
+            methodCall(r, "throw", {});
+        return r.toStr();
     };
     // `<{ … }>` — the block's value is the pattern, read with the cursor's
     // captures beside it (a token may well write `(\w) <{ $0 }>`).

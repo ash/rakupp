@@ -1911,6 +1911,7 @@ static std::string reprSelfName(const void* p, bool isHash) {
     g_reprSelfRef.emplace(p, nm);
     return nm;
 }
+extern Interpreter* g_revInterp;   // a HyperSeq's configuration (rakuRepr below)
 std::string rakuRepr(const Value& v, int depth, std::set<const void*>& seen) {
     const void* ctr = v.t == VT::Array ? (const void*)v.arr()
                     : v.t == VT::Hash  ? (const void*)v.hash() : nullptr;
@@ -2156,6 +2157,9 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             if (v.hashKind == "IO::Special")
                 return "IO::Special.new(" + rakuStrLit(v.s) + ")";
             if (v.hashKind == "CArray") return v.gist(); // Rakudo's: the type and `.new`, no elements
+            // an identity rebuilds as the object it is: `ValueObjAt.new("Int|5")`
+            if (v.hashKind == "ObjAt" || v.hashKind == "ValueObjAt")
+                return v.hashKind.str() + ".new(" + rakuStrLit(v.s) + ")";
             return rakuStrLit(v.s);
         case VT::Int:  return v.toStr();
         case VT::Rat: {
@@ -2289,6 +2293,18 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         }
         case VT::Array: {
             if (v.s == "Slip" && (!v.arr() || v.arr()->empty())) return "Empty";
+            // a HyperSeq / RaceSeq is its configuration, not its elements
+            if (v.s == "HyperSeq" || v.s == "RaceSeq") {
+                unsigned hc = std::thread::hardware_concurrency();
+                long long batch = 64, degree = hc > 1 ? (long long)hc - 1 : 1;
+                if (g_revInterp) {
+                    const auto asked = g_revInterp->hyperCfgOf(v);
+                    if (asked.first >= 0)  batch  = asked.first;
+                    if (asked.second >= 0) degree = asked.second;
+                }
+                return v.s.str() + ".new(configuration => HyperConfiguration.new(batch => " +
+                       std::to_string(batch) + ", degree => " + std::to_string(degree) + "))";
+            }
             if (v.hashKind == "Capture") { // \(…) literal round-trips as itself
                 std::string o = "\\(";
                 bool first = true;
@@ -3190,7 +3206,13 @@ Value makeInfArray(long long start) {
 
 ValueList toList(const Value& v) {
     forceLazy(v);   // an unpulled gather lists its ELEMENTS
-    if (v.t == VT::Array && v.arr()) return *v.arr();
+    if (v.t == VT::Array && v.arr()) {
+        // a HOLE of an `is default(v)` array lists as v, the value reading
+        // that slot gives: `@a.grep`, `.kv`, `.pairs` see 7 where it is unset
+        ValueList out = *v.arr();
+        fillArrayHoles(v, out);
+        return out;
+    }
     if (v.t == VT::Range) return v.flatten();
     // a Blob/Buf lists as its ELEMENTS (`$blob.rotor(3, :partial)` in Base64;
     // 32-bit words for blob32) — mirrors the `for`-iteration rule in the
@@ -4137,7 +4159,8 @@ std::string whichOf(const Value& v) {
                               return v.typeName() + buf;
                           }
                           return v.typeName() + "|" + v.toStr();
-        case VT::Array:   if (v.hashKind == "Capture") {
+        case VT::Array:   if (!v.enumType.empty() && v.enumName.empty()) goto typeObject; // an enum's type
+                          if (v.hashKind == "Capture") {
                               std::string pos;
                               std::vector<std::string> named; // named parts are unordered
                               if (v.arr()) for (auto& e : *v.arr()) {
@@ -4160,6 +4183,15 @@ std::string whichOf(const Value& v) {
                               return s + ")";
                           }
                           return v.typeName() + "|" + v.toStr();
+        // a TYPE OBJECT is undefined, and Rakudo marks that with a `U` before
+        // the type's own number: `Rat|U4360041773904`. The number here is the
+        // name's hash, so it is stable for the run and distinct per type.
+        case VT::Type: case VT::Any: case VT::Nil: typeObject: {
+            std::string nm = v.typeName();
+            uint64_t h = 1469598103934665603ULL;               // FNV-1a
+            for (unsigned char c : nm) { h ^= c; h *= 1099511628211ULL; }
+            return nm + "|U" + std::to_string(h % 9000000000000ULL + 1000000000000ULL);
+        }
         default:          return v.typeName() + "|" + v.toStr();
     }
 }
@@ -6269,6 +6301,9 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                     for (size_t i = 0; i < src.size(); i++) {
                         out.arr()->push_back(Value::integer((long long)i));
                         out.arr()->push_back(src[i]);
+                        // (a nested Array or Hash of an Array is in a container)
+                        Value& e = out.arr()->back();
+                        if (!inv.isList && (e.t == VT::Array || e.t == VT::Hash)) e.itemized = true;
                     }
                     return out;
                 }
@@ -6497,6 +6532,31 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
              {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(true)}},
             "Invocant of method '" + m + "' must be an object instance of type '" + std::string(inv.s.c_str()) +
             "', not a type object of type '" + std::string(inv.s.c_str()) + "'.  Did you forget a '.new'?");
+    // A numeric coercion of a core TYPE OBJECT: Rakudo's `Str.Int`, `Num.Rat`
+    // and `Rat.Num` die, since the method wants an instance — except the
+    // type's own coercion (`Int.Int` is Int) and the few Cool falls back on
+    // (`Str.Rat` is 0.0). Any, Mu, Cool and Numeric keep their 0.
+    if (inv.t == VT::Type && inv.enumName.empty() &&
+        (opEq(m, "Int") || opEq(m, "Num") || opEq(m, "Rat") || opEq(m, "FatRat")) &&
+        !classes_.count(inv.s)) {
+        static const std::map<std::string, std::string> kDies = {   // type -> methods that die
+            {"Str", "Int Num"}, {"Int", "Num Rat FatRat"}, {"Num", "Int Rat FatRat"},
+            {"Rat", "Int Num Rat FatRat"}, {"FatRat", "Int Num Rat FatRat"},
+            {"Real", "Int Num Rat FatRat"}, {"Complex", "Int Num"}};
+        const std::string tn = inv.s.str();
+        auto it = kDies.find(tn);
+        if (it != kDies.end()) {
+            const std::string mm = m;
+            if ((" " + it->second + " ").find(" " + mm + " ") != std::string::npos)
+                throwTypedV("X::Parameter::InvalidConcreteness",
+                    {{"expected", Value::typeObj(tn)}, {"got", inv},
+                     {"routine", Value::str(mm)}, {"param", Value::str("self")},
+                     {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(true)}},
+                    "Invocant of method '" + mm + "' must be an object instance of type '" + tn +
+                    "', not a type object of type '" + tn + "'.  Did you forget a '.new'?");
+            if (mm == tn) return inv;   // `Int.Int`, `Num.Num`: the type object itself
+        }
+    }
     // `Mu.new(1)` — the default constructor takes named arguments only
     if (opEq(m, "new") && inv.t == VT::Type && inv.s == "Mu")
         for (auto& a : args)

@@ -1663,8 +1663,13 @@ static void markAnonDecl(Expr* e) {
     if (e->kind == NK::Unary) { markAnonDecl(static_cast<Unary*>(e)->operand.get()); return; }
     if (e->kind != NK::BlockExpr) return;
     static_cast<BlockExpr*>(e)->anonTerm = true;   // `anon sub f {}` installs no &f
-    for (auto& st : static_cast<BlockExpr*>(e)->body)
+    for (auto& st : static_cast<BlockExpr*>(e)->body) {
         if (st && st->kind == NK::ClassDecl) static_cast<ClassDecl*>(st.get())->isAnonDecl = true;
+        // `anon subset F` claims no name a later `subset F` would redeclare
+        if (st && st->kind == NK::SubsetDecl) static_cast<SubsetDecl*>(st.get())->isAnon = true;
+        // …and `anon enum E <a b>` installs its members but not the type name
+        if (st && st->kind == NK::EnumDecl) static_cast<EnumDecl*>(st.get())->name.clear();
+    }
 }
 
 // `my Int $x = NaN` is a COMPILE error in Raku, and a named one: a numeric
@@ -3360,7 +3365,7 @@ ExprPtr Parser::parsePrefix(bool tight) {
          peek().text == "package" || peek().text == "module" ||
          peek().text == "token" || peek().text == "rule" || peek().text == "regex" ||
          peek().text == "multi" || peek().text == "state" || peek().text == "my" ||
-         peek().text == "subset")) {
+         peek().text == "subset" || peek().text == "enum")) {
         advance();
         ExprPtr inner = parsePrefix(tight);
         markAnonDecl(inner.get());
@@ -17061,7 +17066,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
         }
         else if (s->kind == NK::SubsetDecl) {
             auto* su = static_cast<const SubsetDecl*>(s.get());
-            if (su->name.empty()) continue;
+            if (su->name.empty() || su->isAnon) continue;
             if (types[su->name]++)
                 throw ParseError("Redeclaration of symbol '" + su->name + "'", su->line,
                                  "X::Redeclaration", {{"symbol", su->name}});

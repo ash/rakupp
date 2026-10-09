@@ -1258,6 +1258,7 @@ struct SubsetDecl : Stmt {
     ExprPtr where;         // may be null (pure alias)
     std::string pod, podTrail; // declarator pod (.WHY)
     bool isMy = false;     // `my subset F` — lexical: not registered under the package-qualified name
+    bool isAnon = false;   // `anon subset F` — its name redeclares nothing
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 

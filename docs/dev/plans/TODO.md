@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-09.*
+*Started 2026-10-03. Last updated 2026-10-10.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -135,13 +135,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 2. Correctness (v5 error batches)
 
-- [ ] **HyperSeq edges against Rakudo 2026.09** (found 2026-10-09):
-  `.raku` lists the elements where Rakudo writes
-  `HyperSeq.new(configuration => …)`; `.elems` then `.list` answers twice
-  where Rakudo's `.elems` consumes it (X::Seq::Consumed); `(1..Inf).hyper.map`
-  answers a Seq, not a HyperSeq; `@a.hyper.invert` dies at once where Rakudo
-  answers a HyperSeq and dies only when read. Next: probe each on Rakudo with
-  a Roast grep first — none is asserted there as far as the sweep shows.
+- [ ] **HyperSeq edges against Rakudo 2026.09** (found 2026-10-09; `.raku`
+  and `(1..Inf).hyper.map` fixed 2026-10-10): `.elems` then `.list` answers
+  twice where Rakudo's `.elems` consumes it (X::Seq::Consumed);
+  `@a.hyper.invert` dies at once where Rakudo answers a HyperSeq and dies only
+  when read.
 - [ ] **Battery regressions since v5.0.1**: Color (t/04-new-invalid,
   `Color.new(rgb => [22, 42])` no longer dies), Encode (t/01-basic,
   `X::Encode::Unknown` undeclared where the test names it) and Trap
@@ -174,8 +172,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   other, where Rakudo takes both as items. `@w.List` strips them now, which
   covered Math::NIntegrate (2026-10-09). Two more seen beside it:
   `List(@w)` flattens to `(5, 6, 3, 4)` (Rakudo: the Array unchanged), and
-  `max`/`min` return the winner without its `$` (Rakudo: `$[5, 6]`). Next:
-  decide whether an Array slot always reads as itemized.
+  `max`/`min` return the winner without its `$` (Rakudo: `$[5, 6]`).
+  `.kv`, `.pairs` and `.antipairs` of an Array itemize its nested Arrays and
+  Hashes since 2026-10-10 (`[[1, 2], 3].kv` is `(0, $[1, 2], 1, 3)`); the
+  rest wait on the decision. Next: decide whether an Array slot always reads
+  as itemized.
 - [ ] **Construction does not track which attributes BUILD initialized**:
   `has $.x is required; submethod BUILD() {}` with `.new(:x(5))` lives
   (Rakudo: X::Attribute::Required), and `has Int:D $.x is required;
@@ -204,17 +205,18 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **Left from the pseudo-package-over-label fix**: a bare `OUR` is a
   type named OUR (Rakudo: the current package, so `next OUR` names
   `GLOBAL:U`); `next Int` dies when it runs (Rakudo: while compiling);
-  `MY::<$x>` and `$CALLER::y` inside a loop block find an outer variable
-  (Rakudo: Nil); `&next` is Any (no `.candidates`). Found 2026-10-07; not
+  `$CALLER::y` inside a loop block finds an outer variable (Rakudo: Nil;
+  `MY::<$x>` fixed 2026-10-10); `&next` is Any (Rakudo: a Sub with two
+  candidates, `( --> Nil)` and `(Label:D $x --> Nil)`). Found 2026-10-07; not
   started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
+  Re-check first: Rakudo 2026.08 does NOT throw on `my $a; $a = f(); say 1`
+  (2026-10-10), so this may be a 2026.09 change or a misreading.
 - [ ] **Rakuglaze**: 3326 of 3326 pass (2026-10-09: round 6, the eleven
   failures Haiku batches 04 to 12 brought in;
-  t/regression/rakuglaze-round-6.raku). Seen in round 6, not fixed: an
-  undeclared `$*name` in a regex matches nothing (Rakudo: X::Dynamic::NotFound);
-  `Int:D.HOW` is a ClassHOW (Rakudo: DefiniteHOW); a spaced `f - 5` with `f`
+  t/regression/rakuglaze-round-6.raku). Seen in round 6, not fixed: a spaced `f - 5` with `f`
   an UNKNOWN name is still `f() - 5` (only declared subs and say/put/print/
   note/dd take the prefix). `('A'..∞).is-lazy` is ruled True in the
   suite (Rakudo answers False, yet treats the range as lazy everywhere else).
@@ -273,17 +275,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **Divergences found in sweeps and not fixed**:
   - `use` inside a sub loads at call time.
   - Role conflicts are undetected or reported late.
-  - Seq, Range, Map and Hash answer one candidate for `.^can('elems')`.
   - An exported `infix:<+++>`.
-  - A postfix after a superscript power applies to the exponent: with
-    `postfix:<!>`, `3²!` is 9 (Rakudo 362880, `(3²)!`). The lexer writes the
-    power as an infix `**`, so it cannot be followed by a postfix of its own.
-    And a superscript numeral term after a word is read as its power:
+  - A superscript numeral term after a word is read as its power:
     `say ²¹²` parses as `say ** 212` and prints an empty line (Rakudo 4096).
+    (`3²!` and `4².sqrt` apply the postfix to the power since 2026-10-10, for
+    a one-token base; `@a[0]²!` still puts it on the exponent.)
   - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
     answers a WhateverCode, Rakudo a Range.
-  - `for @$list.kv -> $i, $x is rw` over a List: Rakudo dies binding `$x`
-    (not a container); Raku++ runs it and the writes go nowhere.
   - A `sub EXPORT` inside a `unit module` runs on `use`; Rakudo does not call
     it there (it has to be outside the module).
   - Outside `react`, a `Proc::Async` with `:w` feeds its stdout taps only when
@@ -293,10 +291,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     Enumeration` are False, `Color.^mro` is `(Any) (Mu)` (Rakudo: Color, Int,
     Cool, Any, Mu), `my Int $v = Color` dies, and `~Color` is the pair list
     (Rakudo warns and gives "").
-  - A type object coerced to a number: `Str.Int`, `Num.Rat`, `Rat.Num` and
-    the rest answer 0 where Rakudo dies ("must be an object instance"), so
-    `sub f(Int() $x) {}; f(Str)` binds 0. Rakudo is not uniform here (`Any.Int`
-    and `Cool.Num` are 0 with a warning).
   - A slurpy hash or a capture does not write back: `sub q(*%n) { %n<x> = 31 };
     q(x => $v)` and `sub r(|c) { c<x> = 33 }` leave `$v` alone (Rakudo: 31,
     33). Named `is rw` / `is raw` parameters do (2026-10-04).
@@ -304,15 +298,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     its `where`: `multi wr(Int $n where * > 0)` beside `multi wr(Int $n)`,
     the first wrapped, answers `wr(-1)` from the second; Rakudo dies binding
     the wrapped candidate ("Constraint type check failed").
-  - `.WHICH`: `5.WHICH.raku` is `"Int|5"` (Rakudo `ValueObjAt.new("Int|5")`),
-    `Less.WHICH` is `Order|Less` (Rakudo `Order|0`), and a type object's has
-    no `U` number (`Rat|`, Rakudo `Rat|U…`).
-  - `.kv` of an `is default(7)` Array shows `Any` in its holes (Rakudo 7),
-    and `[[1, 2], 3].kv` shows `[1, 2]` where Rakudo shows `$[1, 2]`.
   - An Array BOUND into a lexical array's slot reads back itemized:
-    `@b.BIND-POS(0, [10])` and `@c[0] := [10]` give `$[10]` (Rakudo `[10]`).
-  - Coercing a non-Str into a Str subclass passes it through: `class Sym is
-    Str {}; Sym(42)` answers 42 where Rakudo dies.
+    `@b.BIND-POS(0, [10])` and `@c[0] := [10]` give `$[10]` for `@c[0]`
+    (Rakudo `[10]`; `@c.raku` agrees). Every element read itemizes an Array
+    slot (itemizeElem), so a bound slot needs a "no container" mark of its own.
+  - A typed array's hole reads as Any: `my Int @j; @j[2] = 1; @j[0].^name` is
+    Any (Rakudo: Int). Found 2026-10-10.
+  - An `is default` array's `.sum` counts the default, 15 for
+    `my @a is default(7); @a[2] = 1` (Rakudo 2026.08: 1, its sum skips the
+    default — every other read gives 7, so this one is left as it is).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair
@@ -552,23 +546,26 @@ with its tag, after the release run is green.
   The work: 2,031 mutsu files and 170 Rakudo files that Rakudo passes and
   Raku++ does not (`comm -23 *.rakudo.list *.rakupp.list`).
   - Parked from the audited LANG work: typed shaped arrays report unassigned
-    cells as existing (`my Int @i[3]; @i[1]:exists`); Rat-endpoint slices
-    (`@a[0..^2.5]` iterates the range and truncates in Rakudo); a closure
-    sequence's seed is stored before it is pulled (`(1, {…} ... *).join` is
-    `...` in Rakudo); `IO::Path.add` does not deep-flatten (methodCallPart3 is at
-    its size ceiling); an enum member named `q` does not shadow the `q{…}` quote.
+    cells as existing (`my Int @i[3]; @i[1]:exists` — a typed shaped array is
+    filled with its type object, which `:exists` cannot tell from a stored
+    one); a closure sequence's seed is stored before it is pulled, so
+    `my @f = 1, {…} ... *; @f.join` is `1...` (Rakudo `...`; the Seq form is
+    fixed); `IO::Path.add` does not deep-flatten (methodCallPart3 is at its size
+    ceiling); an enum member named `q` does not shadow the `q{…}` quote, nor
+    one named `x` the infix (`say x.WHICH` prints an empty line).
   - Rakudo t/ classified 2026-10-05 (145 LANG, 38 RakuAST, 5 6.e; 41 excluded).
-  - Parked from the Rakudo t/ LANG work: `anon subset`/`anon enum` still
-    install their name (subsets live in one global table); a nested block's
+  - Parked from the Rakudo t/ LANG work: an `anon subset` shares its name's
+    entry in the one global subset table, so a later `subset Foo of Str`
+    replaces what `$anon` checks (`anon enum` and the redeclaration error are
+    fixed); a nested block's
     `constant T` does not overwrite `OUR::<T>` (the GLOBAL frame is also the
     mainline's lexical scope); takes from the thunk of a sunk `xx *` inside a
     gather; a Label's `.gist` with its source excerpt; `Format.handle-iterator`;
     an operator declared LATER in a block is not seen by uses before it
     (`$i++` then `sub postfix:<++>`); a generic `T $x is copy` does not check
     assignments against the instantiated T; a native passed to a raw (`\v`)
-    parameter or put in a Pair is not snapshotted; `my Int $x is default(5);
-    $x = "s"` is not refused (the default value displaces the type record in
-    `varDefault`); a compile-time error is not `~~ X::Comp` (Rakudo mixes it in);
+    parameter or put in a Pair is not snapshotted; a compile-time error is not
+    `~~ X::Comp` (Rakudo mixes it in);
     `.does` ignores a user role that shadows a core one; a sigilless name
     bound to a container (`my \c := $u`, `my (\a, \b) := ($x, $y)`) is not
     assignable through (`c = 5` leaves `$u` alone or dies), siglist-decl-rvalue.t.
@@ -608,7 +605,12 @@ with its tag, after the release run is green.
   t/regression/regex-search-prefilters.raku; both older than the prefilters):
   `"STRASSE" ~~ / :i 'straße' /` matches `STRASSE` here and `STRASS` there,
   and `"a\r\nb" ~~ / \r\n /` matches here but not there (the CRLF is one
-  grapheme, which a two-atom pattern cannot match).
+  grapheme, which a two-atom pattern cannot match). The second is
+  deliberate: 892e6c61 fused `\r\n` into the CR LF grapheme to pass Rakudo's
+  own t/02-rakudo/regex-crlf-grapheme.t and mutsu's
+  regex-crlf-literal-escape-pair.t, which the 2026.08 release fails. Decide
+  which Rakudo to follow before changing it. Also `"x\r\n" ~~ / x $$ /` is
+  False here, True on Rakudo 2026.08.
 - [ ] **An Array in a sequence's seed list**: the endpoint check reads it.
   With `@f = lazy 0, 1, 1`, `(@f, 2, 3 ... 8)` leaves `@f` reified, so it
   shows `[0 1 1]` where Rakudo shows `[...]`; the cause is that `@f ~~ 8`

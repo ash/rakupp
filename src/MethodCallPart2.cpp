@@ -9169,6 +9169,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // passed the prefix off as the whole list.
         if (inv.t == VT::Array && inv.arr() && inv.ext() &&
             std::static_pointer_cast<LazySeqState>(inv.ext())->infinite) {
+            if (inv.isList) return Value::str("...");   // (a Seq shows nothing it cached)
             std::string out;
             for (auto& e : *inv.arr()) { out += e.toStr(); out += ' '; }
             return Value::str(out + "...");
@@ -9598,6 +9599,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             else if (inv.s == "List" || inv.s == "Seq") probeInv = Value::list({});
             else if (inv.s == "Hash" || inv.s == "Map") probeInv = Value::makeHash();
             else if (inv.s == "Pair") probeInv = Value::pair("k", Value::integer(0));
+            else if (inv.s == "Range") probeInv = Value::range(0, 0, false, false);
         }
         if (!ci && out.arr()->empty() && !mn.empty() &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&
@@ -9619,11 +9621,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     };
                     out.arr()->push_back(stub);
                     // …and `elems` twice on a List: List declares one and so does
-                    // Any (see Interpreter::callAllCandidates, which `.+` uses)
+                    // Any (see Interpreter::callAllCandidates, which `.+` uses) —
+                    // as do Seq, Range, Map and Hash (Rakudo 2026.08)
                     const bool listish =
-                        (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array")) ||
+                        (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" ||
+                                               inv.s == "Range" || inv.s == "Map" || inv.s == "Hash")) ||
                         (inv.t == VT::Array && inv.arr() && inv.enumName.empty() &&
-                         (inv.s.empty() || inv.s == "Slip"));
+                         (inv.s.empty() || inv.s == "Slip" || inv.s == "Seq")) ||
+                        inv.t == VT::Range ||
+                        (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Map"));
                     if (mn == "elems" && listish) out.arr()->push_back(stub);
                 }
             }
@@ -10510,6 +10516,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     if (m == "HOW") {
+        // a DEFINITE type — `Int:D`, `Int:U` (the smiley rides in `.i`) — is
+        // made by DefiniteHOW; `Int:_` is the plain type
+        if (inv.t == VT::Type && (inv.i == 1 || inv.i == 2))
+            return Value::typeObj("Metamodel::DefiniteHOW");
         // an ENUM type object answers an EnumHOW, as Rakudo does — modules
         // pick their enum handling by `$type.HOW ~~ Metamodel::EnumHOW`
         // (Getopt::Long's enum-converter branch)
@@ -10697,6 +10707,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a type object and Nil are ValueObjAt (sheet LA-36).
         Value w = Value::str(whichOf(inv));
         w.hashKind = whichIsObjAt(inv) ? "ObjAt" : "ValueObjAt";
+        // an enum MEMBER is its type and its place in the declaration: `E|0`,
+        // `Order|0` for Less — not its name, and not its value
+        if (!inv.enumName.empty() && !inv.enumType.empty() && inv.t != VT::Bool) {
+            long long idx = -1;
+            auto ep = enumPairs_.find(inv.enumType);
+            if (ep != enumPairs_.end() && ep->second.arr()) {
+                for (size_t i = 0; i < ep->second.arr()->size(); i++)
+                    if ((*ep->second.arr())[i].s.str() == inv.enumName.str()) { idx = (long long)i; break; }
+            }
+            else if (inv.enumType == "Order") idx = inv.i + 1;   // Less, Same, More
+            else if (inv.t == VT::Int && !inv.big()) idx = inv.i;
+            if (idx >= 0) w.s = inv.typeName() + "|" + std::to_string(idx);
+        }
         return w;
     }
     if (m == "WHERE") { // memory address of the value (an Int)
