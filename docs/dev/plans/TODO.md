@@ -20,8 +20,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `»op«` / `».method` over plain Ints and Nums run natively, split over cores
   (InterpreterRegex.cpp). Over 1M Nums on the M3: `.hyper.map` 0.32 → 0.16 s,
   `(4 «*» @a) «*» @b` 92 → 25 ms, `hyper for @a` 0.53 → 0.09 s (its workers had
-  queued on one stripe lock per element). Owed: `perf-guard --check` (the hyper
-  arm and seqMintList sit on hot paths). Left: worker scaling is ~2.2× on 7
+  queued on one stripe lock per element). On main as 0f15e190 + f0de6b3e;
+  perf-guard A/B of that tree against 6f62635c within 5% (fib +4.7%, code
+  placement only). Owed: a full `t/run.raku`. Left: worker scaling is ~2.2× on 7
   workers — per-call interpretation and allocator frees, no lock; and
   `my @d = <fresh list>` copies every element (34 ms of 2M, against 7 ms for the
   `»*«` that built it) where a uniquely owned temporary could hand over its buffer.
