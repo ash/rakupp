@@ -1190,6 +1190,26 @@ is skipped; the rest resolves like a name on the command line. `rakupp
 install app.raku -r lib` takes both at once: the program's imports, with
 those the `lib/` tree provides installed from it.
 
+A module no index has is listed as `skipped:` in the plan, and the rest
+still installs. If nothing else was left to install, the run fails with
+`cannot resolve:`. Otherwise it ends with a `warning:` on stderr that
+names each module that was not installed and the program that uses it.
+The warning also prints under `-q`. When the module sits under a
+namespace a published distribution owns, the note names that
+distribution and its newest release:
+
+```
+warning: 1 module was not installed:
+  Math::NIntegrate::VariableTransformer::AffineEnBloc — Fast-Affine.raku uses it: not in the ecosystem index; Math::NIntegrate:ver<0.0.6>, the newest release, does not provide it — a newer Math::NIntegrate, not yet published, may: see its author's repository
+```
+
+A dependency declared under a META6 condition, such as
+`{"name": {"by-distro.name": {"mswin32": "Win32::Registry", "": ""}}}`,
+resolves to the branch for the machine running the install. An empty
+branch means no dependency. The selector can be `by-distro`, `by-kernel`,
+`by-vm` or `by-raku` with a field, or `by-env.VAR` or
+`by-env-exists.VAR`.
+
 Every run appends a step-by-step account of itself — engine build, OS,
 arguments, resolution, fetches, checksums, hook and suite verdicts, store
 writes down to each bin wrapper — to `~/.raku/rakupp-install/trace.log`

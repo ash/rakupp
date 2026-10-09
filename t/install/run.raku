@@ -150,7 +150,9 @@ my ($arc7, $sha7)  = make-dist('Gate::Built', 'Gate::Built', '1.0',
 # the File::Temp shape: META6 writes `depends` as the PHASE hash rather than
 # a list — 223 dists in the zef index do, File::Temp 0.0.12 among them — with
 # an object-form dependency and a bin-only alternation mixed in, both of which
-# resolve to nothing installable and must stay silent.
+# resolve to nothing installable and must stay silent. Plus two META6
+# conditional names (the File::Which shape on REA): one whose branch here is
+# empty, one nested whose branch here is Gate::Demo.
 my ($arc8, $sha8)  = make-dist('Gate::Phased', 'Gate::Phased', '0.1.0');
 # …and an alternation between two RAKU dists: nobody's alternative gets picked
 # for them, so it is reported instead of guessed at.
@@ -211,7 +213,11 @@ $tmp.add('index.json').spurt(qq:to/END/);
          "depends": \{ "runtime": \{ "requires": [
                           "Gate::Demo",
                           \{ "name": "curl", "from": "bin" \},
-                          \{ "any": ["elinks:from<bin>", "lynx:from<bin>"] \} ] \},
+                          \{ "any": ["elinks:from<bin>", "lynx:from<bin>"] \},
+                          \{ "name": \{ "by-kernel.name": \{ "no-such-kernel": "Gate::Nope", "": "" \} \} \},
+                          \{ "name": \{ "by-env-exists.HOME": \{
+                              "yes": \{ "by-distro.name": \{ "no-such-distro": "Gate::Nope", "": "Gate::Demo" \} \},
+                              "no": "Gate::Nope" \} \} \} ] \},
                        "test": \{ "requires": [] \} \},
          "path": "$sha8.tar.gz" \},
       \{ "name": "Gate::Choice", "version": "0.1.0", "auth": "test:gate",
@@ -725,6 +731,23 @@ check %pg2<exit> == 0 && installer-p('--list', :home($prhome))<out>.contains('Ga
 my %pg3 = installer-p('app.raku', :cwd($ws.Str), :home($prhome), :index($tmp.add('index.json')));
 check %pg3<exit> == 0 && %pg3<out>.contains('nothing to install'),
       'program: a dependency already in the store answers it';
+# a program that uses one module nobody published: the rest installs, and the
+# gap is the run's LAST word — the plan's `skipped:` line scrolls away under
+# the fetches and suites after it. Real case: Math::NIntegrate 0.0.6 lacks
+# the …::AffineEnBloc a program used, and the first sign was "Could not find".
+$ws.add('app2.raku').spurt("use Gate::Demo;\nuse Gate::Demo::Later;\nsay 'app2';\n");
+my %ul = installer-p('app2.raku', :cwd($ws.Str), :home($paths.add('home-later').mkdir),
+                     :index($tmp.add('index.json')));
+check %ul<exit> == 0 && %ul<out>.contains('skipped: Gate::Demo::Later')
+      && %ul<err>.lines.tail(2).join("\n").contains("warning: 1 module was not installed:\n"
+             ~ "  Gate::Demo::Later — app2.raku uses it: not in the ecosystem index")
+      && %ul<err>.contains('Gate::Demo:ver<0.4.2>, the newest release, does not provide it'),
+      'program: a module nobody published is said last, with the dist whose namespace it is in';
+my %ulq = installer-p('-q', 'app2.raku', :cwd($ws.Str), :home($paths.add('home-later-q').mkdir),
+                      :index($tmp.add('index.json')));
+check %ulq<exit> == 0 && %ulq<out> eq '' && %ulq<err>.lines.elems == 2
+      && %ulq<err>.starts-with('warning: 1 module was not installed'),
+      'program: …and under -q that warning is all it prints';
 my %nf = installer-p('nope.raku', :cwd($ws.Str), :home($prhome));
 check %nf<exit> == 1 && %nf<err>.contains('no such file'),
       'program: a missing x.raku is a missing file, not a module nobody published';
@@ -814,6 +837,9 @@ check %ph-dry<exit> == 0
 check !%ph-dry<out>.contains('does not resolve') && !%ph-dry<out>.contains('curl')
       && !%ph-dry<err>.contains('alternation'),
       '…and the :from<bin> object and bin-only alternation pass without a word';
+check !%ph-dry<out>.contains('skipped') && !%ph-dry<out>.contains('by-')
+      && !%ph-dry<out>.contains('Gate::Nope'),
+      '…and a conditional name (by-kernel.name, a nested by-env-exists) picks this machine\'s branch';
 my %ph = installer('Gate::Phased');
 check %ph<exit> == 0 && %ph<err>.contains('installed Gate::Phased'),
       '…and the dist installs through it';

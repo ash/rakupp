@@ -96,7 +96,8 @@ sub dep-identities($spec --> List) {
     # { name => …, ver|version => …, auth => …, from => … } — one dependency
     # written as an object rather than as an identity string.
     if $spec<name>:exists {
-        my $id  = ~$spec<name>;
+        my $id  = conditional-name($spec<name>);
+        return () if $id eq '';   # this machine's branch names nothing
         my $ver = ~($spec<ver> // $spec<version> // '');
         $id ~= ":ver<$ver>"                if $ver ne '';
         $id ~= ":auth<{$spec<auth>}>"      if ~($spec<auth> // '') ne '';
@@ -109,6 +110,31 @@ sub dep-identities($spec --> List) {
     @out.append(dep-identities($spec{$_})) for <runtime test build>;
     @out.append(dep-identities($spec<requires>));
     @out.List
+}
+
+# A META6 conditional name picks by the machine it installs on:
+#   {"by-distro.name": {"mswin32": "Win32::Registry", "": ""}}
+# The key names a field of $*DISTRO, $*KERNEL, $*VM or $*RAKU (or by-env.X /
+# by-env-exists.X); the map takes that field's value to a name, "" being the
+# default; a branch may nest another condition. An empty answer means no
+# dependency. Real case: File::Which 1.0.4 on REA, whose Windows-only dep was
+# stringified into the dist name "by-distro.name\t\tmswin32\tWin32::Registry".
+sub conditional-name($n --> Str) {
+    return ~($n // '') unless $n ~~ Associative;
+    return '' unless $n.elems == 1;
+    my ($sel, $map) = $n.kv;
+    return '' unless $map ~~ Associative;
+    my $have = do given $sel {
+        when /^ 'by-env-exists.' (.+) $/ { %*ENV{~$0}:exists ?? 'yes' !! 'no' }
+        when /^ 'by-env.' (.+) $/        { %*ENV{~$0} // '' }
+        when /^ 'by-' (distro|kernel|vm|raku) '.' (\w+) $/ {
+            my $obj = %(distro => $*DISTRO, kernel => $*KERNEL, vm => $*VM, raku => $*RAKU){~$0};
+            ~((try $obj."$1"()) // '')
+        }
+        default { '' }
+    };
+    my $pick = $map{$have}:exists ?? $map{$have} !! $map{''};
+    conditional-name($pick)
 }
 
 # The half of a spec this installer will not act on: an alternation whose
@@ -592,6 +618,25 @@ sub installed-entries(Str $prefix) {
     @e
 }
 
+# A module nobody publishes, under a namespace somebody does, is most often
+# one its dist gained after its newest release: a program written against
+# the author's checkout. Real case: Math::NIntegrate 0.0.6 provides
+# Math::NIntegrate::VariableTransformer::Affine but not …::AffineEnBloc,
+# which a program used. Naming the dist tells the reader where to look.
+# The name is walked up one component at a time; the longest match wins.
+sub namespace-hint(@index, Str $name --> Str) {
+    my @parts = $name.split('::');
+    for (1 ..^ @parts.elems).reverse -> $n {
+        my %prefix = name => @parts[^$n].join('::'), ver => '', auth => '', from => '';
+        my @c = candidates(@index, %prefix);
+        next unless @c;
+        my %e = @c[0];
+        return "; {%e<name>}:ver<{%e<version> // ''}>, the newest release, does not provide it"
+             ~ " — a newer {%e<name>}, not yet published, may: see its author's repository";
+    }
+    ''
+}
+
 # The dependency-first install plan for the requested identities. Each plan
 # entry is the index entry hash; %notes collects what was skipped and why.
 sub resolve(@index, @wants, %notes, Str :$prefix = '') {
@@ -661,7 +706,7 @@ sub resolve(@index, @wants, %notes, Str :$prefix = '') {
             unless %planned{%want<name>} {   # a planned dist also PROVIDES names
                 %notes{%want<name>} = $floor
                     ?? "nothing at {%want<ver>} in the index, the archive or the store"
-                    !! 'not in the ecosystem index';
+                    !! 'not in the ecosystem index' ~ namespace-hint(@index, %want<name>);
             }
             next;
         }
@@ -2412,8 +2457,10 @@ sub MAIN(
     # version for those, so whatever is installed already answers them.
     my @scanned;
     my @program-wants;
+    my %used-by;   # module name -> the programs that `use` it
     for @programs -> $p {
         my @w = program-wants($p);
+        %used-by{parse-identity($_)<name>}.push($p) for @w;
         progress(@w ?? "$p: a program — installing the {+@w} module{@w == 1 ?? '' !! 's'} it uses, not the program"
                     !! "$p: a program that uses no module outside the core");
         trace("program $p: uses {@w ?? @w.join(' ') !! 'nothing outside the core'}");
@@ -2536,7 +2583,8 @@ sub MAIN(
 
     # The plan is narration on a real run and THE product of --dry-run, so -q
     # drops it only on the former. What was skipped is neither: a dependency
-    # this run will not provide is always said.
+    # this run will not provide is always said — here, and once more as the
+    # run's last word (where -q leaves only that one).
     my $show-plan = $dry-run || !$QUIET;
     say "plan ({@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'}, dependencies first):"
         if $show-plan;
@@ -2549,7 +2597,7 @@ sub MAIN(
             if $show-plan;
     }
     for %notes.sort -> $n {
-        say "  skipped: {$n.key} — {$n.value}";
+        say "  skipped: {$n.key} — {$n.value}" if $show-plan;
     }
 
     if $dry-run {
@@ -2616,4 +2664,14 @@ sub MAIN(
     }
     inform("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
     trace("done: {@plan.elems} distribution{@plan.elems == 1 ?? '' !! 's'} processed into $to");
+    # The plan's `skipped:` lines scroll away under every fetch and suite run
+    # that follows, and `done:` reads as all done. Real case: a program's one
+    # unpublished module surfaced only as "Could not find" on its first run.
+    if %notes {
+        note "warning: {+%notes} module{%notes == 1 ?? ' was' !! 's were'} not installed:";
+        for %notes.sort -> $n {
+            my $who = %used-by{$n.key} ?? "{%used-by{$n.key}.join(', ')} uses it: " !! '';
+            note "  {$n.key} — " ~ $who ~ $n.value;
+        }
+    }
 }
