@@ -3800,6 +3800,21 @@ bool Interpreter::hyperNumericInfix(const std::string& op, const Value& l, const
     }
     else if (L.iter) { if (strictR) return false; n = L.n; }
     else { if (strictL) return false; n = R.n; }
+    auto declined = [&] {
+        if (g_hyperKernelTrace)
+            std::fprintf(stderr, "kernel: hyper infix:<%s> over %zu element(s) declined\n", op.c_str(), n);
+        return false;
+    };
+    // Element 0 settles most declines — a Rat or a Str in the list, an Int/Int
+    // quotient — before the scope lookup and the allocation below, so a short
+    // list the kernel cannot take costs what it did with no kernel at all
+    {
+        KNum x, y;
+        if (!L.at(0, x) || !R.at(0, y)) return declined();
+        alignas(Value) unsigned char probe[sizeof(Value)];
+        if (!hyperApply(k, x, y, reinterpret_cast<Value*>(probe))) return declined();
+        reinterpret_cast<Value*>(probe)->~Value();
+    }
     // a lexical &infix:<op> answers element by element in the generic path
     if (lexShadowedInfix(op, l, r)) return false;
     Value res = Value::array();
@@ -3808,11 +3823,10 @@ bool Interpreter::hyperNumericInfix(const std::string& op, const Value& l, const
         KNum x, y;
         return L.at(i, x) && R.at(i, y) && hyperApply(k, x, y, dst);
     });
+    if (!done) return declined();
     if (g_hyperKernelTrace)
-        std::fprintf(stderr, "kernel: hyper infix:<%s> over %zu element(s) %s\n", op.c_str(), n,
-                     done ? (ways > 1 ? ("on " + std::to_string(ways) + " threads").c_str() : "on 1 thread")
-                          : "declined");
-    if (!done) return false;
+        std::fprintf(stderr, "kernel: hyper infix:<%s> over %zu element(s) on %zu thread%s\n",
+                     op.c_str(), n, ways, ways > 1 ? "s" : "");
     // (the result mirrors the shape of the side that is a list, as hyperCore's)
     const Value& shaper = L.iter ? l : r;
     res.isList = !(shaper.t == VT::Array && !shaper.isList);
@@ -3827,17 +3841,29 @@ bool Interpreter::hyperNumericMethod(const Value& inv, const std::string& m, con
     if (k == HMeth::None) return false;
     KSide S;
     if (!kSide(inv, S) || !S.iter || S.n == 0) return false;
+    auto declined = [&] {
+        if (g_hyperKernelTrace)
+            std::fprintf(stderr, "kernel: hyper .%s over %zu element(s) declined\n", m.c_str(), S.n);
+        return false;
+    };
+    // (element 0 first, before the allocation: see hyperNumericInfix)
+    {
+        KNum x;
+        if (!S.at(0, x)) return declined();
+        alignas(Value) unsigned char probe[sizeof(Value)];
+        if (!hyperMethApply(k, x, reinterpret_cast<Value*>(probe))) return declined();
+        reinterpret_cast<Value*>(probe)->~Value();
+    }
     Value res = Value::array();
     size_t ways = 1;
     const bool done = hyperFill(*res.arr(), S.n, ways, [&](size_t i, Value* dst) {
         KNum x;
         return S.at(i, x) && hyperMethApply(k, x, dst);
     });
+    if (!done) return declined();
     if (g_hyperKernelTrace)
-        std::fprintf(stderr, "kernel: hyper .%s over %zu element(s) %s\n", m.c_str(), S.n,
-                     done ? (ways > 1 ? ("on " + std::to_string(ways) + " threads").c_str() : "on 1 thread")
-                          : "declined");
-    if (!done) return false;
+        std::fprintf(stderr, "kernel: hyper .%s over %zu element(s) on %zu thread%s\n",
+                     m.c_str(), S.n, ways, ways > 1 ? "s" : "");
     // (as hyperMethodEach: an Array in gives an Array out)
     res.isList = isNodalMethod(m) || !(inv.t == VT::Array && !inv.isList);
     out = std::move(res);
