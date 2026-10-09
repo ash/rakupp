@@ -23182,8 +23182,9 @@ static Value slipOf(const Value& v) {
         Value out = Value::array(v.blobList()); out.isList = true; out.s = "Slip";
         return out;
     }
-    // a Hash / Map slips its PAIRS: `%(|%h)` is a fresh, untyped Hash
-    if (v.t == VT::Hash && v.hash() && !v.itemized && (v.hashKind.empty() || v.hashKind == "Map")) {
+    // a Hash / Map slips its PAIRS: `%(|%h)` is a fresh, untyped Hash — a
+    // `$`-held one too, as an itemized Array slips its elements (`|$h`)
+    if (v.t == VT::Hash && v.hash() && (v.hashKind.empty() || v.hashKind == "Map")) {
         Value out = Value::array(); out.isList = true; out.s = "Slip";
         for (auto& kv : *v.hash()) {
             Value p = Value::pair(kv.first, kv.second);
@@ -29365,6 +29366,10 @@ Value Interpreter::eval(Expr* e) {
                     const auto& op = static_cast<Unary*>(it.get())->op;
                     bareAtVar = opEq(op, "ctx@") || opEq(op, "decont");
                 }
+                // …and so does a nested `[…]`, which no container holds: `[[1]]`
+                // is `[1]` and `[[]]` is `[]` (`[[1],]` keeps it, by the comma)
+                if (!bareAtVar && it->kind == NK::ArrayLit && v.t == VT::Array && !v.itemized)
+                    bareAtVar = true;
                 // …and a `$` variable is the one item it holds, whatever that is:
                 // `my $l = (1, 2); [$l]` is one element in Rakudo. The itemized
                 // flag does not survive the store, so this keys on the syntax.

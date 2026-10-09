@@ -1839,6 +1839,27 @@ static Value coolOnlyOnPlainClass(Interpreter& I, const Value& inv, const MName&
     return I.methodCallUnresolved(inv, m, args, rwArgs);
 }
 
+// `.^nominalize` — the NOMINAL type a coercion, a definite type or a subset
+// wraps: `Int(Str)`, `Int:D` and `subset S of Int` are all Int (AttrX::Mooish
+// binds an attribute's type through it). A nominal type has no such method,
+// as in Rakudo, so it answers nullopt.
+std::optional<Value> Interpreter::nominalizeType(const Value& t) {
+    if (t.t != VT::Type) return std::nullopt;
+    std::string n = t.s;
+    bool wrapped = t.i != 0;
+    size_t o = n.find('(');
+    if (o != std::string::npos && o > 0 && n.back() == ')') { n.erase(o); wrapped = true; }
+    if (n.size() > 2 && n[n.size() - 2] == ':' && (n.back() == 'D' || n.back() == 'U' || n.back() == '_'))
+        n.erase(n.size() - 2);
+    for (int hop = 0; hop < 32; hop++) {
+        auto si = subsets_.find(n);
+        if (si == subsets_.end() || classes_.count(n)) break;
+        n = si->second.base; wrapped = true;
+    }
+    if (!wrapped) return std::nullopt;
+    return Value::typeObj(n);
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     // The Variable a variable's user trait is handed (`trait_mod:<is>(Variable:D
@@ -2032,7 +2053,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 tapSupply(inv, emitCb, doneCb, quitCb);
                 return c;
             }
-            if (!introspect) inv = drainSupplyBlock(inv);
+            // `.share` subscribes LIVE (S-48 below taps the block itself): a
+            // drained block's whenevers would emit into a finished collection,
+            // so Pakku's `watch-recursive($dir).share` reached no tap at all
+            if (!introspect && m != "share") inv = drainSupplyBlock(inv);
         }
         bool listy = inv.hash()->count("values");
         auto vals = [&]() -> ValueList { return listy ? *(*inv.hash())["values"].arr() : ValueList{}; };
@@ -7929,6 +7953,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // transaction with it. (`new` learned the same lesson above.)
     if ((m == "throw" || m == "rethrow" || m == "fail") && inv.t == VT::Object && inv.obj() &&
         !(!m.skipOwn && inv.obj()->cls && inv.obj()->cls->findMethod(m))) {
+        // `$ex.fail` is `fail $ex`: the routine that wrote it RETURNS a
+        // Failure (DBDish's `self!set-err(…).fail unless …`), it does not throw
+        if (m == "fail") { ValueList fa{inv}; return callBuiltin("fail", fa); }
         // A CONTROL exception (`class CX::Red::Bool is X::Control`) is offered
         // to the innermost CONTROL block first; `.resume` there carries on
         // right after this throw, which is how Red's what-does-it-do explores
@@ -9442,12 +9469,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "archetypes") {
                 Value a = Value::makeHash(); a.hashKind = "Archetypes";
                 bool role = inv.t == VT::Type && inv.s.find("Role") != std::string::npos;
-                (*a.hash())["nominal"]       = Value::boolean(!role);
-                (*a.hash())["nominalizable"] = Value::boolean(false);
+                // a coercion, a definite type and a subset WRAP a nominal type,
+                // which `.^nominalize` answers
+                const bool coercion = inv.t == VT::Type && inv.s == "Metamodel::CoercionHOW";
+                const bool definite = inv.t == VT::Type && inv.s == "Metamodel::DefiniteHOW";
+                const bool wrapper = coercion || definite ||
+                                     (inv.t == VT::Type && inv.s == "Metamodel::SubsetHOW");
+                (*a.hash())["nominal"]       = Value::boolean(!role && !wrapper);
+                (*a.hash())["nominalizable"] = Value::boolean(wrapper);
                 (*a.hash())["parametric"]    = Value::boolean(role);
                 (*a.hash())["generic"]       = Value::boolean(false);
-                (*a.hash())["coercive"]      = Value::boolean(false);
-                (*a.hash())["definite"]      = Value::boolean(false);
+                (*a.hash())["coercive"]      = Value::boolean(coercion);
+                (*a.hash())["definite"]      = Value::boolean(definite);
                 (*a.hash())["augmentable"]   = Value::boolean(!role);
                 return a;
             }

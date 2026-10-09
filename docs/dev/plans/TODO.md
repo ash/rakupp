@@ -183,8 +183,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
-- [ ] **Rakuglaze**: 2176 of 2176 pass (2026-10-06: lists of an Array's
-  elements write through, ElemView). `('A'..∞).is-lazy` is ruled True in the
+- [ ] **Rakuglaze**: 3326 of 3326 pass (2026-10-09: round 6, the eleven
+  failures Haiku batches 04 to 12 brought in;
+  t/regression/rakuglaze-round-6.raku). Seen in round 6, not fixed: an
+  undeclared `$*name` in a regex matches nothing (Rakudo: X::Dynamic::NotFound);
+  `Int:D.HOW` is a ClassHOW (Rakudo: DefiniteHOW); a spaced `f - 5` with `f`
+  an UNKNOWN name is still `f() - 5` (only declared subs and say/put/print/
+  note/dd take the prefix). `('A'..∞).is-lazy` is ruled True in the
   suite (Rakudo answers False, yet treats the range as lazy everywhere else).
   Open from the write-through work: a list of an Array's elements is a copy
   that a write is MIRRORED from, so a later change to the array is not seen

@@ -4709,7 +4709,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 tctx_.cur->define("&" + sname, code);
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
-                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur) {
+                // …but in a CLASS or ROLE body the package is that type: the sub
+                // is `A::f` and the body's own lexical, never a bare `&f` of the
+                // scope around the class — two classes may each have `our sub get`
+                // (HTTP::UserAgent beside its own `method get`)
+                bool inTypeBody = false;
+                if (sd->isOur && curPkgEnv_)
+                    for (Env* e = tctx_.cur.get(); e && e != curPkgEnv_.get(); e = e->parent.get())
+                        if (e->packageFrame) { inTypeBody = !e->xr().pkgType.expired(); break; }
+                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur && !inTypeBody) {
                     // a DIFFERENT `our sub` of the same name already owns the
                     // package slot: `{ our sub foo {…} }; { our sub foo {…} }`
                     if (!sd->isMulti && !sd->isProto && !sd->isMethod) {   // methods live in their class

@@ -2749,11 +2749,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "is-absolute") return Value::boolean(!inv.toStr().empty() && inv.toStr()[0] == '/');
         // the path's OS grammar and the directory it is resolved against
-        if (m == "SPEC") {
+        // (IO::Path only: Str has neither, and `$str.?CWD // …` takes the default)
+        if (m == "SPEC" && inv.hashKind == "IO") {
             if (!inv.enumType.empty()) return Value::typeObj(inv.enumType.str());   // a user IO::Spec
             return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? std::string("Unix") : inv.enumName.str()));
         }
-        if (m == "CWD") {
+        if (m == "CWD" && inv.hashKind == "IO") {
             if (!inv.ofType().empty()) return Value::str(inv.ofType()); // the captured :CWD
             return Value::str(cwdName());
         }

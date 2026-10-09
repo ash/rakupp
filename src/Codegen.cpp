@@ -2597,6 +2597,8 @@ struct Codegen {
                         (static_cast<Unary*>(it)->op == "ctx@" || static_cast<Unary*>(it)->op == "decont");
                     const bool plain = !isSlip(it) && it->kind != NK::VarExpr && !spreadOp &&
                                        !(it->kind == NK::MethodCall && static_cast<MethodCall*>(it)->hyper);
+                    // a nested `[…]` spreads as a bare @-variable does: `[[1]]` is `[1]`
+                    if (it->kind == NK::ArrayLit) return "rtOneArgAtVar(" + exArg(it) + ")";
                     if (plain) return "rtOneArgArray(" + exArg(it) + ")";
                     if (it->kind == NK::VarExpr && static_cast<VarExpr*>(it)->name.rfind('@', 0) == 0)
                         return "rtOneArgAtVar(" + exArg(it) + ")";

@@ -149,10 +149,10 @@ is-deeply pf("'q,x',b\n", :quote("'")), [["q,x","b"],], ':quote picks the quote 
 is-deeply pf("a,b\n1,2\n", :headers(<x y>)),
           [{ x => "a", y => "b" }, { x => "1", y => "2" }],
    'a list :headers names the columns and consumes no line';
-is pt([["a","b"]], :sep(';')), "a;b\n", 'to-csv honours :sep';
-is pt([["a,b"]], :sep(';')), "a,b\n", 'and quotes for the separator in force, not for a comma';
-is pt([["a;b"]], :sep(';')), "\"a;b\"\n", '— which it does quote';
-is pt([["a","b"]], :quote("'"), :always-quote), "'a','b'\n", 'and :quote';
+is pt([["a","b"],], :sep(';')), "a;b\n", 'to-csv honours :sep';
+is pt([["a,b"],], :sep(';')), "a,b\n", 'and quotes for the separator in force, not for a comma';
+is pt([["a;b"],], :sep(';')), "\"a;b\"\n", '— which it does quote';
+is pt([["a","b"],], :quote("'"), :always-quote), "'a','b'\n", 'and :quote';
 is pt([["a"], ["b"]], :headers(<h>)), "h\na\nb\n", 'a list :headers writes a header line';
 # The trailing comma is load-bearing: `[{ a => 1 }]` is a single Hash under the
 # one-arg rule, so the literal is its PAIRS — `[:a(1)]` — not a one-row table.
@@ -201,7 +201,7 @@ throws-like { pt([1]) }, X::AdHoc, message => /'not a list or a hash'/,
     'and each row a list or a hash — naming which row';
 throws-like { pt([["a"], { b => 1 }]) }, X::AdHoc, message => /'no headers are known'/,
     'a hash row with no headers to project onto is refused rather than guessed';
-throws-like { pt([["a"]], :eol('!')) }, X::AdHoc, message => /'eol must be'/,
+throws-like { pt([["a"],], :eol('!')) }, X::AdHoc, message => /'eol must be'/,
     'and :eol is one of the three line endings';
 
 # The parse errors name the line, which is the whole reason to raise rather
