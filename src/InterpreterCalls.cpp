@@ -1351,6 +1351,18 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     auto ci = classes_.find(reg);
     if (ci != classes_.end() && ci->second && (ci->second->findMethod("COERCE") || ci->second->findMethod("new")))
         return coerceThroughType(v, reg, "");
+    // A class deriving a BOXED SCALAR built-in — `class Symbol is Str` — holds
+    // that value and is built from it positionally, as the `T(x)` call arm
+    // already knew. Every other route to a coercion lands here and did not: a
+    // type in a variable (`$t('b')`), a `Sym()` parameter, a role's `T($v)`,
+    // and the short name of a class inside its own package (BSON::Simple's
+    // `Symbol(read-string)`, read as a bound type).
+    if (ci != classes_.end() && ci->second) {
+        static const std::set<std::string> kBoxedBase = {"Str", "Int", "Num", "Rat"};
+        for (const ClassInfo* c2 = ci->second.get(); c2; c2 = c2->parent.get())
+            if (kBoxedBase.count(c2->nativeParent))
+                return methodCall(Value::typeObj(reg), "new", ValueList{v});
+    }
     if (size_t sep = type.rfind("::"); sep != std::string::npos) {
         try { return methodCall(v, type.substr(sep + 2), ValueList{}); }
         catch (RakuError&) {}

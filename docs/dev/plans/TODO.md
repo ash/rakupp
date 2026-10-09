@@ -309,6 +309,10 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     no `U` number (`Rat|`, Rakudo `Rat|U…`).
   - `.kv` of an `is default(7)` Array shows `Any` in its holes (Rakudo 7),
     and `[[1, 2], 3].kv` shows `[1, 2]` where Rakudo shows `$[1, 2]`.
+  - An Array BOUND into a lexical array's slot reads back itemized:
+    `@b.BIND-POS(0, [10])` and `@c[0] := [10]` give `$[10]` (Rakudo `[10]`).
+  - Coercing a non-Str into a Str subclass passes it through: `class Sym is
+    Str {}; Sym(42)` answers 42 where Rakudo dies.
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair
