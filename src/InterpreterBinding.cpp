@@ -3730,6 +3730,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         int w = Interpreter::ncElemSize(et);
         if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
         Value el = Interpreter::ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+        if (g_cbInterp) el = g_cbInterp->ncClassElem(std::move(el), &base, et, i);
         if (Interpreter::ncIsPointerElem(et) && el.t == VT::Int && g_cbInterp)
             return g_cbInterp->ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
         return el;
@@ -3738,6 +3739,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         base.hash() && base.hash()->count("addr")) {
         std::string of = base.hash()->count("of") ? base.hash()->at("of").toStr() : "int64";
         Value el = Interpreter::ncReadElem(base.hash()->at("addr").toInt(), of, key.toInt());
+        if (base.hashKind == "CArray" && g_cbInterp) el = g_cbInterp->ncClassElem(std::move(el), nullptr, of, key.toInt());
         if (Interpreter::ncIsPointerElem(of) && el.t == VT::Int && g_cbInterp)
             return g_cbInterp->ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
         return el;
@@ -5151,6 +5153,18 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
 // mysql_stmt_bind_result then handed the server. Only a LOWERCASE name is
 // looked up: native type names are lowercase and class/Pointer/Str names are
 // not, so a class-typed field still costs no lookup.
+// What a byte-backed CArray keeps on its `ext`: the strings its CArray[Str]
+// slots point into, and the object last stored in each slot of a
+// CArray[SomeCStruct].
+struct NcCArrayKeep {
+    std::vector<std::shared_ptr<std::string>> strs;
+    std::unordered_map<long long, Value> objs;
+};
+static NcCArrayKeep& ncCArrayKeep(Value& arr) {
+    auto k = std::static_pointer_cast<NcCArrayKeep>(arr.ext());
+    if (!k) { k = std::make_shared<NcCArrayKeep>(); arr.extM() = k; }
+    return *k;
+}
 // See the header: a CArray[Str] element is a char* into memory the array owns.
 // Writing the SOURCE Value's own buffer (what ncWriteElem does for a bare Str)
 // left every slot pointing at a temporary that died with the statement, so the
@@ -5158,11 +5172,47 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
 // parameter array exactly this way.
 long long Interpreter::ncOwnStrElem(Value& arr, const Value& v) {
     if (!isDefined(v)) return 0;   // an undefined Str is C's NULL
-    using Owned = std::vector<std::shared_ptr<std::string>>;
-    auto owned = std::static_pointer_cast<Owned>(arr.ext());
-    if (!owned) { owned = std::make_shared<Owned>(); arr.extM() = owned; }
-    owned->push_back(std::make_shared<std::string>(v.toStr()));
-    return (long long)(intptr_t)owned->back()->c_str();
+    auto& strs = ncCArrayKeep(arr).strs;
+    strs.push_back(std::make_shared<std::string>(v.toStr()));
+    return (long long)(intptr_t)strs.back()->c_str();
+}
+
+// The element type of `CArray[N-Error]` was read as an 8-byte integer: the
+// slot's pointer came back as a number and `g_set_error_literal($e, …)` could
+// never be read through (#136). A class name only — native type names are
+// lowercase, as ncClass in callNative also assumes.
+std::shared_ptr<ClassInfo> Interpreter::ncElemClass(const std::string& t) {
+    if (t.empty() || (!ascii::isupper((unsigned char)t[0]) && t.find("::") == std::string::npos)) return nullptr;
+    if (ncIsPointerElem(t)) return nullptr;
+    auto it = classes_.find(t);
+    if (it == classes_.end()) it = classes_.find(resolveClassAlias(t));
+    if (it == classes_.end()) return nullptr;
+    const std::string& r = it->second->repr;
+    return r == "CStruct" || r == "CPPStruct" || r == "CUnion" || r == "CPointer" ? it->second : nullptr;
+}
+Value Interpreter::ncClassElem(Value el, const Value* arr, const std::string& t, long long index) {
+    if (el.t != VT::Int) return el;
+    auto ci = ncElemClass(t);
+    if (!ci) return el;
+    long long p = el.toInt();
+    if (!p) return Value::typeObj(ci->name);
+    // the object stored here, while the slot still points at it: `$c[0] === $x`
+    if (arr && arr->ext()) {
+        auto k = std::static_pointer_cast<NcCArrayKeep>(arr->ext());
+        auto it = k->objs.find(index);
+        if (it != k->objs.end() && it->second.t == VT::Object && it->second.obj()) {
+            auto pa = it->second.obj()->attrs.find("__native_ptr");
+            if (pa != it->second.obj()->attrs.end() && pa->second.toInt() == p) return it->second;
+        }
+    }
+    // a pointer C put there: a view onto its memory, as a CStruct return is
+    Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
+    o.obj()->cls = ci; o.obj()->attrs["__native_ptr"] = Value::integer(p);
+    return o;
+}
+void Interpreter::ncKeepClassElem(Value& arr, long long index, const Value& v) {
+    if (v.t == VT::Object && v.obj()) ncCArrayKeep(arr).objs[index] = v;
+    else if (arr.ext()) ncCArrayKeep(arr).objs.erase(index);
 }
 
 // Store `rhs` into a CStruct's field at `off` (of native `type`), on `inv`.

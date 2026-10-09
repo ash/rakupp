@@ -219,7 +219,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   a Raku-built CArray has no `.AT-POS` method; `.clone` returns the same
   object; a CArray read back from a CStruct field forgets its length, so
   `.elems` dies where Rakudo answers. Also: an `@` parameter binds a Range
-  as an Array (Rakudo keeps the Range).
+  as an Array (Rakudo keeps the Range). Seen with #136 (2026-10-09): a
+  CArray's `.Str` is its element type's name (`int32`) where Rakudo joins the
+  elements (`1 2 3`); a NULL `Pointer`/`CArray` struct field reads as
+  `Pointer.new(0)` where Rakudo answers the type object; `CArray[Pointer]`
+  elements read as `{:addr…}` hashes.
 - [ ] **#110 constructor type checks**: the module battery gate was never run,
   for #110 or for the nominal-check fixes of 2026-10-07. Open: native width is
   not enforced; `has Array[Int]` is not checked. Seen beside those fixes:

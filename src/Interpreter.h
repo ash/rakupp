@@ -1732,6 +1732,18 @@ public:
     // Value's `ext` (shared by every copy of it, so it lives as long as the
     // array does). 0 for an undefined value — C's NULL.
     static long long ncOwnStrElem(Value& arr, const Value& v);
+    // A CArray of a CStruct / CUnion / CPointer CLASS holds POINTERS to its
+    // members, as Rakudo's does: `CArray[N-Error]` is C's `GError **`. The class
+    // the element type names, or null for a native scalar, Str, Pointer, CArray.
+    std::shared_ptr<ClassInfo> ncElemClass(const std::string& ofType);
+    // `el` is what ncReadElem answered for slot `index` of a CArray of `ofType`
+    // (`arr` is the byte-backed array, or null for a live one). A class element
+    // comes back as a member of that class — NULL as its type object, the
+    // object stored there as itself — and anything else as it was.
+    Value ncClassElem(Value el, const Value* arr, const std::string& ofType, long long index);
+    // Remember the object just stored at `index` (or forget it, for a type
+    // object), on the array's `ext` beside ncOwnStrElem's strings.
+    static void ncKeepClassElem(Value& arr, long long index, const Value& v);
     static std::string ncResolveTypeAlias(ClassInfo* ci, const std::string& t); // `constant my_bool = int8` → "int8"
     void ncStoreStructField(Value& inv, const std::string& field, const std::string& type, long long off, const Value& rhs);
     static std::string ncLibNameOf(const Value& r); // `is native(('cairo', v2))` → libcairo.2.dylib

@@ -1071,6 +1071,10 @@ std::string Value::gist() const {
     // literally named "<STDIN>".
     if (t == VT::Str && hashKind == "IO::Special")
         return "IO::Special.new(\"" + s.str() + "\")";
+    // A CArray gists (and `.raku`s) as Rakudo's does, element type and all —
+    // its enumName is that type, and the enum arm below printed just "int32".
+    if (t == VT::Str && hashKind == "CArray")
+        return "NativeCall::Types::CArray" + (enumName.empty() ? std::string() : "[" + enumName.str() + "]") + ".new";
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr() &&

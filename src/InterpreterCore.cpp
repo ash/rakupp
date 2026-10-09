@@ -14512,7 +14512,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             // buffer is what C was handed (see CArray.new).
                             std::memcpy(bp->s.mutInPlace() + (size_t)i * esz, &p, sizeof p);
                         }
-                        else ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
+                        else {
+                            ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
+                            if (ncElemClass(et)) ncKeepClassElem(*bp, i, v);
+                        }
                     }
                     return v;
                 }
@@ -26461,7 +26464,8 @@ Value Interpreter::evalIndex(Index* idx) {
                 for (auto& e : kv.flatten()) {
                     long long i = e.toInt();
                     if (i < 0 || (lim >= 0 && i >= lim)) { out.arr()->push_back(Value::any()); continue; }
-                    out.arr()->push_back(ncReadElem(addr, et, i));
+                    Value el = ncReadElem(addr, et, i);
+                    out.arr()->push_back(base.hashKind == "CArray" ? ncClassElem(std::move(el), live ? nullptr : &base, et, i) : el);
                 }
                 return out;
             }
@@ -26470,8 +26474,12 @@ Value Interpreter::evalIndex(Index* idx) {
             long long i = eval(idx->index.get()).toInt();
             std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
             int w = ncElemSize(et);
-            if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
-            Value el = ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+            if (i < 0 || (i + 1) * w > (long long)base.s.size()) {
+                // past the end, a class element reads as its type object
+                auto ci = i >= 0 ? ncElemClass(et) : nullptr;
+                return ci ? Value::typeObj(ci->name) : Value::any();
+            }
+            Value el = ncClassElem(ncReadElem((long long)(intptr_t)base.s.data(), et, i), &base, et, i);
             // an element that is ITSELF a pointer stays usable as one, so
             // `$out[0][^$n]` can read through what a native call wrote there
             // (a Str element already came back dereferenced — leave it be)
@@ -26482,6 +26490,7 @@ Value Interpreter::evalIndex(Index* idx) {
             long long i = eval(idx->index.get()).toInt();
             std::string of = base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64";
             Value el = ncReadElem((*base.hash())["addr"].toInt(), of, i);
+            if (base.hashKind == "CArray") el = ncClassElem(std::move(el), nullptr, of, i);
             if (ncIsPointerElem(of) && el.t == VT::Int) return ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
             return el;
         }

@@ -101,7 +101,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                             "Don't know how many elements a C array returned from a library has"};
         long long addr = (*inv.hash())["addr"].toInt();
         std::string of = inv.hash()->count("of") ? (*inv.hash())["of"].toStr() : "int64";
-        if (m == "AT-POS" || m == "[]") return ncReadElem(addr, of, args.empty() ? 0 : args[0].toInt());
+        if (m == "AT-POS" || m == "[]") return ncClassElem(ncReadElem(addr, of, args.empty() ? 0 : args[0].toInt()), nullptr, of, args.empty() ? 0 : args[0].toInt());
         if (m == "Numeric" || m == "Int") return Value::integer(addr);
         if (m == "defined") return Value::boolean(true);   // as for Pointer above
         if (m == "Bool") return Value::boolean(addr != 0);
@@ -142,6 +142,10 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 long long p = Interpreter::ncOwnStrElem(c, strArgs[k]);
                 std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &p, sizeof p);
             }
+            // CArray[SomeCStruct]: each slot holds its object's address, and
+            // the array holds the object
+            if (ncElemClass(et))
+                for (size_t k = 0; k < items.size(); k++) ncKeepClassElem(c, (long long)k, items[k]);
             c.enumName = et; // remember the element type
             return c;
         }
@@ -154,6 +158,20 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 "Unable to allocate an array of " + std::to_string((unsigned long long)n) + " elements"};
             Value c = Value::str(std::string((size_t)n * esz, '\0')); c.hashKind = "CArray";
             c.s.promote();   // shared storage, as `new` above
+            // a struct slot gets a fresh zeroed member, as Rakudo's allocate
+            // does (nqp::create: no BUILD runs); a CPointer slot stays NULL
+            auto eci = ncElemClass(et);
+            if (eci && eci->repr != "CPointer")
+                for (long long k = 0; k < n; k++) {
+                    void* mem = calloc(1, (size_t)std::max<long long>(ncStructSize(eci.get()), 1));
+                    Value o = Value::object(makePayload<ObjectData>());
+                    o.obj()->cls = eci;
+                    o.obj()->attrs["__native_ptr"] = Value::integer((long long)(intptr_t)mem);
+                    o.obj()->attrs["__cstruct_owned"] = Value::boolean(true);
+                    long long p = (long long)(intptr_t)mem;
+                    std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &p, sizeof p);
+                    ncKeepClassElem(c, k, o);
+                }
             c.enumName = et;
             return c;
         }
@@ -186,7 +204,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         long long n = w > 0 ? (long long)(inv.s.size() / (size_t)w) : 0;
         Value out = Value::array(); out.isList = (m != "Array");
         for (long long i = 0; i < n; i++)
-            out.arr()->push_back(Interpreter::ncReadElem((long long)(intptr_t)inv.s.data(), et, i));
+            out.arr()->push_back(ncClassElem(ncReadElem((long long)(intptr_t)inv.s.data(), et, i), &inv, et, i));
         if (m == "Seq") out.s = "Seq";
         static const std::set<std::string> direct = {"list", "values", "List", "Array", "Seq"};
         if (direct.count(m)) return out;

@@ -1878,6 +1878,8 @@ Value hashEntryKey(const Value& h, const std::string& k, const Value& stored) {
     return Value::str(k);
 }
 
+extern Interpreter* g_cbInterp;   // reads a native struct's fields (InterpreterParts.h)
+
 // `.raku` / `.perl` — an EVAL-round-trippable representation of a value (as opposed
 // to `.gist`, which is the human-readable form). Recursive over containers.
 std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen);
@@ -2055,6 +2057,15 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         if (hd != v.hash()->end() && hd->second.truthy()) out += ", handled => Bool::True";
         return out + ")";
     }
+    // a live Pointer / CArray (a native struct's field) renders as its `.raku`
+    // method does, not as the {addr, of} slots that hold it
+    if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") &&
+        v.hash() && v.hash()->count("addr")) {
+        auto o = v.hash()->find("of");
+        std::string of = o != v.hash()->end() ? o->second.toStr() : std::string();
+        if (v.hashKind == "CArray") return "NativeCall::Types::CArray" + (of.empty() ? "" : "[" + of + "]") + ".new";
+        return "Pointer" + (of.empty() ? "" : "[" + of + "]") + ".new(" + std::to_string(v.hash()->at("addr").toInt()) + ")";
+    }
     forceLazy(v);   // an unpulled gather renders its ELEMENTS, not `().Seq`
     // an ENDLESS sequence renders its cached prefix and MARKS the rest, Rakudo
     // style — nested occurrences included. (The .raku method arm pre-materialises
@@ -2137,11 +2148,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // a standard handle's path rebuilds by name, not as a path literal
             if (v.hashKind == "IO::Special")
                 return "IO::Special.new(" + rakuStrLit(v.s) + ")";
-            if (v.hashKind == "CArray") { // a locally-built CArray rebuilds the same way
-                std::string o = "CArray.new("; bool f = true;
-                for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
-                return o + ")";
-            }
+            if (v.hashKind == "CArray") return v.gist(); // Rakudo's: the type and `.new`, no elements
             return rakuStrLit(v.s);
         case VT::Int:  return v.toStr();
         case VT::Rat: {
@@ -2530,7 +2537,20 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             bool isEx = false;
             for (ClassInfo* c = v.obj()->cls.get(); c && !isEx; c = c->parent.get())
                 if (c->name == "Exception" || c->nativeParent == "Exception") isEx = true;
+            // A native struct's fields live in ITS memory, not in attrs — the
+            // accessor reads them there, so `.raku` shows what C put in them
+            const std::string& repr = v.obj()->cls->repr;
+            bool native = (repr == "CStruct" || repr == "CPPStruct" || repr == "CUnion") &&
+                          v.obj()->attrs.count("__native_ptr") && g_cbInterp;
             for (auto* at : pub) {
+                if (native) {
+                    Value av;
+                    try { av = g_cbInterp->methodCall(v, at->name, ValueList{}); }
+                    catch (RakuError&) { av = at->type.empty() ? Value::any() : Value::typeObj(at->type); }
+                    if (!inner.empty()) inner += ", ";
+                    inner += at->name + " => " + rakuRepr(av, depth + 1, seen);
+                    continue;
+                }
                 if (isEx && at->name == "message") {
                     bool own = false;   // …unless the class declares one itself
                     for (auto& a2 : v.obj()->cls->attrs) if (&a2 == at) own = true;
@@ -9765,12 +9785,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 type = inner;
             }
             std::string bt = type.substr(0, type.find('['));
-            if (bt == "Str") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return Value::str(p ? std::string((const char*)(intptr_t)p) : ""); }
+            if (bt == "Str") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return p ? Value::str(std::string((const char*)(intptr_t)p)) : Value::typeObj("Str"); }
             if (bt == "Pointer") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakePointer(type, (void*)(intptr_t)p); }
             if (bt == "CArray")  { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakeLiveCArray(type, (void*)(intptr_t)p); }
             auto cit = classes_.find(type);
             if (cit != classes_.end()) { // nested CStruct/CPointer field → box the pointer
                 long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+                if (!p) return Value::typeObj(cit->second->name);   // NULL is the type object, as Rakudo reads it
                 Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
                 o.obj()->cls = cit->second; o.obj()->attrs["__native_ptr"] = Value::integer(p);
                 return o;
