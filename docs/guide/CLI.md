@@ -1002,6 +1002,10 @@ rakupp install Foo:ver<1.2.3>    # a specific version (installs are additive)
 rakupp install .                 # this directory's dist; deps from the index
 rakupp install my-dist           # any path: a directory name, ./x, ~/x, /x,
                                  # dists/x, C:\x, \\host\share\x
+rakupp install lib/Foo           # module files with no META6.json: the ones
+                                 # in that directory (-r: and every one below)
+rakupp install Foo.rakumod       # one module file
+rakupp install app.raku          # the modules a program uses, not the program
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
                                  # a github page URL, subdirectory and all
 rakupp install https://host/Foo-1.0.tar.gz     # or a release tarball
@@ -1144,15 +1148,47 @@ zef's rule for which arguments are paths is a leading `.` or `/` and
 nothing else. That is a rule about spelling, and people do not spell a
 directory that way when it is in front of them — they type its name. So a
 path here is any of: a leading `.`, `/`, `~`, `C:\`/`C:/` or `\\host\share`;
-a `/` or `\` anywhere in the argument (`dists/Foo`); or a bare word that
-names a directory holding a `META6.json`, which is `rakupp install Foo`
-beside a `Foo/` checkout. A bare word that is not such a directory stays a
-module name, and an identity — anything with `::` or a `:ver<…>`-style
-adverb — is always a name, whatever directory happens to sit beside it.
+a `/` or `\` anywhere in the argument (`dists/Foo`); a bare word that
+names a directory holding a `META6.json` or module files, which is
+`rakupp install Foo` beside a `Foo/` checkout; or a bare word ending in a
+source extension (`app.raku`, `Foo.rakumod`). A bare word that is none of
+these stays a module name, and an identity — anything with `::` or a
+`:ver<…>`-style adverb — is always a name, whatever directory happens to
+sit beside it.
 `rakupp install .` is the development loop; `rakupp test .` measures the
 suite without installing; `uninstall` and `reinstall` accept the same
 spelling and act on whatever dist the directory names. A path install
 whose dist has no ecosystem dependencies touches no network at all.
+
+A directory **without** a `META6.json` installs the module files in it
+(`.rakumod`, `.pm6`, `.pm`): the ones directly in it, or with `-r`
+(`--recursive`) every one below it, hidden directories aside. A path to
+one module file installs that module. Where the path lies under a
+distribution's `lib/` — a `META6.json` in a directory above it — that
+distribution is what installs: its name, version and dependencies come
+from its META, and a module file found there that the META's `provides`
+does not list is added to it. A store copy of the same version that lacks
+an added module is replaced, so `rakupp install -r lib` in a checkout
+installs the module its author forgot to list. With no `META6.json` above
+the path (the climb stops at a `.git`), the modules install as a
+distribution of their own: version 0, named for the namespace they share
+(`Foo` for `Foo::A` and `Foo::B::C`) or else for the directory, with
+the modules they `use` as its dependencies. A module file is named by
+its own `unit class`/`module`/`role` declaration when that matches the
+file name, else by its path below the nearest `lib/`. Nothing states a
+version for such a set, so installing it again replaces the store's copy.
+
+A **program** — any other source file, `app.raku` — installs the modules
+it uses and not itself. Its `use` and `need` lines are read from the
+source text: pod blocks, heredocs and everything after `=finish` are
+skipped, `require` is not followed (it runs at run time and is usually
+optional), pragmas and the core modules are left out, and a module found
+in one of the program's literal `use lib` directories counts as local.
+`:from<Perl5>` and `:from<Python>` ask for `Inline::Perl5` and
+`Inline::Python`. A module any installed distribution already provides
+is skipped; the rest resolves like a name on the command line. `rakupp
+install app.raku -r lib` takes both at once: the program's imports, with
+those the `lib/` tree provides installed from it.
 
 Every run appends a step-by-step account of itself — engine build, OS,
 arguments, resolution, fetches, checksums, hook and suite verdicts, store

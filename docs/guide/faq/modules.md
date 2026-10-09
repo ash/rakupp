@@ -40,13 +40,23 @@ Yes — give a path or a URL where a name would go.
 ```sh
 rakupp install my-dist          # a checkout: the directory with META6.json
 rakupp install ~/src/my-dist    # ./x, /x, ~/x, dists/x, C:\x all work too
+rakupp install -r lib           # module files without a META6.json
+rakupp install app.raku         # the modules a program uses
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
 rakupp install https://host/Foo-1.0.tar.gz
 ```
 
-A bare word is a path when it names a directory with a `META6.json` in it,
-and a module name otherwise, so `rakupp install Foo` does the obvious thing
-from either side of a checkout.
+A bare word is a path when it names a directory with a `META6.json` or module
+files in it, or ends in a source extension (`app.raku`), and a module name
+otherwise, so `rakupp install Foo` does the obvious thing from either side of
+a checkout.
+
+A directory with module files but no `META6.json` installs those modules (`-r`
+reaches into its subdirectories). Inside a checkout's `lib/` that means the
+checkout's distribution, plus any module its `META6.json` does not list — the
+usual reason a module installs and then `use` cannot find part of it. A
+program installs nothing of itself: its `use` lines are read, and what is not
+installed yet is.
 
 The github form takes the URL from your address bar, including the
 `/tree/BRANCH/SUBDIR` shape a monorepo of modules produces; without a `/tree/`

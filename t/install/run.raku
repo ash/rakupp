@@ -634,6 +634,101 @@ check %tilde<exit> == 0
       && installer-p('--list', :home($thome))<out>.contains('Tilde::Demo:ver<1.0>'),
       'path: a leading ~ is expanded by the installer, not left to the shell';
 
+# ---- module files without a META6.json, -r, and programs --------------------
+# A directory of module files with no META6.json installs its modules: the
+# ones directly in it, or with -r every one below. Inside a distribution's
+# lib/ the directory stands for that dist, and a module its META6.json forgot
+# joins the provides. A program installs what it `use`s, and not itself.
+sub load-from(IO::Path $home, Str $code) {
+    my $p = run $EXE, '-I', "inst#{$home.add('.raku')}", '-e', $code, :out, :err;
+    $p.err.slurp(:close);
+    $p.out.slurp(:close).trim
+}
+my $mhome = $paths.add('home-modules');
+$mhome.mkdir;
+my $loose = $ws.add('loose-tree');
+$loose.add('lib/Loose/B').mkdir;
+$loose.add('lib/Loose/A.rakumod').spurt(
+    "unit module Loose::A;\nuse Loose::B::C;\nsub a is export \{ 'A' ~ c() \}\n");
+# no package declaration: named by its path below lib/
+$loose.add('lib/Loose/B/C.rakumod').spurt("sub c is export \{ 'C' \}\n");
+my %lnr = installer-p('lib', :cwd($loose.Str), :home($mhome));
+check %lnr<exit> == 1 && %lnr<err>.contains('-r installs those'),
+      'modules: a directory whose modules all sit below it asks for -r (and is not the `lib` pragma)';
+my %lr = installer-p('-r', 'lib', :cwd($loose.Str), :home($mhome));
+check %lr<exit> == 0 && installer-p('--list', :home($mhome))<out>.contains('Loose:ver<0>'),
+      'modules: -r installs a META-less tree as one dist, named for the namespace its modules share';
+check load-from($mhome, 'use Loose::A; print a()') eq 'AC',
+      'modules: ...and its modules load from the store, the undeclared one by its path';
+$loose.add('lib/Loose/A.rakumod').spurt(
+    "unit module Loose::A;\nuse Loose::B::C;\nsub a is export \{ 'A2' ~ c() \}\n");
+my %lr2 = installer-p('lib', '-r', :cwd($loose.Str), :home($mhome));
+check %lr2<exit> == 0 && !%lr2<out>.contains('already installed')
+      && load-from($mhome, 'use Loose::A; print a()') eq 'A2C',
+      'modules: with no version to compare, installing again replaces the store copy';
+my %one = installer-p('--dry-run', 'lib/Loose/B/C.rakumod', :cwd($loose.Str), :home($mhome));
+check %one<exit> == 0 && %one<out>.contains('Loose::B::C:ver<0>'),
+      'modules: one module file installs as itself';
+
+# a checkout whose META6.json lists one of its two modules
+my $aug = path-dist($ws.add('Aug-Demo'), 'Aug::Demo');
+$aug.add('lib/Aug/Extra.rakumod').spurt("unit module Aug::Extra;\nsub extra is export \{ 'extra' \}\n");
+my $ahome = $paths.add('home-aug');
+$ahome.mkdir;
+my %a1 = installer-p('Aug-Demo', :cwd($ws.Str), :home($ahome));
+check %a1<exit> == 0 && !installer-p('--list', :home($ahome))<out>.contains('Aug::Extra'),
+      'modules: without -r a dist root installs what its META6.json provides, and no more';
+my %a2 = installer-p('Aug-Demo', '-r', :cwd($ws.Str), :home($ahome));
+check %a2<exit> == 0 && %a2<err>.contains('replacing it')
+      && load-from($ahome, 'use Aug::Extra; print extra()') eq 'extra',
+      'modules: -r adds the module the META forgot, replacing the stored copy that lacks it';
+my %a3 = installer-p('Aug-Demo', '-r', :cwd($ws.Str), :home($ahome));
+check %a3<exit> == 0 && %a3<out>.contains('already installed'),
+      'modules: ...after which the store has it all';
+# from INSIDE the checkout's lib/: the directory stands for the dist
+my $ahome2 = $paths.add('home-aug2');
+$ahome2.mkdir;
+my %a4 = installer-p('.', :cwd($aug.add('lib/Aug').Str), :home($ahome2));
+my $alist = installer-p('--list', :home($ahome2))<out>;
+check %a4<exit> == 0 && %a4<err>.contains('inside the distribution')
+      && $alist.contains('Aug::Demo:ver<1.0>') && $alist.contains('Aug::Extra'),
+      "modules: `install .` inside a dist's lib/ installs the dist, with the modules found there";
+
+# a program: pod, a heredoc and a `use lib` directory are not dependencies
+$ws.add('mylib/Local').mkdir;
+$ws.add('mylib/Local/Thing.rakumod').spurt("unit class Local::Thing;\n");
+$ws.add('app.raku').spurt(q:to/END/);
+    use v6.d;
+    use lib 'mylib';
+    use Local::Thing;
+    use Test;
+    need Gate::Demo;
+    =begin pod
+    use Gate::Flaky;
+    =end pod
+    my $s = q:to/X/;
+        use Gate::Built;
+        X
+    say 'app';
+    END
+my $prhome = $paths.add('home-prog');
+$prhome.mkdir;
+my %pg = installer-p('--dry-run', 'app.raku', :cwd($ws.Str), :home($prhome),
+                     :index($tmp.add('index.json')));
+check %pg<exit> == 0 && %pg<out>.contains('Gate::Demo:ver<0.4.2>')
+      && !%pg<out>.contains('Gate::Flaky') && !%pg<out>.contains('Gate::Built')
+      && !%pg<out>.contains('Local::Thing') && !%pg<out>.contains('skipped'),
+      'program: plans what it uses — not pod, not a heredoc, not its `use lib`, not itself';
+my %pg2 = installer-p('app.raku', :cwd($ws.Str), :home($prhome), :index($tmp.add('index.json')));
+check %pg2<exit> == 0 && installer-p('--list', :home($prhome))<out>.contains('Gate::Demo:ver<0.4.2>'),
+      'program: ...and installs it';
+my %pg3 = installer-p('app.raku', :cwd($ws.Str), :home($prhome), :index($tmp.add('index.json')));
+check %pg3<exit> == 0 && %pg3<out>.contains('nothing to install'),
+      'program: a dependency already in the store answers it';
+my %nf = installer-p('nope.raku', :cwd($ws.Str), :home($prhome));
+check %nf<exit> == 1 && %nf<err>.contains('no such file'),
+      'program: a missing x.raku is a missing file, not a module nobody published';
+
 # ---- the build hook, and `rakupp test` --------------------------------------
 # Gate::Built is the OpenSSL shape: Build.rakumod imports a build-dep from
 # the target store and generates a file its own suite requires. Driven

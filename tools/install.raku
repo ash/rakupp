@@ -16,6 +16,8 @@
 #   rakupp install Foo::Bar              install newest satisfying, plus deps
 #   rakupp install Foo:ver<1.2.3>        a specific version (still additive)
 #   rakupp install --dry-run Foo         the full plan, nothing written
+#   rakupp install [-r] lib/Foo          module files with no META6.json
+#   rakupp install app.raku              the modules a program uses
 #   rakupp install --list                what is installed in the home store:
 #                                        identity, installer, module files,
 #                                        bin wrappers (-q: identities only)
@@ -769,6 +771,14 @@ sub archive-url(%e) {
     %e<source-url> // (base-url() ~ '/' ~ (%e<path> // ''))
 }
 
+# The source files a path argument can name besides a distribution root (see
+# "modules without a META6.json" below): a module file, or a program.
+my constant @MODULE-EXTS  = <rakumod pm6 pm>;
+my constant @PROGRAM-EXTS = <raku rakutest p6 pl6 pl t>;
+
+# -r / --recursive: a directory's module files at every depth, not only its own
+my $RECURSIVE = False;
+
 # A PATH identity — an argument that names a directory holding a distribution
 # (META6.json at its root), never an ecosystem module. `rakupp install .` is
 # the development loop: THIS dist, its ecosystem dependencies first, no fetch
@@ -839,6 +849,18 @@ sub expand-tilde(Str $arg --> Str) {
 #   META6.json         the file that MAKES a directory a distribution root, so
 #                      a path to it is a path to the distribution — tab
 #                      completion hands it over, and it was "not a directory".
+#   Foo, again         …or a directory with no META6.json that holds module
+#                      files, at any depth: `rakupp install VariableTransformer`
+#                      from inside a checkout's lib/. (At any depth even
+#                      without -r, so that a `lib` whose modules all sit in
+#                      subdirectories is answered with the -r hint, not taken
+#                      for the `lib` pragma.)
+#   x.raku, X.rakumod  a source file, by name — by its extension, so a typo
+#                      fails as a missing file rather than as a module nobody
+#                      published. No distribution's name ends in `.raku`, and
+#                      without an extension a bare word stays a name: `rakupp
+#                      install p` must not become a path because a file `p`
+#                      lies about.
 #
 # The shape rules do NOT consult the filesystem, on purpose: `./nope` must fail
 # as a missing directory, not travel to the ecosystem index as a module name.
@@ -849,8 +871,10 @@ sub is-path-arg(Str $arg is copy) {
     return True if $arg.starts-with('\\');                      # UNC, or a rooted Windows path
     return True if $arg ~~ /^ <[A..Za..z]> ':' <[\\ /]> /;        # C:\dist or C:/dist
     return True if $arg.contains('/') || $arg.contains('\\');   # dists/Foo, dists\Foo
-    so (try ($arg.IO.d && $arg.IO.add('META6.json').e)
-            || ($arg eq 'META6.json' && $arg.IO.f))
+    return True if $arg ~~ / '.' (<[a..z 0..9]>+) $ / && ~$0 eq any(@MODULE-EXTS) | any(@PROGRAM-EXTS);
+    my $io = $arg.IO;
+    so (try ($io.d && ($io.add('META6.json').e || module-files($io, :all)))
+            || ($arg eq 'META6.json' && $io.f))
 }
 
 # The distribution directory a path argument names. Tilde-expanded, so every
@@ -950,11 +974,7 @@ sub url-dist-entry(Str $url) {
     %e
 }
 
-sub local-dist-entry(Str $arg) {
-    my $root = arg-path($arg).absolute.IO.cleanup;   # `.` spells the cwd, not a path segment to keep
-    die "$arg: not a directory" unless $root.d;
-    die "$arg: no META6.json at {$root} — not a distribution root"
-        unless $root.add('META6.json').e;
+sub meta-dist-entry(IO::Path $root, Str $arg) {
     my %m = (try json-decode($root.add('META6.json').slurp))
         // die "$arg: META6.json does not parse";
     die "$arg: META6.json carries no name" unless %m<name>;
@@ -965,7 +985,348 @@ sub local-dist-entry(Str $arg) {
     %e<dist> = "%m<name>:ver<{%m<version> // ''}>:auth<{%m<auth> // ''}>";
     %e<local-root> = $root.Str;
     %e<source-url> = $root.Str;   # what the plan line prints
+    %e<scan-notes> = [];
     %e
+}
+
+# A path argument as the distribution to install. A directory with a
+# META6.json is one as it stands; anything else is a set of module files —
+# see the section below for where its identity comes from.
+sub local-dist-entry(Str $arg) {
+    my $path = arg-path($arg).absolute.IO.cleanup;   # `.` spells the cwd, not a path segment to keep
+    die "$arg: no such file or directory" unless $path.e;
+    if $path.d && $path.add('META6.json').e {
+        my %e = meta-dist-entry($path, $arg);
+        # -r at a distribution root: every module file under lib/ joins what
+        # the META provides — the one way to install a module it forgot to list
+        add-found-modules(%e, module-files($path.add('lib'), :all), $arg)
+            if $RECURSIVE && $path.add('lib').d;
+        return %e;
+    }
+    die "$arg: not a module file (.{@MODULE-EXTS.join(', .')}) and not a directory"
+        if $path.f && !module-file($path);
+    my @files = $path.d ?? module-files($path, :all($RECURSIVE)) !! ($path,);
+    unless @files {
+        my $below = $RECURSIVE ?? 0 !! module-files($path, :all).elems;
+        die $below
+            ?? "$arg: no module files directly in it, and $below below it — -r installs those"
+            !! "$arg: no META6.json and no module files (.{@MODULE-EXTS.join(', .')}) — nothing to install";
+    }
+    with enclosing-dist($path) -> $root {
+        my %e = meta-dist-entry($root, $arg);
+        %e<scan-notes>.push: "$arg: inside the distribution at $root — installing "
+                           ~ "{%e<dist>}, with every module found here";
+        add-found-modules(%e, @files, $arg);
+        return %e;
+    }
+    loose-dist-entry($path, @files, $arg)
+}
+
+# ---- modules without a META6.json, and programs ------------------------------
+# Three things a path argument can name besides a distribution root:
+#
+#   lib/Foo                a directory of module files with no META6.json: the
+#                          modules directly in it — or, with -r, every module
+#                          file below it
+#   lib/Foo/Bar.rakumod    one module file
+#   script.raku            a PROGRAM: the modules it `use`s install, and the
+#                          program itself does not — the store has no place for
+#                          a file nothing provides under a name
+#
+# A directory or module file inside a distribution — a META6.json above it,
+# and the path under one of the directories that dist keeps its modules in —
+# stands for THAT distribution, and the modules found join what its META6.json
+# provides. The META is the only place the dist's name, version, auth and
+# dependencies are written down. Installing the found modules under an
+# identity of their own would put a partial second copy of the dist in the
+# store beside the real one, and `use` would pick between the two by version.
+# What the scan does add is the module the META forgot to list, which is how a
+# checkout's `rakupp install .` succeeds and then fails `use`.
+#
+# With no META6.json anywhere above, there is no identity to take, so one is
+# made (loose-dist-entry), and the dependencies are what the files `use`.
+# (@MODULE-EXTS, @PROGRAM-EXTS and $RECURSIVE are declared above is-path-arg,
+# which reads the first two.)
+
+sub module-file(IO::Path $f --> Bool) {
+    ?($f.f && $f.extension eq any(@MODULE-EXTS))
+}
+
+# A path argument that is a program rather than a module or a dist: an
+# existing file that is neither a module file nor the META6.json.
+sub program-arg(Str $arg --> Bool) {
+    my $p = expand-tilde($arg).IO;
+    ?((try $p.f) && $p.basename ne 'META6.json' && !module-file($p))
+}
+
+# Every module file in $dir: directly in it, or with :all at any depth.
+# Hidden directories (.git, .precomp) are not looked in, and neither is a
+# symlinked one — a link back up the tree would never end.
+sub module-files(IO::Path $dir, Bool :$all --> List) {
+    my @out;
+    my @todo = $dir;
+    while @todo {
+        my $d = @todo.shift;
+        for (try $d.dir) // () -> $e {
+            next if $e.basename.starts-with('.');
+            if $e.d {
+                @todo.push($e) if $all && !$e.l;
+            }
+            elsif $e.extension eq any(@MODULE-EXTS) {
+                @out.push($e);
+            }
+        }
+    }
+    @out.sort(*.Str).List
+}
+
+# A path below $base as a module name: Foo/Bar.rakumod is Foo::Bar.
+sub path-module-name(IO::Path $f, IO::Path $base --> Str) {
+    $f.relative($base).subst(/ '.' <-[./\\]>+ $ /, '').split(/<[/\\]>/).join('::')
+}
+
+# A path below a dist root, spelled the way META6 provides spells one.
+sub dist-rel(IO::Path $f, IO::Path $root --> Str) {
+    $f.relative($root).subst('\\', '/', :g)
+}
+
+# A META6 provides value is a path; an installed record's is { path => … }.
+sub provides-path($v --> Str) {
+    ($v ~~ Associative ?? ~($v.keys[0] // '') !! ~$v).subst('\\', '/', :g).subst(/^ './' /, '')
+}
+
+# The packages a source file declares, by name.
+sub declared-packages(Str $src --> List) {
+    $src.match(/ ^^ \h* [ 'unit' \h+ ]? [ [ 'my' | 'our' ] \h+ ]?
+                 [ 'module' | 'class' | 'role' | 'grammar' | 'package' | 'knowhow' | 'monitor' ]
+                 \h+ ( <[\w]> <[\w'-]>* [ '::' <[\w]> <[\w'-]>* ]* ) /, :g)
+        .map({ ~.[0] }).List
+}
+
+# A module file's name when no META6.json gives it one: the file's own
+# declaration first — `unit class Foo::Bar` in …/Bar.rakumod — then the path
+# below the nearest lib/ (the convention every provides list follows), then
+# the path below the directory the scan started from.
+sub loose-module-name(IO::Path $f, IO::Path $base --> Str) {
+    my $stem = $f.basename.subst(/ '.' <-[.]>+ $ /, '');
+    my $declared = declared-packages((try $f.slurp) // '')
+        .first({ .split('::').tail eq $stem });
+    return $declared if $declared;
+    my $lib = $f.parent;
+    $lib = $lib.parent while $lib.basename ne 'lib' && $lib.parent.Str ne $lib.Str;
+    path-module-name($f, $lib.basename eq 'lib' ?? $lib !! $base)
+}
+
+# The distribution a path lies inside: the nearest META6.json above it, taken
+# only when the path is under a directory that dist keeps its modules in
+# (lib/, or wherever its provides point) — a t/lib/ helper or an examples/
+# module beside a dist is not part of it. The climb stops at a repository root
+# (.git), so a checkout never borrows the META of whatever directory holds it.
+sub enclosing-dist(IO::Path $path) {
+    my $d = $path.parent;
+    loop {
+        my $meta = $d.add('META6.json');
+        if $meta.f {
+            my %m = (try json-decode($meta.slurp)) // {};
+            return Nil unless %m<name>;
+            my @homes = 'lib', |(%m<provides> // {}).values.map({ provides-path($_).split('/')[0] });
+            my $first = dist-rel($path, $d).split('/')[0];
+            return $first eq any(@homes) ?? $d !! Nil;
+        }
+        last if $d.add('.git').e || $d.parent.Str eq $d.Str;
+        $d = $d.parent;
+    }
+    Nil
+}
+
+# The module files a dist's META6.json does not provide, added to it. Named by
+# their path below lib/ (or below whichever directory holds them), which is how
+# `use` finds a file with -I lib and how mi6 writes a provides list. What the
+# added files `use` that neither the dist nor its META's dependencies provide
+# installs too, the way a program's imports do.
+sub add-found-modules(%e, @files, Str $arg) {
+    my $root = %e<local-root>.IO;
+    my %m = json-decode($root.add('META6.json').slurp);
+    my %provides = %m<provides> // {};
+    my %listed;
+    %listed{provides-path(.value)} = .key for %provides.pairs;
+    my @added;
+    for @files -> $f {
+        my $rel = dist-rel($f, $root);
+        next if %listed{$rel};
+        my $name = path-module-name($f, $root.add($rel.split('/')[0]));
+        if %provides{$name}:exists {
+            %e<scan-notes>.push: "warning: {%e<name>}: $rel would be module $name, which "
+                               ~ "META6.json gives to {provides-path(%provides{$name})} — keeping that";
+            next;
+        }
+        %provides{$name} = $rel;
+        @added.push: $name;
+    }
+    return unless @added;
+    %m<provides> = %provides;
+    %e<provides> = %provides;
+    %e<meta>     = %m;
+    %e<scanned>  = True;
+    %e<scan-notes>.push: "{%e<name>}: {+@added} module{@added == 1 ?? '' !! 's'} its META6.json "
+                       ~ "does not provide, added: {@added.join(', ')}";
+    my %declared;
+    %declared{parse-identity(~$_)<name>} = True
+        for <depends build-depends test-depends>.map({ dep-identities(%m{$_}) }).flat;
+    my @extra;
+    for @added -> $name {
+        for source-uses($root.add(%provides{$name}).slurp)<uses>.list -> $id {
+            my $n = parse-identity($id)<name>;
+            next if %provides{$n}:exists || %declared{$n} || @extra.first(* eq $id);
+            @extra.push: $id;
+        }
+    }
+    if @extra {
+        %e<depends> = [ |dep-identities(%e<depends>), |@extra ];
+        %e<scanned-wants> = @extra;
+        %e<scan-notes>.push: "{%e<name>}: the added module{@added == 1 ?? '' !! 's'} also "
+                           ~ "use{@added == 1 ?? 's' !! ''} {@extra.join(', ')}";
+    }
+}
+
+# Module files with no META6.json anywhere above them, as a distribution of
+# their own. The name is the namespace every module shares (Foo, for Foo and
+# Foo::Bar; Foo::Bar, for Foo::Bar::A and Foo::Bar::B), else the directory's;
+# the version is 0, because nothing states one; the dependencies are what the
+# files `use`. With no version to compare, the directory's copy REPLACES the
+# store's on every install: editing a module and installing again must not
+# answer "already installed".
+sub loose-dist-entry(IO::Path $path, @files, Str $arg) {
+    my $root = $path.d ?? $path !! $path.parent;
+    my %provides;
+    for @files -> $f {
+        my $name = loose-module-name($f, $root);
+        die "$arg: {dist-rel($f, $root)} and {%provides{$name}} are both module $name"
+            if %provides{$name}:exists;
+        %provides{$name} = dist-rel($f, $root);
+    }
+    my @names = %provides.keys.sort;
+    my @common = @names[0].split('::');
+    for @names -> $n {
+        my @s = $n.split('::');
+        my $i = 0;
+        $i++ while $i < @common && $i < @s && @common[$i] eq @s[$i];
+        @common = @common[^$i];
+    }
+    my $name = @common ?? @common.join('::') !! $root.basename;
+    my @depends;
+    for @names -> $n {
+        for source-uses($root.add(%provides{$n}).slurp)<uses>.list -> $id {
+            next if %provides{parse-identity($id)<name>}:exists || @depends.first(* eq $id);
+            @depends.push: $id;
+        }
+    }
+    my %m = name => $name, version => '0', auth => '',
+            description => "modules installed from $root, which has no META6.json",
+            provides => %provides, depends => @depends;
+    my %e = name => $name, version => '0', auth => '', provides => %provides,
+            depends => @depends, dist => "{$name}:ver<0>:auth<>",
+            local-root => $root.Str, source-url => $root.Str,
+            meta => %m, loose => True, scanned-wants => @depends;
+    %e<scan-notes> = ["$arg: no META6.json above it — installing "
+                    ~ (@names == 1 && @names[0] eq $name
+                        ?? "module $name as {$name}:ver<0>"
+                        !! "{+@names} modules as {$name}:ver<0>: {@names.join(', ')}")];
+    %e
+}
+
+# Names the engine answers itself: its pragmas, and the modules Rakudo ships
+# in its core. Keep in step with isPragmaName in src/Interpreter.cpp.
+my constant @BUILTIN-MODULES = <strict fatal lib isms nqp soft worries experimental js JS
+    variables attributes cur Slang MONKEY Test NativeCall Pod::To::Text if newline
+    precompilation trace dynamic-scope snapper safe-snapper invocant internals
+    parameters routines subroutines absolute dispatch DEPRECATED Telemetry>;
+sub builtin-module(Str $name --> Bool) {
+    ?($name eq any(@BUILTIN-MODULES) || $name eq any(@CORE-NAMES)
+      || $name ~~ /^ 'v' \d / || $name.starts-with('MONKEY-')
+      || $name.starts-with('NativeCall::') || $name.starts-with('Rakupp::'))
+}
+
+# What a source file loads, read as TEXT: every `use` and `need` of a module by
+# name, adverbs and all (`Foo:ver<1.2+>:auth<zef:x>`), and the literal
+# directories its `use lib` adds. Not compiled: a program whose dependencies
+# are missing is exactly the program that cannot be. Pod blocks and heredocs
+# are skipped — a `use` line in documentation, or in code a program writes
+# out, is not a dependency. `require` is not followed: it runs at run time,
+# and is usually a `try` or an `if` away from being optional.
+# `:from<Perl5>` and `:from<Python>` need the Inline:: dist that loads them.
+sub source-uses(Str $src) {
+    my (@uses, @libs);
+    my @owed;          # heredoc terminators, in the order their bodies follow
+    my $pod = '';      # the =begin block being skipped
+    my $para = False;  # an abbreviated pod block (=head1, =for …): ends at a blank line
+    for $src.lines -> $line {
+        if @owed {
+            @owed.shift if $line.trim eq @owed[0];
+            next;
+        }
+        if $pod {
+            $pod = '' if $line ~~ /^ \h* '=end' \h+ (\S+) / && ~$0 eq $pod;
+            next;
+        }
+        if $line ~~ /^ \h* '=' (<[A..Za..z]> \S*) [ \h+ (\S+) ]? / {
+            my $directive = ~$0;
+            last if $directive eq 'finish' | 'END';
+            if $directive eq 'begin' { $pod = $1 ?? ~$1 !! 'pod' }
+            elsif $directive ne 'end' { $para = True }
+            next;
+        }
+        if $para {
+            $para = False if $line.trim eq '';
+            next;
+        }
+        for $line.match(/ [ ^ | ';' | '{' ] \h* $<kw>=[ 'use' | 'need' ] \h+
+                          $<id>=[ <[\w]> <[\w'-]>* [ '::' <[\w]> <[\w'-]>* ]*
+                                  [ ':' <[a..z]>+ '<' <-[>]>* '>' ]* ]
+                          <?before [ \s | ';' | '}' | $ ]> /, :g) -> $m {
+            my $id = ~$m<id>;
+            my %i = parse-identity($id);
+            if %i<name> eq 'lib' {
+                my $rest = $line.substr($m.to).split(';')[0];
+                for $rest.match(/ \' (<-[']>*) \' | \" (<-["]>*) \" | '<' (<-[>]>*) '>' /, :g) -> $l {
+                    @libs.append: (~$l[0]).words;
+                }
+                next;
+            }
+            if %i<from> ne '' {
+                $id = %i<from> eq 'Perl5' ?? 'Inline::Perl5'
+                   !! %i<from> eq 'Python' ?? 'Inline::Python'
+                   !! next;
+            }
+            next if builtin-module(parse-identity($id)<name>);
+            @uses.push($id) unless @uses.first(* eq $id);
+        }
+        @owed.append: $line.match(/ [ ':to' | ':heredoc' ] <[/<«]> (<-[/>»]>+) <[/>»]> /, :g)
+                           .map({ ~.[0] });
+    }
+    { uses => @uses, libs => @libs }
+}
+
+# A program's dependencies: what it `use`s, less what its `use lib`
+# directories hold — those it finds without an install. A `use lib` path is
+# relative to wherever the program is run from; both the program's own
+# directory and the current one are looked in.
+sub program-wants(Str $arg --> List) {
+    my $f = expand-tilde($arg).IO.absolute.IO;
+    my %u = source-uses((try $f.slurp) // die "$arg: cannot read it");
+    my @libs = %u<libs>.map(-> $l {
+        $l.IO.is-absolute ?? ($l.IO,) !! ($f.parent.add($l), $*CWD.add($l))
+    }).flat.grep(*.d);
+    my @wants;
+    for %u<uses>.list -> $id {
+        my $rel = parse-identity($id)<name>.split('::').join('/');
+        with @libs.first(-> $d { @MODULE-EXTS.first({ $d.add("$rel.$_").e }) }) -> $d {
+            trace("program $arg: {parse-identity($id)<name>} is in its `use lib` {$d}");
+            next;
+        }
+        @wants.push: $id;
+    }
+    @wants
 }
 
 # This engine's CompUnit install takes any object with .meta and .IO, but
@@ -1230,8 +1591,10 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
                 // die "no META6.json in %e<name>'s archive";
     }
 
-    my %meta = json-decode($root.add('META6.json').slurp);
-    trace("meta: {%meta<name> // '?'} ver<{%meta<version> // '?'}> auth<{%meta<auth> // ''}> (root {$root.basename})");
+    # A dist whose provides a scan widened, or a set of modules with no
+    # META6.json at all, carries the META to write; every other reads its own.
+    my %meta = %e<meta> ?? %(%e<meta>) !! json-decode($root.add('META6.json').slurp);
+    trace("meta:{%meta<name> // '?'} ver<{%meta<version> // '?'}> auth<{%meta<auth> // ''}> (root {$root.basename})");
 
     # The index and the dist can disagree about auth — REA rewrites it, so
     # Hash::Merge 2.0.0 is auth<cpan:TYIL> in the index and auth<github:scriptkitties>
@@ -1239,7 +1602,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
     # plan's pre-check asked with the wrong identity and missed. Ask again with
     # the dist's own identity, now that it is known, rather than paying for a
     # build hook and a whole test suite that end in the engine's refusal.
-    if !$force && !$test-only
+    if !$force && !$test-only && !%e<replace>
        && %have{identity-key(%meta<name>, %meta<version> // %meta<ver>, %meta<auth>, %meta<api>)} {
         inform("already installed: {%e<dist> // %e<name>} (use --force to reinstall)");
         trace("already installed: {%e<dist> // %e<name>} — the dist's own identity "
@@ -1248,7 +1611,9 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
         return True;
     }
 
-    if !run-build-hook(%e, $root, $prefix) {
+    # (no META6.json, no build protocol: a Build.rakumod among loose modules
+    # is one of the modules)
+    if !%e<loose> && !run-build-hook(%e, $root, $prefix) {
         die "%e<name>: its build hook fails under rakupp — not installing";
     }
 
@@ -1321,7 +1686,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
     my $repo = CompUnit::RepositoryRegistry.repository-for-spec("inst#$prefix");
     my $dist = InstallableDist.new(meta => %meta, root => $root.Str);
     my $dist-id = with-repo-lock($prefix, {
-        my $id = $repo.install($dist, :force($force || $repair));
+        my $id = $repo.install($dist, :force($force || $repair || ?%e<replace>));
         record-owned($prefix, ~$id) if $id ~~ Str;
         $id
     });
@@ -1823,10 +2188,13 @@ sub identity-key($name, $ver, $auth, $api) {
 # store through SHA-1 on each install, while the only records whose damage
 # changes this run are the ones about to be installed. Presence is still checked
 # for all of them, and it is free.
+#
+# %mods answers which modules each identity's records provide — a scan can
+# widen a dist's provides past what the store holds under the same identity.
 sub store-state(Str $prefix, %verify = {}) {
-    my (%have, %broken);
+    my (%have, %broken, %mods);
     my $dist-dir = $prefix.IO.add('dist');
-    return { have => %have, broken => %broken } unless $dist-dir.d;
+    return { have => %have, broken => %broken, mods => %mods } unless $dist-dir.d;
     my %owned = owned-set($prefix);
     for $dist-dir.dir.grep(*.f) -> $f {
         my %m = try json-decode($f.slurp);
@@ -1834,8 +2202,9 @@ sub store-state(Str $prefix, %verify = {}) {
         my $key = identity-key(%m<name>, %m<version> // %m<ver>, %m<auth>, %m<api>);
         my $verify = ?%verify{$key} && ?%owned{$f.basename};
         (store-blobs-intact($prefix, %m, :$verify) ?? %have !! %broken){$key} = True;
+        %mods{$key}{$_} = True for (%m<provides> // {}).keys;
     }
-    { have => %have, broken => %broken }
+    { have => %have, broken => %broken, mods => %mods }
 }
 
 # Every blob a dist record names, still on disk — and, with :verify, still the
@@ -1884,9 +2253,11 @@ sub MAIN(
     Bool :$force,              #= reinstall / uninstall despite refusals
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
     Bool :q(:$quiet),          #= only warnings and failures; nothing on success
+    Bool :r(:$recursive),      #= a directory's module files at every depth, not only its own
     Str  :$to = home-dir().add('.raku').Str,  #= the CURI store prefix to write
 ) {
     $QUIET = ?$quiet;
+    $RECURSIVE = ?$recursive;
     # the one-symlink PATH shim the test/build children see, if one was made
     LEAVE { run 'rm', '-rf', $TEST-SHIM if $TEST-SHIM }
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
@@ -1934,7 +2305,9 @@ sub MAIN(
         exit with-repo-lock($to, { store-gc($to, :dry($dry-run)) });
     }
     # `rakupp uninstall .` / `reinstall .` — the store knows dists by NAME,
-    # so a path argument stands for whatever its directory's META6 names
+    # so a path argument stands for whatever its directory's META6 names —
+    # or, for a directory or module file without one, the dist an install of
+    # it would write
     if $uninstall {
         with @modules.first({ url-arg($_) }) -> $u {
             note "rakupp uninstall: $u";
@@ -1945,9 +2318,8 @@ sub MAIN(
         }
     }
     my @removal-names = @modules.map(-> $a {
-        my $meta = is-path-arg($a) ?? arg-path($a).add('META6.json') !! Nil;
-        $meta && $meta.e
-            ?? ((try json-decode($meta.slurp))<name> // $a)
+        is-path-arg($a) && !program-arg($a)
+            ?? ((try local-dist-entry($a))<name> // $a)
             !! $a
     });
     if $uninstall {
@@ -1985,6 +2357,12 @@ sub MAIN(
                    rakupp install .            this directory's dist
                    rakupp install my-dist      a Path: a directory holding a META6.json, however
                                                spelled — my-dist, ./x, ~/x, /x, dists/x, C:\x, \\\\host\x
+                   rakupp install [-r] lib/Foo a directory of module files with no META6.json:
+                                               the modules in it (-r: and in every directory
+                                               below it). Inside a dist's lib/, that dist, with
+                                               any module its META6.json does not list added
+                   rakupp install Foo.rakumod  one module file, the same way
+                   rakupp install app.raku     what a program uses: its modules, not the program
                    rakupp install https://github.com/OWNER/REPO[/tree/REF[/SUBDIR]]
                    rakupp install https://host/Foo-1.0.tar.gz
                    rakupp install --list | --check | --gc | --refresh
@@ -2003,6 +2381,7 @@ sub MAIN(
               --refresh        refetch the ecosystem index(es) (else cached 24h);
                                alone: refresh and stop
               --to=PATH        the store prefix to use (default: ~/.raku)
+              -r, --recursive  a directory's module files at every depth, not only its own
               -q, --quiet      only warnings and failures; nothing on success
                                (with any command, before or after it)
             END
@@ -2011,28 +2390,78 @@ sub MAIN(
 
     $REA-REFRESH = $refresh // False;
     # is-path-arg(): an argument that spells a path, or bare-names a directory
-    # with a META6.json in it, is a directory to install from; everything else
-    # resolves in the ecosystem.
+    # with a META6.json or module files in it, or a source file, is something
+    # on disk to install from; everything else resolves in the ecosystem.
     # A path dist contributes its DEPENDENCIES to the resolver — they install
     # first, like any plan's — while the dist itself installs from its
-    # directory, never from the index's copy of the same name.
+    # directory, never from the index's copy of the same name. A program
+    # contributes ONLY its dependencies.
     #
     # A URL is fetched and unpacked into a directory FIRST, and is a local dist
     # from there on: same dependency handling, same build hook, same test gate,
     # same store write. Nothing downstream knows the difference.
-    my @local-entries = @modules.grep({ is-path-arg($_) }).map({ local-dist-entry($_) });
+    my @path-args = @modules.grep({ is-path-arg($_) });
+    my @programs = @path-args.grep({ program-arg($_) });
+    my @local-entries = @path-args.grep({ !program-arg($_) }).map({ local-dist-entry($_) });
     @local-entries.append(@modules.grep({ url-arg($_) }).map({ url-dist-entry($_) }));
     my @names = @modules.grep({ !is-path-arg($_) && !url-arg($_) });
     my %notes;
     my @wants = @names;
+    # What a SCAN found — a program's imports, or what module files with no
+    # META6.json `use` — rather than what anybody declared. Nothing states a
+    # version for those, so whatever is installed already answers them.
+    my @scanned;
+    my @program-wants;
+    for @programs -> $p {
+        my @w = program-wants($p);
+        progress(@w ?? "$p: a program — installing the {+@w} module{@w == 1 ?? '' !! 's'} it uses, not the program"
+                    !! "$p: a program that uses no module outside the core");
+        trace("program $p: uses {@w ?? @w.join(' ') !! 'nothing outside the core'}");
+        @program-wants.append(@w);
+    }
+    @wants.append(@program-wants);
+    @scanned.append(@program-wants);
     for @local-entries -> %e {
         trace("local: {%e<dist>} from {%e<local-root>}");
+        for @(%e<scan-notes> // []) -> $n {
+            $n.starts-with('warning:') ?? note($n) !! progress($n);
+            trace("scan: $n");
+        }
+        @scanned.append(@(%e<scanned-wants> // []));
         for <depends build-depends test-depends> -> $field {
             @wants.append(dep-identities(%e{$field}));
             %notes{$_} = 'an alternation this installer does not choose between'
                 for dep-unresolved(%e{$field});
         }
     }
+    # A module a local entry provides installs from its directory — not from
+    # the index's copy of it, and not as "not in the ecosystem index" when only
+    # the checkout has it.
+    my %local-provides;
+    for @local-entries -> %e {
+        %local-provides{%e<name>} = True;
+        %local-provides{$_} = True for (%e<provides> // {}).keys;
+    }
+    my %scanned-set = @scanned.map({ $_ => True });
+    my @installed = @scanned && !$force ?? installed-entries($to) !! ();
+    my $satisfied = 0;
+    @wants = @wants.grep(-> $id {
+        my %w = parse-identity(~$id);
+        if %local-provides{%w<name>} {
+            trace("want $id: provided by a directory on this command line");
+            False
+        }
+        elsif %scanned-set{$id} && @installed && candidates(@installed, %w) {
+            trace("want $id: found by a scan, and installed already");
+            $satisfied++;
+            False
+        }
+        else {
+            True
+        }
+    });
+    progress("$satisfied of the modules found by reading the source "
+           ~ "{$satisfied == 1 ?? 'is' !! 'are'} installed already") if $satisfied;
     # a pure-path install with no ecosystem wants needs no index at all —
     # `rakupp install .` on a dependency-free dist works offline
     my @index = @wants ?? load-index($refresh // False).list !! ();
@@ -2056,12 +2485,22 @@ sub MAIN(
         # directory beside it is called, so it earns no such note.)
         for %notes.keys.sort.grep({ !identity-arg($_) && (try .IO.d)
                                     && !(try .IO.add('META6.json').e) }) -> $d {
-            note "  $d is a directory here, but has no META6.json — a distribution root needs one";
-            trace("cannot resolve: $d is a META6-less directory");
+            my $below = module-files($d.IO, :all).elems;
+            note "  $d is a directory here, but has no META6.json and no module files"
+               ~ ($below ?? " directly in it — -r installs the $below below it"
+                         !! " — nothing in it to install");
+            trace("cannot resolve: $d is a META6-less directory ($below module files below it)");
         }
         trace("cannot resolve: {%notes.map({ "{.key} ({.value})" }).join('; ')}");
         trace-pointer();
         exit 1;
+    }
+    # only a program can get here with nothing to do: everything it uses is
+    # in the core or in the store
+    if !@plan && !%notes {
+        inform("nothing to install");
+        trace("plan: empty — nothing to install");
+        return;
     }
     trace("plan: {@plan.elems} — " ~ (@plan ?? @plan.map(-> %e { %e<dist> // %e<name> }).join(', ') !! '(empty)'));
     trace("skipped: {.key} — {.value}") for %notes.sort;
@@ -2076,6 +2515,23 @@ sub MAIN(
         my %state = store-state($to, %planned);
         %have   = %state<have>;
         %broken = %state<broken>;
+        # In the store is not the same as installed, for a dist this run builds
+        # from module files. Loose modules have no version to tell one copy
+        # from the next, so the directory's always replaces the store's; a dist
+        # whose provides a scan widened replaces a stored copy that lacks a
+        # module it now provides — the copy installed before that module was
+        # found, or the ecosystem's release, which never had it.
+        for @plan.grep({ .<loose> || .<scanned> }) -> %e {
+            my $key = identity-key(%e<name>, %e<version>, %e<auth>, %e<api>);
+            next unless %have{$key};
+            my @missing = %e<loose> ?? () !! (%e<provides> // {}).keys.grep({ !%state<mods>{$key}{$_} }).sort;
+            next unless %e<loose> || @missing;
+            %have{$key}:delete;
+            %e<replace> = True;
+            progress("{%e<dist>}: the store's copy does not provide {@missing.join(', ')} — replacing it")
+                if @missing;
+            trace("replace: {%e<dist>}" ~ (@missing ?? " — the store's copy lacks {@missing.join(', ')}" !! ' — loose modules'));
+        }
     }
 
     # The plan is narration on a real run and THE product of --dry-run, so -q
@@ -2087,7 +2543,8 @@ sub MAIN(
     for @plan -> %e {
         my $known = %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)};
         my $note = shadowed-by-rakulib(%e) ?? '   (provided by rakupp, not fetched)'
-                !! $known ?? '   (already installed)' !! '';
+                !! $known ?? '   (already installed)'
+                !! %e<replace> ?? '   (replaces the copy in the store)' !! '';
         say "  {%e<dist> // %e<name>}   {archive-url(%e)}$note"
             if $show-plan;
     }
@@ -2107,7 +2564,8 @@ sub MAIN(
         %target{parse-identity($_)<name>} = True for @names;
         %target{.<name>} = True for @local-entries;   # `rakupp test .` targets the dist the dir names
     }
-    my @named = |@names.map({ parse-identity($_)<name> }), |@local-entries.map(*.<name>);
+    my @named = |@names.map({ parse-identity($_)<name> }), |@local-entries.map(*.<name>),
+                |@program-wants.map({ parse-identity($_)<name> });
     my $test-only-deps = test-only-entries(@plan, @named);
     for @plan -> %e {
         my $is-target = $test-only
