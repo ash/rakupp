@@ -204,6 +204,11 @@ logs and the reviews. This page is the complete list.
   measured: a bound `@` parameter keeps a `List`, the Roast harness stops
   splicing child output into its status lines, and the moved perf baseline
   survives four more eliminations uncaused.
+- **[OPEN-5.3.md](OPEN-5.3.md)** *(v5.3.0 sitting, 2026-10-08/09)* — what the
+  release ships broken or degraded: interpreted calls 5–10% slower than v5.2.1,
+  the deliberate Rakudo-compatible refusals that break three Raku Koans, three
+  battery dists broken since v5.0.1, and the Raku.js and embedding gaps still
+  open after the crash fix.
 
 ## Performance investigations
 
