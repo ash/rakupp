@@ -4918,12 +4918,17 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // hashes in v3.21.0 — it is the same defect, one path over.
                     else if (bv.t == VT::Array && bv.itemized) {
                         Value u = bv; u.itemized = false;
+                        if (u.isList && u.s == "Seq") { u.seqTouch(); u.s.clear(); }   // a Seq in a `$`
                         bv = u.isList ? u : coerceArray(u);
                     }
                     else if (bv.t == VT::Array && !p.isCopy && !bv.ext()) {
                         if (bv.s == "Seq") bv.s.clear();   // a reified Seq binds as a List
                     }
-                    else bv = coerceArray(bv);
+                    else {
+                        bv = coerceArray(bv);
+                        // …and so does a lazy one, still lazy
+                        if (!p.isCopy && bv.t == VT::Array && bv.s == "Seq") bv.s.clear();
+                    }
                 }
                 else if (p.sigil == '%') {
                     if (!(bv.t == VT::Hash && bv.hash() && !p.isCopy)) bv = coerceHash(bv);
@@ -5015,6 +5020,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // `my $l = ((1,2),(3,4)); sub f(@c) { @c.flat }` is four.
                     Value u = v;
                     u.itemized = false;
+                    // (…and a Seq in a `$` binds as the List it caches into)
+                    if (u.isList && !p.isCopy && u.s == "Seq") u.s.clear();
                     v = u.isList && !p.isCopy ? u : coerceArray(u);   // (`is copy`: a fresh Array)
                 }
                 // …and a LIST binds AS THE LIST IT IS. Binding never itemises, so
@@ -5040,7 +5047,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         {{"got", v}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
                         "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Positional but got " +
                         v.typeName() + " (" + typeCheckRepr(v) + ")");
-                else v = coerceArray(v);
+                else {
+                    v = coerceArray(v);
+                    // a LAZY Seq stays lazy, and binds as the List it caches
+                    // into, as a reified one does above: `@x.^name` is List
+                    if (!p.isCopy && v.t == VT::Array && v.s == "Seq") v.s.clear();
+                }
                 // `Int @x` is a Positional[Int]: the ARRAY must be typed so —
                 // "You have to pass an explicitly typed array, not one that just
                 // might happen to contain elements of the correct type"
@@ -6022,8 +6034,28 @@ static bool subSigArgs(Interpreter& I, const Value& v0, ValueList& out) {
     return false;
 }
 
-bool Interpreter::paramWherePasses(const Value& cand, const Param& p, const Value& wv, size_t i,
+// A Seq bound to an `@` parameter is the List it caches into (Rakudo's
+// PositionalBindFailover), and that List is what the parameter's `where` sees.
+// Dispatch used to run the `where` on the raw Seq instead: `where @m ~~ List:D`
+// failed, so Math::SparseMatrix's `CSR.new(dense-matrix => @vec.map(…))` fell
+// through to Mu.new ("$!nrow is required"). A `where` that iterated the Seq
+// also consumed it, and the candidate that won next died with X::Seq::Consumed.
+static bool isSeqForAtParam(const Param& p, const Value& v) {
+    return p.sigil == '@' && !p.slurpy && v.t == VT::Array && v.s == "Seq";
+}
+static Value seqAsBoundList(const Value& v) {
+    v.seqTouch();
+    Value u = v;
+    u.s.clear();
+    u.itemized = false;
+    return u;
+}
+
+bool Interpreter::paramWherePasses(const Value& cand, const Param& p, const Value& arg, size_t i,
                                    const ValueList& pos, const Value* selfForWhere) {
+    const bool seqView = isSeqForAtParam(p, arg);
+    const Value listView = seqView ? seqAsBoundList(arg) : Value();
+    const Value& wv = seqView ? listView : arg;
     const auto& params = *cand.code()->params;
     const std::shared_ptr<Env>& whereScope =
         cand.code()->closure ? cand.code()->closure : tctx_.cur;
@@ -6793,6 +6825,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         if (p.whereExpr) {
             Value v = supplied ? sval
                     : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
+            if (supplied && isSeqForAtParam(p, v)) v = seqAsBoundList(v);
             if (!supplied && p.defaultVal) {
                 auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
                 defineSelf(*denv);
