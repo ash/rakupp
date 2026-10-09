@@ -15,6 +15,74 @@ extern thread_local bool g_rxReservedHash;   // Parser.cpp: the RegexLit reads i
 
 namespace rakupp {
 
+// A named binding takes ONE quantified atom, and the binding is then an atom
+// itself (Rakudo's metachar:sym<var>): in `$<w>=.*? +%% [ … ]` the `*?` is the
+// bound atom's and the `+` quantifies the binding. Given the position after
+// the `=`, this answers where the bound atom's own quantifier ends, or npos
+// when the atom has none or is a shape not recognized here (that case keeps
+// the plain `a+ +` refusal).
+static size_t boundQuantifierEnd(const std::string& p, size_t i) {
+    const size_t npos = std::string::npos;
+    auto ws = [&](size_t k) { while (k < p.size() && std::strchr(" \t\n\r", p[k])) k++; return k; };
+    // the end of the atom starting at k, or npos
+    auto atomEnd = [&](size_t k) -> size_t {
+        if (k >= p.size()) return npos;
+        const char c = p[k];
+        if (c == '[' || c == '(') {          // a group: to its closer
+            const char open = c, close = c == '[' ? ']' : ')';
+            int d = 0; char q = 0;
+            for (size_t j = k; j < p.size(); j++) {
+                const char cj = p[j];
+                if (q) { if (cj == '\\') j++; else if (cj == q) q = 0; continue; }
+                if (cj == '\\') { j++; continue; }
+                if (cj == '\'' || cj == '"') { q = cj; continue; }
+                if (cj == open) d++;
+                else if (cj == close && --d == 0) return j + 1;
+            }
+            return npos;
+        }
+        if (c == '<') {                      // an assertion: to its `>`
+            int d = 0; char q = 0;
+            for (size_t j = k; j < p.size(); j++) {
+                const char cj = p[j];
+                if (q) { if (cj == '\\') j++; else if (cj == q) q = 0; continue; }
+                if (cj == '\\') { j++; continue; }
+                if (cj == '\'' || cj == '"') { q = cj; continue; }
+                if (cj == '<') d++;
+                else if (cj == '>' && --d == 0) return j + 1;
+            }
+            return npos;
+        }
+        if (c == '\'' || c == '"') {         // a quoted literal
+            for (size_t j = k + 1; j < p.size(); j++) {
+                if (p[j] == '\\') { j++; continue; }
+                if (p[j] == c) return j + 1;
+            }
+            return npos;
+        }
+        if (c == '\\') {                     // an escape, `\x[41]` and kin included
+            if (k + 2 < p.size() && std::strchr("cCxXoO", p[k + 1]) && p[k + 2] == '[') {
+                const size_t e = p.find(']', k + 3);
+                return e == npos ? npos : e + 1;
+            }
+            return k + 2 <= p.size() ? k + 2 : npos;
+        }
+        if (c == '.' || ascii::isalnum((unsigned char)c) || c == '_') return k + 1;
+        return npos;
+    };
+    const size_t e = atomEnd(ws(i));
+    if (e == npos) return npos;
+    size_t k = ws(e);
+    if (k >= p.size() || !std::strchr("*+?", p[k])) return npos;   // no quantifier of its own
+    if (p[k] == '*' && k + 1 < p.size() && p[k + 1] == '*') return npos;   // `**` ranges: not here
+    k++;
+    // the greed and ratchet modifiers belong to the quantifier: `*?`, `+!`, `+:`
+    if (k < p.size() && (p[k] == '?' || p[k] == '!' ||
+                         (p[k] == ':' && !(k + 1 < p.size() && ascii::isalpha((unsigned char)p[k + 1])))))
+        k++;
+    return k;
+}
+
 void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
     // an empty regex (or an empty alternation branch / group) is X::Syntax::
     // Regex::NullRegex — `/ /`, `/ a | /`, `/ [] /`, `/ () /`, `s//x/`.
@@ -46,6 +114,9 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
     // (`a+ +` quantifies nothing), or something that matches nothing to repeat
     // (an anchor, a code block, a code assertion — X::Syntax::Regex::NonQuantifiable)
     enum { LkAtom, LkQuant, LkNonQuant } lastKind = LkAtom;
+    // where a quantifier may follow another: right after a named binding's
+    // own quantified atom, where it quantifies the binding (boundQuantifierEnd)
+    size_t bindQuantAt = std::string::npos;
     int grpDepth = 0;   // ( ) / [ ] balance — a `#` comment can swallow a closer
     auto nonQuantifiable = [&]() {
         throw ParseError("Can only quantify a construct that produces a match", line,
@@ -127,6 +198,18 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+        // `$<name>=…` / `@<name>=…` / `%<name>=…`: note where the binding's own
+        // quantifier may stand (the scan goes on through the binding as before)
+        if ((c == '$' || c == '@' || c == '%') && i + 1 < pat.size() && pat[i + 1] == '<') {
+            const size_t gt = pat.find('>', i + 2);
+            size_t k = gt == std::string::npos ? gt : gt + 1;
+            while (k < pat.size() && std::strchr(" \t\n\r", pat[k])) k++;
+            if (k < pat.size() && pat[k] == '=' && !(k + 1 < pat.size() && (pat[k + 1] == '=' || pat[k + 1] == '>'))) {
+                size_t q = boundQuantifierEnd(pat, k + 1);
+                while (q < pat.size() && std::strchr(" \t\n\r", pat[q])) q++;
+                if (q < pat.size() && std::strchr("*+?", pat[q])) bindQuantAt = q;
+            }
+        }
         // `o{1,3}` — Perl's general quantifier
         if (c == '{' && i > 0 && !atomStart && lastKind == LkAtom &&
             !std::strchr(" \t\n", pat[i - 1])) {
@@ -329,8 +412,9 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
         if (c == '*' || c == '+' || c == '?') {
             if (lastKind == LkNonQuant) nonQuantifiable();
             // `a+ +`: a second quantifier, across a blank, quantifies nothing
-            // (`a+?` is the frugal modifier and stays legal)
-            if (lastKind == LkQuant && i > 0 && std::strchr(" \t\n", pat[i - 1]))
+            // (`a+?` is the frugal modifier and stays legal) — unless the
+            // first was a named binding's own: `$<w>=.*? +` quantifies the binding
+            if (lastKind == LkQuant && i > 0 && std::strchr(" \t\n", pat[i - 1]) && i != bindQuantAt)
                 throw ParseError("Quantifier quantifies nothing", line,
                                  "X::Syntax::Regex::SolitaryQuantifier", {});
             atomStart = groupStart = afterBranch = false;
