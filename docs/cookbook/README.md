@@ -48,12 +48,12 @@ where a recipe needs one, and the output shown is what it printed.
   a deadline does not cancel the request. Programs: [http/](http/).
 
 - **[parallel.md](parallel.md)** — four requests in 2021 ms instead of 8020,
-  primes 4.5× faster over eight promises, results in the order they arrive, a
-  `Channel` worker pool, and eight threads sharing one `Array` — with what each
-  one measured. What bites: `await` inside the loop, the `.race`/`.hyper`
-  methods not fanning out on this engine today (the `race for` loop does),
-  thread ids that count `start` blocks rather than parallelism, and an
-  exception in a `start` block that waits for you. Programs: [parallel/](parallel/).
+  primes 4.7× faster over eight promises and as fast again written as one
+  `.race`, results in the order they arrive, a `Channel` worker pool, and
+  eight threads sharing one `Array` — with what each one measured. What bites:
+  `await` inside the loop, thread ids that count `start` blocks rather than
+  parallelism, and an exception in a `start` block that waits for you.
+  Programs: [parallel/](parallel/).
 
 ## Adding one
 

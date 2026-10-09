@@ -75,7 +75,10 @@ runnable snippets in [RECIPES.md](RECIPES.md), complete programs in
   (See [UNICODE.md](UNICODE.md).)
 - **Concurrency** — real `std::thread`s: promises, `Supply`/`react`/`whenever`,
   `Channel`, `Thread`, `Lock`, `atomicint`. True CPU parallelism is the default
-  since v3; `RAKUPP_GIL=1` selects the cooperative GIL. (See [ASYNC.md](ASYNC.md).)
+  since v3; `RAKUPP_GIL=1` selects the cooperative GIL. `hyper for` and
+  `.hyper`/`.race` run their blocks on worker threads, and hyper operators over
+  long lists of plain numbers run as a native loop over the cores. (See
+  [ASYNC.md](ASYNC.md) and [faq/hyper.md](faq/hyper.md).)
 - **I/O & system** — files, `IO::Path`, `run`/`shell` subprocesses, and a
   **NativeCall** C FFI (`is native` via `dlsym`, marshalled by a `libffi` that
   is `dlopen`ed at runtime rather than linked): scalars at their declared width,

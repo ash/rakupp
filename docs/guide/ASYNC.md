@@ -109,7 +109,10 @@ and the statement ends when the last batch has. The values come back in the
 order of the list (`race` allows any order, and gets this one). The `.hyper`
 and `.race` *methods* do the same for `.map` and `.grep`: `@a.hyper.map(&f)`
 runs `f` on the workers, in batches (`:batch` and `:degree` set both), and
-answers a HyperSeq in the list's order.
+answers a HyperSeq in the list's order. The hyper *operators* over long lists
+of plain Ints and Nums (`@a »*« @b`, `@a».sqrt`) run as a native loop split
+over the cores, with no interpreter in it. Which form to reach for, with
+measured numbers, is [faq/hyper.md](faq/hyper.md).
 
 ```raku
 my $main = $*THREAD.id;

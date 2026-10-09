@@ -85,6 +85,11 @@ only way these can drift.
   `RAKUPP_GIL=1` does, how to tell that threads really ran at once, why a
   `start` can make a program slower, what is yours to guard, and what
   `hyper for`, `.hyper` and the hyper operators spread over the cores.
+- **[hyper.md](hyper.md)** — the three things called hyper: which way the
+  arrows of `»op«` point, which forms use more than one core, `.map` against
+  `.hyper.map`, `hyper for` and a hyper operator with measured numbers,
+  `:batch` and `:degree`, what stays on one thread, deaths, `$_` and `$/` in
+  the block, and how to see what ran in parallel.
 
 ## When something goes wrong
 
