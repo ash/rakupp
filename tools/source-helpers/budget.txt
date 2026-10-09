@@ -6,26 +6,27 @@
 default file 10000
 default function 1500
 
-file src/InterpreterCore.cpp 31780
-file src/MethodCallPart2.cpp 10938
-file src/Parser.cpp 17905
+file src/Builtins.cpp 10512
+file src/InterpreterCore.cpp 32776
+file src/MethodCallPart2.cpp 11200
+file src/Parser.cpp 18125
 
-function Interpreter::evalAssignInner 3720
-function Interpreter::evalBinary 1698
-function Interpreter::evalIndex 2105
-function Interpreter::evalUnary 1550
-function Interpreter::execDeclStmt 3619
-function Interpreter::lvalue 1671
-function Interpreter::methodCallInner 3597
-function Interpreter::methodCallPart1c 1807
-function Interpreter::methodCallPart2 9446
-function Interpreter::methodCallPart3 6505
-function Interpreter::methodCallTail 5069
-function Parser::parsePrimary 3374
-function applyArithGeneral 2551
-function main 1712
+function Interpreter::evalAssignInner 3797
+function Interpreter::evalBinary 1704
+function Interpreter::evalIndex 2106
+function Interpreter::evalUnary 1552
+function Interpreter::execDeclStmt 3635
+function Interpreter::lvalue 1678
+function Interpreter::methodCallInner 3371
+function Interpreter::methodCallPart1c 1823
+function Interpreter::methodCallPart2 9280
+function Interpreter::methodCallPart3 6580
+function Interpreter::methodCallTail 5098
+function Parser::parsePrimary 3419
+function applyArithGeneral 2573
+function main 1762
 
 compiler Apple clang version 21.0.0 (clang-2100.3.34.2)
-preprocessed src/BuiltinsParts.h 92261
-preprocessed src/Interpreter.h 83829
-preprocessed src/InterpreterParts.h 100274
+preprocessed src/BuiltinsParts.h 92678
+preprocessed src/Interpreter.h 84200
+preprocessed src/InterpreterParts.h 100695

@@ -179,7 +179,7 @@ sub check() {
              'the inverse transform gives the signal back');
 
     # 3. a pure tone lands in exactly one bin
-    my @tone = tone-signal([[6, 1, 0]], 64);
+    my @tone = tone-signal([[6, 1, 0],], 64);   # (the comma: one triple, not three numbers)
     my @s = spectrum(@tone);
     is-close(@s[6], 1, 1e-12, 'a pure tone of 6 cycles puts amplitude 1 in bin 6');
     is-close(@s.kv.map(-> $k, $v { $k == 6 ?? 0 !! abs($v) }).max, 0, 1e-12,
