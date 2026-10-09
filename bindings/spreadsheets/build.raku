@@ -10,11 +10,23 @@
 # Marketplace add-on). The engine is a Raku.js build (rakujs/playground by
 # default).
 
-use JSON::Fast;
 use Data::Native :digest;
 
 my $HERE = $*PROGRAM.IO.absolute.IO.parent;
 my $ROOT = $HERE.parent.parent;
+
+# A Str as a JSON string literal, escaped the way JSON::Fast's to-json does it.
+# The build needs nothing installed, so the release job (which has no
+# modules) runs it as is.
+sub json-string(Str $s --> Str) {
+    my %esc = "\\" => "\\\\", '"' => '\\"', "\n" => '\\n', "\r" => '\\r', "\t" => '\\t';
+    '"' ~ $s.subst(/<[\\"\x00..\x1f\x10000..\x10FFFF]>/, {
+        my $c = .ord;
+        %esc{~$_} // ($c < 0x10000 ?? sprintf('\\u%04x', $c)       # other controls
+                     !! sprintf('\\u%04X\\u%04X',                   # beyond the BMP: a surrogate pair
+                                0xD800 + (($c - 0x10000) +> 10), 0xDC00 + (($c - 0x10000) +& 0x3FF)))
+    }, :g) ~ '"'
+}
 
 sub MAIN(
     Str :$base   = 'https://localhost:3000/',   #= HTTPS address the Excel files will be served from, ending in /
@@ -31,7 +43,7 @@ sub MAIN(
 
     my $version = repo-version($revision);
     my $core    = $HERE.add('core/rakusheet-core.js').slurp
-                    .subst("'@RAKUSHEET_DRIVER@'", to-json($HERE.add('rakusheet.raku').slurp));
+                    .subst("'@RAKUSHEET_DRIVER@'", json-string($HERE.add('rakusheet.raku').slurp));
     die "core/rakusheet-core.js lost its @RAKUSHEET_DRIVER@ slot\n" if $core.contains('@RAKUSHEET_DRIVER@');
     # The stamp Office's cache keys on (?v=…): a digest of everything the add-in
     # is made from, so a new engine or a changed file gets a new one, and the
