@@ -135,7 +135,7 @@ synchronisation at all.
 
 ## Do `hyper` and `race` use more than one core?
 
-The statement forms do; the methods do not on Raku++:
+The statement forms and the methods both do:
 
 ```raku
 my $main = $*THREAD.id;
@@ -145,15 +145,28 @@ say 'hyper for: ', @a.grep(* != $main).elems, ' of 1000 off the main thread';
 say '.hyper:    ', @b.grep(* != $main).elems, ' of 1000 off the main thread';
 ```
 
+Raku++ and Rakudo print the same two lines:
+
 ```
-Raku++                                      Rakudo
-hyper for: 1000 of 1000 off the main thread  hyper for: 1000 of 1000 off the main thread
-.hyper:    0 of 1000 off the main thread     .hyper:    1000 of 1000 off the main thread
+hyper for: 1000 of 1000 off the main thread
+.hyper:    1000 of 1000 off the main thread
 ```
 
-`race for` and `.race` behave the same way on each engine. On Raku++,
-`.hyper` and `.race` give the right answer serially. To fan a loop out, write
-`hyper for` / `race for`, or `start` and `await`.
+`race for` and `.race` behave the same way. The methods spread `.map` and
+`.grep`: the block runs in batches of 64 on one worker per core less one
+(`:batch` and `:degree` set both), and the values come back in the order of
+the list. A block with a `state` variable or a loop phaser keeps to the
+calling thread.
+
+The hyper *operators* use the cores too when the work is arithmetic on plain
+numbers. Over Int and Num elements, `+ - * /` and the comparisons
+(`@a »*« @b`, `4 «*» @a`) and the methods `.sqrt`, `.abs`, `.exp` and the
+trigonometric ones (`@a».sqrt`) run as a native loop, split over the cores
+once a list holds 32,768 elements. Over a million Nums,
+`my @c = (4 «*» @a) «*» @b` takes 25 ms and `my @c = (@a »+» 3)».sqrt` 25 ms
+on an M3. Anything else — another operator, a Rat, a nested list, an Int that
+overflows — takes the ordinary path, and the answer is the same either way.
+`RAKUPP_KERNEL_TRACE=1` prints a line for each one that ran natively.
 
 ## When is `RAKUPP_GIL=1` worth setting?
 

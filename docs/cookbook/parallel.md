@@ -51,16 +51,16 @@ my $parallel = ([+] await @promises);
 
 ```output
 primes below 400000
-  one thread    : 33860 in 145 ms
+  one thread    : 33860 in 150 ms
   8 promises   : 33860 in 32 ms
-  ratio         : 4.5x
-  race(:degree(8)) : 33860 in 158 ms
+  ratio         : 4.7x
+  race(:degree(8)) : 33860 in 34 ms
 ```
 
-4.5× out of 8 cores on a machine that was already busy, and both answers agree.
-The last line is the same computation written as `race`, which is the idiom you
-will see everywhere else — see the note under [things that bite](#four-things-that-bite)
-for what it currently does here.
+4.7× out of 8 cores, and the answers agree. The last line is the same
+computation written as `race`, the idiom you will see everywhere else: its
+`.grep` runs in batches of 4096 on eight worker threads, and takes about as
+long as the promises written out by hand.
 
 ## Results in the order they arrive
 
@@ -191,19 +191,11 @@ and 16,000 lock acquisitions are 16,000 chances to become the bottleneck. Reach
 for `Lock` when the state genuinely is shared — a cache, a counter — and keep
 what it protects small.
 
-## Four things that bite
+## Three things that bite
 
 **`await` inside the loop.** Covered above, and worth repeating because it
 looks concurrent and reads as concurrent: 8023 ms against 2021 ms for the same
 four requests.
-
-**The `.race` and `.hyper` methods do not fan out on Raku++.** They give the
-right answer, in one thread, at serial speed: 158 ms against 145 ms for the
-loop they replace, where `start`/`await` over the same chunks took 32 ms. The
-same `race` under Rakudo 2026.08 took 51 ms against 220 ms serial. The loop
-forms do fan out: `race for 2 ..^ $limit { $_ if .is-prime }` counts the same
-primes in 52 ms, against 185 ms for that loop without the `race`. When a
-program here needs parallelism, write the loop form, or `start` and `await`.
 
 **Counting threads will not tell you whether you are parallel.** Every `start`
 block runs on a thread of its own on Raku++, so each one reports a new

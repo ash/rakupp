@@ -107,8 +107,9 @@ on the spawning thread), so `start work($n)` parallelises just like `start { wor
 iterations go to worker threads in batches of 64, one worker per core less one,
 and the statement ends when the last batch has. The values come back in the
 order of the list (`race` allows any order, and gets this one). The `.hyper`
-and `.race` *methods* do not fan out on this engine — they run their chain
-serially and give the same answer.
+and `.race` *methods* do the same for `.map` and `.grep`: `@a.hyper.map(&f)`
+runs `f` on the workers, in batches (`:batch` and `:degree` set both), and
+answers a HyperSeq in the list's order.
 
 ```raku
 my $main = $*THREAD.id;

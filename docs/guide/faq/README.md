@@ -83,8 +83,8 @@ only way these can drift.
   in any Raku.
 - **[threads.md](threads.md)** — is there a GIL? Not by default: what
   `RAKUPP_GIL=1` does, how to tell that threads really ran at once, why a
-  `start` can make a program slower, what is yours to guard, and why `.hyper`
-  runs serially where `hyper for` does not.
+  `start` can make a program slower, what is yours to guard, and what
+  `hyper for`, `.hyper` and the hyper operators spread over the cores.
 
 ## When something goes wrong
 

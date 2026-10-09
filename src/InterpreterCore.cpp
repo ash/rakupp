@@ -2569,6 +2569,16 @@ Value Interpreter::execGivenStmt(Stmt* s) {
     }
 }
 
+// A `hyper for` iteration's loop variable still holds the element it was bound
+// to — the same value, not a write of an equal one: type, payload, cold block,
+// number bits, strings and tags. (The container flags asTopic sets on the
+// binding are not part of the value.) Only then may its write-back be skipped.
+static inline bool sameBoundValue(const Value& now, const Value& was) {
+    return now.t == was.t && now.pk_ == was.pk_ && now.p_.get() == was.p_.get() &&
+           now.x_.get() == was.x_.get() && now.i == was.i && now.b == was.b && now.s == was.s &&
+           now.hashKind == was.hashKind && now.enumName == was.enumName && now.enumType == was.enumType;
+}
+
 // exec's `for` arm, in a frame of its own. A switch's frame is the largest
 // over its arms, and this arm is two-thirds of exec: every statement of
 // every program paid for its locals — over a page, so a stack probe — on
@@ -3606,21 +3616,30 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             };
             // (a live source is walked serially: only this thread may grow it)
             if (hyperLoop && !live && n0 > 0) {
+                // The workers bind from a SNAPSHOT of the elements, taken once
+                // here. Reading the live storage needs the array's stripe, and
+                // seven workers taking that one lock twice an iteration ran the
+                // loop at less than half the serial speed. A write to the loop
+                // variable still goes back to the array, under the stripe — when
+                // the body changed it.
+                ValueList snap;
+                { ParStripe es(*this, arr.get()); snap = *arr; }
                 runHyperLoop(fs, n0,
                     [&](size_t k, const std::shared_ptr<Env>& sc) {
-                        ParStripe es(*this, arr.get());
                         const size_t pk = P(k);
-                        if (pk >= arr->size()) return false;
-                        sc->define(var, asTopic((*arr)[pk], var, 0));
+                        if (pk >= snap.size()) return false;
+                        sc->define(var, asTopic(snap[pk], var, 0));
                         return true;
                     },
                     rw ? HyperBind([&](size_t k, const std::shared_ptr<Env>& sc) {
                         auto it = sc->vars.find(var);
                         if (it == sc->vars.end()) return true;
-                        ParStripe es(*this, arr.get());
                         const size_t pk = P(k);
+                        const Value& now = *it->second.deref();
+                        if (pk < snap.size() && sameBoundValue(now, snap[pk])) return true;
+                        ParStripe es(*this, arr.get());
                         if (pk < arr->size()) {
-                            (*arr)[pk] = *it->second.deref();
+                            (*arr)[pk] = now;
                             if ((*arr)[pk].t == VT::Array && arrayElemSrc) (*arr)[pk].itemized = false;
                         }
                         return true;
@@ -20874,6 +20893,9 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
                 op.compare(0, 2, ">>") == 0, op.compare(op.size() - 2, 2, "<<") == 0);
         bool strictL = op.compare(0, 2, ">>") == 0;
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
+        // lists of plain machine numbers: the native kernel (InterpreterRegex.cpp)
+        if (Value nk; hyperNumericInfix(inner, l, r, strictL, strictR, nk))
+            return typedHyperResult(*this, l, r, std::move(nk));
         Value ll = l, rr = r;
         HyperOpName hon{inner};
         return typedHyperResult(*this, l, r, hyperCore(ll, rr, strictL, strictR,
@@ -22073,6 +22095,9 @@ Value Interpreter::evalBinary(Binary* b) {
                     op.compare(0, 2, ">>") == 0, op.compare(op.size() - 2, 2, "<<") == 0);
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
+            // lists of plain machine numbers: the native kernel (InterpreterRegex.cpp)
+            if (Value nk; hyperNumericInfix(inner, l, r, strictL, strictR, nk))
+                return typedHyperResult(*this, l, r, std::move(nk));
             Value ll = l, rr = r;
             HyperOpName hon{inner};
             return typedHyperResult(*this, l, r, hyperCore(ll, rr, strictL, strictR,

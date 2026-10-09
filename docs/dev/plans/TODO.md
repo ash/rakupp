@@ -15,6 +15,16 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 1. Speed (v6)
 
+- [ ] **Parallel `.hyper` / `.race` and hyper kernels** (2026-10-09): `.map` /
+  `.grep` on a HyperSeq run on the `hyper for` scheduler (runParallel), and
+  `»op«` / `».method` over plain Ints and Nums run natively, split over cores
+  (InterpreterRegex.cpp). Over 1M Nums on the M3: `.hyper.map` 0.32 → 0.16 s,
+  `(4 «*» @a) «*» @b` 92 → 25 ms, `hyper for @a` 0.53 → 0.09 s (its workers had
+  queued on one stripe lock per element). Owed: `perf-guard --check` (the hyper
+  arm and seqMintList sit on hot paths). Left: worker scaling is ~2.2× on 7
+  workers — per-call interpretation and allocator frees, no lock; and
+  `my @d = <fresh list>` copies every element (34 ms of 2M, against 7 ms for the
+  `»*«` that built it) where a uniquely owned temporary could hand over its buffer.
 - [ ] **Call-path cost shipped in v5.3.0**: against a v5.2.1 build, `privmeth`
   +9.5%, `strpass` +9.0%, `method` +8.6%, `attrread` +5.8% (2026-10-08, two
   interleaved rounds; retired instructions +6-7%), built up over ~120 commits.
@@ -124,6 +134,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **HyperSeq edges against Rakudo 2026.09** (found 2026-10-09):
+  `.raku` lists the elements where Rakudo writes
+  `HyperSeq.new(configuration => …)`; `.elems` then `.list` answers twice
+  where Rakudo's `.elems` consumes it (X::Seq::Consumed); `(1..Inf).hyper.map`
+  answers a Seq, not a HyperSeq; `@a.hyper.invert` dies at once where Rakudo
+  answers a HyperSeq and dies only when read. Next: probe each on Rakudo with
+  a Roast grep first — none is asserted there as far as the sweep shows.
 - [ ] **Battery regressions since v5.0.1**: Color (t/04-new-invalid,
   `Color.new(rgb => [22, 42])` no longer dies), Encode (t/01-basic,
   `X::Encode::Unknown` undeclared where the test names it) and Trap
