@@ -42,7 +42,9 @@
   meta-operators over user ops ([METAPROGRAMMING.md](../internals/METAPROGRAMMING.md)).
 - **Concurrency** — real OS threads: `start` / `await`, `Supply` / `react` /
   `whenever`, `Channel`, `Lock`, atomics; true CPU parallelism by default since
-  v3, with `RAKUPP_GIL=1` as the escape hatch ([ASYNC.md](ASYNC.md)).
+  v3, with `RAKUPP_GIL=1` as the escape hatch ([ASYNC.md](ASYNC.md)). `hyper for`,
+  `.hyper` and the hyper operators spread their work over the cores
+  ([faq/hyper.md](faq/hyper.md)).
 - **Unicode** — grapheme-correct strings (UAX #29 incl. emoji ZWJ), NFC/NFD/
   NFKC/NFKD, UCA collation (`unicmp`), names, properties — generated
   UCD/UCA 18.0 tables ([UNICODE.md](UNICODE.md)).

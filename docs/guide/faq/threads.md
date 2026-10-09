@@ -4,15 +4,17 @@ Short answers about running Raku on more than one core: whether a global
 interpreter lock stands in the way, how to tell that threads really ran at
 once, why a `start` sometimes makes a program slower, and what is yours to
 guard. The engine side is [ASYNC.md](../ASYNC.md); how to measure a speed-up
-you can defend is [PARALLEL-SPEEDUP.md](../PARALLEL-SPEEDUP.md).
+you can defend is [PARALLEL-SPEEDUP.md](../PARALLEL-SPEEDUP.md); the hyper
+operators, `hyper for` and `.hyper` have [hyper.md](hyper.md) to themselves.
 
 Measured 2026-10-07 on an Apple M3 (4 performance + 4 efficiency cores):
 Raku++ 5.2.1 (main) and Rakudo v2026.09.
 
 ## Is there a global interpreter lock?
 
-Not by default. `start` blocks and the iterations of `hyper for` and
-`race for` run Raku on separate cores at the same time. Rakudo works the same
+Not by default. `start` blocks, the iterations of `hyper for` and
+`race for`, and the blocks of `.hyper.map` and `.race.map` run Raku on
+separate cores at the same time. Rakudo works the same
 way, and has no lock to turn on.
 
 Raku++ has one switch, read once at startup: `RAKUPP_GIL=1` runs the program
@@ -155,18 +157,10 @@ hyper for: 1000 of 1000 off the main thread
 `race for` and `.race` behave the same way. The methods spread `.map` and
 `.grep`: the block runs in batches of 64 on one worker per core less one
 (`:batch` and `:degree` set both), and the values come back in the order of
-the list. A block with a `state` variable or a loop phaser keeps to the
-calling thread.
-
-The hyper *operators* use the cores too when the work is arithmetic on plain
-numbers. Over Int and Num elements, `+ - * /` and the comparisons
-(`@a »*« @b`, `4 «*» @a`) and the methods `.sqrt`, `.abs`, `.exp` and the
-trigonometric ones (`@a».sqrt`) run as a native loop, split over the cores
-once a list holds 32,768 elements. Over a million Nums,
-`my @c = (4 «*» @a) «*» @b` takes 25 ms and `my @c = (@a »+» 3)».sqrt` 25 ms
-on an M3. Anything else — another operator, a Rat, a nested list, an Int that
-overflows — takes the ordinary path, and the answer is the same either way.
-`RAKUPP_KERNEL_TRACE=1` prints a line for each one that ran natively.
+the list. On Raku++ the hyper *operators* use the cores too, when the work is
+arithmetic on long lists of plain numbers (`@a »*« @b`, `@a».sqrt`). Which
+form to reach for, with measured numbers, and what keeps a block on one
+thread, is [hyper.md](hyper.md).
 
 ## When is `RAKUPP_GIL=1` worth setting?
 

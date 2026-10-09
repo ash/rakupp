@@ -401,6 +401,38 @@ with `start` says only `kernel: work declined`, and the loop runs interpreted.
 
 ---
 
+## Without `start`: `hyper for`, `.hyper` and the hyper operators
+
+Three forms spread work over the cores without a `start` in sight, and the
+three conditions at the top of this page hold for them too:
+
+- `hyper for` / `race for` hand the iterations out in batches of 64 to one
+  worker per core less one;
+- `.hyper` / `.race` do the same for the block of a `.map` or `.grep`
+  (`:batch` and `:degree` set both);
+- a hyper operator over long lists of plain Ints and Nums — `@a »*« @b`,
+  `4 «*» @a`, `@a».sqrt` — runs as a native loop, split over the cores. It is
+  not interpreted code at all, so the worker costs above do not apply to it.
+
+Measure each against the serial form that gives the same list — `for`
+against `hyper for`, `.map` against `.hyper.map` — with the method above.
+Three things move those numbers more than the form does:
+
+- **A short list loses.** Handing a batch to a worker costs tens of
+  microseconds, so a list of a few hundred elements is faster serial.
+- **`:degree` past the performance cores adds little.** The workers past them
+  land on the efficiency cores, as the extra `start` blocks of example 1 do.
+- **A block can keep to the calling thread.** One with a `state` variable or
+  a loop phaser runs serially, giving the same answer at serial speed.
+  `$*THREAD.id` inside the block shows where it ran; `RAKUPP_KERNEL_TRACE=1`
+  prints a line for each hyper operator that ran natively, and on how many
+  threads.
+
+[faq/hyper.md](faq/hyper.md) has the forms side by side over a million Nums,
+and a `:degree` table.
+
+---
+
 ## Checklist
 
 Before believing a parallel speed-up number:
@@ -427,5 +459,7 @@ Before believing a parallel speed-up number:
   `Semaphore`, `Channel` and `Supply` do under each
 - [faq/threads.md](faq/threads.md) — the short answers: is there a GIL, what
   scales, what the runtime protects for you
+- [faq/hyper.md](faq/hyper.md) — the hyper operators, `hyper for` and `.hyper`:
+  which to reach for, with measured numbers
 - [../status/BENCHMARKS.md](../status/BENCHMARKS.md) — single-threaded Raku++
   against Rakudo
