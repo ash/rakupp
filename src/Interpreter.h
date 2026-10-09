@@ -1783,6 +1783,9 @@ public:
     // such member never pays the extra invocant evaluation that lookup needs.
     bool haveInlineAttrs_ = false;
     static long long ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type); // CStruct field byte offset
+    // `$s.field` on a native-backed CStruct/CUnion with no method of that name:
+    // the field's value, read from native memory; nothing when it is not one
+    std::optional<Value> ncStructFieldGet(const Value& inv, const std::string& m);
     static long long ncStructSize(ClassInfo* ci);   // CStruct total padded size
     static long long ncStructAlign(ClassInfo* ci);  // …and the alignment it imposes on its container
     // Width + alignment one member contributes (a `HAS` member is the inner struct itself)

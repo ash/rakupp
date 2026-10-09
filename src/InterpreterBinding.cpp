@@ -5026,6 +5026,14 @@ typedef double    (*NcFnD)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWo
 // Pointer.deref). 0 ⇒ not a plain native scalar.
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
     isFloat = false; sign = true;
+    // Every name below starts with one of these letters. This runs per CArray
+    // element read and write, so a pointer or class type skips the whole chain.
+    if (t.empty()) return 0;
+    switch (t[0]) {
+        case 'n': case 'N': case 'i': case 'I': case 'c': case 'u': case 'b':
+        case 'B': case 'l': case 's': break;
+        default: return 0;
+    }
     if (t == "num32") { isFloat = true; return 4; }
     if (t == "num" || t == "num64" || t == "Num") { isFloat = true; return 8; }
     if (t == "int8"  || t == "char")   { return 1; }
@@ -5398,25 +5406,52 @@ long long Interpreter::ncStructAlign(ClassInfo* ci) {
     }
     return maxA;
 }
-long long Interpreter::ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type) {
+// Every field's offset and type, worked out once per class. Laying the struct
+// out again on each access (resolving every member's type alias on the way)
+// was most of the cost of `$s.field`.
+struct NcLayout {
+    size_t nattrs = 0;   // the attribute count it was made from
+    struct Field { std::string name, type; long long off; };
+    std::vector<Field> fields;
+};
+NcLayoutSlot& NcLayoutSlot::operator=(const NcLayoutSlot&) {
+    delete p.exchange(nullptr, std::memory_order_acq_rel);
+    return *this;
+}
+NcLayoutSlot::~NcLayoutSlot() { delete p.load(std::memory_order_acquire); }
+
+static const NcLayout* ncLayoutOf(ClassInfo* ci) {
+    const NcLayout* have = ci->ncLayout.p.load(std::memory_order_acquire);
+    if (have && have->nattrs == ci->attrs.size()) return have;
+    auto* l = new NcLayout;
+    l->nattrs = ci->attrs.size();
     const bool uni = (ci->repr == "CUnion");
     long long off = 0;
     for (auto& a : ci->attrs) {
-        std::string at = ncResolveTypeAlias(ci, a.type);
-        long long w, align; ncMemberLayout(a, at, w, align);
+        std::string at = Interpreter::ncResolveTypeAlias(ci, a.type);
+        long long w, align; Interpreter::ncMemberLayout(a, at, w, align);
         if (!uni) off = (off + align - 1) / align * align;
         std::string an = a.name; if (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%')) an = an.substr(1);
         if (!an.empty() && (an[0]=='!'||an[0]=='.')) an = an.substr(1);
         // An INLINE member answers its offset with the type marked, so the read
         // path hands back a view ONTO those bytes instead of dereferencing them
         // as a pointer.
-        if (an == field) {
-            type = at.empty() ? "int64" : at;
-            if (a.inlined) type = "HAS " + type;
-            return uni ? 0 : off;
-        }
+        std::string type = at.empty() ? "int64" : at;
+        if (a.inlined) type = "HAS " + type;
+        l->fields.push_back({std::move(an), std::move(type), uni ? 0 : off});
         if (!uni) off += w;
     }
+    // A layout made before an attribute was added is left in place, not freed:
+    // another thread may still be reading it.
+    if (ci->ncLayout.p.compare_exchange_strong(have, l, std::memory_order_acq_rel, std::memory_order_acquire))
+        return l;
+    delete l;
+    return have;
+}
+
+long long Interpreter::ncFieldOffset(ClassInfo* ci, const std::string& field, std::string& type) {
+    for (auto& f : ncLayoutOf(ci)->fields)
+        if (f.name == field) { type = f.type; return f.off; }
     return -1;
 }
 long long Interpreter::ncStructSize(ClassInfo* ci) {

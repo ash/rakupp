@@ -6182,6 +6182,29 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             return inv;
         }
     }
+    // `.push` onto a plain untyped Array, of arguments that are no list, Slip,
+    // Nil or native: straight to the store. The guards rule out every special
+    // case the general path meets before its push arm (methodCallTail), which
+    // it reached only after ~250 ns of other method checks per call.
+    if (m.size() == 4 && opEq(m, "push") && !args.empty() && inv.t == VT::Array && inv.arr() &&
+        !inv.isList && inv.s.empty() && inv.enumName.empty() && inv.hashKind.empty() &&
+        inv.pk_ != PK::Packed && !inv.ext() && inv.ofType().empty() && !inv.pairVal() &&
+        !(inv.shape() && !inv.shape()->empty()) && !inv.holdsContainers() && builtinExt_.empty()) {
+        bool plain = true;
+        for (auto& a : args)
+            if (a.t == VT::Array || a.t == VT::Nil || a.natBits) { plain = false; break; }
+        if (plain) {
+            Interpreter::ParStripe mutStripe(*this, inv.arr());
+            for (auto& a : args) inv.arr()->push_back(a);
+            return inv;
+        }
+    }
+    // `$s.field` on a NativeCall struct: the field, before the general chain
+    // walks ~3,000 lines of other method checks to the same arm
+    // (an ordinary object pays only the `repr` test)
+    if (inv.t == VT::Object && args.empty() && !skipOwn && inv.obj() && inv.obj()->cls &&
+        !inv.obj()->cls->repr.empty())
+        if (auto r = ncStructFieldGet(inv, m)) return std::move(*r);
     // A construction whose BUILD/TWEAK answered a Failure answers that Failure
     // (BuildFailureEx, from the hook runner). The catch is armed once per
     // `.new`/`.bless` — a nested construction inside a BUILD arms its own —
@@ -9757,11 +9780,27 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // CArray[T].new(vals…) — a packed native array (NativeCall). Stored as raw
     // bytes in .s (like Blob); callNative passes a pointer to the bytes.
-    // NativeCall CStruct field read: `$s.field` on a native-backed struct reads
-    // native memory at the field's computed offset. (Writes go through the
-    // assignment path.) Only for a repr('CStruct') class the accessor doesn't
-    // otherwise define a real method for.
-    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+    // NativeCall CStruct field read (ncStructFieldGet). methodCall asks first,
+    // for the plain case; this is the one with arguments or skipOwn set.
+    if (inv.t == VT::Object)
+        if (auto r = ncStructFieldGet(inv, m)) return std::move(*r);
+    // Segments continue in methodCallPart1b and methodCallPart1c (MethodCallPart1b.cpp, MethodCallPart1c.cpp) — same ordered chain.
+    if (auto r = methodCallPart1b(inv, m, args, rwArgs)) return std::move(*r);
+    if (auto r = methodCallPart1c(inv, m, args, rwArgs)) return std::move(*r);
+    // Segment continues in MethodCallPart2.cpp — same ordered chain.
+    if (auto r = methodCallPart2(inv, m, args, rwArgs)) return std::move(*r);
+    // Segment continues in MethodCallPart3.cpp — same ordered chain.
+    if (auto r = methodCallPart3(inv, m, args, rwArgs)) return std::move(*r);
+    if (auto r = methodCallTail(inv, m, args, rwArgs)) return std::move(*r);
+    return methodCallUnresolved(inv, m, args, rwArgs);
+}
+
+// NativeCall CStruct field read: `$s.field` on a native-backed struct reads
+// native memory at the field's computed offset. (Writes go through the
+// assignment path.) Only for a repr('CStruct') class the accessor doesn't
+// otherwise define a real method for.
+std::optional<Value> Interpreter::ncStructFieldGet(const Value& inv, const std::string& m) {
+    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->repr.empty() &&
         (inv.obj()->cls->repr == "CStruct" || inv.obj()->cls->repr == "CPPStruct" ||
          inv.obj()->cls->repr == "CUnion") &&
         inv.obj()->attrs.count("__native_ptr") && !inv.obj()->cls->findMethod(m)) {
@@ -9802,15 +9841,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Interpreter::ncReadElem(fa, type, 0);
         }
     }
-    // Segments continue in methodCallPart1b and methodCallPart1c (MethodCallPart1b.cpp, MethodCallPart1c.cpp) — same ordered chain.
-    if (auto r = methodCallPart1b(inv, m, args, rwArgs)) return std::move(*r);
-    if (auto r = methodCallPart1c(inv, m, args, rwArgs)) return std::move(*r);
-    // Segment continues in MethodCallPart2.cpp — same ordered chain.
-    if (auto r = methodCallPart2(inv, m, args, rwArgs)) return std::move(*r);
-    // Segment continues in MethodCallPart3.cpp — same ordered chain.
-    if (auto r = methodCallPart3(inv, m, args, rwArgs)) return std::move(*r);
-    if (auto r = methodCallTail(inv, m, args, rwArgs)) return std::move(*r);
-    return methodCallUnresolved(inv, m, args, rwArgs);
+    return std::nullopt;
 }
 
 Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueList& args,

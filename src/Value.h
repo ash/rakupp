@@ -1749,6 +1749,19 @@ inline constexpr const char* kAnonEnumPrefix = "\x01" "anon-enum-";
 // …and where `$attr.container` keeps the one placeholder container it hands out
 inline constexpr const char* ATTR_CONTAINER_KEY = "\x01container";
 
+// A CStruct's field layout (InterpreterBinding.cpp), worked out on the first
+// field access instead of on every one. The slot is owned by the class it lays
+// out and published release/acquire, as PublishedOnce does. A COPY of the class
+// (a role pun, a concretization) starts empty: its attributes may differ.
+struct NcLayout;
+struct NcLayoutSlot {
+    std::atomic<const NcLayout*> p{nullptr};
+    NcLayoutSlot() = default;
+    NcLayoutSlot(const NcLayoutSlot&) {}
+    NcLayoutSlot& operator=(const NcLayoutSlot&);
+    ~NcLayoutSlot();
+};
+
 struct ClassInfo {
     std::string name;
     // A ROLE composing a role that declares the same attribute: the conflict
@@ -1795,6 +1808,7 @@ struct ClassInfo {
     // which is all of them until a metaclass adds one.
     bool hasPopulate = false;
     std::string repr; // `is repr("CStruct")` — NativeCall native memory layout
+    NcLayoutSlot ncLayout; // …and its field offsets, once known (ncFieldOffset)
     std::string ver, auth, api; // :ver<>/:auth<>/:api<> — answered by .^ver/.^auth/.^api
     std::string pod; // `#|` declarator pod (.WHY)
     std::string podTrail; // …its `#=` part alone
