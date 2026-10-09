@@ -2,7 +2,9 @@
 # Each check below was WRONG or impossible before libffi was wired in — the
 # fixed 8-integer/8-float prototype could not express any of them:
 #   1. num32 arguments and returns (a float passed/read as a double: garbage)
-#   2. more than 8 integer register arguments (a clean X::NYI before)
+#   2. more integer arguments than the fixed prototype holds (a clean X::NYI
+#      there). It held 8 when libffi came in and holds 16 since the Win32 API
+#      needed fourteen, so nine now fit it and seventeen are the libffi case.
 #   3. variadic calls — `*@args` marks where C's `...` begins. Silently wrong
 #      before on every ABI that passes varargs on the stack (Apple ARM64).
 #   4. typed callbacks: Pointer parameters, any arity, more than 64 of them
@@ -15,6 +17,9 @@ my @fail;
 sub ldexpf(num32, int32 --> num32) is native {*}
 sub strtof(Str, Pointer --> num32) is native {*}
 sub nine(int32, int32, int32, int32, int32, int32, int32, int32, int32 --> int32)
+    is native is symbol('abs') {*}
+sub seventeen(int32, int32, int32, int32, int32, int32, int32, int32, int32,
+              int32, int32, int32, int32, int32, int32, int32, int32 --> int32)
     is native is symbol('abs') {*}
 sub snprintf(Buf, size_t, Str, *@args --> int32) is native {*}
 
@@ -46,11 +51,15 @@ unless $ffi {
     for 'num32'    => { ldexpf(3e0, 2) },
         'num32-ret'=> { strtof('2.5', Pointer) },
         'variadic' => { snprintf(buf8.allocate(8), 8, "%d", 1) },
-        'nine-args'=> { nine(-7,1,2,3,4,5,6,7,8) }
+        'seventeen-args' => { seventeen(-7,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16) }
     -> (:key($what), :value($try)) {
         my $threw = ?(try { $try(); False } // True);
         @fail.push("no-libffi: $what should throw") unless $threw;
     }
+    # …while nine integers are inside the prototype's sixteen, and must come
+    # back right rather than throw
+    my $nine = try nine(-7,1,2,3,4,5,6,7,8);
+    @fail.push("no-libffi: nine-args ({$nine // $!.message})") unless ($nine // 0) == 7;
     # The 65th distinct callback used to be handed to C as a NULL function
     # pointer — `qsort` with a null comparator HANGS the process, far from the
     # line that caused it. It must be an exception like the other three.
@@ -73,9 +82,12 @@ unless $ffi {
 sub ldexp(num64, int32 --> num64) is native {*}
 @fail.push('num64-arg') unless ldexp(3e0, 2) == 12e0;
 
-# 2. past the old 8-register ceiling (nine is declared at the top). abs() reads
-# only its first argument; the rest exist to make the marshaller place nine.
+# 2. past the old 8-register ceiling, and past the fixed prototype's 16 (both
+# declared at the top). abs() reads only its first argument; the rest exist to
+# make the marshaller place them.
 @fail.push("nine-args ({nine(-7,1,2,3,4,5,6,7,8)})") unless nine(-7,1,2,3,4,5,6,7,8) == 7;
+my $seventeen = seventeen(-7,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16);
+@fail.push("seventeen-args ($seventeen)") unless $seventeen == 7;
 
 # 3. variadics: everything after the slurpy is a `...` argument, promoted the
 # way C promotes them (int → int64, num → double, Str → char*).
