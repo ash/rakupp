@@ -69,6 +69,22 @@ Against the v5.2.1 artifact, compiled `fib` (5.5 → 5.8 ms) and `arraypush`
 (53.9 → 56.8 ms) are each +5%. An artifact and a local build differ by up to
 9%, so this is not a finding. Re-check when the v5.3.0 artifact exists.
 
+### 1.6 The tag's Raku.js job failed; its zips were attached by hand — NEW, fixed for later tags
+
+- The `wasm (Raku.js)` job of the v5.3.0 tag died in "Build and test the
+  spreadsheet formulas": `bindings/spreadsheets/build.raku` used JSON::Fast,
+  and the runner has no modules. That step had never run on a tag before.
+- Package and Attach come after it, so the release first had no
+  `rakujs-*.zip` at all.
+- The four zips (`rakujs`, `rakujs-showcase-web`, `rakujs-excel`,
+  `rakujs-google-sheets`, each with its `.sha256`) were then built from the
+  tag with the job's own Package steps and attached by hand on 2026-10-09.
+  The engine in them is the pair the job had already built and uploaded as
+  the `rakujs-wasm` artifact, which passed its Node smoke test.
+- The Google Sheets add-on push did not run for this tag.
+- Fixed for later tags: build.raku needs no module (dd59f19e, then
+  b360c507, which uses Data::Native's `to-json`).
+
 ## 2. Deliberate changes that refuse code v5.2.1 ran — NEW, Rakudo-compatible
 
 Each one matches Rakudo 2026.09. Code that relied on the old leniency now
