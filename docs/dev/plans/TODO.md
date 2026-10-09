@@ -112,6 +112,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - [UNBOX-PLAN.md](UNBOX-PLAN.md): P3–P5, partly overtaken by `--cnp`.
 - [ ] **`--exe` native module bodies**: the remaining cost is method dispatch
   (the `RT.methodCall` ladder).
+- [ ] **Built-in methods in interpreted loops**: each walked methodCall's
+  whole chain, 150–250 ns a call. The commonest are answered at its entry
+  now (`.push`, `.Num`, `.Int`, `.Str`, `.defined`, `.elems`, `.WHICH`,
+  `.join`, `.kv`, Hash `.values`, a CStruct's fields). Next: `.map`, `.flat`
+  and `.any` on a Seq; a CStruct's CArray field built once per pointer, not
+  per read (Rakudo keeps child objects, but object `eqv` and `.Capture` read
+  every attribute key). The `fib` integer kernel moves ±5% with code
+  placement in unrelated files: pin its alignment so perf-guard stops seeing
+  it.
 
 ## 2. Correctness (v5 error batches)
 
@@ -277,6 +286,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     its `where`: `multi wr(Int $n where * > 0)` beside `multi wr(Int $n)`,
     the first wrapped, answers `wr(-1)` from the second; Rakudo dies binding
     the wrapped candidate ("Constraint type check failed").
+  - `.WHICH`: `5.WHICH.raku` is `"Int|5"` (Rakudo `ValueObjAt.new("Int|5")`),
+    `Less.WHICH` is `Order|Less` (Rakudo `Order|0`), and a type object's has
+    no `U` number (`Rat|`, Rakudo `Rat|U…`).
+  - `.kv` of an `is default(7)` Array shows `Any` in its holes (Rakudo 7),
+    and `[[1, 2], 3].kv` shows `[1, 2]` where Rakudo shows `$[1, 2]`.
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair

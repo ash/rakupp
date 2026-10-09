@@ -7,7 +7,7 @@
 # 2026.09's.
 use Test;
 use NativeCall;
-plan 31;
+plan 43;
 
 # coercions and queries
 is 3.Num.raku, '3e0', 'Int.Num';
@@ -57,6 +57,25 @@ throws-like { @t.push: 'x' }, X::TypeCheck, 'a typed array checks a push';
 my @l = (1..*);
 throws-like { @l.push: 1 }, X::Cannot::Lazy, 'a lazy array refuses push';
 throws-like { (1, 2).push: 3 }, X::Immutable, 'a List refuses push';
+
+# .WHICH, .join, .kv, .values
+is 5.WHICH.^name, 'ValueObjAt', 'Int.WHICH is a ValueObjAt';
+is (True.WHICH, "x".WHICH, 2.5e0.WHICH).join(","), 'Bool|1,Str|x,Num|2.5', '.WHICH of a Bool, a Str, a Num';
+ok 5.WHICH eq 'Int|5', '…whose Str is the type and value';
+my @w = 10, 3;
+is @w>>.WHICH.join("|"), 'Int|10|Int|3', 'a hyper .WHICH, joined';
+is <a b c>.join("-"), 'a-b-c', 'a list of Str joined';
+is [[1, 2], 3].join(","), '1 2,3', 'a nested Array joins its own .Str';
+is [1, 2].kv.raku, '(0, 1, 1, 2).Seq', 'Array.kv is a Seq';
+my %hv = a => 1;
+is %hv.values.^name, 'Seq', 'Hash.values is a Seq';
+is %hv.values.raku, '(1,).Seq', '…of its values';
+my @outer; my @inner = 1, 2;
+@outer.push: @inner;
+is @outer.elems, 1, 'an Array argument is pushed as one element';
+@inner.push: 3;
+is @outer[0].elems, 3, '…the same Array, not a copy';
+is (my @z).push((1, 2)).elems, 1, 'a List argument is one element too';
 
 # a NativeCall struct's field, and a method of the same name
 class S is repr('CStruct') {

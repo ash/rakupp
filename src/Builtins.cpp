@@ -6187,12 +6187,17 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // case the general path meets before its push arm (methodCallTail), which
     // it reached only after ~250 ns of other method checks per call.
     if (m.size() == 4 && opEq(m, "push") && !args.empty() && inv.t == VT::Array && inv.arr() &&
-        !inv.isList && inv.s.empty() && inv.enumName.empty() && inv.hashKind.empty() &&
+        !inv.isList && inv.s.empty() && inv.enumName.empty() && inv.enumType.empty() && inv.hashKind.empty() &&
         inv.pk_ != PK::Packed && !inv.ext() && inv.ofType().empty() && !inv.pairVal() &&
         !(inv.shape() && !inv.shape()->empty()) && !inv.holdsContainers() && builtinExt_.empty()) {
+        // (an Array argument is one element, as in the general arm; a List,
+        // Seq or Slip is not taken here — a Slip slips, and a parenthesized
+        // List literal keeps its variables' containers)
         bool plain = true;
         for (auto& a : args)
-            if (a.t == VT::Array || a.t == VT::Nil || a.natBits) { plain = false; break; }
+            if ((a.t == VT::Array && (a.isList || !a.s.empty())) || a.t == VT::Nil || a.natBits) {
+                plain = false; break;
+            }
         if (plain) {
             Interpreter::ParStripe mutStripe(*this, inv.arr());
             for (auto& a : args) inv.arr()->push_back(a);
@@ -6208,31 +6213,93 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // The commonest zero-argument coercions and queries on a PLAIN core value,
     // answered before the general chain, which spent ~150-250 ns reaching them
     // in an interpreted loop. Each arm answers what the chain's own arm does.
-    // Anything tagged goes the long way: an enum value, an allomorph, a native,
-    // a big Int, and a lazy, packed, shaped or Seq array.
-    if (args.empty() && !skipOwn && m.size() >= 3 && m.size() <= 7 && inv.hashKind.empty() &&
-        inv.enumName.empty() && !inv.natBits && !inv.natFloat && builtinExt_.empty()) {
+    // Anything tagged goes the long way: an enum value or type, an allomorph, a
+    // native, a big Int, and a lazy, packed, shaped or Seq array.
+    if (args.empty() && !skipOwn && m.size() >= 2 && m.size() <= 7 && inv.hashKind.empty() &&
+        inv.enumName.empty() && inv.enumType.empty() && !inv.natBits && !inv.natFloat && builtinExt_.empty()) {
+        // `.WHICH` of a plain value — the general arm's own answer (whichOf)
+        auto which = [&]() {
+            Value w = Value::str(whichOf(inv));
+            w.hashKind = whichIsObjAt(inv) ? "ObjAt" : "ValueObjAt";
+            return w;
+        };
         switch (inv.t) {
             case VT::Num:
                 if (opEq(m, "Num")) return Value::number(inv.n);
                 if (opEq(m, "defined")) return Value::boolean(true);
+                if (opEq(m, "WHICH")) return which();
                 break;
             case VT::Int:
                 if (inv.big()) break;
                 if (opEq(m, "Int")) return Value::integer(inv.i);
                 if (opEq(m, "Num")) return Value::number((double)inv.i);
                 if (opEq(m, "defined")) return Value::boolean(true);
+                if (opEq(m, "WHICH")) return which();
                 break;
             case VT::Str:
                 if (opEq(m, "Str")) return inv;
                 if (opEq(m, "defined")) return Value::boolean(true);
+                if (opEq(m, "WHICH")) return which();
+                break;
+            case VT::Bool:
+                if (opEq(m, "WHICH")) return which();
+                break;
+            // a CORE type object (a user class may declare its own WHICH)
+            case VT::Type:
+                if (opEq(m, "WHICH") && !classes_.count(inv.s)) return which();
                 break;
             case VT::Array:
                 if (opEq(m, "elems") && inv.arr() && inv.s.empty() && !inv.ext() &&
                     inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()))
                     return Value::integer((long long)inv.arr()->size());
+                // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
+                if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
+                    inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&
+                    !inv.holdsContainers() && !inv.elemDefault()) {
+                    Value out = Value::array(); out.isList = true; out.s = "Seq";
+                    const ValueList& src = *inv.arr();
+                    out.arr()->reserve(src.size() * 2);
+                    for (size_t i = 0; i < src.size(); i++) {
+                        out.arr()->push_back(Value::integer((long long)i));
+                        out.arr()->push_back(src[i]);
+                    }
+                    return out;
+                }
+                break;
+            // `.values` of a plain Hash: a Seq of its values, as the hash arm and
+            // methodCall's kv-family step make it
+            case VT::Hash:
+                if (opEq(m, "values") && inv.hash()) {
+                    Value out = Value::array(); out.isList = true; out.s = "Seq";
+                    out.arr()->reserve(inv.hash()->size());
+                    for (auto& kv : *inv.hash()) out.arr()->push_back(kv.second);
+                    return out;
+                }
                 break;
             default: break;
+        }
+    }
+    // `.join($sep)` of a plain list of strings (or ObjAts, `@a».WHICH`): the
+    // general arm's loop without its snapshot of the list
+    if (args.size() == 1 && !skipOwn && inv.t == VT::Array && m.size() == 4 && opEq(m, "join") &&
+        inv.arr() && inv.s.empty() && inv.hashKind.empty() && inv.enumName.empty() && inv.enumType.empty() && !inv.ext() &&
+        inv.pk_ != PK::Packed && !inv.elemDefault() && !inv.holdsContainers() &&
+        args[0].t == VT::Str && args[0].hashKind.empty() && builtinExt_.empty()) {
+        bool plain = true;
+        for (auto& e : *inv.arr())
+            if (e.t != VT::Str || !(e.hashKind.empty() || e.hashKind == "ObjAt" || e.hashKind == "ValueObjAt")) {
+                plain = false; break;
+            }
+        if (plain) {
+            const std::string& sep = args[0].s.str();
+            std::string out;
+            bool first = true;
+            for (auto& e : *inv.arr()) {
+                if (!first) out += sep;
+                first = false;
+                out += e.s.str();
+            }
+            return Value::str(nfcNormalize(std::move(out)));
         }
     }
     // A construction whose BUILD/TWEAK answered a Failure answers that Failure
