@@ -2337,8 +2337,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::list(items);
             // an ARRAY's holes become Nil in its List — a deleted or never-written
             // slot, not the `is default` value the Array would read (delete.t)
+            // …and its elements come out of their containers: `@a[0] = [1, 2]`
+            // itemized that slot, but `@a.List` holds the Array itself, so
+            // `cross(|@a.List)` and `@a.List.flat` see its elements, as in Rakudo
             if (m == "List" && inv.t == VT::Array && !inv.isList && out.arr())
-                for (auto& e : *out.arr()) if (e.t == VT::Any) e = Value::nil();
+                for (auto& e : *out.arr()) {
+                    if (e.t == VT::Any) e = Value::nil();
+                    e.itemized = false;
+                }
             if (m == "Seq") out.s = "Seq"; // `.Seq` really is one — `(1,2).Seq.raku` says so
             // `.eager` answers a LIST — `(1..*).list.head(3).eager` is `(1, 2, 3)`,
             // not a Seq (sheet LA-10). `.cache` keeps the invocant's own type.
