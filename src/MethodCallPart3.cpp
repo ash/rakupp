@@ -1238,7 +1238,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         if (m == "ASSIGN-POS" && slot.readonly)
                             throwTyped("X::Assignment::RO", {{"typename", slot.typeName()}},
                                        "Cannot modify an immutable " + slot.typeName() + " (" + slot.toStr() + ")");
-                        slot = args.back();
+                        slot = m == "ASSIGN-POS" ? rtElementItem(args.back()) : args.back();
                         slot.readonly = (m == "BIND-POS");
                         return args.back();
                     }
@@ -1277,7 +1277,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "ASSIGN-POS") {
             Value v = args.size() > 1 ? args[1] : Value::any();
             if (i >= 0) { while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
-                          (*inv.arr())[i] = v; }
+                          (*inv.arr())[i] = rtElementItem(v); }
             return v;
         }
         // DELETE-POS

@@ -254,6 +254,15 @@ uint32_t cpAtByte(const std::string& s, size_t b); // decode ONE codepoint at by
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
 bool whichIsObjAt(const Value& v);   // .WHICH is an ObjAt (identity) rather than a ValueObjAt
+// What an element ASSIGNMENT stores: an Array or a Hash goes into the slot's
+// Scalar, so it reads back itemized — `@a[$i] = [1]` and `%h<k> = [1]` have
+// always done this, and the method spellings ASSIGN-POS / ASSIGN-KEY do too
+// (Hash::Ordered stores every value through them). A Proxy names a container
+// and is left as it is.
+inline Value rtElementItem(Value v) {
+    if ((v.t == VT::Array || v.t == VT::Hash) && v.hashKind != "Proxy") v.itemized = true;
+    return v;
+}
 bool exprNamesContainer(const Expr* e); // does this expression name a container? (Pair value binding)
 std::string objHashIndex(const Value& k); // payload index for one key of an object hash
 bool predAnswerTruthy(Interpreter& I, const Value& res, const Value& elem);

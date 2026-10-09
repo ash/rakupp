@@ -829,7 +829,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 inv.hash()->setObjKey(k, stored);
             }
             Value& slot = (*inv.hash())[k];
-            slot = args[1];
+            slot = m == "ASSIGN-KEY" ? rtElementItem(args[1]) : args[1];
             // BIND-KEY puts the value in the slot with NO Scalar container around
             // it, so the element is immutable afterwards — exactly as `%h<k> := v`
             // is. Binding something that NAMES a container (the argument arrives
