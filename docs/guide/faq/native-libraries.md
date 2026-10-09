@@ -5,8 +5,8 @@ differently, so a name that loads on one machine can fail on the next. This
 page is about writing the name once so that it loads on Linux, macOS and
 Windows. [FFI.md](../FFI.md) covers the rest of NativeCall.
 
-The snippets were run on macOS (Rakudo 2026.09) and on Linux (Rakudo 2022.12),
-and under Raku++ on both. Windows was not run: its spellings below are read
+The snippets were run on macOS and on Linux, under Rakudo 2026.09 and under
+Raku++. Windows was not run: its spellings below are read
 from the two engines' sources. Where the engines differ, the page says so.
 
 ## The short answer
