@@ -6205,6 +6205,36 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     if (inv.t == VT::Object && args.empty() && !skipOwn && inv.obj() && inv.obj()->cls &&
         !inv.obj()->cls->repr.empty())
         if (auto r = ncStructFieldGet(inv, m)) return std::move(*r);
+    // The commonest zero-argument coercions and queries on a PLAIN core value,
+    // answered before the general chain, which spent ~150-250 ns reaching them
+    // in an interpreted loop. Each arm answers what the chain's own arm does.
+    // Anything tagged goes the long way: an enum value, an allomorph, a native,
+    // a big Int, and a lazy, packed, shaped or Seq array.
+    if (args.empty() && !skipOwn && m.size() >= 3 && m.size() <= 7 && inv.hashKind.empty() &&
+        inv.enumName.empty() && !inv.natBits && !inv.natFloat && builtinExt_.empty()) {
+        switch (inv.t) {
+            case VT::Num:
+                if (opEq(m, "Num")) return Value::number(inv.n);
+                if (opEq(m, "defined")) return Value::boolean(true);
+                break;
+            case VT::Int:
+                if (inv.big()) break;
+                if (opEq(m, "Int")) return Value::integer(inv.i);
+                if (opEq(m, "Num")) return Value::number((double)inv.i);
+                if (opEq(m, "defined")) return Value::boolean(true);
+                break;
+            case VT::Str:
+                if (opEq(m, "Str")) return inv;
+                if (opEq(m, "defined")) return Value::boolean(true);
+                break;
+            case VT::Array:
+                if (opEq(m, "elems") && inv.arr() && inv.s.empty() && !inv.ext() &&
+                    inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()))
+                    return Value::integer((long long)inv.arr()->size());
+                break;
+            default: break;
+        }
+    }
     // A construction whose BUILD/TWEAK answered a Failure answers that Failure
     // (BuildFailureEx, from the hook runner). The catch is armed once per
     // `.new`/`.bless` — a nested construction inside a BUILD arms its own —
@@ -9800,13 +9830,15 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
 // assignment path.) Only for a repr('CStruct') class the accessor doesn't
 // otherwise define a real method for.
 std::optional<Value> Interpreter::ncStructFieldGet(const Value& inv, const std::string& m) {
-    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->repr.empty() &&
-        (inv.obj()->cls->repr == "CStruct" || inv.obj()->cls->repr == "CPPStruct" ||
-         inv.obj()->cls->repr == "CUnion") &&
-        inv.obj()->attrs.count("__native_ptr") && !inv.obj()->cls->findMethod(m)) {
+    if (!(inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->repr.empty() &&
+          (inv.obj()->cls->repr == "CStruct" || inv.obj()->cls->repr == "CPPStruct" ||
+           inv.obj()->cls->repr == "CUnion")))
+        return std::nullopt;
+    auto np = inv.obj()->attrs.find("__native_ptr");
+    if (np != inv.obj()->attrs.end() && !inv.obj()->cls->findMethod(m)) {
         std::string type; long long off = Interpreter::ncFieldOffset(inv.obj()->cls.get(), m, type);
         if (off >= 0) {
-            long long base = inv.obj()->attrs["__native_ptr"].toInt();
+            long long base = np->second.toInt();
             long long fa = base + off;
             // scalar field: read directly; pointer/Str/class field: read the 8-byte
             // pointer and box it appropriately.

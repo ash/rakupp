@@ -6034,6 +6034,19 @@ static bool subSigArgs(Interpreter& I, const Value& v0, ValueList& out) {
     return false;
 }
 
+// A live Pointer/CArray's address and element type, one hash lookup each.
+// Every element read and write asked count() and then operator[] for both
+// keys, four lookups where two do.
+static bool ncLiveAddrOf(const Value& v, long long& addr, std::string& of) {
+    ValueHash& h = *v.hash();
+    auto ai = h.find("addr");
+    if (ai == h.end()) return false;
+    addr = ai->second.toInt();
+    auto oi = h.find("of");
+    of = oi != h.end() ? oi->second.toStr() : std::string("int64");
+    return true;
+}
+
 // A Seq bound to an `@` parameter is the List it caches into (Rakudo's
 // PositionalBindFailover), and that List is what the parameter's `where` sees.
 // Dispatch used to run the `where` on the raw Seq instead: `where @m ~~ List:D`
@@ -14826,10 +14839,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // matrix exactly this way, and read every one of them back as
                 // zeroes. The base is the one already evaluated above, so this
                 // costs no extra evaluation of a side-effecting accessor.
+                long long liveAddr; std::string of;
                 if (bp && !ix->isHash && bp->t == VT::Hash && bp->hash() &&
                     (bp->hashKind == "CArray" || bp->hashKind == "Pointer") &&
-                    bp->hash()->count("addr")) {
-                    std::string of = bp->hash()->count("of") ? (*bp->hash())["of"].toStr() : "int64";
+                    ncLiveAddrOf(*bp, liveAddr, of)) {
                     // A CArray[Str] slot is a char* the ARRAY has to own (see
                     // ncOwnStrElem). A live array has nowhere to keep the string,
                     // and a pointer to a temporary would outlive it — so leave
@@ -14837,7 +14850,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (of != "Str") {
                         long long i = eval(ix->index.get()).toInt();
                         Value v = evalValueOf(a->value.get());
-                        if (i >= 0) ncWriteElem((*bp->hash())["addr"].toInt(), of, i, v);
+                        if (i >= 0) ncWriteElem(liveAddr, of, i, v);
                         return v;
                     }
                 }
@@ -26579,10 +26592,11 @@ Value Interpreter::evalIndex(Index* idx) {
         }
         if (base.t == VT::Str && base.hashKind == "CArray")
             return ncLocalAt(base, eval(idx->index.get()).toInt());
-        if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") && base.hash()->count("addr")) {
+        long long liveAddr; std::string of;
+        if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
+            ncLiveAddrOf(base, liveAddr, of)) {
             long long i = eval(idx->index.get()).toInt();
-            std::string of = base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64";
-            Value el = ncReadElem((*base.hash())["addr"].toInt(), of, i);
+            Value el = ncReadElem(liveAddr, of, i);
             if (base.hashKind == "CArray") el = ncClassElem(std::move(el), nullptr, of, i);
             if (ncIsPointerElem(of) && el.t == VT::Int) return ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
             return el;
