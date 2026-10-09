@@ -665,7 +665,26 @@ $_rc"; else RC_TOUCHED=$_rc; fi
     else
         note "undo      curl -fsSL $SITE | sh -s -- --uninstall"
     fi
-    note 'open a new terminal for the PATH change, then: rakupp -e "say 6 * 7"'
+    # `curl | sh` runs in a child, so the terminal that typed it keeps the PATH
+    # it had. Name the line that fixes it in place -- the env file itself, which
+    # is all a startup file does, and safer to source than a whole ~/.zshrc.
+    case ":$PATH:" in
+        *":$BIN:"*)
+            note 'try it    rakupp -e "say 6 * 7"' ;;
+        *)
+            if [ "$NO_PATH" = 1 ]; then
+                note "try it    \"$BIN/rakupp\" -e \"say 6 * 7\""
+            else
+                if [ "$(basename "${SHELL:-sh}" 2>/dev/null)" = fish ]; then
+                    _src="source \"$(homeish "$PREFIX/env.fish")\""
+                else
+                    _src=". \"$(homeish "$PREFIX/env")\""
+                fi
+                note 'open a new terminal for the PATH change, or run this in this one:'
+                note "    $_src"
+                note 'then: rakupp -e "say 6 * 7"'
+            fi ;;
+    esac
 }
 
 main "$@"

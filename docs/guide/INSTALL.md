@@ -31,7 +31,8 @@ docker run --rm -it ghcr.io/ash/rakupp
 ```
 
 After either installer, open a **new** terminal — a running one keeps the
-environment it started with — and:
+environment it started with, though the one-liner prints the line that updates
+it in place — and:
 
 ```sh
 rakupp -e 'say 6 * 7'
@@ -158,6 +159,11 @@ shell startup file that applies — `~/.profile`, and `~/.zshrc`, `~/.bashrc`,
 Nothing else in those files is touched, and `--uninstall` removes exactly those
 lines and leaves every other byte where it was. Re-running the installer adds
 nothing a second time.
+
+A startup file is read when a shell starts, so the terminal that ran the
+installer still has its old `PATH`. Open a new one, or run that line in it —
+the installer prints it for your shell (`source "$HOME/.rakupp/env.fish"` under
+fish).
 
 **The second name.** `rakupp` finds its runtime relative to its own executable's
 real path, so `raku` inside `bin/` is a complete engine and not a stub —

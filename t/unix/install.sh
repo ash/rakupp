@@ -15,6 +15,7 @@
 #   * a startup file gains exactly one line, and every other byte of it comes
 #     back unchanged -- the property the whole env-file design exists for
 #   * the env file actually puts bin/ on PATH when a shell sources it
+#   * so does the line the summary prints for the terminal that ran it
 #   * the piped form works: under `curl ... | sh` the script IS standard input,
 #     so a question that reads stdin would eat the rest of the installer
 #   * --uninstall removes the prefix and restores the startup file byte for byte
@@ -110,6 +111,12 @@ is "$(lines_matching "$PROFILE" '# rakupp')" 1 'the startup file gained exactly 
 # never mentions it.
 SOURCED=$(env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin sh -c '. "$HOME/.rakupp/env"; command -v rakupp' 2>/dev/null || true)
 is "$SOURCED" "$EXE" 'sourcing the env file puts bin/ on PATH'
+
+# The summary names a line for the terminal that ran the one-liner, which keeps
+# the PATH it had. Run it exactly as printed -- that text is what gets pasted.
+PRINTED=$(sed -n 's/^        \(\. ".*"\)$/\1/p' "$ROOT/out")
+NOW=$(env -i HOME="$HOME_DIR" PATH=/usr/bin:/bin sh -c "$PRINTED; command -v rakupp" 2>/dev/null || true)
+is "$NOW" "$EXE" 'the line the summary prints puts bin/ on PATH'
 
 # ---- upgrade, asking for the second name -----------------------------------
 run_installer --archive "$ARCHIVE" --dir "$PREFIX" --raku-alias --yes
