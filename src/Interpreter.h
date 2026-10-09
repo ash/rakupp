@@ -1617,6 +1617,34 @@ public:
     using HyperBind = std::function<bool(size_t, const std::shared_ptr<Env>&)>;
     void runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind, const HyperBind& writeBack,
                       ValueList* collect);
+    // The scheduler under every parallel iteration — `hyper for` / `race for`
+    // and the `.hyper` / `.race` methods. `n` iterations go out in batches of
+    // `batch`, in order, to `degree` workers (0: as many as the machine has
+    // cores less one), and this thread waits for them. `worker` runs once on
+    // each worker thread and answers that worker's iteration runner:
+    // `run(i, out)` runs iteration i, appends what it contributes to `out`
+    // (null when nothing is collected) and answers false when a `last` ended
+    // the loop there. Collected values come back in source order; a death ends
+    // the run and reaches the caller doing X::HyperRace::Died.
+    using ParIter = std::function<bool(size_t, ValueList*)>;
+    void runParallel(size_t n, size_t batch, size_t degree,
+                     const std::function<ParIter()>& worker, ValueList* collect);
+    // `.map` / `.grep` on a HyperSeq or RaceSeq (what `.hyper` / `.race`
+    // answer), over runParallel. False when the call has to stay serial — it
+    // has then run nothing, and the caller takes the ordinary path.
+    bool hyperSeqCall(const Value& inv, const std::string& m, ValueList& args,
+                      const ValueList& items, Value& out);
+    // The `:batch` / `:degree` a HyperSeq was given (-1 where it was not), and
+    // the same recorded for a list that carries them on (hyperCfg_).
+    std::pair<long long, long long> hyperCfgOf(const Value& v);
+    void hyperCfgSet(const Value& v, std::pair<long long, long long> cfg);
+    // Native kernels for hyper operators over plain machine numbers, split
+    // over threads when the operands are long (InterpreterRegex.cpp). Each
+    // answers false, having changed nothing, for anything it cannot answer
+    // exactly as the generic path would — which then runs.
+    bool hyperNumericInfix(const std::string& op, const Value& l, const Value& r,
+                           bool strictL, bool strictR, Value& out);
+    bool hyperNumericMethod(const Value& inv, const std::string& m, const ValueList& args, Value& out);
 
     // calling
     // `whereVerified`: the multi dispatcher already evaluated this candidate's
@@ -2881,6 +2909,7 @@ public:
     std::map<std::string, Value> moduleExportSubs_;
     ValueList useExprArgs_;  // `use Mod EXPR, …` — the evaluated non-string arguments, handed to EXPORT after the string ones
     std::unordered_map<const void*, std::pair<long long, long long>> hyperCfg_; // `.hyper(:batch, :degree)` per list (keyed by its storage): what `.configuration` answers
+    std::mutex hyperCfgMu_;   // hyperCfg_ is written from whichever thread calls `.hyper`
     // each loaded module's SELECTIVE `is export(:tag)` subs (key, value, tags),
     // kept so a REPEAT `use Mod :tag` can import the ones its tag now selects —
     // they are withheld on a plain `use`, so the module body's one run does not

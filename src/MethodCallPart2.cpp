@@ -9730,8 +9730,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     // `.elems` on a type object is 1 — a type object is a one-element list of
     // itself, exactly like any other scalar. `.serial` answers the invocant
-    // (only a Supply has anything to decide there).
+    // (only a Supply has anything to decide there) — but a HyperSeq / RaceSeq
+    // goes back to being an ordinary Seq.
     if (m == "elems" && (inv.t == VT::Type || inv.t == VT::Whatever)) return Value::integer(1);
+    if (m == "serial" && inv.t == VT::Array && (inv.s == "HyperSeq" || inv.s == "RaceSeq")) {
+        Value s = inv; s.s = "Seq";
+        return s;
+    }
     if (m == "serial" && inv.t != VT::Object) return inv;
     // .list/.List/.flat/.eager on a *scalar* (Int/Str/Num/Rat/Bool/Complex/Pair/type object)
     // yields a one-element list. Restricted to scalar types so list/array/range/seq values —

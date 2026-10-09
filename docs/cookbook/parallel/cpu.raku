@@ -25,8 +25,8 @@ sub MAIN(Int $limit = 400_000, Int :$parts = 8) {
     say "  $parts promises   : $parallel in {$parallel-ms} ms";
     say "  ratio         : { ($serial-ms / max($parallel-ms, 1)).round(0.1) }x";
 
-    # race and hyper say the same thing in one line. They return the right
-    # answer; see the page for what they cost on this engine.
+    # race and hyper say the same thing in one line: the grep runs in batches
+    # on $parts worker threads.
     $t0 = now;
     my $raced = (2 ..^ $limit).race(:degree($parts), :batch(4096)).grep(*.is-prime).elems;
     say "  race(:degree($parts)) : $raced in { ms($t0) } ms";

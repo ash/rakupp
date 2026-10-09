@@ -461,6 +461,17 @@ public:
             for (; n_ < k; n_++) ::new (static_cast<void*>(d_ + n_)) T(tmp);
         }
     }
+    // Append `k` elements that `fill(first, k)` placement-constructs in the raw
+    // slots at `first` — every one of them, and without throwing. The
+    // data-parallel kernels split that block over threads, so a million-element
+    // answer is constructed (and its pages first touched) once and in parallel,
+    // where resize() would default-construct it here and then be assigned over.
+    template <class F>
+    void appendConstructed(size_type k, F&& fill) {
+        ensure(n_ + k);
+        fill(d_ + n_, k);
+        n_ += k;
+    }
 
     iterator insert(const_iterator pos, const T& v) {
         std::size_t at = static_cast<std::size_t>(pos - d_);

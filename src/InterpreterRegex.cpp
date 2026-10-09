@@ -2,6 +2,9 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "IntOps.h"           // add_ovf & co.: the hyper kernels' Int arithmetic
+#include <atomic>
+#include <condition_variable>
 
 namespace rakupp {
 
@@ -3455,6 +3458,390 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         out.arr()->push_back(deepApply(x, y, xs, ys));
     }
     return (!lIter && !rIter && out.arr()->size() == 1) ? (*out.arr())[0] : out;
+}
+
+// ---------------------------------------------------------------------------
+// Native kernels for the hyper operators (hyperNumericInfix and
+// hyperNumericMethod in the header).
+//
+// `@a »*« @b` over a million Nums is a million trips down hyperCore's element
+// walk, each through two std::function layers into the generic operator
+// ladder; over machine numbers the same work is a tight loop. A kernel runs
+// only where nothing it meets can change the answer: every element a plain
+// machine Int or Num (the value alone — no BigInt, native tag, enum,
+// allomorph or mixin), the operator or method a built-in one that nothing
+// lexical shadows and no `augment` extends, and every result the one the
+// generic path gives, bit for bit. Anything else — an Int overflow, a division
+// by zero, an Int/Int division (a Rat), a nested list, a Junction — and the
+// kernel declines, having changed nothing, and the generic path runs.
+//
+// No user code runs in them, so a long operand is split over threads without
+// changing anything a program can observe.
+//
+// RAKUPP_NO_KERNELS=1 turns them off with the other kernels (A/B and gates);
+// RAKUPP_HYPER_THREADS=N caps their threads (1: serial). RAKUPP_GIL=1, the
+// threading escape hatch, keeps them serial too.
+// ---------------------------------------------------------------------------
+namespace {
+
+const bool g_hyperKernelsOff = [] {
+    const char* e = std::getenv("RAKUPP_NO_KERNELS");
+    return e && *e && *e != '0';
+}();
+// RAKUPP_KERNEL_TRACE=1: each hyper kernel that runs or declines (stderr), as
+// for the routine and loop kernels
+const bool g_hyperKernelTrace = [] {
+    const char* e = std::getenv("RAKUPP_KERNEL_TRACE");
+    return e && *e && *e != '0';
+}();
+
+// N-1 resident threads and the caller. One job at a time: a second caller (a
+// worker doing a long hyper of its own) runs its job serially rather than wait
+// for the first. Never destroyed: its threads sleep on a condition variable
+// until the process ends.
+class HyperPool {
+public:
+    static HyperPool& get() {
+        static HyperPool* p = new HyperPool();
+        return *p;
+    }
+    size_t width() const { return width_.load(std::memory_order_relaxed); }
+    // body(c) for every c in [0, chunks), spread over the pool and this thread;
+    // false when it all ran here instead
+    bool run(size_t chunks, const std::function<void(size_t)>& body) {
+        if (chunks > 1 && width() > 1 && (long long)::getpid() == pid_ && busy_.try_lock()) {
+            std::lock_guard<std::mutex> job(busy_, std::adopt_lock);
+            if (start()) {
+                {
+                    std::lock_guard<std::mutex> lk(m_);
+                    job_ = &body;
+                    chunks_ = chunks;
+                    next_.store(0);
+                    active_ = spawned_;
+                    gen_++;
+                }
+                cv_.notify_all();
+                for (size_t c; (c = next_.fetch_add(1)) < chunks;) body(c);
+                std::unique_lock<std::mutex> lk(m_);
+                done_.wait(lk, [&] { return active_ == 0; });
+                job_ = nullptr;
+                return true;
+            }
+        }
+        for (size_t c = 0; c < chunks; c++) body(c);
+        return false;
+    }
+private:
+    HyperPool() : pid_((long long)::getpid()) {
+        size_t w = std::thread::hardware_concurrency();
+        if (const char* e = std::getenv("RAKUPP_HYPER_THREADS")) {
+            long v = std::atol(e);
+            if (v > 0) w = (size_t)v;
+        }
+        const char* g = std::getenv("RAKUPP_GIL");
+        const char* p = std::getenv("RAKUPP_PARALLEL");
+        if ((g && *g && std::string(g) != "0") || (p && std::string(p) == "0")) w = 1;
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+        w = 1;   // (std::thread's constructor throws there)
+#endif
+        width_.store(std::max<size_t>(1, std::min<size_t>(w, 64)));
+    }
+    // the threads, on first use (busy_ held); false — serial from then on —
+    // when none would start
+    bool start() {
+        if (!started_) {
+            started_ = true;
+            for (size_t k = 1; k < width(); k++) {
+                try { std::thread([this] { loop(); }).detach(); spawned_++; }
+                catch (const std::system_error&) { break; }
+            }
+            width_.store(spawned_ + 1);
+        }
+        return spawned_ > 0;
+    }
+    void loop() {
+        uint64_t seen = 0;
+        std::unique_lock<std::mutex> lk(m_);
+        for (;;) {
+            cv_.wait(lk, [&] { return gen_ != seen; });
+            seen = gen_;
+            const std::function<void(size_t)>* job = job_;
+            const size_t chunks = chunks_;
+            lk.unlock();
+            for (size_t c; (c = next_.fetch_add(1)) < chunks;) (*job)(c);
+            lk.lock();
+            if (--active_ == 0) done_.notify_one();
+        }
+    }
+    std::atomic<size_t> width_{1};
+    size_t spawned_ = 0;
+    bool started_ = false;
+    long long pid_;   // a forked child has none of the threads: it runs serially
+    std::mutex busy_, m_;
+    std::condition_variable cv_, done_;
+    uint64_t gen_ = 0;
+    const std::function<void(size_t)>* job_ = nullptr;
+    size_t chunks_ = 0, active_ = 0;
+    std::atomic<size_t> next_{0};
+};
+
+// body(begin, end) over [0, n), in equal chunks over the pool once n is long
+// enough to pay for waking it; answers how many threads it ran on
+constexpr size_t kHyperGrain = 16384;
+size_t hyperFor(size_t n, const std::function<void(size_t, size_t)>& body) {
+    const size_t chunks = std::min(HyperPool::get().width(), n / kHyperGrain);
+    if (chunks <= 1) { body(0, n); return 1; }
+    return HyperPool::get().run(chunks, [&](size_t c) { body(n * c / chunks, n * (c + 1) / chunks); })
+               ? chunks : 1;
+}
+
+// A number a kernel computes on, read off one element
+struct KNum { bool isInt; long long i; double d; };
+
+// a plain machine Int or Num: the value alone
+inline bool kLeaf(const Value& v, KNum& k) {
+    if (v.x_ || v.pk_ != PK::None || v.natBits || v.natSigned || v.natFloat || v.b || v.isList ||
+        !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty() || !v.s.empty())
+        return false;
+    if (v.t == VT::Int) { k.isInt = true; k.i = v.i; return true; }
+    if (v.t == VT::Num) { k.isInt = false; k.d = v.n; return true; }
+    return false;
+}
+
+// One operand of a kernel: a list of numbers, or one number the other side's
+// length extends
+struct KSide {
+    const Value* one = nullptr;         // a single number
+    const Value* elems = nullptr;       // a list's elements
+    const PackedArr* packed = nullptr;  // a native array still in its words
+    long long lo = 0;                   // an integer Range: lo, lo+1, …
+    size_t n = 1;
+    bool iter = false;
+    bool at(size_t i, KNum& k) const {
+        if (elems) return kLeaf(elems[i], k);
+        if (one) return kLeaf(*one, k);
+        if (packed) {
+            if (packed->isNum) { k.isInt = false; std::memcpy(&k.d, &packed->w[i], 8); }
+            else { k.isInt = true; k.i = packed->w[i]; }
+            return true;
+        }
+        k.isInt = true; k.i = lo + (long long)i;
+        return true;
+    }
+};
+
+bool kSide(const Value& v, KSide& s) {
+    if (v.t == VT::Array) {
+        // (a Junction is a tagged Array; a lazy, shaped or packed-but-unpacked
+        // list has rules of its own)
+        if (!v.enumName.empty() || v.ext() || isMultiDimShaped(v)) return false;
+        if (v.packedLive()) {
+            s.packed = v.packed();
+            s.n = s.packed->w.size();
+        }
+        else if (v.pk_ == PK::List) {
+            const ValueList* a = v.arr();
+            s.elems = a->data();
+            s.n = a->size();
+        }
+        else return false;
+        s.iter = true;
+        return true;
+    }
+    if (v.t == VT::Range) {
+        if (v.rNum() || v.ext() || v.big() || v.ofType() == "Str" || v.rTo() >= 9000000000000000000LL)
+            return false;
+        const long long lo = v.rFrom() + (v.rExFrom() ? 1 : 0), hi = v.rTo() - (v.rExTo() ? 1 : 0);
+        if (hi < lo || (unsigned long long)hi - (unsigned long long)lo >= (1ULL << 32)) return false;
+        s.lo = lo;
+        s.n = (size_t)((unsigned long long)hi - (unsigned long long)lo) + 1;
+        s.iter = true;
+        return true;
+    }
+    KNum k;
+    if (!kLeaf(v, k)) return false;
+    s.one = &v;
+    return true;
+}
+
+enum class HOp : unsigned char { Add, Sub, Mul, Div, Lt, Le, Gt, Ge, Eq, Ne, None };
+
+HOp hyperOpCode(const std::string& op) {
+    if (op.size() == 1)
+        switch (op[0]) {
+            case '+': return HOp::Add;
+            case '-': return HOp::Sub;
+            case '*': return HOp::Mul;
+            case '/': return HOp::Div;
+            case '<': return HOp::Lt;
+            case '>': return HOp::Gt;
+        }
+    if (op.size() == 2 && op[1] == '=')
+        switch (op[0]) {
+            case '<': return HOp::Le;
+            case '>': return HOp::Ge;
+            case '=': return HOp::Eq;
+            case '!': return HOp::Ne;
+        }
+    return HOp::None;
+}
+
+// One element's answer, constructed at `dst` — or false, with nothing
+// constructed, for one the generic path has to give
+inline bool hyperApply(HOp op, const KNum& a, const KNum& b, Value* dst) {
+    auto put = [dst](Value v) { ::new (static_cast<void*>(dst)) Value(std::move(v)); return true; };
+    if (a.isInt && b.isInt) {
+        long long z;
+        switch (op) {
+            case HOp::Add: return !rakupp::add_ovf(a.i, b.i, &z) && put(Value::integer(z));
+            case HOp::Sub: return !rakupp::sub_ovf(a.i, b.i, &z) && put(Value::integer(z));
+            case HOp::Mul: return !rakupp::mul_ovf(a.i, b.i, &z) && put(Value::integer(z));
+            case HOp::Div: return false;   // a Rat
+            case HOp::Lt: return put(Value::boolean(a.i < b.i));
+            case HOp::Le: return put(Value::boolean(a.i <= b.i));
+            case HOp::Gt: return put(Value::boolean(a.i > b.i));
+            case HOp::Ge: return put(Value::boolean(a.i >= b.i));
+            case HOp::Eq: return put(Value::boolean(a.i == b.i));
+            case HOp::Ne: return put(Value::boolean(a.i != b.i));
+            case HOp::None: return false;
+        }
+        return false;
+    }
+    // an Int against a Num compares exactly in the generic path, past 2**53 too
+    if (a.isInt != b.isInt && op >= HOp::Lt) return false;
+    const double x = a.isInt ? (double)a.i : a.d, y = b.isInt ? (double)b.i : b.d;
+    switch (op) {
+        case HOp::Add: return put(Value::number(x + y));
+        case HOp::Sub: return put(Value::number(x - y));
+        case HOp::Mul: return put(Value::number(x * y));
+        case HOp::Div: return y != 0 && put(Value::number(x / y));   // (÷0 is a Failure)
+        case HOp::Lt: return put(Value::boolean(x < y));
+        case HOp::Le: return put(Value::boolean(x <= y));
+        case HOp::Gt: return put(Value::boolean(x > y));
+        case HOp::Ge: return put(Value::boolean(x >= y));
+        case HOp::Eq: return put(Value::boolean(x == y));
+        case HOp::Ne: return put(Value::boolean(x != y));
+        case HOp::None: return false;
+    }
+    return false;
+}
+
+// Fill `n` answers in place, over threads when long (`ways`: how many); false
+// when any element declined (every slot is constructed either way, as
+// appendConstructed needs)
+template <class F>
+bool hyperFill(ValueList& dst, size_t n, size_t& ways, F&& one) {
+    std::atomic<bool> bail{false};
+    dst.appendConstructed(n, [&](Value* first, size_t cnt) {
+        ways = hyperFor(cnt, [&](size_t b, size_t e) {
+            for (size_t i = b; i < e; i++)
+                if (bail.load(std::memory_order_relaxed) || !one(i, first + i)) {
+                    bail.store(true, std::memory_order_relaxed);
+                    for (; i < e; i++) ::new (static_cast<void*>(first + i)) Value();
+                    break;
+                }
+        });
+    });
+    return !bail.load();
+}
+
+enum class HMeth : unsigned char { Sqrt, Abs, Exp, Sin, Cos, Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, None };
+
+HMeth hyperMethCode(const std::string& m) {
+    static const std::unordered_map<std::string, HMeth> kMeth = {
+        {"sqrt", HMeth::Sqrt}, {"abs", HMeth::Abs}, {"exp", HMeth::Exp},
+        {"sin", HMeth::Sin}, {"cos", HMeth::Cos}, {"tan", HMeth::Tan},
+        {"asin", HMeth::Asin}, {"acos", HMeth::Acos}, {"atan", HMeth::Atan},
+        {"sinh", HMeth::Sinh}, {"cosh", HMeth::Cosh}, {"tanh", HMeth::Tanh}};
+    auto it = kMeth.find(m);
+    return it == kMeth.end() ? HMeth::None : it->second;
+}
+
+inline bool hyperMethApply(HMeth m, const KNum& a, Value* dst) {
+    auto put = [dst](Value v) { ::new (static_cast<void*>(dst)) Value(std::move(v)); return true; };
+    if (m == HMeth::Abs && a.isInt)   // (|LLONG_MIN| is a BigInt)
+        return a.i != std::numeric_limits<long long>::min() && put(Value::integer(std::llabs(a.i)));
+    const double x = a.isInt ? (double)a.i : a.d;
+    switch (m) {
+        // a negative square root is NaN or, under 6.e, a Complex
+        case HMeth::Sqrt: return !(x < 0) && put(Value::number(std::sqrt(x)));
+        case HMeth::Abs:  return put(Value::number(std::fabs(x)));
+        case HMeth::Exp:  return put(Value::number(std::exp(x)));
+        case HMeth::Sin:  return put(Value::number(std::sin(x)));
+        case HMeth::Cos:  return put(Value::number(std::cos(x)));
+        case HMeth::Tan:  return put(Value::number(std::tan(x)));
+        case HMeth::Asin: return put(Value::number(std::asin(x)));
+        case HMeth::Acos: return put(Value::number(std::acos(x)));
+        case HMeth::Atan: return put(Value::number(std::atan(x)));
+        case HMeth::Sinh: return put(Value::number(std::sinh(x)));
+        case HMeth::Cosh: return put(Value::number(std::cosh(x)));
+        case HMeth::Tanh: return put(Value::number(std::tanh(x)));
+        case HMeth::None: return false;
+    }
+    return false;
+}
+
+}   // namespace
+
+bool Interpreter::hyperNumericInfix(const std::string& op, const Value& l, const Value& r,
+                                    bool strictL, bool strictR, Value& out) {
+    if (g_hyperKernelsOff) return false;
+    const HOp k = hyperOpCode(op);
+    if (k == HOp::None) return false;
+    KSide L, R;
+    if (!kSide(l, L) || !kSide(r, R) || (!L.iter && !R.iter) || L.n == 0 || R.n == 0) return false;
+    // The shapes hyperCore gives without cycling or complaint: two lists of one
+    // length, or a list and a number on the DWIMMY side. (An empty side, a
+    // shorter list, a strict number facing a list: hyperCore's own rules.)
+    size_t n;
+    if (L.iter && R.iter) {
+        if (L.n != R.n) return false;
+        n = L.n;
+    }
+    else if (L.iter) { if (strictR) return false; n = L.n; }
+    else { if (strictL) return false; n = R.n; }
+    // a lexical &infix:<op> answers element by element in the generic path
+    if (lexShadowedInfix(op, l, r)) return false;
+    Value res = Value::array();
+    size_t ways = 1;
+    const bool done = hyperFill(*res.arr(), n, ways, [&](size_t i, Value* dst) {
+        KNum x, y;
+        return L.at(i, x) && R.at(i, y) && hyperApply(k, x, y, dst);
+    });
+    if (g_hyperKernelTrace)
+        std::fprintf(stderr, "kernel: hyper infix:<%s> over %zu element(s) %s\n", op.c_str(), n,
+                     done ? (ways > 1 ? ("on " + std::to_string(ways) + " threads").c_str() : "on 1 thread")
+                          : "declined");
+    if (!done) return false;
+    // (the result mirrors the shape of the side that is a list, as hyperCore's)
+    const Value& shaper = L.iter ? l : r;
+    res.isList = !(shaper.t == VT::Array && !shaper.isList);
+    out = std::move(res);
+    return true;
+}
+
+bool Interpreter::hyperNumericMethod(const Value& inv, const std::string& m, const ValueList& args,
+                                     Value& out) {
+    if (g_hyperKernelsOff || !args.empty() || !builtinExt_.empty()) return false;
+    const HMeth k = hyperMethCode(m);
+    if (k == HMeth::None) return false;
+    KSide S;
+    if (!kSide(inv, S) || !S.iter || S.n == 0) return false;
+    Value res = Value::array();
+    size_t ways = 1;
+    const bool done = hyperFill(*res.arr(), S.n, ways, [&](size_t i, Value* dst) {
+        KNum x;
+        return S.at(i, x) && hyperMethApply(k, x, dst);
+    });
+    if (g_hyperKernelTrace)
+        std::fprintf(stderr, "kernel: hyper .%s over %zu element(s) %s\n", m.c_str(), S.n,
+                     done ? (ways > 1 ? ("on " + std::to_string(ways) + " threads").c_str() : "on 1 thread")
+                          : "declined");
+    if (!done) return false;
+    // (as hyperMethodEach: an Array in gives an Array out)
+    res.isList = isNodalMethod(m) || !(inv.t == VT::Array && !inv.isList);
+    out = std::move(res);
+    return true;
 }
 
 // The CONTAINER an expression denotes, as a proxy — for the two places that bind

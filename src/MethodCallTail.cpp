@@ -346,6 +346,112 @@ static bool mapBlockReturnsOut(const Value& fn) {
     return r;
 }
 
+bool mayHaveStateDecl(const Stmt* s);
+
+std::pair<long long, long long> Interpreter::hyperCfgOf(const Value& v) {
+    if (v.t != VT::Array || v.pk_ != PK::List) return {-1, -1};
+    std::lock_guard<std::mutex> lk(hyperCfgMu_);
+    auto it = hyperCfg_.find((const void*)v.arr());
+    return it == hyperCfg_.end() ? std::make_pair(-1LL, -1LL) : it->second;
+}
+
+// (-1, -1 — nothing asked — forgets what was recorded for that storage)
+void Interpreter::hyperCfgSet(const Value& v, std::pair<long long, long long> cfg) {
+    if (v.t != VT::Array || v.pk_ != PK::List) return;
+    std::lock_guard<std::mutex> lk(hyperCfgMu_);
+    if (cfg.first < 0 && cfg.second < 0) hyperCfg_.erase((const void*)v.arr());
+    else hyperCfg_[(const void*)v.arr()] = cfg;
+}
+
+// `.map` / `.grep` on a HyperSeq or RaceSeq: the block runs on worker threads,
+// in batches (runParallel), and the answer is a HyperSeq / RaceSeq again, in
+// source order, carrying the same :batch / :degree on. Each call is a ROUTINE
+// frame for `$/`, as a `start` block's is, so a match in the block is that
+// call's own rather than a write every worker makes to the enclosing routine's.
+//
+// What stays serial, however it is asked for: a block that `return`s (the lazy
+// map arm answers it), loop phasers (Rakudo refuses them in a hyper), `state`
+// (one variable every worker would initialize and bump at once), a matcher
+// that is not a block, and grep's adverbs and N-at-a-time form.
+bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList& args,
+                               const ValueList& items, Value& out) {
+    const bool isMap = m == "map";
+    if ((!isMap && m != "grep") || args.size() != 1 || args[0].t != VT::Code || !args[0].code())
+        return false;
+    const Value fn = args[0];
+    const Callable& c = *fn.code();
+    if (mapBlockReturnsOut(fn)) return false;
+    if (c.body)
+        for (auto& s : *c.body) {
+            if (s->kind == NK::Block) {
+                const std::string& ph = static_cast<Block*>(s.get())->phaser;
+                if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") return false;
+            }
+            if (mayHaveStateDecl(s.get())) return false;
+        }
+    const size_t ar = std::max<size_t>(1, codeArity(fn));
+    if (!isMap && ar > 1) return false;
+    // (as the serial map: a chunk short of the REQUIRED parameters dies)
+    size_t required = ar;
+    if (c.params && !c.params->empty()) {
+        size_t req = 0;
+        for (auto& pp : *c.params)
+            if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
+        if (req <= ar) required = req;
+    }
+    // `$_` aliases the element, as in the serial arms: each worker writes only
+    // the elements of its own batches
+    ValueList* const src = ar == 1 && inv.t == VT::Array && inv.arr() &&
+                           items.size() == inv.arr()->size() ? inv.arr() : nullptr;
+    const bool asRoutine = c.isBlock;
+    const size_t total = items.size();
+    const auto cfg = hyperCfgOf(inv);
+    ValueList res;
+    runParallel((total + ar - 1) / ar, cfg.first > 0 ? (size_t)cfg.first : 64,
+                cfg.second > 0 ? (size_t)cfg.second : 0, [&]() -> ParIter {
+        return [&, this](size_t k, ValueList* o) -> bool {
+            // the call registers are one-shot; clear them however the call ends
+            struct Regs { ~Regs() { tctx_.topicWriteback = nullptr; tctx_.forceRoutineFrame = false; } } regs;
+            const size_t i = k * ar;
+            if (isMap) {
+                ValueList ca;
+                for (size_t j = 0; j < ar && i + j < total; j++) ca.push_back(items[i + j]);
+                if (ca.size() < required)
+                    throw RakuError{Value::typeObj("X::AdHoc"),
+                        "Too few positionals passed; expected " + std::to_string(required) +
+                            " arguments but got " + std::to_string(ca.size())};
+                if (src) tctx_.topicWriteback = &(*src)[i];
+                tctx_.forceRoutineFrame = asRoutine;
+                Value r;
+                try { r = callCallable(fn, std::move(ca)); }
+                catch (LastEx& le) { if (le.hasVal) pushLoopPayload(*o, le.val); return false; }
+                catch (NextEx& ne) { if (ne.hasVal) pushLoopPayload(*o, ne.val); return true; }
+                if (r.t == VT::Array && r.isList && r.s == "Slip")
+                    for (auto& x : *r.arr()) o->push_back(x);
+                else o->push_back(std::move(r));
+                return true;
+            }
+            for (;;) {   // (again from the top on a `redo`)
+                const Value v = items[i];
+                if (src) tctx_.topicWriteback = &(*src)[i];
+                tctx_.forceRoutineFrame = asRoutine;
+                bool match;
+                try { match = predAnswerTruthy(*this, callCallable(fn, ValueList{v}), v); }
+                catch (LastEx&) { return false; }
+                catch (NextEx&) { return true; }
+                catch (RedoEx&) { continue; }
+                // (a write to `$_` shows in what is kept)
+                if (match) o->push_back(src ? (*src)[i] : v);
+                return true;
+            }
+        };
+    }, &res);
+    out = Value::array(); out.isList = true; out.s = inv.s;
+    *out.arr() = std::move(res);
+    if (cfg.first >= 0 || cfg.second >= 0) hyperCfgSet(out, cfg);
+    return true;
+}
+
 // `has $.b handles *`: the object hands a name it has no method for to the
 // attribute. nullopt when no attribute of its class delegates everything.
 std::optional<Value> Interpreter::catchAllDelegation(const Value& inv, const MName& m, ValueList& args,
@@ -2068,12 +2174,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (m == "configuration" && (inv.t == VT::Array || inv.t == VT::Range)) {
         unsigned hc = std::thread::hardware_concurrency();
         long long batch = 64, degree = hc > 1 ? (long long)hc - 1 : 1;
-        if (inv.t == VT::Array && inv.arr()) { // what `.hyper(:batch, :degree)` asked for
-            auto it = hyperCfg_.find((const void*)inv.arr());
-            if (it != hyperCfg_.end()) {
-                if (it->second.first >= 0)  batch  = it->second.first;
-                if (it->second.second >= 0) degree = it->second.second;
-            }
+        if (inv.t == VT::Array) { // what `.hyper(:batch, :degree)` asked for
+            const auto asked = hyperCfgOf(inv);
+            if (asked.first >= 0)  batch  = asked.first;
+            if (asked.second >= 0) degree = asked.second;
         }
         Value cfg = Value::makeHash();
         (*cfg.hash())["batch"]  = Value::integer(batch);
@@ -2093,40 +2197,41 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                  {"value", *a.pairVal()}},
                                 "Invalid value '" + a.pairVal()->toStr() + "' for :" + a.s.str() +
                                     " on method " + std::string(m));
-        // what `.hyper`/`.race` answer IS a HyperSeq/RaceSeq (the work stays serial)
+        // what `.hyper`/`.race` answer IS a HyperSeq/RaceSeq: a list whose
+        // `.map` and `.grep` run over worker threads (hyperSeqCall)
         const char* seqKind = m == "hyper" ? "HyperSeq" : m == "race" ? "RaceSeq" : "";
+        // `.hyper(:batch(42), :degree(16))` — what it was ASKED is what the
+        // workers use and what `.configuration` answers (hyperize reads it
+        // straight back: `@a.&hyperize(42).configuration.batch`). It is kept
+        // per element storage (hyperCfg_).
+        long long batch = -1, degree = -1;
+        if (m != "serial")
+            for (auto& a : args)
+                if (a.t == VT::Pair && a.pairVal()) {
+                    if (a.s == "batch") batch = a.pairVal()->toInt();
+                    else if (a.s == "degree") degree = a.pairVal()->toInt();
+                }
+        const bool asked = batch >= 0 || degree >= 0;
         if (inv.t == VT::Range) {
             Value r = inv; Value l = methodCall(r, "list", {}, nullptr);
             if (*seqKind && l.t == VT::Array) l.s = seqKind;
+            if (asked) hyperCfgSet(l, {batch, degree});
             return l;
         }
         if (inv.t == VT::Hash) {
             Value o = Value::array(); o.isList = true;
             for (auto& kv : *inv.hash()) o.arr()->push_back(hashEntryPair(inv, kv.first, kv.second));
             if (*seqKind) o.s = seqKind;
+            if (asked) hyperCfgSet(o, {batch, degree});
             return o;
         }
+        // An Array's HyperSeq SHARES its storage — a write to `$_` in its
+        // `.map` reaches the array — so a `.hyper` that asks nothing clears
+        // what an earlier one over the same array asked
         Value o = inv; o.isList = true; o.itemized = false;
         if (*seqKind) o.s = seqKind;
         else if (o.s == "HyperSeq" || o.s == "RaceSeq") o.s = "Seq";   // `.serial`
-        // `.hyper(:batch(42), :degree(16))` — the parallel stand-in is serial,
-        // but what it was ASKED is what `.configuration` has to answer (hyperize
-        // reads it straight back: `@a.&hyperize(42).configuration.batch`). The
-        // list gets storage of its own so the answer keys on it alone.
-        if (m != "serial" && inv.t == VT::Array && inv.arr()) {
-            long long batch = -1, degree = -1;
-            for (auto& a : args)
-                if (a.t == VT::Pair && a.pairVal()) {
-                    if (a.s == "batch") batch = a.pairVal()->toInt();
-                    else if (a.s == "degree") degree = a.pairVal()->toInt();
-                }
-            if (batch >= 0 || degree >= 0) {
-                o = Value::array(); o.isList = true;
-                *o.arr() = *inv.arr();
-                hyperCfg_[(const void*)o.arr()] = {batch, degree};
-                if (*seqKind) o.s = seqKind;
-            }
-        }
+        if (m != "serial" && inv.t == VT::Array) hyperCfgSet(o, {batch, degree});
         return o;
     }
     // `.all`/`.any`/`.one`/`.none` on a single (non-container) value → a one-element
@@ -2192,6 +2297,22 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             (m == "values" || m == "keys" || m == "kv" || m == "pairs" || m == "antipairs");
         if (!(inv.t == VT::Array && inv.arr() && !inv.ext() && throughHandle()) && !hashPush && !hashDirect)
             items = toList(inv);
+        // `.map` / `.grep` on what `.hyper` / `.race` answered run over worker
+        // threads (hyperSeqCall). One that has to stay serial takes the
+        // ordinary arm, and still answers a HyperSeq / RaceSeq.
+        if (inv.t == VT::Array && !inv.ext() && (m == "map" || m == "grep") &&
+            (inv.s == "HyperSeq" || inv.s == "RaceSeq")) {
+            Value po;
+            if (hyperSeqCall(inv, m, args, items, po)) return po;
+            Value plain = inv; plain.s = std::string();
+            Value r = methodCall(plain, m, std::move(args), rwArgs);
+            if (r.t == VT::Array && !r.ext()) {
+                r.s = inv.s;
+                const auto cfg = hyperCfgOf(inv);
+                if (cfg.first >= 0 || cfg.second >= 0) hyperCfgSet(r, cfg);
+            }
+            return r;
+        }
         // .collate — UCA-ordered sort (the coll infix already implements DUCET;
         // this just wires the method Rakudo exposes on lists)
         if (m == "collate") {

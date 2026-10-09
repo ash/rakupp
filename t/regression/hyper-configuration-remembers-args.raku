@@ -1,10 +1,9 @@
 # Regression: `.hyper(:batch, :degree)` — `.configuration` answers what was asked.
 #
-# rakupp's HyperSeq stand-in is serial: `.hyper` on a list is the list. That
-# is fine for the work, but `.configuration.batch` / `.degree` answered the
-# pool defaults whatever the call said, and hyperize's suite reads them
-# straight back (`@a.&hyperize(42).configuration.batch` wants 42). The type
-# object's defaults are unchanged.
+# `.configuration.batch` / `.degree` answered the pool defaults whatever the
+# call said, and hyperize's suite reads them straight back
+# (`@a.&hyperize(42).configuration.batch` wants 42). The type object's
+# defaults are unchanged.
 #
 # Every expectation was checked against Rakudo.
 

@@ -434,6 +434,11 @@ say (1,2,3).map(-*);      # → (-1 -2 -3)  (prefer .map for prefix ops)
 Hyper method calls: `(1,2,3)>>.abs` calls `.abs` on each element, and
 `<a b c>>>.uc` works on a word list too.
 
+Over lists of plain Int and Num elements, `+ - * /`, the comparisons and the
+numeric methods (`.sqrt`, `.abs`, `.exp`, the trigonometric ones) run as a
+native loop, split over the cores once a list holds 32,768 elements. The answer
+is the one the element-by-element path gives.
+
 ### Zip `Z` / Cross `X` with an operator
 
 ```raku

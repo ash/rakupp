@@ -2766,28 +2766,25 @@ void Interpreter::runLoopLast(Block* body, const std::shared_ptr<Env>& scope) {
     }
 }
 
-// `hyper for` / `race for`. The iterations go out in batches of 64, in order,
-// to as many workers as the machine has cores less one (Rakudo's `.hyper`
-// defaults), and this thread waits for them. Each iteration binds its loop
-// variable in its worker's scope and runs the body through runLoopBody, as the
-// serial loop does — so `next`, `redo`, a `when` and the collected value behave
-// as they do there. That scope also holds the worker's own `$/`: a match in the
-// body would otherwise write the enclosing routine's from several threads at once.
+// The scheduler under every parallel iteration (see the header). The batches go
+// out in source order: each worker takes the next one as it finishes the last.
 //
 // The values come back in source order, which hyper promises and race permits.
-// A `last` ends the loop where it stands: every iteration before it counts,
-// none after it (a later batch already under way is thrown away). A die ends it
-// too, reaching the caller doing X::HyperRace::Died, as in Rakudo; whichever of
-// the two came first in the source decides.
-void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
-                               const HyperBind& writeBack, ValueList* collect) {
-    constexpr size_t kBatch = 64;
-    const size_t nb = (n + kBatch - 1) / kBatch;
+// A `last` ends the run where it stands: every iteration before it counts, none
+// after it (a later batch already under way is thrown away). A die ends it too,
+// reaching the caller doing X::HyperRace::Died, as in Rakudo; whichever of the
+// two came first in the source decides. A next/last labeled for an OUTER loop
+// acts on this one: that loop is on another thread, out of reach.
+void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
+                              const std::function<ParIter()>& worker, ValueList* collect) {
+    // (a batch past the whole list is one batch: no arithmetic below overflows)
+    batch = std::max<size_t>(1, std::min(batch, n));
+    const size_t nb = (n + batch - 1) / batch;
     const unsigned hc = std::thread::hardware_concurrency();
-    const size_t degree = std::min<size_t>(nb, hc > 1 ? hc - 1 : 1);
+    const size_t degree = std::min<size_t>(nb, degreeWanted ? degreeWanted : hc > 1 ? hc - 1 : 1);
     struct Run {
         std::atomic<size_t> next{0};           // the next batch to hand out
-        std::atomic<size_t> stop{SIZE_MAX};    // the earliest iteration that ended the loop
+        std::atomic<size_t> stop{SIZE_MAX};    // the earliest iteration that ended the run
         std::mutex m;                          // guards errAt/err/lastAt
         size_t errAt = SIZE_MAX, lastAt = SIZE_MAX;
         std::exception_ptr err;
@@ -2800,57 +2797,28 @@ void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
         while (v < cur && !a.compare_exchange_weak(cur, v)) {}
     };
     auto loopScope = tctx_.cur;
-    Block* body = fs->body.get();
-    const std::string label = fs->label;
     const bool keep = collect != nullptr;
-    // a worker's own `$/` starts as the one the loop sees: a match made before
-    // the loop still reads the same inside it
-    Value outerMatch = Value::nil();
-    if (loopScope) if (Value* m = loopScope->find("$/")) outerMatch = *m;
-    const bool flat = flatLoopBody(body);   // (asked here: it caches on the node)
     Value work; work.t = VT::Code; work.setCode(makePayload<Callable>());
-    // (bind/writeBack are the caller's, alive until every worker has finished)
-    work.code()->builtin = [run, lower, loopScope, outerMatch, body, label, keep, flat, n, nb, &bind, &writeBack]
-                           (Interpreter& I, ValueList&) -> Value {
-        // One scope per worker, kept across its iterations as the serial loop
-        // keeps one: a scope per iteration made every worker bump the one
-        // shared parent's reference count, and seven cores contending for that
-        // cache line ran the loop slower than one thread did. A fresh scope
-        // only when the last escaped (a closure in the body captured it);
-        // otherwise emptied between iterations, or for a flat body overwritten.
-        std::shared_ptr<Env> scope;
-        // …and a frame of its own to stand in: a worker starts out in the
-        // spawner's scope, which they all share, and every body entry saves
-        // and restores the current scope — one more shared count per iteration
+    // (`worker` is the caller's, alive until every worker has finished)
+    work.code()->builtin = [run, lower, loopScope, keep, n, nb, batch, &worker]
+                           (Interpreter&, ValueList&) -> Value {
+        // A frame of its own to stand in: a worker starts out in the spawner's
+        // scope, which they all share, and every body entry saves and restores
+        // the current scope — one more shared count per iteration
         auto own = std::make_shared<Env>();
         own->parent = loopScope;
         struct CurG { std::shared_ptr<Env> s; ~CurG() { tctx_.cur = std::move(s); } } curG{tctx_.cur};
         tctx_.cur = own;
+        ParIter iter = worker();
         for (;;) {
             const size_t b = run->next.fetch_add(1);
-            if (b >= nb || b * kBatch > run->stop.load()) break;
+            if (b >= nb || b * batch > run->stop.load()) break;
             ValueList* out = keep ? &run->out[b] : nullptr;
-            if (out) out->reserve(kBatch);
-            for (size_t i = b * kBatch, e = std::min(n, i + kBatch); i < e; i++) {
+            if (out) out->reserve(std::min(batch, n - b * batch));
+            for (size_t i = b * batch, e = std::min(n, i + batch); i < e; i++) {
                 if (i > run->stop.load()) break;
-                if (!scope || scope.use_count() > 1) {
-                    scope = std::make_shared<Env>();
-                    scope->parent = loopScope;
-                    scope->define("$/", outerMatch);
-                }
-                else if (!flat) {
-                    scope->vars.clear();
-                    scope->define("$/", outerMatch);
-                }
                 bool cont = true;
-                try {
-                    if (!bind(i, scope)) continue;
-                    std::function<void()> rebind = [&] { bind(i, scope); };   // redo: the element afresh
-                    cont = I.runLoopBody(body, scope, label, i == 0, i + 1 == n, out, rebind);
-                    if (writeBack) writeBack(i, scope);
-                }
-                // a next/last labeled for an OUTER loop: that loop is on another
-                // thread, out of reach, so it acts on this one
+                try { cont = iter(i, out); }
                 catch (NextEx&) { continue; }
                 catch (LastEx&) { cont = false; }
                 catch (...) {
@@ -2868,10 +2836,10 @@ void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
         }
         return Value::nil();
     };
-    // A `hyper for` nested in another's body spawns from a worker. Past the
-    // spawn cap (throttleSpawn) a spawner waits for the herd to thin, which the
-    // parents parked here awaiting their own workers never do — so well short
-    // of the cap the batches run on this thread instead.
+    // A parallel iteration nested in another's body spawns from a worker. Past
+    // the spawn cap (throttleSpawn) a spawner waits for the herd to thin, which
+    // the parents parked here awaiting their own workers never do — so well
+    // short of the cap the batches run on this thread instead.
     if (liveWorkers_.load(std::memory_order_relaxed) + (int)degree > 256) {
         ValueList none;
         work.code()->builtin(*this, none);
@@ -2897,10 +2865,55 @@ void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
         // anything else (a control exception, a teardown abort) goes on as it was
     }
     if (collect) {
-        const size_t upTo = run->lastAt == SIZE_MAX ? nb : run->lastAt / kBatch + 1;
+        const size_t upTo = run->lastAt == SIZE_MAX ? nb : run->lastAt / batch + 1;
         for (size_t b = 0; b < upTo; b++)
             for (auto& v : run->out[b]) collect->push_back(std::move(v));
     }
+}
+
+// `hyper for` / `race for`, over runParallel: batches of 64 to as many workers
+// as the machine has cores less one (Rakudo's `.hyper` defaults). Each
+// iteration binds its loop variable in its worker's scope and runs the body
+// through runLoopBody, as the serial loop does — so `next`, `redo`, a `when`
+// and the collected value behave as they do there. That scope also holds the
+// worker's own `$/`: a match in the body would otherwise write the enclosing
+// routine's from several threads at once.
+void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
+                               const HyperBind& writeBack, ValueList* collect) {
+    auto loopScope = tctx_.cur;
+    Block* body = fs->body.get();
+    const std::string label = fs->label;
+    // a worker's own `$/` starts as the one the loop sees: a match made before
+    // the loop still reads the same inside it
+    Value outerMatch = Value::nil();
+    if (loopScope) if (Value* m = loopScope->find("$/")) outerMatch = *m;
+    const bool flat = flatLoopBody(body);   // (asked here: it caches on the node)
+    runParallel(n, 64, 0, [&]() -> ParIter {
+        // One scope per worker, kept across its iterations as the serial loop
+        // keeps one: a scope per iteration made every worker bump the one
+        // shared parent's reference count, and seven cores contending for that
+        // cache line ran the loop slower than one thread did. A fresh scope
+        // only when the last escaped (a closure in the body captured it);
+        // otherwise emptied between iterations, or for a flat body overwritten.
+        std::shared_ptr<Env> scope;
+        return [this, scope, &loopScope, &outerMatch, body, &label, flat, n, &bind, &writeBack]
+               (size_t i, ValueList* out) mutable -> bool {
+            if (!scope || scope.use_count() > 1) {
+                scope = std::make_shared<Env>();
+                scope->parent = loopScope;
+                scope->define("$/", outerMatch);
+            }
+            else if (!flat) {
+                scope->vars.clear();
+                scope->define("$/", outerMatch);
+            }
+            if (!bind(i, scope)) return true;
+            std::function<void()> rebind = [&] { bind(i, scope); };   // redo: the element afresh
+            const bool cont = runLoopBody(body, scope, label, i == 0, i + 1 == n, out, rebind);
+            if (writeBack) writeBack(i, scope);
+            return cont;
+        };
+    }, collect);
 }
 
 // Is `n` a built-in type name that a class may legitimately derive from?
@@ -3717,14 +3730,20 @@ ClassInfo* Interpreter::qualifiedConcretizationFrom(ClassInfo* start, const std:
 // engine's internal reads, so nothing the engine does on its own behalf can
 // make a Seq throw. Marking one CACHED is always safe: it can only take a
 // later complaint away.
+// (A HyperSeq / RaceSeq — what `.hyper` / `.race` and their `.map` / `.grep`
+// answer — is read once in exactly the same way.)
+// (every method call's list result asks; most lists are untagged)
+static bool isSeqKind(const Value& v) {
+    return !v.s.empty() && (v.s == "Seq" || v.s == "HyperSeq" || v.s == "RaceSeq");
+}
 void Interpreter::seqUse(const Value& v, SeqUse how) {
     SeqToken* tok = v.seqTok();
-    if (!tok || v.t != VT::Array || !v.isList || !(v.s == "Seq")) return;
+    if (!tok || v.t != VT::Array || !v.isList || !isSeqKind(v)) return;
     unsigned char st = tok->state.load(std::memory_order_relaxed);
     if (st == kSeqCached) return;
     if (st == kSeqConsumed) {
         if (how == SeqUse::Sink) return;
-        throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj("Seq")}},
+        throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(v.s.str())}},
                     "The iterator of this Seq is already in use/consumed by another Seq\n"
                     "(you might solve this by adding .cache on usages of the Seq, or\n"
                     "by assigning the Seq into an array)");
@@ -3735,7 +3754,7 @@ void Interpreter::seqUse(const Value& v, SeqUse how) {
 }
 
 void Interpreter::seqMintList(Value& r, const Value& inv) {
-    if (!(r.s == "Seq")) return;
+    if (!isSeqKind(r)) return;
     SeqToken* have = r.seqTok();
     if (have && have != inv.seqTok()) return;   // a Seq handed back as it is keeps its state
     r.setSeqTok(makeSlabShared<SeqToken>());

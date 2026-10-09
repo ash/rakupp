@@ -1797,6 +1797,9 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
                           (v.t == VT::Hash && v.hash() && v.hashKind.empty()));
     };
     const bool invoke = opEq(m, kHyperInvoke);   // `».(args)`: call each element
+    // a list of plain machine numbers and a numeric method: the native kernel
+    // (InterpreterRegex.cpp)
+    if (Value nk; !invoke && hyperNumericMethod(inv, m, args, nk)) return nk;
     auto each = [&](const Value& el) -> Value {
         if (descends(el)) return hyperMethodEach(el, m, args, maybe);
         if (invoke) {
