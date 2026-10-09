@@ -200,7 +200,7 @@ bool rtUserPrefix(Value (*fn)(ValueList), const Value& v, Value& out) {
     if (!(v.t == VT::Object && v.obj() && v.obj()->cls)) return false;
     try { out = fn(ValueList{v}); return true; }
     catch (RakuError& e) {
-        if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+        if (!isMultiNoMatch(e)) throw;
     }
     return false;
 }

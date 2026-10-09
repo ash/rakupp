@@ -432,7 +432,7 @@ void Interpreter::registerBuiltinsPart3() {
             if (userOp.t == VT::Code && v.t == VT::Object && v.obj() && v.obj()->cls) {
                 try { return I.callCallable(userOp, ValueList{v}); }
                 catch (RakuError& e) {
-                    if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+                    if (!isMultiNoMatch(e)) throw;
                 }
             }
             bool b = I.boolify(v);
@@ -451,7 +451,7 @@ void Interpreter::registerBuiltinsPart3() {
         if (!f) return false;
         try { out = I.callCallable(*f, ValueList{a[0]}); return true; }
         catch (RakuError& e) {
-            if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+            if (!isMultiNoMatch(e)) throw;
         }
         return false;
     };

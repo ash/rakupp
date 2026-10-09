@@ -336,6 +336,8 @@ void (*g_pullLazy)(const Value&, size_t) = nullptr;
 void (*g_procSettle)(const Value&) = nullptr;   // Builtins.cpp: a live run() child settles first
 // Interpreter.cpp: has a Promise settled, in whichever shape it keeps its state
 bool (*g_promiseSettled)(const Value&) = nullptr;
+// InterpreterBinding.cpp: a CArray's elements, decoded and space-joined
+std::string (*g_carrayStr)(const Value&) = nullptr;
 DateFormatFn g_dateFormat = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 
 // Recursion depth backstop for gist()/toStr() over nested containers. A
@@ -771,6 +773,9 @@ std::string Value::toStr() const {
     // (a Blob/Buf uses enumName for its ENCODING, and a flavored IO::Path for its
     // OS grammar — neither is an enum key)
     if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
+        // a CArray built here (enumName is its element type) Strs as its
+        // elements, space-joined, as Rakudo's does
+        if (t == VT::Str && hashKind == "CArray" && g_carrayStr) return g_carrayStr(*this);
         // a Str-VALUED member stringifies to its value (`enum E (x => "val")`:
         // ~x is "val"), an Int-valued one to its key — Rakudo-verified both ways
         if (t == VT::Int && pairVal() && pairVal()->t == VT::Str) return pairVal()->s;

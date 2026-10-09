@@ -2524,7 +2524,21 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     }
                     vi = vals.size();
                     Value* lv = lvalue(tgt);
-                    if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest); }
+                    // each element enters a container of its own, so a Nil resets
+                    // it, as `my @a = Nil, 2` does: `my ($x, @a) = 1, Nil, 2` is [Any, 2]
+                    if (nm[0] == '@') {
+                        const std::string et = lv->ofType().empty() ? std::string() : elemTypeOfSpec(lv->ofType());
+                        const Value dflt = lv->elemDefault() ? *lv->elemDefault()
+                                         : !et.empty() && ascii::isupper((unsigned char)et[0]) ? Value::typeObj(et)
+                                                                                               : Value::any();
+                        for (auto& e : *rest.arr()) if (e.t == VT::Nil) e = dflt;
+                        // …and the container keeps its type: `my ($x, Int @a)` is an Array[Int]
+                        rest.ofTypeM() = lv->ofType();
+                        rest.elemDefaultM() = lv->elemDefault();
+                    }
+                    // a `%` target is STORED into, as `my %h = …` is: Nil values
+                    // reset, and an odd count is an error rather than a lost item
+                    if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest, /*store=*/true); }
                     else *lv = rest;
                     continue;
                 }
@@ -2550,6 +2564,20 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     if (!ct.empty()) v = coerceToType(v, ct);
                 }
                 Value* lv = lvalue(tgt);
+                // Nil RESETS a `$` variable, as `$x = Nil` does: to its `is
+                // default`, its type object or Any. Stored as it came, `my ($a,
+                // $b) = Nil, 5` left Nil in $a, and `my Int ($a) = Nil` died.
+                if (!isBinding && v.t == VT::Nil && tgt->kind == NK::VarExpr) {
+                    const std::string& nm = static_cast<VarExpr*>(tgt)->name;
+                    if (nm.size() > 1 && nm[0] == '$' && nm[1] != '!' && nm[1] != '.') {
+                        v = Value::any();
+                        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                            auto di = en->xr().varDefault.find(nm);
+                            if (di != en->xr().varDefault.end()) { v = di->second; break; }
+                            if (en->local(nm)) break;   // owner scope reached, no declared default
+                        }
+                    }
+                }
                 // a TYPED slot checks what it is given, as `my Str $x = 3` does:
                 // `my (Str $x) = 3` dies
                 if (!isBinding && tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->declType.empty()) {

@@ -456,7 +456,7 @@ Value Interpreter::hyperUnary(const std::string& op, Value v) {
         if (userOp && x.t == VT::Object && x.obj() && x.obj()->cls) {
             try { return callCallable(uf, ValueList{x}); }
             catch (RakuError& e) {
-                if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+                if (!isMultiNoMatch(e)) throw;
             }
         }
         if (op == "++" || op == "--") {

@@ -954,6 +954,12 @@ struct RakuError {
     RakuError(Value p, std::string m, NoCapture)
         : payload(std::move(p)), message(std::move(m)) {}
 };
+// "No candidate took these arguments", in either shape it is raised: a bare
+// type, or an instance carrying `.dispatcher` and `.capture`. The callers that
+// fall back to a built-in on it ask here.
+inline bool isMultiNoMatch(const RakuError& e) {
+    return (e.payload.t == VT::Type ? std::string(e.payload.s.str()) : e.payload.typeName()) == "X::Multi::NoMatch";
+}
 
 // The `self` of a grammar method reached through a `<.method>` subrule call
 // (issue #64): a Match positioned at the call — `.pos`, `.target`, `.orig` —
@@ -1746,6 +1752,12 @@ public:
     // Remember the object just stored at `index` (or forget it, for a type
     // object), on the array's `ext` beside ncOwnStrElem's strings.
     static void ncKeepClassElem(Value& arr, long long index, const Value& v);
+    // An element of a CArray built here (its bytes are the Value's string), as
+    // `$c[i]` and `.AT-POS(i)` read it: past the end, the element type's empty
+    // value (0 for a number, the type object for a Str or a class). And the
+    // store `$c[i] = v` and `.ASSIGN-POS(i, v)` make, growing the array.
+    Value ncLocalAt(const Value& arr, long long index);
+    void ncLocalAssign(Value& arr, long long index, const Value& v);
     static std::string ncResolveTypeAlias(ClassInfo* ci, const std::string& t); // `constant my_bool = int8` → "int8"
     void ncStoreStructField(Value& inv, const std::string& field, const std::string& type, long long off, const Value& rhs);
     static std::string ncLibNameOf(const Value& r); // `is native(('cairo', v2))` → libcairo.2.dylib

@@ -5214,6 +5214,55 @@ void Interpreter::ncKeepClassElem(Value& arr, long long index, const Value& v) {
     if (v.t == VT::Object && v.obj()) ncCArrayKeep(arr).objs[index] = v;
     else if (arr.ext()) ncCArrayKeep(arr).objs.erase(index);
 }
+Value Interpreter::ncLocalAt(const Value& arr, long long i) {
+    const std::string et = arr.enumName.empty() ? std::string("int64") : arr.enumName.str();
+    const int w = ncElemSize(et);
+    if (i < 0 || (i + 1) * w > (long long)arr.s.size()) {
+        // past the end: a class element reads as its type object, a Str as
+        // (Str), a number as 0 (Rakudo); a pointer element is left undefined
+        if (i < 0) return Value::any();
+        if (auto ci = ncElemClass(et)) return Value::typeObj(ci->name);
+        if (et == "Str") return Value::typeObj("Str");
+        if (ncIsPointerElem(et)) return Value::any();
+        return et.compare(0, 3, "num") == 0 ? Value::number(0.0) : Value::integer(0);
+    }
+    Value el = ncClassElem(ncReadElem((long long)(intptr_t)arr.s.data(), et, i), &arr, et, i);
+    // an element that is ITSELF a pointer stays usable as one, so
+    // `$out[0][^$n]` can read through what a native call wrote there
+    // (a Str element already came back dereferenced — leave it be)
+    if (ncIsPointerElem(et) && el.t == VT::Int) return ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
+    return el;
+}
+void Interpreter::ncLocalAssign(Value& arr, long long i, const Value& v) {
+    if (i < 0) return;
+    const std::string et = arr.enumName.empty() ? std::string("int64") : arr.enumName.str();
+    const int esz = ncElemSize(et);
+    const size_t need = (size_t)(i + 1) * (size_t)esz;
+    if (arr.s.size() < need) arr.s.resize(need, '\0');
+    if (et == "Str") { // the slot is a char* into memory the array owns
+        long long p = ncOwnStrElem(arr, v);
+        // IN PLACE: `mut()` forks the shared buffer, and the
+        // buffer is what C was handed (see CArray.new).
+        std::memcpy(arr.s.mutInPlace() + (size_t)i * esz, &p, sizeof p);
+    }
+    else {
+        ncWriteElem((long long)(intptr_t)arr.s.data(), et, i, v);
+        if (ncElemClass(et)) ncKeepClassElem(arr, i, v);
+    }
+}
+// Value::toStr's view of a CArray built here: its elements, space-joined
+static std::string carrayStrImpl(const Value& c) {
+    const std::string et = c.enumName.str();
+    const int w = Interpreter::ncElemSize(et);
+    std::string out;
+    for (long long i = 0; w > 0 && (i + 1) * w <= (long long)c.s.size(); i++) {
+        if (i) out += ' ';
+        out += Interpreter::ncReadElem((long long)(intptr_t)c.s.data(), et, i).toStr();
+    }
+    return out;
+}
+extern std::string (*g_carrayStr)(const Value&);   // Value.cpp
+static const bool g_carrayStrSet = ((g_carrayStr = &carrayStrImpl), true);
 
 // Store `rhs` into a CStruct's field at `off` (of native `type`), on `inv`.
 // A CArray/Pointer field stores the ADDRESS of its value's buffer. When that

@@ -55,4 +55,23 @@ check($u8[^3].^name, 'Seq',             'slice-is-seq');
 check(Buf.new($u8[^5]).decode('utf-8'), 'ABCDE', 'slice-into-buf');
 check($u8[2], '67',                     'scalar-index-still-works');
 
+# 5. the Positional protocol and the rest a Raku-built CArray answers (2026-10-09):
+#    `.Str` and interpolation said the element type (`int32`), `.AT-POS` and
+#    `.ASSIGN-POS` were missing, `.clone` shared the buffer, and an index past
+#    the end read Any where Rakudo reads the element type's empty value
+{
+    my $c = CArray[int32].new(1, 2, 3);
+    check($c.Str, '1 2 3',                  'Str-joins-elements');
+    check("<$c>", '<1 2 3>',                'interpolation-joins-elements');
+    check($c.AT-POS(1), '2',                'AT-POS');
+    check($c[5].raku, '0',                  'past-end-int-is-0');
+    check(CArray[num64].new(1e0)[3].raku, '0e0', 'past-end-num-is-0e0');
+    check(CArray[Str].new('a')[3].raku, 'Str',   'past-end-Str-is-type-object');
+    $c.ASSIGN-POS(6, 4);
+    check($c.elems ~ ' ' ~ $c[6], '7 4',    'ASSIGN-POS-grows');
+    my $d = $c.clone;
+    $d[0] = 9;
+    check($c[0] ~ ' ' ~ $d[0], '1 9',       'clone-is-a-second-array');
+}
+
 if @fail { note "FAILED: @fail.join('; ')"; say 'FAIL' } else { say 'PASS' }

@@ -183,6 +183,19 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         int esz = Interpreter::ncElemSize(et);
         return Value::integer((long long)(inv.s.size() / esz));
     }
+    if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "AT-POS" && args.size() == 1)
+        return ncLocalAt(inv, args[0].toInt());
+    // `.clone` is a second array: every copy of the Value shares one buffer
+    // (C is handed its address), so the copy is of the BYTES. The strings and
+    // objects the slots point at stay owned by both (the shared `ext`).
+    if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "clone" && args.empty()) {
+        Value c = Value::str(std::string(inv.s.str()));
+        c.hashKind = "CArray";
+        c.enumName = inv.enumName;
+        c.s.promote();
+        c.extM() = inv.ext();
+        return c;
+    }
     // A locally-built CArray lists its ELEMENTS, decoded by its type — the
     // logical size Rakudo tracks is our byte length over the element width.
     // Digest::SHA256::Native pre-sizes one with `$hash[127] = 0`, lets the C

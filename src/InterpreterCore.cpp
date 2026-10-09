@@ -8134,9 +8134,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     } catch (...) {}
                 }
                 std::string defProf = noMatchProfile(Value(), as, /*withInvocant=*/false);
-                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
-                                "Cannot resolve caller " + c.name + "(" + defProf +
-                                "); none of these signatures matches:" + sigs};
+                // …and the exception carries what was called and with what
+                Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+                *cap.arr() = as;
+                throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
+                            "Cannot resolve caller " + c.name + "(" + defProf +
+                            "); none of these signatures matches:" + sigs);
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -10213,9 +10216,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 // Rakudo's wording: the capture as types, invocant first, named
                 // arguments as `:name(Type)`
                 std::string prof = noMatchProfile(selfCopy, as, /*withInvocant=*/true);
-                throw RakuError{Value::typeObj("X::Multi::NoMatch"),
-                                "Cannot resolve caller " + c.name + "(" + prof +
-                                "); none of these signatures matches"};
+                Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+                cap.arr()->push_back(selfCopy);
+                cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
+                throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
+                            "Cannot resolve caller " + c.name + "(" + prof +
+                            "); none of these signatures matches");
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -13091,7 +13097,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     else {
         try { r = evalAssignInner(a, sink); }
         catch (RakuError& e) {
-            const std::string tn = e.payload.t == VT::Type ? e.payload.s : std::string();
+            // (a no-match is raised as an instance, carrying .dispatcher and .capture)
+            const std::string tn = e.payload.t == VT::Type ? std::string(e.payload.s)
+                                 : isMultiNoMatch(e) ? std::string("X::Multi::NoMatch") : std::string();
             if (tn.empty() || tn.rfind("X::Comp", 0) == 0 || tn.rfind("X::Syntax", 0) == 0 ||
                 tn.rfind("X::Undeclared", 0) == 0 || tn.rfind("X::TypeCheck", 0) == 0 ||
                 tn == "X::ParametricConstant" || tn == "X::Redeclaration" || tn == "X::AdHoc")
@@ -14576,22 +14584,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (bp && bp->t == VT::Str && bp->hashKind == "CArray") {
                     long long i = eval(ix->index.get()).toInt();
                     Value v = evalValueOf(a->value.get());
-                    const std::string et = bp->enumName.empty() ? std::string("int64") : bp->enumName.str();
-                    int esz = ncElemSize(et);
-                    if (i >= 0) {
-                        size_t need = (size_t)(i + 1) * (size_t)esz;
-                        if (bp->s.size() < need) bp->s.resize(need, '\0');
-                        if (et == "Str") { // the slot is a char* into memory the array owns
-                            long long p = ncOwnStrElem(*bp, v);
-                            // IN PLACE: `mut()` forks the shared buffer, and the
-                            // buffer is what C was handed (see CArray.new).
-                            std::memcpy(bp->s.mutInPlace() + (size_t)i * esz, &p, sizeof p);
-                        }
-                        else {
-                            ncWriteElem((long long)(intptr_t)bp->s.data(), et, i, v);
-                            if (ncElemClass(et)) ncKeepClassElem(*bp, i, v);
-                        }
-                    }
+                    ncLocalAssign(*bp, i, v);
                     return v;
                 }
             }
@@ -16348,7 +16341,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else if (bp && !bp->ofType().empty()) *lv = typedElemDefault(*bp);
             else *lv = Value::typeObj("Any");   // a reset, not a hole (see nilElemDefault)
         }
-        else if (rhs.t == VT::Nil && opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
+        else if (rhs.t == VT::Nil && opEq(a->op, "=") && a->target->kind == NK::VarExpr &&
+                 // (`my \x = Nil` and `constant c = Nil` BIND: there is no
+                 // container to reset, and the name is Nil itself)
+                 !sigillessDeclBind(a) &&
+                 !(static_cast<VarExpr*>(a->target.get())->declare &&
+                   static_cast<VarExpr*>(a->target.get())->declScope == "constant")) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
             // …except in a native, which has no undefined value to reset to
             nativeUndefCheck(rhs, a->target.get(), lv);
@@ -24578,7 +24576,7 @@ Value Interpreter::evalUnary(Unary* u) {
             catch (RakuError& e) {
                 // no candidate for this class: fall through to the built-in, the
                 // way Rakudo's own wider candidate would have taken it.
-                if (!(e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch")) throw;
+                if (!isMultiNoMatch(e)) throw;
             }
         }
     }
@@ -26280,7 +26278,7 @@ Value Interpreter::evalIndex(Index* idx) {
         else args.push_back(eval(idx->index.get()));
         try { out = callCallable(*fn, args); }
         catch (RakuError& e) {
-            if (e.payload.t == VT::Type && e.payload.s == "X::Multi::NoMatch") return false;
+            if (isMultiNoMatch(e)) return false;
             throw;
         }
         return true;
@@ -26545,22 +26543,8 @@ Value Interpreter::evalIndex(Index* idx) {
                 return out;
             }
         }
-        if (base.t == VT::Str && base.hashKind == "CArray") {
-            long long i = eval(idx->index.get()).toInt();
-            std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
-            int w = ncElemSize(et);
-            if (i < 0 || (i + 1) * w > (long long)base.s.size()) {
-                // past the end, a class element reads as its type object
-                auto ci = i >= 0 ? ncElemClass(et) : nullptr;
-                return ci ? Value::typeObj(ci->name) : Value::any();
-            }
-            Value el = ncClassElem(ncReadElem((long long)(intptr_t)base.s.data(), et, i), &base, et, i);
-            // an element that is ITSELF a pointer stays usable as one, so
-            // `$out[0][^$n]` can read through what a native call wrote there
-            // (a Str element already came back dereferenced — leave it be)
-            if (ncIsPointerElem(et) && el.t == VT::Int) return ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
-            return el;
-        }
+        if (base.t == VT::Str && base.hashKind == "CArray")
+            return ncLocalAt(base, eval(idx->index.get()).toInt());
         if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") && base.hash()->count("addr")) {
             long long i = eval(idx->index.get()).toInt();
             std::string of = base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64";
@@ -31129,6 +31113,18 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         if (lv && lv->t == VT::Pair) return freezeOne(*lv);
         Value tmp = inv;
         return freezeOne(tmp);
+    }
+    // `$c.ASSIGN-POS(i, v)` on a CArray built here stores as `$c[i] = v` does,
+    // through the invocant's container, so an array it grows stays grown
+    if (inv.t == VT::Str && inv.hashKind == "CArray" && !mc->meta && opEq(mc->method, "ASSIGN-POS")) {
+        ValueList wargs = evalArgs(mc->args);
+        if (wargs.size() == 2) {
+            Value* lv = nullptr;
+            try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
+            Value tmp = inv;
+            ncLocalAssign(lv && lv->t == VT::Str && lv->hashKind == "CArray" ? *lv : tmp, wargs[0].toInt(), wargs[1]);
+            return wargs[1];
+        }
     }
     // Buf.append/.push/.prepend/.unshift/.pop/.shift mutate the byte string
     // through the invocant's container

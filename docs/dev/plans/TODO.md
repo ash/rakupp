@@ -172,8 +172,12 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   type named OUR (Rakudo: the current package, so `next OUR` names
   `GLOBAL:U`); `next Int` dies when it runs (Rakudo: while compiling);
   `MY::<$x>` and `$CALLER::y` inside a loop block find an outer variable
-  (Rakudo: Nil); X::Multi::NoMatch has no `.dispatcher`/`.capture`;
-  `&next` is Any (no `.candidates`). Found 2026-10-07; not started.
+  (Rakudo: Nil); `&next` is Any (no `.candidates`). Found 2026-10-07; not
+  started.
+- [ ] **A trait inside a declarator list does not parse**: `my ($g is
+  default(9), $h) = Nil, 1` and `my ($t, @u is default(8)) = …` are "Two
+  terms in a row" (Rakudo: `$g` is 9, `@u` is `[8, 2]`). Found 2026-10-09;
+  not started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
@@ -195,17 +199,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     after block".
   - `Int:D()` given a Str type object dies at bind; Rakudo is not consistent
     there (it dies, or returns an undefined value).
-  Also `my \y = $s; y.VAR` is Int (a parameter's is Scalar now), and a `my
-  class` used earlier in its OWN block is no longer reported as a
+  Also a `my class` used earlier in its OWN block is no longer reported as a
   post-declaration.
 - [ ] **NativeCall CArray gaps** (found with Math::SparseMatrix::Native,
-  2026-10-06; its binding, dispatch and `--exe` subscript bugs are fixed):
-  a Raku-built CArray has no `.AT-POS` method; `.clone` returns the same
-  object; a CArray read back from a CStruct field forgets its length, so
-  `.elems` dies where Rakudo answers. Also: an `@` parameter binds a Range
-  as an Array (Rakudo keeps the Range). Seen with #136 (2026-10-09): a
-  CArray's `.Str` is its element type's name (`int32`) where Rakudo joins the
-  elements (`1 2 3`); a NULL `Pointer`/`CArray` struct field reads as
+  2026-10-06; its binding, dispatch and `--exe` subscript bugs are fixed, and
+  `.Str`, `.AT-POS`, `.ASSIGN-POS` and `.clone` on 2026-10-09): a CArray read
+  back from a CStruct field forgets its length, so `.elems` dies where Rakudo
+  answers. Also: an `@` parameter binds a Range as an Array (Rakudo keeps the
+  Range); `.^name` lacks the `NativeCall::Types::` prefix. Seen with #136
+  (2026-10-09): a NULL `Pointer`/`CArray` struct field reads as
   `Pointer.new(0)` where Rakudo answers the type object; `CArray[Pointer]`
   elements read as `{:addr…}` hashes.
 - [ ] **#110 constructor type checks**: the module battery gate was never run,
@@ -383,13 +385,15 @@ with its tag, after the release run is green.
   `rakulang.Object` and keyword arguments to `call` (2026-10-05,
   `rakulang/object_shim.raku`, `bindings/python/tests/`). The shim works
   around Raku++ gaps that Rakudo 2026.09 does not have; each wants an engine
-  fix, after which the workaround can go: `my \x = Nil` binds `Any`; `try`
-  around a throw returns `Any`, not `Nil`; `MY::` after `use` lists the
+  fix, after which the workaround can go. Fixed in the engine by 2026-10-09,
+  so their workarounds can go once a wheel carries the fix (the comment above
+  `rk-py-look` still gives the first as its reason): `my \x = Nil` bound `Any`,
+  `try` around a throw returned `Any`, `(0..*).map(...)` was a `List`, and
+  `Pair.^mro` lacked Pair. Still open: `MY::` after `use` lists the
   imported subs but not the imported classes, constants and enum values;
   `Geo.WHO` lacks the stub `Shape` of a nested `class Geo::Shape::Circle`;
-  `(0..*).map(...)` returned from a sub is a `List`, not a `Seq`; `Pair`,
-  `Range`, `Complex` report no `.^attributes`, `Exception` reports a
-  `$!message` accessor, and `Pair.^mro` is `(Any Mu)`; `Date.^can('new')`
+  `Pair`, `Range`, `Complex` report no `.^attributes`, and `Exception`
+  reports a `$!message` accessor; `Date.^can('new')`
   and the core types' `.^methods(:local)` are empty; `use M:ver<1.2+>` does
   not match a `use lib` module declared `:ver<1.2.3>`; JSON::Fast's
   `&to-json.signature` is `:()`. Also: the README's `raku.call("area", 3)`

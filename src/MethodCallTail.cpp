@@ -1155,7 +1155,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         const bool streamLive = !infinite && (lst->finiteSource || lst->streaming) && !lst->exhausted;
         if (m == "map" && !args.empty() && args[0].t == VT::Code && codeArity(args[0]) == 1) {
             Value fn = args[0], src = inv;                 // src shares arr+ext with inv
-            Value out = Value::array(); out.isList = true; // 1:1 map → cache index == source index
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; // 1:1 map → cache index == source index
             auto st = std::make_shared<LazySeqState>();
             st->infinite = infinite; // a view over an endless source is endless too
             // …and one over a gather is what a gather is: not reified yet, and
@@ -1210,7 +1210,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // lazy filter: each appendNext pulls source elements (bounded per call)
             // until the predicate matches, so `(^Inf).grep(…).head(3)` terminates.
             Value pred = args[0], src = inv;
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::array(); out.isList = true; out.s = "Seq";   // a lazy grep is a Seq, as an eager one
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
             // NOT marked infinite even over an endless source: a grep can still
@@ -1286,7 +1286,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "skip") { // lazy skip: shared view starting n further along the source
             long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt());
             Value src = inv;
-            Value out = Value::array(); out.isList = true;
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto st = std::make_shared<LazySeqState>();
             st->infinite = infinite; // a view over an endless source is endless too
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
@@ -1992,7 +1992,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "head" && args.empty()) return Value::integer(lo); // scalar first element
         if (m == "head") { long long n = std::max(0LL, args[0].toInt());
             Value o = Value::array(); o.isList = true; for (long long i = 0; i < n; i++) o.arr()->push_back(Value::integer(lo + i)); return o; }
-        if (m == "skip") { long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt()); return Value::range(lo + n, inv.rTo(), false, inv.rExTo()); }
+        // a skip is a Seq, as Rakudo's is: a Range here said `.^name` Range and
+        // gisted `2..Inf` where Rakudo says `(...)`
+        if (m == "skip") {
+            long long n = args.empty() ? 1 : std::max(0LL, args[0].toInt());
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto next = std::make_shared<long long>(lo + n);
+            st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
+            out.extM() = st;
+            return out;
+        }
         // `.elems` on an ENDLESS range is X::Cannot::Lazy, not Inf — and it is a
         // SOFT failure, so `throws-like $range.elems, …` still gets to see it
         // rather than being blown up while its arguments are built.
