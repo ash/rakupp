@@ -2891,9 +2891,15 @@ public:
     void lexSubResolver(SubResolver& resolver, std::set<std::string>& lexNames,
                         const GrammarHooks*& useHooks);
     // One capture's Match with its own capture tree under it (`$<a><b>`),
-    // shared by every Match builder.
+    // shared by every Match builder. `memo`, when given, keeps each subtree it
+    // builds by its frozen child map (held, so the address cannot be reused)
+    // and hands the same Match back next time: a grammar's code blocks see the
+    // same completed captures again and again.
+    struct MatchMemoEntry { std::shared_ptr<const void> hold; long from, to; Value v; };
+    using MatchMemo = std::unordered_map<const void*, MatchMemoEntry>;
     static Value matchFromNode(const ParseNode& c, const std::string& subject,
-                               const std::shared_ptr<std::string>& orig = nullptr);
+                               const std::shared_ptr<std::string>& orig = nullptr,
+                               MatchMemo* memo = nullptr);
     // …and the way back: a Match VALUE (with its capture tree) as a parse node,
     // spans shifted by `offset`. A qualified `<G::rule>` call and a grammar
     // method's returned Match both hand their result to the engine this way.

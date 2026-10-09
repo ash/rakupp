@@ -1441,7 +1441,15 @@ void Interpreter::matchValueToNode(const Value& mv, long offset, ParseNode& node
 }
 
 Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
-                                 const std::shared_ptr<std::string>& orig) {
+                                 const std::shared_ptr<std::string>& orig, MatchMemo* memo) {
+    auto sub = [&](const ParseNode& n) -> Value {
+        if (!memo || !n.kids) return matchFromNode(n, subject, orig, memo);
+        auto it = memo->find(n.kids.get());
+        if (it != memo->end() && it->second.from == n.from && it->second.to == n.to) return it->second.v;
+        Value v = matchFromNode(n, subject, orig, memo);
+        (*memo)[n.kids.get()] = {n.kids, n.from, n.to, v};
+        return v;
+    };
     Value cv = Value::matchVal(subject.substr(c.from, c.to - c.from), c.from, c.to);
     // `.orig`/.prematch/.postmatch read the WHOLE subject when the builder has
     // it to share; the callers that never did keep not doing it.
@@ -1464,9 +1472,9 @@ Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
             const std::vector<ParseNode>& occ = *kit->second;
             if (occ.size() > 1 || (c.listCaps && c.listCaps->count((int)i))) {
                 Value lst = Value::array();
-                for (auto& o : occ) lst.arrRef().push_back(matchFromNode(o, subject, orig));
+                for (auto& o : occ) lst.arrRef().push_back(sub(o));
                 cv.arrRef().push_back(lst);
-            } else cv.arrRef().push_back(matchFromNode(occ[0], subject, orig));
+            } else cv.arrRef().push_back(sub(occ[0]));
             continue;
         }
         if (c.listCaps && c.listCaps->count((int)i)) { // `( (a)+ )` — every occurrence
@@ -1489,10 +1497,10 @@ Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
     // an alias pair (ParseNode::aliasId) is one Match under two keys
     std::unordered_map<uint64_t, Value> aliasBuilt;
     auto child = [&](const ParseNode& g) -> Value {
-        if (!g.aliasId) return matchFromNode(g, subject, orig);
+        if (!g.aliasId) return sub(g);
         auto hit = aliasBuilt.find(g.aliasId);
         if (hit != aliasBuilt.end()) return hit->second;
-        return aliasBuilt.emplace(g.aliasId, matchFromNode(g, subject, orig)).first->second;
+        return aliasBuilt.emplace(g.aliasId, sub(g)).first->second;
     };
     if (c.kids) for (auto& ck : *c.kids) {
         if (isPositionalKey(ck.first)) continue;   // a NUMBER — presented above
@@ -2416,45 +2424,60 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Execute `code` with an overlay of the current rule params (as Str) and $/ (carrying
     // the named captures so far) temporarily bound; `:my`/assignments persist in tctx_.cur.
     using NamedMap = GrammarHooks::NamedMap; using ParamMap = GrammarHooks::ParamMap;
-    auto runCode = [this, &input, parseCode, pendingMakes, subMatch](const std::string& code, long from, long to,
+    // The captures a block sees are built once per parse: a block after a
+    // repeated subrule (`[ <stmt> { … } ]+`) sees every earlier `<stmt>` again.
+    auto blockMemo = std::make_shared<MatchMemo>();
+    auto runCode = [this, &input, parseCode, pendingMakes, subMatch, targetStr, blockMemo](const std::string& code, long from, long to,
                                              const NamedMap& named, const ParamMap& params,
                                              const std::vector<std::pair<long, long>>* caps = nullptr,
                                              const RxCursorCaps* cc = nullptr) -> Value {
         auto prog = parseCode(code);
         if (!prog) return Value::any();
         // build $/ over [from..to] with the named sub-captures attached
-        Value m = subMatch(from, to);
-        for (auto& nm : named)
-            m.hashRef()[nm.first] = subMatch(nm.second.first, nm.second.second);
-        // …and where a name has OCCURRENCES rather than one span, the list it will
-        // be in the finished match. The flat `named` map keeps only the last span
-        // per name, so `<n> '+' <n> { $<n>.elems }` read 0 mid-match where the
-        // finished match reads 2.
-        if (cc && cc->children)
-            for (auto& kv : *cc->children) {
-                const auto& occ = kv.second;
-                if (occ.empty()) continue;
-                bool asList = occ.size() > 1 || (cc->listNames && cc->listNames->count(kv.first));
-                auto one = [&](const ParseNode& pn) {
-                    return subMatch(pn.from, pn.to);
-                };
-                if (!asList) { m.hashRef()[kv.first] = one(occ.back()); continue; }
-                Value lst = Value::array();   // a quantified NAMED capture is an Array, as in Rakudo
-                for (auto& pn : occ) lst.arrRef().push_back(one(pn));
-                m.hashRef()[kv.first] = std::move(lst);
-            }
-        // …and the POSITIONAL ones, when the caller has them. A code assertion in
-        // a GRAMMAR rule saw only the named captures, so `([\w]+) <?{ f($0.Str) }>`
-        // — the shape a grammar uses to gate a token on a lookup — asked about an
-        // empty string and never matched (Lingua::NumericWordForms::Koremutake).
+        Value m;
         std::vector<std::pair<std::string, Value>> capSlots;
-        if (caps) {
-            for (size_t ci = 0; ci < caps->size(); ci++) {
-                long cb = (*caps)[ci].first, ce = (*caps)[ci].second;
-                Value cv = cb >= 0 && ce >= cb ? subMatch(cb, ce)
-                                               : Value::any();
-                m.arrRef().push_back(cv);
-                capSlots.push_back({"$" + std::to_string(ci), cv});
+        if (cc && cc->children) {
+            // With the cursor's capture records, `$/` is built the way the
+            // finished match will be — by matchFromNode, from a node standing for
+            // the cursor — so each capture carries its OWN captures. Built from
+            // spans alone, `<al> <?{ $<al><s>.elems == 3 }>` read `$<al><s>` as
+            // Nil (issue #139), and so did `$0<s>` and `$<item>[0]<w>`; it is
+            // also how a repeated name or a quantified `(\w)+` reads as the list
+            // it will be (`<n> '+' <n> { $<n>.elems }` is 2, not 0). The records
+            // are borrowed, not copied: the node lives only for this build.
+            ParseNode cur;
+            cur.from = from; cur.to = to;
+            cur.named = named;
+            if (caps) cur.caps = *caps;
+            cur.kids = std::shared_ptr<const ChildMap>(std::shared_ptr<const void>(), cc->children);
+            if (cc->capReps)
+                cur.capReps = std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>>(
+                    std::shared_ptr<const void>(), cc->capReps);
+            cur.listCaps = cc->listCaps;
+            cur.listNames = cc->listNames;
+            m = matchFromNode(cur, input, targetStr, blockMemo.get());
+            if (caps) {
+                size_t built = m.arr() ? m.arr()->size() : 0;
+                for (size_t ci = 0; ci < caps->size(); ci++)
+                    capSlots.push_back({"$" + std::to_string(ci), ci < built ? (*m.arr())[ci] : Value::any()});
+            }
+        }
+        else {
+            m = subMatch(from, to);
+            for (auto& nm : named)
+                m.hashRef()[nm.first] = subMatch(nm.second.first, nm.second.second);
+            // …and the POSITIONAL ones, when the caller has them. A code assertion in
+            // a GRAMMAR rule saw only the named captures, so `([\w]+) <?{ f($0.Str) }>`
+            // — the shape a grammar uses to gate a token on a lookup — asked about an
+            // empty string and never matched (Lingua::NumericWordForms::Koremutake).
+            if (caps) {
+                for (size_t ci = 0; ci < caps->size(); ci++) {
+                    long cb = (*caps)[ci].first, ce = (*caps)[ci].second;
+                    Value cv = cb >= 0 && ce >= cb ? subMatch(cb, ce)
+                                                   : Value::any();
+                    m.arrRef().push_back(cv);
+                    capSlots.push_back({"$" + std::to_string(ci), cv});
+                }
             }
         }
         // save & overlay $/ + params; restore them after (but let :my vars persist)
@@ -2529,6 +2552,14 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                                    const ParamMap& pm) -> bool {
         if (!parseCode(code)) return true; // unparseable assertion → lenient pass
         return runCode(code, from, to, nm, pm, &caps).truthy();
+    };
+    // …and with the cursor's capture records, so the assertion's `$<al>` is the
+    // whole capture — `$<al><s>` included — as a block's is (issue #139).
+    gm.hooks.assertPassCursor = [runCode, parseCode](const std::string& code, long from, long to, const NamedMap& nm,
+                                                     const std::vector<std::pair<long, long>>& caps,
+                                                     const RxCursorCaps& cc, const ParamMap& pm) -> bool {
+        if (!parseCode(code)) return true; // unparseable assertion → lenient pass
+        return runCode(code, from, to, nm, pm, &caps, &cc).truthy();
     };
     gm.hooks.run = [runCode, pendingMakeCode](const std::string& code, long from, long to, const NamedMap& nm, const ParamMap& pm) {
         // a `make` block is deferred to build() (it may reference children's .made);

@@ -26,15 +26,26 @@ thread_local bool g_rxReservedHash = false;   // set by checkNullRegex (ParserRe
 namespace rakupp {
 
 // Does a pattern call `<sym>` — outside its quoted literals, where `"<sym>"`
-// is only text?
+// is only text? Inside a code block a `<sym>` straight after a term is a
+// SUBSCRIPT: `{ $<item><sym> }` reads a capture's `sym` (issue #139). One in
+// term position there is still a call — the block may declare a regex of its
+// own (`/grammar { regex TOP { <sym> } }/`, S05-grammar/action-stubs.t).
 static bool rxUsesSym(const std::string& pat) {
     char q = 0;
+    int code = 0;
     for (size_t i = 0; i < pat.size(); i++) {
         char c = pat[i];
         if (c == '\\') { i++; continue; }
         if (q) { if (c == q) q = 0; continue; }
         if (c == '\'' || c == '"') { q = c; continue; }
-        if (c == '<' && pat.compare(i, 5, "<sym>") == 0) return true;
+        if (c == '{') { code++; continue; }
+        if (c == '}' && code) { code--; continue; }
+        if (c != '<' || pat.compare(i, 5, "<sym>") != 0) continue;
+        if (code && i > 0) {
+            unsigned char p = (unsigned char)pat[i - 1];
+            if (p >= 0x80 || ascii::isalnum(p) || std::strchr("_-'$@%&./>)]}", (char)p)) continue;
+        }
+        return true;
     }
     return false;
 }
