@@ -59,6 +59,12 @@ only way these can drift.
   is not: what `IO::Socket::Async` gives you with no `use`, writing a request
   and a response by hand, which HTTP modules work on each engine today, TLS,
   and why even the installer shells out to `curl`.
+- **[native-libraries.md](native-libraries.md)** — naming a native library so
+  it loads on every OS: what `is native('foo')` becomes on Linux, macOS and
+  Windows, why the version matters on Linux, choosing a name per OS, letting
+  the user point at the file, where the system looks (and the macOS
+  `#!/usr/bin/env` trap), shipping a library in `resources/`, and where the
+  engines differ.
 - **[buffering.md](buffering.md)** — why output does not appear when you
   expect it: `.out-buffer` and `.flush`, the three places output can sit (your
   own handles, a file you opened, a child's stdout), the child's own buffer
