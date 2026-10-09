@@ -2821,6 +2821,100 @@ bool byteIsGraphemeIndex(const std::string& s) {
     return allAscii(s) && std::memchr(s.data(), '\r', s.size()) == nullptr;
 }
 
+// How many graphemes start before byte `b` of `s`, counted from the front:
+// pure ASCII is byte == grapheme except "\r\n", ONE grapheme (#102).
+static long long prefixGraphemes(const std::string& s, size_t b) {
+    long long n = (long long)b;
+    for (size_t i = 0; i < b; i++) {
+        if ((unsigned char)s[i] >= 0x80) {
+            const std::string pre = s.substr(0, b);
+            return (long long)uniGraphemeCount(utf8cp(pre), pre);
+        }
+        if (s[i] == '\r' && i + 1 < b && s[i + 1] == '\n') n--;
+    }
+    return n;
+}
+
+namespace {
+// One Match subject's byte → grapheme table, sorted byte offsets. `skips`: the
+// bytes that start NO grapheme (continuation bytes, combining marks, the LF of
+// a CR LF), so the offset is b minus those below b; otherwise the bytes that
+// start one, so the offset is how many lie below b. Whichever list is shorter
+// is kept: mostly-ASCII text with a few accents has a tiny skip list, CJK text
+// a start list a third of its bytes. `owner` is the identity — a held
+// weak_ptr keeps its control block, so no later subject can be mistaken for it.
+struct SubjectGraphemes {
+    std::weak_ptr<void> owner;
+    size_t len = 0;
+    bool skips = true;
+    std::vector<uint32_t> tab;
+};
+}
+
+long long subjectGraphemeOffset(const std::shared_ptr<void>& subject, size_t b) {
+    const std::string& s = *static_cast<const std::string*>(subject.get());
+    b = std::min(b, s.size());
+    if (b < 256 || s.size() > UINT32_MAX) return prefixGraphemes(s, b);
+    thread_local SubjectGraphemes cache[4];
+    thread_local unsigned victim = 0;
+    SubjectGraphemes* hit = nullptr;
+    SubjectGraphemes* spare = nullptr;
+    for (auto& e : cache) {
+        if (e.owner.expired()) {   // never used, or its subject is gone: free the table
+            if (!e.tab.empty()) e = SubjectGraphemes{};
+            if (!spare) spare = &e;
+            continue;
+        }
+        if (!e.owner.owner_before(subject) && !subject.owner_before(e.owner) && e.len == s.size()) hit = &e;
+    }
+    if (!hit) {
+        hit = spare ? spare : &cache[victim++ % 4];
+        *hit = SubjectGraphemes{};
+        hit->owner = subject;
+        hit->len = s.size();
+        const size_t len = s.size();
+        size_t starts = 0;
+        for (size_t p = byteIsGraphemeIndex(s) ? len : 0; p < len; starts++) {
+            // eight ASCII bytes, no CR among them and ASCII after: eight clusters
+            if (p + 8 < len) {
+                uint64_t w;
+                std::memcpy(&w, s.data() + p, 8);
+                const uint64_t cr = w ^ 0x0D0D0D0D0D0D0D0DULL;   // a zero byte where w has a CR
+                if (!(w & 0x8080808080808080ULL) && !((cr - 0x0101010101010101ULL) & ~cr & 0x8080808080808080ULL) &&
+                    (unsigned char)s[p + 8] < 0x80) {
+                    p += 8;
+                    starts += 7;
+                    continue;
+                }
+            }
+            const unsigned char c = (unsigned char)s[p];
+            // ASCII followed by ASCII is a cluster of one, CR LF aside — the
+            // same shortcut atGraphemeBoundary takes; only the rest walks UAX #29
+            if (c < 0x80 && (p + 1 == len || ((unsigned char)s[p + 1] < 0x80 && !(c == '\r' && s[p + 1] == '\n')))) {
+                p++;
+                continue;
+            }
+            const size_t e = uniClusterEndUtf8(s, p, len);
+            for (size_t q = p + 1; q < e; q++) hit->tab.push_back((uint32_t)q);
+            p = e;
+        }
+        if (hit->tab.size() > starts) {   // more non-starts than starts: keep the starts
+            std::vector<uint32_t> st;
+            st.reserve(starts);
+            size_t k = 0;
+            for (size_t p = 0; p < len; p++) {
+                if (k < hit->tab.size() && hit->tab[k] == p) { k++; continue; }
+                st.push_back((uint32_t)p);
+            }
+            hit->tab.swap(st);
+            hit->skips = false;
+        }
+        hit->tab.shrink_to_fit();
+    }
+    const long long below = std::lower_bound(hit->tab.begin(), hit->tab.end(), (uint32_t)b) - hit->tab.begin();
+    return hit->skips ? (long long)b - below : below;
+}
+
 // Drop every combining mark, keeping ONE base character per grapheme — the
 // folding `:ignoremark` compares through. Character positions survive it, so an
 // index into the folded text is an index into the original.

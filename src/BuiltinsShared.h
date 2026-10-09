@@ -227,6 +227,11 @@ bool allAscii(const std::string& s);
 bool byteIsGraphemeIndex(const std::string& s);
 bool atGraphemeBoundary(const std::string& s, size_t p);                       // Builtins.cpp
 size_t graphemeFind(const std::string& hay, const std::string& ndl, size_t from); // find on cluster boundaries
+// The GRAPHEME offset of byte `b` in a Match's subject (its ext(), the string
+// every Match of one parse or one :g search shares) — what .from/.to/.pos say.
+// Past a short prefix the subject's table is built once and kept per thread,
+// so reading .from on every node of a parse is not quadratic (#140).
+long long subjectGraphemeOffset(const std::shared_ptr<void>& subject, size_t b);
 // The cached forms: same answers, memoized on a long string's immutable body.
 // The scanning ops call these once per character examined, so the difference
 // between memoized and not is the difference between a linear tokenizer and a
