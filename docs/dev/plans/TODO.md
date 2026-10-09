@@ -157,9 +157,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
   reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,
   `($listed, 1)` on eight fresh workers). Found 2026-10-08; not started.
-- [ ] **`$*THREAD.id` inside `hyper for` names the spawner**: every iteration
-  reports one id although the batches run on workers (the loop is 2× faster).
-  Found 2026-10-08; not started.
 - [ ] **Module code can name the program's lexicals**: a module's
   `sub peek() { $secret2 }` compiles and reads the program's `my $secret2`, and
   `::('$secret')` finds one (Rakudo: X::Undeclared at compile time, and no
@@ -174,10 +171,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `MY::<$x>` and `$CALLER::y` inside a loop block find an outer variable
   (Rakudo: Nil); `&next` is Any (no `.candidates`). Found 2026-10-07; not
   started.
-- [ ] **A trait inside a declarator list does not parse**: `my ($g is
-  default(9), $h) = Nil, 1` and `my ($t, @u is default(8)) = …` are "Two
-  terms in a row" (Rakudo: `$g` is 9, `@u` is `[8, 2]`). Found 2026-10-09;
-  not started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
@@ -226,7 +219,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   925260b1 are still unlocked (the inner-tap closers and tapSupply's `ended`
   write). The fix needs the supplier lock key passed through tapSupply.
 - [ ] **Cro and #116 follow-ups**:
-  - `all(@p)».status` collapses the junction.
   - A bare `Node` resolves through the `classAliases_` tail.
   - `NativeLibs EXPORT failed: No such method 'dispatcher'`.
   - Nested protos under LTM.
@@ -235,8 +227,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **Phaser order**: `temp` is restored after LEAVE; builtin callbacks
   (`.map`) and gather bodies keep the old order. perf-guard was not run for
   55b4f18a.
-- [ ] **Native kinds**: still not refused through
-  `.new(v => $int)`, `my @a = $int, 1`, `push` and hash construction.
 - [ ] **Semantics sheets, step two**: about 11 sheets.
   [../findings/semantics/](../findings/semantics/).
 - [ ] **Divergences found in sweeps and not fixed**:
@@ -244,8 +234,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - Role conflicts are undetected or reported late.
   - Seq, Range, Map and Hash answer one candidate for `.^can('elems')`.
   - An exported `infix:<+++>`.
-  - Stacked postfixes: with only `postfix:<!>` declared, `3!!` is a parse
-    error (Rakudo 720), and `3!²` drops the `²` (Rakudo 36).
+  - A postfix after a superscript power applies to the exponent: with
+    `postfix:<!>`, `3²!` is 9 (Rakudo 362880, `(3²)!`). The lexer writes the
+    power as an infix `**`, so it cannot be followed by a postfix of its own.
+    And a superscript numeral term after a word is read as its power:
+    `say ²¹²` parses as `say ** 212` and prints an empty line (Rakudo 4096).
   - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
     answers a WhateverCode, Rakudo a Range.
   - `for @$list.kv -> $i, $x is rw` over a List: Rakudo dies binding `$x`
@@ -266,8 +259,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - A slurpy hash or a capture does not write back: `sub q(*%n) { %n<x> = 31 };
     q(x => $v)` and `sub r(|c) { c<x> = 33 }` leave `$v` alone (Rakudo: 31,
     33). Named `is rw` / `is raw` parameters do (2026-10-04).
-  - `@a[$i++] = $i` evaluates the value before the subscript: Raku++ stores
-    0 at index 0, Rakudo 1 (the subscript first). The same for `%h{…}`.
   - A multi candidate wrapped with `.wrap` keeps taking part in dispatch with
     its `where`: `multi wr(Int $n where * > 0)` beside `multi wr(Int $n)`,
     the first wrapped, answers `wr(-1)` from the second; Rakudo dies binding
@@ -612,3 +603,7 @@ with its tag, after the release run is green.
 - The binding version scheme (section 4).
 - Telling the 321 author that their code breaks on Raku++ after v4.0.1
   (section 5).
+- Whether whole files get EVAL's strict statement separation: Rakudo
+  refuses `sub k { 1 } sub v { 2 }` or `if 1 { } say 2` on one line
+  ("Strange text after block"); Raku++ refuses it only in an EVAL
+  (`enforceStmtSep`), so files that rely on the leniency would stop compiling.

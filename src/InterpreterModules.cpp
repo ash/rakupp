@@ -3804,8 +3804,18 @@ bool mayHaveStateDecl(const Expr* e) {
                 if (mayHaveStateDecl(o.get())) return true;
             return false;
         }
+        // a block or closure written in the body (`$lock.protect: { … }`) is
+        // looked into: assuming a `state` there sent every `hyper for` whose
+        // body passes one to the serial path
+        case NK::BlockExpr: {
+            auto* be = static_cast<const BlockExpr*>(e);
+            if (!be->phaser.empty()) return true;
+            for (auto& p : be->params) if (mayHaveStateDecl(p.defaultVal.get())) return true;
+            for (auto& st : be->body) if (mayHaveStateDecl(st.get())) return true;
+            return false;
+        }
         default:
-            return true; // BlockExpr, SymbolicRef, NqpOp, … — keep the frame
+            return true; // SymbolicRef, NqpOp, … — keep the frame
     }
 }
 bool mayHaveStateDecl(const Stmt* s) {

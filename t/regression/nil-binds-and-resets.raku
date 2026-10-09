@@ -46,6 +46,12 @@ sub check($got, $want, $what) { @fail.push("$what: got {$got.raku} want {$want.r
     check %x.raku, '{:a(Any)}', 'a % target\'s values reset';
     check ((try { my ($w2, %x2) = 1, 2, 3, 4; %x2 }) // $!).^name, 'X::Hash::Store::OddNumber',
           '…and an odd count left for it is an error';
+    # a trait on ONE item of the list parses, and its default is what Nil
+    # resets to (it was "Two terms in a row")
+    my ($g is default(9), $h) = Nil, 1;
+    check ($g, $h), (9, 1), 'my ($g is default(9), $h) = Nil, 1';
+    my ($t2, @u is default(8)) = 1, Nil, 2;
+    check @u.List, (8, 2), 'an @ item with its own default';
 }
 
 if @fail { .say for @fail; say "FAIL" } else { say "PASS" }

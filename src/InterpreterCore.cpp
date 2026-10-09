@@ -31615,6 +31615,15 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         // a hyper call ITERATES its invocant: a Seq is read once, so
         // `seq».abs; seq».abs` dies X::Seq::Consumed as `.map` twice does
         if (!inv.itemized) seqUse(inv, SeqUse::Iterate);
+        // a JUNCTION invocant autothreads, as any call on one does: each
+        // eigenstate is hyper'd on its own (a one-element list, for a scalar)
+        // and the answers form a junction of the same kind, so
+        // `all(@p)».status` is all((Kept), (Kept)). It was flattened to an Array.
+        if (isJunction(inv) && !mc->mutate) {
+            Value j = Value::array(); j.enumName = inv.enumName;
+            for (auto& e : *inv.arr()) j.arr()->push_back(hyperMethodEach(e, hname, args, mc->maybe));
+            return j;
+        }
         Value out = hyperMethodEach(inv, hname, args, mc->maybe);
         if (mc->mutate) {
             // `($a, $b)>>.=meth` writes each result back to that element's own

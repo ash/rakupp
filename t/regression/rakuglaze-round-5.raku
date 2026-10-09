@@ -59,6 +59,13 @@ sub dies($code, $type, $what) {
     my %g; $i = 0;
     %g{$i} = ++$i;
     ck %g, %(1 => 1), 'a bare variable key is read after the right side';
+    # …and a key that changes what the right side reads (2026-10-09)
+    my @a; $i = 0;
+    @a[$i++] = $i;
+    ck @a, [1], '@a[$i++] = $i stores 1 at index 0';
+    my %k; $i = 0;
+    %k{$i++} = $i;
+    ck %k, %(0 => 1), '%k{$i++} = $i';
 }
 
 # a :D coercion target refuses a type object

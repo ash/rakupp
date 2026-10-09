@@ -35,6 +35,14 @@ ck $*THREAD.is-initial-thread, True, 'the mainline is';
     race for ^2000 { $elsewhere = True if $*THREAD.id != $main }
     ck $elsewhere, True, 'a race for too';
 }
+# …and a body that passes a block (a Lock's `protect`) as well: a block was
+# assumed to hold a `state`, which kept such a loop serial (2026-10-09)
+{
+    my @ids; my $l = Lock.new;
+    hyper for ^2000 { $l.protect: { @ids.push: $*THREAD.id } }
+    ck @ids.elems, 2000, 'a body passing a block runs every iteration';
+    ck @ids.unique.elems > 1, True, '…over threads';
+}
 {
     my $elsewhere = False;
     for (^2000).hyper { $elsewhere = True if $*THREAD.id != $main }

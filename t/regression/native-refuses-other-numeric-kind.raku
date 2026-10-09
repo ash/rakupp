@@ -126,6 +126,12 @@ ck dies-as({ sub k(int $x is rw) { $x = 7/2 }; my int $n = 0; k($n) }), 'X::AdHo
     my $h = 0; $h = $m; $h /= 2;               ck $h, 1.5, 'a boxed /= after holding an int';
     my ($p, $q) = $m, $f; $p = 1/2; $q = 1;    ck ($p, $q), (0.5, 1), 'list-assigned copies';
     sub c($x is copy) { $x = 1/2; $x };        ck c($m), 0.5, 'an `is copy` parameter';
+    # …and an attribute the constructor fills (2026-10-09)
+    my int8 $b = 5;
+    my class Boxed { has $.v is rw }
+    my $o = Boxed.new(v => $b); $o.v = 300;    ck $o.v, 300, 'a boxed attribute from .new';
+    my class Narrow { has int8 $.v is rw }
+    my $w = Narrow.new(v => $b); $w.v = 300;   ck $w.v, 44, '…while a native one still wraps';
 }
 
 say $fails ?? "FAIL ($fails)" !! 'PASS';

@@ -1119,6 +1119,9 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         Value v = nilResetForAttr(pv ? *pv : Value::any(), at);
         if (wasNil && at.defaultTrait && at.sigil == '$') v = eval(const_cast<Expr*>(at.defaultTrait));
         checkAttrStore(*this, v, at, resolveRoleType(at.type), wasNil, scope);
+        // a boxed attribute takes a native's VALUE: its width tags stayed on,
+        // so `C.new(v => $an-int8)` then `.v = 300` wrapped to 44
+        if (v.natBits && !isNativeTypeName(at.type)) { v.natBits = 0; v.natSigned = v.natFloat = false; }
         return v;
     };
     // A value the CALLER passed for a typed container attribute keeps the

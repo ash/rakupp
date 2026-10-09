@@ -2055,7 +2055,8 @@ ExprPtr Parser::curryCompoundAssign(std::unique_ptr<Assign> a) {
 // `%index{~$i} = $i++` — Rakudo evaluates the subscript's key BEFORE the right
 // side, so the key is "0" and the value 0. The interpreter reads the right side
 // first, which only shows when that side changes a variable the key computes
-// from; then (and only then) the key goes into a temporary first:
+// from, or the key changes one the right side reads (`@a[$i++] = $i` stores 1
+// at index 0); then (and only then) the key goes into a temporary first:
 // `do { my $k = ~$i; %index{$k} = $i++ }`. A bare variable as the key is left
 // alone — it is a container, read when the element is stored, after the right
 // side (`%g{$i} = ++$i` keys by the NEW $i in Rakudo too).
@@ -2069,36 +2070,41 @@ ExprPtr Parser::keyBeforeValue(std::unique_ptr<Assign> a) {
             return a;
         default: break;
     }
-    // the variables the right side changes, and the variables the key reads
-    std::set<std::string> changed, read;
-    std::function<void(Expr*, bool)> walk = [&](Expr* e, bool rhs) {
+    // the variables each side reads and changes
+    struct Uses { std::set<std::string> read, changed; };
+    std::function<void(Expr*, Uses&)> walk = [&](Expr* e, Uses& u) {
         if (!e) return;
         switch (e->kind) {
-            case NK::VarExpr: if (!rhs) read.insert(static_cast<VarExpr*>(e)->name); return;
-            case NK::Unary: { auto* u = static_cast<Unary*>(e);
-                if (rhs && (u->op == "++" || u->op == "--") && u->operand && u->operand->kind == NK::VarExpr)
-                    changed.insert(static_cast<VarExpr*>(u->operand.get())->name);
-                walk(u->operand.get(), rhs); return; }
+            case NK::VarExpr: u.read.insert(static_cast<VarExpr*>(e)->name); return;
+            case NK::Unary: { auto* un = static_cast<Unary*>(e);
+                if ((un->op == "++" || un->op == "--") && un->operand && un->operand->kind == NK::VarExpr)
+                    u.changed.insert(static_cast<VarExpr*>(un->operand.get())->name);
+                walk(un->operand.get(), u); return; }
             case NK::Assign: { auto* x = static_cast<Assign*>(e);
-                if (rhs && x->target && x->target->kind == NK::VarExpr)
-                    changed.insert(static_cast<VarExpr*>(x->target.get())->name);
-                walk(x->target.get(), rhs); walk(x->value.get(), rhs); return; }
-            case NK::Binary: { auto* b = static_cast<Binary*>(e); walk(b->lhs.get(), rhs); walk(b->rhs.get(), rhs); return; }
+                if (x->target && x->target->kind == NK::VarExpr)
+                    u.changed.insert(static_cast<VarExpr*>(x->target.get())->name);
+                walk(x->target.get(), u); walk(x->value.get(), u); return; }
+            case NK::Binary: { auto* b = static_cast<Binary*>(e); walk(b->lhs.get(), u); walk(b->rhs.get(), u); return; }
             case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
-                walk(m->inv.get(), rhs); for (auto& x : m->args) walk(x.get(), rhs); return; }
-            case NK::Call: for (auto& x : static_cast<Call*>(e)->args) walk(x.get(), rhs); return;
-            case NK::Index: { auto* i = static_cast<Index*>(e); walk(i->base.get(), rhs); walk(i->index.get(), rhs); return; }
-            case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) walk(p.get(), rhs); return;
-            case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) walk(x.get(), rhs); return;
+                walk(m->inv.get(), u); for (auto& x : m->args) walk(x.get(), u); return; }
+            case NK::Call: for (auto& x : static_cast<Call*>(e)->args) walk(x.get(), u); return;
+            case NK::Index: { auto* i = static_cast<Index*>(e); walk(i->base.get(), u); walk(i->index.get(), u); return; }
+            case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) walk(p.get(), u); return;
+            case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) walk(x.get(), u); return;
             default: return;
         }
     };
-    walk(a->value.get(), true);
-    if (changed.empty()) return a;
-    walk(ix->index.get(), false);
-    bool clash = false;
-    for (auto& n : changed) if (read.count(n)) { clash = true; break; }
-    if (!clash) return a;
+    // …a clash either way round: the right side changes what the key reads
+    // (`%h{~1} = 1++`), or the key changes what the right side reads
+    // (` = 1`, which stores 1 at index 0 in Rakudo)
+    Uses val, key;
+    walk(a->value.get(), val);
+    walk(ix->index.get(), key);
+    auto meets = [](const std::set<std::string>& x, const std::set<std::string>& y) {
+        for (auto& n : x) if (y.count(n)) return true;
+        return false;
+    };
+    if (!meets(val.changed, key.read) && !meets(key.changed, val.read)) return a;
     const int line = a->line;
     static const std::string kKey = "$\x01subscript-key";
     auto decl = std::make_unique<VarExpr>(kKey); decl->declare = true; decl->line = line;
@@ -3769,6 +3775,35 @@ bool Parser::splitPostfixRun() {
     return true;
 }
 
+// The run of superscript digits and signs at `at` in the source (`²`, `¹²`,
+// `⁻¹`), as the ASCII exponent it spells, and the byte offset where it ends.
+static bool superscriptRunAt(const std::string& src, size_t at, std::string& exp, size_t& end) {
+    size_t p = at;
+    for (;;) {
+        if (p >= src.size()) break;
+        const unsigned char c0 = (unsigned char)src[p];
+        char d = 0; size_t len = 0;
+        if (c0 == 0xC2 && p + 1 < src.size()) {
+            const unsigned char c1 = (unsigned char)src[p + 1];
+            len = 2;
+            d = c1 == 0xB9 ? '1' : c1 == 0xB2 ? '2' : c1 == 0xB3 ? '3' : c1 == 0xAF ? '-' : 0;
+        }
+        else if (c0 == 0xE2 && p + 2 < src.size() && (unsigned char)src[p + 1] == 0x81) {
+            const unsigned char c2 = (unsigned char)src[p + 2];
+            len = 3;
+            if (c2 == 0xB0) d = '0';
+            else if (c2 >= 0xB4 && c2 <= 0xB9) d = (char)('4' + (c2 - 0xB4));
+            else if (c2 == 0xBA) d = '+';
+            else if (c2 == 0xBB) d = '-';
+        }
+        if (!d) break;
+        exp += d;
+        p += len;
+    }
+    end = p;
+    return !exp.empty() && exp.find_first_of("0123456789") != std::string::npos;
+}
+
 // `.:<op>` ahead, with the colon at toks_[i]: a PREFIX operator called as a
 // postfix, in any of its wrappers — `<->`, `«~»`, `<<~>>`, `["~"]`, `<<'~'>>`.
 bool Parser::prefixOpCallAt(size_t i) const {
@@ -4850,9 +4885,11 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             auto u = std::make_unique<Unary>();
             u->op = "i"; u->postfix = true; u->operand = std::move(base);
             base = std::move(u);
-        } else if (cur().kind == Tok::Ident && !cur().spaceBefore && !userPostfix_.empty() &&
-                   !userPostfix_.count(cur().text) && splitPostfixRun()) {
-            continue;   // the run was split into its declared postfixes; take the first
+        } else if ((cur().kind == Tok::Ident || cur().kind == Tok::Op) && !cur().spaceBefore &&
+                   !userPostfix_.empty() && !userPostfix_.count(cur().text) && splitPostfixRun()) {
+            // the run was split into its declared postfixes; take the first
+            // (an operator token too: `3!!` lexes as the `!!` of `?? !!`)
+            continue;
         } else if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) && !cur().spaceBefore &&
                    userPostfix_.count(cur().text) && !stopPostfix_.count(cur().text)) {
             // user-defined postfix operator:  5!  ==  postfix:<!>(5) — and it must
@@ -4864,6 +4901,24 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
             call->name = "postfix:<" + opname + ">";
             call->args.push_back(std::move(base));
             base = std::move(call);
+            // `3!²` — a superscript run touching the postfix is its power. The
+            // lexer cannot know `!` is a postfix, so it read the run as a
+            // numeral TERM (`²`, and `²³` as `²`, `**`, `3`); re-read it from
+            // the source as the exponent, and step over the tokens it made
+            if ((isKind(Tok::IntLit) || isKind(Tok::Op)) && !cur().spaceBefore && src_ &&
+                cur().off >= cur().text.size()) {   // (a sign, `⁻¹`, lexes as an operator)
+                std::string exp; size_t end = 0;
+                if (superscriptRunAt(*src_, cur().off - cur().text.size(), exp, end)) {
+                    const int line = cur().line;
+                    while (!isKind(Tok::End) && cur().off <= end) advance();
+                    auto lit = std::make_unique<IntLit>(std::stoll(exp));
+                    lit->line = line;
+                    auto pw = std::make_unique<Binary>();
+                    pw->line = line; pw->op = "**";
+                    pw->lhs = std::move(base); pw->rhs = std::move(lit);
+                    base = std::move(pw);
+                }
+            }
         } else if (isKind(Tok::LParen) && !cur().spaceBefore) {
             // invocation of a callable expression (e.g. NameTerm or coderef)
             advance();
@@ -5567,6 +5622,16 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // `my ($a, @b is copy) := …` — a parameter trait; the item is a
             // fresh container either way
             while (isIdent("is") && (peek().text == "copy" || peek().text == "rw" || peek().text == "raw")) { advance(); advance(); }
+            // …and a variable trait on ONE item: `my ($g is default(9), $h)`,
+            // which was "Two terms in a row" (the list form below applies a
+            // trait after the parenthesis to every item)
+            if (isIdent("is") || isIdent("will")) {
+                lastIsDynamic_ = false;
+                skipTraits(scope != "has", &ve->declDefault);
+                if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
+                lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false;
+                lastWillPhaser_.clear(); lastWillBlock_.reset(); earlierWills_.clear();
+            }
             // A type written BEFORE the parenthesis applies to every variable in
             // the list — `my Int ($a, $b)` declares two Int, and `my uint32
             // ($a, $b)` two 32-bit natives that wrap on assignment. Only the
