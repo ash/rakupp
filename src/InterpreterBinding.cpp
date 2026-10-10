@@ -1205,6 +1205,37 @@ std::string elemTypeOfSpec(const std::string& ofType) {
     if (!ascii::isupper((unsigned char)first[0])) return ""; // native: see natCheck
     return first;
 }
+// A COERCION type's target, `Int(Any)` → "Int", with its source (`Any`, or a
+// nested `Int(Cool)`) in *from; "" for anything else. A parameterisation is
+// not one: `Array[Int(Any)]` is an Array.
+std::string coercionTarget(const std::string& t, std::string* from = nullptr) {
+    size_t lp = t.find('(');
+    if (lp == std::string::npos || lp == 0 || t.back() != ')') return "";
+    size_t br = t.find('[');
+    if (br != std::string::npos && br < lp) return "";
+    if (from) *from = t.substr(lp + 1, t.size() - lp - 2);
+    return t.substr(0, lp);
+}
+// What a value becomes on its way into a coercion-typed element (`my Hash() %h`
+// is Rakudo's Hash[Hash(Any)]): coerced to the target when its source type
+// takes it, and left alone otherwise, for checkElemType to refuse by the
+// coercion type's full name. A nested source coerces inside out:
+// `Str(Int(Cool))` makes 4.7 the Int 4 and then "4". An undefined value is not
+// coerced (Rakudo's attempt fails, with another error).
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v) {
+    std::string from;
+    std::string target = coercionTarget(want, &from);
+    if (target.empty() || v.t == VT::Nil || !rtIsDefined(v) || I.typeOrSubsetMatches(v, target)) return;
+    std::string inner = coercionTarget(from);
+    if (!inner.empty()) {
+        coerceElemValue(I, from, v);
+        if (!I.typeOrSubsetMatches(v, inner)) return;
+    }
+    else if (!from.empty() && from != "Any" && from != "Mu" && !I.typeOrSubsetMatches(v, from)) return;
+    v = I.coerceToType(v, target);
+    // a coercion that fails throws its own error (`"abc"` into an Int() is X::Str::Numeric)
+    if (v.t == VT::Hash && v.hashKind == "Failure") failureDetonate(v);
+}
 std::string Interpreter::elemTypeOf(const Value& container) {
     if (container.ofType().empty()) return "";
     if (container.t != VT::Array && container.t != VT::Hash) return ""; // Range/IO::Path ride on ofType too
@@ -1305,13 +1336,18 @@ void Interpreter::checkElemType(const std::string& want, const Value& v, const s
                         "; expected " + want + " but got " + base + " (" + base + ")");
     }
     if (v.t == VT::Nil) return;
+    // a COERCION type's element is its target once coerceElemValue ran
+    // (the message still names the whole `Int(Str)`)
+    std::string target = coercionTarget(want);
+    if (!target.empty()) {
+        if (typeOrSubsetMatches(v, target)) return;
+    }
     // A PARAMETERISED element type constrains TWICE: the value must be that
     // base type AND carry the same parameterisation. `my Array[Int] @a` takes
     // an Array[Int] and neither an Array[Str] nor a plain Array — Rakudo
     // rejects both, and roast S06-currying/positional.t declares exactly
     // `my Array[Int] @AoAoI = $@AoI, $@AoI`.
-    size_t br = want.find('[');
-    if (br != std::string::npos && !want.empty() && want.back() == ']') {
+    else if (size_t br = want.find('['); br != std::string::npos && want.back() == ']') {
         if (typeOrSubsetMatches(v, want.substr(0, br)) &&
             v.ofType() == want.substr(br + 1, want.size() - br - 2)) return;
     }
@@ -3601,6 +3637,8 @@ Value typedElemDefault(const Value& base) {
     if (base.ofType().empty()) return Value::nil();
     std::string first = base.ofType().substr(0, base.ofType().find(','));
     if (first.empty()) return Value::nil();
+    // a coercion type's element defaults to its target: `my Int() %h; %h<x>` is (Int)
+    if (std::string target = coercionTarget(first); !target.empty()) first = target;
     if (ascii::isupper((unsigned char)first[0])) return Value::typeObj(first);
     // native element types are zero-initialized (my int @a — gaps read as 0)
     if (first == "num" || first == "num32" || first == "num64") return Value::number(0.0);

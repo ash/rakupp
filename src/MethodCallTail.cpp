@@ -5,6 +5,8 @@
 
 namespace rakupp {
 
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+
 // A `next`/`last` PAYLOAD (6.e) joins the loop's results as a value — a Slip
 // as its elements (`next slip($_, -$_)`), the Slip TYPE as itself.
 static void pushLoopPayload(ValueList& out, const Value& v) {
@@ -4675,10 +4677,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     }
                     key = a.toStr(); val = flat[++fi];
                 }
-                // a TYPED hash (`my Int %h`) checks what is pushed into it
+                // a TYPED hash (`my Int %h`, `my Hash() %h`) checks what lands
+                // in the entry: the value for a new key, and for an existing
+                // one the Array the two make (below)
                 std::string wantT = elemTypeOf(inv);
-                if (!wantT.empty())
-                    checkElemType(wantT, val, "%h");
                 // an OBJECT hash checks the KEY against its key type, and keys
                 // by identity (`my Int %h{Rat}; %h.push: 1 => 3` dies)
                 if (inv.objKeyed && a.t == VT::Pair) {
@@ -4694,34 +4696,76 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             " but got " + kobj.typeName());
                 }
                 auto it = inv.hash()->find(key);
-                // pushing onto an EXISTING key makes its value an Array — which
-                // a typed hash's element type refuses
-                if (it != inv.hash()->end() && !wantT.empty() && wantT != "Any" && wantT != "Mu" &&
-                    wantT != "Array" && wantT != "Positional" && wantT != "List" && wantT != "Iterable" &&
-                    wantT != "Cool")
-                    throwTypedV("X::TypeCheck::Assignment",
-                        {{"got", Value::array()}, {"expected", Value::typeObj(wantT)}},
-                        "Type check failed in assignment to %h; expected " + wantT + " but got Array");
                 if (it == inv.hash()->end()) {
                     // a NEW key stores the value as it is — a List, a Slip and all
                     // (append and push agree here — it is the existing-key branch that
                     // tells them apart) — in the entry's Scalar: `.raku` of it is
                     // `$(1, 2)` / `$(slip(…))`
+                    if (!wantT.empty()) {
+                        coerceElemValue(*this, wantT, val);
+                        checkElemType(wantT, val, "%h");
+                    }
                     Value& slot = (*inv.hash())[key];
                     slot = val;
                     if (slot.t == VT::Array) slot.itemized = true;
-                } else {
-                    if (it->second.t != VT::Array) { Value ar = Value::array(); ar.arr()->push_back(it->second); ar.itemized = true; it->second = ar; }
-                    // …and a LIST value becomes an Array too — `:b(2, 3)` then
-                    // `.append(:b<Y>)` is `[2, 3, "Y"]`, an Array (S32-hash/push.t);
-                    // pushing onto the List left it a List.
-                    else if (it->second.isList) { Value ar = Value::array(); for (auto& x : *it->second.arr()) ar.arr()->push_back(x); ar.itemized = true; it->second = ar; }
-                    if (m == "append") for (auto& x : val.flatten()) it->second.arr()->push_back(x);
+                    continue;
+                }
+                // An EXISTING key: an Array value takes the new one in place
+                // (append flattens it, push does not); anything else becomes an
+                // Array with the new value after it — Rakudo's `[|old, |new]`
+                // for append and `[old, new]` for push. Append SLIPS both: a
+                // Hash into its pairs, a List or a Range into its elements, so
+                // `:b(2, 3)` then `.append(:b<Y>)` is `[2, 3, "Y"]`
+                // (S32-hash/push.t) while `.push` keeps `(2, 3)` whole.
+                auto slipInto = [&](Value& ar, const Value& x, bool deep) {
+                    if (x.t == VT::Hash && x.hash() && (x.hashKind.empty() || x.hashKind == "Map")) {
+                        for (auto& kv : *x.hash()) {
+                            Value p = Value::pair(kv.first, kv.second);
+                            if (x.objKeyed) p.pairKeyM() = std::make_shared<Value>(hashEntryKey(x, kv.first, kv.second));
+                            ar.arr()->push_back(std::move(p));
+                        }
+                    }
+                    else if (!deep && x.t == VT::Array && x.arr())
+                        for (auto& e : *x.arr()) ar.arr()->push_back(e);
+                    else for (auto& e : x.flatten()) ar.arr()->push_back(e);
+                };
+                const bool append = m == "append";
+                Value merged = it->second;
+                if (merged.t == VT::Array && !merged.isList && merged.arr()) {
+                    // (a typed hash's refusal must leave the entry as it was)
+                    if (!wantT.empty()) { merged = Value::array(); *merged.arr() = *it->second.arr(); merged.itemized = true; }
+                    if (append) slipInto(merged, val, true);
                     // a Slip pushed onto the Array slips into it, as Array.push does
                     else if (val.t == VT::Array && val.isList && val.s == "Slip" && val.arr())
-                        for (auto& x : *val.arr()) it->second.arr()->push_back(x);
-                    else it->second.arr()->push_back(val);
+                        for (auto& x : *val.arr()) merged.arr()->push_back(x);
+                    else merged.arr()->push_back(val);
                 }
+                else {
+                    merged = Value::array(); merged.itemized = true;
+                    if (append) {
+                        // (an entry bound to a variable slips that variable's value)
+                        slipInto(merged, it->second.isCell() ? *it->second.deref() : it->second, false);
+                        slipInto(merged, val, true);
+                    }
+                    else {
+                        // (a Slip slips into the new Array, as it does in `[…]`)
+                        for (const Value* x : {&it->second, &val}) {
+                            if (x->t == VT::Array && x->isList && x->s == "Slip" && x->arr())
+                                for (auto& e : *x->arr()) merged.arr()->push_back(e);
+                            else merged.arr()->push_back(*x);
+                        }
+                    }
+                }
+                if (!wantT.empty()) {
+                    coerceElemValue(*this, wantT, merged);   // `my Hash() %h`: the merged pairs are a Hash again
+                    checkElemType(wantT, merged, "%h");
+                }
+                // an Array entry is grown, not replaced (a bound alias sees it)
+                if (merged.t == VT::Array && merged.arr() && it->second.t == VT::Array &&
+                    !it->second.isList && it->second.arr()) {
+                    if (merged.arr() != it->second.arr()) *it->second.arr() = *merged.arr();
+                }
+                else it->second = merged;
             }
             return inv;
         }
@@ -4983,9 +5027,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // @a.append([1,2])` appends two ints and is legal (natCheck read
             // the raw argument and rejected the Array), while `my Int @a;
             // @a.push([1,2])` stores the Array itself and is not.
-            auto elemCheck = [&](const Value& v) {
+            auto elemCheck = [&](Value& v) {
                 natCheck(v);
-                if (!boxedElem.empty()) checkElemType(boxedElem, v, "");
+                if (!boxedElem.empty()) {
+                    coerceElemValue(*this, boxedElem, v);   // `my Int() @a; @a.push: "3"`
+                    checkElemType(boxedElem, v, "");
+                }
             };
             // P3 (the no-crash contract): in parallel mode the structural
             // mutators below run under the array's stripe — unguarded

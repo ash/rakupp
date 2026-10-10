@@ -1292,6 +1292,17 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
         Value cap;
         if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) { cap.i = 0; return cap; }
     }
+    // A coercion type on an `@`/`%` is its ELEMENTS' type, and the container
+    // keeps it whole: `my Hash() %h` is Rakudo's Hash[Hash(Any)], so every
+    // later store into an element coerces (see coerceElemValue), and `.of`
+    // says Hash(Any). The value half of an object hash's "value,key" spec.
+    if (ve && (sigil == '@' || sigil == '%') && !ve->declCoerce.empty()) {
+        const std::string& dt = ve->declType;
+        size_t comma = dt.find(',');
+        if (dt.substr(0, comma) == ve->declCoerce)
+            return typedDefault(ve->declCoerce + "(" + (ve->declCoerceFrom.empty() ? "Any" : ve->declCoerceFrom) +
+                                ")" + (comma == std::string::npos ? std::string() : dt.substr(comma)), sigil);
+    }
     return typedDefault(ve ? ve->declType : std::string(), sigil);
 }
 

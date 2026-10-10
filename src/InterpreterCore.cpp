@@ -7375,6 +7375,13 @@ bool Interpreter::boolify(const Value& v) {
 // (The untyped reset is the `Any` TYPE OBJECT, not the bare undefined value:
 // that one is a HOLE — a deleted or never-written slot — and `.List`, `:exists`
 // and the typed renderings tell the two apart, as Rakudo does.)
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+std::string coercionTarget(const std::string& t, std::string* from = nullptr);   // InterpreterBinding.cpp
+// an element type as a store must satisfy it: a coercion type's target (`Hash(Any)` → Hash)
+static std::string elemTargetOf(const std::string& want) {
+    std::string t = coercionTarget(want);
+    return t.empty() ? want : t;
+}
 static Value nilElemDefault(const Value& v, const Value& container) {
     if (v.t != VT::Nil) return v;
     if (container.elemDefault()) return *container.elemDefault();
@@ -11639,7 +11646,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // container where only the element type may live: `my Int %h;
             // %h<a><b> = 3` dies rather than store a Hash under "a"
             if (asInvocant && base->hashKind.empty() && !base->hash()->count(key))
-                if (std::string want = elemTypeOf(*base); !want.empty() &&
+                if (std::string want = elemTargetOf(elemTypeOf(*base)); !want.empty() &&
                     want != "Hash" && want != "Associative" && want != "Array" && want != "Positional" &&
                     !subsets_.count(want) && want.find('[') == std::string::npos)
                     throwTypedV("X::TypeCheck::Assignment",
@@ -11855,7 +11862,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // autovivify a container there: `my Int @a; @a[42]<foo> = 3` dies
             // and leaves @a as it was (see the hash arm)
             if (asInvocant && grown)
-                if (std::string want = elemTypeOf(*base); !want.empty() &&
+                if (std::string want = elemTargetOf(elemTypeOf(*base)); !want.empty() &&
                     want != "Hash" && want != "Associative" && want != "Array" && want != "Positional" &&
                     !subsets_.count(want) && want.find('[') == std::string::npos)
                     throwTypedV("X::TypeCheck::Assignment",
@@ -15295,6 +15302,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         for (size_t i = 0; i < ks.size(); i++) {
                             Value v = i < vs.size() ? nilElemDefault(vs[i], *bp) : Value::any();
                             // a typed container checks a SLICE assignment too
+                            coerceElemValue(*this, elemTypeOf(*bp), v);
                             checkElemType(*bp, v, containerNameOf(ix->base.get(), ix->isHash ? '%' : '@'));
                             if (ix->isHash && bp->t == VT::Hash && bp->hash()) {
                                 const std::string& hk = bp->hashKind;
@@ -15844,6 +15852,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             std::string want = tctx_.lastLvalueElemType;
             tctx_.lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(a->target.get());
+            coerceElemValue(*this, want, rhs);   // `my Int() %h; %h<a> = "1"`
             checkElemTypeOrShrink(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'), growBase, growSize);
         }
         // …and `%h.AT-KEY(k) = v` / `@a.AT-POS(i) = v`, the method spelling
@@ -15851,8 +15860,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* mct = static_cast<MethodCall*>(a->target.get());
             std::string want = tctx_.lastLvalueElemType;
             tctx_.lastLvalueElemType.clear();
-            if (mct->method == "AT-KEY" || mct->method == "AT-POS")
+            if (mct->method == "AT-KEY" || mct->method == "AT-POS") {
+                coerceElemValue(*this, want, rhs);
                 checkElemType(want, rhs, containerNameOf(mct->inv.get(), mct->method == "AT-KEY" ? '%' : '@'));
+            }
         }
         // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset,
         // checked where the default lands)
@@ -16321,8 +16332,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         }
                         el = nilElemDefault(reset ? Value::nil() : el, proto);
                         // …and a TYPED one checks it: `my Int @a = 1, "x"` throws
-                        if (!want.empty() && !reset)
+                        if (!want.empty() && !reset) {
+                            coerceElemValue(*this, want, el);
                             checkElemType(want, el, targetName('@'));
+                        }
                         checkElemSmiley(targetName('@'), want, el);   // `my Int:D @x = Nil` dies
                     }
                 }
@@ -16480,6 +16493,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // a typed hash (`my Int %h = a => "x"`) checks every value in
                 if (std::string want = elemTypeOfSpec(keepType); !want.empty() && nv.hash())
                     for (auto& kv : *nv.hash()) {
+                        coerceElemValue(*this, want, kv.second);
                         checkElemType(want, kv.second, targetName('%'));
                         checkElemSmiley(targetName('%'), want, kv.second);   // `my Int:D %h = a => Nil`
                     }
@@ -24692,6 +24706,7 @@ Value Interpreter::evalUnary(Unary* u) {
             std::string want = tctx_.lastLvalueElemType;
             tctx_.lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(u->operand.get());
+            coerceElemValue(*this, want, newv);
             checkElemType(want, newv, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
         }
         *lv = newv;
