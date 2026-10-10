@@ -4046,6 +4046,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                            errMode == 1 ? &err : nullptr, errMode == -1, outMode);
             (*inv.hash())["out-str"] = Value::str(out);      // shared hash: $proc.out.slurp sees this
             (*inv.hash())["err-str"] = Value::str(err);
+            // run(…, :in, :out($fh)) / :err($fh): the handles the deferral carried
+            for (const char* k : {"out", "err"}) {
+                auto sk = inv.hash()->find(std::string(k) + "-sink");
+                if (sk == inv.hash()->end()) continue;
+                Value sink = sk->second;   // a copy: its `print` may run user code
+                procDrainToSink(*this, sink, true, *k == 'o' ? out : err);
+            }
             storeProcStatus(inv, code); // exitcode + signal
             (*inv.hash())["ran"] = Value::boolean(true);
             if (m == "close") { Value pr = inv; pr.hashKind = "Proc"; return pr; } // as above

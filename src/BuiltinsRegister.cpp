@@ -1390,6 +1390,25 @@ bool envPairsFrom(const Value& v, std::map<std::string, std::string>& out) {
     return false;
 }
 
+// Deliver a finished child's stream to its `:out($fh)` / `:err($fh)` sink (see
+// asSink in run()). The child has already finished, so this is a copy rather
+// than a live redirection — the handle sees the whole stream at once, in order,
+// which is what a caller that closes and reads the file afterwards wants.
+void procDrainToSink(Interpreter& I, Value& sink, bool have, const std::string& text) {
+    if (!have || text.empty()) return;
+    ValueList pa{Value::str(text)};
+    I.methodCall(sink, "print", pa);
+    // …and FLUSH it. Rakudo hands the child the handle's own descriptor, so
+    // the bytes are in the file the moment the child exits; a buffered
+    // `print` here is not on disk until the handle closes. App::RaCoCo
+    // slurps the file with the handle still open (`will leave { .close }`)
+    // and read an empty one.
+    if (sink.t == VT::Hash && sink.hashKind == "FileHandle") {
+        ValueList none;
+        I.methodCall(sink, "flush", none);
+    }
+}
+
 // A large `combinations($n, $k)` is a lazy Seq that KNOWS its count:
 // `+combinations(100, 70)` is the binomial C(100, 70) without building a single
 // combination, and iterating it walks the index combinations in order.
@@ -1833,23 +1852,6 @@ void Interpreter::registerBuiltinsPart2() {
     static const auto asSink = [](const Value* pv) {
         return pv && ((pv->t == VT::Hash && pv->hashKind == "FileHandle") || pv->t == VT::Object);
     };
-    // The child has already finished, so this is a copy rather than a live
-    // redirection — the handle sees the whole stream at once, in order, which is
-    // what a caller that closes and reads the file afterwards wants.
-    static const auto drainTo = [](Interpreter& I, Value& sink, bool have, const std::string& text) {
-        if (!have || text.empty()) return;
-        ValueList pa{Value::str(text)};
-        I.methodCall(sink, "print", pa);
-        // …and FLUSH it. Rakudo hands the child the handle's own descriptor, so
-        // the bytes are in the file the moment the child exits; a buffered
-        // `print` here is not on disk until the handle closes. App::RaCoCo
-        // slurps the file with the handle still open (`will leave { .close }`)
-        // and read an empty one.
-        if (sink.t == VT::Hash && sink.hashKind == "FileHandle") {
-            ValueList none;
-            I.methodCall(sink, "flush", none);
-        }
-    };
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
@@ -1983,6 +1985,11 @@ void Interpreter::registerBuiltinsPart2() {
             // written, so `run(cmd, :in, :out, :err)` read back an empty `.err`.
             (*p.hash())["out-mode"] = Value::integer(outMode);
             (*p.hash())["err-mode"] = Value::integer(errMode);
+            // …and so do the handles of `:out($fh)` / `:err($fh)`: that spawn
+            // captured into the Proc and never wrote them, so a file given
+            // beside an `:in` stayed empty.
+            if (haveOutSink) (*p.hash())["out-sink"] = outSink;
+            if (haveErrSink) (*p.hash())["err-sink"] = errSink;
             (*p.hash())["out-str"] = Value::str("");
             (*p.hash())["err-str"] = Value::str("");
             (*p.hash())["exitcode"] = Value::integer(0);
@@ -2009,8 +2016,8 @@ void Interpreter::registerBuiltinsPart2() {
         if (inFd >= 0) ::close(inFd); // the child holds its own copy
 #endif
         // Deliver a redirected stream to its handle.
-        drainTo(I, outSink, haveOutSink, out);
-        drainTo(I, errSink, haveErrSink, err);
+        procDrainToSink(I, outSink, haveOutSink, out);
+        procDrainToSink(I, errSink, haveErrSink, err);
         // Neither stream needs echoing any more: an un-adverbed child wrote to
         // our own descriptors while it ran.
         storeProcStatus(p, code); // exitcode + signal
@@ -2109,8 +2116,8 @@ void Interpreter::registerBuiltinsPart2() {
 #if !defined(_WIN32)
         if (inFd >= 0) ::close(inFd);
 #endif
-        drainTo(I, outSink, haveOutSink, out);
-        drainTo(I, errSink, haveErrSink, err);
+        procDrainToSink(I, outSink, haveOutSink, out);
+        procDrainToSink(I, errSink, haveErrSink, err);
         Value p = Value::makeHash(); p.hashKind = "Proc";
         Value av = Value::array(); av.isList = true; av.arr()->push_back(Value::str(cmd));
         if (binPipes) (*p.hash())["bin"] = Value::boolean(true);

@@ -355,6 +355,9 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
                            const std::string& cwd = "",
                            std::string* errOut = nullptr, bool errInherit = false,
                            int outMode = 1);
+// Copy a finished child's stream into its `:out($fh)` / `:err($fh)` handle and
+// flush it (BuiltinsRegister.cpp); nothing when `have` is false.
+void procDrainToSink(Interpreter& I, Value& sink, bool have, const std::string& text);
 
 // A child's wait status folded into ONE int, the shape every spawn caller
 // already stores: 0..255 a normal exit, 256+N death by signal N, −1 never ran
