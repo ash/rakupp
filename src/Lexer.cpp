@@ -2058,6 +2058,18 @@ void Lexer::scanDeclaredSubNames(
             pos++;
             continue;
         }
+        // …and so is a ｢…｣ span, whichever quote word opens it (the brackets
+        // nest). `Q｢class Q { … }｣` is text, and read as a declaration it made
+        // every later `Q｢` in the file a call to a routine named Q.
+        if (src.compare(pos, 3, "\xEF\xBD\xA2") == 0) {
+            int depth = 0;
+            while (pos < src.size()) {
+                if (src.compare(pos, 3, "\xEF\xBD\xA2") == 0) { depth++; pos += 3; }
+                else if (src.compare(pos, 3, "\xEF\xBD\xA3") == 0) { pos += 3; if (--depth == 0) break; }
+                else pos++;
+            }
+            continue;
+        }
         // A TYPE of a quote keyword's name declares it too: `my role Q[&f] {}`
         // makes `Q[{ 1 }]` a parameterization, not a Q[…] quote (Rakudo).
         // (only where one of those words can start: this runs at every byte)
