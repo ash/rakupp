@@ -29,6 +29,7 @@ What other people write about Raku++ is a different file:
 | 15 September 2026 | [Raku: la lingua dove posso parlare italiano](https://andrewshitov.com/2026/09/15/raku-la-lingua-dove-posso-parlare-italiano/) | The L10N modules: Raku keywords in Italian and other languages. |
 | 17 September 2026 | [Raku++ module manager](https://andrewshitov.com/2026/09/17/raku-module-manager/) | The v4.0.0 release, "Raku that travels", and the module manager that brought 1000 ecosystem modules to Raku++. |
 | 29 September 2026 | [Raku++ v5.0.0 reaches 100.00% of Roast](https://andrewshitov.com/2026/09/29/raku-v5-0-0-reaches-100-00-of-roast/) | The v5.0.0 release: 100.00% of Roast, the official Raku test suite. |
+| 10 October 2026 | [Better ways to install modules in Raku++](https://andrewshitov.com/2026/10/10/better-ways-to-install-modules-in-raku/) | `rakupp install prog.raku` installs the modules a program uses; `rakupp install -r lib` installs a folder of module files, with or without a META6.json. |
 
 ## On dev.to
 
