@@ -1164,6 +1164,17 @@ Value Interpreter::coerceViaSubset(const Value& v, const std::string& type) {
     try { return coerceToType(v, it->second.base); } catch (...) { return v; }
 }
 
+// An enum's value type — what its members are (`enum Color <R G B>` is Int,
+// `enum S (a => "x")` Str) — read off its first member.
+std::string Interpreter::enumBaseType(const std::string& enumType) {
+    auto ep = enumPairs_.find(enumType);
+    if (ep == enumPairs_.end() || !ep->second.arr() || ep->second.arr()->empty()) return "Int";
+    const Value& p0 = (*ep->second.arr())[0];
+    const Value* v0 = p0.t == VT::Pair ? p0.pairVal() : nullptr;
+    if (!v0) return "Int";
+    return v0->t == VT::Int ? std::string("Int") : v0->typeName();
+}
+
 bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
     if (subsets_.count(type)) return subsetMatches(type, v);
     return typeMatchesResolved(v, type);
@@ -2259,6 +2270,24 @@ static bool pkgIsRoleImpl(const std::string& p) {
     return it != g_revInterp->classes_.end() && it->second && it->second->isRole;
 }
 static const bool g_pkgIsRoleInstalled = ((g_pkgIsRole = &pkgIsRoleImpl), true);
+// …and what a SUBSET parameter's type narrows: the first name up its chain
+// that is no subset ("" when the name is not one)
+extern std::string (*g_subsetNominal)(const std::string&);
+static std::string subsetNominalImpl(const std::string& t) {
+    if (t == "UInt") return "Int";
+    if (!g_revInterp) return "";
+    const auto& subs = g_revInterp->subsets_;
+    if (!subs.count(t) || g_revInterp->classes_.count(t)) return "";
+    std::string n = t;
+    for (int hop = 0; hop < 32; hop++) {
+        auto si = subs.find(n);
+        if (si == subs.end() || g_revInterp->classes_.count(n)) break;
+        n = si->second.base;
+        if (n == "UInt") { n = "Int"; break; }
+    }
+    return n.empty() ? std::string("Any") : n;
+}
+static const bool g_subsetNominalInstalled = ((g_subsetNominal = &subsetNominalImpl), true);
 extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
 static void pullLazyImpl(const Value& v, size_t n) { if (g_cbInterp) g_cbInterp->materializeLazy(v, n); }
 static const bool g_pullLazyInstalled = ((g_pullLazy = &pullLazyImpl), true);
@@ -3421,6 +3450,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
         else if (mainSub.code()) cands.push_back(&mainSub);
         for (const Value* c : cands) {
             if (!c->code() || !c->code()->params) continue;
+            if (c->code()->isProto || c->code()->isProtoBody) continue;
             for (auto& p : *c->code()->params) {
                 if (!p.named || p.slurpy) continue;
                 std::set<std::string>& into = p.sigil == '@' ? listNamed : scalarNamed;
@@ -3445,6 +3475,10 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
         mainMatches = false;
         for (auto& cand : mainSub.code()->candidates) {
+            // (an explicit `proto MAIN(|) {*}` is no candidate: its `|` takes
+            // anything, and then the real dispatch found none — Cro's CLI
+            // declares one, and `cro --help` died where it should print usage)
+            if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody)) continue;
             ValueList mc = pairedArgs(cand);
             listifyNamed(mc);
             if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
@@ -3768,6 +3802,14 @@ Value& rtAttrRef(Value& self, const std::string& name) {
 // Nominal type check for native multi-dispatch.
 bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;
+    // an enum's TYPE OBJECT: its own type, Enumeration, and its value type's
+    // ancestry (`Color ~~ Int`, `my Int $v = Color`) — as typeMatchesResolved
+    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty() && g_revInterp &&
+        isEnumTypeObject(v)) {
+        if (type == v.enumType || type == "Enumeration") return true;
+        for (auto& a : typeAncestry(g_revInterp->enumBaseType(v.enumType.str()))) if (a == type) return true;
+        return false;
+    }
     // an enum VALUE matches the Enumeration role, its own enum type, and its name
     if (!v.enumName.empty() &&
         (type == "Enumeration" || type == v.enumType || type == v.enumName)) return true;

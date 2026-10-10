@@ -3938,6 +3938,20 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     for (size_t k = vi + (isWrite ? 1 : 0); k < args.size(); k++)
         if (args[k].t != VT::Pair) { endian = endianOf(args[k]); break; }
     int nb = width ? width / 8 : 8;
+    // A READ outside the buffer dies as MoarVM's read_buf does — X::AdHoc and
+    // its exact text, which CBOR::Simple matches BY NAME (`when /^ 'MVMArray:
+    // read_buf out of bounds' /`) to report a truncated float head as
+    // X::Malformed. (nqp::readuint already says the same; see
+    // t/regression/needle-compile-cluster.raku.) A 128-bit read goes in 8-byte
+    // chunks, so its count is 8, as Rakudo's is.
+    const long long origOff = off;
+    const long long elemsNow = (long long)bytes.size() / std::max(1, buf.blobElemSize());
+    auto readOutOfBounds = [&](long long at, int count) {
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        "MVMArray: read_buf out of bounds offset " + std::to_string(at) + " start 0 elems " +
+                        std::to_string(elemsNow) + " count " + std::to_string(count)};
+    };
+    if (off < 0 && !isWrite) readOutOfBounds(off, nb > 8 ? 8 : nb);
     if (off < 0)
         throw RakuError{Value::typeObj("X::OutOfRange"), "offset " + std::to_string(off) + " out of range"};
     // Typed bufs (buf16/32/64): Rakudo addresses `pos` in ELEMENTS — the value
@@ -3966,7 +3980,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
             return buf;
         }
         if ((long long)bytes.size() < off + nb)
-            throw RakuError{Value::typeObj("X::OutOfRange"), "read past end of buffer"};
+            readOutOfBounds((long long)bytes.size() < off + 8 ? origOff : origOff + 8, 8);
         BigInt acc(0);
         for (int i = 0; i < nb; i++) { // accumulate MSB-first
             int pos = isLittle(endian) ? nb - 1 - i : i;
@@ -3997,8 +4011,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
         }
         return buf;
     }
-    if ((long long)bytes.size() < off + nb)
-        throw RakuError{Value::typeObj("X::OutOfRange"), "read past end of buffer"};
+    if ((long long)bytes.size() < off + nb) readOutOfBounds(origOff, nb);
     unsigned char raw[8] = {0};
     for (int i = 0; i < nb; i++) {
         int dst = isLittle(endian) == hostLittle ? i : nb - 1 - i;
@@ -4403,14 +4416,32 @@ static std::string renderDefault(const Param& p) {
 // $s)` — and as `Int $` on its own, which is what Parameter.gist answers. We
 // rendered the sigil in both places, so a signature carrying an anonymous typed
 // parameter read `(Int $, …)` where every other implementation writes `(Int, …)`.
+// The nominal type a SUBSET narrows (`subset S of Int` → "Int"; UInt is Int),
+// or "" for a name that is no subset. Installed by InterpreterBinding.cpp,
+// which owns the subset registry.
+std::string (*g_subsetNominal)(const std::string&) = nullptr;
+
 static std::string renderParam(const Param& p, bool inSignature = false) {
     std::string o;
+    // the anonymous-but-typed case: `Int` in a signature, `Int $` alone (see below)
+    const bool anonShort = inSignature && (p.name.empty() || p.name == "$") && !p.type.empty() &&
+        !(p.type == "Any" && p.typeShown.empty() && !p.coerce && !p.defConstraint) && !p.named &&
+        !p.slurpy && p.sigil == '$' && !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
+        renderDefault(p).empty();
+    // A SUBSET is a nominal type and a constraint, and renders as Rakudo has
+    // it: `S $x` is `Int $x where { ... }` for a `subset S of Int`, `Any`
+    // left out as ever; an `@`/`%` parameter and an anonymous `S $` keep the
+    // subset's own name.
+    const std::string subBase = !p.type.empty() && p.typeShown.empty() && !p.coerce && g_subsetNominal
+                              ? g_subsetNominal(p.type) : std::string();
+    std::string ty = p.typeShown.empty() ? p.type : p.typeShown;
+    if (!subBase.empty() && p.sigil == '$' && !anonShort) ty = subBase;
     // An explicit `Any` on a `$` parameter is the default spelled out, and
     // Rakudo leaves it out: `sub (Any $x)` is `($x)` (`Any:D` and `Any @a` stay).
-    const bool anyOmitted = p.type == "Any" && p.typeShown.empty() && p.sigil == '$' && !p.coerce &&
+    const bool anyOmitted = ty == "Any" && p.typeShown.empty() && p.sigil == '$' && !p.coerce &&
                             !p.defConstraint;
     if (!p.type.empty() && !anyOmitted) {
-        o += p.typeShown.empty() ? p.type : p.typeShown;
+        o += ty;
         // A COERCION renders both halves — `Int(Cool) $a`, and `Int()` as
         // `Int(Any)`, which is what it means. Only the target was printed, so
         // `:(Int(Cool) $a).raku` came back `:(Int $a)` and read as an ordinary
@@ -4438,9 +4469,7 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
     // the anonymous-but-typed case: `Int` in a signature, `Int $` alone. An
     // anonymous UNTYPED one is `$` either way — there would be nothing left.
     // (The parser keeps a bare `$` as the anonymous parameter's name.)
-    if (inSignature && (p.name.empty() || p.name == "$") && !p.type.empty() && !anyOmitted && !p.named &&
-        !p.slurpy && p.sigil == '$' && !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
-        renderDefault(p).empty()) {
+    if (anonShort) {
         o.pop_back();   // the space renderParam put after the type name
         return o;
     }
@@ -4464,7 +4493,7 @@ static std::string renderParam(const Param& p, bool inSignature = false) {
     else if (p.optional && def.empty() && !p.slurpy) o += "?";
     if (p.isRw) o += " is rw";
     if (p.isCopy) o += " is copy";
-    if (p.whereExpr || p.hadWhere) o += " where { ... }";
+    if (p.whereExpr || p.hadWhere || !subBase.empty()) o += " where { ... }";
     if (!def.empty()) o += " = " + def;
     return o;
 }
@@ -4617,6 +4646,23 @@ static bool sigAcceptsSig(Interpreter& I, const std::vector<Param>& S, const std
 // which owns the class registry (a method of a hidden class has no implicit *%_)
 bool (*g_pkgIsHidden)(const std::string&) = nullptr;
 bool (*g_pkgIsRole)(const std::string&) = nullptr;
+
+// A literal parameter's text when it is a plain string: 'foo', or a "foo"
+// that interpolates nothing (an InterpStr of literal parts). Only StrLit was
+// read, so `sub f("foo")` had no constraint to report — and Cro's link
+// generator, which takes a route's literal segments from .constraint_list,
+// treated `get -> "greet", $name` as two arguments.
+static bool literalParamStr(const Expr* e, std::string& out) {
+    if (e->kind == NK::StrLit) { out = static_cast<const StrLit*>(e)->v; return true; }
+    if (e->kind != NK::InterpStr) return false;
+    std::string s;
+    for (auto& part : static_cast<const InterpStr*>(e)->parts) {
+        if (!part || part->kind != NK::StrLit) return false;
+        s += static_cast<const StrLit*>(part.get())->v;
+    }
+    out = std::move(s);
+    return true;
+}
 
 Value makeSignature(const Callable* c) {
     // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
@@ -4844,12 +4890,19 @@ Value makeSignature(const Callable* c) {
                 tv = Value::typeObj(p.type + "(" +
                                     (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")");
             // a LITERAL parameter `:(3)` is typed by its literal
+            else if (std::string ls; p.type.empty() && p.litVal && literalParamStr(p.litVal.get(), ls))
+                tv = Value::typeObj("Str");
             else if (p.type.empty() && p.litVal &&
-                     (p.litVal->kind == NK::IntLit || p.litVal->kind == NK::StrLit ||
+                     (p.litVal->kind == NK::IntLit ||
                       p.litVal->kind == NK::NumLit || p.litVal->kind == NK::BoolLit))
                 tv = Value::typeObj(p.litVal->kind == NK::IntLit ? "Int"
-                                  : p.litVal->kind == NK::StrLit ? "Str"
                                   : p.litVal->kind == NK::NumLit ? "Num" : "Bool");
+            // …and a SUBSET-typed scalar answers the nominal type it narrows
+            // (the subset itself is among its constraints): Cro's router asks
+            // `.type =:= Str` of a `UUIDv4 $id` route segment
+            else if (std::string sb; p.sigil == '$' && !p.type.empty() && g_subsetNominal &&
+                     !(sb = g_subsetNominal(p.type)).empty())
+                tv = Value::typeObj(sb);
             else tv = Value::typeObj(
                 !p.type.empty() ? p.type
                 : p.sigil == '@' ? "Positional"
@@ -4932,9 +4985,13 @@ Value makeSignature(const Callable* c) {
             // node kinds directly (StrLit/IntLit). A `where` clause is scored
             // at dispatch here and is not yet carried as a Code eigenstate.
             Value cj = Value::array(); cj.enumName = "all";
+            // a subset type is a constraint of its own, ahead of any `where`
+            if (!p.type.empty() && !p.coerce && g_subsetNominal && !g_subsetNominal(p.type).empty())
+                cj.arr()->push_back(Value::typeObj(p.type));
             if (p.litVal) {
                 Expr* le = p.litVal.get();
-                if (le->kind == NK::StrLit) cj.arr()->push_back(Value::str(static_cast<StrLit*>(le)->v));
+                std::string ls;
+                if (literalParamStr(le, ls)) cj.arr()->push_back(Value::str(ls));
                 else if (le->kind == NK::IntLit) cj.arr()->push_back(Value::integer(static_cast<IntLit*>(le)->v));
                 else if (le->kind == NK::NumLit) cj.arr()->push_back(Value::number(static_cast<NumLit*>(le)->v));
                 else if (le->kind == NK::BoolLit) cj.arr()->push_back(Value::boolean(static_cast<BoolLit*>(le)->v));
@@ -6324,7 +6381,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
                 if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
                     inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&
-                    !inv.holdsContainers() && !inv.elemDefault()) {
+                    !inv.holdsContainers() && !inv.elemDefault() && inv.ofType().empty()) {
                     Value out = Value::array(); out.isList = true; out.s = "Seq";
                     const ValueList& src = *inv.arr();
                     out.arr()->reserve(src.size() * 2);
@@ -8674,10 +8731,37 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         out.arr()->push_back(r);
             return out;
         }
+        // A native type's size and signedness, as NativeHOW answers them:
+        // `int8.^nativesize` is 8, `uint16.^unsigned` is 1, and the unsized
+        // `int`/`num` have no size to give (atomicint's -8 is Rakudo's own). Cro's router packs the range of a
+        // natively typed route segment (`get -> int8 $n`) from these two.
+        if ((mm == "nativesize" || mm == "unsigned") && inv.t == VT::Type) {
+            static const std::map<std::string, std::pair<int, int>> kNat = {
+                {"int8", {8, 0}}, {"int16", {16, 0}}, {"int32", {32, 0}}, {"int64", {64, 0}},
+                {"uint8", {8, 1}}, {"uint16", {16, 1}}, {"uint32", {32, 1}}, {"uint64", {64, 1}},
+                {"byte", {8, 1}}, {"atomicint", {-8, 0}}, {"num32", {32, 0}}, {"num64", {64, 0}},
+                {"int", {0, 0}}, {"uint", {0, 1}}, {"num", {0, 0}}};
+            auto ni = kNat.find(inv.s.str());
+            if (ni != kNat.end()) {
+                if (mm == "unsigned") return Value::integer(ni->second.second);
+                return ni->second.first ? Value::integer(ni->second.first) : Value::any();
+            }
+        }
         // …and the LINEARISATION questions resolve against the type object for a
         // plain value too: `42.^mro` is `(Int, Cool, Any, Mu)` and `Nil.^mro` is
         // `(Nil, Cool, Any, Mu)`. They used to be "no such method" on anything
         // that was not already a type object (Nil-Any sheet NA-02).
+        // an ENUM — its type object or a member — linearises as the enum, then
+        // its value type's own MRO: `Color.^mro` is (Color Int Cool Any Mu)
+        if ((mm == "mro" || mm == "parents") && !inv.enumType.empty() && inv.t != VT::Bool &&
+            (isEnumTypeObject(inv) || !inv.enumName.empty())) {
+            const std::string et = inv.enumType.str();
+            Value base = methodCall(Value::typeObj(enumBaseType(et)), "^mro", ValueList{});
+            Value out = Value::array(); out.isList = true;
+            if (mm == "mro") out.arr()->push_back(Value::typeObj(et));
+            if (base.arr()) for (auto& b : *base.arr()) out.arr()->push_back(b);
+            return out;
+        }
         if ((mm == "mro" || mm == "parents") && inv.t != VT::Type && inv.t != VT::Object)
             return methodCall(Value::typeObj(inv.typeName()), m, std::move(args), rwArgs);
         // `.^roles` of a CORE type: the roles over its whole MRO, and with
@@ -9235,6 +9319,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (ty == "Mu" && !str.empty() && std::strchr("$@%&\\|*", str[0]))
                 str = "Mu " + str;
             return Value::str(str);
+        }
+        // `.constraint_list`: the post-constraints as a plain List, which
+        // `.constraints` wraps in all(…) — a literal parameter's value, a
+        // `where` clause. Cro's link generator reads a route's literal path
+        // segments from it.
+        if (m == "constraint_list") {
+            Value out = Value::array(); out.isList = true;
+            auto ci = inv.hash()->find("constraints");
+            if (ci != inv.hash()->end() && ci->second.t == VT::Array && ci->second.arr())
+                *out.arr() = *ci->second.arr();
+            return out;
         }
         if ((m == "name" || m == "named" || m == "optional" || m == "slurpy" ||
              m == "constraints" || m == "named_names" || m == "usage-name" ||

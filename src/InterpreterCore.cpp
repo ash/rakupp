@@ -3669,7 +3669,13 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             std::shared_ptr<Env> kframe;
             // a HOLE of an `is default(v)` array reads as v, and stays a hole
             // unless the body writes something else into it
-            const Value* holeDflt = arr == listv.arrS() && listv.elemDefault() ? listv.elemDefault().get() : nullptr;
+            // (…and a TYPED array's hole reads as its element type)
+            Value typedHole;
+            if (arr == listv.arrS() && !listv.elemDefault() && !listv.ofType().empty() &&
+                ascii::isupper((unsigned char)listv.ofType()[0]))
+                typedHole = typedElemDefault(listv);
+            const Value* holeDflt = arr == listv.arrS() && listv.elemDefault() ? listv.elemDefault().get()
+                                  : typedHole.t == VT::Type ? &typedHole : nullptr;
             bool wasHole = false;
             for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
                 if (__jg.site && jit::isReady(__jg.site)) {
@@ -3925,6 +3931,43 @@ static inline bool isMuTypeObject(const Value& v) {
 static Value unpassedDefault(const std::string& type, char sigil, bool blockParam) {
     if (blockParam && type.empty() && sigil == '$') return Value::typeObj("Mu");
     return typedDefault(type, sigil);
+}
+// …which a `:D` parameter refuses: an optional `Real:D :$r` (or `Real:D $r?`)
+// that nobody passed would hold the Real TYPE OBJECT, and Rakudo's binder says
+// so — X::Parameter::InvalidConcreteness, naming the routine. (Multi dispatch
+// already passed such a candidate over; this is the plain call.)
+// The routine whose signature is being bound, for its name in that message
+// (set around the two routine-level bindParams calls; a block is `<anon>`).
+static thread_local const std::string* t_bindRoutine = nullptr;
+struct BindRoutineName {
+    const std::string* saved;
+    explicit BindRoutineName(const std::string* n) : saved(t_bindRoutine) { t_bindRoutine = n; }
+    ~BindRoutineName() { t_bindRoutine = saved; }
+};
+void Interpreter::refuseUnpassedDefinite(const Param& p) {
+    if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
+    std::string routine = t_bindRoutine && !t_bindRoutine->empty() ? *t_bindRoutine : std::string("<anon>");
+    throwTypedV("X::Parameter::InvalidConcreteness",
+        {{"expected", Value::str(p.type)}, {"got", Value::str(p.type)},
+         {"routine", Value::str(routine)}, {"param", Value::str(p.name)},
+         {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(false)}},
+        "Parameter '" + p.name + "' of routine '" + routine + "'" +
+        " must be an object instance of type\n'" + p.type + "', not a type object of type '" + p.type +
+        "'. Did you forget a '.new'?");
+}
+
+// A SHORT type name means what it meant where the routine was written: inside
+// `class DF`, an invocant typed `OnBuild:D:` is DF::OnBuild, though another
+// class ending the same way (Docker::File's X::Docker::File::OnBuild) took the
+// global short name first. The class's name is a lexical of its declaring
+// scope, so `scope` — the routine's closure, or a scope below it — answers.
+// The scope's meaning, when it has one, is THE meaning: the global short name
+// is not asked as well, or an X::Docker::File::OnBuild would pass for one.
+bool Interpreter::typeMatchesInScope(const Value& v, const std::string& type, Env* scope) {
+    if (scope && !type.empty() && type.find("::") == std::string::npos)
+        if (Value* tv = scope->find(type); tv && tv->t == VT::Type && !tv->s.empty() && tv->s.str() != type)
+            return typeOrSubsetMatches(v, tv->s.str());
+    return typeOrSubsetMatches(v, type);
 }
 
 void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockParam,
@@ -4303,8 +4346,8 @@ static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::s
 
 // `*@a` — what one argument contributes to a flattening slurpy (see the
 // binder's 'f' arm, and scoreCandidate, whose `where` on the slurpy must see
-// the same list). Flattening walks THROUGH lists and stops at ARRAYS, because
-// an Array's elements each sit in their own Scalar container: `f([[1,2],[3,4]])`
+// the same list). Flattening walks THROUGH lists and stops at an ARRAY's
+// elements, because each sits in its own Scalar container: `f([[1,2],[3,4]])`
 // binds two Arrays, not four Ints, while `f((1,(2,3)))` binds three Ints. A
 // SLIP flattens even when itemized — that is the whole of what a Slip is for.
 // Every other itemized value is left whole.
@@ -4323,8 +4366,15 @@ static void slurpySpread(const Value& x, ValueList& out) {
         // A SHAPED array's elements are its LEAVES, not its rows: `my @m[3;2]`
         // binds six values to `*@a`, the same six `my @flat = @m` stores.
         if (isMultiDimShaped(v)) { shapedLeaves(v, out); return; }
+        // An ARRAY's elements each sit in a Scalar container, so they go in
+        // whole, a List or a Range among them too: `my @m = (1,2),(3,4); f(@m)`
+        // binds two Lists, and Cro's WebSocket test hands `*@checks` an
+        // `[(…), (…)]` of per-frame check lists. A LIST's elements are bare,
+        // so an Iterable among them — an Array as well — flattens on:
+        // `f((1, [2, 3]))` binds three.
+        const bool containers = !v.isList && !isSlip(v);
         for (auto& e : *v.arr()) {                   // one level, then decide
-            if (isSlip(e) || (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr() && e.isList))))
+            if (!containers && (isSlip(e) || (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr())))))
                 spread(e);
             else out.push_back(e);
         }
@@ -4492,6 +4542,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
                     else e->define(params[i].name, std::move(v));
                 } else {
+                    refuseUnpassedDefinite(params[i]);
                     int ps = params[i].padSlot;
                     Env* e = env.get();
                     if (ps >= 0 && e->layout &&
@@ -4617,7 +4668,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // `method x(Int $a:)` — the invocant is type-checked too
             if (!p.type.empty() && !p.typeCapture && p.type.rfind("::", 0) != 0 && !p.coerce)
                 if (Value* sp = env->find("self"))
-                    if (!typeOrSubsetMatches(*sp, p.type))
+                    if (!typeMatchesInScope(*sp, p.type, env.get()))
                         throwTypedV("X::TypeCheck::Binding::Parameter",
                             {{"got", *sp}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
                             "Type check failed in binding to parameter '" + paramShownName(p) +
@@ -4655,6 +4706,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     if (p.name[0] == '@') av = coerceArray(av);
                     else if (p.name[0] == '%') av = coerceHash(av);
                     else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
+                    checkAttrParamStore(av, *sp, p.name.substr(2), v.t == VT::Nil);
                     sp->obj()->attrs[p.name.substr(2)] = std::move(av);
                 }
         };
@@ -4997,7 +5049,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             else if (p.required)
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Required named parameter '" + bareName + "' not passed"};
-            else env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
+            else { refuseUnpassedDefinite(p);
+                   env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams)); }
             continue;
         }
         if (pi < positional.size()) {
@@ -5221,6 +5274,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         if (p.name[0] == '@') av = coerceArray(av);
                         else if (p.name[0] == '%') av = coerceHash(av);
                         else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
+                        checkAttrParamStore(av, *sp, p.name.substr(2), v.t == VT::Nil);
                         sp->obj()->attrs[p.name.substr(2)] = std::move(av);
                     }
             }
@@ -5255,6 +5309,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 env->define(p.captureName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName()));
             env->define(slotName(p, pidx), std::move(dv));
         } else {
+            refuseUnpassedDefinite(p);
             env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
         }
     }
@@ -5392,8 +5447,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         wenv->define("$_", val);
         auto saved = tctx_.cur; tctx_.cur = wenv;
         bool ok;
+        Value cv;
         try {
-            Value cv = eval(p.whereExpr.get());
+            cv = eval(p.whereExpr.get());
             // `where EXPR` is a smartmatch: a Code/WhateverCode is called with the
             // value; anything else (a type, a junction like `Any:U|Blob|Cool`) is
             // smartmatched — NOT just boolified
@@ -5401,11 +5457,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             else ok = boolify(smartmatchValue("~~", val, cv));
         } catch (...) { tctx_.cur = saved; throw; }
         tctx_.cur = saved;
-        if (!ok)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+        if (!ok) {
+            // …carrying what Rakudo's does: the value, the constraint, and the
+            // PARAMETER (Cro's router answers 400 rather than 404 when the
+            // refusing parameter is `.named`)
+            std::vector<std::pair<std::string, Value>> at{
+                {"got", val}, {"expected", cv}, {"symbol", Value::str(p.name)}};
+            if (Value po = paramObjectFor(p); po.t == VT::Hash) at.push_back({"parameter", po});
+            throwTypedV("X::TypeCheck::Binding::Parameter", std::move(at),
                 "Constraint type check failed in binding to parameter '" + paramShownName(p) +
                 "'; expected anonymous constraint to be met but got " + val.typeName() +
-                " (" + typeCheckRepr(val) + ")"};
+                " (" + typeCheckRepr(val) + ")");
+        }
     }
 }
 
@@ -8614,6 +8677,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (c.params && !c.params->empty()) {
+        BindRoutineName brn(&c.name);
         bindParams(*c.params, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.params, env, rwArgs,
@@ -10164,7 +10228,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         // it — Red's `(Red::Model:D:)` column accessor over the
                         // `(Mu:D:)` placeholder a specialised model also carries
                         if (!ip.type.empty() && ip.type != "Mu" && ip.type != "Any" && !ip.typeCapture) {
-                            if (!typeOrSubsetMatches(selfCopy, ip.type)) { s = -1; break; }
+                            if (!typeMatchesInScope(selfCopy, ip.type, cand.code()->closure.get())) { s = -1; break; }
                             invocantSlot += 2;
                         }
                         break;
@@ -10462,6 +10526,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
     }
     if (c.params && !c.params->empty()) {
+        BindRoutineName brn(&c.name);
         bindParams(*c.params, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
                    whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
@@ -16551,6 +16616,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // declared type or a subtype (Int matches Int; Any does not)
                     std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
                     if (tn == want) return true;
+                    // an enum's type object is one of its value type (`my Int $v = Color`)
+                    if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, want);
                     if (want == "UInt" && (tn == "Int" || tn == "UInt" || tn == "IntStr")) return true;
         if (want == "Int" && tn == "IntStr") return true;
                     if (want == "Num" && tn == "NumStr") return true;
@@ -17910,6 +17977,13 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     }
     if (Value got; r.t == VT::Type && g_cbInterp && (opEq(op, "~~") || opEq(op, "!~~")) && !isJunction(l) &&
         g_cbInterp->typeObjectUserAccepts(l, r, got)) return Value::boolean(opEq(op, "~~") == got.truthy());   // C's ACCEPTS
+    // an enum's TYPE OBJECT against a type: a type object (never `:D`) of its
+    // enum, of Enumeration and of its value type's line — not a list to match
+    // element-wise, which is what its pair-list shape fell into
+    if (r.t == VT::Type && (opEq(op, "~~") || opEq(op, "!~~")) && isEnumTypeObject(l)) {
+        const bool res = r.i != 1 && rtTypeMatch(l, r.s.str());
+        return Value::boolean(opEq(op, "~~") ? res : !res);
+    }
     if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) { // simple integer sequence (closure/list seeds handled in evalBinary)
         // …but `[...]`, `>>...<<` and `&infix:<...>` reach THIS arm with a list
         // seed, which read as its element count (`[...] 1, 3, 9` answered 3..9):
@@ -24753,6 +24827,9 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Type && v.s == "Mu" && u->operand && u->operand->kind == NK::NameTerm)
             throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                             "Cannot resolve caller prefix:<~>(Mu:U); none of these signatures matches:\n    (\\a)"};
+        // an enum's TYPE OBJECT is undefined: `~Color` warns and is "", as
+        // `Color.Str` is (its pair-list shape would print the members)
+        if (isEnumTypeObject(v)) return methodCall(v, "Str", ValueList{});
         if (!undefOperand) return prefixStringify(v); // honour a user Str/gist / Exception .message
         UninitNameScope nm(*this, uninitNameOf(u->operand.get()));
         return prefixStringify(v);
@@ -25107,6 +25184,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
     auto undefOk = [&](const std::string& want) {
         std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
         if (tn == want) return true;
+        if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, want);   // `my Int $v = Color`
         if (want == "Int" && tn == "IntStr") return true;
         if (want == "Num" && tn == "NumStr") return true;
         if (want == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
@@ -26372,6 +26450,9 @@ Value Interpreter::evalIndex(Index* idx) {
                     // linked list, or segfaulted, roughly one run in three).
                     const Value& slot = (*bp->arr())[i];
                     ParStripe rs(*this, &slot);
+                    // a HOLE of a typed array reads as its element type
+                    // (`my Int @a; @a[2] = 1; @a[0]` is Int), as past its end
+                    if (slot.t == VT::Any && !bp->ofType().empty()) return arrayMissingDefault(*bp);
                     return itemizeElem(slot, bp->isList);
                 }
             }
@@ -30417,6 +30498,46 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // and bodies that apply nothing (the engine already did).
         // Static on purpose — the proto→candidate→dispatcher cycle
         // lives for the process, like the real dispatch group would.
+        // &next / &last / &redo — Rakudo's loop-control SUBS, each a multi of
+        // `( --> Nil)` and `(Label:D $x --> Nil)`; calling one is the statement
+        if (bare == "next" || bare == "last" || bare == "redo") {
+            static std::map<std::string, Value> ctl;
+            static std::mutex ctlM;
+            std::lock_guard<std::mutex> lk(ctlM);
+            auto it = ctl.find(bare);
+            if (it != ctl.end()) return it->second;
+            static std::deque<std::vector<Param>> sigStore;
+            const std::string which = bare;
+            auto thrower = [which](Interpreter&, ValueList& a) -> Value {
+                std::string label;
+                if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Label" && a[0].hash()) {
+                    auto n = a[0].hash()->find("name");
+                    if (n != a[0].hash()->end()) label = n->second.toStr();
+                }
+                if (which == "next") { NextEx e; e.label = label; throw e; }
+                if (which == "last") { LastEx e; e.label = label; throw e; }
+                RedoEx e; e.label = label; throw e;
+            };
+            Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
+            p.code()->name = bare;
+            p.code()->isMultiDispatcher = true; p.code()->isProto = true;
+            p.code()->builtin = thrower;
+            for (int withLabel = 0; withLabel < 2; withLabel++) {
+                Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
+                c.code()->name = bare;
+                c.code()->isMultiCandidate = true;
+                c.code()->retType = "Nil";
+                sigStore.emplace_back();
+                auto& ps = sigStore.back();
+                if (withLabel) { ps.emplace_back(); ps.back().name = "$x"; ps.back().type = "Label"; ps.back().defConstraint = 1; }
+                c.code()->params = &ps;
+                c.code()->hadSig = true;
+                c.code()->builtin = thrower;
+                c.code()->dispatcherC = p.codeS();
+                p.code()->candidates.push_back(std::move(c));
+            }
+            return ctl[bare] = p;
+        }
         if (bare == "trait_mod:<is>") {
             static Value proto = [] {
                 static std::deque<std::vector<Param>> sigStore;

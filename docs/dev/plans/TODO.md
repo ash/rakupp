@@ -201,15 +201,17 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `::('$secret')` finds one (Rakudo: X::Undeclared at compile time, and no
   such symbol). The module unit scope chains to `global_`. Found 2026-10-08;
   the parallel-scaling sweep accounts for it, the semantics are not fixed.
-- [ ] **A `use` inside a routine runs when the routine is CALLED**: `sub f {
-  use G::Path }; G::Path` is unknown unless `f` ran (Rakudo loads at compile
-  time). Found 2026-10-07; not started.
+- [ ] **A `use` inside a routine runs when the routine is CALLED**: Rakudo
+  compiles the module at compile time (its BEGIN blocks run then), while here
+  nothing happens until `f` runs. Re-checked 2026-10-10 on 2026.09: the
+  module's names stay invisible outside the routine there too (`GG::Path`,
+  `::("GG::Cls")` are unknown), and its mainline runs late — so the
+  difference is the timing of BEGIN-time side effects, not name visibility.
 - [ ] **Left from the pseudo-package-over-label fix**: a bare `OUR` is a
   type named OUR (Rakudo: the current package, so `next OUR` names
   `GLOBAL:U`); `next Int` dies when it runs (Rakudo: while compiling);
   `$CALLER::y` inside a loop block finds an outer variable (Rakudo: Nil;
-  `MY::<$x>` fixed 2026-10-10); `&next` is Any (Rakudo: a Sub with two
-  candidates, `( --> Nil)` and `(Label:D $x --> Nil)`). Found 2026-10-07; not
+  `MY::<$x>` and `&next`/`&last`/`&redo` as Subs fixed 2026-10-10). Found 2026-10-07; not
   started.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
@@ -282,20 +284,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - `use` inside a sub loads at call time.
   - Role conflicts are undetected or reported late.
   - An exported `infix:<+++>`.
-  - A postfix after a superscript power on a multi-token base applies to the
-    exponent: `@a[0]²!` (`3²!`, `4².sqrt` and `say ²¹²` are right since
-    2026-10-10).
   - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
     answers a WhateverCode, Rakudo a Range.
-  - A `sub EXPORT` inside a `unit module` runs on `use`; Rakudo does not call
-    it there (it has to be outside the module).
   - Outside `react`, a `Proc::Async` with `:w` feeds its stdout taps only when
     the start promise is awaited, so an interactive driver never sees a reply
     before `close-stdin` (found with #121).
-  - An enum TYPE object outside binding: `Color ~~ Int` and `Color ~~
-    Enumeration` are False, `Color.^mro` is `(Any) (Mu)` (Rakudo: Color, Int,
-    Cool, Any, Mu), `my Int $v = Color` dies, and `~Color` is the pair list
-    (Rakudo warns and gives "").
   - A slurpy hash or a capture does not write back: `sub q(*%n) { %n<x> = 31 };
     q(x => $v)` and `sub r(|c) { c<x> = 33 }` leave `$v` alone (Rakudo: 31,
     33). Named `is rw` / `is raw` parameters do (2026-10-04).
@@ -307,13 +300,6 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     `@b.BIND-POS(0, [10])` and `@c[0] := [10]` give `$[10]` for `@c[0]`
     (Rakudo `[10]`; `@c.raku` agrees). Every element read itemizes an Array
     slot (itemizeElem), so a bound slot needs a "no container" mark of its own.
-  - A typed array's hole reads as Any: `my Int @j; @j[2] = 1; @j[0].^name` is
-    Any (Rakudo: Int). Found 2026-10-10.
-  - An absent optional named with a `:D` type binds its type object quietly:
-    `sub g(Real:D :$r) { }; g()` lives (Rakudo: X::Parameter::InvalidConcreteness).
-    Multi dispatch already passes such a candidate over. Found 2026-10-10.
-  - `IO::Handle.spurt` is missing (`$fh.spurt("x")`; Rakudo writes it through
-    the handle). Found 2026-10-10.
   - An `is default` array's `.sum` counts the default, 15 for
     `my @a is default(7); @a[2] = 1` (Rakudo 2026.08: 1, its sum skips the
     default — every other read gives 7, so this one is left as it is).
@@ -559,8 +545,7 @@ with its tag, after the release run is green.
     one); a closure sequence's seed is stored before it is pulled, so
     `my @f = 1, {…} ... *; @f.join` is `1...` (Rakudo `...`; the Seq form is
     fixed); `IO::Path.add` does not deep-flatten (methodCallPart3 is at its size
-    ceiling); an enum member named `q` does not shadow the `q{…}` quote, nor
-    one named `x` the infix (`say x.WHICH` prints an empty line).
+    ceiling); an enum member named `q` does not shadow the `q{…}` quote.
   - Rakudo t/ classified 2026-10-05 (145 LANG, 38 RakuAST, 5 6.e; 41 excluded).
   - Parked from the Rakudo t/ LANG work: an `anon subset` shares its name's
     entry in the one global subset table, so a later `subset Foo of Str`

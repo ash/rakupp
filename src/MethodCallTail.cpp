@@ -2462,10 +2462,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = inv; out.itemized = false; return out;
         }
         if (m == "list" || m == "cache" || m == "eager" || m == "Seq" || m == "List" || m == "lazy") {
-            // (`.List` reads the raw slots: toList filled an `is default`
-            // array's holes with the default, and its List holds Nil there)
+            // (`.List` reads the raw slots: toList filled an `is default` or a
+            // typed array's holes with what a read gives, and its List holds Nil)
             Value out = m == "List" && inv.t == VT::Array && !inv.isList && inv.arr() && !inv.ext() &&
-                        inv.elemDefault() ? Value::list(*inv.arr()) : Value::list(items);
+                        (inv.elemDefault() || !inv.ofType().empty()) ? Value::list(*inv.arr()) : Value::list(items);
             // an ARRAY's holes become Nil in its List — a deleted or never-written
             // slot, not the `is default` value the Array would read (delete.t)
             // …and its elements come out of their containers: `@a[0] = [1, 2]`

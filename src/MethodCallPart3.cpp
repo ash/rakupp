@@ -3387,6 +3387,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             fhWrite(inv, it != inv.hash()->end() ? it->second.toStr() : std::string("\n"));
             return Value::boolean(true);
         }
+        // `$fh.spurt($data, :close)`: a Blob goes out as `.write`, anything else
+        // as `.print`; `:close` closes the handle after (Rakudo's IO::Handle.spurt)
+        if (m == "spurt") {
+            Value data; bool closeAfter = false; bool have = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) { if (a.s == "close") closeAfter = a.pairVal() && a.pairVal()->truthy(); }
+                else if (!have) { data = a; have = true; }
+            }
+            if (have) {
+                const bool blob = data.t == VT::Str && (data.hashKind == "Blob" || data.hashKind == "Buf");
+                methodCall(inv, blob ? "write" : "print", ValueList{data});
+            }
+            if (closeAfter) methodCall(inv, "close", ValueList{});
+            return Value::boolean(true);
+        }
         if (m == "say" || m == "print" || m == "put" || m == "printf") {
             std::string s;
             if (m == "printf") { // $fh.printf(FMT, args…) — FMT stringifies via .Str (junctions too)
@@ -4884,11 +4899,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 i += len;
             }
         }
-        // a leading UTF-8 BOM is not text: Rakudo strips it on decode
+        // a leading UTF-8 BOM is not text: Rakudo strips it on decode. What is
+        // left is NFC, as all text is: U+2126 OHM SIGN decodes as U+03A9, so a
+        // percent-decoded "%E2%84%A6" key matches the 'Ω' a program wrote
+        // (Cro::HTTP's query-value test).
         if (inv.s.size() >= 3 && (unsigned char)inv.s[0] == 0xEF && (unsigned char)inv.s[1] == 0xBB &&
             (unsigned char)inv.s[2] == 0xBF)
-            return Value::str(inv.s.str().substr(3));
-        return Value::str(inv.s);
+            return Value::str(nfcNormalize(inv.s.str().substr(3)));
+        return Value::str(nfcNormalize(inv.s.str()));
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(inv.t == VT::Str ? cowGraphemeCount(inv.s)

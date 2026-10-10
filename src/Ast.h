@@ -894,6 +894,7 @@ struct VarDecl : Stmt {
 
 struct SubDecl : Stmt {
     std::string name; // empty for anon
+    std::string pkgOfExport; // a `sub EXPORT` written inside a package (`unit module Foo`): Foo
     ExprPtr nameExpr; // `sub ::(EXPR) (…) {…}` / `method ::('name')` — computed when the decl runs
     std::vector<Param> params;
     std::vector<std::vector<Param>> altParams; // extra `(sig1) | (sig2)` signatures, share the body

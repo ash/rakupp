@@ -11400,6 +11400,13 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
                 k += 2;
                 continue;
             }
+            // (a SPACED bracket is no postfix but an argument: `{ delegate
+            // <foo> => $inner }` is a block calling `delegate` — Cro's router
+            // DSL — where reading `delegate<foo>` composed a Hash and ran the
+            // call outside the `route` that gives it its route set)
+            if (tk.spaceBefore && (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
+                                   (tk.kind == Tok::Op && tk.text == "<")))
+                break;
             if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
                 (tk.kind == Tok::Op && tk.text == "<")) {
                 int d2 = 0;
@@ -13435,6 +13442,10 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         if (!isKind(Tok::RParen)) s->immediateArgs = parseCallArgs();
         else advance();
     }
+    // a `sub EXPORT` inside a package (after `unit module Foo`, or in braces)
+    // is the PACKAGE's, not the compunit's export protocol (see loadModule)
+    if (s->name == "EXPORT" && !pkgStack_.empty() && !pkgStack_.back().first.empty())
+        s->pkgOfExport = pkgStack_.back().first;
     return s;
 }
 

@@ -349,6 +349,37 @@ static inline Value ctxCallable(std::shared_ptr<SupplyTapCtx> ctx,
     return v;
 }
 
+// The tapper's quit handler, called because a whenever body died. Whatever it
+// throws stays here, the supply is ending anyway, except a `return`: that
+// one belongs to the routine around the emit that got us here, and is handed
+// back for the caller to rethrow once its own cleanup has run. Cro::HTTP's
+// request-parser test returns from its `refuses` helper inside the handler;
+// swallowing it ran the helper on past `$fake-in.emit` into its flunk.
+static inline std::exception_ptr callQuitCb(Interpreter& I, const Value& cb, const Value& ex) {
+    if (cb.t != VT::Code) return nullptr;
+    ValueList one{ex};
+    try { I.callCallable(cb, one); }
+    catch (ReturnEx&) { return std::current_exception(); }
+    catch (...) {}
+    return nullptr;
+}
+
+// A whenever's LAST phasers, inside a SUPPLY block. A `die` in one ends the
+// supply as a die in the body does (S-57): the tapper's quit handler hears
+// it, and nothing follows. Swallowed, Cro's ContentLength body parser
+// (`LAST { die X::…::TooShort.new if $expected != 0 }`) passed a short body
+// off as whole. Returns what callQuitCb hands back, for the caller to rethrow.
+static inline std::exception_ptr runSupplyLast(Interpreter& I, const ValueList& lastP,
+                                               const std::shared_ptr<SupplyTapCtx>& ctx) {
+    std::optional<Value> died;
+    I.runLastPhasers(lastP, nullptr, &died);
+    if (!died || ctx->done) return nullptr;
+    auto ret = callQuitCb(I, ctx->quitCb, *died);
+    ctx->done = true;
+    if (ctx->tap) I.closeTapHandle(ctx->tap);
+    return ret;
+}
+
 // The cause of a broken Promise (or a failed Channel) as a real Exception: a
 // plain string is the PAYLOAD of an X::AdHoc, so `.message` and `.payload` work
 // wherever the cause surfaces — a whenever's QUIT phaser, a react's rethrow,

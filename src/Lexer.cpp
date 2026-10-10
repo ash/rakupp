@@ -394,8 +394,12 @@ static std::string applyRakudoFudge(const std::string& src) {
     return out;
 }
 
+// The program text is NFC before anything reads it, as Rakudo has it: a name
+// or a bareword key written with U+2126 OHM SIGN is the one spelled with
+// U+03A9, as the strings a program decodes are (Cro::HTTP's query test
+// compares `ΩΩ => …` with a percent-decoded key). ASCII passes straight through.
 Lexer::Lexer(std::string src, bool honourFudge)
-    : src_(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src)) {
+    : src_(nfcNormalize(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src))) {
     scanUserOps();
 }
 
@@ -4341,8 +4345,28 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 }
             }
             Tok lk = out.back().kind;
+            // an angle SUBSCRIPT written against its variable — `%h<a>²` lexes as
+            // `%h` `<` `a` `>` — is a term too, its base starting at the variable
+            size_t angleBase = std::string::npos;
+            if (!spaced && lk == Tok::Op && out.back().text == ">" && !out.back().spaceBefore) {
+                for (size_t j = out.size() - 1; j > 0; j--) {
+                    const Token& t = out[j - 1];
+                    if (t.kind == Tok::Op && t.text == "<") {
+                        if (!t.spaceBefore && j >= 2 && out[j - 2].kind == Tok::Var) angleBase = j - 2;
+                        // …and a word LIST standing on its own (`<a b>²` is 2²)
+                        else if (t.spaceBefore || j == 1 ||
+                                 (out[j - 2].kind == Tok::Op && out[j - 2].text != ">") ||
+                                 out[j - 2].kind == Tok::LParen)
+                            angleBase = j - 1;
+                        break;
+                    }
+                    if (t.spaceBefore && t.kind != Tok::Ident) break;   // words only, spaced or not
+                    if (t.kind != Tok::Ident && t.kind != Tok::IntLit) break;
+                }
+            }
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
                              lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||
+                             angleBase != std::string::npos ||
                              (lk == Tok::Op && (out.back().text == "*" || // Whatever-curry `*²`
                                                 out.back().text == "\xE2\x88\x9E" || // `∞²` — ∞ is a term
                                                 out.back().text == ">>" || out.back().text == "\xC2\xBB")); // hyper `»²`
@@ -4366,7 +4390,46 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
                      (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^'))))
                     call = true;
-                if (call) { Token lp = make(Tok::LParen, "("); lp.spaceBefore = out.back().spaceBefore; out.back().spaceBefore = false; out.insert(out.end() - 1, lp); }
+                // …and a SUBSCRIPTED base (`@a[0]²!`, `f(2)².sqrt`): wrap from the
+                // term the brackets belong to, walking back over each balanced
+                // group and the name in front of it
+                size_t multiStart = std::string::npos;
+                if (!call && (lk == Tok::RBracket || lk == Tok::RParen) &&
+                    ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
+                     (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^')))) {
+                    size_t i = out.size();
+                    bool ok = false;
+                    while (i > 0) {
+                        const Tok k = out[i - 1].kind;
+                        if (k != Tok::RBracket && k != Tok::RParen) break;
+                        int depth = 0; size_t j = i;
+                        while (j > 0) {
+                            const Tok t = out[j - 1].kind;
+                            if (t == Tok::RBracket || t == Tok::RParen) depth++;
+                            else if (t == Tok::LBracket || t == Tok::LParen) { if (--depth == 0) break; }
+                            j--;
+                        }
+                        if (j == 0) { ok = false; break; }
+                        i = j - 1;                       // at the opener
+                        ok = true;
+                        // the name the group subscripts or calls, written against it
+                        if (i > 0 && !out[i].spaceBefore &&
+                            (out[i - 1].kind == Tok::Var || out[i - 1].kind == Tok::Ident)) { i--; break; }
+                    }
+                    if (ok && i < out.size()) multiStart = i;
+                }
+                // …and an ANGLE subscript (`%h<a>²!`), from its variable
+                if (!call && multiStart == std::string::npos && angleBase != std::string::npos &&
+                    ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
+                     (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^'))))
+                    multiStart = angleBase;
+                if (multiStart != std::string::npos) {
+                    Token lp = make(Tok::LParen, "("); lp.spaceBefore = out[multiStart].spaceBefore;
+                    out[multiStart].spaceBefore = false;
+                    out.insert(out.begin() + (long)multiStart, lp);
+                    call = true;
+                }
+                else if (call) { Token lp = make(Tok::LParen, "("); lp.spaceBefore = out.back().spaceBefore; out.back().spaceBefore = false; out.insert(out.end() - 1, lp); }
                 Token op = make(Tok::Op, "**"); op.spaceBefore = false; out.push_back(op);
                 Token num = make(Tok::IntLit, digits); num.ival = std::strtoll(digits.c_str(), nullptr, 10);
                 out.push_back(num);
@@ -4659,7 +4722,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             advance(); advance(); t = make(Tok::Op, ",=");
         }
         else if (c == ',') { advance(); t = make(Tok::Comma, ","); }
-        else if (c == '/' && !inAngle && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
+        else if (c == '/' && !inAngle && guilleWords_ == 0 && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
                  pos_ < slashPrefixAt_ && // a `sub prefix:</>` above this point owns the slash
                  // `[/]` (and `[\/]`) is the division reduce metaop, not a regex
                  !(peek(1) == ']' && !out.empty() &&
@@ -4881,6 +4944,29 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     angleWords_--;
             }
         }
+        // `<< … >>` and `« … »` in TERM position are word lists as well (the
+        // interpolating kind; in operator position they are hyper operators).
+        // Their words reach the parser as tokens like a `< … >` list's, and a
+        // `/` among them is a word character: `<</foo /bar/baz>>` is two paths.
+        // Read as code, `foo /bar/` was a listop and a regex argument, and the
+        // list came back ("/foo", "barbaz") — Docker::File's VOLUME test.
+        // (Glued to an operator before it, `-« @a` is a prefix HYPER; and a `;`
+        // ends the statement, whatever was misread.)
+        if (t.kind == Tok::Op && angleWords_ == 0) {
+            if (guilleWords_ == 0 && (t.text == "<<" || t.text == "\xC2\xAB") && angleTermContext(out) &&
+                !(spaced == false && !out.empty() && out.back().kind == Tok::Op))
+                guilleClose_ = t.text == "<<" ? ">>" : "\xC2\xBB", guilleWords_ = 1;
+            else if (guilleWords_ > 0 &&
+                     // the closer, whole or ending a word's operator (`-c->>`
+                     // lexed `->` and `>`, so its first `>` came glued to the arrow)
+                     (t.text == guilleClose_ ||
+                      (t.text.size() > guilleClose_.size() &&
+                       t.text.compare(t.text.size() - guilleClose_.size(), guilleClose_.size(), guilleClose_) == 0) ||
+                      (guilleClose_ == ">>" && t.text == ">" && !spaced && !out.empty() &&
+                       out.back().kind == Tok::Op && !out.back().text.empty() && out.back().text.back() == '>')))
+                guilleWords_ = 0;
+        }
+        else if (t.kind == Tok::Semicolon) guilleWords_ = 0;
         // (braces used to bail out of word mode here, as a net for a stray `<`.
         //  They are ordinary word characters — `< { } >` is two words — and the
         //  net is no longer needed: an unclosed `<` reports its own runaway at

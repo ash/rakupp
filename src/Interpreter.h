@@ -1860,7 +1860,9 @@ public:
     // it used to hit the catch-all beside these loops and vanish, so `LAST done`
     // ran and the react went on waiting for its other sources. Log::Timeline's
     // client sat out its ten-second timeout after the server hung up.
-    void runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCtx> rctx);
+    // `died`, when given, stops at the first phaser that dies and holds its exception
+    void runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCtx> rctx,
+                        std::optional<Value>* died = nullptr);
     Value spawnSupplyInterval(double interval, double delay, Value blk,
                               std::shared_ptr<SupplyTapCtx> ctx); // Supply.interval inside a supply {} block
     // anonymous pun of a parameterized role with `[...]` args bound (P[%h].new / Q[Int].mk)
@@ -2251,6 +2253,8 @@ public:
     // `Sym(42)` with `class Sym is Str`: a non-string cannot be the string a
     // Str-derived class holds (Rakudo dies unboxing it). Throws, or returns.
     void checkBoxedStrSource(const ClassInfo* cls, const Value& v);
+    void refuseUnpassedDefinite(const Param& p);   // an optional `T:D` param nobody passed
+    std::string enumBaseType(const std::string& enumType);   // Int for `enum <a b>`, Str for `(a => "x")`
     Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param
@@ -2612,6 +2616,10 @@ public:
     void checkBareSubsetDecl(const VarExpr* ve, char sigil);
     void checkPrivatePermission(const std::string& qualified);
     const std::string& attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf);
+    // a `$!x` parameter's value, checked as an assignment to the attribute (MethodCallPart2.cpp)
+    void checkAttrParamStore(Value& v, const Value& self, const std::string& bare, bool wasNil);
+    // a short type name resolved where the routine was declared (InterpreterCore.cpp)
+    bool typeMatchesInScope(const Value& v, const std::string& type, Env* scope);
     bool multiTie(const Value& a, const Value& b);
     // Does this method's implicit `*%_` take the call's unclaimed named arguments?
     // Every method's does — but one declared in an `is hidden` class has none (Rakudo)
