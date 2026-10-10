@@ -46,11 +46,11 @@
     Never prompt: take the defaults (no "raku" name unless -RakuAlias).
 
 .EXAMPLE
-    irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+    irm https://raku.online/install-windows.ps1 | iex
 
 .EXAMPLE
     # with options, since `| iex` cannot pass arguments:
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1))) -RakuAlias -Prepend
+    & ([scriptblock]::Create((irm https://raku.online/install-windows.ps1))) -RakuAlias -Prepend
 
 .EXAMPLE
     .\install-windows.ps1 -Uninstall

@@ -1352,7 +1352,11 @@ jobs:
   # command in the README, in docs/guide/INSTALL.md and on the front page — and
   # it is served from a COPY of tools/install.sh in the raku.online repo, which
   # nothing in this repository can see. A copy that falls behind installs an
-  # older engine for everybody, silently, and forever.
+  # older engine for everybody, silently, and forever. The Windows one-liner,
+  # `irm https://raku.online/install-windows.ps1 | iex`, is served the same
+  # way, from a copy of tools/install-windows.ps1, and gets the same check.
+  # Neither is served from main: a mid-cycle edit there would reach every new
+  # install before any release had tested it.
   #
   # So compare them. A real difference is a red build with the fix in the log:
   # push the site repo. A site that cannot be reached is NOT a failure — that
@@ -1374,25 +1378,40 @@ jobs:
   # workflow_dispatch runs it too, from any branch — otherwise the only way to
   # find out whether the job still works would be to cut a release.
   installer-copy:
-    name: install.sh matches the one raku.online serves
+    name: the installers match the ones raku.online serves
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
 
-      - name: Compare tools/install.sh with https://raku.online/install.sh
+      - name: Compare tools/install.sh and tools/install-windows.ps1 with raku.online
         run: |
-          if ! curl -fsSL --max-time 30 -o served.sh https://raku.online/install.sh; then
-            echo "::notice::raku.online/install.sh could not be fetched; nothing compared"
-            exit 0
-          fi
-          if diff -u tools/install.sh served.sh; then
-            echo "identical — the published one-liner installs this engine"
-            exit 0
-          fi
-          echo "::error::raku.online/install.sh differs from tools/install.sh."
-          echo "The published one-liner is stale. Copy tools/install.sh to the"
-          echo "raku.online repo as www/install.sh, commit and push it — GitHub"
-          echo "Pages serves www/ verbatim. See docs/dev/RELEASING.md."
-          exit 1
+          stale=0
+          for f in install.sh install-windows.ps1; do
+            # 404 is the site answering that it does not serve the file — a
+            # copy never pushed, which is red. Anything else short of 200 is
+            # the network's problem: say so, compare nothing.
+            code=$(curl -sSL --max-time 30 -o "served-$f" -w '%{http_code}' "https://raku.online/$f" || true)
+            if [ "$code" = 404 ]; then
+              echo "::error::raku.online/$f is not there (HTTP 404)."
+              echo "Copy tools/$f to the raku.online repo as www/$f, commit and"
+              echo "push it. See docs/dev/RELEASING.md."
+              stale=1
+              continue
+            fi
+            if [ "$code" != 200 ]; then
+              echo "::notice::raku.online/$f could not be fetched (HTTP $code); nothing compared"
+              continue
+            fi
+            if diff -u "tools/$f" "served-$f"; then
+              echo "$f identical — the published one-liner installs this engine"
+              continue
+            fi
+            echo "::error::raku.online/$f differs from tools/$f."
+            echo "The published one-liner is stale. Copy tools/$f to the"
+            echo "raku.online repo as www/$f, commit and push it — GitHub"
+            echo "Pages serves www/ verbatim. See docs/dev/RELEASING.md."
+            stale=1
+          done
+          exit $stale

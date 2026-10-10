@@ -36,7 +36,7 @@ curl -fsSL https://raku.online/install.sh | sh
 Windows, in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+irm https://raku.online/install-windows.ps1 | iex
 ```
 
 Then restart VS Code so that it sees the new `PATH`. The

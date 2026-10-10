@@ -15,7 +15,7 @@ curl -fsSL https://raku.online/install.sh | sh
 **Windows**, in a PowerShell window:
 
 ```powershell
-irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+irm https://raku.online/install-windows.ps1 | iex
 ```
 
 Either one downloads the release archive for the machine it is running on,
@@ -254,7 +254,7 @@ the machine `PATH` instead of yours.
 ### One command in PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+irm https://raku.online/install-windows.ps1 | iex
 ```
 
 In a **PowerShell** window — Start menu → "PowerShell", or the PowerShell tab of
@@ -272,7 +272,7 @@ environment it started with.
 block instead:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1))) -RakuAlias -Prepend
+& ([scriptblock]::Create((irm https://raku.online/install-windows.ps1))) -RakuAlias -Prepend
 ```
 
 | Option | |
@@ -309,7 +309,7 @@ undo command; normally that is the copy of itself it leaves in the prefix:
 The script-block form does the same and needs nothing on disk:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1))) -Uninstall
+& ([scriptblock]::Create((irm https://raku.online/install-windows.ps1))) -Uninstall
 ```
 
 Either takes the prefix's entry back out of `PATH` and leaves the rest of the

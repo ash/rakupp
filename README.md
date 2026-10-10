@@ -73,7 +73,7 @@ curl -fsSL https://raku.online/install.sh | sh          # macOS, Linux, the BSDs
 
 ```powershell
 # Windows, in a PowerShell window — irm and iex are PowerShell's own aliases
-irm https://raw.githubusercontent.com/ash/rakupp/main/tools/install-windows.ps1 | iex
+irm https://raku.online/install-windows.ps1 | iex
 ```
 
 Neither needs root or an administrator. Each downloads the archive for the

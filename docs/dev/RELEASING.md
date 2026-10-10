@@ -871,7 +871,7 @@ look at, and it is the wrong one to have a two-release-old ecosystem table on.
 |---|---|---|
 | **The Raku.js WASM engine** | **always** | it *is* the engine; `/play/` and every run button on the site execute it |
 | **Front page + install page figures** | **always** | hand-written, no generator, no check |
-| **`www/install.sh`** | **always** | a byte copy of `tools/install.sh`, and the URL every doc prints; the tag's CI run compares the two, so a drift is a red job rather than a broken one-liner |
+| **`www/install.sh`, `www/install-windows.ps1`** | **always** | byte copies of `tools/install.sh` and `tools/install-windows.ps1`, and the URLs every doc prints; the tag's CI run compares each pair, so a drift is a red job rather than a broken one-liner |
 | **`snapshot.raku` → `gen-dashboard.raku`** | **always** | the timeline gains a point per tag; skip one and it is missing forever |
 | **`gen-roast-map.raku`** | **always** | gate 1 produced a new `roast.txt`; it is the release's own measurement |
 | **`spec` + `spec/rules`** | on demand — **always on a major** | only meaningful if gate 7's sweep was actually run this cycle |
@@ -1152,15 +1152,17 @@ The cost is named so the list stays a record rather than a ritual.
 - [ ] **Edit the hand-written figures on `www/index.html` and
       `www/install/index.html`.** Nothing generates them and no check compares
       them. *(Two releases stale.)*
-- [ ] **Copy `tools/install.sh` to the site repo's `www/install.sh`** if it
-      changed this cycle. `curl -fsSL https://raku.online/install.sh | sh` is
-      the headline install command in the README, INSTALL.md and on the front
-      page, and it is served from that copy — a stale one installs an older
+- [ ] **Copy `tools/install.sh` and `tools/install-windows.ps1` to the site
+      repo's `www/`** if either changed this cycle.
+      `curl -fsSL https://raku.online/install.sh | sh` and
+      `irm https://raku.online/install-windows.ps1 | iex` are the headline
+      install commands in the README, INSTALL.md and on the front page, and
+      they are served from those copies — a stale one installs an older
       engine for everybody and nothing on the rakupp side can show it. The
-      tag's `installer-copy` job compares the two, and it ran back in step 4 —
-      before this — so it is red until you do this. Re-run that one job
-      afterwards: a green release run is what says the published one-liner
-      installs the engine you just shipped.
+      tag's `installer-copy` job compares each pair, and it ran back in step 4
+      — before this — so it is red until you do this. Re-run that one job
+      afterwards: a green release run is what says the published one-liners
+      install the engine you just shipped.
 - [ ] **Commit `www/` together with `sites/spec/src/data/` and push.** Pages
       publishes `www/` verbatim — there is no build step in CI.
 
