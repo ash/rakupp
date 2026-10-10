@@ -535,7 +535,12 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         if (m == "decoder") {
             Value d = Value::makeHash(); d.hashKind = "Decoder";
             (*d.hash())["buffer"] = Value::str("");
-            Value seps = Value::array(); seps.arr()->push_back(Value::str("\n"));
+            (*d.hash())["enc"] = Value::str(canonEncodingName((*inv.hash())["name"].toStr()));
+            // until set-line-separators says otherwise a CRLF ends a line too,
+            // and :chomp takes all of it (Rakudo's default pair)
+            Value seps = Value::array();
+            seps.arr()->push_back(Value::str("\n"));
+            seps.arr()->push_back(Value::str("\r\n"));
             (*d.hash())["seps"] = seps;
             return d;
         }
@@ -574,6 +579,23 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     }
     if (inv.t == VT::Hash && inv.hashKind == "Decoder") {
         Value& buf = (*inv.hash())["buffer"];
+        // The buffer holds BYTES in the decoder's encoding. Strings are UTF-8
+        // inside, so for that one (and utf8-c8) bytes are chars already; any
+        // other encoding decodes what it hands out, and looks for a line
+        // separator by its encoded bytes. Treating every buffer as UTF-8 read
+        // Cro's latin-1 header "...æµ¥" as "...浥": E6 B5 A5 is valid UTF-8.
+        const std::string enc = inv.hash()->count("enc") ? (*inv.hash())["enc"].toStr() : std::string();
+        const bool native = enc.empty() || enc == "utf8" || enc == "utf8-c8";
+        const bool wide = enc.rfind("utf16", 0) == 0;
+        auto chars = [&](const std::string& bytes) -> Value {
+            if (native || bytes.empty()) return Value::str(nfcNormalize(bytes));
+            Value blob = Value::str(bytes); blob.hashKind = "Buf"; blob.ofTypeM() = "uint8";
+            return methodCall(blob, "decode", ValueList{Value::str(enc)});
+        };
+        auto sepBytes = [&](const std::string& sep) -> std::string {
+            if (native) return sep;
+            return methodCall(Value::str(sep), "encode", ValueList{Value::str(enc)}).s.str();
+        };
         if (m == "add-bytes") { if (!args.empty()) buf.s += args[0].s; return inv; }
         if (m == "set-line-separators") {
             Value seps = Value::array();
@@ -591,20 +613,28 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             size_t best = std::string::npos, bestLen = 0;
             if (inv.hash()->count("seps"))
                 for (auto& sep : *(*inv.hash())["seps"].arr()) {
-                    const std::string ss = sep.toStr();
-                    if (ss.empty()) continue;
+                    if (sep.toStr().empty()) continue;
+                    const std::string ss = sepBytes(sep.toStr());
+                    // a match must start on a grapheme boundary: the LF of a
+                    // CRLF is not one, so an explicit "\n" leaves "a\r\nb" whole
+                    const std::string cr = sep.toStr()[0] == '\n' ? sepBytes("\r") : std::string();
+                    auto inside = [&](size_t at) {
+                        return (wide && at % 2) ||
+                               (!cr.empty() && at >= cr.size() && buf.s.str().compare(at - cr.size(), cr.size(), cr) == 0);
+                    };
                     size_t pos = buf.s.find(ss);
+                    while (pos != std::string::npos && inside(pos)) pos = buf.s.find(ss, pos + 1);
                     if (pos == std::string::npos) continue;
                     // earliest match wins; on a tie the longer separator wins
                     if (pos < best || (pos == best && ss.size() > bestLen)) { best = pos; bestLen = ss.size(); }
                 }
             if (best == std::string::npos) {
-                if (eof && !buf.s.empty()) { std::string all = buf.s; buf.s.clear(); return Value::str(all); }
+                if (eof && !buf.s.empty()) { std::string all = buf.s; buf.s.clear(); return chars(all); }
                 return Value::typeObj("Str"); // no complete line yet
             }
             std::string line = buf.s.substr(0, chomp ? best : best + bestLen);
             buf.s.erase(0, best + bestLen);
-            return Value::str(line);
+            return chars(line);
         }
         if (m == "bytes-available") return Value::integer((long long)buf.s.size());
         if (m == "consume-exactly-bytes") {
@@ -615,7 +645,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             return b;
         }
         if (m == "consume-all-chars") {
-            std::string all = buf.s; buf.s.clear(); return Value::str(all);
+            std::string all = buf.s; buf.s.clear(); return chars(all);
         }
         // `consume-available-chars` is what a STREAM decoder yields as bytes
         // arrive, and it is not the same as draining the buffer: the tail may
@@ -631,10 +661,19 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         //     extend or join (LF, TAB, NUL are emitted; CR is not, because CRLF
         //     is one cluster; a space is not, because a mark can attach to it).
         if (m == "consume-available-chars") {
+            if (!native) {
+                // whole code units only; a trailing CR waits for a possible LF
+                size_t end = wide ? buf.s.size() & ~(size_t)1 : buf.s.size();
+                const std::string cr = sepBytes("\r");
+                if (end >= cr.size() && buf.s.str().compare(end - cr.size(), cr.size(), cr) == 0) end -= cr.size();
+                std::string out = buf.s.str().substr(0, end);
+                buf.s.erase(0, end);
+                return chars(out);
+            }
             size_t end = utf8TextPrefixLen(buf.s.str());
             std::string out = buf.s.str().substr(0, end);
             buf.s.erase(0, end);
-            return Value::str(out);
+            return chars(out);
         }
         if (m == "consume-all-bytes" || m == "consume-available-bytes") {
             Value b = Value::str(buf.s); b.hashKind = "Blob"; buf.s.clear(); return b;

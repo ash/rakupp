@@ -88,6 +88,15 @@ ck(k2("z"), "plain", '…without swallowing the plain case');
     my $threw = (try { nqp::readuint(Blob[uint8].new(0x51, 0x52, 0x53), 3, $ne8); 'no' }) // ($!.Str.lines[0]);
     ck($threw.starts-with('MVMArray: read_buf out of bounds'), True, 'reading past the end throws MoarVM\'s message');
     ck(nqp::atpos_i(nqp::decont(Blob[uint8].new(0x81, 0x82)), 7), 0, 'nqp::atpos_i past the end still answers 0');
+    # …and so do the Blob METHODS (2026-10-10): a truncated float head is how
+    # CBOR::Simple meets it, through .read-uint16 / .read-num32 / .read-num64
+    my $short = Blob.new(0xf9, 0);
+    for <read-uint16 read-num32 read-num64> -> $m {
+        my $t = (try { $short."$m"(1, BigEndian); 'no' }) // $!.message;
+        ck($t.starts-with('MVMArray: read_buf out of bounds'), True, ".$m past the end throws MoarVM's message");
+    }
+    my $neg = (try { $short.read-uint16(-1); 'no' }) // $!.message;
+    ck($neg, 'MVMArray: read_buf out of bounds offset -1 start 0 elems 2 count 2', '…a negative offset too, exactly as Rakudo');
 }
 
 # --- 8. nqp::istype of a TYPE OBJECT against its own type ------------------

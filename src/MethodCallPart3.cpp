@@ -4899,11 +4899,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 i += len;
             }
         }
-        // a leading UTF-8 BOM is not text: Rakudo strips it on decode
+        // a leading UTF-8 BOM is not text: Rakudo strips it on decode. What is
+        // left is NFC, as all text is: U+2126 OHM SIGN decodes as U+03A9, so a
+        // percent-decoded "%E2%84%A6" key matches the 'Ω' a program wrote
+        // (Cro::HTTP's query-value test).
         if (inv.s.size() >= 3 && (unsigned char)inv.s[0] == 0xEF && (unsigned char)inv.s[1] == 0xBB &&
             (unsigned char)inv.s[2] == 0xBF)
-            return Value::str(inv.s.str().substr(3));
-        return Value::str(inv.s);
+            return Value::str(nfcNormalize(inv.s.str().substr(3)));
+        return Value::str(nfcNormalize(inv.s.str()));
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(inv.t == VT::Str ? cowGraphemeCount(inv.s)

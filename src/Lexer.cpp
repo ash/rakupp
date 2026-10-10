@@ -394,8 +394,12 @@ static std::string applyRakudoFudge(const std::string& src) {
     return out;
 }
 
+// The program text is NFC before anything reads it, as Rakudo has it: a name
+// or a bareword key written with U+2126 OHM SIGN is the one spelled with
+// U+03A9, as the strings a program decodes are (Cro::HTTP's query test
+// compares `ΩΩ => …` with a percent-decoded key). ASCII passes straight through.
 Lexer::Lexer(std::string src, bool honourFudge)
-    : src_(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src)) {
+    : src_(nfcNormalize(honourFudge ? applyRakudoFudge(std::move(src)) : std::move(src))) {
     scanUserOps();
 }
 
@@ -4718,7 +4722,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             advance(); advance(); t = make(Tok::Op, ",=");
         }
         else if (c == ',') { advance(); t = make(Tok::Comma, ","); }
-        else if (c == '/' && !inAngle && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
+        else if (c == '/' && !inAngle && guilleWords_ == 0 && peek(1) != '/' && peek(1) != '=' && regexContext(out) &&
                  pos_ < slashPrefixAt_ && // a `sub prefix:</>` above this point owns the slash
                  // `[/]` (and `[\/]`) is the division reduce metaop, not a regex
                  !(peek(1) == ']' && !out.empty() &&
@@ -4940,6 +4944,29 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     angleWords_--;
             }
         }
+        // `<< … >>` and `« … »` in TERM position are word lists as well (the
+        // interpolating kind; in operator position they are hyper operators).
+        // Their words reach the parser as tokens like a `< … >` list's, and a
+        // `/` among them is a word character: `<</foo /bar/baz>>` is two paths.
+        // Read as code, `foo /bar/` was a listop and a regex argument, and the
+        // list came back ("/foo", "barbaz") — Docker::File's VOLUME test.
+        // (Glued to an operator before it, `-« @a` is a prefix HYPER; and a `;`
+        // ends the statement, whatever was misread.)
+        if (t.kind == Tok::Op && angleWords_ == 0) {
+            if (guilleWords_ == 0 && (t.text == "<<" || t.text == "\xC2\xAB") && angleTermContext(out) &&
+                !(spaced == false && !out.empty() && out.back().kind == Tok::Op))
+                guilleClose_ = t.text == "<<" ? ">>" : "\xC2\xBB", guilleWords_ = 1;
+            else if (guilleWords_ > 0 &&
+                     // the closer, whole or ending a word's operator (`-c->>`
+                     // lexed `->` and `>`, so its first `>` came glued to the arrow)
+                     (t.text == guilleClose_ ||
+                      (t.text.size() > guilleClose_.size() &&
+                       t.text.compare(t.text.size() - guilleClose_.size(), guilleClose_.size(), guilleClose_) == 0) ||
+                      (guilleClose_ == ">>" && t.text == ">" && !spaced && !out.empty() &&
+                       out.back().kind == Tok::Op && !out.back().text.empty() && out.back().text.back() == '>')))
+                guilleWords_ = 0;
+        }
+        else if (t.kind == Tok::Semicolon) guilleWords_ = 0;
         // (braces used to bail out of word mode here, as a net for a stray `<`.
         //  They are ordinary word characters — `< { } >` is two words — and the
         //  net is no longer needed: an unclosed `<` reports its own runaway at
