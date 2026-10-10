@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-10.*
+*Started 2026-10-03. Last updated 2026-10-11.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -332,6 +332,29 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - `qqww{a {1+1} $x}`: Rakudo makes the nested braces words of their own
     (`"{", "1+1", "}"`); here `"{1+1}"` is one word.
   - `"X".lc("a")` answers `x`; Rakudo dies (Too many positionals).
+- [ ] **Typed element stores left by b21ea7a6** (coercion types on every
+  element store; Hash.append/push merging). Found 2026-10-11 against Rakudo
+  2026.09; not started.
+  - An op-assign into an element skips the element type check, coercion or
+    not: `my Int %h; %h<a> //= "x"` stores the Str, `my Int @a; @a[0] ~= "x"`
+    too (Rakudo: X::TypeCheck::Assignment), and `my Int() @b; @b[0] //= "3"`
+    keeps `"3"` (Rakudo: 3). Plain `=` and `++` check through
+    `lastLvalueElemType`; none of the store branches under `// compound
+    assignment` in InterpreterCore.cpp do. Each should run coerceElemValue and
+    checkElemType, and leave the element as it was on refusal.
+  - A push onto a typed array names no container: "for an element of the
+    container" where Rakudo says `@a` (MethodCallTail's elemCheck passes "").
+  - `my Int() %h; %h<a> = Str` fails X::TypeCheck::Assignment here; Rakudo
+    tries the coercion and dies X::AdHoc ("Cannot create an Int from a 'Str'
+    type object"). coerceElemValue leaves an undefined value alone.
+  - `Int(Any) ~~ Int` is False here, True in Rakudo.
+  - Append onto an entry bound with `:=` (`%h<a> := $x`) keeps a Hash value
+    whole (`[{:x(1)}, 5]`; Rakudo `[:x(1), 5]`, and Rakudo also writes the
+    merged Array through to `$x`).
+  - Rakudo quirks, left as they are: `splice` into a `my Int() @a` stores the
+    uncoerced Str (`Array[Int(Any)].new("7")`; here X::TypeCheck::Splice), and
+    `.append` of a Hash onto an existing Array value drops the Hash
+    (`[1, 2]`; here `[1, 2, :y(2)]`).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair
