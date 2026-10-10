@@ -666,17 +666,21 @@ void Interpreter::registerBuiltins() {
     B["__qx__"] = [](Interpreter& I, ValueList& a) -> Value { // qx// / qqx// shell capture
         std::string cmd = a.empty() ? "" : a[0].toStr();
         I.syncEnvToProcess();   // the child sees `%*ENV<X> = …` made before it
-        std::string outp; char buf[4096]; size_t n;
+        std::string outp;
 #if defined(_WIN32)
+        char buf[4096]; size_t n;
         FILE* p = _popen(cmd.c_str(), "r");
         if (!p) return Value::str("");
         while ((n = fread(buf, 1, sizeof buf, p)) > 0) outp.append(buf, n);
         _pclose(p);
 #else
-        FILE* p = popen(cmd.c_str(), "r");
-        if (!p) return Value::str("");
-        while ((n = fread(buf, 1, sizeof buf, p)) > 0) outp.append(buf, n);
-        pclose(p);
+        // shell()'s spawn, not popen(): popen's child inherits our SIG_IGN for
+        // SIGPIPE (ChildSignals.h), so the writer in `qx{… | head}` lived on to
+        // print "Broken pipe". stdin and stderr are inherited, as popen had them.
+        std::vector<std::string> argv = {"/bin/sh", "-c", cmd};
+        int code = 0; bool timedout = false;
+        spawnCapture(argv, 0, outp, code, timedout, &I, nullptr, "", nullptr, nullptr,
+                     /*errInherit*/ true, /*outMode*/ 1);
 #endif
         return Value::str(outp);
     };

@@ -3,6 +3,7 @@
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
 #include "Sandbox.h"
+#include "ChildSignals.h"
 
 namespace rakupp {
 
@@ -528,7 +529,7 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
     // clause naming the reason (roast S29-os/system.t asserts both).
     int xfd[2] = {-1, -1};
     const bool haveX = cloexecPipe(xfd);
-    pid_t pid = fork();
+    pid_t pid = forkForExec();   // the child starts with SIGPIPE at SIG_DFL again (ChildSignals.h)
     if (pid < 0) {
         if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); }
         if (io.captureErr) { close(errfd[0]); close(errfd[1]); }
@@ -913,7 +914,7 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
         if (capOut) { close(outPipe[0]); close(outPipe[1]); }
         return;
     }
-    pid_t pid = fork();
+    pid_t pid = forkForExec();   // see spawnChildStart
     if (pid < 0) {
         close(inPipe[0]); close(inPipe[1]);
         if (capOut) { close(outPipe[0]); close(outPipe[1]); }
@@ -950,7 +951,9 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     fcntl(wfd, F_SETFL, O_NONBLOCK);
     if (rfd >= 0) { fcntl(rfd, F_SETFD, FD_CLOEXEC); fcntl(rfd, F_SETFL, O_NONBLOCK); }
     if (efd >= 0) { fcntl(efd, F_SETFD, FD_CLOEXEC); fcntl(efd, F_SETFL, O_NONBLOCK); }
-    // (SIGPIPE is ignored process-wide at startup — Runtime.cpp)
+    // (SIGPIPE is ignored process-wide at startup — Runtime.cpp — so a child
+    // that closes its stdin early is an EPIPE here, not our death. The child
+    // got SIG_DFL back in forkForExec.)
     bool parked = gil ? gil->gilPark() : false; // drop the GIL for the feed/read wait below
     size_t written = 0;
     char buf[8192];
