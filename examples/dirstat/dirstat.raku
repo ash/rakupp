@@ -8,7 +8,7 @@ use lib 'lib';
 use DirStat::Scan;
 use DirStat::Tally;
 
-use JSON::Fast;
+use JSON::Native;
 use Number::Bytes::Human :functions;
 use Terminal::ANSIColor;
 use Terminal::Boxer;
