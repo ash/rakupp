@@ -33,7 +33,8 @@ static Value mixinAttrDefault(const ClassAttr& a) {
     return Value::any();
 }
 
-Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsIsLiteralList) {
+Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsIsLiteralList,
+                              const std::vector<std::pair<std::string, Value>>* presets) {
     // Collect the role(s) and attribute Pair(s) from the RHS (a single role type,
     // a list of them, or a `:name(value)` Pair mixing one attribute).
     std::vector<ClassInfo*> roleInfos;
@@ -386,6 +387,10 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     // a grammar's `.parse` above all — dispatch to the box instead.
     if (baseWasType) return Value::typeObj(nc->name);
     Value out; out.t = VT::Object; out.setObj(obj);
+    // `but R(value)` presets the role's attribute first: the role's TWEAK is
+    // where it gets checked (highlighter's `"bar" but Type<words>` dies in
+    // TWEAK unless `$!type` is already "words", as it is on Rakudo)
+    if (presets) for (auto& pr : *presets) obj->attrs[pr.first] = pr.second;
     // A role mixed in at RUNTIME runs its BUILD submethod NOW, on the object it
     // was mixed into — construction already happened, so this is the only point
     // at which a mixed-in role can initialise anything.
@@ -1094,8 +1099,8 @@ struct GatherRegs {
     Value* builtinTopicWB = nullptr;
     const Interpreter::ArgWriter* builtinArgWriter = nullptr;
     bool deferGather = false, valueSmartmatch = false,
-         matchVarSuppressed = false, hoistingSubs = false,
-         suppressLoopFirst = false, fatalTry = false;
+         matchVarSuppressed = false, hoistingSubs = false, fatalTry = false;
+    const std::vector<StmtPtr>* loopFirstBody = nullptr;
     std::string declaringType;
     std::vector<Interpreter::RedispatchCtx> redispatchStack;
     std::vector<Interpreter::ProtoCtx> protoStack;
@@ -1194,7 +1199,9 @@ struct GatherTls {
     Value** builtinTopicWB;
     const Interpreter::ArgWriter** builtinArgWriter;
     bool *deferGather, *valueSmartmatch, *matchVarSuppressed,
-         *hoistingSubs, *suppressLoopFirst, *fatalTry;
+         *hoistingSubs;
+    const std::vector<StmtPtr>** loopFirstBody;
+    bool *fatalTry;
     std::string* declaringType;
     std::vector<Interpreter::RedispatchCtx>* redispatchStack;
     std::vector<Interpreter::ProtoCtx>* protoStack;
@@ -1216,7 +1223,7 @@ static GatherTls& gatherTls() {
         &Interpreter::builtinArgWriter_,
         &Interpreter::deferGather_, &Interpreter::valueSmartmatch_,
         &Interpreter::matchVarSuppressed_,
-        &Interpreter::hoistingSubs_, &Interpreter::suppressLoopFirst_, &t_fatalTry,
+        &Interpreter::hoistingSubs_, &Interpreter::loopFirstBody_, &t_fatalTry,
         &Interpreter::declaringType_,
         &Interpreter::redispatchStack_, &Interpreter::protoStack_, &Interpreter::reactStack_,
         &g_rxRoutine, &g_hyperOpName, &g_rxTemps, &g_evalUnits, &g_classBodies,
@@ -1233,7 +1240,7 @@ static void gatherSwapStatics(const GatherTls& T, GatherRegs& r) {
     std::swap(*T.valueSmartmatch, r.valueSmartmatch);
     std::swap(*T.matchVarSuppressed, r.matchVarSuppressed);
     std::swap(*T.hoistingSubs, r.hoistingSubs);
-    std::swap(*T.suppressLoopFirst, r.suppressLoopFirst);
+    std::swap(*T.loopFirstBody, r.loopFirstBody);
     std::swap(*T.fatalTry, r.fatalTry);
     T.declaringType->swap(r.declaringType);
     T.redispatchStack->swap(r.redispatchStack);

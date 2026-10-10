@@ -866,7 +866,7 @@ static bool isBlockPhaser(Stmt* s) {
            p == "PRE" || p == "POST" ||
            p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE" || p == "TEMP";
 }
-void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
+void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce) {
     // PRE: a precondition, checked on entry — false is X::Phaser::PrePost. The
     // PREs all run BEFORE any ENTER, wherever they stand in the block.
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
@@ -877,10 +877,16 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts) {
                 throwTypedV("X::Phaser::PrePost", {{"phaser", Value::str("PRE")}, {"condition", Value::str(r.gist())}},
                             "Precondition '" + r.gist() + "' failed");
         } }
+    // ENTER fires on every block entry; FIRST once per closure clone. In a loop
+    // body the loop drives FIRST (loopFirstBody_); a called closure runs it on
+    // its FIRST call only (`my &b = { FIRST … }; b() for 1..3` says it once —
+    // rak calls a pattern per item and counts on that); and a block run in
+    // place is a fresh clone every time it runs, so its FIRST runs every time
+    // (`for 1..3 { { FIRST … } }` says it three times).
+    const bool runFirst = &stmts != loopFirstBody_ &&
+        (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        // ENTER fires on every block entry; FIRST fires once — in a loop body the loop
-        // drives FIRST (suppressLoopFirst_), elsewhere FIRST behaves like a one-shot ENTER.
-        if (b->phaser == "ENTER" || (b->phaser == "FIRST" && !suppressLoopFirst_)) {
+        if (b->phaser == "ENTER" || (b->phaser == "FIRST" && runFirst)) {
             auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
             // an ENTER written LAST is the block's value, computed at entry:
             // `sub f { ENTER 'SANDMAN' }` returns SANDMAN (enter-leave.t)
@@ -1507,7 +1513,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
             firstNext = true;
         }
     }
-    bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true; // execBlock must not re-run FIRST
+    const std::vector<StmtPtr>* savedSF = loopFirstBody_; loopFirstBody_ = &body->stmts; // execBlock must not re-run FIRST
     // `return` inside a NEXT/LAST phaser WITH an enclosing routine returns from
     // it (`sub f { for 1,2 { LAST return $_ } }`); with NO routine it is
     // X::ControlFlow::Return (like Rakudo) — never the raw unwind that used to
@@ -1561,14 +1567,14 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     } lguard{tc, savedLoopFrame, savedGivenFrame};
     if (firstNext) {
         if (hasNext) {
-            try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+            try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
             catch (LastEx& e) {
-                if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
                 if (hasLast) runLoopLast(body, scope);
-                suppressLoopFirst_ = savedSF; return false;
+                loopFirstBody_ = savedSF; return false;
             }
         }
-        runLast(); suppressLoopFirst_ = savedSF; return true;
+        runLast(); loopFirstBody_ = savedSF; return true;
     }
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
@@ -1580,7 +1586,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               // `with Grammar.parse(…) { .ast }` in MediaType.parse yield Any).
               // A CATCH's `default { return … }` still sees its flag: the
               // handler consumes it before any loop does.
-              if (tc.returning) { tc.givenCtl = 0; suppressLoopFirst_ = savedSF; return false; }
+              if (tc.returning) { tc.givenCtl = 0; loopFirstBody_ = savedSF; return false; }
               // LOOP CONTROL FIRST: `when … { last }` sets BOTH flags — the
               // when-match and the `last`. Consuming the when-flag first said
               // "iteration done" and left the loop flag set, so it travelled out
@@ -1598,20 +1604,20 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                       // runLoopLast) unless the last is labeled for an OUTER
                       // loop, which skips this one's LAST
                       if (hasNext) {
-                          try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                          try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
                           catch (LastEx& e) {
-                              if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                              if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
                               if (hasLast) runLoopLast(body, scope);
-                              suppressLoopFirst_ = savedSF; return false;
+                              loopFirstBody_ = savedSF; return false;
                           }
                       }
-                      runLast(); suppressLoopFirst_ = savedSF; return true;
+                      runLast(); loopFirstBody_ = savedSF; return true;
                   }
                   // `last`: the loop ends NOW, whatever iteration this is — its
                   // LAST phasers run (the old positional gate skipped them
                   // whenever the `last` fired before the final element)
                   if (hasLast) runLoopLast(body, scope);
-                  suppressLoopFirst_ = savedSF; return false; // last
+                  loopFirstBody_ = savedSF; return false; // last
               }
               bool whenValue = false;
               if (tc.givenCtl) { // cooperative when-match in this loop's body: the
@@ -1632,51 +1638,51 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                   else collect->push_back(v);
               }
               if (hasNext) {
-                  try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                  try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
                   catch (LastEx& e) {
-                      if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                      if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
                       if (hasLast) runLoopLast(body, scope);
-                      suppressLoopFirst_ = savedSF; return false;
+                      loopFirstBody_ = savedSF; return false;
                   }
               }
-              runLast(); suppressLoopFirst_ = savedSF; return true; }
-        catch (LeaveEx&) { runLast(); suppressLoopFirst_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
-        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; } if (rebind) rebind(); continue; }
+              runLast(); loopFirstBody_ = savedSF; return true; }
+        catch (LeaveEx&) { runLast(); loopFirstBody_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
+        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; } if (rebind) rebind(); continue; }
         catch (NextEx& e) {
-            if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+            if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
             if (collect && e.hasVal) pushLoopValue(*collect, e.val);   // 6.e `next 9`: the iteration's value
             if (hasNext) {
-                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
                 catch (LastEx& le) { // `last` from a NEXT phaser ends the loop: LAST runs
-                    if (!le.label.empty() && le.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                    if (!le.label.empty() && le.label != label) { loopFirstBody_ = savedSF; throw; }
                     if (hasLast) runLoopLast(body, scope);
-                    suppressLoopFirst_ = savedSF; return false;
+                    loopFirstBody_ = savedSF; return false;
                 }
             }
-            runLast(); suppressLoopFirst_ = savedSF; return true;
+            runLast(); loopFirstBody_ = savedSF; return true;
         }
         catch (BreakGivenEx& bg) { // a thrown when-match: the iteration is done — like `next`, carrying the when block's value
             if (collect) collect->push_back(bg.hasVal ? bg.v : Value::nil());
             if (hasNext) {
-                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); suppressLoopFirst_ = savedSF; return false; } }
+                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
                 catch (LastEx& le) {
-                    if (!le.label.empty() && le.label != label) { suppressLoopFirst_ = savedSF; throw; }
+                    if (!le.label.empty() && le.label != label) { loopFirstBody_ = savedSF; throw; }
                     if (hasLast) runLoopLast(body, scope);
-                    suppressLoopFirst_ = savedSF; return false;
+                    loopFirstBody_ = savedSF; return false;
                 }
             }
-            runLast(); suppressLoopFirst_ = savedSF; return true;
+            runLast(); loopFirstBody_ = savedSF; return true;
         }
         catch (LastEx& e) {
-            if (!e.label.empty() && e.label != label) { suppressLoopFirst_ = savedSF; throw; }
+            if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
             if (collect && e.hasVal) pushLoopValue(*collect, e.val);   // 6.e `last 9`: the loop's final value
             // `last` ends the loop here, so LAST phasers run — on WHATEVER
             // iteration it happened (a label targeting an outer loop rethrows
             // above instead: that outer loop's LAST runs, this one's is skipped)
             if (hasLast) runLoopLast(body, scope);
-            suppressLoopFirst_ = savedSF; return false;
+            loopFirstBody_ = savedSF; return false;
         }
-        catch (...) { suppressLoopFirst_ = savedSF; throw; }
+        catch (...) { loopFirstBody_ = savedSF; throw; }
     }
 }
 
@@ -4052,7 +4058,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             "'; expected " + p.type + " but got Nil (Nil)"};
     // …carrying what was expected and what came: `sub f(Mu:D $a) {}; f(Int)`
     // expected Mu, got Int
-    if (p.defConstraint == 1 && !isDefined(v) && !failure) {
+    if (p.defConstraint == 1 && !isDefinite(v) && !failure) {
         std::string want = p.type.empty() ? std::string("Any") : p.type;
         throwTypedV("X::Parameter::InvalidConcreteness",
             {{"expected", Value::str(want)}, {"got", Value::str(v.typeName())},
@@ -4060,7 +4066,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
              {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(false)}},
             "Parameter '" + p.name + "' must be an object instance of type '" + want + "', not a type object");
     }
-    if (p.defConstraint == 2 && (isDefined(v) || failure)) {
+    if (p.defConstraint == 2 && (isDefinite(v) || failure)) {
         std::string want = p.type.empty() ? std::string("Any") : p.type;
         throwTypedV("X::Parameter::InvalidConcreteness",
             {{"expected", Value::str(want)}, {"got", Value::str(v.typeName())},
@@ -6419,8 +6425,8 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             if (Value* tv = cand.code()->closure->local(p->type))
                 if (tv->t == VT::Type && !tv->s.empty() && tv->s != p->type) {
                     if (!typeOrSubsetMatches(pos[i], tv->s)) return -1;
-                    if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
-                    if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
+                    if (p->defConstraint == 1 && !isDefinite(pos[i])) return -1;
+                    if (p->defConstraint == 2 && isDefinite(pos[i])) return -1;
                     score += 8 + (p->defConstraint ? 2 : 0) + (tv->s == pos[i].typeName() ? 2 : 0);
                     continue;
                 }
@@ -6665,8 +6671,8 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             pos[i].t == VT::Type && (pos[i].s == "Junction" || pos[i].s == "Mu") && pos[i].ofType().empty())
             return -1;
         // type smiley: :D requires a defined arg, :U requires an undefined one
-        if (p->defConstraint == 1 && !isDefined(pos[i])) return -1;
-        if (p->defConstraint == 2 && isDefined(pos[i])) return -1;
+        if (p->defConstraint == 1 && !isDefinite(pos[i])) return -1;
+        if (p->defConstraint == 2 && isDefinite(pos[i])) return -1;
         if (p->defConstraint) score += 2; // a smiley is more specific
         // `Any` is narrower than `Mu` — Mu is the root, and everything except a
         // Junction is an Any. Both matched everything and scored the same, so
@@ -6703,8 +6709,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // (Positional) says more about it: `multi m(Cool $x)` / `multi m(@x)`
         // sends [1] to the @x candidate, as Rakudo does. A HASH the same: `%x`,
         // `Associative $x` and `Hash $x` all beat `Cool $x` for %h on Rakudo.
+        // A smiley does not change that — Rakudo weighs definedness only
+        // between two parameters of the SAME type — so `Cool:D` (the 2 above
+        // and 3 here) stays under the sigil's 6 while still beating a bare
+        // `Cool`: String::Utils' `paragraphs(Cool:D $string)` hands
+        // `$string.lines` on to `paragraphs(@source)`, and recursed into itself.
         else if (p->type == "Cool" && (pos[i].t == VT::Array || pos[i].t == VT::Hash)) {
-            score += 5;
+            score += p->defConstraint ? 3 : 4;
         }
         else if (!p->type.empty() && p->type != "Any" && p->type != "Mu") {
             score += 8;                                // a NOMINAL type outranks a bare @/% sigil
@@ -6868,8 +6879,8 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // must pass over a `:@values!` candidate (Rakudo falls through to
             // Mu.new — Math::SparseMatrix::Native builds its targets that way)
             if (p.sigil == '@' && (sval.t == VT::Nil || sval.t == VT::Any)) return -1;
-            if (p.defConstraint == 1 && !isDefined(sval)) return -1;
-            if (p.defConstraint == 2 && isDefined(sval)) return -1;
+            if (p.defConstraint == 1 && !isDefinite(sval)) return -1;
+            if (p.defConstraint == 2 && isDefinite(sval)) return -1;
             // A named with a SUB-SIGNATURE (`:$referencing! (&code, Str
             // :$model!, *%rest)`) is a constraint too: the value must bind it,
             // as its Capture, or the candidate is out. Red declares four such
@@ -8919,12 +8930,12 @@ resumeBody:
         if (resumeAt == 0) {
             captureBodyEnds(c);   // an END anywhere in the body binds to THIS call's scope
             if (c.body && lpc) {
-                bool savedSF = suppressLoopFirst_; suppressLoopFirst_ = true;
+                const std::vector<StmtPtr>* savedSF = loopFirstBody_; loopFirstBody_ = c.body;
                 runEnterPhasers(*c.body); // ENTER only; FIRST suppressed
-                suppressLoopFirst_ = savedSF;
+                loopFirstBody_ = savedSF;
                 if (lpc & 1) runFirstPhasers(*c.body);
             }
-            else if (c.body && (bodyWork & 2)) runEnterPhasers(*c.body);
+            else if (c.body && (bodyWork & 2)) runEnterPhasers(*c.body, &c);
         }
         if (c.body) {
             // a native body (an embedded module's, AotModules.h) runs in place of the walk
@@ -9328,7 +9339,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         bare.retType = retTypeName(c.retType);
         v = checkRetType(bare, std::move(v));
         if (v.t == VT::Nil || (v.t == VT::Hash && v.hashKind == "Failure")) return v;
-        const bool def = isDefined(v);
+        const bool def = isDefinite(v);
         if ((sm == 'D' && !def) || (sm == 'U' && def))
             throwTypedV("X::TypeCheck::Return",
                         {{"got", v}, {"expected", Value::typeObj(bare.retType)}},
@@ -10661,7 +10672,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     const bool hasPhasers = c.phaserScan == 1;
     captureBodyEnds(c);   // …and a method's, which phaserScan does not cover
-    if (hasPhasers && c.body) runEnterPhasers(*c.body);
+    if (hasPhasers && c.body) runEnterPhasers(*c.body, &c);
     bool phasersDone = false;
     // …and `temp`/`let` in a method body must be undone on the way out, which is
     // the other half of what runLeavePhasers does. It ran only for a body with
@@ -14065,6 +14076,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 allState = false; break;
             }
         }
+        if (allState)   // seeded ahead of the first run: this IS the first run
+            for (auto& it : tl->items)
+                if (consumeStatePreseed(tctx_.curStateEnv, static_cast<VarExpr*>(it.get())->name))
+                    allState = false;
         if (allState) {
             Value out = Value::array(); out.isList = true;
             for (auto& it : tl->items)
@@ -14271,7 +14286,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // on it; only the slot persists — for `$++`-style counters).
         if (opEq(a->op, "=") && ve->declare && ve->declScope == "state" && !ve->stateInParens &&
             tctx_.curStateEnv && tctx_.curStateEnv->vars.count(ve->name) &&
-            ve->name.rfind("$anon--state--", 0) != 0)
+            ve->name.rfind("$anon--state--", 0) != 0 &&
+            !consumeStatePreseed(tctx_.curStateEnv, ve->name))
             return tctx_.curStateEnv->vars[ve->name];
     }
 
@@ -15456,7 +15472,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // (its storage is a vector, and a push would leave the binding dangling).
         if (bindsSlot && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->value.get());
-            if (ix->isHash && ix->index && !ix->multiDim && slotTarget) {
+            // (an ADVERBED subscript is a value, not a slot: `$m := %n<k>:delete`
+            // binds what the delete answers — and must still delete, which rak
+            // relies on to consume every option App::Rak hands it)
+            if (ix->isHash && ix->index && !ix->multiDim && slotTarget && ix->adverb.empty()) {
                 // A slot that does not EXIST yet is not made by the binding: `my $b
                 // := %h<a><b>` leaves %h empty until something is ASSIGNED through
                 // $b (S02-types/autovivification.t). Bind a proxy that reads the
@@ -15589,7 +15608,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // Graph's A* walked a 100x100 grid off a heap that was never a heap.
         if (bindsSlot && a->target->kind == NK::VarExpr && a->value->kind == NK::Index) {
             auto* ix = static_cast<Index*>(a->value.get());
-            if (!ix->isHash && ix->index && !ix->multiDim && slotTarget) {
+            if (!ix->isHash && ix->index && !ix->multiDim && slotTarget && ix->adverb.empty()) {
                 Value* base = nullptr;
                 try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
                 PRef<ValueList> arr;
@@ -19657,8 +19676,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (l.t != VT::Object && l.t != VT::Type && g_cbInterp && g_cbInterp->userShadowsCoreRole(r.s))
                 return Value::boolean(!opEq(op, "~~"));   // `role Numeric { }` shadows the core role
             // `$x ~~ Foo:D` is the type test AND a definedness test
-            if (r.i == 1 && !isDefined(l)) return Value::boolean(!opEq(op, "~~"));
-            if (r.i == 2 && isDefined(l))  return Value::boolean(!opEq(op, "~~"));
+            if (r.i == 1 && !isDefinite(l)) return Value::boolean(!opEq(op, "~~"));
+            if (r.i == 2 && isDefinite(l))  return Value::boolean(!opEq(op, "~~"));
             // A SUBSET's type object conforms as its base type: `UInt ~~ Int`
             // and `(subset Pos of Int where * > 0) ~~ Int` are True. Red maps a
             // column's SQL type by dispatching on the attribute's type object,
@@ -22646,7 +22665,8 @@ Value Interpreter::evalBinary(Binary* b) {
                         presets.emplace_back(key, pe->value ? eval(pe->value.get())
                                                             : Value::boolean(true));
                     }
-                Value res = mixinValue(std::move(base), Value::typeObj(rn), opEq(op, "but"));
+                Value res = mixinValue(std::move(base), Value::typeObj(rn), opEq(op, "but"),
+                                       /*rhsIsLiteralList=*/true, &presets);
                 for (auto& pr : presets) {
                     if (res.t == VT::Object && res.obj()) res.obj()->attrs[pr.first] = pr.second;
                     else if (res.t == VT::Code && res.code()) res.code()->mixinsRW().attrs[pr.first] = pr.second;
@@ -30959,7 +30979,8 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     if (mc->mutate && mc->inv && mc->inv->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(mc->inv.get());
         if (ve->declare && ve->declScope == "state" && tctx_.curStateEnv &&
-            tctx_.curStateEnv->vars.count(ve->name))
+            tctx_.curStateEnv->vars.count(ve->name) &&
+            !consumeStatePreseed(tctx_.curStateEnv, ve->name))
             return tctx_.curStateEnv->vars[ve->name];
         // `my C constant T .= new(…)` — a typed CONSTANT's `.=` calls on
         // its declared type, as `my C $x .= new` does on its container's
@@ -31610,7 +31631,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // reports concreteness and never a user-declared DEFINITE method. The
     // quoted `."DEFINITE"()` form (methodExpr set) still dispatches normally.
     if (opEq(mc->method, "DEFINITE") && !mc->methodExpr && !mc->meta)
-        return Value::boolean(isDefined(inv));
+        return Value::boolean(isDefinite(inv));
     // `.VAR` on a $-variable: a Scalar container record answering
     // .^name (Scalar), .name ($x), .default; other methods hit the value.
     if (opEq(mc->method, "VAR") && !mc->methodExpr && !mc->meta &&

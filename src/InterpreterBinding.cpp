@@ -3920,6 +3920,10 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
         // `nqp::istype(%map.keyof, Str)` to tell a string-keyed map from an
         // object-keyed one, and answered "object-keyed" for both.
         case VT::Type: return typeMatchesArg(v, type);
+        // `*` is the Whatever it says it is: String::Utils' `stem(str $basename,
+        // $parts = *)` asks `nqp::istype($parts, Whatever)`, and a 0 here sent
+        // `stem("foo.tar.gz")` down the counted branch, answering ""
+        case VT::Whatever: return type == "Whatever";
         default: return false;
     }
 }

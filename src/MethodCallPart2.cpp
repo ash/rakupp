@@ -8586,10 +8586,63 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->params = &noParams;
             code.code()->body = &found->stmts;
-            code.code()->closure = inv.code()->closure;
+            // The phaser closes over the block's `state` frame, which sits
+            // between the block's closure and each call's own frame: rak's
+            // `{ state $s = 0; NEXT $s++; LAST say "$s files"; … }` reads the
+            // count the calls left. Made here when the block has not been called
+            // yet (rak takes its phasers first), so the calls then share it.
+            Callable& src = *inv.code();
+            std::call_once(src.state.init, [&] {
+                src.state.env = std::make_shared<Env>();
+                src.state.env->parent = src.closure ? src.closure : global_;
+                src.state.env->stateFrame = true;
+            });
+            code.code()->closure = src.state.env;
+            // …and the block's own `state` variables are there before its first
+            // call, as Rakudo's compile-time pad has them: rak runs NEXT once per
+            // source while the pattern's calls are still lazy. Seeded undefined
+            // and marked, so the block's first run still does `state $s = 0`.
+            {
+                Env& se = *src.state.env;
+                auto seed = [&](const VarExpr* v) {
+                    if (!v || !v->declare || v->declScope != "state" || v->name.size() < 2 ||
+                        v->name.rfind("$anon--state--", 0) == 0 || se.vars.count(v->name)) return;
+                    const char sg = v->name[0];
+                    se.define(v->name, sg == '@' ? Value::array() : sg == '%' ? Value::makeHash() : Value::any());
+                    se.x().statePreseeded.insert(v->name);
+                };
+                for (auto& s : *body) {
+                    if (!s || s->kind != NK::ExprStmt) continue;
+                    Expr* e = static_cast<ExprStmt*>(s.get())->e.get();
+                    if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                    if (e && e->kind == NK::VarExpr) seed(static_cast<VarExpr*>(e));
+                    else if (e && e->kind == NK::ListExpr)
+                        for (auto& it : static_cast<ListExpr*>(e)->items) {
+                            Expr* x = it.get();
+                            if (x && x->kind == NK::Assign) x = static_cast<Assign*>(x)->target.get();
+                            if (x && x->kind == NK::VarExpr) seed(static_cast<VarExpr*>(x));
+                        }
+                }
+            }
             code.code()->langRev = inv.code()->langRev;
             code.code()->declFile = inv.code()->declFile;
             code.code()->isBlock = true;
+            // Running the FIRST taken out IS that closure's FIRST: rak calls it
+            // once before the search and then calls the pattern per item, which
+            // must not run it a second time (FIRST runs once per clone).
+            if (want == "FIRST") {
+                Value inner = code, owner = inv;
+                Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
+                w.code()->params = &noParams;
+                w.code()->isBlock = true;
+                w.code()->langRev = inv.code()->langRev;
+                w.code()->declFile = inv.code()->declFile;
+                w.code()->builtin = [inner, owner](Interpreter& I, ValueList&) -> Value {
+                    owner.code()->state.firstDone.store(true, std::memory_order_release);
+                    return I.callCallable(inner, ValueList{});
+                };
+                return w;
+            }
             return code;
         }
         if (m == "returns" || m == "of") {
@@ -9425,7 +9478,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::boolean(!inv.truthy());
     }
     if (m == "defined") return Value::boolean(defined(inv));
-    if (m == "DEFINITE") return Value::boolean(defined(inv)); // defined instance vs type/undef
+    if (m == "DEFINITE") return Value::boolean(rtIsDefinite(inv)); // instance vs type object (Empty is one)
     // Mu.return: return the invocant from the enclosing routine
     // (Cro's serializer selectors: `.return if .is-applicable(...)`)
     if (m == "return") throw ReturnEx{inv};

@@ -637,6 +637,9 @@ enum class NqpOpc : uint16_t {
     MulBigI, SubBigI, ModBigI, NegBigI, AbsBigI, PowBigI, GcdBigI, LcmBigI,
     BitandBigI, BitorBigI, BitxorBigI, BitshiftlBigI, BitshiftrBigI,
     IsBigI, ToStrBigI, FromStrBigI, SqrtN,
+    // appended: the rest of the Unicode property family, on MoarVM's numbers
+    // (unipropcode answers an Int since 2026-10-10 — String::Utils' `my int`)
+    UniPvalCode, MatchUniProp, HasUniProp,
 };
 struct NqpOp : Expr {
     NqpOpc op;

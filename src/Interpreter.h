@@ -456,6 +456,10 @@ struct EnvExtras {
     // `$x := <value>`: these `$` names hold a VALUE bound straight in, not a
     // container of their own — `=:=` between two of them compares the values
     std::set<std::string> varValueBound;
+    // A `state` frame's names made BEFORE the block's first run (a phaser taken
+    // out with callable_for_phaser can run first, and Rakudo's pad has them
+    // from compile time): the first `state $s = 0` still initialises them.
+    std::set<std::string> statePreseeded;
 };
 
 // The hash and the key compare of a scope's variable map (and of a pad
@@ -823,6 +827,12 @@ struct Env {
 // codegen used to inline `t==VT::Nil||t==VT::Any||t==VT::Type` with a comment
 // claiming Failure was covered, so `fail` under `--exe` did not answer to `//`.
 bool rtIsDefined(const Value& v);
+// What a `:D` / `:U` smiley and `.DEFINITE` ask: an instance rather than a type
+// object. The same as rtIsDefined but for an EMPTY Slip, whose `.defined` is
+// False (Rakudo) while it is still an instance — `--> Slip:D` takes `Empty`.
+inline bool rtIsDefinite(const Value& v) {
+    return rtIsDefined(v) || (v.t == VT::Array && v.s == "Slip" && v.enumType.empty());
+}
 // Does an ARRAY SLOT exist? A hole is the bare undefined scalar; a type object
 // put there on purpose (`my @a = 42, Any, 23`) is an element like any other.
 inline bool rtSlotExists(const Value& v) { return v.t == VT::Type || rtIsDefined(v); }
@@ -2773,7 +2783,9 @@ public:
     bool materializePendingType(const std::string& name); // true while hoistSubs is registering (defers trait application)
     void breakSelfClosures(const std::shared_ptr<Env>& env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed (a frame something else still holds keeps them)
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
-    void runEnterPhasers(const std::vector<StmtPtr>& stmts); // ENTER/FIRST at block entry (source order)
+    // ENTER/FIRST at block entry (source order). `firstOnce` is the closure being
+    // called, whose FIRST runs on its first call only; a block run in place has none.
+    void runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce = nullptr);
     void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration
     void runLastPhasers(const std::vector<StmtPtr>& stmts);  // LAST once after a loop's last iteration
     // LEAVE/KEEP/UNDO at block exit (reverse order). `ok` selects which conditional
@@ -2784,7 +2796,11 @@ public:
     // reuses the caller's) must unwind only the temps IT pushed.
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0, int postOk = -1);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
-    RAKUPP_CONSTINIT static thread_local bool suppressLoopFirst_; // set while running a loop body so execBlock skips FIRST (save/restore per thread, like the call registers)
+    // The body a loop is running, whose FIRST the loop drives itself, so its
+    // execBlock must not run it again. Only THAT body: a block nested in it, or
+    // one it calls, is not the loop's and keeps its own FIRST (save/restore per
+    // thread, like the call registers).
+    RAKUPP_CONSTINIT static thread_local const std::vector<StmtPtr>* loopFirstBody_;
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.
     // `checkOnly` is `EVAL $code, :check`: compile it — parse, then BEGIN and
@@ -4143,7 +4159,10 @@ public:
 private:
     // `$x does R` (in-place) / `$x but R` (copy) — mix role(s) or an attribute Pair
     // into a value, producing an object that also does R.
-    Value mixinValue(Value base, const Value& rhs, bool copy, bool rhsIsLiteralList = true);
+    // `presets`: the attribute values `but R(value)` / `but R(:a(1))` supplies,
+    // set on a mixed-into object BEFORE the role's BUILD and TWEAK run
+    Value mixinValue(Value base, const Value& rhs, bool copy, bool rhsIsLiteralList = true,
+                     const std::vector<std::pair<std::string, Value>>* presets = nullptr);
     Value evalUnary(Unary* u);
     Value postfixI(Value v); // postfix:<i> — multiply by the imaginary unit
 public:

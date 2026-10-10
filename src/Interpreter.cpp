@@ -3907,7 +3907,7 @@ thread_local bool Interpreter::valueSmartmatch_ = false;
 thread_local bool Interpreter::matchVarSuppressed_ = false;
 thread_local std::string Interpreter::declaringType_;
 thread_local bool Interpreter::hoistingSubs_ = false;
-thread_local bool Interpreter::suppressLoopFirst_ = false;
+thread_local const std::vector<StmtPtr>* Interpreter::loopFirstBody_ = nullptr;
 // Per-thread call-stack state (step 3a — see header).
 thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
 thread_local int Interpreter::loopNest_ = 0;

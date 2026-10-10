@@ -450,8 +450,11 @@ bool Value::truthy() const {
                 auto it = hash()->find("addr");
                 if (it != hash()->end()) return it->second.toInt() != 0;
             }
+            // (a Lock keeps its state outside the map, which is empty: rak's
+            // `$lock.protect(&next-phaser) if $lock` never ran a NEXT phaser)
             return (hashKind == "Raku" || hashKind == "Compiler" ||
-                    hashKind == "Mu" || hashKind == "Any") // object-like: always defined/true
+                    hashKind == "Mu" || hashKind == "Any" || hashKind == "Lock" ||
+                    hashKind == "Lock::Async" || hashKind == "LockCondition") // object-like: always defined/true
                             || (hash() && !hash()->empty());
         case VT::Range: return true;
         case VT::Code:  return true;

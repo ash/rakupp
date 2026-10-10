@@ -17402,6 +17402,8 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"eqaddr", NqpOpc::Eqaddr}, {"objprimspec", NqpOpc::ObjPrimSpec},
         {"unipropcode", NqpOpc::UniPropCode}, {"getuniprop_str", NqpOpc::GetUniPropStr},
         {"getuniprop_bool", NqpOpc::GetUniPropBool}, {"getuniprop_int", NqpOpc::GetUniPropInt},
+        {"unipvalcode", NqpOpc::UniPvalCode}, {"matchuniprop", NqpOpc::MatchUniProp},
+        {"hasuniprop", NqpOpc::HasUniProp},
         // the AttrX::Mooish surface
         {"hllize", NqpOpc::Decont}, {"box_s", NqpOpc::P6BoxS},
         {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},

@@ -142,6 +142,12 @@ static inline bool isSliceBlock(const Value& k) {
     return k.t == VT::Code && k.code() && !k.code()->isWhateverCode;
 }
 static inline bool isDefined(const Value& v) { return rtIsDefined(v); }
+static inline bool isDefinite(const Value& v) { return rtIsDefinite(v); }
+// A `state` name seeded ahead of its block's first run (see
+// EnvExtras::statePreseeded): true once, the first time its initialiser runs.
+static inline bool consumeStatePreseed(Env* stateEnv, const std::string& name) {
+    return stateEnv && stateEnv->ex && stateEnv->ex->statePreseeded.erase(name) > 0;
+}
 
 // A parenthesised LIST LITERAL whose items sit at their own positions: no
 // `|slip` shifts them, so item k is element k.

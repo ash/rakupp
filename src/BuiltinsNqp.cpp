@@ -3,6 +3,8 @@
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
 #include "Sandbox.h"
+#include <mutex>
+#include <unordered_map>
 
 namespace rakupp {
 
@@ -95,6 +97,204 @@ static Value nqpBufRead(const std::string& bytes, long long off,
         return Value::bigint(b + BigInt(2).pow(63));
     }
     return Value::integer((long long)u);
+}
+
+// ---- Unicode property codes -------------------------------------------------
+// nqp::unipropcode answers MoarVM's NUMBER for a property, and the other
+// Unicode ops take that number in place of the name: String::Utils keeps it in
+// a `my int $gcprop`, so a name standing in for the code no longer fits.
+// The numbers, and every name that reaches one, were read off Rakudo 2026.09 /
+// MoarVM 2026.09, one probe per name. MoarVM files VALUE names under their
+// property too ("Lu" is General_Category's 20, "W" East_Asian_Width's 7,
+// "Narrow" Decomposition_Type's 19), and a name written in lower case matches
+// case-insensitively ("alpha", "lu"); "ALPHA" is 0, as is any unknown name.
+// Script and Block VALUE names ("Latin", "Basic_Latin") are the gap: MoarVM
+// files them under 9 and 6, and here they answer 0.
+namespace {
+struct UniPropCodeEnt { const char* name; int code; };
+const UniPropCodeEnt kUniPropCodes[] = {
+    {"Joining_Group", 3}, {"jg", 3}, {"Case_Folding", 4}, {"cf", 4},
+    {"Bidi_Mirroring_Glyph", 5}, {"bmg", 5}, {"ASCII", 6}, {"Block", 6}, {"blk", 6},
+    {"Ambiguous", 7}, {"East_Asian_Width", 7}, {"F", 7}, {"Fullwidth", 7}, {"H", 7},
+    {"Halfwidth", 7}, {"Na", 7}, {"Neutral", 7}, {"W", 7}, {"ea", 7}, {"Numeric_Value", 8},
+    {"nv", 8}, {"Script", 9}, {"sc", 9}, {"Numeric_Value_Numerator", 10}, {"InCB", 12},
+    {"Indic_Conjunct_Break", 12}, {"A", 13}, {"Canonical_Combining_Class", 13}, {"ccc", 13},
+    {"InSC", 14}, {"Indic_Syllabic_Category", 14}, {"Line_Break", 15}, {"lb", 15}, {"Age", 16},
+    {"age", 16}, {"Bidi_Class", 17}, {"bc", 17}, {"GCB", 18}, {"Grapheme_Cluster_Break", 18},
+    {"Prepend", 18}, {"Decomposition_Type", 19}, {"Narrow", 19}, {"Wide", 19}, {"dt", 19},
+    {"Cc", 20}, {"Cf", 20}, {"Close_Punctuation", 20}, {"Cn", 20}, {"Co", 20},
+    {"Connector_Punctuation", 20}, {"Control", 20}, {"Cs", 20}, {"Currency_Symbol", 20},
+    {"Dash_Punctuation", 20}, {"Decimal_Number", 20}, {"Enclosing_Mark", 20},
+    {"Final_Punctuation", 20}, {"Format", 20}, {"General_Category", 20},
+    {"Initial_Punctuation", 20}, {"Letter_Number", 20}, {"Line_Separator", 20}, {"Ll", 20},
+    {"Lm", 20}, {"Lo", 20}, {"Lowercase_Letter", 20}, {"Lt", 20}, {"Lu", 20},
+    {"Math_Symbol", 20}, {"Mc", 20}, {"Me", 20}, {"Mn", 20}, {"Modifier_Letter", 20},
+    {"Modifier_Symbol", 20}, {"Nd", 20}, {"Nl", 20}, {"No", 20}, {"Nonspacing_Mark", 20},
+    {"Open_Punctuation", 20}, {"Other_Letter", 20}, {"Other_Number", 20},
+    {"Other_Punctuation", 20}, {"Other_Symbol", 20}, {"Paragraph_Separator", 20}, {"Pc", 20},
+    {"Pd", 20}, {"Pe", 20}, {"Pf", 20}, {"Pi", 20}, {"Po", 20}, {"Private_Use", 20}, {"Ps", 20},
+    {"Sc", 20}, {"Sk", 20}, {"Sm", 20}, {"So", 20}, {"Space_Separator", 20},
+    {"Spacing_Mark", 20}, {"Surrogate", 20}, {"Titlecase_Letter", 20}, {"Unassigned", 20},
+    {"Uppercase_Letter", 20}, {"Zl", 20}, {"Zp", 20}, {"Zs", 20}, {"cntrl", 20}, {"digit", 20},
+    {"gc", 20}, {"Numeric_Value_Denominator", 21}, {"WB", 22}, {"Word_Break", 22}, {"InPC", 23},
+    {"Indic_Positional_Category", 23}, {"na", 23}, {"SB", 24}, {"Sentence_Break", 24},
+    {"Hangul_Syllable_Type", 25}, {"hst", 25}, {"AHex", 26}, {"ASCII_Hex_Digit", 26},
+    {"Joining_Type", 27}, {"jt", 27}, {"NFC_QC", 28}, {"NFC_Quick_Check", 28}, {"NFG_QC", 29},
+    {"NFKC_QC", 30}, {"NFKC_Quick_Check", 30}, {"Numeric_Type", 31}, {"nt", 31},
+    {"Vertical_Orientation", 32}, {"vo", 32}, {"Alpha", 33}, {"Alphabetic", 33}, {"Any", 34},
+    {"Assigned", 35}, {"Bidi_C", 36}, {"Bidi_Control", 36}, {"Bidi_M", 37},
+    {"Bidi_Mirrored", 37}, {"C", 38}, {"Other", 38}, {"CI", 40}, {"Case_Ignorable", 40},
+    {"Cased", 41}, {"CWCF", 42}, {"Changes_When_Casefolded", 42}, {"CWCM", 43},
+    {"Changes_When_Casemapped", 43}, {"CWL", 44}, {"Changes_When_Lowercased", 44},
+    {"CWKCF", 45}, {"Changes_When_NFKC_Casefolded", 45}, {"CWT", 46},
+    {"Changes_When_Titlecased", 46}, {"CWU", 47}, {"Changes_When_Uppercased", 47}, {"Dash", 48},
+    {"DI", 49}, {"Default_Ignorable_Code_Point", 49}, {"Dep", 50}, {"Deprecated", 50},
+    {"Dia", 51}, {"Diacritic", 51}, {"Emoji", 52}, {"EComp", 53}, {"Emoji_Component", 53},
+    {"EMod", 54}, {"Emoji_Modifier", 54}, {"EBase", 55}, {"Emoji_Modifier_Base", 55},
+    {"EPres", 56}, {"Emoji_Presentation", 56}, {"ExtPict", 57}, {"Extended_Pictographic", 57},
+    {"Ext", 58}, {"Extender", 58}, {"Comp_Ex", 59}, {"Full_Composition_Exclusion", 59},
+    {"Gr_Base", 60}, {"Grapheme_Base", 60}, {"Gr_Ext", 61}, {"Grapheme_Extend", 61},
+    {"Gr_Link", 62}, {"Grapheme_Link", 62}, {"Hex", 63}, {"Hex_Digit", 63}, {"Hyphen", 64},
+    {"IDSB", 65}, {"IDS_Binary_Operator", 65}, {"IDST", 66}, {"IDS_Trinary_Operator", 66},
+    {"IDSU", 67}, {"IDS_Unary_Operator", 67}, {"ID_Compat_Math_Continue", 68},
+    {"ID_Compat_Math_Start", 69}, {"IDC", 70}, {"ID_Continue", 70}, {"IDS", 71},
+    {"ID_Start", 71}, {"Ideo", 72}, {"Ideographic", 72}, {"Join_C", 73}, {"Join_Control", 73},
+    {"L", 74}, {"Letter", 74}, {"Cased_Letter", 75}, {"LC", 75}, {"lc", 75}, {"LOE", 76},
+    {"Logical_Order_Exception", 76}, {"Lower", 77}, {"Lowercase", 77}, {"Combining_Mark", 78},
+    {"M", 78}, {"Mark", 78}, {"MVM_COLLATION_QC", 79}, {"Math", 80}, {"MCM", 81},
+    {"Modifier_Combining_Mark", 81}, {"N", 82}, {"Number", 82}, {"NFD_QC", 83},
+    {"NFD_Quick_Check", 83}, {"MVM_COLLATION_PRIMARY", 84}, {"MVM_COLLATION_SECONDARY", 85},
+    {"NFKD_QC", 86}, {"NFKD_Quick_Check", 86}, {"NChar", 87}, {"Noncharacter_Code_Point", 87},
+    {"OAlpha", 88}, {"Other_Alphabetic", 88}, {"MVM_COLLATION_TERTIARY", 89}, {"ODI", 90},
+    {"Other_Default_Ignorable_Code_Point", 90}, {"OGr_Ext", 91}, {"Other_Grapheme_Extend", 91},
+    {"OIDC", 92}, {"Other_ID_Continue", 92}, {"OIDS", 93}, {"Other_ID_Start", 93},
+    {"OLower", 94}, {"Other_Lowercase", 94}, {"OMath", 95}, {"Other_Math", 95}, {"OUpper", 96},
+    {"Other_Uppercase", 96}, {"P", 97}, {"Punctuation", 97}, {"Pat_Syn", 98},
+    {"Pattern_Syntax", 98}, {"Pat_WS", 99}, {"Pattern_White_Space", 99}, {"PCM", 100},
+    {"Prepended_Concatenation_Mark", 100}, {"QMark", 101}, {"Quotation_Mark", 101},
+    {"Radical", 102}, {"RI", 103}, {"Regional_Indicator", 103}, {"S", 104}, {"Symbol", 104},
+    {"STerm", 105}, {"Sentence_Terminal", 105}, {"SD", 106}, {"Soft_Dotted", 106},
+    {"Term", 107}, {"Terminal_Punctuation", 107}, {"UIdeo", 108}, {"Unified_Ideograph", 108},
+    {"Upper", 109}, {"Uppercase", 109}, {"VS", 110}, {"Variation_Selector", 110},
+    {"WSpace", 111}, {"White_Space", 111}, {"space", 111}, {"XIDC", 112}, {"XID_Continue", 112},
+    {"XIDS", 113}, {"XID_Start", 113}, {"Separator", 114}, {"Z", 114},
+};
+// The property each code reads back as, by the name `.uniprop` knows it by; ""
+// for the four codes no name reaches. The General_Category groups (C, L, LC,
+// M, N, P, S, Z) and Any / Assigned are tested against the category directly.
+const char* const kUniPropCodeNames[] = {
+    "", "", "", "Joining_Group", "Case_Folding", "Bidi_Mirroring_Glyph", "Block",
+    "East_Asian_Width", "Numeric_Value", "Script", "Numeric_Value_Numerator", "",
+    "Indic_Conjunct_Break", "Canonical_Combining_Class", "Indic_Syllabic_Category",
+    "Line_Break", "Age", "Bidi_Class", "Grapheme_Cluster_Break", "Decomposition_Type",
+    "General_Category", "Numeric_Value_Denominator", "Word_Break", "Indic_Positional_Category",
+    "Sentence_Break", "Hangul_Syllable_Type", "ASCII_Hex_Digit", "Joining_Type",
+    "NFC_Quick_Check", "NFG_QC", "NFKC_Quick_Check", "Numeric_Type", "Vertical_Orientation",
+    "Alphabetic", "Any", "Assigned", "Bidi_Control", "Bidi_Mirrored", "C", "", "Case_Ignorable",
+    "Cased", "Changes_When_Casefolded", "Changes_When_Casemapped", "Changes_When_Lowercased",
+    "Changes_When_NFKC_Casefolded", "Changes_When_Titlecased", "Changes_When_Uppercased",
+    "Dash", "Default_Ignorable_Code_Point", "Deprecated", "Diacritic", "Emoji",
+    "Emoji_Component", "Emoji_Modifier", "Emoji_Modifier_Base", "Emoji_Presentation",
+    "Extended_Pictographic", "Extender", "Full_Composition_Exclusion", "Grapheme_Base",
+    "Grapheme_Extend", "Grapheme_Link", "Hex_Digit", "Hyphen", "IDS_Binary_Operator",
+    "IDS_Trinary_Operator", "IDS_Unary_Operator", "ID_Compat_Math_Continue",
+    "ID_Compat_Math_Start", "ID_Continue", "ID_Start", "Ideographic", "Join_Control", "L", "LC",
+    "Logical_Order_Exception", "Lowercase", "M", "MVM_COLLATION_QC", "Math",
+    "Modifier_Combining_Mark", "N", "NFD_Quick_Check", "MVM_COLLATION_PRIMARY",
+    "MVM_COLLATION_SECONDARY", "NFKD_Quick_Check", "Noncharacter_Code_Point",
+    "Other_Alphabetic", "MVM_COLLATION_TERTIARY", "Other_Default_Ignorable_Code_Point",
+    "Other_Grapheme_Extend", "Other_ID_Continue", "Other_ID_Start", "Other_Lowercase",
+    "Other_Math", "Other_Uppercase", "P", "Pattern_Syntax", "Pattern_White_Space",
+    "Prepended_Concatenation_Mark", "Quotation_Mark", "Radical", "Regional_Indicator", "S",
+    "Sentence_Terminal", "Soft_Dotted", "Terminal_Punctuation", "Unified_Ideograph",
+    "Uppercase", "Variation_Selector", "White_Space", "XID_Continue", "XID_Start", "Z",
+};
+constexpr long long kUniPropCodeMax = (long long)(sizeof(kUniPropCodeNames) / sizeof(*kUniPropCodeNames)) - 1;
+
+// MoarVM's value numbers for the two enumerated properties ecosystem code
+// compares against: getuniprop_int of General_Category is 6 for Mn (String::
+// Utils' nomark drops those), and nqp::unipvalcode answers the same numbers
+// from either spelling of a value. Every other value is interned (below).
+const std::map<std::string, long long>& uniGcValueCodes() {
+    static const std::map<std::string, long long> m = {
+        {"Cn", 0},  {"Lu", 1},  {"Ll", 2},  {"Lt", 3},  {"Lm", 4},  {"Lo", 5},
+        {"Mn", 6},  {"Me", 7},  {"Mc", 8},  {"Nd", 9},  {"Nl", 10}, {"No", 11},
+        {"Zs", 12}, {"Zl", 13}, {"Zp", 14}, {"Cc", 15}, {"Cf", 16}, {"Co", 17},
+        {"Cs", 18}, {"Pd", 19}, {"Ps", 20}, {"Pe", 21}, {"Pc", 22}, {"Po", 23},
+        {"Sm", 24}, {"Sc", 25}, {"Sk", 26}, {"So", 27}, {"Pi", 28}, {"Pf", 29},
+        {"Unassigned", 0}, {"Uppercase_Letter", 1}, {"Lowercase_Letter", 2},
+        {"Titlecase_Letter", 3}, {"Modifier_Letter", 4}, {"Other_Letter", 5},
+        {"Nonspacing_Mark", 6}, {"Enclosing_Mark", 7}, {"Spacing_Mark", 8},
+        {"Decimal_Number", 9}, {"digit", 9}, {"Letter_Number", 10}, {"Other_Number", 11},
+        {"Space_Separator", 12}, {"Line_Separator", 13}, {"Paragraph_Separator", 14},
+        {"Control", 15}, {"cntrl", 15}, {"Format", 16}, {"Private_Use", 17},
+        {"Surrogate", 18}, {"Dash_Punctuation", 19}, {"Open_Punctuation", 20},
+        {"Close_Punctuation", 21}, {"Connector_Punctuation", 22}, {"Other_Punctuation", 23},
+        {"Math_Symbol", 24}, {"Currency_Symbol", 25}, {"Modifier_Symbol", 26},
+        {"Other_Symbol", 27}, {"Initial_Punctuation", 28}, {"Final_Punctuation", 29}};
+    return m;
+}
+const std::map<std::string, long long>& uniEawValueCodes() {
+    static const std::map<std::string, long long> m = {
+        {"N", 0}, {"A", 1}, {"H", 2}, {"W", 3}, {"F", 4}, {"Na", 5},
+        {"Neutral", 0}, {"Ambiguous", 1}, {"Halfwidth", 2}, {"Wide", 3},
+        {"Fullwidth", 4}, {"Narrow", 5}};
+    return m;
+}
+// Values of the other string-valued properties get a number of their own,
+// handed out on first sight and shared by unipvalcode and getuniprop_int, so
+// matchuniprop's `getuniprop_int(cp, prop) == value` holds for them as well.
+// Above MoarVM's small value numbers, so one is never mistaken for the other.
+long long uniInternedValueCode(const std::string& s) {
+    static std::mutex mu;
+    static std::unordered_map<std::string, long long> ids;
+    std::lock_guard<std::mutex> g(mu);
+    auto it = ids.find(s);
+    if (it != ids.end()) return it->second;
+    long long id = 1000 + (long long)ids.size();
+    ids.emplace(s, id);
+    return id;
+}
+bool uniIsGcGroup(const std::string& p) {
+    return p == "C" || p == "L" || p == "LC" || p == "M" || p == "N" || p == "P" ||
+           p == "S" || p == "Z" || p == "Any" || p == "Assigned";
+}
+} // namespace
+
+static long long uniPropCodeOf(const std::string& name) {
+    for (auto& e : kUniPropCodes) if (name == e.name) return e.code;
+    if (std::any_of(name.begin(), name.end(), [](char c) { return c >= 'A' && c <= 'Z'; })) return 0;
+    for (auto& e : kUniPropCodes) {
+        const char* k = e.name; size_t i = 0;
+        while (k[i] && i < name.size() && ascii::tolower((unsigned char)k[i]) == name[i]) ++i;
+        if (!k[i] && i == name.size()) return e.code;
+    }
+    return 0;
+}
+
+// The property an op's second argument names: MoarVM's number, or (as older
+// rakupp code passed it) the name itself. "" when the number names nothing.
+static std::string uniPropNameOf(const Value& p) {
+    if (p.t == VT::Str) return p.toStr();
+    long long c = p.toInt();
+    return c > 0 && c <= kUniPropCodeMax ? kUniPropCodeNames[c] : "";
+}
+
+// nqp::unipvalcode(prop, value): MoarVM's number for a value of a property.
+// A binary property has no value names (MoarVM answers 0 for "True" and "Y"
+// alike — its regexes match those against a literal 1).
+static long long uniPvalCodeOf(const std::string& prop, const std::string& value) {
+    if (prop.empty()) return 0;
+    if (prop == "General_Category") {
+        auto it = uniGcValueCodes().find(value);
+        return it == uniGcValueCodes().end() ? 0 : it->second;
+    }
+    if (prop == "East_Asian_Width") {
+        auto it = uniEawValueCodes().find(value);
+        return it == uniEawValueCodes().end() ? 0 : it->second;
+    }
+    if (uniIsGcGroup(prop) || uniBinaryProp(0, prop) >= 0) return 0;
+    return uniInternedValueCode(value);
 }
 
 // ---- the `use nqp` compatibility subset ------------------------------------
@@ -465,29 +665,55 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     // `my %h is Hash::int` got an Array back from `.new` and fell through to
     // a plain Hash — every method the class defines silently unused.
     // The Unicode property reads go through the `uniprop` method, which knows
-    // every property name and its value forms; the "code" is the name itself
-    // (see UniPropCode). `_bool` answers 0/1, `_int` a number, `_str` the
-    // value's string form (General_Category → "Lu", East_Asian_Width → "W").
+    // every property name and its value forms; the property arrives as MoarVM's
+    // number (see uniPropCodeOf) and is read back by name. `_str` is the
+    // value's string form (General_Category → "Lu", East_Asian_Width → "W";
+    // "" for a binary property, as MoarVM has it), `_bool` 0/1, and `_int` a
+    // value NUMBER — the one unipvalcode answers, so matchuniprop is exactly
+    // `getuniprop_int(cp, prop) == value`, and hasuniprop that at a position.
     if ((n->op == NqpOpc::GetUniPropStr || n->op == NqpOpc::GetUniPropBool ||
-         n->op == NqpOpc::GetUniPropInt) && v.size() >= 2) {
-        ValueList pa; pa.push_back(Value::str(v[1].toStr()));
-        Value r = methodCall(Value::integer(v[0].toInt()), "uniprop", pa);
-        if (n->op == NqpOpc::GetUniPropStr) return Value::str(r.toStr());
-        if (n->op == NqpOpc::GetUniPropBool) return Value::integer(r.truthy() ? 1 : 0);
-        // `_int` of General_Category is MoarVM's NUMBER for the category, not
-        // the two-letter name: String::Utils' nomark drops every codepoint whose
-        // category is 6 (Mn). Read off Rakudo 2026.07, one codepoint per value.
-        if (r.t == VT::Str) {
-            static const std::map<std::string, long long> gcCode = {
-                {"Cn", 0},  {"Lu", 1},  {"Ll", 2},  {"Lt", 3},  {"Lm", 4},  {"Lo", 5},
-                {"Mn", 6},  {"Me", 7},  {"Mc", 8},  {"Nd", 9},  {"Nl", 10}, {"No", 11},
-                {"Zs", 12}, {"Zl", 13}, {"Zp", 14}, {"Cc", 15}, {"Cf", 16}, {"Co", 17},
-                {"Cs", 18}, {"Pd", 19}, {"Ps", 20}, {"Pe", 21}, {"Pc", 22}, {"Po", 23},
-                {"Sm", 24}, {"Sc", 25}, {"Sk", 26}, {"So", 27}, {"Pi", 28}, {"Pf", 29}};
-            auto g = gcCode.find(r.toStr());
-            if (g != gcCode.end()) return Value::integer(g->second);
+         n->op == NqpOpc::GetUniPropInt || n->op == NqpOpc::MatchUniProp ||
+         n->op == NqpOpc::HasUniProp) && v.size() >= 2) {
+        long long cp;
+        size_t pi = 1;
+        if (n->op == NqpOpc::HasUniProp) {
+            // codepoint-indexed, as nqp::ordat is; past either end matches nothing
+            if (v.size() < 4) return Value::integer(0);
+            std::vector<uint32_t> cps = utf8cp(v[0].toStr());
+            long long at = v[1].toInt();
+            if (at < 0 || at >= (long long)cps.size()) return Value::integer(0);
+            cp = cps[(size_t)at];
+            pi = 2;
+        } else {
+            cp = v[0].toInt();
         }
-        return Value::integer(r.t == VT::Bool ? (r.truthy() ? 1 : 0) : r.toInt());
+        const std::string prop = uniPropNameOf(v[pi]);
+        Value r;
+        if (prop.empty()) r = Value::boolean(false);
+        else if (uniIsGcGroup(prop)) {
+            const std::string gc = uniGeneralCategory((uint32_t)cp);
+            bool in = prop == "Any" ? true
+                    : prop == "Assigned" ? gc != "Cn"
+                    : prop == "LC" ? (gc == "Lu" || gc == "Ll" || gc == "Lt")
+                    : gc[0] == prop[0];
+            r = Value::boolean(in);
+        } else {
+            ValueList pa; pa.push_back(Value::str(prop));
+            r = methodCall(Value::integer(cp), "uniprop", pa);
+        }
+        if (n->op == NqpOpc::GetUniPropStr) return Value::str(r.t == VT::Bool ? std::string() : r.toStr());
+        if (n->op == NqpOpc::GetUniPropBool) return Value::integer(r.truthy() ? 1 : 0);
+        long long code;
+        if (r.t == VT::Bool) code = r.truthy() ? 1 : 0;
+        else if (r.t == VT::Str && (prop == "General_Category" || prop == "East_Asian_Width")) {
+            const auto& tbl = prop == "General_Category" ? uniGcValueCodes() : uniEawValueCodes();
+            auto g = tbl.find(r.toStr());
+            code = g != tbl.end() ? g->second : 0;
+        }
+        else if (r.t == VT::Str) code = uniInternedValueCode(r.toStr());
+        else code = r.toInt();
+        if (n->op == NqpOpc::GetUniPropInt) return Value::integer(code);
+        return Value::integer(code == v[pi + 1].toInt() ? 1 : 0);
     }
     if (n->op == NqpOpc::Create && v.size() == 1 && v[0].t == VT::Type) {
         std::string tn = v[0].s;
@@ -1048,14 +1274,13 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 return Value::integer(1);
             return Value::integer(0);
         }
-        // nqp::unipropcode('General_Category'): MoarVM hands back a small
-        // integer it later resolves the name from again. There is no table to
-        // index here, so the code IS the name — carried as a Str, which every
-        // getuniprop_* below accepts as the property. Unknown names answer 0.
-        case O::UniPropCode: {
-            if (v.empty()) return Value::integer(0);
-            return Value::str(v[0].toStr());
-        }
+        // nqp::unipropcode('General_Category') is MoarVM's number for the
+        // property (20); nqp::unipvalcode(20, 'Lu') a value's number (1). See
+        // uniPropCodeOf. Unknown names answer 0.
+        case O::UniPropCode:
+            return Value::integer(v.empty() ? 0 : uniPropCodeOf(v[0].toStr()));
+        case O::UniPvalCode:
+            return Value::integer(v.size() < 2 ? 0 : uniPvalCodeOf(uniPropNameOf(v[0]), v[1].toStr()));
         case O::HllBool:
             return Value::boolean(!v.empty() && v[0].truthy());
         case O::Istype: {
@@ -1158,9 +1383,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             // build is already atomic, so the guard is a no-op here
             return Value::nil();
         // The directory walk `paths` is written against. A handle reads its
-        // directory ONCE on open — `.` and `..` first, as readdir(3) lists them
-        // and as paths expects to skip — and nextfiledir hands the names out
-        // one at a time; nqp's null (Nil here) says the directory is done.
+        // directory ONCE on open and nextfiledir hands the names out one at a
+        // time. As MoarVM does (2026.09), `.` and `..` are never handed out,
+        // and the end of the directory is the empty string, which is what
+        // nqp's null_s becomes in `my str $entry = nqp::nextfiledir($h)` —
+        // paths reads it exactly that way, and a native str refuses Nil.
         // Failure to open THROWS: the caller wraps the op in nqp::handle.
         case O::OpenDir: {
             if (g_sandboxChecks) sandboxRefuseBare("nqp::opendir", SandboxCap::Read);
@@ -1169,8 +1396,6 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (!d) throw RakuError{Value::typeObj("X::AdHoc"),
                                     "Failed to open dir: " + path + ": " + std::strerror(errno)};
             Value entries = Value::array();
-            entries.arr()->push_back(Value::str("."));
-            entries.arr()->push_back(Value::str(".."));
             while (dirent* de = ::readdir(d)) {
                 const std::string nm = de->d_name;
                 if (nm == "." || nm == "..") continue;
@@ -1183,11 +1408,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return h;
         }
         case O::NextFileDir: {
-            if (v.empty() || v[0].t != VT::Hash || !v[0].hash()) return Value::nil();
+            if (v.empty() || v[0].t != VT::Hash || !v[0].hash()) return Value::str("");
             auto& H = *v[0].hash();
             long long p = H["pos"].toInt();
             Value& ents = H["entries"];
-            if (ents.t != VT::Array || !ents.arr() || p >= (long long)ents.arr()->size()) return Value::nil();
+            if (ents.t != VT::Array || !ents.arr() || p >= (long long)ents.arr()->size()) return Value::str("");
             H["pos"] = Value::integer(p + 1);
             return (*ents.arr())[(size_t)p];
         }
