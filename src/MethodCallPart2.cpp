@@ -4126,8 +4126,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             takeVow();
             Value v = args.empty() ? Value::boolean(true) : args[0];
             std::vector<std::function<void()>> fire;
-            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->result = v; ps->done = true; } fire.swap(ps->thens); ps->cv.notify_all(); }
-            (*inv.hash())["status"] = Value::str("Kept"); (*inv.hash())["result"] = v;
+            // the hash is written under ps->m too: an `await Promise.anyof(…)`
+            // that sees this promise settled reflects it onto the same hash
+            // under that lock, and two unguarded writers can tear a Value
+            auto settle = [&] { (*inv.hash())["status"] = Value::str("Kept"); (*inv.hash())["result"] = v; };
+            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->result = v; ps->done = true; } settle(); fire.swap(ps->thens); ps->cv.notify_all(); }
+            else settle();
             for (auto& f : fire) f(); // run `.then` continuations now that it's settled
             return inv;
         }
@@ -4146,8 +4150,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
             }
             std::vector<std::function<void()>> fire;
-            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->broken = true; ps->cause = c; ps->causeMsg = c.toStr(); ps->done = true; } fire.swap(ps->thens); ps->cv.notify_all(); }
-            (*inv.hash())["status"] = Value::str("Broken"); (*inv.hash())["cause"] = c;
+            auto settle = [&] { (*inv.hash())["status"] = Value::str("Broken"); (*inv.hash())["cause"] = c; };   // under ps->m, as keep
+            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->broken = true; ps->cause = c; ps->causeMsg = c.toStr(); ps->done = true; } settle(); fire.swap(ps->thens); ps->cv.notify_all(); }
+            else settle();
             for (auto& f : fire) f();
             return inv;
         }

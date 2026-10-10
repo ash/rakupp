@@ -298,6 +298,11 @@ static void asyncSockName(const sockaddr_storage& ss, std::string& host, long lo
 Value makeAsyncSocket(int fd) {
     Value s = Value::makeHash(); s.hashKind = "AsyncSocket";
     (*s.hash())["fd"] = Value::integer(fd);
+    // "closed" exists from the start: its reader worker writes it at EOF while
+    // another thread may be reading the hash, and an INSERT there can move the
+    // table out from under that reader. Writing a key that is already there
+    // leaves the hash's shape alone; both sides take the hash's stripe.
+    (*s.hash())["closed"] = Value::boolean(false);
     sockaddr_storage a{}; socklen_t alen = sizeof(a);
     std::string h; long long p = 0;
     if (::getsockname(fd, (sockaddr*)&a, &alen) == 0) {
@@ -2445,7 +2450,12 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
     // 4) async read: a worker recv()s and emits Blob chunks; EOF fires done.
     if (h.count("kind") && h.at("kind").toStr() == "async-read") {
         Value sock = h.at("socket");
-        int fd = (sock.t == VT::Hash && sock.hash()->count("fd")) ? (int)(*sock.hash())["fd"].toInt() : -1;
+        int fd = -1;
+        if (sock.t == VT::Hash && sock.hash()) {
+            ParStripe g(*this, sock.hash());   // another tap's reader may be forgetting it
+            auto fi = sock.hash()->find("fd");
+            if (fi != sock.hash()->end()) fd = (int)fi->second.toInt();
+        }
         engageGil();
         auto handle = std::make_shared<TapHandle>();
         // Closing a TAP must not touch the SOCKET. This used to
@@ -2598,6 +2608,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             // away) went into that NEW connection — chat messages for a dead
             // client reached whoever connected next.
             if (!tapClosed && fd >= 0 && sock.t == VT::Hash && sock.hash()) {
+                Interpreter::ParStripe g(*self, sock.hash());   // the program may be reading it now
                 (*sock.hash())["fd"] = Value::integer(-1);
                 (*sock.hash())["closed"] = Value::boolean(true);
             }

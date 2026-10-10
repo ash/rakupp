@@ -872,10 +872,17 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     // synchronous sends answered with a kept Promise (Cro awaits them via
     // `whenever $socket.write(…) {}`).
     if (inv.t == VT::Hash && inv.hashKind == "AsyncSocket") {
-        int fd = inv.hash()->count("fd") ? (int)(*inv.hash())["fd"].toInt() : -1;
+        // under the hash's stripe: the socket's reader worker writes both at EOF
+        int fd = -1; bool sockClosed = false;
+        {   ParStripe g(*this, inv.hash());
+            auto fi = inv.hash()->find("fd");
+            if (fi != inv.hash()->end()) fd = (int)fi->second.toInt();
+            auto ci = inv.hash()->find("closed");
+            sockClosed = ci != inv.hash()->end() && ci->second.truthy();
+        }
         if (m == "Supply") {
             // a closed socket has nothing left to read: its Supply is done at once
-            if (inv.hash()->count("closed"))
+            if (sockClosed)
                 return methodCall(Value::typeObj("Supply"), "from-list", ValueList{});
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["kind"] = Value::str("async-read");
@@ -917,6 +924,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         }
         if (m == "close") {
             if (fd >= 0) { ::shutdown(fd, SHUT_WR); }
+            ParStripe g(*this, inv.hash());
             (*inv.hash())["closed"] = Value::boolean(true);
             return Value::boolean(true);
         }
