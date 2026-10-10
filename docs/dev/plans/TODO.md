@@ -132,6 +132,28 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   every attribute key). The `fib` integer kernel moves ±5% with code
   placement in unrelated files: pin its alignment so perf-guard stops seeing
   it.
+- [ ] **Run-time quadratics the scaling gate found** (2026-10-10): seven
+  common operations whose cost per call grows with the size of what they work
+  on. Each is a `known` shape in `t/scaling/run.raku`, a TAP TODO, so the gate
+  stays green; take a shape's mark off when it reports linear (the summary
+  says so). Growth for 8× the size, measured 2026-10-11 (linear is about 8×):
+  - `@a.unshift` / `.prepend`, ×64 (`run/array-unshift`): each call moves
+    every element. Next: headroom at the front of the ValueList storage.
+  - `$x (elem) $set`, ×83 (`run/set-elem`): it scans the elements where
+    `$set{$x}` and `.EXISTS-KEY` are hash lookups. Next: route `(elem)`, `∈`,
+    `∉` and `(cont)` to that lookup for the Setty and Baggy types.
+  - `.index($needle, $pos)` with a start position, ×58 (`run/str-index-walk`):
+    O(string length) per call, about 130 µs on 100 KB wherever `$pos` is,
+    where `.index($needle)` is instant. STRING-SCAN-QUADRATICS.md §5 fixed the
+    other `.index` sites; this is the position path.
+  - `$s ~~ m:c/…/` in a loop, ×57 (`run/str-match-continue`): each match pays
+    for the position it starts from (`match-offsets-linear.raku` covers a
+    neighbouring shape).
+  - `[~] @list`, ×71 (`run/str-concat-reduce`): it folds pairwise, copying the
+    growing string at each step, where `.join` is linear. Next: a join-shaped
+    path for the `~` reduction.
+  - `Buf.push`, ×87 (`run/buf-push`), and `Buf.append`, ×68 (`run/buf-append`):
+    the cost grows with the Buf, where `~=` on a Buf is linear.
 
 ## 2. Correctness (v5 error batches)
 
