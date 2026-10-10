@@ -751,6 +751,11 @@ std::string constantStringFor(const std::string& src, const std::string& var) {
 // file's declarations are visible here; an imported one still needs its
 // module's own parse.
 void Lexer::scanUserOps() {
+    for (size_t p = src_.find("infix:<"); p != std::string::npos; p = src_.find("infix:<", p + 1)) {
+        size_t b = p + 7, e = b;
+        while (e < src_.size() && (ascii::isalnum((unsigned char)src_[e]) || src_[e] == '_' || src_[e] == '-')) e++;
+        if (e > b && e < src_.size() && src_[e] == '>') infixWordsInSrc_.insert(src_.substr(b, e - b));
+    }
     // `sub circumfix:<w ">` — a closer that is a double quote. In TERM position
     // `"` still opens a string; right after a term it can only be the closer.
     for (size_t p = src_.find("circumfix:<"); p != std::string::npos; p = src_.find("circumfix:<", p + 1)) {
@@ -822,7 +827,7 @@ void Lexer::scanUserOps() {
             {
                 size_t ls = src_.rfind('\n', p);
                 ls = (ls == std::string::npos) ? 0 : ls + 1;
-                if (src_.find('#', ls) < p) continue;
+                if (std::memchr(src_.data() + ls, '#', p - ls)) continue;
             }
             size_t o = p + cl;
             std::string name;
@@ -947,6 +952,15 @@ bool Lexer::userOpIsAssignPrefix(const std::string& uo) const {
     return false;
 }
 
+size_t Lexer::builtinOpLenHere() const {
+    size_t best = 0;
+    for (const char* op : kLexOps) {
+        const size_t n = std::strlen(op);
+        if (n > best && src_.compare(pos_, n, op) == 0) best = n;
+    }
+    return best;
+}
+
 bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
     if (userOps_.empty()) return false;
     // tight after a word, a spelling that STARTS like a word would split one
@@ -980,14 +994,11 @@ bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
             }
     }
     // the longest BUILT-IN operator spelled here: a declared `infix:<..>` must
-    // not cut the `..^` of `1..^5` in two
-    size_t builtinLen = 0;
-    for (const char* op : kLexOps) {
-        const size_t n = std::strlen(op);
-        if (n > builtinLen && src_.compare(pos_, n, op) == 0) builtinLen = n;
-    }
+    // not cut the `..^` of `1..^5` in two (measured once a declared one matches)
+    size_t builtinLen = (size_t)-1;
     for (const std::string& uo : userOps_) {
         if (src_.compare(pos_, uo.size(), uo) != 0) continue;
+        if (builtinLen == (size_t)-1) builtinLen = builtinOpLenHere();
         if (builtinLen > uo.size()) continue;
         if (afterWord && wordish0(uo)) continue;
         bool isTerm = userTerms_.count(uo) != 0;
@@ -2049,19 +2060,22 @@ void Lexer::scanDeclaredSubNames(
         }
         // A TYPE of a quote keyword's name declares it too: `my role Q[&f] {}`
         // makes `Q[{ 1 }]` a parameterization, not a Q[…] quote (Rakudo).
-        for (const char* kw : {"role", "class", "grammar"}) {
-            const size_t kl = std::strlen(kw);
-            if (src.compare(pos, kl, kw) != 0 || pos + kl >= src.size() ||
-                !ascii::isspace((unsigned char)src[pos + kl]) ||
-                (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '_' ||
-                         src[pos - 1] == '-')))
-                continue;
-            size_t i = pos + kl;
-            while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
-            size_t b = i;
-            while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
-            if (i > b) open.back().push_back({src.substr(b, i - b), pos});
-            break;
+        // (only where one of those words can start: this runs at every byte)
+        if (src[pos] == 'r' || src[pos] == 'c' || src[pos] == 'g') {
+            for (const char* kw : {"role", "class", "grammar"}) {
+                const size_t kl = std::strlen(kw);
+                if (src.compare(pos, kl, kw) != 0 || pos + kl >= src.size() ||
+                    !ascii::isspace((unsigned char)src[pos + kl]) ||
+                    (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '_' ||
+                             src[pos - 1] == '-')))
+                    continue;
+                size_t i = pos + kl;
+                while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
+                size_t b = i;
+                while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
+                if (i > b) open.back().push_back({src.substr(b, i - b), pos});
+                break;
+            }
         }
         if (src.compare(pos, 3, "sub") != 0) { pos++; continue; }
         if (pos && (ascii::isalnum((unsigned char)src[pos - 1]) || src[pos - 1] == '_' ||
@@ -2123,11 +2137,11 @@ static bool prevIsClearTerm(const std::vector<Token>& out);
 // a quote: with `our &infix:<qq> = …` (or `sub infix:<qq>`), `(1, 2) qq (3, 4)`
 // is the call, where `qq (…)` in term position stays a string.
 bool Lexer::declaredInfixWordAfterTerm(const std::vector<Token>& out) const {
-    if (out.empty() || !prevIsClearTerm(out)) return false;
+    if (infixWordsInSrc_.empty() || out.empty() || !prevIsClearTerm(out)) return false;
     size_t e = pos_;
     while (e < src_.size() && (ascii::isalnum((unsigned char)src_[e]) || src_[e] == '_' || src_[e] == '-')) e++;
     if (e == pos_) return false;
-    return src_.find("infix:<" + src_.substr(pos_, e - pos_) + ">") != std::string::npos;
+    return infixWordsInSrc_.count(src_.substr(pos_, e - pos_)) > 0;
 }
 
 bool Lexer::tryQuoteForm(Token& out) {
@@ -3706,9 +3720,11 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
             if (pos_ == 0 || !(src_[pos_ - 1] == ' ' || src_[pos_ - 1] == '\t')) return false;
             refreshTermNames(out);
             if (isTermName(pv.text)) return false;
-            size_t nl = src_.find('\n', pos_ + 1);
-            size_t close = src_.find('/', pos_ + 1);
-            return close != std::string::npos && (nl == std::string::npos || close < nl);
+            // the first `/` or newline ahead: only a slash on THIS line closes it.
+            // (Searching for the slash alone ran to the next one anywhere in the
+            // file, for every `%` after a name — `my %h` made lexing quadratic.)
+            size_t close = src_.find_first_of("/\n", pos_ + 1);
+            return close != std::string::npos && src_[close] == '/';
         }
         default:
             return false; // IntLit/NumLit/Var/RParen/RBracket/StrLit/RegexLit => division
@@ -3935,14 +3951,12 @@ Token Lexer::lexOperator(bool termBefore) {
     // a spelling this file DECLARED (`sub infix:<%%%>`) wins over the table,
     // longest first — otherwise the table's `%%` would take a bite out of it
     // (…unless a LONGER built-in one is spelled here: `..` declared, `..^` written)
-    {
-        size_t builtinLen = 0;
-        for (const char* op : kLexOps) {
-            const size_t n = std::strlen(op);
-            if (n > builtinLen && src_.compare(pos_, n, op) == 0) builtinLen = n;
-        }
+    if (!userOps_.empty()) {
+        size_t builtinLen = (size_t)-1;   // measured once a declared spelling matches
         for (const std::string& uo : userOps_)
-            if (src_.compare(pos_, uo.size(), uo) == 0 && !userOpIsAssignPrefix(uo) && builtinLen <= uo.size()) {
+            if (src_.compare(pos_, uo.size(), uo) == 0 && !userOpIsAssignPrefix(uo)) {
+                if (builtinLen == (size_t)-1) builtinLen = builtinOpLenHere();
+                if (builtinLen > uo.size()) continue;
                 for (size_t k = 0; k < uo.size(); k++) advance();
                 return make(Tok::Op, uo);
             }
@@ -4002,12 +4016,10 @@ Token Lexer::lexOperator(bool termBefore) {
     }
     // try longest first (skip the textual placeholder)
     for (const char* op : kLexOps) {
-        std::string s(op);
-        bool ok = true;
-        for (size_t k = 0; k < s.size(); k++) {
-            if (peek(k) != s[k]) { ok = false; break; }
-        }
-        if (ok) {
+        size_t n = 0;
+        while (op[n] && pos_ + n < src_.size() && src_[pos_ + n] == op[n]) n++;
+        if (!op[n]) {
+            std::string s(op, n);
             // Inside a bare `< … >` word list an operator must never swallow the
             // CLOSING angle: `<AAAAAA=>` is the one word "AAAAAA=", not a fat arrow
             // that eats the `>` and leaves the list unterminated (Base64's list of

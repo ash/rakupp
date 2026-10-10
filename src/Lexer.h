@@ -115,6 +115,11 @@ private:
     std::vector<std::string> userOps_; // `sub infix:<…>` spellings declared in THIS file, longest first
     std::set<std::string> userTerms_;  // …of which these are TERMS (`sub term:<•>`): lexed as names
     std::set<std::string> userWordInfix_; // declared WORD infixes (`infix:<dot>`), for `»dot«`
+    // every word W spelled `infix:<W>` ANYWHERE in the source — declared, bound
+    // (`our &infix:<qq> = …`) or merely mentioned. Collected once up front:
+    // asking the source per word after a term made every `1 if $x` statement
+    // re-scan the whole file, and loading quadratic in its length.
+    std::set<std::string> infixWordsInSrc_;
     void scanUserOps();
 public:
     // a spelling to lex whole (a declared operator, or a TERM lexed as a name);
@@ -126,6 +131,7 @@ private:
     // `$v **= 3` where the file redeclares `infix:<**>`: an ASCII spelling
     // followed by `=` is its compound assignment, which the table lexes whole
     bool userOpIsAssignPrefix(const std::string& uo) const;
+    size_t builtinOpLenHere() const;   // the longest kLexOps spelling at pos_ (0: none)
     // A file that declares `sub prefix:</>` has taken the slash away from the
     // regex literal: from that declaration on, a `/` in term position is that
     // operator (Rakudo does the same — `/bc/` there becomes prefix-slash on a
