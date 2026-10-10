@@ -212,8 +212,6 @@ std::string joinValues(const ValueList& items, const std::string& sep);
 Value makeInfArray(long long start);
 std::string markFold(const std::string& in);
 ValueList toList(const Value& v);
-// A HOLE of an `is default(v)` array reads as v: replace the unset slots of a
-// snapshot `items` taken from `arr` (nothing to do for any other array).
 // NativeCall's types live in NativeCall::Types, and their `.^name` and a type
 // object's `.raku` say so; typeName() keeps the short name every check uses
 inline std::string ncQualifiedName(const std::string& n) {
@@ -221,9 +219,20 @@ inline std::string ncQualifiedName(const std::string& n) {
         return "NativeCall::Types::" + n;
     return n;
 }
+// A HOLE of an `is default(v)` array reads as v, and one of a TYPED array as
+// its element type (`my Int @a; @a[2] = 1` lists Int, Int, 1): replace the
+// unset slots of a snapshot `items` taken from `arr`.
+Value typedElemDefault(const Value& base);
 inline void fillArrayHoles(const Value& arr, ValueList& items) {
-    if (arr.t != VT::Array || !arr.elemDefault()) return;
-    for (auto& e : items) if (e.t == VT::Any) e = *arr.elemDefault();
+    if (arr.t != VT::Array) return;
+    if (arr.elemDefault()) {
+        for (auto& e : items) if (e.t == VT::Any) e = *arr.elemDefault();
+        return;
+    }
+    if (arr.ofType().empty() || !std::isupper((unsigned char)arr.ofType()[0])) return;
+    Value d; bool have = false;
+    for (auto& e : items)
+        if (e.t == VT::Any) { if (!have) { d = typedElemDefault(arr); have = true; } e = d; }
 }
 // A negative (or int64-overflowing) START POSITION for a string search is out of
 // range: a returned X::OutOfRange Failure naming the method (Str sheet ST-27).

@@ -2251,6 +2251,8 @@ public:
     // `Sym(42)` with `class Sym is Str`: a non-string cannot be the string a
     // Str-derived class holds (Rakudo dies unboxing it). Throws, or returns.
     void checkBoxedStrSource(const ClassInfo* cls, const Value& v);
+    void refuseUnpassedDefinite(const Param& p);   // an optional `T:D` param nobody passed
+    std::string enumBaseType(const std::string& enumType);   // Int for `enum <a b>`, Str for `(a => "x")`
     Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param

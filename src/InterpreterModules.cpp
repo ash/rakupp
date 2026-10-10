@@ -1115,6 +1115,11 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // in the USING scope.
         {
             auto it = moduleEnv->vars.find("&EXPORT");
+            // …the COMPUNIT's EXPORT only: one written after `unit module Foo`
+            // is Foo::EXPORT, a sub of the package, and Rakudo never calls it
+            if (it != moduleEnv->vars.end() && it->second.t == VT::Code && it->second.code() &&
+                !it->second.code()->pkg.empty() && it->second.code()->pkg != "GLOBAL")
+                it = moduleEnv->vars.end();
             if (it != moduleEnv->vars.end() && it->second.t == VT::Code)
                 moduleExportSubs_[name] = it->second;   // for repeat `use`s
             if (doImport && it != moduleEnv->vars.end() && it->second.t == VT::Code) {
@@ -4392,7 +4397,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             auto makeCand = [&](const std::vector<Param>* prms) {
                 Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
                 c.code()->name = sname;
-                c.code()->pkg = tctx_.pkgPrefix.empty() ? "GLOBAL"
+                c.code()->pkg = !sd->pkgOfExport.empty() ? sd->pkgOfExport
+                            : tctx_.pkgPrefix.empty() ? "GLOBAL"
                             : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
                 c.code()->params = prms;
                 c.code()->body = &sd->body;

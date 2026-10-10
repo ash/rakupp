@@ -4341,8 +4341,28 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 }
             }
             Tok lk = out.back().kind;
+            // an angle SUBSCRIPT written against its variable — `%h<a>²` lexes as
+            // `%h` `<` `a` `>` — is a term too, its base starting at the variable
+            size_t angleBase = std::string::npos;
+            if (!spaced && lk == Tok::Op && out.back().text == ">" && !out.back().spaceBefore) {
+                for (size_t j = out.size() - 1; j > 0; j--) {
+                    const Token& t = out[j - 1];
+                    if (t.kind == Tok::Op && t.text == "<") {
+                        if (!t.spaceBefore && j >= 2 && out[j - 2].kind == Tok::Var) angleBase = j - 2;
+                        // …and a word LIST standing on its own (`<a b>²` is 2²)
+                        else if (t.spaceBefore || j == 1 ||
+                                 (out[j - 2].kind == Tok::Op && out[j - 2].text != ">") ||
+                                 out[j - 2].kind == Tok::LParen)
+                            angleBase = j - 1;
+                        break;
+                    }
+                    if (t.spaceBefore && t.kind != Tok::Ident) break;   // words only, spaced or not
+                    if (t.kind != Tok::Ident && t.kind != Tok::IntLit) break;
+                }
+            }
             bool afterTerm = lk == Tok::IntLit || lk == Tok::NumLit || lk == Tok::Var ||
                              lk == Tok::RParen || lk == Tok::RBracket || lk == Tok::Ident ||
+                             angleBase != std::string::npos ||
                              (lk == Tok::Op && (out.back().text == "*" || // Whatever-curry `*²`
                                                 out.back().text == "\xE2\x88\x9E" || // `∞²` — ∞ is a term
                                                 out.back().text == ">>" || out.back().text == "\xC2\xBB")); // hyper `»²`
@@ -4366,7 +4386,46 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
                      (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^'))))
                     call = true;
-                if (call) { Token lp = make(Tok::LParen, "("); lp.spaceBefore = out.back().spaceBefore; out.back().spaceBefore = false; out.insert(out.end() - 1, lp); }
+                // …and a SUBSCRIPTED base (`@a[0]²!`, `f(2)².sqrt`): wrap from the
+                // term the brackets belong to, walking back over each balanced
+                // group and the name in front of it
+                size_t multiStart = std::string::npos;
+                if (!call && (lk == Tok::RBracket || lk == Tok::RParen) &&
+                    ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
+                     (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^')))) {
+                    size_t i = out.size();
+                    bool ok = false;
+                    while (i > 0) {
+                        const Tok k = out[i - 1].kind;
+                        if (k != Tok::RBracket && k != Tok::RParen) break;
+                        int depth = 0; size_t j = i;
+                        while (j > 0) {
+                            const Tok t = out[j - 1].kind;
+                            if (t == Tok::RBracket || t == Tok::RParen) depth++;
+                            else if (t == Tok::LBracket || t == Tok::LParen) { if (--depth == 0) break; }
+                            j--;
+                        }
+                        if (j == 0) { ok = false; break; }
+                        i = j - 1;                       // at the opener
+                        ok = true;
+                        // the name the group subscripts or calls, written against it
+                        if (i > 0 && !out[i].spaceBefore &&
+                            (out[i - 1].kind == Tok::Var || out[i - 1].kind == Tok::Ident)) { i--; break; }
+                    }
+                    if (ok && i < out.size()) multiStart = i;
+                }
+                // …and an ANGLE subscript (`%h<a>²!`), from its variable
+                if (!call && multiStart == std::string::npos && angleBase != std::string::npos &&
+                    ((peek() == '!' && peek(1) != '=' && peek(1) != '~') ||
+                     (peek() == '.' && (isIdentStart(peek(1)) || peek(1) == '^'))))
+                    multiStart = angleBase;
+                if (multiStart != std::string::npos) {
+                    Token lp = make(Tok::LParen, "("); lp.spaceBefore = out[multiStart].spaceBefore;
+                    out[multiStart].spaceBefore = false;
+                    out.insert(out.begin() + (long)multiStart, lp);
+                    call = true;
+                }
+                else if (call) { Token lp = make(Tok::LParen, "("); lp.spaceBefore = out.back().spaceBefore; out.back().spaceBefore = false; out.insert(out.end() - 1, lp); }
                 Token op = make(Tok::Op, "**"); op.spaceBefore = false; out.push_back(op);
                 Token num = make(Tok::IntLit, digits); num.ival = std::strtoll(digits.c_str(), nullptr, 10);
                 out.push_back(num);

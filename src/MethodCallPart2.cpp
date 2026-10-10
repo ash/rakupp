@@ -9535,6 +9535,30 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return out;
             }
         }
+        // …and so does an IO::Handle — from a list, not by probing: the probe
+        // would CALL the method, and `print` on a live handle writes
+        if ((inv.t == VT::Hash && inv.hashKind == "FileHandle") ||
+            (inv.t == VT::Type && inv.s == "IO::Handle")) {
+            static const std::set<std::string> kHandle = {
+                "print", "say", "put", "printf", "print-nl", "write", "spurt", "get", "getc",
+                "lines", "words", "read", "readchars", "slurp", "slurp-rest", "comb", "split",
+                "close", "opened", "eof", "seek", "tell", "lock", "unlock", "flush", "encoding",
+                "nl-in", "nl-out", "chomp", "path", "IO", "Str", "gist", "raku", "open",
+                "native-descriptor", "t", "Supply", "out-buffer", "WRITE", "READ", "EOF",
+                "DESTROY", "new", "defined" };
+            if (kHandle.count(mn)) {
+                Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
+                stub.code()->name = mn; stub.code()->isMethod = true;
+                std::string mnc = mn;
+                stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                    if (a.empty()) return Value::any();
+                    ValueList rest(a.begin() + 1, a.end());
+                    return I.methodCall(a[0], mnc, std::move(rest));
+                };
+                out.arr()->push_back(stub);
+                return out;
+            }
+        }
         ClassInfo* ci = nullptr;
         if (inv.t == VT::Object && inv.obj()) ci = inv.obj()->cls.get();
         else if (inv.t == VT::Type) { auto it = classes_.find(resolveClassAlias(inv.s)); if (it != classes_.end()) ci = it->second.get(); }

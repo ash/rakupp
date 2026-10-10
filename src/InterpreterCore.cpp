@@ -3669,7 +3669,13 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             std::shared_ptr<Env> kframe;
             // a HOLE of an `is default(v)` array reads as v, and stays a hole
             // unless the body writes something else into it
-            const Value* holeDflt = arr == listv.arrS() && listv.elemDefault() ? listv.elemDefault().get() : nullptr;
+            // (…and a TYPED array's hole reads as its element type)
+            Value typedHole;
+            if (arr == listv.arrS() && !listv.elemDefault() && !listv.ofType().empty() &&
+                ascii::isupper((unsigned char)listv.ofType()[0]))
+                typedHole = typedElemDefault(listv);
+            const Value* holeDflt = arr == listv.arrS() && listv.elemDefault() ? listv.elemDefault().get()
+                                  : typedHole.t == VT::Type ? &typedHole : nullptr;
             bool wasHole = false;
             for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
                 if (__jg.site && jit::isReady(__jg.site)) {
@@ -3925,6 +3931,29 @@ static inline bool isMuTypeObject(const Value& v) {
 static Value unpassedDefault(const std::string& type, char sigil, bool blockParam) {
     if (blockParam && type.empty() && sigil == '$') return Value::typeObj("Mu");
     return typedDefault(type, sigil);
+}
+// …which a `:D` parameter refuses: an optional `Real:D :$r` (or `Real:D $r?`)
+// that nobody passed would hold the Real TYPE OBJECT, and Rakudo's binder says
+// so — X::Parameter::InvalidConcreteness, naming the routine. (Multi dispatch
+// already passed such a candidate over; this is the plain call.)
+// The routine whose signature is being bound, for its name in that message
+// (set around the two routine-level bindParams calls; a block is `<anon>`).
+static thread_local const std::string* t_bindRoutine = nullptr;
+struct BindRoutineName {
+    const std::string* saved;
+    explicit BindRoutineName(const std::string* n) : saved(t_bindRoutine) { t_bindRoutine = n; }
+    ~BindRoutineName() { t_bindRoutine = saved; }
+};
+void Interpreter::refuseUnpassedDefinite(const Param& p) {
+    if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
+    std::string routine = t_bindRoutine && !t_bindRoutine->empty() ? *t_bindRoutine : std::string("<anon>");
+    throwTypedV("X::Parameter::InvalidConcreteness",
+        {{"expected", Value::str(p.type)}, {"got", Value::str(p.type)},
+         {"routine", Value::str(routine)}, {"param", Value::str(p.name)},
+         {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(false)}},
+        "Parameter '" + p.name + "' of routine '" + routine + "'" +
+        " must be an object instance of type\n'" + p.type + "', not a type object of type '" + p.type +
+        "'. Did you forget a '.new'?");
 }
 
 void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockParam,
@@ -4492,6 +4521,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
                     else e->define(params[i].name, std::move(v));
                 } else {
+                    refuseUnpassedDefinite(params[i]);
                     int ps = params[i].padSlot;
                     Env* e = env.get();
                     if (ps >= 0 && e->layout &&
@@ -4997,7 +5027,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             else if (p.required)
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Required named parameter '" + bareName + "' not passed"};
-            else env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
+            else { refuseUnpassedDefinite(p);
+                   env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams)); }
             continue;
         }
         if (pi < positional.size()) {
@@ -5255,6 +5286,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 env->define(p.captureName, dv.t == VT::Type ? dv : Value::typeObj(dv.typeName()));
             env->define(slotName(p, pidx), std::move(dv));
         } else {
+            refuseUnpassedDefinite(p);
             env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
         }
     }
@@ -8614,6 +8646,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (c.params && !c.params->empty()) {
+        BindRoutineName brn(&c.name);
         bindParams(*c.params, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.params, env, rwArgs,
@@ -10462,6 +10495,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
     }
     if (c.params && !c.params->empty()) {
+        BindRoutineName brn(&c.name);
         bindParams(*c.params, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
                    whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
@@ -16551,6 +16585,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // declared type or a subtype (Int matches Int; Any does not)
                     std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
                     if (tn == want) return true;
+                    // an enum's type object is one of its value type (`my Int $v = Color`)
+                    if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, want);
                     if (want == "UInt" && (tn == "Int" || tn == "UInt" || tn == "IntStr")) return true;
         if (want == "Int" && tn == "IntStr") return true;
                     if (want == "Num" && tn == "NumStr") return true;
@@ -17910,6 +17946,13 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     }
     if (Value got; r.t == VT::Type && g_cbInterp && (opEq(op, "~~") || opEq(op, "!~~")) && !isJunction(l) &&
         g_cbInterp->typeObjectUserAccepts(l, r, got)) return Value::boolean(opEq(op, "~~") == got.truthy());   // C's ACCEPTS
+    // an enum's TYPE OBJECT against a type: a type object (never `:D`) of its
+    // enum, of Enumeration and of its value type's line — not a list to match
+    // element-wise, which is what its pair-list shape fell into
+    if (r.t == VT::Type && (opEq(op, "~~") || opEq(op, "!~~")) && isEnumTypeObject(l)) {
+        const bool res = r.i != 1 && rtTypeMatch(l, r.s.str());
+        return Value::boolean(opEq(op, "~~") ? res : !res);
+    }
     if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) { // simple integer sequence (closure/list seeds handled in evalBinary)
         // …but `[...]`, `>>...<<` and `&infix:<...>` reach THIS arm with a list
         // seed, which read as its element count (`[...] 1, 3, 9` answered 3..9):
@@ -24753,6 +24796,9 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Type && v.s == "Mu" && u->operand && u->operand->kind == NK::NameTerm)
             throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                             "Cannot resolve caller prefix:<~>(Mu:U); none of these signatures matches:\n    (\\a)"};
+        // an enum's TYPE OBJECT is undefined: `~Color` warns and is "", as
+        // `Color.Str` is (its pair-list shape would print the members)
+        if (isEnumTypeObject(v)) return methodCall(v, "Str", ValueList{});
         if (!undefOperand) return prefixStringify(v); // honour a user Str/gist / Exception .message
         UninitNameScope nm(*this, uninitNameOf(u->operand.get()));
         return prefixStringify(v);
@@ -25107,6 +25153,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
     auto undefOk = [&](const std::string& want) {
         std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
         if (tn == want) return true;
+        if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, want);   // `my Int $v = Color`
         if (want == "Int" && tn == "IntStr") return true;
         if (want == "Num" && tn == "NumStr") return true;
         if (want == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
@@ -26372,6 +26419,9 @@ Value Interpreter::evalIndex(Index* idx) {
                     // linked list, or segfaulted, roughly one run in three).
                     const Value& slot = (*bp->arr())[i];
                     ParStripe rs(*this, &slot);
+                    // a HOLE of a typed array reads as its element type
+                    // (`my Int @a; @a[2] = 1; @a[0]` is Int), as past its end
+                    if (slot.t == VT::Any && !bp->ofType().empty()) return arrayMissingDefault(*bp);
                     return itemizeElem(slot, bp->isList);
                 }
             }
@@ -30417,6 +30467,46 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // and bodies that apply nothing (the engine already did).
         // Static on purpose — the proto→candidate→dispatcher cycle
         // lives for the process, like the real dispatch group would.
+        // &next / &last / &redo — Rakudo's loop-control SUBS, each a multi of
+        // `( --> Nil)` and `(Label:D $x --> Nil)`; calling one is the statement
+        if (bare == "next" || bare == "last" || bare == "redo") {
+            static std::map<std::string, Value> ctl;
+            static std::mutex ctlM;
+            std::lock_guard<std::mutex> lk(ctlM);
+            auto it = ctl.find(bare);
+            if (it != ctl.end()) return it->second;
+            static std::deque<std::vector<Param>> sigStore;
+            const std::string which = bare;
+            auto thrower = [which](Interpreter&, ValueList& a) -> Value {
+                std::string label;
+                if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Label" && a[0].hash()) {
+                    auto n = a[0].hash()->find("name");
+                    if (n != a[0].hash()->end()) label = n->second.toStr();
+                }
+                if (which == "next") { NextEx e; e.label = label; throw e; }
+                if (which == "last") { LastEx e; e.label = label; throw e; }
+                RedoEx e; e.label = label; throw e;
+            };
+            Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
+            p.code()->name = bare;
+            p.code()->isMultiDispatcher = true; p.code()->isProto = true;
+            p.code()->builtin = thrower;
+            for (int withLabel = 0; withLabel < 2; withLabel++) {
+                Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
+                c.code()->name = bare;
+                c.code()->isMultiCandidate = true;
+                c.code()->retType = "Nil";
+                sigStore.emplace_back();
+                auto& ps = sigStore.back();
+                if (withLabel) { ps.emplace_back(); ps.back().name = "$x"; ps.back().type = "Label"; ps.back().defConstraint = 1; }
+                c.code()->params = &ps;
+                c.code()->hadSig = true;
+                c.code()->builtin = thrower;
+                c.code()->dispatcherC = p.codeS();
+                p.code()->candidates.push_back(std::move(c));
+            }
+            return ctl[bare] = p;
+        }
         if (bare == "trait_mod:<is>") {
             static Value proto = [] {
                 static std::deque<std::vector<Param>> sigStore;

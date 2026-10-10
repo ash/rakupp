@@ -6321,7 +6321,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
                 if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
                     inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&
-                    !inv.holdsContainers() && !inv.elemDefault()) {
+                    !inv.holdsContainers() && !inv.elemDefault() && inv.ofType().empty()) {
                     Value out = Value::array(); out.isList = true; out.s = "Seq";
                     const ValueList& src = *inv.arr();
                     out.arr()->reserve(src.size() * 2);
@@ -8675,6 +8675,17 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // plain value too: `42.^mro` is `(Int, Cool, Any, Mu)` and `Nil.^mro` is
         // `(Nil, Cool, Any, Mu)`. They used to be "no such method" on anything
         // that was not already a type object (Nil-Any sheet NA-02).
+        // an ENUM — its type object or a member — linearises as the enum, then
+        // its value type's own MRO: `Color.^mro` is (Color Int Cool Any Mu)
+        if ((mm == "mro" || mm == "parents") && !inv.enumType.empty() && inv.t != VT::Bool &&
+            (isEnumTypeObject(inv) || !inv.enumName.empty())) {
+            const std::string et = inv.enumType.str();
+            Value base = methodCall(Value::typeObj(enumBaseType(et)), "^mro", ValueList{});
+            Value out = Value::array(); out.isList = true;
+            if (mm == "mro") out.arr()->push_back(Value::typeObj(et));
+            if (base.arr()) for (auto& b : *base.arr()) out.arr()->push_back(b);
+            return out;
+        }
         if ((mm == "mro" || mm == "parents") && inv.t != VT::Type && inv.t != VT::Object)
             return methodCall(Value::typeObj(inv.typeName()), m, std::move(args), rwArgs);
         // `.^roles` of a CORE type: the roles over its whole MRO, and with

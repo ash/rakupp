@@ -19,7 +19,7 @@
 #   - `for @$list.kv -> $i, $x is rw` refuses a List's values
 #   - a superscript power binds before a following postfix
 use Test;
-plan 52;
+plan 71;
 
 # .WHICH
 is 5.WHICH.raku, 'ValueObjAt.new("Int|5")', '.raku of a ValueObjAt';
@@ -123,3 +123,43 @@ is $sup.Supply.tap({ ; }).raku, 'Tap.new', 'Tap.raku';
 # a superscript numeral after a listop's whitespace is a term, not its power
 sub sup-id($x) { $x }
 is (sup-id ²¹²), 4096, 'sub ²¹² is the numeral 2¹²';
+
+# ---- third round (2026-10-10, Rakudo 2026.09) ----------------------------
+# a typed array's hole reads as its element type; its .List holds Nil
+my Int @th; @th[2] = 1;
+is @th[0].raku, 'Int', 'a typed hole reads as the element type';
+is @th.kv.raku, '(0, Int, 1, Int, 2, 1).Seq', '…in .kv';
+my @thl; for @th { @thl.push: .raku }
+is @thl.join(' '), 'Int Int 1', '…and in a for loop';
+ok @th.List[0] =:= Nil, '…while .List holds Nil';
+# an optional :D parameter nobody passed is refused
+sub opt-def(Real:D :$r) { 1 }
+throws-like { opt-def() }, X::Parameter::InvalidConcreteness, 'an unpassed Real:D :$r';
+sub opt-def-pos(Real:D $r?) { 1 }
+throws-like { opt-def-pos() }, X::Parameter::InvalidConcreteness, '…and Real:D $r?';
+sub opt-def-dflt(Int:D :$r = 5) { $r }
+is opt-def-dflt(), 5, '…but a default satisfies it';
+# IO::Handle.spurt
+my $sp = $*TMPDIR.add("rakupp-spurt-{$*PID}.txt");
+LEAVE try $sp.unlink;
+my $sph = $sp.open(:w); $sph.spurt('ab'); $sph.spurt('c', :close);
+is $sp.slurp, 'abc', 'IO::Handle.spurt, :close';
+nok $sph.opened, '…closes the handle';
+ok $*OUT.can('say'), '.can on a handle';
+# &next / &last are Subs with two candidates
+is &next.candidates».signature.map(*.raku).join(' '), ':( --> Nil) :(Label:D $x --> Nil)', '&next.candidates';
+my @nx; for 1..5 { &next() if $_ %% 2; @nx.push: $_ }
+is @nx.join, '135', '&next() skips';
+# a superscript power binds before a postfix on a subscripted base
+my @sb = 3, 4;
+is @sb[0]²!, 362880, '@a[0]²! is (@a[0]²)!';
+my %sh = a => 3;
+is %sh<a>², 9, '%h<a>² is a power';
+is <a b>², 4, '<a b>² is 2²';
+# an enum TYPE object
+enum EColor <ER EG EB>;
+ok EColor ~~ Int, 'an enum type object is an Int type object';
+ok EColor ~~ Enumeration, '…does Enumeration';
+is EColor.^mro.map(*.^name).join(' '), 'EColor Int Cool Any Mu', '…linearises through Int';
+my Int $ev = EColor;
+is $ev.^name, 'EColor', '…and goes into an Int variable';

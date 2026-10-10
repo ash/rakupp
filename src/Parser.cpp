@@ -13435,6 +13435,10 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         if (!isKind(Tok::RParen)) s->immediateArgs = parseCallArgs();
         else advance();
     }
+    // a `sub EXPORT` inside a package (after `unit module Foo`, or in braces)
+    // is the PACKAGE's, not the compunit's export protocol (see loadModule)
+    if (s->name == "EXPORT" && !pkgStack_.empty() && !pkgStack_.back().first.empty())
+        s->pkgOfExport = pkgStack_.back().first;
     return s;
 }
 

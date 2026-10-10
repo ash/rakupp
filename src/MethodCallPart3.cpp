@@ -3387,6 +3387,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             fhWrite(inv, it != inv.hash()->end() ? it->second.toStr() : std::string("\n"));
             return Value::boolean(true);
         }
+        // `$fh.spurt($data, :close)`: a Blob goes out as `.write`, anything else
+        // as `.print`; `:close` closes the handle after (Rakudo's IO::Handle.spurt)
+        if (m == "spurt") {
+            Value data; bool closeAfter = false; bool have = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) { if (a.s == "close") closeAfter = a.pairVal() && a.pairVal()->truthy(); }
+                else if (!have) { data = a; have = true; }
+            }
+            if (have) {
+                const bool blob = data.t == VT::Str && (data.hashKind == "Blob" || data.hashKind == "Buf");
+                methodCall(inv, blob ? "write" : "print", ValueList{data});
+            }
+            if (closeAfter) methodCall(inv, "close", ValueList{});
+            return Value::boolean(true);
+        }
         if (m == "say" || m == "print" || m == "put" || m == "printf") {
             std::string s;
             if (m == "printf") { // $fh.printf(FMT, args…) — FMT stringifies via .Str (junctions too)

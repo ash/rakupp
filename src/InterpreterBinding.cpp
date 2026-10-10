@@ -1164,6 +1164,17 @@ Value Interpreter::coerceViaSubset(const Value& v, const std::string& type) {
     try { return coerceToType(v, it->second.base); } catch (...) { return v; }
 }
 
+// An enum's value type — what its members are (`enum Color <R G B>` is Int,
+// `enum S (a => "x")` Str) — read off its first member.
+std::string Interpreter::enumBaseType(const std::string& enumType) {
+    auto ep = enumPairs_.find(enumType);
+    if (ep == enumPairs_.end() || !ep->second.arr() || ep->second.arr()->empty()) return "Int";
+    const Value& p0 = (*ep->second.arr())[0];
+    const Value* v0 = p0.t == VT::Pair ? p0.pairVal() : nullptr;
+    if (!v0) return "Int";
+    return v0->t == VT::Int ? std::string("Int") : v0->typeName();
+}
+
 bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
     if (subsets_.count(type)) return subsetMatches(type, v);
     return typeMatchesResolved(v, type);
@@ -3768,6 +3779,14 @@ Value& rtAttrRef(Value& self, const std::string& name) {
 // Nominal type check for native multi-dispatch.
 bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;
+    // an enum's TYPE OBJECT: its own type, Enumeration, and its value type's
+    // ancestry (`Color ~~ Int`, `my Int $v = Color`) — as typeMatchesResolved
+    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty() && g_revInterp &&
+        isEnumTypeObject(v)) {
+        if (type == v.enumType || type == "Enumeration") return true;
+        for (auto& a : typeAncestry(g_revInterp->enumBaseType(v.enumType.str()))) if (a == type) return true;
+        return false;
+    }
     // an enum VALUE matches the Enumeration role, its own enum type, and its name
     if (!v.enumName.empty() &&
         (type == "Enumeration" || type == v.enumType || type == v.enumName)) return true;

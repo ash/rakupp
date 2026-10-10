@@ -48,9 +48,11 @@ my $sha = &::('rakupp-sha1-hex')('Digest::Native').uc;
 $store.add('sources').mkdir;
 $store.add('dist').mkdir;
 $store.add("short/$sha").mkdir;
+# (the fixtures' `sub EXPORT` comes BEFORE `unit module`: one written after it
+# belongs to the package, and `use` never calls it — as in Rakudo)
 $store.add('sources/FAKE001').spurt(q:to/MOD/);
-    unit module Digest::Native;
     sub EXPORT(*@names) { Map.new('&md5-hex' => sub ($x) { 'FAKE' }) }
+    unit module Digest::Native;
     MOD
 $store.add('dist/fakedist001').spurt('{"name":"Digest::Native","ver":"0.2.0"}');
 sub install-version(Str $v) {
@@ -101,8 +103,8 @@ my $lib = $*TMPDIR.add("rakupp-prec-lib-{$*PID}");
 LEAVE { $lib.&rm-rf }
 $lib.add('Digest').mkdir(:p);
 $lib.add('Digest/Native.rakumod').spurt(q:to/MOD/);
-    unit module Digest::Native;
     sub EXPORT(*@names) { Map.new('&md5-hex' => sub ($x) { 'ONPATH' }) }
+    unit module Digest::Native;
     MOD
 {
     install-version('0.0.1');       # the store would lose to the engine…

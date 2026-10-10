@@ -20,7 +20,7 @@ namespace rakupp {
 
 // Bumped whenever the encoding or the AST changes shape. A cache entry carrying
 // a different version is ignored, never reinterpreted.
-inline constexpr uint32_t kAstSerialVersion = 43; // v43: StrLit.wordQuote; v42: BlockExpr.userTraits; v41: BlockExpr.isSubmethodTerm; v40: ClassDecl.isExport; v39: VarExpr.nativeNumRead; v38: VarExpr.nativeStrRead, VarExpr.nativeIntRead; v37: Param.typeMayBeUndeclared; v36: SubDecl.isNodal; v35: NameTerm.pkgSelf; v34: AttrDecl.coerceFrom; v33: SubDecl.deprecated(+With); v32: AttrDecl.doesRoles; v31: Param.typeShown, SubsetDecl.isMy; v30: ForStmt.hyper; v29: AttrDecl.twigilWritten; v28: BlockExpr.phaser; v27: Binary.parenned; v26: GivenStmt.elseOuterTopic (with … elsif sees the outer $_); v25: ClassDecl.bracedBody
+inline constexpr uint32_t kAstSerialVersion = 44; // v44: SubDecl.pkgOfExport; v43: StrLit.wordQuote; v42: BlockExpr.userTraits; v41: BlockExpr.isSubmethodTerm; v40: ClassDecl.isExport; v39: VarExpr.nativeNumRead; v38: VarExpr.nativeStrRead, VarExpr.nativeIntRead; v37: Param.typeMayBeUndeclared; v36: SubDecl.isNodal; v35: NameTerm.pkgSelf; v34: AttrDecl.coerceFrom; v33: SubDecl.deprecated(+With); v32: AttrDecl.doesRoles; v31: Param.typeShown, SubsetDecl.isMy; v30: ForStmt.hyper; v29: AttrDecl.twigilWritten; v28: BlockExpr.phaser; v27: Binary.parenned; v26: GivenStmt.elseOuterTopic (with … elsif sees the outer $_); v25: ClassDecl.bracedBody
 // v24: GrammarRuleDecl.lits — literal-value multi rules
 // and `is raw` on a plain-name loop parameter, which decide whether a write to
 // it is refused and with which message; the plain-name path kept only the name,
