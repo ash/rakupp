@@ -1,5 +1,6 @@
 #include "AsciiCtype.h"
 #include "MethodCallSegment.h"
+#include "InterpreterParts.h"   // decontCopied
 #include "Coro.h"
 
 namespace rakupp {
@@ -112,6 +113,36 @@ static Value bagHashAdd(const Value& inv, const ValueList& args) {
 // rules are .flat's own, and they are about the SLOT x sits in, not about x:
 // a bare list slot spreads its Iterable, an ARRAY's slot never does because
 // array assignment itemises each element into a Scalar container. So
+// `.Array` of an ARRAY is a new Array (Rakudo's List.Array), and a lazy one is
+// no exception: `my @l = 1..*; my $c = @l.Array; $c[0] = 99` leaves `@l[0]`
+// alone. The copy keeps its own buffer and fills it from the source's, which
+// it grows through the source's own pull, so each side is reified once.
+static Value lazyArrayCopy(const Value& inv) {
+    auto srcSt = std::static_pointer_cast<LazySeqState>(inv.ext());
+    Value src = inv; src.itemized = false;
+    Value out = Value::array(*inv.arr());
+    decontCopiedElems(*out.arr());
+    auto st = std::make_shared<LazySeqState>(*srcSt);
+    st->pullHint = 0;
+    LazySeqState* stp = st.get();
+    st->appendNext = [src, srcSt, stp](ValueList& buf) -> bool {
+        ValueList& from = *src.arr();
+        while (from.size() <= buf.size() && !srcSt->exhausted) {
+            srcSt->pullHint = stp->pullHint;
+            if (!srcSt->appendNext(from)) { srcSt->exhausted = true; break; }
+        }
+        stp->pullHint = 0;
+        stp->exhausted = srcSt->exhausted;
+        if (from.size() <= buf.size()) return false;
+        const size_t had = buf.size();
+        buf.insert(buf.end(), from.begin() + (std::ptrdiff_t)had, from.end());
+        for (size_t i = had; i < buf.size(); i++) decontCopied(buf[i]);
+        return true;
+    };
+    out.extM() = st;
+    return out;
+}
+
 // `my @a = (1,2),(3,4); @a.flat` is TWO elements even though each element is
 // a List, while `((1,2),(3,4)).flat` is four. `.item` opts out either way,
 // and `:hammer` (6.e) flattens containers regardless.
@@ -1133,6 +1164,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // …and its `.Array` is the lazy Array over the same source, as `my @x =`
         // makes it: `(lazy 1..3).Array.is-lazy` is True
         if (m == "Array" && lst->declaredLazy && !lst->exhausted && args.empty()) {
+            if (!inv.isList) return lazyArrayCopy(inv);   // (a new Array, as below)
             Value out = inv; out.isList = false; out.s.clear(); out.itemized = false;
             return out;
         }
@@ -1434,7 +1466,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             else if (m == "Seq") out.s = "Seq";
             return out;
         }
-        if (infinite && m == "Array") { Value out = inv; out.isList = false; return out; } // a lazy Array (Rakudo)
+        if (infinite && m == "Array") { // a lazy Array (Rakudo)
+            // …and of a lazy ARRAY, a new one: writes to it must not reach the
+            // source. A Seq's buffer has no other reader, so it is shared.
+            if (!inv.isList) return lazyArrayCopy(inv);
+            Value out = inv; out.isList = false; return out;
+        }
         // (.gist and .raku of an endless source are answered in segment 2, which
         // runs before this one — see MethodCallPart2's gist/raku arms)
         if (infinite && m == "keys") { // 0, 1, 2, … — as endless as the source
@@ -2382,7 +2419,16 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // `.Array` on a shaped array is its LEAVES as a plain Array — the
             // shape is what it drops (Rakudo: `[1, 2, 3, 4, 5, 6]`).
             if (isMultiDimShaped(inv)) return Value::array(shapedLeaves(inv));
-            Value r = inv; r.itemized = false; r.isList = false; return r;
+            // Otherwise it is a NEW Array of the same elements, never the
+            // invocant itself: Prettier::Table does `@rows.map(*.Array)` and
+            // then unshifts a sort key onto each row, which must not grow the
+            // table's own rows. Rakudo's copy is plain whatever the source
+            // was — `my Int @t; @t.Array.of` is Mu, a 1-dim shape is dropped —
+            // and itemized elements stay itemized (`items` keeps the marker).
+            // A slot bound to a container (`@a[0] := $x`) copies as what it
+            // holds, so the copy does not write through to `$x`.
+            decontCopiedElems(items);
+            return Value::array(std::move(items));
         }
         if (m == "values") {
             Value out = Value::array();
