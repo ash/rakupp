@@ -720,6 +720,37 @@ static uint32_t cpAt(const std::string& s, size_t i, int& len) {
     return cp;
 }
 
+// The closer of a Unicode delimiter `D` (one UTF-8 character), or `D` itself
+// when it pairs with nothing and so closes itself. Any Unicode OPEN-punctuation
+// delimiter (category Ps, plus the U+301D reversed-double-prime quote) closes
+// with its mirrored glyph, across the CJK, fullwidth, vertical and ornate
+// families; the curly quotes pair up by shape; « closes with ».
+static std::string uniDelimCloser(const std::string& D) {
+    const int dlen = (int)D.size();
+    uint32_t cp = (unsigned char)D[0] & (0xFF >> (dlen + 1));
+    for (int k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)D[k] & 0x3F);
+    uint32_t cc;
+    // ‘ and the low ‚ both close with ’, “ and „ with ”
+    if (cp == 0x2018 || cp == 0x201A) cc = 0x2019;
+    else if (cp == 0x201C || cp == 0x201E) cc = 0x201D;
+    else if (cp == 0xAB) cc = 0xBB; // « … » (an initial quote, not Ps)
+    else if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
+        // The closer is the MIRRORED glyph, not blindly cp+1: the tick
+        // brackets cross over (⦍ U+298D closes with ⦐ U+2990, ⦏ U+298F
+        // with ⦎ U+298E), and cp+1 picked the other pair's closer — the
+        // scan then ran to end of input. U+301D 〝 has no mirror; its
+        // closer really is cp+1.
+        int32_t mir = uniBidiMirror(cp);
+        cc = mir >= 0 ? (uint32_t)mir : cp + 1;
+    }
+    else return D;
+    std::string DC;
+    if (cc < 0x800) { DC += (char)(0xC0 | (cc >> 6)); DC += (char)(0x80 | (cc & 0x3F)); }
+    else if (cc < 0x10000) { DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
+    else { DC += (char)(0xF0 | (cc >> 18)); DC += (char)(0x80 | ((cc >> 12) & 0x3F)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
+    return DC;
+}
+
 // `q`'s escapes on the text between its delimiters: `\\` is one backslash and a
 // backslash before `open` or `close` (a repeated run whole, as written) is that
 // delimiter; every other backslash stays. An empty delimiter matches nothing.
@@ -2534,35 +2565,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         int dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
         if (p + dlen <= src_.size()) {
             std::string D = src_.substr(p, dlen);
-            // Any Unicode OPEN-punctuation delimiter (category Ps, plus the
-            // U+301D reversed-double-prime quote) closes with codepoint+1 —
-            // true across the CJK, fullwidth, vertical and ornate families
-            std::string DC = D;
-            {
-                uint32_t cp = (unsigned char)D[0] & (0xFF >> (dlen + 1));
-                for (int k = 1; k < dlen; k++) cp = (cp << 6) | ((unsigned char)D[k] & 0x3F);
-                // the curly quotes pair up by shape, not by category: ‘ and
-                // the low ‚ both close with ’, “ and „ with ”
-                if (cp == 0x2018 || cp == 0x201A || cp == 0x201C || cp == 0x201E) {
-                    uint32_t cc = (cp == 0x2018 || cp == 0x201A) ? 0x2019 : 0x201D;
-                    DC.clear();
-                    DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F));
-                }
-                else if (cp == 0xAB) DC = "\xC2\xBB"; // « … » (an initial quote, not Ps)
-                else if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
-                    // The closer is the MIRRORED glyph, not blindly cp+1: the tick
-                    // brackets cross over (⦍ U+298D closes with ⦐ U+2990, ⦏ U+298F
-                    // with ⦎ U+298E), and cp+1 picked the other pair's closer — the
-                    // scan then ran to end of input. U+301D 〝 has no mirror; its
-                    // closer really is cp+1.
-                    int32_t mir = uniBidiMirror(cp);
-                    uint32_t cc = mir >= 0 ? (uint32_t)mir : cp + 1;
-                    DC.clear();
-                    if (cc < 0x800) { DC += (char)(0xC0 | (cc >> 6)); DC += (char)(0x80 | (cc & 0x3F)); }
-                    else if (cc < 0x10000) { DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
-                    else { DC += (char)(0xF0 | (cc >> 18)); DC += (char)(0x80 | ((cc >> 12) & 0x3F)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
-                }
-            }
+            const std::string DC = uniDelimCloser(D);
             // A BRACKETING pair nests, as it does in every Raku quote:
             // `q｢a ｢b｣ c｣` is `a ｢b｣ c`, where the first ｣ used to end the
             // string and leave ` c｣` behind as code. A repeated opener is one
@@ -2646,10 +2649,32 @@ bool Lexer::tryQuoteForm(Token& out) {
         }
         return need == 0;
     };
-    char d = src_[p];
-    char close;
+    // A Unicode BRACKET delimits the regex family too: `rx｢\d+｣`, `m⟨x⟩`,
+    // `s｢a｣ = "b"`, `tr｢a..c｣｢A..C｣`, after whitespace as well (`m ｢x｣`), as
+    // Rakudo reads them all. It nests like an ASCII bracket, and from here on
+    // the delimiters are held as strings, `dS` and `closeS`; a doubled opener
+    // is one delimiter (`rx｢｢x｣｣`). The q-family took its Unicode delimiters
+    // above, and a lone symbol (`m°b°`) closes itself in the branch before.
+    std::string dS, closeS;
+    if (isRegex || isSubst || isTrans) {
+        size_t q = p;
+        while (q < src_.size() && (src_[q] == ' ' || src_[q] == '\t')) q++;
+        const unsigned char b0 = q < src_.size() ? (unsigned char)src_[q] : 0;
+        const size_t dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
+        if (b0 >= 0xC2 && q + dlen <= src_.size()) {
+            const std::string D = src_.substr(q, dlen), DC = uniDelimCloser(D);
+            if (DC != D) {
+                p = q; dS = D; closeS = DC;
+                for (size_t r = p + dlen; src_.compare(r, dlen, D) == 0; r += dlen) { dS += D; closeS += DC; }
+            }
+        }
+    }
+    const bool uniDelim = !dS.empty();
+    auto atS = [&](const std::string& t) { return src_.compare(pos_, t.size(), t) == 0; };
+    char d = uniDelim ? '\0' : src_[p];
+    char close = '\0';
     bool bracket = true;
-    switch (d) {
+    if (!uniDelim) switch (d) {
         case '(': close = ')'; break;
         case '{': close = '}'; break;
         case '[': close = ']'; break;
@@ -2702,6 +2727,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                 { close = d; bracket = false; break; }
             return false;
     }
+    if (!uniDelim) { dS = std::string(1, d); closeS = std::string(1, close); }
     // A bracketed substitution needs TWO groups: s(pat)(repl) / S[a][b], OR the
     // assignment form s[pat] = repl. If neither follows, this is really a call like
     // S(5) or s($x) — not a substitution — so let it lex as an identifier instead.
@@ -2709,9 +2735,10 @@ bool Lexer::tryQuoteForm(Token& out) {
     std::string assignOp; // s[pat] OP= repl : "" = plain `=`, else the op (`+`, `x`, …)
     if (isSubst && bracket) {
         int depth = 0; size_t q = p;
-        for (; q < src_.size(); q++) {
-            if (src_[q] == d) depth++;
-            else if (src_[q] == close) { depth--; if (depth == 0) { q++; break; } }
+        while (q < src_.size()) {
+            if (src_.compare(q, dS.size(), dS) == 0) { depth++; q += dS.size(); }
+            else if (src_.compare(q, closeS.size(), closeS) == 0) { depth--; q += closeS.size(); if (depth == 0) break; }
+            else q++;
         }
         while (q < src_.size() && ascii::isspace((unsigned char)src_[q])) q++;
         // any assignment operator: `=`, `+=`, `x=`, `~=`, `//=`, … (not `==`/`=~`/`=>`)
@@ -2719,6 +2746,11 @@ bool Lexer::tryQuoteForm(Token& out) {
         while (r < src_.size() && (ascii::isalnum((unsigned char)src_[r]) || strchr("+-*/~%.|&^", src_[r]))) op += src_[r++];
         if (r < src_.size() && src_[r] == '=' && (r + 1 >= src_.size() || (src_[r + 1] != '=' && src_[r + 1] != '~' && src_[r + 1] != '>')))
             { assignForm = true; assignOp = op; }
+        // a Unicode bracket has ONLY the assignment form: `s｢a｣｢b｣` is
+        // Rakudo's "Missing assignment operator", not a two-group substitution
+        else if (uniDelim)
+            throw ParseError("Missing assignment operator", line_, "X::Syntax::Missing",
+                             {{"what", "assignment operator"}});
         else if (q >= src_.size() || src_[q] != d) return false;
     }
     // A lone `{` DELIMITER makes every inner `{` a nesting step, never a
@@ -2727,7 +2759,11 @@ bool Lexer::tryQuoteForm(Token& out) {
     // `{{` opener frees the single `{` again (`qq{{a {1+1} b}}` is `a 2 b`).
     // `reps` is only known once the opener is read; readPart runs for reps == 1.
     auto closureDelim = [&](int reps) { return closures && !(d == '{' && reps == 1); };
-    bool patQuoteAware = (isRegex || isSubst) && !bracket; // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter
+    // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter, a
+    // bracketing one as well: `m{ '}' }`, `m{ ｢x}y｣ }`, `rx｢ a '｣' b ｣`,
+    // `m｢ <[x｣]> ｣`. (Brackets used to skip this, so the first `}` ended
+    // `m{ '}' }` inside its quote.)
+    bool patQuoteAware = isRegex || isSubst;
     bool codeBlocks = (isRegex || isSubst); // regex/subst may contain { ... } embedded code
     // Perl-5 regex mode (rx:P5/…/) uses Perl bracket semantics where `[` does not
     // nest like Raku char classes, so don't shield the delimiter inside `[ ]` there.
@@ -2803,7 +2839,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                 size_t at = raw.size();
                 skipRegexComment(raw);
                 // the comment swallowed the closer: remember where the pattern was
-                if (commentAt == std::string::npos && raw.find(close, at) != std::string::npos) commentAt = at;
+                if (commentAt == std::string::npos && raw.find(closeS, at) != std::string::npos) commentAt = at;
                 continue;
             }
             if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
@@ -2823,18 +2859,22 @@ bool Lexer::tryQuoteForm(Token& out) {
                 sd--; if (inClass) inClass = false;
                 raw += advance(); continue;
             }
-            if (sd == 0 && bracket && ch == d) { depth++; raw += advance(); continue; }
+            if (sd == 0 && bracket && atS(dS)) { depth++; for (size_t k = 0; k < dS.size(); k++) raw += advance(); continue; }
             // `$/` in a REPLACEMENT is the match variable, not the end of the
             // replacement: HTTP::Tinyish writes `s/…/$/[0]/`, where reading the
             // `/` of `$/` as the delimiter left `[0]/;` as stray code and the
             // error surfaced far away as an unterminated string.
-            if (isRepl && ch == close && !raw.empty() && raw.back() == '$') { raw += advance(); continue; }
-            if (sd == 0 && ch == close) { depth--; if (depth == 0) { advance(); closed = true; break; } raw += advance(); continue; }
+            if (isRepl && atS(closeS) && !raw.empty() && raw.back() == '$') { raw += advance(); continue; }
+            if (sd == 0 && atS(closeS)) {
+                if (--depth == 0) { for (size_t k = 0; k < closeS.size(); k++) advance(); closed = true; break; }
+                for (size_t k = 0; k < closeS.size(); k++) raw += advance();
+                continue;
+            }
             raw += advance();
         }
         if (!closed) {
             if (isRepl)
-                throw ParseError(std::string("Malformed replacement part; couldn't find final ") + close,
+                throw ParseError("Malformed replacement part; couldn't find final " + closeS,
                                  line_, true);
             // `m/foo (#) bar /` — the comment took the `)` AND the delimiter; Rakudo
             // reports the group left open where the comment began
@@ -2848,17 +2888,18 @@ bool Lexer::tryQuoteForm(Token& out) {
                     throw ParseError("Unable to parse regex; couldn't find final ')'", startLine, "X::Comp::Group",
                                      {{"panic", "X::Comp::AdHoc"}, {"panic-msg", "Unable to parse regex; couldn't find final ')'"}});
             }
-            runawayTerm(std::string(1, close), std::string(1, d), startLine);
+            runawayTerm(closeS, dS, startLine);
         }
         return raw;
     };
     while (pos_ < p) advance(); // consume keyword + adverbs
     startLine = line_;
-    advance();                  // opening delimiter
+    for (size_t k = 0; k < dS.size(); k++) advance(); // opening delimiter
     // repeated bracket delimiters: q{{ … }} / q[[[ … ]]] — only an equally long
     // run of closers ends the quote; shorter runs are literal content
     int reps = 1;
     while (bracket && !isRegex && !isSubst && !isTrans && peek() == d) { advance(); reps++; }
+    if (reps > 1) { dS = std::string(reps, d); closeS = std::string(reps, close); }
     std::string raw;
     if (reps > 1) {
         int rdepth = 1;
@@ -2919,7 +2960,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     else raw = readPart(patQuoteAware, codeBlocks);
     // qx / :w / :to are decided by the form
-    if (quoteFormTail(raw, std::string(reps, d), std::string(reps, close))) return true;
+    if (quoteFormTail(raw, dS, closeS)) return true;
     if (isSubst || isTrans) {
         std::string repl;
         if (assignForm) { // s[pat] OP= repl : the RHS applied per match
@@ -2988,7 +3029,7 @@ bool Lexer::tryQuoteForm(Token& out) {
         } else if (bracket) { // s[..][..] / tr[..][..] : skip ws, expect a fresh bracket pair
             while (!eof() && ascii::isspace((unsigned char)peek())) advance();
             startLine = line_; // the replacement's own opener is what a runaway names
-            if (peek() == d) { advance(); repl = readPart(false, !isTrans); }
+            if (atS(dS)) { for (size_t k = 0; k < dS.size(); k++) advance(); repl = readPart(false, !isTrans); }
         } else {
             repl = readPart(false, !isTrans, /*isRepl=*/true); // replacement (tr: raw, not brace-aware)
         }
@@ -3133,7 +3174,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     // `q…` has single-quote semantics: collapse \\ → \ and \<delimiter> → <delimiter>
     // (qq handles escapes at interpolation time; Q leaves everything literal).
-    if (w == "q") raw = qUnescape(raw, std::string(reps, d), std::string(reps, close));
+    if (w == "q") raw = qUnescape(raw, dS, closeS);
     // `qq{…}` — with `{}` as the DELIMITER, a nested `{block}` is literal text
     // (only $/@/% still interpolate); so it is under `qq:c{…}` above. A doubled
     // `qq{{…}}` interpolates its single-brace blocks again.
@@ -3832,18 +3873,9 @@ bool Lexer::regexContext(const std::vector<Token>& out) {
 // delimiter inside it is not the pattern's end. At its opener, append the
 // whole span to `raw` and answer true.
 bool Lexer::skipUniQuote(std::string& raw) {
-    const unsigned char a = (unsigned char)peek(), b = (unsigned char)peek(1), c = (unsigned char)peek(2);
-    std::vector<const char*> closers;
-    if (a == 0xE2 && b == 0x80 && (c == 0x98 || c == 0x9A))                   // ‘ ‚ … ’ ‘
-        closers = {"\xE2\x80\x99", "\xE2\x80\x98"};
-    else if (a == 0xE2 && b == 0x80 && (c == 0x9C || c == 0x9E))              // “ „ … ” “
-        closers = {"\xE2\x80\x9D", "\xE2\x80\x9C"};
-    else if (a == 0xEF && b == 0xBD && c == 0xA2) closers = {"\xEF\xBD\xA3"}; // ｢ … ｣
-    else return false;
-    size_t end = std::string::npos;
-    for (const char* cl : closers) end = std::min(end, src_.find(cl, pos_ + 3));
-    if (end == std::string::npos) return false;
-    end += 3;
+    // (the span nests, so `/ ｢a ｢/｣ b｣ /` is one literal)
+    const size_t end = uniQuoteSpanEnd(src_, pos_);
+    if (!end) return false;
     while (pos_ < end) raw += advance();
     return true;
 }
@@ -4408,7 +4440,8 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                     if (b2 == closeB || (closeB2 && b2 == closeB2)) {
                         if (--depth == 0) { advance(); advance(); advance(); closed = true; break; }
                     }
-                    else if (b2 == openB && (openB == 0x98 || openB == 0x9C)) depth++; // nested opener (curly pairs only)
+                    // a nested opener: ‘ “ and the low ‚ „ (`‚a ‚b’ c’` is one string)
+                    else if (b2 == openB && (openB == 0x98 || openB == 0x9C || openB == 0x9A || openB == 0x9E)) depth++;
                     raw += advance(); raw += advance(); raw += advance(); continue;
                 }
                 raw += advance();

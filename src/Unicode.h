@@ -100,21 +100,31 @@ int32_t uniBidiMirror(uint32_t cp);  // Bidi_Mirroring_Glyph target codepoint, o
 int uniBinaryProp(uint32_t cp, const std::string& prop); // 1/0 for a known binary prop, -1 if unknown
 std::string uniBlockOf(uint32_t cp);                           // block name ("Basic Latin", …)
 
-// A Unicode QUOTE opening at s[i] — ‘…’ / ‚…’, “…” / „…”, ｢…｣ (either closer
-// of its family) — and the index just past its closer; 0 when s[i] opens none
-// or the quote never closes. Raku code quotes with these as well, so a scanner
-// stepping over code (a `{ }` block of a string or a pattern) steps over them:
-// an ASCII quote or a brace inside one is text (`{ “doesn't” }`).
+// A Unicode QUOTE opening at s[i] — ‘…’ / ‚…’, “…” / „…”, ｢…｣ — and the index
+// just past its closer; 0 when s[i] opens none or the quote never closes.
+// Raku code quotes with these as well, so a scanner stepping over code (a `{ }`
+// block of a string or a pattern) steps over them: an ASCII quote or a brace
+// inside one is text (`{ “doesn't” }`). Each NESTS on its own opener, as
+// Rakudo's do: `｢a ｢b｣ c｣` is one span, and so is `‘a ‘b’ c’`. ‘ and “ close
+// only with ’ and ”; the low ‚ and „ take either closer of their family.
 inline size_t uniQuoteSpanEnd(const std::string& s, size_t i) {
-    if (i + 2 >= s.size()) return 0;
-    const unsigned char a = (unsigned char)s[i], b = (unsigned char)s[i + 1], c = (unsigned char)s[i + 2];
-    const char* cl1; const char* cl2 = nullptr;
-    if (a == 0xE2 && b == 0x80 && (c == 0x98 || c == 0x9A)) { cl1 = "\xE2\x80\x99"; cl2 = "\xE2\x80\x98"; }
-    else if (a == 0xE2 && b == 0x80 && (c == 0x9C || c == 0x9E)) { cl1 = "\xE2\x80\x9D"; cl2 = "\xE2\x80\x9C"; }
-    else if (a == 0xEF && b == 0xBD && c == 0xA2) cl1 = "\xEF\xBD\xA3";
+    auto at = [&](size_t k, const char* b) { return k + 2 < s.size() && s.compare(k, 3, b, 3) == 0; };
+    const char* open; const char* cl1; const char* cl2 = nullptr;
+    if (at(i, "\xE2\x80\x98"))      { open = "\xE2\x80\x98"; cl1 = "\xE2\x80\x99"; }                       // ‘ … ’
+    else if (at(i, "\xE2\x80\x9A")) { open = "\xE2\x80\x9A"; cl1 = "\xE2\x80\x99"; cl2 = "\xE2\x80\x98"; } // ‚ … ’ ‘
+    else if (at(i, "\xE2\x80\x9C")) { open = "\xE2\x80\x9C"; cl1 = "\xE2\x80\x9D"; }                       // “ … ”
+    else if (at(i, "\xE2\x80\x9E")) { open = "\xE2\x80\x9E"; cl1 = "\xE2\x80\x9D"; cl2 = "\xE2\x80\x9C"; } // „ … ” “
+    else if (at(i, "\xEF\xBD\xA2")) { open = "\xEF\xBD\xA2"; cl1 = "\xEF\xBD\xA3"; }                       // ｢ … ｣
     else return 0;
-    size_t end = s.find(cl1, i + 3);
-    if (cl2) end = std::min(end, s.find(cl2, i + 3));
-    return end == std::string::npos ? 0 : end + 3;
+    int depth = 0;
+    for (size_t k = i + 3; k < s.size(); ) {
+        if (at(k, open)) { depth++; k += 3; }
+        else if (at(k, cl1) || (cl2 && at(k, cl2))) {
+            if (depth == 0) return k + 3;
+            depth--; k += 3;
+        }
+        else k++;
+    }
+    return 0;
 }
 }
