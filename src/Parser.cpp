@@ -54,6 +54,8 @@ bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
 
 bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
 
+std::string qUnescape(const std::string& s, const std::string& open, const std::string& close); // Lexer.cpp
+
 // Byte length of a Unicode whitespace char at s[i], or 0 if s[i] is not
 // whitespace. Covers ASCII plus the multibyte forms (NEL, NBSP, OGHAM SPACE,
 // the U+2000..200A run, LS/PS, NNBSP, U+205F, U+3000) — matches the lexer,
@@ -7231,6 +7233,18 @@ ExprPtr Parser::parsePrimary() {
             // "$x" the variable's value). Empty text2 (other producers of
             // QwList tokens) keeps the plain whitespace split.
             std::string form = cur().text2;
+            // A `q` word list carries its delimiters after a \x1F (see the
+            // lexer): outside a quoted span a word then takes q's escapes —
+            // `qw[a \] b]` is ("a", "]", "b"), `qw[a \\ b]` ("a", "\", "b").
+            std::string qOpen, qClose;
+            const size_t qMark = form.find('\x1F');
+            const bool qEsc = qMark != std::string::npos;
+            if (qEsc) {
+                const size_t m2 = form.find('\x1F', qMark + 1);
+                qOpen  = form.substr(qMark + 1, m2 - qMark - 1);
+                qClose = form.substr(m2 + 1);
+                form.resize(qMark);
+            }
             // An explicit `:v`/`:val` adverb rides on the form as a `:v` suffix
             // (see the lexer): it re-enables the allomorphing the q-family drops.
             bool valAdverb = form.size() > 2 && form.compare(form.size() - 2, 2, ":v") == 0;
@@ -7287,7 +7301,8 @@ ExprPtr Parser::parsePrimary() {
                         }
                         i = k;
                         if (qq) qqwwAddWord(*arr, qqFlags, "'" + seg + "'", allomorph);
-                        else if (kind == 2 && interp) arr->items.push_back(parseInterpString(seg));
+                        // a double-quoted span is a `qq` string in every ww form
+                        else if (kind == 2) arr->items.push_back(parseInterpString(seg));
                         else arr->items.push_back(std::make_unique<StrLit>(seg));
                         continue;
                     }
@@ -7314,7 +7329,9 @@ ExprPtr Parser::parsePrimary() {
                         }
                         qqwwAddWord(*arr, qqFlags, std::string(1, q) + lit + q, allomorph);
                     }
-                    else if (q == '"' && interp)
+                    // …in `qww` and `Qww` too, not only `qqww`: `qww[a "$x\t" b]`
+                    // interpolates and escapes, as Rakudo reads it
+                    else if (q == '"')
                         arr->items.push_back(parseInterpString(seg));
                     else {
                         // single-quote semantics: only \' and \\ unescape
@@ -7330,9 +7347,15 @@ ExprPtr Parser::parsePrimary() {
                 }
                 size_t start = i;
                 while (i < n && !uniWsLen(raw, i, true) &&
-                       !(protect && (raw[i] == '\'' || raw[i] == '"'))) i++;
+                       !(protect && (raw[i] == '\'' || raw[i] == '"'))) {
+                    // under q's escapes a backslash takes the next character
+                    // with it, so `qww[\"d]` is the word `\"d`, not a span
+                    if (qEsc && raw[i] == '\\' && i + 1 < n && !uniWsLen(raw, i + 1, true)) i++;
+                    i++;
+                }
                 if (i > start) {
                     std::string word = raw.substr(start, i - start);
+                    if (qEsc) word = qUnescape(word, qOpen, qClose);
                     // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
                     // in a multi-word list too: <1 2 3>[0].WHAT is IntStr
                     ExprPtr cp, num;

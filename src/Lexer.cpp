@@ -720,6 +720,26 @@ static uint32_t cpAt(const std::string& s, size_t i, int& len) {
     return cp;
 }
 
+// `q`'s escapes on the text between its delimiters: `\\` is one backslash and a
+// backslash before `open` or `close` (a repeated run whole, as written) is that
+// delimiter; every other backslash stays. An empty delimiter matches nothing.
+// The parser applies it to the words of a `qw` list as well.
+std::string qUnescape(const std::string& s, const std::string& open, const std::string& close) {
+    std::string r;
+    r.reserve(s.size());
+    for (size_t k = 0; k < s.size(); k++) {
+        if (s[k] == '\\' && k + 1 < s.size()) {
+            if (s[k + 1] == '\\') { r += '\\'; k++; continue; }
+            const std::string* hit = nullptr;
+            for (const std::string* dl : {&close, &open})
+                if (!hit && !dl->empty() && s.compare(k + 1, dl->size(), *dl) == 0) hit = dl;
+            if (hit) { r += *hit; k += hit->size(); continue; }
+        }
+        r += s[k];
+    }
+    return r;
+}
+
 std::string constantStringFor(const std::string& src, const std::string& var) {
     const std::string kw = "constant";
     for (size_t p = src.find(kw); p != std::string::npos; p = src.find(kw, p + 1)) {
@@ -2291,7 +2311,9 @@ bool Lexer::tryQuoteForm(Token& out) {
     // short of this and handed back a plain string, so `qw«a b»` called an
     // undeclared `qw` and `q:to«END»` never opened a heredoc. Answers false when
     // the form asks for none of the three — the caller then builds the string.
-    auto quoteFormTail = [&](const std::string& raw) -> bool {
+    // `open`/`close` are the delimiters as written, a repeated run whole.
+    auto quoteFormTail = [&](const std::string& raw, const std::string& open,
+                             const std::string& close) -> bool {
         // `q:x/…/` and `qq:x/…/` are the adverb spellings of qx and qqx
         if (isExec || adverbs.find(":x ") != std::string::npos ||
             adverbs.find(":exec ") != std::string::npos) { // qx = literal command, qqx = interpolated command
@@ -2345,6 +2367,13 @@ bool Lexer::tryQuoteForm(Token& out) {
             // adverb rides along as a `:v` suffix the parser strips off.
             if (adverbs.find(":v ") != std::string::npos ||
                 adverbs.find(":val ") != std::string::npos) out.text2 += ":v";
+            // A `q` word list has `q`'s escapes: `\\` is one backslash and a
+            // backslashed delimiter is the delimiter, so `qw[a \] b]` is
+            // ("a", "]", "b"). Only the parser can apply them, since inside a
+            // qww's quoted span the span's own rules hold instead, so the
+            // delimiters ride along after a \x1F; their absence (Q and the qq
+            // forms) means no q escapes.
+            if (w[0] == 'q' && !interpF) out.text2 += "\x1F" + open + "\x1F" + close;
             return true;
         }
         // heredoc: q:to/MARKER/ — the delimited text is the terminator; body follows at line end
@@ -2405,6 +2434,11 @@ bool Lexer::tryQuoteForm(Token& out) {
                 out.text2 = (adverbs.find(":ww ") != std::string::npos ||
                              adverbs.find(":quotewords ") != std::string::npos)
                                 ? (w == "qq" ? "qqww" : "qww") : (w == "qq" ? "qqw" : "qw");
+                // a `q` heredoc's `\\` is the parser's to unescape, word by word,
+                // like any `q` word list's: done here over the whole body, a
+                // qww's "…" span would see its backslashes twice. There is no
+                // delimiter to escape, so the two delimiters are empty.
+                if (w == "q") { heredocEscapes_ = false; out.text2 += "\x1F\x1F"; }
             }
             return true;
         }
@@ -2542,25 +2576,13 @@ bool Lexer::tryQuoteForm(Token& out) {
                 raw += advance();
             }
             for (size_t k = 0; k < shut.size(); k++) advance(); // closing delimiter
-            if (quoteFormTail(raw)) return true;
+            if (quoteFormTail(raw, open, shut)) return true;
             bool interp = (w == "qq");
             std::string feats = interp ? "sahfcb" : "";
             bool anyFeat = quoteFeatAdverbs(adverbs, feats);
             // `q…` collapses \\ → \ and a backslashed delimiter to the delimiter,
             // as the ASCII-delimited `q[…]` below does
-            if (!anyFeat && w == "q") {
-                std::string s;
-                for (size_t k = 0; k < raw.size(); k++) {
-                    if (raw[k] == '\\' && k + 1 < raw.size()) {
-                        if (raw[k + 1] == '\\') { s += '\\'; k++; continue; }
-                        const std::string* hit = raw.compare(k + 1, D.size(), D) == 0 ? &D
-                                               : raw.compare(k + 1, DC.size(), DC) == 0 ? &DC : nullptr;
-                        if (hit) { s += *hit; k += hit->size(); continue; }
-                    }
-                    s += raw[k];
-                }
-                raw = std::move(s);
-            }
+            if (!anyFeat && w == "q") raw = qUnescape(raw, open, shut);
             if (anyFeat) out = feats.empty() ? make(Tok::StrLit, raw)
                                              : make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
             else if (interp) out = make(Tok::StrInterp, raw);
@@ -2808,6 +2830,19 @@ bool Lexer::tryQuoteForm(Token& out) {
         bool closed = false;
         while (!eof()) {
             char ch = peek();
+            // `\\` is one escape, and so is a backslash before a WHOLE run:
+            // `q[[a \]] b]]` is `a ]] b`, while in `q{{a \} b}}` the lone `}`
+            // was never the delimiter and `\}` stays as written. A bare `Q`
+            // has no escapes at all.
+            if (ch == '\\' && !rawQ) {
+                raw += advance();
+                if (peek() == '\\') { raw += advance(); continue; }
+                for (char dc : {close, d}) {
+                    int run = 0; while (peek(run) == dc) run++;
+                    if (run >= reps) { for (int k = 0; k < reps; k++) raw += advance(); break; }
+                }
+                continue;
+            }
             if (ch == d) {
                 int run = 0; while (peek(run) == d) run++;
                 if (run >= reps) { for (int k = 0; k < reps; k++) raw += advance(); rdepth++; continue; }
@@ -2827,7 +2862,8 @@ bool Lexer::tryQuoteForm(Token& out) {
             runawayTerm(std::string(reps, close), std::string(reps, d), startLine);
     }
     else raw = readPart(patQuoteAware, codeBlocks);
-    if (quoteFormTail(raw)) return true; // qx / :w / :to are decided by the form
+    // qx / :w / :to are decided by the form
+    if (quoteFormTail(raw, std::string(reps, d), std::string(reps, close))) return true;
     if (isSubst || isTrans) {
         std::string repl;
         if (assignForm) { // s[pat] OP= repl : the RHS applied per match
@@ -3038,16 +3074,7 @@ bool Lexer::tryQuoteForm(Token& out) {
     }
     // `q…` has single-quote semantics: collapse \\ → \ and \<delimiter> → <delimiter>
     // (qq handles escapes at interpolation time; Q leaves everything literal).
-    if (w == "q") {
-        std::string s;
-        for (size_t k = 0; k < raw.size(); k++) {
-            if (raw[k] == '\\' && k + 1 < raw.size() &&
-                (raw[k + 1] == '\\' || raw[k + 1] == d || raw[k + 1] == close)) {
-                s += raw[k + 1]; k++;
-            } else s += raw[k];
-        }
-        raw = std::move(s);
-    }
+    if (w == "q") raw = qUnescape(raw, std::string(reps, d), std::string(reps, close));
     // `qq{…}` — with `{}` as the DELIMITER, a nested `{block}` is literal text
     // (only $/@/% still interpolate). Explicit `qq:c{…}` re-enables it above.
     if (interp && d == '{') { out = make(Tok::StrInterp, "\x02sahfb\x02" + raw); return true; }
