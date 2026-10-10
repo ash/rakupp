@@ -303,6 +303,35 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   - An `is default` array's `.sum` counts the default, 15 for
     `my @a is default(7); @a[2] = 1` (Rakudo 2026.08: 1, its sum skips the
     default — every other read gives 7, so this one is left as it is).
+- [ ] **Quote and word-list divergences left by f27fa12f and ed499880** (qq
+  closures that hold the delimiter; qqw interpolating before it splits).
+  Found 2026-10-10 against Rakudo 2026.08; not started.
+  - A one-word static q-family word list is a Str here and a one-element List
+    in Rakudo: `qw[a]`, `qqw[a]`, `qww[a]`, `q:w[a]`, `Qw[a]` (`<a>` and `«a»`
+    are Str in both). An interpolated one is a List already.
+  - A qww/qqww span holding the delimiter ends the quote: `qqww[a "b]c" d]`,
+    `qww[a "b]c" d]` and `qqww｢a "b｣c"｣` are parse errors (Rakudo:
+    `("a", "b]c", "d")`). The lexer's word-list scan knows no spans.
+  - A negated adverb glued to the opening bracket is the delimiter here:
+    `qq:!c[…]`, `qqw:!s[…]`, `qqww:!b[…]` work. Rakudo refuses them ("Argument
+    not allowed on negated pair") and needs a space.
+  - `qq ｢…｣` (a blank, no adverb) is "Undefined routine 'qq'" here; Rakudo reads
+    the quote.
+  - `qq'a {1} b'` is a quote here; Rakudo reads `qq'a` as an identifier.
+  - A quote word after prefix `|` is not a quote: `f |qw[a b]` is "Undefined
+    routine 'qw'", `f |qqw[a $x b]` "Two terms in a row".
+  - A `qq｢…｣` inside another one's closure fails (`qq｢{qq｢{"｣"}｣}｣`; Rakudo:
+    `｣`). copyCodeBlock reads `｢…｣` as a plain Q span and never sees the `qq`.
+  - `Q:c{{a {{1}} b}}` runs the nested `{{1}}` as a closure (Rakudo: text).
+    Without the backslash feature parseInterpString has no literal brace.
+  - Under `qq:!b`, `\{` still escapes the brace: `qq:!b [a \{"]"} b]` is a
+    parse error (Rakudo: `a \] b`, a backslash and then a closure).
+  - `«a\ b c»` is `("ab", "c")` (Rakudo: `("a", "b", "c")`). The token reader
+    loses the backslash; qqww has it right.
+  - `«/c ""»`: the empty span is `""` here and `IntStr.new(0, "")` in Rakudo.
+  - `qqww{a {1+1} $x}`: Rakudo makes the nested braces words of their own
+    (`"{", "1+1", "}"`); here `"{1+1}"` is one word.
+  - `"X".lc("a")` answers `x`; Rakudo dies (Too many positionals).
 - [ ] **Cell promotion while workers are live**: `varCell` (Pair, list
   literal, `given`) no longer promotes a variable's slot while `start` workers
   run, because the in-place rewrite raced unlocked readers; there the Pair
