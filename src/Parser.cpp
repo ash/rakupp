@@ -55,6 +55,11 @@ bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
 bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
 
 std::string qUnescape(const std::string& s, const std::string& open, const std::string& close); // Lexer.cpp
+size_t interpChainEnd(const std::string& src, size_t p, const std::string& stopA = {},
+                      const std::string& stopB = {}); // Lexer.cpp
+static bool interpStaticText(const Expr* e, std::string& out);
+static ExprPtr qqwwStaticWord(const std::string& w, bool val);
+static std::string scanInterpBlock(const std::string& raw, size_t& j, char open, char close);
 
 // Byte length of a Unicode whitespace char at s[i], or 0 if s[i] is not
 // whitespace. Covers ASCII plus the multibyte forms (NEL, NBSP, OGHAM SPACE,
@@ -7245,12 +7250,22 @@ ExprPtr Parser::parsePrimary() {
                 qClose = form.substr(m2 + 1);
                 form.resize(qMark);
             }
+            // A feature adverb's effective set rides after a \x02 (`qqw:!s`,
+            // `qww:c`, `Qw:s`); without one the qq forms interpolate everything
+            // and the rest nothing.
+            std::string feats;
+            const size_t fMark = form.find('\x02');
+            const bool haveFeats = fMark != std::string::npos;
+            if (haveFeats) { feats = form.substr(fMark + 1); form.resize(fMark); }
             // An explicit `:v`/`:val` adverb rides on the form as a `:v` suffix
             // (see the lexer): it re-enables the allomorphing the q-family drops.
             bool valAdverb = form.size() > 2 && form.compare(form.size() - 2, 2, ":v") == 0;
             if (valAdverb) form.resize(form.size() - 2);
             const bool protect = form == "qww" || form == "qqww";
-            const bool interp  = form == "qqw" || form == "qqww";
+            if (!haveFeats && (form == "qqw" || form == "qqww")) feats = "sahfcb";
+            const bool interp  = !feats.empty();
+            const bool closures = feats.find('c') != std::string::npos;
+            const std::string featPfx = haveFeats ? "\x02" + feats + "\x02" : "";
             // Only the ANGLE forms val() their words into allomorphs. `<8 9>`,
             // `«8 9»` and `<<8 9>>` give IntStr; every q-family spelling —
             // qw, qww, qqw, qqww and any `q:w`/`Q:w`/`:words` adverb — gives
@@ -7269,6 +7284,42 @@ ExprPtr Parser::parsePrimary() {
             std::string raw = advance().text;
             auto arr = std::make_unique<ArrayLit>();
             arr->isList = true;
+            // A word list that interpolates WITHOUT quote protection — qqw,
+            // qq:w, q:w:s, Qw:c — is one interpolated string, split into words
+            // afterwards, as Rakudo builds it: with $x "p q", `qqw[a $x b]` is
+            // ("a", "p", "q", "b") and `qqw[a{$x}b]` ("ap", "qb"), and an
+            // escaped blank splits too (`qqw[a\tb]`). Splitting the source first
+            // cut a closure or a call with a blank in it into pieces
+            // (`qqw[a {1 + 1} b]` was ("a", "1", "+", "1}", "b")) and kept a
+            // value's words together.
+            if (interp && !protect) {
+                if (qEsc) raw = qUnescape(raw, qOpen, qClose);   // q:w:s keeps q's own escapes
+                ExprPtr is = parseInterpString(featPfx + raw);
+                std::string text;
+                if (!interpStaticText(is.get(), text)) {
+                    // …at run time, then: `__qqww` splits the one value (and
+                    // val()s its words under :v, where one word is that word)
+                    auto one = std::make_unique<ArrayLit>();
+                    one->isList = true;
+                    one->items.push_back(std::move(is));
+                    auto c = std::make_unique<Call>();
+                    c->name = "__qqww";
+                    c->args.push_back(std::make_unique<StrLit>(allomorph ? "cs" : "nw"));
+                    c->args.push_back(std::move(one));
+                    return c;
+                }
+                for (size_t k = 0, m = text.size(); k < m; ) {
+                    for (int w; k < m && (w = uniWsLen(text, k, true)); ) k += w;
+                    size_t b = k;
+                    while (k < m && !uniWsLen(text, k, true)) k++;
+                    if (k > b) arr->items.push_back(qqwwStaticWord(text.substr(b, k - b), allomorph));
+                }
+                if (arr->items.size() == 1) {
+                    if (arr->items[0]->kind == NK::StrLit) static_cast<StrLit*>(arr->items[0].get())->wordQuote = true;
+                    return std::move(arr->items[0]);
+                }
+                return arr;
+            }
             // qqww shares «…»'s word rules (it IS «…» under :v): an interpolated
             // value splits into words, and a bare word splits at its
             // interpolations — qqww{$y} with "a b" is ("a", "b")
@@ -7351,6 +7402,32 @@ ExprPtr Parser::parsePrimary() {
                     // under q's escapes a backslash takes the next character
                     // with it, so `qww[\"d]` is the word `\"d`, not a span
                     if (qEsc && raw[i] == '\\' && i + 1 < n && !uniWsLen(raw, i + 1, true)) i++;
+                    else if (qq) {
+                        // CODE in an interpolating word is one unit, blanks and
+                        // quotes and all: a closure (`qqww[a {"x y"} b]`), a
+                        // call's arguments (`$x.substr(0, 1)`); and an escape is
+                        // one character, `\ ` too — a blank splits the word only
+                        // once it is a blank (qqwwAddWord: `qqww[a\ b]` is two)
+                        if (raw[i] == '\\' && i + 1 < n) { i += 2; continue; }
+                        if (raw[i] == '{' && closures) {
+                            size_t j = i + 1;
+                            scanInterpBlock(raw, j, '{', '}');
+                            i = j < n ? j + 1 : n;
+                            continue;
+                        }
+                        const char* sig = std::strchr("$@%&", raw[i]);
+                        if (sig && raw[i] && feats.find("sahf"[sig - "$@%&"]) != std::string::npos) {
+                            // `$( expr )` / `@( … )`: a contextualizer's parens hold code
+                            if (raw[i] != '&' && i + 1 < n && raw[i + 1] == '(') {
+                                size_t j = i + 2;
+                                scanInterpBlock(raw, j, '(', ')');
+                                i = j < n ? j + 1 : n;
+                                continue;
+                            }
+                            size_t e = interpChainEnd(raw, i + 1);
+                            if (e > i + 1) { i = e; continue; }
+                        }
+                    }
                     i++;
                 }
                 if (i > start) {
@@ -7359,16 +7436,14 @@ ExprPtr Parser::parsePrimary() {
                     // a numeric word is an allomorph (<42> IntStr, <1/3> RatStr, …) —
                     // in a multi-word list too: <1 2 3>[0].WHAT is IntStr
                     ExprPtr cp, num;
-                    if (qq) qqwwAddWord(*arr, qqFlags, word, allomorph);
+                    if (qq) qqwwAddWord(*arr, qqFlags, featPfx + word, allomorph);
                     else if (protect && (cp = angleColonPair(word))) // `:name(…)` word → Pair
                         arr->items.push_back(std::move(cp));
                     else if (allomorph && (num = angleWordNumeric(word))) {
                         auto al = std::make_unique<AllomorphLit>();
                         al->num = std::move(num); al->str = word;
                         arr->items.push_back(std::move(al));
-                    } else if (interp && word.find_first_of("$@{\\") != std::string::npos)
-                        arr->items.push_back(parseInterpString(word));
-                    else
+                    } else
                         arr->items.push_back(std::make_unique<StrLit>(word));
                 }
             }
@@ -10050,6 +10125,18 @@ ExprPtr Parser::angleColonPair(const std::string& w) {
     return nullptr;
 }
 
+// The text of an interpolation with nothing to interpolate, if that is what it is.
+static bool interpStaticText(const Expr* e, std::string& out) {
+    if (e->kind == NK::StrLit) { out = static_cast<const StrLit*>(e)->v; return true; }
+    if (e->kind != NK::InterpStr) return false;
+    out.clear();
+    for (auto& p : static_cast<const InterpStr*>(e)->parts) {
+        if (p->kind != NK::StrLit) return false;
+        out += static_cast<const StrLit*>(p.get())->v;
+    }
+    return true;
+}
+
 // A qq-word-list word that needs no run-time work: an allomorph when it spells
 // a number and the list val()s its words (`«42»`, `qqww:v[42]`), else a Str.
 static ExprPtr qqwwStaticWord(const std::string& w, bool val) {
@@ -10072,7 +10159,25 @@ static ExprPtr qqwwStaticWord(const std::string& w, bool val) {
 //   and an interpolated value splits on whitespace (an empty one is no word).
 // «…» IS qqww:v, and roast compares the two element for element
 // (S02-literals/allomorphic.t), so both come through here.
-void Parser::qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w, bool val) {
+// A literal run splits on its blanks once its escapes are applied:
+// `qqww[a\ b]` and `qqww[a\tb]` are ("a", "b"). A bare word may arrive
+// behind a "\x02feats\x02" prefix, the quote's own feature set (`qqww:!s`).
+void Parser::qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& wIn, bool val) {
+    std::string featPfx, w = wIn;
+    if (!w.empty() && w[0] == '\x02') {
+        const size_t e = w.find('\x02', 1);
+        featPfx = w.substr(0, e + 1);
+        w.erase(0, e + 1);
+    }
+    // a literal run, split on its blanks: each piece a word as it stands
+    auto addLiteral = [&](const std::string& text) {
+        for (size_t k = 0, m = text.size(); k < m; ) {
+            for (int b; k < m && (b = uniWsLen(text, k, true)); ) k += b;
+            size_t b = k;
+            while (k < m && !uniWsLen(text, k, true)) k++;
+            if (k > b) { arr.items.push_back(qqwwStaticWord(text.substr(b, k - b), val)); flags += 'l'; }
+        }
+    };
     if (w.size() > 1 && w[0] == ':')
         if (ExprPtr cp = angleColonPair(w)) { arr.items.push_back(std::move(cp)); flags += 'l'; return; }
     auto stringified = [](ExprPtr e) {
@@ -10083,38 +10188,24 @@ void Parser::qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w
         mc->method = "Str";
         return mc;
     };
-    // the text of an interpolation with nothing to interpolate, if that is what it is
-    auto staticText = [](const Expr* e, std::string& out) {
-        if (e->kind == NK::StrLit) { out = static_cast<const StrLit*>(e)->v; return true; }
-        if (e->kind != NK::InterpStr) return false;
-        out.clear();
-        for (auto& p : static_cast<const InterpStr*>(e)->parts) {
-            if (p->kind != NK::StrLit) return false;
-            out += static_cast<const StrLit*>(p.get())->v;
-        }
-        return true;
-    };
     std::string text;
     if (w.size() >= 2 && (w.front() == '\'' || w.front() == '"') && w.back() == w.front()) {
         std::string inner = w.substr(1, w.size() - 2);
         if (w.front() == '\'') { arr.items.push_back(qqwwStaticWord(inner, val)); flags += 'l'; return; }
         ExprPtr is = parseInterpString(inner);
-        if (staticText(is.get(), text)) { arr.items.push_back(qqwwStaticWord(text, val)); flags += 'l'; return; }
+        if (interpStaticText(is.get(), text)) { arr.items.push_back(qqwwStaticWord(text, val)); flags += 'l'; return; }
         if (val) { arr.items.push_back(stringified(std::move(is))); flags += 'v'; }
         else { arr.items.push_back(std::move(is)); flags += 'l'; }
         return;
     }
-    if (w.find_first_of("$@{\\") == std::string::npos) {
+    if (w.find_first_of("$@%&{\\") == std::string::npos) {
         arr.items.push_back(qqwwStaticWord(w, val)); flags += 'l'; return;
     }
-    ExprPtr is = parseInterpString(w);
-    if (staticText(is.get(), text)) { arr.items.push_back(qqwwStaticWord(text, val)); flags += 'l'; return; }
+    ExprPtr is = parseInterpString(featPfx + w);
+    if (interpStaticText(is.get(), text)) { addLiteral(text); return; }
     for (auto& part : static_cast<InterpStr*>(is.get())->parts) {
-        if (part->kind == NK::StrLit) {
-            // a literal run (escapes already applied) is a word as it stands
-            arr.items.push_back(qqwwStaticWord(static_cast<StrLit*>(part.get())->v, val));
-            flags += 'l';
-        }
+        // a literal run (escapes already applied) splits on its blanks
+        if (part->kind == NK::StrLit) addLiteral(static_cast<StrLit*>(part.get())->v);
         else { arr.items.push_back(stringified(std::move(part))); flags += val ? 's' : 'w'; }
     }
 }
@@ -10240,7 +10331,18 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
     int depth = 0;
     const bool qqww = close == "\xC2\xBB" || close == ">>"; // «…» / <<…>> (quotes are syntax)
     int braces = 0;          // inside a `{…}` in a qqww word, quotes are code
+    int calls = 0;           // …and inside a call's `(…)`/`[…]` glued to an interpolation
     bool afterQuote = false; // the token before was a quoted span: start a new word
+    // a word that holds an interpolation (`$x`, `@a.join`): its glued `(`/`[` is code
+    auto interpolates = [](const std::string& w) {
+        if (!w.empty() && std::strchr("$@%", w.back())) return true;   // `$( … )`
+        for (size_t k = 0; k + 1 < w.size(); k++)
+            if (std::strchr("$@%&", w[k]) &&
+                (ascii::isalpha((unsigned char)w[k + 1]) || w[k + 1] == '_' ||
+                 ((unsigned char)w[k + 1] >= 0x80) || std::strchr("*!.^?", w[k + 1])))
+                return true;
+        return false;
+    };
     while (!(isOp(close) && depth == 0) && !isKind(Tok::End)) {
         // `<Zm8=>` — the lexer fused the word's trailing `=` with the closing angle
         // into a FAT ARROW. Inside a word list it is just those two characters, so
@@ -10352,10 +10454,19 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close) {
             const char q = t.kind == Tok::StrInterp ? '"' : '\'';
             wt = q + wt + q;
         }
-        if ((quoted || afterQuote) && braces == 0) sep = true;
-        afterQuote = quoted && braces == 0;
+        // CODE in a word is one unit: inside a closure (`«a {1 + 1} b»`) or a
+        // call's arguments (`«a $x.substr(0, 1) b»`) a blank or a quoted span
+        // is the code's own, so the token joins the word, its blank with it.
+        // The words were cut at every blank, which broke the code apart.
+        const bool inCode = qqww && (braces > 0 || calls > 0);
+        if (inCode) { sep = false; if (t.spaceBefore) wt = " " + wt; }
+        if ((quoted || afterQuote) && !inCode) sep = true;
+        afterQuote = quoted && !inCode;
         if (qqww && t.kind == Tok::LBrace) braces++;
         else if (qqww && t.kind == Tok::RBrace && braces > 0) braces--;
+        else if (qqww && (t.kind == Tok::LParen || t.kind == Tok::LBracket) && !sep &&
+                 (calls > 0 || (braces == 0 && interpolates(words.back())))) calls++;
+        else if (qqww && (t.kind == Tok::RParen || t.kind == Tok::RBracket) && calls > 0) calls--;
         if (sep) words.push_back(wt);
         else words.back() += wt;
         advance();

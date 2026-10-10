@@ -1861,7 +1861,7 @@ static size_t balancedGroupEnd(const std::string& src, size_t p) {
 // `stopA`/`stopB` are the quote's own delimiters when they are Unicode: any
 // byte >= 0x80 continues a name, so `qq｢a $x｣` would otherwise read `x｣` as
 // the name and swallow the closer.
-static size_t interpChainEnd(const std::string& src, size_t p,
+size_t interpChainEnd(const std::string& src, size_t p,
                              const std::string& stopA = {}, const std::string& stopB = {}) {
     const size_t n = src.size();
     auto uniNameByte = [&](size_t k) {
@@ -2381,10 +2381,28 @@ bool Lexer::tryQuoteForm(Token& out) {
             adverbs.find(":ww ") != std::string::npos ||
             adverbs.find(":quotewords ") != std::string::npos)) {
             out = make(Tok::QwList, raw);
+            // the FORM decides quote protection (ww) and interpolation (qq):
+            // the parser splits the words differently for each — qqww{ "\n" || }
+            // is two words, the first a real newline (Text::Utils' suite)
+            bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
+            bool protectF = (w == "qww" || w == "qqww" || w == "Qww" ||
+                             adverbs.find(":ww ") != std::string::npos ||
+                             adverbs.find(":quotewords ") != std::string::npos);
+            // …and a feature adverb changes what the words interpolate:
+            // `qqw:!s[a $x]` keeps `$x`, `qww:c[a {1+1}]` runs the block,
+            // `qqw:!b[a\tb]` keeps the backslash. The effective set rides on
+            // the token (below); with none, the parser takes the form's own.
+            // Under a lone `{` delimiter the braces are text, so the closure
+            // feature goes with them.
+            std::string feats = interpF ? "sahfcb" : "";
+            const bool anyFeat = quoteFeatAdverbs(adverbs, feats);
+            if (anyFeat && open == "{" && feats.find('c') != std::string::npos)
+                feats.erase(feats.find('c'), 1);
             // a BRACE delimiter makes inner braces nesting, not closures (as
             // `qq{…}` has it): `qqw{a {1+1} c}` is ("a", "{1+1}", "c"). Only a
             // LONE brace: `qqw{{a {1+1} c}}` interpolates ("a", "2", "c").
-            if ((w == "qq" || w == "qqw" || w == "qqww") && open == "{") {
+            // (An explicit feature set has dropped `c` for it instead.)
+            if ((w == "qq" || w == "qqw" || w == "qqww") && open == "{" && !anyFeat) {
                 std::string esc;
                 for (size_t k = 0; k < raw.size(); k++) {
                     if (raw[k] == '\\' && k + 1 < raw.size()) { esc += raw[k]; esc += raw[++k]; continue; }
@@ -2393,13 +2411,6 @@ bool Lexer::tryQuoteForm(Token& out) {
                 }
                 out.text = esc;
             }
-            // the FORM decides quote protection (ww) and interpolation (qq):
-            // the parser splits the words differently for each — qqww{ "\n" || }
-            // is two words, the first a real newline (Text::Utils' suite)
-            bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
-            bool protectF = (w == "qww" || w == "qqww" || w == "Qww" ||
-                             adverbs.find(":ww ") != std::string::npos ||
-                             adverbs.find(":quotewords ") != std::string::npos);
             out.text2 = protectF ? (interpF ? "qqww" : "qww")
                                  : (interpF ? "qqw"  : "qw");
             // An EXPLICIT `:v`/`:val` asks for allomorphs, which the q-family
@@ -2409,6 +2420,7 @@ bool Lexer::tryQuoteForm(Token& out) {
             // adverb rides along as a `:v` suffix the parser strips off.
             if (adverbs.find(":v ") != std::string::npos ||
                 adverbs.find(":val ") != std::string::npos) out.text2 += ":v";
+            if (anyFeat) out.text2 += "\x02" + feats;
             // A `q` word list has `q`'s escapes: `\\` is one backslash and a
             // backslashed delimiter is the delimiter, so `qw[a \] b]` is
             // ("a", "]", "b"). Only the parser can apply them, since inside a
@@ -2468,19 +2480,28 @@ bool Lexer::tryQuoteForm(Token& out) {
                 }
             }
             out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, ""); // body filled at line end
-            // `q :heredoc :w "EOF"` — the body, once read, splits into words
-            if (adverbs.find(":w ") != std::string::npos || adverbs.find(":words ") != std::string::npos ||
+            // `q :heredoc :w "EOF"` — the body, once read, splits into words;
+            // and so does a word-list FORM's: `qqw:to/END/`, `qww:to/END/`.
+            // Those read as plain strings, uninterpolated even under qqw.
+            if (isWords || adverbs.find(":w ") != std::string::npos || adverbs.find(":words ") != std::string::npos ||
                 adverbs.find(":ww ") != std::string::npos || adverbs.find(":quotewords ") != std::string::npos) {
                 heredocFeats_.clear();
                 out = make(Tok::QwList, "");
-                out.text2 = (adverbs.find(":ww ") != std::string::npos ||
-                             adverbs.find(":quotewords ") != std::string::npos)
-                                ? (w == "qq" ? "qqww" : "qww") : (w == "qq" ? "qqw" : "qw");
+                const bool interpF  = (w == "qq" || w == "qqw" || w == "qqww");
+                const bool protectF = (w == "qww" || w == "qqww" || w == "Qww" ||
+                                       adverbs.find(":ww ") != std::string::npos ||
+                                       adverbs.find(":quotewords ") != std::string::npos);
+                heredocInterp_ = interpF;
+                out.text2 = protectF ? (interpF ? "qqww" : "qww") : (interpF ? "qqw" : "qw");
+                if (adverbs.find(":v ") != std::string::npos || adverbs.find(":val ") != std::string::npos)
+                    out.text2 += ":v";
+                std::string feats = interpF ? "sahfcb" : "";
+                if (quoteFeatAdverbs(adverbs, feats)) out.text2 += "\x02" + feats;
                 // a `q` heredoc's `\\` is the parser's to unescape, word by word,
                 // like any `q` word list's: done here over the whole body, a
                 // qww's "…" span would see its backslashes twice. There is no
                 // delimiter to escape, so the two delimiters are empty.
-                if (w == "q") { heredocEscapes_ = false; out.text2 += "\x1F\x1F"; }
+                if (w[0] == 'q' && !interpF) { heredocEscapes_ = false; out.text2 += "\x1F\x1F"; }
             }
             return true;
         }
