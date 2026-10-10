@@ -201,6 +201,46 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
 extern std::atomic<bool> g_anyShaped;   // has any shaped array been made? (gates the dimension checks)
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
+// Is this text NFC — would nfcNormalize leave it as it is? A Str caches the
+// answer on its body; nfcKnown(v) is 1/0 for a plain Str, -1 for anything
+// else, whose string form has to be checked. (Builtins.cpp)
+bool isNfcText(const char* s, size_t n);
+inline bool isNfcText(const std::string& s) { return isNfcText(s.data(), s.size()); }
+bool cowIsNfc(const CowStr& s);
+int nfcKnown(const Value& v);
+// `a ~ b`: exactly nfcNormalize(a + b), but when a is NFC the text is
+// renormalized only where the two meet, at the cost of b and not of a. aNfc
+// and bNfc say what is known of each side: 1 NFC, 0 not, -1 check it here.
+std::string nfcConcat(const std::string& a, const std::string& b, int aNfc = -1, int bNfc = -1);
+Value nfcConcatStr(const CowStr& a, const CowStr& b);   // …two Strs, into a Str known to be NFC
+// dst ~= v, the same way. `chars` is dst's grapheme count, -1 for unknown, and
+// is kept up to date across the join; `dstNfc` is what is known of dst (1, 0,
+// -1), and is kept too — without one, dst is checked every time.
+void nfcAppend(std::string& dst, const std::string& v, long long* chars = nullptr, signed char* dstNfc = nullptr);
+// dst ~= v on a Str's own storage: in place wherever appendText would be,
+// with the body's grapheme count and NFC flag carried across. And x ~ dst.
+void nfcAppendCow(CowStr& dst, const char* v, size_t nv, int vNfc = -1);
+inline void nfcAppendCow(CowStr& dst, const std::string& v) { nfcAppendCow(dst, v.data(), v.size()); }
+inline void nfcAppendCow(CowStr& dst, const CowStr& v) { nfcAppendCow(dst, v.bytes(), v.size(), cowIsNfc(v) ? 1 : 0); }
+void nfcPrependCow(CowStr& dst, const char* x, size_t nx);
+// One part of a join or an interpolation onto `out`, which only these build,
+// as `~` would join it. Linear in the parts, where normalizing the joined text
+// afterwards made `$s = "$s…"` re-read all of $s. `partNfc` as above; an ASCII
+// part (most of them: every `"literal"` is interpolated) is NFC and joins as
+// it is, so the second form asks value `v` whether it is NFC only otherwise.
+void nfcAppendPartSlow(std::string& out, const std::string& part, int partNfc);
+inline bool nfcAsciiPart(const std::string& part) {
+    for (unsigned char c : part) if (c >= 0x80) return false;
+    return true;
+}
+inline void nfcAppendPart(std::string& out, const std::string& part, int partNfc = -1) {
+    if (nfcAsciiPart(part)) out += part;
+    else nfcAppendPartSlow(out, part, partNfc);
+}
+inline void nfcAppendPart(std::string& out, const std::string& part, const Value& v) {
+    if (nfcAsciiPart(part)) out += part;
+    else nfcAppendPartSlow(out, part, nfcKnown(v));
+}
 
 // Split a package-qualified symbol name into the package and the key a Stash
 // holds it under. A sigilled symbol has TWO spellings and one slot: `&A::foo`
@@ -4310,8 +4350,8 @@ inline bool rtStrSlot(const Value& v) {
            v.hashKind.empty();
 }
 // A Str lane's `~` and `~=`: what the interpreter answers for two plain Strs.
-// `~` is nfcNormalize(l ~ r), and text that is all ASCII joins to itself;
-// `~=` appends an ASCII right side in place and renormalizes the rest.
+// `~` is NFC(l ~ r), and text that is all ASCII joins to itself; `~=` appends
+// an ASCII right side in place and renormalizes the rest where they meet.
 inline bool rtAsciiOnly(const std::string& s) {
     for (unsigned char c : s) if (c >= 0x80) return false;
     return true;
@@ -4319,13 +4359,14 @@ inline bool rtAsciiOnly(const std::string& s) {
 inline std::string rtLaneCat(const std::string& l, const std::string& r) {
     std::string out;
     out.reserve(l.size() + r.size());
-    out += l; out += r;
-    if (rtAsciiOnly(l) && rtAsciiOnly(r)) return out;
-    return nfcNormalize(std::move(out));
+    out += l;
+    if (rtAsciiOnly(l) && rtAsciiOnly(r)) { out += r; return out; }
+    nfcAppend(out, r);
+    return out;
 }
 inline void rtLaneAppend(std::string& d, const std::string& r) {
     if (rtAsciiOnly(r)) d += r;
-    else d = nfcNormalize(d + r);
+    else nfcAppend(d, r);
 }
 // Non-`-O` codegen emits every value-position operator as `applyArith("+", …)`,
 // and the parameter is a std::string — so a one- or two-character literal was
@@ -4592,7 +4633,7 @@ inline void rtCatAssign(Value& l, const Value& r) {
     if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && r.hashKind.empty()) {
         if (r.enumName.empty()) {
             if (r.t == VT::Str) { rtCatAppendText(l, r.s.str()); return; }
-            if (r.t == VT::Int && !r.natBits) { l.s.appendText(r.toStr()); return; }   // (digits: ASCII)
+            if (r.t == VT::Int && !r.natBits) { l.s.appendAscii(r.toStr()); return; }   // (digits)
         }
         if (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.t == VT::Bool) {
             rtCatAppendText(l, r.toStr());   // the text applyArith's `~` takes

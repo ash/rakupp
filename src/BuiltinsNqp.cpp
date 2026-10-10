@@ -983,17 +983,25 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         // NFC-composed, as Rakudo's NFG strings are: chaining nqp::concat with a
         // combining char must yield the composed grapheme (JSON::Fast's \u parser)
-        case O::Concat: return Value::str(nfcNormalize(S(0) + S(1)));
+        case O::Concat: {
+            auto known = [&](size_t i) { return i < v.size() ? nfcKnown(v[i]) : 1; };
+            return Value::str(nfcConcat(S(0).str(), S(1).str(), known(0), known(1)));
+        }
         // The digest of the string's UTF-8 bytes, in UPPERCASE hex — the
         // spelling MoarVM answers with, which App::RaCoCo asserts literally.
         case O::Sha1: return Value::str(sha1hex(S(0).str()));
         case O::Join: {
-            std::string sep = S(0), out;
-            if (v.size() > 1 && v[1].t == VT::Array && v[1].arr()) {
+            const std::string sep = nfcNormalize(S(0).str());
+            std::string out;
+            if (v.size() > 1 && v[1].t == VT::Array && v[1].arr()) {   // NFG: composing across the joins
                 bool first = true;
-                for (auto& e : *v[1].arr()) { if (!first) out += sep; out += e.toStr(); first = false; }
+                for (auto& e : *v[1].arr()) {
+                    if (!first) nfcAppendPart(out, sep, 1);
+                    nfcAppendPart(out, e.toStr(), e);
+                    first = false;
+                }
             }
-            return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
+            return Value::str(std::move(out));
         }
         // `nqp::indexic($h, $n, $pos)` — index, ignoring case; `indexim` ignores
         // marks; `indexicim` ignores both. Positions are CHARACTER indices and both foldings
@@ -1057,7 +1065,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             }
             return Value::integer(-1);
         }
-        case O::Chr: return Value::str(cpToU8((uint32_t)I(0)));
+        case O::Chr: return Value::str(nfcNormalize(cpToU8((uint32_t)I(0))));   // NFC: U+2126 is U+03A9
         case O::StrFromCodes: {
             std::string out;
             if (!v.empty() && v[0].t == VT::Array && v[0].arr())

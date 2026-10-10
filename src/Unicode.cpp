@@ -609,20 +609,36 @@ std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, const st
     return graphemeStarts(cps, synth);
 }
 
+// One codepoint of the UTF-8 in s[0, len) at byte p, as utf8cp reads it: a byte
+// that starts no well-formed sequence is a character of its own, a UTF8-C8
+// synthetic, which comes back as GB_SYNTHETIC. Answers the byte length.
+static inline size_t decUtf8(const char* s, size_t p, size_t len, uint32_t& cp) {
+    unsigned char c0 = (unsigned char)s[p];
+    int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 0;
+    for (int i = 1; i < clen; i++)   // the same well-formedness utf8cp checks
+        if (p + i >= len || ((unsigned char)s[p + i] & 0xC0) != 0x80) { clen = 0; break; }
+    if (clen == 0) { cp = GB_SYNTHETIC; return 1; }   // a UTF8-C8 synthetic
+    cp = clen == 1 ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
+    for (int i = 1; i < clen; i++) cp = (cp << 6) | ((unsigned char)s[p + i] & 0x3F);
+    return (size_t)clen;
+}
+// …and the codepoint that ENDS at byte q (a codepoint boundary, q > 0): the
+// answer is where it starts. UTF-8 synchronizes itself, so stepping back over
+// continuation bytes finds the same characters a forward walk does — including
+// the synthetics, which are the bytes no well-formed sequence covers.
+static inline size_t decUtf8Before(const char* s, size_t q, uint32_t& cp) {
+    size_t k = q - 1;
+    while (k > 0 && ((unsigned char)s[k] & 0xC0) == 0x80 && q - k < 4) k--;
+    if (decUtf8(s, k, q, cp) == q - k) return k;
+    cp = GB_SYNTHETIC;
+    return q - 1;
+}
+
 // Byte offset of the end of the grapheme cluster beginning at UTF-8 byte `pos`
 // (which must be a codepoint boundary). Walks forward applying the UAX #29
 // pairwise rules — O(cluster length), the regex engine's grapheme-atom stride.
 size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len) {
-    auto dec = [&](size_t p, uint32_t& cp) -> size_t { // -> byte length
-        unsigned char c0 = (unsigned char)s[p];
-        int clen = c0 < 0x80 ? 1 : (c0 >> 5) == 0x6 ? 2 : (c0 >> 4) == 0xe ? 3 : (c0 >> 3) == 0x1e ? 4 : 0;
-        for (int i = 1; i < clen; i++)   // the same well-formedness utf8cp checks
-            if (p + i >= len || ((unsigned char)s[p + i] & 0xC0) != 0x80) { clen = 0; break; }
-        if (clen == 0) { cp = GB_SYNTHETIC; return 1; }   // a UTF8-C8 synthetic
-        cp = clen == 1 ? c0 : (uint32_t)(c0 & (0xFF >> (clen + 1)));
-        for (int i = 1; i < clen; i++) cp = (cp << 6) | ((unsigned char)s[p + i] & 0x3F);
-        return (size_t)clen;
-    };
+    auto dec = [&](size_t p, uint32_t& cp) -> size_t { return decUtf8(s.data(), p, len, cp); };
     if (pos >= len) return pos;
     uint32_t cp; size_t p = pos + dec(pos, cp);
     GbState st(cp);
@@ -638,6 +654,32 @@ size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len) {
 
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
     return uniGraphemeStarts(cps).size();
+}
+
+size_t uniGraphemeCountUtf8(const char* s, size_t len) {
+    if (!len) return 0;
+    uint32_t cp;
+    size_t p = decUtf8(s, 0, len, cp), n = 1;
+    GbState st(cp);
+    while (p < len) {
+        p += decUtf8(s, p, len, cp);
+        int cur = gbProp(cp), ip = incbProp(cp);
+        bool brk = gbBreakBefore(st, cur, ip);
+        n += brk;
+        gbAdvance(st, cur, ip, brk);
+    }
+    return n;
+}
+
+// A boundary between `prev` and `cur` whatever came before `prev`: the rules
+// that look further back (GB9c, GB11, GB12/13) can only ever REMOVE a break, so
+// asking with each of their flags at its no-break value is asking for the worst.
+bool uniGraphemeBreakCertain(uint32_t prev, uint32_t cur) {
+    GbState st(prev);
+    st.pictSeq = true;
+    st.riRun = 1;
+    st.incbState = 2;
+    return gbBreakBefore(st, gbProp(cur), incbProp(cur));
 }
 
 size_t uniGraphemeCount(const std::vector<uint32_t>& cps, const std::string& src) {
@@ -1087,6 +1129,190 @@ std::vector<uint32_t> uniNormalize(const std::vector<uint32_t>& cps, int mode) {
         else { out.push_back(c); if (cc == 0) startIdx = (int)out.size() - 1; lastCC = cc; }
     }
     return out;
+}
+
+// NFC is local. Where a codepoint C decomposes to a starter (ccc 0) that is
+// not the second half of any composition pair — a Hangul V or T jamo is one,
+// arithmetically — nothing before C can reorder past it or compose with it,
+// and nothing after it can reach back over it: uniNormalize's composer sets
+// its last starter to C's and starts again. So NFC(x ~ y) is NFC(x) ~ NFC(y)
+// whenever y begins with such a C. These are the codepoints that are NOT one,
+// sorted; every one sits at U+0300 or above.
+static const std::vector<uint32_t>& nfcNoBoundary() {
+    static const std::vector<uint32_t> v = [] {
+        std::vector<uint32_t> second, out;
+        for (size_t i = 0; i + 2 < ucd::COMP_N; i += 3) second.push_back(ucd::COMP[i + 1]);
+        for (uint32_t c = VBase; c < VBase + VCount; c++) second.push_back(c);
+        for (uint32_t c = TBase + 1; c < TBase + TCount; c++) second.push_back(c);
+        std::sort(second.begin(), second.end());
+        auto isSecond = [&](uint32_t c) { return std::binary_search(second.begin(), second.end(), c); };
+        out = second;
+        for (size_t i = 0; i + 1 < ucd::CCC_N; i += 2)
+            if (ucd::CCC[i + 1]) out.push_back(ucd::CCC[i]);
+        for (size_t i = 0; i < ucd::CANON_N;) {   // (cp, len, d0, d1…), fully decomposed
+            const uint32_t cp = ucd::CANON[i], len = ucd::CANON[i + 1], first = ucd::CANON[i + 2];
+            if (uniCombiningClass(first) || isSecond(first)) out.push_back(cp);
+            i += 2 + len;
+        }
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }();
+    return v;
+}
+bool uniNfcBoundaryBefore(uint32_t cp) {
+    if (cp < 0x300) return true;   // (nfcNoBoundary().front() is U+0300 itself)
+    const auto& v = nfcNoBoundary();
+    return !std::binary_search(v.begin(), v.end(), cp);
+}
+
+// The NFC quick check (UAX #15 §9), from the same tables uniNormalize uses so
+// the two agree: per codepoint at U+0300 or above that is not a plain starter,
+// its combining class and whether NFC can change it — "No" when it does not
+// survive on its own (a singleton, an excluded or non-starter decomposition),
+// "Maybe" when it is the second half of a composition and so depends on what
+// precedes it. Every codepoint below U+0300 is a plain starter.
+namespace {
+struct NfcQc { uint32_t cp; uint8_t ccc; uint8_t qc; };   // qc: 0 Yes, 1 Maybe, 2 No
+}
+static const std::vector<NfcQc>& nfcQcTable() {
+    static const std::vector<NfcQc> v = [] {
+        std::unordered_map<uint32_t, NfcQc> t;
+        auto at = [&](uint32_t cp) -> NfcQc& {
+            auto it = t.find(cp);
+            if (it == t.end()) it = t.emplace(cp, NfcQc{cp, (uint8_t)uniCombiningClass(cp), 0}).first;
+            return it->second;
+        };
+        for (size_t i = 0; i + 1 < ucd::CCC_N; i += 2)
+            if (ucd::CCC[i + 1]) at(ucd::CCC[i]);
+        for (size_t i = 0; i + 2 < ucd::COMP_N; i += 3) at(ucd::COMP[i + 1]).qc = 1;
+        for (uint32_t c = VBase; c < VBase + VCount; c++) at(c).qc = 1;
+        for (uint32_t c = TBase + 1; c < TBase + TCount; c++) at(c).qc = 1;
+        for (size_t i = 0; i < ucd::CANON_N;) {
+            const uint32_t cp = ucd::CANON[i], len = ucd::CANON[i + 1];
+            if (uniNormalize({cp}, 1) != std::vector<uint32_t>{cp}) at(cp).qc = 2;
+            i += 2 + len;
+        }
+        std::vector<NfcQc> out;
+        for (auto& kv : t) out.push_back(kv.second);
+        std::sort(out.begin(), out.end(), [](const NfcQc& a, const NfcQc& b) { return a.cp < b.cp; });
+        return out;
+    }();
+    return v;
+}
+int uniNfcQuickCheckUtf8(const char* s, size_t n) {
+    const std::vector<NfcQc>* tab = nullptr;   // built on first need: ASCII text never asks
+    int lastCcc = 0, answer = 1;
+    for (size_t p = 0; p < n;) {
+        // below 0xCC every byte is ASCII, a continuation byte, or the lead of a
+        // codepoint under U+0300 — and what utf8cp makes of a stray one is too
+        if ((unsigned char)s[p] < 0xCC) {
+            uint64_t w;
+            if (p + 8 <= n && (std::memcpy(&w, s + p, 8), !(w & 0x8080808080808080ULL))) p += 8;   // ASCII
+            else p++;
+            lastCcc = 0;
+            continue;
+        }
+        uint32_t cp;
+        p += decUtf8(s, p, n, cp);
+        if (!tab) tab = &nfcQcTable();
+        auto it = cp == GB_SYNTHETIC ? tab->end()
+                                     : std::lower_bound(tab->begin(), tab->end(), cp,
+                                                        [](const NfcQc& e, uint32_t c) { return e.cp < c; });
+        if (it == tab->end() || it->cp != cp) { lastCcc = 0; continue; }
+        if (it->qc == 2) return 0;
+        if (it->ccc && lastCcc > it->ccc) return 0;   // marks out of canonical order
+        if (it->qc == 1) answer = -1;
+        lastCcc = it->ccc;
+    }
+    return answer;
+}
+
+static void putUtf8(std::string& out, uint32_t cp) {
+    if (cp < 0x80) out += (char)cp;
+    else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) {
+        out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
+    }
+    else {
+        out += (char)(0xF0 | (cp >> 18)); out += (char)(0x80 | ((cp >> 12) & 0x3F));
+        out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
+    }
+}
+
+// a ~ b for two NFC strings, renormalizing only the stretch that can change:
+// from the last boundary codepoint of `a` (above) to the first one of `b` after
+// its start. A UTF8-C8 synthetic composes with nothing on either side, so it
+// bounds the stretch too and never enters it.
+UniNfcJoin uniNfcJoin(const char* a, size_t na, const char* b, size_t nb) {
+    UniNfcJoin J;
+    if (!na || !nb) return J;
+    uint32_t cp;
+    size_t j = decUtf8(b, 0, nb, cp);
+    if (cp == GB_SYNTHETIC || uniNfcBoundaryBefore(cp)) return J;   // the common case: nothing to do
+    while (j < nb) {
+        const size_t l = decUtf8(b, j, nb, cp);
+        if (cp == GB_SYNTHETIC || uniNfcBoundaryBefore(cp)) break;
+        j += l;
+    }
+    size_t i = na;
+    while (i > 0) {
+        const size_t k = decUtf8Before(a, i, cp);
+        if (cp == GB_SYNTHETIC) break;
+        i = k;
+        if (uniNfcBoundaryBefore(cp)) break;
+    }
+    std::vector<uint32_t> cps;
+    for (size_t p = i; p < na;) { p += decUtf8(a, p, na, cp); cps.push_back(cp); }
+    for (size_t p = 0; p < j;) { p += decUtf8(b, p, j, cp); cps.push_back(cp); }
+    std::vector<uint32_t> norm = uniNormalize(cps, 1);
+    if (norm == cps) return J;
+    J.changed = true;
+    J.i = i;
+    J.j = j;
+    for (uint32_t c : norm) putUtf8(J.mid, c);
+    return J;
+}
+
+// The grapheme count of a join, from the left side's. A cluster boundary that
+// uniGraphemeBreakCertain vouches for holds whatever precedes it, so counting
+// can start over there: `p` is one at or before the part of `a` the join keeps,
+// within a few codepoints of it, and the result has a's count less a's clusters
+// from p on, plus its own from p on. When none is near (a long run of regional
+// indicators, say), the count is left unknown.
+UniGraphemeJoin uniGraphemeJoin(const char* a, size_t na, const UniNfcJoin& J, const char* b, size_t nb) {
+    UniGraphemeJoin G;
+    const size_t keep = J.changed ? J.i : na;   // a[0, keep) is the result's too
+    uint32_t atKeep = 0;                        // the result's codepoint at `keep`, if any
+    bool more = true;
+    if (J.changed && !J.mid.empty()) decUtf8(J.mid.data(), 0, J.mid.size(), atKeep);
+    else if (J.changed && J.j < nb) decUtf8(b, J.j, nb, atKeep);
+    else if (!J.changed && nb) decUtf8(b, 0, nb, atKeep);
+    else more = false;
+    size_t p = keep;
+    for (int steps = 0; p > 0; steps++) {
+        if (steps == 32) return G;
+        uint32_t prev, cur;
+        const size_t k = decUtf8Before(a, p, prev);
+        bool ok;
+        if (p < keep) {
+            decUtf8(a, p, na, cur);
+            ok = uniGraphemeBreakCertain(prev, cur);
+        }
+        else {
+            ok = !more || uniGraphemeBreakCertain(prev, atKeep);
+            if (ok && p < na) {
+                decUtf8(a, p, na, cur);
+                ok = uniGraphemeBreakCertain(prev, cur);
+            }
+        }
+        if (ok) break;
+        p = k;
+    }
+    G.ok = true;
+    G.p = p;
+    G.tailA = p < na ? uniGraphemeCountUtf8(a + p, na - p) : 0;
+    return G;
 }
 
 std::string uniBidiClassOf(uint32_t cp) { return uniBidiClass(cp); }

@@ -89,6 +89,11 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
     mutable std::atomic<signed char> allAscii{-1};   // every byte < 0x80: a byte index is a codepoint index
     mutable std::atomic<signed char> crFree{-1};     // no CR: with allAscii, a byte index is a GRAPHEME index
                                                      // (CR LF is the one ASCII sequence that clusters, GB3)
+    // NFC, as nfcNormalize sees it: what a join may assume of each side, so it
+    // renormalizes only where they meet (nfcAppendCow). Most text is, but not
+    // all of it — a file's bytes or a `.subst` result are kept as they came.
+    // (Beside the other flags, in what was padding: a body is no bigger.)
+    mutable std::atomic<signed char> nfc{-1};
     mutable std::atomic<long long>   nGraphemes{-1}; // .chars
     // Byte-offset tables for POSITIONAL ops on non-ASCII text, built lazily by
     // cowCpIndex/cowGraphemeIndex (Builtins.cpp). Without them every positional
@@ -115,6 +120,7 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
         allAscii.store(-1, std::memory_order_relaxed);
         crFree.store(-1, std::memory_order_relaxed);
         nGraphemes.store(-1, std::memory_order_relaxed);
+        nfc.store(-1, std::memory_order_relaxed);
         delete cpIndex.exchange(nullptr, std::memory_order_acq_rel);
         delete gIndex.exchange(nullptr, std::memory_order_acq_rel);
     }
@@ -193,6 +199,7 @@ public:
         b->allAscii.store(-1, std::memory_order_relaxed);
         b->crFree.store(-1, std::memory_order_relaxed);
         b->nGraphemes.store(-1, std::memory_order_relaxed);
+        b->nfc.store(-1, std::memory_order_relaxed);
         return b->text.empty() ? nullptr : &b->text[0];
     }
 
@@ -281,6 +288,14 @@ public:
     }
     void appendText(const std::string& x) { appendText(x.data(), x.size()); }
     void appendTextSlow(const char* x, size_t n);
+    // appendText of text the caller knows is ASCII. An ASCII tail cannot change
+    // whether the text is NFC, so the body keeps saying so (StrBody::nfc), and
+    // the next non-ASCII join need not read the whole string to find out.
+    void appendAscii(const std::string& x) {
+        const signed char nfc = p_ ? p_->nfc.load(std::memory_order_relaxed) : -1;
+        appendText(x.data(), x.size());
+        if (nfc >= 0 && p_) p_->nfc.store(nfc, std::memory_order_relaxed);
+    }
     // `$s = x ~ $s`: into the free space before a view; a flat body (whose
     // front cannot grow) moves into a buffer with room in front, once.
     void prependText(const char* x, size_t n);
@@ -291,6 +306,15 @@ public:
         const std::string& s = str();
         return s.empty() ? 0 : (unsigned char)s[0];
     }
+    // the bytes, without flattening a view (str() copies a view out, once)
+    const char* bytes() const {
+        if (p_ && p_->view) return p_->view->buf->data + p_->view->off;
+        return str().data();
+    }
+    // Keep the first `keep` bytes, then write mid and x[0, n): a join that
+    // renormalized where the two texts met (nfcAppendCow). In place for a flat
+    // body nothing else holds, as appendText is.
+    void spliceTail(size_t keep, const std::string& mid, const char* x, size_t n);
     static bool joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r);
     static bool joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n);
     static bool sub(CowStr& out, const CowStr& s, size_t off, size_t len);

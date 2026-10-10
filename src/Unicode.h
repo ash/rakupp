@@ -45,6 +45,30 @@ private:
     std::vector<size_t> starts_; // empty when one grapheme == one codepoint
 };
 size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len);  // byte end of the grapheme cluster at `pos`
+size_t uniGraphemeCountUtf8(const char* s, size_t len);   // clusters in s[0, len), the walk starting fresh at s[0]
+bool uniGraphemeBreakCertain(uint32_t prev, uint32_t cur); // a cluster boundary between them, whatever precedes `prev`
+// Joining two NFC strings. A codepoint is an NFC boundary when nothing before it
+// can compose or reorder with it, so normalization never reaches across it.
+bool uniNfcBoundaryBefore(uint32_t cp);
+// Is this UTF-8 NFC, as uniNormalize sees it? 1 yes, 0 no, -1 cannot tell
+// without normalizing (it holds a codepoint that composes with what precedes).
+int uniNfcQuickCheckUtf8(const char* s, size_t n);
+// How NFC(a ~ b) differs from the bytes of a then b, for a and b each NFC:
+// unchanged, or a[0, i) ~ mid ~ b[j, nb).
+struct UniNfcJoin {
+    bool changed = false;
+    size_t i = 0, j = 0;
+    std::string mid;
+};
+UniNfcJoin uniNfcJoin(const char* a, size_t na, const char* b, size_t nb);
+// Counting the result's graphemes from a's count, for the join J of a and b:
+// count(result) = count(a) - tailA + uniGraphemeCountUtf8(result + p, …). `ok`
+// is false when no restart point is near enough to find.
+struct UniGraphemeJoin {
+    bool ok = false;
+    size_t p = 0, tailA = 0;
+};
+UniGraphemeJoin uniGraphemeJoin(const char* a, size_t na, const UniNfcJoin& J, const char* b, size_t nb);
 int uniCollate(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b); // UCA (DUCET) three-way compare
 int uniCollateLevels(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b, const int lv[4]); // …per Collation level
 int32_t uniCharByName(const std::string& name);            // name -> codepoint, or -1

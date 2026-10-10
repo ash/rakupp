@@ -225,6 +225,23 @@ void CowStr::appendTextSlow(const char* x, size_t n) {
     grown();
 }
 
+void CowStr::spliceTail(size_t keep, const std::string& mid, const char* x, size_t n) {
+    if (p_ && !p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
+        StrBody* b = const_cast<StrBody*>(p_.get());
+        b->invalidate();
+        b->text.resize(keep);
+        b->text += mid;
+        b->text.append(x, n);
+        return;
+    }
+    std::string t;
+    t.reserve(keep + mid.size() + n);
+    t.append(bytes(), keep);
+    t += mid;
+    t.append(x, n);
+    take(std::move(t));
+}
+
 void CowStr::prependText(const char* x, size_t n) {
     if (!p_) {
         if (s_.size() + n < kViewMin) { s_.insert(0, x, n); grown(); return; }

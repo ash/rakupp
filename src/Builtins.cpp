@@ -3095,6 +3095,7 @@ std::string nfcNormalize(std::string s) { // by value: the ASCII fast path moves
     for (uint32_t cp : norm) out += cpToUtf8(cp);
     return out;
 }
+
 // Unicode combining marks (Mn/Mc/Me — the common ranges) — they attach to the preceding grapheme.
 // Count grapheme clusters via the full UAX #29 algorithm (emoji/flags/Hangul-aware).
 // How many bytes of a growing UTF-8 buffer are safe to hand over as TEXT.
@@ -3189,14 +3190,15 @@ std::string canonEncodingName(const std::string& name, bool* known) {
 }
 
 std::string joinValues(const ValueList& items, const std::string& sep) {
-    std::string out;
-    for (size_t i = 0; i < items.size(); i++) {
-        if (i) out += sep;
-        out += items[i].toStr();
-    }
     // NFC-composed, as concatenation is: joining ("a", COMBINING RING) yields
     // the composed grapheme in Rakudo's NFG strings
-    return nfcNormalize(std::move(out));
+    const std::string s = nfcNormalize(sep);
+    std::string out;
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i) nfcAppendPart(out, s, 1);
+        nfcAppendPart(out, items[i].toStr(), items[i]);
+    }
+    return out;
 }
 
 // A lazy @-array over the integers from `start` upward (an infinite `…..Inf` range).
@@ -6423,12 +6425,13 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             const std::string& sep = args[0].s.str();
             std::string out;
             bool first = true;
+            const int sepNfc = cowIsNfc(args[0].s) ? 1 : 0;
             for (auto& e : *inv.arr()) {
-                if (!first) out += sep;
+                if (!first) nfcAppendPart(out, sep, sepNfc);
                 first = false;
-                out += e.s.str();
+                nfcAppendPart(out, e.s.str(), e);
             }
-            return Value::str(nfcNormalize(std::move(out)));
+            return Value::str(std::move(out));
         }
     }
     // A construction whose BUILD/TWEAK answered a Failure answers that Failure

@@ -319,3 +319,55 @@ take a positional op.
 The §1 lesson held again, in mirror image: fixing the ASCII lane of seven
 sites and calling it done left the SAME seven sites quadratic for
 everyone else. The scaling table has to be run per LANE, not per site.
+
+## 8. Joining non-ASCII text re-normalized the whole result — FIXED (2026-10-10)
+
+`~`, `~=`, interpolation and `.join` were `nfcNormalize(a + b)` whenever either
+side had a non-ASCII byte, so each `$s ~= 'é'` decoded, decomposed and
+recomposed all of `$s`: 5k appends 0.37 s, 10k 1.32 s, 20k 5.25 s. ASCII
+appends had been linear since §1. The scaling gate (t/scaling/run.raku) found
+it the day it landed: shapes `run/str-append-unicode` and
+`run/str-append-chars-unicode`.
+
+NFC is local. A code point whose decomposition starts with a starter that is
+not the second half of any composition pair (Hangul V and T jamo are, by
+arithmetic) is a boundary nothing reaches across, so for two NFC sides
+NFC(a ~ b) = a[0, i) ~ NFC(a[i, …) ~ b[0, j)) ~ b[j, …), with i the last boundary
+in `a` and j the first in `b` after its start — usually one code point each.
+`uniNfcJoin` (Unicode.cpp) finds them from the composition tables
+`uniNormalize` already uses. The grapheme count is carried across the join as
+well (`uniGraphemeJoin`: restart the UAX #29 walk at a break no earlier text can
+undo), on the StrBody and in the kernel's slot info, so `.chars` after each
+append stays O(1). After: 80k appends 2 ms, with `.chars` each time 10 ms.
+
+**Not every Str is NFC**, and that decided the design. An audit of the
+producers found plain Strs kept exactly as they came from: every UTF-8 read
+(`slurp`, `lines`, `get`, `$*IN`, `run`/`qx` output, sockets, Proc::Async
+chunks), `%*ENV`, `@*ARGS`, `dir()`, NativeCall strings; and, built in-process,
+`sprintf`/`.fmt`, `.subst`/`s///`, `.trans`/`tr///`, `substr-rw` stores,
+`.wordcase`/`.samecase`, `.flip`, `uniparse`, the JSON parser, `uniprop` case
+maps, `nqp::flip`/`nqp::x`, `~` of a Uni, Ranges of Strs. The old join
+normalized such text as a side effect, so a window that assumed NFC would have
+changed answers. Instead a side that is not NFC is normalized whole first —
+NFC(x ~ y) is NFC(NFC(x) ~ y), so the answer is the old one, at the old cost,
+once — and whether a Str is NFC is cached on its body (`StrBody::nfc`, filled
+by a UAX #15 quick check), and in a kernel slot. A join's result is NFC, and
+an ASCII append (`CowStr::appendAscii`) cannot change the answer, so `~=` in a
+loop checks its accumulator once and each appended piece as it comes.
+Fixed at the source in the same change, because they are cheap and Rakudo
+normalizes there: the `chrs()` sub, `nqp::chr`, and `~` with an object operand
+(its `.Str` was joined without composing at all).
+
+Proof that the shortcut changes nothing: `RAKUPP_NFC_CHECK=1` re-runs the
+whole-string pass on every join and checks every cached flag; a full Roast run
+under it reported nothing, and a differential fuzz of every join path
+(`~`, `~=` at top level and in a sub, interpolation, `.join`, `[~]`, prepend,
+array and hash elements, `nqp::concat`, `.chars` after each step), half its
+operands deliberately not NFC, is byte-identical to the build before, in the
+kernel, interpreter, forced-view and `--jit` lanes.
+
+Left as they were: a run of regional indicators appended one at a time gives
+up carrying the count after 32 code points (the next `.chars` recounts), and
+the codegen Str lane (`rtLaneAppend`, `--exe`/`--jit`) has nowhere to cache the
+flag, so it checks its accumulator on each non-ASCII append — a byte scan, no
+longer a normalization.

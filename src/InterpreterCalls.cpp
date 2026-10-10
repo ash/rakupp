@@ -468,8 +468,8 @@ Value Interpreter::interpolate(ValueList& vals) {
             }
             if (idx == parts.size()) {
                 std::string acc;
-                for (auto& v : parts) acc += strInStrContext(v);
-                return Value::str(nfcNormalize(acc));
+                for (auto& v : parts) nfcAppendPart(acc, strInStrContext(v), v);
+                return Value::str(std::move(acc));
             }
             Value out = Value::array(); out.isList = true; out.enumName = parts[idx].enumName;
             Value jv = parts[idx]; // keep the junction alive while we substitute over it
@@ -493,8 +493,9 @@ Value Interpreter::interpolate(ValueList& vals) {
     std::string out;
     // interpolation is a Str:D context too: "[$m]" with $m a `Str but R` is the
     // VALUE, not the role's .Str (an explicit $m.Str still dispatches)
-    for (auto& v : vals) out += strInStrContext(v);
-    return Value::str(nfcNormalize(out)); // NFG: combining marks compose across part boundaries
+    // NFG: combining marks compose across part boundaries
+    for (auto& v : vals) nfcAppendPart(out, strInStrContext(v), v);
+    return Value::str(std::move(out));
 }
 
 // A `return-rw` hands a container OUT of the routine, so a parameter that is

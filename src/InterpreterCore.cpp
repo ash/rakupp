@@ -12837,8 +12837,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 bool asciiRhs = true;
                                 for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
                                 SlotStripe ws(*this, slot);
-                                if (asciiRhs) slot->s.appendText(rhs.s.str());
-                                else slot->s = nfcNormalize(slot->s + rhs.s);
+                                if (asciiRhs) slot->s.appendAscii(rhs.s.str());
+                                else nfcAppendCow(slot->s, rhs.s);
                             } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() &&
                                        (rhs.t == VT::Int || rhs.t == VT::Num || rhs.t == VT::Rat || rhs.t == VT::Bool) &&
                                        rhs.hashKind.empty()) {
@@ -12849,7 +12849,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                                       rhs.enumType.empty() && !rhs.natBits;
                                 std::string txt = rhs.toStr();   // the text applyArith's `~` takes
                                 SlotStripe ws(*this, slot);
-                                if (plainInt) slot->s.appendText(txt);   // (digits: ASCII)
+                                if (plainInt) slot->s.appendAscii(txt);   // (digits)
                                 else rtCatAppendText(*slot, txt);
                             } else if ((sv == 2 || sv == 3) &&
                                        (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
@@ -12886,8 +12886,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 else if (sv == 5) *slot = Value::str("");
                                 else *slot = Value::integer(0);
                             }
-                            nv = sv == 5 ? Value::str(strOf(*slot) + strOf(rhs))
-                                         : applyArith(bop2, *slot, rhs);
+                            if (sv == 5) {   // (composing across the join, as `~` does)
+                                const std::string lt = strOf(*slot);
+                                nv = Value::str(nfcConcat(lt, strOf(rhs), nfcKnown(*slot), nfcKnown(rhs)));
+                            }
+                            else nv = applyArith(bop2, *slot, rhs);
                         }
                         {
                             SlotStripe ws(*this, slot);
@@ -17114,8 +17117,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     // `$s ~= $obj` honours a user-defined Str method, exactly like binary `~`
     // (XML::Document.Str appends its root element object this way)
+    // (and composes across the join as `~` does)
     if (!overloaded && binop == "~" && (lv->t == VT::Object || rhs.t == VT::Object)) {
-        *lv = Value::str(strInStrContext(*lv) + strInStrContext(rhs));
+        const std::string lt = strInStrContext(*lv);
+        *lv = Value::str(nfcConcat(lt, strInStrContext(rhs), nfcKnown(*lv), nfcKnown(rhs)));
         return sink ? Value::any() : *lv;
     }
     // `$s ~= $n` with a plain Int: its decimal text is ASCII, so it appends in
@@ -17123,7 +17128,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // whole string — `$s ~= $_ % 10` over 300k iterations took 8.5 s.
     if (!overloaded && binop == "~" && lv->t == VT::Str && lv->hashKind.empty() && rhs.t == VT::Int &&
         !rhs.x_ && rhs.pk_ == PK::None && rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() && !rhs.natBits) {
-        lv->s.appendText(std::to_string(rhs.i));
+        lv->s.appendAscii(std::to_string(rhs.i));
         return sink ? Value::any() : *lv;
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
@@ -17147,8 +17152,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         bool asciiRhs = true;
         for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
-        if (asciiRhs) lv->s.appendText(rhs.s.str());
-        else lv->s = nfcNormalize(lv->s + rhs.s);
+        if (asciiRhs) lv->s.appendAscii(rhs.s.str());
+        else if (lv->hashKind.empty() && rhs.hashKind.empty()) nfcAppendCow(lv->s, rhs.s);
+        else lv->s = nfcNormalize(lv->s + rhs.s);   // (a Buf on one side: its bytes are not text)
         return sink ? Value::any() : *lv;
     }
     if (!overloaded && !subsets_.empty() && a->target->kind == NK::VarExpr &&
@@ -17517,8 +17523,10 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // does (armCat): a user `method Str` answers, and an operand that IS-A Str
     // gives its value. The interpreter's binary `~` never gets here with one;
     // compiled code, `[~]` and the metaops do — and printed `A<503865983376>`.
-    if (op.size() == 1 && op[0] == '~' && (l.t == VT::Object || r.t == VT::Object) && g_cbInterp)
-        return Value::str(g_cbInterp->strInStrContext(l) + g_cbInterp->strInStrContext(r));
+    if (op.size() == 1 && op[0] == '~' && (l.t == VT::Object || r.t == VT::Object) && g_cbInterp) {
+        const std::string lt = g_cbInterp->strInStrContext(l);   // (composing across the join)
+        return Value::str(nfcConcat(lt, g_cbInterp->strInStrContext(r), nfcKnown(l), nfcKnown(r)));
+    }
     // Distribution::Path / ::Hash / a repository's dist: each reports its own
     // type name, and each does Distribution
     if (r.t == VT::Type && l.t == VT::Hash && l.hashKind == "Distribution" && r.s == "Distribution" &&
@@ -17723,13 +17731,13 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             case '~':
                 if (c1 != '\0') break;
                 // a view on the left claims the space after it (APPEND-PLAN.md):
-                // `$t = $s ~ x` costs x, not $s — ASCII at the join, as ever
-                if (l.s.isView() && r.s.firstByte() < 0x80) {
+                // `$t = $s ~ x` costs x, not $s — when the join changes nothing
+                if (l.s.isView() && (r.s.firstByte() < 0x80 ||
+                                     !uniNfcJoin(l.s.bytes(), l.s.size(), r.s.bytes(), r.s.size()).changed)) {
                     Value out; out.t = VT::Str;
-                    const std::string& rt = r.s.str();
-                    if (CowStr::joinAppend(out.s, l.s, rt.data(), rt.size())) return out;
+                    if (CowStr::joinAppend(out.s, l.s, r.s.bytes(), r.s.size())) return out;
                 }
-                return Value::str(nfcNormalize(l.s + r.s));
+                return nfcConcatStr(l.s, r.s);
             case 'e': if (c1 == 'q') return Value::boolean(l.s == r.s); break;
             case 'n': if (c1 == 'e') return Value::boolean(l.s != r.s); break;
             case 'l': if (c1 == 't') return Value::boolean(l.s <  r.s);
@@ -18935,8 +18943,10 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (u && g_revInterp && Interpreter::uninitOperand(v)) g_revInterp->warnUninitStr(v);
             return u;
         };
-        return Value::str(nfcNormalize((undef(l) ? std::string() : l.toStr()) +
-                                       (undef(r) ? std::string() : r.toStr())));
+        // (an operand that is not a Str is checked for NFC; a Str knows)
+        const bool lu = undef(l), ru = undef(r);
+        const std::string lt = lu ? std::string() : l.toStr();
+        return Value::str(nfcConcat(lt, ru ? std::string() : r.toStr(), lu ? 1 : nfcKnown(l), ru ? 1 : nfcKnown(r)));
     }
     if (opEq(op, "x")) {
         // an UNDEFINED count is a numeric use of it: Rakudo warns and repeats
@@ -22532,8 +22542,10 @@ Value Interpreter::evalBinary(Binary* b) {
         // candidate and concatenates its VALUE — per operand, even when the
         // other side is a plain object. `("bb" but R) ~ Plain.new` is "bbplain",
         // not "R's-Str" ~ "plain".
-        if (l.t == VT::Object || r.t == VT::Object)
-            return Value::str(strInStrContext(l) + strInStrContext(r));
+        if (l.t == VT::Object || r.t == VT::Object) {
+            const std::string lt = strInStrContext(l);   // (composing across the join)
+            return Value::str(nfcConcat(lt, strInStrContext(r), nfcKnown(l), nfcKnown(r)));
+        }
         return applyArith("~", l, r);
     }
   armDoes:

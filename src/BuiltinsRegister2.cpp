@@ -763,7 +763,8 @@ void Interpreter::registerBuiltinsPart3() {
         if (e && n == "$_") if (Value* t = e->find(n)) return *t;
         return Value::nil();
     };
-    B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(r); };
+    // NFC, as `.chrs` and every Str is: chrs(0x958) is U+0915 U+093C
+    B["chrs"] = [](Interpreter&, ValueList& a) -> Value { std::string r; for (auto& x : flattenArgs(a)) r += cpToUtf8((uint32_t)x.toInt()); return Value::str(nfcNormalize(std::move(r))); };
     // msb/lsb — the position of an Int's highest and lowest set bit, counting
     // from 0. Rakudo's answer for a NEGATIVE argument is the two's-complement
     // one: msb(-1) is 0, msb(-255) is 8 (one more than msb(255)), because the

@@ -272,10 +272,10 @@ work 'set-hash',         Q｢my %s is SetHash; %s{$_} = True for ^@N@;｣;
 # -- run: strings
 work 'str-append',       Q｢my $s = ''; $s ~= 'abcde' for ^@N@;｣;
 work 'str-append-chars', Q｢my $s = ''; my $c = 0; for ^@N@ { $s ~= 'a'; $c += $s.chars }｣;
-work 'str-append-unicode', Q｢my $s = 'é'; $s ~= 'é' for ^@N@;｣, :n(1000),
-     :known('joining non-ASCII text re-normalizes the WHOLE result to NFC: nfcNormalize(dst + v) per append');
-work 'str-append-chars-unicode', Q｢my $s = 'é'; my $c = 0; for ^@N@ { $s ~= 'é'; $c += $s.chars }｣, :n(1000),
-     :known('the same whole-string NFC pass per append');
+work 'str-append-unicode', Q｢my $s = 'é'; $s ~= 'é' for ^@N@;｣;
+work 'str-append-chars-unicode', Q｢my $s = 'é'; my $c = 0; for ^@N@ { $s ~= 'é'; $c += $s.chars }｣;
+work 'str-append-chars-mixed', Q｢my $s = 'é'; my $c = 0; for ^@N@ { $s ~= 'a'; $c += $s.chars }｣;
+work 'str-append-chars-unicode-sub', Q｢my $s = 'é'; my $c = 0; sub f($x) { $s ~= $x; $c += $s.chars }; f('é') for ^@N@;｣;
 work 'str-prepend',      Q｢my $s = ''; $s = 'abcde' ~ $s for ^@N@;｣;
 work 'str-join',         Q｢my $j = (^@N@).join(',');｣, :n(50_000);
 work 'str-split',        Q｢my $s = 'ab,' x @N@; my $c = $s.split(',').elems;｣, :n(50_000);

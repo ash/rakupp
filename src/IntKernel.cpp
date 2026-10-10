@@ -1580,6 +1580,10 @@ struct KConts {
     // plain — all ASCII and no CR, so a byte index is a grapheme index (CR LF
     // is the one ASCII pair that clusters). SSet, SApp and SGiven keep it.
     int64_t* sinfo = nullptr;
+    // …and whether the text is NFC: 1, 0, or -1 not yet known. A non-ASCII
+    // `~=` renormalizes only where the two texts meet when it is (nfcAppend),
+    // so it is checked once, not on every append. The same three keep it.
+    signed char* snfc = nullptr;
 };
 [[gnu::always_inline]] inline bool stopped(const KRun& R) { return R.bail | R.ret | R.next | R.last | R.succeed; }
 
@@ -1816,6 +1820,7 @@ int64_t sgivenFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& t = srun(n->a, fr, R);
     if (&t != &R.sfr[n->slot]) R.sfr[n->slot] = t;
     R.cc->sinfo[n->slot] = -1;
+    R.cc->snfc[n->slot] = -1;
     const int64_t v = krun(n->c, fr, R);
     R.succeed = false;
     return R.ret ? v : 0;
@@ -1850,9 +1855,9 @@ int64_t lastFn(const KNode*, int64_t*, KRun& R) { R.last = true; return 0; }
 int64_t nextFn(const KNode*, int64_t*, KRun& R) { R.next = true; return 0; }
 
 // Strings. A plain Str is NFC already, and the generic path's `~` is
-// nfcNormalize(l ~ r): text that is all ASCII joins to itself, so only the
-// rest is renormalized. `~=` appends an ASCII right side in place, as the
-// generic path does.
+// NFC(l ~ r): text that is all ASCII joins to itself, and the rest is
+// renormalized where the two meet (nfcAppend). `~=` appends an ASCII right
+// side in place, as the generic path does.
 inline bool allAscii(const std::string& s) {
     for (unsigned char c : s) if (c >= 0x80) return false;
     return true;
@@ -1865,7 +1870,11 @@ const std::string& scatFn(const KNode* n, int64_t* fr, KRun& R) {
     if (&l != &out) out = l;   // (a temporary may be its own left operand only through a chain)
     const std::string& r = srun(n->b, fr, R);
     if (allAscii(out) && allAscii(r)) out += r;
-    else out = nfcNormalize(out + r);
+    else {
+        signed char known = n->a->op == KOp::SVar ? R.cc->snfc[n->a->slot] : n->a->op == KOp::SCat ? 1 : -1;
+        nfcAppend(out, r, nullptr, &known);
+    }
+    R.cc->snfc[n->slot] = 1;   // a join's result is NFC
     return out;
 }
 const std::string& sintFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -1895,20 +1904,27 @@ int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
         std::swap(dst, R.sfr[n->a->slot]);
     else if (&v != &dst) dst = v;
     R.cc->sinfo[n->slot] = ao == KOp::SVar ? R.cc->sinfo[n->a->slot] : -1;
+    R.cc->snfc[n->slot] = ao == KOp::SVar || ao == KOp::SCat ? R.cc->snfc[n->a->slot] : -1;
     return 0;
 }
 int64_t sappFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->a, fr, R);
     std::string& dst = R.sfr[n->slot];
     int64_t& info = R.cc->sinfo[n->slot];
-    if (allAscii(v)) {
+    if (allAscii(v) && !(info >= 0 && !(info & 1))) {
         // plain text joined to plain text stays plain, one character a byte
         if (info >= 0 && (info & 1) && std::memchr(v.data(), '\r', v.size()) == nullptr)
             info += (int64_t)v.size() << 1;
         else info = -1;
         dst += v;
     }
-    else { info = -1; dst = nfcNormalize(dst + v); }
+    else {
+        // renormalized where the two meet, and the grapheme count carried
+        // across the join when it is known, so `.chars` stays O(1) here too
+        long long chars = info >= 0 ? info >> 1 : -1;
+        nfcAppend(dst, v, &chars, &R.cc->snfc[n->slot]);
+        info = chars >= 0 ? chars << 1 : -1;
+    }
     return 0;
 }
 
@@ -2367,9 +2383,8 @@ int64_t csappFn(const KNode* n, int64_t* fr, KRun& R) {
     if (el->t != VT::Str) { R.bail = true; return 0; }
     // appended in place: the element's own text, detached once from any
     // other Value that shares it, then grown, not rebuilt each time
-    std::string& cur = el->s.mut();
-    if (allAscii(v)) cur += v;
-    else cur = nfcNormalize(cur + v);
+    if (allAscii(v)) el->s.mut() += v;
+    else nfcAppendCow(el->s, v);   // (renormalized where the two meet, the element's NFC flag kept)
     return 0;
 }
 int64_t cpushFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -3034,6 +3049,10 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     std::unique_ptr<int64_t[]> heapInfo;
     int64_t* sinfo = L->nstr <= 16 ? stackInfo : (heapInfo.reset(new int64_t[L->nstr]), heapInfo.get());
     std::fill(sinfo, sinfo + L->nstr, -1);
+    signed char stackNfc[16];
+    std::unique_ptr<signed char[]> heapNfc;
+    signed char* snfc = L->nstr <= 16 ? stackNfc : (heapNfc.reset(new signed char[L->nstr]), heapNfc.get());
+    std::fill(snfc, snfc + L->nstr, (signed char)-1);
     fr[kLoSlot] = lo;
     fr[kHiSlot] = hi;
     for (size_t i = 0; i < no; i++) {
@@ -3044,7 +3063,10 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             if (cells[i]->t == VT::Int) { fr[o.slot] = cells[i]->i; fr[o.slot + 1] = 0; }
             else { fr[o.slot] = cells[i]->ratN()->toLL(); fr[o.slot + 1] = cells[i]->ratD()->toLL(); }
         }
-        else strs[o.slot] = cells[i]->s.str();
+        else {
+            strs[o.slot] = cells[i]->s.str();
+            if (const StrBody* b = cells[i]->s.body()) snfc[o.slot] = b->nfc.load(std::memory_order_relaxed);
+        }
     }
     // the generic path's own limits for the calls it makes (see tryIntKernel)
     KRun R;
@@ -3064,6 +3086,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     kc.conts = conts;
     kc.n = nc;
     kc.sinfo = sinfo;
+    kc.snfc = snfc;
     if (nc) kc.size(nc);
     R.cc = &kc;
     krun(L->k.body, fr, R);
@@ -3090,7 +3113,10 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             else *cells[i] = fr[o.slot + 1] ? ratValue(fr[o.slot], fr[o.slot + 1]) : Value::integer(fr[o.slot]);
         }
 #endif
-        else cells[i]->s = std::move(strs[o.slot]);
+        else {
+            cells[i]->s = std::move(strs[o.slot]);
+            if (const StrBody* b = cells[i]->s.body()) b->nfc.store(snfc[o.slot], std::memory_order_relaxed);
+        }
     }
     return true;
 }

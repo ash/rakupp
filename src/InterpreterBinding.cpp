@@ -4747,13 +4747,13 @@ Value Interpreter::stepValue(const Value& cur, bool up) {
 }
 void rtCatAppendText(Value& l, const std::string& r) {
     for (unsigned char c : r)
-        if (c >= 0x80) { l.s = nfcNormalize(l.s.str() + r); return; }
-    l.s.appendText(r);   // (a body others hold grows a buffer, not a copy: APPEND-PLAN.md)
+        if (c >= 0x80) { nfcAppendCow(l.s, r); return; }
+    l.s.appendAscii(r);   // (a body others hold grows a buffer, not a copy: APPEND-PLAN.md)
 }
 void rtCatPrependText(Value& l, const std::string& x) {
     // ASCII at the join (the string's own first byte) cannot combine with what
-    // goes in front of it; anything else is renormalized as `~` does
-    if (l.s.firstByte() >= 0x80) { l.s = nfcNormalize(x + l.s.str()); return; }
+    // goes in front of it; anything else is renormalized where they meet
+    if (l.s.firstByte() >= 0x80) { nfcPrependCow(l.s, x.data(), x.size()); return; }
     l.s.prependText(x);
 }
 void rtViewSyncSlow(const Value& base) {

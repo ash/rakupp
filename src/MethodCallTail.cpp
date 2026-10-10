@@ -2571,19 +2571,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     a0().typeName() + " (" + a0().gist() + ")"};
             // each element through ITS OWN .Str, so a user `method Str` is honoured —
             // except a Str-ish one, which contributes its VALUE (Str:D candidate)
-            const std::string sep = args.empty() ? "" : a0().toStr();
+            const std::string sep = args.empty() ? "" : nfcNormalize(a0().toStr());
             // A HOLE stringifies as what READING it would give: "" for a plain
             // array, the `is default(v)` value where there is one, and the
             // element type's object for a typed array (sheet LA-14).
             const Value* dflt = inv.t == VT::Array && inv.elemDefault()
                                     ? inv.elemDefault().get() : nullptr;
             std::string out;
-            for (size_t k = 0; k < items.size(); k++) {
-                if (k) out += sep;
-                out += (dflt && items[k].t == VT::Any) ? strInStrContext(*dflt)
-                                                       : strInStrContext(items[k]);
+            for (size_t k = 0; k < items.size(); k++) {   // NFG: composing across the joins
+                if (k) nfcAppendPart(out, sep, 1);
+                const Value& e = (dflt && items[k].t == VT::Any) ? *dflt : items[k];
+                nfcAppendPart(out, strInStrContext(e), e);
             }
-            return Value::str(nfcNormalize(std::move(out))); // NFG: compose across the joins
+            return Value::str(std::move(out));
         }
         if (m == "fmt" && inv.t == VT::Array && inv.b)   // a `.lazy`-marked list
             throwTyped("X::Cannot::Lazy", {{"action", ".fmt"}}, "Cannot .fmt a lazy list");
