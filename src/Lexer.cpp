@@ -2280,6 +2280,11 @@ bool Lexer::tryQuoteForm(Token& out) {
                (src_[ws] == '\'' || src_[ws] == '"' || (unsigned char)src_[ws] >= 0x80))
           p = ws; }
     if (p >= src_.size()) return false;
+    // A bare `Q` has NO escapes, not even of its own closing delimiter:
+    // `Q[a escape\]` is the text `a escape\` (roast S17-procasync's quoting tests)
+    bool rawQ = word0 == "Q";
+    for (const char* a : {":b ", ":backslash ", ":q ", ":qq ", ":single ", ":double "})
+        if (adverbs.find(a) != std::string::npos) rawQ = false;
     // What the delimited text BECOMES is decided by the FORM, not by which
     // delimiter carried it: qx runs a shell command, :w splits a word list, :to
     // names a heredoc terminator. The Unicode-delimiter branches below stopped
@@ -2456,13 +2461,11 @@ bool Lexer::tryQuoteForm(Token& out) {
                                  line_, "X::Comp::Group", {});
         }
     }
-    // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes; no
-    // nesting, backslash protects. Every q-family form (not m/s/tr). `q｢…｣` is
-    // one of these: the standalone ｢…｣ quote handled elsewhere never sees the
-    // `q`, so excluding the pair here left `q:to｢END｣` as an undeclared call.
-    if (!isRegex && !isSubst && !isTrans &&
-        (unsigned char)src_[p] >= 0x80 &&
-        !((unsigned char)src_[p] == 0xC2 && p + 1 < src_.size() && (unsigned char)src_[p + 1] == 0xAB)) { // « handled below
+    // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes.
+    // Every q-family form (not m/s/tr). `q｢…｣` is one of these: the standalone
+    // ｢…｣ quote handled elsewhere never sees the `q`, so excluding the pair
+    // here left `q:to｢END｣` as an undeclared call.
+    if (!isRegex && !isSubst && !isTrans && (unsigned char)src_[p] >= 0x80) {
         unsigned char b0 = (unsigned char)src_[p];
         int dlen = b0 >= 0xF0 ? 4 : b0 >= 0xE0 ? 3 : 2;
         if (p + dlen <= src_.size()) {
@@ -2481,6 +2484,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                     DC.clear();
                     DC += (char)(0xE0 | (cc >> 12)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F));
                 }
+                else if (cp == 0xAB) DC = "\xC2\xBB"; // « … » (an initial quote, not Ps)
                 else if (uniGeneralCategory(cp) == "Ps" || cp == 0x301D) {
                     // The closer is the MIRRORED glyph, not blindly cp+1: the tick
                     // brackets cross over (⦍ U+298D closes with ⦐ U+2990, ⦏ U+298F
@@ -2495,75 +2499,74 @@ bool Lexer::tryQuoteForm(Token& out) {
                     else { DC += (char)(0xF0 | (cc >> 18)); DC += (char)(0x80 | ((cc >> 12) & 0x3F)); DC += (char)(0x80 | ((cc >> 6) & 0x3F)); DC += (char)(0x80 | (cc & 0x3F)); }
                 }
             }
+            // A BRACKETING pair nests, as it does in every Raku quote:
+            // `q｢a ｢b｣ c｣` is `a ｢b｣ c`, where the first ｣ used to end the
+            // string and leave ` c｣` behind as code. A repeated opener is one
+            // delimiter, `Q｢｢a｣b｣｣` (only an equally long closer run ends it,
+            // only an equally long opener run nests). A lone symbol closes
+            // itself and nests nothing.
+            const bool nests = DC != D;
             while (pos_ < p) advance();
             const int startLine = line_;
+            std::string open = D, shut = DC;
             for (int k = 0; k < dlen; k++) advance(); // opening delimiter
+            while (nests && src_.compare(pos_, D.size(), D) == 0) {
+                for (int k = 0; k < dlen; k++) advance();
+                open += D; shut += DC;
+            }
+            auto at = [&](const std::string& s) { return src_.compare(pos_, s.size(), s) == 0; };
+            auto take = [&](std::string& raw, const std::string& s) {
+                for (size_t k = 0; k < s.size(); k++) raw += advance();
+            };
             std::string raw;
-            while (!eof() && src_.compare(pos_, dlen, DC) != 0) {
-                if (peek() == '\\') {
+            int depth = 0;
+            for (;;) {
+                if (eof()) runawayTerm(shut, open, startLine);
+                // a backslashed delimiter is text, never a nesting step or the
+                // end — except in a bare `Q`, which has no escapes at all
+                if (peek() == '\\' && !rawQ) {
                     raw += advance();
-                    if (!eof() && src_.compare(pos_, dlen, D) == 0) { for (int k = 0; k < dlen; k++) raw += advance(); }
-                    else if (!eof()) raw += advance();
+                    if (eof()) continue;
+                    if (at(open)) take(raw, open);
+                    else if (at(shut)) take(raw, shut);
+                    else if (at(D)) take(raw, D);
+                    else if (at(DC)) take(raw, DC);
+                    else raw += advance();
                     continue;
+                }
+                if (nests && at(open)) { depth++; take(raw, open); continue; }
+                if (at(shut)) {
+                    if (depth == 0) break;
+                    depth--; take(raw, shut); continue;
                 }
                 raw += advance();
             }
-            if (eof()) runawayTerm(DC, D, startLine);
-            for (int k = 0; k < dlen; k++) advance(); // closing delimiter
+            for (size_t k = 0; k < shut.size(); k++) advance(); // closing delimiter
             if (quoteFormTail(raw)) return true;
             bool interp = (w == "qq");
             std::string feats = interp ? "sahfcb" : "";
             bool anyFeat = quoteFeatAdverbs(adverbs, feats);
+            // `q…` collapses \\ → \ and a backslashed delimiter to the delimiter,
+            // as the ASCII-delimited `q[…]` below does
+            if (!anyFeat && w == "q") {
+                std::string s;
+                for (size_t k = 0; k < raw.size(); k++) {
+                    if (raw[k] == '\\' && k + 1 < raw.size()) {
+                        if (raw[k + 1] == '\\') { s += '\\'; k++; continue; }
+                        const std::string* hit = raw.compare(k + 1, D.size(), D) == 0 ? &D
+                                               : raw.compare(k + 1, DC.size(), DC) == 0 ? &DC : nullptr;
+                        if (hit) { s += *hit; k += hit->size(); continue; }
+                    }
+                    s += raw[k];
+                }
+                raw = std::move(s);
+            }
             if (anyFeat) out = feats.empty() ? make(Tok::StrLit, raw)
                                              : make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
             else if (interp) out = make(Tok::StrInterp, raw);
             else out = make(Tok::StrLit, raw);
             return true;
         }
-    }
-    // guillemet-delimited quote: Q«…» / Q««…»» (double «« matches »», so a single
-    // » may appear inside). q interpolates nothing extra; qq interpolates.
-    if (!isRegex && !isSubst && !isTrans &&
-        p + 1 < src_.size() && (unsigned char)src_[p] == 0xC2 && (unsigned char)src_[p + 1] == 0xAB) {
-        while (pos_ < p) advance(); // consume the keyword (+ adverbs/whitespace)
-        const int startLine = line_;
-        int opens = 0;
-        while ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) { advance(); advance(); opens++; }
-        std::string raw;
-        bool closed = false;
-        int depth = 0; // brackets nest: `Q«a«b»c»` is `a«b»c`
-        while (!eof()) {
-            if (opens == 1 && (unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xAB) {
-                raw += advance(); raw += advance(); depth++;
-                continue;
-            }
-            if ((unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
-                int closes = 0;
-                while (closes < opens && (unsigned char)peek() == 0xC2 && (unsigned char)peek(1) == 0xBB) {
-                    advance(); advance(); closes++;
-                }
-                if (closes == opens && depth > 0) { depth--; raw += "\xC2\xBB"; continue; }
-                if (closes == opens) { closed = true; break; }       // matched full run: done
-                for (int k = 0; k < closes; k++) raw += "\xC2\xBB"; // shorter run is content
-                continue;
-            }
-            raw += advance();
-        }
-        if (!closed) { // `Q««…` needs an equally long `»»` run, so name the whole run
-            std::string o, c;
-            for (int k = 0; k < opens; k++) { o += "\xC2\xAB"; c += "\xC2\xBB"; }
-            runawayTerm(c, o, startLine);
-        }
-        if (quoteFormTail(raw)) return true;
-        {
-            bool interp = (w == "qq");
-            std::string feats = interp ? "sahfcb" : "";
-            bool anyFeat = quoteFeatAdverbs(adverbs, feats);
-            if (anyFeat) out = feats.empty() ? make(Tok::StrLit, raw)
-                                             : make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
-            else out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
-        }
-        return true;
     }
     // A BARE lower-case `m`/`rx`/`s` takes any of the other documented
     // delimiters too — `m^b^`, `s$a$b$`, `m;b;` (S05-metasyntax/delimiters.t)
@@ -2674,11 +2677,6 @@ bool Lexer::tryQuoteForm(Token& out) {
     // nest like Raku char classes, so don't shield the delimiter inside `[ ]` there.
     bool p5 = adverbs.find("P5") != std::string::npos || adverbs.find("Perl5") != std::string::npos;
     int startLine = line_; // set again below, once the opening delimiter is consumed
-    // A bare `Q` has NO escapes, not even of its own closing delimiter:
-    // `Q[a escape\]` is the text `a escape\` (roast S17-procasync's quoting tests)
-    bool rawQ = word0 == "Q";
-    for (const char* a : {":b ", ":backslash ", ":q ", ":qq ", ":single ", ":double "})
-        if (adverbs.find(a) != std::string::npos) rawQ = false;
     // `isRepl` marks the SECOND half of s/pat/repl/ — Rakudo names that part
     // rather than reporting a plain missing terminator.
     auto readPart = [&](bool quoteAware, bool blocks, bool isRepl = false) -> std::string {
