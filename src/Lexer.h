@@ -144,6 +144,8 @@ private:
     int termDepth_ = 0;               // brace depth at termScan_
     int termParen_ = 0;               // paren depth at termScan_ (a `\x` inside one is a parameter)
     int angleWords_ = 0; // depth inside a bare `< … >` word list: quote/regex lexing is off (content is words)
+    int guilleWords_ = 0;      // inside a term-position `<< … >>` / `« … »` list: no regex there
+    std::string guilleClose_;  // …and what closes it
     int angleLine_ = 0;  // line the OUTERMOST `<` of that word list opened on
     int line_ = 1;
 public:

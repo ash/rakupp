@@ -1251,11 +1251,12 @@ void Interpreter::registerBuiltinsPart4() {
                         int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);
                         if (r != 0) {
                             Value out = r == 2 ? repl : ex;
-                            if (ctx->quitCb.t == VT::Code) { ValueList one{out}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                            auto ret = callQuitCb(I2, ctx->quitCb, out);
                             // nothing may follow a quit (S-06); `done` also stops the
                             // maybeFinishSupply below emitting one after it.
                             ctx->done = true;
                             if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                            if (ret) { ctx->pending--; std::rethrow_exception(ret); }
                         }
                     } else {
                         ValueList one{ ps->result };
@@ -1274,16 +1275,17 @@ void Interpreter::registerBuiltinsPart4() {
                             // this shape, so a 404 hung the client instead of throwing.
                             died = true;
                             Value ex = I2.exceptionFor(e);
-                            if (ctx->quitCb.t == VT::Code) {
-                                ValueList qa{ex};
-                                try { I2.callCallable(ctx->quitCb, qa); } catch (...) {}
-                            }
+                            auto ret = callQuitCb(I2, ctx->quitCb, ex);
                             // nothing may follow a quit (S-06); `done` also makes the
                             // maybeFinishSupply below a no-op, so no done is emitted.
                             ctx->done = true;
                             if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                            if (ret) { ctx->pending--; std::rethrow_exception(ret); }
                         }
-                        if (!died) I2.runLastPhasers(lastP, nullptr);
+                        if (!died) {
+                            auto ret = runSupplyLast(I2, lastP, ctx);
+                            if (ret) { ctx->pending--; std::rethrow_exception(ret); }
+                        }
                     }
                     ctx->pending--;
                     I2.maybeFinishSupply(ctx);
@@ -1322,9 +1324,10 @@ void Interpreter::registerBuiltinsPart4() {
                     // its backlog is dropped, and when no whenever is left the
                     // supply is done.
                     ctx->closeSub(subId);
-                    I2.runLastPhasers(lastP, nullptr);
+                    auto ret = runSupplyLast(I2, lastP, ctx);
                     if (ctx->pending > 0) ctx->pending--;
                     I2.maybeFinishSupply(ctx);
+                    if (ret) std::rethrow_exception(ret);
                 }
                 catch (DoneEx&) {}
                 catch (RakuError& e) {
@@ -1335,9 +1338,10 @@ void Interpreter::registerBuiltinsPart4() {
                     // dies per malformed frame and its test reads it there).
                     ctx->closeSub(subId);
                     Value ex = I2.exceptionFor(e);
-                    if (ctx->quitCb.t == VT::Code) { ValueList one{ex}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                    auto ret = callQuitCb(I2, ctx->quitCb, ex);
                     ctx->done = true;
                     if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                    if (ret) std::rethrow_exception(ret);
                 }
             });
             // every inner tap holds the supply open until its done fires; the
@@ -1345,9 +1349,10 @@ void Interpreter::registerBuiltinsPart4() {
             ctx->pending++;
             Value doneW = wrap([lastP, ctx, subId](Interpreter& I2, ValueList&) {
                 ctx->closeSub(subId);
-                I2.runLastPhasers(lastP, nullptr);
+                auto ret = runSupplyLast(I2, lastP, ctx);
                 if (ctx->pending > 0) ctx->pending--;
                 I2.maybeFinishSupply(ctx);
+                if (ret) std::rethrow_exception(ret);
             });
             // S-57: the SOURCE quitting is what a QUIT phaser is for. It works
             // like CATCH — a matching `when`/`default` consumes the quit and
@@ -1365,9 +1370,10 @@ void Interpreter::registerBuiltinsPart4() {
                     return;
                 }
                 Value out = r == 2 ? repl : ex;
-                if (ctx->quitCb.t == VT::Code) { ValueList one{out}; try { I2.callCallable(ctx->quitCb, one); } catch (...) {} }
+                auto ret = callQuitCb(I2, ctx->quitCb, out);
                 ctx->done = true;
                 if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                if (ret) std::rethrow_exception(ret);
             });
             Value tapV = I.tapSupply(src, emitW, doneW, quitW);
             // closing the outer tap closes this inner one
@@ -1446,12 +1452,20 @@ void Interpreter::registerBuiltinsPart4() {
                         ctx = I.reactStack_.back();
                         std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++;
                     }
+                    // the block's LAST phasers run when the stream ends, as for
+                    // every other source: `whenever $conn.Supply.lines { …; LAST
+                    // done }` is how a client notices the server hung up (it ran
+                    // nothing here, so Log::Timeline's socket test timed out)
+                    ValueList lastP, quitP;
+                    scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
                     Value doneW;
                     if (ctx) {
                         std::weak_ptr<ReactCtx> wctx = ctx;
                         doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
-                        doneW.code()->builtin = [wctx](Interpreter&, ValueList&) -> Value {
-                            if (auto c = wctx.lock()) { std::lock_guard<std::mutex> lk(c->m); if (c->liveSources > 0) c->liveSources--; c->cv.notify_all(); }
+                        doneW.code()->builtin = [wctx, lastP](Interpreter& I2, ValueList&) -> Value {
+                            auto c = wctx.lock();
+                            I2.runLastPhasers(lastP, c);
+                            if (c) { std::lock_guard<std::mutex> lk(c->m); if (c->liveSources > 0) c->liveSources--; c->cv.notify_all(); }
                             return Value::any();
                         };
                     }

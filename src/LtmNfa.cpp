@@ -379,6 +379,13 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             // lookaround, so a `rule`'s implicit <.ws> stops LTM right there
             // (`rule { \w+ '-'+ }` ranks at the word, below `token { \w+ '-' }`)
             if (n->ruleName == "ws") return accept(from);
+            // A QUALIFIED call — `<dt=DateTime::Parse::Grammar::rfc1123-date>`, a
+            // rule of ANOTHER grammar — ends the prefix the way Rakudo's NFA ends
+            // it: a fair ranking point, not a model gap. As a gap it sent the
+            // whole proto to the full-match probe, which let Cro's
+            // `cookie-av:sym<extension> { <path> }` beat `:sym<expires> { :i
+            // 'Expires=' <dt=…> }` and dropped every cookie's Expires.
+            if (n->ruleName.find("::") != std::string::npos) return accept(from);
             if (!buildCtx_->hooks || !buildCtx_->hooks->namedRule)
                 return acceptGap(from);
             std::string text, flags;

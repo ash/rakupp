@@ -822,6 +822,56 @@ static void checkAttrStore(Interpreter& I, Value& v, const ClassAttr& at,
                       " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
 }
 
+// A value the CALLER passed for a typed container attribute keeps the
+// attribute's element type — coercing it to the sigil builds a fresh
+// Array/Hash that knows nothing of the declaration — and every element it
+// brings has to satisfy it, the same check the attribute's own later writes
+// get. Used by the default constructor and by a `:@!a` parameter.
+static Value typedAttrContainer(Interpreter& I, Value v, const ClassAttr& at, ClassInfo* ci) {
+    if ((at.sigil != '@' && at.sigil != '%') || at.type.empty()) return v;
+    if (v.t != VT::Array && v.t != VT::Hash) return v;
+    if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
+    if (v.ofType().empty()) v.ofTypeM() = roleTypeIn(ci, at.type);
+    std::string want = I.elemTypeOf(v);
+    // `has P() %.props` COERCES each element it is given (P's COERCE, or
+    // the built-in conversion) rather than refusing what is not one yet
+    if (at.coerce && !want.empty()) {
+        if (v.t == VT::Array && v.arr()) {
+            Value nv = Value::array(); nv.ofTypeM() = v.ofType();
+            for (auto& el : *v.arr())
+                nv.arr()->push_back(I.typeOrSubsetMatches(el, want) ? el : I.coerceToType(el, want));
+            return nv;
+        }
+        if (v.hash()) {
+            Value nv = Value::makeHash(); nv.ofTypeM() = v.ofType();
+            for (auto& kv : *v.hash())
+                (*nv.hash())[kv.first] = I.typeOrSubsetMatches(kv.second, want) ? kv.second
+                                                                               : I.coerceToType(kv.second, want);
+            return nv;
+        }
+    }
+    if (!want.empty()) {
+        std::string sym = std::string(1, at.sigil) + "!" + at.name;
+        if (v.t == VT::Array && v.arr()) for (auto& el : *v.arr()) I.checkElemType(want, el, sym);
+        else if (v.hash()) for (auto& kv : *v.hash()) I.checkElemType(want, kv.second, sym);
+    }
+    return v;
+}
+
+// A `$!x` parameter — BUILD's `:$!x`, `method set($!x)` — stores into the
+// attribute as `$!x = value` would, so the attribute's type is asked, subset
+// `where` included. It was stored as given: Cro::HTTP::Cookie's
+// `has CookieName $.name` and `submethod BUILD(:$!name, …)` took an empty name,
+// and its "Empty names are not permitted" test lived.
+void Interpreter::checkAttrParamStore(Value& v, const Value& self, const std::string& bare, bool wasNil) {
+    if (self.t != VT::Object || !self.obj() || !self.obj()->cls) return;
+    ClassInfo* ci = self.obj()->cls.get();
+    const ClassAttr* at = ci->findAttr(bare);
+    if (!at) return;
+    if (at->sigil == '@' || at->sigil == '%') { v = typedAttrContainer(*this, std::move(v), *at, ci); return; }
+    checkAttrStore(*this, v, *at, roleTypeIn(ci, at->type), wasNil, ci->declEnv.get());
+}
+
 // Park a tap on a Proc::Async stream Supply ({proc, stream, split?, bin?}).
 // The process's output arrives in CHUNKS as it is produced (runProcPromise's
 // sink), so a `.lines`-marked stream splits HERE, at the tap: the callback runs
@@ -1124,39 +1174,9 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         if (v.natBits && !isNativeTypeName(at.type)) { v.natBits = 0; v.natSigned = v.natFloat = false; }
         return v;
     };
-    // A value the CALLER passed for a typed container attribute keeps the
-    // attribute's element type — the coercion below builds a fresh Array/Hash
-    // that knows nothing of the declaration — and every element it brings has
-    // to satisfy it, the same check the attribute's own later writes get.
+    // (a caller's typed container value: see typedAttrContainer)
     auto typedContainer = [&](Value v, const ClassAttr& at) -> Value {
-        if ((at.sigil != '@' && at.sigil != '%') || at.type.empty()) return v;
-        if (v.t != VT::Array && v.t != VT::Hash) return v;
-        if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
-        if (v.ofType().empty()) v.ofTypeM() = resolveRoleType(at.type);
-        std::string want = elemTypeOf(v);
-        // `has P() %.props` COERCES each element it is given (P's COERCE, or
-        // the built-in conversion) rather than refusing what is not one yet
-        if (at.coerce && !want.empty()) {
-            if (v.t == VT::Array && v.arr()) {
-                Value nv = Value::array(); nv.ofTypeM() = v.ofType();
-                for (auto& el : *v.arr())
-                    nv.arr()->push_back(typeOrSubsetMatches(el, want) ? el : coerceToType(el, want));
-                return nv;
-            }
-            if (v.hash()) {
-                Value nv = Value::makeHash(); nv.ofTypeM() = v.ofType();
-                for (auto& kv : *v.hash())
-                    (*nv.hash())[kv.first] = typeOrSubsetMatches(kv.second, want) ? kv.second
-                                                                                   : coerceToType(kv.second, want);
-                return nv;
-            }
-        }
-        if (!want.empty()) {
-            std::string sym = std::string(1, at.sigil) + "!" + at.name;
-            if (v.t == VT::Array && v.arr()) for (auto& el : *v.arr()) checkElemType(want, el, sym);
-            else if (v.hash()) for (auto& kv : *v.hash()) checkElemType(want, kv.second, sym);
-        }
-        return v;
+        return typedAttrContainer(*this, std::move(v), at, ci.get());
     };
     for (size_t lvlIx = nChain; lvlIx-- > 0;) {
         ClassInfo* lvl = chainAt(lvlIx);
@@ -1879,10 +1899,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // block exactly as it was.
         Value invLocal = inv;
         Value& inv = invLocal;
-        // .schedule-on($scheduler) hops emissions onto that scheduler in Rakudo;
-        // rakupp's taps already run cooperatively, so the identity is the
-        // faithful translation (Cro's HTTP/2 frame tests pipe through it)
-        if (m == "schedule-on") return inv;
+        // .schedule-on($scheduler) hops every event onto that scheduler: a tap
+        // of it subscribes to this supply and has the scheduler `cue` the
+        // callbacks (tapSupply's schedule-on arm). A list-backed supply has
+        // nothing in flight to hop, so it stays as it is.
+        if (m == "schedule-on") {
+            if (inv.hash()->count("values") || args.empty()) return inv;
+            Value s2 = Value::makeHash(); s2.hashKind = "Supply";
+            (*s2.hash())["kind"] = Value::str("schedule-on");
+            (*s2.hash())["src"] = inv;
+            (*s2.hash())["scheduler"] = args[0];
+            return s2;
+        }
         // Supply.Promise: a Promise kept with the LAST value the Supply emits when it
         // is done (broken if it quits). Drives the supply via tapSupply. Cro coerces
         // `Promise(supply {…})` here (body parsers).
@@ -1947,7 +1975,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::string k = inv.hash()->at("kind").toStr();
             if (k == "async-read" || k == "async-listen" || k == "udp-read" || k == "signal" ||
                 k == "interval" || k == "watch" || k == "throttle" || k == "throttle-run" ||
-                k == "combine" || k == "flatten" || k == "migrate") {
+                k == "combine" || k == "flatten" || k == "migrate" || k == "schedule-on") {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
                 for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
@@ -2066,6 +2094,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // and `grep` carry that through. Every other combinator is a `supply {}`
             // block in Rakudo, which is on-demand, so `$s.Supply.lines.live` is
             // False where `$s.Supply.map(…).live` is True (S17-supply/lines.t).
+            // (`.schedule-on` moves the events, not their source: it is as
+            // live as what it hops)
+            if (inv.hash()->count("kind") && (*inv.hash())["kind"].toStr() == "schedule-on" &&
+                inv.hash()->count("src"))
+                return methodCall((*inv.hash())["src"], "live", ValueList{});
             bool live = inv.hash()->count("supplier") > 0;
             if (live && inv.hash()->count("chain"))
                 for (auto& step : *(*inv.hash())["chain"].arrS()) {
@@ -4046,6 +4079,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                            errMode == 1 ? &err : nullptr, errMode == -1, outMode);
             (*inv.hash())["out-str"] = Value::str(out);      // shared hash: $proc.out.slurp sees this
             (*inv.hash())["err-str"] = Value::str(err);
+            // run(…, :in, :out($fh)) / :err($fh): the handles the deferral carried
+            for (const char* k : {"out", "err"}) {
+                auto sk = inv.hash()->find(std::string(k) + "-sink");
+                if (sk == inv.hash()->end()) continue;
+                Value sink = sk->second;   // a copy: its `print` may run user code
+                procDrainToSink(*this, sink, true, *k == 'o' ? out : err);
+            }
             storeProcStatus(inv, code); // exitcode + signal
             (*inv.hash())["ran"] = Value::boolean(true);
             if (m == "close") { Value pr = inv; pr.hashKind = "Proc"; return pr; } // as above
@@ -5988,6 +6028,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `List.new({:path(…), :value(…)})`, which came back as two loose
             // Pairs; the caller then sorted a flat pair soup and every path in
             // the answer was separated from its value (issue #69).
+            // A Slip is never one element, though: its values go in where it
+            // stands, for List and Array alike — `List.new(slip(1, 3), 4)` is
+            // (1, 3, 4), and `Empty` adds nothing. Cro's MultiValue (a List)
+            // grows by `.new($existing.Slip, $value)`.
+            if (a.t == VT::Array && a.s == "Slip" && !a.itemized) {
+                for (auto& x : toList(a)) seed.push_back(x);
+                continue;
+            }
             if (inv.s == "List") seed.push_back(a);
             // `Array.new` follows the SINGLE-ARGUMENT RULE, not a blanket
             // flatten: one Iterable argument is the list of elements, several

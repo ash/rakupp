@@ -18,6 +18,7 @@
 #define getpid _getpid
 #else
 #include <unistd.h>
+#include "ChildSignals.h"
 #endif
 #include "Lexer.h"
 #include "Parser.h"
@@ -2282,7 +2283,7 @@ static int runChild(const std::string& exe, const std::vector<std::string>& args
     return (int)_spawnv(_P_WAIT, exe.c_str(), av.data());
 #else
     std::cout.flush(); std::cerr.flush();
-    pid_t pid = fork();
+    pid_t pid = forkForExec();   // not our SIG_IGN for SIGPIPE (ChildSignals.h)
     if (pid < 0) return -1;
     if (pid == 0) { execv(exe.c_str(), av.data()); _exit(127); }
     int st = 0;

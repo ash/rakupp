@@ -600,7 +600,8 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
 // spawnSupplyInterval's: a live source holds the activation open with
 // ctx->pending and fires through ctxCallable so the body's emits reach the
 // downstream tap, then releases the hold so the supply can finish.
-void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCtx> rctx) {
+void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCtx> rctx,
+                                 std::optional<Value>* died) {
     if (lastP.empty()) return;
     if (!rctx && !reactStack_.empty()) rctx = reactStack_.back();
     // `done` looks for its react on reactStack_, and these phasers run on the
@@ -618,6 +619,9 @@ void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCt
                 rctx->closed = true;
                 rctx->cv.notify_all();
             }
+        }
+        catch (RakuError& e) {
+            if (died) { *died = exceptionFor(e); break; }
         }
         catch (...) {}
     }
@@ -1564,8 +1568,15 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             Value ex = exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList one{ex}; try { callCallable(q, one); handled = true; } catch (...) {} }
-            if (!handled && quitCb.t == VT::Code) { ValueList one{ex}; try { callCallable(quitCb, one); handled = true; } catch (...) {} }
+            std::exception_ptr ret;
+            if (!handled && quitCb.t == VT::Code) {
+                ValueList one{ex};
+                try { callCallable(quitCb, one); handled = true; }
+                catch (ReturnEx&) { ret = std::current_exception(); }   // see callQuitCb
+                catch (...) {}
+            }
             closeTapHandle(handle);
+            if (ret) std::rethrow_exception(ret);
             if (!handled) throw;
         }
         catch (DoneEx&) { // `done` in the supply body: normal end (its bookkeeping already ran)
@@ -1732,6 +1743,98 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 Interpreter* ip = this;
                 handle->closers.push_back([ip, ot] {
                     Value t = ot;
+                    if (!(t.t == VT::Hash && t.hash())) return;
+                    if (t.ext() && t.hash()->count("wired") && (*t.hash())["wired"].truthy())
+                        ip->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
+                    else closeTapRecord(*t.hash());
+                });
+            }
+        }
+        Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
+        (*t.hash())["wired"] = Value::boolean(true);
+        return t;
+    }
+    // `.schedule-on($scheduler)`: whatever the source sends is handed to the
+    // scheduler's `cue`, so the tapper's callbacks run where it says (a pool
+    // thread, for $*SCHEDULER) and never inside the emitter's own call. Run
+    // inline, as they were, Cro::HTTP's response-parser test deadlocked: its
+    // tap waits for the body, which the emitting thread finishes only once
+    // `emit` has returned. Events keep their order: they queue, and one drain
+    // job at a time is cued to deliver them.
+    if (h.count("kind") && h.at("kind").toStr() == "schedule-on") {
+        Value src = h.at("src"), sched = h.at("scheduler");
+        auto handle = std::make_shared<TapHandle>();
+        struct Hops {
+            std::mutex m;
+            std::deque<std::function<void(Interpreter&)>> items;
+            bool running = false;
+        };
+        auto q = std::make_shared<Hops>();
+        auto drain = std::make_shared<Value>();
+        drain->t = VT::Code; drain->setCode(makePayload<Callable>());
+        // (the drain job holds no reference to itself: `post` cues it)
+        auto post = [q, sched, drain](Interpreter& I2, std::function<void(Interpreter&)> f) {
+            bool start = false;
+            {
+                std::lock_guard<std::mutex> lk(q->m);
+                q->items.push_back(std::move(f));
+                if (!q->running) { q->running = true; start = true; }
+            }
+            if (start) { ValueList ca{*drain}; I2.methodCall(sched, "cue", ca); }
+        };
+        drain->code()->builtin = [q, handle, sched, drain = std::weak_ptr<Value>(drain)](Interpreter& I2, ValueList&) -> Value {
+            for (;;) {
+                std::function<void(Interpreter&)> f;
+                {
+                    std::lock_guard<std::mutex> lk(q->m);
+                    if (q->items.empty()) { q->running = false; return Value::any(); }
+                    f = std::move(q->items.front());
+                    q->items.pop_front();
+                }
+                { std::lock_guard<std::mutex> lk(handle->m); if (handle->closed) continue; }
+                try { f(I2); }
+                catch (...) {
+                    // the scheduler deals with the exception; what is still
+                    // queued gets a drain job of its own
+                    bool more;
+                    { std::lock_guard<std::mutex> lk(q->m); more = !q->items.empty(); q->running = more; }
+                    if (more) if (auto d = drain.lock()) { ValueList ca{*d}; I2.methodCall(sched, "cue", ca); }
+                    throw;
+                }
+            }
+        };
+        auto mk = [](std::function<Value(Interpreter&, ValueList&)> fn) {
+            Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
+            c.code()->builtin = std::move(fn);
+            return c;
+        };
+        Value ie = mk([post, emitCb](Interpreter& I2, ValueList& b) -> Value {
+            Value v = b.empty() ? Value::any() : b[0];
+            post(I2, [emitCb, v](Interpreter& I3) {
+                if (emitCb.t == VT::Code) { ValueList one{v}; I3.callCallable(emitCb, one); }
+            });
+            return Value::any();
+        });
+        Value id = mk([post, doneCb](Interpreter& I2, ValueList&) -> Value {
+            post(I2, [doneCb](Interpreter& I3) {
+                if (doneCb.t == VT::Code) { ValueList na; I3.callCallable(doneCb, na); }
+            });
+            return Value::any();
+        });
+        Value iq = mk([post, quitCb](Interpreter& I2, ValueList& b) -> Value {
+            Value ex = b.empty() ? Value::any() : b[0];
+            post(I2, [quitCb, ex](Interpreter& I3) {
+                if (quitCb.t == VT::Code) { ValueList one{ex}; I3.callCallable(quitCb, one); }
+            });
+            return Value::any();
+        });
+        Value inner = tapSupply(src, ie, id, iq);
+        {
+            std::lock_guard<std::mutex> lk(handle->m);
+            if (!handle->closed) {
+                Interpreter* ip = this;
+                handle->closers.push_back([ip, inner] {
+                    Value t = inner;
                     if (!(t.t == VT::Hash && t.hash())) return;
                     if (t.ext() && t.hash()->count("wired") && (*t.hash())["wired"].truthy())
                         ip->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
@@ -2464,6 +2567,16 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             // Whatever was held back still belongs to the reader: at EOF there is
             // no next chunk to complete it, so it goes out as it stands — the
             // same thing `consume-all-chars` does when a decoder is drained.
+            // (the react rides along for these too, as for an emit above: a
+            // `LAST { done }` in `whenever $conn.Supply` runs inside the DONE
+            // callback, and without the ReactCtx its `done` found no react —
+            // a server closing the connection never ended the client's react,
+            // which is how Log::Timeline's socket test timed out)
+            if (rctx0) self->reactStack_.push_back(rctx0);
+            struct PopReact {
+                Interpreter* s; bool on;
+                ~PopReact() { if (on && !s->reactStack_.empty()) s->reactStack_.pop_back(); }
+            } popReact{self, (bool)rctx0};
             if (malformed) {
                 if (quitCb.t == VT::Code) {
                     Value ex = self->makeTypedEx("X::AdHoc", {}, "Malformed UTF-8");

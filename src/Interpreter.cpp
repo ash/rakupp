@@ -1764,8 +1764,10 @@ std::string Interpreter::mainUsage() {
     if (!mainSub && global_) mainSub = global_->find("&MAIN");
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code()) return "";
     ValueList cands;
-    if (mainSub->code()->isMultiDispatcher)
-        for (auto& c : mainSub->code()->candidates) cands.push_back(c);
+    if (mainSub->code()->isMultiDispatcher) {
+        for (auto& c : mainSub->code()->candidates)   // (a proto is no usage line)
+            if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody))) cands.push_back(c);
+    }
     else cands.push_back(*mainSub);
     // a candidate marked `is hidden-from-USAGE` is not advertised
     cands.erase(std::remove_if(cands.begin(), cands.end(),

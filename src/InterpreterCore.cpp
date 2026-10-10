@@ -3962,6 +3962,20 @@ void Interpreter::refuseUnpassedDefinite(const Param& p) {
         "'. Did you forget a '.new'?");
 }
 
+// A SHORT type name means what it meant where the routine was written: inside
+// `class DF`, an invocant typed `OnBuild:D:` is DF::OnBuild, though another
+// class ending the same way (Docker::File's X::Docker::File::OnBuild) took the
+// global short name first. The class's name is a lexical of its declaring
+// scope, so `scope` — the routine's closure, or a scope below it — answers.
+// The scope's meaning, when it has one, is THE meaning: the global short name
+// is not asked as well, or an X::Docker::File::OnBuild would pass for one.
+bool Interpreter::typeMatchesInScope(const Value& v, const std::string& type, Env* scope) {
+    if (scope && !type.empty() && type.find("::") == std::string::npos)
+        if (Value* tv = scope->find(type); tv && tv->t == VT::Type && !tv->s.empty() && tv->s.str() != type)
+            return typeOrSubsetMatches(v, tv->s.str());
+    return typeOrSubsetMatches(v, type);
+}
+
 void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockParam,
                                     bool whereVerified, Env* sigEnv) {
     // Fast-ACCEPT for a parameter typed by a user class (`HeapNode $left`) or Mu:
@@ -4338,8 +4352,8 @@ static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::s
 
 // `*@a` — what one argument contributes to a flattening slurpy (see the
 // binder's 'f' arm, and scoreCandidate, whose `where` on the slurpy must see
-// the same list). Flattening walks THROUGH lists and stops at ARRAYS, because
-// an Array's elements each sit in their own Scalar container: `f([[1,2],[3,4]])`
+// the same list). Flattening walks THROUGH lists and stops at an ARRAY's
+// elements, because each sits in its own Scalar container: `f([[1,2],[3,4]])`
 // binds two Arrays, not four Ints, while `f((1,(2,3)))` binds three Ints. A
 // SLIP flattens even when itemized — that is the whole of what a Slip is for.
 // Every other itemized value is left whole.
@@ -4358,8 +4372,15 @@ static void slurpySpread(const Value& x, ValueList& out) {
         // A SHAPED array's elements are its LEAVES, not its rows: `my @m[3;2]`
         // binds six values to `*@a`, the same six `my @flat = @m` stores.
         if (isMultiDimShaped(v)) { shapedLeaves(v, out); return; }
+        // An ARRAY's elements each sit in a Scalar container, so they go in
+        // whole, a List or a Range among them too: `my @m = (1,2),(3,4); f(@m)`
+        // binds two Lists, and Cro's WebSocket test hands `*@checks` an
+        // `[(…), (…)]` of per-frame check lists. A LIST's elements are bare,
+        // so an Iterable among them — an Array as well — flattens on:
+        // `f((1, [2, 3]))` binds three.
+        const bool containers = !v.isList && !isSlip(v);
         for (auto& e : *v.arr()) {                   // one level, then decide
-            if (isSlip(e) || (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr() && e.isList))))
+            if (!containers && (isSlip(e) || (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr())))))
                 spread(e);
             else out.push_back(e);
         }
@@ -4653,7 +4674,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // `method x(Int $a:)` — the invocant is type-checked too
             if (!p.type.empty() && !p.typeCapture && p.type.rfind("::", 0) != 0 && !p.coerce)
                 if (Value* sp = env->find("self"))
-                    if (!typeOrSubsetMatches(*sp, p.type))
+                    if (!typeMatchesInScope(*sp, p.type, env.get()))
                         throwTypedV("X::TypeCheck::Binding::Parameter",
                             {{"got", *sp}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
                             "Type check failed in binding to parameter '" + paramShownName(p) +
@@ -4691,6 +4712,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     if (p.name[0] == '@') av = coerceArray(av);
                     else if (p.name[0] == '%') av = coerceHash(av);
                     else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
+                    checkAttrParamStore(av, *sp, p.name.substr(2), v.t == VT::Nil);
                     sp->obj()->attrs[p.name.substr(2)] = std::move(av);
                 }
         };
@@ -5258,6 +5280,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         if (p.name[0] == '@') av = coerceArray(av);
                         else if (p.name[0] == '%') av = coerceHash(av);
                         else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
+                        checkAttrParamStore(av, *sp, p.name.substr(2), v.t == VT::Nil);
                         sp->obj()->attrs[p.name.substr(2)] = std::move(av);
                     }
             }
@@ -5430,8 +5453,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         wenv->define("$_", val);
         auto saved = tctx_.cur; tctx_.cur = wenv;
         bool ok;
+        Value cv;
         try {
-            Value cv = eval(p.whereExpr.get());
+            cv = eval(p.whereExpr.get());
             // `where EXPR` is a smartmatch: a Code/WhateverCode is called with the
             // value; anything else (a type, a junction like `Any:U|Blob|Cool`) is
             // smartmatched — NOT just boolified
@@ -5439,11 +5463,18 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             else ok = boolify(smartmatchValue("~~", val, cv));
         } catch (...) { tctx_.cur = saved; throw; }
         tctx_.cur = saved;
-        if (!ok)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+        if (!ok) {
+            // …carrying what Rakudo's does: the value, the constraint, and the
+            // PARAMETER (Cro's router answers 400 rather than 404 when the
+            // refusing parameter is `.named`)
+            std::vector<std::pair<std::string, Value>> at{
+                {"got", val}, {"expected", cv}, {"symbol", Value::str(p.name)}};
+            if (Value po = paramObjectFor(p); po.t == VT::Hash) at.push_back({"parameter", po});
+            throwTypedV("X::TypeCheck::Binding::Parameter", std::move(at),
                 "Constraint type check failed in binding to parameter '" + paramShownName(p) +
                 "'; expected anonymous constraint to be met but got " + val.typeName() +
-                " (" + typeCheckRepr(val) + ")"};
+                " (" + typeCheckRepr(val) + ")");
+        }
     }
 }
 
@@ -10208,7 +10239,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         // it — Red's `(Red::Model:D:)` column accessor over the
                         // `(Mu:D:)` placeholder a specialised model also carries
                         if (!ip.type.empty() && ip.type != "Mu" && ip.type != "Any" && !ip.typeCapture) {
-                            if (!typeOrSubsetMatches(selfCopy, ip.type)) { s = -1; break; }
+                            if (!typeMatchesInScope(selfCopy, ip.type, cand.code()->closure.get())) { s = -1; break; }
                             invocantSlot += 2;
                         }
                         break;
