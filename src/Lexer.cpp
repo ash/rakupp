@@ -1827,13 +1827,23 @@ static size_t balancedGroupEnd(const std::string& src, size_t p) {
 // inside the argument list, and the remainder lexed as `| "…"` — a Junction.
 // `<…>` is deliberately left out: it cannot contain a delimiter, and scanning to
 // its `>` would swallow the rest of a `"$a<$b"` comparison.
-static size_t interpChainEnd(const std::string& src, size_t p) {
+// `stopA`/`stopB` are the quote's own delimiters when they are Unicode: any
+// byte >= 0x80 continues a name, so `qq｢a $x｣` would otherwise read `x｣` as
+// the name and swallow the closer.
+static size_t interpChainEnd(const std::string& src, size_t p,
+                             const std::string& stopA = {}, const std::string& stopB = {}) {
     const size_t n = src.size();
+    auto uniNameByte = [&](size_t k) {
+        if ((unsigned char)src[k] < 0x80) return false;
+        for (const std::string* s : {&stopA, &stopB})
+            if (!s->empty() && src.compare(k, s->size(), *s) == 0) return false;
+        return true;
+    };
     size_t q = p;
     if (q + 1 < n && src[q] && strchr("*!.^?", src[q]) &&
         (ascii::isalpha((unsigned char)src[q + 1]) || src[q + 1] == '_')) q++; // twigil
     const size_t nameStart = q;
-    while (q < n && (rakuIdentCont(src[q]) || (unsigned char)src[q] >= 0x80)) q++;
+    while (q < n && (rakuIdentCont(src[q]) || uniNameByte(q))) q++;
     while (q + 1 < n && rakuIdentJoins(src[q], src[q + 1])) {
         q++;
         while (q < n && rakuIdentCont(src[q])) q++;
@@ -1872,18 +1882,18 @@ static size_t interpChainEnd(const std::string& src, size_t p) {
         // a LATER link in the chain still be protected.
         if (q + 1 < n && src[q] == '.' &&
             (ascii::isalpha((unsigned char)src[q + 1]) || src[q + 1] == '_' ||
-             (unsigned char)src[q + 1] >= 0x80 ||
+             uniNameByte(q + 1) ||
              ((src[q + 1] == '^' || src[q + 1] == '?' || src[q + 1] == '&') && q + 2 < n &&
               (ascii::isalpha((unsigned char)src[q + 2]) || src[q + 2] == '_' ||
-               (unsigned char)src[q + 2] >= 0x80)))) {
+               uniNameByte(q + 2))))) {
             size_t k = q + 1;
             if (src[k] == '^' || src[k] == '?' || src[k] == '&') k++;
             // the same name rule as the variable above: Unicode letters, and
             // `-`/`'` joins ("$n.is-prime()", "$n.mööse()")
-            while (k < n && (rakuIdentCont(src[k]) || (unsigned char)src[k] >= 0x80)) k++;
+            while (k < n && (rakuIdentCont(src[k]) || uniNameByte(k))) k++;
             while (k + 1 < n && rakuIdentJoins(src[k], src[k + 1])) {
                 k++;
-                while (k < n && (rakuIdentCont(src[k]) || (unsigned char)src[k] >= 0x80)) k++;
+                while (k < n && (rakuIdentCont(src[k]) || uniNameByte(k))) k++;
             }
             if (k < n && src[k] == '(') {
                 size_t e = balancedGroupEnd(src, k);
@@ -2341,8 +2351,9 @@ bool Lexer::tryQuoteForm(Token& out) {
             adverbs.find(":quotewords ") != std::string::npos)) {
             out = make(Tok::QwList, raw);
             // a BRACE delimiter makes inner braces nesting, not closures (as
-            // `qq{…}` has it): `qqw{a {1+1} c}` is ("a", "{1+1}", "c")
-            if ((w == "qq" || w == "qqw" || w == "qqww") && pos_ > 0 && src_[pos_ - 1] == '}') {
+            // `qq{…}` has it): `qqw{a {1+1} c}` is ("a", "{1+1}", "c"). Only a
+            // LONE brace: `qqw{{a {1+1} c}}` interpolates ("a", "2", "c").
+            if ((w == "qq" || w == "qqw" || w == "qqww") && open == "{") {
                 std::string esc;
                 for (size_t k = 0; k < raw.size(); k++) {
                     if (raw[k] == '\\' && k + 1 < raw.size()) { esc += raw[k]; esc += raw[++k]; continue; }
@@ -2495,6 +2506,25 @@ bool Lexer::tryQuoteForm(Token& out) {
                                  line_, "X::Comp::Group", {});
         }
     }
+    // A qq-family quote interpolates, so a variable's postfix chain inside it is
+    // Raku code and may legitimately carry this quote's delimiter:
+    // `qq{@a.join("}")}`. Scan such a chain as a unit, exactly as lexQuoted()
+    // does for `"…"`. Regex/subst parts are excluded — their own quote and
+    // character-class handling below owns that text.
+    // …and so is a `{…}` closure, once the form has the closure feature:
+    // `qq[a {"]"} b]` is `a ] b` in Rakudo, where the `]` in the block's string
+    // ended the quote. A heredoc's delimited text is its terminator, not a body.
+    // (Which delimiter carries the quote matters too: see `closureDelim` below.)
+    bool interpChain = false, closures = false, backslashes = false;
+    if (!isRegex && !isSubst && !isTrans) {
+        std::string feats = (w.rfind("qq", 0) == 0) ? "sahfcb" : "";
+        quoteFeatAdverbs(adverbs, feats);
+        interpChain = feats.find_first_of("sah") != std::string::npos;
+        backslashes = feats.find('b') != std::string::npos;
+        closures = feats.find('c') != std::string::npos &&
+                   adverbs.find(":to ") == std::string::npos &&
+                   adverbs.find(":heredoc ") == std::string::npos;
+    }
     // arbitrary Unicode delimiter: `Q:b♥…♥` — the same codepoint closes.
     // Every q-family form (not m/s/tr). `q｢…｣` is one of these: the standalone
     // ｢…｣ quote handled elsewhere never sees the `q`, so excluding the pair
@@ -2568,6 +2598,15 @@ bool Lexer::tryQuoteForm(Token& out) {
                     else raw += advance();
                     continue;
                 }
+                // code inside the quote — a variable's postfix chain, a `{…}`
+                // closure — owns its strings: `qq｢@a.join("｣")｣`, `qq｢a {"｣"} b｣`
+                const char ch = peek();
+                if (interpChain && (ch == '$' || ch == '@' || ch == '%' || ch == '&')) {
+                    raw += advance();
+                    for (size_t e = interpChainEnd(src_, pos_, D, DC); pos_ < e; ) raw += advance();
+                    continue;
+                }
+                if (closures && ch == '{') { raw += advance(); copyCodeBlock(raw); continue; }
                 if (nests && at(open)) { depth++; take(raw, open); continue; }
                 if (at(shut)) {
                     if (depth == 0) break;
@@ -2682,17 +2721,12 @@ bool Lexer::tryQuoteForm(Token& out) {
             { assignForm = true; assignOp = op; }
         else if (q >= src_.size() || src_[q] != d) return false;
     }
-    // A qq-family quote interpolates, so a variable's postfix chain inside it is
-    // Raku code and may legitimately carry this quote's delimiter:
-    // `qq{@a.join("}")}`. Scan such a chain as a unit, exactly as lexQuoted()
-    // does for `"…"`. Regex/subst parts are excluded — their own quote and
-    // character-class handling below owns that text.
-    bool interpChain = false;
-    if (!isRegex && !isSubst && !isTrans) {
-        std::string feats = (w.rfind("qq", 0) == 0) ? "sahfcb" : "";
-        quoteFeatAdverbs(adverbs, feats);
-        interpChain = feats.find_first_of("sah") != std::string::npos;
-    }
+    // A lone `{` DELIMITER makes every inner `{` a nesting step, never a
+    // closure, whatever the adverbs say: Rakudo reads `qq:c{a {1+1} b}` as
+    // `a {1+1} b`, because the opener is tried before any escape. A doubled
+    // `{{` opener frees the single `{` again (`qq{{a {1+1} b}}` is `a 2 b`).
+    // `reps` is only known once the opener is read; readPart runs for reps == 1.
+    auto closureDelim = [&](int reps) { return closures && !(d == '{' && reps == 1); };
     bool patQuoteAware = (isRegex || isSubst) && !bracket; // regex/subst PATTERN: '...'/{...}/<...>/[...] protect the delimiter
     bool codeBlocks = (isRegex || isSubst); // regex/subst may contain { ... } embedded code
     // Perl-5 regex mode (rx:P5/…/) uses Perl bracket semantics where `[` does not
@@ -2719,6 +2753,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                 for (size_t e = interpChainEnd(src_, pos_); pos_ < e; ) raw += advance();
                 continue;
             }
+            if (ch == '{' && closureDelim(1)) { raw += advance(); copyCodeBlock(raw); continue; }
             // inside a { ... } code block (regex pattern OR subst replacement): it is
             // Raku, so track string quotes — a brace in a string ('}' / "}") is not a
             // block delimiter and must not miscount the nesting
@@ -2828,31 +2863,52 @@ bool Lexer::tryQuoteForm(Token& out) {
     if (reps > 1) {
         int rdepth = 1;
         bool closed = false;
+        // `qq{{…}}` interpolates its lone-brace closures, so a `{{`/`}}` run —
+        // text here — must reach parseInterpString backslashed, the one literal
+        // brace it knows: `qq{{a {{1}} {2} b}}` is `a {{1}} 2 b`. Without the
+        // backslash feature (`Q:c{{…}}`) there is no such spelling.
+        const bool litBraces = d == '{' && closureDelim(reps) && backslashes;
+        auto runText = [&](char c, bool afterBackslash) {
+            for (int k = 0; k < reps; k++) {
+                if (litBraces && (k > 0 || !afterBackslash)) raw += '\\';
+                raw += c;
+            }
+        };
         while (!eof()) {
             char ch = peek();
             // `\\` is one escape, and so is a backslash before a WHOLE run:
             // `q[[a \]] b]]` is `a ]] b`, while in `q{{a \} b}}` the lone `}`
             // was never the delimiter and `\}` stays as written. A bare `Q`
-            // has no escapes at all.
+            // has no escapes at all. Any other escaped character is text, as
+            // readPart has it: `qq{{a \{1} b}}` opens no closure.
             if (ch == '\\' && !rawQ) {
                 raw += advance();
                 if (peek() == '\\') { raw += advance(); continue; }
+                bool run = false;
                 for (char dc : {close, d}) {
-                    int run = 0; while (peek(run) == dc) run++;
-                    if (run >= reps) { for (int k = 0; k < reps; k++) raw += advance(); break; }
+                    int n = 0; while (peek(n) == dc) n++;
+                    if (n >= reps) { for (int k = 0; k < reps; k++) advance(); runText(dc, true); run = true; break; }
                 }
+                if (!run && !eof()) raw += advance();
+                continue;
+            }
+            if (interpChain && (ch == '$' || ch == '@' || ch == '%' || ch == '&')) {
+                raw += advance();
+                for (size_t e = interpChainEnd(src_, pos_); pos_ < e; ) raw += advance();
                 continue;
             }
             if (ch == d) {
                 int run = 0; while (peek(run) == d) run++;
-                if (run >= reps) { for (int k = 0; k < reps; k++) raw += advance(); rdepth++; continue; }
+                if (run >= reps) { for (int k = 0; k < reps; k++) advance(); runText(d, false); rdepth++; continue; }
             }
+            // (after the run check: in `qq{{…}}` a `{{` nests, a lone `{` is code)
+            if (ch == '{' && closureDelim(reps)) { raw += advance(); copyCodeBlock(raw); continue; }
             if (ch == close) {
                 int run = 0; while (peek(run) == close) run++;
                 if (run >= reps) {
                     for (int k = 0; k < reps; k++) advance();
                     if (--rdepth == 0) { closed = true; break; }
-                    for (int k = 0; k < reps; k++) raw += close;
+                    runText(close, false);
                     continue;
                 }
             }
@@ -3067,6 +3123,9 @@ bool Lexer::tryQuoteForm(Token& out) {
     {
         std::string feats = interp ? "sahfcb" : "";
         if (quoteFeatAdverbs(adverbs, feats)) {
+            // `qq:c{a {1+1} b}` / `Q:c{…}`: the lone `{` delimiter still wins
+            if (d == '{' && reps == 1 && feats.find('c') != std::string::npos)
+                feats.erase(feats.find('c'), 1);
             if (feats.empty()) { out = make(Tok::StrLit, raw); return true; }
             out = make(Tok::StrInterp, "\x02" + feats + "\x02" + raw);
             return true;
@@ -3076,8 +3135,9 @@ bool Lexer::tryQuoteForm(Token& out) {
     // (qq handles escapes at interpolation time; Q leaves everything literal).
     if (w == "q") raw = qUnescape(raw, std::string(reps, d), std::string(reps, close));
     // `qq{…}` — with `{}` as the DELIMITER, a nested `{block}` is literal text
-    // (only $/@/% still interpolate). Explicit `qq:c{…}` re-enables it above.
-    if (interp && d == '{') { out = make(Tok::StrInterp, "\x02sahfb\x02" + raw); return true; }
+    // (only $/@/% still interpolate); so it is under `qq:c{…}` above. A doubled
+    // `qq{{…}}` interpolates its single-brace blocks again.
+    if (interp && d == '{' && reps == 1) { out = make(Tok::StrInterp, "\x02sahfb\x02" + raw); return true; }
     out = make(interp ? Tok::StrInterp : Tok::StrLit, raw);
     // a bare `Q…` is fully RAW: no embedded `\q…[…]` escape is read in it later
     if (w == "Q" && shortAdv.empty() && adverbs.find_first_not_of(' ') == std::string::npos) out.text2 = "Q";
