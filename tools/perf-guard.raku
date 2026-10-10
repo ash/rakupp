@@ -221,13 +221,31 @@ my %kernels =
     substrloop => 'my $s = "abcde" x 100_000; my $n = 0; while $s.chars { $s = $s.substr(5); $n++ }; say $n;',
     junctionwide => 'my $j = any(1 .. 1000); my $needle = 500;
                   my int $n = 0; my $c = 0;
-                  while $n < 2_000 { $c = $c + 1 if $needle ~~ $j; $n = $n + 1 }; say $c;';
+                  while $n < 2_000 { $c = $c + 1 if $needle ~~ $j; $n = $n + 1 }; say $c;',
+    # loadtime (2026-10-10) — 1,200 routines and classes of ordinary code, declared
+    #   and never called, so the time is the lexer, the parser, the checks and
+    #   the declaring, which every kernel above spends a line on. Issue #141:
+    #   5.3.0 made each statement after a term re-read the whole source and put
+    #   a scan of the operator table on every operator token, and no kernel here
+    #   moved. t/scaling/run.raku catches the quadratic half by its growth; this
+    #   catches the per-token half, which at a fixed size is a constant.
+    loadtime  => (^1200).map(-> $i { Q｢
+sub f@I@($x, :$y = @I@) {
+    return 0 if $x > @I@;
+    my %h = a => $x, b => [1, 2, @I@];
+    my $s = "f@I@: $x {$x + 1} %h<a>";
+    for ^3 -> $k { $s ~= $k unless $k == 1 }
+    my $n = do given $x { when Int { $s.chars }; default { 0 } };
+    $s ~~ /f(\d+)/ ?? ~$0 ~ $n !! $s.uc
+}
+class C@I@ { has $.a = @I@; method m($z) { $!a + $z div 2 } }
+｣.subst('@I@', $i, :g) }).join ~ "say 'ok';\n";
 
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
                 method attrread privmeth multimeth multiwhere objnew mainnext mainwhen
-                junction junctionwide intcat prepend sharedappend substrloop>;
+                junction junctionwide intcat prepend sharedappend substrloop loadtime>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
 # this list is never measured and never gated, silently — the same shape as

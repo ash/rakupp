@@ -160,6 +160,17 @@ that way and turned the Linux and macOS jobs red. Probing from inside the file
 is not an option when the module supplies a trait — the import has to happen at
 compile time. The runner already understands the declaration; use it.
 
+**It times things, too.** The suite runs `t/scaling/run.raku` and folds in one
+check per shape: n statements of one kind, or a program doing n of one thing,
+timed at n and 8n. A red shape grew more than 24x for 8x the size, which is a
+quadratic and not noise: the ratio does not depend on the machine, and a long
+run is retried before it is believed. v5.3.0 shipped a lexer pass that re-read
+the whole source per statement (issue #141; 3000 one-line subs with a postfix
+`if` loaded 4.5x slower, 30000 took 16 s), and every gate here passed it,
+because every one of them checked output. To find the commit, judge older
+builds with the same shapes:
+`rakupp t/scaling/run.raku --only=SHAPE --engine=/path/to/old/rakupp -v`.
+
 ### 3. Performance — no regression
 
 ```bash

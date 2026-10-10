@@ -545,6 +545,29 @@ for dir($ROOT.add('t/regression')).grep(*.Str.ends-with('.raku')).sort -> $f {
     }
 }
 
+# ---- loading and running stay linear --------------------------------------
+# t/scaling/run.raku times every shape it knows — n statements of one kind, or
+# a program doing n of one thing — at two sizes, and fails one whose time grows
+# faster than its size. Issue #141 was a lexer pass that made loading quadratic,
+# and nothing in this file could have seen it: every check here is about
+# output. The gate's own TAP is folded in, one check per shape; a TODO (a shape
+# known to be superlinear, with the reason beside it) counts as a pass.
+section('t/scaling (load and run time stay linear)');
+{
+    my $p = run($*EXECUTABLE, $ROOT.add('t/scaling/run.raku').Str, :out, :err);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    my @tap = $out.lines.grep(/^ 'not '? 'ok ' \d+ ' - '/);
+    ok(@tap.elems > 0 && $out.lines.first(*.starts-with('1..')).defined, 'scaling: the gate ran');
+    unless @tap {
+        diag("stderr: $_") for $err.lines.head(10);
+    }
+    for @tap -> $l {
+        my $desc = $l.subst(/^ 'not '? 'ok ' \d+ ' - '/, '');
+        ok(!$l.starts-with('not ') || $l.contains('# TODO'), "scaling: $desc");
+    }
+}
+
 # ---- a real module's own suite -------------------------------------------
 # YAMLish 0.1.2 (zef:leont, Artistic-2.0), vendored in t/fixtures/yamlish. It
 # is a large grammar with parameterised tokens, runtime-bounded quantifiers and
