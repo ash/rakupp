@@ -1,5 +1,5 @@
 # Regression, 2026-10-10: the small divergences TODO.md listed as one-function
-# fixes, each answered as Rakudo 2026.08 answers it (the oracle on this box):
+# fixes, each answered as Rakudo 2026.08 and 2026.09 answer it:
 #   - `.WHICH` renders as the ObjAt it is; an enum member is `E|index`; a type
 #     object is `Name|U…`
 #   - a hole of an `is default(v)` array reads as v through `.kv`, `.pairs`,
@@ -19,7 +19,7 @@
 #   - `for @$list.kv -> $i, $x is rw` refuses a List's values
 #   - a superscript power binds before a following postfix
 use Test;
-plan 45;
+plan 52;
 
 # .WHICH
 is 5.WHICH.raku, 'ValueObjAt.new("Int|5")', '.raku of a ValueObjAt';
@@ -68,6 +68,7 @@ is $td, 5, '…and the default';
 # anon declarations
 my $as = anon subset AnonFoo of Int where * > 2;
 lives-ok { EVAL 'subset AnonFoo of Str' }, 'anon subset claims no name';
+lives-ok { EVAL 'anon subset AnonQ of Int; subset AnonQ of Str' }, '…as a statement too';
 my $ae = anon enum AnonBar <aa ab>;
 is $ae.^name, 'Map', 'anon enum is a Map';
 nok ::('AnonBar').defined, '…and installs no type name';
@@ -102,3 +103,23 @@ throws-like { for @$list.kv -> $i, $x is rw { $x = 5 } }, X::Parameter::RW, 'rw 
 sub postfix:<!>($n) { [*] 1..$n }
 is 3²!, 362880, '3²! is (3²)!';
 is 4².sqrt, 4, '4².sqrt is (4²).sqrt';
+
+# ---- second round (2026-10-10, Rakudo 2026.09) ---------------------------
+# an `is default` array's .List still holds Nil in its holes (Roast delete.t)
+my @hd is default(42) = <a b c>; @hd[1]:delete;
+ok @hd.List[1] =:= Nil, '.List keeps a hole as Nil';
+# a lazy Seq bound to @x stays the List it caches into
+sub lazy-bind(@x) { @x.^name }
+is lazy-bind((1, 2 ... *)), 'List', 'a lazy Seq binds to @x as a List';
+# a Range binds to an untyped @x as itself
+sub range-bind(@x) { @x.^name ~ ' ' ~ @x.elems }
+is range-bind(1..3), 'Range 3', 'a Range binds to @x as a Range';
+# a nested store leaves no stray entry for the key the RHS moved past
+my %nest; my $ni = 0; %nest{$ni}{5} = $ni++;
+is %nest.keys.elems, 1, 'a nested subscript store makes one entry';
+# a Tap is opaque
+my $sup = Supplier.new;
+is $sup.Supply.tap({ ; }).raku, 'Tap.new', 'Tap.raku';
+# a superscript numeral after a listop's whitespace is a term, not its power
+sub sup-id($x) { $x }
+is (sup-id ²¹²), 4096, 'sub ²¹² is the numeral 2¹²';

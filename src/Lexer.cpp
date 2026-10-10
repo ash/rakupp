@@ -4347,7 +4347,10 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                                                 out.back().text == "\xE2\x88\x9E" || // `∞²` — ∞ is a term
                                                 out.back().text == ">>" || out.back().text == "\xC2\xBB")); // hyper `»²`
             std::string digits;
-            if (afterTerm && tryReadSuperscript(digits)) {
+            // (a superscript AFTER WHITESPACE is no postfix — Raku has none
+            // that may be spaced off — so it starts a numeral term instead:
+            // `say ²¹²` is 4096, not `say ** 212`)
+            if (afterTerm && !spaced && tryReadSuperscript(digits)) {
                 // `*²(4)` is a CALL of the curried power — the superscript binds
                 // tighter than the postfix parens, so the base and its power are
                 // wrapped as one term when a `(` follows. Emitted flat, the parens

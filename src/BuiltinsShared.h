@@ -214,6 +214,13 @@ std::string markFold(const std::string& in);
 ValueList toList(const Value& v);
 // A HOLE of an `is default(v)` array reads as v: replace the unset slots of a
 // snapshot `items` taken from `arr` (nothing to do for any other array).
+// NativeCall's types live in NativeCall::Types, and their `.^name` and a type
+// object's `.raku` say so; typeName() keeps the short name every check uses
+inline std::string ncQualifiedName(const std::string& n) {
+    if (n == "Pointer" || n.rfind("Pointer[", 0) == 0 || n == "CArray" || n.rfind("CArray[", 0) == 0)
+        return "NativeCall::Types::" + n;
+    return n;
+}
 inline void fillArrayHoles(const Value& arr, ValueList& items) {
     if (arr.t != VT::Array || !arr.elemDefault()) return;
     for (auto& e : items) if (e.t == VT::Any) e = *arr.elemDefault();

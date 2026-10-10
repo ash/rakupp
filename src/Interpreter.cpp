@@ -3462,11 +3462,6 @@ Value rtArrayVal(const Value& v) {
         if (v.ext()) { // a lazy seq stays lazy; a finite gather does not
             Value r = reifyIfFinite(v);
             if (v.s == "Seq" && r.arrS() != v.arrS()) deproxyElems(r);
-            // …and what an `@` container holds is an ARRAY, lazy or not:
-            // `my @b = (1, 2 ... *)` is an Array whose elements arrive on demand
-            // (it was the Seq itself, so `.^name` said Seq and `.join` showed
-            // none of what indexing had reified)
-            if (r.isList && (r.s == "Seq" || r.s.empty())) { r.isList = false; r.s = std::string(); }
             return r;
         }
         // a shaped source contributes its LEAVES, as it does in coerceArray —
@@ -3651,11 +3646,6 @@ Value coerceArray(const Value& v, bool nativeTarget) {
             // …and only a FRESH buffer may be decontainerized: a still-lazy seq
             // is shared with v, where the Proxies are the write-through
             if (v.s == "Seq" && r.arrS() != v.arrS()) deproxyElems(r);
-            // …and what an `@` container holds is an ARRAY, lazy or not:
-            // `my @b = (1, 2 ... *)` is an Array whose elements arrive on demand
-            // (it was the Seq itself, so `.^name` said Seq and `.join` showed
-            // none of what indexing had reified)
-            if (r.isList && (r.s == "Seq" || r.s.empty())) { r.isList = false; r.s = std::string(); }
             return r;
         }
         // A shaped array STORED into an unshaped one contributes its leaves:

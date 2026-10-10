@@ -5241,6 +5241,10 @@ Value Interpreter::ncLocalAt(const Value& arr, long long i) {
     // an element that is ITSELF a pointer stays usable as one, so
     // `$out[0][^$n]` can read through what a native call wrote there
     // (a Str element already came back dereferenced — leave it be)
+    // …but an UNTYPED pointer element (`CArray[Pointer]`, C's `void **`) is a
+    // Pointer, as Rakudo reads it — there is nothing to index through
+    // (NULL included: an element is `Pointer.new(0)`, unlike a NULL field)
+    if (et == "Pointer" && el.t == VT::Int) return ncMakePointer(et, (void*)(intptr_t)el.toInt());
     if (ncIsPointerElem(et) && el.t == VT::Int) return ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
     return el;
 }

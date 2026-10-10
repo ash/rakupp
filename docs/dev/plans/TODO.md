@@ -140,17 +140,19 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   twice where Rakudo's `.elems` consumes it (X::Seq::Consumed);
   `@a.hyper.invert` dies at once where Rakudo answers a HyperSeq and dies only
   when read.
-- [ ] **Battery regressions since v5.0.1**: Color (t/04-new-invalid,
-  `Color.new(rgb => [22, 42])` no longer dies), Encode (t/01-basic,
-  `X::Encode::Unknown` undeclared where the test names it) and Trap
-  (t/02-tee, the tee writes its string twice). Fail on v5.2.1 too; battery
-  44/59 at v5.3.0. Next: bisect v5.0.1..v5.2.1 per dist.
+- [ ] **Battery: re-measure after the 2026-10-10 fixes** (44/59 at v5.3.0).
+  Color, Encode and Trap pass their own suites again (a method `proto` kept
+  in its dispatcher; `my class X::…` published in X's stash; a `:w` handle
+  writing at its own position — t/regression/battery-proto-new-x-stash-
+  write-position.raku). Next: the whole battery on a machine that has it.
 - [ ] **Raku.js runs worker bodies inline, on the main registers**: with no
   pthreads, BigStackThread runs a `start`/`react` worker body on the caller,
-  and the body's `loadCtx(empty)` + `dynStack.push_back(spawnScope)` replace
-  the main thread's registers for the rest of that program. 19ed905f stops it
-  leaking into the NEXT program; within one program it remains. Next: save
-  and restore tctx_ around the inline run.
+  and the body's `loadCtx(empty)` + `dynStack.push_back(spawnScope)` replaced
+  the main thread's registers for the rest of that program. Since 2026-10-10
+  the inline run saves and restores tctx_ (BigStackThread::runInline_), as
+  SlangTctxGuard does. Owed: a WASM build and rakujs/smoke.cjs with a program
+  that reads a lexical after awaiting a `start` (no emcc on the Mac it was
+  written on).
 - [ ] **`rk_run` skips the CLI's compile-time checks** (decision): rakuppRunOn
   is called without declCheck, so Raku.js and every embedder run programs the
   CLI refuses (undeclared variables, #32; calls that can never bind,
@@ -212,8 +214,8 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **An assignment statement that stores a Failure does not throw**:
   Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
   f()` does not). Found 2026-10-03 with the Num kernels; not started.
-  Re-check first: Rakudo 2026.08 does NOT throw on `my $a; $a = f(); say 1`
-  (2026-10-10), so this may be a 2026.09 change or a misreading.
+  Re-check first: neither Rakudo 2026.08 nor 2026.09 throws on
+  `my $a; $a = f(); say 1` (2026-10-10), so this may be a misreading.
 - [ ] **Rakuglaze**: 3326 of 3326 pass (2026-10-09: round 6, the eleven
   failures Haiku batches 04 to 12 brought in;
   t/regression/rakuglaze-round-6.raku). Seen in round 6, not fixed: a spaced `f - 5` with `f`
@@ -225,8 +227,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   through it (`my $r = @a.reverse; @a[0] = 9; $r` still shows the old value);
   and compiled code does not refuse a write into an immutable List
   (`my $l = (1,2,3); $l[0] = 5` under --exe). Seen during round 5, not fixed:
-  - `%m{$i}{$i} = $i++` stores `0 => Any` as well as `1 => {1 => 0}`
-    (Rakudo: `{0 => {1 => 0}}`).
+  - `%m{$i}{$i} = $i++` stores `{1 => {1 => 0}}` (Rakudo: `{0 => {1 => 0}}`):
+    the outer key is read after the right-hand side, and a key with side
+    effects is evaluated twice (`%m{k()}{k()} = k()`). The stray `0 => Any`
+    is gone (2026-10-10); the rest needs the base container held across the
+    right-hand side.
   - `for $l.list` over a quit Supply's list raises before the values;
     `for $l` and `for @$l` read them first, as Rakudo does.
   - An INIT default that reads an earlier parameter (`$y = INIT { $x }`)
@@ -237,15 +242,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     there (it dies, or returns an undefined value).
   Also a `my class` used earlier in its OWN block is no longer reported as a
   post-declaration.
-- [ ] **NativeCall CArray gaps** (found with Math::SparseMatrix::Native,
-  2026-10-06; its binding, dispatch and `--exe` subscript bugs are fixed, and
-  `.Str`, `.AT-POS`, `.ASSIGN-POS` and `.clone` on 2026-10-09): a CArray read
-  back from a CStruct field forgets its length, so `.elems` dies where Rakudo
-  answers. Also: an `@` parameter binds a Range as an Array (Rakudo keeps the
-  Range); `.^name` lacks the `NativeCall::Types::` prefix. Seen with #136
-  (2026-10-09): a NULL `Pointer`/`CArray` struct field reads as
-  `Pointer.new(0)` where Rakudo answers the type object; `CArray[Pointer]`
-  elements read as `{:addr…}` hashes.
+- [ ] **NativeCall CArray gaps**: all of the list fixed 2026-10-10
+  (t/regression/nativecall-names-and-null-fields.raku) but identity: a CArray
+  read back from a CStruct field knows its length and writes through, yet is
+  not `===` the one stored (Rakudo keeps the child object itself); a typed
+  `Pointer[T].new($addr).raku` keeps its `[T]` where Rakudo drops it.
 - [ ] **#110 constructor type checks**: the module battery gate was never run,
   for #110 or for the nominal-check fixes of 2026-10-07. Open: native width is
   not enforced; `has Array[Int]` is not checked. Seen beside those fixes:
@@ -258,28 +259,32 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   calls every hash-backed object (Promise, Lock, Signature, IO::Handle) a
   Hash/Map/Associative; a Seq bound to `Positional $p` stays a Seq (Rakudo's
   binder caches it into a List); a Capture binds `Array` and `List`.
-- [ ] **Supply closers on aarch64**: three closers of the class fixed in
-  925260b1 are still unlocked (the inner-tap closers and tapSupply's `ended`
-  write). The fix needs the supplier lock key passed through tapSupply.
-- [ ] **Cro and #116 follow-ups**:
-  - A bare `Node` resolves through the `classAliases_` tail.
-  - `NativeLibs EXPORT failed: No such method 'dispatcher'`.
-  - Nested protos under LTM.
-- [ ] **LibCurl::EasyHandle**: "Redeclaration of return type" since the
-  GLOBAL-leak fix; not investigated.
+- [ ] **Supply closers on aarch64**: the three closers of the class fixed in
+  925260b1 (the inner-tap closers and tapSupply's `ended` write) take the
+  supplier's lock since 2026-10-10 (tapSupply leaves its key in the record,
+  closeTapRecord). Owed: the Linux TSan run of `t/stress` that would show it.
+- [ ] **Cro and #116 follow-ups**: `NativeLibs EXPORT failed: No such
+  method 'dispatcher'` and LibCurl::EasyHandle's "Redeclaration of return
+  type" no longer reproduce (2026-10-10: NativeLibs loads, LibCurl's
+  t/01-load passes). Left, and needing Cro installed to see: a bare `Node`
+  resolving through the `classAliases_` tail (two modules each declaring
+  `Node` resolve right inside their own package), and nested protos under
+  LTM. Seen beside them: two `use`d modules exporting the same `Node` are
+  "Redeclaration of symbol 'Node'" in Rakudo; here the last one wins.
 - [ ] **Phaser order**: `temp` is restored after LEAVE; builtin callbacks
   (`.map`) and gather bodies keep the old order. perf-guard was not run for
-  55b4f18a.
+  55b4f18a. Rakudo 2026.09 restores BEFORE LEAVE (2026.08 did not):
+  `my $x = 1; sub s { temp $x = 2; LEAVE say $x }; s()` says 1 there, and so
+  does a LEAVE in a `.map` block; rakupp says 2 in both (2026-10-10).
 - [ ] **Semantics sheets, step two**: about 11 sheets.
   [../findings/semantics/](../findings/semantics/).
 - [ ] **Divergences found in sweeps and not fixed**:
   - `use` inside a sub loads at call time.
   - Role conflicts are undetected or reported late.
   - An exported `infix:<+++>`.
-  - A superscript numeral term after a word is read as its power:
-    `say ²¹²` parses as `say ** 212` and prints an empty line (Rakudo 4096).
-    (`3²!` and `4².sqrt` apply the postfix to the power since 2026-10-10, for
-    a one-token base; `@a[0]²!` still puts it on the exponent.)
+  - A postfix after a superscript power on a multi-token base applies to the
+    exponent: `@a[0]²!` (`3²!`, `4².sqrt` and `say ²¹²` are right since
+    2026-10-10).
   - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
     answers a WhateverCode, Rakudo a Range.
   - A `sub EXPORT` inside a `unit module` runs on `use`; Rakudo does not call
@@ -304,6 +309,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     slot (itemizeElem), so a bound slot needs a "no container" mark of its own.
   - A typed array's hole reads as Any: `my Int @j; @j[2] = 1; @j[0].^name` is
     Any (Rakudo: Int). Found 2026-10-10.
+  - An absent optional named with a `:D` type binds its type object quietly:
+    `sub g(Real:D :$r) { }; g()` lives (Rakudo: X::Parameter::InvalidConcreteness).
+    Multi dispatch already passes such a candidate over. Found 2026-10-10.
+  - `IO::Handle.spurt` is missing (`$fh.spurt("x")`; Rakudo writes it through
+    the handle). Found 2026-10-10.
   - An `is default` array's `.sum` counts the default, 15 for
     `my @a is default(7); @a[2] = 1` (Rakudo 2026.08: 1, its sum skips the
     default — every other read gives 7, so this one is left as it is).
@@ -479,8 +489,6 @@ with its tag, after the release run is green.
   [SLANG-PLAN.md](SLANG-PLAN.md).
 - [ ] **Larger walls**: PDF 16 of 49 test files (encryption, `ByteString`,
   filters, tie); Red #77 (compile-time lexical declaration).
-- [ ] **Data::Native**: `Callable :sorted-keys` is refused.
-  [DATA-PLAN.md](DATA-PLAN.md).
 - [ ] **Not started**: [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) (`rakupp.lock`,
   `--frozen`) and [UUID-PLAN.md](UUID-PLAN.md) (draft; the distribution's name
   is open).
@@ -608,7 +616,7 @@ with its tag, after the release run is green.
   grapheme, which a two-atom pattern cannot match). The second is
   deliberate: 892e6c61 fused `\r\n` into the CR LF grapheme to pass Rakudo's
   own t/02-rakudo/regex-crlf-grapheme.t and mutsu's
-  regex-crlf-literal-escape-pair.t, which the 2026.08 release fails. Decide
+  regex-crlf-literal-escape-pair.t, which the 2026.08 and 2026.09 releases fail. Decide
   which Rakudo to follow before changing it. Also `"x\r\n" ~~ / x $$ /` is
   False here, True on Rakudo 2026.08.
 - [ ] **An Array in a sequence's seed list**: the endpoint check reads it.

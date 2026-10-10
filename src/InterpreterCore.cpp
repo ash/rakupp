@@ -5076,6 +5076,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // settled by this point, only the marker would have leaked.
                     if (v.s == "Seq") v.s.clear();
                 }
+                // …and so does a RANGE: it is Positional, and `sub f(@x)` called
+                // with `1..3` holds the Range (`@x.^name` is Range in Rakudo)
+                // rather than a copy of its elements. (A typed `Int @x` still
+                // coerces below and judges the Array, as before.)
+                else if (v.t == VT::Range && !p.isCopy && !v.itemized &&
+                         (p.type.empty() || p.type == "Any" || p.type == "Mu")) {
+                }
                 // a definite scalar is no Positional: `sub f(@a) {}; f(1)` is a
                 // binding failure, not a one-element array — and nor is Nil, Any
                 // or a non-Positional type object (`f(Nil)` refuses in Rakudo)
@@ -10226,10 +10233,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 // …and Mu's `new(*%attrinit)` is one of `new`'s candidates: a
                 // samewith whose arguments no user candidate takes builds the
                 // object (Dan's Series re-enters `new` with a Hash index)
+                // (…unless the class wrote its own `proto method new`, which
+                // REPLACES Mu's: then nothing matching is X::Multi::NoMatch)
                 if (c.name == "new" && selfCopy.t == VT::Type) {
-                    bool allNamed = true;
+                    bool allNamed = true, ownProto = false;
                     for (auto& a : as) if (!(a.t == VT::Pair && a.namedArg)) { allNamed = false; break; }
-                    if (allNamed) return methodCall(selfCopy, "new", as, nullptr, /*skipOwn=*/true);
+                    for (auto& pc : c.candidates)
+                        if (pc.code() && (pc.code()->isProto || pc.code()->isProtoBody)) { ownProto = true; break; }
+                    if (allNamed && !ownProto) return methodCall(selfCopy, "new", as, nullptr, /*skipOwn=*/true);
                 }
                 // no candidate takes the Junction itself — autothread over it
                 for (size_t ai = 0; ai < as.size(); ai++) {
@@ -14940,7 +14951,19 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             !sliceSubscript(static_cast<Index*>(a->target.get()))) {
             auto* ix = static_cast<Index*>(a->target.get());
             Value* bp = nullptr;
-            try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
+            // (a NESTED base is asked as a value first: its lvalue would create
+            // the outer slot before the right-hand side runs, and the store
+            // below evaluates the target again — `%m{$i}{$i} = $i++` left a
+            // stray `0 => Any` beside the entry it meant)
+            bool quantBase = true;
+            if (ix->base->kind == NK::Index) {
+                Value probe;
+                try { probe = eval(ix->base.get()); } catch (RakuError&) {}
+                const std::string pk = probe.t == VT::Type ? probe.s.str() : probe.hashKind.str();
+                quantBase = pk == "SetHash" || pk == "BagHash" || pk == "MixHash";
+            }
+            if (quantBase)
+                try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             // an undefined `my SetHash $sh` (or BagHash/MixHash) vivifies on write
             if (bp && bp->t == VT::Type &&
                 (bp->s == "SetHash" || bp->s == "BagHash" || bp->s == "MixHash")) {
@@ -16138,6 +16161,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     }
                 }
                 if (!packedNow) nv = coerceArray(rhs);
+                // what an `@` container is ASSIGNED is an Array, lazy or not:
+                // `my @b = (1, 2 ... *)` reifies on demand but is no Seq (it was
+                // the Seq itself, so `.^name` said Seq and `.join` showed none of
+                // what indexing had reified). A bind (`sub f(@x)`) keeps the List.
+                if (!packedNow && nv.t == VT::Array && nv.ext() && nv.isList &&
+                    (nv.s == "Seq" || nv.s.empty())) { nv.isList = false; nv.s = std::string(); }
                 if (!packedNow && nv.arr()) { // each element enters a container: Nil resets
                     Value proto; proto.ofTypeM() = keepType; proto.elemDefaultM() = keepDefault;
                     std::string want = elemTypeOfSpec(keepType);

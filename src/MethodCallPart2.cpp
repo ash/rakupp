@@ -10839,7 +10839,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "name" || m == "^name") {
         // the metaclass reports Rakudo's full name; HOW.name($obj) names the OBJECT's type
         if (inv.t == VT::Type && (inv.s == "Metamodel::ClassHOW" || inv.s == "Metamodel::EnumHOW")) {
-            if (m == "name" && !args.empty()) return Value::str(args[0].typeName());
+            if (m == "name" && !args.empty()) {
+                const std::string tn = args[0].typeName();
+                return Value::str(classes_.count(tn) && args[0].t == VT::Object ? tn : ncQualifiedName(tn));
+            }
             return Value::str("Perl6::" + std::string(inv.s.str()));
         }
         // A typed container names its PARAMETER: `my Int @a; @a.^name` is
@@ -10855,7 +10858,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // `Int.name`, `Less.name` and a user-class instance with no name
         // method all die X::Method::NotFound in Rakudo — answering the type
         // name made `try $x.name` a wrong guess instead of Nil
-        if (m == "^name") return Value::str(inv.typeName());
+        if (m == "^name") {
+            const std::string tn = inv.typeName();
+            return Value::str(classes_.count(tn) && inv.t == VT::Object ? tn : ncQualifiedName(tn));
+        }
         throwTypedV("X::Method::NotFound",
                     {{"method", Value::str("name")}, {"typename", Value::str(inv.typeName())}, {"invocant", inv}},
                     "No such method 'name' for invocant of type '" + inv.typeName() + "'");

@@ -1504,6 +1504,21 @@ Value watchFilter(const Value& sup, const Value& blk) {
     return cb;
 }
 
+// A supplier-fed tap record is read by the emit fan-out under its supplier's
+// mutex (supplierMutex), so closing it takes the same lock: an unlocked write of
+// `closed` let a producer on another thread miss it and deliver past the close
+// (the class 925260b1 fixed for a react's own taps). tapSupply leaves the
+// supplier's key in the record; the registry only compares the address.
+static const char* const kTapSupKey = "\x01supkey";
+template <class H> static void closeTapRecord(H& rec) {
+    std::unique_lock<std::recursive_mutex> lk;
+    auto k = rec.find(kTapSupKey);
+    if (k != rec.end())
+        lk = std::unique_lock<std::recursive_mutex>(supplierMutex((const void*)(intptr_t)k->second.i));
+    rec["closed"] = Value::boolean(true);
+    rec["ended"] = Value::boolean(true);
+}
+
 Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value quitCb) {
     if (!(s.t == VT::Hash && s.hashKind == "Supply" && s.hash())) {
         Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -1585,14 +1600,20 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // Under the supplier's own stripe, so no live value overtakes the replay.
         if (sup.t == VT::Hash && sup.hash()->count("taps")) {
             std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+            (*tapRec.hash())[kTapSupKey] = Value::integer((long long)(intptr_t)sup.hash());
             (*sup.hash())["taps"].arr()->push_back(tapRec);
             replayPreserved(sup, tapRec);
         }
         // already-done supplier: fire done immediately so wiring completes
-        if (sup.t == VT::Hash && sup.hash()->count("done_state") && (*sup.hash())["done_state"].truthy() &&
-            !(tapRec.hash()->count("ended") && (*tapRec.hash())["ended"].truthy())) {
-            (*tapRec.hash())["ended"] = Value::boolean(true);
-            if (doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
+        // (the flag under the supplier's lock, as the fan-out reads it)
+        if (sup.t == VT::Hash && sup.hash()->count("done_state") && (*sup.hash())["done_state"].truthy()) {
+            bool fire = false;
+            {   std::lock_guard<std::recursive_mutex> lk(supplierMutex(sup.hash()));
+                if (!(tapRec.hash()->count("ended") && (*tapRec.hash())["ended"].truthy())) {
+                    (*tapRec.hash())["ended"] = Value::boolean(true);
+                    fire = true;
+                } }
+            if (fire && doneCb.t == VT::Code) { ValueList na; try { callCallable(doneCb, na); } catch (...) {} }
         }
         tapRec.hashKind = "Tap";
         return tapRec;
@@ -1653,7 +1674,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (!(t.t == VT::Hash && t.hash())) return;
             if (t.ext() && t.hash()->count("wired") && (*t.hash())["wired"].truthy())
                 self->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
-            else { (*t.hash())["closed"] = Value::boolean(true); (*t.hash())["ended"] = Value::boolean(true); }
+            else closeTapRecord(*t.hash());
         };
         Value outerEmit; outerEmit.t = VT::Code; outerEmit.setCode(makePayload<Callable>());
         outerEmit.code()->builtin =
@@ -1714,7 +1735,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                     if (!(t.t == VT::Hash && t.hash())) return;
                     if (t.ext() && t.hash()->count("wired") && (*t.hash())["wired"].truthy())
                         ip->closeTapHandle(std::static_pointer_cast<TapHandle>(t.ext()));
-                    else { (*t.hash())["closed"] = Value::boolean(true); (*t.hash())["ended"] = Value::boolean(true); }
+                    else closeTapRecord(*t.hash());
                 });
             }
         }
@@ -1872,10 +1893,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                         handle->closers.push_back([ip, ih] { ip->closeTapHandle(ih); });
                     } else if (innerTap.hashKind == "Tap") {
                         auto rec = innerTap.hashS();
-                        handle->closers.push_back([rec] {
-                            (*rec)["closed"] = Value::boolean(true);
-                            (*rec)["ended"] = Value::boolean(true);
-                        });
+                        handle->closers.push_back([rec] { closeTapRecord(*rec); });
                     }
                 }
             }

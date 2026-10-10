@@ -1032,6 +1032,11 @@ std::string Value::toStr() const {
 }
 
 std::string Value::gist() const {
+    // a Tap is an opaque handle: Rakudo shows `Tap.new`, not its record
+    if (t == VT::Hash && hashKind == "Tap") return "Tap.new";
+    // …and a Pointer is its package and address: `NativeCall::Types::Pointer<0x10>`
+    if (t == VT::Hash && hashKind == "Pointer" && hash() && hash()->count("addr"))
+        return "NativeCall::Types::" + ncPointerText("Pointer", "", hash()->at("addr").toInt());
     // an object of a class with its OWN `.gist` renders by it, nested too
     if ((t == VT::Object || t == VT::Type) && g_objMethodStr) { std::string o; if (g_objMethodStr(*this, "gist", o)) return o; }
     // …and the DEFAULT gist of an object is its `.raku` (Mu.gist): `[Bar.new(:1x)]`

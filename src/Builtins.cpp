@@ -2125,7 +2125,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             std::string d = g_typeDispName ? g_typeDispName(v.s) : std::string();
             if (!d.empty()) return d;
             // …and a parameterized built-in names its parameter: array[str]
-            return v.ofType().empty() ? v.s.str() : v.s.str() + "[" + v.ofType() + "]";
+            // (a NativeCall type its package: NativeCall::Types::Pointer)
+            return ncQualifiedName(v.ofType().empty() ? v.s.str() : v.s.str() + "[" + v.ofType() + "]");
         }
         case VT::Str:
             // a Buf/Blob is a Str only in REPRESENTATION — its .raku is the
@@ -2402,6 +2403,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // a bare `Mu.new` / `Any.new` instance: no attributes, no container
             if ((v.hashKind == "Mu" || v.hashKind == "Any") && (!v.hash() || v.hash()->empty()))
                 return v.hashKind + ".new";
+            if (v.hashKind == "Tap") return "Tap.new";   // an opaque handle, as Rakudo shows it
             // a Signature inside a list renders as its literal, as it does alone
             // (`(:(Int $), "x").raku` is `(:(Int $), "x")`, not the record behind it)
             if (v.hashKind == "Signature" && v.hash()) {
@@ -5184,7 +5186,11 @@ void Interpreter::fhAppendToFile(const PRef<ValueMap>& h, const std::string& s) 
         if (fi != h->end() && fi->second.ext()) fd = static_cast<WriteFd*>(fi->second.ext().get())->fd;
         else {
             const std::string path = (*h)["path"].toStr();
-            int flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | ((mode == "a" || wrote) ? 0 : O_TRUNC);
+            // (only `:a` appends: a `:w` handle writes at ITS position, from 0,
+            // over whatever another writer put there since — Trap's tee test
+            // opens `:w`, lets the file be rewritten, then writes the same line)
+            int flags = O_WRONLY | O_CREAT | O_CLOEXEC | (mode == "a" ? O_APPEND : 0) |
+                        ((mode == "a" || wrote) ? 0 : O_TRUNC);
             fd = ::open(path.c_str(), flags, 0666);
             if (fd >= 0) {
                 Value fv = Value::integer(fd);
@@ -5544,7 +5550,7 @@ std::string jsonEncode(const Value& v) {
 // installed (the v3.0.1 unvendoring stands: no pinned source in the binary);
 // what changes is the CALL: loadModule wraps the loaded &to-json/&from-json,
 // and a call whose arguments this replica covers runs the native codec.
-// Anything it does not cover — an unknown adverb, a callable :sorted-keys, a
+// Anything it does not cover — an unknown adverb, a
 // NaN/Inf Num (whose rendering hangs on the $*JSON_NAN_INF_SUPPORT dynamic),
 // or a type outside the ladder (DateTime, Version, objects) — falls through to
 // the module's own sub, so behaviour is the module's in every uncovered case.
@@ -5552,6 +5558,12 @@ std::string jsonEncode(const Value& v) {
 // back to JSON::Fast, but the PRIMITIVE has no module behind it and has to say
 // what it refused.
 struct JsonFastUnsupported { const char* why; };
+// A CALLABLE :sorted-keys, as the module applies it: `%h.sort($sorted-keys)`
+// over the hash's pairs (a key extractor or a comparator alike). jfEncode is
+// a plain function, so the comparator and the interpreter that runs it ride
+// here for the duration of one to-json call.
+static thread_local Interpreter* t_jfInterp = nullptr;
+static thread_local const Value* t_jfSortFn = nullptr;
 
 static void jfEscape(const std::string& s, std::string& out) {
     // Measured against the module (the unicode block in the regression file
@@ -5734,7 +5746,18 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             // key, exactly like the module's `.sort(*.key)`
             std::vector<std::pair<const std::string*, const Value*>> kvs;
             for (auto& kv : h) kvs.emplace_back(&kv.first, &kv.second);
-            if (sortedKeys)
+            if (sortedKeys && t_jfSortFn && t_jfInterp && kvs.size() > 1) {
+                Value pairs = Value::array(); pairs.isList = true;
+                for (auto& kv : kvs) pairs.arr()->push_back(Value::pair(*kv.first, *kv.second));
+                Value sorted = t_jfInterp->methodCall(pairs, "sort", ValueList{*t_jfSortFn});
+                std::vector<std::pair<const std::string*, const Value*>> byFn;
+                for (auto& p : toList(sorted)) {
+                    auto it = h.find(p.s.str());
+                    if (it != h.end()) byFn.emplace_back(&it->first, &it->second);
+                }
+                if (byFn.size() == kvs.size()) kvs.swap(byFn);
+            }
+            else if (sortedKeys)
                 std::sort(kvs.begin(), kvs.end(),
                           [](auto& a, auto& b) { return *a.first < *b.first; });
             if (pretty) {
@@ -5780,7 +5803,7 @@ static bool jsonNanInfWanted(Interpreter&) {
 Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered) {
     const Value* obj = nullptr;
     bool pretty = true; long long level = 0, spacing = 2; bool enumsAsValue = false;
-    bool sortedKeys = false;
+    bool sortedKeys = false; const Value* sortFn = nullptr;
     for (auto& x : a) {
         if (x.t == VT::Pair && x.namedArg) {
             bool tv = x.pairVal() && x.pairVal()->truthy();
@@ -5793,8 +5816,7 @@ Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovere
                 // wrapper delegates, the primitive raises. DATA-PLAN P1 lists
                 // it as the primitive's to implement, and it needs the key sort
                 // inside jfEncode to be able to call back into Raku.
-                if (x.pairVal() && x.pairVal()->t == VT::Code)
-                    return uncovered("a Callable :sorted-keys comparator is not supported");
+                if (x.pairVal() && x.pairVal()->t == VT::Code) sortFn = x.pairVal();
                 sortedKeys = tv;
             }
             else return uncovered("no adverb of that name");
@@ -5803,6 +5825,11 @@ Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovere
         else return uncovered("more than one positional argument");
     }
     if (!obj) return uncovered("no value to serialise");
+    struct SortG {
+        Interpreter* i; const Value* f;
+        ~SortG() { t_jfInterp = i; t_jfSortFn = f; }
+    } sortG{t_jfInterp, t_jfSortFn};
+    t_jfInterp = &I; t_jfSortFn = sortFn;
     try {
         std::string out;
         jfEncode(*obj, pretty, (int)spacing, sortedKeys, enumsAsValue,
@@ -8519,6 +8546,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (cn != classes_.end() && cn->second && !cn->second->dispName.empty())
                     return Value::str(!cn->second->shownName.empty() ? cn->second->shownName : cn->second->dispName);
             }
+            // (a NativeCall type names its package: NativeCall::Types::CArray[int32])
+            if (inv.t != VT::Object) return Value::str(ncQualifiedName(inv.typeName()));
             return Value::str(inv.typeName());
         }
         // `.^base_type` — the same type without its definiteness constraint
@@ -9994,8 +10023,23 @@ std::optional<Value> Interpreter::ncStructFieldGet(const Value& inv, const std::
             }
             std::string bt = type.substr(0, type.find('['));
             if (bt == "Str") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return p ? Value::str(std::string((const char*)(intptr_t)p)) : Value::typeObj("Str"); }
-            if (bt == "Pointer") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakePointer(type, (void*)(intptr_t)p); }
-            if (bt == "CArray")  { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return ncMakeLiveCArray(type, (void*)(intptr_t)p); }
+            // (a NULL Pointer or CArray field reads as the type object, as a
+            // NULL struct field does below — Rakudo's `.defined` is False)
+            if (bt == "Pointer") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+                                   return p ? ncMakePointer(type, (void*)(intptr_t)p) : Value::typeObj(type); }
+            if (bt == "CArray")  { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+                                   if (!p) return Value::typeObj(type);
+                                   // a view of the CArray stored there knows its
+                                   // length while the field still points at its
+                                   // bytes (Rakudo keeps the child object); the view
+                                   // still writes through to the native memory
+                                   Value live = ncMakeLiveCArray(type, (void*)(intptr_t)p);
+                                   auto kp = inv.obj()->attrs.find("__native_keep_" + m);
+                                   if (kp != inv.obj()->attrs.end() && kp->second.t == VT::Str &&
+                                       kp->second.hashKind == "CArray" &&
+                                       (long long)(intptr_t)kp->second.s.data() == p)
+                                       (*live.hash())["elems"] = methodCall(kp->second, "elems", ValueList{});
+                                   return live; }
             auto cit = classes_.find(type);
             if (cit != classes_.end()) { // nested CStruct/CPointer field → box the pointer
                 long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);

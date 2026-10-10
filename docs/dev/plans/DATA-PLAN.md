@@ -1068,7 +1068,8 @@ half), then P1, P6, P2, P3, P4 and P5 in that order, all on 2026-09-05.
   written, with two corrections this plan was wrong about — NaN/Inf (below),
   and `$*JSON_NAN_INF_SUPPORT` needing a *lenient* dynamic lookup, because a
   module can sit between the setter and the codec. The `Callable :sorted-keys`
-  path is the one piece not done; it is still refused, by both entry points.
+  path, the one piece left then, landed 2026-10-10: the comparator runs as the
+  module's `.sort($sorted-keys)` over the pairs, by both entry points.
   Gate: `t/regression/data-native-json.raku`, 117 assertions.
 - ~~**P2 — L1 CSV primitives.**~~ **DONE 2026-09-05.** `src/DataCsv.{h,cpp}`,
   the port of `csv.c`, 400 lines. Three things the port had to decide that the

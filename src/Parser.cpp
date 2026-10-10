@@ -15816,6 +15816,12 @@ StmtPtr Parser::parseStatementImpl() {
                 // undeclared, and so is a `C` inside the body.
                 if (kw == "anon" && st && st->kind == NK::ClassDecl)
                     static_cast<ClassDecl*>(st.get())->isAnonDecl = true;
+                // …and `anon subset F` / `anon enum E` as statements claim no
+                // name either, as their expression forms do (markAnonDecl)
+                if (kw == "anon" && st && st->kind == NK::SubsetDecl)
+                    static_cast<SubsetDecl*>(st.get())->isAnon = true;
+                if (kw == "anon" && st && st->kind == NK::EnumDecl)
+                    static_cast<EnumDecl*>(st.get())->name.clear();
                 // `our sub`/`our multi` — remember package scope so it installs globally.
                 if (wasOur && st && st->kind == NK::SubDecl) {
                     auto* osd = static_cast<SubDecl*>(st.get());

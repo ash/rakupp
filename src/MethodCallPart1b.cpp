@@ -36,10 +36,13 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         if (m == "defined") return Value::boolean(true);
         if (m == "Bool" || m == "so") return Value::boolean(addr != 0);
         // Rakudo prints the address in HEX and spells NULL out; `.raku` is the
-        // constructor form, not the angle-bracket gist. (The class name stays
-        // short here, as every other NativeCall type's `.^name` does.)
-        if (m == "gist" || m == "Str") return Value::str(ncPointerText("Pointer", of, addr));
-        if (m == "raku") return Value::str("Pointer" + std::string(of.empty() ? "" : "[" + of + "]") +
+        // constructor form, not the angle-bracket gist — with the package and
+        // the element type, as `Pointer[Handle].new.raku` is in Rakudo.
+        // (`.gist` names the package and not the element type, as Rakudo's does;
+        // Rakudo's `.Str` shows an object id, so it keeps the address here)
+        if (m == "gist") return Value::str("NativeCall::Types::" + ncPointerText("Pointer", "", addr));
+        if (m == "Str") return Value::str(ncPointerText("Pointer", of, addr));
+        if (m == "raku") return Value::str("NativeCall::Types::Pointer" + std::string(of.empty() ? "" : "[" + of + "]") +
                                            ".new(" + std::to_string(addr) + ")");
         // `.deref` on a Pointer[T] where T is a NativeCall CLASS (CPointer or
         // CStruct) hands back a T sitting at the pointed-to address, not the raw
@@ -96,6 +99,18 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     if (inv.t == VT::Hash && inv.hashKind == "CArray" && inv.hash()->count("addr")) {
         // a LIVE array (from C, or a nativecast view) has no known length —
         // Rakudo dies the same way; NativeHelpers::Blob's suite asserts it
+        // (…unless it is a struct field's view of a CArray stored there, whose
+        // length the field read records as `elems`)
+        if (m == "elems" && inv.hash()->count("elems")) return (*inv.hash())["elems"];
+        // …and lists its elements: `.list`, `.Array`, `.Seq` and the like
+        if ((m == "list" || m == "List" || m == "Array" || m == "Seq" || m == "values") &&
+            inv.hash()->count("elems")) {
+            long long n = (*inv.hash())["elems"].toInt();
+            Value out = Value::array(); out.isList = m != "Array";
+            if (m == "Seq" || m == "values") out.s = "Seq";
+            for (long long k = 0; k < n; k++) out.arr()->push_back(methodCall(inv, "AT-POS", ValueList{Value::integer(k)}));
+            return out;
+        }
         if (m == "elems")
             throw RakuError{Value::typeObj("X::AdHoc"),
                             "Don't know how many elements a C array returned from a library has"};

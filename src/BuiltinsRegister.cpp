@@ -2458,8 +2458,11 @@ void Interpreter::registerBuiltinsPart2() {
             // once here as Rakudo's is (a second open at the first write
             // truncated again, and a watcher saw it)
             if (!err && (mode == "w" || mode == "a")) {
-                openedFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC |
-                                                (mode == "w" ? O_TRUNC : 0), 0666);
+                // (O_APPEND for `:a` only: a `:w` handle writes at its own
+                // position, so another writer's bytes since are overwritten,
+                // not appended to — Trap's tee test)
+                openedFd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC |
+                                                (mode == "w" ? O_TRUNC : O_APPEND), 0666);
                 if (openedFd < 0) err = errno;
             }
             else
@@ -2511,8 +2514,16 @@ void Interpreter::registerBuiltinsPart2() {
             if ((canon == "utf16" || canon == "utf-16") && (mode == "w" || mode == "a" || mode == "rw")) {
                 struct stat bst;
                 if (::stat(path.c_str(), &bst) == 0 && bst.st_size == 0) {
-                    std::ofstream bom(path, std::ios::binary | std::ios::app);
-                    bom.write("\xFF\xFE", 2);
+#if !defined(_WIN32)
+                    // through the handle's own descriptor, so its position moves past
+                    // it (a `:w` descriptor writes at its position, not the end)
+                    if (openedFd >= 0) { ssize_t n = ::write(openedFd, "\xFF\xFE", 2); (void)n; }
+                    else
+#endif
+                    {
+                        std::ofstream bom(path, std::ios::binary | std::ios::app);
+                        bom.write("\xFF\xFE", 2);
+                    }
                     (*h.hash())["wrote"] = Value::boolean(true);   // the first print must not truncate it away
                 }
             }

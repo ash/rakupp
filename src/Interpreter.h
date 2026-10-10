@@ -3350,6 +3350,18 @@ public:
         bool joinable_ = false;
         struct Fn { std::function<void()> f; };
         static void run_(void* p) { std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
+        // A body run INLINE (no thread could be made — always, in a WASM build
+        // without pthreads) runs on the caller's thread, whose registers it
+        // would otherwise replace: a worker body loads an empty context and
+        // pushes its spawn scope, and the caller went on with them for the
+        // rest of the program. The caller's registers come back afterwards.
+        static void runInline_(Fn* fn) {
+            std::unique_ptr<Fn> g(fn);
+            ExecContext saved(tctx_);
+            try { g->f(); }
+            catch (...) { tctx_ = std::move(saved); throw; }
+            tctx_ = std::move(saved);
+        }
     public:
         BigStackThread() = default;
         // `stackBytes` 0 takes the default. `inlineOnFailure` is the fallback for
@@ -3367,7 +3379,7 @@ public:
 #if defined(_WIN32)
             h_ = bigStackCreate(&BigStackThread::run_, fn, kStack);
             if (h_) joinable_ = true;
-            else if (inlineOnFailure) { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+            else if (inlineOnFailure) runInline_(fn);                       // creation failed: run inline
             else { std::unique_ptr<Fn> g(fn); }                              // …or tell the caller, via joinable()
 #else
             pthread_attr_t attr;
@@ -3375,7 +3387,7 @@ public:
             pthread_attr_setstacksize(&attr, kStack);
             auto entry = [](void* p) -> void* { BigStackThread::run_(p); return nullptr; };
             if (pthread_create(&h_, &attr, entry, fn) == 0) joinable_ = true;
-            else if (inlineOnFailure) { std::unique_ptr<Fn> g(fn); g->f(); } // creation failed: run inline
+            else if (inlineOnFailure) runInline_(fn);                       // creation failed: run inline
             else { std::unique_ptr<Fn> g(fn); }                              // …or tell the caller, via joinable()
             pthread_attr_destroy(&attr);
 #endif

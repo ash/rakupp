@@ -6447,6 +6447,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         // package at all, so it answered GLOBAL — Method::Protected
                         // then asked GLOBAL for `^add_attribute`.
                         disp.code()->pkg = clsName;
+                        // a PROTO declared before it stays the group's head, as
+                        // a sub's does: `proto method new(|) {*}` replaces the
+                        // default constructor, and with no candidate matching
+                        // the call is X::Multi::NoMatch, not a Mu.new — dropped
+                        // here, `Color.new(rgb => [22, 42])` built a black Color
+                        if (it != ci->methods.end() && it->second.code() &&
+                            (it->second.code()->isProto || it->second.code()->isProtoBody))
+                            disp.code()->candidates.push_back(it->second);
                         disp.code()->candidates.push_back(code);
                         ci->methods[key] = disp;
                     }
@@ -6793,6 +6801,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
             }
             if (!stubOverCompleted) classes_[clsName] = ci;
+            // `my class X::Encode::Unknown` inside `unit module Encode`: its leading
+            // `X` is the GLOBAL exception package, so Rakudo installs the class in
+            // X's stash and `X::Encode::Unknown` names it from anywhere — while
+            // `.^name` keeps the long `Encode::X::Encode::Unknown`. Encode's own
+            // suite throws-likes it by the short name.
+            if (!cd->isAugment && !cd->isAnonDecl && !tctx_.pkgPrefix.empty() &&
+                cd->name.rfind("X::", 0) == 0 && clsName != cd->name && global_ && !global_->local(cd->name))
+                global_->define(cd->name, Value::typeObj(clsName));
             if (!cd->isAugment && !cd->name.empty() && !cd->isAnonDecl) {
                 if (!cd->isMy && lexicalPkgDepth_ == 0) stashDeclare(clsName, false);
                 else if (stashUnitHere().empty()) {   // the program's own lexical type

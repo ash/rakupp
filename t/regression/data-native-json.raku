@@ -94,9 +94,10 @@ throws-like { pt(Date.new(2026, 9, 5)) }, X::AdHoc, message => /'type tag'/,
     'a Date is refused rather than having its fields invented';
 throws-like { pt(1, :nope) }, X::AdHoc, message => /'adverb'/,
     'an unknown adverb is refused, naming the problem';
-throws-like { pt({ a => 1 }, :sorted-keys(-> $a, $b { 0 })) }, X::AdHoc,
-    message => /'Callable'/,
-    'a Callable :sorted-keys comparator is refused for now (DATA-PLAN P1 leaves it)';
+# a Callable :sorted-keys is the module's `.sort($sorted-keys)` over the pairs
+# (2026-10-10; JSON::Fast under Rakudo 2026.09 writes the same bytes)
+is pt({ b => 1, a => 2, c => 3 }, :!pretty, :sorted-keys({ $^b.key cmp $^a.key })),
+   '{"c":3,"b":1,"a":2}', 'a Callable :sorted-keys comparator';
 throws-like { pt(1, 2) }, X::AdHoc, message => /'positional'/,
     'a second positional argument is refused';
 
