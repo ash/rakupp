@@ -1391,7 +1391,11 @@ void Interpreter::registerBuiltinsPart4() {
             else if (ctx->tap && tapV.t == VT::Hash && tapV.hashKind == "Tap" && tapV.hash()) {
                 auto rec = tapV.hashS();
                 std::lock_guard<std::mutex> lk(ctx->tap->m);
+                // (under the supplier's lock: the fan-out on the emitting thread
+                // reads this record, and the insert of `closed` could rehash it
+                // there — the SIGBUS in supply-deliveries-across-threads)
                 if (!ctx->tap->closed) ctx->tap->closers.push_back([rec] {
+                    auto lk = lockTapRecord(*rec);
                     (*rec)["closed"] = Value::boolean(true);
                     (*rec)["ended"] = Value::boolean(true);
                 });
@@ -1724,6 +1728,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // of the replay, and the tap would see the stream out of
                     // order (Roast supplier-preserving.t emits from a `start`).
                     if (sup.t == VT::Hash && sup.hash()->count("taps")) {
+                        stampTapRecord(*tapRec.hash(), sup.hash());
                         std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
                         (*sup.hash())["taps"].arr()->push_back(tapRec);
                         I.replayPreserved(sup, tapRec);

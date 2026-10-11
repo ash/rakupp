@@ -9552,6 +9552,25 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
 void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env,
                             const std::vector<ExprPtr>* rwArgs) {
     if (!params || !rwArgs) return;
+    // The callee may have started a worker that still writes its parameters
+    // through (rwWriteThrough): `sub poke($x is rw) { start { $x = … } }`
+    // returns at once. So, as there, the parameter is copied out under its
+    // stripe, stored under the caller slot's, and rwSynced is read under the
+    // frame's — each lock alone, never two at once.
+    Env* const fe = env.get();
+    auto paramValue = [&](Value* pv) { ParStripe rs(*this, pv); return *pv; };
+    auto storeInto = [&](Value* lv, const Value& v) { ParStripe ws(*this, lv); *lv = v; };
+    auto syncedUnchanged = [&](const std::string& n, const Value& cur) {
+        Value syv;
+        {   ParStripe ss(*this, fe);
+            auto sy = fe->xr().rwSynced.find(n);
+            if (sy == fe->xr().rwSynced.end()) return false;
+            syv = sy->second;
+        }
+        return valueEqv(cur, syv);
+    };
+    auto hasSynced = [&](const std::string& n) { ParStripe ss(*this, fe); return fe->xr().rwSynced.count(n) > 0; };
+    auto noneSynced = [&]() { ParStripe ss(*this, fe); return fe->xr().rwSynced.empty(); };
     // `is rw` params write back explicitly; a sigilless capture param (`\a`) binds
     // the caller's container, so an assignment through it must write back too.
     // Assignments already went through IMMEDIATELY via rwWriteThrough; this is the
@@ -9561,7 +9580,7 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     // edits, and lvalue() on an untouched arg can autovivify a missing path.
     bool any = false;
     for (auto& p : *params) if (p.isRw || p.isRaw || p.sigil == '\\') any = true;
-    if (!any && env->xr().rwSynced.empty()) return;
+    if (!any && noneSynced()) return;
     size_t pi = 0;
     for (auto& p : *params) {
         if (p.named) {
@@ -9571,9 +9590,9 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
                 auto li = env->xr().rwLinks.find(p.name);
                 Value* pv = env->local(p.name);
                 if (li != env->xr().rwLinks.end() && pv) {
-                    auto sy = env->xr().rwSynced.find(p.name);
-                    if (!(sy != env->xr().rwSynced.end() && valueEqv(*pv, sy->second)))
-                        try { if (Value* lv = lvalue(li->second.first)) *lv = *pv; } catch (...) {}
+                    Value cur = paramValue(pv);
+                    if (!syncedUnchanged(p.name, cur))
+                        try { if (Value* lv = lvalue(li->second.first)) storeInto(lv, cur); } catch (...) {}
                 }
             }
             continue;
@@ -9586,11 +9605,11 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
                 auto li = env->xr().rwLinks.find(p.name);
                 Value* pv = env->local(p.name);
                 if (li != env->xr().rwLinks.end() && pv) {
-                    auto sy = env->xr().rwSynced.find(p.name);
-                    if (!(sy != env->xr().rwSynced.end() && valueEqv(*pv, sy->second))) {
+                    Value cur = paramValue(pv);
+                    if (!syncedUnchanged(p.name, cur)) {
                         auto savedCur = tctx_.cur;
                         tctx_.cur = li->second.second;   // the caller's scope
-                        try { if (Value* lv = lvalue(li->second.first)) *lv = *pv; } catch (...) {}
+                        try { if (Value* lv = lvalue(li->second.first)) storeInto(lv, cur); } catch (...) {}
                         tctx_.cur = savedCur;
                     }
                 }
@@ -9622,15 +9641,13 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         if (p.slurpy) break;
         // rwSynced-only entries are the Buf-bound params (see setupRwLinks):
         // they copy back when mutated, same unchanged-guard as `is rw`
-        if ((p.isRw || p.isRaw || p.sigil == '\\' ||
-             env->xr().rwSynced.count(p.name)) && pi < rwArgs->size() &&
+        if ((p.isRw || p.isRaw || p.sigil == '\\' || hasSynced(p.name)) && pi < rwArgs->size() &&
             !env->xr().rwCelled.count(p.name)) {
             Value* pv = env->local(p.name);
             if (pv) {
-                auto sy = env->xr().rwSynced.find(p.name);
-                bool unchanged = sy != env->xr().rwSynced.end() && valueEqv(*pv, sy->second);
-                if (!unchanged)
-                    try { if (Value* lv = lvalue(peelIncDec((*rwArgs)[pi].get()))) *lv = *pv; } catch (...) {}
+                Value cur = paramValue(pv);
+                if (!syncedUnchanged(p.name, cur))
+                    try { if (Value* lv = lvalue(peelIncDec((*rwArgs)[pi].get()))) storeInto(lv, cur); } catch (...) {}
             }
         }
         pi++;

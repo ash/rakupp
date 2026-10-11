@@ -1519,11 +1519,16 @@ Value watchFilter(const Value& sup, const Value& blk) {
 // (the class 925260b1 fixed for a react's own taps). tapSupply leaves the
 // supplier's key in the record; the registry only compares the address.
 static const char* const kTapSupKey = "\x01supkey";
-template <class H> static void closeTapRecord(H& rec) {
-    std::unique_lock<std::recursive_mutex> lk;
+std::unique_lock<std::recursive_mutex> lockTapRecord(const ValueMap& rec) {
     auto k = rec.find(kTapSupKey);
-    if (k != rec.end())
-        lk = std::unique_lock<std::recursive_mutex>(supplierMutex((const void*)(intptr_t)k->second.i));
+    if (k == rec.end()) return {};
+    return std::unique_lock<std::recursive_mutex>(supplierMutex((const void*)(intptr_t)k->second.i));
+}
+void stampTapRecord(ValueMap& rec, const ValueMap* sup) {
+    rec[kTapSupKey] = Value::integer((long long)(intptr_t)sup);
+}
+template <class H> static void closeTapRecord(H& rec) {
+    auto lk = lockTapRecord(rec);
     rec["closed"] = Value::boolean(true);
     rec["ended"] = Value::boolean(true);
 }
@@ -1616,7 +1621,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // Under the supplier's own stripe, so no live value overtakes the replay.
         if (sup.t == VT::Hash && sup.hash()->count("taps")) {
             std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
-            (*tapRec.hash())[kTapSupKey] = Value::integer((long long)(intptr_t)sup.hash());
+            stampTapRecord(*tapRec.hash(), sup.hash());
             (*sup.hash())["taps"].arr()->push_back(tapRec);
             replayPreserved(sup, tapRec);
         }

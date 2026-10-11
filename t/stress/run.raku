@@ -199,7 +199,9 @@ for @programs -> $prog {
         }
         else {
             $failed++;
-            say "not ok - $id (exit {$p.exitcode})";
+            # a death by signal reads as exit 0: name it, so a crash in a CI
+            # log is not mistaken for a wrong answer
+            say "not ok - $id (exit {$p.exitcode}{$p.signal ?? ", signal {$p.signal}" !! ''})";
             note "  --- stdout: {$out.lines.tail // ''}";
             note "  --- stderr: {$err.lines.head // ''}" if $err;
             note "  --- $_" for @tsan-summaries.head(3);

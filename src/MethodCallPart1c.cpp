@@ -1296,7 +1296,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     return Value::boolean(true);
                 };
                 (*rec.hash())["emit"] = e; (*rec.hash())["done"] = d; (*rec.hash())["quit"] = q;
-                (*sup.hash())["taps"].arr()->push_back(rec);
+                stampTapRecord(*rec.hash(), sup.hash());
+                {   // (registered as every Supplier tap is: under the supplier's lock)
+                    std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                    (*sup.hash())["taps"].arr()->push_back(rec);
+                }
                 ValueList one{sup};
                 if (producer.t == VT::Code) I.callCallable(producer, one);
                 return Value::any();

@@ -62,6 +62,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   (`t/run.raku`, the module battery, the adopters gate); then P7 (`--exe`
   probes), P8 (PARALLEL-SPEEDUP.md, faq/threads.md, ASYNC.md, JIT.md, CNP.md,
   the book), and P2's raw-pointer audit.
+- [ ] **`ub-iterate-during-push/parallel` died once on linux-x86_64**
+  (fc6abf32's CI run, 2026-10-11; green on the run before and after). A death
+  by signal, which the stress runner then reported as `exit 0`; it now names
+  the signal. 200 parallel runs on macOS never hit it, and every for-over-array
+  copy and the `.push` fast path take the container's stripe. The August
+  crash of this program (221d4763) was also Linux-only: glibc surfaces a torn
+  copy that macOS's allocator forgives. Next: the signal and a backtrace from
+  the next CI hit. (The `.kv`/`.join` fast arms copy elements unstriped — a
+  latent torn copy of the same kind, not this program's path.)
 - [ ] **TSan: the `private-*` stress programs are tolerated, not clean.**
   12 of the 13 programs 458886c2 added to `t/stress/` report under Linux TSan
   in parallel mode, the same with `RAKUPP_PRIVATE_SLOTS=0` and on 458886c2's

@@ -338,7 +338,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
         Value v;
         { Value* src = e->local(name); ParStripe rs(*this, src); v = *src; }
         { ParStripe ws(*this, dit->second); *dit->second = v; }
-        e->x().rwSynced[name] = v;
+        { ParStripe ss(*this, e); e->x().rwSynced[name] = v; }   // read by copyOutRw on the caller's thread
         return;
     }
     if (!e->ex || e->ex->rwLinks.empty()) return;
@@ -375,7 +375,9 @@ void Interpreter::rwWriteThrough(Expr* target) {
         try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) { ParStripe ws(*this, lv); *lv = v; } } catch (...) {}
         tctx_.cur = savedCur;
     }
-    e->x().rwSynced[name] = v;
+    // under the frame's stripe: a worker the callee started writes through
+    // here while the caller's copyOutRw reads the map on return
+    { ParStripe ss(*this, e); e->x().rwSynced[name] = v; }
 }
 // The C3 linearization of a class's CLASS ancestors (composed roles are not
 // ancestors): the class, then the merge of its parents' linearizations and the

@@ -262,6 +262,14 @@ long long subjectGraphemeOffset(const std::shared_ptr<void>& subject, size_t b);
 // Shared so `Supply.wait` can read the supplier's completion state without
 // racing an emit on another thread. Defined in Builtins.cpp.
 std::recursive_mutex& supplierMutex(const void* key);
+// The lock a Supplier-fed tap record is read under: its supplier's
+// (supplierMutex), named by the key tapSupply stamps on the record. Empty for a
+// record no supplier feeds. Every write to such a record, and every read of it
+// off the emit fan-out, holds this — an unlocked insert can rehash the record
+// under a fan-out on another thread. Defined in BuiltinsSupply.cpp.
+std::unique_lock<std::recursive_mutex> lockTapRecord(const ValueMap& rec);
+// Stamp that key on a record about to join `sup`'s taps (before it is shared).
+void stampTapRecord(ValueMap& rec, const ValueMap* sup);
 
 bool cowAllAscii(const CowStr& s);
 bool cowByteIsGraphemeIndex(const CowStr& s);

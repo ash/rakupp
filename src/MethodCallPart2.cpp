@@ -2520,7 +2520,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*tapRec.hash())["done"] = doneCb;
             (*tapRec.hash())["quit"] = quitCb;
             Value sup = (*inv.hash())["supplier"];
-            if (sup.t == VT::Hash && sup.hash()->count("taps")) (*sup.hash())["taps"].arr()->push_back(tapRec);
+            if (sup.t == VT::Hash && sup.hash()->count("taps")) {
+                stampTapRecord(*tapRec.hash(), sup.hash());
+                std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                (*sup.hash())["taps"].arr()->push_back(tapRec);
+            }
             return c;
         }
         if (m == "Channel") { // drain a (from-list) Supply into a closed Channel
@@ -2570,6 +2574,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 bool registered = false;
                 if (sup.t == VT::Hash && sup.hash()->count("taps")) {
                     // registration and replay are one step (see tapSupply)
+                    stampTapRecord(*tapRec.hash(), sup.hash());
                     std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
                     (*sup.hash())["taps"].arr()->push_back(tapRec);
                     replayPreserved(sup, tapRec);
@@ -3243,15 +3248,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // inner taps, CLOSE phasers, and I/O workers via the TapHandle.
         if (m == "close") {
             if (inv.hash()) {
-                (*inv.hash())["closed"] = Value::boolean(true);
-                (*inv.hash())["ended"] = Value::boolean(true);   // S-06: no event reaches a closed tap
                 // S-03/S-12: the close hooks run on EVERY close call. A copy of
                 // the list, so a hook that closes again cannot walk it twice.
-                auto cit = inv.hash()->find("closers");
-                if (cit != inv.hash()->end() && cit->second.arr()) {
-                    ValueList hooks = *cit->second.arr();
-                    for (auto& h : hooks) if (h.t == VT::Code) { ValueList none; callCallable(h, none); }
+                // The record is read and written under its supplier's lock (a
+                // producer's fan-out reads it on another thread); the hooks run
+                // after it is released.
+                ValueList hooks;
+                {
+                    auto lk = lockTapRecord(*inv.hash());
+                    (*inv.hash())["closed"] = Value::boolean(true);
+                    (*inv.hash())["ended"] = Value::boolean(true);   // S-06: no event reaches a closed tap
+                    auto cit = inv.hash()->find("closers");
+                    if (cit != inv.hash()->end() && cit->second.arr()) hooks = *cit->second.arr();
                 }
+                for (auto& h : hooks) if (h.t == VT::Code) { ValueList none; callCallable(h, none); }
             }
             if (inv.ext() && inv.hash() && inv.hash()->count("wired") && (*inv.hash())["wired"].truthy())
                 closeTapHandle(std::static_pointer_cast<TapHandle>(inv.ext()));
