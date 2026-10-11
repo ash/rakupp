@@ -4988,18 +4988,35 @@ std::string GrammarMatcher::evalArg(const std::string& e0) const {
       for (size_t i = 0; i < e.size(); i++) { char c = e[i];
           if (inq) { if (c == q) inq = false; }
           else if (c == '\'' || c == '"') { inq = true; q = c; }
-          else if (c == '~') return evalArg(e.substr(0, i)) + evalArg(e.substr(i + 1)); } }
+          else if (c == '~') return rxArgStr(evalArg(e.substr(0, i))) + rxArgStr(evalArg(e.substr(i + 1))); } }
     if (e.empty()) return "";
     if (e[0] == '$') {
         if (!scope_.empty()) { auto it = scope_.back().find(e); if (it != scope_.back().end()) return it->second; }
-        if (hooks.str) return hooks.str(e, {}, currentParams()); // a `:my`/runtime var — ask the interpreter
+        // a `:my`/runtime var or an expression — ask the interpreter, which
+        // keeps the value's type
+        if (hooks.argVal) return hooks.argVal(e, currentParams());
+        if (hooks.str) return hooks.str(e, {}, currentParams());
         return "";
     }
     if (e[0] == '\'' || e[0] == '"') {
-        std::string o; for (size_t i = 1; i < e.size() && e[i] != e[0]; i++) {
+        size_t i = 1; std::string o;
+        for (; i < e.size() && e[i] != e[0]; i++) {
             if (e[i] == '\\' && i + 1 < e.size()) { i++; o += (e[i] == 'n' ? '\n' : e[i] == 't' ? '\t' : e[i]); } else o += e[i]; }
-        return o;
+        if (i + 1 >= e.size() || !hooks.argVal) return o;   // the whole argument is the one literal
     }
+    // The cheap literals keep off the interpreter: an integer, True, False.
+    {
+        size_t d = (e[0] == '-' || e[0] == '+') ? 1 : 0;
+        if (d < e.size() && e.find_first_not_of("0123456789_", d) == std::string::npos && ascii::isdigit((unsigned char)e[d])) {
+            std::string n; for (char c : e) if (c != '_' && c != '+') n += c;
+            return std::string("\x04I") + n;
+        }
+    }
+    if (e == "True" || e == "False" || e == "Bool::True" || e == "Bool::False")
+        return std::string("\x04" "B") + (e.find("True") != std::string::npos ? "True" : "False");
+    // anything else is Raku code: a number with a point, an expression, a
+    // constant, a type name, a call
+    if (hooks.argVal) return hooks.argVal(e, currentParams());
     return e; // number / bareword
 }
 
@@ -5050,7 +5067,7 @@ std::string GrammarMatcher::interpParams(const std::string& pat, const std::map<
         if (c == '$' && angle == 0 && brace == 0 && i + 1 < pat.size() && (ascii::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
             size_t j = i + 1; while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
             auto it = sc.find("$" + pat.substr(i + 1, j - i - 1));
-            if (it != sc.end()) { out += gmQuoteMeta(it->second); i = j - 1; continue; }
+            if (it != sc.end()) { out += gmQuoteMeta(rxArgStr(it->second)); i = j - 1; continue; }
         }
         out += c;
     }
@@ -5083,7 +5100,7 @@ Regex* GrammarMatcher::compiledFor(const Rule& rule, const std::string& name, co
             for (size_t i = 0; i < av.size() && hit; i++) {
                 auto lv = litVal_.find(lc.args[i]);   // a literal is constant: evaluate once
                 if (lv == litVal_.end()) lv = litVal_.emplace(lc.args[i], evalArg(lc.args[i])).first;
-                hit = lv->second == av[i];
+                hit = lv->second == av[i] || rxArgStr(lv->second) == rxArgStr(av[i]);
             }
             if (!hit) continue;
             std::string ckey = name; ckey += "\x1f#"; ckey += std::to_string(ci);

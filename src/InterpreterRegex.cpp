@@ -8,6 +8,51 @@
 
 namespace rakupp {
 
+// A rule argument's value in the matcher's tagged string form (Regex.h,
+// rxArgTagged), and back. Bool, Int and Num keep their type on the way to the
+// callee's parameter (#150); a type object comes back as itself; anything
+// else travels as its Str, as every argument did before.
+void stampMatchGrammar(const Value& m, const std::string& g) {
+    if (m.t == VT::Array && m.arr()) { for (auto& e : *m.arr()) stampMatchGrammar(e, g); return; }
+    if (m.t != VT::Match || !m.md() || m.md()->grammar == g) return;
+    // in place: the matches of a parse just finished are its own, and every
+    // view of one of them is the same object of the grammar
+    const_cast<MatchData*>(m.md())->grammar = g;
+    if (m.md()->pos) for (auto& e : *m.md()->pos) stampMatchGrammar(e, g);
+    if (m.md()->named) for (auto& kv : *m.md()->named) stampMatchGrammar(kv.second, g);
+}
+
+static std::string rxArgEncode(const Value& v) {
+    const bool plain = v.enumName.empty() && v.enumType.empty() && v.hashKind.empty();
+    if (v.t == VT::Bool) return std::string("\x04" "B") + (v.b ? "True" : "False");
+    if (v.t == VT::Int && plain && v.s.empty()) return "\x04I" + v.toStr();
+    if (v.t == VT::Num && plain) return "\x04N" + v.toStr();
+    if (v.t == VT::Type && !v.s.empty()) return "\x04T" + v.s.str();
+    return v.toStr();
+}
+static Value rxArgDecode(const std::string& v) {
+    if (!rxArgTagged(v)) return Value::str(v);
+    const std::string body = v.substr(2);
+    switch (v[1]) {
+        case 'B': return Value::boolean(body == "True");
+        case 'I': {
+            errno = 0; char* end = nullptr;
+            long long n = std::strtoll(body.c_str(), &end, 10);
+            if (errno == 0 && end && *end == '\0') return Value::integer(n);
+            return Value::bigint(BigInt::fromString(body));
+        }
+        case 'N': {
+            if (body == "Inf") return Value::number(HUGE_VAL);
+            if (body == "-Inf") return Value::number(-HUGE_VAL);
+            if (body == "NaN") return Value::number(NAN);
+            return Value::number(std::strtod(body.c_str(), nullptr));
+        }
+        case 'T': return Value::typeObj(body);
+    }
+    return Value::str(body);
+}
+
+
 // Escape regex metacharacters so an interpolated string matches literally.
 static std::string spliceRegexValueFwd(const std::string& src);
 static std::string quoteMetaRx(const std::string& s) {
@@ -2287,6 +2332,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (!haveActions || !actCls) return;
         Value* method = resolveAction(name);
         if (!method) return;
+        if (g) stampMatchGrammar(mv, g->name);   // an action's $/ is a G too
         tctx_.makeTargets.push_back(&mv);
         try { invokeMethod(*method, actions, {mv}); }
         catch (RakuError& e) { if (std::getenv("RAKUPP_ACTTRACE")) std::cerr << "[ACT] " << name << " threw: " << e.message << "\n"; tctx_.makeTargets.pop_back(); throw; }
@@ -2531,7 +2577,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     size_t ks = p.second.find('\x1d', q), ve = p.second.find('\x1e', q);
                     if (ks == std::string::npos || ve == std::string::npos) break;
                     const std::string k = p.second.substr(q, ks - q), v = p.second.substr(ks + 1, ve - ks - 1);
-                    (*h.hash())[k] = v == "True" ? Value::boolean(true) : v == "False" ? Value::boolean(false)
+                    (*h.hash())[k] = rxArgTagged(v) ? rxArgDecode(v)
+                                   : v == "True" ? Value::boolean(true) : v == "False" ? Value::boolean(false)
                                    : !v.empty() && v.find_first_not_of("-0123456789") == std::string::npos
                                        ? Value::integer(std::stoll(v)) : Value::str(v);
                     q = ve + 1;
@@ -2539,7 +2586,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 overlay(p.first, h);
                 continue;
             }
-            overlay(p.first, Value::str(p.second));
+            overlay(p.first, rxArgDecode(p.second));
         }
         Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`
         Value last = Value::any();
@@ -2594,13 +2641,21 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // VarMatch in real grammars and is matched constantly. Resolve it straight from
         // the rule's param bindings, skipping parse/Match-build/overlay/exec entirely.
         auto it = pm.find(expr);
-        if (it != pm.end()) return it->second;
+        if (it != pm.end()) return rxArgStr(it->second);
         Value r = runCode(expr, 0, 0, nm, pm);
         // a `$*name` nothing declares reads as a Failure, and interpolating it
         // into the pattern throws its X::Dynamic::NotFound (it matched nothing)
         if (r.t == VT::Hash && r.hashKind == "Failure" && expr.size() > 2 && expr[1] == '*')
             methodCall(r, "throw", {});
         return r.toStr();
+    };
+    gm.hooks.argVal = [this, runCode](const std::string& expr, const ParamMap& pm) -> std::string {
+        auto it = pm.find(expr);
+        if (it != pm.end()) return it->second;
+        Value r = runCode(expr, 0, 0, NamedMap{}, pm);
+        if (r.t == VT::Hash && r.hashKind == "Failure" && expr.size() > 2 && expr[1] == '*')
+            methodCall(r, "throw", {});
+        return rxArgEncode(r);
     };
     // `<{ … }>` — the block's value is the pattern, read with the cursor's
     // captures beside it (a token may well write `(\w) <{ $0 }>`).

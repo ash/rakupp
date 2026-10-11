@@ -79,6 +79,14 @@ struct FnRef {
 struct ParseNode; // declared below — the hooks reference completed nodes
 struct RxCursorCaps;   // defined below, once ChildMap is — the mid-match cursor's capture lists
 
+// A rule parameter's value travels through the matcher as a string. A value
+// that is not a Str is tagged so it reaches the callee's code blocks with its
+// type (#150): "\x04" + tag + its Str form, tag B (Bool), I (Int), N (Num) or
+// T (a type object). A Str stays as it is. Interpolated into a pattern, or
+// read as an atom, a parameter is its Str form: rxArgStr.
+inline bool rxArgTagged(const std::string& v) { return v.size() >= 2 && v[0] == '\x04'; }
+inline std::string rxArgStr(const std::string& v) { return rxArgTagged(v) ? v.substr(2) : v; }
+
 struct GrammarHooks {
     using NamedMap = FlatMap<std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
     using ParamMap = std::map<std::string, std::string>;           // current rule params, e.g. $indent
@@ -115,6 +123,10 @@ struct GrammarHooks {
                        const std::vector<std::pair<long, long>>&,
                        const RxCursorCaps&, const ParamMap&)> runCursor;
     std::function<std::string(const std::string&, const NamedMap&, const ParamMap&)> str;             // $var atom
+    // A rule ARGUMENT evaluated as Raku code (`<.on(False)>`, `<r($n - 1)>`),
+    // answered in the tagged form rxArgEncode gives (see below): the value
+    // keeps its type on its way to the callee's parameter.
+    std::function<std::string(const std::string&, const ParamMap&)> argVal;
     std::function<std::pair<long,long>(const std::string&, const NamedMap&, const ParamMap&)> range;  // ** {…}
     // Save/restore interpreter side-effect state (`:my` vars, deferred makes) so an LTM
     // collect pass can measure branch lengths without polluting the commit pass.

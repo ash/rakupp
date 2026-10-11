@@ -20276,7 +20276,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // wired mode: an anonymous `regex {…}` value — its code blocks and
     // assertions execute for real, in a per-match child of the scope the
     // regex closed over (`:my`/`$cap` persist across blocks within a match)
-    bool wired = rxVal && rxVal->t == VT::Regex && !rxVal->hashKind.empty() && rxVal->ext();
+    // …and so does an `rx//` whose CODE blocks closed over its scope: a
+    // lexical sub or variable there is what `<?{ f($/) }>` calls, wherever
+    // the regex is matched (#147; see regexClosingOver)
+    bool wired = rxVal && rxVal->t == VT::Regex && rxVal->ext() &&
+                 (!rxVal->hashKind.empty() ||
+                  (rxHasCodeBlock(rxVal->s.str()) && !isP5Pattern(rxVal->s.str())));
     std::shared_ptr<Env> savedCurWired;
     if (wired) {
         savedCurWired = tctx_.cur;
@@ -24502,6 +24507,9 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Hash && (v.hashKind == "Channel" || v.hashKind == "Supply")) {
                 ValueList na;
                 Value l = methodCall(v, "list", na);
+                // (a Channel's list is lazy — each value is received as it is
+                // read — so it is the answer itself: its cache is still empty)
+                if (v.hashKind == "Channel" && l.t == VT::Array) return l;
                 if (l.t == VT::Array && l.arr()) { Value a = Value::array(*l.arr()); a.isList = true; return a; }
                 Value a = Value::array(); a.isList = true; a.arr()->push_back(l); return a;
             }
@@ -30789,9 +30797,14 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // fall back to the built-in default when the name is neither being
     // declared nor already bound in this scope / the caller chain.
     bool builtinDefault = !ve->declare;
-    if (builtinDefault && ve->name.size() > 1 && ve->name[1] == '*' &&
-        findDynamicLenient(ve->name))
-        builtinDefault = false;
+    // (the answer is kept for the dynamic read below: walking the caller
+    // chain twice per `$*x` read doubled its cost, #156)
+    bool dynLooked = false; Value* dynFound = nullptr;
+    if (builtinDefault && ve->name.size() > 1 && ve->name[1] == '*') {
+        dynLooked = true;
+        dynFound = findDynamicLenient(ve->name);
+        if (dynFound) builtinDefault = false;
+    }
     if (builtinDefault) {
     if (ve->name == "$=pod" || ve->name == "@=pod") { Value a = Value::array(); *a.arr() = podDom_; return a; }
     if (ve->name == "$*CWD") { Value p = Value::str(cwdName()); p.hashKind = "IO"; return p; }
@@ -31064,7 +31077,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // caller's dynamic minted a throwaway local instead — the `if`
     // dist's suite is the witness for both).
     if (ve->name.size() > 1 && ve->name[1] == '*') {
-        if (Value* dp = findDynamicLenient(ve->name)) {
+        if (Value* dp = dynLooked ? dynFound : findDynamicLenient(ve->name)) {
             if (dp->t == VT::Hash && dp->hashKind == "Proxy" && dp->hash()) {
                 auto itF = dp->hash()->find("FETCH");
                 if (itF != dp->hash()->end()) return callCallable(itF->second, { *dp });

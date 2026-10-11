@@ -1514,7 +1514,7 @@ std::string Value::typeName() const {
         case VT::Whatever: return b ? "HyperWhatever" : "Whatever"; // `**` marks hyper via .b
         case VT::Object: return obj() && obj()->cls ? obj()->cls->name : "Object";
         case VT::Regex: return "Regex";
-        case VT::Match: return "Match";
+        case VT::Match: return md() && !md()->grammar.empty() ? md()->grammar : std::string("Match");
     }
     return "Any";
 }

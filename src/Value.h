@@ -846,6 +846,10 @@ struct MatchData {
     // (Interpreter.h's GrammarCursor). Null on every ordinary Match.
     std::shared_ptr<void> cursor;
     std::shared_ptr<Value> actions;  // the :actions a grammar parse ran with (`.actions`)
+    // The grammar a parse ran: its result, and every match in it, is an object
+    // of that grammar — `.^name`, `~~ G`, and G's own methods (#153). Empty on
+    // every ordinary Match.
+    std::string grammar;
 };
 
 // What the payload slot holds. Distinct from VT on purpose — see MatchData.

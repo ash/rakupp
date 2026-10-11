@@ -346,6 +346,42 @@ static std::string winEnvBlock(const std::vector<std::string>& kvs) {
     blk += '\0';
     return blk;
 }
+// CreateProcessA that hands the child ONLY its own three standard handles.
+// With bInheritHandles alone a child inherits every inheritable handle the
+// process has at that moment, the pipe ends made for children other threads
+// are starting included: a slow child then holds a quick one's output open,
+// and its reader sees no end of file until the slow one exits (#143). This is
+// the Windows counterpart of the close-on-exec the POSIX path sets before it
+// forks. Should the list be refused, the plain call still starts the child.
+static BOOL winCreateProcess(char* cmd, LPVOID env, const char* cwd, STARTUPINFOA& si, PROCESS_INFORMATION& pi) {
+    HANDLE list[3]; DWORD n = 0;
+    for (HANDLE h : {si.hStdInput, si.hStdOutput, si.hStdError}) {
+        if (h == nullptr || h == INVALID_HANDLE_VALUE) continue;
+        bool dup = false;
+        for (DWORD i = 0; i < n; i++) if (list[i] == h) dup = true;
+        if (!dup) list[n++] = h;
+    }
+    SIZE_T size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+    std::vector<char> mem(size);
+    auto attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(mem.data());
+    if (n > 0 && size > 0 && InitializeProcThreadAttributeList(attrs, 1, 0, &size)) {
+        BOOL started = FALSE;
+        if (UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, list, n * sizeof(HANDLE), nullptr, nullptr)) {
+            STARTUPINFOEXA six; ZeroMemory(&six, sizeof(six));
+            six.StartupInfo = si;
+            six.StartupInfo.cb = sizeof(six);
+            six.lpAttributeList = attrs;
+            started = CreateProcessA(nullptr, cmd, nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT, env, cwd,
+                                     &six.StartupInfo, &pi);
+        }
+        DWORD err = started ? 0 : GetLastError();
+        DeleteProcThreadAttributeList(attrs);
+        if (started) return TRUE;
+        if (err != ERROR_INVALID_PARAMETER) { SetLastError(err); return FALSE; }
+    }
+    return CreateProcessA(nullptr, cmd, nullptr, nullptr, TRUE, 0, env, cwd, &si, &pi);
+}
 #endif
 
 // Children Proc::Async.start has running, keyed by the token stored on the proc
@@ -455,7 +491,7 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+    BOOL started = winCreateProcess(cmdbuf.data(), envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), si, pi);
     DWORD spawnErr = started ? 0 : GetLastError();
     // Not an .exe? It may be a .bat/.cmd, or a name the command processor knows.
     // CreateProcess cannot start those directly, so retry through COMSPEC — which
@@ -466,7 +502,7 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
         const char* comspec = std::getenv("COMSPEC");
         std::string shellCmd = std::string(comspec && *comspec ? comspec : "cmd.exe") + " /c " + cmd;
         cmdbuf2.assign(shellCmd.begin(), shellCmd.end()); cmdbuf2.push_back('\0');
-        started = CreateProcessA(nullptr, cmdbuf2.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+        started = winCreateProcess(cmdbuf2.data(), envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), si, pi);
         if (!started) spawnErr = GetLastError();
     }
     if (outW) CloseHandle(outW); if (errW) CloseHandle(errW); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
@@ -846,7 +882,7 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     PROCESS_INFORMATION pi; ZeroMemory(&pi, sizeof(pi));
     std::vector<char> cmdbuf(cmd.begin(), cmd.end()); cmdbuf.push_back('\0');
     std::string envblk; if (envKV) envblk = winEnvBlock(*envKV);
-    BOOL started = CreateProcessA(nullptr, cmdbuf.data(), nullptr, nullptr, TRUE, 0, envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
+    BOOL started = winCreateProcess(cmdbuf.data(), envKV ? (LPVOID)envblk.data() : nullptr, cwd.empty() ? nullptr : cwd.c_str(), si, pi);
     CloseHandle(inR);
     if (outW) CloseHandle(outW);
     if (errW) CloseHandle(errW);
@@ -7003,6 +7039,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         else if (!call && cur->grammar && (cur->grammar->findRule(m) || cur->grammar->findMethodForCall(m)))
             throw RakuError{Value::typeObj("X::AdHoc"),
                 "Cannot call '" + std::string(m) + "' on a grammar cursor outside the parse it belongs to"};
+    }
+    // The result of `G.parse` is a G: a method G declares answers on it, ahead
+    // of Match's own, as it would on any subclass (#153).
+    if (inv.t == VT::Match && inv.md() && !inv.md()->cursor && !inv.md()->grammar.empty() && !m.skipOwn) {
+        auto git = classes_.find(inv.md()->grammar);
+        if (git != classes_.end()) {
+            ClassInfo* owner = nullptr;
+            if (Value* um = git->second->findMethodForCall(m, langRev_ < 2, &owner))
+                return invokeMethodChain(m, git->second.get(), inv, std::move(args), rwArgs, um, owner);
+        }
     }
     // `@a.BIND-POS($i, $container)` is answered in methodCallTail, which is the
     // LAST of the three dispatch parts — so every call walked the whole built-in

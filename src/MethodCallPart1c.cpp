@@ -666,56 +666,58 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             return Value::boolean(true);
         }
         if (m == "closed") { std::lock_guard<std::recursive_mutex> lk(chm); return (*inv.hash())["closedPromise"]; }
-        // `.list`/`.Seq` CONSUME a closed channel: they yield the queued values
-        // and drain it (so the .closed Promise then keeps). `.Supply` snapshots
-        // without draining (a Supply is a re-tappable stream).
+        // `.list`/`.Seq` CONSUME the channel: a Seq that RECEIVES each value as
+        // it is read, ending when the channel is closed and drained (#145).
+        // Draining to the close before answering made a consumer that acts per
+        // item — releasing a Semaphore the producer waits on — a deadlock.
+        // Each pull waits as `.receive` does: patience while somebody could
+        // still send, never a deadlock once nobody can. A channel that FAILED
+        // raises its cause once drained, as `.receive` does: `for @$c { }`
+        // over a failed channel must not end quietly (Roast Channel.t).
         if (m == "list" || m == "Seq") {
-            // Rakudo: `.list` DRAINS the channel — it blocks until close and
-            // yields everything sent. Snapshotting only the current queue
-            // raced the producer once parallel became the default (the GIL's
-            // spawn-time handoff used to let the producer finish first).
-            // Same wait discipline as `.receive`: patience while somebody
-            // could still send, never a deadlock once nobody can.
-            Value o = Value::array(); o.isList = true;
-            for (;;) {
-                bool done = false;
-                {   std::lock_guard<std::recursive_mutex> lk(chm);
-                    for (auto& x : q) o.arr()->push_back(x);
-                    q.clear();
-                    done = isClosed();
+            // (`.list` is a List, as Rakudo's `self.Seq.list`)
+            Value out = Value::array(); out.isList = true; if (m == "Seq") out.s = "Seq";
+            auto st = std::make_shared<LazySeqState>();
+            st->streaming = true;
+            Interpreter* self = this;
+            Value chan = inv;
+            st->appendNext = [self, chan](ValueList& cache) -> bool {
+                std::recursive_mutex& cm = atomicStripe(chan.hash());
+                PRef<ValueList> cq;
+                { std::lock_guard<std::recursive_mutex> lk(cm); cq = (*chan.hash())["queue"].arrS(); }
+                for (;;) {
+                    bool nobody = false;
+                    {   std::lock_guard<std::recursive_mutex> lk(cm);
+                        if (!cq->empty()) { cache.push_back(cq->front()); cq->erase(cq->begin()); return true; }
+                        if ((*chan.hash())["closed"].b) break;
+                        // nobody left to send: the last sender may have sent and
+                        // closed between the look above and this check, so this
+                        // decision is taken under the lock, after one more look
+                        nobody = !t_poll.isWorker && self->liveWorkers_.load() <= 0 && self->cuedLoads_.load() <= 0;
+                    }
+                    if (nobody) {
+                        std::lock_guard<std::recursive_mutex> lk(cm);
+                        if (!cq->empty()) { cache.push_back(cq->front()); cq->erase(cq->begin()); return true; }
+                        break;
+                    }
+                    if (self->gilHeld_ && !self->parallelMode_) self->yieldToWorkerFor(0.02);
+                    else std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 }
-                if (done) break;
-                if (liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) {
-                    // nobody left to send — but the last sender may have sent and
-                    // closed BETWEEN the drain above and this check (it decrements
-                    // the worker count only after its close lands). One final
-                    // locked sweep, or that tail is silently dropped: t/run's
-                    // parallel example lost "100 121 144" exactly here once,
-                    // under machine load. `.receive` re-checks under its lock
-                    // after the same break; `.list` returned without looking.
-                    std::lock_guard<std::recursive_mutex> lk(chm);
-                    for (auto& x : q) o.arr()->push_back(x);
-                    q.clear();
-                    break;
+                self->methodCall(chan, "poll", ValueList{}); // keeps .closed once drained
+                std::lock_guard<std::recursive_mutex> lk(cm);
+                if (chan.hash()->count("failCause")) {
+                    const Value& fc = (*chan.hash())["failCause"];
+                    std::string msg = "Channel failed";
+                    if (fc.t == VT::Object && fc.obj()) {
+                        auto mit = fc.obj()->attrs.find("message");
+                        if (mit != fc.obj()->attrs.end()) msg = mit->second.toStr();
+                    } else if (fc.t == VT::Str) msg = fc.s.str();
+                    throw RakuError{fc, msg};
                 }
-                if (gilHeld_ && !parallelMode_) yieldToWorkerFor(0.02);
-                else std::this_thread::sleep_for(std::chrono::milliseconds(2));
-            }
-            std::lock_guard<std::recursive_mutex> lk(chm);
-            keepClosedIfDrained();
-            // …and a channel that FAILED raises its cause once its queue has
-            // been drained, exactly as `.receive` does: `for @$c { }` over a
-            // failed channel must not end quietly (Roast Channel.t).
-            if (inv.hash()->count("failCause")) {
-                const Value& fc = (*inv.hash())["failCause"];
-                std::string msg = "Channel failed";
-                if (fc.t == VT::Object && fc.obj()) {
-                    auto mit = fc.obj()->attrs.find("message");
-                    if (mit != fc.obj()->attrs.end()) msg = mit->second.toStr();
-                } else if (fc.t == VT::Str) msg = fc.s.str();
-                throw RakuError{fc, msg};
-            }
-            return o;
+                return false;
+            };
+            out.extM() = st;
+            return out;
         }
         if (m == "Supply") {
             // Every channel is Rakudo's on-demand `supply { whenever $c { emit

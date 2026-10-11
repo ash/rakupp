@@ -2979,6 +2979,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return out;
         }
         if (m == "eof" && args.empty()) return Value::boolean(liveProcEof(this, tok, isErr));
+        // `.read(N)` hands back the bytes there are as soon as there are any,
+        // up to N, as one read(2) does in Rakudo; an empty Buf only at the end.
+        // Taking the rest of the stream first made a request / reply exchange
+        // with a child that stays up wait for ever (#148).
+        if (m == "read" && args.size() <= 1 && (args.empty() || !(args[0].t == VT::Pair && args[0].namedArg))) {
+            long long want = args.empty() ? 65536 : args[0].toInt();
+            if (want <= 0) return binBuf(std::string());
+            return binBuf(liveProcRead(this, tok, isErr, (size_t)want));
+        }
         static const std::set<std::string> kTakesRest = {
             "get", "getline", "lines", "words", "slurp", "slurp-rest", "read", "readchars", "getc",
             "comb", "split", "Supply", "seek", "tell", "close", "eof", "encoding"};
@@ -5655,6 +5664,43 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (from > (long long)hay.size()) return Value::nil();
                 size_t at = m == "index" ? hay.find(ndl, (size_t)from) : hay.rfind(ndl, (size_t)from);
                 return at == std::string::npos ? Value::nil() : Value::integer((long long)at);
+            }
+        }
+        // A haystack beyond ASCII, read through the grapheme→byte table its body
+        // caches (what `.substr` reads): a byte search from where the start
+        // position lands, taking a hit only when both its ends are cluster
+        // boundaries. Decoding the whole string per call made a scanning loop,
+        // `$text.index("\n", $pos)`, quadratic (#154).
+        if (!icase && !imark && cowHay &&
+            (args.size() <= 1 || (args[1].t == VT::Int && !args[1].big() && args[1].i >= 0))) {
+            if (const std::vector<uint32_t>* gi = cowGraphemeIndex(inv.s)) {
+                const long long n = (long long)gi->size() - 1;
+                const long long from = args.size() > 1 ? args[1].i : (m == "index" ? 0 : n);
+                if (from > n) return Value::nil();
+                auto gAt = [gi](size_t b) -> long long {   // grapheme index of byte b, or -1
+                    auto it = std::lower_bound(gi->begin(), gi->end(), (uint32_t)b);
+                    return it != gi->end() && *it == b ? (long long)(it - gi->begin()) : -1;
+                };
+                auto whole = [&](size_t b, long long& g) {
+                    g = gAt(b);
+                    return g >= 0 && gAt(b + ndl.size()) >= 0;
+                };
+                size_t b = (*gi)[(size_t)from];
+                long long g;
+                if (m == "index") {
+                    for (; (b = hay.find(ndl, b)) != std::string::npos; b++)
+                        if (whole(b, g)) return Value::integer(g);
+                }
+                else {
+                    for (;;) {
+                        b = hay.rfind(ndl, b);
+                        if (b == std::string::npos) break;
+                        if (whole(b, g)) return Value::integer(g);
+                        if (b == 0) break;
+                        b--;
+                    }
+                }
+                return Value::nil();
             }
         }
         auto cps = utf8cp(hay); auto ncps = utf8cp(ndl);

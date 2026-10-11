@@ -693,9 +693,13 @@ static void rejectObsoleteRegex(const std::string& pat) {
 }
 static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
     Value v = Value::regex(std::move(pat));
-    if (sc && (rxNeedsScalarPass(v.s.str()) || v.s.find('@') != std::string::npos))
+    // (…and a CODE block, `{ … }` / `<?{ … }>`, reads the scope the regex was
+    // written in, wherever it is matched: a lexical sub or variable there is
+    // the one it calls (#147))
+    const bool interp = rxNeedsScalarPass(v.s.str()) || v.s.find('@') != std::string::npos;
+    if (sc && (interp || rxHasCodeBlock(v.s.str())))
         v.extM() = std::static_pointer_cast<void>(sc);
-    else rejectObsoleteRegex(v.s.str());
+    if (!sc || !interp) rejectObsoleteRegex(v.s.str());
     return v;
 }
 
@@ -710,7 +714,7 @@ Value Interpreter::regexLitValue(RegexLit* rl) {
         return Value::regex(*static_cast<const std::string*>(p));
     Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
     if (!v.ext() && !rxNeedsScalarPass(rl->pattern) &&
-        rl->pattern.find('@') == std::string::npos) {
+        rl->pattern.find('@') == std::string::npos && !rxHasCodeBlock(rl->pattern)) {
         auto* mine = new std::string(v.s.str());
         if (rl->closedPat.publish(mine) != mine) delete mine; // another thread won
     }

@@ -1153,9 +1153,43 @@ static inline std::string vmName() {
 // found through whoever is PULLING (the dynamic chain), not through the scope
 // that happened to write the gather: Rakudo resolves a `$*x` in the block
 // through the reifier, and the block may be read long after that scope left.
+// Does a regex source carry a CODE block — `{ … }`, `<?{ … }>`, `<!{ … }>` —
+// as opposed to a `{` inside a quoted atom (`"{NAME}"`, interpolated where it
+// is spliced), an escape, or a repetition count (`** {2..3}`)? Such a regex
+// runs its blocks in the scope it was written in (#147, regexClosingOver).
+static inline bool rxHasCodeBlock(const std::string& p) {
+    char q = 0;
+    for (size_t i = 0; i < p.size(); i++) {
+        char c = p[i];
+        if (c == '\\') {   // an escape, and the `{…}` argument of `\x{…}`/`\p{…}`
+            i++;
+            if (i + 1 < p.size() && p[i + 1] == '{') { size_t e = p.find('}', i + 1); i = e == std::string::npos ? p.size() : e; }
+            continue;
+        }
+        if (q) { if (c == q) q = 0; continue; }
+        if (c == '\'' || c == '"') { q = c; continue; }
+        if (c != '{') continue;
+        size_t j = i;
+        while (j > 0 && (p[j - 1] == ' ' || p[j - 1] == '\t')) j--;
+        if (j >= 2 && p[j - 1] == '*' && p[j - 2] == '*') continue;
+        return true;
+    }
+    return false;
+}
+
+// It is Env::local, minus the probes that cannot hit: a dynamic read from deep
+// in a recursion passes every frame between it and the declaration, and two
+// hash lookups at each made the read cost grow with the depth (#156).
 static inline Value* dynInFrame(Env* e, const std::string& name, const Env* stop = nullptr) {
     for (; e && e != stop; e = e->parent.get()) {
-        if (Value* p = e->local(name)) return p;
+        if (!e->vars.empty()) {
+            auto it = e->vars.find(name);
+            if (it != e->vars.end()) return it->second.deref();
+        }
+        // (a `$*x` cannot be in a pad that declares none; `$CALLER::x` and
+        // the other plain names still look)
+        if (e->layout && (e->layout->holdsDynamic || name.size() < 2 || name[1] != '*'))
+            if (Value* p = e->padFind(name)) return p->deref();
         if (e->routineFrame) return nullptr;
     }
     return nullptr;

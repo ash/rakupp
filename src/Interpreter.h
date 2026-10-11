@@ -580,6 +580,9 @@ struct PadLayout {
     // `sharedWhy` holds the first reason, for RAKUPP_SLOT_TRACE.
     uint64_t sharedMask = 0;
     std::vector<std::string> sharedWhy;
+    // a `$*x` among the names: without one, a dynamic lookup passing this
+    // frame need not probe its pad (dynInFrame)
+    bool holdsDynamic = false;
     void markShared(int s, const std::string& why) {
         if ((sharedMask >> s) & 1) return;
         sharedMask |= (uint64_t)1 << s;
@@ -597,6 +600,7 @@ struct PadLayout {
         names.push_back(n);
         simple.push_back(simpleSlot ? 1 : 0);
         byName.emplace(n, s);
+        if (n.size() > 1 && n[1] == '*') holdsDynamic = true;
         return s;
     }
 };
@@ -1499,6 +1503,10 @@ struct ExecContext {
 // on demand (returns false when exhausted). Reached via Value::ext.
 // State shared between a cued job's worker and its Cancellation value.
 struct CueState { std::atomic<bool> cancelled{false}; };
+
+// Mark `m` and every match inside it as an object of grammar `g` (#153):
+// the result of `G.parse` is a G. InterpreterRegex.cpp.
+void stampMatchGrammar(const Value& m, const std::string& g);
 
 struct LazySeqState {
     std::function<bool(ValueList&)> appendNext;

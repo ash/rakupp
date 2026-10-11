@@ -6521,6 +6521,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                            ruleArgs.empty() ? nullptr : &ruleArgs);
                     if (r.t == VT::Match && r.md() && actions.t != VT::Any && actions.t != VT::Nil)
                         r.mdW().actions = std::make_shared<Value>(actions);   // `$match.actions`
+                    if (r.t == VT::Match) stampMatchGrammar(r, ci->name);
                     // From 6.e a FAILED .parse is a Failure carrying
                     // X::Syntax::Confused, not a bare Nil — 6.e gives grammars a
                     // base class whose parse reports where it stopped. .subparse
@@ -6571,8 +6572,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return builtinParse(a2);
                 }
                 // A user-defined `method parse`/`subparse` (e.g. YAMLish wires :actions via nextwith)
-                // runs first; the built-in is its redispatch target.
-                if (Value* um = ci->findMethod(m)) {
+                // runs first; the built-in is its redispatch target. A call
+                // qualified past it, `G.Grammar::parse(…)`, runs the built-in (#152).
+                if (Value* um = m.skipOwn ? nullptr : ci->findMethod(m)) {
                     RedispatchCtx prc; prc.next = builtinParse; prc.sameArgs = args;
                     redispatchStack_.push_back(std::move(prc));
                     Value r;
@@ -8193,7 +8195,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // a grammar INSTANCE (`Grammar.new`) parses just like the type object
         if ((m == "parse" || m == "subparse" || m == "parsefile") && (ci->isGrammar || ci->findRule("TOP")))
-            return methodCall(Value::typeObj(ci->name), m, args, rwArgs);
+            return methodCall(Value::typeObj(ci->name), m, args, rwArgs, m.skipOwn);
         // `self.bless(...)` / `$obj.new(...)` on an INSTANCE builds a fresh object
         // of its class (Cro::Uri's add(): `(self ?? $!create !! Cro::Uri).bless(|%parts)`)
         if (m == "bless" || m == "new")
@@ -10457,12 +10459,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 cst->appendNext = reader(have);
                 Value nv = inv;
                 nv.setArr(makePayload<ValueList>(*inv.arr()));
+                nv.itemized = false;
                 nv.extM() = cst;
                 return nv;
             }
         }
-        if (inv.t == VT::Array) { Value nv = inv; nv.setArr(makePayload<ValueList>(*inv.arr())); return nv; }
-        if (inv.t == VT::Hash)  { Value nv = inv; nv.setHash(makePayload<ValueMap>(*inv.hash())); return nv; }
+        // The clone is a new value, not the scalar the original sat in, so it
+        // does not inherit that item flag: `my @b = $a.clone` flattens (#144).
+        if (inv.t == VT::Array) { Value nv = inv; nv.setArr(makePayload<ValueList>(*inv.arr())); nv.itemized = false; return nv; }
+        if (inv.t == VT::Hash)  { Value nv = inv; nv.setHash(makePayload<ValueMap>(*inv.hash())); nv.itemized = false; return nv; }
         // A PAIR is mutable through `.value` (Rakudo declares it `is rw`), and
         // every copy of the Value shares the one cell it points at — so the
         // immutable return below handed back an ALIAS, and `$p.clone.value = 7`
