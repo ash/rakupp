@@ -12,8 +12,10 @@ react {
     whenever $s.Supply.stable(0.3) { @stable.push($_) }
     whenever $s.Supply.delayed(0.2) { @delayed.push($_) }
     whenever Promise.in(0.05) { $s.emit(1); $s.emit(2) }
-    whenever Promise.in(0.6)  { $s.emit(3) }
-    whenever Promise.in(1.2)  { done }
+    # (wide margins: 2's debounce must fire before 3 arrives, and a CI runner
+    # under load has run a 0.3 s timer more than 0.25 s late)
+    whenever Promise.in(1.0)  { $s.emit(3) }
+    whenever Promise.in(1.8)  { done }
 }
 @fail.push("stable gave {@stable.raku}") unless @stable eqv [2, 3];
 @fail.push("delayed gave {@delayed.raku}") unless @delayed eqv [1, 2, 3];
