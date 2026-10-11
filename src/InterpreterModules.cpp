@@ -2929,7 +2929,9 @@ GrammarParseDiag& grammarParseDiag() {
 }
 
 bool isNativeTypeName(const std::string& n) {
-    static const std::set<std::string> t = {
+    // A hash probe: every native declaration asks, on every execution of it
+    // (declTypeIsKnown), and an ordered set made that a string-compare walk.
+    static const std::unordered_set<std::string> t = {
         "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16",
         "uint32", "uint64", "byte", "num", "num32", "num64", "str", "atomicint",
         "array", "bool", "size_t", "ssize_t", "long", "longlong", "ulong",

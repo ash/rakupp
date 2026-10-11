@@ -78,4 +78,4 @@ ck (cis(pi / 2).im - 1).abs < 1e-12, True, 'cis(π/2) is i';
 my $lock = Lock.new;
 ck $lock.protect({ 6 * 7 }), 42, 'Lock.protect answers its block';
 
-say $fails ?? "FAILED $fails" !! 'all ok';
+say $fails ?? "FAILED $fails" !! 'PASS';

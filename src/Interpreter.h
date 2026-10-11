@@ -4188,6 +4188,8 @@ private:
     bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
     bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
     Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
+    static bool nativeDeclShape(const VarExpr* v, const Expr* rhs);   // `my int $x = EXPR` takes the native declaration lane
+    Value* nativeDeclLane(Assign* a);              // …which answers the new slot, or null before anything ran
     bool typedTreeDecide(Binary* b);               // is it a typed-subtree root (and compiled to one)?
     Value* plainIntStepSlot(VarExpr* ve);           // the slot `$n++` steps in place, or null
     bool blockTakesAtArgs(Callable& c);             // does a called block get an `@_`?

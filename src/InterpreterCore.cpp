@@ -12788,6 +12788,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // one of them out, so a lane node has nothing to ask of them.
     {
         // Verdict values: 0 none, 1 plain `=`, 2 `+=`, 3 `-=`, 4 `*=`, 5 `~=`
+        // (6 `my $x = EXPR`, 7 a packed store, 8 `$!attr = EXPR`, 9 `my int $x = EXPR`)
         // (TARG-PLAN.md, the op= extension — whitelisted compounds whose full
         // path ends in the same applyArith this lane calls).
         signed char sv = a->simpleSlot;
@@ -12797,6 +12798,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
                     plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get()))
                     cls = 6;
+                else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
+                         nativeDeclShape(static_cast<VarExpr*>(a->target.get()), a->value.get()))
+                    cls = 9;
                 else if (a->target && a->target->kind == NK::Index && packedStoreShape(a))
                     cls = 7;
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp) {
@@ -12830,6 +12834,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             }
             else if (sv == 6) {
                 if (Value* slot = declLane(a)) return sink ? Value::any() : *slot;
+            }
+            else if (sv == 9) {
+                if (Value* slot = nativeDeclLane(a)) return sink ? Value::any() : *slot;
             }
             else if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
@@ -22097,6 +22104,84 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     Value rv;
     if (!declLaneRhs(a->value.get(), rv)) return nullptr;
     rv.readonly = rv.immutableBind = false;
+    return &de->define(tv->name, std::move(rv));
+}
+
+// The native declaration lane (Assign::simpleSlot 9): `my int $x = EXPR`,
+// `my num $x = EXPR` and the sized widths, with nothing else on the
+// declaration. The full path pays for a declaration's ceremony on every
+// execution — declInitial asks whether the type is declared, checkDeclTypeSane
+// whether it names a package, typedDefault walks the width table — and none of
+// it can say anything new about a native type. In a loop body that cost three
+// times the arithmetic: the FFT in Math::Wavelet's CWT ran 2.3 times faster
+// with its `my num` temporaries hoisted out of the butterfly.
+//
+// The store is the native one the pad lane makes for a later `$x = EXPR`:
+// refuse what the width cannot hold, then wrap. The right side may be
+// anything, because the lane never declines once it has evaluated it.
+static bool nativeDeclSpec(const std::string& t, int& bits, bool& sign, bool& isFloat) {
+    static const struct { const char* n; int bits; bool sgn; bool fl; } kinds[] = {
+        {"int",64,true,false}, {"num",64,true,true}, {"int64",64,true,false}, {"num64",64,true,true},
+        {"num32",32,true,true}, {"int32",32,true,false}, {"int16",16,true,false}, {"int8",8,true,false},
+        {"uint",64,false,false}, {"uint64",64,false,false}, {"uint32",32,false,false},
+        {"uint16",16,false,false}, {"uint8",8,false,false}, {"byte",8,false,false}};
+    for (auto& k : kinds)
+        if (t == k.n) { bits = k.bits; sign = k.sgn; isFloat = k.fl; return true; }
+    return false;
+}
+// Whether `e` could read the variable `name` — conservatively: a node this
+// does not look into (a closure, a regex, a quote with code) answers yes.
+// `my int $x = $x + 1` in a loop must see what the full path shows it.
+static bool rhsMayName(const Expr* e, const std::string& name, int depth = 0) {
+    if (!e) return false;
+    if (depth > 16) return true;
+    auto any = [&](const std::vector<ExprPtr>& v) { for (auto& x : v) if (rhsMayName(x.get(), name, depth + 1)) return true; return false; };
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: return false;
+        case NK::VarExpr: return static_cast<const VarExpr*>(e)->name == name;
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            return rhsMayName(b->lhs.get(), name, depth + 1) || rhsMayName(b->rhs.get(), name, depth + 1); }
+        case NK::Unary: return rhsMayName(static_cast<const Unary*>(e)->operand.get(), name, depth + 1);
+        case NK::Index: { auto* ix = static_cast<const Index*>(e);
+            return rhsMayName(ix->base.get(), name, depth + 1) || rhsMayName(ix->index.get(), name, depth + 1); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return rhsMayName(t->cond.get(), name, depth + 1) || rhsMayName(t->then.get(), name, depth + 1) ||
+                   rhsMayName(t->els.get(), name, depth + 1); }
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            return rhsMayName(c->callee.get(), name, depth + 1) || any(c->args); }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            return m->methodExpr || rhsMayName(m->inv.get(), name, depth + 1) || any(m->args); }
+        case NK::ListExpr: return any(static_cast<const ListExpr*>(e)->items);
+        case NK::ChainExpr: return any(static_cast<const ChainExpr*>(e)->operands);
+        default: return true;
+    }
+}
+bool Interpreter::nativeDeclShape(const VarExpr* v, const Expr* rhs) {
+    int bits; bool sign, isFloat;
+    if (!v->declare || v->declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->synthTopic || v->heredocOuter ||
+        v->stateInParens || !v->declStubType.empty() || !nativeDeclSpec(v->declType, bits, sign, isFloat) ||
+        !v->declCoerce.empty() || v->declDefault || v->declDynamic || v->declExport || v->declSmiley ||
+        v->declWhereExpr || v->declHasWhere || v->declMyConstant || v->pkgSymbol || !v->containerIs.empty() ||
+        v->declShape || v->declTypeExpr || v->namedBind || v->viaPseudoPkg || v->processScoped)
+        return false;
+    return rhs && !rhsMayName(rhs, v->name);
+}
+// Null only before anything was evaluated: a name already bound to a cell or
+// a Proxy here goes the full way.
+[[gnu::noinline]] Value* Interpreter::nativeDeclLane(Assign* a) {
+    auto* tv = static_cast<VarExpr*>(a->target.get());
+    Env* de = tctx_.cur.get();
+    while (de->loopFrame && de->parent) de = de->parent.get();
+    Value* have = de->localRaw(tv->name);
+    if (have && (have->isCell() || (have->t == VT::Hash && have->hashKind == "Proxy"))) return nullptr;
+    int bits; bool sign, isFloat;
+    nativeDeclSpec(tv->declType, bits, sign, isFloat);
+    Value rv = evalValueOf(a->value.get());
+    if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, tv, nullptr);
+    rv.readonly = rv.immutableBind = false;
+    if (nativeNeedsCheck(rv, isFloat)) nativeAssignCheck(rv, bits, isFloat, tv->name, sign);
+    wrapNative(rv, bits, sign, isFloat);
     return &de->define(tv->name, std::move(rv));
 }
 
