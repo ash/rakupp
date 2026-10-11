@@ -454,7 +454,110 @@ void Interpreter::checkImportTags(const std::string& name, const std::vector<std
 // A `use`/`need`/`require` merges what the loaded unit declared into the
 // importing unit's view of the packages (stashImport) — every form of load
 // but a repository's `.need`, which hands the unit back without merging.
+// ---- a `use` inside a routine body ----------------------------------------
+// Rakudo loads every `use` at compile time, wherever it is written. rakupp runs
+// a unit's statements in order, and a `use` in a routine body used to load only
+// when the routine first RAN: a missing module in a routine nobody called went
+// unreported, the module's body ran at an arbitrary later moment, and under
+// parallel mode eight `start { t() }` all made that first load together.
+// preloadRoutineUses loads them (importing nothing, as `need` does) when the
+// top-level statement holding the routine is reached; the routine's own `use`
+// then only imports, through the already-loaded road. Not preloaded: pragmas
+// (lowercase, or one exec() special-cases), `require`, `no`, `:if(…)`, and
+// anything after a nested `use lib`, which may be what finds it.
+static bool preloadableUse(const UseStmt* u) {
+    if (u->isNo || u->isImport || u->isRequire || u->ifCond || u->fileExpr || !u->fromLang.empty()) return false;
+    const std::string& m = u->module;
+    if (m.empty() || !ascii::isupper((unsigned char)m[0])) return false;
+    return m.compare(0, 6, "MONKEY") != 0 && m.compare(0, 10, "NativeCall") != 0 && m != "Rakupp::Ext";
+}
+static void routineUsesStmt(Stmt* s, bool inRoutine, std::vector<UseStmt*>& out, bool& stop);
+static void routineUsesBody(const std::vector<StmtPtr>& b, bool inRoutine, std::vector<UseStmt*>& out, bool& stop) {
+    for (auto& s : b) { if (stop) return; routineUsesStmt(s.get(), inRoutine, out, stop); }
+}
+static void routineUsesExpr(Expr* e, bool inRoutine, std::vector<UseStmt*>& out, bool& stop) {
+    if (!e || stop) return;
+    auto x = [&](Expr* c) { routineUsesExpr(c, inRoutine, out, stop); };
+    switch (e->kind) {
+        case NK::BlockExpr: { auto* b = static_cast<BlockExpr*>(e);
+            routineUsesBody(b->body, inRoutine || b->isSub || b->isMethodTerm || b->isSubmethodTerm, out, stop);
+            return; }
+        case NK::Assign: { auto* a = static_cast<Assign*>(e); x(a->target.get()); x(a->value.get()); return; }
+        case NK::Binary: { auto* b = static_cast<Binary*>(e); x(b->lhs.get()); x(b->rhs.get()); return; }
+        case NK::Unary: x(static_cast<Unary*>(e)->operand.get()); return;
+        case NK::Call: { auto* c = static_cast<Call*>(e); x(c->callee.get()); for (auto& a : c->args) x(a.get()); return; }
+        case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e);
+            x(m->inv.get()); x(m->methodExpr.get()); for (auto& a : m->args) x(a.get()); return; }
+        case NK::Index: { auto* i = static_cast<Index*>(e); x(i->base.get()); x(i->index.get()); return; }
+        case NK::Ternary: { auto* t = static_cast<Ternary*>(e); x(t->cond.get()); x(t->then.get()); x(t->els.get()); return; }
+        case NK::Range: { auto* r = static_cast<RangeExpr*>(e); x(r->from.get()); x(r->to.get()); return; }
+        case NK::Pair: { auto* p = static_cast<PairExpr*>(e); x(p->keyExpr.get()); x(p->value.get()); return; }
+        case NK::ChainExpr: for (auto& o : static_cast<ChainExpr*>(e)->operands) x(o.get()); return;
+        case NK::ListExpr:  for (auto& i : static_cast<ListExpr*>(e)->items) x(i.get()); return;
+        case NK::ArrayLit:  for (auto& i : static_cast<ArrayLit*>(e)->items) x(i.get()); return;
+        case NK::HashLit:   for (auto& i : static_cast<HashLit*>(e)->items) x(i.get()); return;
+        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) x(p.get()); return;
+        default: return;
+    }
+}
+static void routineUsesStmt(Stmt* s, bool inRoutine, std::vector<UseStmt*>& out, bool& stop) {
+    if (!s || stop) return;
+    auto x = [&](Expr* e) { routineUsesExpr(e, inRoutine, out, stop); };
+    auto body = [&](Block* b) { if (b) routineUsesBody(b->stmts, inRoutine, out, stop); };
+    switch (s->kind) {
+        case NK::UseStmt: { auto* u = static_cast<UseStmt*>(s);
+            if (u->module == "lib" && !u->isNo) { stop = true; return; }
+            if (inRoutine && preloadableUse(u)) out.push_back(u);
+            return; }
+        case NK::Block: body(static_cast<Block*>(s)); return;
+        case NK::ExprStmt: x(static_cast<ExprStmt*>(s)->e.get()); return;
+        case NK::VarDecl: x(static_cast<VarDecl*>(s)->init.get()); return;
+        case NK::ReturnStmt: x(static_cast<ReturnStmt*>(s)->value.get()); return;
+        case NK::SubDecl: routineUsesBody(static_cast<SubDecl*>(s)->body, true, out, stop); return;
+        case NK::IfStmt: { auto* f = static_cast<IfStmt*>(s);
+            for (auto& br : f->branches) { x(br.first.get()); body(br.second.get()); }
+            body(f->elseBlock.get()); return; }
+        case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s); x(w->cond.get()); body(w->body.get()); return; }
+        case NK::RepeatStmt: { auto* r = static_cast<RepeatStmt*>(s); body(r->body.get()); x(r->cond.get()); return; }
+        case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s); x(f->list.get()); body(f->body.get()); return; }
+        case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s);
+            x(l->init.get()); x(l->cond.get()); x(l->incr.get()); body(l->body.get()); return; }
+        case NK::GivenStmt: { auto* g = static_cast<GivenStmt*>(s); x(g->topic.get()); body(g->body.get()); return; }
+        case NK::WhenStmt: { auto* w = static_cast<WhenStmt*>(s); x(w->cond.get()); body(w->body.get()); return; }
+        case NK::ClassDecl: { auto* c = static_cast<ClassDecl*>(s);
+            for (auto& m : c->methods) routineUsesStmt(m.get(), true, out, stop);
+            routineUsesBody(c->body, inRoutine, out, stop); return; }
+        default: return;
+    }
+}
+void Interpreter::preloadRoutineUses(Stmt* top) {
+    std::vector<UseStmt*> uses;
+    bool stop = false;
+    routineUsesStmt(top, /*inRoutine=*/false, uses, stop);
+    for (auto* u : uses)
+        if (!loadedModules_.count(u->module) || modulesLoading_.count(u->module))   // (the latter: a cycle)
+            loadModule(u->module, {}, /*doImport=*/false, /*quiet=*/false, u->verReq);
+}
+
+// Take the loader (see loadMut_). Only parallel mode needs it: under the GIL a
+// load is never entered by two threads at once. A thread that has to WAIT and
+// holds the event workers' gil_ lets go of it meanwhile, as every other
+// blocking wait here does — the loading thread may be awaiting one of them.
+std::unique_lock<std::recursive_mutex> Interpreter::lockLoader() {
+    std::unique_lock<std::recursive_mutex> lk(loadMut_, std::defer_lock);
+    if (!parallelMode_) return lk;
+    if (lk.try_lock()) return lk;
+    if (t_holdsGil) {
+        gilYieldNotify();
+        lk.lock();
+        gilLock();
+    }
+    else lk.lock();
+    return lk;
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm, bool mergeGlobals) {
+    auto loaderLock = lockLoader();
     const std::string importer = stashUnitHere();
     {   // (the module's own declarations are ITS, whatever unit a hoisted
         // type being built asked for it — see materializePendingType)
@@ -557,7 +660,12 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                             continue;
                         }
                     }
-                    if (want && !mainlineSubNames_.count(se.key) &&
+                    // a routine is kept off a name the PROGRAM declared only
+                    // when it lands in the mainline; inside a block or routine
+                    // the import is lexical and shadows it there, as a first
+                    // load's does — unless that scope declares the name itself
+                    const bool lexicalRoutine = !se.key.empty() && se.key[0] == '&' && tctx_.cur.get() != global_.get();
+                    if (want && (lexicalRoutine ? !tctx_.cur->local(se.key) : !mainlineSubNames_.count(se.key)) &&
                         !importWouldShadowRoutine(se.key, se.value))
                         tctx_.cur->define(se.key, se.value);
                 }
@@ -1047,6 +1155,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             struct TopPop { std::vector<Env*>& v; ~TopPop() { v.pop_back(); } } topPop{moduleTopEnvs_};
             for (auto& st : prog->stmts) {
                 tctx_.endCurTopStmt = st.get();           // for a nested `use` in it
+                if (prog->mayHaveRoutineUse) preloadRoutineUses(st.get());
                 if (!isPrologue(st.get())) runInitsOnce(); // every `use` above us has run
                 if (st->kind == NK::Block && static_cast<Block*>(st.get())->initHoisted)
                     continue; // ran in runInitsOnce, ahead of this mainline
@@ -2009,6 +2118,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     CatchReg unitCatchReg{tctx_, unitCatch, &prog->stmts, tctx_.cur};
     for (auto& s : prog->stmts) {
         tctx_.endCurTopStmt = s.get();   // for a `use` in it
+        if (prog->mayHaveRoutineUse) preloadRoutineUses(s.get());
         if (s.get() == unitCatch) continue;
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
@@ -4025,6 +4135,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         }
         case NK::UseStmt: {
             auto* u = static_cast<UseStmt*>(s);
+            // the whole statement is the loader's: `use lib` edits the search
+            // path, and useExprArgs_ is handed from here to loadModule
+            auto loaderLock = lockLoader();
             // `use Foo:if(EXPR)` — a false condition makes the whole statement
             // a no-op (the ecosystem `if` dist; rakupp honors the adverb
             // natively since both of that dist's implementations are Rakudo
@@ -5322,7 +5435,17 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // During a `use` load, `is export` subs of a braced module also
                 // surface BARE to the importer (same-file code still sees only
                 // the qualified names, like Rakudo).
-                if (loadingModuleDepth_ > 0 && moduleDoImport_) {
+                // …and are recorded for the module's later `use`s, which import
+                // through moduleSelectiveExports_: without that, a load that
+                // imported nothing (`need`, or a `use` in a routine body loaded
+                // ahead of the routine — preloadRoutineUses) left a following
+                // `use` nothing to import.
+                if (loadingModuleDepth_ > 0) {
+                    const std::string unit = stashUnitHere();
+                    auto give = [&](const std::string& key, const Value& v) {
+                        if (moduleDoImport_) tctx_.cur->define(key, v);
+                        if (!unit.empty()) moduleSelectiveExports_[unit].push_back({key, v, {"DEFAULT"}});
+                    };
                     std::function<void(const std::vector<StmtPtr>&)> surface =
                         [&](const std::vector<StmtPtr>& body) {
                         for (auto& st : body) {
@@ -5330,8 +5453,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 auto* sd = static_cast<SubDecl*>(st.get());
                                 if (sd->isExport && !sd->name.empty()) {
                                     auto it = pkgEnv->vars.find("&" + sd->name);
-                                    if (it != pkgEnv->vars.end())
-                                        tctx_.cur->define(it->first, it->second);
+                                    if (it != pkgEnv->vars.end()) give(it->first, it->second);
                                 }
                             }
                             // `enum LEVEL is export <FATAL ERROR …>` inside the braced
@@ -5346,12 +5468,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 if (!ed->isExport || ed->name.empty()) continue;
                                 auto tv = pkgEnv->vars.find(ed->name);
                                 if (tv == pkgEnv->vars.end()) continue;
-                                tctx_.cur->define(ed->name, tv->second);
+                                give(ed->name, tv->second);
                                 if (tv->second.t == VT::Array && tv->second.arr())
                                     for (auto& p : *tv->second.arr()) {
                                         auto vi = pkgEnv->vars.find(p.s);
-                                        if (vi != pkgEnv->vars.end())
-                                            tctx_.cur->define(p.s, vi->second);
+                                        if (vi != pkgEnv->vars.end()) give(p.s, vi->second);
                                     }
                             }
                         }
@@ -7914,6 +8035,7 @@ int Interpreter::run(Program& prog) {
         topCatchSerial = topCatchReg.serial;
         for (auto* s : mainline) {
             tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
+            if (prog.mayHaveRoutineUse) preloadRoutineUses(s);
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
                 !static_cast<SubDecl*>(s)->isMethod) {
                 auto* sd = static_cast<SubDecl*>(s);

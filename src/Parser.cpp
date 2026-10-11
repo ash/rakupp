@@ -16284,6 +16284,7 @@ StmtPtr Parser::parseStatementImpl() {
             auto u = std::make_unique<UseStmt>();
             u->isNo = (kw == "no");
             u->isNeed = (kw == "need");
+            if (!u->isNo && routineDepth_ > 0) sawRoutineUse_ = true;
             if (!u->isNo && isKind(Tok::Ident) &&
                 (cur().text == "nqp" || cur().text == "MONKEY-GUTS" || cur().text == "MONKEY"))
                 useNqp_ = true; // enable the nqp:: op subset for the rest of the unit
@@ -17317,6 +17318,7 @@ Program Parser::parseProgram() {
     prog.typeNamesOpaque = declTypesOpaque_;
     prog.importsModules = importsModules_;
     prog.mayHaveEnd = sawEndPhaser_;
+    prog.mayHaveRoutineUse = sawRoutineUse_;
     prog.langRev = langRev_;
     prog.usesRakuAst = usesRakuAst_;
     return prog;

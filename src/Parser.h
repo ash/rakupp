@@ -339,6 +339,7 @@ private:
     bool declTypesOpaque_ = false;
     bool importsModules_ = false;   // a non-pragma `use`/`need` anywhere in the unit
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
+    bool sawRoutineUse_ = false;  // a `use`/`need` inside a routine body (Program::mayHaveRoutineUse)
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
     std::vector<std::string> lastDoesRoles_;

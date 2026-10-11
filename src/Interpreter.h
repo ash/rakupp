@@ -2983,6 +2983,16 @@ public:
     // …and the ones whose body is running right now: a `use` of one of THESE is
     // a cycle (A uses B, B uses A), which Rakudo refuses as circular loading
     std::set<std::string> modulesLoading_;
+    // The loader is one critical section. Under parallel mode two threads can
+    // reach the same `use` at once — a `use` inside a routine runs when the
+    // routine does, and `start { t() }` x 8 runs it eight times together — and
+    // the second one found the module in modulesLoading_ and reported a cycle
+    // that was only a race. Recursive, because a module's own `use`s reenter
+    // on the loading thread; that thread's modulesLoading_ is then the only one
+    // there is, so the cycle check means a cycle again. See lockLoader.
+    std::recursive_mutex loadMut_;
+    std::unique_lock<std::recursive_mutex> lockLoader();
+    void preloadRoutineUses(Stmt* top);   // load the `use`s in its routine bodies now
     int runtimeLoadDepth_ = 0;
     // A CompUnit::Repository::Installation over `prefix` (see Builtins' CUR arms)
     Value makeCuri(const std::string& name, const std::string& prefix, const Value& nextRepo = Value::any());

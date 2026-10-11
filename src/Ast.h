@@ -1344,6 +1344,10 @@ struct Program {
     // A DESERIALIZED (cached/embedded) Program keeps the conservative default
     // and is walked — one traversal per unit, and never a lost phaser.
     bool mayHaveEnd = true;
+    // …and a `use`/`need` inside a routine body, which the interpreter loads
+    // when the routine's declaration is reached rather than at its first call
+    // (Interpreter::preloadRoutineUses). Same conservative default.
+    bool mayHaveRoutineUse = true;
     // Language revision this unit was written in (0=6.c, 1=6.d, 2=6.e), from
     // its `use v6.X` pragma. A unit has exactly one — the pragma has to be the
     // first statement — so it lives here rather than on every routine node.
