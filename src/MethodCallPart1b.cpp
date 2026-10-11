@@ -1130,6 +1130,9 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         // `Blob[uint8].new(1).^name` are "Blob[uint8]" (Buf shows its [T] from
         // the element type; Blob reads its name)
         if (b.hashKind == "Blob") b.enumName = "Blob[" + b.ofType() + "]";
+        // …and `utf8.new(…)` is a utf8, as `.encode` makes one: it decodes
+        // under `.Str` and `~` (S03-operators/buf.t)
+        if (inv.s == "utf8" || inv.s == "utf16" || inv.s == "utf32") b.enumName = inv.s;
         b.s.promote();   // a native buffer needs stable, shared storage
         if (b.hashKind == "Buf") identify(b);
         return b;

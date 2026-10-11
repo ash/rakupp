@@ -1685,6 +1685,10 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
                 }
                 argV = nullptr;   // the argument never reached the slot
             }
+            // (a class's own BUILD decides what reaches the slot: an argument
+            // its signature ignores initializes nothing — `submethod BUILD() {}`
+            // with `.new(:x(5))` is still X::Attribute::Required)
+            if (argV && rc->methods.count("BUILD") && !at.def && !at.hasDefVal) argV = nullptr;
             if (argV) continue;
             // …or filled by a custom BUILD. A default of the
             // attribute's OWN does not excuse it (Rakudo: `has $.d
@@ -10898,6 +10902,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (c->name.rfind("Metamodel::", 0) == 0) howInv = true;
         if (howInv && args.size() >= 2)
             return methodCall(args[0], "does", ValueList{args[1]}, rwArgs);
+        // a user `role Numeric { }` hides the core role: a built-in value does
+        // not do the user's one (`5.does(Numeric)` is False), as with `~~`
+        if (!howInv && args[0].t == VT::Type && inv.t != VT::Object && inv.t != VT::Type &&
+            userShadowsCoreRole(args[0].s))
+            return Value::boolean(false);
         std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
         // a SUBSET answers by its constraint: `1.does(PosReal)` is True

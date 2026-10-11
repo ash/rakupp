@@ -133,27 +133,18 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   placement in unrelated files: pin its alignment so perf-guard stops seeing
   it.
 - [ ] **Run-time quadratics the scaling gate found** (2026-10-10): seven
-  common operations whose cost per call grows with the size of what they work
+  common operations whose cost per call grew with the size of what they work
   on. Each is a `known` shape in `t/scaling/run.raku`, a TAP TODO, so the gate
   stays green; take a shape's mark off when it reports linear (the summary
-  says so). Growth for 8× the size, measured 2026-10-11 (linear is about 8×):
-  - `@a.unshift` / `.prepend`, ×64 (`run/array-unshift`): each call moves
+  says so). Five are linear since 2026-10-11 (`(elem)` looks the key up,
+  `.index` with a position skips the decode, `[~]` appends into one buffer,
+  Buf `.push`/`.append` let go of the second reference before appending).
+  Left, growth for 8× the size (linear is about 8×):
+  - `@a.unshift` / `.prepend`, ×60 (`run/array-unshift`): each call moves
     every element. Next: headroom at the front of the ValueList storage.
-  - `$x (elem) $set`, ×83 (`run/set-elem`): it scans the elements where
-    `$set{$x}` and `.EXISTS-KEY` are hash lookups. Next: route `(elem)`, `∈`,
-    `∉` and `(cont)` to that lookup for the Setty and Baggy types.
-  - `.index($needle, $pos)` with a start position, ×58 (`run/str-index-walk`):
-    O(string length) per call, about 130 µs on 100 KB wherever `$pos` is,
-    where `.index($needle)` is instant. STRING-SCAN-QUADRATICS.md §5 fixed the
-    other `.index` sites; this is the position path.
-  - `$s ~~ m:c/…/` in a loop, ×57 (`run/str-match-continue`): each match pays
+  - `$s ~~ m:c/…/` in a loop, ×58 (`run/str-match-continue`): each match pays
     for the position it starts from (`match-offsets-linear.raku` covers a
     neighbouring shape).
-  - `[~] @list`, ×71 (`run/str-concat-reduce`): it folds pairwise, copying the
-    growing string at each step, where `.join` is linear. Next: a join-shaped
-    path for the `~` reduction.
-  - `Buf.push`, ×87 (`run/buf-push`), and `Buf.append`, ×68 (`run/buf-append`):
-    the cost grows with the Buf, where `~=` on a Buf is linear.
 
 ## 2. Correctness (v5 error batches)
 
@@ -194,16 +185,17 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `@w.Seq`, `@w.Slip`, `@w.values`, `@w[*]` and `|@w` (Rakudo: `$` on both).
   So `cross(|@w)` and `cross(@w)` cross one element whole and spread the
   other, where Rakudo takes both as items. `@w.List` strips them now, which
-  covered Math::NIntegrate (2026-10-09). Two more seen beside it:
-  `List(@w)` flattens to `(5, 6, 3, 4)` (Rakudo: the Array unchanged), and
-  `max`/`min` return the winner without its `$` (Rakudo: `$[5, 6]`).
+  covered Math::NIntegrate (2026-10-09). `List(@w)` is the Array unchanged
+  since 2026-10-11 (it flattened deeply).
   `.kv`, `.pairs` and `.antipairs` of an Array itemize its nested Arrays and
   Hashes since 2026-10-10 (`[[1, 2], 3].kv` is `(0, $[1, 2], 1, 3)`); the
   rest wait on the decision. Next: decide whether an Array slot always reads
   as itemized.
 - [ ] **Construction does not track which attributes BUILD initialized**:
-  `has $.x is required; submethod BUILD() {}` with `.new(:x(5))` lives
-  (Rakudo: X::Attribute::Required), and `has Int:D $.x is required;
+  `has $.x is required; submethod BUILD() {}` with `.new(:x(5))` is
+  X::Attribute::Required since 2026-10-11 (judged on what BUILD left in the
+  slot), but `submethod BUILD(:$!x) {}` with no argument still dies here where
+  Rakudo counts the bind as initializing (`C.new.x` is Any); and `has Int:D $.x is required;
   submethod BUILD(:$!x) {}` with no argument is X::Attribute::Required where
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
@@ -231,20 +223,16 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   difference is the timing of BEGIN-time side effects, not name visibility.
 - [ ] **Left from the pseudo-package-over-label fix**: a bare `OUR` is a
   type named OUR (Rakudo: the current package, so `next OUR` names
-  `GLOBAL:U`); `next Int` dies when it runs (Rakudo: while compiling);
-  `$CALLER::y` inside a loop block finds an outer variable (Rakudo: Nil;
+  `GLOBAL:U`); `$CALLER::y` inside a loop block finds an outer variable
+  (Rakudo 2026.09: "Cannot access '$y' through CALLER, because it is not
+  declared as dynamic";
   `MY::<$x>` and `&next`/`&last`/`&redo` as Subs fixed 2026-10-10). Found 2026-10-07; not
   started.
-- [ ] **An assignment statement that stores a Failure does not throw**:
-  Rakudo sinks the assignment (`$a = f();` with `f` failing throws; `my $b =
-  f()` does not). Found 2026-10-03 with the Num kernels; not started.
-  Re-check first: neither Rakudo 2026.08 nor 2026.09 throws on
-  `my $a; $a = f(); say 1` (2026-10-10), so this may be a misreading.
 - [ ] **Rakuglaze**: 3326 of 3326 pass (2026-10-09: round 6, the eleven
   failures Haiku batches 04 to 12 brought in;
   t/regression/rakuglaze-round-6.raku). Seen in round 6, not fixed: a spaced `f - 5` with `f`
-  an UNKNOWN name is still `f() - 5` (only declared subs and say/put/print/
-  note/dd take the prefix). `('A'..∞).is-lazy` is ruled True in the
+  an UNKNOWN name is still `f() - 5` (declared subs, subs declared later in
+  the file since 2026-10-11, and say/put/print/note/dd take the prefix). `('A'..∞).is-lazy` is ruled True in the
   suite (Rakudo answers False, yet treats the range as lazy everywhere else).
   Open from the write-through work: a list of an Array's elements is a copy
   that a write is MIRRORED from, so a later change to the array is not seen
@@ -274,15 +262,12 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 - [ ] **#110 constructor type checks**: the module battery gate was never run,
   for #110 or for the nominal-check fixes of 2026-10-07. Open: native width is
   not enforced; `has Array[Int]` is not checked. Seen beside those fixes:
-  multi dispatch ranks by type only between candidates that tie on every score
-  (candidateNarrowerByType), so a WIDER type carrying a `where` or a smiley
-  still beats a narrower plain one (`Numeric $x where * > 0` over `Int $x` for
-  5, `Cool:D` over `Numeric`; Rakudo ranks by type first), and two matching
-  unrelated types (Positional and Iterable for an Array) go to the first
-  declared where Rakudo reports X::Multi::Ambiguous; `hashKindIsAssociative`
-  calls every hash-backed object (Promise, Lock, Signature, IO::Handle) a
-  Hash/Map/Associative; a Seq bound to `Positional $p` stays a Seq (Rakudo's
-  binder caches it into a List); a Capture binds `Array` and `List`.
+  two matching unrelated types (Positional and Iterable for an Array) go to
+  the first declared where Rakudo reports X::Multi::Ambiguous. Multi dispatch
+  ranks a narrower type first (`Int $x` over `Numeric $x where * > 0`) since
+  2026-10-11, but only between candidates of the same positional arity with
+  no slurpy or optional parameter (sameShapeForTypeRank); other shapes still
+  let a `where` or a smiley outrank a narrower type.
 - [ ] **Supply closers on aarch64**: the three closers of the class fixed in
   925260b1 (the inner-tap closers and tapSupply's `ended` write) take the
   supplier's lock since 2026-10-10 (tapSupply leaves its key in the record,
@@ -295,19 +280,24 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   `Node` resolve right inside their own package), and nested protos under
   LTM. Seen beside them: two `use`d modules exporting the same `Node` are
   "Redeclaration of symbol 'Node'" in Rakudo; here the last one wins.
-- [ ] **Phaser order**: `temp` is restored after LEAVE; builtin callbacks
-  (`.map`) and gather bodies keep the old order. perf-guard was not run for
-  55b4f18a. Rakudo 2026.09 restores BEFORE LEAVE (2026.08 did not):
-  `my $x = 1; sub s { temp $x = 2; LEAVE say $x }; s()` says 1 there, and so
-  does a LEAVE in a `.map` block; rakupp says 2 in both (2026-10-10).
+- [ ] **Phaser order**: perf-guard was not run for 55b4f18a. `temp` is
+  restored BEFORE the LEAVE phasers since 2026-10-11, as Rakudo 2026.09 does
+  (2026.08 did not): `my $x = 1; sub s { temp $x = 2; LEAVE say $x }; s()`
+  says 1, and so does a LEAVE in a `.map` block. Not checked: gather bodies.
+  Which order to keep is a decision (below): Roast does not test it.
 - [ ] **Semantics sheets, step two**: about 11 sheets.
   [../findings/semantics/](../findings/semantics/).
 - [ ] **Divergences found in sweeps and not fixed**:
+  - A Buf copied into another variable does not see a later `.push`:
+    `my $c = Buf.new(1); my $d = $c; $c.push(2); $d` is `Buf:0x<01>` (Rakudo
+    `<01 02>`: a Buf is a reference). Its bytes are a copy-on-write string,
+    so the push copies them away from `$d`. Found 2026-10-11.
+  - `1 + (* + 1)` held in a variable is a Num here, where Rakudo dies (Numeric
+    of a WhateverCode); `"a".encode ~ "b".encode` is a Buf here and a utf8
+    in Rakudo. Found 2026-10-11 (`"a" ~ $buf` dies as Rakudo's since then).
   - `use` inside a sub loads at call time.
   - Role conflicts are undetected or reported late.
   - An exported `infix:<+++>`.
-  - `sub f($n) { 1..$n }; f(* + 1)` curries the range by value: Raku++
-    answers a WhateverCode, Rakudo a Range.
   - Outside `react`, a `Proc::Async` with `:w` feeds its stdout taps only when
     the start promise is awaited, so an interactive driver never sees a reply
     before `close-stdin` (found with #121).
@@ -327,19 +317,15 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     default — every other read gives 7, so this one is left as it is).
 - [ ] **Quote and word-list divergences left by f27fa12f and ed499880** (qq
   closures that hold the delimiter; qqw interpolating before it splits).
-  Found 2026-10-10 against Rakudo 2026.08; not started.
-  - A one-word static q-family word list is a Str here and a one-element List
-    in Rakudo: `qw[a]`, `qqw[a]`, `qww[a]`, `q:w[a]`, `Qw[a]` (`<a>` and `«a»`
-    are Str in both). An interpolated one is a List already.
+  Found 2026-10-10 against Rakudo 2026.08. Fixed 2026-10-11: a one-word
+  q-family list is a List (`qw[a]`), `qq ｢…｣` / `q "…"` after a blank,
+  `qq'a…'` as an identifier, `"X".lc("a")` an arity error.
   - A qww/qqww span holding the delimiter ends the quote: `qqww[a "b]c" d]`,
     `qww[a "b]c" d]` and `qqww｢a "b｣c"｣` are parse errors (Rakudo:
     `("a", "b]c", "d")`). The lexer's word-list scan knows no spans.
   - A negated adverb glued to the opening bracket is the delimiter here:
     `qq:!c[…]`, `qqw:!s[…]`, `qqww:!b[…]` work. Rakudo refuses them ("Argument
     not allowed on negated pair") and needs a space.
-  - `qq ｢…｣` (a blank, no adverb) is "Undefined routine 'qq'" here; Rakudo reads
-    the quote.
-  - `qq'a {1} b'` is a quote here; Rakudo reads `qq'a` as an identifier.
   - A quote word after prefix `|` is not a quote: `f |qw[a b]` is "Undefined
     routine 'qw'", `f |qqw[a $x b]` "Two terms in a row".
   - A `qq｢…｣` inside another one's closure fails (`qq｢{qq｢{"｣"}｣}｣`; Rakudo:
@@ -348,28 +334,21 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     Without the backslash feature parseInterpString has no literal brace.
   - Under `qq:!b`, `\{` still escapes the brace: `qq:!b [a \{"]"} b]` is a
     parse error (Rakudo: `a \] b`, a backslash and then a closure).
-  - `«a\ b c»` is `("ab", "c")` (Rakudo: `("a", "b", "c")`). The token reader
-    loses the backslash; qqww has it right.
+  - `«a\ b c»` is `("ab", "c")` (Rakudo: `("a", "b", "c")`). The lexer takes
+    `\ ` for an unspace, since it does not track `«…»` depth (Lexer.h would
+    need a counter, as angleWords_ is for `<…>`); qqww has it right.
   - `«/c ""»`: the empty span is `""` here and `IntStr.new(0, "")` in Rakudo.
   - `qqww{a {1+1} $x}`: Rakudo makes the nested braces words of their own
     (`"{", "1+1", "}"`); here `"{1+1}"` is one word.
-  - `"X".lc("a")` answers `x`; Rakudo dies (Too many positionals).
 - [ ] **Typed element stores left by b21ea7a6** (coercion types on every
   element store; Hash.append/push merging). Found 2026-10-11 against Rakudo
-  2026.09; not started.
-  - An op-assign into an element skips the element type check, coercion or
-    not: `my Int %h; %h<a> //= "x"` stores the Str, `my Int @a; @a[0] ~= "x"`
-    too (Rakudo: X::TypeCheck::Assignment), and `my Int() @b; @b[0] //= "3"`
-    keeps `"3"` (Rakudo: 3). Plain `=` and `++` check through
-    `lastLvalueElemType`; none of the store branches under `// compound
-    assignment` in InterpreterCore.cpp do. Each should run coerceElemValue and
-    checkElemType, and leave the element as it was on refusal.
+  2026.09. An op-assign into an element (`%h<a> //= "x"`, `@a[0] ~= "x"`)
+  checks and coerces since 2026-10-11, and `Int(Any) ~~ Int` is True.
   - A push onto a typed array names no container: "for an element of the
     container" where Rakudo says `@a` (MethodCallTail's elemCheck passes "").
   - `my Int() %h; %h<a> = Str` fails X::TypeCheck::Assignment here; Rakudo
     tries the coercion and dies X::AdHoc ("Cannot create an Int from a 'Str'
     type object"). coerceElemValue leaves an undefined value alone.
-  - `Int(Any) ~~ Int` is False here, True in Rakudo.
   - Append onto an entry bound with `:=` (`%h<a> := $x`) keeps a Hash value
     whole (`[{:x(1)}, 5]`; Rakudo `[:x(1), 5]`, and Rakudo also writes the
     merged Array through to `$x`).
@@ -618,24 +597,23 @@ with its tag, after the release run is green.
     filled with its type object, which `:exists` cannot tell from a stored
     one); a closure sequence's seed is stored before it is pulled, so
     `my @f = 1, {…} ... *; @f.join` is `1...` (Rakudo `...`; the Seq form is
-    fixed); `IO::Path.add` does not deep-flatten (methodCallPart3 is at its size
-    ceiling); an enum member named `q` does not shadow the `q{…}` quote.
+    fixed). (`IO::Path.add` flattening and an enum member named `q` answer as
+    Rakudo's, re-checked 2026-10-11.)
   - Rakudo t/ classified 2026-10-05 (145 LANG, 38 RakuAST, 5 6.e; 41 excluded).
   - Parked from the Rakudo t/ LANG work: an `anon subset` shares its name's
     entry in the one global subset table, so a later `subset Foo of Str`
     replaces what `$anon` checks (`anon enum` and the redeclaration error are
-    fixed); a nested block's
-    `constant T` does not overwrite `OUR::<T>` (the GLOBAL frame is also the
-    mainline's lexical scope); takes from the thunk of a sunk `xx *` inside a
+    fixed); takes from the thunk of a sunk `xx *` inside a
     gather; a Label's `.gist` with its source excerpt; `Format.handle-iterator`;
     an operator declared LATER in a block is not seen by uses before it
     (`$i++` then `sub postfix:<++>`); a generic `T $x is copy` does not check
     assignments against the instantiated T; a native passed to a raw (`\v`)
-    parameter or put in a Pair is not snapshotted; a compile-time error is not
-    `~~ X::Comp` (Rakudo mixes it in);
-    `.does` ignores a user role that shadows a core one; a sigilless name
-    bound to a container (`my \c := $u`, `my (\a, \b) := ($x, $y)`) is not
-    assignable through (`c = 5` leaves `$u` alone or dies), siglist-decl-rvalue.t.
+    parameter or put in a Pair is not snapshotted; sigilless names bound
+    through a list (`my (\a, \b) := ($x, $y)`) are not assignable through
+    (`a = 10` dies; `my \c := $u` works), siglist-decl-rvalue.t. (A nested
+    `constant T` and `X::Comp` on a compile-time error answer as Rakudo's,
+    re-checked 2026-10-11; `.does` against a user role that shadows a core
+    one was fixed that day.)
   - `t/02-rakudo/attribute-typeobject-default.t` SEGFAULTS (rc 139) in its last
     test, a lock-free `cas` queue fed by 4 `start`s — every run, on the 5.2.1
     build as well, so not a regression.
@@ -726,3 +704,9 @@ with its tag, after the release run is green.
   refuses `sub k { 1 } sub v { 2 }` or `if 1 { } say 2` on one line
   ("Strange text after block"); Raku++ refuses it only in an EVAL
   (`enforceStmtSep`), so files that rely on the leniency would stop compiling.
+- `temp` against LEAVE: since 2026-10-11 a `temp` is restored BEFORE the
+  block's LEAVE phasers run (runLeavePhasers' drainTempRestores), following
+  Rakudo 2026.09; Rakudo 2026.08 and Raku++ before then restored it after, so
+  a LEAVE saw the temporary value. Roast tests neither order. The old order is
+  arguably the more useful one (a LEAVE can log or clean up the temporary
+  state). Keep 2026.09's order, or go back? (section 2, "Phaser order")

@@ -993,8 +993,19 @@ static inline const std::string& aliasType(const std::string& type) {
 // Date do Dateish and nothing else. BSON::Simple's encoder tests Associative
 // BEFORE Dateish, so a DateTime was written out as a sub-document of its own
 // accessors instead of the 8-byte BSON datetime, silently and byte-wrong.
+// The same goes for the other built-ins that ride on a hash: a Promise, a
+// handle or a Signature does not do Associative either.
 static inline bool hashKindIsAssociative(const std::string& kind) {
-    return kind != "DateTime" && kind != "Date";
+    if (kind.empty()) return true;
+    static const std::unordered_set<std::string> notAssoc = {
+        "DateTime", "Date", "Promise", "Vow", "Lock", "LockCondition", "Semaphore", "Signature",
+        "Parameter", "Attribute", "IO", "FileHandle", "CatHandle", "Socket", "AsyncSocket", "Tap",
+        "Supply", "Supplier", "Channel", "Thread", "Scheduler", "Cancellation", "Proc",
+        "Proc::Async", "Duration", "Instant", "Failure", "Version", "Iterator", "Encoding",
+        "Encoder", "Decoder", "Label", "CallFrame", "BacktraceFrame", "Kernel", "VM", "Distro",
+        "Compiler", "Format", "StrDistance", "Collation", "Variable", "HyperConfiguration",
+        "Archetypes"};
+    return !notAssoc.count(kind);
 }
 
 

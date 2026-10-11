@@ -6664,6 +6664,16 @@ ExprPtr Parser::subsetTerm() {
     return u;
 }
 
+// A sub declared LATER in the file is a routine too: `say f - 5; sub f($x)
+// {…}` is f(-5). Asked of the tokens only for that shape (parsePrimary).
+static bool subDeclaredLater(const std::vector<Token>& toks, size_t from, const std::string& nm) {
+    for (size_t k = from; k + 1 < toks.size(); k++)
+        if (toks[k].kind == Tok::Ident && toks[k].text == "sub" &&
+            toks[k + 1].kind == Tok::Ident && toks[k + 1].text == nm)
+            return true;
+    return false;
+}
+
 ExprPtr Parser::parsePrimary() {
     // `&[+]` / `&[~=]` — the infix operator as a Callable term (same value as
     // `&infix:<+>`); the op may span several tokens (`**`, `~^`, `max`)
@@ -7314,7 +7324,7 @@ ExprPtr Parser::parsePrimary() {
                     while (k < m && !uniWsLen(text, k, true)) k++;
                     if (k > b) arr->items.push_back(qqwwStaticWord(text.substr(b, k - b), allomorph));
                 }
-                if (arr->items.size() == 1) {
+                if (arr->items.size() == 1 && allomorph) {
                     if (arr->items[0]->kind == NK::StrLit) static_cast<StrLit*>(arr->items[0].get())->wordQuote = true;
                     return std::move(arr->items[0]);
                 }
@@ -7448,8 +7458,8 @@ ExprPtr Parser::parsePrimary() {
                 }
             }
             if (qq) return qqwwFinish(std::move(arr), qqFlags, allomorph);
-            // a single `<word>` is that element itself, not a one-item list
-            if (arr->items.size() == 1) {
+            // a single `<word>` is that element itself (a q-family list stays a List)
+            if (arr->items.size() == 1 && (form.empty() || valAdverb)) {
                 if (arr->items[0]->kind == NK::StrLit) static_cast<StrLit*>(arr->items[0].get())->wordQuote = true;
                 return std::move(arr->items[0]);
             }
@@ -9892,11 +9902,13 @@ ExprPtr Parser::parsePrimary() {
             // (f a declared sub) as a prefix on the argument. An unknown name
             // keeps the infix reading: it may be a constant or a term a module
             // exports, which the parser cannot see.
+            // (…and so is a sub declared LATER in the file: subDeclaredLater)
             static const std::set<std::string> kIoListops = {"say", "put", "print", "note", "dd"};
             if (listopOk && cur().kind == Tok::Op &&
                 (cur().text == "+" || cur().text == "-" || cur().text == "?" || cur().text == "|") &&
                 peek(1).spaceBefore &&
-                (cur().text == "|" || !(kIoListops.count(name) || declaredSubNames_.count(name))))
+                (cur().text == "|" || !(kIoListops.count(name) || declaredSubNames_.count(name) ||
+                                        subDeclaredLater(toks_, pos_, name))))
                 listopOk = false; // `f -5` => f(-5) but `f - 5` => f() - 5; likewise `run |@x` slip
             // `1 ?? Nil !! Any` — a spaced `!!` is the ternary's else-marker, not
             // `Nil(!!Any)`, but only while a `??` at this bracket depth is still
@@ -10216,7 +10228,8 @@ void Parser::qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w
 // `qqww:v{$n}`), and otherwise — `qqww{$x}` — it stays a List.
 ExprPtr Parser::qqwwFinish(std::unique_ptr<ArrayLit> arr, const std::string& flags, bool val) {
     if (flags.find_first_not_of('l') == std::string::npos) {
-        if (arr->items.size() == 1) {
+        // (one word of a q-family list, `qqww[a]`, stays a one-item List)
+        if (arr->items.size() == 1 && val) {
             // a lone colonpair is a Pair VALUE, not a named argument: `f(«:a(1)»)`
             if (arr->items[0]->kind == NK::Pair)
                 static_cast<PairExpr*>(arr->items[0].get())->parenned = true;

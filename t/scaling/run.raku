@@ -265,8 +265,7 @@ work 'hash-iteration',   Q｢my %h = (^@N@).map({ $_ => $_ }); my $s = 0; $s += 
 work 'hash-of-arrays',   Q｢my %h; %h{$_ % 100}.push($_) for ^@N@;｣;
 work 'hash-nested',      Q｢my %h; %h{$_ % 100}{$_} = 1 for ^@N@;｣;
 work 'set-bag',          Q｢my $s = set ^@N@; my $b = bag (^@N@).map(* % 100); my $c = 0; $c++ if $s{$_} for ^@N@;｣;
-work 'set-elem',         Q｢my $s = set ^@N@; my $c = 0; $c++ if $_ (elem) $s for ^@N@;｣, :n(1000),
-     :known('`(elem)` costs O(set size) per test where `$set{$x}` is a hash lookup');
+work 'set-elem',         Q｢my $s = set ^@N@; my $c = 0; $c++ if $_ (elem) $s for ^@N@;｣, :n(1000);
 work 'set-hash',         Q｢my %s is SetHash; %s{$_} = True for ^@N@;｣;
 
 # -- run: strings
@@ -283,8 +282,7 @@ work 'str-comb',         Q｢my $c = ('ab' x @N@).comb.elems;｣, :n(50_000);
 work 'str-lines-words',  Q｢my $l = ("line\n" x @N@).lines.elems; my $w = ("w " x @N@).words.elems;｣, :n(50_000);
 work 'str-substr-scan',  Q｢my $s = 'abcdefghij' x (@N@ div 10); my $c = 0; for ^$s.chars { $c++ if $s.substr($_, 1) eq 'a' }｣;
 work 'str-substr-scan-unicode', Q｢my $s = 'é' ~ ('abcdefghij' x (@N@ div 10)); my $c = 0; for ^$s.chars { $c++ if $s.substr($_, 1) eq 'a' }｣;
-work 'str-index-walk',   Q｢my $s = 'ab' x @N@; my $p = 0; my $c = 0; while ($p = $s.index('b', $p)).defined { $c++; $p++ }｣, :n(2000),
-     :known('`.index` with a start position costs O(string length) per call; without one it does not');
+work 'str-index-walk',   Q｢my $s = 'ab' x @N@; my $p = 0; my $c = 0; while ($p = $s.index('b', $p)).defined { $c++; $p++ }｣, :n(2000);
 work 'str-ord-scan',     Q｢my $s = 'abcdefghij' x (@N@ div 10); my $c = 0; for ^$s.chars { $c += $s.substr($_, 1).ord }｣;
 work 'str-match-global', Q｢my $c = +(('ab' x @N@) ~~ m:g/b/);｣;
 work 'str-match-continue', Q｢my $s = 'ab' x @N@; my $c = 0; $c++ while $s ~~ m:c/b/;｣, :n(2000),
@@ -294,14 +292,11 @@ work 'str-trans',        Q｢my $t = ('ab' x @N@).trans('a' => 'x');｣, :n(50_0
 work 'str-sort',         Q｢my @s = (^@N@).map(*.Str).sort;｣;
 work 'str-interpolate',  Q｢my $s; for ^@N@ { $s = "a $_ b {$_ + 1}" }｣;
 work 'str-sprintf',      Q｢my $s; for ^@N@ { $s = sprintf('%05d %s', $_, 'x') }｣;
-work 'str-concat-reduce', Q｢my $s = [~] (^@N@).map(*.Str);｣, :n(2000),
-     :known('`[~]` folds pairwise, copying the growing string each step; `.join` is linear');
+work 'str-concat-reduce', Q｢my $s = [~] (^@N@).map(*.Str);｣, :n(2000);
 work 'str-encode-decode', Q｢my $s = 'aé' x @N@; my $b = $s.encode; my $t = $b.decode;｣, :n(50_000);
 work 'buf-concat',       Q｢my $c = Buf.new; $c ~= Buf.new(1, 2) for ^@N@;｣;
-work 'buf-push',         Q｢my $b = Buf.new; $b.push(1) for ^@N@;｣, :n(20_000),
-     :known('`.push` on a Buf costs more as the Buf grows (80k -> 320k pushes: 8.5x the time); `~=` does not');
-work 'buf-append',       Q｢my $c = Buf.new; $c.append(1, 2) for ^@N@;｣, :n(5000),
-     :known('`.append` on a Buf costs more as the Buf grows (20k -> 80k calls: 21x the time)');
+work 'buf-push',         Q｢my $b = Buf.new; $b.push(1) for ^@N@;｣, :n(20_000);
+work 'buf-append',       Q｢my $c = Buf.new; $c.append(1, 2) for ^@N@;｣, :n(5000);
 
 # -- run: objects, calls, control
 work 'object-new',       Q｢class P { has $.x }; my @o = (^@N@).map({ P.new(x => $_) });｣;

@@ -353,6 +353,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         throw RakuError{Value::typeObj("X::Multi::NoMatch"),
             "Cannot resolve caller " + (const std::string&)m + "(" + inv.typeName() +
             ":D); none of these signatures matches"};
+    // The case maps and the counts take the invocant alone: `"X".lc("a")` is an
+    // arity error, not a call that drops its argument.
+    if ((inv.t == VT::Str || inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat) &&
+        (m == "uc" || m == "lc" || m == "tc" || m == "tclc" || m == "fc" || m == "flip" ||
+         m == "chars" || m == "codes" || m == "ords" || m == "trim" || m == "trim-leading" ||
+         m == "trim-trailing")) {
+        size_t pos = 0;
+        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos++;
+        if (pos > 0)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Too many positionals passed; expected 1 argument but got " +
+                            std::to_string(pos + 1)};
+    }
     if (inv.t == VT::Hash && !inv.hashKind.empty()) {
         bool isSet = inv.hashKind.find("Set") == 0;
         if (m == "default") return isSet ? Value::boolean(false) : Value::integer(0);
@@ -5629,6 +5642,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (args.size() <= 1 || !args[1].isNumeric())) {
             size_t at = m == "index" ? hay.find(ndl) : hay.rfind(ndl);
             return at == std::string::npos ? Value::nil() : Value::integer((long long)at);
+        }
+        // …and with a START position in range, which a scanning loop passes on
+        // every call: no decode of the whole haystack (`run/str-index-walk`)
+        if (!icase && !imark && args.size() > 1 && args[1].isNumeric() &&
+            args[1].t != VT::Num && args[1].t != VT::Rat && args[1].t != VT::Complex &&
+            !args[1].big() &&
+            (cowHay ? cowByteIsGraphemeIndex(inv.s) : byteIsGraphemeIndex(hay)) &&
+            (cowNdl ? cowByteIsGraphemeIndex(args[0].s) : byteIsGraphemeIndex(ndl))) {
+            long long from = args[1].toInt();
+            if (from >= 0) {
+                if (from > (long long)hay.size()) return Value::nil();
+                size_t at = m == "index" ? hay.find(ndl, (size_t)from) : hay.rfind(ndl, (size_t)from);
+                return at == std::string::npos ? Value::nil() : Value::integer((long long)at);
+            }
         }
         auto cps = utf8cp(hay); auto ncps = utf8cp(ndl);
         if (icase) { for (auto& c : cps) c = toLowerCp(c); for (auto& c : ncps) c = toLowerCp(c); }

@@ -882,6 +882,8 @@ bool typeNameConforms(const std::string& lnIn, const std::string& rn,
         {"IO::Special", {"IO::Special", "IO"}},
         {"Grammar", {"Grammar", "Match", "Capture", "Cool"}},
         {"Match",   {"Match", "Capture", "Cool"}},
+        // (S02-types/sigils-and-types.t: a Capture does both)
+        {"Capture", {"Capture", "Positional", "Associative"}},
         // a synchronous socket does the IO::Socket role — but is not an IO
         {"IO::Socket::INET", {"IO::Socket::INET", "IO::Socket"}},
         // The Uni family: each normalisation form is a Uni SUBCLASS, and Uni

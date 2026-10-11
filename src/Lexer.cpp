@@ -2290,6 +2290,11 @@ bool Lexer::tryQuoteForm(Token& out) {
     // if the delims are parens'` (S05-metasyntax/regex.t), and
     // `ok ss (foo) = 'bar'` in S05-substitution/subst.t.
     if (p < src_.size() && src_[p] == '(') return false;
+    // …nor is an apostrophe that an identifier character follows: it joins the
+    // NAME, as `don't` does, so `qq'a {1} b'` is the identifier `qq'a`
+    if (p + 1 < src_.size() && src_[p] == '\'' &&
+        (ascii::isalpha((unsigned char)src_[p + 1]) || src_[p + 1] == '_'))
+        return false;
     // adverbs between keyword and delimiter, e.g. m:i/.../ , s:g/.../.../ —
     // whitespace before/between adverbs is allowed (`q :w /a b/`); a quote form
     // only commits if a delimiter follows, so a stray `q :foo` still falls back
@@ -2336,7 +2341,10 @@ bool Lexer::tryQuoteForm(Token& out) {
       // `q 'x'` stays a call to a declared `sub q`, the same reading the
       // adjacent-paren rule above gives `q('x')`, since a one-pass lexer cannot
       // know what is declared.
-      else if (ws > p && ws < src_.size() && !adverbs.empty() &&
+      // A quote form (q, qq, Q and the word lists) takes them with no adverb
+      // too, `qq ｢a｣` and `q "a"`: a declared `sub q` returned above.
+      else if (ws > p && ws < src_.size() &&
+               (!adverbs.empty() || w == "q" || w == "qq" || w == "Q" || isWords) &&
                !isRegex && !isSubst && !isTrans &&
                (src_[ws] == '\'' || src_[ws] == '"' || (unsigned char)src_[ws] >= 0x80))
           p = ws; }

@@ -939,6 +939,15 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     // LEAVE phasers stay silent, as they do when Rakudo drops the continuation.
     // (Asked only once there IS a phaser: this runs at every block exit.)
     if (!leaves.empty() && tctx_.curGather && gatherCancelling()) leaves.clear();
+    // `temp`-saved containers are restored on scope exit (reverse order), BEFORE
+    // the LEAVE blocks run, as Rakudo 2026.09 does (`temp $x = 2; LEAVE say $x`
+    // says the old value) — but only the ones THIS block pushed. A
+    // statement-modifier loop runs its body in the CALLER's env (that is how `$_`
+    // aliases without an env per iteration), so draining the whole list undid
+    // the enclosing scope's `temp` after the first iteration: `temp %h; %h{$_} =
+    // 7 for <A B>` restored over A, then wrote B into the restored container,
+    // which then leaked past the scope the temp was supposed to bound.
+    drainTempRestores(tctx_.cur.get(), tempMark);
     // A LEAVE/KEEP/UNDO phaser body runs to completion even though the block is
     // leaving via a cooperative return/next/last — those flags belong to the
     // OUTER control flow. Save and clear them around each phaser so execBlock's
@@ -1017,14 +1026,6 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
                             "Postcondition '" + r.gist() + "' failed");
         }
     }
-    // `temp`-saved containers are restored on scope exit (reverse order), after
-    // LEAVE blocks — but only the ones THIS block pushed. A statement-modifier
-    // loop runs its body in the CALLER's env (that is how `$_` aliases without an
-    // env per iteration), so draining the whole list undid the enclosing scope's
-    // `temp` after the first iteration: `temp %h; %h{$_} = 7 for <A B>` restored
-    // over A, then wrote B into the restored container, which then leaked past the
-    // scope the temp was supposed to bound.
-    drainTempRestores(tctx_.cur.get(), tempMark);
     if (leaveErrors.size() > 1) {
         Value list = Value::array(); list.isList = true;
         for (auto& le : leaveErrors) list.arr()->push_back(exceptionFor(le));
@@ -4505,6 +4506,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     p.isCopy || p.defaultVal || p.subSig || p.litVal ||
                     p.whereExpr || p.defConstraint || p.coerce ||
                     p.typeCapture ||   // `::T $x` binds the NAME T as well as $x
+                    p.type == "Positional" ||  // a Seq binds as the List it caches into
                     !p.captureName.empty() ||  // …and so does `Int ::T $x`, which is typed
 
                     (!p.type.empty() && isCoercionSubset(p.type)) || // `subset CC of Str()`: binds coerced
@@ -5061,6 +5063,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         }
         if (pi < positional.size()) {
             Value v = positional[pi++];
+            // a Seq bound to `Positional $p` is the List it caches into, as
+            // for an `@` parameter (Rakudo's PositionalBindFailover)
+            if (p.sigil == '$' && p.type == "Positional" && v.t == VT::Array && v.isList &&
+                v.s == "Seq" && !v.itemized) {
+                v.seqTouch();
+                v.s.clear();
+            }
             if (p.subSig) {
                 // the TYPE is checked before anything is unpacked: `-> Pair
                 // (:key($k), :value($v))` given a List is a binding failure on
@@ -5857,6 +5866,12 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (arg.s == "Uni" || arg.s == "NFC" || arg.s == "NFD" ||
                 arg.s == "NFKC" || arg.s == "NFKD")
                 return type == "Uni" || type == arg.s || type == "Positional" || type == "Stringy";
+            // A Capture (`\(1, 2)`) is no List and no Array (`sub f(Array $a)`
+            // refuses one), but it does Positional and Associative: Roast's
+            // S02-types/sigils-and-types.t asserts both. (Rakudo 2026.09 does
+            // neither and carries those two tests as todo.)
+            if (arg.hashKind == "Capture")
+                return type == "Capture" || type == "Positional" || type == "Associative";
             // A NATIVE array (`my uint64 @a`, `array[uint8]`) IS an `array`, and
             // is NOT an Array or a List — Rakudo's native array is its own type,
             // Positional and Iterable and Cool but nothing in the Array family.
@@ -7210,6 +7225,26 @@ static bool candidateNarrowerByType(Interpreter& I, const Value& cand, const Val
     }
     return narrower && !wider;
 }
+// Two candidates whose positionals line up one to one: the same count, and no
+// slurpy or capture on either side.
+static bool sameShapeForTypeRank(const Value& a, const Value& b) {
+    const Callable* ca = a.code();
+    const Callable* cb = b.code();
+    if (!ca || !cb || !ca->params || !cb->params) return false;
+    auto count = [](const Callable* c, size_t& n) {
+        n = 0;
+        for (auto& p : *c->params) {
+            if (p.invocant) continue;
+            if (p.slurpy || p.sigil == '|') return false;
+            if (p.named) continue;
+            if (p.optional || p.defaultVal) return false;
+            n++;
+        }
+        return true;
+    };
+    size_t na, nb;
+    return count(ca, na) && count(cb, nb) && na == nb && na > 0;
+}
 // Whether `cand` (scored s, vec) takes the call from the best so far: a better
 // score, a tie by every score that the narrower TYPE breaks, or the `is default`
 // and `is rw` tie rules — which never take a call from a better or a narrower
@@ -7217,7 +7252,17 @@ static bool candidateNarrowerByType(Interpreter& I, const Value& cand, const Val
 static bool candidateBeats(Interpreter& I, const Value& cand, const std::vector<int>& vec, int s, bool candRw,
                            const Value* best, const std::vector<int>& bestVec, int bestScore, bool bestRw) {
     if (s < 0) return false;
-    if (!best || betterCandidate(vec, s, bestVec, bestScore)) return true;
+    if (!best) return true;
+    // TYPE first, as Rakudo sorts its candidates: a strictly narrower nominal
+    // type wins over a wider one that carries a `where` or a smiley —
+    // `multi m(Numeric $x where * > 0)` loses 5 to `multi m(Int $x)`, and
+    // `(Cool:D $x)` to `(Numeric $x)`. Only for two candidates of the same
+    // positional arity with no slurpy, where the comparison is per parameter.
+    if (sameShapeForTypeRank(cand, *best)) {
+        if (candidateNarrowerByType(I, cand, *best)) return true;
+        if (candidateNarrowerByType(I, *best, cand)) return false;
+    }
+    if (betterCandidate(vec, s, bestVec, bestScore)) return true;
     if (s == bestScore && vec == bestVec && candidateNarrowerByType(I, cand, *best)) return true;
     const bool tieRule = (cand.code() && cand.code()->isDefaultCand && best->code() && !best->code()->isDefaultCand) ||
                          (candRw && !bestRw);
@@ -12659,6 +12704,20 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
     return true;
 }
 
+// The element an OP= into a typed container refused, as Rakudo names it:
+// `@a[0]`, `%h{'a'}`. An index that is not a literal or a variable would
+// have to run a second time, so that keeps the container's bare name.
+static std::string opAssignElemName(Interpreter& I, Index* ix) {
+    std::string base = containerNameOf(ix->base.get(), ix->isHash ? '%' : '@');
+    if (!ix->index || ix->multiDim || base.empty() || (base[0] != '@' && base[0] != '%')) return base;
+    NK k = ix->index->kind;
+    if (k != NK::IntLit && k != NK::StrLit && k != NK::VarExpr) return base;
+    Value iv = I.eval(ix->index.get());
+    if (iv.t == VT::Array || iv.t == VT::Range || iv.t == VT::Hash) return base;
+    if (ix->isHash) return base + "{'" + iv.toStr() + "'}";
+    return base + "[" + iv.toStr() + "]";
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my $m = ($c, 2)` / `$l := (…)` / `my \l = (…)` keep the List, which holds
     // its items' containers (keepListContainers)
@@ -16882,7 +16941,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                           (ix->index->kind == NK::VarExpr || ix->index->kind == NK::StrLit ||
                            ix->index->kind == NK::IntLit);
             }
+            // a TYPED container's element (`my Int %h; %h<a> //= "x"`) checks
+            // and coerces what the assignment stores, as `=` does
+            std::string scElemWant;
+            const bool scElem = a->target->kind == NK::Index;
+            if (scElem) tctx_.lastLvalueElemType.clear();
             if (!deferLv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
+            if (scElem) { scElemWant = tctx_.lastLvalueElemType; tctx_.lastLvalueElemType.clear(); }
             Value cur = lv ? *lv : eval(a->target.get());
             bool keep = scOr ? cur.truthy() : scAnd ? !cur.truthy()
                       : scAt ? !topicDefined(cur) : topicDefined(cur);
@@ -16894,8 +16959,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto itemize = [&](Value v) { if (scalarTarget && (v.t == VT::Array || v.t == VT::Hash)) v.itemized = true; return v; };
             if (keep) return sink ? Value::any() : itemize(cur);
             Value rhs = eval(a->value.get());
-            if (!lv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
+            if (!lv) {
+                if (scElem) tctx_.lastLvalueElemType.clear();
+                try { lv = lvalue(a->target.get()); } catch (RakuError&) {}
+                if (scElem) { scElemWant = tctx_.lastLvalueElemType; tctx_.lastLvalueElemType.clear(); }
+            }
             if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
+            if (!scElemWant.empty() && rhs.t != VT::Nil) {
+                auto* ixt = static_cast<Index*>(a->target.get());
+                coerceElemValue(*this, scElemWant, rhs);
+                checkElemType(scElemWant, rhs, opAssignElemName(*this, ixt));
+            }
             int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
             // an `@` or `%` container ASSIGNS what it is given, as `=` does:
             // `state @colors ||= <green yellow>` holds a mutable Array (Cro's
@@ -16957,8 +17031,24 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     g_lvAttrSigil = 0;
     const bool opElemTarget = a->target->kind == NK::Index;
-    if (opElemTarget) tctx_.viewMirrorArr.reset();
+    if (opElemTarget) { tctx_.viewMirrorArr.reset(); tctx_.lastLvalueElemType.clear(); }
     Value* lv = lvalue(a->target.get());
+    // a TYPED container's element checks (and coerces) what OP= leaves in it,
+    // and keeps what it held when that is refused: `my Int @a; @a[0] ~= "x"`
+    std::string opElemWant;
+    if (opElemTarget) { opElemWant = tctx_.lastLvalueElemType; tctx_.lastLvalueElemType.clear(); }
+    Value opElemPrev;
+    if (!opElemWant.empty()) opElemPrev = *lv;
+    auto opDone = [&]() -> Value {
+        if (!opElemWant.empty() && lv->t != VT::Nil) {
+            auto* ixt = static_cast<Index*>(a->target.get());
+            try {
+                coerceElemValue(*this, opElemWant, *lv);
+                checkElemType(opElemWant, *lv, opAssignElemName(*this, ixt));
+            } catch (...) { *lv = opElemPrev; throw; }
+        }
+        return sink ? Value::any() : *lv;
+    };
     ViewMirrorWrite opViewMirror;   // (a write through a list of an Array's elements: see ElemView)
     if (opElemTarget && tctx_.viewMirrorArr) {
         opViewMirror.arr = std::move(tctx_.viewMirrorArr);
@@ -17061,7 +17151,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             else              for (auto& e : es) e = rs.back();
         }
         else if (!rs.empty()) *lv = rs.back();
-        return sink ? Value::any() : *lv;
+        return opDone();
     }
     // `$a Z+= 2` / `@a Z~= <x y>` — the zip of an ASSIGNMENT operator applies
     // `OP=` to each left-hand CONTAINER in turn (a scalar is one container,
@@ -17096,7 +17186,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // index cannot run twice. Issue #85.
     if (binop == ",") {
         rtCommaAssign(*lv, rhs);
-        return sink ? Value::any() : *lv;
+        return opDone();
     }
     // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
     // auto-generates OP= from OP), falling back to the built-in operator.
@@ -17135,7 +17225,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (!overloaded && binop == "~" && (lv->t == VT::Object || rhs.t == VT::Object)) {
         const std::string lt = strInStrContext(*lv);
         *lv = Value::str(nfcConcat(lt, strInStrContext(rhs), nfcKnown(*lv), nfcKnown(rhs)));
-        return sink ? Value::any() : *lv;
+        return opDone();
     }
     // `$s ~= $n` with a plain Int: its decimal text is ASCII, so it appends in
     // place like an ASCII Str below. Through applyBinOp every append copied the
@@ -17143,7 +17233,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (!overloaded && binop == "~" && lv->t == VT::Str && lv->hashKind.empty() && rhs.t == VT::Int &&
         !rhs.x_ && rhs.pk_ == PK::None && rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() && !rhs.natBits) {
         lv->s.appendAscii(std::to_string(rhs.i));
-        return sink ? Value::any() : *lv;
+        return opDone();
     }
     // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
     // string each step. Appending PURE-ASCII text can never change the NFC form of
@@ -17162,21 +17252,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             lv->hashKind = "Buf";
             identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
             if (lv->ofType().empty()) lv->ofTypeM() = rhs.ofType();
-            return sink ? Value::any() : *lv;
+            return opDone();
         }
         bool asciiRhs = true;
         for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
         if (asciiRhs) lv->s.appendAscii(rhs.s.str());
         else if (lv->hashKind.empty() && rhs.hashKind.empty()) nfcAppendCow(lv->s, rhs.s);
         else lv->s = nfcNormalize(lv->s + rhs.s);   // (a Buf on one side: its bytes are not text)
-        return sink ? Value::any() : *lv;
+        return opDone();
     }
     if (!overloaded && !subsets_.empty() && a->target->kind == NK::VarExpr &&
         !subsetTypeOfVar(static_cast<VarExpr*>(a->target.get())->name).empty()) {
         Value nv = applyBinOp(binop, *lv, rhs);  // checked BEFORE the store
         subsetMutationCheck(a->target.get(), nv);
         *lv = nv;
-        return sink ? Value::any() : *lv;
+        return opDone();
     }
     if (!overloaded) {
         // an `@` container LIST-assigns the result: `@a += 10` holds [11]
@@ -17217,7 +17307,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     if (nb) nativeCompoundStore(*lv, before, nb, ns, nf, a->target.get(),
                                 compoundSrcNative(binop, rhs, a->value.get(), nf));
-    return sink ? Value::any() : *lv;
+    return opDone();
 }
 bool isSetOpStr(const std::string& o) {
     static const std::set<std::string> ops = {
@@ -18948,6 +19038,18 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             out.ofTypeM() = l.ofType().empty() ? r.ofType() : l.ofType();
             return identify(out);
         }
+        // …and a Buf meeting a STRING has no string form to join: `"a" ~ $buf` is
+        // X::Buf::AsStr, as `.Str` is (a utf8 decodes, as its `.Str` does)
+        {
+            auto rawBuf = [](const Value& v) {
+                return v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf") &&
+                       v.enumName != "utf8" && v.enumName != "utf16" && v.enumName != "utf32";
+            };
+            if (rawBuf(l) != rawBuf(r))
+                throw RakuError{Value::typeObj("X::Buf::AsStr"),
+                    "Stringification of a Buf is not done with 'Stringy', which the '~'\n"
+                    "operator uses. The 'decode' method should be used to convert a Buf to a\nStr."};
+        }
         // an undefined operand stringifies to "", with Rakudo's warning (`Any ~
         // $x` is $x) — except IterationEnd, which is a sentinel with a real name.
         // A written `~` names the operand before it gets here (evalBinary);
@@ -19733,6 +19835,30 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // `$x ~~ Foo:D` is the type test AND a definedness test
             if (r.i == 1 && !isDefinite(l)) return Value::boolean(!opEq(op, "~~"));
             if (r.i == 2 && isDefinite(l))  return Value::boolean(!opEq(op, "~~"));
+            // A COERCION type `T(S)` (`Int()` is `Int(Any)`) conforms as its
+            // target, `Int(Any) ~~ Int`, and as a matcher accepts what either
+            // its target or its source type accepts: `"3" ~~ Int(Str)`.
+            {
+                auto coercionParts = [](const Value& t, std::string& tgt, std::string& src) {
+                    if (t.t != VT::Type || !t.ofType().empty()) return false;
+                    const std::string& s = t.s;
+                    size_t p = s.find('(');
+                    if (p == std::string::npos || p == 0 || s.back() != ')') return false;
+                    tgt = s.substr(0, p);
+                    src = s.substr(p + 1, s.size() - p - 2);
+                    if (src.empty()) src = "Any";
+                    return true;
+                };
+                std::string tgt, src;
+                if (coercionParts(l, tgt, src) && l.s != r.s)
+                    return applyArithGeneral(op, Value::typeObj(tgt), r);
+                if (coercionParts(r, tgt, src)) {
+                    if (l.t == VT::Type && l.s == r.s) return Value::boolean(opEq(op, "~~"));
+                    bool cres = applyArithGeneral("~~", l, Value::typeObj(tgt)).truthy() ||
+                                applyArithGeneral("~~", l, Value::typeObj(src)).truthy();
+                    return Value::boolean(opEq(op, "~~") ? cres : !cres);
+                }
+            }
             // A SUBSET's type object conforms as its base type: `UInt ~~ Int`
             // and `(subset Pos of Int where * > 0) ~~ Int` are True. Red maps a
             // column's SQL type by dispatching on the attribute's type object,
@@ -19818,7 +19944,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (!res) {
                 // (a Seq is Iterable, but no Positional: `(1, 2).map(*) ~~ Positional`
                 // is False on Rakudo, though its binder takes one for `@a`)
-                if (l.t == VT::Array &&
+                if (l.t == VT::Array && l.hashKind == "Capture")
+                    res = r.s == "Positional" || r.s == "Associative";   // (see typeMatchesArg)
+                else if (l.t == VT::Array &&
                     (r.s == "Iterable" ||
                      (r.s == "Positional" && !(l.isList && (l.s == "Seq" || l.s == "HyperSeq" ||
                                                             l.s == "RaceSeq")))))
@@ -26050,13 +26178,22 @@ Value Interpreter::evalCall(Call* c) {
              c->name == "Bag" || c->name == "Mix" || c->name == "SetHash" ||
              c->name == "BagHash" || c->name == "MixHash") && !args.empty()) {
             if (c->name == "Array" || c->name == "List") {
-                Value out = Value::array();
-                out.isList = (c->name == "List");
-                for (auto& v : args) {
-                    if ((v.t == VT::Array || v.t == VT::Range) && !v.itemized)
-                        for (auto& x : v.flatten()) out.arr()->push_back(x);
-                    else out.arr()->push_back(v);
+                // ONE argument is coerced, `List(x)` being `x.List`: a List (an
+                // Array is one) comes back as it is, nested Arrays and all, and
+                // `Array(@a)` is `@a` itself. Several arguments are the list.
+                bool isArr = c->name == "Array";
+                if (args.size() == 1 && !(args[0].t == VT::Pair && args[0].namedArg)) {
+                    const Value& v = args[0];
+                    bool seqLike = v.t == VT::Array && v.isList &&
+                                   (v.s == "Seq" || v.s == "HyperSeq" || v.s == "RaceSeq");
+                    if (v.t == VT::Array && v.arr() && !seqLike && (isArr ? !v.isList : true))
+                        return v;
+                    if (v.t == VT::Array || v.t == VT::Range || v.t == VT::Hash)
+                        return methodCall(v, c->name, ValueList{});
                 }
+                Value out = Value::array();
+                out.isList = !isArr;
+                for (auto& v : args) out.arr()->push_back(v);
                 return out;
             }
             ValueList flat;
@@ -29060,29 +29197,37 @@ struct RatLitParts {
             Value from = eval(r->from.get());
             Value to = eval(r->to.get());
             // a WhateverCODE endpoint curries the whole range: `1..*-1` is a
-            // WhateverCode (bare `1..*` stays an infinite Range)
+            // WhateverCode (bare `1..*` stays an infinite Range). Currying is
+            // SYNTAX: a WhateverCode a variable, a call or a subscript hands
+            // over is an endpoint value (`sub f($n) { 1..$n }; f(* + 1)`).
             {
                 auto isWC = [](const Value& v) {
                     return v.t == VT::Code && v.code() && v.code()->isWhateverCode;
                 };
-                if (isWC(from) || isWC(to)) {
+                auto valueNode = [](const Expr* x) {
+                    return x && (x->kind == NK::VarExpr || x->kind == NK::Call ||
+                                 x->kind == NK::Index || x->kind == NK::NameTerm);
+                };
+                const bool cF = isWC(from) && !valueNode(r->from.get());
+                const bool cT = isWC(to) && !valueNode(r->to.get());
+                if (cF || cT) {
                     Value f2 = from, t2 = to;
                     bool exF = r->exFrom, exT = r->exTo;
                     Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                     code.code()->isWhateverCode = true;
-                    long long ar = (isWC(from) ? std::max(1LL, from.code()->whateverArity) : 0)
-                                 + (isWC(to)   ? std::max(1LL, to.code()->whateverArity)   : 0);
+                    long long ar = (cF ? std::max(1LL, from.code()->whateverArity) : 0)
+                                 + (cT ? std::max(1LL, to.code()->whateverArity)   : 0);
                     code.code()->whateverArity = ar ? ar : 1;
-                    code.code()->builtin = [f2, t2, exF, exT, isWC](Interpreter& I, ValueList& as) -> Value {
+                    code.code()->builtin = [f2, t2, exF, exT, cF, cT](Interpreter& I, ValueList& as) -> Value {
                         size_t k = 0;
-                        auto feed = [&](const Value& side) -> Value {
-                            if (!isWC(side)) return side;
+                        auto feed = [&](const Value& side, bool curried) -> Value {
+                            if (!curried) return side;
                             long long n = std::max(1LL, side.code()->whateverArity);
                             ValueList sub;
                             for (long long j = 0; j < n && k < as.size(); j++) sub.push_back(as[k++]);
                             return I.callCallable(side, std::move(sub));
                         };
-                        Value lo = feed(f2), hi = feed(t2);
+                        Value lo = feed(f2, cF), hi = feed(t2, cT);
                         // a bare `*` on the other side stays UNBOUNDED: `*-2..*` is
                         // `{ $_ - 2 .. Inf }`, the LLONG extreme marking an endless
                         // range as the plain `1..*` below does. .toInt() of a
@@ -31530,6 +31675,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         Value* lvp = nullptr;                       // a temporary `Buf.new.push(…)`
         try { lvp = lvalue(mc->inv.get()); } catch (RakuError&) {}   // has none: the copy below
         if (Value* lv = lvp) {
+            // `inv` is a second reference to these bytes: let go of it first, or
+            // the append copies the whole Buf every time (`run/buf-push`)
+            inv = Value();
             if (front) lv->s = add + lv->s; else lv->s += add;
             return *lv;
         }

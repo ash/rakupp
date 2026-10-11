@@ -2982,6 +2982,24 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     if (op == "(^)" || op == "\xE2\x8A\x96") return setSymDiffN(items);
     if (isSetOpStr(op) && !isSetPredicateStr(op))
         if (auto j = setOpFoldN(op, items)) return *j;   // one joint tier over every operand
+    // `[~]` over plain strings appends into ONE buffer, as `~=` does: folding
+    // pairwise copied the growing string at each step (`run/str-concat-reduce`)
+    if (op == "~" && items.size() > 2 && !lexShadowPossible(op)) {
+        bool plain = true;
+        for (auto& it : items)
+            if (it.t != VT::Str || !it.hashKind.empty() || it.isAllomorph() || it.itemized) { plain = false; break; }
+        if (plain) {
+            Value acc = Value::str(items[0].s);
+            for (size_t k = 1; k < items.size(); k++) {
+                const CowStr& r = items[k].s;
+                bool ascii = true;
+                for (unsigned char c : r) if (c >= 0x80) { ascii = false; break; }
+                if (ascii) acc.s.appendAscii(r.str());
+                else nfcAppendCow(acc.s, r);
+            }
+            return acc;
+        }
+    }
     Value acc = items[0];
     for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
     return acc;

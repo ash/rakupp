@@ -2881,6 +2881,20 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
         auto elemMatches = [&](const Value& el) { return whichOf(el) == want; };
         if (hay.t == VT::Hash && hay.hash()) {
             bool setK = settyTier(hay) == 0 && !hay.hashKind.empty();
+            // A Set, Bag or Mix keys each element by baggyKeyStr, so the one
+            // entry that can hold the needle is found by that key, not by a
+            // walk of every element (the scaling gate's `run/set-elem`).
+            const std::string& hk = hay.hashKind;
+            if (!hay.objKeyed && hay.ofType().find(',') == std::string::npos &&
+                (hk.compare(0, 3, "Set") == 0 || hk.compare(0, 3, "Bag") == 0 ||
+                 hk.compare(0, 3, "Mix") == 0)) {
+                auto it = hay.hash()->find(baggyKeyStr(needle));
+                if (it == hay.hash()->end()) return false;
+                double w = setK ? (it->second.truthy() ? 1.0 : 0.0) : it->second.toNum();
+                if (w == 0) return false;
+                Value el = it->second.elemKey() ? *it->second.elemKey() : Value::str(it->first);
+                return elemMatches(el);
+            }
             for (auto& kv : *hay.hash()) {
                 double w = hay.hashKind.empty() || setK ? (kv.second.truthy() ? 1.0 : 0.0)
                                                         : kv.second.toNum();
