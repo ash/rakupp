@@ -1976,7 +1976,7 @@ sub human-bytes(Int() $n) {
 # of the store and shrinks here: the sweep asks it which blobs are still
 # referenced, so a second removal in the same run sees the first one gone.
 sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
-               Bool :$force, Bool :$for-reinstall) {
+               Bool :$force, Bool :$for-reinstall, Bool :$dry) {
     my $p = $prefix.IO;
     my $identity = "{%meta<name>}:ver<{%meta<version> // ''}>:auth<{%meta<auth> // ''}>";
 
@@ -2015,6 +2015,17 @@ sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
             trace("uninstall refused: $identity has dependents ({@dependents.unique.join(', ')})");
             return False;
         }
+    }
+
+    # --dry-run: every refusal above has had its say, so what is printed is
+    # what a real run would do; the store itself is not touched. %dists still
+    # forgets the dist, so a later name in the same run sees it gone, as it
+    # would for real.
+    if $dry {
+        %dists{$dist-id}:delete;
+        say "would uninstall $identity (--dry-run: nothing removed)";   # a report: -q keeps it
+        trace("uninstall dry-run: $identity ($dist-id)");
+        return True;
     }
 
     with-repo-lock($prefix, {
@@ -2077,8 +2088,9 @@ sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
 # installed DEPENDENTS do not block (a removal would strand them; a reinstall
 # restores what they depend on), and foreign PROVENANCE downgrades to a
 # warning — the replacement becomes rakupp-owned, and the warning says so.
-sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
-    trace("uninstall: {@names.join(' ')} from $prefix" ~ ($for-reinstall ?? ' (for reinstall)' !! ''));
+sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall, Bool :$dry) {
+    trace("uninstall: {@names.join(' ')} from $prefix" ~ ($for-reinstall ?? ' (for reinstall)' !! '')
+          ~ ($dry ?? ' (dry run)' !! ''));
     my $p = $prefix.IO;
     unless $p.add('dist').d {
         if $for-reinstall {
@@ -2132,7 +2144,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall) {
             !! Order::Same
         }) -> $hit {
             $rc = 1 unless remove-one($prefix, $hit.key, $hit.value, %dists,
-                                      :$force, :$for-reinstall);
+                                      :$force, :$for-reinstall, :$dry);
         }
     }
     $rc
@@ -2369,10 +2381,10 @@ sub MAIN(
     });
     if $uninstall {
         unless @modules {
-            note "usage: rakupp uninstall [--force] Module ...";
+            note "usage: rakupp uninstall [--dry-run] [--force] Module ...";
             exit 2;
         }
-        exit do-uninstall(@removal-names, $to, :force($force // False));
+        exit do-uninstall(@removal-names, $to, :force($force // False), :dry($dry-run // False));
     }
     if $reinstall {
         unless @modules {
@@ -2380,7 +2392,10 @@ sub MAIN(
             exit 2;
         }
         # the uninstall half; the normal install flow below is the other half
-        my $rc = do-uninstall(@removal-names, $to, :force($force // False), :for-reinstall);
+        # with --dry-run the removal is only reported, and the install flow
+        # below stops at its plan, so a dry reinstall writes nothing either
+        my $rc = do-uninstall(@removal-names, $to, :force($force // False), :for-reinstall,
+                              :dry($dry-run // False));
         exit $rc if $rc != 0;
     }
     if $refresh && !@modules {
@@ -2412,8 +2427,8 @@ sub MAIN(
                    rakupp install https://host/Foo-1.0.tar.gz
                    rakupp install --list | --check | --gc | --refresh
                    rakupp test Module|Path ... run the dists' own suites; installs only their deps
-                   rakupp uninstall [--force] Module|Path ...
-                   rakupp reinstall [--no-test] [--force] Module|Path ...
+                   rakupp uninstall [--dry-run] [--force] Module|Path ...
+                   rakupp reinstall [--dry-run] [--no-test] [--force] Module|Path ...
             options:
               --dry-run        resolve and print the plan; write nothing
               --list           what is installed in the target store: identity,

@@ -1013,6 +1013,7 @@ rakupp test Foo                  # build + run Foo's own suite; installs its
                                  # deps, never Foo — the measurement command
 rakupp uninstall Foo             # remove what THIS installer put there —
                                  # every installed version behind the name
+rakupp uninstall --dry-run Foo   # what that would remove, and nothing removed
 rakupp reinstall Foo             # uninstall + install fresh, one command
 rakupp install --list            # what is installed: identity, installer,
                                  # module files, bin wrappers (-q: identities)
