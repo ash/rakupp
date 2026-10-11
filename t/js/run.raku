@@ -142,6 +142,27 @@ if !@args {
     else { say "ok - the use JS interop goldens hold under $host" }
 }
 
+# --- `use`d modules -----------------------------------------------------------
+# Each program in t/js/modules is compiled with `-I t/js/modules/lib`, and run
+# under the host and the interpreter with the same path: the modules it uses
+# are compiled into it, so the two must agree like any corpus program.
+my @module-bad;
+if !@args {
+    my $dir = $ROOT.add('t/js/modules');
+    my $lib = $dir.add('lib').absolute;
+    for $dir.dir.grep({ .extension eq 'raku' }).sort(*.Str) -> $f {
+        my $js = $tmp.add($f.basename.subst(/\.raku$/, '.js'));
+        my $tr = run $rakupp.Str, '--target=js', '--standalone', '-q', '-I', $lib, $f.Str, '-o', $js.Str, :out, :err;
+        if $tr.exitcode != 0 { @module-bad.push("{$f.basename}: transpile failed — " ~ ($tr.err.slurp(:close).lines.first // '')); next }
+        my ($xj, $oj, $ej) = run-capped($host, $js.Str);
+        my ($xi, $oi, $ei) = run-capped($rakupp.Str, '-I', $lib, $f.Str);
+        @module-bad.push("{$f.basename}: exit $xi vs $xj, " ~ ($oi eq $oj ?? 'same stdout' !! 'stdout differs') ~ ($ej ?? "; js stderr: {$ej.lines.first}" !! ''))
+            unless $xj == $xi && $oj eq $oi && $ej eq $ei;
+    }
+    if @module-bad { say "not ok - modules: " ~ @module-bad.join('; '); $bad++ }
+    else { say "ok - programs that use modules agree under $host" }
+}
+
 my $n = @files.elems - @skipped.elems;
 my $refused = %refused.values.map(*.elems).sum;
 say "";

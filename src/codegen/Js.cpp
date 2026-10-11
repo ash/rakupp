@@ -71,7 +71,10 @@ string mangleBody(const string& s) {
 string mangleVar(const string& name) {
     if (name == "$/") return "v__slash";
     if (name == "$!") return "v__bang";
-    if (name.size() <= 1 || name.find('\x01') != string::npos) return "_anon";   // `my $;` — declared with `var` (redeclarable), never referenced
+    // `my $;` — a bare sigil: declared with `var` (redeclarable), never referenced.
+    // Only a SIGIL alone: `constant N = 512` is a one-letter name, and mangling
+    // it to _anon made every one-letter constant in a scope the same variable.
+    if (name.empty() || (name.size() == 1 && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) || name.find('\x01') != string::npos) return "_anon";
     char sigil = (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) ? name[0] : 0;
     string body = sigil ? name.substr(1) : name;
     const char* pre = sigil == '@' ? "a_" : sigil == '%' ? "h_" : sigil == '&' ? "c_" : "v_";
@@ -107,7 +110,7 @@ string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsSt
 const std::set<string> kBuiltins = {
     "item", "decont", "bindArray", "iterTopic", "parametric",
     "opFn", "react", "supplyBlock", "whenever", "emit", "done", "sleepP", "allo", "val", "module", "exportFn", "exportType", "exportMain", "boolOf", "isMatch", "isRegex", "smartmatchWith", "attrSet", "isFailure", "substMutate", "withDefault", "__radix", "__radix-list", "__qqww",
-    "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt",
+    "say", "print", "put", "note", "printf", "dd", "exit", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "cbrt", "cis",
     "log", "log2", "log10", "atan2", "floor", "ceiling", "truncate", "round", "sign", "is-prime", "expmod", "polymod", "rand", "srand", "min", "max", "sum",
     "elems", "end", "join", "reverse", "sort", "map", "grep", "first", "unique", "keys", "values", "kv", "pairs", "push", "append", "pop", "shift", "unshift",
     "prepend", "splice", "zip", "roundrobin", "head", "tail", "defined", "item", "flat", "pick", "roll", "categorize", "classify", "reduce", "produce",
@@ -119,13 +122,13 @@ const std::set<string> kBuiltins = {
 };
 // Names the runtime answers as type objects (R.T.<name>).
 const std::set<string> kCoreTypes = {
-    "Supply", "Supplier", "Supplier::Preserving", "Channel", "Tap", "Vow",
+    "Supply", "Supplier", "Supplier::Preserving", "Channel", "Tap", "Vow", "Lock",
     "Mu", "Any", "Cool", "Numeric", "Real", "Int", "Num", "Rational", "Rat", "FatRat", "Str", "Bool", "Nil", "Positional", "Iterable", "List", "Array", "Seq", "Slip",
     "Range", "Associative", "Map", "Hash", "Pair", "Callable", "Code", "Block", "Routine", "Sub", "Method", "Whatever", "WhateverCode", "Exception", "X::AdHoc",
     "Failure", "Junction", "Order", "Setty", "Set", "SetHash", "Baggy", "Bag", "BagHash", "Mixy", "Mix", "MixHash", "Complex", "IO", "IO::Path", "IO::Handle",
     "Stringy", "Version", "Date", "DateTime", "Instant", "Match", "Regex", "Capture", "Signature", "IterationEnd", "Int:D", "Str:D", "Promise", "PromiseStatus",
 };
-const std::set<string> kLaterTypes = { "Lock", "Thread", "Proc", "Proc::Async", "IO::Socket::INET", "IO::Socket::Async", "Semaphore", "Lock::Async", "Scheduler", "ThreadPoolScheduler", "atomicint" };
+const std::set<string> kLaterTypes = { "Thread", "Proc", "Proc::Async", "IO::Socket::INET", "IO::Socket::Async", "Semaphore", "Lock::Async", "Scheduler", "ThreadPoolScheduler", "atomicint" };
 const std::map<string, string> kBinOps = {
     {"+", "add"}, {"-", "sub"}, {"*", "mul"}, {"/", "div"}, {"%", "mod"}, {"**", "pow"}, {"div", "idiv"}, {"mod", "imod"}, {"gcd", "gcd"}, {"lcm", "lcm"},
     {"~", "concat"}, {"x", "xrepeat"}, {"==", "numeq"}, {"!=", "numne"}, {"<", "lt"}, {"<=", "le"}, {">", "gt"}, {">=", "ge"},
@@ -336,7 +339,163 @@ struct JsGen {
     bool jsInterop = false;              // `use JS` seen: the JS term and JS::Object are live
     string ret(const string& v) { return sinkVar.empty() ? "return " + v + ";" : sinkVar + ".push(" + v + ");"; }
 
-    JsGen(Program& p, const JsOptions& o) : opt(o), prog(p) {}
+    JsGen(Program& p, const JsOptions& o, std::vector<JsModuleUnit>* m = nullptr) : opt(o), prog(p), mods(m) {}
+
+    // ---------------------------------------------------------------- modules --
+    // The modules the program `use`s (see JsModuleUnit), compiled ahead of it.
+    // Each becomes a function scope of its own; what it exports is bound outside.
+    std::vector<JsModuleUnit>* mods;
+    std::set<string> bundled;                  // their names: a `use` of one is satisfied
+    std::map<string, string> qualifiedVars;    // `Pkg::NAME` / `$Pkg::x` → the outer JS binding
+    struct ModOut { std::vector<std::pair<string, string>> exports; };   // key in the module's answer → outer name
+    std::vector<ModOut> modOut;
+    std::set<string> moduleSubs;               // every sub a module declares, by its final name
+    void forEachNode(Node* n, const std::function<void(Node*)>& f) { if (!n) return; f(n); forEachChild(n, [&](Node* c) { forEachNode(c, f); }); }
+
+    // Before the prepass: give each module's private subs names of their own,
+    // resolve `Pkg::name` calls to the sub they name, and record what each
+    // module answers. The emitter's tables are keyed by sub name across the
+    // whole output, so two modules' `sub helper` would otherwise merge into one
+    // multi; a `my` variable needs no renaming, since the module's function
+    // scope holds it.
+    void prepareModules() {
+        if (!mods) return;
+        std::map<string, string> subAlias;     // Pkg::name → final sub name
+        int k = 0;
+        for (auto& mu : *mods) {
+            k++;
+            bundled.insert(mu.name);
+            modOut.emplace_back();
+            auto& stmts = mu.prog.stmts;
+            // the names a `sub EXPORT` hands out ('&name' => &name) are exported,
+            // and the sub itself is the loader's business: it is not emitted
+            std::set<string> exportNames;
+            for (size_t i = 0; i < stmts.size(); i++) {
+                if (stmts[i]->kind != NK::SubDecl || static_cast<SubDecl*>(stmts[i].get())->name != "EXPORT") continue;
+                forEachNode(stmts[i].get(), [&](Node* x) {
+                    auto take = [&](const string& v) { if (v.size() > 1 && v[0] == '&') exportNames.insert(v.substr(1)); };
+                    if (x->kind == NK::StrLit) take(static_cast<StrLit*>(x)->v);
+                    if (x->kind == NK::Pair) take(static_cast<PairExpr*>(x)->key);   // '&name' => &name: the key rides on the pair
+                });
+                stmts.erase(stmts.begin() + i); i--;
+            }
+            // the declarations at module level, with the package each sits in
+            struct SubAt { SubDecl* d; string pkg; string orig; };
+            std::vector<SubAt> declSubs;
+            std::vector<std::pair<VarExpr*, string>> declVars;
+            std::vector<string> types;
+            std::function<void(std::vector<StmtPtr>&, string)> scan = [&](std::vector<StmtPtr>& ss, string pkg) {
+                for (auto& sp : ss) {
+                    Stmt* st = sp.get();
+                    if (st->kind == NK::SubDecl) { auto* d = static_cast<SubDecl*>(st); if (!d->name.empty() && !d->isMethod && !d->isSubmethod) declSubs.push_back({ d, pkg, d->name }); continue; }
+                    if (st->kind == NK::ClassDecl) {
+                        auto* c = static_cast<ClassDecl*>(st);
+                        if (c->isPackage && !c->bracedBody) { pkg = c->name; continue; }   // `unit module P;`: the rest of the file is P
+                        if (!c->isPackage && !c->name.empty()) types.push_back(c->name);
+                        scan(c->body, c->name);
+                        continue;
+                    }
+                    if (st->kind == NK::EnumDecl) { auto* e = static_cast<EnumDecl*>(st); if (!e->name.empty()) types.push_back(e->name); continue; }
+                    if (st->kind == NK::SubsetDecl) { types.push_back(static_cast<SubsetDecl*>(st)->name); continue; }
+                    if (st->kind == NK::ExprStmt) {
+                        Expr* e = static_cast<ExprStmt*>(st)->e.get();
+                        if (e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                        if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); if (v->declare && (v->declScope == "our" || v->declScope == "constant") && !pkg.empty()) declVars.push_back({ v, pkg }); }
+                    }
+                }
+            };
+            scan(stmts, "");
+            // a `&name` parameter anywhere in the module keeps a sub of that
+            // name from being renamed: its uses could not be told apart
+            std::set<string> codeParams;
+            for (auto& sp : stmts) forEachNode(sp.get(), [&](Node* x) {
+                auto add = [&](const std::vector<Param>& ps) { for (auto& p : ps) if (p.name.size() > 1 && p.name[0] == '&') codeParams.insert(p.name.substr(1)); };
+                if (x->kind == NK::SubDecl) add(static_cast<SubDecl*>(x)->params);
+                if (x->kind == NK::BlockExpr) add(static_cast<BlockExpr*>(x)->params);
+            });
+            std::map<string, string> rename;
+            for (auto& sa : declSubs) {
+                const string& n = sa.d->name;
+                bool exported = sa.d->isExport || exportNames.count(n) || n == "MAIN" || codeParams.count(n);
+                if (!exported && !rename.count(n)) rename[n] = n + "__M" + std::to_string(k);
+            }
+            if (!rename.empty()) for (auto& sp : stmts) forEachNode(sp.get(), [&](Node* x) {
+                if (x->kind == NK::Call) { auto* c = static_cast<Call*>(x); if (!c->callee) { auto r = rename.find(c->name); if (r != rename.end()) c->name = r->second; } }
+                else if (x->kind == NK::NameTerm) { auto* t = static_cast<NameTerm*>(x); auto r = rename.find(t->name); if (r != rename.end()) t->name = r->second; }
+                else if (x->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(x); if (v->name.size() > 1 && v->name[0] == '&') { auto r = rename.find(v->name.substr(1)); if (r != rename.end()) v->name = "&" + r->second; } }
+                else if (x->kind == NK::SubDecl) { auto* d = static_cast<SubDecl*>(x); if (!d->isMethod && !d->isSubmethod) { auto r = rename.find(d->name); if (r != rename.end()) d->name = r->second; } }
+            });
+            // what the module answers: every sub (a private one under its own
+            // name, which nothing outside can spell), every type, and its
+            // packages' `our` variables and constants
+            std::set<string> seen;
+            for (auto& sa : declSubs) {
+                const string& fin = sa.d->name;
+                if (!seen.insert("&" + fin).second) continue;
+                moduleSubs.insert(fin);
+                modOut.back().exports.push_back({ mangleSub(fin), mangleSub(fin) });
+                if (!sa.pkg.empty()) subAlias[sa.pkg + "::" + sa.orig] = fin;
+            }
+            for (auto& t : types) if (seen.insert("::" + t).second) modOut.back().exports.push_back({ mangleType(t), mangleType(t) });
+            int qi = 0;
+            for (auto& dv : declVars) {
+                const string& n = dv.first->name;
+                bool sigilled = !n.empty() && (n[0] == '$' || n[0] == '@' || n[0] == '%' || n[0] == '&');
+                string key = sigilled ? string(1, n[0]) + dv.second + "::" + n.substr(1) : dv.second + "::" + n;
+                string outer = "q_m" + std::to_string(k) + "_" + std::to_string(++qi);
+                qualifiedVars[key] = outer;
+                modOut.back().exports.push_back({ mangleVar(n), outer });
+            }
+        }
+        // `Pkg::name(…)` in any module or the program: the sub it names
+        if (subAlias.empty()) return;
+        auto fix = [&](std::vector<StmtPtr>& ss) {
+            for (auto& sp : ss) forEachNode(sp.get(), [&](Node* x) {
+                if (x->kind == NK::Call) { auto* c = static_cast<Call*>(x); if (!c->callee) { auto r = subAlias.find(c->name); if (r != subAlias.end()) c->name = r->second; } }
+                else if (x->kind == NK::NameTerm) { auto* t = static_cast<NameTerm*>(x); auto r = subAlias.find(t->name); if (r != subAlias.end()) t->name = r->second; }
+                else if (x->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(x); if (v->name.size() > 1 && v->name[0] == '&') { auto r = subAlias.find(v->name.substr(1)); if (r != subAlias.end()) v->name = "&" + r->second; } }
+            });
+        };
+        for (auto& mu : *mods) fix(mu.prog.stmts);
+        fix(prog.stmts);
+    }
+
+    // Each module as a function run in place, then its answer bound outside:
+    //     const __m1 = (() => { …the module… return { u_dwt: u_dwt, … }; })();
+    //     const u_dwt = __m1.u_dwt;
+    // A name the program declares itself is not bound: the program's own wins.
+    void emitModules(int ind) {
+        if (!mods) return;
+        std::set<string> programSubs;
+        for (auto& sp : prog.stmts) if (sp->kind == NK::SubDecl) programSubs.insert(mangleSub(static_cast<SubDecl*>(sp.get())->name));
+        std::set<string> bound;
+        for (size_t i = 0; i < mods->size(); i++) {
+            auto& mu = (*mods)[i];
+            string var = "__m" + std::to_string(i + 1);
+            bool aw = stmtsAwait(mu.prog.stmts);
+            string body;
+            try {
+                body = fnBody(false, [&]() {
+                    line(ind + 1, "let v___0 = R.Any;");
+                    topics.push_back("v___0");
+                    emitStmts(mu.prog.stmts, ind + 1, false);
+                    topics.pop_back();
+                    string table;
+                    for (auto& e : modOut[i].exports) table += (table.empty() ? "" : ", ") + jsStr(e.first) + ": " + e.first;
+                    line(ind + 1, "return { " + table + " };");
+                }, ind + 1);
+            } catch (const CodegenError& e) {
+                throw CodegenError{e.msg + " in module " + mu.name};
+            }
+            line(ind, "const " + var + " = " + (aw ? "await (async () => {" : "(() => {"));
+            out << body;
+            line(ind, "})();");
+            for (auto& e : modOut[i].exports) {
+                if (programSubs.count(e.second) || !bound.insert(e.second).second) continue;
+                line(ind, "const " + e.second + " = " + var + "[" + jsStr(e.first) + "];");
+            }
+        }
+    }
 
     // -- output plumbing --
     // every JS line carries the Raku line of the statement it came from as a trailing
@@ -383,6 +542,7 @@ struct JsGen {
     string varRef(VarExpr* v) {
         const string& n = v->name;
         if (n == "$_") return topic();
+        { auto q = qualifiedVars.find(n); if (q != qualifiedVars.end()) return q->second; }   // $Pkg::x of a module
         if (n == "$!") { fn().usesBang = true; return "v__bang"; }
         if (n == "$\xC2\xA2") { if (!fn().slashParam) return "R.Nil"; fn().usesSlash = true; return "v__slash"; }   // $¢: the cursor inside regex code, gone outside
         if (n == "$/") { fn().usesSlash = true; return "v__slash"; }
@@ -395,6 +555,10 @@ struct JsGen {
         if (n.size() > 2 && n[1] == '*') {
             static const std::set<string> core = { "@*ARGS", "%*ENV", "$*PROGRAM-NAME", "$*PROGRAM", "$*CWD", "$*IN", "$*OUT", "$*ERR", "$*EXECUTABLE", "$*EXECUTABLE-NAME", "$*PID", "$*TMPDIR", "$*HOME", "$*USER", "$*RAKU", "$*PERL", "$*VM", "$*KERNEL", "$*DISTRO", "$*USAGE", "$*INIT-INSTANT", "$*COLLATION", "$*SCHEDULER", "$*THREAD", "$*DEFAULT-READ-ELEMS", "$*REPO", "$*DISTRIBUTION" };
             if (n == "$*EXECUTABLE" || n == "$*EXECUTABLE-NAME") refuse("a program that runs the rakupp executable (" + n + ")", v->line);
+            // one thread, so there is no answer a threaded program could rely on;
+            // since `Lock` compiles (a lock has nothing to exclude), this is where
+            // a program written for threads is turned away
+            if (n == "$*THREAD") refuse("threads ($*THREAD)", v->line);
             if (core.count(n)) return "R.dynVar(" + jsStr(n) + ")";
             return "R.dynGet(" + jsStr(n) + ")";
         }
@@ -518,6 +682,9 @@ struct JsGen {
                 Expr* op = static_cast<Unary*>(e)->operand.get();
                 if (op->kind == NK::VarExpr && static_cast<VarExpr*>(op)->name[0] == '%') { hashSpread = true; hashSpreadExpr = ex(op); continue; }
                 if (!pos.empty()) pos += ", ";
+                // `.map(|*)`: not a flattened argument but a WhateverCode that
+                // slips what it is given — `{ |$_ }`
+                if (op->kind == NK::Whatever && !static_cast<WhateverExpr*>(op)->hyper) { pos += "R.wc(((_w1) => R.slip(_w1)), 1)"; continue; }
                 pos += "...R.spreadArgs(" + exCurry(op) + ")";
                 continue;
             }
@@ -716,6 +883,7 @@ struct JsGen {
             return "R.smiley(" + nameTerm(&base) + ", " + std::to_string(n->defConstraint) + ")";
         }
         if (sigillessVisible(name)) return mangleVar(name);   // a `\x` variable shadows any term
+        { auto q = qualifiedVars.find(name); if (q != qualifiedVars.end()) return q->second; }   // Pkg::CONSTANT of a module
         if (jsInterop && name == "JS") return "R.JS";
         if (jsInterop && name == "JS::Object") return "R.JsObjectT";
         if (name == "True") return "true";
@@ -894,9 +1062,20 @@ struct JsGen {
         return lvExpr(lv, lv.set(binop(bop, lv.get, exArg(a->value.get()), a->line)));
     }
     // ($a, $b) = ... / my ($a, @rest) = ...
+    // A nested target, `($a, ($b, $c)) = …`, is not handled here: Rakudo flattens
+    // the left side of an assignment (and destructures only in a `my (…)`
+    // declaration), the interpreter destructures both, and lvalue() refuses it.
     string listAssign(ListExpr* l, Expr* value) {
+        // One term on the right is iterated even when it is an item, as in
+        // Rakudo: `my ($a, $b) = $pair` and `my ($h, $v, $d) = @bands[1]` both
+        // unpack. (listSource keeps an item whole, which is what `for $x` wants.)
+        if (value->kind != NK::ListExpr && isItemized(value)) return listAssignFrom(l, "R.arr(R.decont(" + exArg(value) + "))");
+        return listAssignFrom(l, "R.arr(" + listSource(value) + ")");
+    }
+    // …from a JS array expression
+    string listAssignFrom(ListExpr* l, const string& src) {
         string arr = tmp();
-        string r = "(" + arr + " = R.arr(" + listSource(value) + ")";
+        string r = "(" + arr + " = " + src;
         size_t i = 0;
         for (auto& it : l->items) {
             Expr* t = it.get();
@@ -1448,6 +1627,8 @@ struct JsGen {
         if (!m->methodQual.empty()) refuse("a qualified method call (.Class::method)", m->line);
         if (m->methodExpr) return "R.mcDyn(" + ex(m->inv.get()) + ", " + exArg(m->methodExpr.get()) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         string name = m->method;
+        // a directory or file watch: no host here has one the program could wait on
+        if (name == "watch") refuse("watching a path (.watch)", m->line);
         if (name == "raku" && !m->mutate && !m->hyper && m->args.empty()) {   // an itemized value renders as $(…)
             Expr* iv = m->inv.get();
             if (iv ? isItemized(iv) : (!topics.empty() && itemTopics.count(topics.back()))) return "R.mc(R.item(" + (iv ? exArg(iv) : topic()) + "), \"raku\")";
@@ -1860,6 +2041,7 @@ struct JsGen {
         // `use js` is the spelling; `use JS` is kept working because the
         // showcases and the interop goldens were written with it.
         if (m == "js" || m == "JS") { jsInterop = true; return; }
+        if (bundled.count(m)) return;   // compiled ahead of the program (emitModules)
         refuse("use " + m, u->line);
     }
     void exprStmt(ExprStmt* es, int ind, bool tail) {
@@ -2397,6 +2579,9 @@ struct JsGen {
                 else line(ind, "let " + n + " = " + (q.sigil == '@' ? (q.isCopy ? "R.newArray(" : "R.bindArray(") + v + ")" : q.sigil == '%' ? "R.newHash(" + v + ")" : v) + ";");
                 if (!q.subSig && itemParam(q)) line(ind, n + " = R.item(" + n + ");");
             }
+            // `(($a, ($b, $c)))`: an unnamed sub-signature unpacks its element
+            // in place — Math::Wavelet's idwt2 takes `($cA, ($cH, $cV, $cD))`
+            else if (q.subSig) bindSubSig(*q.subSig, arr + "[" + std::to_string(i) + "] ?? R.Any", ind);
             i++;
         }
     }
@@ -2587,8 +2772,20 @@ struct JsGen {
         string jsName = name.empty() ? "c__anon" + std::to_string(++labelN) : mangleType(name);
         string savedClass = curClass; curClass = name;
         // class-body statements (`my $count`, `constant`, a sub the methods share):
-        // emitted here, in the enclosing scope, which is what the methods close over
-        if (!c->body.empty()) emitStmts(c->body, ind, false);
+        // emitted here, in the enclosing scope, which is what the methods close over.
+        // Their subs and sigilless names go into the enclosing scope as well:
+        // emitStmts scopes them to the body, and the methods are emitted after it.
+        if (!c->body.empty()) {
+            for (auto& b : c->body) {
+                if (b->kind == NK::SubDecl) { auto* d = static_cast<SubDecl*>(b.get()); if (!d->name.empty() && !d->isMethod && !d->isSubmethod && !scopes.empty()) scopes.back().subs.insert(d->name); }
+                if (b->kind == NK::ExprStmt) {
+                    Expr* e = static_cast<ExprStmt*>(b.get())->e.get();
+                    if (e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
+                    if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); if (v->declare && !v->name.empty() && v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%' && v->name[0] != '&') declareSigilless(v->name); }
+                }
+            }
+            emitStmts(c->body, ind, false);
+        }
         string parents, roles;
         auto addParent = [&](const string& pn, bool asRole) {
             string ref = (classNames.count(pn) ? mangleType(pn) : typeObj(pn, c->line));
@@ -2793,13 +2990,18 @@ struct JsGen {
             if (n->kind == NK::BlockExpr) sigless(static_cast<BlockExpr*>(n)->params);
             if (n->kind == NK::ForStmt) sigless(static_cast<ForStmt*>(n)->params);
             if (n->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(n)->names) if (nm.size() > 1 && nm[0] == '&') codeVars.insert(nm.substr(1));
+            // a class BODY is an ordinary lexical scope — `sub helper` there is
+            // a sub the methods call — and only the methods are the class's
+            if (n->kind == NK::ClassDecl && !inClass) for (auto& b : static_cast<ClassDecl*>(n)->body) walk(b.get(), false);
             forEachChild(n, [&](Node* c) { walk(c, inClass || n->kind == NK::ClassDecl); });
         };
+        if (mods) for (auto& mu : *mods) for (auto& s : mu.prog.stmts) walk(s.get(), false);
         for (auto& s : prog.stmts) walk(s.get(), false);
         for (auto& kv : subs) if (kv.second.isMulti) { bool anyMulti = false; for (auto* d : kv.second.cands) if (d->isMulti) anyMulti = true; if (!anyMulti) kv.second.isMulti = false; }
         // colouring, to a fixpoint: a routine awaits directly, or calls one that does
         std::vector<SubDecl*> methods;
         std::function<void(Node*)> collect = [&](Node* n) { if (!n) return; if (n->kind == NK::ClassDecl) for (auto& m : static_cast<ClassDecl*>(n)->methods) methods.push_back(m.get()); forEachChild(n, collect); };
+        if (mods) for (auto& mu : *mods) for (auto& s : mu.prog.stmts) collect(s.get());
         for (auto& s : prog.stmts) collect(s.get());
         for (bool changed = true; changed;) {
             changed = false;
@@ -2810,12 +3012,18 @@ struct JsGen {
     bool mainAsync = false;
     string program() {
         usesChannel = opt.srcText.find("Channel") != string::npos;
+        prepareModules();
         prepass();
         mainAsync = stmtsAwait(prog.stmts);
+        if (mods) for (auto& mu : *mods) if (stmtsAwait(mu.prog.stmts)) mainAsync = true;
+        // the modules' subs are visible everywhere after them, as their
+        // `use` makes them; the scope stays for the whole program
+        if (mods) { scopes.emplace_back(); scopes.back().subs = moduleSubs; }
         fns.emplace_back();
         fn().isRoutine = false;
         string body = capture([&]() {
             line(1, "let v___0 = R.Any;");
+            emitModules(1);
             topics.push_back("v___0");
             emitStmts(prog.stmts, 1, false);
             topics.pop_back();
@@ -2945,8 +3153,8 @@ static std::string sourceMapJson(const std::vector<int>& srcLines, const std::st
     }
     return "{\"version\":3,\"file\":" + jsonStr(file) + ",\"sources\":[" + jsonStr(srcName) + "],\"sourcesContent\":[" + jsonStr(srcText) + "],\"names\":[],\"mappings\":\"" + mappings + "\"}\n";
 }
-std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts, std::string* map) {
-    JsGen g(prog, opt);
+std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts, std::string* map, std::vector<JsModuleUnit>* modules) {
+    JsGen g(prog, opt, modules && !modules->empty() ? modules : nullptr);
     string body = g.program();
     if (dts && opt.module) {
         std::ostringstream d;

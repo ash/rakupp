@@ -404,7 +404,7 @@ Two different questions hide under one word.
 
 ### Can a program that `use`s a module be transpiled?
 
-Not today. Two files — an ordinary module and an ordinary program that uses it:
+Yes. Two files — an ordinary module and an ordinary program that uses it:
 
 ```raku
 # lib/Stats.rakumod
@@ -430,36 +430,41 @@ sub MAIN(*@n) {
 }
 ```
 
-It runs under the interpreter:
+It runs under the interpreter, and the JavaScript backend compiles the module
+into the program:
 
 ```bash
 rakupp report.raku 3 1 4 1 5 9 2 6     # mean=3.875 median=3.5
-```
-
-…and is refused by the JavaScript backend:
-
-```bash
 rakupp --target=js report.raku -o report.js
+bun report.js 3 1 4 1 5 9 2 6          # mean=3.875 median=3.5
 ```
 
-```
-note: a `use`d module (Stats) — outside the JavaScript core; --fallback=wasm runs it on the WebAssembly engine instead
-```
+The module is found the way the interpreter finds it: `use lib`, `-I`,
+`RAKULIB`, or an installed distribution. Every module the program uses,
+and every module those use, goes into the one output.
 
-The way around it is the one the browser showcases use: **concatenate the module
-into the program** and transpile the result. Drop the `unit module` line and the
-`use` lines, and the rest is ordinary Raku:
+**How a module is compiled.** Each one becomes a function scope of its own,
+run in dependency order ahead of the program. Its `my` variables and private
+subs stay inside that scope, so two modules can each have a `sub helper`.
+What it exports is bound where the program and the modules after it can see
+it:
 
-```bash
-{ grep -vE '^\s*unit\s+module' lib/Stats.rakumod
-  grep -vE '^\s*use\s+(lib|Stats)\b' report.raku ; } > bundle.raku
-rakupp --target=js bundle.raku -o bundle.js
-bun bundle.js 3 1 4 1 5 9 2 6          # mean=3.875 median=3.5
-```
+- its `is export` subs, and the names a `sub EXPORT` hands out
+  (`'&name' => &name`);
+- its packages' `our` subs and constants, by their full name:
+  `Stats::helper()`, `Stats::LIMIT`;
+- every class, role, grammar, enum and subset it declares.
 
-`showcase/eclipse/tools/build.raku` is the same three steps written properly —
-bundle, transpile, inline into a page — and `showcase/fourier` and
-`showcase/orbits` reuse it verbatim.
+Two differences from the interpreter are worth knowing. An export is visible to
+the whole program, not only to the scopes that `use` its module, so a program
+that calls a sub its own `use`s did not import still compiles. The interpreter
+refuses it, so `--verify` catches it. And a module is held to the same core
+as the program: one construct outside it, anywhere in any module, refuses the
+whole build, and the note names the module.
+
+Math::Wavelet compiles this way, with its 106 filter tables, as a whole: the
+discrete, stationary and 2-D transforms, and the continuous one. Its four
+examples pass `--verify`.
 
 ### Can a Raku module be compiled *into* a JavaScript module?
 

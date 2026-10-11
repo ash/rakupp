@@ -99,11 +99,11 @@ function defClass(name, spec) {
     // accessors for public attributes (a user method of the same name wins)
     for (const a of ty.attrs) {
         if (a.pub && !ty.methods[a.name]) {
-            const key = 'a_' + a.name;
+            const key = attrKey(a.name);
             ty.methods[a.name] = a.rw ? accessorRw(key) : function (self) { return self[key]; };
         }
         for (let i = 0; i < (a.handles ? a.handles.length : 0); i++) {
-            const mname = a.handles[i], target = (a.handlesTo && a.handlesTo[i]) || mname, key = 'a_' + a.name;
+            const mname = a.handles[i], target = (a.handlesTo && a.handlesTo[i]) || mname, key = attrKey(a.name);
             ty.methods[mname] = function (self, ...args) { return mc(self[key], target, ...args); };
         }
     }
@@ -153,6 +153,7 @@ function buildObj(ty, ...args) {
         if (ty === SupplierT) return new RSupplier(false);
         if (ty === SupplierPreservingT) return new RSupplier(true);
         if (ty === ChannelT) return new RChannel();
+        if (ty === LockT) return new RLock();
         if (ty === T.Any || ty === T.Mu) return new RObj(defClass(null, { parents: [T.Any] }));
         if (ty === T.Capture) { const [pos, named] = splitArgs(args); return new RCapture(pos, new Map(named)); }
         if (ty === T.Date || ty === T.DateTime) return dateNew(ty, args);
@@ -165,7 +166,7 @@ function buildObj(ty, ...args) {
     const used = new Set();
     const buildM = ty.findUser('BUILD');
     for (const a of ty.allAttrs()) {
-        const key = 'a_' + a.name;
+        const key = attrKey(a.name);
         let v;
         if ((a.pub || a.built) && named.has(a.name)) { v = named.get(a.name); used.add(a.name); }
         else if (a.def) v = a.def(o);
@@ -190,7 +191,7 @@ function cloneObj(o, ...args) {
         const [, named] = splitArgs(args);
         const c = new RObj(o.ty);
         for (const k of Object.keys(o)) if (k !== 'ty') c[k] = o[k];
-        for (const [k, v] of named) c['a_' + k] = v;
+        for (const [k, v] of named) c[attrKey(k)] = v;
         return c;
     }
     if (o instanceof RList) return new RList(o.a.slice(), o.ty);
@@ -215,10 +216,15 @@ function attrSet(o, name, v) {
         if (a.coerce) v = coerce(T[a.type], v);
         else if (!isa(v, a.type)) throw new RakuError(`Type check failed in assignment to $!${name}; expected ${a.type} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment');
     }
-    o['a_' + mangleAttr(name)] = v;
+    o[attrKey(name)] = v;
     return v;
 }
 // the emitter's key for an attribute name: `-` and other non-identifier bytes are escaped as _xx
+// The property an attribute lives in: the emitter's spelling (`$!dec-lo` is
+// `self.a_dec_2dlo`), so every reader and writer — construction, accessors,
+// clone, .raku, eqv, handles — must use this one, never the raw name.
+const ATTR_KEYS = new Map();
+function attrKey(n) { let k = ATTR_KEYS.get(n); if (k === undefined) { k = 'a_' + mangleAttr(n); ATTR_KEYS.set(n, k); } return k; }
 function mangleAttr(n) { let o = ''; for (const ch of n) o += /[A-Za-z0-9]/.test(ch) ? ch : Array.from(new TextEncoder().encode(ch), b => '_' + b.toString(16).padStart(2, '0')).join(''); return o; }
 
 // --- named arguments -----------------------------------------------------------

@@ -165,8 +165,10 @@ build/rakupp showcase/eclipse/tools/build.raku
 Three steps, and the middle one is why this showcase exists:
 
 1. **bundle** — `lib/Eclipse.rakumod` and `web/api.raku` are concatenated into
-   `build/engine.raku`, with `use` and `unit module` stripped, because
-   `--target=js` takes a single file.
+   `build/engine.raku`, with `use` and `unit module` stripped. That was
+   needed when `--target=js` took a single file; since 2026-10-11 it compiles
+   a `use`d module into the program itself, and the step is kept only
+   because the build works.
 2. **transpile** — `rakupp --target=js --standalone build/engine.raku -o
    web/engine.js`. 690 lines of Raku become 425 KB of JavaScript with the
    runtime inlined: classes, `Rat` arithmetic, `sprintf`, hash slices, `%h<…>`,

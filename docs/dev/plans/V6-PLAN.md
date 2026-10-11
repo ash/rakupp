@@ -371,10 +371,11 @@ A feature rather than a speed item, planned here so that it ships with v6.
 - **Threads do not run.** `start { 42 }; await $p` spins at 100% CPU on the
   July build, so a module that starts threads cannot work there. Re-check
   this at HEAD.
-- **`--target=js` refuses a `use`d module** and exits 5
-  ([main.cpp](../../../src/main.cpp), `compileJs`). The `--fallback=wasm`
-  wrapper carries only the main program's source, so the module is missing
-  there as well.
+- **`--target=js` compiles a `use`d module into the program** since
+  2026-10-11 ([main.cpp](../../../src/main.cpp), `jsModuleUnits`; each module
+  a function scope of its own, see docs/guide/JS-TUTORIAL.md). The
+  `--fallback=wasm` wrapper still carries only the main program's source, so
+  a module is missing there.
 
 **The engine surface.** Every item is small.
 

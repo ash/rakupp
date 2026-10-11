@@ -373,6 +373,7 @@ function typeOf(v) {
             if (v instanceof RSupply) return SupplyT;
             if (v instanceof RSupplier) return v.supply.preserving ? SupplierPreservingT : SupplierT;
             if (v instanceof RChannel) return ChannelT;
+            if (v instanceof RLock) return LockT;
             if (v instanceof RTap) return TapT;
             if (v instanceof RVow) return VowT;
             if (v instanceof RWhatever) return T.Whatever;
@@ -992,7 +993,7 @@ function listGistOf(items, open, close) {
 // the default object gist is its .raku: derived class's attributes first, values as .raku
 function objGist(o) {
     const parts = [];
-    for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(o['a_' + a.name]));
+    for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(o[attrKey(a.name)]));
     return o.ty.name + '.new' + (parts.length ? '(' + parts.join(', ') + ')' : '');
 }
 // .raku
@@ -1024,7 +1025,7 @@ R"RKJS(        case 'object':
             if (v instanceof RObj) {
                 const m = v.ty.findUser('raku'); if (m) return str(m(v));
                 const parts = [];
-                for (const a of v.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(v['a_' + a.name]));
+                for (const a of v.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(v[attrKey(a.name)]));
                 return v.ty.name + '.new(' + parts.join(', ') + ')';
             }
             if (v instanceof RJunction) return junctionRaku(v);
@@ -1132,7 +1133,7 @@ function eqv(a, b) {
     if (a instanceof RRange && b instanceof RRange) return eqv(a.from, b.from) && eqv(a.to, b.to) && a.exFrom === b.exFrom && a.exTo === b.exTo;
     if (a instanceof RObj && b instanceof RObj) {
         if (a.ty !== b.ty) return false;
-        for (const at of a.ty.allAttrs()) if (!eqv(a['a_' + at.name], b['a_' + at.name])) return false;
+        for (const at of a.ty.allAttrs()) if (!eqv(a[attrKey(at.name)], b[attrKey(at.name)])) return false;
         return true;
     }
     if (a instanceof RSetty && b instanceof RSetty) return a.eqv(b);
@@ -1821,10 +1822,12 @@ class RHash {
         const ps = this.sortedPairs(); const parts = [];
         for (let i = 0; i < ps.length && i < 100; i++) parts.push(pairGist(ps[i]));
         if (ps.length > 100) parts.push('...');
+        if (this.ty === T.Map) return 'Map.new((' + parts.join(', ') + '))';
         return '{' + parts.join(', ') + '}';
     }
     raku() {   // a hash's values live in scalar containers: an Array or Hash value renders as $[…] / ${…}
         const ps = this.sortedPairs();
+        if (this.ty === T.Map) return 'Map.new((' + ps.map(pairRaku).join(',') + '))';
         return '{' + ps.map(p => ((p.v instanceof RList && p.v.ty !== T.Slip) || p.v instanceof RHash) ? pairRaku(new RPair(p.k, new RakuItem(p.v))) : pairRaku(p)).join(', ') + '}';
     }
     [Symbol.iterator]() { return this.pairs()[Symbol.iterator](); }
@@ -1851,6 +1854,7 @@ function hget(h, k) {
 }
 function hset(h, k, v) {
     if (h instanceof RHash) {
+        if (h.ty === T.Map) throw new RakuError(h.m.has(hashKey(k)) ? `Cannot modify an immutable Map` : `Cannot add key '${hashKey(k)}' to an immutable Map`);
         if (v instanceof RSlip) v = mkArray(v.a.slice());
         if (v === Nil || h.of) v = checkOf(h, v);
         if (typeof k !== 'string') {
@@ -2048,19 +2052,21 @@ function assignArray(a, src) {
 }
 function newArray(src) { return assignArray(mkArray([]), src === undefined ? [] : src); }
 function newHash(src) { return src === undefined ? new RHash() : assignHash(new RHash(), src); }
+// `.Map`: the same pairs, in a hash that refuses to change (hset)
+function newMap(src) { const h = newHash(src); h.ty = T.Map; return h; }
 // flat: recursive flattening of what is not itemized. An Array's slots are
 // scalar containers, so they are pushed as they are (`flat [[1,2],[3,4]]` is two
 // items, `flat ((1,2),(3,4))` four); a List's elements descend unless they are items.
 function flat(v) {
     if (v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
     const out = [];
-    const walk = (x, slot) => {
+)RKJS",
+R"RKJS(    const walk = (x, slot) => {
         if (slot) out.push(item(x));   // an Array slot is a container: its list or hash stays an item
         else if (x !== null && typeof x === 'object' && x.item === true) out.push(x);
         else if (x instanceof RList) { const isArr = x.ty === T.Array; for (const y of x.arr()) walk(y, isArr); }
         else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) walk(y, false);
-)RKJS",
-R"RKJS(        else out.push(x);
+        else out.push(x);
     };
     if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) walk(v, false);
     else for (const x of iter(v)) walk(x, false);   // a Hash's pairs, an object's own iterator
@@ -2106,6 +2112,7 @@ function aset(a, i, v) {
         if (typeof i === 'number' && i < 0) throw new RakuError(`Index out of range. Is: ${i}, should be in 0..^Inf`, 'X::OutOfRange');
         v = checkOf(a, v);   // Nil restores the default; a typed container checks the value
         if (typeof i === 'function') i = i(a.a.length);
+        if (openSlice(i)) i = clipSlice(i, a.a.length);
         if (i instanceof RList || i instanceof RSeq || i instanceof RRange) { const is = arr(i), vs = arr(v); is.forEach((ix, k) => aset(a, ix, vs[k] === undefined ? Any : vs[k])); return v; }
         const k = Number(toInt(i));
         if (k < 0) throw new RakuError(`Unsupported use of a negative ${k} subscript to index from the end. In Raku please use: a function such as *-1`);
@@ -2118,15 +2125,18 @@ function aset(a, i, v) {
     if (a instanceof RObj) { const m = a.ty.findUser('ASSIGN-POS'); if (m) return m(a, i, v); const at = a.ty.findUser('AT-POS'); if (at) { const c = at(a, i); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(a)}`);
 }
+// A slice range with an open or computed end — `@a[1..*]`, `@a[*-3..*-1]`,
+// `@a[2..Inf]` — stops at the end of the array, when read and when assigned.
+function openSlice(r) { return r instanceof RRange && (typeof r.from === 'function' || typeof r.to === 'function' || r.to instanceof RWhatever || r.isInfinite()); }
+function clipSlice(r, cnt) {
+    const lo = typeof r.from === 'function' ? r.from(cnt) : r.from;
+    const hi = typeof r.to === 'function' ? r.to(cnt) : (r.to instanceof RWhatever || r.to === Infinity) ? cnt - 1 : r.to;
+    return range(lo, hi, r.exFrom, r.exTo && !(r.to instanceof RWhatever));
+}
 function aslice(a, idxs) {
     // the element count is only needed for `*-1` style and open-ended indices, and forcing it would reify a lazy array
     const n = () => a instanceof RList ? a.elems() : a instanceof RSeq ? a.elems() : a.arr().length;
-    if (idxs instanceof RRange && (typeof idxs.from === 'function' || typeof idxs.to === 'function' || idxs.to instanceof RWhatever || idxs.isInfinite())) {
-        const cnt = n();
-        const lo = typeof idxs.from === 'function' ? idxs.from(cnt) : idxs.from;
-        const hi = typeof idxs.to === 'function' ? idxs.to(cnt) : (idxs.to instanceof RWhatever || idxs.to === Infinity) ? cnt - 1 : idxs.to;
-        idxs = range(lo, hi, idxs.exFrom, idxs.exTo && !(idxs.to instanceof RWhatever));   /* @a[1..*] stops at the end */
-    }
+    if (openSlice(idxs)) idxs = clipSlice(idxs, n());
     const out = []; for (const i of iter(idxs)) { if (i instanceof RWhatever) { out.push(...arr(a)); continue; } const k = typeof i === 'function' ? i(n()) : i; out.push(aget(a, k)); } return mkList(out); }
 function aexists(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); return k >= 0 && k < a.a.length && a.a[k] !== undefined; } if (a instanceof RHash) return hexists(a, i); if (a instanceof RObj) { const m = a.ty.findUser('EXISTS-POS'); if (m) return truthy(m(a, i)); } return false; }
 function adelete(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); const v = a.a[k]; if (k === a.a.length - 1) a.a.pop(); else if (k < a.a.length) a.a[k] = Any; return v === undefined ? Any : v; } if (a instanceof RHash) return hdelete(a, i); return Any; }
@@ -2267,14 +2277,14 @@ function antipairsOf(v) { return mkSeq(arr(pairsOf(v)).map(p => new RPair(p.v, p
 function invertOf(v) { const o = []; for (const p of arr(pairsOf(v))) { for (const x of (p.v instanceof RList ? p.v.a : itemsOf(p.v))) o.push(new RPair(x, p.k)); } return mkSeq(o); }   // an Iterable value gives one pair per element
 function pushTo(a, ...items) {
     items = items.filter(x => !(x instanceof RNamed));   // a named argument contributes nothing
-    if (a instanceof RList && a.ty === T.Array) items = items.map(x => (x === Nil || (a.of && !(x instanceof RSlip) && !(x instanceof RList))) ? checkOf(a, x) : x);
+)RKJS",
+R"RKJS(    if (a instanceof RList && a.ty === T.Array) items = items.map(x => (x === Nil || (a.of && !(x instanceof RSlip) && !(x instanceof RList))) ? checkOf(a, x) : x);
     if (a instanceof RHash) {
         const flat = []; for (const it of items) { if (it instanceof RSlip || it instanceof RList) flat.push(...itemsOf(it)); else flat.push(it); }
         for (let i = 0; i < flat.length; i++) {
             const it = flat[i]; let k, v;
             if (it instanceof RPair) { k = it.k; v = it.v; } else if (it instanceof RHash) { for (const [kk, vv] of it.m) pushTo(a, pair(kk, vv)); continue; }
-)RKJS",
-R"RKJS(            else { k = it; v = flat[++i]; if (v === undefined) throw new RakuError('Odd number of elements found where hash initializer expected', 'X::Hash::Store::OddNumber'); }
+            else { k = it; v = flat[++i]; if (v === undefined) throw new RakuError('Odd number of elements found where hash initializer expected', 'X::Hash::Store::OddNumber'); }
             const kk = hashKey(k);
             if (a.m.has(kk)) { const cur = a.m.get(kk); if (cur instanceof RList && cur.ty === T.Array) cur.a.push(v); else a.m.set(kk, mkArray([cur, v])); } else a.m.set(kk, v);
         }
@@ -2485,7 +2495,8 @@ function smartmatch(v, pat) {
     if (pat instanceof RSetty) return pat.has(v);
     if (pat instanceof REnum) return v instanceof REnum ? v === pat : (isNumeric(v) ? numeq(v, pat.val) : str(v) === pat.key);
     if (pat instanceof RWhatever) return true;
-    if (pat instanceof RObj) { const m = pat.ty.findUser('ACCEPTS'); if (m) return truthy(m(pat, v)); return identical(v, pat); }
+)RKJS",
+R"RKJS(    if (pat instanceof RObj) { const m = pat.ty.findUser('ACCEPTS'); if (m) return truthy(m(pat, v)); return identical(v, pat); }
     if (pat instanceof RakuError) return v instanceof RakuError && v.type === pat.type;
     if (pat instanceof RVersion) return v instanceof RVersion && v.accepts(pat);   // wildcards and `+`
     return eqv(v, pat);
@@ -2493,8 +2504,7 @@ function smartmatch(v, pat) {
 
 Object.assign(R, { item, decont, bindArray, iterTopic, smartmatchWith, smartmatchType, minMaxAdv, withDefault,
     RList, RSeq, RRange, RHash, mkList, mkArray, mkSeq, mkSlip, seqOf, range, upto, mkHash, hashKey, hget, hset, hexists, hdelete, hslice,
-)RKJS",
-R"RKJS(    hviv, aviv, derefAt, rwSource, rwKeys, rwHas, rwGet, rwSet, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
+    hviv, aviv, derefAt, rwSource, rwKeys, rwHas, rwGet, rwSet, assignHash, hashLit, hashFrom, pair, pairKey, pairValue, listItems, arr, iter, iterN, list, arrayLit, itemsOf,
     assignArray, newArray, newHash, flat, slip, spreadArgs, aget, aset, aslice, aexists, adelete, elemsOf,
     mapList, grepList, matcherOf, firstOf, repeatedList, joinList, reverseList, sumList, sortList, orderNum, minOf, maxOf, minmax, uniqueList, squishList,
     headOf, tailOf, keysOf, valuesOf, kvOf, pairsOf, antipairsOf, invertOf, pushTo, appendTo, unshiftTo, prependTo, popFrom, shiftFrom, spliceArr,
@@ -2604,11 +2614,11 @@ function defClass(name, spec) {
     // accessors for public attributes (a user method of the same name wins)
     for (const a of ty.attrs) {
         if (a.pub && !ty.methods[a.name]) {
-            const key = 'a_' + a.name;
+            const key = attrKey(a.name);
             ty.methods[a.name] = a.rw ? accessorRw(key) : function (self) { return self[key]; };
         }
         for (let i = 0; i < (a.handles ? a.handles.length : 0); i++) {
-            const mname = a.handles[i], target = (a.handlesTo && a.handlesTo[i]) || mname, key = 'a_' + a.name;
+            const mname = a.handles[i], target = (a.handlesTo && a.handlesTo[i]) || mname, key = attrKey(a.name);
             ty.methods[mname] = function (self, ...args) { return mc(self[key], target, ...args); };
         }
     }
@@ -2658,6 +2668,7 @@ function buildObj(ty, ...args) {
         if (ty === SupplierT) return new RSupplier(false);
         if (ty === SupplierPreservingT) return new RSupplier(true);
         if (ty === ChannelT) return new RChannel();
+        if (ty === LockT) return new RLock();
         if (ty === T.Any || ty === T.Mu) return new RObj(defClass(null, { parents: [T.Any] }));
         if (ty === T.Capture) { const [pos, named] = splitArgs(args); return new RCapture(pos, new Map(named)); }
         if (ty === T.Date || ty === T.DateTime) return dateNew(ty, args);
@@ -2670,7 +2681,7 @@ function buildObj(ty, ...args) {
     const used = new Set();
     const buildM = ty.findUser('BUILD');
     for (const a of ty.allAttrs()) {
-        const key = 'a_' + a.name;
+        const key = attrKey(a.name);
         let v;
         if ((a.pub || a.built) && named.has(a.name)) { v = named.get(a.name); used.add(a.name); }
         else if (a.def) v = a.def(o);
@@ -2695,7 +2706,7 @@ function cloneObj(o, ...args) {
         const [, named] = splitArgs(args);
         const c = new RObj(o.ty);
         for (const k of Object.keys(o)) if (k !== 'ty') c[k] = o[k];
-        for (const [k, v] of named) c['a_' + k] = v;
+        for (const [k, v] of named) c[attrKey(k)] = v;
         return c;
     }
     if (o instanceof RList) return new RList(o.a.slice(), o.ty);
@@ -2706,7 +2717,8 @@ function cloneObj(o, ...args) {
 function enumType(name, pairs, base) {
     const ty = mkType(name, [base || T.Int], { isEnum: true });
     ty.enumValues = pairs.map(([k, v]) => new REnum(ty, k, v));
-    ty.isUser = true;
+)RKJS",
+R"RKJS(    ty.isUser = true;
     return ty;
 }
 function enumFromKeys(ty, key) { return ty.enumValues.find(e => e.key === key) || Nil; }
@@ -2716,15 +2728,19 @@ function attrGet(o, key) { return o[key]; }
 function attrSpec(o, name) { if (!(o instanceof RObj)) return null; for (const t of o.ty.mro) if (t.attrs) for (const a of t.attrs) if (a.name === name) return a; return null; }
 function attrSet(o, name, v) {
     const a = attrSpec(o, name);
-)RKJS",
-R"RKJS(    if (a && a.sigil === '$' && a.type && T[a.type] && v !== Any && !(v instanceof RType)) {
+    if (a && a.sigil === '$' && a.type && T[a.type] && v !== Any && !(v instanceof RType)) {
         if (a.coerce) v = coerce(T[a.type], v);
         else if (!isa(v, a.type)) throw new RakuError(`Type check failed in assignment to $!${name}; expected ${a.type} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment');
     }
-    o['a_' + mangleAttr(name)] = v;
+    o[attrKey(name)] = v;
     return v;
 }
 // the emitter's key for an attribute name: `-` and other non-identifier bytes are escaped as _xx
+// The property an attribute lives in: the emitter's spelling (`$!dec-lo` is
+// `self.a_dec_2dlo`), so every reader and writer — construction, accessors,
+// clone, .raku, eqv, handles — must use this one, never the raw name.
+const ATTR_KEYS = new Map();
+function attrKey(n) { let k = ATTR_KEYS.get(n); if (k === undefined) { k = 'a_' + mangleAttr(n); ATTR_KEYS.set(n, k); } return k; }
 function mangleAttr(n) { let o = ''; for (const ch of n) o += /[A-Za-z0-9]/.test(ch) ? ch : Array.from(new TextEncoder().encode(ch), b => '_' + b.toString(16).padStart(2, '0')).join(''); return o; }
 
 // --- named arguments -----------------------------------------------------------
@@ -2915,7 +2931,8 @@ function dateNew(ty, args) {
             ? new Date(Date.UTC(s0.getUTCFullYear(), s0.getUTCMonth(), s0.getUTCDate()))
             : new Date(s0), fmt);
     }
-    if (pos.length === 1) { if (typeof pos[0] === 'string' && !(ty === T.Date ? /^\d{4}-\d\d-\d\d$/ : /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/).test(pos[0])) throw new RakuError(`Invalid ${ty.name} string '${pos[0]}'; use ${ty === T.Date ? 'yyyy-mm-dd' : 'yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00'} instead`, 'X::Temporal::InvalidFormat'); return new RDate(ty, new Date(typeof pos[0] === 'string' ? pos[0] + (ty === T.Date ? 'T00:00:00Z' : '') : toFloat(pos[0]) * 1000), fmt); }
+)RKJS",
+R"RKJS(    if (pos.length === 1) { if (typeof pos[0] === 'string' && !(ty === T.Date ? /^\d{4}-\d\d-\d\d$/ : /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/).test(pos[0])) throw new RakuError(`Invalid ${ty.name} string '${pos[0]}'; use ${ty === T.Date ? 'yyyy-mm-dd' : 'yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00'} instead`, 'X::Temporal::InvalidFormat'); return new RDate(ty, new Date(typeof pos[0] === 'string' ? pos[0] + (ty === T.Date ? 'T00:00:00Z' : '') : toFloat(pos[0]) * 1000), fmt); }
     if (pos.length >= 3) return new RDate(ty, new Date(Date.UTC(Number(pos[0]), Number(pos[1]) - 1, Number(pos[2]), Number(pos[3] || 0), Number(pos[4] || 0), Number(pos[5] || 0))), fmt);
     const g = k => named.has(k) ? Number(toInt(named.get(k))) : 0;
     return new RDate(ty, new Date(Date.UTC(g('year'), (named.has('month') ? g('month') : 1) - 1, named.has('day') ? g('day') : 1, g('hour'), g('minute'), g('second'))), fmt);
@@ -2925,8 +2942,7 @@ class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd; } }
 class RIOHandle { constructor(kind, path) { this.kind = kind; this.path = path; this.buf = ''; this.pos = 0; this.eof = false; this.lines = null; } }
 
 Object.assign(R, {
-)RKJS",
-R"RKJS(    RScalar, die, failure, fail, sink, exc, isControl, excMessage, excType, excPayload, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
+    RScalar, die, failure, fail, sink, exc, isControl, excMessage, excType, excPayload, mkExType, rethrow, warn, TakeCtl, take, gather, gatherEager,
     defClass, construct, buildObj, cloneObj, enumType, enumFromKeys, enumFromValue, attrGet, attrSet, named, splitArgs, namedArg, namedHash, checkNamed,
     tooMany, tooFew, arityError, notAny, typeCheck, typeMatches, noMatch, RCapture, capture, RSetty, mkSetty, toSetty, setOp, setRel, elem,
     RVersion, RDate, dateNew, RIOPath, RIOHandle, EMPTY_MAP,
@@ -2953,6 +2969,7 @@ function log(v, base) { const f = toFloat(v); if (base === undefined) return num
 function log2(v) { return numResult(Math.log2(toFloat(v))); }
 function log10(v) { return numResult(Math.log10(toFloat(v))); }
 function atan2(a, b) { return numResult(Math.atan2(toFloat(a), toFloat(b))); }
+function cis(v) { const f = toFloat(v); return new RComplex(Math.cos(f), Math.sin(f)); }   // e^(i·v)
 function floor(v) { const x = toNumeric(v); if (isIntVal(x)) return x; if (x instanceof RRat) { let q = x.n / x.d; if (x.n < 0n && x.n % x.d !== 0n) q -= 1n; return normBig(q); } const f = toFloat(x); return Number.isFinite(f) ? safeInt(Math.floor(f)) : f; }
 function ceiling(v) { const x = toNumeric(v); if (isIntVal(x)) return x; if (x instanceof RRat) { let q = x.n / x.d; if (x.n > 0n && x.n % x.d !== 0n) q += 1n; return normBig(q); } const f = toFloat(x); return Number.isFinite(f) ? safeInt(Math.ceil(f)) : f; }
 function truncate(v) { const x = toNumeric(v); if (isIntVal(x)) return x; if (x instanceof RRat) return normBig(x.n / x.d); const f = toFloat(x); return Number.isFinite(f) ? safeInt(Math.trunc(f)) : f; }
@@ -3097,7 +3114,8 @@ function chrsOf(...v) { return chrs(mkList(v)); }
 function ordsOf(v) { return ords(v); }
 function ucfirst(s) { return tc(s); }
 function slurpB(...args) { return host.slurp(...args); }
-function spurtB(...args) { return host.spurt(...args); }
+)RKJS",
+R"RKJS(function spurtB(...args) { return host.spurt(...args); }
 function linesB(...args) { return args.length === 0 || args[0] instanceof RNamed ? host.stdinLines() : lines(args[0]); }
 function get() { return host.stdinGet(); }
 function prompt(msg) { if (msg !== undefined) host.stdout(str(msg)); host.flush(); return host.stdinGet(); }
@@ -3119,8 +3137,7 @@ function EVAL() { throw new RakuError('EVAL is not available in transpiled JavaS
 // Operator table: `[+] @a`, `&infix:<+>`, `.reduce(&[+])`, Z+, X*
 const OPS = {
     '+': add, '-': sub, '*': mul, '/': div, '%': mod, '**': pow, 'div': idiv, 'mod': imod, 'gcd': gcd, 'lcm': lcm,
-)RKJS",
-R"RKJS(    '~': concat, 'x': xrepeat, 'xx': listRepeat,
+    '~': concat, 'x': xrepeat, 'xx': listRepeat,
     '==': numeq, '!=': numne, '<': lt, '<=': le, '>': gt, '>=': ge, 'eq': seq, 'ne': sne, 'lt': slt, 'le': sle, 'gt': sgt, 'ge': sge,
     '<=>': spaceship, 'cmp': cmp, 'leg': leg, '===': identical, 'eqv': eqv, '=:=': identical,
     '&&': (a, b) => truthy(a) ? b : a, '||': (a, b) => truthy(a) ? a : b, '//': (a, b) => defined(a) ? a : b, 'and': (a, b) => truthy(a) ? b : a, 'or': (a, b) => truthy(a) ? a : b,
@@ -3261,12 +3278,13 @@ function eagerOf(v) { if (v instanceof RSeq) return v.cache(); return v; }
 function cacheOf(v) { if (v instanceof RSeq) return v.list(); if (v instanceof RRange) return mkList(v.arr()); return v; }
 
 Object.assign(R, {
-    say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2,
+    say, print, put, note, printf, dd, exit, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, exp, cbrt, log, log2, log10, atan2, cis,
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
     categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, '__qqww': qqww, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
     lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
-    assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
+)RKJS",
+R"RKJS(    assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,
     unival, exists: (v) => defined(v), squish: (...items) => squishList(items.length === 1 ? items[0] : mkList(items)),
     'rotor': (v, ...specs) => { const nm_ = specs.filter(x => x instanceof RNamed), ps = specs.filter(x => !(x instanceof RNamed)); const isL = x => x instanceof RList || x instanceof RSeq || x instanceof RRange; return (ps.length && !isL(v) && isL(ps[ps.length - 1])) ? rotorList(ps[ps.length - 1], v, ...ps.slice(0, -1), ...nm_) : rotorList(v, ...specs); }, 'batch': (v, n) => batchList(v, n), combinations: (v, n) => combinations(v, n), permutations: (v) => permutations(v),
@@ -3276,8 +3294,7 @@ Object.assign(R, {
 
 // ---- 60-methods.js ----
 // Method dispatch. `mc(inv, name, ...args)` finds the method on the invocant's
-)RKJS",
-R"RKJS(// type (user methods first, then the core tables below, then Any/Mu), and calls
+// type (user methods first, then the core tables below, then Any/Mu), and calls
 // it as `m(inv, ...args)`. Named arguments travel as a trailing RNamed.
 
 function M(ty, table) { Object.assign(ty.methods, table); }
@@ -3300,7 +3317,7 @@ M(T.Mu, {
     ACCEPTS: (s, v) => smartmatch(v, s), 'ACCEPTS': (s, v) => smartmatch(v, s),
     elems: (s) => elemsOf(s), end: (s) => elemsOf(s) - 1, list: (s) => s instanceof RList && s.ty !== T.Seq ? s : mkList(itemsOf(s).slice()), List: (s) => mkList(itemsOf(s).slice()),
     Array: (s) => newArray(s), Seq: (s) => mkSeq(itemsOf(s).slice()), Slip: (s) => mkSlip(itemsOf(s).slice()), flat: (s) => flat(s), eager: (s) => eagerOf(s), lazy: (s) => lazyOf(s), cache: (s) => cacheOf(s),
-    'is-lazy': (s) => s instanceof RSeq && s.lazy, iterator: (s) => iter(s)[Symbol.iterator](), hash: (s) => newHash(s), Hash: (s) => newHash(s),
+    'is-lazy': (s) => s instanceof RSeq && s.lazy, iterator: (s) => iter(s)[Symbol.iterator](), hash: (s) => newHash(s), Hash: (s) => newHash(s), Map: (s) => newMap(s),
     map: (s, f) => mapList(s, f), grep: (s, f) => grepList(s, f), first: (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), join: (s, sep) => joinList(s, sep), sort: (s, f) => sortList(s, f), reverse: (s) => reverseList(s),
     sum: (s) => sumList(s), min: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], false, nm(a)) : minOf(s, posArgs(a)[0]), max: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], true, nm(a)) : maxOf(s, posArgs(a)[0]), minmax: (s, ...a) => { const f = posArgs(a)[0] ?? nm(a).get('by'); return f ? range(minOf(s, f), maxOf(s, f)) : minmax(s); }, unique: (s, ...a) => uniqueList(s, nm(a).get('as') || nm(a).get('with')), squish: (s) => squishList(s),
     head: (s, n) => headOf(s, n), tail: (s, n) => tailOf(s, n), keys: (s) => keysOf(s), values: (s) => valuesOf(s), kv: (s) => kvOf(s), pairs: (s) => pairsOf(s), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
@@ -3315,7 +3332,7 @@ M(T.Mu, {
     substr: (s, f, l) => substr(s, f, l), split: (s, ...a) => strSplit(s, posArgs(a)[0], posArgs(a)[1], nm(a)), words: (s, n) => words(s, n), lines: (s) => lines(s), comb: (s, p, l) => comb(s, p, l), indent: (s, n) => indent(s, n),
     fmt: (s, f) => fmt(s, f), succ: (s) => inc(s), pred: (s) => dec(s), samecase: (s, p) => samecase(s, p), trans: (s, ...a) => { const [p, named] = splitArgs(a); return strTrans(s, p.length === 1 ? p[0] : mkList(p), named); }, NFC: (s) => strNfc(s), NFD: (s) => strNfd(s), encode: (s) => strEncode(s),
     'is-prime': (s) => isPrime(s), abs: (s) => abs(s), sqrt: (s) => sqrt(s), sign: (s) => sign(s), floor: (s) => floor(s), ceiling: (s) => ceiling(s), round: (s, n) => round(s, n), truncate: (s) => truncate(s),
-    exp: (s, b) => b === undefined ? exp(s) : pow(b, s), log: (s, b) => log(s, b), log2: (s) => log2(s), log10: (s) => log10(s), sin: (s) => sin(s), cos: (s) => cos(s), tan: (s) => tan(s), asin: (s) => asin(s), acos: (s) => acos(s), atan: (s) => atan(s), atan2: (s, b) => atan2(s, b), sinh: (s) => sinh(s), cosh: (s) => cosh(s), tanh: (s) => tanh(s), cbrt: (s) => cbrt(s),
+    exp: (s, b) => b === undefined ? exp(s) : pow(b, s), log: (s, b) => log(s, b), log2: (s) => log2(s), log10: (s) => log10(s), sin: (s) => sin(s), cos: (s) => cos(s), tan: (s) => tan(s), asin: (s) => asin(s), acos: (s) => acos(s), atan: (s) => atan(s), atan2: (s, b) => atan2(s, b), sinh: (s) => sinh(s), cosh: (s) => cosh(s), tanh: (s) => tanh(s), cbrt: (s) => cbrt(s), cis: (s) => cis(s),
     rand: (s) => randNum(s), gcd: (s, b) => gcd(s, b), lcm: (s, b) => lcm(s, b), expmod: (s, e, m) => expmod(s, e, m), polymod: (s, ...m) => polymod(s, ...m), base: (s, b) => toBase(s, b), 'base-repeating': (s, b) => toBase(s, b),
     narrow: (s) => { const n = toNumeric(s); if (n instanceof RRat && n.d === 1n) return normBig(n.n); if (n instanceof RNum) return n.v; if (typeof n === 'number' && !Number.isInteger(n) && Number.isInteger(n)) return n; return n; },
     numerator: (s) => { const n = toNumeric(s); return n instanceof RRat ? normBig(n.n) : n; }, denominator: (s) => { const n = toNumeric(s); return n instanceof RRat ? normBig(n.d) : 1; }, nude: (s) => { const n = toNumeric(s); return n instanceof RRat ? mkList([normBig(n.n), normBig(n.d)]) : mkList([n, 1]); },
@@ -3334,7 +3351,7 @@ M(T.Mu, {
     'toggle': (s, ...fs) => { const out = []; let on = true, fi = 0; for (const x of iter(s)) { if (fi < fs.length && truthy(fs[fi](x)) !== on) { fi++; on = !on; } if (on) out.push(x); } return mkSeq(out); },
     'deepmap': (s, f) => { const walk = x => (x instanceof RList) ? mkList(x.a.map(walk), x.ty) : f(x); return walk(s); }, 'duckmap': (s, f) => { const walk = x => { try { const r = f(x); if (r instanceof RFailure) throw 0; return r; } catch (e) { return x instanceof RList ? mkList(x.a.map(walk), x.ty) : x; } }; return walk(s); },
     'nodemap': (s, f) => mkList(arr(s).map(f)), 'sum': (s) => sumList(s), 'Bool': (s) => truthy(s), 'are': (s) => { const items = arr(s); if (!items.length) return T.Nil; let t = typeOf(items[0]); for (const x of items) { const u = typeOf(x); while (!u.isa(t)) t = t.parents[0] || T.Mu; } return t; },
-    'chunks': (s, n) => batchList(s, n), 'tree': (s) => s, 'antipair': (s) => s instanceof RPair ? pair(s.v, s.k) : Any, 'SET-SELF': (s) => s, 'BUILDALL': (s) => s, 'bless': (s, ...a) => buildObj(s, ...a), 'CREATE': (s) => new RObj(s),
+    'chunks': (s, n) => batchList(s, n), 'tree': (s) => s, 'antipair': (s) => s instanceof RPair ? pair(s.v, s.k) : Any, 'SET-SELF': (s) => s, 'BUILDALL': (s) => s, 'bless': (s, ...a) => buildObj(s instanceof RObj ? s.ty : s, ...a),   /* `self.bless` in a method called on an instance builds one of its type */ 'CREATE': (s) => new RObj(s),
     'perl': (s) => raku(s), 'gistseen': (s) => gist(s), 'iterator-end': () => T.IterationEnd, 'DEFINITE': (s) => defined(s), 'REPR': (s) => 'P6opaque', 'HOW': (s) => typeOf(s), 'WHY': (s) => Nil, 'set': (s, v) => s,
     'seed': (s, v) => s, 'srand': (s) => srand(s), 'exit': (s) => exit(s), 'sleep': (s) => sleep(s), 'now': () => now(), 'time': () => time(),
     'is-integer': (s) => isIntVal(toNumeric(s)),
@@ -3354,7 +3371,8 @@ M(T.Mu, {
     'sink': (s) => Nil, 'dd': (s) => dd(s), 'is-prime': (s) => isPrime(s), 'sqrt': (s) => sqrt(s), 'roots': (s, n) => { const k = Number(toInt(n)); const r = Math.pow(toFloat(s), 1 / k); return mkList(Array.from({ length: k }, (_, i) => { const th = 2 * Math.PI * i / k; return new RComplex(r * Math.cos(th), r * Math.sin(th)); })); },
     'Instant': (s) => toNumeric(s), 'Duration': (s) => toNumeric(s), 'unival': (s) => Nil, 'univals': (s) => mkList([]), 'uniprop': (s) => Nil, 'NFKC': (s) => str(s).normalize('NFKC'), 'NFKD': (s) => str(s).normalize('NFKD'), 'encode': (s, ...a) => strEncode(s, ...a), 'decode': (s) => str(s),
     'match': (s, rxo, ...a) => { const named = nm(a); const adv = { g: truthy(named.get('g') || named.get('global')), ex: truthy(named.get('ex') || named.get('exhaustive')), ov: truthy(named.get('ov') || named.get('overlap')) }; return rxMatch(s, (adv.g || adv.ex || adv.ov) ? new RRegex(rxo.tree, { ...rxo.adv, ...adv }) : rxo); },
-    'subst': (s, pat, ...a) => { const named = nm(a); const repl = posArgs(a)[0]; const g = truthy(named.get('g') || named.get('global')); if (pat instanceof RRegex) return rxSubst(s, pat, mt => typeof repl === 'function' ? repl(mt) : str(repl), { g }).s; const src = str(s), lit = str(pat); const rep = typeof repl === 'function' ? str(repl(lit)) : str(repl); return g ? src.split(lit).join(rep) : src.replace(lit, () => rep); },
+)RKJS",
+R"RKJS(    'subst': (s, pat, ...a) => { const named = nm(a); const repl = posArgs(a)[0]; const g = truthy(named.get('g') || named.get('global')); if (pat instanceof RRegex) return rxSubst(s, pat, mt => typeof repl === 'function' ? repl(mt) : str(repl), { g }).s; const src = str(s), lit = str(pat); const rep = typeof repl === 'function' ? str(repl(lit)) : str(repl); return g ? src.split(lit).join(rep) : src.replace(lit, () => rep); },
 });
 function floatToRat(f) {
     if (!Number.isFinite(f)) return f;
@@ -3365,8 +3383,7 @@ function floatToRat(f) {
 // numeric-only methods that shouldn't be on Str with those meanings are the same here; Rakudo coerces.
 M(T.Int, { Str: (s) => str(s), 'is-prime': (s) => isPrime(s), Rat: (s) => mkRat(big(s), 1n), base: (s, b) => toBase(s, b), 'polymod': (s, ...m) => polymod(s, ...m), 'chr': (s) => chr(s), 'succ': (s) => inc(s), 'pred': (s) => dec(s), 'Range': (s) => range(0, s, false, true), 'sqrt': (s) => sqrt(s), 'Bool': (s) => truthy(s) });
 M(T.Bool, { Int: (s) => (s ? 1 : 0), Numeric: (s) => (s ? 1 : 0), Str: (s) => str(s), gist: (s) => str(s), 'key': (s) => str(s), 'value': (s) => (s ? 1 : 0), 'pred': (s) => false, 'succ': (s) => true, 'enums': () => hashFrom([['False', 0], ['True', 1]]), 'pick': (s) => (Math.random() < 0.5), 'Bool': (s) => s, 'not': (s) => !s, 'so': (s) => s });
-)RKJS",
-R"RKJS(M(T.Str, { Int: (s) => numFail(() => strInt(s)), Num: (s) => numFail(() => strNum(s)), Rat: (s) => numFail(() => strRat(s)), FatRat: (s) => numFail(() => strRat(s)), Complex: (s) => numFail(() => strToNumeric(s)), Numeric: (s) => numFail(() => strToNumeric(s)), 'Str': (s) => s, 'chars': (s) => chars(s), 'uc': (s) => uc(s), 'lc': (s) => lc(s), 'flip': (s) => flip(s), 'contains': (s, n, st) => contains(s, n, st), 'IO': (s) => ioPath(s), 'succ': (s) => strSucc(s), 'pred': (s) => strPred(s), 'Bool': (s) => truthy(s),
+M(T.Str, { Int: (s) => numFail(() => strInt(s)), Num: (s) => numFail(() => strNum(s)), Rat: (s) => numFail(() => strRat(s)), FatRat: (s) => numFail(() => strRat(s)), Complex: (s) => numFail(() => strToNumeric(s)), Numeric: (s) => numFail(() => strToNumeric(s)), 'Str': (s) => s, 'chars': (s) => chars(s), 'uc': (s) => uc(s), 'lc': (s) => lc(s), 'flip': (s) => flip(s), 'contains': (s, n, st) => contains(s, n, st), 'IO': (s) => ioPath(s), 'succ': (s) => strSucc(s), 'pred': (s) => strPred(s), 'Bool': (s) => truthy(s),
     'unival': (s) => Nil, 'ord': (s) => ord(s), 'trim': (s) => trim(s), 'split': (s, ...a) => strSplit(s, posArgs(a)[0], posArgs(a)[1], nm(a)), 'index': (s, n, st) => strIndex(s, n, st), 'substr': (s, f, l) => substr(s, f, l), 'substr-rw': (s, f, l) => substr(s, f, l),
     'sprintf': (s, ...a) => sprintf(s, ...a), 'starts-with': (s, p) => startsWith(s, p), 'ends-with': (s, p) => endsWith(s, p), 'parse-base': (s, b) => parseBase(s, b), 'is-prime': (s) => isPrime(s), 'x': (s, n) => xrepeat(s, n), 'chomp': (s) => chomp(s), 'comb': (s, p, l) => comb(s, p, l), 'words': (s, n) => words(s, n), 'lines': (s) => lines(s),
     'encode': (s, ...a) => strEncode(s, ...a), 'NFC': (s) => strNfc(s), 'NFD': (s) => strNfd(s), 'succ': (s) => strSucc(s), 'Version': (s) => new RVersion(s), 'path': (s) => ioPath(s), 'Date': (s) => dateNew(T.Date, [s]) });
@@ -3380,7 +3397,10 @@ M(T.List, {
     'clone': (s) => new RList(s.a.slice(), s.ty), 'iterator': (s) => s.a[Symbol.iterator](), 'of': (s) => s.of || T.Mu, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'is-lazy': (s) => !!s.src, 'Capture': (s) => new RCapture(s.a.slice()), 'shape': (s) => mkList([s.a.length]), 'keys': (s) => keysOf(s), 'sum': (s) => sumList(s), 'map': (s, f) => mapList(s, f),
 });
 M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gist(), raku: (s) => s.raku(), 'is-lazy': (s) => s.lazy, list: (s) => s.list(), List: (s) => s.list(), cache: (s) => s instanceof RSeq ? s.list() : mkList(s.arr()), eager: (s) => s instanceof RSeq ? s.cache() : s, Array: (s) => newArray(s), 'lazy': (s) => lazyOf(s), 'Str': (s) => str(s), 'Seq': (s) => s, 'iterator': (s) => s[Symbol.iterator](), 'Slip': (s) => mkSlip(s.arr().slice()), 'clone': (s) => s });
-M(T.Range, { elems: (s) => s.elemsOrInf(), min: (s) => s.min(), max: (s) => s.max(), 'excludes-min': (s) => s.exFrom, 'excludes-max': (s) => s.exTo, bounds: (s) => mkList([s.from, s.to]), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.elemsOrInf() !== 0,
+M(T.Range, { elems: (s) => s.elemsOrInf(),
+    // bare, the endpoints (`(^3).max` is 3); with :by or :k, the elements compared like a list's
+    min: (s, ...a) => a.length ? (nm(a).size ? minMaxAdv(mkList(s.arr()), posArgs(a)[0], false, nm(a)) : minOf(mkList(s.arr()), posArgs(a)[0])) : s.min(),
+    max: (s, ...a) => a.length ? (nm(a).size ? minMaxAdv(mkList(s.arr()), posArgs(a)[0], true, nm(a)) : maxOf(mkList(s.arr()), posArgs(a)[0])) : s.max(), 'excludes-min': (s) => s.exFrom, 'excludes-max': (s) => s.exTo, bounds: (s) => mkList([s.from, s.to]), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.elemsOrInf() !== 0,
     list: (s) => mkList(s.arr()), List: (s) => mkList(s.arr()), Array: (s) => mkArray(s.arr()), reverse: (s) => s.reverse(), 'is-lazy': (s) => s.isInfinite(), 'infinite': (s) => s.isInfinite(), 'is-int': (s) => s.isIntRange(), sum: (s) => { if (s.isInfinite()) return Infinity; if (s.isIntRange() && !s.isInfinite()) { const lo = s.lo(), hi = s.hi(); if (lt(hi, lo)) return 0; return idiv(mul(add(lo, hi), add(sub(hi, lo), 1)), 2); } return sumList(s); },
     'int-bounds': (s) => mkList([s.lo(), s.hi()]), 'minmax': (s) => mkList([s.min(), s.max()]), 'iterator': (s) => s[Symbol.iterator](), 'ACCEPTS': (s, v) => s.contains(v), 'Int': (s) => s.elemsOrInf(), 'Numeric': (s) => s.elemsOrInf(), 'pick': (s, n) => pickFrom(s, n), 'roll': (s, n) => rollFrom(s, n), 'rand': (s) => rangeRand(s), 'Seq': (s) => new RSeq(s[Symbol.iterator](), s.isInfinite()), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)) });
 M(T.Hash, { elems: (s) => s.m.size, Bool: (s) => s.m.size > 0, Str: (s) => str(s), gist: (s) => s.gist(), raku: (s) => s.raku(), keys: (s) => mkSeq(s.keys()), values: (s) => mkSeq(s.values()), kv: (s) => kvOf(s), pairs: (s) => mkSeq(s.pairs()), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
@@ -3400,9 +3420,9 @@ M(T.Setty, { elems: (s) => s.m.size, total: (s) => s.total(), keys: (s) => mkSeq
     'clone': (s) => s.clone(), 'minpairs': (s) => { const ps = s.pairsList(); if (!ps.length) return mkSeq([]); const m = minOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'maxpairs': (s) => { const ps = s.pairsList(); if (!ps.length) return mkSeq([]); const m = maxOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'antipairs': (s) => mkSeq(s.pairsList().map(p => pair(p.v, p.k))), 'invert': (s) => mkSeq(s.pairsList().map(p => pair(p.v, p.k))), 'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'sort': (s, f) => sortList(mkList(s.listItems()), f), 'map': (s, f) => mapList(mkList(s.listItems()), f), 'grep': (s, f) => grepList(mkList(s.listItems()), f), 'iterator': (s) => s.listItems()[Symbol.iterator](), 'first': (s, ...a) => firstOf(mkList(s.listItems()), posArgs(a)[0], nm(a)), 'sum': (s) => sumList(mkList(s.listItems())), 'join': (s, sep) => joinList(mkList(s.listItems()), sep), 'elem': (s, v) => s.has(v), 'add': (s, ...v) => { for (const x of v) s.add(x); return s; } });
 M(T.Version, { Str: (s) => s.Str(), gist: (s) => 'v' + s.Str(), raku: (s) => /^\d/.test(s.Str()) ? 'v' + s.Str() : "Version.new('" + s.Str() + "')", parts: (s) => mkList(s.parts), 'ACCEPTS': (s, v) => v instanceof RVersion && v.accepts(s), 'Bool': (s) => true });
 M(T.Capture, { list: (s) => mkList(s.pos), hash: (s) => namedHash(s.named), elems: (s) => s.pos.length, gist: (s) => s.gist(), raku: (s) => s.raku(), Str: (s) => s.Str(), 'AT-POS': (s, i) => aget(s, i), 'AT-KEY': (s, k) => hget(s, k), 'keys': (s) => mkList(Array.from({ length: s.pos.length }, (_, i) => i).concat(Array.from(s.named.keys()))), 'Capture': (s) => s, 'Bool': (s) => s.pos.length > 0 || s.named.size > 0 });
-M(T.Complex, { re: (s) => mkNum(s.re), im: (s) => mkNum(s.im), Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => '<' + s.Str() + '>', abs: (s) => numResult(Math.hypot(s.re, s.im)), 'polar': (s) => mkList([numResult(Math.hypot(s.re, s.im)), numResult(Math.atan2(s.im, s.re))]), 'conj': (s) => new RComplex(s.re, -s.im), 'Complex': (s) => s, 'Bool': (s) => s.re !== 0 || s.im !== 0, 'sqrt': (s) => { const r = Math.hypot(s.re, s.im); const re = Math.sqrt((r + s.re) / 2), im = Math.sign(s.im || 1) * Math.sqrt((r - s.re) / 2); return new RComplex(re, im); }, 'reals': (s) => mkList([mkNum(s.re), mkNum(s.im)]), 'Numeric': (s) => s, 'narrow': (s) => s.im === 0 ? mkNum(s.re) : s });
 )RKJS",
-R"RKJS(M(T.Date, { Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => s.raku(), Int: (s) => s.ty === T.Date ? s.daycount() : Math.floor(s.d.getTime() / 1000), year: (s) => s.d.getUTCFullYear(), month: (s) => s.d.getUTCMonth() + 1, day: (s) => s.d.getUTCDate(), 'day-of-month': (s) => s.d.getUTCDate(), 'day-of-week': (s) => (s.d.getUTCDay() + 6) % 7 + 1, 'day-of-year': (s) => Math.floor((s.d - Date.UTC(s.d.getUTCFullYear(), 0, 1)) / 86400000) + 1, 'days-in-month': (s) => new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth() + 1, 0)).getUTCDate(), 'is-leap-year': (s) => { const y = s.d.getUTCFullYear(); return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }, later: (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('days') || n.has('day')) d.setUTCDate(d.getUTCDate() + Number(toInt(n.get('days') ?? n.get('day')))); if (n.has('months') || n.has('month')) d.setUTCMonth(d.getUTCMonth() + Number(toInt(n.get('months') ?? n.get('month')))); if (n.has('years') || n.has('year')) d.setUTCFullYear(d.getUTCFullYear() + Number(toInt(n.get('years') ?? n.get('year')))); if (n.has('hours') || n.has('hour')) d.setUTCHours(d.getUTCHours() + Number(toInt(n.get('hours') ?? n.get('hour')))); if (n.has('minutes') || n.has('minute')) d.setUTCMinutes(d.getUTCMinutes() + Number(toInt(n.get('minutes') ?? n.get('minute')))); if (n.has('seconds') || n.has('second')) d.setUTCSeconds(d.getUTCSeconds() + Number(toInt(n.get('seconds') ?? n.get('second')))); return new RDate(s.ty, d, s.fmt); }, earlier: (s, ...a) => { const n = nm(a); const m2 = new Map(); for (const [k, v] of n) m2.set(k, neg(v)); return mc(s, 'later', new RNamed(m2)); }, 'succ': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() + 1); return new RDate(s.ty, d, s.fmt); }, 'pred': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() - 1); return new RDate(s.ty, d, s.fmt); }, 'daycount': (s) => Math.floor(s.d.getTime() / 86400000) + 40587, 'Date': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())), s.ty === T.Date ? s.fmt : undefined), 'DateTime': (s) => new RDate(T.DateTime, new Date(s.d)), hour: (s) => s.d.getUTCHours(), minute: (s) => s.d.getUTCMinutes(), second: (s) => s.d.getUTCSeconds(), 'posix': (s) => Math.floor(s.d.getTime() / 1000), 'Instant': (s) => numResult(s.d.getTime() / 1000), 'yyyy-mm-dd': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate()))).iso(), 'hh-mm-ss': (s) => s.iso().slice(11, 19), 'Numeric': (s) => s.numeric(), 'truncated-to': (s, u) => { const d = new Date(s.d); const un = str(u); if (un === 'month') d.setUTCDate(1); if (un === 'year') { d.setUTCMonth(0); d.setUTCDate(1); } if (un === 'day' || un === 'month' || un === 'year') d.setUTCHours(0, 0, 0, 0); return new RDate(s.ty, d, s.fmt); }, 'in-timezone': (s) => s, 'utc': (s) => s, 'local': (s) => s, 'timezone': (s) => 0, 'offset': (s) => 0, 'week-number': (s) => { const d = new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())); const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day); const y0 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1)); return Math.ceil(((d - y0) / 86400000 + 1) / 7); }, 'weekday-of-month': (s) => Math.floor((s.d.getUTCDate() - 1) / 7) + 1, 'clone': (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('year')) d.setUTCFullYear(Number(toInt(n.get('year')))); if (n.has('month')) d.setUTCMonth(Number(toInt(n.get('month'))) - 1); if (n.has('day')) d.setUTCDate(Number(toInt(n.get('day')))); return new RDate(s.ty, d, n.has('formatter') ? n.get('formatter') : s.fmt); }, 'Bool': (s) => true, 'ACCEPTS': (s, v) => v instanceof RDate && v.d.getTime() === s.d.getTime() });
+R"RKJS(M(T.Complex, { re: (s) => mkNum(s.re), im: (s) => mkNum(s.im), Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => '<' + s.Str() + '>', abs: (s) => numResult(Math.hypot(s.re, s.im)), 'polar': (s) => mkList([numResult(Math.hypot(s.re, s.im)), numResult(Math.atan2(s.im, s.re))]), 'conj': (s) => new RComplex(s.re, -s.im), 'Complex': (s) => s, 'Bool': (s) => s.re !== 0 || s.im !== 0, 'sqrt': (s) => { const r = Math.hypot(s.re, s.im); const re = Math.sqrt((r + s.re) / 2), im = Math.sign(s.im || 1) * Math.sqrt((r - s.re) / 2); return new RComplex(re, im); }, 'reals': (s) => mkList([mkNum(s.re), mkNum(s.im)]), 'Numeric': (s) => s, 'narrow': (s) => s.im === 0 ? mkNum(s.re) : s });
+M(T.Date, { Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => s.raku(), Int: (s) => s.ty === T.Date ? s.daycount() : Math.floor(s.d.getTime() / 1000), year: (s) => s.d.getUTCFullYear(), month: (s) => s.d.getUTCMonth() + 1, day: (s) => s.d.getUTCDate(), 'day-of-month': (s) => s.d.getUTCDate(), 'day-of-week': (s) => (s.d.getUTCDay() + 6) % 7 + 1, 'day-of-year': (s) => Math.floor((s.d - Date.UTC(s.d.getUTCFullYear(), 0, 1)) / 86400000) + 1, 'days-in-month': (s) => new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth() + 1, 0)).getUTCDate(), 'is-leap-year': (s) => { const y = s.d.getUTCFullYear(); return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }, later: (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('days') || n.has('day')) d.setUTCDate(d.getUTCDate() + Number(toInt(n.get('days') ?? n.get('day')))); if (n.has('months') || n.has('month')) d.setUTCMonth(d.getUTCMonth() + Number(toInt(n.get('months') ?? n.get('month')))); if (n.has('years') || n.has('year')) d.setUTCFullYear(d.getUTCFullYear() + Number(toInt(n.get('years') ?? n.get('year')))); if (n.has('hours') || n.has('hour')) d.setUTCHours(d.getUTCHours() + Number(toInt(n.get('hours') ?? n.get('hour')))); if (n.has('minutes') || n.has('minute')) d.setUTCMinutes(d.getUTCMinutes() + Number(toInt(n.get('minutes') ?? n.get('minute')))); if (n.has('seconds') || n.has('second')) d.setUTCSeconds(d.getUTCSeconds() + Number(toInt(n.get('seconds') ?? n.get('second')))); return new RDate(s.ty, d, s.fmt); }, earlier: (s, ...a) => { const n = nm(a); const m2 = new Map(); for (const [k, v] of n) m2.set(k, neg(v)); return mc(s, 'later', new RNamed(m2)); }, 'succ': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() + 1); return new RDate(s.ty, d, s.fmt); }, 'pred': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() - 1); return new RDate(s.ty, d, s.fmt); }, 'daycount': (s) => Math.floor(s.d.getTime() / 86400000) + 40587, 'Date': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())), s.ty === T.Date ? s.fmt : undefined), 'DateTime': (s) => new RDate(T.DateTime, new Date(s.d)), hour: (s) => s.d.getUTCHours(), minute: (s) => s.d.getUTCMinutes(), second: (s) => s.d.getUTCSeconds(), 'posix': (s) => Math.floor(s.d.getTime() / 1000), 'Instant': (s) => numResult(s.d.getTime() / 1000), 'yyyy-mm-dd': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate()))).iso(), 'hh-mm-ss': (s) => s.iso().slice(11, 19), 'Numeric': (s) => s.numeric(), 'truncated-to': (s, u) => { const d = new Date(s.d); const un = str(u); if (un === 'month') d.setUTCDate(1); if (un === 'year') { d.setUTCMonth(0); d.setUTCDate(1); } if (un === 'day' || un === 'month' || un === 'year') d.setUTCHours(0, 0, 0, 0); return new RDate(s.ty, d, s.fmt); }, 'in-timezone': (s) => s, 'utc': (s) => s, 'local': (s) => s, 'timezone': (s) => 0, 'offset': (s) => 0, 'week-number': (s) => { const d = new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())); const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day); const y0 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1)); return Math.ceil(((d - y0) / 86400000 + 1) / 7); }, 'weekday-of-month': (s) => Math.floor((s.d.getUTCDate() - 1) / 7) + 1, 'clone': (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('year')) d.setUTCFullYear(Number(toInt(n.get('year')))); if (n.has('month')) d.setUTCMonth(Number(toInt(n.get('month'))) - 1); if (n.has('day')) d.setUTCDate(Number(toInt(n.get('day')))); return new RDate(s.ty, d, n.has('formatter') ? n.get('formatter') : s.fmt); }, 'Bool': (s) => true, 'ACCEPTS': (s, v) => v instanceof RDate && v.d.getTime() === s.d.getTime() });
 Object.assign(T.DateTime.methods, T.Date.methods);
 M(T['IO::Path'], { Str: (s) => s.path, gist: (s) => strLit(s.path) + '.IO', raku: (s) => 'IO::Path.new(' + strLit(s.path) + ')', IO: (s) => s, 'Bool': (s) => true, absolute: (s) => host.absolute(s.path), relative: (s, ...a) => { const base = posArgs(a).length ? str(posArgs(a)[0]) : host.cwd; const abs = host.absolute(s.path); const b = host.absolute(base).replace(/\/+$/, '') + '/'; return abs.startsWith(b) ? abs.slice(b.length) : s.path; }, basename: (s) => s.path.replace(/\/+$/, '').split('/').pop(), extension: (s) => { const b = s.path.split('/').pop(); const i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1) : ''; }, parent: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return new RIOPath(i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i)); }, dirname: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i); }, add: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p)), child: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p)), 'e': (s) => host.exists(s.path), 'f': (s) => host.isFile(s.path), 'd': (s) => host.isDir(s.path), 'r': (s) => host.exists(s.path), 'w': (s) => host.exists(s.path), 'x': (s) => host.exists(s.path), 's': (s) => host.size(s.path), 'z': (s) => host.size(s.path) === 0, 'slurp': (s, ...a) => host.slurp(s.path, ...a), 'spurt': (s, ...a) => host.spurt(s.path, ...a), 'lines': (s, ...a) => lines(host.slurp(s.path)), 'words': (s) => words(host.slurp(s.path)), 'open': (s, ...a) => host.open(s.path, ...a), 'dir': (s, ...a) => host.dir(s.path, ...a), 'mkdir': (s) => host.mkdir(s.path), 'rmdir': (s) => host.rmdir(s.path), 'unlink': (s) => host.unlink(s.path), 'copy': (s, t) => host.copy(s.path, str(t)), 'rename': (s, t) => host.rename(s.path, str(t)), 'move': (s, t) => host.rename(s.path, str(t)), 'modified': (s) => host.modified(s.path), 'resolve': (s) => new RIOPath(host.absolute(s.path)), 'is-absolute': (s) => s.path.startsWith('/'), 'is-relative': (s) => !s.path.startsWith('/'), 'chars': (s) => chars(s.path), 'parts': (s) => hashFrom([['basename', s.path.split('/').pop()], ['dirname', s.path.includes('/') ? s.path.slice(0, s.path.lastIndexOf('/')) : '.'], ['volume', '']]), 'SPEC': (s) => T.IO, 'path': (s) => s.path, 'touch': (s) => host.spurt(s.path, '', new RNamed(new Map([['append', true]]))), 'ACCEPTS': (s, v) => str(v) === s.path, 'succ': (s) => { const i = s.path.lastIndexOf('/') + 1, dir = s.path.slice(0, i), base = s.path.slice(i), d = base.lastIndexOf('.'); return new RIOPath(dir + (d > 0 ? strSucc(base.slice(0, d)) + base.slice(d) : strSucc(base)), s.cwd); }, 'comb': (s, ...a) => comb(host.slurp(s.path), ...a), 'split': (s, ...a) => strSplit(host.slurp(s.path), ...a) });
 M(T['IO::Handle'], { Str: (s) => s.path || '', gist: (s) => 'IO::Handle<' + (s.path || '') + '>', get: (s) => host.handleGet(s), lines: (s) => host.handleLines(s), slurp: (s) => host.handleSlurp(s), 'slurp-rest': (s) => host.handleSlurp(s), print: (s, ...a) => host.handlePrint(s, a.map(str).join('')), say: (s, ...a) => host.handlePrint(s, a.map(gist).join('') + '\n'), put: (s, ...a) => host.handlePrint(s, a.map(str).join('') + '\n'), printf: (s, f, ...a) => host.handlePrint(s, sprintf(f, ...a)), 'print-nl': (s) => host.handlePrint(s, '\n'), 'close': (s) => host.close(s), 'eof': (s) => host.handleEof(s), 'flush': (s) => { host.handleFlush(s); host.flush(); return true; }, 'opened': (s) => !s.closed, 'words': (s) => words(host.handleSlurp(s)), 'comb': (s, ...a) => comb(host.handleSlurp(s), ...a), 'getc': (s) => host.handleGetc(s), 'read': (s, n) => strEncode(host.handleSlurp(s)), 'write': (s, b) => host.handlePrint(s, chrs(b)), 'nl-in': (s) => '\n', 'nl-out': (s) => '\n', 'path': (s) => new RIOPath(s.path || ''), 'IO': (s) => new RIOPath(s.path || ''), 't': (s) => host.isTTY(s), 'encoding': (s) => 'utf8', 'Bool': (s) => true, 'Supply': (s) => mkList(arr(host.handleLines(s))), 'seek': (s, p) => { s.pos = Number(toInt(p)); return true; }, 'tell': (s) => s.pos, 'lock': (s) => true, 'unlock': (s) => true, 'spurt': (s, ...a) => { host.handlePrint(s, str(posArgs(a)[0])); if (truthy(nm(a).get('close'))) host.close(s); return true; } });
@@ -3474,15 +3494,15 @@ function mc(inv, name, ...args) {
     }
     if (inv instanceof REnum) { const em = ENUM_METHODS[name]; if (em) return em(inv, ...args); const um = ty.findUser(name); if (um) return um(inv, ...args); return mc(inv.val, name, ...args); }
     if (inv instanceof RObj && (name === 'parse' || name === 'subparse') && inv.ty.mro.some(t => t.rules)) return grammarParse(inv.ty, args[0], args, name === 'subparse');   // Grammar.new.parse
-    if (inv instanceof RakuError && inv.payload && Object.prototype.hasOwnProperty.call(inv.payload, name)) return inv.payload[name];   // an exception's own fields (.method, .typename, …)
+)RKJS",
+R"RKJS(    if (inv instanceof RakuError && inv.payload && Object.prototype.hasOwnProperty.call(inv.payload, name)) return inv.payload[name];   // an exception's own fields (.method, .typename, …)
     // $*VM / $*KERNEL / $*DISTRO carry their fields in a Hash here, as they do in
     // the interpreter, so a method call on one had nothing to resolve against and
     // `$*VM.name` — the spelling every program uses, and the only one Rakudo
     // accepts — died with "No such method 'name' for invocant of type 'Hash'".
     // BEFORE the Hash table: `.gist` and `.Str` belong to the systemic object,
     // not to the hash it keeps its fields in.
-)RKJS",
-R"RKJS(    if (inv instanceof RHash && inv.sysKind) { const sm = systemicMethod(inv, name, args); if (sm !== undefined) return sm; }
+    if (inv instanceof RHash && inv.sysKind) { const sm = systemicMethod(inv, name, args); if (sm !== undefined) return sm; }
     const m = ty.find(name);
     if (m) return m(inv, ...args);
     if (inv instanceof RMatch && inv.ctx) { const r = cursorCall(inv, name, args); if (r !== undefined) return r; }   // self.rule inside a grammar method
@@ -3509,7 +3529,7 @@ function numFail(f) { try { return f(); } catch (e) { if (e instanceof RakuError
 const NODAL = new Set(['elems', 'end', 'keys', 'values', 'kv', 'pairs', 'antipairs', 'invert', 'join', 'sort', 'reverse', 'rotate', 'flat', 'list', 'List', 'Slip', 'Seq', 'Array', 'head', 'tail', 'first', 'unique', 'squish', 'sum', 'min', 'max', 'minmax', 'Bag', 'Set', 'Mix', 'BagHash', 'SetHash', 'MixHash', 'hash', 'Hash', 'Capture', 'pick', 'roll', 'classify', 'categorize', 'combinations', 'permutations', 'rotor', 'batch', 'produce', 'reduce', 'grep', 'map', 'is-lazy', 'eager', 'lazy', 'cache', 'iterator', 'Bool', 'so', 'not', 'defined', 'WHAT', 'WHICH']);
 function hyperMethod(inv, name, ...args) {
     if (inv instanceof RHash) { const h = new RHash(); for (const [k, v] of inv.m) h.m.set(k, mc(v, name, ...args)); return h; }
-    return mkList(spliceSlips(arr(inv).map(x => ((x instanceof RList || x instanceof RSeq) && x.item !== true && !NODAL.has(name)) ? hyperMethod(x, name, ...args) : mc(x, name, ...args))), inv instanceof RList ? inv.ty : T.List);   // ».m descends into nested lists unless the method is nodal (elems, join, sort …); a Slip result splices
+    return mkList(spliceSlips(arr(inv).map(x => ((x instanceof RList || x instanceof RSeq) && x.item !== true && !NODAL.has(name)) ? hyperMethod(x, name, ...args) : mc(x, name, ...args))), inv instanceof RList && !NODAL.has(name) ? inv.ty : T.List);   // ».m descends into nested lists unless the method is nodal (elems, join, sort …); a Slip result splices. An Array stays an Array, except under a nodal method: `@a».elems` is a List, as in Rakudo
 }
 const CODE_METHODS = {
     arity: (f) => f.arity !== undefined ? f.arity : f.length, count: (f) => f.count !== undefined ? f.count : (f.arity !== undefined ? f.arity : f.length),
@@ -3600,13 +3620,13 @@ function rangeRand(s) {
 M(T['IO::Handle'], { 'out-buffer': (s) => s.outBuffer === undefined ? (s.kind === 'out' || s.kind === 'err' ? 0 : 8192) : s.outBuffer });   // a file is buffered by default; the standard streams are not
 // a Hash's min/max go by value: the pair, or with :v the value, :k the key, :kv both, :p the pair
 function minMaxHash(h, isMax, named) {
-    const ps = arr(pairsOf(h)); let best = null, ties = [];
+)RKJS",
+R"RKJS(    const ps = arr(pairsOf(h)); let best = null, ties = [];
     const byValue = named && named.size;   // the adverbs compare values; the bare form compares whole pairs
     for (const p of ps) { const c = best ? (byValue ? (isMax ? cmpNum(p.v, best.v) : -cmpNum(p.v, best.v)) : (isMax ? cmpNum(p, best) : -cmpNum(p, best))) : 1; if (c > 0) { best = p; ties = [p]; } else if (c === 0) ties.push(p); }
     const has = (n) => named && truthy(named.get(n) ?? false);
     if (!best) return (named && named.size) ? mkList([]) : (isMax ? -Infinity : Infinity);   // empty: no positions to answer; the bare form is the identity
-)RKJS",
-R"RKJS(    if (has('v')) return mkList(ties.map(p => p.v)); if (has('k')) return mkList(ties.map(p => p.k)); if (has('kv')) return mkList(ties.flatMap(p => [p.k, p.v])); if (has('p')) return mkList(ties);
+    if (has('v')) return mkList(ties.map(p => p.v)); if (has('k')) return mkList(ties.map(p => p.k)); if (has('kv')) return mkList(ties.flatMap(p => [p.k, p.v])); if (has('p')) return mkList(ties);
     return best;   // the bare form: the pair (whole pairs compare by value first)
 }
 M(T.Hash, { 'max': (s, ...a) => minMaxHash(s, true, nm(a)), 'min': (s, ...a) => minMaxHash(s, false, nm(a)) });
@@ -3746,7 +3766,8 @@ function hostKernel() {
 }
 // …and the DISTRO is the operating system's flavour, which is what Rakudo's
 // `macos`/`debian`/`mswin32` name — not the kernel and not the JS host.
-function hostDistro() {
+)RKJS",
+R"RKJS(function hostDistro() {
     const k = hostKernel();
     return k === 'darwin' ? 'macos' : k;
 }
@@ -3758,8 +3779,7 @@ function systemicMethod(h, name, args) {
         case 'gist': { const v = self('version'); return h.sysKind === 'VM' ? nm + ' (' + str(v) + ')' : nm; }
         case 'version': return self('version') === undefined ? new RVersion('0') : self('version');
         case 'is-win': return nm === 'mswin32' || nm === 'mingw' || nm === 'msys' || nm === 'cygwin';
-)RKJS",
-R"RKJS(        case 'path-sep': return (nm === 'mswin32' || nm === 'mingw' || nm === 'msys' || nm === 'cygwin') ? ';' : ':';
+        case 'path-sep': return (nm === 'mswin32' || nm === 'mingw' || nm === 'msys' || nm === 'cygwin') ? ';' : ':';
         case 'cpu-cores': { try { return nodeRequire('os').cpus().length || 1; } catch (e) { return 1; } }
         case 'archname': case 'cpu-arch': {
             const a = typeof process !== 'undefined' ? process.arch : 'unknown';
@@ -3992,7 +4012,8 @@ function usage(cands) {
                 // other `=<Type>`, and a Bool takes nothing at all because its
                 // presence is the value. A required named (`:$x!`) prints
                 // without the outer brackets.
-                let label = (p.name.length === 1 ? '-' : '--') + p.name;
+)RKJS",
+R"RKJS(                let label = (p.name.length === 1 ? '-' : '--') + p.name;
                 if (p.type === 'Bool') { }
                 else if (!p.type) label += '[=Any]';
                 else if (['Int', 'UInt', 'Cool', 'Any', 'Mu', 'Numeric', 'Real'].includes(p.type))
@@ -4002,8 +4023,7 @@ function usage(cands) {
                 doc(label);
                 continue;
             }
-)RKJS",
-R"RKJS(            if (p.slurpy) { const label = '[<' + p.name + '> ...]'; pos.push(label); doc(label); continue; }
+            if (p.slurpy) { const label = '[<' + p.name + '> ...]'; pos.push(label); doc(label); continue; }
             const n = '<' + p.name + '>';
             const label = p.optional || p.hasDefault ? '[' + n + ']' : n;
             pos.push(label); doc(label);
@@ -4225,14 +4245,14 @@ function slurpyFlat(items) { const out = []; for (const x of items) { if (x !== 
 function vivArray(v) { return (v instanceof RType || v === undefined) ? mkArray([]) : v; }
 function withOf(c, ty) { c.of = ty; if (c instanceof RList) c.a = c.a.map(x => x === Any ? ty : checkOf(c, x)); else if (c instanceof RHash) for (const [k, v] of c.m) c.m.set(k, v === Any ? ty : checkOf(c, v)); return c; }   // what is already inside must fit too; an empty slot is the element type
 function isAny(v) { return v !== Mu && !(v instanceof RJunction); }
-// a minimal Signature object: what .signature.count / .arity / .params answer
+)RKJS",
+R"RKJS(// a minimal Signature object: what .signature.count / .arity / .params answer
 class RSig { constructor(f) { this.f = f; } }
 
 T.Signature.methods.count = s => s.f.count !== undefined ? s.f.count : (s.f.arity !== undefined ? s.f.arity : s.f.length);
 T.Signature.methods.arity = s => s.f.arity !== undefined ? s.f.arity : s.f.length;
 T.Signature.methods.params = s => mkList([]);
-)RKJS",
-R"RKJS(T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
+T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
 T.Signature.methods.returns = s => T.Mu;
 Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });
@@ -4439,12 +4459,12 @@ class RSupply {
         else if (this.quitErr && !t.closed) { if (t.quit) t.quit(this.quitErr); rt.close(); }
         return rt;
     }
-    emit(v) { if (this.preserving && !this.taps.length) { (this.replay || (this.replay = [])).push(v); return; } for (const t of this.taps.slice()) if (!t.closed) safeEmit(t, v); }
+)RKJS",
+R"RKJS(    emit(v) { if (this.preserving && !this.taps.length) { (this.replay || (this.replay = [])).push(v); return; } for (const t of this.taps.slice()) if (!t.closed) safeEmit(t, v); }
     done() { this.doneFlag = true; for (const t of this.taps.slice()) if (!t.closed) { if (t.done) t.done(); t.tap.close(); } }
     quit(e) { this.quitErr = e; for (const t of this.taps.slice()) if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }
 }
-)RKJS",
-R"RKJS(function safeEmit(t, v) { const r = t.emit(v); if (r && typeof r.then === 'function') r.catch(e => { if (!(e instanceof DoneCtl)) reportUncaught(e); }); }
+function safeEmit(t, v) { const r = t.emit(v); if (r && typeof r.then === 'function') r.catch(e => { if (!(e instanceof DoneCtl)) reportUncaught(e); }); }
 class RSupplier { constructor(preserving) { this.supply = new RSupply(); this.supply.preserving = !!preserving; } }
 class RVow { constructor(p) { this.p = p; } }
 
@@ -4634,19 +4654,27 @@ M(SupplyT, {
 });
 M(SupplierT, { emit: (s, v) => { s.supply.emit(v); return v; }, done: (s) => { s.supply.done(); return true; }, quit: (s, e) => { s.supply.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; }, Supply: (s) => s.supply, gist: (s) => 'Supplier.new', Str: (s) => 'Supplier', raku: (s) => 'Supplier.new', WHAT: (s) => s.supply.preserving ? SupplierPreservingT : SupplierT, defined: (s) => true });
 M(ChannelT, {
-    send: (s, v) => s.send(v), receive: (s) => s.receive(), poll: (s) => s.poll(), close: (s) => s.close(), closed: (s) => s.closedP, fail: (s, e) => { s.fail(e); return true; },
+)RKJS",
+R"RKJS(    send: (s, v) => s.send(v), receive: (s) => s.receive(), poll: (s) => s.poll(), close: (s) => s.close(), closed: (s) => s.closedP, fail: (s, e) => { s.fail(e); return true; },
     list: (s) => s.list(), Supply: (s) => s.Supply(), gist: (s) => 'Channel.new', Str: (s) => 'Channel', raku: (s) => 'Channel.new', WHAT: (s) => ChannelT, defined: (s) => true, Bool: (s) => true,
 });
 M(TapT, { close: (s) => s.close(), WHAT: (s) => TapT, gist: (s) => 'Tap.new', defined: (s) => true });
-)RKJS",
-R"RKJS(M(VowT, { keep: (s, v) => s.p.keep(v === undefined ? true : v), 'break': (s, e) => s.p.break_(e === undefined ? new RakuError('Died') : e), WHAT: (s) => VowT });
+M(VowT, { keep: (s, v) => s.p.keep(v === undefined ? true : v), 'break': (s, e) => s.p.break_(e === undefined ? new RakuError('Died') : e), WHAT: (s) => VowT });
 M(T.Promise, { vow: (s) => new RVow(s) });
 M(T.Any, { emit: (s) => emitVal(s) });
 Object.assign(TYPE_METHODS, {
     'from-list': (t, ...a) => t === SupplyT ? supplyFromList(spliceSlips(a.filter(x => !(x instanceof RNamed)))) : Nil,
     'interval': (t, secs, delay) => t === SupplyT ? supplyInterval(secs, delay) : Nil,
 });
-Object.assign(R, { RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
+// Lock. The host runs one piece of code at a time — a callback never preempts
+// another — so a lock has nothing to exclude: `protect` runs its block and
+// answers its value, and `lock`/`unlock` hold nothing. Code written for
+// threads (a cache filled under a lock) then runs here unchanged. A block that
+// AWAITS inside `protect` is not held across the wait; nothing here could be.
+const LockT = mkType('Lock', [T.Any]);
+class RLock { }
+M(LockT, { protect: (s, f) => callCode(f), lock: (s) => true, unlock: (s) => true, gist: (s) => 'Lock.new', Str: (s) => 'Lock', raku: (s) => 'Lock.new', WHAT: (s) => LockT, defined: (s) => true, Bool: (s) => true });
+Object.assign(R, { RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, RLock, LockT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
 R.start = startCounted; TYPE_METHODS.start = (t, fn) => startCounted(fn);   // a start block counts as pending work while it runs
 
 // ---- 90-regex.js ----
@@ -4834,7 +4862,8 @@ function ltmReach(n, from, ctx, depth) {
             if (rule && !rule.proto) { if (rule.mk) return gapAt(); return ltmReach(rule.rx.root, from, ctx, depth + 1); }
             if (ctx.grammar) {
                 const cands = protoCandidates(ctx.grammar, name);
-                if (cands.length) { let gap = false; for (const c of cands) { if (c.rule.mk) { gap = true; continue; } const r = ltmReach(c.rule.rx.root, from, { ...ctx, sym: c.sym }, depth + 1); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
+)RKJS",
+R"RKJS(                if (cands.length) { let gap = false; for (const c of cands) { if (c.rule.mk) { gap = true; continue; } const r = ltmReach(c.rule.rx.root, from, { ...ctx, sym: c.sym }, depth + 1); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
             }
             const lex = namedRegexes.get(name);
             if (lex) return ltmReach(lex.root, from, ctx, depth + 1);
@@ -4853,8 +4882,7 @@ function ltmRank(kids, st, pos, syms) {
     kids.forEach((kid, i) => {
         const r = ltmReach(kid, new Map([[pos, 0]]), syms ? { ...base, sym: syms[i] } : base, 0);
         let end = -1, lit = 0;
-)RKJS",
-R"RKJS(        for (const [p, l] of r.pos) if (p > end || (p === end && l > lit)) { end = p; lit = l; }
+        for (const [p, l] of r.pos) if (p > end || (p === end && l > lit)) { end = p; lit = l; }
         if (end >= 0) ranked.push({ i, end, lit });
     });
     ranked.sort((a, b) => b.end - a.end || b.lit - a.lit || a.i - b.i);
@@ -5117,7 +5145,8 @@ function subrule(n, st, pos, k) {
             for (const a of alts) if (s.startsWith(a, pos) && rec(new RMatch(s, pos, pos + a.length), pos + a.length)) return true;
             return false;
         }
-        if (v instanceof RList || v instanceof RSeq) { const xs = arr(v); const ordered = xs.every(x => !(x instanceof RRegex)) ? xs.map(str).sort((a, b) => b.length - a.length) : xs; for (const x of ordered) if (one(x, rec)) return true; return false; }   // longest alternative first
+)RKJS",
+R"RKJS(        if (v instanceof RList || v instanceof RSeq) { const xs = arr(v); const ordered = xs.every(x => !(x instanceof RRegex)) ? xs.map(str).sort((a, b) => b.length - a.length) : xs; for (const x of ordered) if (one(x, rec)) return true; return false; }   // longest alternative first
         return one(v, rec);
     }
     if (name === 'sym') { const sym = st.curSym; if (sym == null || !s.startsWith(sym, pos)) return false; const sub = new RMatch(s, pos, pos + sym.length); return record(sub, pos + sym.length); }
@@ -5133,8 +5162,7 @@ function subrule(n, st, pos, k) {
             const roots = cands.map(c => c.rule.mk ? { k: 'Code' } : c.rule.rx.root);   // a parameterized candidate has no static prefix
             for (const i of ltmRank(roots, st, pos, cands.map(c => c.sym))) {
                 const c = cands[i];
-)RKJS",
-R"RKJS(                const ok = callRule(c.rule, c.name, n, st, pos, (sub, q) => { sub.rule = c.name; sub.actualRule = c.name; return record(sub, q); }, c.sym);
+                const ok = callRule(c.rule, c.name, n, st, pos, (sub, q) => { sub.rule = c.name; sub.actualRule = c.name; return record(sub, q); }, c.sym);
                 if (ok) return true;
             }
             return false;
@@ -5361,7 +5389,8 @@ function parseRxString(src, ic) {
     const alt = () => {
         const kids = [seq()];
         let first = false;
-        while (src[i] === '|') { if (src[i + 1] === '|') { i += 2; first = true; } else i++; kids.push(seq()); }
+)RKJS",
+R"RKJS(        while (src[i] === '|') { if (src[i + 1] === '|') { i += 2; first = true; } else i++; kids.push(seq()); }
         if (src[i] === '&') bad('a conjunction');
         if (kids.length === 1) return kids[0];
         const n = { k: 'Alt', kids }; if (first) n.firstMatch = 1; return n;
@@ -5388,8 +5417,7 @@ function runSearch(s, rxo, ctx, startPos) {
         if (ok) {
             const mt = new RMatch(s, st.capFrom >= 0 ? st.capFrom : start, st.capTo >= 0 ? st.capTo : end);
             finishMatch(mt, st, rxo.tree);
-)RKJS",
-R"RKJS(            mt.end = end;   // where the scan continues (not the `<(` trimmed .from)
+            mt.end = end;   // where the scan continues (not the `<(` trimmed .from)
             return mt;
         }
         if (start < s.length) { const cp = s.codePointAt(start); if (cp > 0xFFFF) start++; }

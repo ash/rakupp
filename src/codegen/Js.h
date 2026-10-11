@@ -6,6 +6,7 @@
 #include "../Codegen.h"   // CodegenError: the same refusal type main.cpp already catches
 #include <set>
 #include <string>
+#include <vector>
 
 namespace rakupp {
 
@@ -15,14 +16,28 @@ struct JsOptions {
     std::string version;                  // RAKUPP_VERSION
     bool standalone = false;              // inline the runtime into the one file
     std::string rtPath = "./rakupp-rt.js"; // the sidecar's import path otherwise
-    std::set<std::string> moduleExports;  // `is export` subs of `use`d modules (unused until modules land)
+    std::set<std::string> moduleExports;  // `is export` subs of `use`d modules
     bool module = false;
     std::string mapUrl;                   // when set: the `//# sourceMappingURL=` the program ends with (main writes the map beside it)                  // --module: an ES module exporting the program's subs, classes and MAIN instead of running it
 };
 
+// A module the program `use`s, parsed, to be compiled into the same output.
+// main.cpp collects them (collectModuleGraph) in dependency order.
+struct JsModuleUnit {
+    std::string name;   // as the program `use`s it: Math::Wavelet::DWT
+    Program prog;
+};
+
 // Transpile a whole program into a JavaScript program. Throws CodegenError on any
 // construct outside the JS core; the message carries the source line.
-std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts = nullptr, std::string* map = nullptr);   // dts: the TypeScript declarations of a --module; map: the source map JSON
+//
+// `modules` are compiled ahead of the program, each into a function scope of its
+// own: its `my` variables and private subs stay its own, and what it exports —
+// `is export` subs, the names a `sub EXPORT` lists, its packages' `our` subs and
+// constants, and every type it declares — is bound where the program and the
+// modules after it can see it.
+std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts = nullptr, std::string* map = nullptr,
+                          std::vector<JsModuleUnit>* modules = nullptr);   // dts: the TypeScript declarations of a --module; map: the source map JSON
 
 // The runtime, assembled from src/js-rt/*.js (generated: src/JsRuntimeSrc.cpp).
 std::string jsRuntimeSource();

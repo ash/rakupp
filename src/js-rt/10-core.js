@@ -206,6 +206,7 @@ function typeOf(v) {
             if (v instanceof RSupply) return SupplyT;
             if (v instanceof RSupplier) return v.supply.preserving ? SupplierPreservingT : SupplierT;
             if (v instanceof RChannel) return ChannelT;
+            if (v instanceof RLock) return LockT;
             if (v instanceof RTap) return TapT;
             if (v instanceof RVow) return VowT;
             if (v instanceof RWhatever) return T.Whatever;
@@ -823,7 +824,7 @@ function listGistOf(items, open, close) {
 // the default object gist is its .raku: derived class's attributes first, values as .raku
 function objGist(o) {
     const parts = [];
-    for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(o['a_' + a.name]));
+    for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(o[attrKey(a.name)]));
     return o.ty.name + '.new' + (parts.length ? '(' + parts.join(', ') + ')' : '');
 }
 // .raku
@@ -854,7 +855,7 @@ function raku(v) {
             if (v instanceof RObj) {
                 const m = v.ty.findUser('raku'); if (m) return str(m(v));
                 const parts = [];
-                for (const a of v.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(v['a_' + a.name]));
+                for (const a of v.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(v[attrKey(a.name)]));
                 return v.ty.name + '.new(' + parts.join(', ') + ')';
             }
             if (v instanceof RJunction) return junctionRaku(v);
@@ -962,7 +963,7 @@ function eqv(a, b) {
     if (a instanceof RRange && b instanceof RRange) return eqv(a.from, b.from) && eqv(a.to, b.to) && a.exFrom === b.exFrom && a.exTo === b.exTo;
     if (a instanceof RObj && b instanceof RObj) {
         if (a.ty !== b.ty) return false;
-        for (const at of a.ty.allAttrs()) if (!eqv(a['a_' + at.name], b['a_' + at.name])) return false;
+        for (const at of a.ty.allAttrs()) if (!eqv(a[attrKey(at.name)], b[attrKey(at.name)])) return false;
         return true;
     }
     if (a instanceof RSetty && b instanceof RSetty) return a.eqv(b);

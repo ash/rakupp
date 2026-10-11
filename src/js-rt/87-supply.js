@@ -236,5 +236,13 @@ Object.assign(TYPE_METHODS, {
     'from-list': (t, ...a) => t === SupplyT ? supplyFromList(spliceSlips(a.filter(x => !(x instanceof RNamed)))) : Nil,
     'interval': (t, secs, delay) => t === SupplyT ? supplyInterval(secs, delay) : Nil,
 });
-Object.assign(R, { RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
+// Lock. The host runs one piece of code at a time — a callback never preempts
+// another — so a lock has nothing to exclude: `protect` runs its block and
+// answers its value, and `lock`/`unlock` hold nothing. Code written for
+// threads (a cache filled under a lock) then runs here unchanged. A block that
+// AWAITS inside `protect` is not held across the wait; nothing here could be.
+const LockT = mkType('Lock', [T.Any]);
+class RLock { }
+M(LockT, { protect: (s, f) => callCode(f), lock: (s) => true, unlock: (s) => true, gist: (s) => 'Lock.new', Str: (s) => 'Lock', raku: (s) => 'Lock.new', WHAT: (s) => LockT, defined: (s) => true, Bool: (s) => true });
+Object.assign(R, { RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, RLock, LockT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
 R.start = startCounted; TYPE_METHODS.start = (t, fn) => startCounted(fn);   // a start block counts as pending work while it runs

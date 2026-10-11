@@ -1593,6 +1593,48 @@ static bool jsVerify(const std::string& src, const std::string& srcName, const s
     return agree;
 }
 
+// The modules a --target=js program `use`s, parsed and in an order the output
+// can run them in: each after every module it `use`s itself. collectModuleGraph
+// found them and their sources; its order is only roughly dependencies-first,
+// and here a class or a constant must exist before the module that names it
+// runs. `JS` is the interop stub the emitter answers itself.
+static void jsUseNames(const std::vector<StmtPtr>& ss, std::vector<std::string>& out) {
+    for (auto& sp : ss) {
+        if (sp->kind == NK::UseStmt) { auto* u = static_cast<UseStmt*>(sp.get()); if (!u->isNo && !u->module.empty()) out.push_back(u->module); }
+        if (sp->kind == NK::ClassDecl) jsUseNames(static_cast<ClassDecl*>(sp.get())->body, out);
+    }
+}
+static std::vector<JsModuleUnit> jsModuleUnits(const Program& prog, const std::vector<BundledModule>& mods,
+                                               const std::vector<std::string>& searchPath) {
+    std::map<std::string, Program> parsed;
+    for (auto& m : mods) {
+        if (m.name == "JS" || m.src.empty()) continue;
+        Lexer lx(m.src);
+        Parser parser(lx.tokenize());
+        parser.libPaths_ = searchPath;
+        parser.srcFile_ = m.name;
+        parsed[m.name] = parser.parseProgram();
+    }
+    std::vector<JsModuleUnit> out;
+    std::set<std::string> done, onPath;
+    std::function<void(const std::string&)> visit = [&](const std::string& name) {
+        auto it = parsed.find(name);
+        if (it == parsed.end() || done.count(name) || onPath.count(name)) return;   // a cycle: Raku refuses it, the loader reports it
+        onPath.insert(name);
+        std::vector<std::string> uses;
+        jsUseNames(it->second.stmts, uses);
+        for (auto& u : uses) visit(u);
+        onPath.erase(name);
+        done.insert(name);
+        out.push_back({ name, std::move(it->second) });
+    };
+    std::vector<std::string> top;
+    jsUseNames(prog.stmts, top);
+    for (auto& u : top) visit(u);
+    for (auto& m : mods) visit(m.name);   // anything reached only through a nested `use`
+    return out;
+}
+
 // The JS backend's driver: parse, transpile (or wrap for the WASM tier), verify
 // when asked, then write the program — to stdout without -o, else to OUT.js plus
 // the runtime sidecar rakupp-rt.js (unless --standalone inlined it).
@@ -1623,8 +1665,8 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         Program prog = parser.parseProgram();
         std::vector<ModuleSkip> skips; std::set<std::string> natives;
         auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &jo.moduleExports, &skips, &natives);
-        for (auto& m : mods) if (m.name != "JS") throw CodegenError{"a `use`d module (" + m.name + ")"};   // JS is the interop stub the emitter knows
-        js = transpileToJs(prog, jo, &dts, &srcMap);
+        std::vector<JsModuleUnit> units = jsModuleUnits(prog, mods, effectiveSearchPath(libPaths));
+        js = transpileToJs(prog, jo, &dts, &srcMap, &units);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
@@ -1644,7 +1686,11 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         std::string runnable = js;
         if (!wasm && !g_standalone) { JsOptions so = jo; so.standalone = true; so.mapUrl.clear();
             Lexer lexer(src); lexer.tolerant_ = true; Parser parser(lexer.tokenize()); parser.declPod_ = lexer.declPod_; parser.leadPod_ = lexer.leadPod_; parser.src_ = &src; parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
-            Program prog = parser.parseProgram(); runnable = transpileToJs(prog, so); }
+            Program prog = parser.parseProgram();
+            // its modules afresh too: the first pass renamed theirs in place
+            auto vmods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+            std::vector<JsModuleUnit> vunits = jsModuleUnits(prog, vmods, effectiveSearchPath(libPaths));
+            runnable = transpileToJs(prog, so, nullptr, nullptr, &vunits); }
         { std::ofstream f = openOut(vpath); if (!f) { std::cerr << "Cannot write " << vpath << "\n"; return 5; } f << runnable; }
         std::string why;
         bool ok = jsVerify(src, srcName, vpath, selfExe, libPaths, why);

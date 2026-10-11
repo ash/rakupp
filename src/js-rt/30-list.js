@@ -180,10 +180,12 @@ class RHash {
         const ps = this.sortedPairs(); const parts = [];
         for (let i = 0; i < ps.length && i < 100; i++) parts.push(pairGist(ps[i]));
         if (ps.length > 100) parts.push('...');
+        if (this.ty === T.Map) return 'Map.new((' + parts.join(', ') + '))';
         return '{' + parts.join(', ') + '}';
     }
     raku() {   // a hash's values live in scalar containers: an Array or Hash value renders as $[…] / ${…}
         const ps = this.sortedPairs();
+        if (this.ty === T.Map) return 'Map.new((' + ps.map(pairRaku).join(',') + '))';
         return '{' + ps.map(p => ((p.v instanceof RList && p.v.ty !== T.Slip) || p.v instanceof RHash) ? pairRaku(new RPair(p.k, new RakuItem(p.v))) : pairRaku(p)).join(', ') + '}';
     }
     [Symbol.iterator]() { return this.pairs()[Symbol.iterator](); }
@@ -210,6 +212,7 @@ function hget(h, k) {
 }
 function hset(h, k, v) {
     if (h instanceof RHash) {
+        if (h.ty === T.Map) throw new RakuError(h.m.has(hashKey(k)) ? `Cannot modify an immutable Map` : `Cannot add key '${hashKey(k)}' to an immutable Map`);
         if (v instanceof RSlip) v = mkArray(v.a.slice());
         if (v === Nil || h.of) v = checkOf(h, v);
         if (typeof k !== 'string') {
@@ -407,6 +410,8 @@ function assignArray(a, src) {
 }
 function newArray(src) { return assignArray(mkArray([]), src === undefined ? [] : src); }
 function newHash(src) { return src === undefined ? new RHash() : assignHash(new RHash(), src); }
+// `.Map`: the same pairs, in a hash that refuses to change (hset)
+function newMap(src) { const h = newHash(src); h.ty = T.Map; return h; }
 // flat: recursive flattening of what is not itemized. An Array's slots are
 // scalar containers, so they are pushed as they are (`flat [[1,2],[3,4]]` is two
 // items, `flat ((1,2),(3,4))` four); a List's elements descend unless they are items.
@@ -464,6 +469,7 @@ function aset(a, i, v) {
         if (typeof i === 'number' && i < 0) throw new RakuError(`Index out of range. Is: ${i}, should be in 0..^Inf`, 'X::OutOfRange');
         v = checkOf(a, v);   // Nil restores the default; a typed container checks the value
         if (typeof i === 'function') i = i(a.a.length);
+        if (openSlice(i)) i = clipSlice(i, a.a.length);
         if (i instanceof RList || i instanceof RSeq || i instanceof RRange) { const is = arr(i), vs = arr(v); is.forEach((ix, k) => aset(a, ix, vs[k] === undefined ? Any : vs[k])); return v; }
         const k = Number(toInt(i));
         if (k < 0) throw new RakuError(`Unsupported use of a negative ${k} subscript to index from the end. In Raku please use: a function such as *-1`);
@@ -476,15 +482,18 @@ function aset(a, i, v) {
     if (a instanceof RObj) { const m = a.ty.findUser('ASSIGN-POS'); if (m) return m(a, i, v); const at = a.ty.findUser('AT-POS'); if (at) { const c = at(a, i); if (c instanceof RScalar) { c.v = v; return v; } } throw new RakuError(`Type ${a.ty.name} does not support positional indexing`); }
     throw new RakuError(`Cannot modify an immutable ${typeName(a)}`);
 }
+// A slice range with an open or computed end — `@a[1..*]`, `@a[*-3..*-1]`,
+// `@a[2..Inf]` — stops at the end of the array, when read and when assigned.
+function openSlice(r) { return r instanceof RRange && (typeof r.from === 'function' || typeof r.to === 'function' || r.to instanceof RWhatever || r.isInfinite()); }
+function clipSlice(r, cnt) {
+    const lo = typeof r.from === 'function' ? r.from(cnt) : r.from;
+    const hi = typeof r.to === 'function' ? r.to(cnt) : (r.to instanceof RWhatever || r.to === Infinity) ? cnt - 1 : r.to;
+    return range(lo, hi, r.exFrom, r.exTo && !(r.to instanceof RWhatever));
+}
 function aslice(a, idxs) {
     // the element count is only needed for `*-1` style and open-ended indices, and forcing it would reify a lazy array
     const n = () => a instanceof RList ? a.elems() : a instanceof RSeq ? a.elems() : a.arr().length;
-    if (idxs instanceof RRange && (typeof idxs.from === 'function' || typeof idxs.to === 'function' || idxs.to instanceof RWhatever || idxs.isInfinite())) {
-        const cnt = n();
-        const lo = typeof idxs.from === 'function' ? idxs.from(cnt) : idxs.from;
-        const hi = typeof idxs.to === 'function' ? idxs.to(cnt) : (idxs.to instanceof RWhatever || idxs.to === Infinity) ? cnt - 1 : idxs.to;
-        idxs = range(lo, hi, idxs.exFrom, idxs.exTo && !(idxs.to instanceof RWhatever));   /* @a[1..*] stops at the end */
-    }
+    if (openSlice(idxs)) idxs = clipSlice(idxs, n());
     const out = []; for (const i of iter(idxs)) { if (i instanceof RWhatever) { out.push(...arr(a)); continue; } const k = typeof i === 'function' ? i(n()) : i; out.push(aget(a, k)); } return mkList(out); }
 function aexists(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); return k >= 0 && k < a.a.length && a.a[k] !== undefined; } if (a instanceof RHash) return hexists(a, i); if (a instanceof RObj) { const m = a.ty.findUser('EXISTS-POS'); if (m) return truthy(m(a, i)); } return false; }
 function adelete(a, i) { if (a instanceof RList) { const k = typeof i === 'function' ? i(a.a.length) : Number(toInt(i)); const v = a.a[k]; if (k === a.a.length - 1) a.a.pop(); else if (k < a.a.length) a.a[k] = Any; return v === undefined ? Any : v; } if (a instanceof RHash) return hdelete(a, i); return Any; }
