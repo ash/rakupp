@@ -26,6 +26,14 @@ struct JsOptions {
 struct JsModuleUnit {
     std::string name;   // as the program `use`s it: Math::Wavelet::DWT
     Program prog;
+    // Move-only, and said so. A Program's move is not noexcept under MSVC (its
+    // std::set members), so a growing vector falls back to COPYING a type that
+    // looks copyable — and a Program's statements are unique_ptrs.
+    JsModuleUnit(std::string n, Program p) : name(std::move(n)), prog(std::move(p)) {}
+    JsModuleUnit(JsModuleUnit&&) = default;
+    JsModuleUnit& operator=(JsModuleUnit&&) = default;
+    JsModuleUnit(const JsModuleUnit&) = delete;
+    JsModuleUnit& operator=(const JsModuleUnit&) = delete;
 };
 
 // Transpile a whole program into a JavaScript program. Throws CodegenError on any
