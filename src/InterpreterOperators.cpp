@@ -1223,7 +1223,7 @@ static GatherTls& gatherTls() {
         &Interpreter::builtinArgWriter_,
         &Interpreter::deferGather_, &Interpreter::valueSmartmatch_,
         &Interpreter::matchVarSuppressed_,
-        &Interpreter::hoistingSubs_, &Interpreter::loopFirstBody_, &t_fatalTry,
+        &Interpreter::hoistingSubs_, &t_poll.firstBody, &t_fatalTry,
         &Interpreter::declaringType_,
         &Interpreter::redispatchStack_, &Interpreter::protoStack_, &Interpreter::reactStack_,
         &g_rxRoutine, &g_hyperOpName, &g_rxTemps, &g_evalUnits, &g_classBodies,

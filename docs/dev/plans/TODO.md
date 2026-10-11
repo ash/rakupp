@@ -31,7 +31,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   interleaved rounds; retired instructions +6-7%), built up over ~120 commits.
   The profile names a `thread_local` loopNest_ touched twice per iteration in
   runLoopBody, setupRwLinks on calls with no rw parameter, and SlotStripe on
-  single-threaded access. Next: remove those three, A/B against v5.2.1, then
+  single-threaded access. loopNest_ is gone (2026-10-11: it and
+  loopFirstBody_ live in `t_poll`; `loopsum` walking −3.3% retired
+  instructions). Next: the other two, A/B against v5.2.1, then
   `perf-guard --record` (v5.3.0 kept v5.2.0's baseline).
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
   2026-10-05. W1–W4 done; owed: `perf-guard --check` on a quiet machine. Left:
@@ -78,11 +80,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   only while workers are live and the slot is shared. Then the entries leave
   `%tsan-parallel-reads` one by one, and `ub-torn-values` can come off
   `%tsan-parallel-skip`.
-- [ ] **Interpreter at native speed**: 18 of 35 tasks open.
-  [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Next: quicken
-  `evalAssign`/`evalIndex`/`evalUnary`, then task 9 (fused integer leaves) and
-  task 10 (automatic `--cnp` tier-up). Task 1's quiet-machine baseline is still
-  owed.
+- [ ] **Interpreter at native speed**: 17 of 35 tasks open.
+  [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md). Task 9 (fused leaves) has its
+  native and Rat leaves since 2026-10-11 (`types/mandel-native` 1.34 →
+  0.84 s); its `loopsum` criterion is not met walking (7.0× `--exe`, needs
+  4.15×), and what is left there is task 4's, not leaves. Next: quicken
+  `evalAssign`/`evalIndex`/`evalUnary`, then task 10 (automatic `--cnp`
+  tier-up). Task 1's quiet-machine baseline is still owed.
 - [ ] **Loop and sub kernels beyond scalars**: [KERNEL-PLAN.md](KERNEL-PLAN.md).
   Tasks 2–4 and the `--help` text done 2026-10-03 (Nums, Rats as exact slots,
   `**`, `min`/`max`, pure methods; `**`/`min`/`max` and Num seeding in the
@@ -108,8 +112,11 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   measurements on a quiet machine; P4 compile and load time (the precomp key
   is a decision for the maintainer); P5 `--exe` size and fallback coverage;
   P7 `use` in the web editions (#83).
-- [ ] **`tctx_` thread-local lookups**: about 19% of loop samples, measured in
-  the dispatch probes and not fixed.
+- [ ] **`tctx_` thread-local lookups**: 20% of a walking `loopsum`'s samples
+  on 2026-10-11 (29% before loopNest_ and loopFirstBody_ moved into
+  `t_poll`): one `tctx_` read each in runLoopBody, execPlainBlock, exec and
+  evalAssign per iteration. Next: pass the context down
+  (INTERP-SPEED-PLAN task 4).
 - [ ] **`--slim` review**: what `--slim` actually removes. The 12.5 / 12.75 MB
   size budgets are a stopgap until this is done. [SLIM-PLAN.md](SLIM-PLAN.md)
   P6 (make `auto` the default) and P7 (`--aot`) follow.

@@ -994,9 +994,9 @@ void Interpreter::registerBuiltins() {
             catch (RakuError&) { died = true; }
             // a loop-control exception with no enclosing loop is a death (X::ControlFlow);
             // inside one it ESCAPES to it, recording no test (Rakudo)
-            catch (NextEx&) { if (I.loopNest_ > 0) throw; died = true; }
-            catch (LastEx&) { if (I.loopNest_ > 0) throw; died = true; }
-            catch (RedoEx&) { if (I.loopNest_ > 0) throw; died = true; }
+            catch (NextEx&) { if (t_poll.loopNest > 0) throw; died = true; }
+            catch (LastEx&) { if (t_poll.loopNest > 0) throw; died = true; }
+            catch (RedoEx&) { if (t_poll.loopNest > 0) throw; died = true; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
@@ -1010,9 +1010,9 @@ void Interpreter::registerBuiltins() {
             catch (RakuError&) { lived = false; }
             // loop control with no loop is a death, as dies-ok counts it; inside
             // one it escapes to it (see dies-ok)
-            catch (NextEx&) { if (I.loopNest_ > 0) throw; lived = false; }
-            catch (LastEx&) { if (I.loopNest_ > 0) throw; lived = false; }
-            catch (RedoEx&) { if (I.loopNest_ > 0) throw; lived = false; }
+            catch (NextEx&) { if (t_poll.loopNest > 0) throw; lived = false; }
+            catch (LastEx&) { if (t_poll.loopNest > 0) throw; lived = false; }
+            catch (RedoEx&) { if (t_poll.loopNest > 0) throw; lived = false; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");

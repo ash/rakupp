@@ -878,12 +878,12 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
                             "Precondition '" + r.gist() + "' failed");
         } }
     // ENTER fires on every block entry; FIRST once per closure clone. In a loop
-    // body the loop drives FIRST (loopFirstBody_); a called closure runs it on
+    // body the loop drives FIRST (t_poll.firstBody); a called closure runs it on
     // its FIRST call only (`my &b = { FIRST … }; b() for 1..3` says it once —
     // rak calls a pattern per item and counts on that); and a block run in
     // place is a fresh clone every time it runs, so its FIRST runs every time
     // (`for 1..3 { { FIRST … } }` says it three times).
-    const bool runFirst = &stmts != loopFirstBody_ &&
+    const bool runFirst = &stmts != t_poll.firstBody &&
         (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "ENTER" || (b->phaser == "FIRST" && runFirst)) {
@@ -1486,7 +1486,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     // coroutine resumes only on the thread that started it, so the reference
     // stays this thread's for as long as the function runs.
     ExecContext& tc = tctx_;
-    struct LoopNest { LoopNest() { loopNest_++; } ~LoopNest() { loopNest_--; } } loopNest;
+    struct LoopNest { LoopNest() { t_poll.loopNest++; } ~LoopNest() { t_poll.loopNest--; } } loopNest;
     safePoint(); // once per iteration: lets a shutting-down worker unwind out of a tight loop
     gatherProbePoint(); // …and lets a gather probe that has stopped TAKING still stop looping
     signed char ph = loopPhaserMask(body);
@@ -1514,7 +1514,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
             firstNext = true;
         }
     }
-    const std::vector<StmtPtr>* savedSF = loopFirstBody_; loopFirstBody_ = &body->stmts; // execBlock must not re-run FIRST
+    const std::vector<StmtPtr>* savedSF = t_poll.firstBody; t_poll.firstBody = &body->stmts; // execBlock must not re-run FIRST
     // `return` inside a NEXT/LAST phaser WITH an enclosing routine returns from
     // it (`sub f { for 1,2 { LAST return $_ } }`); with NO routine it is
     // X::ControlFlow::Return (like Rakudo) — never the raw unwind that used to
@@ -1568,14 +1568,14 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
     } lguard{tc, savedLoopFrame, savedGivenFrame};
     if (firstNext) {
         if (hasNext) {
-            try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
+            try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); t_poll.firstBody = savedSF; return false; } }
             catch (LastEx& e) {
-                if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
+                if (!e.label.empty() && e.label != label) { t_poll.firstBody = savedSF; throw; }
                 if (hasLast) runLoopLast(body, scope);
-                loopFirstBody_ = savedSF; return false;
+                t_poll.firstBody = savedSF; return false;
             }
         }
-        runLast(); loopFirstBody_ = savedSF; return true;
+        runLast(); t_poll.firstBody = savedSF; return true;
     }
     for (;;) {
         try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
@@ -1587,7 +1587,7 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
               // `with Grammar.parse(…) { .ast }` in MediaType.parse yield Any).
               // A CATCH's `default { return … }` still sees its flag: the
               // handler consumes it before any loop does.
-              if (tc.returning) { tc.givenCtl = 0; loopFirstBody_ = savedSF; return false; }
+              if (tc.returning) { tc.givenCtl = 0; t_poll.firstBody = savedSF; return false; }
               // LOOP CONTROL FIRST: `when … { last }` sets BOTH flags — the
               // when-match and the `last`. Consuming the when-flag first said
               // "iteration done" and left the loop flag set, so it travelled out
@@ -1605,20 +1605,20 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                       // runLoopLast) unless the last is labeled for an OUTER
                       // loop, which skips this one's LAST
                       if (hasNext) {
-                          try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
+                          try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); t_poll.firstBody = savedSF; return false; } }
                           catch (LastEx& e) {
-                              if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
+                              if (!e.label.empty() && e.label != label) { t_poll.firstBody = savedSF; throw; }
                               if (hasLast) runLoopLast(body, scope);
-                              loopFirstBody_ = savedSF; return false;
+                              t_poll.firstBody = savedSF; return false;
                           }
                       }
-                      runLast(); loopFirstBody_ = savedSF; return true;
+                      runLast(); t_poll.firstBody = savedSF; return true;
                   }
                   // `last`: the loop ends NOW, whatever iteration this is — its
                   // LAST phasers run (the old positional gate skipped them
                   // whenever the `last` fired before the final element)
                   if (hasLast) runLoopLast(body, scope);
-                  loopFirstBody_ = savedSF; return false; // last
+                  t_poll.firstBody = savedSF; return false; // last
               }
               bool whenValue = false;
               if (tc.givenCtl) { // cooperative when-match in this loop's body: the
@@ -1639,51 +1639,51 @@ bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std
                   else collect->push_back(v);
               }
               if (hasNext) {
-                  try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
+                  try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); t_poll.firstBody = savedSF; return false; } }
                   catch (LastEx& e) {
-                      if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
+                      if (!e.label.empty() && e.label != label) { t_poll.firstBody = savedSF; throw; }
                       if (hasLast) runLoopLast(body, scope);
-                      loopFirstBody_ = savedSF; return false;
+                      t_poll.firstBody = savedSF; return false;
                   }
               }
-              runLast(); loopFirstBody_ = savedSF; return true; }
-        catch (LeaveEx&) { runLast(); loopFirstBody_ = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
-        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; } if (rebind) rebind(); continue; }
+              runLast(); t_poll.firstBody = savedSF; return true; }
+        catch (LeaveEx&) { runLast(); t_poll.firstBody = savedSF; return true; } // leave: end this iteration, NO NEXT phasers
+        catch (RedoEx& e) { if (!e.label.empty() && e.label != label) { t_poll.firstBody = savedSF; throw; } if (rebind) rebind(); continue; }
         catch (NextEx& e) {
-            if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
+            if (!e.label.empty() && e.label != label) { t_poll.firstBody = savedSF; throw; }
             if (collect && e.hasVal) pushLoopValue(*collect, e.val);   // 6.e `next 9`: the iteration's value
             if (hasNext) {
-                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
+                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); t_poll.firstBody = savedSF; return false; } }
                 catch (LastEx& le) { // `last` from a NEXT phaser ends the loop: LAST runs
-                    if (!le.label.empty() && le.label != label) { loopFirstBody_ = savedSF; throw; }
+                    if (!le.label.empty() && le.label != label) { t_poll.firstBody = savedSF; throw; }
                     if (hasLast) runLoopLast(body, scope);
-                    loopFirstBody_ = savedSF; return false;
+                    t_poll.firstBody = savedSF; return false;
                 }
             }
-            runLast(); loopFirstBody_ = savedSF; return true;
+            runLast(); t_poll.firstBody = savedSF; return true;
         }
         catch (BreakGivenEx& bg) { // a thrown when-match: the iteration is done — like `next`, carrying the when block's value
             if (collect) collect->push_back(bg.hasVal ? bg.v : Value::nil());
             if (hasNext) {
-                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); loopFirstBody_ = savedSF; return false; } }
+                try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); t_poll.firstBody = savedSF; return false; } }
                 catch (LastEx& le) {
-                    if (!le.label.empty() && le.label != label) { loopFirstBody_ = savedSF; throw; }
+                    if (!le.label.empty() && le.label != label) { t_poll.firstBody = savedSF; throw; }
                     if (hasLast) runLoopLast(body, scope);
-                    loopFirstBody_ = savedSF; return false;
+                    t_poll.firstBody = savedSF; return false;
                 }
             }
-            runLast(); loopFirstBody_ = savedSF; return true;
+            runLast(); t_poll.firstBody = savedSF; return true;
         }
         catch (LastEx& e) {
-            if (!e.label.empty() && e.label != label) { loopFirstBody_ = savedSF; throw; }
+            if (!e.label.empty() && e.label != label) { t_poll.firstBody = savedSF; throw; }
             if (collect && e.hasVal) pushLoopValue(*collect, e.val);   // 6.e `last 9`: the loop's final value
             // `last` ends the loop here, so LAST phasers run — on WHATEVER
             // iteration it happened (a label targeting an outer loop rethrows
             // above instead: that outer loop's LAST runs, this one's is skipped)
             if (hasLast) runLoopLast(body, scope);
-            loopFirstBody_ = savedSF; return false;
+            t_poll.firstBody = savedSF; return false;
         }
-        catch (...) { loopFirstBody_ = savedSF; throw; }
+        catch (...) { t_poll.firstBody = savedSF; throw; }
     }
 }
 
@@ -9013,9 +9013,9 @@ resumeBody:
         if (resumeAt == 0) {
             captureBodyEnds(c);   // an END anywhere in the body binds to THIS call's scope
             if (c.body && lpc) {
-                const std::vector<StmtPtr>* savedSF = loopFirstBody_; loopFirstBody_ = c.body;
+                const std::vector<StmtPtr>* savedSF = t_poll.firstBody; t_poll.firstBody = c.body;
                 runEnterPhasers(*c.body); // ENTER only; FIRST suppressed
-                loopFirstBody_ = savedSF;
+                t_poll.firstBody = savedSF;
                 if (lpc & 1) runFirstPhasers(*c.body);
             }
             else if (c.body && (bodyWork & 2)) runEnterPhasers(*c.body, &c);
@@ -12718,6 +12718,21 @@ static std::string opAssignElemName(Interpreter& I, Index* ix) {
     return base + "[" + iv.toStr() + "]";
 }
 
+// A Rat that is a value and nothing else: every flag at its default, and a
+// cold block holding its two parts alone — no container fields (a type, a
+// default, a shape), not a FatRat, no view. Stored over wholesale, such a
+// slot loses nothing, which is what lets plain `=` into it take the
+// assignment lane, and a typed subtree's Rat be written into its parts.
+static inline bool bareRatValue(const Value& v) {
+    if (v.t != VT::Rat || !v.x_ || v.pk_ != PK::None || v.natBits || v.natSigned || v.natFloat ||
+        v.readonly || v.itemized || v.b || v.isList || v.objKeyed || v.immutableBind || v.pairValRO ||
+        v.namedArg || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty() || !v.s.empty())
+        return false;
+    const ValueExt& x = *v.x_;
+    return x.ratN && x.ratD && !x.big && !x.pairKey && !x.cont && !x.view.src && x.im == 0 &&
+           !x.rFrom && !x.rTo && !x.rExFrom && !x.rExTo && !x.rNum && !x.fatRat && !x.holdsCells;
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my $m = ($c, 2)` / `$l := (…)` / `my \l = (…)` keep the List, which holds
     // its items' containers (keepListContainers)
@@ -12826,13 +12841,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // the same argument: `$t += $r` over Rats is an accumulator
                     // too, and the op= arm's applyArith is where the long path
                     // ends. Nothing else may ride in the block (a handle, a
-                    // shape, a type annotation).
+                    // shape, a type annotation). Plain `=` over a Rat that is
+                    // nothing but its two parts (bareRatValue) loses nothing by
+                    // the wholesale store: `$r = $r * $k + 0.5` is the Rat
+                    // accumulator `=` writes.
                     bool coldOk = !slot->x_ ||
                                   (sv >= 2 && slot->t == VT::Int && slot->big() &&
                                    slot->enumName.empty() && slot->natBits == 0) ||
                                   (sv >= 2 && slot->t == VT::Rat && slot->enumName.empty() &&
                                    slot->natBits == 0 && !slot->ext() && !slot->shape() &&
-                                   slot->ofType().empty() && !slot->elemDefault() && !slot->pairKey());
+                                   slot->ofType().empty() && !slot->elemDefault() && !slot->pairKey()) ||
+                                  (sv == 1 && bareRatValue(*slot));
                     // …and an op= whose operator a user multi may take over core
                     // operands (`multi infix:<+>(Int, Int $b where * > 100)`)
                     // leaves the lane: the long path asks userInfixOverCore
@@ -12844,9 +12863,10 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
-                            if ((!nb || (nb == 64 && nsg && !nfl)) && a->value->kind == NK::Binary &&
-                                (fusedIntAssign(static_cast<Binary*>(a->value.get()), slot) ||
-                                 (!nb && fusedTypedAssign(static_cast<Binary*>(a->value.get()), slot)))) {
+                            if (a->value->kind == NK::Binary &&
+                                (((!nb || (nb == 64 && nsg && !nfl)) &&
+                                  fusedIntAssign(static_cast<Binary*>(a->value.get()), slot)) ||
+                                 fusedTypedAssign(static_cast<Binary*>(a->value.get()), slot))) {
                                 if (anyRwLinks_) rwWriteThrough(a->target.get());
                                 return sink ? Value::any() : *slot;
                             }
@@ -21242,6 +21262,7 @@ static inline bool plainScalarLit(const Expr* e) {
 // taken; the caller falls back to eval+boolify, and nothing here has side
 // effects, so the fallback never double-evaluates.
 static inline bool binaryShadowMaybe(const std::string& op);
+static int typedLeavesBool(Binary* b, Env* cur);
 int Interpreter::tryCondBool(Expr* e) {
     if (!e || e->kind != NK::Binary) return -1;
     auto* b = static_cast<Binary*>(e);
@@ -21300,8 +21321,8 @@ int Interpreter::tryCondBool(Expr* e) {
         return true;
     };
     long long l, r;
-    if (!intOf(b->lhs.get(), b->fastShape == 2, l)) return -1;
-    if (!intOf(b->rhs.get(), b->fastShape == 1, r)) return -1;
+    if (!intOf(b->lhs.get(), b->fastShape == 2, l) || !intOf(b->rhs.get(), b->fastShape == 1, r))
+        return typedLeavesBool(b, tctx_.cur.get());   // Nums, natives, Rats: the typed subtree's leaves
     bool v = opEq(op, "<")  ? l < r  : opEq(op, ">")  ? l > r
            : opEq(op, "<=") ? l <= r : opEq(op, ">=") ? l >= r
            : opEq(op, "==") ? l == r : l != r;
@@ -21567,17 +21588,37 @@ Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
 // has no fast shape: each node evaluated both operands into Values and ran the
 // general path (its Proxy, Whatever, DateTime, Pointer and temporal tests)
 // before applyArith. A subtree made only of `+ - * / %`, prefix `-`, plain `$`
-// lexicals and Int/Num literals, under at most one comparison at its root, is
-// evaluated here as machine numbers instead, with one Value built at the end.
+// lexicals and Int/Num/Rat literals, under at most one comparison at its root,
+// is evaluated here as machine numbers instead, with one Value built at the end.
 //
 // The SHAPE is decided once (Binary::typedTree); the leaves are read and their
 // types checked on every evaluation. Anything the typed rules do not answer
-// exactly as applyArith would — a leaf that is not a plain Int or Num, an Int
-// overflow, Int `/` Int (a Rat), a zero divisor, a native, a shadowing
-// operator — makes the whole subtree decline, and since the leaves have no
-// side effects the general path then evaluates it from scratch.
+// exactly as applyArith would — a leaf that is not a plain Int, Num, Rat or
+// native, an Int overflow outside a native operation, a Rat part past applyArith's
+// small-Rat lane, a Rat beside a Num, a zero divisor, a shadowing operator —
+// makes the whole subtree decline, and since the leaves have no side effects
+// the general path then evaluates it from scratch.
+//
+// A native leaf (`my int $i`, `my num $n`) is its number, and the operations
+// over it follow nativeIntArith and tagNativeNum: an integer operation is
+// native, and wraps, when each operand is a native or an Int literal and one is
+// a native; a Num result is a native num when each operand is a native or a
+// literal of the other side's kind. `nat` carries that tag up the tree, as the
+// tagged Values carry it on the general path.
 namespace {
-struct TNum { bool isNum; long long i; double n; };
+// `f` is the kind: 0 a plain Int, or the bits below. One byte, so the common
+// case — two plain Ints — is one test of the two operands' kinds together.
+// TN_UNS marks an unsigned native LEAF (an operation's result is signed): its
+// `!=` follows nativeMixedSignNe, which the comparison leaves to the full path.
+enum : unsigned char { TN_NUM = 1, TN_RAT = 2, TN_NAT = 4, TN_UNS = 8 };
+struct TNum {
+    unsigned char f;
+    long long i;       // an Int, or a Rat's numerator
+    union {
+        double n;      // a Num, when f has TN_NUM
+        long long d;   // a Rat's denominator (> 0, reduced), when f has TN_RAT
+    };
+};
 
 inline bool typedOpArith(const std::string& op) {
     return op.size() == 1 && (op[0] == '+' || op[0] == '-' || op[0] == '*' || op[0] == '/' || op[0] == '%');
@@ -21595,7 +21636,7 @@ bool typedOperandShape(const Expr* e, int depth) {
             return plainLexVar(e) && static_cast<const VarExpr*>(e)->name[0] == '$';
         case NK::IntLit: return static_cast<const IntLit*>(e)->big.empty();
         case NK::NumLit: { auto* n = static_cast<const NumLit*>(e);
-                           return !n->isRat && !n->imaginary; }
+                           return !n->imaginary && (!n->isRat || (n->bigNum.empty() && n->ratDen > 0)); }
         case NK::Unary: { auto* u = static_cast<const Unary*>(e);
                           return !u->postfix && opEq(u->op, "-") && typedOperandShape(u->operand.get(), depth + 1); }
         case NK::Binary: { auto* b = static_cast<const Binary*>(e);
@@ -21605,26 +21646,116 @@ bool typedOperandShape(const Expr* e, int depth) {
     }
 }
 
-// What applyArith answers for two plain machine numbers, or false where it
-// would answer something else (a bignum, a Rat, a Failure).
-inline bool typedArith(char c, const TNum& l, const TNum& r, TNum& o) {
-    if (!l.isNum && !r.isNum) {
-        long long z;
-        switch (c) {
-            case '+': if (rakupp::add_ovf(l.i, r.i, &z)) return false; break;
-            case '-': if (rakupp::sub_ovf(l.i, r.i, &z)) return false; break;
-            case '*': if (rakupp::mul_ovf(l.i, r.i, &z)) return false; break;
-            case '%':
-                if (r.i == 0) return false;
-                if (r.i == -1) z = 0;
-                else { z = l.i % r.i; if (z && ((z < 0) != (r.i < 0))) z += r.i; }
-                break;
-            default: return false;   // Int / Int is a Rat
+// nativeIntArith's `intLit` and tagNativeNum's `numLitNode`, on the shape
+inline bool typedIntLitNode(const Expr* e) {
+    if (e && e->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(e);
+        if (u->postfix || (!opEq(u->op, "-") && !opEq(u->op, "\xE2\x88\x92"))) return false;
+        e = u->operand.get();
+    }
+    return e && e->kind == NK::IntLit;
+}
+inline bool typedNumLitNode(const Expr* e, bool wantNum) {
+    if (e && e->kind == NK::Unary && !static_cast<const Unary*>(e)->postfix)
+        e = static_cast<const Unary*>(e)->operand.get();
+    if (!e) return false;
+    if (!wantNum) return e->kind == NK::IntLit;
+    return e->kind == NK::NumLit && !static_cast<const NumLit*>(e)->isRat &&
+           !static_cast<const NumLit*>(e)->imaginary;
+}
+
+// Int `+ - * %` as applyArith answers them: false on an overflow (a bignum)
+// and a zero divisor (a Failure).
+RAKUPP_ALWAYS_INLINE bool typedIntOp(char c, long long a, long long b, long long& z) {
+    switch (c) {
+        case '+': return !rakupp::add_ovf(a, b, &z);
+        case '-': return !rakupp::sub_ovf(a, b, &z);
+        case '*': return !rakupp::mul_ovf(a, b, &z);
+        case '%':
+            if (b == 0) return false;
+            if (b == -1) z = 0;
+            else { z = a % b; if (z && ((z < 0) != (b < 0))) z += b; }
+            return true;
+        default: return false;   // Int / Int is a Rat
+    }
+}
+
+#if RAKUPP_HAS_INT128
+// applyArith's small-Rat lane: parts under 2**62, the products in __int128,
+// reduced by a binary gcd. False where that lane would not answer with a Rat
+// whose parts fit an int64 (it spills to Num or falls through to BigInt).
+[[gnu::noinline]] bool typedRatArith(char c, long long n1, long long d1, long long n2, long long d2, TNum& o) {
+    const long long LIM = 1LL << 62;
+    if (!(n1 > -LIM && n1 < LIM && d1 > 0 && d1 < LIM && n2 > -LIM && n2 < LIM && d2 > 0 && d2 < LIM))
+        return false;
+    __int128 n, d;
+    switch (c) {
+        case '*': n = (__int128)n1 * n2; d = (__int128)d1 * d2; break;
+        case '/': if (n2 == 0) return false; n = (__int128)n1 * d2; d = (__int128)d1 * n2; break;
+        case '+': n = (__int128)n1 * d2 + (__int128)n2 * d1; d = (__int128)d1 * d2; break;
+        case '-': n = (__int128)n1 * d2 - (__int128)n2 * d1; d = (__int128)d1 * d2; break;
+        default: return false;
+    }
+    if (d < 0) { n = -n; d = -d; }
+    auto ctz = [](unsigned __int128 x) -> int {
+        unsigned long long lo = (unsigned long long)x;
+        return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll((unsigned long long)(x >> 64));
+    };
+    unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d, g;
+    if (a && b) {
+        int sh = ctz(a | b);
+        a >>= ctz(a);
+        while (b) {
+            b >>= ctz(b);
+            if (a > b) { unsigned __int128 t = a; a = b; b = t; }
+            b -= a;
         }
-        o.isNum = false; o.i = z;
+        g = a << sh;
+    } else g = a | b;
+    if (g > 1) { n /= (__int128)g; d /= (__int128)g; }
+    if (n < (__int128)LLONG_MIN || n > (__int128)LLONG_MAX || d > (__int128)LLONG_MAX) return false;
+    o.f = TN_RAT; o.i = (long long)n; o.d = (long long)d;
+    return true;
+}
+#endif
+
+// What applyArith answers for two typed operands that are not both plain Ints,
+// or false where it would answer something else (a bignum, a Failure, a Rat
+// past the small lane). `ln` and `rn` are the operand nodes, which decide
+// whether the operation is native.
+[[gnu::noinline]] bool typedArithSlow(char c, const TNum& l, const TNum& r, const Expr* ln, const Expr* rn,
+                                      TNum& o) {
+    const unsigned char lf = l.f, rf = r.f;
+    if (((lf | rf) & TN_RAT) || (c == '/' && !((lf | rf) & TN_NUM))) {
+#if RAKUPP_HAS_INT128
+        // exact: Rat op Rat/Int, and Int / Int (a Rat); beside a Num, declined
+        if ((lf | rf) & TN_NUM) return false;
+        return typedRatArith(c, l.i, (lf & TN_RAT) ? l.d : 1, r.i, (rf & TN_RAT) ? r.d : 1, o);
+#else
+        return false;
+#endif
+    }
+    if (!((lf | rf) & TN_NUM)) {
+        // two Ints, one at least a native. The operation is native when each
+        // side is a native or an Int literal (nativeIntArith): the machine
+        // operation, wrapping, and native itself. Otherwise the Int candidate.
+        if (((lf & TN_NAT) || typedIntLitNode(ln)) && ((rf & TN_NAT) || typedIntLitNode(rn))) {
+            const unsigned long long a = (unsigned long long)l.i, b = (unsigned long long)r.i;
+            long long z;
+            switch (c) {
+                case '+': z = (long long)(a + b); break;
+                case '-': z = (long long)(a - b); break;
+                case '*': z = (long long)(a * b); break;
+                default: if (!typedIntOp(c, l.i, r.i, z)) return false; break;   // `%`: no overflow to wrap
+            }
+            o.f = TN_NAT; o.i = z;
+            return true;
+        }
+        if (!typedIntOp(c, l.i, r.i, o.i)) return false;
+        o.f = 0;
         return true;
     }
-    const double a = l.isNum ? l.n : (double)l.i, b = r.isNum ? r.n : (double)r.i;
+    const double a = (lf & TN_NUM) ? l.n : (double)l.i, b = (rf & TN_NUM) ? r.n : (double)r.i;
     switch (c) {
         case '+': o.n = a + b; break;
         case '-': o.n = a - b; break;
@@ -21632,30 +21763,113 @@ inline bool typedArith(char c, const TNum& l, const TNum& r, TNum& o) {
         case '/': if (b == 0.0) return false; o.n = a / b; break;   // an inexact divide by zero is a Failure
         default: return false;   // Num % … keeps the full path
     }
-    o.isNum = true;
+    // a native num when each side is a native or a literal of the other
+    // side's kind, one a native (tagNativeNum); never for `/`
+    const bool lNum = (lf & (TN_NUM | TN_NAT)) == (TN_NUM | TN_NAT),
+               rNum = (rf & (TN_NUM | TN_NAT)) == (TN_NUM | TN_NAT);
+    const bool nat = c != '/' && ((lf | rf) & TN_NAT) &&
+                     ((lf & TN_NAT) || typedNumLitNode(ln, rNum)) &&
+                     ((rf & TN_NAT) || typedNumLitNode(rn, lNum));
+    o.f = nat ? (TN_NUM | TN_NAT) : TN_NUM;
     return true;
 }
 
-inline bool typedCompare(const std::string& op, const TNum& l, const TNum& r) {
+// What applyArith answers for two typed operands; plain Ints and plain Nums
+// inline, natives and Rats out of line. Forced inline: as a call it costs the
+// plain-Int subtree more than the native and Rat arms are worth to it.
+RAKUPP_ALWAYS_INLINE bool typedArith(char c, const TNum& l, const TNum& r, const Expr* ln, const Expr* rn, TNum& o) {
+    const unsigned char k = l.f | r.f;
+    if (!k) {
+        if (!typedIntOp(c, l.i, r.i, o.i)) {
+            if (c != '/') return false;
+            return typedArithSlow(c, l, r, ln, rn, o);   // Int / Int: a Rat
+        }
+        o.f = 0;
+        return true;
+    }
+    if (k == TN_NUM) {   // a Num and a Num or plain Int, neither native
+        const double a = l.f ? l.n : (double)l.i, b = r.f ? r.n : (double)r.i;
+        switch (c) {
+            case '+': o.n = a + b; break;
+            case '-': o.n = a - b; break;
+            case '*': o.n = a * b; break;
+            case '/': if (b == 0.0) return false; o.n = a / b; break;   // an inexact divide by zero is a Failure
+            default: return false;   // Num % … keeps the full path
+        }
+        o.f = TN_NUM;
+        return true;
+    }
+    return typedArithSlow(c, l, r, ln, rn, o);
+}
+
+// 1 or 0 for a comparison of two typed operands, or -1 where it is declined
+// (a Rat beside a Num).
+inline int typedCompare(const std::string& op, const TNum& l, const TNum& r) {
     const char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
-    if (!l.isNum && !r.isNum) {
-        const long long a = l.i, b = r.i;
+    auto cmp = [&](auto a, auto b) -> int {
         switch (c0) {
             case '<': return c1 ? a <= b : a < b;
             case '>': return c1 ? a >= b : a > b;
             case '=': return a == b;
             default:  return a != b;
         }
+    };
+    if (((l.f | r.f) & TN_UNS) && c0 == '!') return -1;   // nativeMixedSignNe's rule
+    const unsigned char k = (l.f | r.f) & (TN_NUM | TN_RAT);
+    if (!k) return cmp(l.i, r.i);
+    if (k == TN_NUM) return cmp((l.f & TN_NUM) ? l.n : (double)l.i, (r.f & TN_NUM) ? r.n : (double)r.i);
+#if RAKUPP_HAS_INT128
+    if (k & TN_NUM) return -1;
+    // exact, across: both denominators are positive
+    return cmp((__int128)l.i * ((r.f & TN_RAT) ? r.d : 1), (__int128)r.i * ((l.f & TN_RAT) ? l.d : 1));
+#else
+    return -1;
+#endif
+}
+
+// A typed result as the Value the general path builds: a native keeps its tag.
+inline Value typedResultValue(const TNum& o) {
+    if (!o.f) return Value::integer(o.i);
+    if (o.f & TN_RAT) {
+        Value v; v.t = VT::Rat;   // already reduced with d > 0, as Value::rat leaves it
+        v.ratNM() = std::make_shared<BigInt>(o.i);
+        v.ratDM() = std::make_shared<BigInt>(o.d);
+        return v;
     }
-    const double a = l.isNum ? l.n : (double)l.i, b = r.isNum ? r.n : (double)r.i;
-    switch (c0) {
-        case '<': return c1 ? a <= b : a < b;
-        case '>': return c1 ? a >= b : a > b;
-        case '=': return a == b;
-        default:  return a != b;
+    Value v = (o.f & TN_NUM) ? Value::number(o.n) : Value::integer(o.i);
+    if (o.f & TN_NAT) {
+        v.natBits = 64;
+        if (o.f & TN_NUM) v.natFloat = true; else v.natSigned = true;
     }
+    return v;
 }
 }  // namespace
+
+// A native or Rat leaf, off typedOperand's line: false if this evaluation
+// cannot be typed.
+[[gnu::noinline]] static bool typedOperandRare(const VarExpr* ve, const Value* p, TNum& o) {
+    if (p->natBits) {
+        // a native read (an unsigned 64-bit one is left to the full path)
+        if (p->natFloat) {
+            if (p->t != VT::Num || !ve->nativeNumRead) return false;
+            o.f = TN_NUM | TN_NAT; o.n = p->n;
+            return true;
+        }
+        if (p->t != VT::Int || p->big() || !ve->nativeIntRead || (!p->natSigned && p->natBits >= 64))
+            return false;
+        o.f = p->natSigned ? TN_NAT : (TN_NAT | TN_UNS); o.i = p->i;
+        return true;
+    }
+    if (p->t != VT::Rat) return false;
+    // a Rat whose parts fit an int64: not a FatRat, no tag, a positive denominator
+    if (!p->x_ || p->pk_ != PK::None || !p->enumName.empty() || !p->s.empty()) return false;
+    const ValueExt& x = *p->x_;
+    if (x.fatRat || !x.ratN || !x.ratD || !x.ratN->fitsLL() || !x.ratD->fitsLL()) return false;
+    const long long dd = x.ratD->toLL();
+    if (dd <= 0) return false;
+    o.f = TN_RAT; o.i = x.ratN->toLL(); o.d = dd;
+    return true;
+}
 
 // One operand of a typed subtree, as a machine number; false if this
 // evaluation cannot be typed. Reads only variables and literals.
@@ -21665,21 +21879,32 @@ static bool typedOperand(Expr* e, Env* cur, TNum& o) {
             auto* ve = static_cast<VarExpr*>(e);
             const Value* p = Interpreter::padPtrIn(ve, cur);
             if (!p) p = cur->find(ve->name);
-            if (!p || p->natBits || !p->hashKind.empty()) return false;
-            if (p->t == VT::Int) { if (p->big()) return false; o.isNum = false; o.i = p->i; return true; }
-            if (p->t == VT::Num) { o.isNum = true; o.n = p->n; return true; }
-            return false;
+            if (!p || !p->hashKind.empty()) return false;
+            if (!p->natBits) {
+                if (p->t == VT::Int) { if (p->big()) return false; o.f = 0; o.i = p->i; return true; }
+                if (p->t == VT::Num) { o.f = TN_NUM; o.n = p->n; return true; }
+            }
+            return typedOperandRare(ve, p, o);
         }
-        case NK::IntLit: o.isNum = false; o.i = static_cast<IntLit*>(e)->v; return true;
-        case NK::NumLit: o.isNum = true; o.n = static_cast<NumLit*>(e)->v; return true;
+        case NK::IntLit: o.f = 0; o.i = static_cast<IntLit*>(e)->v; return true;
+        case NK::NumLit: {
+            auto* nl = static_cast<NumLit*>(e);
+            if (nl->isRat) { o.f = TN_RAT; o.i = nl->ratNum; o.d = nl->ratDen; return true; }
+            o.f = TN_NUM; o.n = nl->v;
+            return true;
+        }
         case NK::Unary: {
             // a plain `sub prefix:<->` replaces the built-in for every operand
             if (g_userPrefixShadow.load(std::memory_order_relaxed)) return false;
-            TNum a;
-            if (!typedOperand(static_cast<Unary*>(e)->operand.get(), cur, a)) return false;
-            if (a.isNum) { o.isNum = true; o.n = -a.n; return true; }
-            if (a.i == LLONG_MIN) return false;
-            o.isNum = false; o.i = -a.i;
+            if (!typedOperand(static_cast<Unary*>(e)->operand.get(), cur, o)) return false;
+            if (o.f & TN_UNS) return false;   // an unsigned native negated: the full path's
+            if (o.f & TN_NUM) { o.n = -o.n; return true; }
+            if (o.f == TN_NAT) {   // a native negates as it adds: wrapping
+                o.i = (long long)(0ULL - (unsigned long long)o.i);
+                return true;
+            }
+            if (o.i == LLONG_MIN) return false;
+            o.i = -o.i;
             return true;
         }
         case NK::Binary: {
@@ -21687,7 +21912,7 @@ static bool typedOperand(Expr* e, Env* cur, TNum& o) {
             if (binaryShadowMaybe(b->op)) return false;
             TNum l, r;
             return typedOperand(b->lhs.get(), cur, l) && typedOperand(b->rhs.get(), cur, r) &&
-                   typedArith(b->op[0], l, r, o);
+                   typedArith(b->op[0], l, r, b->lhs.get(), b->rhs.get(), o);
         }
         default: return false;
     }
@@ -21722,11 +21947,13 @@ bool Interpreter::typedTreeValue(Binary* b, Value& out) {
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return false;
     if (typedOpArith(op)) {
         TNum o;
-        if (!typedArith(op[0], l, r, o)) return false;
-        out = o.isNum ? Value::number(o.n) : Value::integer(o.i);
+        if (!typedArith(op[0], l, r, b->lhs.get(), b->rhs.get(), o)) return false;
+        out = typedResultValue(o);
         return true;
     }
-    out = Value::boolean(typedCompare(op, l, r));
+    const int c = typedCompare(op, l, r);
+    if (c < 0) return false;
+    out = Value::boolean(c != 0);
     return true;
 }
 
@@ -21740,23 +21967,90 @@ static inline bool plainNumberSlotValue(const Value& v) {
            v.enumType.empty() && v.hashKind.empty() && v.s.empty();
 }
 
+// A native slot a number may be written into the same way: a `my int` (an
+// unsigned 64-bit one excepted) holding an Int, or a `my num` holding a Num,
+// every other flag at its default.
+static inline bool nativeNumberSlotValue(const Value& v) {
+    if (!v.natBits) return false;
+    if (v.natFloat ? v.t != VT::Num : (v.t != VT::Int || (!v.natSigned && v.natBits >= 64))) return false;
+    return !v.x_ && v.pk_ == PK::None && !v.readonly && !v.itemized && !v.b && !v.isList &&
+           !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg && v.enumName.empty() &&
+           v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+}
+
+// fusedTypedAssign's store when a Rat is on either side of it. A Rat over a
+// bare Rat that owns its block and both parts rewrites the parts (inline
+// limbs, nothing allocated) where the store would free the block and build
+// another. Looked at under the stripe: a copy another thread takes then waits
+// for it, and one taken before shows in the counts. Anything else is the
+// wholesale store, the Value built before the stripe is taken.
+[[gnu::noinline]] static void fusedRatStore(Interpreter& I, Value* slot, const TNum& o) {
+    if (slot->t == VT::Rat && (o.f & TN_RAT)) {
+        BigInt nn(o.i), dd(o.d);
+        Interpreter::SlotStripe ws(I, slot);
+        if (slot->x_.use_count() == 1 && slot->x_->ratN.use_count() == 1 && slot->x_->ratD.use_count() == 1) {
+            ValueExt& x = *slot->x_;
+            *x.ratN = std::move(nn);
+            *x.ratD = std::move(dd);
+            return;
+        }
+    }
+    Value v = typedResultValue(o);
+    Interpreter::SlotStripe ws(I, slot);
+    *slot = std::move(v);
+}
+
 // `$x = <typed arithmetic subtree>`: the number written into the slot, where
 // the lane would build a Value, move it in and destroy the temporary. Only for
-// a node compiled to typedTreeHandler. False, with nothing evaluated and the
-// slot untouched, when the subtree declines or the slot is not plain.
+// a node compiled to typedTreeHandler, or to binaryFastHandler (`$x = $a op
+// $b` over Nums, natives and Rats; two plain Ints are fusedIntAssign's). False, with the slot untouched, when
+// the subtree declines, the slot is not plain, or the slot is a native that
+// cannot take the result by its number (a Rat, or a Num for a `my int`, which
+// the full path converts or refuses): the full path then evaluates the
+// subtree again, which has no side effects.
+//
+// A plain `$` takes the number and drops a native's tag (dropNativeTags); a
+// Rat goes in whole. A native takes a result of its own kind, wrapped to its
+// width and rounded to a num32 as wrapNative does.
 bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
-    if (!pendingSubscripts_.empty() || (Expr::EvalFn)b->handler != &Interpreter::typedTreeHandler)
-        return false;
+    if (!pendingSubscripts_.empty()) return false;
+    // a typed subtree, or the fast shape's two leaves (variables and plain
+    // literals, which typedOperand reads as the subtree's leaves are read)
+    const Expr::EvalFn h = b->handler;
+    if (h != &Interpreter::typedTreeHandler && h != &Interpreter::binaryFastHandler) return false;
     const std::string& op = b->op;
-    if (!typedOpArith(op) || binaryShadowMaybe(op) || !plainNumberSlotValue(*slot)) return false;
+    if (!typedOpArith(op) || binaryShadowMaybe(op)) return false;
+    const bool native = slot->natBits != 0;
+    if (native ? !nativeNumberSlotValue(*slot) : !plainNumberSlotValue(*slot) && !bareRatValue(*slot))
+        return false;
     Env* const cur = tctx_.cur.get();
     TNum l, r, o;
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r) ||
-        !typedArith(op[0], l, r, o))
+        !typedArith(op[0], l, r, b->lhs.get(), b->rhs.get(), o))
         return false;
-    SlotStripe ws(*this, slot);   // torn-copy contract, as the lane's store
-    if (o.isNum) { slot->t = VT::Num; slot->n = o.n; }
-    else { slot->t = VT::Int; slot->i = o.i; }
+    if (!native) {
+        if (slot->t == VT::Rat || (o.f & TN_RAT)) { fusedRatStore(*this, slot, o); return true; }
+        SlotStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+        if (o.f & TN_NUM) { slot->t = VT::Num; slot->n = o.n; }
+        else { slot->t = VT::Int; slot->i = o.i; }
+        return true;
+    }
+    const int bits = slot->natBits;
+    if (slot->natFloat) {
+        if (!(o.f & TN_NUM)) return false;
+        SlotStripe ws(*this, slot);
+        slot->n = bits == 32 ? (double)(float)o.n : o.n;
+        return true;
+    }
+    if (o.f & (TN_NUM | TN_RAT)) return false;
+    long long z = o.i;
+    if (bits < 64) {
+        const unsigned long long mask = (1ULL << bits) - 1, u = (unsigned long long)o.i & mask;
+        z = (slot->natSigned && (u & (1ULL << (bits - 1)))) ? (long long)u - (long long)(1ULL << bits)
+                                                            : (long long)u;
+    }
+    SlotStripe ws(*this, slot);
+    slot->i = z;
     return true;
 }
 
@@ -21790,9 +22084,10 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
 }
 
 // The right side of a declaration-lane node, as a plain Int, Num, Str or
-// Bool — computed only from literals and plain variables, so false means
-// nothing ran. A Binary answers once its own evaluation has decided its shape: a
-// typed subtree, or the fast shape over two machine numbers.
+// Bool, or a typed subtree's Rat — computed only from literals and plain
+// variables, so false means nothing ran. A Binary answers once its own
+// evaluation has decided its shape: a typed subtree, or the fast shape over two
+// machine numbers.
 bool Interpreter::declLaneRhs(Expr* e, Value& out) {
     switch (e->kind) {
         case NK::IntLit: out = Value::integer(static_cast<IntLit*>(e)->v); return true;
@@ -21820,7 +22115,11 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
         case NK::Binary: {
             auto* b = static_cast<Binary*>(e);
             const Expr::EvalFn h = b->handler;
-            if (h == &Interpreter::typedTreeHandler) return typedTreeValue(b, out);
+            if (h == &Interpreter::typedTreeHandler) {
+                if (!typedTreeValue(b, out)) return false;
+                if (out.natBits) dropNativeTags(out);   // a boxed $ takes the value, not the native
+                return true;
+            }
             if (h != &Interpreter::binaryFastHandler || binaryShadowMaybe(b->op)) return false;
             Env* const cur = tctx_.cur.get();
             auto leaf = [&](Expr* x, bool isLit, TNum& o) -> bool {
@@ -21832,8 +22131,8 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
                     if (!p) p = cur->find(ve->name);
                 }
                 if (!p || p->natBits || !p->hashKind.empty()) return false;
-                if (p->t == VT::Int) { if (p->big()) return false; o.isNum = false; o.i = p->i; return true; }
-                if (p->t == VT::Num) { o.isNum = true; o.n = p->n; return true; }
+                if (p->t == VT::Int) { if (p->big()) return false; o.f = 0; o.i = p->i; return true; }
+                if (p->t == VT::Num) { o.f = TN_NUM; o.n = p->n; return true; }
                 return false;
             };
             TNum l, r;
@@ -21841,15 +22140,26 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
                 return false;
             if (typedOpArith(b->op)) {
                 TNum o;
-                if (!typedArith(b->op[0], l, r, o)) return false;
-                out = o.isNum ? Value::number(o.n) : Value::integer(o.i);
+                if (!typedArith(b->op[0], l, r, b->lhs.get(), b->rhs.get(), o)) return false;
+                out = typedResultValue(o);
                 return true;
             }
-            out = Value::boolean(typedCompare(b->op, l, r));
+            const int c = typedCompare(b->op, l, r);
+            if (c < 0) return false;
+            out = Value::boolean(c != 0);
             return true;
         }
         default: return false;
     }
+}
+
+// A fast-shape comparison whose leaves are not two machine Ints, as a
+// condition: 1/0, or -1 when the typed rules do not answer it (nothing read
+// has side effects).
+static int typedLeavesBool(Binary* b, Env* cur) {
+    TNum l, r;
+    if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return -1;
+    return typedCompare(b->op, l, r);
 }
 
 int Interpreter::typedTreeBool(Binary* b) {
@@ -21857,7 +22167,7 @@ int Interpreter::typedTreeBool(Binary* b) {
     Env* const cur = tctx_.cur.get();
     TNum l, r;
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return -1;
-    return typedCompare(b->op, l, r) ? 1 : 0;
+    return typedCompare(b->op, l, r);
 }
 
 // The handler a typed-subtree root is compiled to. A subtree whose leaves keep

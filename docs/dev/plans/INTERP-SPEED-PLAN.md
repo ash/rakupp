@@ -25,8 +25,9 @@ and V6's P2/P3, by evidence per cost. Each item keeps its own section and gates.
    each leaf, and `++`/`op=` on element and attribute targets (`@a[$i]++`,
    `$!n++`). TYPES N0 measured typed evaluation at 4.8× on the arithmetic.
    *In part (task 9 below):* typed subtrees, Num in the fast shape, and the
-   `my $x = EXPR` declaration lane — `types/mandel-plain` −63%; and `++`/`--`
-   on elements and attributes in place — perf-guard `hash` −24%.
+   `my $x = EXPR` declaration lane — `types/mandel-plain` −63%; `++`/`--`
+   on elements and attributes in place — perf-guard `hash` −24%; and native
+   and Rat leaves — `types/mandel-native` −37%, `mandel-rat` −19%.
 2. **`--cnp` on x86-64** (CNP-PLAN P1). The one hard blocker for tier-up
    (task 10), for `--cnp` as the default, and for retiring `--jit`.
    *Fixed for Mach-O 2026-10-01:* the GOT slot held value − 4. Linux x86-64
@@ -262,6 +263,17 @@ times, `exec` 96.
 It is 7.4% (from ~8.5% before this task; the loop itself is 23% faster, so
 the absolute cost fell further than the share).
 
+*Re-measured 2026-10-11* (M1, `loopsum` at 30M iterations with the kernels
+off, macOS `sample`): `_tlv_get_addr` was 29% of the interpreter thread's
+samples. v5.3.0 had put `loopNest_` — a non-constinit `static thread_local`,
+so every use outside its own file called its TLS wrapper — into
+`runLoopBody`'s per-iteration count, and `loopFirstBody_` was a lookup of its
+own beside it. Both now live in `t_poll`, which the iteration reads anyway:
+`loopsum` −3.3% retired instructions (95 → 88 ms walking), `streq` −1.9%, and
+the share is 20%. What is left is one `tctx_` read in each of `runLoopBody`,
+`execPlainBlock`, `exec` and `evalAssign` per iteration, which needs the
+context passed down rather than re-read.
+
 ### 5. Shrink the hot frames
 
 `___chkstk_darwin`, ~4%: `eval`, `evalBinary`, `evalAssignInner` and `exec`
@@ -467,8 +479,8 @@ node kinds or goes into V6's "measured, and not pursued" table with its numbers.
 an int64 lane with the overflow check and stores the Int in place — the
 UNBOX / `--cnp` idea applied per node rather than per loop.
 
-- [ ] Build it on task 8's handlers, for `+ - * < <= > >= == !=` over native
-  and plain Int operands. *In part:*
+- [x] Build it on task 8's handlers, for `+ - * < <= > >= == !=` over native
+  and plain Int operands. *Done 2026-10-11*, with Nums and Rats:
   - `$x = $a op $b` for `+ - *` (`fusedIntAssign`): into the slot of a plain
     Int or a full-width signed `int`, for a right side compiled to its fast
     shape; `asg` −9%, and the kernels counting with `my int $n` −2…−7%.
@@ -520,9 +532,42 @@ UNBOX / `--cnp` idea applied per node rather than per loop.
     −43%. A loop keyed by another subscript (`%h{@k[$i]}++`) is +2% in
     retired instructions: the lane's own refusal is 16 per iteration, the
     rest is how the compiler laid out the surrounding path.
-  - *Not done:* typed Rat leaves.
+  - Native and Rat leaves in typed subtrees (2026-10-11). A `my int`/`my num`
+    leaf is its number, and an operation over one follows nativeIntArith and
+    tagNativeNum: native, wrapping and tagged when each operand is a native
+    or a literal of the right kind, the Int candidate otherwise; an unsigned
+    leaf's `!=` keeps nativeMixedSignNe's rule by declining. A Rat leaf (a
+    variable or a decimal literal) and Int `/` Int take applyArith's
+    small-Rat lane — parts under 2**62, `__int128` products, a binary gcd —
+    and decline past it, beside a Num, for a FatRat and on a zero divisor.
+    `fusedTypedAssign` writes natives wrapped to their width (a num32
+    rounded), takes the fast shape's two leaves too (`$x = $a op $b` over
+    Nums, natives, Rats), and rewrites a Rat's parts in place when the slot
+    owns its block and both parts (checked under the stripe); `tryCondBool`
+    reads a fast-shape condition's Num, native and Rat leaves the same way.
+    Plain `=` into a variable holding a bare Rat now takes the assignment
+    lane (`bareRatValue`); it went down the full path before. Retired
+    instructions against fc6abf32, kernels off, median of 5: a native int
+    subtree loop −46%, a native num one −57%, a Rat one −78%, a Rat
+    comparison −69%, a native num `while` counter −38%; `types/` intloop-
+    native −39%, numloop-native −38%, mandel-native −35%, mandel-rat −23%;
+    plain Int and Num shapes −1…−2%, mandel-plain +0.8%. In the default mode,
+    where the loop kernels decline natives, mandel-native 1.34 → 0.84 s,
+    numloop-native 1.13 → 0.67 s, intloop-native 1.23 → 0.70 s, mandel-rat
+    350 → 283 ms. Regression test:
+    `t/regression/typed-subtree-native-and-rat-leaves.raku`.
+  - *Not done:* a Rat compared with a Num, a Rat literal in the fast shape
+    (`$r * 0.5` has no fast shape: plainScalarLit takes no Rat), and an
+    unsigned 64-bit native leaf; each takes the full path.
 
-*Done when:* `loopsum` and `streq` have closed half their gap.
+*Done when:* `loopsum` and `streq` have closed half their gap. Measured
+2026-10-11 on an M1, interpreter with the loop kernels off against `--exe`
+built without them: `streq` 160 against 21.5 ms, 7.5× (16.3× at v5.0.0), so
+past half; `loopsum` 88 against 12.5 ms, 7.0× (8.3×), not. `loopsum`'s body is
+`$total += $_`, which already took the in-place Int lane before this task:
+what is left is the loop runner and block entry, and 20% of its samples are
+thread-local lookups (task 4), not leaves. With the kernels on, as the
+benchmarks page measures it, both kernels run within 1.5–2.3× of `--exe`.
 
 ### 10. Tier hot loops up to copy-and-patch (V6 P6)
 

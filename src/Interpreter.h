@@ -1080,6 +1080,17 @@ struct LoopPoll {
     // (and saveCtx/loadCtx, which move the stack between threads' parked
     // contexts) are the only writers, so it cannot drift from the stack.
     long long gatherDeadline = 0;
+    // How many loop BODIES are running on this thread (runLoopBody): a `last`
+    // inside `lives-ok { … }` escapes to such a loop instead of failing the
+    // test. Here, not a thread_local of its own, because runLoopBody counts it
+    // up and down every iteration: as a separate non-constinit thread_local
+    // each touch was a call to its TLS wrapper.
+    int loopNest = 0;
+    // The body a loop is running, whose FIRST the loop drives itself, so its
+    // execBlock must not run it again. Only THAT body: a block nested in it,
+    // or one it calls, is not the loop's and keeps its own FIRST. Set and
+    // restored by runLoopBody each iteration, so it rides in the same struct.
+    const std::vector<StmtPtr>* firstBody = nullptr;
 };
 RAKUPP_CONSTINIT extern thread_local LoopPoll t_poll;
 // The line of the statement now executing (test diagnostics, callframe, the line
@@ -2842,11 +2853,7 @@ public:
     // reuses the caller's) must unwind only the temps IT pushed.
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0, int postOk = -1);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
-    // The body a loop is running, whose FIRST the loop drives itself, so its
-    // execBlock must not run it again. Only THAT body: a block nested in it, or
-    // one it calls, is not the loop's and keeps its own FIRST (save/restore per
-    // thread, like the call registers).
-    RAKUPP_CONSTINIT static thread_local const std::vector<StmtPtr>* loopFirstBody_;
+    // (the body a loop drives FIRST for is t_poll.firstBody)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.
     // `checkOnly` is `EVAL $code, :check`: compile it — parse, then BEGIN and
@@ -3840,9 +3847,7 @@ public:
     // so true parallel execution can't corrupt them. Same access syntax (`X_`), so no
     // call-site changes. Cross-thread emit uses the mutex-guarded ReactCtx, not reactStack_.
     static thread_local std::vector<RedispatchCtx> redispatchStack_;
-    // how many loop BODIES are running on this thread (runLoopBody): a `last`
-    // inside `lives-ok { … }` escapes to such a loop instead of failing the test
-    static thread_local int loopNest_;
+    // (how many loop bodies run on this thread is t_poll.loopNest)
     // A `proto` with a real body runs AROUND the dispatch; the `{*}` inside it is
     // where the candidates are finally chosen. One frame per active proto body.
     struct ProtoCtx { std::function<Value(ValueList)> dispatch; ValueList args; };
