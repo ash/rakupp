@@ -2217,15 +2217,32 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
     return o;
 }
 
+// The names %*ENV held when it was built, and at each sync since: one that
+// is gone from the hash now was deleted by the program, and leaves the
+// process environment too. Only those — whatever the engine set for itself
+// and the program never saw stays where it is.
+std::set<std::string>& envSyncedNames() {
+    static std::set<std::string> names;
+    return names;
+}
+
 void Interpreter::syncEnvToProcess() {
     // --sandbox: %*ENV is the program's own; the process keeps the host's
     // environment, which is also where the engine reads its own switches
     if (sandboxed()) return;
     auto it = global_->vars.find("%*ENV");
     if (it == global_->vars.end() || it->second.t != VT::Hash || !it->second.hash()) return;
+    static std::mutex m;
+    std::lock_guard<std::mutex> lk(m);
+    std::set<std::string>& known = envSyncedNames();
+    // `%*ENV<X>:delete` takes X out of what a child inherits (#157)
+    for (auto& name : known)
+        if (!it->second.hash()->count(name)) unsetenv(name.c_str());
+    known.clear();
     for (auto& kv : *it->second.hash()) {
         std::string val = kv.second.toStr();
         setenv(kv.first.c_str(), val.c_str(), 1);
+        known.insert(kv.first);
     }
 }
 

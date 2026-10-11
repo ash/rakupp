@@ -4047,6 +4047,8 @@ void Interpreter::adoptProcessStatics() {
     };
 }
 
+std::set<std::string>& envSyncedNames();   // InterpreterBinding.cpp
+
 Interpreter::Interpreter() {
     adoptProcessStatics();
     // On the `now` clock, NOT raw POSIX. epochNowSecs() carries the Instant
@@ -4143,6 +4145,7 @@ Interpreter::Interpreter() {
             (*envh.hash())[kv.substr(0, eq)] = valAllomorph(Value::str(kv.substr(eq + 1)));
         }
         global_->define("%*ENV", envh);
+        for (auto& kv : *envh.hash()) envSyncedNames().insert(kv.first);
     }
     // `Cursor` is the setting's old name for Match: `has Cursor $.cursor` holds
     // a Match (Cro::WebApp::Template's SyntaxError does), and `Cursor.^name`
