@@ -5290,6 +5290,19 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 return Value::typeObj(cd->name);
             }
             if (cd->isPackage) {
+                // Normal flow reached the declaration: retire its forward-reference
+                // record, as a class does below. A package never shows up as
+                // built in classes_ (typeDeclBuilt), so a stale record made a
+                // later `import M` (#158) run the body again — its statements
+                // and all (S06-operator-overloading/imported-subs.t).
+                {
+                    auto pend = pendingTypes_.find(cd->name);
+                    if (pend != pendingTypes_.end()) {
+                        auto& v = pend->second;
+                        v.erase(std::remove(v.begin(), v.end(), cd), v.end());
+                        if (v.empty()) pendingTypes_.erase(pend);
+                    }
+                }
                 // `module M is NoSuch {}` — a parent nobody declared (Rakudo:
                 // X::Inheritance::UnknownParent, as for a class)
                 if (!cd->name.empty() && !cd->parent.empty() && !classes_.count(cd->parent) &&
