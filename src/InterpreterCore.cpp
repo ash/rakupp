@@ -7455,6 +7455,19 @@ struct HideRedispatch {
     }
 };
 
+// A value a callable hands back is a VALUE: a native type is no container
+// (`my int $x` holds no Scalar), so a value read out of one and returned must
+// not carry the variable's native tags along (see dropNativeTags, which the
+// argument binder and `=` already apply). It did, and a bind took them — after
+// `$v := f()` with f returning a native int, $v was itself a native slot, and
+// every later `$v := …` was coerced to an integer: `$v := [7, 8]` gave 2,
+// `$v := "s"` gave 0 (found by JSON::Native's Raku parser, whose object
+// values came back as their own .elems).
+static Value dropNativeTag(Value v) {
+    if (v.natBits) dropNativeTags(v);
+    return v;
+}
+
 Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     // `is test-assertion`: the outermost one's call site is where a failure inside it is reported
     struct TALine { int& ref; bool set; ~TALine() { if (set) ref = 0; } }
@@ -7502,9 +7515,9 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
                 redispatchStack_.pop_back();
                 return r;
             };
-        return runLevel((int)wraps.size() - 1, std::move(args));
+        return dropNativeTag(runLevel((int)wraps.size() - 1, std::move(args)));
     }
-    return callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified);
+    return dropNativeTag(callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified));
 }
 Callable::~Callable() { delete (NcCif*)nativeCifCache.p; }
 

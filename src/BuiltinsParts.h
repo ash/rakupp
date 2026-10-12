@@ -10,6 +10,7 @@
 //   BuiltinsRegister2.cpp      registerBuiltins, pieces three and four: string and list subs, radix, coercions
 //   BuiltinsRegister3.cpp      registerBuiltins, the last piece: sleep, signals, NativeCall subs, set operators
 //   BuiltinsNqp.cpp            the nqp:: ops, interpreted (evalNqpOp) and compiled (rtNqpOp)
+//   BuiltinsJson.cpp           the JSON codec's reader: whitespace and JSONC comments, strings, numbers, values
 #pragma once
 #include "CNumeric.h"
 #include "AsciiCtype.h"

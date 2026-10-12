@@ -5485,125 +5485,6 @@ static Value precompRepoObj(std::unordered_map<std::string, std::shared_ptr<Clas
     ro->attrs["store"] = Value::object(so);
     return Value::object(ro);
 }
-void jsonSkipWs(const std::string& s, size_t& i, const JsonCfg& cfg) {
-    for (;;) {
-        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
-        if (!cfg.jsonc || i + 1 >= s.size() || s[i] != '/') return;
-        if (s[i + 1] == '/') { i += 2; while (i < s.size() && s[i] != '\n') i++; }
-        else if (s[i + 1] == '*') {
-            i += 2;
-            while (i + 1 < s.size() && !(s[i] == '*' && s[i + 1] == '/')) i++;
-            i = i + 1 < s.size() ? i + 2 : s.size();
-        }
-        else return; // a lone '/' is the next token's parse error, not whitespace
-    }
-}
-static bool jsonParseString(const std::string& s, size_t& i, std::string& out) {
-    if (i >= s.size() || s[i] != '"') return false;
-    i++;
-    out.clear();
-    while (i < s.size() && s[i] != '"') {
-        unsigned char c = (unsigned char)s[i];
-        if (c < 0x20) return false; // raw control characters must arrive \u-escaped
-        i++;
-        if (c != '\\') { out += (char)c; continue; }
-        if (i >= s.size()) return false;
-        char e = s[i++];
-        switch (e) {
-            case 'n': out += '\n'; break;  case 't': out += '\t'; break;
-            case 'r': out += '\r'; break;  case 'b': out += '\b'; break;
-            case 'f': out += '\f'; break;  case '/': out += '/';  break;
-            case '"': out += '"';  break;  case '\\': out += '\\'; break;
-            case 'u': {
-                auto hex4 = [&](size_t p, unsigned& v) {
-                    if (p + 4 > s.size()) return false;
-                    v = 0;
-                    for (int k = 0; k < 4; k++) {
-                        char h = s[p + k]; v <<= 4;
-                        if (h >= '0' && h <= '9') v |= (unsigned)(h - '0');
-                        else if (h >= 'a' && h <= 'f') v |= (unsigned)(h - 'a' + 10);
-                        else if (h >= 'A' && h <= 'F') v |= (unsigned)(h - 'A' + 10);
-                        else return false;
-                    }
-                    return true;
-                };
-                unsigned cp;
-                if (!hex4(i, cp)) return false;
-                i += 4;
-                // a high surrogate followed by \u-escaped low surrogate is ONE
-                // astral character (03-unicode.t round-trips flag emoji this way)
-                if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size() &&
-                    s[i] == '\\' && s[i + 1] == 'u') {
-                    unsigned lo;
-                    if (hex4(i + 2, lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                        i += 6;
-                    }
-                }
-                if (cp >= 0xD800 && cp <= 0xDFFF) return false; // a LONE surrogate is not a character — die, like chr() would
-                out += cpToU8(cp);
-                break;
-            }
-            default: return false; // JSON::Fast dies on unknown escapes; so do we
-        }
-    }
-    if (i >= s.size()) return false;
-    i++; // closing quote
-    return true;
-}
-bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg) {
-    if (++cfg.depth > 20000) return false; // ~3 MB of C++ frames; no real document nests this deep
-    jsonSkipWs(s, i, cfg);
-    if (i >= s.size()) return false;
-    char c = s[i];
-    if (c == '"') { std::string str; if (!jsonParseString(s, i, str)) return false; out = Value::str(str); return true; }
-    if (c == '{') {
-        i++; out = Value::makeHash();
-        if (cfg.immutable) out.hashKind = "Map";
-        jsonSkipWs(s, i, cfg);
-        if (i < s.size() && s[i] == '}') { i++; return true; }
-        for (;;) {
-            jsonSkipWs(s, i, cfg);
-            std::string key; if (!jsonParseString(s, i, key)) return false;
-            jsonSkipWs(s, i, cfg);
-            if (i >= s.size() || s[i] != ':') return false; i++;
-            Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
-            (*out.hash())[key] = v;
-            jsonSkipWs(s, i, cfg);
-            if (i < s.size() && s[i] == ',') { i++; continue; }
-            if (i < s.size() && s[i] == '}') { i++; return true; }
-            return false;
-        }
-    }
-    if (c == '[') {
-        i++; out = Value::array();
-        out.isList = cfg.immutable; // List under :immutable, Array otherwise — is-deeply tells them apart
-        jsonSkipWs(s, i, cfg);
-        if (i < s.size() && s[i] == ']') { i++; return true; }
-        for (;;) {
-            Value v; if (!jsonParseValue(s, i, v, cfg)) return false;
-            out.arr()->push_back(v);
-            jsonSkipWs(s, i, cfg);
-            if (i < s.size() && s[i] == ',') { i++; continue; }
-            if (i < s.size() && s[i] == ']') { i++; return true; }
-            return false;
-        }
-    }
-    if (s.compare(i, 4, "true") == 0)  { i += 4; out = Value::boolean(true);  return true; }
-    if (s.compare(i, 5, "false") == 0) { i += 5; out = Value::boolean(false); return true; }
-    if (s.compare(i, 4, "null") == 0)  { i += 4; out = Value::any();           return true; }
-    // number: scan the same loose token JSON::Fast does, then type it exactly
-    // like Str.Numeric does — that is what the real module calls on the token.
-    if (c != '-' && !ascii::isdigit((unsigned char)c)) return false; // JSON has no leading '+'
-    size_t st = i;
-    if (c == '-') i++;
-    while (i < s.size() && (ascii::isdigit((unsigned char)s[i]) || s[i] == '.' ||
-                            s[i] == 'e' || s[i] == 'E' || s[i] == '+' || s[i] == '-')) i++;
-    if (i == st) return false;
-    out = numifyStr(s.substr(st, i - st));
-    return out.t != VT::Any && out.t != VT::Nil; // "5." scans but does not numify — die like .Numeric
-}
-
 static void jfEscape(const std::string& s, std::string& out); // defined below (JSON::Fast codec)
 std::string jsonEncode(const Value& v) {
     switch (v.t) {
@@ -5673,8 +5554,16 @@ static void jfEscape(const std::string& s, std::string& out) {
     // byte copy genuinely disagree. Falling back on any byte >= 0x80, the
     // old rule, sent Sparrow6-shaped writes to the interpreted module:
     // ~327 ms instead of ~4 ms on the 278 KB diagnose corpus.
+    // …except at an escape. The module rebuilds the string from codepoints, so
+    // what follows an escape can compose with the escape's last character:
+    // "\n" then U+0301 is a backslash and an "ń" in its output. So where an
+    // escape is followed by non-ASCII, the escaped text is put in NFC after.
+    const size_t start = out.size();
+    bool afterEscape = false, mayCompose = false;
     for (size_t i = 0; i < s.size();) {
         unsigned char c = (unsigned char)s[i];
+        if (c >= 0x80 && afterEscape) mayCompose = true;
+        afterEscape = c < 0x80 && (c == '\n' || c == '\r' || c == '\t' || c == '"' || c == '\\' || c <= 31);
         if (c < 0x80) {
             if (c == '\n') out += "\\n";
             else if (c == '\r') out += "\\r";
@@ -5697,6 +5586,13 @@ static void jfEscape(const std::string& s, std::string& out) {
         snprintf(b, sizeof b, "\\u%04X\\u%04X", 0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF));
         out += b;
         i += 4;
+        afterEscape = true;
+    }
+    if (mayCompose && uniNfcQuickCheckUtf8(out.data() + start, out.size() - start) != 1) {
+        std::string norm;
+        for (uint32_t cp : uniNormalize(utf8cp(out.substr(start)), 1)) norm += cpToU8(cp);
+        out.resize(start);
+        out += norm;
     }
 }
 
@@ -5805,6 +5701,9 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             return;
         }
         case VT::Array: {
+            // a Capture is not Positional to the module: it dies "Don't know
+            // how to jsonify Capture", and that is its answer to give
+            if (v.hashKind == "Capture") throw JsonFastUnsupported{"cannot serialise a Capture"};
             if (!v.arr()) { out += pretty ? "[\n]" : "[]"; return; }
             auto& xs = *v.arr();
             if (pretty) {

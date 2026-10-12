@@ -193,6 +193,35 @@ void Interpreter::registerBuiltins() {
             throw RakuError{Value::typeObj("X::AdHoc"), std::string("to-json: ") + why};
         });
     };
+    // The codec as a ROUTINE with a fallback built in, for a module that stands
+    // in for JSON::Fast: `rakupp-json-codec('from-json', &raku-from-json)`
+    // returns a sub that runs the codec, and hands the very same arguments to
+    // the Raku routine for anything the codec does not cover — an adverb it
+    // does not take, a type outside the ladder, a document it refuses. It is
+    // the JSON::Fast wrapper (wrapJsonFastExports) offered to any module: a
+    // module that exports this sub answers a call with no Raku-level frame of
+    // its own in front of the codec, which on a fifty-byte document is most of
+    // the cost (JSON::Native, 2026-10-12: 2.6 µs through a Raku sub, 0.4 µs
+    // through this). The fallback must be a JSON::Fast-exact implementation;
+    // the codec answers only what it answers exactly as JSON::Fast does.
+    B["rakupp-json-codec"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() != 2 || a[1].t != VT::Code)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "rakupp-json-codec: expected ('from-json' or 'to-json', &fallback)"};
+        const std::string which = a[0].toStr();
+        const bool to = which == "to-json";
+        if (!to && which != "from-json")
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "rakupp-json-codec: no codec named '" + which + "'"};
+        Value fallback = a[1];
+        Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
+        w.code()->name = which;
+        w.code()->builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
+            auto handOver = [&](const char*) { return I.callCallable(fallback, args); };
+            return to ? jsonToJsonBody(I, args, handOver) : jsonFromJsonBody(I, args, handOver);
+        };
+        return w;
+    };
     // The tag's diagnostic sub. `core` is what it reports when the compiler
     // answered the `use` — as against `native` for a distribution's compiled
     // extension, or the name of the module it stood aside for. Registered under
