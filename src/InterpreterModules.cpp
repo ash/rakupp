@@ -4307,6 +4307,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // the two apart; a program that could would see a name in scope
                 // that Rakudo would not give it.
                 if (u->isImport) {
+                    // A BEGIN or CHECK runs before the mainline has reached the
+                    // `module Foo {…}` above it, so the package is still a pending
+                    // declaration with nothing exported yet. Rakudo has built it
+                    // by then (compile time): build it now, as `Foo::f()` does
+                    // (issue #158, Rosetta Code's Modular_arithmetic).
+                    if (pendingTypes_.count(u->module)) materializePendingType(u->module);
                     // `import Mod :tag` asks the module for a SELECTIVE export
                     // set, which only the loader can answer — the package scan
                     // below sees what a load already published, never what a tag
