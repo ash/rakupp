@@ -1329,6 +1329,7 @@ public:
         size_t found = 0;     // index whose scope chain holds the name
     };
     struct Slot { Memo m[2]; unsigned char next = 0; };
+    static constexpr size_t NONE = ~(size_t)0;   // Memo::found of a walk that found nothing
 private:
     std::vector<Env*> v_;
     std::vector<DynSerial> s_;
@@ -2259,6 +2260,8 @@ public:
     // Static like tctx_ itself — everything they consult is thread-local.
     static Value* findDynamicSlot(const std::string& name);
     static Value* dynStackFind(DynStack& ds, const std::string& name);
+    static Value* dynCallerFrame(Env* e, const std::string& name, const Env* stop, bool mark);
+    static Value* dynRawSlot(const std::string& name, const Value* held);
     // …then the historical lenient fallbacks (full closure chains), so nothing
     // resolvable before the ordering fix became unreachable. Reads AND writes
     // go through this one resolver.

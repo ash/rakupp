@@ -10,6 +10,11 @@
 # rebinding, temp, EVAL, CALLER::, a grammar's :my, sibling calls, threads.
 # Every expectation is Rakudo 2026.09's answer.
 #
+# The second half pins three walk rules that differed from Rakudo before the
+# memo existed: a later `my $*X` in a caller's frame hides the outer one from
+# the start; a called block (pointy, closure) finds dynamics through its
+# callers, not the frame it was written in; and `$*X := $y` aliases.
+#
 # The file runs itself a second time under RAKUPP_DYNCACHE_CHECK=1, which
 # checks every memoized answer against the full walk and aborts on the first
 # disagreement.
@@ -102,6 +107,58 @@ is deep(40, { $*OUT.^name }), 'IO::Handle', 'a PROCESS one, deep';
 # a later declaration in a frame the earlier read passed
 sub later() { my @r; @r.push: deep(30, &g); { my $*X = 'later'; @r.push: deep(30, &g) }; @r.push: deep(30, &g); @r }
 is later(), ['top', 'later', 'top'], 'a declaration after a memoized read';
+
+# --- what a caller's frame holds (Rakudo's rules, once rakupp's own) ------
+
+# a `my $*X` further down a caller's frame exists from the frame's entry,
+# undefined and of its type, and hides the outer one from the callee before the
+# declaration runs; what the callee writes there, the declaration then sets
+sub gx() { $*X.raku }
+sub late1() { my @r; @r.push: gx(); my Int $*X = 5; @r.push: gx(); @r }
+is late1(), ['Int', '5'], 'a later typed declaration';
+sub ga() { @*A.raku }
+my @*A = 1, 2;
+sub late2() { my @r; @r.push: ga(); my @*A = 3; @r.push: ga(); @r }
+is late2(), ['[]', '[3]'], 'a later array declaration';
+sub setx() { $*X = 'set-by-callee' }
+sub late3() { my @r; setx(); @r.push: g(); my $*X = 'late'; @r.push: g(); @r }
+is late3(), ['set-by-callee', 'late'], 'a callee writing a not-yet-declared dynamic';
+is $*X, 'top', '...which leaves the outer one alone';
+sub late4() { my @r; setx(); @r.push: g(); my $*X; @r.push: g(); @r }
+is late4(), ['set-by-callee', 'set-by-callee'], 'a bare declaration keeps what was written';
+sub late5() { if True { @*SEEN2.push: g() }; my $*X = 'x' }
+my @*SEEN2; late5();
+is @*SEEN2, ['none'], 'from inside an inner block of the declaring frame (undefined)';
+
+# a called block finds a dynamic through its callers, not where it was written
+my &stored;
+sub maker() { my $*X = 'maker'; &stored = -> { $*X } }
+maker();
+sub caller-of() { my $*X = 'caller'; stored() }
+is caller-of(), 'caller', 'a stored pointy block sees its caller';
+is stored(), 'top', '...and not the frame that made it';
+sub b1() { my $*X = 'b1'; my @r;
+    @r.push: (1, 2).map({ $*X }).join(',');
+    @r.push: (given 1 { $*X });
+    @r.push: (with 1 -> $v { $*X });
+    @r.push: (-> { -> { $*X }() })();
+    @r.push: await(start { $*X });
+    @r.push: await(Promise.kept(1).then({ $*X }));
+    my $s = ''; react { whenever Supply.from-list(1) { $s ~= $*X } }; @r.push: $s;
+    @r }
+is b1(), ['b1,b1', 'b1', 'b1', 'b1', 'b1', 'b1', 'b1'], 'blocks run by builtins reach the routine';
+
+# `:=` to a dynamic aliases the container
+my $y = 'y1';
+sub d1() { my @r; my $*X := $y; @r.push: g(); $y = 'y2'; @r.push: g(); $*X = 'via-alias'; @r.push: $y; @r }
+is d1(), ['y1', 'y2', 'via-alias'], 'my $*X := $y';
+sub d2() { my $z = 'z1'; my $*X = 'own'; $*X := $z; $z = 'z2'; g() }
+is d2(), 'z2', '$*X := $z rebinds';
+
+# indir in a worker: its block's $*CWD is its own
+my $cwd = $*CWD;
+is await(start { indir $*TMPDIR, { $*CWD.IO.resolve.Str } }), $*TMPDIR.IO.resolve.Str, 'indir in a start block';
+is $*CWD, $cwd, '...and ours is untouched';
 
 say $fails == 0 ?? 'PASS' !! "FAIL ($fails)";
 exit $fails == 0 ?? 0 !! 1;

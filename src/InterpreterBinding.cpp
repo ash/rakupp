@@ -3296,6 +3296,83 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
     return Value::nil();
 }
 
+// Does this scope's own block DECLARE `name` further on — a `my $*x` its
+// code has not reached yet? Rakudo's lexical exists from the frame's entry,
+// undefined, so a callee already sees it (and not an outer one): `sub f { g();
+// my $*X = 1 }` hands g an undefined $*X. The statements are the ones Env::
+// declStmts names; a declaration inside a nested block is that block's.
+static const VarExpr* dynDeclaredLater(const Env* e, const std::string& name) {
+    if (!e->declStmts) return nullptr;
+    auto one = [&](const Expr* x) -> const VarExpr* {
+        if (!x) return nullptr;
+        if (x->kind == NK::VarExpr) {
+            auto* v = static_cast<const VarExpr*>(x);
+            return v->declare && v->declScope == "my" && v->name == name ? v : nullptr;
+        }
+        if (x->kind == NK::ListExpr)
+            for (auto& it : static_cast<const ListExpr*>(x)->items)
+                if (it && it->kind == NK::VarExpr) {
+                    auto* v = static_cast<const VarExpr*>(it.get());
+                    if (v->declare && v->declScope == "my" && v->name == name) return v;
+                }
+        return nullptr;
+    };
+    for (auto& s : *static_cast<const std::vector<StmtPtr>*>(e->declStmts)) {
+        if (!s || s->kind != NK::ExprStmt) continue;
+        const Expr* x = static_cast<const ExprStmt*>(s.get())->e.get();
+        if (x && x->kind == NK::Assign) x = static_cast<const Assign*>(x)->target.get();
+        if (const VarExpr* v = one(x)) return v;
+    }
+    return nullptr;
+}
+
+// One CALLER's frame for a `$*x` read: dynInFrame, plus the declaration its
+// scopes have not reached yet (dynDeclaredLater), which is made there now —
+// undefined, of its declared type — so the callee reads and writes the
+// variable the declaration will then initialize. Made only while one thread
+// runs: a `start` block's caller may be running on, and its scope is not
+// ours to insert into; there the outer variable answers, as before. `mark`
+// sets EnvVars::walked on each scope passed (the memo's invalidation hook).
+static thread_local unsigned t_dynPendingSkips = 0;
+Value* Interpreter::dynCallerFrame(Env* e, const std::string& name, const Env* stop, bool mark) {
+    for (; e && e != stop; e = e->parent.get()) {
+        if (mark) e->vars.markWalked();
+        if (!e->vars.empty()) {
+            auto it = e->vars.find(name);
+            if (it != e->vars.end()) return it->second.deref();
+        }
+        if (e->layout && e->layout->holdsDynamic)
+            if (Value* p = e->padFind(name)) return p->deref();
+        if (e->declStmts)
+            if (const VarExpr* v = dynDeclaredLater(e, name)) {
+                Interpreter* I = liveTarget();
+                if (I && !(I->parallelMode_ && I->liveWorkers_.load(std::memory_order_acquire) > 0))
+                    return e->define(name, typedDefault(v->declType, name[0])).deref();
+                t_dynPendingSkips++;
+            }
+        if (e->routineFrame || e->callEnv) return nullptr;
+    }
+    return nullptr;
+}
+
+// The STORAGE slot of the `$*x` whose container is `held` (what lvalue
+// answered): the binder replaces the slot, cell holder and all, and a dynamic
+// lives in whichever caller's frame declared it, not on the lexical chain.
+Value* Interpreter::dynRawSlot(const std::string& name, const Value* held) {
+    auto in = [&](Env* e) -> Value* {
+        for (; e; e = e->parent.get()) {
+            if (Value* r = e->localRaw(name)) if (r->deref() == held) return r;
+            if (e->routineFrame || e->callEnv) break;
+        }
+        return nullptr;
+    };
+    ExecContext& t = tctx_;
+    if (t.cur) if (Value* r = in(t.cur.get())) return r;
+    for (size_t i = t.dynStack.size(); i-- > 0;)
+        if (Env* e = t.dynStack[i]) if (Value* r = in(e)) return r;
+    return nullptr;
+}
+
 // Proper Raku resolution order for $*foo (t/regression/dynamic-var-caller-chain
 // holds the oracle probes): the CURRENT frame first — a routine's own
 // `my $*X` beats its caller's — then each CALLER frame innermost-out; a
@@ -3311,9 +3388,11 @@ Value* Interpreter::findDynamicSlot(const std::string& name) {
     // the memoized walk is for `$*x` names off a plain call chain; a gather's
     // block sees its puller's chain, which changes from one resume to the next
     if (t.curGather || !isDynName(name)) {
+        const bool dyn = isDynName(name);
         for (size_t i = t.dynStack.size(); i-- > 0;)
             if (Env* e = t.dynStack[i])
-                if (Value* p = dynInFrame(e, name, i >= ownFrom ? stop : nullptr)) return p;
+                if (Value* p = dyn ? dynCallerFrame(e, name, i >= ownFrom ? stop : nullptr, false)
+                                   : dynInFrame(e, name, i >= ownFrom ? stop : nullptr)) return p;
         return nullptr;
     }
     Value* r = dynStackFind(t.dynStack, name);
@@ -3322,7 +3401,7 @@ Value* Interpreter::findDynamicSlot(const std::string& name) {
     if (check) {
         Value* full = nullptr;
         for (size_t i = t.dynStack.size(); i-- > 0 && !full;)
-            if (Env* e = t.dynStack[i]) full = dynInFrame(e, name);
+            if (Env* e = t.dynStack[i]) full = dynCallerFrame(e, name, nullptr, false);
         if (full != r) {
             std::cerr << "RAKUPP_DYNCACHE_CHECK: " << name << " memoized walk disagrees with the full walk (depth "
                       << t.dynStack.size() << ")\n";
@@ -3344,44 +3423,42 @@ Value* Interpreter::findDynamicSlot(const std::string& name) {
 Value* Interpreter::dynStackFind(DynStack& ds, const std::string& name) {
     const uint64_t epoch = g_dynEpoch.load(std::memory_order_acquire);
     const size_t n = ds.size();
-    auto probe = [&](Env* e) -> Value* {   // dynInFrame, marking what it passes
-        for (; e; e = e->parent.get()) {
-            e->vars.markWalked();
-            if (!e->vars.empty()) {
-                auto it = e->vars.find(name);
-                if (it != e->vars.end()) return it->second.deref();
-            }
-            if (e->layout && e->layout->holdsDynamic)
-                if (Value* p = e->padFind(name)) return p->deref();
-            if (e->routineFrame) return nullptr;
-        }
-        return nullptr;
-    };
-    // memos for the indices above `from` this walk passed (from: where it
-    // started probing on its own, or met a memo — at and below it the memos
-    // are already there)
+    const unsigned skips = t_dynPendingSkips;
+    constexpr size_t NONE = DynStack::NONE;   // a memo of a MISS: nothing from there down
+    auto probe = [&](Env* e) { return dynCallerFrame(e, name, nullptr, true); };
+    // memos at the indices this walk passed above `from` (where it met a memo,
+    // at and below which they exist already; NONE when it met none), naming
+    // where it ended: `found`, or NONE for a miss
     auto leave = [&](size_t found, size_t from) {
         // (marks were set before the epoch could move past `epoch`: if it moved,
-        // these memos are dead on arrival, which costs a walk, never an answer)
-        if (g_dynEpoch.load(std::memory_order_acquire) != epoch) return;
-        for (size_t d = 0; d < n && n - 1 - d > found && n - 1 - d > from; d = d ? d * 2 : 1)
-            ds.setMemo(n - 1 - d, name, epoch, found);
+        // these memos are dead on arrival, which costs a walk, never an answer —
+        // and a declaration left unmade for a live worker (dynCallerFrame) is an
+        // answer that changes without the epoch, so that walk leaves none)
+        if (g_dynEpoch.load(std::memory_order_acquire) != epoch || t_dynPendingSkips != skips) return;
+        for (size_t d = 0; d < n; d = d ? d * 2 : 1) {
+            const size_t idx = n - 1 - d;
+            if ((found != NONE && idx <= found) || (from != NONE && idx <= from)) break;
+            ds.setMemo(idx, name, epoch, found);
+        }
     };
     for (size_t i = n; i-- > 0;) {
         if (const DynStack::Memo* m = ds.memo(i, name, epoch)) {
             const size_t k = m->found;
+            if (k == NONE) { leave(NONE, i); return nullptr; }
             if (k <= i)
                 if (Env* e = ds[k])
                     if (Value* p = probe(e)) { leave(k, i); return p; }
             // re-probe failed (the name left that scope): walk on from i
             for (size_t j = i + 1; j-- > 0;)
                 if (Env* e = ds[j])
-                    if (Value* p = probe(e)) { leave(j, j); return p; }
+                    if (Value* p = probe(e)) { leave(j, NONE); return p; }
+            leave(NONE, NONE);
             return nullptr;
         }
         if (Env* e = ds[i])
-            if (Value* p = probe(e)) { leave(i, i); return p; }
+            if (Value* p = probe(e)) { leave(i, NONE); return p; }
     }
+    leave(NONE, NONE);
     return nullptr;
 }
 

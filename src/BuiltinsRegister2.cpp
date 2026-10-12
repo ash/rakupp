@@ -227,17 +227,20 @@ void Interpreter::registerBuiltinsPart3() {
         // one lexically; with none, a fresh frame carries it.)
         Value cwdv = Value::str(logical); cwdv.hashKind = "IO"; cwdv.ofTypeM() = base;
         if (worker && code.code()) {
-            // a scope of the block's own around its closure holds the new
-            // `$*CWD`: the block reads and assigns THAT, and a caller's
-            // `$*CWD`, which other threads are reading, is never touched
+            // the block is CALLED from a scope of this thread's own that holds
+            // the new `$*CWD` — Rakudo's `my $*CWD = $path; code()` — so it
+            // reads and assigns THAT, and a caller's `$*CWD`, which other
+            // threads are reading, is never touched. (Not a scope around the
+            // block's closure: a called block finds a dynamic through its
+            // callers, not where it was written.)
             auto own = std::make_shared<Env>();
-            own->parent = code.code()->closure;
+            own->parent = Interpreter::tctx_.cur;
             own->define("$*CWD", cwdv);
-            auto cc = makePayload<Callable>(*code.code());
-            cc->closure = own;
-            Value blk; blk.t = VT::Code; blk.setCode(cc);
+            auto savedCur = Interpreter::tctx_.cur;
+            Interpreter::tctx_.cur = own;
+            struct Back { std::shared_ptr<Env> s; ~Back() { Interpreter::tctx_.cur = std::move(s); } } back{savedCur};
             ValueList none;
-            return I.callCallable(blk, none);
+            return I.callCallable(code, none);
         }
         auto denv = std::make_shared<Env>();
         denv->parent = Interpreter::tctx_.cur;

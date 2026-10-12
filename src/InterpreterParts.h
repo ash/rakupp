@@ -1190,7 +1190,12 @@ static inline Value* dynInFrame(Env* e, const std::string& name, const Env* stop
         // the other plain names still look)
         if (e->layout && (e->layout->holdsDynamic || name.size() < 2 || name[1] != '*'))
             if (Value* p = e->padFind(name)) return p->deref();
-        if (e->routineFrame) return nullptr;
+        // an ACTIVATION's own scope ends the frame: a routine's, and a pointy
+        // block's or a closure's too — what is outside a called block is where
+        // it was WRITTEN, not who called it, and its caller is the next entry
+        // of the dynamic chain (Rakudo: `sub mk { my $*X = 1; -> { $*X } }`,
+        // the block called elsewhere does not see mk's $*X)
+        if (e->routineFrame || e->callEnv) return nullptr;
     }
     return nullptr;
 }

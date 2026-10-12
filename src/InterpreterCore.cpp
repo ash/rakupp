@@ -15519,9 +15519,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value* sr = tctx_.cur->findRaw(sv->name);
                 sigillessCell = sr && sr->isCell();
             }
+            // (a DYNAMIC target too: `$*X := $y` / `my $*X := $y` alias $y, and a
+            // callee reading $*X sees what is written to $y afterwards)
             if (((tv->name.size() > 1 && tv->name[0] == '$' &&
                   (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_' ||
-                   tv->name[1] == '!')) || sigilDeclBind) &&
+                   tv->name[1] == '!' ||
+                   (tv->name[1] == '*' && tv->name.size() > 2 && !tv->processScoped && !tv->viaPseudoPkg))) ||
+                 sigilDeclBind) &&
                 ((sv->name.size() > 1 && sv->name[0] == '$' &&
                   (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) || sigillessCell)) {
                 std::shared_ptr<Env> owner;
@@ -15552,7 +15556,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         tctx_.rwMirrorSigil = 0;
                         PRef<Value> cell = srcRaw->promoteToCell();
                         Value* blv = lvalue(a->target.get());
-                        Value* traw = tv->name != "$_" && tv->name[1] != '!' ? tctx_.cur->findRaw(tv->name) : nullptr;
+                        Value* traw = tv->name != "$_" && tv->name[1] != '!'
+                            ? (tv->name[1] == '*' ? dynRawSlot(tv->name, blv) : tctx_.cur->findRaw(tv->name)) : nullptr;
                         if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
                         else *blv = makeSharedCellProxy(cell);
                         return sink ? Value::any() : eval(a->value.get());
