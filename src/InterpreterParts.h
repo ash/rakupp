@@ -1257,12 +1257,31 @@ bool argIsNeverContainer(const Expr* e);
 // The lvalue TARGET of an rw write-back: `f(++$pos)` in Rakudo hands the
 // CONTAINER through the increment, so the callee's writes land in $pos. Peel a
 // prefix/postfix ++/-- (the increment already ran when the arg was evaluated)
-// and aim at the variable underneath.
+// and aim at the variable underneath. `f($pos = $pos + 1)` (and `+=` …) hands
+// the target's container the same way: peel the assignment too. lvalue() of the
+// Assign would RUN it again — and that re-run writes through the caller's own
+// rw link, so a write at depth d walked all d frames: JSON::Fast threads
+// `int $pos is rw` down `parse-array($text, $pos = $pos + 1)`, and 10_000-deep
+// input in its t/01-parse.t took minutes.
 static inline Expr* peelIncDec(Expr* e) {
-    while (e && e->kind == NK::Unary) {
-        auto* u = static_cast<Unary*>(e);
-        if (u->op != "++" && u->op != "--") break;
-        e = u->operand.get();
+    for (;;) {
+        if (e && e->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(e);
+            if (u->op != "++" && u->op != "--") break;
+            e = u->operand.get();
+            continue;
+        }
+        if (e && e->kind == NK::Assign) {
+            auto* a = static_cast<Assign*>(e);
+            const std::string& op = a->op;
+            // `10 R+= $a` writes the value side; leave the odd forms to lvalue()
+            if (op.empty() || op.back() != '=' || op[0] == 'R' || op == ":=" || op == "::=") break;
+            Expr* t = a->target.get();
+            if (!t || (t->kind != NK::VarExpr && t->kind != NK::Assign)) break;
+            e = t;
+            continue;
+        }
+        break;
     }
     return e;
 }
