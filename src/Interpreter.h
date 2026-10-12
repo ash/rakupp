@@ -550,6 +550,106 @@ struct VarNameEq {
 };
 using VarMap = std::unordered_map<std::string, Value, VarNameHash, VarNameEq>;
 
+// The `$*x` lookup memo (DynStack, findDynamicSlot) answers a read from deep in
+// a call chain without walking it again — valid only while nothing the walk
+// passed could now answer the name earlier. g_dynEpoch is what such a change
+// bumps; a memo filled at an older epoch is ignored. Only a scope the walk has
+// actually passed is marked (EnvVars::walked), so a `:my $*x` in a fresh
+// frame (every rule of a grammar) leaves the memos alone.
+extern std::atomic<uint64_t> g_dynEpoch;
+inline void bumpDynEpoch() { g_dynEpoch.fetch_add(1, std::memory_order_acq_rel); }
+inline bool isDynName(const std::string& n) { return n.size() > 1 && n[1] == '*'; }
+
+// Env::vars: a VarMap whose every way to ADD a name is seen, so a `$*x`
+// appearing in a scope a memoized walk passed invalidates the memos. Removal
+// needs nothing — a memo is re-probed where it found the name, and a name
+// gone from a scope it skipped cannot make that scope answer.
+class EnvVars : private VarMap {
+    std::atomic<bool> walked_{false};
+    void added(const std::string& k) const {
+        if (isDynName(k) && walked_.load(std::memory_order_relaxed)) bumpDynEpoch();
+    }
+    void addedAll() const {
+        if (!walked_.load(std::memory_order_relaxed)) return;
+        for (auto& kv : *this) if (isDynName(kv.first)) { bumpDynEpoch(); return; }
+    }
+public:
+    using VarMap::iterator;
+    using VarMap::const_iterator;
+    using VarMap::value_type;
+    using VarMap::key_type;
+    using VarMap::mapped_type;
+    using VarMap::size_type;
+    using VarMap::begin;
+    using VarMap::end;
+    using VarMap::find;
+    using VarMap::count;
+    using VarMap::size;
+    using VarMap::empty;
+    using VarMap::erase;
+    using VarMap::clear;
+    using VarMap::reserve;
+    using VarMap::at;
+    EnvVars() = default;
+    // (walked-ness belongs to the scope, not to its contents: never copied)
+    EnvVars(const EnvVars& o) : VarMap(o) {}
+    EnvVars& operator=(const EnvVars& o) { VarMap::operator=(o); addedAll(); return *this; }
+    EnvVars& operator=(const VarMap& o) { VarMap::operator=(o); addedAll(); return *this; }
+    const VarMap& map() const { return *this; }
+    Value& operator[](const std::string& k) {
+        auto r = VarMap::try_emplace(k);
+        if (r.second) added(k);
+        return r.first->second;
+    }
+    template <class... A> std::pair<iterator, bool> emplace(A&&... a) {
+        auto r = VarMap::emplace(std::forward<A>(a)...);
+        if (r.second) added(r.first->first);
+        return r;
+    }
+    template <class... A> std::pair<iterator, bool> try_emplace(const std::string& k, A&&... a) {
+        auto r = VarMap::try_emplace(k, std::forward<A>(a)...);
+        if (r.second) added(k);
+        return r;
+    }
+    bool walked() const { return walked_.load(std::memory_order_relaxed); }
+    void markWalked() { if (!walked_.load(std::memory_order_relaxed)) walked_.store(true, std::memory_order_relaxed); }
+    void resetWalked() { walked_.store(false, std::memory_order_relaxed); }
+};
+
+// Env::parent: re-pointing a scope that HAS a parent at a different one may
+// put a `$*x` on a walk that a memo skipped, so it bumps g_dynEpoch. Giving a
+// fresh scope its first parent, or dropping one, cannot (RAKUPP_DYNCACHE_CHECK
+// verifies the memo against a full walk).
+struct EnvParent {
+    std::shared_ptr<Env> p;
+    EnvParent() = default;
+    EnvParent(const EnvParent&) = delete;
+    EnvParent& operator=(const EnvParent& o) { set(o.p); return *this; }
+    EnvParent& operator=(const std::shared_ptr<Env>& n) { set(n); return *this; }
+    EnvParent& operator=(std::shared_ptr<Env>&& n) {
+        if (p && n && p != n) bumpDynEpoch();
+        p = std::move(n);
+        return *this;
+    }
+    EnvParent& operator=(std::nullptr_t) { p.reset(); return *this; }
+    void set(const std::shared_ptr<Env>& n) {
+        if (p && n && p != n) bumpDynEpoch();
+        p = n;
+    }
+    void reset() { p.reset(); }
+    Env* get() const { return p.get(); }
+    Env* operator->() const { return p.get(); }
+    Env& operator*() const { return *p; }
+    explicit operator bool() const { return (bool)p; }
+    operator const std::shared_ptr<Env>&() const { return p; }
+    const std::shared_ptr<Env>& sp() const { return p; }
+    long use_count() const { return p.use_count(); }
+};
+inline bool operator==(const EnvParent& a, const std::shared_ptr<Env>& b) { return a.p == b; }
+inline bool operator!=(const EnvParent& a, const std::shared_ptr<Env>& b) { return a.p != b; }
+inline bool operator==(const EnvParent& a, std::nullptr_t) { return !a.p; }
+inline bool operator!=(const EnvParent& a, std::nullptr_t) { return (bool)a.p; }
+
 // The pad slot table for one pad OWNER — the main program's mainline, or a
 // Callable body (PADS-PLAN.md). Built once per BODY (two Callables sharing a
 // body — .assuming wrappers — must agree on slot numbers, because the slot
@@ -641,8 +741,8 @@ inline bool lexShadowPossible(const std::string& op) {
 }
 
 struct Env {
-    VarMap vars;
-    std::shared_ptr<Env> parent;
+    EnvVars vars;
+    EnvParent parent;
     bool routineFrame = false; // a ROUTINE activation ($/ scopes here, like Rakudo's per-routine $/)
     bool staticSeeded = false; // a scope whose first run took its lexicals from a BEGIN-time static env
     // A bare block's scope (`{ … }` as a statement), which `.backtrace.list`
@@ -844,6 +944,7 @@ struct Env {
                 slotv = std::move(v);
                 if (name.size() == 4 && name[0] == 's' && name == "self") selfSlot = &slotv;
                 padLive.fetch_or((uint64_t)1 << it->second, std::memory_order_release);
+                if (isDynName(name) && vars.walked()) bumpDynEpoch();   // (see EnvVars)
                 if (!vars.empty()) vars.erase(name);
                 return slotv;
             }
@@ -1202,6 +1303,97 @@ struct SupplyTapCtx {
 struct GatherCoro;   // a gather's block running as a coroutine (InterpreterOperators.cpp)
 // A WhateverCode builtin's argument write-back (Interpreter::ArgWriter).
 using CallArgWriter = std::function<void(size_t, const Value&)>;
+// The dynamic chain: each caller's scope, innermost last. Next to every entry,
+// a serial unique to the push that put it there — a pair (thread tag, count),
+// so it never repeats, whichever thread a parked chain resumes on. While the
+// serial at index i is unchanged, entries 0..i are the same pushes: nothing
+// below an entry changes without popping it first, and insert/erase renumber
+// everything they shift.
+//
+// `memo` caches, per entry, where a `$*x` walk STARTING there found its name
+// (findDynamicSlot): a read from deep in a recursion — a grammar's rules, the
+// #156 benchmark — answers from the nearest memo instead of passing every
+// frame. A memo is used only when its entry's serial and g_dynEpoch are both
+// what they were when it was made, and is re-probed at the index it names.
+struct DynSerial {
+    uint64_t tag = 0, n = 0;
+    bool operator==(const DynSerial& o) const { return n == o.n && tag == o.tag; }
+    bool operator!=(const DynSerial& o) const { return !(*this == o); }
+};
+class DynStack {
+public:
+    struct Memo {
+        DynSerial owner;      // the push it belongs to
+        uint64_t epoch = 0;
+        std::string name;
+        size_t found = 0;     // index whose scope chain holds the name
+    };
+    struct Slot { Memo m[2]; unsigned char next = 0; };
+private:
+    std::vector<Env*> v_;
+    std::vector<DynSerial> s_;
+    std::vector<Slot> memo_;   // grown on demand, never shrunk; stale by serial
+    static DynSerial nextSerial() {
+        static std::atomic<uint64_t> tags{0};
+        thread_local DynSerial cur{tags.fetch_add(1, std::memory_order_relaxed) + 1, 0};
+        cur.n++;
+        return cur;
+    }
+    void renumber(size_t from) { for (size_t i = from; i < s_.size(); i++) s_[i] = nextSerial(); }
+public:
+    using const_iterator = std::vector<Env*>::const_iterator;
+    using const_reverse_iterator = std::vector<Env*>::const_reverse_iterator;
+    void push_back(Env* e) { v_.push_back(e); s_.push_back(nextSerial()); }
+    void pop_back() { v_.pop_back(); s_.pop_back(); }
+    void resize(size_t n) {   // shrink only (the restore guards)
+        if (n < v_.size()) { v_.resize(n); s_.resize(n); }
+    }
+    Env* back() const { return v_.back(); }
+    Env* operator[](size_t i) const { return v_[i]; }
+    size_t size() const { return v_.size(); }
+    bool empty() const { return v_.empty(); }
+    const_iterator begin() const { return v_.begin(); }
+    const_iterator end() const { return v_.end(); }
+    const_reverse_iterator rbegin() const { return v_.rbegin(); }
+    const_reverse_iterator rend() const { return v_.rend(); }
+    void insert(const_iterator pos, const_iterator first, const_iterator last) {
+        size_t at = (size_t)(pos - v_.begin());
+        std::vector<Env*> add(first, last);   // (the range may be our own)
+        v_.insert(v_.begin() + at, add.begin(), add.end());
+        s_.insert(s_.begin() + at, add.size(), DynSerial{});
+        renumber(at);
+    }
+    void insert(const_iterator pos, Env* e) {
+        size_t at = (size_t)(pos - v_.begin());
+        v_.insert(v_.begin() + at, e);
+        s_.insert(s_.begin() + at, DynSerial{});
+        renumber(at);
+    }
+    void erase(const_iterator first, const_iterator last) {
+        size_t a = (size_t)(first - v_.begin()), b = (size_t)(last - v_.begin());
+        v_.erase(v_.begin() + a, v_.begin() + b);
+        s_.erase(s_.begin() + a, s_.begin() + b);
+        renumber(a);
+    }
+    // The memo a walk from index i may use for `name`, or null.
+    const Memo* memo(size_t i, const std::string& name, uint64_t epoch) const {
+        if (i >= memo_.size()) return nullptr;
+        for (const Memo& m : memo_[i].m)
+            if (m.owner == s_[i] && m.epoch == epoch && m.name == name) return &m;
+        return nullptr;
+    }
+    void setMemo(size_t i, const std::string& name, uint64_t epoch, size_t found) {
+        if (memo_.size() <= i) memo_.resize(v_.size());
+        Slot& sl = memo_[i];
+        Memo* m = nullptr;
+        for (Memo& c : sl.m)   // its own entry for the name, else a dead one
+            if (c.owner == s_[i] && c.name == name) { m = &c; break; }
+        if (!m) for (Memo& c : sl.m) if (c.owner != s_[i] || c.epoch != epoch) { m = &c; break; }
+        if (!m) { m = &sl.m[sl.next]; sl.next ^= 1; }
+        m->owner = s_[i]; m->epoch = epoch; m->name = name; m->found = found;
+    }
+};
+
 struct ExecContext {
     std::shared_ptr<Env> cur;
     // The signature bindParams is binding now, so a binding error can carry
@@ -1247,7 +1439,7 @@ struct ExecContext {
     std::vector<int> endUnitKey;
     std::unordered_map<const Stmt*, int> endsBeforeStmt;
     const Stmt* endCurTopStmt = nullptr;
-    std::vector<Env*> dynStack;
+    DynStack dynStack;
     int callDepth = 0;
     // Reusable argument buffers for evalNqpOp, one per nesting depth. Every nqp
     // op used to build a fresh ValueList, so an nqp-heavy program (a tokenizer
@@ -2066,6 +2258,7 @@ public:
     // inclusive), then each caller frame innermost-out with the same bound.
     // Static like tctx_ itself — everything they consult is thread-local.
     static Value* findDynamicSlot(const std::string& name);
+    static Value* dynStackFind(DynStack& ds, const std::string& name);
     // …then the historical lenient fallbacks (full closure chains), so nothing
     // resolvable before the ordering fix became unreachable. Reads AND writes
     // go through this one resolver.

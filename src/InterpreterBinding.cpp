@@ -3308,9 +3308,80 @@ Value* Interpreter::findDynamicSlot(const std::string& name) {
     size_t ownFrom = 0;
     if (t.curGather) { stop = gatherDynBoundary(t.curGather); ownFrom = gatherDynBase(t.curGather); }
     if (t.cur) if (Value* p = dynInFrame(t.cur.get(), name, stop)) return p;
-    for (size_t i = t.dynStack.size(); i-- > 0;)
-        if (Env* e = t.dynStack[i])
-            if (Value* p = dynInFrame(e, name, i >= ownFrom ? stop : nullptr)) return p;
+    // the memoized walk is for `$*x` names off a plain call chain; a gather's
+    // block sees its puller's chain, which changes from one resume to the next
+    if (t.curGather || !isDynName(name)) {
+        for (size_t i = t.dynStack.size(); i-- > 0;)
+            if (Env* e = t.dynStack[i])
+                if (Value* p = dynInFrame(e, name, i >= ownFrom ? stop : nullptr)) return p;
+        return nullptr;
+    }
+    Value* r = dynStackFind(t.dynStack, name);
+    // RAKUPP_DYNCACHE_CHECK=1: every memoized answer against the full walk
+    static const bool check = [] { const char* v = std::getenv("RAKUPP_DYNCACHE_CHECK"); return v && *v && *v != '0'; }();
+    if (check) {
+        Value* full = nullptr;
+        for (size_t i = t.dynStack.size(); i-- > 0 && !full;)
+            if (Env* e = t.dynStack[i]) full = dynInFrame(e, name);
+        if (full != r) {
+            std::cerr << "RAKUPP_DYNCACHE_CHECK: " << name << " memoized walk disagrees with the full walk (depth "
+                      << t.dynStack.size() << ")\n";
+            std::abort();
+        }
+    }
+    return r;
+}
+
+// The caller-chain half of a `$*x` read (#156). Walks innermost-out as the
+// plain loop does, but where a walk from some index has been made before — at
+// this same push, with nothing changed since (DynStack::memo) — it jumps to the
+// index that walk found and re-probes there. A miss falls back to probing. A
+// walk that ends in a hit leaves memos behind at the indices it passed, at
+// doubling distances from where it started, so the next read from here, from
+// deeper, or from a sibling call answers in a few steps. Every scope the walk
+// passes is marked (EnvVars::walked): a `$*x` later added there, or a parent
+// re-pointed, bumps g_dynEpoch and retires the memos.
+Value* Interpreter::dynStackFind(DynStack& ds, const std::string& name) {
+    const uint64_t epoch = g_dynEpoch.load(std::memory_order_acquire);
+    const size_t n = ds.size();
+    auto probe = [&](Env* e) -> Value* {   // dynInFrame, marking what it passes
+        for (; e; e = e->parent.get()) {
+            e->vars.markWalked();
+            if (!e->vars.empty()) {
+                auto it = e->vars.find(name);
+                if (it != e->vars.end()) return it->second.deref();
+            }
+            if (e->layout && e->layout->holdsDynamic)
+                if (Value* p = e->padFind(name)) return p->deref();
+            if (e->routineFrame) return nullptr;
+        }
+        return nullptr;
+    };
+    // memos for the indices above `from` this walk passed (from: where it
+    // started probing on its own, or met a memo — at and below it the memos
+    // are already there)
+    auto leave = [&](size_t found, size_t from) {
+        // (marks were set before the epoch could move past `epoch`: if it moved,
+        // these memos are dead on arrival, which costs a walk, never an answer)
+        if (g_dynEpoch.load(std::memory_order_acquire) != epoch) return;
+        for (size_t d = 0; d < n && n - 1 - d > found && n - 1 - d > from; d = d ? d * 2 : 1)
+            ds.setMemo(n - 1 - d, name, epoch, found);
+    };
+    for (size_t i = n; i-- > 0;) {
+        if (const DynStack::Memo* m = ds.memo(i, name, epoch)) {
+            const size_t k = m->found;
+            if (k <= i)
+                if (Env* e = ds[k])
+                    if (Value* p = probe(e)) { leave(k, i); return p; }
+            // re-probe failed (the name left that scope): walk on from i
+            for (size_t j = i + 1; j-- > 0;)
+                if (Env* e = ds[j])
+                    if (Value* p = probe(e)) { leave(j, j); return p; }
+            return nullptr;
+        }
+        if (Env* e = ds[i])
+            if (Value* p = probe(e)) { leave(i, i); return p; }
+    }
     return nullptr;
 }
 

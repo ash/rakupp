@@ -880,7 +880,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // require is visible there, and in whatever that module loads in
         // turn. A compile-time `use` gets no such frame.
         struct DynFrameG {
-            std::vector<Env*>& st; Env* e;
+            DynStack& st; Env* e;
             ~DynFrameG() { if (e && !st.empty() && st.back() == e) st.pop_back(); }
         } dynFrameG{tctx_.dynStack, (requireForm || runtimeLoadDepth_ > 0) && saved ? saved.get() : nullptr};
         if (dynFrameG.e) tctx_.dynStack.push_back(dynFrameG.e);

@@ -6434,6 +6434,38 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                 "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
                 args[0].typeName() + " (" + args[0].gist() + ")"};
+        // No adverbs, a plain Str on both sides: read the operands in place.
+        // The general path below copies the whole haystack per call (and
+        // `.contains($n, $pos)` decoded it twice more), so a scanning loop
+        // went quadratic, the #154 shape. Positions come off the grapheme
+        // table cached on the immutable body (what `.index`/`.substr` read);
+        // anything this cannot answer exactly falls through to the general path.
+        if (!args.empty() && args.size() <= 2 && inv.t == VT::Str && inv.enumName.empty() &&
+            args[0].t == VT::Str && args[0].enumName.empty() &&
+            (args.size() == 1 || m == "contains") &&
+            !(args.size() == 2 && (args[1].t != VT::Int || args[1].big() || args[1].i < 0))) {
+            const std::string& s = inv.s.str();
+            const std::string& n = args[0].s.str();
+            if (m == "starts-with")
+                return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0 &&
+                                      atGraphemeBoundary(s, n.size()));
+            if (m == "ends-with")
+                return Value::boolean(s.size() >= n.size() && s.compare(s.size() - n.size(), n.size(), n) == 0 &&
+                                      atGraphemeBoundary(s, s.size() - n.size()));
+            if (args.size() == 1) return Value::boolean(graphemeFind(s, n, 0) != std::string::npos);
+            const long long pos = args[1].i;
+            bool known = false;
+            size_t from = 0;
+            if (cowByteIsGraphemeIndex(inv.s)) {
+                if (pos > (long long)s.size()) return Value::boolean(false);
+                from = (size_t)pos; known = true;
+            }
+            else if (const std::vector<uint32_t>* gi = cowGraphemeIndex(inv.s)) {
+                if (pos > (long long)gi->size() - 1) return Value::boolean(false);
+                from = (*gi)[(size_t)pos]; known = true;
+            }
+            if (known) return Value::boolean(graphemeFind(s, n, from) != std::string::npos);
+        }
         bool icase = false, imark = false, smart = false;
         for (auto& a2 : args)
             if (a2.t == VT::Pair) {

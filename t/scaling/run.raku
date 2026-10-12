@@ -284,6 +284,10 @@ work 'str-substr-scan',  Q｢my $s = 'abcdefghij' x (@N@ div 10); my $c = 0; for
 work 'str-substr-scan-unicode', Q｢my $s = 'é' ~ ('abcdefghij' x (@N@ div 10)); my $c = 0; for ^$s.chars { $c++ if $s.substr($_, 1) eq 'a' }｣;
 work 'str-index-walk',   Q｢my $s = 'ab' x @N@; my $p = 0; my $c = 0; while ($p = $s.index('b', $p)).defined { $c++; $p++ }｣, :n(2000);
 work 'str-ord-scan',     Q｢my $s = 'abcdefghij' x (@N@ div 10); my $c = 0; for ^$s.chars { $c += $s.substr($_, 1).ord }｣;
+work 'str-contains-pos-walk', Q｢my $s = 'ab' x @N@; my $c = 0; for ^@N@ -> $i { $c++ if $s.contains('b', 2 * $i) }｣, :n(2000);
+work 'str-contains-pos-walk-unicode', Q｢my $s = 'é' ~ ('ab' x @N@); my $c = 0; for ^@N@ -> $i { $c++ if $s.contains('b', 2 * $i) }｣, :n(2000);
+work 'str-starts-ends-with', Q｢my $s = 'ab' x @N@; my $c = 0; for ^@N@ { $c++ if $s.starts-with('ab') && $s.ends-with('ab') }｣, :n(2000);
+work 'dyn-read-deep',    Q｢sub d($k) { $k == 0 ?? 0 !! $*X + d($k - 1) }; my $*X = 1; d(@N@);｣, :n(500);
 work 'str-match-global', Q｢my $c = +(('ab' x @N@) ~~ m:g/b/);｣;
 work 'str-match-continue', Q｢my $s = 'ab' x @N@; my $c = 0; $c++ while $s ~~ m:c/b/;｣, :n(2000),
      :known('a `m:c` match continuing from $/.to pays for the position it starts at');

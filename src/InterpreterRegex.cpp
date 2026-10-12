@@ -2687,7 +2687,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     gm.hooks.saveState = [this, emptySentinel]() -> std::shared_ptr<void> {
         if (tctx_.cur->vars.empty()) return emptySentinel;
         auto s = std::make_shared<GState>();
-        s->vars = tctx_.cur->vars;
+        s->vars = tctx_.cur->vars.map();
         return s;
     };
     gm.hooks.restoreState = [this, emptySentinel](std::shared_ptr<void> v) {
@@ -3156,7 +3156,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             }
         }
         struct CallerDynG {
-            std::vector<Env*>& st; Env* e;
+            DynStack& st; Env* e;
             ~CallerDynG() { if (e && !st.empty() && st.back() == e) st.pop_back(); }
         } callerDynG{tctx_.dynStack, callerDyn};
         if (callerDyn) tctx_.dynStack.push_back(callerDyn);

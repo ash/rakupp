@@ -3975,6 +3975,7 @@ std::function<Value(const Value&)> g_deproxy;
 std::function<bool(const Value&, std::string&)> g_userStr;
 std::function<bool(const Value&, std::string&, bool&)> g_userWhich;
 std::atomic<uint64_t> g_lexShadowMask{0};
+std::atomic<uint64_t> g_dynEpoch{1};
 std::atomic<bool> g_userPrefixShadow{false};
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as

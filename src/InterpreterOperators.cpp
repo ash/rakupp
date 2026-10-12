@@ -1185,7 +1185,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT)
-static_assert(sizeof(ExecContext) == 1392,
+static_assert(sizeof(ExecContext) == 1440,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif

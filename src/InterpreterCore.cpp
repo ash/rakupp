@@ -1832,6 +1832,7 @@ struct FramePool {
         if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
         e->vars.clear();          // keeps the bucket array — the next call's
         e->selfSlot = nullptr;    // …and the recorded `self` dies with them
+        e->vars.resetWalked();    // a fresh scope no `$*x` walk has passed
         e->parent.reset();        // "$_" insert does not rehash
         // every flag back to a fresh Env's: a pooled frame is also a block's
         // scope (an `if` branch), and a `no strict` or a `use fatal` inside
@@ -4546,6 +4547,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         (const void*)e->layout == params[i].padOwner) {
                         e->pad[ps] = std::move(v);
                         e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
+                        if (e->vars.walked() && isDynName(params[i].name)) bumpDynEpoch();
                         if (!e->vars.empty()) e->vars.erase(params[i].name);
                     }
                     else e->define(params[i].name, std::move(v));
@@ -4557,6 +4559,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         (const void*)e->layout == params[i].padOwner) {
                         e->pad[ps] = unpassedDefault(params[i].type, '$', blockParams);
                         e->padLive.fetch_or((uint64_t)1 << ps, std::memory_order_release);
+                        if (e->vars.walked() && isDynName(params[i].name)) bumpDynEpoch();
                         if (!e->vars.empty()) e->vars.erase(params[i].name);
                     }
                     else e->define(params[i].name, unpassedDefault(params[i].type, '$', blockParams));
@@ -7611,6 +7614,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         live |= (uint64_t)1 << ps;
     }
     env->padLive.fetch_or(live, std::memory_order_release);
+    if (env->vars.walked() && c.padLayout->holdsDynamic) bumpDynEpoch();
     auto saved = std::move(tcx.cur);
     Env* savedState = tcx.curStateEnv;
     tcx.cur = env;
