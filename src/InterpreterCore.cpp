@@ -1829,7 +1829,13 @@ struct FramePool {
         return e;
     }
     void release(std::shared_ptr<Env>&& e) {
-        if (!e || e.use_count() != 1 || free.size() >= 32) { e.reset(); return; }
+        if (!e || e.use_count() != 1 || free.size() >= 32) {
+            if (e && e.use_count() != 1) e->cycleNoteKeptSlots();   // a closure kept the frame
+            e.reset();
+            cycleMaybeCollect();
+            return;
+        }
+        e->cycleNoteSlots();
         e->vars.clear();          // keeps the bucket array — the next call's
         e->selfSlot = nullptr;    // …and the recorded `self` dies with them
         e->vars.resetWalked();    // a fresh scope no `$*x` walk has passed
@@ -1850,6 +1856,7 @@ struct FramePool {
         e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
         e->padEscaped.store(0, std::memory_order_relaxed); // use_count 1: nothing kept an alias
         free.push_back(std::move(e));
+        cycleMaybeCollect();
     }
 };
 // Hands out a pooled frame that returns itself on scope exit. A frame anything
@@ -2235,7 +2242,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // postfix `STMT while COND`: no implicit block — run STMT in the
                 // ENCLOSING scope so a `my` in it declares there (never cleared!)
                 if (ws->modifier) scope = tctx_.cur;
-                else if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                else if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                 else if (!(ws->params.empty() && ws->var.empty() && flatLoopBody(ws->body.get())))
                     scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                 // (a flat, binder-less while body never puts anything in the
@@ -2356,7 +2363,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             break;
                         }
                     }
-                    if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                    if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                     else if (!flatB) scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                     // LAST is not positional in a condition loop; see WhileStmt
                     if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, false, col)) break;
@@ -2378,7 +2385,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             Value lastCond = Value::any();   // what `-> $x` binds: the previous condition
             for (;;) {
-                if (!scope || scope.use_count() > 1) { scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
                 else scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                 if (!r->var.empty()) scope->define(r->var, lastCond);
                 // LAST is not positional in a condition loop; see WhileStmt
@@ -3283,6 +3290,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         std::shared_ptr<Env> scope;
         auto freshScope = [&]() {
             if (!scope || scope.use_count() > 1) {
+                if (scope) scope->cycleNoteKeptSlots();
                 scope = std::make_shared<Env>();
                 scope->parent = tctx_.cur;
             } else {
@@ -3356,6 +3364,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (__jg.site) jit::tick(__jg.site);
                 if (flat && topic && scope.use_count() == 1) {
                     *topic = topicInt(k);
+                    cycleMaybeCollect();   // (a flat body clears no scope: the safe point is here)
                 } else {
                     freshScope();
                     topic = &scope->define(var, topicInt(k));
@@ -3525,7 +3534,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             for (;; i++) {
                 Value el;
                 if (!elemAt(i, el)) break;
-                if (flat && topic && scope.use_count() == 1) *topic = asTopic(std::move(el), var, 0);
+                if (flat && topic && scope.use_count() == 1) {
+                    *topic = asTopic(std::move(el), var, 0);
+                    cycleMaybeCollect();   // (a flat body clears no scope: the safe point is here)
+                }
                 else {
                     freshScope();
                     topic = &scope->define(var, asTopic(std::move(el), var, 0));
@@ -3695,6 +3707,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (__jg.site) jit::tick(__jg.site);
                 const size_t pi = P(i);
                 if (flat && topic && scope.use_count() == 1) {
+                    cycleMaybeCollect();   // (a flat body clears no scope: the safe point is here)
                     ParStripe es(*this, arr.get());
                     if (pi >= arr->size()) break;
                     wasHole = holeDflt && (*arr)[pi].t == VT::Any;
@@ -3896,6 +3909,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     std::shared_ptr<Env> scope;
     for (size_t i = 0; haveItem(i); i += nvars) {
         if (!scope || scope.use_count() > 1) {
+            if (scope) scope->cycleNoteKeptSlots();
             scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
         }
         else if (loopVars.empty()) { static const std::string kTopic = "$_"; scope->clearBindingsKeeping(&kTopic, 1); }

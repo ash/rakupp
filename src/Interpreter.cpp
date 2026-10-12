@@ -3512,6 +3512,10 @@ void Interpreter::maybeRegisterDestroy(const Value& self) {
     bool pressure = false;
     {
         std::lock_guard<std::mutex> lk(destroyMu_);
+        // once: a second entry would keep use_count above 1 for good (and the
+        // cycle collector counts the registry's reference as exactly one)
+        Payload* body = self.p_.get();
+        if (body->pflags_.fetch_or(kPayInDestroyReg, std::memory_order_relaxed) & kPayInDestroyReg) return;
         destroyReg_.push_back(self.objS());
         pressure = !inDestroySweep_ && destroyReg_.size() >= destroySweepAt_;
     }
@@ -3531,17 +3535,31 @@ void Interpreter::maybeRegisterDestroy(const Value& self) {
 // object: the entry leaves the registry before its destructor is called, and
 // resurrection does not re-register.
 void Interpreter::runPendingDestroys() {
-    std::vector<PRef<ObjectData>> dead;
+    std::vector<PRef<ObjectData>> dead, finalized;
     {
         std::lock_guard<std::mutex> lk(destroyMu_);
         if (inDestroySweep_) return; // a DESTROY that requests GC must not recurse
         inDestroySweep_ = true;
         for (auto it = destroyReg_.begin(); it != destroyReg_.end();) {
-            if (it->use_count() == 1) { dead.push_back(std::move(*it)); it = destroyReg_.erase(it); }
+            if (it->use_count() == 1) {
+                Payload* body = it->body();
+                // the cycle collector already ran this one's DESTROY
+                bool done = body->pflags_.fetch_and(~uint32_t(kPayInDestroyReg), std::memory_order_relaxed) &
+                            kPayCycleFinalized;
+                (done ? finalized : dead).push_back(std::move(*it));
+                it = destroyReg_.erase(it);
+            }
             else ++it;
         }
     }
-    for (auto& od : dead) {
+    finalized.clear();   // (freed outside the lock)
+    for (auto& od : dead) runDestroyChain(od);
+    std::lock_guard<std::mutex> lk(destroyMu_);
+    inDestroySweep_ = false;
+}
+
+void Interpreter::runDestroyChain(const PRef<ObjectData>& od) {
+    {
         Value self = Value::object(od);
         // the class chain child-first: the primary parent line, then any
         // multiple-inheritance parents' lines, each class visited once
@@ -3601,8 +3619,6 @@ void Interpreter::runPendingDestroys() {
             runOne(mi->second);
         }
     }
-    std::lock_guard<std::mutex> lk(destroyMu_);
-    inDestroySweep_ = false;
 }
 
 // Rvalue overload: a freshly built plain List (a method-call result being
@@ -4050,6 +4066,8 @@ void Interpreter::adoptProcessStatics() {
 
 std::set<std::string>& envSyncedNames();   // InterpreterBinding.cpp
 
+Interpreter::~Interpreter() { cycleDetach(this); }
+
 Interpreter::Interpreter() {
     adoptProcessStatics();
     // On the `now` clock, NOT raw POSIX. epochNowSecs() carries the Instant
@@ -4062,6 +4080,7 @@ Interpreter::Interpreter() {
     defaultScheduler_ = Value::makeHash(); defaultScheduler_.hashKind = "Scheduler";
     (*defaultScheduler_.hash())["name"] = Value::str("ThreadPoolScheduler");
     mainThread_ = std::this_thread::get_id();
+    cycleAttach(this);
     // PARALLEL BY DEFAULT (v3, PARALLEL-PLAN P5): start/worker threads run
     // on all cores. RAKUPP_GIL=1 selects the cooperative GIL — the escape
     // hatch, the bisection tool, and a CI leg. RAKUPP_PARALLEL=0 is honored

@@ -7928,7 +7928,7 @@ int Interpreter::run(Program& prog) {
         // Dropped objects get their DESTROY before the ENDs, so an END block
         // observes destructor effects; objects an END itself releases wait for
         // a real process exit, like Rakudo's unguaranteed finalization.
-        try { runPendingDestroys(); } catch (...) {}
+        try { cycleCollectAtExit(); runPendingDestroys(); } catch (...) {}
         // Snapshot before running: ENDs run with the workers still alive (below),
         // and both an EVAL on a worker and an END that EVALs an END of its own
         // register into endPhasers_ while this runs — a reference into it would

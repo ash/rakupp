@@ -45,6 +45,108 @@ Without cycles rakupp holds a fifteenth of Rakudo's memory: reference
 counting frees each pair at the end of its iteration. The plan must keep
 that; a collector that made the common case pay would be a bad trade.
 
+## Status (2026-10-12): Phases 0–4 built, in one sitting
+
+| | objects freed after 8 rounds | footprint, round 0 → 7 |
+|---|---:|---|
+| rakupp, with the cycle, collector on | **319,078** of 320,000 | 10 MB → 11 MB |
+| rakupp, without the cycle, collector on | 319,397 of 320,000 | 10 MB → 10 MB |
+| rakupp, with the cycle, `RAKUPP_CYCLE=0` | 0 of 320,000 | 238 MB → 1,882 MB |
+
+Same machine and script as above. What landed differs from the phases below
+in three places, each forced by a measurement:
+
+- **The buffer holds no count.** A candidate is a raw pointer plus a flag
+  bit in `pflags_` that carries its buffer index; the release path takes a
+  dying body out (`cycleForget`). So being a candidate never delays a free,
+  and the batch can wait for 1,024 candidates without changing what a
+  program observes. A collection that finds nothing doubles the threshold
+  (to 2^20), one that finds garbage resets it.
+- **Objects use strategy B (Phase 4), the rest strategy A.** Named drops
+  missed almost everything not built from named locals. Of eight shapes
+  (reassigning an outer variable, replacing an element, `:delete`, `@a = ()`,
+  a sunk `N.new.link`, `.shift`, overwriting an attribute, `.map`), scope
+  exits caught one; Rakudo frees all eight. An object's body now carries a
+  *tracked* bit in the top of its count, so the inline release test is still
+  one compare (`(int32_t)old <= 1`) and only tracked bodies and last releases
+  leave it. A buffered object has the bit cleared until a collection takes
+  it out alive, so its releases stay inline meanwhile. All eight shapes now
+  free everything, as Rakudo does. Arrays, hashes, Pairs and cells stay on
+  scope-exit notes, with a cascade into a container the drop frees.
+- **Scopes are walk nodes (Phase 3) and routines are broken, not scopes.**
+  An Env's count is its `shared_ptr` use_count, an edge to it is a handle
+  sharing its control block, and a program's, a module's, a package's or an
+  EVAL's scope is never entered. Breaking clears a garbage routine's
+  `closure`, `state` scope, candidates and wrappers; the scope then goes by
+  reference counting. Every call of a routine that declares `my sub`, or
+  keeps a block in a variable, leaked its whole frame before this (Rakudo:
+  20,000 of 20,000 freed; rakupp: 0); now all 20,000 are.
+
+Compiled code (`--exe`) gets the same tracking for free (it uses the same
+`Ref.h`); its safe point is the top of every loop iteration that can call
+user code.
+
+Gates, all measured 2026-10-12:
+
+- **Leak corpus** `t/leak/` (16 files, each its own TAP, folded into
+  `t/run.raku`): passes under rakupp both plain and with
+  `RAKUPP_CYCLE_POISON=1`, and under Rakudo 2026.09. The 30,001-node rings
+  leak (the walk is capped at 1,024 new nodes) and take 0.2 s.
+- **Roast** in a worktree at 119c97fa: 1,425 / 1,425 files, 220,845 /
+  220,845 before and after, and the same under poison. The one file that
+  dipped once (`S17-promise/nonblocking-await.t`) fails 1 run in 12 on the
+  base binary too.
+- **`t/run.raku`**: unchanged but for `data-native-precedence.raku`, which
+  fails on the base binary (a JSON::Native version mismatch).
+- **`t/stress/run.raku`**: 54 / 54.
+- **Benchmarks**, instructions retired, min of 3 interleaved: 20 of 22
+  kernels within ±0.6%; `objects` +1.3% to +1.5% (200,000 objects, each
+  buffered once and forgotten at death; +0.5% with the collector off),
+  `sortnums` +1.3% to +2.2% between builds, the same with the collector off
+  (code layout, or the scope-exit loop that runs either way). `precomp-table`
+  moves ±5% on a null control and is not read. The first cut cost a mapped
+  block call ~100 instructions by scanning every pad slot at scope exit;
+  scanning only the slots whose declaration ran (`padLive`) took that to
+  noise.
+
+**Classes that cannot be on a cycle are not tracked.** A class whose every
+attribute (its own, its parents', its roles') is a `$` typed with a native or
+a value type (`int`, `str`, `num`, `Int`, `Str`, `Num`, `Rat`, `Bool`, …)
+cannot hold a reference, so its objects need no candidacy. The verdict is
+computed once per class (`ClassInfo::cycleSafe`) at an instance's first
+release that leaves it alive, which every way of making an object passes,
+and the tracked bit then comes off for good. On `objects.raku` with the two
+attributes typed `Int`, the collector's cost goes from +1.14% to +0.71%
+instructions; typed `int`, from +1.08% to +0.66%. Untyped attributes, which
+most code has, are unchanged (+1.2%). Not decidable in general, so it is a
+heuristic that is only ever wrong toward a leak: a value type can be
+subclassed (`class A is Int { has Int $.next }`) or mixed into, and a cycle
+made only of such objects has no tracked member and is not collected.
+
+**Bounding a walk, and its cost.** Testing with `RAKUPP_CYCLE_TRIGGER=1`
+(collect whenever one candidate waits) turned up two `t/scaling` shapes,
+`attr-array-push` and `attr-hash-insert`, going superlinear: the walk capped
+the nodes it ADDED, but read every element of a node before looking at the
+cap, so a big live array reachable from candidates was read whole by every
+collection. A walk now also has a budget of 16,384 Values read, and a node
+left half-read is pinned (the edges it did report are real; the rest only
+make targets look held). A worst case for strategy B, one object holding
+200,000 children that each point back at it and are iterated five times,
+cost +8.4% instructions with a `std::unordered_map` node index; an
+open-addressing index, one reused queue, and no nodes for empty arrays and
+hashes brought it to +2.9% (36 ms for the one 200,000-candidate
+collection), RSS +25 MB at peak. Loops with a flat body clear no scope, so
+they had no safe point; they get one per iteration. The end-of-program
+collection runs only when some object still waits for a DESTROY: otherwise
+the process frees everything anyway.
+
+Left open: a group larger than one walk's cap leaks; a cycle through an
+opaque holder (a promise, a channel, a lazy generator, a `std::function`
+capture) leaks; an array or hash that holds itself inside an object that
+dies with count 1 is not noted (the object's own cascade is skipped, since
+objects are tracked); collections wait while worker threads are live, so a
+program that always has one collects only at its quiet points.
+
 ---
 
 ## Why scope exit alone cannot decide

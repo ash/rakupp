@@ -3779,7 +3779,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // `$*VM.request-garbage-collection` — the one hook Raku offers to ask
         // for finalization. Runs the pending-DESTROY sweep (see Interpreter.h).
-        if (m == "request-garbage-collection") { runPendingDestroys(); return Value::boolean(true); }
+        if (m == "request-garbage-collection") { cycleCollectNow(); runPendingDestroys(); return Value::boolean(true); }
 #if defined(__APPLE__)
         if (inv.hashKind == "Distro") { // what Rakudo reads off `sw_vers` — see macDistro()
             const MacDistro& md = macDistro();

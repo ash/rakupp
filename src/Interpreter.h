@@ -2,6 +2,7 @@
 #include "Ast.h"
 #include "Token.h"   // TokenXform — P1-L10N's `.AST($lang)` seam
 #include "Value.h"
+#include "Cycle.h"   // the backup cycle collector: Env notes what a scope exit drops
 #include "IntOps.h"
 #include "ConstInit.h"  // RAKUPP_CONSTINIT on the thread_local declarations below
 #include <algorithm>
@@ -819,22 +820,49 @@ struct Env {
     // the frame lives; a reused frame starts clean (FramePool::release).
     std::atomic<uint64_t> padEscaped{0};
 
+    // What a scope exit is about to drop, for the cycle collector (Cycle.h):
+    // a container the drop leaves held may now be held only by its own group.
+    // Only the pad slots whose declaration ran: a pad is sized for its whole
+    // owner, and touching every slot of it on every block exit cost a mapped
+    // block call ~100 instructions.
+    template <class F>
+    void forEachLiveSlot(F&& f) {
+        for (auto& kv : vars) f(kv.second);
+        const size_t n = pad.size();
+        if (!n) return;
+        for (uint64_t live = padLive.load(std::memory_order_relaxed); live; live &= live - 1) {
+            size_t i = (size_t)ctzll(live);
+            if (i < n) f(pad[i]);
+        }
+        for (size_t i = 64; i < n; i++) f(pad[i]);
+    }
+    void cycleNoteSlots() { forEachLiveSlot([](const Value& v) { cycleNote(v); }); }
+    // …and a scope let go of while a routine made in it keeps it (Cycle.h)
+    void cycleNoteKeptSlots() { forEachLiveSlot([](const Value& v) { cycleNoteKept(v); }); }
+    ~Env() { cycleNoteSlots(); }
+    Env() = default;
+    Env(const Env&) = delete;
+    Env& operator=(const Env&) = delete;
+
     // A loop's iteration scope, reused for the next iteration (only when
     // nothing else holds it): drop every binding, keep the buckets and the
     // pad's storage. A block pad's slots go dark again until their `my` runs.
     void clearBindings() {
+        cycleNoteSlots();
         vars.clear();
         if (layout) {
             padLive.store(0, std::memory_order_relaxed);
             padEscaped.store(0, std::memory_order_relaxed);
             for (auto& v : pad) v = Value();
         }
+        cycleMaybeCollect();
     }
     // clearBindings for a loop scope about to define the same loop variables
     // again: when they are all the map holds, their nodes stay (each value
     // reset) and the next iteration's define reuses them instead of
     // allocating. Anything else in the map, and it is cleared as before.
     void clearBindingsKeeping(const std::string* names, size_t n) {
+        cycleNoteSlots();
         bool keep = vars.size() == n;
         for (size_t k = 0; keep && k < n; k++) keep = vars.count(names[k]) == 1;
         if (keep) for (auto& kv : vars) kv.second = Value();
@@ -844,6 +872,7 @@ struct Env {
             padEscaped.store(0, std::memory_order_relaxed);
             for (auto& v : pad) v = Value();
         }
+        cycleMaybeCollect();
     }
     // Drop one binding from THIS scope (map or pad slot); outer bindings show through again.
     void undefine(const std::string& name) {
@@ -4327,8 +4356,25 @@ public:
     // Rakudo's own test suite relies on.
     void maybeRegisterDestroy(const Value& self);
     void runPendingDestroys();
+    // The cycle collector's side of it (Cycle.cpp): whether this is a quiet
+    // point — the main thread, no worker live — and an object's DESTROY
+    // chain, run as a sweep runs it, for garbage the collector found.
+    bool cycleQuiet() const {
+        return std::this_thread::get_id() == mainThread_ && liveWorkers_.load(std::memory_order_acquire) == 0;
+    }
+    void cycleFinalize(const PRef<ObjectData>& od) { runDestroyChain(od); }
+    // At program end the process frees everything anyway: a collection there
+    // is for the DESTROYs of cyclic garbage alone, so it runs only when some
+    // object is waiting for one.
+    void cycleCollectAtExit() {
+        bool any;
+        { std::lock_guard<std::mutex> lk(destroyMu_); any = !destroyReg_.empty(); }
+        if (any) cycleCollectNow();
+    }
+    ~Interpreter();
 
 private:
+    void runDestroyChain(const PRef<ObjectData>& od);
     std::vector<PRef<ObjectData>> destroyReg_;
     std::mutex destroyMu_;
     bool inDestroySweep_ = false; // a DESTROY that itself requests GC must not recurse

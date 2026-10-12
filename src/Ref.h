@@ -117,7 +117,43 @@ struct Payload {
 protected:
     ~Payload() = default;
 };
-enum : std::uint32_t { kPayHyperIterTaken = 1 };
+enum : std::uint32_t {
+    kPayHyperIterTaken = 1,
+    // The cycle collector's bits (Cycle.h, CYCLE-GC-PLAN.md). BUFFERED: the
+    // body is a candidate, and bits 8 and up hold its place in the buffer, so
+    // the body's death can take it out (cycleForget) — the buffer holds no
+    // count. IN_DESTROY_REG: an object the DESTROY registry holds one count
+    // on, which the collector's walk accounts as known. FINALIZED: the
+    // collector already ran this object's DESTROY; the registry sweep won't.
+    kPayCycleBuffered = 2,
+    kPayInDestroyReg = 4,
+    kPayCycleFinalized = 8,
+    // ACYCLIC: an object of a class whose attributes hold only values
+    // (cycleClassify); it stays untracked even after a collection.
+    kPayCycleAcyclic = 16,
+};
+constexpr unsigned kPayCycleIdxShift = 8;
+void cycleForget(Payload* p) noexcept;   // Cycle.cpp
+
+// The count's top bit: a TRACKED body (an object's: see makePayload) whose
+// every release that leaves it alive makes it a cycle-collector candidate —
+// the drop that strands a group of objects can be any release at all, a
+// temporary's included. The bit lives IN the count so the inline release
+// test stays one compare: a tracked body's old count reads negative, as a
+// last release's reads 1, and only those two leave the inline path. Every
+// reader of the count masks it (use_count).
+constexpr std::uint32_t kRefTracked = 0x80000000u;
+constexpr std::uint32_t kRefMask = 0x7fffffffu;
+extern bool g_cycleTrack;                       // Cycle.cpp: objects are tracked
+void cycleNoteRelease(Payload* p) noexcept;     // Cycle.cpp
+[[gnu::noinline]] inline void payloadReleaseSlow(Payload* p, std::uint32_t old) noexcept {
+    if ((old & kRefMask) == 1) {
+        if (p->pflags_.load(std::memory_order_relaxed) & kPayCycleBuffered) cycleForget(p);
+        p->destroySelf();
+    }
+    else if (old & kRefTracked) cycleNoteRelease(p);
+}
+struct ObjectData;
 
 template <class T>
 struct Body final : Payload {
@@ -154,9 +190,11 @@ template <> struct BodyOf<Value> {
 class PayRef {
     Payload* p_ = nullptr;
     void retain() const noexcept { if (p_) p_->refs_.fetch_add(1, std::memory_order_relaxed); }
-    [[gnu::noinline]] static void destroy(Payload* p) noexcept { p->destroySelf(); }
     void release() noexcept {
-        if (p_ && p_->refs_.fetch_sub(1, std::memory_order_acq_rel) == 1) destroy(p_);
+        if (p_) {
+            std::uint32_t old = p_->refs_.fetch_sub(1, std::memory_order_acq_rel);
+            if ((std::int32_t)old <= 1) payloadReleaseSlow(p_, old);
+        }
     }
 public:
     PayRef() noexcept = default;
@@ -178,7 +216,7 @@ public:
     void reset() noexcept { release(); p_ = nullptr; }
     Payload* get() const noexcept { return p_; }
     explicit operator bool() const noexcept { return p_ != nullptr; }
-    long use_count() const noexcept { return p_ ? (long)p_->refs_.load(std::memory_order_acquire) : 0; }
+    long use_count() const noexcept { return p_ ? (long)(p_->refs_.load(std::memory_order_acquire) & kRefMask) : 0; }
     friend bool operator==(const PayRef& a, const PayRef& b) noexcept { return a.p_ == b.p_; }
     friend bool operator!=(const PayRef& a, const PayRef& b) noexcept { return a.p_ != b.p_; }
     friend bool operator==(const PayRef& a, std::nullptr_t) noexcept { return !a.p_; }
@@ -193,9 +231,11 @@ class PRef {
     using B = typename BodyOf<T>::type;
     B* b_ = nullptr;
     void retain() const noexcept { if (b_) b_->refs_.fetch_add(1, std::memory_order_relaxed); }
-    [[gnu::noinline]] static void destroy(B* b) noexcept { b->destroySelf(); }
     void release() noexcept {
-        if (b_ && b_->refs_.fetch_sub(1, std::memory_order_acq_rel) == 1) destroy(b_);
+        if (b_) {
+            std::uint32_t old = b_->refs_.fetch_sub(1, std::memory_order_acq_rel);
+            if ((std::int32_t)old <= 1) payloadReleaseSlow(b_, old);
+        }
     }
     template <class U, class... A> friend PRef<U> makePayload(A&&...);
     template <class U> friend class PRef;
@@ -253,7 +293,7 @@ public:
     T& operator*() const noexcept { return *BodyOf<T>::obj(b_); }
     T* operator->() const noexcept { return BodyOf<T>::obj(b_); }
     explicit operator bool() const noexcept { return b_ != nullptr; }
-    long use_count() const noexcept { return b_ ? (long)b_->refs_.load(std::memory_order_acquire) : 0; }
+    long use_count() const noexcept { return b_ ? (long)(b_->refs_.load(std::memory_order_acquire) & kRefMask) : 0; }
     Payload* body() const noexcept { return b_; }
     friend bool operator==(const PRef& a, const PRef& b) noexcept { return a.b_ == b.b_; }
     friend bool operator!=(const PRef& a, const PRef& b) noexcept { return a.b_ != b.b_; }
@@ -271,6 +311,8 @@ inline PRef<T> makePayload(A&&... a) {
     Body<T>* b;
     try { b = ::new (mem) Body<T>(std::in_place, std::forward<A>(a)...); }
     catch (...) { SlabPool::dealloc(mem, sizeof(Body<T>)); throw; }
+    if constexpr (std::is_same<T, ObjectData>::value)
+        if (g_cycleTrack) b->refs_.store(1u | kRefTracked, std::memory_order_relaxed);
     return PRef<T>::adoptNew(b);
 }
 

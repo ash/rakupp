@@ -306,6 +306,20 @@ public:
         return makeValueAlias(gen_, &v);
     }
 
+    // The cycle collector's view (Cycle.cpp): every Value this hash holds a
+    // count through — a dead entry keeps its Value until clear(), and an
+    // object-keyed hash keeps its keys' originals — until `f` answers false;
+    // and whether a live Pair over an entry (aliasOf) can still reach the
+    // entries from outside.
+    template <class F>
+    void forEachHeld(F&& f) const {
+        const ChunkList<Entry>& es = E();
+        for (size_t i = 0; i < es.size(); i++) if (!f(es[i].kv.second)) return;
+        for (const auto& kv : objKeys_) if (!f(kv.second)) return;
+    }
+    bool entriesAliased() const { return gen_ && gen_.use_count() > 1; }
+    bool holdsNothing() const { return E().size() == 0 && objKeys_.empty(); }
+
     iterator find(const std::string& key) {
         int32_t s = findSlot(key, hashKey(key));
         return s < 0 ? end() : iterator(this, (size_t)index_[s]);

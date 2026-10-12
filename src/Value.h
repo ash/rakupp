@@ -1857,6 +1857,14 @@ struct ClassInfo {
     // the roles a class composed, in `does` order (a role's own roles are in
     // its parent slots) — the 6.e BUILD/TWEAK walk runs their submethods
     std::vector<std::shared_ptr<ClassInfo>> composedRoles;
+    // The cycle collector's verdict on this class (Cycle.cpp, cycleClassify):
+    // 1 = every attribute, its own, its parents' and its roles', can only
+    // hold a value (a native, Int, Str, …), so an instance cannot be on a
+    // cycle and needs no tracking; 0 = it can; -1 = not yet decided. Decided
+    // at an instance's first release that leaves it alive, and never
+    // revisited: a later `augment` that adds a container attribute can only
+    // cost collections, never free anything early.
+    DecidedOnce<signed char> cycleSafe{-1};
     // a class before 6.e with a 6.e role's BUILD/TWEAK somewhere in its
     // composition (or its ancestry): that role's hooks run as ROLE
     // constructors, not composed (construction checks this before walking)

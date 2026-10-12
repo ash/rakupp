@@ -3746,6 +3746,10 @@ struct Codegen {
                          body.find("v_c") != std::string::npos ||      // code-var reads (grep(&f, @a) where &f says `last`)
                          body.find("Value::closure") != std::string::npos;
         if (!canSignal) { out << body; return; }
+        // the cycle collector's safe point (Cycle.h): compiled frames are not
+        // Envs, so no scope exit of theirs offers one; the previous
+        // iteration's locals are gone here, as an interpreted loop's are
+        line(ind, "cycleMaybeCollect();");
         line(ind, "try {");
         out << body;
         // an unlabelled signal stops here; a labelled one only if this loop wears it

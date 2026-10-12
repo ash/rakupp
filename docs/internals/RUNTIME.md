@@ -37,6 +37,7 @@ code changes.
 - [The object model](#the-object-model)
 - [How built-in types get methods](#how-built-in-types-get-methods)
 - [Closures](#closures)
+- [Memory: reference counts and the cycle collector](#memory-reference-counts-and-the-cycle-collector)
 - [Junctions](#junctions)
 - [Lazy and infinite sequences](#lazy-and-infinite-sequences)
 - [`but` / `does` mixins](#but--does-mixins)
@@ -918,6 +919,40 @@ free variable in the body resolves through the captured `closure` scope. Because
 the capture is the live `Env` (not a copy of its values), a closure sees and
 mutates the *same* container as its defining scope — real closures, e.g. a
 counter that keeps incrementing the same `my $n`.
+
+## Memory: reference counts and the cycle collector
+
+A `Value`'s payload (an array, a hash, an object, a Pair or container cell, a
+Match, a routine) is a body with an intrusive atomic count (`src/Ref.h`), and
+the last release frees it on the spot. That keeps memory small and frees
+things in a predictable order, but on its own it never frees a group of
+containers that refer to each other: when the program lets go of the group,
+each member's count stays at what the others hold (issue #151).
+
+A **backup cycle collector** (`src/Cycle.h`, `src/Cycle.cpp`, plan in
+[CYCLE-GC-PLAN.md](../dev/plans/CYCLE-GC-PLAN.md)) frees those groups and
+leaves the acyclic case alone:
+
+- **Candidates.** An object's body is *tracked*: the top bit of its count is
+  set, so the inline release test (`(int32_t)old <= 1`) sends every release
+  that leaves it alive to an out-of-line note, at no cost to the release sites
+  of other payloads. An array, hash, Pair or cell is noted where a scope exit
+  drops it (`Env::cycleNoteSlots`), and a scope a closure keeps alive has its
+  variables noted when the loop or call lets go of it. Candidates sit in a
+  buffer that holds no count: a body that dies takes itself out.
+- **Collection** runs when the buffer reaches a threshold, at a scope exit or
+  a compiled loop's iteration, on the main thread with no worker live. It
+  walks the references container bodies, routines and closure scopes hold,
+  counts the ones inside the walk, and treats a node whose count is higher
+  as held from outside, together with everything it reaches. The rest is
+  garbage: its `DESTROY`s run with every link intact, the set is checked
+  again (a `DESTROY` may store `self`), and then its contents are cleared, so
+  ordinary reference counting frees it.
+
+`RAKUPP_CYCLE=0` turns it off, `RAKUPP_CYCLE=dry` finds garbage without
+freeing it, `RAKUPP_CYCLE_STATS=1` reports at exit, and `RAKUPP_CYCLE_POISON=1`
+replaces a collected object's class with one that dies on any method call
+instead of clearing it. `t/leak/run.raku` runs the leak corpus both ways.
 
 ## Junctions
 

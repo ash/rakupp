@@ -568,6 +568,26 @@ section('t/scaling (load and run time stay linear)');
     }
 }
 
+# ---- cyclic garbage is freed -----------------------------------------------
+# t/leak/run.raku runs the leak corpus: objects, arrays, hashes and closure
+# scopes that refer to each other, each counted by DESTROY, plus the live
+# cycles that must survive a collection. Every file also runs under
+# RAKUPP_CYCLE_POISON=1, the check that the cycle collector never freed
+# something still reachable (docs/dev/plans/CYCLE-GC-PLAN.md).
+section('t/leak (the cycle collector)');
+{
+    my $p = run($*EXECUTABLE, $ROOT.add('t/leak/run.raku').Str, :out, :err);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    my @tap = $out.lines.grep(/^ 'not '? 'ok ' \d+ ' - '/);
+    ok(@tap.elems > 0 && $out.lines.first(*.starts-with('1..')).defined, 'leak: the corpus ran');
+    diag("stderr: $_") for $err.lines.head(10);
+    for @tap -> $l {
+        my $desc = $l.subst(/^ 'not '? 'ok ' \d+ ' - '/, '');
+        ok(!$l.starts-with('not '), "leak: $desc");
+    }
+}
+
 # ---- a real module's own suite -------------------------------------------
 # YAMLish 0.1.2 (zef:leont, Artistic-2.0), vendored in t/fixtures/yamlish. It
 # is a large grammar with parameterised tokens, runtime-bounded quantifiers and
