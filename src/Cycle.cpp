@@ -98,7 +98,16 @@ void retrack(Payload* p, PK k) {
         p->refs_.fetch_or(kRefTracked, std::memory_order_relaxed);
 }
 
-void bufferAdd(Payload* p, PK k) {
+// What the trigger compares: the candidates waiting, plus extra weight for
+// the ones a kept scope supplied. Candidates are counted, not measured, and a
+// frame a closure keeps can hold any amount — 300 calls of a routine keeping
+// a block beside a 1 MB string sat at 294 MB, never reaching 1,024. Weighted
+// 64, sixteen such frames start a collection.
+size_t g_keptExtra = 0;
+constexpr size_t kKeptWeight = 64;
+void publishPressure() { g_cycleBufN.store(g_buf.size() + g_keptExtra, std::memory_order_relaxed); }
+
+void bufferAdd(Payload* p, PK k, size_t weight = 1) {
     if (p->pflags_.load(std::memory_order_relaxed) & kPayCycleBuffered) return;
     BufGuard g;
     if (p->pflags_.load(std::memory_order_relaxed) & kPayCycleBuffered) return;
@@ -106,7 +115,8 @@ void bufferAdd(Payload* p, PK k) {
     setIndex(p, g_buf.size());
     untrack(p, k);
     g_buf.push_back({p, k});
-    g_cycleBufN.store(g_buf.size(), std::memory_order_relaxed);
+    g_keptExtra += weight - 1;
+    publishPressure();
     S.buffered++;
 }
 
@@ -555,6 +565,7 @@ size_t collect() {
     {
         BufGuard g;
         batch.swap(g_buf);
+        g_keptExtra = 0;
         g_cycleBufN.store(0, std::memory_order_relaxed);
         for (Cand& cd : batch) { clearIndex(cd.p); retrack(cd.p, cd.k); }
         c.nodes.reserve(batch.size() * 2);
@@ -610,7 +621,11 @@ size_t collect() {
         }
         bool ok = true;
         if (!fin.empty()) {
-            for (auto& od : fin) { S.finalized++; g_interp->cycleFinalize(od); }
+            // newest first: the candidates are in the order they were made,
+            // and an outer object is made after what it holds, so this runs
+            // an owner's DESTROY before its parts' (as the registry sweep,
+            // and Rakudo, do for a chain: x, then y, then z)
+            for (size_t i = fin.size(); i-- > 0;) { S.finalized++; g_interp->cycleFinalize(fin[i]); }
             fin.clear();
             ok = c.recheck(garbage);
         }
@@ -689,7 +704,7 @@ void cycleForget(Payload* p) noexcept {
         setIndex(g_buf[idx].p, idx);
     }
     g_buf.pop_back();
-    g_cycleBufN.store(g_buf.size(), std::memory_order_relaxed);
+    publishPressure();
     S.forgotten++;
 }
 
@@ -759,7 +774,7 @@ void cycleClassify(Payload* p, ObjectData* od) noexcept {
 
 void cycleNoteKeptSlow(const Value& v) noexcept {
     if (g_stats) S.kept++;
-    if (g_cycleMode && v.p_) bufferAdd(v.p_.get(), v.pk_);
+    if (g_cycleMode && v.p_) bufferAdd(v.p_.get(), v.pk_, kKeptWeight);
 }
 
 void cycleNoteSlow(const Value& v) noexcept {
@@ -813,6 +828,7 @@ void cycleDetach(Interpreter* in) noexcept {
         BufGuard g;
         for (Cand& cd : g_buf) { clearIndex(cd.p); retrack(cd.p, cd.k); }
         g_buf.clear();
+        g_keptExtra = 0;
         g_cycleBufN.store(0, std::memory_order_relaxed);
     }
     g_interp = g_interps.empty() ? nullptr : g_interps.front().first;
