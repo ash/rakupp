@@ -31,7 +31,7 @@ and the code generator walk. There is no bytecode and no VM: the interpreter
 walks the tree directly. What it has instead is **four output modes** — interpret,
 `--bundle` (embed the source), `--aot` (embed the rebuilt tree), and `--exe`,
 which transpiles the program to C++ and links a native binary with no interpreter
-inside it. Memory is `shared_ptr` reference counting with no collector. The
+inside it. Memory is reference counting with a backup cycle collector. The
 module manager is built in as well: `rakupp install` resolves against the same
 ecosystem index zef uses and writes into the same store, so a distribution put
 there by either tool is visible to both engines, and getting one does not need
@@ -58,7 +58,7 @@ growing the interpreter until it runs.
 | Front end | hand-written lexer + recursive descent / Pratt | hand-written parser | NQP grammar → QAST |
 | Execution | tree-walking interpreter | bytecode VM (~340 opcodes) | bytecode VM (MoarVM) |
 | Runtime optimiser | integer and loop kernels, default on; opt-in tier-up (`--jit`, `--cnp`) | Cranelift JIT, default on | `spesh` type specialisation + inlining, then JIT |
-| Memory | intrusive reference counting, no collector | refcounting + Bacon–Rajan cycle collector | generational, precise, moving GC |
+| Memory | intrusive reference counting + trial-deletion cycle collector | refcounting + Bacon–Rajan cycle collector | generational, precise, moving GC |
 | Value repr | one struct, cold fields behind a copy-on-write block | NaN-boxed (8-byte target) | MoarVM object model |
 | Third-party deps | none | ~25 crates (num-bigint, ICU, Cranelift, libffi, pcre2) | its own toolchain (NQP, MoarVM) |
 | Regex engine | own | own | own (NQP-compiled) |
@@ -117,12 +117,14 @@ Three different answers to the same question:
 
 ### Reclaiming memory
 
-Raku++ frees a value the moment its last reference goes, which buys a ~1.5 MB
-floor and no stop-the-world pause, and costs you **reference cycles, which are
-never reclaimed** — see [garbage-collection.md](garbage-collection.md). mutsu
-starts from the same refcounting base and adds a Bacon–Rajan collector that
-finds exactly those cycles, so it pays a little memory and some bookkeeping to
-close the leak. Rakudo's moving generational collector is the most capable of the
+Raku++ and mutsu both free a value the moment its last reference goes, which
+buys a small floor and no stop-the-world pause, and both add a collector that
+looks only for reference cycles, the one thing counting cannot free. Raku++'s
+(since 2026-10) is the synchronous trial-deletion form of Bacon and Rajan's
+algorithm: it collects at the end of a scope, on the main thread, from
+candidates noted when a release leaves an object alive, and it walks a
+bounded amount per candidate, so a cycle larger than that is still leaked —
+see [garbage-collection.md](garbage-collection.md#what-about-cycles). Rakudo's moving generational collector is the most capable of the
 three and the reason its baseline process is ~90 MB rather than ~1.5 MB.
 
 ### Dependencies
@@ -214,7 +216,7 @@ Our own per-synopsis breakdown is in [ROAST.md](../../status/ROAST.md).
 - [ARCHITECTURE.md](../../internals/ARCHITECTURE.md) — how Raku++ itself is put
   together, mode by mode.
 - [garbage-collection.md](garbage-collection.md) — refcounting, what it buys,
-  and the cycles it leaks.
+  and how cycles are collected.
 - [compiling.md](compiling.md) — `--exe` vs `--aot` vs `--bundle`.
 - [differences.md](differences.md) — where Raku++ and Rakudo differ in
   *behaviour* rather than construction.

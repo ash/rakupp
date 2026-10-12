@@ -329,10 +329,11 @@ tree walk. No amount of it produces an instruction stream.
 
 ### Is there a garbage collector?
 
-No. Memory is `shared_ptr` reference counting, which buys a ~1.5 MB floor and no
-stop-the-world pause, and costs you unreclaimed reference cycles and a free that
-lands on your own clock. [garbage-collection.md](garbage-collection.md) is the
-full trade.
+Not a tracing one. Memory is reference counting, which buys a ~1.5 MB floor
+and no stop-the-world pause, and makes a free land on your own clock. A backup
+cycle collector frees the groups of objects that refer to each other, which
+counting alone would leak. [garbage-collection.md](garbage-collection.md) is
+the full trade.
 
 ### Static or dynamic typing?
 

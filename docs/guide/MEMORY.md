@@ -91,9 +91,14 @@ and whatever stack their creator gave them.
 - **Values** are shared-structure (`shared_ptr` arrays/hashes): assignment
   of containers copies structure lazily at mutation boundaries; `@a = …` /
   `%h = …` refill the existing container in place.
-- **Env→closure cycles** from named inner subs are collected at frame
-  teardown (`breakSelfClosures`) — a 300k-call loop that used to retain
-  ~425 MB of dead frames now stays around 3 MB.
+- **Env→closure cycles** from named inner subs are cut at frame teardown
+  (`breakSelfClosures`) — a 300k-call loop that used to retain ~425 MB of dead
+  frames now stays around 3 MB.
+- **Reference cycles** in general (objects, arrays and hashes that refer to
+  each other, a block stored in its own frame) are freed by the backup cycle
+  collector, which walks a bounded amount per candidate: a cycle larger than
+  that (tens of thousands of objects) is still leaked. See
+  [faq/garbage-collection.md](faq/garbage-collection.md#what-about-cycles).
 - **BigInt** is arbitrary precision: memory grows with the number. There is
   no cap; `10 ** 10 ** 8` will happily eat what it needs.
 - **Infinite ranges** never materialize: `flatten()` on `1..Inf` yields a

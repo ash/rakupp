@@ -2,8 +2,9 @@
 
 A `Value` copy shares its payload. Raku sometimes wants that and sometimes
 wants the opposite, and the rules for which are the subtlest part of the value
-model. This chapter is about where the sharing is broken on purpose, and how
-the things Raku calls *containers* are modelled without a container object.
+model. This chapter is about where the sharing is broken on purpose, how the
+things Raku calls *containers* are modelled without a container object, and,
+at the end, how shared payloads that refer to each other are freed.
 
 ## Scopes are hash maps with a parent pointer
 
@@ -360,12 +361,221 @@ This works for **direct** calls, where the caller supplied the argument
 expressions. Multi-dispatched and indirect calls can lose that fidelity — a
 known limitation, documented rather than hidden.
 
+## Freeing cycles
+
+Every payload this chapter has described is reference-counted: an array, a
+hash, an object, a Pair's value, a container cell. The count lives in the body
+(`src/Ref.h`), and the release that takes it to zero frees the body on the
+spot. That is what gives Raku++ its small floor and its pause-free run time,
+and it has the classic hole: two bodies that refer to each other keep each
+other's count at one after the program has let go of both. Issue #151 was
+the plainest form of it, a loop that made a pair of objects pointing at each
+other and dropped them. Rakudo held that loop at 143 MB; Raku++ grew by 235 MB
+every 20,000 pairs and freed none of them.
+
+The fix is a **backup cycle collector** (`src/Cycle.h`, `src/Cycle.cpp`).
+Reference counting stays the primary mechanism and keeps everything it was
+already good at. The collector only looks for groups that counting cannot
+free, and frees them by clearing their contents, after which ordinary counting
+does the rest.
+
+### Why the end of a scope cannot decide
+
+The obvious first idea is to free an object when the variable that named it
+goes out of scope. It is wrong whenever the object escaped: pushed onto an
+outer array, captured by a closure, stored in another object, returned.
+Proving that nothing escaped is escape analysis through `new`, `BUILD`, `is
+rw` accessors and every method call, and in Raku the honest answer is "might
+escape" almost everywhere.
+
+What the end of a scope *can* supply is a trigger. A group becomes garbage at
+the moment its last outside reference goes away, so every release that leaves
+a container alive is a moment it may have done so. The container is then a
+**candidate**.
+
+### Trial deletion
+
+The algorithm is the synchronous form of Bacon and Rajan's cycle collection
+(ECOOP 2001), done without touching the live counts:
+
+1. From the candidates, walk the references that bodies hold.
+2. For each body reached, count the references to it from other bodies the
+   walk reached.
+3. A body whose real count is higher is held from outside the walk. It is
+   live, and so is everything it reaches.
+4. Whatever is left is referenced only from inside the group: garbage.
+5. Run the garbage objects' `DESTROY`s while every link is still intact, then
+   count again, because a `DESTROY` may have stored `self` somewhere.
+6. Clear the garbage bodies' contents. Their counts fall to zero and the
+   normal release path frees them.
+
+The safety argument is one sentence. A body is cleared only when every
+reference its count records comes from a body in the garbage set. A reference
+the walk cannot see (a C++ temporary, a native callback's capture, another
+thread's copy) leaves the count higher than the walk explains, so the body
+looks held and nothing is freed. A walk cut short by a budget leaves edges
+uncounted, with the same effect. The single error that could free something
+live is counting an edge that holds no reference, so `forEachEdge`, the
+function that lists a body's references, reports only handles that each own
+exactly one count. When a count comes out *below* what the walk explains,
+that is proof of such an error, and the collection is abandoned.
+
+Two holders need care. A hash entry handed out as a live Pair keeps the
+entries alive through a shared generation, not through a count, so a hash
+with outstanding aliases is treated as held from outside. And the `DESTROY`
+registry holds one count on every object whose class declares a `DESTROY`;
+a flag bit on the body tells the walk to account for it.
+
+### Candidates that hold nothing
+
+The first design held a counted reference to every candidate, and that is the
+design to avoid: it delays every free until the next collection, and a
+handle closed by its destructor would close later than it does today. The
+candidate list holds **raw pointers**. A flag bit in the body's `pflags_`
+word marks it as buffered, and the bits above carry its index in the list.
+When a buffered body's count reaches zero, the release path removes it
+(`cycleForget`) before freeing it. Being a candidate never keeps anything
+alive, so a collection can wait for 1,024 candidates without changing what a
+program observes.
+
+### Which releases make a candidate
+
+The plan was to note candidates at scope exits only. Measured against eight
+ways a program drops a cycle (reassigning an outer variable, replacing an
+array element, `:delete`, `@a = ()`, a sunk `N.new.link`, `.shift`,
+overwriting an attribute, the result list of a `.map`), scope exits caught
+one. Rakudo frees all eight. The drops that matter happen everywhere a
+`Value` is released, and the only place that sees all of them is the release
+itself.
+
+Hooking every release costs on the hottest path in the engine. A comment in
+`Ref.h` records that inlining the destroy call there once cost 2.5% from code
+size alone. The answer folds the decision into the count:
+
+```cpp
+// src/Ref.h
+void release() noexcept {
+    if (p_) {
+        std::uint32_t old = p_->refs_.fetch_sub(1, std::memory_order_acq_rel);
+        if ((std::int32_t)old <= 1) payloadReleaseSlow(p_, old);
+    }
+}
+```
+
+An object's body is created with the top bit of its count set
+(`kRefTracked`). Its count therefore reads negative, so every release of it
+leaves the inline path, exactly as the last release of any body does, and the
+inline test is still one compare. The out-of-line half frees on a last
+release and otherwise notes a tracked body as a candidate. Every reader of a
+count masks the bit. A buffered object has the bit cleared while it waits, so
+its later releases stay inline, and gets it back if a collection finds it
+alive.
+
+Arrays, hashes, Pairs and cells are not tracked: they are released far more
+often than objects, and the cycles they form on their own are rarer. They
+are noted where a scope exit drops them. When the drop frees one instead, its
+own contents lose a reference too, so the note looks into the dying body, a
+bounded number of levels down.
+
+### Scopes are nodes too
+
+A routine that declares `my sub helper`, or keeps a block in a variable,
+makes a cycle every time it runs: the frame holds the block, and the block
+holds the frame as its closure. Before the collector, every call of such a
+routine leaked its whole frame; Rakudo freed 20,000 of 20,000 and Raku++
+none. Frames are `Env`s reached through `std::shared_ptr`, not payload
+bodies, so the walk treats an `Env` as a node of its own. Its count is the
+pointer's `use_count`, and an edge to it is a handle that shares its control
+block (an aliasing or non-owning handle is not counted). The walk does not
+enter a program's, a module's, a package's or an `EVAL`'s scope: the process
+holds those for good, and their slots are most of what a program has.
+
+Breaking such a cycle clears the routine, not the scope. Resetting a garbage
+`Callable`'s `closure` and `state` scope releases the frame, and the frame's
+own count takes it from there. A frame is not cleared in place: interpreter
+code holds raw pointers into frames' slots, and a frame that dies by its
+count dies the way it always has.
+
+The trigger here is a frame that a closure keeps alive when its routine
+returns or its loop iteration ends: its variables become candidates. A kept
+frame can hold any amount of memory, so these candidates weigh 64 toward the
+1,024 that start a collection. Counted as one each, 300 calls of a routine
+keeping a block beside a 1 MB string peaked at 294 MB; weighted, at 18 MB.
+
+### When it runs
+
+A collection reads counts while it walks, and parallel mode has threads
+changing them. It therefore runs only at a **quiet point**: on the main
+thread, with no worker live, at the end of a scope (a pooled frame returned,
+a loop iteration's scope cleared, a flat loop body's iteration) or at the top
+of a compiled loop iteration. While workers run, candidates wait, and the
+threshold doubles each time a collection is put off. Candidates may be noted
+on any thread; the list sits behind a spinlock that costs an exchange and a
+store when uncontended.
+
+`DESTROY` runs from the collection, at those same points. That is no new
+licence: the registry sweep already runs `DESTROY` when constructing an
+object pushes the registry past its threshold. A collection never starts
+while an exception unwinds.
+
+### Bounding the cost
+
+The danger is a hot routine whose local variable names the root of a large
+structure that is cyclic but live, such as a tree with parent links. Every
+return would walk the tree to find it held. Four bounds keep that in check:
+
+- **A node budget per candidate.** A walk that would add more than 1,024
+  nodes stops adding, and pins the nodes it has not looked inside. A pinned
+  node counts as held from outside.
+- **A read budget per walk.** The node cap alone was not enough: a walk read
+  every element of a node before checking the cap. Running `t/scaling` with a
+  collection at every scope exit made two of its shapes quadratic, because a
+  growing attribute array was read whole each time. A walk now stops after
+  16,384 values, and the node it stopped inside is pinned.
+- **Shared work within a collection.** Candidates are walked one at a time,
+  but a node an earlier walk reached is not walked again. A collection that
+  finds nothing doubles the threshold for the next, up to 2^20; one that finds
+  garbage resets it.
+- **No node for nothing.** An empty array or hash is not given a node at all,
+  since it holds nothing and so is on no cycle. Together with an
+  open-addressing index in place of `std::unordered_map` and one reused
+  queue, that took the strategy's worst measured case (200,000 children each
+  pointing back at a live parent) from +8.4% to +2.9% instructions.
+
+One more saving is static. A class whose attributes can only hold values (a
+native, `Int`, `Str`, `Num`, `Rat`, `Bool`, …), counting its parents' and
+roles' attributes, cannot be on a cycle, and its objects are not tracked. The
+verdict is cached on the `ClassInfo` the first time one of its objects is
+released, a point every way of making an object passes through. It is a
+heuristic, and it errs only toward a leak: a value type can be subclassed
+(`class A is Int { has Int $.next }`), and a cycle made only of such objects
+has no tracked member.
+
+### How it was checked
+
+`t/leak/` holds one file per shape of cyclic garbage and per shape of live
+cycle that must survive, each counting `DESTROY` calls. It passes under
+Rakudo as well. Every file also runs with `RAKUPP_CYCLE_POISON=1`: instead of
+clearing a collected object, the collector gives it a class whose every
+method dies with `CYCLE-COLLECTED[…]` in the message. `DESTROY` still runs,
+so every count still holds, and any later use of a collected object fails
+loudly. `RAKUPP_CYCLE_TRIGGER=1` makes a collection run at nearly every scope
+exit, which matters because at the normal threshold most Roast files are too
+short to collect at all. Roast under that setting, with and without poison,
+passed 220,845 of 220,845 tests, and the threaded paths ran clean under
+ThreadSanitizer.
+
+On the benchmark kernels the collector costs under 0.6% on twenty of
+twenty-two. The object-construction kernel pays 1.3–1.5%: each of its
+200,000 objects goes on the candidate list once and comes off when it is
+freed.
+
 ## Honest limitations
 
-- **A reference cycle leaks.** Lifetime is refcounting. The interpreter breaks
-  the one cycle it creates systematically — a nested sub whose closure points
-  back at the frame that holds it — and otherwise relies on processes being
-  short-lived.
+- **Some cycles still leak.** A cycle larger than one walk's budget, and one
+  that runs through a promise, a channel, a lazy generator or a native
+  callback, are not freed. A program that always has a worker thread running
+  collects only at the moments it has none.
 - **`:=` on a scalar costs a call per read.** The `Proxy` is correct and
   general, and it is not free.
 - **`is rw` write-back is expression-based.** Where the argument expression is

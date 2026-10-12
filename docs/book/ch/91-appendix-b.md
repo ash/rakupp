@@ -133,6 +133,16 @@ sixty-six flags the binary accepts, including a whole run mode.
 | `RAKUPP_FFI=/path` | use *only* that library; if it fails to load, report and fall back rather than silently substituting the system copy |
 | `RAKUPP_FFI_TRACE=1` | log every crossing, with marshalled arguments and raw returns |
 
+### Memory
+
+| Variable | Effect |
+|---|---|
+| `RAKUPP_CYCLE=0` | no cycle collection: reference counting alone (Chapter 12) |
+| `RAKUPP_CYCLE=dry` | find cyclic garbage and count it, free nothing |
+| `RAKUPP_CYCLE_STATS=1` | at exit, report collections, candidates, walks and what was freed |
+| `RAKUPP_CYCLE_POISON=1` | give a collected object a class whose every method dies, instead of clearing it |
+| `RAKUPP_CYCLE_TRIGGER=N` | collect whenever N candidates wait; `1` collects at nearly every scope exit |
+
 ### Concurrency
 
 | Variable | Effect |

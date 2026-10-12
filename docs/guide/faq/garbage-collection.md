@@ -1,15 +1,19 @@
 # FAQ — the garbage collector
 
-There isn't one. Raku++ has no tracing, generational or incremental collector,
-no heap to size, no GC knobs and no GC log. Lifetime is `shared_ptr` reference
-counting: a value is freed the moment the last reference to it goes away.
-How the counting itself works, in Raku terms, is
-[refcounting.md](refcounting.md).
+Not a tracing one. Raku++ has no tracing, generational or incremental
+collector, no heap to size and no GC log. Lifetime is reference counting: a
+value is freed the moment the last reference to it goes away. How the counting
+itself works, in Raku terms, is [refcounting.md](refcounting.md).
+
+Reference counting alone cannot free two things that point at each other, so
+beside it runs a **backup cycle collector** that looks only for such groups and
+frees them (since 2026-10, issue #151). It never pauses the program to walk the
+heap: it looks at what was let go of recently, a bounded amount at a time. The
+section [What about cycles?](#what-about-cycles) below has the details.
 
 That answers most of the questions on this page in one line, but the
-consequences are worth spelling out, because two of them will eventually bite
-you: **reference cycles are never reclaimed**, and **`DESTROY` still is not a
-destructor you can schedule**.
+consequences are worth spelling out. The one that will eventually bite you:
+**`DESTROY` is not a destructor you can schedule**.
 
 Figures below were measured on macOS arm64 (M-series), 2026-08-30, rakupp
 3.23.0 against Rakudo v2026.08 / MoarVM 2026.08, with `/usr/bin/time -l`.
@@ -110,9 +114,11 @@ the structure die with the process.
 Deep structures are safe to drop: a 500,000-node linked list released by
 setting its head to `Nil` tears down without exhausting the stack.
 
-**Cycles are never reclaimed.** This is the real limitation. Two objects
-pointing at each other keep each other's count above zero, and nothing ever
-goes looking for them:
+## What about cycles?
+
+Two objects pointing at each other keep each other's count above zero after
+the program has let go of both. Reference counting cannot free them; the cycle
+collector does:
 
 ```raku
 class Node { has $.name is rw; has $.peer is rw; }
@@ -120,54 +126,95 @@ sub cyc() {
     my $a = Node.new(name => 'a');
     my $b = Node.new(name => 'b');
     $a.peer = $b;
-    $b.peer = $a;      # ← the cycle: neither is ever freed
+    $b.peer = $a;      # ← the cycle
 }
 ```
 
-Peak footprint of `for ^N { cyc() }` — the block form of `for`, so the loop
-itself allocates nothing — against the same routine with the last line removed:
+Peak footprint of `for ^N { cyc() }` (the block form of `for`, so the loop
+itself allocates nothing), against the same routine with the last line
+removed, and with the collector switched off (`RAKUPP_CYCLE=0`):
 
-| iterations | no cycle | cycle | Rakudo, cycle |
-|---:|---:|---:|---:|
-| 100,000 | 2 MB | 857 MB | 163 MB |
-| 400,000 | 2 MB | 3423 MB | 189 MB |
+| iterations | no cycle | cycle | cycle, `RAKUPP_CYCLE=0` | Rakudo, cycle |
+|---:|---:|---:|---:|---:|
+| 100,000 | 2.1 MB | 3.2 MB | 94 MB | 146 MB |
+| 400,000 | 2.0 MB | 3.2 MB | 371 MB | 146 MB |
 
-About 8.6 KB per cycle, growing forever. Rakudo's collector finds them, which
-is exactly what a collector is for.
+(rakupp after 5.3.0, Rakudo 2026.09, macOS arm64, 2026-10-12, peak memory
+footprint.) Without the collector each
+cycle leaks about 0.9 KB, growing for as long as the program runs; with it,
+memory stays flat.
 
-The same loop, with the body replaced by a container that contains itself:
+The same holds for a container that contains itself:
 
-| shape | leaked per iteration |
-|---|---:|
-| `%h<self> = %h` | ~4 KB |
-| `@a[0] = @a` | ~180 B |
-| `$x = [$x]` (not a cycle — the old value is captured, not referenced back) | nothing |
+| shape, 200,000 iterations | collector on | `RAKUPP_CYCLE=0` |
+|---|---:|---:|
+| `%h<self> = %h` | 2.8 MB | 115 MB |
+| `@a[0] = @a` | 2.4 MB | 26 MB |
 
-**One cycle is broken for you.** A named sub nested in another routine closes
-over the enclosing frame and is stored back into it — a cycle the language
-makes, not you. When a frame exits without that closure having escaped, the
-interpreter drops the back-edge (`breakSelfClosures`, src/Interpreter.cpp), so
-this stays flat at 1.6 MB at any iteration count:
+and for the cycles closures make: a block kept in a variable of the frame it
+was made in, or an object that stores a callback mentioning that object. Those
+are measured in [refcounting.md](refcounting.md#which-cycles-do-i-make-without-noticing).
 
-```raku
-sub outer($x) {
-    my sub helper($y) { $y * 2 }    # would otherwise retain outer's frame
-    helper($x) + 1;
-}
-```
+### How it works
 
-**Not in 4.0.0 to 5.0.0:** a regression makes the interpreter skip that cut
-once `helper` has been called, so today the routine above keeps every frame it
-makes: about 1.5 KB per call, 1.5 GB over a million calls. Declaring `helper`
-at unit scope avoids it. The shapes affected are measured in
-[refcounting.md](refcounting.md).
+A group of objects becomes garbage at the moment its last outside reference
+goes away. The collector keeps a list of **candidates**, the containers that
+may just have lost such a reference:
 
-That is the only cycle handled automatically. Cycles in *your* data are yours.
+- an object, every time a reference to it is released and the object stays
+  alive;
+- an array, hash, Pair or container cell, when a scope that held it exits;
+- the variables of a scope a closure keeps alive, when the routine or loop
+  that made the scope lets go of it.
+
+The list holds no reference of its own: a candidate that is freed in the
+ordinary way simply leaves it. When enough candidates have gathered, at the
+end of a scope, the collector walks what they reference and counts how many
+of each object's references come from inside the walk. An object referenced
+more often than that is held from outside, and so is everything it reaches.
+What is left is referenced only by itself, so it is garbage. Its `DESTROY`s
+run first, with every link intact; then its contents are cleared, and
+reference counting frees the rest.
+[RUNTIME.md](../../internals/RUNTIME.md#memory-reference-counts-and-the-cycle-collector)
+has the engineering, and the Internals book a chapter of its own
+([Chapter 12](../../book/ch/12-containers.md#freeing-cycles)).
+
+### What it costs
+
+The cost is paid where candidates are made, mostly on objects. On the
+benchmark kernels (instructions retired, 2026-10-12) twenty of twenty-two
+moved by under 0.6%; the kernel that builds 200,000 objects and calls
+methods on them costs 1.3–1.5% more. A class whose attributes are all typed
+with a value type (`has Int $.x`, `has str $.s`, …) cannot be part of a
+cycle, and its objects are not tracked at all; on the same kernel with typed
+attributes the cost is 0.7%.
+
+A collection walks at most a bounded amount from each candidate (1,024 new
+objects, 16,384 values read), so a large structure that is still in use is
+looked at in slices, never re-read whole. The price of that bound is the
+first item in the next list.
+
+### What it does not free
+
+- **A cycle larger than one walk.** A ring of 30,000 objects is still leaked.
+  It is reported nowhere, and nothing else slows down.
+- **A cycle through a promise, a channel, a lazy sequence's generator or a
+  native callback.** The collector cannot see inside those, so a cycle that
+  passes through one is treated as held from outside.
+- **A cycle built while worker threads run, until they stop.** A collection
+  needs the program to be quiet: the main thread, with no `start` block or
+  supply worker running. A server that always has a worker live collects only
+  at the moments it has none.
+
+When a cycle is still a problem, the structural fixes below free it at once
+and need no collector at all.
 
 ## How do I avoid a cycle?
 
-Raku has no weak reference in either implementation, so the fix is structural,
-not a keyword:
+Usually you do not need to: the collector frees them. Avoid one when you want
+the memory back at a precise moment, or when the cycle is one of the shapes
+above that the collector cannot free. Raku has no weak reference in either
+implementation, so the fix is structural, not a keyword:
 
 - **Prefer one direction.** Parent → children, and look the parent up by id or
   index instead of storing a back-pointer.
@@ -179,7 +226,7 @@ class Node { has $.name is rw; has $.peer is rw; }
 sub build() {
     my $a = Node.new(name => 'a');
     my $b = Node.new(name => 'b');
-    LEAVE { $a.peer = Nil; $b.peer = Nil }   # frees both
+    LEAVE { $a.peer = Nil; $b.peer = Nil }   # frees both, right here
     $a.peer = $b;
     $b.peer = $a;
     "$a.name() ↔ $b.name()";
@@ -187,12 +234,8 @@ sub build() {
 say build();       # a ↔ b
 ```
 
-  In a 400,000-iteration loop that routine stays flat at 1.7 MB, against the
-  3423 MB it takes with the links left in place.
-
 - **Let the process end.** A short-lived script that leaks a bounded number of
-  cycles is fine; the OS reclaims everything at exit. It is long-lived
-  processes — servers, daemons, watchers — where a per-request cycle matters.
+  cycles is fine; the OS reclaims everything at exit.
 
 ## My long-running program grows. Is it a cycle?
 
@@ -214,8 +257,12 @@ Check three things, in this order, because the first two are far more common:
    The modifier's cost is per element of the list, not per iteration: three
    million iterations of `$s += $_ for ^10` stay at 1.6 MB.
 
-3. **Then look for a cycle** — a back-pointer, a parent link, a callback an
-   object stores that closes over that same object.
+3. **Then look for a cycle the collector cannot free** (see
+   [What it does not free](#what-it-does-not-free)): a ring of tens of
+   thousands of objects, a cycle through a promise or a channel, or a program
+   that always has a worker thread running. `RAKUPP_CYCLE_STATS=1` prints what
+   the collector did at exit: how many collections ran, and how many
+   containers they freed.
 
 ### Measuring it
 
@@ -239,7 +286,10 @@ Not at the drop. Raku does not promise timely destruction, and Raku++ does not
 provide it: instances of classes that declare a `DESTROY` submethod are parked
 in a registry, and a sweep runs the destructor of every entry the registry
 alone still holds. Sweeps happen at three moments — when the program asks, when
-enough instances have piled up since the last sweep, and at program end.
+enough instances have piled up since the last sweep, and at program end. A
+cycle collection, which starts on its own at the end of a scope once enough
+candidates are waiting, also runs `DESTROY` for the dropped instances it finds,
+whether or not they are in a cycle.
 
 Asking explicitly works the same in both engines:
 
@@ -302,9 +352,12 @@ difference:
 
 So: **use `DESTROY` for a diagnostic, never for a release.** Close the file,
 release the lock, return the connection in a `LEAVE` block, or with an explicit
-call. That is the advice on the Rakudo side too, and it is the same advice here
-for a stronger reason — nothing looks for cycles, so a leaked object never even
-reaches the registry sweep.
+call. That is the advice on the Rakudo side too.
+
+An object in a cycle gets its `DESTROY` when the cycle collector finds the
+cycle, before anything in the cycle is cleared, so it still sees its
+attributes. If `DESTROY` stores `self` somewhere, the object stays alive, and
+its `DESTROY` does not run a second time when it is dropped again.
 
 ## Does dropping a filehandle close it?
 
@@ -346,31 +399,45 @@ tens of thousands of files, that is worth knowing about.
 
 ## Can I force a collection?
 
-`$*VM.request-garbage-collection` runs the pending-`DESTROY` sweep, as in the
-snippet above. It does not collect cycles — there is nothing that does.
+`$*VM.request-garbage-collection` runs a cycle collection over whatever
+candidates are waiting, then the pending-`DESTROY` sweep, as in the snippet
+above.
 
-`nqp::force_gc()` is not implemented; it works on Rakudo. There are no other
-knobs: no heap size, no nursery, no generation count, no GC environment
-variables, because there is nothing to tune.
+`nqp::force_gc()` is not implemented; it works on Rakudo. There is no heap
+size, nursery or generation count to tune. The environment variables are
+switches for checking the collector, not tuning knobs:
+
+| variable | effect |
+|---|---|
+| `RAKUPP_CYCLE=0` | no cycle collection; reference counting alone |
+| `RAKUPP_CYCLE=dry` | find cyclic garbage and count it, free nothing |
+| `RAKUPP_CYCLE_STATS=1` | at exit, print what the collector did |
+| `RAKUPP_CYCLE_POISON=1` | instead of clearing a collected object, give it a class whose every method dies with `CYCLE-COLLECTED[…]` in the message; for checking that nothing collected is used again |
+| `RAKUPP_CYCLE_TRIGGER=N` | collect whenever N candidates wait (default: 1,024, rising while collections find nothing); `1` collects at nearly every scope exit |
 
 ## Do threads change any of this?
 
-No collector means no global pause and no collector-side synchronisation.
-Reference counts are atomic, and a value is freed by whichever thread drops the
-last reference. Your own shared data is a different question — two `start`
+There is no global pause. Reference counts are atomic, and a value is freed by
+whichever thread drops the last reference. The cycle collector runs only on
+the main thread while no worker thread is live; while workers run, candidates
+wait, and the next quiet moment collects them. Your own shared data is a different question — two `start`
 blocks writing the same array without a `Lock` is a data race here exactly as
 it is under Rakudo. See [ASYNC.md](../ASYNC.md).
 
 ## Does `--exe` behave differently?
 
 No. Compiled binaries link the same runtime and use the same reference
-counting, so the floor, the cycles and the `DESTROY` sweep all behave as they
-do in the interpreter. The same holds for the WebAssembly build.
+counting and the same cycle collector, so the floor, the cycles and the
+`DESTROY` sweep all behave as they do in the interpreter; a compiled program
+collects at the top of each loop iteration that calls user code. The same
+holds for the WebAssembly build.
 
 ---
 
 Deeper detail: [MEMORY.md](../MEMORY.md) for stacks, recursion depth and the
 data-side guardrails; [RUNTIME.md](../../internals/RUNTIME.md) for what a
-`Value` is and why its payloads are behind `shared_ptr`.
+`Value` is and how its payloads are counted;
+[CYCLE-GC-PLAN.md](../../dev/plans/CYCLE-GC-PLAN.md) for the collector's
+design and measurements.
 
 Back to the [FAQ index](README.md).

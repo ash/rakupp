@@ -8,7 +8,8 @@ to zero frees it, right there, before the next statement runs.
 
 This page is about the mechanism: what is counted, which Raku operations
 move a count, what is shared and what is copied, and the one thing counting
-cannot see, which is a cycle. The consequences (the memory floor, the absence
+cannot see, which is a cycle (a backup cycle collector handles those). The
+consequences (the memory floor, the absence
 of pauses, the cost of a big free, and what `DESTROY` does and does not
 promise) are on the companion page,
 [garbage-collection.md](garbage-collection.md).
@@ -96,8 +97,9 @@ as in the second row. That releases the value at once.
 ## When exactly is memory freed?
 
 When the count reaches zero, which happens inside the statement that dropped
-the last reference and on the thread that dropped it. No collector runs later
-to find it. Freeing then cascades: when an array goes, it lets go of each
+the last reference and on the thread that dropped it. Nothing waits for a
+collector to find it (the cycle collector only ever looks at values that
+counting could not free). Freeing then cascades: when an array goes, it lets go of each
 element, and any element whose count reaches zero goes too.
 
 So a loop that builds a large temporary on every pass never holds more than one
@@ -270,10 +272,12 @@ freed at the drop like everything else.
 
 This design means `DESTROY` always runs at one of those points and sees a live
 `self`, never inside whatever statement happened to drop the last reference.
-It has one visible consequence: **a chain of objects that each have a
-`DESTROY` is released one link per sweep.** A sweep only takes the entries
-whose count is one when it looks. The next link down is still referenced by the
-object in front of it, so it waits for the following sweep:
+
+A sweep only takes the entries whose count is one when it looks, so on its own
+it would release **a chain of objects that each have a `DESTROY` one link per
+sweep**: the next link down is still referenced by the object in front of it.
+The cycle collector runs first and sees the whole dropped chain at once, since
+it is referenced only from inside itself and from the registry:
 
 ```raku
 class R { has $.name; has $.next; submethod DESTROY { say "DESTROY $!name" } }
@@ -283,14 +287,17 @@ $*VM.request-garbage-collection; say "sweep 2";
 $*VM.request-garbage-collection; say "sweep 3";
 ```
 
-| rakupp | Rakudo |
-|---|---|
-| `DESTROY x` | `DESTROY x` |
-| `sweep 1` | `DESTROY y` |
-| `DESTROY y` | `DESTROY z` |
-| `sweep 2` | `sweep 1` |
-| `DESTROY z` | `sweep 2` |
-| `sweep 3` | `sweep 3` |
+| rakupp | rakupp, `RAKUPP_CYCLE=0` | Rakudo 2026.08 | Rakudo 2026.09 |
+|---|---|---|---|
+| `DESTROY x` | `DESTROY x` | `DESTROY x` | |
+| `DESTROY y` | `sweep 1` | `DESTROY y` | |
+| `DESTROY z` | `DESTROY y` | `DESTROY z` | |
+| `sweep 1` | `sweep 2` | `sweep 1` | `sweep 1` |
+| `sweep 2` | `DESTROY z` | `sweep 2` | `sweep 2` |
+| `sweep 3` | `sweep 3` | `sweep 3` | `sweep 3` |
+
+(Rakudo 2026.09 printed no `DESTROY` line in four runs out of four; the
+language promises nothing about when, or whether, `DESTROY` runs.)
 
 The memory itself is not held up the same way: only the objects that have a
 `DESTROY` wait for sweeps. The rest of the `DESTROY` story, including why it
@@ -299,9 +306,11 @@ should never be what closes a file, is in
 
 ## What happens with a reference cycle?
 
-It is never freed. If two things point at each other, each keeps the other's
-count at one or more after the program has let go of both. Nothing goes looking
-for such pairs: there is no cycle collector.
+Counting alone never frees it. If two things point at each other, each keeps
+the other's count at one or more after the program has let go of both. That is
+what the **cycle collector** is for: it watches the releases that leave a
+container alive, and when enough have gathered it looks for groups referenced
+only from inside themselves, runs their `DESTROY`s and frees them.
 
 ```raku
 class Node {
@@ -322,20 +331,24 @@ $*VM.request-garbage-collection;
 say "after the sweep";
 ```
 
-| rakupp | Rakudo |
-|---|---|
-| | `DESTROY b` |
-| | `DESTROY a` |
-| `DESTROY plain` | `DESTROY plain` |
-| `after the sweep` | `after the sweep` |
+| rakupp | rakupp, `RAKUPP_CYCLE=0` | Rakudo |
+|---|---|---|
+| `DESTROY b` | `DESTROY plain` | |
+| `DESTROY a` | | |
+| `DESTROY plain` | | |
+| `after the sweep` | `after the sweep` | `after the sweep` |
 
-On rakupp, `a` and `b` stay in memory until the process exits, and their
-`DESTROY` never runs because their count never gets down to the registry's one.
-Rakudo's collector finds them, because tracing from the roots never reaches
-them.
+(rakupp after 5.3.0 and Rakudo 2026.09, 2026-10-12; Rakudo printed the same
+single line in four runs out of four.) `$*VM.request-garbage-collection` runs
+a cycle collection before the `DESTROY` sweep, so `a` and `b` are found there.
+(An earlier Rakudo printed all three `DESTROY` lines, in the order rakupp
+now does.)
+Without the explicit request they would be found at the next collection,
+which starts on its own once about a thousand candidates are waiting.
 
-The fix is to cut a link when you are done with the pair, in a `LEAVE` if the
-end of a scope is what "done" means:
+You can still cut a link yourself, in a `LEAVE` if the end of a scope is what
+"done" means. That frees the pair at that line rather than at the next
+collection, and it works for the cycles the collector cannot free:
 
 ```raku
 class Node {
@@ -356,17 +369,10 @@ $*VM.request-garbage-collection;
 say "after the sweep";
 ```
 
-| rakupp | Rakudo |
-|---|---|
-| `a ↔ b` | `a ↔ b` |
-| `DESTROY a` | |
-| `DESTROY b` | |
-| `after the sweep` | `after the sweep` |
-
-Raku has no weak reference, in either engine, so there is no keyword that does
-this for you. Other ways to break the cycle (point in one direction only, look
-the parent up by id instead of storing it) are in
-[garbage-collection.md](garbage-collection.md).
+Raku has no weak reference, in either engine. What the collector does not
+free, and the other ways to avoid a cycle (point in one direction only, look
+the parent up by id instead of storing it), are in
+[garbage-collection.md](garbage-collection.md#what-about-cycles).
 
 ## Which cycles do I make without noticing?
 
@@ -381,11 +387,11 @@ closures, because a closure points at its frame:
   named `my sub` declared inside a routine, because the name is a variable in
   that frame too.
 
-The second shape is one the language creates for you, so the interpreter tries
-to break it: when a routine returns and the closure has not escaped, it cuts the
-closure's link back to the frame (`breakSelfClosures` in `src/Interpreter.cpp`).
-**From 4.0.0 to 5.0.0 that cut is skipped once the inner sub or block has been
-called.** Each call then retains its frame and everything the frame holds.
+The cycle collector frees both kinds: when a routine returns and a closure it
+made still holds its frame, the frame's variables become candidates, and the
+walk follows a block to the frame it closes over. A named `my sub` is also cut
+loose by the interpreter itself when it has not escaped
+(`breakSelfClosures` in `src/Interpreter.cpp`).
 
 Measured with 300 calls of a routine whose frame holds a 1 MB string:
 
@@ -398,26 +404,27 @@ sub outer($x) {
 for ^300 { outer($_) }
 ```
 
-| shape of the routine | rakupp |
-|---|---:|
-| `my sub helper` declared, never called | 3 MB |
-| `my sub helper` called (above) | 294 MB |
-| `my $h = -> $y { … }; $h($x)` | 294 MB |
-| `helper` declared at unit scope instead | 4 MB |
-| a block passed straight to `.map`, not stored | 3 MB |
-| `my $cb = -> { $big.chars }; $cb` returned | 294 MB |
-| `-> { $big.chars }` returned directly | 4 MB |
-| `my $cb = …; LEAVE $cb = Nil; $cb` returned | 4 MB |
+| shape of the routine | rakupp | `RAKUPP_CYCLE=0` | Rakudo |
+|---|---:|---:|---:|
+| `my sub helper` declared, never called | 3 MB | 3 MB | 85 MB |
+| `my sub helper` called (above) | 3 MB | 3 MB | 86 MB |
+| `my $h = -> $y { … }; $h($x)` | 18 MB | 294 MB | 87 MB |
+| `helper` declared at unit scope instead | 3 MB | 3 MB | 85 MB |
+| a block passed straight to `.map`, not stored | 3 MB | 3 MB | 88 MB |
+| `my $cb = -> { $big.chars }; $cb` returned | 34 MB | 294 MB | 87 MB |
+| `-> { $big.chars }` returned directly | 3 MB | 3 MB | 86 MB |
+| `my $cb = …; LEAVE $cb = Nil; $cb` returned | 3 MB | 3 MB | 88 MB |
 
-Rakudo stays at its 96–98 MB floor for every row. The frame does not need
-anything big in it to add up: an empty one is about 1.5 KB, so a million calls
-of the routine above without `$big` reach 1.5 GB. Until the regression is
-fixed, declare helpers at unit scope, or pass blocks where they are used
-instead of storing them first.
+(2026-10-12, rakupp after 5.3.0, Rakudo 2026.09.) The two rows that are not
+flat are the two real cycles, and the collector holds them to a few dozen
+frames: a frame is freed at the next collection, not when its routine
+returns. A frame kept alive by a closure counts heavily toward starting a
+collection, so about sixteen such frames start one. Clearing the variable in
+a `LEAVE`, the last row, frees the frame at once.
 
-The last three rows have nothing to do with the regression. A closure that
-escapes while it is also stored in its own frame is a real cycle. Return the
-block directly, or clear the variable in a `LEAVE` as in the last row.
+From 4.0.0 to 5.0.0 a regression kept every frame of the second row, about
+1.5 KB per call even without `$big`. It is gone, and the collector would now
+free those frames anyway.
 
 ## Can I see a reference count from Raku?
 
@@ -437,7 +444,8 @@ Two things can show you the effect of a count:
 
 The counts are. Increments and decrements are atomic, and whichever thread
 drops the last reference frees the value, with no global pause and no
-collector thread. What you store is a different matter: two `start` blocks
+collector thread. The cycle collector runs on the main thread, and only while
+no worker thread is running. What you store is a different matter: two `start` blocks
 writing the same array without a `Lock` is a data race here, as it is in
 Rakudo. See [ASYNC.md](../ASYNC.md).
 
@@ -447,13 +455,14 @@ Further reading, from here inwards:
 
 - What refcounting buys and costs, measured; `DESTROY` timing on both
   engines; filehandles: [garbage-collection.md](garbage-collection.md).
-- Refcounting here, refcounting plus a cycle collector in mutsu, a tracing
-  collector in Rakudo: [implementations.md](implementations.md).
+- Refcounting plus a cycle collector here and in mutsu, a tracing collector
+  in Rakudo: [implementations.md](implementations.md).
 - What a `Value` is, and where assignment deliberately breaks the sharing:
   [RUNTIME.md](../../internals/RUNTIME.md).
 - The Internals book: [Chapter 8](../../book/ch/08-value.md) on the `Value`
   layout, [Chapter 9](../../book/ch/09-strings.md) on shared string bodies,
-  [Chapter 12](../../book/ch/12-containers.md) on containers, and
+  [Chapter 12](../../book/ch/12-containers.md) on containers and on the cycle
+  collector, and
   [Chapter 14](../../book/ch/14-calls.md) on frames.
 
 Back to the [FAQ index](README.md).

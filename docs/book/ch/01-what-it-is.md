@@ -4,7 +4,7 @@
 
 Raku++ is a Raku implementation written from scratch in C++17. It has no
 third-party dependencies: no parser generator, no regex library, no bignum
-library, no ICU, no libffi at link time, no garbage collector. The binary it
+library, no ICU, no libffi at link time, no tracing garbage collector. The binary it
 produces is one file, and the same source builds it on macOS, Linux, the BSDs,
 Windows, and — compiled to WebAssembly — inside a browser tab.
 
@@ -100,12 +100,12 @@ against Rakudo and against the Roast suite continuously rather than
 aspirationally. The current position is roughly ninety per cent of declared
 Roast assertions.
 
-It has no garbage collector, and no JIT unless one is asked for: the two
-tier-up back ends, `--jit` and `--cnp`, are off by default and are Chapter 44.
-Lifetime is `shared_ptr` reference
-counting, which means a reference cycle leaks; the interpreter breaks the
-specific cycle that a self-closured nested sub would create, and otherwise the
-process is short-lived enough for this to be a real but tolerable limitation.
+It has no tracing garbage collector, and no JIT unless one is asked for: the
+two tier-up back ends, `--jit` and `--cnp`, are off by default and are
+Chapter 44. Lifetime is reference counting, which frees a value the moment its
+last reference goes away. Beside it runs a backup cycle collector that looks
+only for groups of objects that refer to each other, which counting alone
+would leak; Chapter 12 describes it.
 
 It implements compile-time metaprogramming only in part. `macro` and `quasi`
 are absent, for the structural reason given above. Swapping the grammar for a

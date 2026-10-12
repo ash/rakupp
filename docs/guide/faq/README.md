@@ -95,11 +95,11 @@ only way these can drift.
 
 - **[debugging.md](debugging.md)** — what a `die` tells you, `--lint`, `--ast`
   and `--cpp`, telling your bug from ours, and what to put in a report.
-- **[garbage-collection.md](garbage-collection.md)** — there isn't one:
-  `shared_ptr` refcounting, what that buys (a 1.5 MB floor, no stop-the-world
-  pause) and what it costs (cycles are never reclaimed, and the free is on your
-  clock), when `DESTROY` actually runs, why a dropped filehandle is not closed,
-  and how to tell a leak from a materialised list.
+- **[garbage-collection.md](garbage-collection.md)** — no tracing collector:
+  reference counting, what that buys (a 1.5 MB floor, no stop-the-world pause)
+  and what it costs (the free is on your clock), the backup cycle collector and
+  the cycles it still cannot free, when `DESTROY` actually runs, why a dropped
+  filehandle is not closed, and how to tell a leak from a materialised list.
 
 ## How Raku++ works
 
@@ -112,7 +112,7 @@ only way these can drift.
   terms: what is counted and what is copied, which operations move a count,
   shallow copies and binding, shared string bodies, what keeps a closure's
   frame alive, why `DESTROY` waits for a sweep, and the cycles you make
-  without noticing.
+  without noticing (and which of them the cycle collector frees).
 - **[hand-written.md](hand-written.md)** — "hand-written lexer and parser"
   vs. written by a human: what the compiler term of art claims (no parser
   generator — the sense GCC, Clang and Go use of themselves, with receipts),

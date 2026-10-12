@@ -105,6 +105,7 @@ same-named enclosing package, which Rakudo's own warning calls legacy.
 - Metamodel: `.^name .^methods .^method_names .^mro .^parents .^roles .^add_method .^find_method .^parameterize` (`Set.^parameterize(Str)` is `Set[Str]`), `.WHAT .WHICH .HOW`
 - `augment` reopens a type — user classes **and** built-ins (`augment class Int {…}` reaches `3.method`, and needs `use MONKEY-TYPING` as in Rakudo); `does`/`but` runtime role mixins. `supersede` is not implemented
 - Inheritance errors: `class A is A` (self), `class B is Undeclared` → compile-time throws
+- `submethod DESTROY` runs from a registry sweep (`$*VM.request-garbage-collection`, allocation pressure, program end); objects, arrays, hashes and closure frames that refer to each other are freed by a backup cycle collector beside reference counting, `DESTROY` first ([faq/garbage-collection.md](faq/garbage-collection.md#what-about-cycles))
 
 ## Regexes & Grammars
 - `/…/`, `m//`, `s///`; char classes `\d \w \s`, `<[…]> <-[…]> <+[…]>`, and **composed** classes that add and subtract members: `<+alpha-[b]>`, `<-space-[\"]>`, `<-[ab]+[b]>` (a `-member` subtracts from the final set, so it applies after a leading `-` negates)

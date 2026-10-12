@@ -140,6 +140,14 @@ they had no safe point; they get one per iteration. The end-of-program
 collection runs only when some object still waits for a DESTROY: otherwise
 the process frees everything anyway.
 
+**Weighting kept frames.** Candidates are counted, not measured, and a frame
+that a closure keeps alive can hold any amount of memory: 300 calls of a
+routine that keeps a block in a variable beside a 1 MB string reached 294 MB
+without ever filling the 1,024-candidate buffer. A candidate noted from a kept
+frame now weighs 64 toward the trigger, so sixteen kept frames start a
+collection: that routine peaks at 18 MB, the returned-closure variant at
+34 MB (Rakudo: 87 MB).
+
 Left open: a group larger than one walk's cap leaks; a cycle through an
 opaque holder (a promise, a channel, a lazy generator, a `std::function`
 capture) leaks; an array or hash that holds itself inside an object that

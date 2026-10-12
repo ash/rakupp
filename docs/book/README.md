@@ -6,7 +6,7 @@ run modes, the two code generators and the optimizer, the two tier-up back
 ends, module loading, NativeCall, the extension ABI, and the concurrency
 runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 423 pages, 44 chapters in
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 431 pages, 44 chapters in
 ten parts, plus four appendices under a divider of their own.
 
 ## Building it

@@ -5,7 +5,7 @@
 Raku is dynamically typed. A variable holds an `Int` now and a `Hash` later,
 routines dispatch on the runtime types of their arguments, lists can be
 infinite, and an object can grow a role while the program runs. Raku++ is
-written in statically-typed C++17 with no garbage collector. One data structure
+written in statically-typed C++17 with no tracing garbage collector. One data structure
 carries the entire distance between those two facts.
 
 ```cpp
