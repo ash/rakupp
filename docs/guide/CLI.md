@@ -1122,8 +1122,11 @@ and loosening drops `:auth` before `:ver` and never drops a `ver<X+>` floor —
 answering "at least X" with a release older than X is the one answer that
 cannot work, so an unsatisfiable floor is reported instead.
 A distribution's own test suite runs under rakupp before it is
-marked installed (`--no-test` skips; `--dry-run` prints the plan and writes
-nothing). Each command alone prints its full usage.
+marked installed (`--no-test` skips; `-v` / `--verbose` shows each test
+file's output as it runs, where by default it is captured and shown only on
+failure; `--dry-run` prints the plan and writes nothing). `-v` works the same
+for `rakupp test`, and cannot be combined with `-q`. Each command alone
+prints its full usage.
 
 Installs are additive, and a repeat is answered from the store: every plan
 entry the store already holds is marked `(already installed)` and skipped

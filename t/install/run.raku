@@ -365,6 +365,21 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
 
+# ---- -v: the suite's own output, as it runs --------------------------------
+# The test child inherits the installer's stdout, so its TAP lands there; the
+# file header and the verdict are the installer's own, on stderr.
+my %vflaky = installer('-v', 'Gate::Flaky', '--force');
+check %vflaky<exit> != 0 && %vflaky<out>.contains('not ok 1')
+      && %vflaky<err>.contains('=== t/01-load.rakutest')
+      && %vflaky<err>.contains('FAILED: 01-load.rakutest'),
+      '-v: a failing file\'s TAP is shown, and the install still refuses';
+my %vtest = installer('--test-only', 'Gate::Demo', '--verbose');
+check %vtest<exit> == 0 && %vtest<out>.contains("1..1\nok 1")
+      && %vtest<err>.contains('suite green'),
+      '-v: --verbose after the name streams a green suite';
+my %vq = installer('-q', '-v', 'Gate::Demo');
+check %vq<exit> == 2 && %vq<err>.contains('pick one'), '-v: -q -v is refused';
+
 # ---- options AFTER the module name -----------------------------------------
 # Raku's default MAIN parsing stops reading options at the first positional, so
 # the spelling the refusal above prints — the option named after the dist it

@@ -390,6 +390,11 @@ my $QUIET = False;
 sub progress(Str $msg) { note $msg unless $QUIET }
 sub inform(Str $msg)   { say  $msg unless $QUIET }
 
+# -v / --verbose: the other direction. A dist's test files run with their
+# output going straight to the terminal as it is produced — the TAP, the
+# diag()s, a warning — instead of being captured and shown only on failure.
+my $VERBOSE = False;
+
 # The wrappers the engine writes carry a `rakupp` shebang (what rakupp
 # installed runs under rakupp) — whether that name resolves on THIS machine
 # decides whether a freshly installed command runs at all.
@@ -1551,6 +1556,20 @@ sub run-dist-tests(%e, $root, Str $prefix) {
     progress("testing %e<name>: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
     trace("tests: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
     for @tests -> $t {
+        my @cmd = $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
+                  '-I', "inst#$prefix", $t.Str;
+        if $VERBOSE {
+            # inherited stdout/stderr: the file's output is already on the
+            # terminal, so a failure needs only its name
+            note "=== {$t.relative($root)}";
+            my $p = run |@cmd, :cwd($root), :env(child-env());
+            if $p.exitcode != 0 {
+                note "FAILED: {$t.basename}";
+                trace("test FAILED: {$t.basename} (exit {$p.exitcode}) — run with -v, output went to the terminal");
+                return False;
+            }
+            next;
+        }
         # `-I inst#<prefix>`: the suite must see the dependencies this plan
         # installed into the TARGET store, wherever --to pointed it
         my $p = run $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
@@ -2310,10 +2329,16 @@ sub MAIN(
     Bool :$force,              #= reinstall / uninstall despite refusals
     Bool :$refresh,            #= refetch the ecosystem index (else cached 24h)
     Bool :q(:$quiet),          #= only warnings and failures; nothing on success
+    Bool :v(:$verbose),        #= show each test file's output as it runs
     Bool :r(:$recursive),      #= a directory's module files at every depth, not only its own
     Str  :$to = home-dir().add('.raku').Str,  #= the CURI store prefix to write
 ) {
+    if $quiet && $verbose {
+        note "rakupp: -q and -v pull in opposite directions — pick one";
+        exit 2;
+    }
     $QUIET = ?$quiet;
+    $VERBOSE = ?$verbose;
     $RECURSIVE = ?$recursive;
     # the one-symlink PATH shim the test/build children see, if one was made
     LEAVE { run 'rm', '-rf', $TEST-SHIM if $TEST-SHIM }
@@ -2444,6 +2469,7 @@ sub MAIN(
               -r, --recursive  a directory's module files at every depth, not only its own
               -q, --quiet      only warnings and failures; nothing on success
                                (with any command, before or after it)
+              -v, --verbose    show each test file's output as it runs
             END
         exit 2;
     }
