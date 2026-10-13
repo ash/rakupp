@@ -183,7 +183,7 @@ struct DataNativeModule {
 };
 static const DataNativeModule kDataNativeModules[] = {
     { "Data::Native",           "0.0.1", { "json", "csv", "digest", "zlib", "random", nullptr } },
-    { "JSON::Native",           "0.0.2", { "json", nullptr } },
+    { "JSON::Native",           "0.1.0", { "json", nullptr } },
     { "CSV::Native",            "0.0.1", { "csv", nullptr } },
     { "Digest::Native",         "0.0.1", { "digest", nullptr } },
     { "Compress::Zlib::Native", "0.0.1", { "zlib", nullptr } },
@@ -200,6 +200,51 @@ static const DataNativeModule kDataNativeModules[] = {
 // check, because a `-I` path naming a real distribution has to be scanned
 // normally — that is the same rule dataNativeUse applies, spelled where the
 // parser can afford it.
+// What the `json` tag hands out: the codec as a routine whose fallback is
+// JSON::Native::Raku — the pure-Raku half of JSON::Native, found installed or
+// on -I, or else the copy bundled in this binary — so a call the codec does
+// not cover (an adverb it does not take, a type outside the ladder, a document
+// it refuses) is answered exactly as JSON::Fast answers it, and nothing has to
+// be installed for that. The fallback is loaded by the first call that needs
+// it; a program whose calls the codec answers never reads it.
+//
+// `defaults` are JSON::Fast's import options (`use JSON::Native <!pretty>`): a
+// named argument the caller did not pass is added with its default.
+// (the codec's two bodies, in Builtins.cpp — declared in BuiltinsParts.h,
+// which this file does not otherwise need)
+using JsonUncovered = std::function<Value(const char* why)>;
+Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
+Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
+
+static Value jsonRakuFallback(Interpreter& I, bool to, ValueList& args) {
+    const std::string qual = to ? "&JSON::Native::Raku::to-json" : "&JSON::Native::Raku::from-json";
+    Value* f = I.global_ ? I.global_->find(qual) : nullptr;
+    if (!f || f->t != VT::Code) {
+        I.loadModule("JSON::Native::Raku", {}, /*doImport=*/false, /*quiet=*/false, "", /*requireForm=*/true);
+        f = I.global_ ? I.global_->find(qual) : nullptr;
+    }
+    if (!f || f->t != VT::Code)
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        std::string("JSON::Native: this call needs JSON::Native::Raku, which did not load")};
+    Value fn = *f;
+    return I.callCallable(fn, args);
+}
+static Value jsonExactRoutine(bool to, const std::map<std::string, bool>& defaults) {
+    Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
+    w.code()->name = to ? "to-json" : "from-json";
+    w.code()->builtin = [to, defaults](Interpreter& I, ValueList& args) -> Value {
+        ValueList a = args;
+        for (auto& d : defaults) {
+            bool given = false;
+            for (auto& x : a) if (x.t == VT::Pair && x.namedArg && x.s == d.first) { given = true; break; }
+            if (!given) { Value p = Value::pair(d.first, Value::boolean(d.second)); p.namedArg = true; a.push_back(p); }
+        }
+        auto handOver = [&](const char*) { return jsonRakuFallback(I, to, a); };
+        return to ? jsonToJsonBody(I, a, handOver) : jsonFromJsonBody(I, a, handOver);
+    };
+    return w;
+}
+
 bool rakuppCompilerAnswersModule(const std::string& name) {
     for (const DataNativeModule* m = kDataNativeModules; m->module; m++) {
         if (name != m->module) continue;
@@ -240,6 +285,14 @@ bool Interpreter::dataNativeUse(const std::string& name,
     // Data::Native:ver<0.2+>` asked for something specific; answering it from
     // the compiler's own interface would be inventing a version.
     if (!verReq.empty()) return false;
+
+    // (2c) JSON_NATIVE_BACKEND naming another of JSON::Native's paths is a
+    // request for the distribution, which is how its own suite tests them.
+    const bool jsonNative = name == "JSON::Native";
+    if (jsonNative) {
+        const char* b = std::getenv("JSON_NATIVE_BACKEND");
+        if (b && *b && std::string(b) != "engine") return false;
+    }
 
     // (1) an explicit search path wins — this is what makes `rakupp test`
     // exercise the distribution rather than the engine.
@@ -290,6 +343,24 @@ bool Interpreter::dataNativeUse(const std::string& name,
     // An unknown tag is an ERROR rather than a silent no-op: a typo'd <crytpo>
     // exporting nothing is a bad afternoon.
     std::vector<std::string> want(importArgs.begin(), importArgs.end());
+    // JSON::Native's import list is not tags: it is JSON::Fast's options —
+    // `<immutable !pretty sorted-keys enums-as-value>`, which change the
+    // defaults of the subs handed out — and the names to import.
+    std::map<std::string, bool> jsonDefaults;
+    std::set<std::string> jsonNames;
+    if (jsonNative) {
+        for (auto& w : want) {
+            const bool neg = !w.empty() && w[0] == '!';
+            const std::string k = neg ? w.substr(1) : w;
+            if (k == "immutable" || k == "pretty" || k == "sorted-keys" || k == "enums-as-value")
+                jsonDefaults[k] = !neg;
+            else if (w == "from-json" || w == "to-json" || w == "json-backend")
+                jsonNames.insert(w);
+            else
+                throw RakuError{Value::typeObj("X::AdHoc"), "JSON::Native: no such name '" + w + "'"};
+        }
+        want.clear();
+    }
     bool all = want.empty();
     for (auto& w : want) if (w == "all") all = true;
     if (!all) {
@@ -336,9 +407,31 @@ bool Interpreter::dataNativeUse(const std::string& name,
         // `&::('rakupp-from-json')` yields, cached per builtin the same way, so
         // the two spellings are the identical object.
         for (const char* const* n = d->names; *n; n++) {
+            const std::string nm = *n;
+            if (jsonNative && !jsonNames.empty() && !jsonNames.count(nm)) continue;
             std::string prim = std::string("rakupp-") + *n;
             auto bit = builtins_.find(prim);
             if (bit == builtins_.end() || !tctx_.cur) continue;
+            // the json tag's two codecs: exact routines with the Raku
+            // fallback, not the bare primitives, which raise where they stop
+            if (std::string(d->tag) == "json" && (nm == "from-json" || nm == "to-json")) {
+                // each takes its own defaults: from-json :immutable, to-json
+                // the rest — as JSON::Fast's EXPORT hands them out
+                std::map<std::string, bool> mine;
+                for (auto& dflt : jsonDefaults)
+                    if ((dflt.first == "immutable") == (nm == "from-json")) mine.insert(dflt);
+                tctx_.cur->define("&" + nm, jsonExactRoutine(nm == "to-json", mine));
+                continue;
+            }
+            // JSON::Native names its paths: the engine's is 'engine', for
+            // parsing and for writing (Data::Native's tag says 'core')
+            if (jsonNative && nm == "json-backend") {
+                Value jb; jb.t = VT::Code; jb.setCode(makePayload<Callable>());
+                jb.code()->name = "json-backend";
+                jb.code()->builtin = [](Interpreter&, ValueList&) -> Value { return Value::str("engine"); };
+                tctx_.cur->define("&json-backend", jb);
+                continue;
+            }
             const Value* ref = builtinRef(prim);
             if (!ref) continue;
             tctx_.cur->define(std::string("&") + *n, *ref);
@@ -1565,6 +1658,17 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         struct DGuard { ValueList& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
         loadSource(ss.str(), repo + "/sources/" + lines[3]);
         return;
+    }
+    // Nothing on the search path or in a store has it: a module this binary
+    // BUNDLES answers now, and only now — the opposite of a shadow, so an
+    // installed or -I copy always wins over the one compiled in.
+    {
+        std::string bdPath, bdSrc;
+        if (rakuppBundledModule(name, bdPath, bdSrc)) {
+            if (traceLoad) fprintf(stderr, "[Load] %s <- the copy bundled in this binary\n", name.c_str());
+            loadSource(bdSrc, bdPath);
+            return;
+        }
     }
     // Module file not found. Pragmas / version literals are expected to have no
     // file; anything else is a genuinely unresolved dependency and is FATAL.

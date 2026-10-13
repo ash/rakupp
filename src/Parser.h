@@ -52,6 +52,10 @@ const std::string* rakuppEmbeddedModuleSource(const std::string& name);
 // pathOut is the name the module answers to as $?FILE and in backtraces:
 // `rakupp:rakulib/NativeHelpers/Blob.rakumod`, which no disk path can be.
 void rakuppRegisterShadowModule(const std::string& name, const char* src, size_t len);
+// A module the binary carries as a LAST resort: found only when no search path
+// and no store provides the name (a shadow is the opposite — found first).
+void rakuppRegisterBundledModule(const std::string& name, const char* src, size_t len);
+bool rakuppBundledModule(const std::string& name, std::string& pathOut, std::string& srcOut);
 bool rakuppShadowModule(const std::string& name, std::string& pathOut, std::string& srcOut);
 // Resolve a module's SOURCE exactly as the loader does — the lib search path
 // first, then the installed CompUnit repositories. Defined in Interpreter.cpp;

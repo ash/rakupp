@@ -50,6 +50,12 @@ embed_file(BLOB_FEATURES kFeat    "${SRC_DIR}/docs/guide/FEATURES.md")
 embed_file(BLOB_SH_BLOB    kShBlob    "${SRC_DIR}/rakulib/NativeHelpers/Blob.rakumod")
 embed_file(BLOB_SH_CSTRUCT kShCStruct "${SRC_DIR}/rakulib/NativeHelpers/CStruct.rakumod")
 embed_file(BLOB_SH_POINTER kShPointer "${SRC_DIR}/rakulib/NativeHelpers/Pointer.rakumod")
+# A BUNDLED module is the other way round from a shadow: used only when nothing
+# on the search path or in a store provides the name (see
+# rakuppRegisterBundledModule). JSON::Native's pure-Raku half is the fallback of
+# the `use JSON::Native` the engine answers itself, so that answer needs no
+# installed distribution; an installed or -I copy still wins.
+embed_file(BLOB_BD_JSON_RAKU kBdJsonRaku "${SRC_DIR}/rakulib/JSON/Native/Raku.rakumod")
 
 # The fixed half of the output. docToolSource() splices the two guides into
 # doc.raku's `my %DOCS;` declaration, so `rakupp doc` answers from a lone
@@ -104,6 +110,8 @@ void registerShadowModules() {
         reinterpret_cast<const char*>(kShCStruct), kShCStructLen);
     rakuppRegisterShadowModule(\"NativeHelpers::Pointer\",
         reinterpret_cast<const char*>(kShPointer), kShPointerLen);
+    rakuppRegisterBundledModule(\"JSON::Native::Raku\",
+        reinterpret_cast<const char*>(kBdJsonRaku), kBdJsonRakuLen);
 }
 } // namespace rakupp
 ")
@@ -117,6 +125,7 @@ set(GENERATED "\
 #include <cstddef>
 namespace rakupp {
 void rakuppRegisterShadowModule(const std::string& name, const char* src, size_t len);
+void rakuppRegisterBundledModule(const std::string& name, const char* src, size_t len);
 ${BLOB_INSTALL}
 ${BLOB_DOC}
 ${BLOB_UPGRADE}
@@ -125,6 +134,7 @@ ${BLOB_FEATURES}
 ${BLOB_SH_BLOB}
 ${BLOB_SH_CSTRUCT}
 ${BLOB_SH_POINTER}
+${BLOB_BD_JSON_RAKU}
 ${EPILOGUE}")
 
 # copy_if_different, like BuildInfo.cmake: touching a guide without changing it

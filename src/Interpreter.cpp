@@ -8115,6 +8115,24 @@ bool rakuppShadowModule(const std::string& name, std::string& pathOut, std::stri
     return true;
 }
 
+static std::map<std::string, std::string>& bundledModuleSources() {
+    static std::map<std::string, std::string> m;
+    return m;
+}
+void rakuppRegisterBundledModule(const std::string& name, const char* src, size_t len) {
+    bundledModuleSources()[name] = std::string(src, len);
+}
+bool rakuppBundledModule(const std::string& name, std::string& pathOut, std::string& srcOut) {
+    auto& m = bundledModuleSources();
+    auto it = m.find(name);
+    if (it == m.end()) return false;
+    std::string rel = name;
+    for (size_t p = rel.find("::"); p != std::string::npos; p = rel.find("::")) rel.replace(p, 2, "/");
+    pathOut = "rakupp:rakulib/" + rel + ".rakumod";
+    srcOut = it->second;
+    return true;
+}
+
 // Every module name a tree `use`s, at any depth — a `use` can sit inside a
 // class body, a package, or any block, so this walks statements rather than
 // scanning only the top level.
