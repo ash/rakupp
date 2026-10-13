@@ -2186,6 +2186,16 @@ public:
         bool any = false;
     };
     std::map<const ClassDecl*, GenericRoleBody> genericRoleBodies_;
+    // A role body's statements that act on the CONSUMING class (`::?CLASS.HOW
+    // does M`, `::?CLASS.^add_method(…)`): Rakudo runs a role body per
+    // composition, so these wait for each class that composes the role rather
+    // than running once, at the declaration, on the role. `mask[i]` marks
+    // cd->body[i] (see roleClassStatements / runRoleClassStatements).
+    std::map<const ClassDecl*, std::vector<char>> roleClassStmts_;
+    const std::vector<char>& roleClassStatements(const ClassDecl* cd);
+    void runRoleClassStatements(ClassInfo* cls, const std::string& clsName);
+    std::deque<Value> roleClassSelf_;   // the `self` each such run reads ::?CLASS from
+    std::set<const ClassInfo*> rolePunsRun_; // roles constructed as their own pun, statements run
     const GenericRoleBody* genericRoleBody(const ClassDecl* cd);
     // Runs `role`'s generic statements for the parameterization `conc`, whose
     // roleParamBindings are already bound. Makes conc->declEnv that scope.
@@ -3649,6 +3659,7 @@ public:
     // chapter was written from the older wording here and inherited the error.
     bool parallelMode_ = false;
     int loadingModuleDepth_ = 0; // >0 while a `use`d module file executes (export surfacing)
+    std::string loadingModuleName_; // …and the name it was `use`d by (its EXPORT packages belong to it)
     bool moduleDoImport_ = true; // false while a `need`ed module loads (no symbol import)
     std::mutex sharedMut_;
     // Worker threads must carry a big stack: the tree-walker recurses deeply and the

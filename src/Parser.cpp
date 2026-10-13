@@ -7927,6 +7927,7 @@ ExprPtr Parser::parsePrimary() {
                 return e;
             }
             ExprPtr e = parseExpression();
+            if (atExprModifier()) e = runBareBlock(std::move(e));
             // statement modifiers inside parens CHAIN: `($_ * $_ if $_ %% 2 for
             // ^10)` is a list comprehension — each modifier wraps the value so far
             for (;;) {
@@ -8311,23 +8312,9 @@ ExprPtr Parser::parsePrimary() {
                     else if (k == Tok::RBracket) { if (depth == 0) break; depth--; }
                     else if (k == Tok::Semicolon && depth == 0) { semi = true; break; }
                 }
-                if (semi) {
-                    auto segment = [&]() -> ExprPtr {
-                        if (isKind(Tok::Semicolon) || isKind(Tok::RBracket))
-                            return std::make_unique<NameTerm>("Any");
-                        ExprPtr e = parseExpression();
-                        if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
-                        return e;
-                    };
-                    arr->items.push_back(segment());
-                    while (matchKind(Tok::Semicolon)) {
-                        if (isKind(Tok::RBracket)) break;
-                        arr->items.push_back(segment());
-                    }
-                    arr->fromCommaList = true;
-                    expectKind(Tok::RBracket, "]");
-                    return arr;
-                }
+                // …and a control statement opening the list is a segment too:
+                // `[ if $x { … } else { … }⏎ more ]`
+                if (semi || atStatementTerm()) return parseArraySegments(std::move(arr));
             }
             if (!isKind(Tok::RBracket)) {
                 ExprPtr e = parseExpression();
@@ -9565,6 +9552,9 @@ ExprPtr Parser::parsePrimary() {
                     if (keyExpr) {
                         auto sr = std::make_unique<SymbolicRef>();
                         sr->nameExpr = std::move(keyExpr);
+                        // `OUR::{EXPR}` keeps its head as CALLER's does: it is
+                        // the package's symbol, not the innermost frame's
+                        if (pseudoPkg == "OUR") sr->pkg = pseudoPkg;
                         return sr;
                     }
                     // `CORE::<Int>` — a sigilless key is a type or package name,
@@ -15394,10 +15384,104 @@ static std::unique_ptr<Block> wrapStmt(StmtPtr s) {
     return b;
 }
 
+bool Parser::atExprModifier() {
+    if (!isKind(Tok::Ident) || peek().kind == Tok::FatArrow) return false;
+    if (isIdent("with") || isIdent("without"))
+        return !(peek().kind == Tok::LParen && !peek().spaceBefore);
+    return isIdent("if") || isIdent("unless") || isIdent("when") || isIdent("for") ||
+           isIdent("while") || isIdent("until") ||
+           (isIdent("given") && peek().kind != Tok::Comma);
+}
+
+// A statement modifier on a BARE block runs the block, as it does at statement
+// level: Rakudo's `({ 42 } with 1)` is 42 and `[{ 42 } if 1]` is [42], where
+// the block alone is a value (`[{ 42 }]` holds a Block). Air::Base builds its
+// nav as `nav [ { ul li :class<logo>, $.logo } with $.logo; … ]`. A pointy or
+// placeholder block, an anonymous routine, or a parenthesized `({ … })` stays
+// a value.
+ExprPtr Parser::runBareBlock(ExprPtr e) {
+    if (!e || e->kind != NK::BlockExpr || parenned_.count(e.get())) return e;
+    auto* b = static_cast<BlockExpr*>(e.get());
+    if (b->isPointy || b->isSub || b->isMethodTerm || b->isSubmethodTerm ||
+        !b->params.empty() || !b->phaser.empty()) return e;
+    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(e);
+    return u;
+}
+
+// A control STATEMENT where a statement list is expected inside `[ … ]`:
+// Air::Base::Elements writes `div [ if $!button { … } else { … }⏎ div … ]`.
+// It is valued as `do STATEMENT` — an `if` its chosen block, a loop the list
+// of its iterations — as the `( … )` path values the same statements.
+bool Parser::atStatementTerm() {
+    if (!isKind(Tok::Ident) || peek().kind == Tok::FatArrow || peek().kind == Tok::Comma) return false;
+    const std::string& k = cur().text;
+    if (k == "with" || k == "without")   // `with(…)` glued is a call (see applyExprModifiers)
+        return !(peek().kind == Tok::LParen && !peek().spaceBefore);
+    return k == "if" || k == "unless" || k == "given" || k == "for" || k == "loop" ||
+           k == "while" || k == "until" || k == "repeat";
+}
+
+ExprPtr Parser::parseStatementTerm() {
+    StmtPtr st;
+    if (isIdent("if") || isIdent("unless")) {
+        bool isUnless = cur().text == "unless";
+        advance();
+        st = parseIf(isUnless);
+    } else {
+        st = parseStatement();
+        markLoopAsExpr(st.get());
+    }
+    auto be = std::make_unique<BlockExpr>();
+    be->body.push_back(std::move(st));
+    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+    return u;
+}
+
+// `[ … ]` as a statement list (parsePrimary, after the `[`): `;`-separated
+// segments, or control statements a closing brace at the end of its line
+// separates. Each segment is one element; one alone is the composer's
+// argument, flattening as `[(1, 2)]` does.
+ExprPtr Parser::parseArraySegments(std::unique_ptr<ArrayLit> arr) {
+    bool lastStmt = false;
+    auto segment = [&]() -> ExprPtr {
+        lastStmt = false;
+        if (isKind(Tok::Semicolon) || isKind(Tok::RBracket))
+            return std::make_unique<NameTerm>("Any");
+        if (atStatementTerm()) { lastStmt = true; return parseStatementTerm(); }
+        // each segment is a statement, so it takes a modifier as the
+        // one-segment form does: `[1 if $x; 7]`
+        ExprPtr e = applyExprModifiers(parseExpression());
+        if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
+        return e;
+    };
+    arr->items.push_back(segment());
+    for (;;) {
+        if (matchKind(Tok::Semicolon)) {
+            if (isKind(Tok::RBracket)) break;
+            arr->items.push_back(segment());
+            continue;
+        }
+        // a statement's closing brace at the end of its line separates it
+        // from the next, as a `;` would
+        if (lastStmt && !isKind(Tok::RBracket) && !isKind(Tok::End)) {
+            enforceStmtSep();
+            arr->items.push_back(segment());
+            continue;
+        }
+        break;
+    }
+    // Rakudo's `[if 1 { (1, 2) }]` and `[1, 2;]` are [1 2] (a trailing `;`
+    // adds no segment)
+    arr->fromCommaList = arr->items.size() > 1;
+    expectKind(Tok::RBracket, "]");
+    return arr;
+}
+
 // Trailing statement modifiers on an EXPRESSION (inside `@(…)` / `$(…)` etc.):
 // `@(EXPR for LIST)`, `@(EXPR if COND)`, … — chains, wrapping the value so far.
 // Mirrors the desugars the plain-paren path uses (list-comprehension semantics).
 ExprPtr Parser::applyExprModifiers(ExprPtr e, bool leaveRest) {
+    if (atExprModifier()) e = runBareBlock(std::move(e));
     // at most ONE conditional modifier, then at most one loop: `(1 if $x if $x)`
     // is Rakudo's "Missing semicolon", as the statement form already is. Under
     // `do` (leaveRest) the one too many belongs to what encloses the `do`:
@@ -17092,6 +17176,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
     std::vector<std::string> stubbed; // `class Foo {...}` stubs not yet completed
     std::set<std::string> stubRoles;  // …those of them that are roles
     std::set<std::string> stubClasses;   // …and those that are not (a class is no role to compose)
+    std::map<std::string, std::vector<std::string>> roleDoes; // role → the roles it does
     int catchBlocks = 0;
     std::set<std::string> labels;     // a label names a symbol of this scope
     // …and so does the mainline's own EXPORT package, which a label at its top
@@ -17196,15 +17281,28 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             }
             // composing a role that is still only a stub: the class is composed
             // here, before the unit's end could report the stub, and there is no
-            // role variant to compose
-            if (!stubRoles.empty()) {
-                std::vector<std::string> comp = cd->roles;
-                if (cd->parentIsDoes && !cd->parent.empty()) comp.push_back(cd->parent);
-                for (auto& rn : comp)
+            // role variant to compose. A ROLE that does the stub is not composed
+            // until something applies it, by which time the stub may be filled
+            // in: Air::Base declares `role Defaults {...}` and then
+            // `role Head does Tag[Regular] { also does Defaults; … }` above it.
+            std::vector<std::string> comp = cd->roles;
+            if (cd->parentIsDoes && !cd->parent.empty()) comp.push_back(cd->parent);
+            if (cd->isRole) roleDoes[cd->name] = comp;
+            // …but a class composing such a role composes the stub with it, so
+            // the class looks through the roles it does (Rakudo: `role H does D
+            // {}; class C does H {}` with D still a stub is the same error)
+            if (!stubRoles.empty() && !cd->isRole) {
+                std::set<std::string> seen;
+                for (size_t i = 0; i < comp.size(); i++) {
+                    const std::string rn = comp[i];
+                    if (!seen.insert(rn).second) continue;
                     if (stubRoles.count(rn) && rn != cd->name &&
                         std::find(stubbed.begin(), stubbed.end(), rn) != stubbed.end())
                         throw ParseError("No appropriate parametric role variant available for '" + rn + "'",
                                          cd->line, "X::Role::Parametric::NoSuchCandidate", {{"role", rn}});
+                    auto it = roleDoes.find(rn);
+                    if (it != roleDoes.end()) comp.insert(comp.end(), it->second.begin(), it->second.end());
+                }
             }
             // inheriting from a class that is still only a STUB: nothing to inherit yet
             if (!cd->parent.empty() && !cd->parentIsDoes && cd->parent != cd->name &&

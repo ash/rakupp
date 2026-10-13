@@ -5568,8 +5568,10 @@ std::string Interpreter::resolveAttrTypeAlias(const std::string& t, const std::s
     // means Outer::Inner even where another `Inner` is in scope. JSON::Unmarshal's
     // own suite declares both in one file, and the attribute took the outer one —
     // so every element the custom unmarshaller built failed its own type check.
+    // …and so does a nested SUBSET: `class Cro::HTTP::Request { subset Method
+    // of Str …; has Method $.method }` is its own Method, not the core type
     if (!pkg.empty() && t.find("::") == std::string::npos &&
-        classes_.count(pkg + "::" + t)) return pkg + "::" + t;
+        (classes_.count(pkg + "::" + t) || subsets_.count(pkg + "::" + t))) return pkg + "::" + t;
     if (classes_.count(t) || subsets_.count(t)) return t;
     Value* v = tctx_.cur ? tctx_.cur->find(t) : nullptr;
     if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s;

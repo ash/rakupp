@@ -2120,6 +2120,21 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
                 i = j - 1; continue;
             }
+            // `$.attr` / `$!attr` — an attribute, as in any interpolating string:
+            // Air's Tabs fills its CSS with `s:g/'%ALIGN-MENU%'/$.align-menu/`,
+            // which came out as the literal text `$.align-menu`
+            if (s[i] == '$' && i + 2 < s.size() && (s[i + 1] == '.' || s[i + 1] == '!') &&
+                (ascii::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
+                size_t j = i + 2;
+                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
+                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
+                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) j++;
+                size_t k = subscriptsEnd(j);
+                size_t chainEnd = methodChain(i, k);
+                size_t e = chainEnd != i ? chainEnd : k;
+                r += evalString(s.substr(i, e - i)).toStr();
+                i = e - 1; continue;
+            }
             if (s[i] == '$' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
                 size_t j = i + 1; std::string nm;
                 // A hyphen or apostrophe CONTINUES an identifier when a letter or

@@ -502,6 +502,82 @@ bool Interpreter::importWouldShadowRoutine(const std::string& key, const Value& 
     return false;
 }
 
+// Does a class body declare (not `my`) a subset named `t`? Its attributes are
+// built before the body runs, so `class Cro::HTTP::Request { subset Method of
+// Str …; has Method $.method }` would otherwise read the core Method.
+static const SubsetDecl* bodyDeclaresSubset(const ClassDecl* cd, const std::string& t) {
+    if (t.empty() || t.find("::") != std::string::npos) return nullptr;
+    for (auto& st : cd->body)
+        if (st && st->kind == NK::SubsetDecl) {
+            auto* sd = static_cast<const SubsetDecl*>(st.get());
+            if (!sd->isMy && !sd->isAnon && sd->name == t) return sd;
+        }
+    return nullptr;
+}
+
+// Which role-body statements act on the consuming class: a plain expression
+// statement (a declaration stays where the role's methods can see it) that
+// names `::?CLASS`. Rakudo runs the whole body per composition; Air::Component
+// and Cromponent mix their meta role in with `::?CLASS.HOW does …`, which run
+// once on the ROLE left every class that composes them without its `.^`
+// methods (`.^add-cromponent-routes`).
+const std::vector<char>& Interpreter::roleClassStatements(const ClassDecl* cd) {
+    auto hit = roleClassStmts_.find(cd);
+    if (hit != roleClassStmts_.end()) return hit->second;
+    std::vector<char> mask(cd->body.size(), 0);
+    if (cd->isRole)
+        for (size_t i = 0; i < cd->body.size(); i++) {
+            const Stmt* st = cd->body[i].get();
+            if (!st || st->kind != NK::ExprStmt) continue;
+            const Expr* e = static_cast<const ExprStmt*>(st)->e.get();
+            const Expr* tgt = e && e->kind == NK::Assign ? static_cast<const Assign*>(e)->target.get() : e;
+            if (!tgt || (tgt->kind == NK::VarExpr && static_cast<const VarExpr*>(tgt)->declare)) continue;
+            NameScan ns; ns.stmt(st);
+            for (auto& r : ns.refs)
+                if (r.rfind("::?CLASS", 0) == 0) { mask[i] = 1; break; }
+        }
+    return roleClassStmts_[cd] = std::move(mask);
+}
+
+// …and their run for one class: for every role it composes (and the roles
+// those compose), in a scope of its own under the role body's, with `self`
+// the class — which is what the `::?CLASS` marker reads in a role. A role
+// constructed as itself (`Tabs.new`: here a role is its own pun) is the class,
+// and its own statements are among them.
+void Interpreter::runRoleClassStatements(ClassInfo* cls, const std::string& clsName) {
+    std::vector<ClassInfo*> roles;
+    std::set<const ClassDecl*> seen;
+    std::function<void(ClassInfo*)> walk = [&](ClassInfo* r) {
+        if (!r || !r->isRole) return;
+        if (r->decl && !seen.insert(r->decl).second) return;
+        roles.push_back(r);
+        walk(r->parent.get());
+        for (auto& p : r->extraParents) walk(p.get());
+        for (auto& c : r->composedRoles) walk(c.get());
+    };
+    if (cls->isRole) walk(cls);
+    for (auto& r : cls->composedRoles) walk(r.get());
+    if (cls->parent) walk(cls->parent.get());
+    for (auto& p : cls->extraParents) walk(p.get());
+    for (ClassInfo* r : roles) {
+        if (!r->decl) continue;
+        const std::vector<char>& mask = roleClassStatements(r->decl);
+        if (std::find(mask.begin(), mask.end(), 1) == mask.end()) continue;
+        const GenericRoleBody* g = genericRoleBody(r->decl);   // those run per parameterization
+        auto env = std::make_shared<Env>();
+        env->parent = r->declEnv ? r->declEnv : global_;
+        roleClassSelf_.push_back(Value::typeObj(clsName));
+        env->selfSlot = &roleClassSelf_.back();
+        auto saved = tctx_.cur;
+        tctx_.cur = env;
+        struct Restore { ExecContext& t; std::shared_ptr<Env> s; std::shared_ptr<Env> e;
+            ~Restore() { t.cur = s; e->selfSlot = nullptr; } } restore{tctx_, saved, env};
+        for (size_t i = 0; i < mask.size() && i < r->decl->body.size(); i++)
+            if (mask[i] && !(g && i < g->generic.size() && g->generic[i]))
+                exec(r->decl->body[i].get());
+    }
+}
+
 // Every tag a module's `is export(:a :b)` traits name, read from its SOURCE —
 // the one record covering every kind of declaration (a sub keeps its tags in
 // the AST; a variable, constant, class or enum does not). Null when the module
@@ -1181,6 +1257,11 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // using an unimplemented primitive, e.g. Lock) is non-fatal: warn and keep
         // going so the importing program can still run paths that don't need it —
         // and still publish whatever the module managed to define before dying.
+        struct ModuleNameScope {
+            std::string& r; std::string saved;
+            ModuleNameScope(std::string& x, const std::string& n) : r(x), saved(x) { r = n; }
+            ~ModuleNameScope() { r = std::move(saved); }
+        } moduleNameScope(loadingModuleName_, name);
         loadingModuleDepth_++;
         bool savedDoImport = moduleDoImport_; moduleDoImport_ = doImport;
         try {
@@ -4230,7 +4311,16 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 info.coerce = sd->coerceBase;             // `of Str()`
                 info.coerceFrom = sd->coerceFrom;         // `of Num(Str)`
                 info.declEnv = tctx_.cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
-                subsets_[sd->name] = info;
+                // A subset declared inside a package is that package's: it must
+                // not take a CORE type's name over for everyone else. Cro::HTTP::
+                // Request's `subset Method of Str where /^<[A..Z]>+$/` turned
+                // every `Method $m` parameter in every later module into an
+                // uppercase-string check (Cromponent's `is controller` traits
+                // stopped matching any method). Its own body still finds it by
+                // the short name (resolveAttrTypeAlias).
+                const bool shadowsCore = !tctx_.pkgPrefix.empty() && !sd->isMy &&
+                                         isKnownTypeName(sd->name) && !subsets_.count(sd->name);
+                if (!shadowsCore) subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
                 // Without it an importer writing `URI::Scheme` got a bare type
                 // object whose `where` had been dropped, so `~~` against it was
@@ -5397,6 +5487,20 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 }
                 return Value::typeObj(cd->name);
             }
+            // A module file with no package of its own (no `unit module`) still
+            // owns the EXPORT packages it declares: Rakudo's import reads the
+            // compunit's EXPORT, so Air::Base's top-level `my package
+            // EXPORT::DEFAULT { OUR::{'&page'} := … }` exports `page`. They are
+            // named under the module, as they are inside `unit module M`, which
+            // is where the import looks (M::EXPORT::TAG) and keeps one module's
+            // exports apart from another's.
+            if (cd->isPackage && tctx_.pkgPrefix.empty() && loadingModuleDepth_ > 0 &&
+                !loadingModuleName_.empty() &&
+                (cd->name == "EXPORT" || cd->name.compare(0, 8, "EXPORT::") == 0) &&
+                !routinePkg.on) {
+                routinePkg.saved = tctx_.pkgPrefix; routinePkg.on = true;
+                tctx_.pkgPrefix = loadingModuleName_ + "::";
+            }
             if (cd->isPackage) {
                 // Normal flow reached the declaration: retire its forward-reference
                 // record, as a class does below. A package never shows up as
@@ -6493,7 +6597,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                              if (!pt || pt->kind != NK::StrLit) return false;
                          return true; }()))) {
                     Value dv = eval(a.def.get());
-                    std::string tgt = resolveAttrTypeAlias(a.type, clsName);
+                    // (a subset the body declares is not registered yet: its
+                    // base type is what the nominal check below would reach)
+                    const SubsetDecl* own = bodyDeclaresSubset(cd, a.type);
+                    std::string tgt = !own ? resolveAttrTypeAlias(a.type, clsName)
+                                           : own->baseType.empty() || own->coerceBase ? std::string("Any")
+                                                                                      : own->baseType;
                     // The check is NOMINAL, as Rakudo's is: a subset's `where`
                     // is not run at declaration (`has Pos $.x = -1` compiles
                     // there), so a subset is judged by its base type. And a
@@ -6527,7 +6636,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 ci->roleAttrConflict = "Attribute '" + std::string(1, a.sigil) + "!" + a.name +
                                     "' conflicts in role '" + clsName + "' composition: declared in both '" +
                                     clsName + "' and '" + role->name + "'";
-                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required; ca.type = resolveAttrTypeAlias(a.type, clsName); ca.requiredWhy = a.requiredWhy;
+                ClassAttr ca; ca.name = a.name; ca.sigil = a.sigil; ca.pub = a.pub; ca.rw = a.rw; ca.required = a.required;
+                ca.type = bodyDeclaresSubset(cd, a.type) ? clsName + "::" + a.type : resolveAttrTypeAlias(a.type, clsName);
+                ca.requiredWhy = a.requiredWhy;
                 ca.pod = a.pod; ca.podTrail = a.podTrail; ca.declLine = a.declLine;
                 // `class Foo is rw` — every PUBLIC attribute is writable
                 // (Compress::Zstd's buffer structs)
@@ -7300,10 +7411,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     for (auto& nm : grb->lexicals)
                         if (!bodyEnv->local(nm))
                             bodyEnv->define(nm, nm[0] == '@' ? Value::array() : nm[0] == '%' ? Value::makeHash() : Value::any());
+                // (and a role's statements on its consuming class wait for one:
+                // runRoleClassStatements)
+                const std::vector<char>* forClass = cd->isRole ? &roleClassStatements(cd) : nullptr;
                 try {
-                    for (size_t bi = 0; bi < cd->body.size(); bi++)
+                    for (size_t bi = 0; bi < cd->body.size(); bi++) {
+                        if (forClass && bi < forClass->size() && (*forClass)[bi]) continue;
                         if (!grb || bi >= grb->generic.size() || !grb->generic[bi] ||
                             (cd->body[bi] && cd->body[bi]->kind == NK::SubDecl)) exec(cd->body[bi].get());
+                    }
                 }
                 catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
                 // `sub … is export` in a CLASS body still exports: in a `unit class`
@@ -7719,6 +7835,10 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         catch (RakuError& e) { if (!hookErrIsSpent(e)) throw; }
                     }
             }
+            // the role-body statements that act on the composing class, as
+            // Rakudo's per-composition run of a role body does them, before
+            // the class's own compose below
+            if (!cd->isRole) runRoleClassStatements(ci.get(), clsName);
             // Composition hook: a role mixed into the class's persistent .HOW (via a
             // method trait — Method::Also's AliasableClassHOW) may define `compose`;
             // Rakudo's metamodel calls it when the class finishes composing, and the

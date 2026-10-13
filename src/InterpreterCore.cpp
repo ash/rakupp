@@ -11325,9 +11325,22 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     if (e->kind == NK::SymbolicRef) {
         auto* sr = static_cast<SymbolicRef*>(e);
         bool callerHead = false;
-        std::string nm = symRefName(sr, &callerHead);
+        std::string rawNm;
+        std::string nm = symRefName(sr, &callerHead, &rawNm);
         if (nm.empty())
             throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+        // `OUR::{'&f'} := …` while a package body runs is the package's
+        // symbol, from a block INSIDE the body too: Air::Base fills its `my
+        // package EXPORT::DEFAULT` from a `for` loop. The slot is the package
+        // frame's, whose symbols are published when the body ends — not the
+        // block's, which would drop it when the block is left.
+        if (sr->pkg == "OUR" && rawNm.size() > 6 && std::strchr("$@%&", rawNm[0]) &&
+            rawNm.compare(1, 5, "OUR::") == 0 && rawNm.find("::", 6) == std::string::npos &&
+            curPkgEnv_ && curPkgEnv_->packageFrame) {
+            const std::string key = rawNm.substr(0, 1) + rawNm.substr(6);
+            if (Value* p = curPkgEnv_->local(key)) return p;
+            return &curPkgEnv_->define(key, Value::any());
+        }
         // `$CALLER::_++` / `CALLER::<$x> = …` write the CALLER's variable, in
         // the frame the read finds it in (the innermost of the dynamic chain;
         // CALLERS:: every caller, innermost out). The lexical lookup below
@@ -29022,6 +29035,12 @@ struct RatLitParts {
             // key in one
             // (…and `$CALLER::($unit)::x`: a literal pseudo HEAD before the
             // computed part heads the same chain — pseudo-6*.t)
+            // `OUR::{'&f'}` while a package body runs: the package frame's own
+            // slot, which is where a bind puts it (see lvalue)
+            if (sr->pkg == "OUR" && rawNm.size() > 6 && std::strchr("$@%&", rawNm[0]) &&
+                rawNm.compare(1, 5, "OUR::") == 0 && rawNm.find("::", 6) == std::string::npos &&
+                curPkgEnv_ && curPkgEnv_->packageFrame)
+                if (const Value* p = curPkgEnv_->local(rawNm.substr(0, 1) + rawNm.substr(6))) return *p;
             const bool settingIn = rawNm.find("SETTING::") != std::string::npos ||
                                    rawNm.find("CORE::") != std::string::npos;
             const bool pseudoHead = !sr->pkg.empty() && isPseudoChain(sr->pkg) &&

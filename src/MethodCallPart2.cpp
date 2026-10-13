@@ -1569,6 +1569,9 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
 // arm, straight from methodCall (plainNewClass). `nb` is the nearest built-in
 // ancestor (empty for none).
 Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueList& args, const std::string& nb) {
+    // a role constructed as its own pun: its body's statements on the class
+    // run for it, once, as a class composing it has them run at declaration
+    if (ci->isRole && rolePunsRun_.insert(ci.get()).second) runRoleClassStatements(ci.get(), ci->name);
     auto od = makePayload<ObjectData>();
     od->cls = ci;
     runAttrDefaults(od, ci, args);
