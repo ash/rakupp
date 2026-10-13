@@ -3,6 +3,25 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.4.1 (2026-10-13) — `use Data::Native` inside a routine
+
+A patch release on v5.4.0. Roast is where v5.4.0 left it: **all 1,425 files**
+and **all 219,207 tests** without skip and todo (220,845 of 220,845 counting
+them), one run on Roast `da425eb92`, with the same file list as v5.4.0. The
+local suite passes all 1,600 checks. The benchmarks were not re-run; the
+figures in [BENCHMARKS.md](docs/status/BENCHMARKS.md) are v5.4.0's.
+
+- **A `use` of a module the engine answers works inside a routine again**
+  (22c9ec09). In v5.4.0, `sub f { use Data::Native <json>; … }` died "Could
+  not find Data::Native" before the program ran, unless the distribution was
+  installed. The same held for JSON::Native, CSV::Native, Digest::Native and
+  Compress::Zlib::Native. v5.4.0 loads the `use`s inside a routine body when
+  the routine is declared, importing nothing, and the engine answers those
+  modules only for an importing `use`. They are now left to the `use` itself.
+  The tag's wasm job found it: the spreadsheet formulas run such a `use`, so
+  v5.4.0 has no Raku.js archives and no Sheets add-on, and this release
+  carries both.
+
 ## v5.4.0 (2026-10-13) — `.hyper` on every core, JSON in the engine, and linear loading again
 
 Roast: **all 1,425 files** of `spectest.data` and **all 219,207** of its tests
