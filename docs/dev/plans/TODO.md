@@ -35,6 +35,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   loopFirstBody_ live in `t_poll`; `loopsum` walking −3.3% retired
   instructions). Next: the other two, A/B against v5.2.1, then
   `perf-guard --record` (v5.3.0 kept v5.2.0's baseline).
+- [ ] **Interpreted slowdowns shipped in v5.4.0** (2026-10-13, local builds of
+  v5.3.0 and v5.4.0 in one sitting): `mainwhen` +11% / +13% retired
+  instructions, a fixed ~10M instructions at both 200k and 2M iterations, so a
+  one-off cost, not per iteration; `sortby` +8% / +8% instructions, growing
+  with the input (+6% at 120k words); perf-guard `strscan` and `substrloop` +6%
+  wall with +1% instructions. Not bisected; instruction counts are a
+  deterministic bisect metric here.
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
   2026-10-05. W1–W4 done; owed: `perf-guard --check` on a quiet machine. Left:
   `--cnp` kernel entry's slot lookups and three interpreter divergences from

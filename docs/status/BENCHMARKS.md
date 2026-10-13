@@ -5,11 +5,12 @@ identically — as a tree-walking interpreter and as a native compiler — again
 Rakudo, the reference implementation, and
 [mutsu](https://github.com/tokuhirom/mutsu), the other from-scratch one.
 
-**Measured 2026-10-08 at `v5.3.0`**, on the machine of record (Apple M3, macOS
-Darwin 27.0.0), in one sitting: three interleaved passes of the kernel harness,
-one of the `-O` harness, and two of the v5.2.1 release binary for the
-comparison below, against **Rakudo 2026.09**. Earlier sittings, with the notes
-that explained each movement, are in
+**Measured 2026-10-13 at `v5.4.0`**, on the machine of record (Apple M3, macOS
+Darwin 27.0.0), in one sitting: three interleaved passes of the kernel harness
+and two of a local v5.3.0 build for the comparison below, against **Rakudo
+2026.09**. The `-O` harness and the YAMLish parse were not re-run; their
+sections say when they were measured. Earlier sittings, with the notes that
+explained each movement, are in
 [findings/BENCHMARKS-HISTORY.md](../dev/findings/BENCHMARKS-HISTORY.md);
 [raku.online/spec/dashboard](https://raku.online/spec/dashboard/) charts every
 release.
@@ -32,31 +33,25 @@ WebAssembly, is measured in
 
 ## The short version
 
-- **Startup:** 2.9 ms for a native binary and 3.9 ms interpreting; mutsu 5.1
-  ms, Rakudo 72.7 ms.
+- **Startup:** 3.0 ms for a native binary and 4.4 ms interpreting; mutsu 4.8
+  ms, Rakudo 70.3 ms.
 - **Against Rakudo 2026.09, `--exe` takes less time on seventeen of eighteen
-  kernels**, from 1.1× on `objects` and 2.5× on `rats` to 86× on `mainwhen`
-  and 102× on `intcat`. On `multiwhere` Rakudo is 4% ahead, and that binary is
-  not compiled code: codegen declines a `where` on a multi candidate and
-  bundles the interpreter.
+  kernels**, from 1.10× on `objects` and 2.5× on `rats` to 84× on `intcat`
+  and `mainwhen`. On `multiwhere` Rakudo is 7% ahead, and that binary is not
+  compiled code: codegen declines a `where` on a multi candidate and bundles
+  the interpreter.
 - **The interpreter takes less time than Rakudo on seventeen of eighteen**,
-  from 1.05× on `objects` to 45× on `mainwhen` and 121× on `intcat`;
-  `multiwhere` is level (Rakudo 2% ahead).
+  from 1.02× on `objects` to 40× on `mainwhen` and 105× on `intcat`; on
+  `multiwhere` Rakudo is 5% ahead.
 - **Against mutsu, both modes take less time on every kernel mutsu was timed
   on** (seventeen; `intcat` takes mutsu about 160 s a run and was left out).
-- **v5.3.0 against the v5.2.1 release binary, interpreted**: `arraypush` −86%,
-  `rats` −85%, `hashfill` −52%, `hash` −48%, `objects` −40%, `multiwhere`
-  −36%, `regex` −12%. Compiled, `multiwhere` −35%, `regex` −19%, `objects`
-  −13%. `intcat`, 2M Int appends, takes 49.7 ms; v5.2.1 did not finish a run
-  in a minute. The other rows moved by less than the 9% an artifact and a
-  local build of the same code differ by. The table is
-  [below](#v521-to-v530).
-- **The loop kernels now reach arrays, hashes, Nums and Rats**, so
-  `arraypush` (18.2 ms) and `rats` (26.0 ms) run faster interpreted than
-  their `--exe` binaries (56.8 and 91.0 ms), whose code does not have those
-  lanes.
+- **v5.4.0 against v5.3.0**, both built here and timed in this sitting:
+  `textsplit` −13% interpreted and −24% compiled, `arraypush` −66% compiled
+  (56.7 → 19.4 ms). Interpreted, `mainwhen` is 11% slower and `sortby` 8%;
+  both are work added, not noise (retired instructions +13% and +8%). The
+  table is [below](#v530-to-v540).
 - **Against Perl 5**, the interpreter is 1.2× faster on `hashfill` and 1.5×
-  on `intcat`, `--exe` 1.8× and 1.3×; perl is 2.4× faster than `--exe` on
+  on `intcat`, `--exe` 1.8× and 1.2×; perl is 1.8× faster than `--exe` on
   `textsplit`.
 
 ## Results
@@ -72,36 +67,34 @@ timed on `intcat` (160.5 s a run when the kernel was added, 2026-10-06).
 
 | Benchmark | Raku++ (interp) | mutsu | Rakudo | vs Rakudo | vs mutsu |
 |---|---:|---:|---:|---|---|
-| intcat | 49.7 ms | — | 6006.6 ms | **120.9×** | — |
-| mainwhen | 6.4 ms | 88.1 ms | 285.2 ms | **44.6×** | **13.8×** |
-| loopsum | 5.2 ms | 54.7 ms | 175.2 ms | **33.7×** | **10.5×** |
-| bigint | 6.4 ms | 8.5 ms | 162.3 ms | **25.4×** | **1.3×** |
-| fib | 13.9 ms | 143.0 ms | 302.9 ms | **21.8×** | **10.3×** |
-| strcat | 4.3 ms | 7.6 ms | 91.3 ms | **21.2×** | **1.8×** |
-| hash | 7.5 ms | 26.6 ms | 125.9 ms | **16.8×** | **3.5×** |
-| arraypush | 18.2 ms | 121.3 ms | 258.7 ms | **14.2×** | **6.7×** |
-| streq | 17.6 ms | 488.2 ms | 186.1 ms | **10.6×** | **27.7×** |
-| sortnums | 18.1 ms | 25.1 ms | 164.7 ms | **9.1×** | **1.4×** |
-| rats | 26.0 ms | 285.5 ms | 225.6 ms | **8.7×** | **11.0×** |
-| sortby | 21.0 ms | 30.7 ms | 143.7 ms | **6.8×** | **1.5×** |
-| regex | 27.8 ms | 84.8 ms | 182.9 ms | **6.6×** | **3.1×** |
-| hashfill | 42.0 ms | 180.3 ms | 271.5 ms | **6.5×** | **4.3×** |
-| arrayops | 34.8 ms | 95.6 ms | 177.1 ms | **5.1×** | **2.7×** |
-| textsplit | 59.4 ms | 90.9 ms | 191.7 ms | **3.2×** | **1.5×** |
-| objects | 203.3 ms | 568.8 ms | 213.4 ms | **1.05×** | **2.8×** |
-| multiwhere | 228.8 ms | 6331.0 ms | 224.1 ms | Rakudo 1.02× | **27.7×** |
+| intcat | 49.2 ms | — | 5163.4 ms | **104.9×** | — |
+| mainwhen | 6.9 ms | 87.6 ms | 278.7 ms | **40.4×** | **12.7×** |
+| loopsum | 5.4 ms | 54.3 ms | 167.1 ms | **30.9×** | **10.1×** |
+| bigint | 6.4 ms | 8.3 ms | 160.1 ms | **25.0×** | **1.3×** |
+| fib | 14.0 ms | 137.8 ms | 302.9 ms | **21.6×** | **9.8×** |
+| strcat | 4.4 ms | 7.4 ms | 88.1 ms | **20.0×** | **1.7×** |
+| hash | 7.5 ms | 26.5 ms | 123.9 ms | **16.5×** | **3.5×** |
+| arraypush | 18.1 ms | 120.5 ms | 254.4 ms | **14.1×** | **6.7×** |
+| streq | 17.8 ms | 474.2 ms | 181.3 ms | **10.2×** | **26.6×** |
+| sortnums | 17.7 ms | 24.9 ms | 163.0 ms | **9.2×** | **1.4×** |
+| rats | 26.5 ms | 275.1 ms | 223.8 ms | **8.4×** | **10.4×** |
+| regex | 26.7 ms | 82.4 ms | 180.6 ms | **6.8×** | **3.1×** |
+| hashfill | 40.7 ms | 178.9 ms | 266.6 ms | **6.6×** | **4.4×** |
+| sortby | 22.1 ms | 29.9 ms | 141.6 ms | **6.4×** | **1.4×** |
+| arrayops | 33.5 ms | 94.9 ms | 171.5 ms | **5.1×** | **2.8×** |
+| textsplit | 51.6 ms | 88.8 ms | 186.3 ms | **3.6×** | **1.7×** |
+| objects | 207.0 ms | 568.2 ms | 210.2 ms | **1.02×** | **2.7×** |
+| multiwhere | 231.4 ms | 6248.2 ms | 220.2 ms | Rakudo 1.05× | **27.0×** |
 
 The integer and loop kernels run a sub or a loop on machine values when
-everything in it is one of the shapes they cover. In v5.2.0 that meant plain
-Int and Str variables (`fib`, `loopsum`, `mainwhen`, `streq`); since v5.3.0 it
-includes array and hash elements read, written and pushed in place, Nums, Rats
-and `**`, which is where `arraypush`, `hash` and `rats` moved from. `intcat`
-is issue #130's shape — a string built by appending Ints — and is linear now
-in every mode. `objects` — 200k `.new`, 300k method calls, 500k attribute
-reads — is the one kernel that measures `class`/`has`/method dispatch, and
-`multiwhere` is 400k calls into a `where`-constrained multi candidate; both
-dropped about 40% this release, from a dispatch cache that covers `where`
-candidates and a direct `.new` for plain classes.
+everything in it is one of the shapes they cover: plain Int and Str variables
+(`fib`, `loopsum`, `mainwhen`, `streq`), array and hash elements read, written
+and pushed in place, Nums, Rats and `**` (`arraypush`, `hash`, `rats`).
+`intcat` is issue #130's shape — a string built by appending Ints — and is
+linear in every mode. `objects` — 200k `.new`, 300k method calls, 500k
+attribute reads — is the one kernel that measures `class`/`has`/method
+dispatch, and `multiwhere` is 400k calls into a `where`-constrained multi
+candidate.
 
 ### Native (`--exe`) vs Rakudo and mutsu
 
@@ -109,82 +102,85 @@ The last column is the speed-up over interpreting the same program.
 
 | Benchmark | Raku++ (`--exe`) | mutsu | Rakudo | vs Rakudo | vs mutsu | vs interp |
 |---|---:|---:|---:|---|---|---:|
-| intcat | 59.1 ms | — | 6006.6 ms | **101.6×** | — | 0.8× |
-| mainwhen | 3.3 ms | 88.1 ms | 285.2 ms | **86.4×** | **26.7×** | 1.9× |
-| loopsum | 3.2 ms | 54.7 ms | 175.2 ms | **54.8×** | **17.1×** | 1.6× |
-| fib | 5.8 ms | 143.0 ms | 302.9 ms | **52.2×** | **24.7×** | 2.4× |
-| bigint | 5.3 ms | 8.5 ms | 162.3 ms | **30.6×** | **1.6×** | 1.2× |
-| strcat | 3.4 ms | 7.6 ms | 91.3 ms | **26.9×** | **2.2×** | 1.3× |
-| streq | 7.3 ms | 488.2 ms | 186.1 ms | **25.5×** | **66.9×** | 2.4× |
-| hash | 7.3 ms | 26.6 ms | 125.9 ms | **17.2×** | **3.6×** | 1.0× |
-| sortnums | 12.0 ms | 25.1 ms | 164.7 ms | **13.7×** | **2.1×** | 1.5× |
-| regex | 18.0 ms | 84.8 ms | 182.9 ms | **10.2×** | **4.7×** | 1.5× |
-| sortby | 15.0 ms | 30.7 ms | 143.7 ms | **9.6×** | **2.0×** | 1.4× |
-| hashfill | 28.8 ms | 180.3 ms | 271.5 ms | **9.4×** | **6.3×** | 1.5× |
-| textsplit | 32.9 ms | 90.9 ms | 191.7 ms | **5.8×** | **2.8×** | 1.8× |
-| arrayops | 33.8 ms | 95.6 ms | 177.1 ms | **5.2×** | **2.8×** | 1.0× |
-| arraypush | 56.8 ms | 121.3 ms | 258.7 ms | **4.6×** | **2.1×** | 0.3× |
-| rats | 91.0 ms | 285.5 ms | 225.6 ms | **2.5×** | **3.1×** | 0.3× |
-| objects | 188.2 ms | 568.8 ms | 213.4 ms | **1.1×** | **3.0×** | 1.1× |
-| multiwhere | 232.8 ms | 6331.0 ms | 224.1 ms | Rakudo 1.04× | **27.2×** | 1.0× |
+| mainwhen | 3.3 ms | 87.6 ms | 278.7 ms | **84.5×** | **26.5×** | 2.1× |
+| intcat | 61.4 ms | — | 5163.4 ms | **84.1×** | — | 0.8× |
+| fib | 5.6 ms | 137.8 ms | 302.9 ms | **54.1×** | **24.6×** | 2.5× |
+| loopsum | 3.3 ms | 54.3 ms | 167.1 ms | **50.6×** | **16.5×** | 1.6× |
+| bigint | 5.3 ms | 8.3 ms | 160.1 ms | **30.2×** | **1.6×** | 1.2× |
+| strcat | 3.3 ms | 7.4 ms | 88.1 ms | **26.7×** | **2.2×** | 1.3× |
+| streq | 7.2 ms | 474.2 ms | 181.3 ms | **25.2×** | **65.9×** | 2.5× |
+| hash | 7.2 ms | 26.5 ms | 123.9 ms | **17.2×** | **3.7×** | 1.0× |
+| sortnums | 11.6 ms | 24.9 ms | 163.0 ms | **14.1×** | **2.1×** | 1.5× |
+| arraypush | 19.4 ms | 120.5 ms | 254.4 ms | **13.1×** | **6.2×** | 0.9× |
+| regex | 17.8 ms | 82.4 ms | 180.6 ms | **10.1×** | **4.6×** | 1.5× |
+| hashfill | 27.1 ms | 178.9 ms | 266.6 ms | **9.8×** | **6.6×** | 1.5× |
+| sortby | 15.7 ms | 29.9 ms | 141.6 ms | **9.0×** | **1.9×** | 1.4× |
+| textsplit | 24.5 ms | 88.8 ms | 186.3 ms | **7.6×** | **3.6×** | 2.1× |
+| arrayops | 32.0 ms | 94.9 ms | 171.5 ms | **5.4×** | **3.0×** | 1.0× |
+| rats | 91.3 ms | 275.1 ms | 223.8 ms | **2.5×** | **3.0×** | 0.3× |
+| objects | 191.2 ms | 568.2 ms | 210.2 ms | **1.10×** | **3.0×** | 1.1× |
+| multiwhere | 235.6 ms | 6248.2 ms | 220.2 ms | Rakudo 1.07× | **26.5×** | 1.0× |
 
 Three rows are slower compiled than interpreted. In each, every loop runs as
-an interpreter kernel (`RAKUPP_KERNEL_TRACE=1` names them), which since this
-release takes array elements, pushes, Nums and Rats, while the `--exe`
-binaries of `arraypush` and `rats` stand where v5.2.1's did (53.9 → 56.8 and
-91.1 → 91.0 ms). Elsewhere compiling gains least where the interpreter already runs a kernel —
-`fib`, `loopsum`, `mainwhen`, `streq` are within 1.6-2.4× of their binaries,
-and much of what is left on those rows is process startup — and nothing where
-the time is inside a runtime method both modes share: `arrayops`
-(`.grep`/`.map`/`.sum`), `hash`, `bigint` (the `BigInt` multiply) and
-`multiwhere` (the bundled interpreter).
+an interpreter kernel (`RAKUPP_KERNEL_TRACE=1` names them), which takes array
+elements, pushes, Nums and Rats, while the `--exe` code does not have those
+lanes. `arraypush` is close to level now (19.4 against 18.1 ms), down from
+56.7 ms compiled at v5.3.0. Elsewhere compiling gains least where the
+interpreter already runs a kernel — `fib`, `loopsum`, `mainwhen`, `streq` are
+within 1.6-2.5× of their binaries, and much of what is left on those rows is
+process startup — and nothing where the time is inside a runtime method both
+modes share: `arrayops` (`.grep`/`.map`/`.sum`), `hash`, `bigint` (the
+`BigInt` multiply) and `multiwhere` (the bundled interpreter).
 
-### v5.2.1 to v5.3.0
+### v5.3.0 to v5.4.0
 
-v5.2.1 is its release binary (`rakupp-macos-universal.tar.gz`, sha256 checked,
-the arm64 slice), timed in this sitting in two passes. v5.3.0 is the local
-build at `5.3.0-g042a74ad`, three passes. At the last sitting the v5.2.0
-artifact read −6% to +9% against a local build of the same code, so a row that
-moved by less than that is not a change in either direction. The Rakudo lane,
-timed beside both, held within 3% between the two halves of the sitting.
-Milliseconds, minimum across the passes.
+Both columns are local builds with the same compiler, timed in this sitting:
+v5.3.0 is the tag built in a clean worktree, two passes, and v5.4.0 is
+`5.4.0-g36b420ad`, three passes. At earlier sittings a release artifact read
+−6% to +16% against a local build of the same code, so this table compares
+two local builds instead. The Rakudo lane, timed beside both, held within 1.6%
+between the two halves of the sitting. Milliseconds, minimum across the
+passes.
 
-| kernel | interp v5.2.1 | interp v5.3.0 | | `--exe` v5.2.1 | `--exe` v5.3.0 | |
+| kernel | interp v5.3.0 | interp v5.4.0 | | `--exe` v5.3.0 | `--exe` v5.4.0 | |
 |---|---:|---:|---:|---:|---:|---:|
-| arraypush | 126.6 | 18.2 | −86% | 53.9 | 56.8 | +5% |
-| rats | 172.9 | 26.0 | −85% | 91.1 | 91.0 | 0% |
-| hashfill | 87.3 | 42.0 | −52% | 29.1 | 28.8 | −1% |
-| hash | 14.5 | 7.5 | −48% | 7.5 | 7.3 | −3% |
-| objects | 338.2 | 203.3 | −40% | 215.5 | 188.2 | −13% |
-| multiwhere | 357.4 | 228.8 | −36% | 355.6 | 232.8 | −35% |
-| regex | 31.7 | 27.8 | −12% | 22.2 | 18.0 | −19% |
-| startup | 4.3 | 3.9 | −9% | 3.1 | 2.9 | −6% |
-| loopsum | 5.7 | 5.2 | −9% | 3.3 | 3.2 | −3% |
-| sortnums | 19.7 | 18.1 | −8% | 11.6 | 12.0 | +3% |
-| strcat | 4.6 | 4.3 | −7% | 3.3 | 3.4 | +3% |
-| bigint | 6.8 | 6.4 | −6% | 5.3 | 5.3 | 0% |
-| mainwhen | 6.8 | 6.4 | −6% | 3.3 | 3.3 | 0% |
-| sortby | 22.1 | 21.0 | −5% | 15.4 | 15.0 | −3% |
-| streq | 18.0 | 17.6 | −2% | 7.3 | 7.3 | 0% |
-| fib | 13.8 | 13.9 | +1% | 5.5 | 5.8 | +5% |
-| arrayops | 34.0 | 34.8 | +2% | 33.3 | 33.8 | +2% |
-| textsplit | 57.5 | 59.4 | +3% | 32.5 | 32.9 | +1% |
-| intcat | — | 49.7 | | — | 59.1 | |
+| textsplit | 59.5 | 51.6 | −13% | 32.1 | 24.5 | −24% |
+| regex | 27.4 | 26.7 | −3% | 17.7 | 17.8 | +1% |
+| arrayops | 34.3 | 33.5 | −2% | 34.0 | 32.0 | −6% |
+| bigint | 6.4 | 6.4 | 0% | 5.2 | 5.3 | +2% |
+| hashfill | 40.6 | 40.7 | 0% | 27.3 | 27.1 | −1% |
+| multiwhere | 229.3 | 231.4 | +1% | 228.7 | 235.6 | +3% |
+| sortnums | 17.5 | 17.7 | +1% | 11.7 | 11.6 | −1% |
+| intcat | 48.6 | 49.2 | +1% | 58.7 | 61.4 | +5% |
+| hash | 7.4 | 7.5 | +1% | 7.2 | 7.2 | 0% |
+| loopsum | 5.3 | 5.4 | +2% | 3.2 | 3.3 | +3% |
+| strcat | 4.3 | 4.4 | +2% | 3.2 | 3.3 | +3% |
+| streq | 17.3 | 17.8 | +3% | 7.1 | 7.2 | +1% |
+| objects | 200.4 | 207.0 | +3% | 190.8 | 191.2 | 0% |
+| rats | 25.6 | 26.5 | +4% | 91.0 | 91.3 | 0% |
+| fib | 13.4 | 14.0 | +4% | 5.6 | 5.6 | 0% |
+| arraypush | 17.2 | 18.1 | +5% | 56.7 | 19.4 | −66% |
+| sortby | 20.5 | 22.1 | +8% | 14.8 | 15.7 | +6% |
+| mainwhen | 6.2 | 6.9 | +11% | 3.3 | 3.3 | 0% |
+| startup | 3.8 | 4.4 | +16% | 3.0 | 3.0 | 0% |
 
-The interpreted gains are the loop kernels reaching arrays, hashes, Nums and
-Rats (`arraypush`, `rats`, `hash`, `hashfill`), the `where`-aware dispatch
-cache and the direct `.new` (`multiwhere`, `objects`), and regex search that
-skips start positions no match can begin at (`regex`)
-([CHANGELOG](../../CHANGELOG.md)). `intcat` has no v5.2.1 figure: each `~=`
-of an Int copied the whole string there.
+**Two interpreted rows are slower, and both are work added.** `mainwhen`
+retires 13% more instructions at 200k iterations; the extra is a fixed ~10M
+instructions (about 0.5 ms) that does not grow with the loop — at 2M
+iterations it is the same 10M, 2% of the run, which is why perf-guard's
+6M-iteration `mainwhen` does not see it. `sortby` retires 8% more and the
+extra grows with the input (+6% at 120k words), so it is a per-element cost
+in the `.map`/`.sort(*.chars)` path. `startup` reads +16% here but is within
+2% in thirty interleaved runs of each binary, with identical instruction
+counts; `fib`, `rats` and interpreted `arraypush` (+4-5%) sit at the edge of
+what two sittings of one build differ by. Neither cause is found yet
+([TODO.md](../dev/plans/TODO.md)).
 
-**Method calls are slower.** These kernels make few calls each, so they do not
-show it; perf-guard's call kernels do. Against a local build of v5.2.1 in two
-interleaved rounds, `privmeth` is 9.5% slower, `strpass` 9.0%, `method` 8.6%,
-`attrread` 5.8%, and `subcall`, `multimeth` and `junctionwide` about 4.5%;
-retired instructions grew 6–7% on the first three. It built up over many
-commits of the cycle rather than in one. The optimizer harness's
-`methodcalls` (below) shows it under `--exe` as well.
+perf-guard's call kernels stand where v5.3.0 left them: against a local
+v5.3.0 build in two interleaved rounds every kernel is within 3% but
+`strscan` and `substrloop`, both 6% slower in wall time with 1% more retired
+instructions. Against the recorded v5.2.0 baseline, the v5.3.0 call-path cost
+is still there (`strpass`, `method`, `privmeth`, `subcall` +5-10%).
 
 ### Startup
 
@@ -193,10 +189,10 @@ this row is process startup and almost nothing else.
 
 | mode | startup | vs Rakudo |
 |---|---:|---:|
-| Raku++ native `--exe` | 2.9 ms | **25.1×** |
-| Raku++ interp | 3.9 ms | **18.6×** |
-| mutsu | 5.1 ms | **14.3×** |
-| Rakudo | 72.7 ms | — |
+| Raku++ native `--exe` | 3.0 ms | **23.4×** |
+| Raku++ interp | 4.4 ms | **16.0×** |
+| mutsu | 4.8 ms | **14.6×** |
+| Rakudo | 70.3 ms | — |
 
 A native Raku++ binary has no VM to bring up and no precompiled setting to
 load; Rakudo's ~70 ms is a fixed cost inside every row on this page. mutsu is
@@ -216,11 +212,11 @@ the machine (5.34.3 and 5.34.1) time within 4% of it on `hashfill` and
 
 | engine | hashfill | vs perl | textsplit | vs perl | intcat | vs perl |
 |---|---:|---:|---:|---:|---:|---:|
-| Raku++ `--exe` | 28.8 ms | **1.8× faster** | 32.9 ms | 2.4× slower | 59.1 ms | **1.3× faster** |
-| Raku++ interp | 42.0 ms | **1.2× faster** | 59.4 ms | 4.4× slower | 49.7 ms | **1.5× faster** |
-| Perl 5 | 51.7 ms | — | 13.5 ms | — | 74.5 ms | — |
-| mutsu | 180.3 ms | 3.5× slower | 90.9 ms | 6.7× slower | — | — |
-| Rakudo | 271.5 ms | 5.3× slower | 191.7 ms | 14.2× slower | 6006.6 ms | 80.6× slower |
+| Raku++ `--exe` | 27.1 ms | **1.8× faster** | 24.5 ms | 1.8× slower | 61.4 ms | **1.2× faster** |
+| Raku++ interp | 40.7 ms | **1.2× faster** | 51.6 ms | 3.9× slower | 49.2 ms | **1.5× faster** |
+| Perl 5 | 49.9 ms | — | 13.3 ms | — | 73.7 ms | — |
+| mutsu | 178.9 ms | 3.6× slower | 88.8 ms | 6.7× slower | — | — |
+| Rakudo | 266.6 ms | 5.3× slower | 186.3 ms | 14.0× slower | 5163.4 ms | 70.1× slower |
 
 The hash payload is an insertion-ordered open hash in the perl mold
 ([PERL5-TECHNIQUES.md](../dev/findings/engines/PERL5-TECHNIQUES.md)), and
@@ -236,7 +232,7 @@ native-int lanes for int assignments and conditions
 ([OPTIMIZATION.md](../internals/OPTIMIZATION.md)). Measured by
 [`tools/run-optbench.raku`](../../tools/run-optbench.raku), which first checks
 each program's output four ways (interp, `--exe`, `--exe -O`, Rakudo); one pass,
-best of 5.
+best of 5. Measured 2026-10-08 at `v5.3.0`, and not re-run for v5.4.0.
 
 | Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
 |---|---:|---:|---:|---:|---|
@@ -341,7 +337,7 @@ stripes took a CPU-bound fan-out on 8 workers from 3.16× to 5.32×
   `loopsum` (0.91×). Not re-timed on the old frontend for this sitting.
 - **mutsu:** 0.25.0, upstream `49442b379` (2026-10-04 JST), `cargo build
   --release` with default features (Cranelift JIT on), built 2026-10-04 and not
-  rebuilt for this sitting. Not timed on `intcat`. Native arm64: check `file` on the binary, since an
+  rebuilt for this sitting or the one before. Not timed on `intcat`. Native arm64: check `file` on the binary, since an
   x86_64 build would run under Rosetta and the harness would not notice.
 - **perl:** v5.44.0 (`/opt/homebrew/bin/perl`), for the three kernels with a
   `.pl` twin.
@@ -354,19 +350,15 @@ stripes took a CPU-bound fan-out on 8 workers from 3.16× to 5.32×
   program is compiled with `--exe` once and the binary is timed; the compile is
   not counted. The harness refuses a Raku++ binary built for another
   architecture.
-- **This sitting:** re-measured 2026-10-08 at `v5.3.0` — the local build is
-  `5.3.0-g042a74ad`, the version commit. It carries all of v5.3.0's code but
-  two fixes made after it, which no kernel here goes through: 1305af21 (a
-  statement prefix with two modifiers, in the parser) and 19ed905f (a reset when
-  an interpreter is created).
-  `intcat` ran in three passes of its own after the other five, without the
-  mutsu lane. The 1-minute load stayed between about 3 and 4.5: WindowServer
-  held about a third of a core throughout, and `ecosystemd`, `biomesyncd` and an
-  iOS Simulator took up to a whole one at times. 59 of the 78 cells agree within
-  4% across the three passes; the worst are `hashfill` under perl (13.2%) and
-  mutsu (10.1%), `intcat` under Rakudo (7.5%) and the 3 ms native `startup`
-  (6.9%). The Rakudo lane held within 3% between the v5.3.0 and the v5.2.1
-  passes.
+- **This sitting:** re-measured 2026-10-13 at `v5.4.0` — the local build is
+  `5.4.0-g36b420ad`, the version commit. `intcat` ran in three passes of its
+  own after the other three, without the mutsu lane; the v5.3.0 comparison
+  build ran two passes after that, without mutsu. The 1-minute load read
+  between 2.2 and 2.7 at the end of each pass. 90 of the 97 cells (the
+  `--cnp` lane included) agree within 4% across the three passes; the worst
+  are native `loopsum` (9.1%) and the 3 ms native `startup` (6.7%), both a
+  few tenths of a millisecond. The Rakudo lane held within 1.6% between the v5.4.0 and the
+  v5.3.0 passes.
 
 ## Reproducing
 

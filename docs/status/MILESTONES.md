@@ -57,6 +57,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-10-02 | **v5.2.0** | **Integer and loop kernels** — every benchmark kernel faster interpreted, `fib` by 97% and `loopsum` by 93%; a Value of 80 bytes instead of 128; `cro run`, DBIish from an installed binary, a Docker image; Roast unchanged at 1,424 / 1,424 |
 | 2026-10-03 | **v5.2.1** | Cro at full scale, native module bodies in `--exe`, `pip install rakulang` — a patch release; Roast unchanged at 1,424 / 1,424 |
 | 2026-10-09 | **v5.3.0** | Unicode 18.0, linear string building, `--sandbox`, spreadsheet formulas — loop kernels over arrays, hashes, Nums and Rats (`arraypush` −86%, `rats` −85%); Roast 1,425 / 1,425 on a Roast that moved to Unicode 18 |
+| 2026-10-13 | **v5.4.0** | `.hyper` and `.race` on every core, `use JSON::Native` answered by the engine, loading linear again (#141) and a scaling gate; `rakupp install` takes folders and programs — Roast unchanged at 1,425 / 1,425 |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -277,6 +278,14 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   Spreadsheets get `=RAKU` formulas, and editors a language server that
   answers hover, completion and definition. Method calls are 5-10% slower
   than in v5.2.1, measured and left for the next release.
+- **Oct 13 — v5.4.0.** Roast unchanged (1,425 / 1,425, the same file list).
+  `.hyper`, `.race` and numeric hyper operators run on every core; loading a
+  source is linear in its length again, and a new scaling gate times 171
+  shapes at n and 8n and fails one that grows quadratically; `use JSON::Native`
+  needs nothing installed; `rakupp install` takes module folders and
+  programs; `--target=js` compiles the modules a program uses. Interpreted
+  `mainwhen` and `sortby` are 8-11% slower than in v5.3.0, measured and left
+  open.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

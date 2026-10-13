@@ -12,10 +12,10 @@ two ever disagree.
 
 **Headline: 100.00% of Roast's tests pass** — 219,207 of 219,207 with the tests Roast marks skip or todo left out, and all declared tests (220,845 / 220,845) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
 
-Measured 2026-10-08 on the v5.3.0 candidate (`8c48b00c`; the release commit
+Measured 2026-10-13 on the v5.4.0 candidate (`56b55eb8`; the release commit
 changes only the version number), against Roast `da425eb92` (2026-10-07) and
 the 1,425 files its `spectest.data` lists: three runs, all three 1,425 / 1,425,
-with every file on v5.2.1's list. `S17-promise/nonblocking-await.t`
+the same file list as v5.3.0's. `S17-promise/nonblocking-await.t`
 still crashes now and then (see [the note below](#the-one-file-that-flaps));
 it did not in these three runs. On a loaded
 machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
@@ -31,7 +31,7 @@ Full suite — **1,425 files** (Roast's `spectest.data`):
 | No TAP output | 0 | 0% |
 | Timeouts | 0 | 0% |
 
-**Since v5.2.1, Roast has moved to Unicode 18.0.** Roast `da425eb92` carries
+**Between v5.2.1 and v5.3.0, Roast moved to Unicode 18.0.** Roast `da425eb92` carries
 roast#923: the generated normalization, grapheme-break and collation tests are
 18.0's, and `S15-nfg/GraphemeBreakTest-4.t` is a new file. That is 790 more
 declared tests (787 without skip/todo), all in S15 and S32. The v5.2.1 release

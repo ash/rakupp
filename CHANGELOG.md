@@ -3,6 +3,149 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.4.0 (2026-10-13) — `.hyper` on every core, JSON in the engine, and linear loading again
+
+Roast: **all 1,425 files** of `spectest.data` and **all 219,207** of its tests
+with skip and todo left out (220,845 of 220,845 counting them as passes), in
+three runs of three, on Roast `da425eb92` — the same Roast and the same file
+list as v5.3.0. The local suite passes all 1,599 checks, 171 of them the new
+scaling shapes. The module battery, the documentation examples, the `-O`
+harness and the ecosystem sweep were not re-run; their figures in the README
+and `docs/status/` are v5.3.0's or older, as labelled.
+
+### Faster
+
+Against a local v5.3.0 build in the same sitting
+([BENCHMARKS.md](docs/status/BENCHMARKS.md)): `textsplit` −13% interpreted
+and −24% compiled, `arraypush` −66% compiled (56.7 → 19.4 ms), `arrayops` −6%
+compiled. The other rows moved by 5% or less, but for three
+interpreted ones, which are slower: `startup` reads +16% in the harness but is within 2%
+in thirty interleaved runs, with the same instruction count; `mainwhen` +11%
+and `sortby` +8% are work added (retired instructions +13% and +8%). The
+`mainwhen` extra is a fixed ~0.5 ms that does not grow with the loop; the
+`sortby` one grows with the input. Neither is found yet.
+
+- **`.hyper` and `.race` run on worker threads** (0f15e190). They were serial
+  stand-ins; now `.map` and `.grep` run the block in batches across the cores
+  and answer a HyperSeq or RaceSeq in source order, and a death in the block is
+  `X::HyperRace::Died`. Hyper operators over plain Ints and Nums (`+ - * /`, the
+  comparisons, `».sqrt`) run as a native loop, split over the cores from 32,768
+  elements. Over 1M Nums: `.hyper.map` 0.32 → 0.16 s, `(4 «*» @a) «*» @b`
+  92 → 25 ms, `hyper for @a` 0.53 → 0.09 s.
+- **Loading is linear in the source again** (#141, ee41d8d2). v5.3.0 asked the
+  whole file a question for every word after a term, so each statement with a
+  postfix `if` re-read the source: 3,000 one-line subs loaded in 176 ms against
+  v5.2.1's 22, and 30,000 took 16 s. Back to 22 ms; the lex stage of 300k subs
+  is 405 ms, against 730 at v5.3.0 and 515 at v5.2.1.
+- **Run-time quadratics made linear**, most found by the new scaling gate:
+  `~=` of non-ASCII text renormalizes only where the two texts meet (20k
+  appends took 5.25 s, 80k now take 2 ms; 0467e49a); Match `.from`/`.to` no longer
+  count graphemes from the front (a 2,705-line grammar with accents 50.66 →
+  0.06 s; #140); `(elem)` on a Set, `.index` from a position, `[~]` and Buf
+  `.push` (fc6abf32); `.index`/`.rindex` on non-ASCII text (#154, 1.2 ms →
+  0.7 µs a call at 1M chars).
+- **A `$*x` read costs the same at any call depth** (#156, 84af1cd0): 2 µs a
+  read at depth 400 before, 0.15 µs at any depth now.
+- **An rw argument that is an assignment is not re-run on write-back**
+  (2b12abd9): `f($pos = $pos + 1)` with `$pos is rw` wrote through every
+  caller frame. JSON::Fast parses 4,000 levels of nesting in 1 s, not 30.
+- **Method dispatch answers common calls at its entry** (db4bfdee, 2cad14a1,
+  b8babfc1): CStruct field reads, `Array.push`, `.Num`, `.Int`, `.Str`,
+  `.defined`, `.elems`, `.WHICH`, `.join`, `.kv` and `Hash.values` skip the
+  method chain. Math::NIntegrate's affine benchmark: `dot` 6.30 → 4.13 ms.
+- **Typed subtrees read natives and Rats** (6ac55398): `my int`/`my num`
+  arithmetic no longer runs twice as slow as untyped (a native-num
+  Mandelbrot 1.34 → 0.84 s), and a small Rat expression stays in machine
+  words.
+- **The JSON codec** (7e42ac3e) builds numbers directly instead of through
+  `Str.Numeric`: 316 KB of mixed records 13.5 → 2.6 ms.
+
+**perf-guard** stays on v5.2.0's baseline. Against a local v5.3.0 build in two
+interleaved rounds, every kernel is within 3% but `strscan` and `substrloop`,
+6% slower in wall time with 1% more retired instructions. Against the v5.2.0
+baseline, the call-path cost v5.3.0 shipped is still there (`strscan` +9.5%,
+`strpass` +7.4%, `method` +5.9%, `subcall` +5.4%, `privmeth` +5.2%); one of its
+three named causes, the thread-local loop counter, is gone (6ac55398).
+
+
+### New
+
+- **`use JSON::Native` needs nothing installed** (d6cc23fe, 09c7aa48): the
+  engine answers it, with JSON::Fast's answers and import options
+  (`<immutable !pretty sorted-keys enums-as-value>`). What the built-in codec
+  does not cover goes to a pure-Raku fallback bundled in the binary, loaded on
+  first need; an installed or `-I` copy still wins.
+- **`rakupp install` takes module folders, module files and programs**
+  (42a30613): a directory without a META6.json installs the modules in it, `-r`
+  takes every directory below, and `rakupp install app.raku` installs what the
+  program's `use` lines need. A run that leaves something out says so last
+  (212ab7f6). `rakupp test -v` and `rakupp install -v` show each test file as
+  it runs (56b55eb8); `rakupp uninstall --dry-run` removes nothing (5f4dabe7).
+- **`rakupp install cro`** installs all 38 distributions with their suites
+  green, and `cro serve` serves files (29f5aa55); the rak chain (String::Utils,
+  rak, App::Rak) installs again (e1663c0c).
+- **`--target=js` compiles the modules a program uses** into its output
+  (33d25fb9). All of Math::Wavelet compiles, and its four examples pass
+  `--verify`.
+- **A scaling gate** (41c0ffc1): `t/scaling/run.raku` times 171 shapes at n and
+  8n — n statements of one kind for loading, a program doing n of one thing
+  for running — and fails one that grows more than 24× for 8× the size. It is
+  part of `t/run.raku`.
+- `install.sh` prints the line that fixes `PATH` in the current terminal
+  (d1996ccd), and the Windows one-liner is served from raku.online (13f0ef78).
+
+### Behaves like Rakudo
+
+Each was checked against Rakudo 2026.09.
+
+- **Grammars**: a code block sees a capture's own captures, `$<al><s>` and
+  `$0<s>` included (#139); a rule's arguments keep their types (#150);
+  `G.Grammar::parse` runs the built-in parse (#152); a parse result is an
+  object of the grammar (#153); an `rx//` with a code block closes over the
+  scope it was written in (#147) (43370447, c87cceb7).
+- **Dynamic variables** (61e75287): a `my $*X` further down a caller's frame
+  exists from the frame's entry, a called block finds a dynamic through its
+  callers, and `$*X := $y` aliases the container.
+- **Modules**: `import` in a BEGIN or CHECK sees a module declared above it
+  (#158), and `import M` no longer runs M's body again (5c4c71bc); a `use`
+  inside a routine loads at its declaration, under a loader lock, so
+  concurrent first calls no longer report a circular load (1099187e); a
+  `sub EXPORT` after `unit module` is the package's (d948832f).
+- **Processes**: `%*ENV<X>:delete` takes X out of what a child inherits
+  (#157); a child starts with SIGPIPE at its default, so `shell 'yes | head
+  -n 1'` prints no "Broken pipe" (a27de4ac); `run(:in, :out($fh))` writes into
+  the handle (f2933ed3); `Channel.list` is lazy (#145); `.read(N)` on a live
+  pipe answers the bytes there are (#148); on Windows a child inherits only
+  its own standard handles (#143, compile-checked, not yet run there).
+- **Quoting**: Unicode bracket delimiters nest in quote words and the regex
+  family; `qqw` interpolates, then splits; a `qq` closure owns its strings
+  (`qq[a {"]"} b]` is `a ] b`); a `class Q` inside `｢…｣` is text (130d8a4b,
+  3fe584d3, ed499880, f27fa12f, ff182274).
+- **Containers and types**: a coercion-typed container coerces every element
+  store (`my Hash() %h`, b21ea7a6); `.Array` of an Array is a new Array;
+  `Array.List` strips item containers; an Instant holds a Rat; coercion into a
+  class deriving Str, Int, Num or Rat works on every route; a CArray of a
+  CStruct holds pointers (#136); an `@` parameter's `where` sees a Seq as a
+  List.
+- Smaller divergences from `docs/dev/plans/TODO.md` (fadb97aa,
+  6acb4326, 79f0bc7c, 0c3540cf, d948832f, fc6abf32), each with a regression
+  case that Rakudo 2026.09 passes too, and the eleven Rakuglaze failures from
+  batches 04 to 12 (8902cac9).
+
+### Threads
+
+Races caught by CI and ThreadSanitizer, fixed: an async socket's hash and a
+Promise's status (24bb8041), Supplier tap records and `is rw` copy-back
+(0f1418f6), each now written under its lock.
+
+### Gates
+
+A light release: Roast (three runs, the same 1,425-file list as v5.3.0), the
+local suite with its scaling shapes, perf-guard (above) and the benchmark
+sitting. Not run: `run-optbench`, `t/aot`, the MinGW syntax check, the module
+battery, the koans and adopters gates, the documentation examples and the
+conformance sweep.
+
 ## v5.3.0 (2026-10-09) — Unicode 18, linear string building, `--sandbox`, and spreadsheets
 
 Roast: **all 1,425 files** of `spectest.data` and **all 219,207** of its tests
