@@ -562,6 +562,10 @@ static bool preloadableUse(const UseStmt* u) {
     if (u->isNo || u->isImport || u->isRequire || u->ifCond || u->fileExpr || !u->fromLang.empty()) return false;
     const std::string& m = u->module;
     if (m.empty() || !ascii::isupper((unsigned char)m[0])) return false;
+    // A module the engine answers (Data::Native and its siblings) is answered
+    // only for an importing `use`; a preload imports nothing, so it would go
+    // looking for a file that need not exist. The `use` itself answers it.
+    if (rakuppCompilerAnswersModule(m)) return false;
     return m.compare(0, 6, "MONKEY") != 0 && m.compare(0, 10, "NativeCall") != 0 && m != "Rakupp::Ext";
 }
 static void routineUsesStmt(Stmt* s, bool inRoutine, std::vector<UseStmt*>& out, bool& stop);
