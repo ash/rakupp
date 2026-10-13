@@ -7233,12 +7233,6 @@ ExprPtr Parser::parsePrimary() {
                                          " (must be quoted to match literally)", t.line,
                                      "X::Syntax::Regex::UnrecognizedMetachar", {{"metachar", std::string(1, t.text[i])}});
             }
-            // `s/a/b/i` — Perl 5's trailing modifiers; Raku writes them as adverbs
-            if (isKind(Tok::Ident) && !cur().spaceBefore && !cur().text.empty() &&
-                cur().text.find_first_not_of("igmsxe") == std::string::npos)
-                throw ParseError("Unsupported use of /" + cur().text + "; in Raku please use :" +
-                                 cur().text, cur().line, "X::Obsolete",
-                                 {{"old", "/" + cur().text}, {"replacement", ":" + cur().text}});
             return std::make_unique<SubstLit>(t.text, t.text2, t.flag);
         }
         case Tok::QwList: { // qw<...> : split raw content on whitespace into a list of strings

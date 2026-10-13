@@ -2217,6 +2217,30 @@ bool Lexer::declaredInfixWordAfterTerm(const std::vector<Token>& out) const {
     return infixWordsInSrc_.count(src_.substr(pos_, e - pos_)) > 0;
 }
 
+// A Perl 5 TRAILING modifier — `/…/i`, `m/…/g`, `s/…/…/x` — is Raku's leading
+// adverb written the old way. Rakudo's old_rx_mods looks at the one character
+// tight against the closer, whatever follows it (`/a/ix` and `/a/sin` both name
+// the first letter), and names its Raku spelling instead of letting the letter
+// parse as something else: `/hello/i` was the regex with postfix `i` applied,
+// silently case-sensitive, and `m/a/is` called Test's `is` (#168). Any other
+// letter is somebody else's problem (a term, usually).
+void Lexer::rejectP5RegexMods() {
+    if (eof()) return;
+    static const std::pair<char, const char*> kP5Mod[] = {
+        {'m', "^^ and $$ anchors"}, {'s', ". or \\N"},
+        {'x', "normal default whitespace"}, {'i', ":i"},
+        {'g', ":g"}, {'c', ":c or :p"},
+        {'e', "interpolated {...} or s{} = ... form"}};
+    for (auto& [mod, use] : kP5Mod)
+        if (peek() == mod) {
+            std::string spell(1, mod);
+            advance();
+            throw ParseError("Unsupported use of /" + spell + ". In Raku please use: " +
+                             use + ".", line_, "X::Obsolete",
+                             {{"old", "/" + spell}, {"replacement", use}});
+        }
+}
+
 bool Lexer::tryQuoteForm(Token& out) {
     size_t p = pos_;
     std::string w;
@@ -2547,10 +2571,12 @@ bool Lexer::tryQuoteForm(Token& out) {
                 std::string pat = readTo();
                 if (isSubst) {
                     std::string repl = readTo();
+                    rejectP5RegexMods();
                     out = make(Tok::SubstLit, adverbs + pat);
                     out.text2 = repl;
                     return true;
                 }
+                rejectP5RegexMods();
                 out = make(Tok::RegexLit, adverbs + pat);
                 out.flag = (w == "rx");
                 if (w == "m" || w == "mm" || w == "ms") out.ival = 1;
@@ -3094,6 +3120,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                                           {"replacement", ".. (or \\- if you mean a literal hyphen)"}});
                 }
             }
+        rejectP5RegexMods();
         // tr/y: tag the pattern with a sentinel so the interpreter transliterates
         out = make(Tok::SubstLit, (isTrans ? std::string("\x01") : std::string()) + adverbs + raw);
         out.text2 = repl;
@@ -3160,25 +3187,7 @@ bool Lexer::tryQuoteForm(Token& out) {
                                      "X::Syntax::Regex::Adverb",
                                      {{"adverb", name}, {"construct", "rx"}});
         }
-        // A Perl 5 TRAILING modifier — `m/…/i`, `/…/g` — is Raku's leading adverb
-        // written the old way, and Raku names each one rather than leaving a
-        // bare parse error. Only the seven Perl 5 actually had; any other letter
-        // tight against the closer is somebody else's problem (a term, usually).
-        if (!eof() && ascii::isalpha((unsigned char)peek()) && !isIdentCont(peek(1))) {
-            static const std::pair<char, const char*> kP5Mod[] = {
-                {'m', "^^ and $$ anchors"}, {'s', ". or \\N"},
-                {'x', "normal default whitespace"}, {'i', ":i"},
-                {'g', ":g"}, {'c', ":c or :p"},
-                {'e', "interpolated {...} or s{} = ... form"}};
-            for (auto& [mod, use] : kP5Mod)
-                if (peek() == mod) {
-                    std::string spell(1, mod);
-                    advance();
-                    throw ParseError("Unsupported use of /" + spell + ". In Raku please use: " +
-                                     use + ".", line_, "X::Obsolete",
-                                     {{"old", "/" + spell}, {"replacement", use}});
-                }
-        }
+        rejectP5RegexMods();
         out = make(Tok::RegexLit, adverbs + raw);
         out.flag = (w == "rx"); // rx// is a Regex object, never an implicit $_ match
         // …and the explicit `m//` is the opposite: ALWAYS a match against $_, even
@@ -4997,6 +5006,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 throw e;
             }
             advance(); // closing /
+            rejectP5RegexMods();
             t = make(Tok::RegexLit, raw);
         }
         else {
