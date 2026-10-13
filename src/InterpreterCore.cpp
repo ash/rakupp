@@ -13568,6 +13568,17 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         tctx_.cur->vars.erase(ve->name);
                     else if (curPkgEnv_) curPkgEnv_->define(ve->name, copy);
                     global_->define(ve->name, copy);
+                    // …and the qualified name is a VIEW onto that one container,
+                    // not the copy published above: `$M::X = 7` outside and the
+                    // module's own `$X` are the same variable (#170). The slot is
+                    // found by name from here, global included — a view from
+                    // `$M::X` to `$X` is two names, so it never fetches itself.
+                    if (ve->name[0] != '&' && qual != ve->name)
+                        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                            if (en->local(ve->name)) {
+                                global_->define(qual, makeEnvSlotProxy(en, ve->name));
+                                break;
+                            }
                 }
             }
         }
@@ -30965,6 +30976,14 @@ Value Interpreter::evalVarExpr(Expr* e) {
         if (ve->declScope == "our" && ve->declExport && sigil != '&' &&
             global_ && curPkgEnv_ && curPkgEnv_.get() != global_.get() &&
             !ve->declShape && !ve->declDefault && ve->containerIs.empty()) {
+            // …and the qualified name is a view onto it: with no initialiser
+            // the publish in evalAssign never runs, so `$M::X` was whatever
+            // its first writer autovivified (#170)
+            std::string qual = ourPublishedName(ve->name, tctx_.pkgPrefix);
+            if (qual != ve->name) {
+                noteSymbolMutation("our-declaration publish (exported, no initialiser)");
+                global_->define(qual, makeEnvSlotProxy(global_, ve->name));
+            }
             if (Value* g = global_->find(ve->name)) return *g;
             return global_->define(ve->name, declInitial(ve, sigil));
         }
