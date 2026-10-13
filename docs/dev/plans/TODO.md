@@ -551,6 +551,11 @@ with its tag, after the release run is green.
   [SLANG-PLAN.md](SLANG-PLAN.md).
 - [ ] **Larger walls**: PDF 16 of 49 test files (encryption, `ByteString`,
   filters, tie); Red #77 (compile-time lexical declaration).
+- [ ] **Missing modules install themselves**: [DEPS-PLAN.md](DEPS-PLAN.md),
+  2026-10-14. A `use` of a module that is not installed fetches it into the
+  ordinary store, with no option to type; `RAKUPP_DEPS=0` turns it off. Plan
+  and probes only (Roast collides with no index name; the typo guard blocks
+  31 of 9,698 names). Next: D0, the network-free gate `t/deps/run.raku`.
 - [ ] **Not started**: [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) (`rakupp.lock`,
   `--frozen`) and [UUID-PLAN.md](UUID-PLAN.md) (draft; the distribution's name
   is open).
