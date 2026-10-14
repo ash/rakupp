@@ -144,6 +144,12 @@ class CowStr {
     // it saves (an allocation per string). Above it, copying is the thing we are
     // here to avoid.
     static constexpr size_t kPromote = 23;
+public:
+    // The same string, cheaply: one shared body, or the same short text.
+    bool sameRep(const CowStr& o) const {
+        return p_ ? p_.get() == o.p_.get() : (!o.p_ && s_ == o.s_);
+    }
+private:
 
     void take(std::string x) {
         if (x.size() >= kPromote) {
@@ -993,6 +999,21 @@ struct Value {
     PayRef p_;                       // THE payload slot; pk_ says what it holds (8 bytes: batch 4)
     Ref<ValueExt> x_;                // the cold block above; null on almost every Value
     IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
+
+    // The SAME value, field for field: the same payload and cold block by
+    // pointer, the same scalar word, string, tags and flags. Not equality
+    // (two equal strings in two bodies differ here): it answers "would copying
+    // `o` over this change anything?", so a write-back can be skipped when it
+    // would only store what the slot already holds. A false "differs" just
+    // writes, as before.
+    bool sameRep(const Value& o) const {
+        return t == o.t && pk_ == o.pk_ && p_.get() == o.p_.get() && x_.get() == o.x_.get() &&
+               i == o.i && s.sameRep(o.s) && hashKind == o.hashKind && enumName == o.enumName &&
+               enumType == o.enumType && b == o.b && isList == o.isList && itemized == o.itemized &&
+               objKeyed == o.objKeyed && readonly == o.readonly && immutableBind == o.immutableBind &&
+               pairValRO == o.pairValRO && namedArg == o.namedArg && natSigned == o.natSigned &&
+               natFloat == o.natFloat && natBits == o.natBits;
+    }
 
     // Payload access. Readers return RAW pointers (null when the slot holds a
     // different kind), so `if (v.arr())` and `v.arr()->size()` read exactly as

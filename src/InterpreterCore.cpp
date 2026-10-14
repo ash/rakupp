@@ -8997,9 +8997,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } magicalGuard{tcx, &codeVal, !c.isBlock};
     auto restore = [&] {
         // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
+        // — only a MUTATED one: see the note at the end of callCallableRaw
         if (topicWB && implicitTopic_local) {
             auto it = env->vars.find("$_");
-            if (it != env->vars.end()) *topicWB = it->second;
+            if (it != env->vars.end() && !it->second.sameRep(*topicWB)) *topicWB = it->second;
         }
         tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
     };
@@ -9356,9 +9357,18 @@ resumeBody:
         runLetRestoresOf(tcx.cur);   // (an undefined result is an unsuccessful exit for `let`)
     tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
     // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
+    //
+    // …and only a MUTATED one. Writing back unconditionally stored every
+    // element a `.first`/`.grep`/`.map` block saw into its slot again, so a
+    // block run over a SHARED array — a module's constant list, read by every
+    // request a server answers — wrote into it from every thread at once,
+    // and the refcounts and strings of the elements tore (ThreadSanitizer:
+    // 160 reports here against toList in one minute of a blog server; the
+    // process died with a corrupted heap). A topic that is still what the slot
+    // holds is left alone.
     if (topicWB && implicitTopic_local) {
         auto it = env->vars.find("$_");
-        if (it != env->vars.end()) *topicWB = it->second;
+        if (it != env->vars.end() && !it->second.sameRep(*topicWB)) *topicWB = it->second;
     }
     copyOutRw(c.params, env, rwArgs);
     return c.retType.empty() ? std::move(last) : checkRetType(c, std::move(last));
@@ -16162,8 +16172,18 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // the object with a plain Hash lost every method the container exists
         // for — DBDish::mysql's Connection.BUILD does exactly this assignment,
         // and `.convert-function` then answered "no such method" on a Hash.
-        if (opEq(a->op, "=") && lv->t == VT::Object && lv->obj() && lv->obj()->cls &&
-            lv->obj()->cls->findMethod("STORE")) {
+        //
+        // The object is read under its slot's stripe (torn-copy contract): two
+        // threads assigning one shared variable at once — a module's `our
+        // $REQUEST`, set by every request a server answers — had this check
+        // read the payload while the other store replaced and freed it.
+        bool userStore = false;
+        if (opEq(a->op, "=") && lv->t == VT::Object) {
+            Value cur;
+            { SlotStripe rs(*this, lv); cur = *lv; }
+            userStore = cur.obj() && cur.obj()->cls && cur.obj()->cls->findMethod("STORE");
+        }
+        if (userStore) {
             // …but only for a %/@ variable. A `$` scalar HOLDS its object rather
             // than BEING a container of that type — `my $v = Hash::Ordered.new(…);
             // $v = 1` replaces what the scalar holds. (The container trait itself
