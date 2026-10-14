@@ -7648,7 +7648,6 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         ~FloorGuard() { t.redispatchFloor = saved; }
     } floorG{tcx, tcx.redispatchFloor};
     tcx.redispatchFloor = redispatchStack_.size() - (ownFrame && !redispatchStack_.empty() ? 1 : 0);
-    tcx.arityCallName = nullptr;   // consumed, as the arity check would
     DepthGuard guard(tcx.callDepth);
     PooledFrame frame_{tcx};
     auto& env = frame_.env;
@@ -7866,6 +7865,10 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
 
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
+    // the name the call site used (the arity check's), consumed before anything
+    // nested runs: what a builtin calls in turn was not the call written
+    const std::string* writtenName = tcx.arityCallName;
+    tcx.arityCallName = nullptr;
     // A plain sub called plainly takes the lean path. The per-call half of the
     // test: no one-shot register set for this call, nothing that switches the
     // language revision or profiles, and arguments the simple binder takes
@@ -7885,7 +7888,6 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         if (pc.intKernel.state.load(std::memory_order_relaxed) != 0) {
             Value kv;
             if (tryIntKernel(pc, args, tcx.callDepth, kv)) {
-                tcx.arityCallName = nullptr;   // consumed, as the call path does
                 t_fatalTry = false;
                 tcx.valContained = false;
                 return kv;
@@ -8677,7 +8679,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     // `*%h` takes NAMED arguments only; `*$f` takes one positional
                     if (p.slurpy && p.sigil == '%') continue;
                     if (p.slurpy && p.sigil == '$' && !p.subSig) { maxPos++; continue; }
-                    if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; continue; }
+                    if (p.slurpy || p.sigil == '|') { unbounded = true; continue; }   // `\x` is one positional
                     // an @-positional historically absorbs capture-interpolated
                     // argument lists (foo(|$c) with sub foo(@arr) — roast-blessed),
                     // and the interpolation is invisible after flattening: treat it
@@ -8690,9 +8692,6 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
         c.arityShape = applies;
     }
-    // the name the call site used — read once, before anything nested runs
-    const std::string* writtenName = tctx_.arityCallName;
-    tctx_.arityCallName = nullptr;
     if (arityCheck && c.arityShape == 1) {
         const bool unbounded = c.arityUnbounded;
         const int maxPos = c.arityMaxPos, reqPos = c.arityReqPos;
@@ -10650,7 +10649,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             if (p.invocant || p.named) continue;
             if (p.slurpy && p.sigil == '%') continue;
             if (p.slurpy && p.sigil == '$' && !p.subSig) { maxPos++; continue; }
-            if (p.slurpy || p.sigil == '|' || p.sigil == '\\') { unbounded = true; break; }
+            if (p.slurpy || p.sigil == '|') { unbounded = true; break; }   // `\x` is one positional
             maxPos++;
             if (!p.optional && !p.defaultVal && !p.litVal) reqPos++;
         }

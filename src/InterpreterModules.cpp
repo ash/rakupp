@@ -227,7 +227,7 @@ static Value jsonRakuFallback(Interpreter& I, bool to, ValueList& args) {
         throw RakuError{Value::typeObj("X::AdHoc"),
                         std::string("JSON::Native: this call needs JSON::Native::Raku, which did not load")};
     Value fn = *f;
-    return I.callCallable(fn, args);
+    return I.callCallable(fn, args, nullptr, false, /*arityCheck=*/true);   // the caller's call, checked as one
 }
 // Rakupp::Internals::JSON.to-json (and its Rakudo alias): the same pair.
 Value jsonExactToJson(Interpreter& I, ValueList& a) {

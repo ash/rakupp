@@ -5873,12 +5873,14 @@ Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncove
     return out;
 }
 
+// The hand-over is the caller's own call, so the module's binder checks it as
+// such: `to-json(:pretty)`, with no value, dies there as it does under Rakudo.
 Value jsonFastToJsonCall(Interpreter& I, ValueList& a, const Value& orig) {
-    return jsonToJsonBody(I, a, [&](const char*) { return I.callCallable(orig, a); });
+    return jsonToJsonBody(I, a, [&](const char*) { return I.callCallable(orig, a, nullptr, false, /*arityCheck=*/true); });
 }
 
 Value jsonFastFromJsonCall(Interpreter& I, ValueList& a, const Value& orig) {
-    return jsonFromJsonBody(I, a, [&](const char*) { return I.callCallable(orig, a); });
+    return jsonFromJsonBody(I, a, [&](const char*) { return I.callCallable(orig, a, nullptr, false, /*arityCheck=*/true); });
 }
 
 // Called by loadModule right after JSON::Fast's tree has executed: wrap the

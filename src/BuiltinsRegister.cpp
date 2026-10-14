@@ -217,7 +217,7 @@ void Interpreter::registerBuiltins() {
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
         w.code()->name = which;
         w.code()->builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
-            auto handOver = [&](const char*) { return I.callCallable(fallback, args); };
+            auto handOver = [&](const char*) { return I.callCallable(fallback, args, nullptr, false, /*arityCheck=*/true); };
             return to ? jsonToJsonBody(I, args, handOver) : jsonFromJsonBody(I, args, handOver);
         };
         return w;

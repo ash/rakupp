@@ -383,8 +383,20 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     // deliberately NOT yet, while the battery still measures those dists.
     if (inv.t == VT::Type && (inv.s == "Rakudo::Internals::JSON" ||
                               inv.s == "Rakupp::Internals::JSON")) {
+        // Each method takes one positional, and a call with none or two fails
+        // binding, counted with the invocant as the method binder counts.
+        const Value* positional = nullptr;
+        if (m == "from-json" || m == "to-json") {
+            int got = 0;
+            for (auto& x : args)
+                if (!(x.t == VT::Pair && x.namedArg)) { if (!got) positional = &x; got++; }
+            if (got != 1)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                    std::string(got < 1 ? "Too few" : "Too many") +
+                    " positionals passed; expected 2 arguments but got " + std::to_string(got + 1)};
+        }
         if (m == "from-json") {
-            std::string j = args.empty() ? "" : args[0].toStr();
+            std::string j = positional->toStr();
             size_t i = 0; Value out;
             JsonCfg cfg;
             if (!jsonParseValue(j, i, out, cfg))
