@@ -430,4 +430,15 @@ beat.
   run there.
 - **A pinned version that was uninstalled** loads the newest installed one
   rather than fetching the pinned one again, as the plan first said.
+- **A failed fetch leaves its dependencies behind.** `use BSON::Simple`
+  installed six of its dependencies (App::Prove6 and its chain) before
+  Base64::Native's build hook failed, and then refused BSON::Simple. `--auto`
+  should remove what that run wrote when the asked-for distribution does not
+  install.
+- **The local suite must not fetch.** `t/run.raku`'s `#?requires Foo` probe
+  is `rakupp -e 'use Foo'`, which now installed Foo into the user's store.
+  It found P5index, Method::Also and the BSON::Simple chain on 2026-10-14.
+  `t/run.raku` now sets `RAKUPP_DEPS=0` for everything it runs. Any other
+  harness that probes with a `use` (the module battery, the sweep) needs
+  the same, as the gate list says.
 - The four open questions above still stand.
