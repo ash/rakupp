@@ -1686,9 +1686,16 @@ void Interpreter::registerBuiltinsPart2() {
         // program that EVALFILE'd it (S29-context/evalfile.t asserts exactly
         // that). The path goes in AS GIVEN — Rakudo's backtrace does not
         // absolutise it. Same RAII switch a module load makes.
-        struct DFGuard { std::string& f; std::string s; ~DFGuard() { f = s; } }
-            dfG{I.curDeclFile_, I.curDeclFile_};
+        //
+        // …and from the call depth EVALFILE was reached at, as a module load
+        // records it: called from a ROUTINE (a module's `sub load($f) {
+        // EVALFILE $f }`), the file's top level runs inside that routine's
+        // frame, and without the depth `$?FILE` named the routine's file —
+        // "Loader.rakumod (Loader)" where Rakudo says the file EVALFILE read.
+        struct DFGuard { std::string& f; std::string s; size_t& d; size_t sd; ~DFGuard() { f = s; d = sd; } }
+            dfG{I.curDeclFile_, I.curDeclFile_, I.curDeclDepth_, I.curDeclDepth_};
         I.curDeclFile_ = path;
+        I.curDeclDepth_ = I.tctx_.callFrames.size();
         return I.callBuiltin("EVAL", args);
     };
     // Default @*ARGS -> argument-list conversion (the built-in ARGS-TO-CAPTURE).
