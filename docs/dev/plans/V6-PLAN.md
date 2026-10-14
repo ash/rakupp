@@ -407,6 +407,30 @@ A feature rather than a speed item, planned here so that it ships with v6.
   `--fallback=wasm` wrapper still carries only the main program's source, so
   a module is missing there.
 
+**Re-probed on 2026-10-14, after `--auto` shipped ([DEPS-PLAN.md](DEPS-PLAN.md)):**
+
+- **zef still sends no CORS header.** Neither `index.json` nor an archive
+  (JSON::Fast's tarball) carries `Access-Control-Allow-Origin`.
+  - 360.zef.pm is S3 behind CloudFront, so allowing it would take one CORS
+    rule on their side. That is the zef maintainers' decision.
+  - The index is 10 MB and is served uncompressed.
+- **`--auto` cannot be reused in Raku.js.** It runs `rakupp install` as a
+  child process, and the installer runs `curl` and `tar` as subprocesses
+  (`tools/install.raku`). A browser has no processes, so the page does the
+  fetching itself: `fetch`, gunzip through `DecompressionStream`, a small
+  tar reader in JS, then a write into the engine's filesystem.
+- **Nothing persists across instances yet.** The files live in one
+  instance's in-memory filesystem. They are gone after a reload, after Stop
+  or a recursion overflow (the worker is replaced), and in Safari's
+  main-thread fallback. To survive a reload, the page keeps the bundles in
+  IndexedDB or the Cache API, keyed by distribution identity, and writes them
+  into every instance it makes. GitHub Pages does not allow long cache
+  headers, so the HTTP cache is not enough.
+- **The collection stays the first source.** It is reachable today, its
+  index is small, and it leaves out what installs but cannot run in a
+  browser. Fetching straight from zef could follow if zef allows CORS.
+- **Threads were not re-checked:** there was no Raku.js build on the machine.
+
 **The engine surface.** Every item is small.
 
 - **Export `FS`,** or a C function that writes a file.
