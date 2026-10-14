@@ -274,10 +274,13 @@ checks missed and why the new ones exist.
   - `expmod(3, 5, -7)`: Rakudo dies in libtommath, Raku++ answers 5.
   - `(4/1).base-repeating(2)`: Rakudo answers the decimal "4", Raku++ the
     base's own "100".
-- **Found, not fixed: large gcd is ~130x slower than Rakudo** (14,000-digit
-  operands: 0.9 s vs 7 ms), so FatRat.new on big parts can run for minutes.
-  Euclid over a quadratic divmod; it wants a binary or Lehmer gcd. Not a
-  wrong answer, so it is its own task.
+- **Found, then fixed: large gcd was ~130x slower than Rakudo** (14,000-digit
+  operands: 0.9 s vs 7 ms), so FatRat.new on big parts could run for
+  minutes: Euclid over a quadratic divmod. It is Lehmer's gcd over the
+  binary form now, after the factors of two come out (5 ms there; 14x
+  faster than Rakudo on 475,000-bit odd operands), and int-oracle.py's gcd
+  cases reach 2,500 limbs, with Fibonacci neighbours, huge quotients, long
+  binary runs and shared powers of two (bigint-gcd-lehmer.raku).
 - Not done: the debug-build `q*b + r == a` check in divmod. The oracle now
   covers division from outside at ~900 cases a second; the check would
   only add the inputs other tests happen to feed it.

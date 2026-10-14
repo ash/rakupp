@@ -1002,18 +1002,220 @@ BigInt BigInt::fromBinary(const uint64_t* words, std::size_t n, int sign) {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// gcd past 64 bits: Lehmer's algorithm (Knuth 4.5.2, Algorithm L) over the
+// binary form.
+//
+// It was Euclid over divmod, one base-1e9 long division per quotient — and a
+// gcd of n-bit numbers takes about 0.58·n of them, each building BigInts limb
+// by limb. (3**30_000 + 1) gcd 2**47_500 took 0.91 s against Rakudo's 7 ms,
+// and every Rat and FatRat construction reduces by a gcd, so
+// FatRat.new(3**300_000 + 1, 2**475_000) ran for minutes.
+//
+// Lehmer runs Euclid on the top LEHMER_BITS of u and the bits of v at the
+// same place, in registers, for as long as the leading bits alone decide each
+// quotient, keeping the 2×2 cofactor matrix of the steps it took; then it
+// applies the matrix to u and v in one pass over the words. Each pass retires
+// about half of LEHMER_BITS, so the whole costs the passes of two words per
+// word of the operands, not a division per quotient. A pass whose first
+// quotient the leading bits cannot decide (a big one) takes one full
+// division instead — Knuth's algorithm D, on the words.
+// ---------------------------------------------------------------------------
+namespace {
+
+#if RAKUPP_HAS_INT128
+typedef __int128 SDWord;
+#else
+typedef int64_t SDWord;
+#endif
+
+// The bits the register loop works on: x̂ < 2^LEHMER_BITS. Its values are
+// all remainders and cofactors of Euclid on (x̂ + 1, ŷ) — the quotients agree
+// with it, which is what the loop checks — so every one of them, and every
+// product it forms, stays within 2^(LEHMER_BITS + 1): inside an int64. The
+// cofactors times a word then stay inside an SDWord with room for the carry.
+const int LEHMER_BITS = WORD_BITS - 3;
+
+int wordBitLength(Word w) { return 64 - clzll((unsigned long long)w); }
+
+bool lessWords(const Words& a, const Words& b) {
+    if (a.size() != b.size()) return a.size() < b.size();
+    for (std::size_t i = a.size(); i-- > 0;)
+        if (a[i] != b[i]) return a[i] < b[i];
+    return false;
+}
+
+void trimWords(Words& w) { while (!w.empty() && w.back() == 0) w.pop_back(); }
+
+// (w >> shift) mod 2^64, for a result known to be under 2^LEHMER_BITS
+int64_t bitsAt(const Words& w, std::size_t shift) {
+    const std::size_t k = shift / WORD_BITS;
+    const int b = (int)(shift % WORD_BITS);
+    const DWord lo = k < w.size() ? w[k] : 0, hi = k + 1 < w.size() ? w[k + 1] : 0;
+    return (int64_t)(uint64_t)((lo >> b) | (b ? hi << (WORD_BITS - b) : 0));
+}
+
+// u = u mod v, for v with no leading zero word: Knuth's algorithm D, keeping
+// only the remainder.
+void modWords(Words& u, const Words& v) {
+    const std::size_t n = v.size(), m = u.size();
+    if (m < n) return;
+    if (n == 1) {
+        DWord r = 0;
+        for (std::size_t i = m; i-- > 0;) r = ((r << WORD_BITS) | u[i]) % v[0];
+        u.assign(r ? 1 : 0, (Word)r);
+        return;
+    }
+    // Shift both so v's top bit is set: that bounds each quotient word's
+    // estimate from the top two words to at most two too many.
+    const int s = WORD_BITS - wordBitLength(v.back());
+    Words vn(n), un(m + 1);
+    auto shl = [s](const Word* src, std::size_t len, Word* dst) {
+        Word c = 0;
+        for (std::size_t i = 0; i < len; i++) {
+            dst[i] = s ? (src[i] << s) | c : src[i];
+            c = s ? src[i] >> (WORD_BITS - s) : 0;
+        }
+        return c;
+    };
+    shl(v.data(), n, vn.data());
+    un[m] = shl(u.data(), m, un.data());
+    const Word vtop = vn[n - 1], vnext = vn[n - 2];
+    for (std::size_t j = m - n + 1; j-- > 0;) {
+        const DWord num = (DWord)un[j + n] << WORD_BITS | un[j + n - 1];
+        DWord qhat = num / vtop, rhat = num % vtop;
+        while ((qhat >> WORD_BITS) != 0 ||
+               qhat * vnext > ((rhat << WORD_BITS) | un[j + n - 2])) {
+            qhat--;
+            rhat += vtop;
+            if ((rhat >> WORD_BITS) != 0) break;
+        }
+        // un[j, j + n] -= qhat·vn
+        Word carry = 0, borrow = 0;
+        for (std::size_t i = 0; i < n; i++) {
+            const DWord p = qhat * vn[i] + carry;
+            carry = (Word)(p >> WORD_BITS);
+            const Word x = un[i + j], pl = (Word)p, d = x - pl;
+            un[i + j] = d - borrow;
+            borrow = (x < pl) | (d < borrow);
+        }
+        const Word x = un[j + n], d = x - carry;
+        un[j + n] = d - borrow;
+        if ((x < carry) | (d < borrow))              // one too many: add v back
+            un[j + n] += addWords(un.data() + j, vn.data(), n);
+    }
+    u.resize(n);
+    for (std::size_t i = 0; i < n; i++)
+        u[i] = s ? (un[i] >> s) | (un[i + 1] << (WORD_BITS - s)) : un[i];
+    trimWords(u);
+}
+
+// gcd of two non-zero binary magnitudes
+Words lehmer(Words u, Words v) {
+    if (lessWords(u, v)) std::swap(u, v);
+    while (!v.empty() && u.size() * WORD_BITS > 64) {
+        const std::size_t nu = u.size();
+        const std::size_t shift = (nu - 1) * WORD_BITS + wordBitLength(u.back()) - LEHMER_BITS;
+        int64_t x = bitsAt(u, shift), y = bitsAt(v, shift);
+        int64_t A = 1, B = 0, C = 0, D = 1;
+        for (;;) {
+            // (x + A)/(y + C) and (x + B)/(y + D) bracket u'/v' for the u', v'
+            // the matrix makes; while they agree, that is its quotient
+            if (y + C == 0 || y + D == 0) break;
+            const int64_t q = (x + A) / (y + C);
+            if (q != (x + B) / (y + D)) break;
+            int64_t t = A - q * C; A = C; C = t;
+            t = B - q * D; B = D; D = t;
+            t = x - q * y; x = y; y = t;
+        }
+        if (B == 0) {                                // not one step: divide
+            modWords(u, v);
+            std::swap(u, v);
+            continue;
+        }
+        // u, v = A·u + B·v, C·u + D·v: both the true remainders, so both
+        // come out non-negative and no longer than u
+        v.resize(nu, 0);
+        SDWord cu = 0, cv = 0;
+        for (std::size_t i = 0; i < nu; i++) {
+            const SDWord ui = u[i], vi = v[i];
+            cu += (SDWord)A * ui + (SDWord)B * vi;
+            cv += (SDWord)C * ui + (SDWord)D * vi;
+            u[i] = (Word)cu;
+            v[i] = (Word)cv;
+            cu >>= WORD_BITS;
+            cv >>= WORD_BITS;
+        }
+        trimWords(u);
+        trimWords(v);
+    }
+    if (v.empty()) return u;
+    // both fit 64 bits: finish in registers
+    uint64_t x = 0, y = 0;
+    for (std::size_t i = u.size(); i-- > 0;) x = (uint64_t)((DWord)x << WORD_BITS | u[i]);
+    for (std::size_t i = v.size(); i-- > 0;) y = (uint64_t)((DWord)y << WORD_BITS | v[i]);
+    while (y) { const uint64_t t = x % y; x = y; y = t; }
+    Words g;
+    for (; x; x = (uint64_t)((DWord)x >> WORD_BITS)) g.push_back((Word)x);
+    return g;
+}
+
+// w shifted right past its trailing zero bits (w non-zero); returns how many
+std::size_t stripTwos(Words& w) {
+    std::size_t z = 0;
+    while (w[z] == 0) z++;
+    const int b = ctzll((unsigned long long)w[z]);
+    const std::size_t n = w.size() - z;
+    for (std::size_t i = 0; i < n; i++)
+        w[i] = b ? (w[i + z] >> b) | (i + 1 < n ? w[i + z + 1] << (WORD_BITS - b) : 0) : w[i + z];
+    w.resize(n);
+    trimWords(w);
+    return z * WORD_BITS + b;
+}
+
+// w·2^k
+Words shiftUp(const Words& w, std::size_t k) {
+    const std::size_t z = k / WORD_BITS;
+    const int b = (int)(k % WORD_BITS);
+    Words r(w.size() + z + 1, 0);
+    for (std::size_t i = 0; i < w.size(); i++) {
+        r[i + z] |= w[i] << b;
+        if (b) r[i + z + 1] = w[i] >> (WORD_BITS - b);
+    }
+    trimWords(r);
+    return r;
+}
+
+// gcd of two non-zero binary magnitudes. The factors of two come out first,
+// as in a binary gcd: the common ones are the answer's, and the rest are no
+// one's. That costs a pass over each operand, and it is what makes a power of
+// two times anything small — the denominator of a FatRat built from a binary
+// fraction, say — an answer at once instead of a Lehmer run over all of it.
+Words gcdWords(Words u, Words v) {
+    const std::size_t k = std::min(stripTwos(u), stripTwos(v));
+    return shiftUp(lehmer(std::move(u), std::move(v)), k);
+}
+
+} // namespace
+
 BigInt BigInt::gcd(BigInt a, BigInt b) {
     a.makeAbs(); b.makeAbs();   // by value already: no reason to copy them again
-    // Euclid entirely in registers when both fit — the general loop below builds
-    // two BigInts per step and calls divmod, and Value::rat() calls this on
+    // Euclid entirely in registers when both fit — Value::rat() calls this on
     // EVERY Rat it constructs.
     if (a.fitsU64() && b.fitsU64()) {
         unsigned long long x = magU64(a), y = magU64(b);
         while (y) { unsigned long long t = x % y; x = y; y = t; }
         return fromMagU64(x, 1);
     }
-    while (!b.isZero()) { BigInt q, r; divmod(a, b, q, r); a = b; b = r; }
-    return a;
+    if (a.isZero()) return b;
+    if (b.isZero()) return a;
+    const Words g = gcdWords(ToBinary(a.mag.data()).of(0, a.mag.size()),
+                             ToBinary(b.mag.data()).of(0, b.mag.size()));
+    const Limbs l = FromBinary(g.data()).of(0, g.size());
+    BigInt r;
+    r.mag.assignFrom(l.data(), l.size());
+    r.sign = 1;
+    return r;
 }
 
 bool BigInt::fitsLL() const {

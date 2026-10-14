@@ -127,13 +127,38 @@ def case(r):
             b = a + r.choice([-1, 0, 1])
         want = (a > b) - (a < b)
     elif op == 'gcd':
-        a, b = operand(r, 200), operand(r, 200)
-        if r.random() < 0.4:                       # a large common factor
-            g = operand(r, 100)
+        # Past 64 bits this is Lehmer's algorithm over the binary form: it
+        # reads the top 61 bits of one operand and the same bits of the other,
+        # runs Euclid on them while they decide the quotients, and divides
+        # (algorithm D on 64-bit words) when they cannot decide the first.
+        a, b = operand(r, 2500), operand(r, 2500)
+        kind = r.randint(0, 9)
+        if kind <= 3:                              # a large common factor
+            g = operand(r, 1000)
             a, b = a * g, b * g
+        elif kind == 4:                            # neighbouring Fibonacci numbers: every quotient 1
+            n = r.randint(90, 60000)
+            f0, f1 = 0, 1
+            for _ in range(n):
+                f0, f1 = f1, f0 + f1
+            a, b = f1 * r.choice([1, -1]), f0
+            if r.random() < 0.5:
+                g = abs(operand(r, 50)) or 3
+                a, b = a * g, b * g
+        elif kind == 5:                            # a huge quotient, then the rest
+            b = operand(r, 400) or 11
+            a = b * operand(r, 2000) + r.choice([0, 1, -1, abs(b) // 3])
+        elif kind == 6:                            # long runs of ones and zeros in binary
+            def runs():
+                n = r.randint(65, 80000)
+                return (1 << n) - (1 << r.randint(0, n - 1)) + r.randint(0, 3)
+            a, b = runs(), runs()
+        elif kind == 7:                            # a common power of two, and one more of it
+            k = r.randint(1, 20000)
+            a, b = a << k, b << (k + r.randint(0, 64))
         want = math.gcd(a, b)
     elif op == 'lcm':
-        a, b = operand(r, 100), operand(r, 100)
+        a, b = operand(r, 400), operand(r, 400)
         want = rk_lcm(a, b)
     elif op == 'pow':
         a = operand(r, 40)
