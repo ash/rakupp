@@ -535,6 +535,7 @@ private:
     void expectKind(Tok k, const char* what);
     [[noreturn]] void error(const std::string& msg);
     bool braceLooksHash(bool emptyIsHash); // `{` at cur(): hash composer or block?
+    size_t skipBracketGroup(size_t k) const; // past the balanced bracket group opening at token k
 
     // statements
     StmtPtr parseStatement();

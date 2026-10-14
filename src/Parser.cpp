@@ -11503,6 +11503,21 @@ static bool strInterpUsesTopic(const std::string& s) {
     return false;
 }
 
+// The index just past the balanced ( … ), [ … ] or < … > group opening at `k`,
+// or `k` itself when it never closes.
+size_t Parser::skipBracketGroup(size_t k) const {
+    int d2 = 0;
+    for (size_t j = k; j < toks_.size(); j++) {
+        Tok kk = toks_[j].kind;
+        bool open = kk == Tok::LParen || kk == Tok::LBracket || (kk == Tok::Op && toks_[j].text == "<");
+        bool close = kk == Tok::RParen || kk == Tok::RBracket || (kk == Tok::Op && toks_[j].text == ">");
+        if (kk == Tok::End) return k;
+        if (open) d2++;
+        else if (close && --d2 == 0) return j + 1;
+    }
+    return k;
+}
+
 bool Parser::braceLooksHash(bool emptyIsHash) {
     bool isHash = false;
     const Token& a = peek(1), &b = peek(2);
@@ -11531,49 +11546,67 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
     // `{ %h<k> => 1 }`. Only a plain postfix chain counts — a term followed by
     // `.name`, a subscript or a call, and then the fat arrow. Anything else
     // (a listop, an operator, a second statement) leaves it a block.
-    else if (a.kind == Tok::Var || a.kind == Tok::Ident) {
+    else {
         // Strictly a POSTFIX chain: `.name`, `!name`, or a bracket group,
         // repeated, and then the arrow. Two terms in a row would be a
         // listop call instead — `{ dt month => 0 }` is a block calling
         // `dt`, not a hash — so the chain stops there.
-        size_t li = pos_;
-        size_t k = li + 2;                    // past `{` and the first term
-        while (k < toks_.size()) {
-            const Token& tk = toks_[k];
-            if (tk.kind == Tok::FatArrow) { isHash = true; break; }
-            if (tk.kind == Tok::Op && (tk.text == "." || tk.text == "!")) {
-                if (k + 1 >= toks_.size()) break;
-                Tok nk = toks_[k + 1].kind;
-                if (nk != Tok::Ident && nk != Tok::Var) break;
-                k += 2;
-                continue;
-            }
-            // (a SPACED bracket is no postfix but an argument: `{ delegate
-            // <foo> => $inner }` is a block calling `delegate` — Cro's router
-            // DSL — where reading `delegate<foo>` composed a Hash and ran the
-            // call outside the `route` that gives it its route set)
-            if (tk.spaceBefore && (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
-                                   (tk.kind == Tok::Op && tk.text == "<")))
-                break;
-            if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
-                (tk.kind == Tok::Op && tk.text == "<")) {
-                int d2 = 0;
-                size_t j = k;
-                for (; j < toks_.size(); j++) {
-                    Tok kk = toks_[j].kind;
-                    bool open = kk == Tok::LParen || kk == Tok::LBracket ||
-                                (kk == Tok::Op && toks_[j].text == "<");
-                    bool close = kk == Tok::RParen || kk == Tok::RBracket ||
-                                 (kk == Tok::Op && toks_[j].text == ">");
-                    if (kk == Tok::End) break;
-                    if (open) d2++;
-                    else if (close && --d2 == 0) { j++; break; }
+        auto chainToArrow = [&](size_t k) -> bool {
+            while (k < toks_.size()) {
+                const Token& tk = toks_[k];
+                if (tk.kind == Tok::FatArrow) return true;
+                if (tk.kind == Tok::Op && (tk.text == "." || tk.text == "!")) {
+                    if (k + 1 >= toks_.size()) return false;
+                    Tok nk = toks_[k + 1].kind;
+                    if (nk != Tok::Ident && nk != Tok::Var) return false;
+                    k += 2;
+                    continue;
                 }
-                if (j <= k) break;
-                k = j;
-                continue;
+                // (a SPACED bracket is no postfix but an argument: `{ delegate
+                // <foo> => $inner }` is a block calling `delegate` — Cro's router
+                // DSL — where reading `delegate<foo>` composed a Hash and ran the
+                // call outside the `route` that gives it its route set)
+                if (tk.spaceBefore && (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
+                                       (tk.kind == Tok::Op && tk.text == "<")))
+                    return false;
+                if (tk.kind == Tok::LParen || tk.kind == Tok::LBracket ||
+                    (tk.kind == Tok::Op && tk.text == "<")) {
+                    size_t j = skipBracketGroup(k);
+                    if (j <= k) return false;
+                    k = j;
+                    continue;
+                }
+                return false;
             }
-            break;
+            return false;
+        };
+        // A key that is a COMPUTED term still composes a hash: `{ $d.name => 1 }`,
+        // `{ %h<k> => 1 }`. Only a plain postfix chain counts — a term followed by
+        // `.name`, a subscript or a call, and then the fat arrow. Anything else
+        // (a listop, an operator, a second statement) leaves it a block.
+        if (a.kind == Tok::Var || a.kind == Tok::Ident)
+            isHash = chainToArrow(pos_ + 2);   // past `{` and the first term
+        // …and so does a key behind a PREFIX operator, or in parentheses:
+        // DBDish::Oracle's `constant %sqltype-map = { +(SQLT_CHR) => Str, … }`
+        // is a Hash on Rakudo, as are `{ (1) => 2 }` and `{ !0 => 1 }`. Read as
+        // a block, the constant failed with "No such method 'Map' for invocant
+        // of type 'Block'" and DBIish could not load its Oracle driver.
+        else if ((a.kind == Tok::Op && (a.text == "+" || a.text == "-" || a.text == "~" ||
+                                        a.text == "!" || a.text == "?")) ||
+                 a.kind == Tok::LParen) {
+            size_t k = pos_ + 1;               // past `{`
+            while (k < toks_.size() && toks_[k].kind == Tok::Op &&
+                   (toks_[k].text == "+" || toks_[k].text == "-" || toks_[k].text == "~" ||
+                    toks_[k].text == "!" || toks_[k].text == "?"))
+                k++;
+            if (k < toks_.size() && toks_[k].kind == Tok::LParen) {
+                const size_t j = skipBracketGroup(k);
+                isHash = j > k && chainToArrow(j);
+            }
+            else if (k < toks_.size() && (toks_[k].kind == Tok::Var || toks_[k].kind == Tok::Ident ||
+                                          toks_[k].kind == Tok::IntLit || toks_[k].kind == Tok::NumLit ||
+                                          toks_[k].kind == Tok::StrLit))
+                isHash = chainToArrow(k + 1);
         }
     }
     // …but a composer that USES THE TOPIC is a block after all: `{3 => 4, :b}`
