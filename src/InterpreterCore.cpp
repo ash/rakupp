@@ -31625,6 +31625,7 @@ Value Interpreter::uninitMethodCall(const MethodCall* mc, const Value& inv) {
 
 Value Interpreter::evalMethodCallExpr(Expr* e) {
     auto* mc = static_cast<MethodCall*>(e);
+    LazyChainMark lazyMark(mc);   // `.first` over map/grep reads lazily (InterpreterCalls.cpp)
     // `$node.left` — an attribute ACCESSOR on a plain user object is answered
     // here, before the special arms below, none of which a call of this shape
     // can meet (plainShape; `.value` only while a binding's raw tail is
@@ -32764,6 +32765,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         if (ci) userMeth = ci->findMethod(mname);
     }
     TranspCall transp{tctx_, userMeth ? *userMeth : Value()};
+    if (lazyMark.wanted) inv = lazyChainSource(inv, mname, args);
     Value res = methodCall(inv, mname, std::move(args), &mc->args);
     // …and a Seq it answers with is a Seq of its own (SeqToken)
     seqMint(res, inv);

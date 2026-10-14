@@ -527,6 +527,11 @@ struct MethodCall : Expr {
     // attribute ACCESSOR, answered before evalMethodCallExpr's special arms.
     // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
     mutable DecidedOnce<signed char> plainShape{-1};
+    // `….map(…).grep(…).first` — a `.first`/`.head` whose invocant is a plain
+    // one-argument map/grep: the links below it are built lazily, so a block
+    // runs only for what the consumer reads (evalMethodCallExpr's lazy chain).
+    // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
+    mutable DecidedOnce<signed char> lazyChain{-1};
     MethodCall(): Expr(NK::MethodCall) {}
 };
 

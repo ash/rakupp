@@ -1371,7 +1371,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto spos = std::make_shared<size_t>(0);
             auto ended = std::make_shared<bool>(false);
             std::weak_ptr<LazySeqState> stw = st;   // weak: st owns the closure
-            st->appendNext = [self, src, fn, spos, ended, stw](ValueList& cache) -> bool {
+            const bool alias = lst->aliasSource;   // an Array's own elements: `$_` writes reach them
+            st->appendNext = [self, src, fn, spos, ended, stw, alias](ValueList& cache) -> bool {
                 for (;;) {
                     if (*ended) return false;
                     size_t si = *spos;
@@ -1379,6 +1380,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (si >= src.arr()->size()) return false;
                     (*spos)++;
                     ValueList one{ (*src.arr())[si] };
+                    if (alias) self->tctx_.topicWriteback = &(*src.arr())[si];
                     // `last` ends the map and `next` skips the element, as in the
                     // eager loop: `(^Inf).map({ last if $_ > 2; $_ })` is (0 1 2)
                     // a Slip the block answers joins as its elements, as in the
@@ -1451,7 +1453,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             out.extM() = st;
             return out;
         }
-        if (m == "first" && !args.empty()) { // first match, scanning lazily (bounded)
+        // first match, scanning lazily (bounded) — and with no matcher, the first
+        // element: `(1..*).map(…).first` is that element, not Nil, and pulls one
+        if (m == "first") {
             bool wantK = false, wantKv = false, wantP = false; // :k index / :kv / :p forms
             for (auto& a : args) if (a.t == VT::Pair && a.pairVal() && a.pairVal()->truthy()) {
                 if (a.s == "k") wantK = true;

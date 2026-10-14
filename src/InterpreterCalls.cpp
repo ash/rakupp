@@ -4094,5 +4094,87 @@ bool Interpreter::takeParkedSubscript(const Expr* e, Value& out) {
     return false;
 }
 
+// ---- the lazy chain: `@h.map({…}).grep(*.so).first` ------------------------
+//
+// Rakudo's map and grep are lazy, so `.first` pulls one element through the
+// chain at a time and the blocks run only until it has its answer. fez picks
+// its HTTP client exactly so — `@handlers.map({ … .able … }).grep(*.so).first`
+// — and asking every candidate here spawned `wget` on a machine without one,
+// and died. A map or grep over a finite list stays eager in general (the eager
+// loop is the fast path); the consumer asks for laziness instead. A `.first` or
+// `.head` over a plain one-argument map/grep marks it (LazyChainMark), a marked
+// link marks the one below it, and a marked link reads its invocant through
+// lazyChainSource, which methodCallTail's lazy arms then map and filter one
+// element at a time. Only the block calls move: every node is still evaluated
+// where and when it was.
+static bool lazyChainPlain(const MethodCall* m) {
+    return m->inv && !m->methodExpr && !m->meta && !m->hyper && !m->maybe && !m->allMode &&
+           !m->bang && !m->mutate && m->methodQual.empty();
+}
+static bool lazyChainLink(const Expr* x) {
+    if (!x || x->kind != NK::MethodCall) return false;
+    auto* m = static_cast<const MethodCall*>(x);
+    return (m->method == "map" || m->method == "grep") && m->args.size() == 1 && lazyChainPlain(m);
+}
+// `.first`, `.first(matcher)` (no `:end`, which reads from the other end),
+// `.head` and `.head(3)` — each reads a prefix and stops
+static bool lazyChainConsumer(const MethodCall* m) {
+    const bool first = m->method == "first", head = m->method == "head";
+    if (!(first || head) || !lazyChainPlain(m) || !lazyChainLink(m->inv.get())) return false;
+    if (m->args.empty()) return true;
+    if (m->args.size() != 1 || !m->args[0]) return false;
+    return first ? m->args[0]->kind != NK::Pair : m->args[0]->kind == NK::IntLit;
+}
+
+void Interpreter::LazyChainMark::arm(const MethodCall* mc) {
+    if (mc->lazyChain < 0) mc->lazyChain = lazyChainConsumer(mc) ? 1 : 0;
+    wanted = was == mc;
+    on = true;
+    // the link below, if this call reads one lazily; nothing for any other call,
+    // so the mark never reaches past the node it names
+    tctx_.lazyChainNode = mc->lazyChain == 1 || (wanted && lazyChainLink(mc->inv.get()))
+        ? mc->inv.get() : nullptr;
+}
+
+Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const ValueList& args) {
+    if (args.size() != 1 || args[0].t == VT::Pair) return inv;
+    if (m == "map") {   // the lazy map arm takes one element per call, and no loop phasers
+        const Value& fn = args[0];
+        if (fn.t != VT::Code || !fn.code() || codeArity(fn) != 1) return inv;
+        if (fn.code()->body)
+            for (auto& s : *fn.code()->body)
+                if (s->kind == NK::Block) {
+                    const std::string& ph = static_cast<Block*>(s.get())->phaser;
+                    if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") return inv;
+                }
+    }
+    auto st = std::make_shared<LazySeqState>();
+    // a plain Array or List: its own elements, all there already, read in place
+    if (inv.t == VT::Array && !inv.ext() && inv.arr() && inv.s.empty() && inv.ofType().empty() &&
+        !inv.elemDefault() && !inv.holdsContainers() && !inv.elemView() && !isMultiDimShaped(inv)) {
+        Value lz = inv;
+        st->aliasSource = true;
+        st->appendNext = [](ValueList&) { return false; };
+        lz.extM() = st;
+        return lz;
+    }
+    // a finite Int range, counted out as it is read
+    if (inv.t == VT::Range && !rangeEnds(inv) && !inv.rNum() &&
+        (inv.ofType().empty() || inv.ofType() == "Int") &&
+        inv.rFrom() > -4000000000000000000LL && inv.rTo() < 4000000000000000000LL) {
+        auto next = std::make_shared<long long>(inv.rFrom() + (inv.rExFrom() ? 1 : 0));
+        const long long last = inv.rTo() - (inv.rExTo() ? 1 : 0);
+        st->appendNext = [next, last](ValueList& buf) -> bool {
+            if (*next > last) return false;
+            buf.push_back(Value::integer((*next)++));
+            return true;
+        };
+        Value lz = Value::array(); lz.isList = true;
+        lz.extM() = st;
+        return lz;
+    }
+    return inv;   // lazy already (its arms answer), or nothing this knows how to read lazily
+}
+
 } // namespace rakupp
 

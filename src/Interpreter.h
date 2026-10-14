@@ -1737,6 +1737,10 @@ struct ExecContext {
     // back to the consumer once it has what the consumer asked for. Null on the
     // mainline and on every context that is not a gather's block.
     GatherCoro* curGather = nullptr;
+    // The map/grep link a `.first`/`.head` above it asked to stay LAZY (see
+    // evalMethodCallExpr's lazy chain): only that node, while its invocant is
+    // evaluated. Null everywhere else.
+    const Expr* lazyChainNode = nullptr;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -1778,6 +1782,10 @@ struct LazySeqState {
     // a LIST over a finished stream (`Supply.list`): read like a handle's lines,
     // but sinking a List reads nothing, so a sunk `.list` raises no quit error
     bool listView = false;
+    // an Array's own elements, read lazily by a map/grep a `.first` stops early
+    // (lazyChainSource): the buffer IS the array's, so a block's write to `$_`
+    // lands in the element, as the eager map's does
+    bool aliasSource = false;
     bool exhausted = false;
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
@@ -2397,6 +2405,21 @@ public:
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
     void drainIfFiniteLazy(const Value& v);         // …all of it, when the list is lazy but finite
+    // `@h.map({…}).grep(*.so).first` runs the block only until `first` has its
+    // answer, as Rakudo's lazy Seq does (InterpreterCalls.cpp). Every method
+    // call opens one of these: it says whether a `.first`/`.head` above asked
+    // this map/grep to stay lazy, and passes the request on to the link below.
+    struct LazyChainMark {
+        explicit LazyChainMark(const MethodCall* mc) : was(tctx_.lazyChainNode) {
+            if (RAKUPP_UNLIKELY(was != nullptr || mc->lazyChain != 0)) arm(mc);
+        }
+        ~LazyChainMark() { if (on) tctx_.lazyChainNode = was; }
+        void arm(const MethodCall* mc);
+        const Expr* was;
+        bool wanted = false, on = false;
+    };
+    // …and the invocant such a link reads from, lazily (or itself, unchanged)
+    Value lazyChainSource(const Value& inv, const std::string& m, const ValueList& args);
     // Store through an lvalue expression, refusing a readonly container. Used by
     // the `.=` write-backs, which do not go through the assignment operator and
     // so never met its guard.
