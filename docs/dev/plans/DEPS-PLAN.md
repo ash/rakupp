@@ -1,4 +1,28 @@
-# Missing modules install themselves — plan
+# Missing modules, listed and installed on request — plan
+
+> **Revised 2026-10-14, after D0–D4 shipped as `876229cb`:** fetching is
+> **opt-in**. The first design fetched on any miss with no option to type. The
+> maintainer judged that too dangerous for inexperienced users. Now:
+>
+> - **Without `--auto`, nothing is fetched.** A missing module stays an
+>   error, line 1 unchanged, and the error lists **every** module the program
+>   is missing, not just the first, with two commands: `rakupp install
+>   app.raku` (the ordinary installer, test suites and all) and
+>   `rakupp --auto app.raku` (install, then run). The commands are spelled
+>   with the name the engine was invoked by, so `raku` when it runs as `raku`.
+> - **`rakupp --auto`** fetches as the first design did, and so do
+>   `--auto --exe`, `--auto --bundle` and `--auto --aot` at compile time.
+>   Without `--auto`, a compile mode reports what it could not embed and
+>   prints the `--auto` spelling.
+> - **`RAKUPP_DEPS=0`** changes from the off switch to a kill switch for
+>   `--auto`. It is for harnesses whose children inherit a `RAKUPP_OPT` that
+>   carries the flag.
+>
+> Everything below the contract section (the installer mode, the typo guard,
+> pins, compiling, the probes) is unchanged. The contract and the table are
+> rewritten for the revision. The first paragraph and "Why this one" describe
+> the first design, and are kept as the record of why it was tried.
+
 
 *Written 2026-10-14 at `0820ef24`, before any code. Goal: `rakupp app.raku`
 runs a program whose `use` names a module that is not installed. The engine
@@ -14,7 +38,7 @@ declaration, and the network is reached only under the rules below.*
 
 ```bash
 rakupp t/deps/run.raku                                  # the gate, network-free
-HOME=$(mktemp -d) rakupp -e 'use JSON::Fast; say to-json [1]'
+HOME=$(mktemp -d) rakupp --auto -e 'use JSON::Fast; say to-json [1]'
 ```
 
 The gate runs against a fixture index and must pass every check. It must also
@@ -65,78 +89,83 @@ has run `zef install`.
 ### What the user sees
 
 ```console
-$ cat app.raku
-use JSON::Fast;
-say to-json %(ok => True), :!pretty;
-
 $ rakupp app.raku
+Could not find JSON::Fast in:
+    lib
+    …
+app.raku uses 2 modules that are not installed: JSON::Fast, Terminal::ANSIColor
+  to install them:          rakupp install app.raku
+  to install them and run:  rakupp --auto app.raku
+
+$ rakupp --auto app.raku
 installed JSON::Fast:ver<0.21.0>:auth<zef:timo> for app.raku
+installed Terminal::ANSIColor:ver<0.9>:auth<zef:raku-community-modules> for app.raku
 {"ok":true}
 
 $ rakupp app.raku
 {"ok":true}
 ```
 
-- **Standard output is the program's alone.** Everything the fetch says goes
-  to stderr. `rakupp app.raku > out` writes the same bytes to `out` on the
-  first run and on every later one.
-- **One line per distribution installed**, naming its full identity, auth
-  included. The user always sees where the code came from. `-q` does not drop
-  this line: it reports a change to the user's store, not chatter about a mode.
+- **The list is the program's whole list.** It is the compile modes' module
+  walk (`collectModuleGraph`) over the main unit, which is still on the
+  interpreter's unit stack when the `use` fails. It follows installed modules
+  into their own `use`s. It leaves out what only a `require` names, and what
+  the binary or the compiler answers (`Interpreter::depsMissingHint`).
+- **Line 1 stays byte for byte** `Could not find X in:`
+  ([TRACER.md](../../guide/TRACER.md)'s rule), and the exception stays
+  `X::CompUnit::UnsatisfiedDependency`. Nothing about the index is said
+  without `--auto`, because the index is not consulted.
+- **With `--auto`, standard output is the program's alone.** Everything the
+  fetch says goes to stderr: one line per distribution installed, naming its
+  full identity, auth included. `-q` does not drop that line: it reports a
+  change to the user's store, not chatter about a mode.
 - **Nothing else changes.** A module that is already installed, found under
-  `-I` or `lib/`, or bundled in the binary loads exactly as it does today,
-  without touching the index.
+  `-I` or `lib/`, or bundled in the binary loads exactly as it does today.
 
-### The five rules
+### The rules under `--auto`
 
 1. **Exact index match only.** The missed name is looked up in the cached zef
    index by the installer's own `candidates()`: an exact distribution name,
    or an entry in a distribution's `provides`. REA is not asked about the
    missed name: it is 18 MB, and a name only REA has is an old release a
    program is unlikely to mean (`resolve()` still reaches it for a dependency
-   pinned to one). A name in
-   neither fails as it does today. Line 1 of the error stays byte for byte
-   `Could not find X in:` ([TRACER.md](../../guide/TRACER.md)'s rule), the
-   exception stays `X::CompUnit::UnsatisfiedDependency`, and one line is added
-   below the search path: `(not in the ecosystem index either)`.
+   pinned to one). A name the index does not have fails with
+   `(not in the ecosystem index either)` below the search path.
 2. **`use` and `need`, never `require`.** `try require Foo` is how Raku code
    asks whether an optional module is present, so installing it there would
    change what the program does. Calls through the `CompUnit::Repository` API
    (`src/Builtins.cpp:7266`, `:7504`) are left alone for the same reason.
 3. **The typo guard.** Fetching a name runs code the user did not write, so a
-   misspelt `use` is the real risk. The fetch is refused if a far more depended-on
-   module name is a typo's distance away. The rule and its measurement are
-   below. The refusal names
-   the neighbour: `did you mean JSON::Fast? (to install JSON::Mask itself,
-   pin it: use JSON::Mask:auth<…>)`. An explicit `:auth<…>` or `:ver<…>` on the
-   `use` counts as proof of intent and passes the guard. The source says what
-   is meant, so no option is needed.
-4. **No module test suites.** These installs run as `--no-test`. Running a
-   suite takes from seconds to minutes, and only 1,019 of 2,547 distributions
-   pass their own suites here today. With the test gate on, half the ecosystem
-   could never be fetched this way. `rakupp install Foo` keeps its test gate.
-5. **An off switch, not an on switch.** `RAKUPP_DEPS=0` restores today's
-   behaviour exactly, for CI and production setups that want a missing module
-   to stay an error.
+   misspelt `use` is the real risk. The fetch is refused if a far more
+   depended-on module name is a typo's distance away; the rule and its
+   measurement are below. The refusal names the neighbour: `did you mean
+   JSON::Fast? (to install JSON::Mask itself, pin it: use
+   JSON::Mask:auth<…>)`. An explicit `:auth<…>` or `:ver<…>` on the `use`
+   counts as proof of intent and passes the guard.
+4. **No module test suites.** These installs run as `--no-test`. Only 1,019
+   of 2,547 distributions pass their own suites here today, so with the test
+   gate on, half the ecosystem could never be fetched this way. The other
+   command the error offers, `rakupp install app.raku`, keeps the test gate.
+5. **`RAKUPP_DEPS=0` makes `--auto` inert**, for harnesses: `rakupp install`
+   sets it for the suites and build hooks it runs, and `t/run.raku` for
+   everything it starts.
 
 ### Where it is on, and where it is off
 
-| context | fetches? | why |
+| context | fetches? | lists and advises? |
 |---|---|---|
-| `rakupp FILE`, `-e`, stdin, `-n`/`-p` | **yes** | the feature |
-| the REPL, `--repl-after` | **yes** | `use Foo` at a prompt is the same request |
-| `EVAL 'use Foo'` | **yes** | a `use`, compiled when the EVAL runs |
-| `--jupyter` | **yes** | a notebook cell is a program |
-| `--mcp` | **yes**, see open question 3 | `--mcp` already gives an agent shell-level trust ([MCP.md](../../guide/integrations/MCP.md)) |
-| `--exe`, `--bundle`, `--aot` | **at compile time** | the fetched modules are embedded (D4) |
-| a binary those modes produced | **no** | a shipped binary never reaches the network on its own |
-| `require`, `CompUnit::Repository` calls | **no** | rule 2 |
-| `-c`, `--lint`, `--lsp` | — | they never load modules (`rakupp -c -e 'use NoSuchThing'` says `Syntax OK`) |
-| `--sandbox` | **no** | the sandbox refuses processes and sockets |
-| `RAKUPP_DEPS=0` | **no** | rule 5 |
-| children of `rakupp install` / `rakupp test` (suites, build hooks) | **no** | a suite that `use`s an undeclared dependency must fail as under Rakudo. Otherwise the ecosystem sweep's numbers inflate |
-| `librakupp` embedding, the bindings | **no** unless the host asks | a host program decides what its process does: `RkConfig.deps` |
-| Raku.js / WASM | **no** | no processes and no store |
+| `rakupp FILE`, `-e`, stdin, `-n`/`-p`, the REPL | **with `--auto`** | yes, without it |
+| `EVAL 'use Foo'` | with `--auto` | yes |
+| `--jupyter`, `--mcp` | with `--auto` | yes |
+| `--exe`, `--bundle`, `--aot` | **at compile time, with `--auto`** | the embedding report names `--auto` |
+| a binary those modes produced | **no** | no: it has no installer |
+| `require`, `CompUnit::Repository` calls | **no** | no |
+| `-c`, `--lint`, `--lsp` | — | — they never load modules |
+| `--sandbox` | **no** | no |
+| `RAKUPP_DEPS=0` | **no**, `--auto` or not | yes |
+| children of `rakupp install` / `rakupp test` | **no** | yes |
+| `librakupp` embedding, the bindings | **no** unless the host asks (`RkConfig.deps`, not built) | no |
+| Raku.js / WASM | **no** | no |
 
 ---
 
@@ -393,7 +422,18 @@ beat.
 
 ## Where it stands
 
-*2026-10-14:* D0–D4 are built, and D6's guides.
+*2026-10-14, the revision:* `--auto` is the only way to fetch. Without it,
+the error lists every missing module and offers `install` and `--auto`.
+`t/deps/run.raku` now has 52 checks, all passing: 10 for the listing and the
+hints (including the `raku` spelling through a symlink), and `--auto` on
+every fetching case. RAKUPP_DEPS=0 is now tested as `--auto`'s kill switch,
+from the command line and from `RAKUPP_OPT`. On the revision's build:
+`t/install/run.raku` 159/159, `t/run.raku` 1,626/1,626, Roast (`cf28a323c`)
+1,425 of 1,425 files and 219,207/219,207 tests with the file list identical to
+v5.4.1's, the MCP, Jupyter and embed smokes pass, and the source budget is
+OK.
+
+*2026-10-14, the first design:* D0–D4 are built, and D6's guides.
 
 - **The gate:** `t/deps/run.raku`, 42 checks, all pass. On `7ae228d3` (the
   plan's commit, before any code) it gave 18 ok and 24 failed: every

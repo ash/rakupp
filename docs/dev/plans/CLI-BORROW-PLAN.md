@@ -188,9 +188,10 @@ warnings or errors; it had existed for `--lint` alone.
   through the installer on first run. Fits the one-file script culture the
   showcases live in, but it is a semantic decision (a new header format,
   network at run time), not just a flag.
-  **Decided 2026-10-14 → [DEPS-PLAN.md](DEPS-PLAN.md):** no header and no
-  flag; the `use` lines are the declaration, a miss fetches into the
-  ordinary store, and `RAKUPP_DEPS=0` is the off switch.
+  **Decided 2026-10-14 → [DEPS-PLAN.md](DEPS-PLAN.md):** no header; the
+  `use` lines are the declaration. A missing module's error lists them all
+  and offers `rakupp install app.raku`; `rakupp --auto app.raku` fetches
+  into the ordinary store and runs.
 
 ## The shortlist
 

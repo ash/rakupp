@@ -8432,13 +8432,17 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               const std::vector<std::string>& searchPath,
                                               std::set<std::string>* exportsOut,
                                               std::vector<ModuleSkip>* skipsOut,
-                                              std::set<std::string>* nativeLibsOut) {
+                                              std::set<std::string>* nativeLibsOut,
+                                              std::set<std::string>* usedOut) {
     std::vector<BundledModule> out;
     std::set<std::string> seen;
     std::set<std::string> distsSeen;   // a dist's resources travel once, not once per module
     std::vector<std::string> queue;
     std::map<std::string, std::string> used;
-    struct UsedScope { ~UsedScope() { t_usedNames = nullptr; } } usedScope;
+    struct UsedScope {
+        std::map<std::string, std::string>& used; std::set<std::string>* out;
+        ~UsedScope() { t_usedNames = nullptr; if (out) for (auto& kv : used) out->insert(kv.first); }
+    } usedScope{used, usedOut};
     t_usedNames = &used;
     collectUseNames(prog.stmts, queue);
     if (nativeLibsOut) collectNativeLibNames(prog.stmts, *nativeLibsOut);

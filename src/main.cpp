@@ -365,9 +365,18 @@ static bool reportModuleEmbedding(const char* mode,
             std::cerr << "\n";
         }
     }
-    for (auto& s : skips)
+    bool missing = false;
+    for (auto& s : skips) {
         std::cerr << mode << ": not embedded: " << s.name << " — " << s.reason
                   << (g_standalone ? "" : " (the binary will need the disk at run time)") << "\n";
+        missing |= s.reason == "not found on the module search path";
+    }
+    // DEPS-PLAN: a module nobody has can be fetched while compiling
+    if (missing && !g_depsFetch && g_depsHints)
+        std::cerr << mode << ": to install what is missing first and embed it: "
+                  << g_depsCmd << " --auto " << mode << " "
+                  << (g_depsProgram.empty() || g_depsProgram == "-e" ? std::string("-e '…'") : g_depsProgram)
+                  << " -o OUT\n";
     if (!natives.empty()) {
         std::cerr << mode << ": native libraries the binary will dlopen at run time:";
         for (auto& n : natives) std::cerr << " " << n;
@@ -2282,6 +2291,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--stagestats", 0, nullptr, "phase timings and module loads on stderr"},
     {"--trace", 0, nullptr, "print each statement as it runs"},
     {"--repl-after", 0, nullptr, "run the program, then open a session on its state"},
+    {"--auto", 0, nullptr, "install the modules the program uses that are missing, then run it"},
     {"--completions", 1, "bash zsh fish", "print a shell completion script"},
     {"--highlight", 0, nullptr, "syntax-highlight to HTML"},
     {"--ansi", 0, nullptr, "syntax-highlight for a terminal"},
@@ -2653,9 +2663,17 @@ int main(int argc, char** argv) {
         argv = installArgv.data();
         argc = (int)installArgv.size();
     }
-    // DEPS-PLAN: an interpreter run asks the installer for a module no search
-    // found (rakupp install --auto). Not the installer and its kin themselves.
-    if (g_embeddedTool.empty()) { g_depsFetch = true; g_depsExe = exePath; }
+    // DEPS-PLAN: an interpreter run may ask the installer for a module no
+    // search found — with --auto (below) — and otherwise says how to install
+    // what is missing. Not the installer and its kin themselves.
+    if (g_embeddedTool.empty()) {
+        g_depsHints = true;
+        g_depsExe = exePath;
+        std::string inv = argv[0];
+        if (size_t sl = inv.find_last_of("/\\"); sl != std::string::npos) inv = inv.substr(sl + 1);
+        if (inv.size() > 4 && inv.compare(inv.size() - 4, 4, ".exe") == 0) inv.resize(inv.size() - 4);
+        if (!inv.empty()) g_depsCmd = inv;
+    }
 
     // A single-dash spelling of a known long option (`-exe`, `-cpp`, `-lint`, …)
     // is a common typo for the `--` form. These names are unambiguous — none is
@@ -2674,7 +2692,7 @@ int main(int argc, char** argv) {
             "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
             "mcp", "lsp", "jupyter", "seed", "color", "colour", "env-file",
             "stack-size", "ll-exception", "json", "stagestats", "trace",
-            "repl-after", "completions", "watch",
+            "repl-after", "completions", "watch", "auto",
         };
         static const std::set<std::string> kValueShorts = {"-I", "-M", "-m", "-o"}; // their value is the next token
         for (int ai = 1; ai < argc; ai++) {
@@ -2912,6 +2930,14 @@ int main(int argc, char** argv) {
             if (a == "--stagestats") { stageStats = true; continue; }
             if (a == "--trace") { traceStmts = true; continue; }
             if (a == "--repl-after") { replAfter = true; continue; }
+            // DEPS-PLAN: fetch what a `use` cannot find, into the store, and
+            // carry on. RAKUPP_DEPS=0 makes it inert, for a harness whose
+            // children inherit a RAKUPP_OPT that carries it.
+            if (a == "--auto") {
+                const char* off = std::getenv("RAKUPP_DEPS");
+                g_depsFetch = g_depsHints && !(off && std::string(off) == "0");
+                continue;
+            }
             // the watcher's CHILD carries a mark: it inherits RAKUPP_OPT, which put
             // `--watch` back into every child — each became a watcher itself, an
             // unbounded chain that never ran the program
@@ -3430,6 +3456,12 @@ int main(int argc, char** argv) {
 "                               every module load, on stderr when the run ends\n"
 "  --trace                      Print each statement to stderr as it runs\n"
 "                               (file:line and the source line)\n"
+"  --auto                       Install the modules the program uses that are\n"
+"                               missing (from the ecosystem, into ~/.raku, without\n"
+"                               their test suites), then run it. With --exe,\n"
+"                               --bundle or --aot: install, then embed them.\n"
+"                               Without it, a missing module is an error that\n"
+"                               lists every one missing and how to install them\n"
 "  --repl-after                 Run the program, then open a session on its state:\n"
 "                               its variables, subs and classes are live (python -i)\n"
 "  --completions=bash|zsh|fish  Print a completion script for the shell\n"
@@ -3539,9 +3571,8 @@ int main(int argc, char** argv) {
 "\n"
 "Environment:\n"
 "  RAKULIB=dir1,dir2            Extra module search dirs (like -I); ',' or ':'\n"
-"  RAKUPP_DEPS=0                A `use` of a module that is not installed stays an\n"
-"                               error; otherwise rakupp fetches it from the\n"
-"                               ecosystem into ~/.raku and carries on\n"
+"  RAKUPP_DEPS=0                Make --auto do nothing (for a harness whose\n"
+"                               children inherit it through RAKUPP_OPT)\n"
 "  RAKUPP_GIL=1                 Coordinate threads under a global lock (the\n"
 "                               pre-v3 default; start/worker threads run on\n"
 "                               all cores otherwise)\n"

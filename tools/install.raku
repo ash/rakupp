@@ -1550,6 +1550,7 @@ sub child-env(--> Hash) {
     # A suite or hook that `use`s a module its META6 never declared must fail
     # here as it does under Rakudo, not fetch it (DEPS-PLAN): otherwise a dist
     # would pass on this engine only because the engine filled in its META.
+    # Nothing here passes --auto, but a RAKUPP_OPT the user set might.
     %env<RAKUPP_DEPS> = '0';
     %env
 }

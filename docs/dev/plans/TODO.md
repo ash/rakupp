@@ -551,12 +551,14 @@ with its tag, after the release run is green.
   [SLANG-PLAN.md](SLANG-PLAN.md).
 - [ ] **Larger walls**: PDF 16 of 49 test files (encryption, `ByteString`,
   filters, tie); Red #77 (compile-time lexical declaration).
-- [ ] **Missing modules install themselves**: [DEPS-PLAN.md](DEPS-PLAN.md),
-  2026-10-14. A `use` of a module that is not installed fetches it into the
-  ordinary store, with no option to type; `RAKUPP_DEPS=0` turns it off.
-  D0–D4 built: `t/deps/run.raku` 42/42 (in CI), Roast list unchanged, the
-  typo guard refuses 4 of 9,698 index names. Next: `RkConfig.deps` for
-  embedding hosts (D5) and parallel archive fetches (D6).
+- [ ] **Missing modules, listed and installed on request**:
+  [DEPS-PLAN.md](DEPS-PLAN.md), 2026-10-14. A missing module's error lists
+  every module the program lacks and offers `rakupp install app.raku` and
+  `rakupp --auto app.raku`; only `--auto` fetches (opt-in since the
+  revision). `t/deps/run.raku` 52/52 (in CI), Roast list unchanged, the typo
+  guard refuses 4 of 9,698 index names. Next: a failed fetch should remove
+  the dependencies it installed, `RkConfig.deps` (D5), parallel archive
+  fetches (D6).
 - [ ] **Not started**: [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) (`rakupp.lock`,
   `--frozen`) and [UUID-PLAN.md](UUID-PLAN.md) (draft; the distribution's name
   is open).

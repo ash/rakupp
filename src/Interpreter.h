@@ -200,11 +200,16 @@ std::string tmpDirPath();
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
                           const ValueList* fill = nullptr);
 extern std::atomic<bool> g_anyShaped;   // has any shaped array been made? (gates the dimension checks)
-// DEPS-PLAN: a `use` that finds nothing asks `g_depsExe install --auto` for it.
-// Off unless main() turns it on for an interpreter run, so a compiled binary,
-// an embedding host and Raku.js never reach the network on their own.
+// DEPS-PLAN. With `rakupp --auto`, a `use` that finds nothing asks
+// `g_depsExe install --auto` for it (g_depsFetch). Without it, the error lists
+// every module the program is missing and the two commands that install them
+// (g_depsHints, spelled with the name the engine was invoked by, g_depsCmd).
+// Both are off unless main() turns them on for an interpreter run, so a
+// compiled binary, an embedding host and Raku.js never fetch or advise.
 extern bool g_depsFetch;
+extern bool g_depsHints;
 extern std::string g_depsExe;
+extern std::string g_depsCmd;
 extern std::string g_depsProgram;   // what a compile mode is compiling, for the installed lines
 // The fetch itself, shared by the loader and the compile modes: true when the
 // installer put something in the store; else `reason` is what it said.
@@ -387,7 +392,8 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               const std::vector<std::string>& searchPath,
                                               std::set<std::string>* exportsOut = nullptr,
                                               std::vector<ModuleSkip>* skipsOut = nullptr,
-                                              std::set<std::string>* nativeLibsOut = nullptr);
+                                              std::set<std::string>* nativeLibsOut = nullptr,
+                                              std::set<std::string>* usedOut = nullptr);
 
 // The `is export` sub names declared by `stmts` (recursing into braced
 // module/package bodies). This is the scan that decides whether a module sub may
@@ -4187,6 +4193,9 @@ public:
     // `reason` holds what it said, for the error.
     bool depsFetch(const std::string& name, const std::string& verReq,
                    const std::string& auth, std::string& reason);
+    // Without --auto: the lines a missing module's error gains — every module
+    // the program uses that nothing provides, and how to install them.
+    std::string depsMissingHint(const std::string& name);
     // $*PROGRAM-NAME when it is not the source file: a COMPILED binary IS the
     // program, so it is named by the command that ran it (argv[0]), not by the
     // .raku file it was built from — which on the user's machine may not even

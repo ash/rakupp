@@ -16,59 +16,67 @@ say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
 
 ---
 
-## Missing modules install themselves
+## When a module is missing
 
-You do not have to install a module before you `use` it. When a `use` or a
-`need` names a module that nothing on the search path, no store and nothing
-built into the binary provides, Raku++ looks the name up in the ecosystem
-index, installs the distribution into the ordinary store and carries on:
+A program that `use`s a module you do not have stops with an error that names
+**every** module it is missing, not only the first, and the two ways to get
+them:
 
 ```console
 $ rakupp app.raku
+Could not find JSON::Fast in:
+    lib
+    …
+app.raku uses 2 modules that are not installed: JSON::Fast, Terminal::ANSIColor
+  to install them:          rakupp install app.raku
+  to install them and run:  rakupp --auto app.raku
+```
+
+The first is the ordinary installer: it reads the program's `use` lines and
+installs what is missing, running each distribution's test suite. The second,
+**`--auto`**, installs the missing modules and runs the program in one go:
+
+```console
+$ rakupp --auto app.raku
 installed JSON::Fast:ver<0.21.0>:auth<zef:timo> for app.raku
+installed Terminal::ANSIColor:ver<0.9>:auth<zef:raku-community-modules> for app.raku
 {"ok":true}
 $ rakupp app.raku
 {"ok":true}
 ```
 
-- **Standard output is the program's alone.** The `installed …` lines go to
-  stderr, one per distribution, with the full identity, so you always see
-  where the code came from. `-q` keeps them.
-- **The store is the ordinary one**, `~/.raku`, shared with zef and Rakudo.
+Nothing is fetched unless you ask for it with `--auto`. What it does:
+
+- **It writes the ordinary store**, `~/.raku`, shared with zef and Rakudo.
   Versions sit side by side there, so nothing another program uses is
   replaced. `rakupp install --list` shows the new entries, and
   `rakupp uninstall` removes them.
-- **The next run is offline.** The module is installed now, so nothing is
-  looked up again.
-- **A script keeps its versions.** The first run records which versions it
+- **It always says what it installed**, one line per distribution on stderr
+  with the full identity, so you can see where the code came from. Standard
+  output is the program's alone, and `-q` keeps these lines.
+- **It skips the modules' test suites.** Many distributions' own suites
+  cannot pass on this engine yet. `rakupp install app.raku` runs them.
+- **The script keeps its versions.** The first `--auto` run records what it
   fetched. If you later install a newer version for something else, the
   script still loads the one it started with, until you change its `use` to
   ask for another.
-- **No test suites run** for these installs. Many distributions' own suites
-  cannot pass on this engine yet, and a test gate here would make them
-  unfetchable. `rakupp install Foo` still runs the suite.
-
-Some things never fetch:
-
-- **`require`.** `try require Foo` is how code asks whether an optional
-  module is there, so it gets an honest no.
-- **A name the index does not have.** You get the usual "Could not find"
-  error, with one added line saying the index was asked.
-- **A likely typo.** `use JSON::Mask` meant as JSON::Fast, or
+- **It refuses a likely typo.** `use JSON::Mask` meant as JSON::Fast, or
   `use Pod::To::MarkDown` meant as Pod::To::Markdown: a name a typo away from
   a far more widely used module is refused with a "did you mean". If you
   really mean that name, add its `:auth<…>` to the `use`; the message gives
   the exact spelling.
-- **`--sandbox`, compiled binaries, embedding hosts and Raku.js.** A binary
-  from `--exe`, `--aot` or `--bundle` fetches at *compile* time instead and
-  embeds what it fetched, so it needs nothing at run time.
-- **`RAKUPP_DEPS=0`.** This turns the whole thing off, for CI and production
-  setups where a missing module should stay an error.
+- **It never fetches for `require`.** `try require Foo` is how code asks
+  whether an optional module is there, so it gets an honest no. Such modules
+  are not in the list of missing ones either.
+- **It fetches at compile time with `--exe`, `--aot` and `--bundle`**, and
+  embeds what it fetched: `rakupp --auto --exe app.raku -o app`. The binary
+  never fetches anything when it runs.
 
-An unreachable index is tried once and then left alone for ten minutes, so a
-machine without network does not wait on a timeout in every process. The
-script itself is ordinary Raku: it runs under Rakudo too, once someone has run
-`zef install`.
+`--sandbox` overrides it, and so does `RAKUPP_DEPS=0`, for a harness whose
+child processes inherit `--auto` through `RAKUPP_OPT`. An unreachable index is
+tried once and then left alone for ten minutes, so a machine without network
+does not wait on a timeout in every process. The script itself is ordinary
+Raku: it runs under Rakudo too, once someone has run `zef install`.
 
 ## Using an installed module
 
@@ -153,8 +161,8 @@ and run unchanged. See [the module campaign](../dev/ecosystem/V2-MODULES-PLAN.md
 tested and where the current edges are.
 
 > **A `use` that fails is fatal**, as in Rakudo: the program stops and exits
-> non-zero rather than running on without the module. (A module the ecosystem
-> has is fetched first, as above; "fails" means nothing could supply it.) Raku++ used to treat a
+> non-zero rather than running on without the module. The error lists every
+> module the program is missing and how to install them (above). Raku++ used to treat a
 > missing or unparseable `use` as a warning and carry on, which read as
 > convenient — you could run a program whose one unused code path wanted a
 > module you did not have. In practice it mostly hid real failures: a module

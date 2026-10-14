@@ -26,9 +26,10 @@ my $EXP   = $?FILE.IO.parent.add('expected');
 my $count = 0;
 my $fails = 0;
 # Nothing this suite runs may fetch a module into the user's store
-# (DEPS-PLAN): a `#?requires Foo` probe would install Foo and then run the
-# case, and a case expecting a missing module would test the network instead.
-# t/deps/run.raku is where fetching is tested, against a fixture index.
+# (DEPS-PLAN): fetching needs --auto, which nothing here passes, but a
+# RAKUPP_OPT in the developer's environment could carry it, and then a
+# `#?requires Foo` probe would install Foo. t/deps/run.raku is where fetching
+# is tested, against a fixture index.
 %*ENV<RAKUPP_DEPS> = '0';
 
 # ---- TAP helpers ------------------------------------------------------

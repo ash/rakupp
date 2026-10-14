@@ -1869,12 +1869,53 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     for (auto& b : libPaths_) where += "\n    " + b;
     for (auto& r : rakuRepoPrefixes()) where += "\n    " + r;
     if (!depsReason.empty()) where += "\n" + depsReason;
+    else if (!requireForm) where += depsMissingHint(name);
     throwTyped("X::CompUnit::UnsatisfiedDependency", {{"specification", name}}, where);
 }
 
 bool g_depsFetch = false;
+bool g_depsHints = false;
 std::string g_depsExe;
+std::string g_depsCmd = "rakupp";
 std::string g_depsProgram;
+
+// The program's whole list, not just the `use` that failed first: the
+// compile modes' module walk over the main unit, which also follows the
+// modules that ARE installed into their own `use`s. `require`s are left out
+// (only an `if` or a `try` away from optional), and so is what the binary or
+// the compiler answers.
+std::string Interpreter::depsMissingHint(const std::string& name) {
+    if (!g_depsHints || g_depsFetch || sandboxed()) return "";
+    std::vector<std::string> missing;
+    if (!unitStack_.empty() && unitStack_.front()) {
+        std::vector<ModuleSkip> skips;
+        std::set<std::string> used;
+        try { collectModuleGraph(*unitStack_.front(), libPaths_, nullptr, &skips, nullptr, &used); }
+        catch (...) {}
+        for (auto& s : skips) {
+            std::string bp, bs;
+            if (s.reason == "not found on the module search path" && used.count(s.name)
+                && !rakuppBundledModule(s.name, bp, bs)
+                && std::find(missing.begin(), missing.end(), s.name) == missing.end())
+                missing.push_back(s.name);
+        }
+    }
+    if (std::find(missing.begin(), missing.end(), name) == missing.end()) missing.insert(missing.begin(), name);
+    const bool one = missing.size() == 1;
+    const bool file = !srcFile_.empty() && srcFile_ != "-e" && srcFile_ != "-";
+    std::string list;
+    for (auto& m : missing) list += (list.empty() ? "" : ", ") + m;
+    std::string h = "\n" + (file ? srcFile_ : std::string("The program")) + " uses "
+                  + (one ? std::string("a module that is") : std::to_string(missing.size()) + " modules that are")
+                  + " not installed: " + list;
+    std::string names;
+    for (auto& m : missing) names += " " + m;
+    h += "\n  to install " + std::string(one ? "it" : "them") + ":          "
+       + g_depsCmd + " install" + (file ? " " + srcFile_ : names);
+    h += "\n  to install " + std::string(one ? "it" : "them") + " and run:  "
+       + g_depsCmd + " --auto " + (file ? srcFile_ : std::string("-e '…'"));
+    return h;
+}
 
 // A `use` nothing could answer, put to the installer (DEPS-PLAN): a child
 // `rakupp install --auto --for=PROGRAM IDENTITY`, with RAKUPP_DEPS=0 so that
