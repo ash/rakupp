@@ -183,7 +183,10 @@ void Interpreter::registerBuiltinsPart3() {
             for (char c : spec) { if (c == ',') { emit(cur); cur.clear(); } else cur += c; }
             emit(cur);
         }
-        return Value::str(out);
+        // a Str is NFC: `uniparse('GREEK QUESTION MARK')` is ";" (U+037E's
+        // singleton decomposition), and "A, COMBINING RING ABOVE" is "Å" — as
+        // the same names in "\c[…]" are. Raw, they compared unequal to both.
+        return Value::str(nfcNormalize(std::move(out)));
     };
     B["indir"] = [](Interpreter& I, ValueList& a) -> Value {
         // indir($path, :d, :r, :w, :x, &code) — the block is the positional

@@ -3,6 +3,7 @@
 #   * SIMPLE 1:1 upper/lower/title mappings (UnicodeData.txt fields 12/13/14)
 #   * FULL   1:N upper/lower/title mappings (SpecialCasing.txt, unconditional only)
 #   * FULL   case folding                    (CaseFolding.txt, status C + F)
+#   * SIMPLE case folding                    (CaseFolding.txt, status C + S)
 #
 # Dogfooding: run by rakupp itself —  build/rakupp tools/gen_unicode_case.raku
 #
@@ -21,6 +22,7 @@ my @fupper;  # [cp, m0, m1, m2]  (full, 1..3 codepoints; trailing zeros unused)
 my @flower;
 my @ftitle;
 my @fold;
+my %sfold;   # cp => cp   (simple folding)
 
 # ---- simple mappings from UnicodeData.txt ----
 for $UD.IO.lines -> $line {
@@ -58,9 +60,11 @@ for $CF.IO.lines -> $line {
     my @f = $l.split(';');
     next unless @f >= 3;
     my $status = @f[1].trim;
-    next unless $status eq 'C' || $status eq 'F';
+    next unless $status eq 'C' || $status eq 'F' || $status eq 'S';
     my $cp  = :16(@f[0].trim);
     my @map = codes(@f[2].split('#')[0]);
+    %sfold{$cp} = @map[0] if $status eq 'C' || $status eq 'S';
+    next unless $status eq 'C' || $status eq 'F';
     my @mf = pad3(@map); @fold.push([$cp, @mf[0], @mf[1], @mf[2]]);
 }
 
@@ -105,9 +109,10 @@ emit-full('FUPPER', @fupper);
 emit-full('FLOWER', @flower);
 emit-full('FTITLE', @ftitle);
 emit-full('FOLDF',  @fold);
+emit-simple('SFOLD', %sfold);
 
 @out.push: '}}';
 spurt 'src/unicode_case_gen.cpp', @out.join("\n") ~ "\n";
 say "wrote src/unicode_case_gen.cpp: ",
     "simple U/L/T = {%supper.elems}/{%slower.elems}/{%stitle.elems}, ",
-    "full U/L/T = {@fupper.elems}/{@flower.elems}/{@ftitle.elems}, fold = {@fold.elems}";
+    "full U/L/T = {@fupper.elems}/{@flower.elems}/{@ftitle.elems}, fold = {@fold.elems}, simple fold = {%sfold.elems}";

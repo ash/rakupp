@@ -93,11 +93,14 @@ single-codepoint entries, 974 contractions, 46,651 collation elements):
   non-starter that extends the match is consumed out of the stream.
 - Implicit weights for Han (via the real `Unified_Ideograph` property, with
   the core-block/extension split) and the fixed Tangut/Nushu/Khitan bases.
-- Equal keys tie-break by codepoint order, per the conformance-test rule.
+- Equal keys tie-break at the identical level (S3.10): on the strings' NFD
+  forms, not their code points as given (a Str is NFC), with U+FFFE lowest.
 
 Roast: all four `CollationTest_NON_IGNORABLE-*.t` files (8,271 adjacent-pair
 comparisons from Unicode's published conformance data) pass with zero real
-failures. This is the *untailored* default table: no locale tailorings (CLDR),
+failures, thirteen of them TODO for Rakudo. `t/oracle/unicode.raku` asks the
+whole file — 207,603 comparisons, every line against the next — and all
+agree. This is the *untailored* default table: no locale tailorings (CLDR),
 so `"ö" unicmp "z"` gives the language-neutral answer, not the Swedish one.
 (Rakudo does not do tailorings either.)
 
@@ -118,9 +121,14 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
   character here where Rakudo throws `X::Str::InvalidCharName`.
 - `unival`/`univals` — numeric values as exact `Rat`s (`"½".unival` is the Rat `0.5`, `"↉".unival` is `0`).
 - `uniprop`/`uniprops` — general category, Script, Block, Age, Line_Break,
-  Word_Break, East_Asian_Width, Numeric_Type, Joining_Type, the case-mapping and
-  Bidi_Mirroring_Glyph properties, and strict binary properties (Emoji,
+  Word_Break, East_Asian_Width, Numeric_Type, Joining_Type, the case-mapping,
+  case-folding (full and simple) and Bidi_Mirroring_Glyph properties,
+  Indic_Conjunct_Break, and strict binary properties (Emoji,
   Full_Composition_Exclusion, …) — see `S15-unicode-information/uniprop.t`.
+  Every code point answers every one of them as the UCD 18.0 text says,
+  defaults (`@missing`) included: `t/oracle/unicode.raku` checks all
+  1,114,112 against a reader of `tools/ucd` of its own. A mapping comes back
+  as a Str, so NFC, like every other Str.
 - Regex property classes: `<:Lu>`, `<:Latin>`, `<:Script<Greek>>`,
   `<:bc<L>>` (bidi class), `<:InBasicLatin>` (blocks), and the binary
   properties from `PropList.txt`/`DerivedCoreProperties.txt`

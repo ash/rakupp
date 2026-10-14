@@ -87,6 +87,7 @@ std::string uniBidiClassOf(uint32_t cp);                       // Bidi_Class sho
 uint32_t uniSimpleUpper(uint32_t cp);   // 1:1 mapping, or cp unchanged
 uint32_t uniSimpleLower(uint32_t cp);
 uint32_t uniSimpleTitle(uint32_t cp);
+uint32_t uniSimpleFold(uint32_t cp);   // Simple_Case_Folding (CaseFolding C + S)
 // full 1:N mapping — kind: 0=lower, 1=upper, 2=title, 3=fold. Always >= 1 codepoint.
 std::vector<uint32_t> uniCaseMap(uint32_t cp, int kind);
 // enumerated property value name, or "" if `prop` is not a handled enum property.
@@ -96,6 +97,7 @@ std::string uniCombiningClassName(uint32_t cp); // ccc by alias, e.g. "Not_Reord
 std::string uniJamoShortName(uint32_t cp);      // Hangul jamo short name ("" when none)
 uint32_t    uniBidiPairedBracket(uint32_t cp);  // paired bracket (the cp itself when none)
 std::string uniBidiPairedBracketType(uint32_t cp); // "o", "c" or "n"
+std::string uniIndicConjunctBreak(uint32_t cp);    // "None", "Linker", "Consonant" or "Extend"
 int32_t uniBidiMirror(uint32_t cp);  // Bidi_Mirroring_Glyph target codepoint, or -1
 int uniBinaryProp(uint32_t cp, const std::string& prop); // 1/0 for a known binary prop, -1 if unknown
 std::string uniBlockOf(uint32_t cp);                           // block name ("Basic Latin", …)

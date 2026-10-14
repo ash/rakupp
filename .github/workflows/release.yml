@@ -449,6 +449,21 @@ jobs:
           RAKUPP_NO_KERNELS=1 build/rakupp t/oracle/int.raku --seconds=20
           build/rakupp t/oracle/rat.raku --seconds=30
 
+      # ORACLE-PLAN P3: the Unicode tables against Unicode 18.0's own
+      # conformance files (NormalizationTest, GraphemeBreakTest, CollationTest;
+      # fetched from unicode.org on the first run, SHA-256 pinned, then cached)
+      # and every code point x property against the UCD text in tools/ucd.
+      # About two minutes.
+      - name: Cache the Unicode conformance files (POSIX)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rakupp/unicode-18.0.0
+          key: unicode-conformance-18.0.0
+      - name: Oracle gate, Unicode against its conformance files (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/oracle/unicode.raku --fetch --cache="$HOME/.cache/rakupp/unicode-18.0.0"
+
       # The embed/ABI gate (ABI-PLAN A0-A2): compiles a C++ host and a C
       # extension against the headers, loads the extension, and checks
       # librakupp's export table against rakupp_ext.h + rakupp.h.

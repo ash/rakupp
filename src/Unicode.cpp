@@ -37,6 +37,7 @@ extern const uint32_t FUPPER[]; extern const size_t FUPPER_N;
 extern const uint32_t FLOWER[]; extern const size_t FLOWER_N;
 extern const uint32_t FTITLE[]; extern const size_t FTITLE_N;
 extern const uint32_t FOLDF[];  extern const size_t FOLDF_N;
+extern const uint32_t SFOLD[];  extern const size_t SFOLD_N;
 // enum-property range tables (unicode_props2_gen.cpp)
 #define ENUMPROP(N) extern const char* const N##_VALUES[]; extern const size_t N##_VALUES_N; \
                     extern const uint32_t N##_RANGES[]; extern const size_t N##_RANGES_N;
@@ -73,7 +74,16 @@ std::string uniEnumProp(const std::string& prop, uint32_t cp) {
     TRY(HST, "NA", "hangulsyllabletype", "hst")
     TRY(DT, "None", "decompositiontype", "dt")
     TRY(NT, "None", "numerictype", "nt")
-    TRY(JT, "U", "joiningtype", "jt")
+    // Joining_Type: ArabicShaping lists the joining code points; of the rest,
+    // those of general category Mn, Me or Cf are Transparent and the others
+    // Non_Joining (the file's header says so), so an unlisted combining mark
+    // is T, not U.
+    if (p == "joiningtype" || p == "jt") {
+        std::string v = enumLookup(ucd::JT_RANGES, ucd::JT_RANGES_N, ucd::JT_VALUES, cp, "");
+        if (!v.empty()) return v;
+        const std::string gc = uniGeneralCategory(cp);
+        return gc == "Mn" || gc == "Me" || gc == "Cf" ? "T" : "U";
+    }
     TRY(JG, "No_Joining_Group", "joininggroup", "jg")
     // the four normalization quick checks: every codepoint the UCD file does not
     // list is "Yes", and the values are reported by full name
@@ -183,6 +193,8 @@ static bool caseSimpleHas(const uint32_t* t, size_t n, uint32_t cp) {
         if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return true; }
     return false;
 }
+// Simple_Case_Folding: CaseFolding.txt's C and S lines, one code point each
+uint32_t uniSimpleFold(uint32_t cp) { return caseSimple(ucd::SFOLD, ucd::SFOLD_N, cp); }
 uint32_t uniSimpleTitle(uint32_t cp) {
     return caseSimpleHas(ucd::STITLE, ucd::STITLE_N, cp) ? caseSimple(ucd::STITLE, ucd::STITLE_N, cp) : uniSimpleUpper(cp);
 }
@@ -491,6 +503,12 @@ static int gbProp(uint32_t cp) {
 }
 
 // Indic_Conjunct_Break class: 0=None 1=Linker 2=Consonant 3=Extend (for GB9c)
+static int incbProp(uint32_t cp);
+std::string uniIndicConjunctBreak(uint32_t cp) {
+    static const char* const names[] = {"None", "Linker", "Consonant", "Extend"};
+    const int k = incbProp(cp);
+    return names[k >= 0 && k <= 3 ? k : 0];
+}
 static int incbProp(uint32_t cp) {
     size_t lo = 0, hi = ucd::INCB_N;
     while (lo < hi) {
@@ -863,10 +881,19 @@ int uniCollateLevels(const std::vector<uint32_t>& acps, const std::vector<uint32
         }
     }
     if (!lv[3]) return 0;
-    // identical sort keys: the UCA conformance rule breaks ties by codepoint order
-    for (size_t i = 0; i < acps.size() && i < bcps.size(); i++)
-        if (acps[i] != bcps[i]) return (acps[i] < bcps[i] ? -1 : 1) * lv[3];
-    if (acps.size() != bcps.size()) return (acps.size() < bcps.size() ? -1 : 1) * lv[3];
+    // Identical sort keys: the identical level (UTS #10 S3.10) breaks the tie
+    // on the NFD form of each string, not on its code points as given — a
+    // Str is NFC, so 0627 0591 0653 (alef, etnahta, maddah) arrives as 0622
+    // 0591 and would sort after 0622 itself, where CollationTest has it
+    // before. U+FFFE, whose primary is the lowest there is (it is the merge
+    // separator), is lowest at this level too: CollationTest orders
+    // 006C FFFE 1D165 before 006C 0001 FFFE. `a` and `b` lost their consumed
+    // non-starters above, so the NFD forms are made again; ties are rare.
+    const std::vector<uint32_t> na = uniNormalize(acps, 0), nb = uniNormalize(bcps, 0);
+    auto rank = [](uint32_t cp) { return cp == 0xFFFE ? 0 : (uint64_t)cp + 1; };
+    for (size_t i = 0; i < na.size() && i < nb.size(); i++)
+        if (na[i] != nb[i]) return (rank(na[i]) < rank(nb[i]) ? -1 : 1) * lv[3];
+    if (na.size() != nb.size()) return (na.size() < nb.size() ? -1 : 1) * lv[3];
     return 0;
 }
 

@@ -5028,16 +5028,28 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             "Cannot resolve caller " + m.s + "(" + inv.typeName() + ":D: " +
                             args[0].typeName() + "); the property must be named by a string"};
         std::string prop = args.empty() ? "General_Category" : args[0].toStr();
-        auto caseMapStr = [](uint32_t cp, int kind) -> Value { // full mapping as a Str
-            std::string s; for (uint32_t c : uniCaseMap(cp, kind)) s += cpToUtf8(c); return Value::str(s);
+        // A mapping answers a Str, and a Str is NFC: U+0340's lowercase is
+        // itself, which is U+0300 once it is a Str (as `0x340.chr` is), and
+        // U+0390's uppercase 0399 0308 0301 is 03AA 0301. Built from the raw
+        // code points they compared unequal to the same text made any other way.
+        auto nfcStr = [](std::vector<uint32_t> cps) -> Value {
+            for (uint32_t c : cps)
+                if (c >= 0x300) { cps = uniNormalize(cps, 1); break; }
+            std::string s; for (uint32_t c : cps) s += cpToUtf8(c); return Value::str(s);
         };
-        auto simpleMapStr = [](uint32_t cp, uint32_t mapped) -> Value { return Value::str(cpToUtf8(mapped)); };
+        auto caseMapStr = [&](uint32_t cp, int kind) -> Value { return nfcStr(uniCaseMap(cp, kind)); };
+        auto simpleMapStr = [&](uint32_t cp, uint32_t mapped) -> Value { return nfcStr({mapped}); };
         auto one = [&](uint32_t cp) -> Value {
             if (prop == "General_Category" || prop == "gc") return Value::str(uniGeneralCategory(cp));
             if (prop == "Script" || prop == "sc") return Value::str(uniScript(cp));
             if (prop == "Name" || prop == "na") return Value::str(uniNameOf(cp));
-            if (prop == "Block" || prop == "blk") return Value::str(uniBlockOf(cp));
+            if (prop == "Block" || prop == "blk") {        // outside every block: the UCD's No_Block
+                std::string b = uniBlockOf(cp);
+                return Value::str(b.empty() ? "No_Block" : b);
+            }
             if (prop == "Bidi_Class" || prop == "bc") return Value::str(uniBidiClassOf(cp));
+            if (prop == "Indic_Conjunct_Break" || prop == "InCB")
+                return Value::str(uniIndicConjunctBreak(cp));
             if (prop == "Canonical_Combining_Class" || prop == "ccc")
                 return Value::str(uniCombiningClassName(cp)); // by ALIAS: 0 is "Not_Reordered"
             if (prop == "Unicode_1_Name" || prop == "na1") return Value::str(uniUnicode1Name(cp));
@@ -5059,8 +5071,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (prop == "Simple_Uppercase_Mapping" || prop == "suc") return simpleMapStr(cp, uniSimpleUpper(cp));
             if (prop == "Simple_Lowercase_Mapping" || prop == "slc") return simpleMapStr(cp, uniSimpleLower(cp));
             if (prop == "Simple_Titlecase_Mapping" || prop == "stc") return simpleMapStr(cp, uniSimpleTitle(cp));
+            if (prop == "Simple_Case_Folding" || prop == "scf")      return simpleMapStr(cp, uniSimpleFold(cp));
             if (prop == "Bidi_Mirroring_Glyph" || prop == "bmg") {
-                int32_t m2 = uniBidiMirror(cp); return Value::str(m2 < 0 ? "" : cpToUtf8((uint32_t)m2));
+                int32_t m2 = uniBidiMirror(cp); return m2 < 0 ? Value::str("") : nfcStr({(uint32_t)m2});
             }
             if (prop == "ISO_Comment" || prop == "isc") return Value::str(""); // empty since Unicode 5.2
             // enumerated properties (Age, Line_Break, East_Asian_Width, Numeric_Type, …)

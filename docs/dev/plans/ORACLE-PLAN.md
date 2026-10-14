@@ -2,9 +2,9 @@
 
 *Written 2026-10-14, the day #159 landed (671e51bd).*
 
-**Status: P0, P1 and P2 are built (2026-10-14), except P1's fuzz harness
-and the new vectors for the shared zlib.vec; see "Done so far" at the end.
-P3 onward not started.**
+**Status: P0, P1, P2 and P3 are built (2026-10-14), except P1's fuzz
+harness and the new vectors for the shared zlib.vec; see "Done so far" at
+the end. P4 onward not started.**
 
 [The dependencies FAQ](https://raku.online/faq/dependencies/) says, in a
 table, that Raku++ carries its own big integers, regex engine, Unicode
@@ -297,3 +297,55 @@ checks missed and why the new ones exist.
 - Not done: the debug-build `q*b + r == a` check in divmod. The oracle now
   covers division from outside at ~900 cases a second; the check would
   only add the inputs other tests happen to feed it.
+
+### P3 (2026-10-14)
+
+- **The premise had moved on.** Roast's Unicode files were regenerated at
+  18.0 (Raku/roast#923), so its NormalizationTest and GraphemeBreakTest
+  copies are at our version after all. What roast does not have: the whole
+  of CollationTest (it samples 8,271 of 212,066 lines), NormalizationTest's
+  Part 1 rule for the code points the file does not list, and anything
+  asked of every code point.
+- **t/oracle/unicode.raku + unicode-oracle.py**, in CI on POSIX, about two
+  minutes:
+  1. NormalizationTest: every line, all four forms, through Uni and Str
+     (403,420 checks); every code point outside Part 1 but the surrogates
+     unchanged by all four (4,379,640);
+  2. GraphemeBreakTest: every line, as `.comb` and `.chars` (853);
+  3. CollationTest_NON_IGNORABLE: every line `unicmp` the next (207,603);
+  4. every code point, for the ~90 properties the vendored UCD files define
+     and Raku++ exposes, against a reader of those files that shares no code
+     with the generators; `.uniname` for every code point, and `uniparse`
+     back for every name and NameAliases alias (173,289).
+  The three test files are not vendored: `--fetch` downloads them once
+  (about 8 MB from unicode.org) into `~/.cache/rakupp/unicode-18.0.0`,
+  pinned by SHA-256, and CI caches that directory. Without them the gate
+  fails, or with `--allow-missing` says SKIP. Section 4 needs only python3.
+- **What it found, all fixed, with regressions:**
+  - `unicmp`/`coll` broke a tie between equal keys on the code points as
+    given; UTS #10's identical level is the NFD form, and a Str is NFC. 12
+    CollationTest pairs, all on roast's TODO list for Rakudo; Raku++ now
+    passes those 13 TODOs too (unicmp-identical-level-is-nfd.raku).
+  - Bidi_Class: the generator ignored DerivedBidiClass's `@missing` lines,
+    so unassigned code points in the Hebrew, Arabic, Syriac, … blocks were L
+    instead of R or AL, and in Currency Symbols L instead of ET (120 ranges).
+  - Joining_Type: an unlisted Mn, Me or Cf code point is T, not U
+    (ArabicShaping's own note); 376 ranges.
+  - Indic_Conjunct_Break answered a Bool; Block answered "" for No_Block;
+    Simple_Case_Folding was not there at all (a new SFOLD table).
+  - The strings `uniprop` answers for mappings, and `uniparse`'s answer,
+    were built from raw code points, so `0x340.uniprop('lc') eq "\x[300]"`
+    and `uniparse('GREEK QUESTION MARK') eq ';'` were False; they are NFC now,
+    as every other Str (uniprop-against-the-ucd.raku).
+  Rakudo 2026.09 shares the first three and the case-folding gaps.
+- **Spellings the oracle encodes on purpose, where Rakudo differs:** roast
+  pins `Not_Reordered` and `Yes`/`Maybe`/`No`, where MoarVM answers `0` and
+  `Y`/`M`/`N`; Hangul_Syllable_Type and Indic_Positional_Category answer the
+  short `NA` (MoarVM: `Not_Applicable`). Joining_Group is spelled as roast
+  pins it, `SYRIAC WAW`, on both engines; canonical combining classes with
+  no name answer their number on both.
+- Not done: Vertical_Orientation and Script_Extensions are not exposed and
+  their files are not vendored; the deprecated Expands_On_* properties are
+  not exposed and the oracle leaves them out. Word, sentence and line break
+  and the Bidi algorithm are not implemented, so their test files are not
+  fetched.
