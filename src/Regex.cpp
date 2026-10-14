@@ -3462,6 +3462,16 @@ long Regex::trySingleChar(const std::string& s, long pos) const {
     return classMatch(n, s[pos]) ? pos + 1 : -1; // Class
 }
 
+// The lexical-subrule lookup for this thread's current search (LexRegexScope),
+// how deep a width computation has followed it (a token may call itself), and
+// whether the last width relied on it — such a width depends on the scope the
+// search ran in, so it is not cached on the lookbehind node.
+static thread_local const LexRegexLookup* tlLexLookup = nullptr;
+static thread_local int tlLexDepth = 0;
+static thread_local bool tlWidthUsedLex = false;
+LexRegexScope::LexRegexScope(const LexRegexLookup* f) : saved(tlLexLookup) { tlLexLookup = f; }
+LexRegexScope::~LexRegexScope() { tlLexLookup = saved; }
+
 Regex::RxWidth Regex::nodeWidth(const Node* n, MState& st) const {
     const long UNB = -1, CAP = 1000000000;
     // bounded sums and products; any unbounded term makes the whole unbounded
@@ -3537,6 +3547,21 @@ Regex::RxWidth Regex::nodeWidth(const Node* n, MState& st) const {
                 // table but is a whole word)
                 if (n->metaCache->singleChar || !n->metaCache->builtinClass.empty())
                     return {1, UNB, n->ruleName == "ident" ? UNB : 1};
+            }
+            // A lexical `my token`/`my regex`: as wide as its own pattern, when the
+            // caller can say what that is. Followed a few calls deep at most — a
+            // token that calls itself is unbounded, which is only a wider scan.
+            else if (st.lexNames && st.lexNames->count(n->ruleName)) {
+                if (tlLexLookup && tlLexDepth < 8) {
+                    if (auto sub = (*tlLexLookup)(n->ruleName)) {
+                        tlWidthUsedLex = true;
+                        ++tlLexDepth;
+                        RxWidth w = sub->ok() && sub->root() ? sub->nodeWidth(sub->root(), st) : RxWidth{0, UNB, UNB};
+                        --tlLexDepth;
+                        return w;
+                    }
+                }
+                return {0, UNB, UNB};
             }
             // …and outside a grammar the built-in classes answer one character
             // too, as builtinRuleMatch matches them, unless a `my regex` shadows one
@@ -3628,13 +3653,21 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             } else {
                 // A lookbehind inner can only match ending at `pos` if it starts within
                 // its own width of it — bound the scan window (O(width), not O(pos)).
+                // A width that read a lexical token's pattern belongs to this
+                // search's scope (another scope's `<sp>` may be wider), so it is
+                // computed afresh rather than cached on the node.
+                long lookMin = n->lookMin, lookMax = n->lookMax, lookChars = n->lookChars;
                 if (!n->lookWidthReady) {
+                    tlWidthUsedLex = false;
                     auto w = nodeWidth(child, st);
-                    n->lookMin = w.lo; n->lookMax = w.hi; n->lookChars = w.chars; n->lookWidthReady = true;
+                    lookMin = w.lo; lookMax = w.hi; lookChars = w.chars;
+                    if (!tlWidthUsedLex) {
+                        n->lookMin = w.lo; n->lookMax = w.hi; n->lookChars = w.chars; n->lookWidthReady = true;
+                    }
                 }
-                long hi = pos - n->lookMin;
-                long lo = n->lookMax >= 0 ? pos - n->lookMax
-                        : n->lookChars >= 0 ? charsBack(st.s, pos, n->lookChars) : 0;
+                long hi = pos - lookMin;
+                long lo = lookMax >= 0 ? pos - lookMax
+                        : lookChars >= 0 ? charsBack(st.s, pos, lookChars) : 0;
                 if (lo < 0) lo = 0;
                 for (long j = hi; j >= lo && !m; j--) {
                     MState sub{st.s, std::vector<std::pair<long, long>>(ncaps_, {-1, -1}), {}, {}, st.resolver, st.grammar};

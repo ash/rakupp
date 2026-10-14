@@ -20591,6 +20591,8 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     std::set<std::string> lexNames;
     SubResolver resolver;
     lexSubResolver(resolver, lexNames, useHooks);
+    const LexRegexLookup lexLookup = lexRegexLookup();
+    LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
     // Every Match — the top one and each capture — reports the WHOLE subject as
     // its .orig; only from/pos say which part matched. Sharing one string keeps
     // `.raku`/.prematch/.postmatch right on captures too, at one allocation.

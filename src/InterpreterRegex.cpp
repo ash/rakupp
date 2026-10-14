@@ -1104,6 +1104,17 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
 // matched it as zero-width: a pattern that matched perfectly under `~~`
 // quietly matched nothing under .subst. `lexNames` and `useHooks` are the
 // caller's and must outlive the resolver, which holds them by reference.
+LexRegexLookup Interpreter::lexRegexLookup() {
+    return [this](const std::string& name) -> std::shared_ptr<const Regex> {
+        auto it = namedRegex_.find(name);
+        // a body that reads a variable or an array is only known when it runs
+        if (it == namedRegex_.end() || rxNeedsScalarPass(it->second) || it->second.find('@') != std::string::npos)
+            return nullptr;
+        const std::string& kind = namedRegexKind_[name];
+        return compileRegexCached(it->second, kind == "rule" ? "sr" : kind == "token" ? "r" : "");
+    };
+}
+
 void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& lexNames,
                                  const GrammarHooks*& useHooks) {
     for (auto& kv : namedRegex_) lexNames.insert(kv.first);
@@ -1894,6 +1905,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         SubResolver resolver;
         if (!namedRegex_.empty() && realPat.find('<') != std::string::npos)
             lexSubResolver(resolver, lexNames, useHooks);
+        const LexRegexLookup lexLookup = lexRegexLookup();
+        LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
         long pos = haveStart ? startPos : 0; RxMatch mm;
         while (pos >= 0 && pos <= (long)subj.size() &&
                re.search(subj, pos, mm, resolver, lexNames.empty() ? nullptr : &lexNames, useHooks)) {

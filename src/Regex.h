@@ -266,6 +266,21 @@ inline uint64_t newAliasId() { static thread_local uint64_t n = 0; return ++n; }
 // anchored at `pos`; on success fill `out` (with out.to = end offset) and return true.
 using SubResolver = std::function<bool(const std::string& name, const std::string& subj, long pos, RxMatch& out)>;
 
+// The compiled pattern a LEXICAL subrule (`my token sp { … }`) stands for, as
+// the caller that resolves those names knows it — or null when it cannot say
+// (a body that reads runtime values). A lookbehind consults it to bound how far
+// back its window reaches; without it a call to `<sp>` inside `<?after …>` was
+// of unknown width and the window was the whole prefix, at every position.
+// Installed per thread for the duration of a search by LexRegexScope.
+using LexRegexLookup = std::function<std::shared_ptr<const Regex>(const std::string& name)>;
+struct LexRegexScope {
+    const LexRegexLookup* saved;
+    explicit LexRegexScope(const LexRegexLookup* f);
+    ~LexRegexScope();
+    LexRegexScope(const LexRegexScope&) = delete;
+    LexRegexScope& operator=(const LexRegexScope&) = delete;
+};
+
 // Per-rule-name metadata the GrammarMatcher caches once and subrule call sites
 // reuse on every call (via a pointer cached on the compiled AST node), so the
 // hot path never re-resolves the name through string-keyed maps.

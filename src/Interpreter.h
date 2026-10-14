@@ -59,6 +59,9 @@ struct GrammarHooks;
 struct ParseNode;
 class Regex;
 struct RxCursorCall;
+class Regex;
+// …and the one src/Regex.h declares for a lexical token's compiled pattern
+using LexRegexLookup = std::function<std::shared_ptr<const Regex>(const std::string& name)>;
 using SubResolver = std::function<bool(const std::string& name, const std::string& subj,
                                        long pos, RxMatch& out)>;
 
@@ -3306,6 +3309,9 @@ public:
     // table, shared by `~~` and by the occurrence scanner behind
     // subst/comb/split/match. `lexNames` and `useHooks` belong to the caller
     // and must outlive the resolver, which holds them by reference.
+    // The compiled pattern of each lexical `my token`/`my regex`, for the regex
+    // engine to read a called token's width by (LexRegexLookup, src/Regex.h).
+    LexRegexLookup lexRegexLookup();
     void lexSubResolver(SubResolver& resolver, std::set<std::string>& lexNames,
                         const GrammarHooks*& useHooks);
     // One capture's Match with its own capture tree under it (`$<a><b>`),
