@@ -60,12 +60,15 @@ to the terse mode harmlessly.
 ## The two-name policy
 
 The codec's **first-party name is `Rakupp::Internals::JSON`** — what
-rakupp's own tooling (`tools/install.raku`, JSON::Native's engine backend)
-calls. `Rakudo::Internals::JSON` is the **compatibility alias**: answered
-so real code runs, and nothing more. Only `Rakupp::Internals::*` is
-whitelisted for the first-party spelling — a typo'd `Rakupp::` name is
-still an error, because `JSON::Native` is a real ecosystem module and the
-namespace must not quietly swallow mistakes.
+rakupp's own tooling (`tools/install.raku`, `tools/upgrade.raku`) calls;
+JSON::Native called it too, until 0.1.0 reached the engine through the
+`rakupp-` names instead. `Rakudo::Internals::JSON` is the **compatibility
+alias**: answered so real code runs, and nothing more. Only
+`Rakupp::Internals::*` is whitelisted for the first-party spelling — a
+typo'd `Rakupp::` name is still an error, because `JSON::Native` is a real
+ecosystem module and the namespace must not quietly swallow mistakes.
+[internals/JSON.md](../../internals/JSON.md) maps these two names beside
+the engine's other ways into the same codec.
 
 Plan of record, deliberately **not implemented yet**: once the battery
 campaign no longer needs those dists measured as-is, the Rakudo spelling

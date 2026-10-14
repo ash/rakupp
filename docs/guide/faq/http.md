@@ -192,20 +192,32 @@ client, no TLS stack and no tar reader lives in the engine, in any language, so
 it carries no certificate store, no redirect policy and no protocol version to
 keep current.
 
-JSON is the exception, and a deliberate one. The ecosystem index *is* JSON, and
-the engine parses it with a codec of its own — `Rakupp::Internals::JSON`, also
-reachable under the `Rakudo::Internals::JSON` name the ecosystem uses:
+JSON is the exception, and a deliberate one. The ecosystem index *is* JSON, so
+the engine carries a JSON codec of its own, and a program reaches it with one
+line:
 
 ```raku
-say Rakupp::Internals::JSON.from-json('{"ver":"1.2.3"}');
+use JSON::Native;
+say from-json('{"ver":"1.2.3"}');
 ```
 ```
 {ver => 1.2.3}
 ```
 
-Nothing is installed for that to work, which is the point: an installer that
-needed a JSON module before it could install anything would have nowhere to
-start.
+Nothing is installed for that to work: Raku++ 5.4.0 and newer answers
+`use JSON::Native` itself. On Rakudo and other engines JSON::Native is an
+ordinary distribution (`zef install JSON::Native`), and the same program runs
+unchanged. Its `from-json` and `to-json` give exactly what JSON::Fast gives,
+so a program written for JSON::Fast switches by changing the `use` line.
+
+The installer reaches the same codec another way, because it cannot `use` a
+module before it has installed one — an installer that needed a JSON module
+first would have nowhere to start. It calls `Rakupp::Internals::JSON`, a class
+the engine answers itself. That name is for toolchain code, not for programs:
+its `from-json` takes no options and fails with a bare "Invalid JSON", its
+`to-json` follows Rakudo's defaults rather than JSON::Fast's, and it does not
+exist on any other engine. [JSON.md](../../internals/JSON.md) maps every way
+into the codec.
 
 ### Where that name comes from
 
