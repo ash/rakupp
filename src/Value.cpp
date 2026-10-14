@@ -660,33 +660,13 @@ double Value::toNum() const {
                            (b.fitsLL() && std::llabs(b.toLL()) <= (1LL << 53));
                 };
                 if (!(dblExact(*ratN()) && dblExact(*ratD()))) {
-                    // wide parts: separate BigInt→double conversions round TWICE
-                    // and drift in the last bits (1e26-digit division printed
-                    // …37 where Rakudo has …33). Long-divide to 19 significant
-                    // decimal digits and let strtod do the single, correct
-                    // rounding. Also covers FatRats too big for double (the
-                    // old inf/inf special case).
-                    // Only the leading limbs matter: past twelve of them (108
-                    // digits) the rest cannot move 19, and the long division is
-                    // quadratic in the length — a Rat power's million-digit parts
-                    // spent seconds here. The dropped digits go in the exponent.
-                    BigInt num = ratN()->abs(), den = ratD()->abs(), q, r;
-                    long long shift = 0;
-                    auto keepTop = [](BigInt& b) -> long long {
-                        const size_t n = b.mag.size(), k = 12;
-                        if (n <= k) return 0;
-                        b.mag.erase(b.mag.begin(), b.mag.begin() + (long)(n - k));
-                        return 9LL * (long long)(n - k);
-                    };
-                    shift += keepTop(num);
-                    shift -= keepTop(den);
-                    std::string sn = num.toString(), sd = den.toString();
-                    long long scale = 19 - ((long long)sn.size() - (long long)sd.size());
-                    if (scale > 0) num = num * BigInt(10).pow(scale);
-                    else if (scale < 0) den = den * BigInt(10).pow(-scale);
-                    BigInt::divmod(num, den, q, r);
-                    std::string lit = q.toString() + "e" + std::to_string(shift - scale);
-                    double d = cnum::strtod(lit.c_str(), nullptr);
+                    // Wide parts: two BigInt→double conversions and a division
+                    // round three times. This used to long-divide to 19 decimal
+                    // digits and let strtod round, which TRUNCATED first: a value
+                    // halfway between two doubles, or just past halfway, came out
+                    // an ulp low where Rakudo and IEEE round up (ORACLE-PLAN P2).
+                    // ratioToDouble rounds once, in binary, ties to even.
+                    double d = BigInt::ratioToDouble(*ratN(), *ratD());
                     return ratN()->sign < 0 ? -d : d;
                 }
                 return ratN()->toDouble() / ratD()->toDouble();

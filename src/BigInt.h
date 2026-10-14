@@ -183,6 +183,9 @@ struct BigInt {
     // 64-bit digest word into 0x7FFF_FFFF_FFFF_FFFF.
     unsigned long long toU64Wrap() const;
     double toDouble() const;
+    // num/den as the nearest double, ties to even, rounded ONCE: what a Rat's
+    // .Num is. Signs are ignored (the caller applies one); den must not be 0.
+    static double ratioToDouble(const BigInt& num, const BigInt& den);
     std::string toString() const;
 };
 

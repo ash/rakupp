@@ -1053,6 +1053,65 @@ double BigInt::toDouble() const {
     return cnum::strtod(toString().c_str(), nullptr);
 }
 
+// The exact conversion: q = floor(num·2^s / den) with 55 or 56 bits (fewer only
+// in the subnormal range, where the grid is 2^-1074 and s stops at 1076), then
+// round q to the grid ourselves — half to even, the division's remainder as the
+// sticky bit — and scale. At least two bits are always dropped, so the guard and
+// the sticky decide every tie, and the one rounding is the only one.
+static double ratioToDoubleExact(const BigInt& num, const BigInt& den) {
+    if (num.isZero()) return 0.0;
+    const long long k = num.bitLength() - den.bitLength();   // num/den in [2^(k-1), 2^(k+1))
+    if (k > 1026) return HUGE_VAL;
+    if (k < -1076) return 0.0;
+    long long s = 55 - k;
+    if (s > 1076) s = 1076;
+    BigInt n2 = num.abs(), d2 = den.abs(), q, r;
+    if (s > 0) n2 = n2 * BigInt(2).pow(s);
+    else if (s < 0) d2 = d2 * BigInt(2).pow(-s);
+    BigInt::divmod(n2, d2, q, r);
+    const unsigned long long qq = q.toU64Wrap();               // < 2^56
+    const int bits = qq ? 64 - clzll(qq) : 0;
+    const long long drop = std::max<long long>(bits - 53, s - 1074);   // 2 or 3
+    const unsigned long long half = 1ULL << (drop - 1);
+    const unsigned long long low = qq & ((half << 1) - 1);
+    unsigned long long mant = qq >> drop;
+    if (low > half || (low == half && (!r.isZero() || (mant & 1)))) mant++;
+    return std::ldexp((double)mant, (int)(drop - s));
+}
+
+double BigInt::ratioToDouble(const BigInt& num, const BigInt& den) {
+    // Parts of up to twelve limbs (108 digits) go straight to the exact
+    // conversion. Past that its long division is quadratic in the length — a
+    // Rat power's million-digit parts would spend seconds — so first bound the
+    // value by the leading twelve limbs of each part, rounded down and up: when
+    // both bounds give the same double, every value between them does too. Only
+    // a value within ~2^-340 of a rounding boundary misses and pays for the
+    // exact path.
+    const size_t K = 12;
+    if (num.mag.size() <= K && den.mag.size() <= K) return ratioToDoubleExact(num, den);
+    auto top = [&](const BigInt& b, BigInt& lo, BigInt& hi) -> long long {
+        lo = b.abs();
+        const size_t n = lo.mag.size();
+        if (n <= K) { hi = lo; return 0; }
+        bool exact = true;
+        for (size_t i = 0; i < n - K; i++) if (lo.mag[i]) { exact = false; break; }
+        lo.mag.erase(lo.mag.begin(), lo.mag.begin() + (long)(n - K));
+        hi = exact ? lo : lo + BigInt(1);
+        return (long long)(n - K);                   // limbs dropped: a factor of 1e9 each
+    };
+    BigInt nlo, nhi, dlo, dhi;
+    const long long dropped = top(num, nlo, nhi) - top(den, dlo, dhi);
+    // Twelve limbs are under 1e108, so a value whose dropped limbs put it past
+    // 1e(108+309) or under 1e-(108+324) is out of a double's range outright.
+    if (dropped * 9 > 108 + 309 + 9) return HUGE_VAL;
+    if (dropped * 9 < -(108 + 324 + 9)) return 0.0;
+    if (dropped > 0) { BigInt f = BigInt(10).pow(9 * dropped); nlo = nlo * f; nhi = nhi * f; }
+    else if (dropped < 0) { BigInt f = BigInt(10).pow(-9 * dropped); dlo = dlo * f; dhi = dhi * f; }
+    const double lo = ratioToDoubleExact(nlo, dhi), hi = ratioToDoubleExact(nhi, dlo);
+    if (lo == hi) return lo;
+    return ratioToDoubleExact(num, den);
+}
+
 std::string BigInt::toString() const {
     if (sign == 0) return "0";
     std::string s = sign < 0 ? "-" : "";
