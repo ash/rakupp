@@ -121,6 +121,12 @@ only way these can drift.
   the three are built and what follows from it — tree-walk vs bytecode VM, JIT
   vs ahead-of-time compilation, refcounting vs a collector, and what each can
   ship. Structural, not a scoreboard.
+- **[dependencies.md](dependencies.md)** — what Raku++ depends on: nothing
+  third-party. What building it takes (CMake and a C++17 compiler), what the
+  binary links on each OS and what each system library is for, what is written
+  in-house instead of linked (big integers, regexes, Unicode, zlib, digests,
+  JSON), and what is loaded only on demand — libffi, OpenSSL for TLS, database
+  client libraries, curl for the installer, a C++ compiler for `--exe`.
 - **[differences.md](differences.md)** — where Raku++ and Rakudo differ, in both
   directions: what Raku++ does that Rakudo does not, where Rakudo is ahead, and
   the handful you will actually run into.
