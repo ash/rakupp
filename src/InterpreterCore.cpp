@@ -15320,7 +15320,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!anyMulti)
                 for (size_t d = 0; d < dims->items.size() && d < keys.size(); d++)
                     if (dims->items[d]->kind != NK::Whatever)
-                        pendingSubscripts_.emplace_back(dims->items[d].get(), keys[d]);
+                        parkSubscript(dims->items[d].get(), keys[d]);
             if (anyMulti) {
                 Value* root = lvalue(ix->base.get(), /*asInvocant=*/true);
                 std::vector<ValueList> tuples = expandDimTuples(*root, keys);
@@ -15378,7 +15378,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     }
                     return sink ? Value::any() : rv;
                 }
-                pendingSubscripts_.emplace_back(ix->index.get(), keys);
+                parkSubscript(ix->index.get(), keys);
             }
             // A call is included: `%orig{ %new.keys } = %new.values`. A non-list
             // result falls through to the ordinary path below, which is what keeps
@@ -15404,7 +15404,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (!(keys.t == VT::Array || keys.t == VT::Range)) {
                     // not a slice after all — hand this answer to the ordinary
                     // path below rather than running the subscript a second time
-                    pendingSubscripts_.emplace_back(ix->index.get(), keys);
+                    parkSubscript(ix->index.get(), keys);
                 }
                 if (keys.t == VT::Array || keys.t == VT::Range) {
                     ValueList ks;
@@ -21579,7 +21579,7 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
 // default — then the Value the lane would store differs from the slot in
 // `.i` alone. False, with nothing evaluated and the slot untouched, otherwise.
 bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
-    if (!pendingSubscripts_.empty() || (Expr::EvalFn)b->handler != &Interpreter::binaryFastHandler)
+    if (anyPendingSubscripts() || (Expr::EvalFn)b->handler != &Interpreter::binaryFastHandler)
         return false;
     const std::string& op = b->op;
     if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
@@ -22132,7 +22132,7 @@ static inline bool nativeNumberSlotValue(const Value& v) {
 // Rat goes in whole. A native takes a result of its own kind, wrapped to its
 // width and rounded to a num32 as wrapNative does.
 bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
-    if (!pendingSubscripts_.empty()) return false;
+    if (anyPendingSubscripts()) return false;
     // a typed subtree, or the fast shape's two leaves (variables and plain
     // literals, which typedOperand reads as the subtree's leaves are read)
     const Expr::EvalFn h = b->handler;
@@ -29969,13 +29969,16 @@ Value Interpreter::eval(Expr* e) {
     // the wrong slot every time. Data::RandomKeep's reservoir is exactly that
     // shape and silently dropped 13.7% of what it was offered. The first eval
     // parks its answer here for the second one to collect, once.
-    if (!pendingSubscripts_.empty())
-        for (size_t i = 0; i < pendingSubscripts_.size(); i++)
-            if (pendingSubscripts_[i].first == e) {
-                Value v = std::move(pendingSubscripts_[i].second);
-                pendingSubscripts_.erase(pendingSubscripts_.begin() + i);
+    if (RAKUPP_UNLIKELY(pendingSubscriptsAny_.load(std::memory_order_relaxed) != 0)) {
+        auto& parked = pendingSubscripts();
+        for (size_t i = 0; i < parked.size(); i++)
+            if (parked[i].first == e) {
+                Value v = std::move(parked[i].second);
+                parked.erase(parked.begin() + i);
+                pendingSubscriptsAny_.fetch_sub(1, std::memory_order_relaxed);
                 return v;
             }
+    }
     // a node compiled to a handler runs it (Expr::handler); the switch is the
     // fallback for everything else
     if (Expr::EvalFn h = e->handler) return h(*this, e);

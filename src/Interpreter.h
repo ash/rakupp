@@ -3196,8 +3196,27 @@ public:
     // for them, so a failing EXPORT stays a warning there instead of failing
     // the load as it does for `use`/`need`.
     // see eval(): the first of an element assignment's two subscript evaluations
-    // parks its result here so the second one does not re-run the user's code
-    std::vector<std::pair<const Expr*, Value>> pendingSubscripts_;
+    // parks its result here so the second one does not re-run the user's code.
+    //
+    // Per THREAD: as a field of the interpreter, two `start` blocks assigning
+    // to elements at once pushed into one vector, and under load the heap was
+    // corrupted ("pointer being freed was not allocated" in evalAssignInner —
+    // a Webraku server with a few modules loaded died one run in three). The
+    // vector is thread_local now; eval() reads it on every node, so it first
+    // reads this count of entries parked on ANY thread, one relaxed load, and
+    // looks up its own thread's vector only when that is not zero.
+    std::atomic<long> pendingSubscriptsAny_{0};
+    static std::vector<std::pair<const Expr*, Value>>& pendingSubscripts() {
+        thread_local std::vector<std::pair<const Expr*, Value>> v;
+        return v;
+    }
+    bool anyPendingSubscripts() const {
+        return pendingSubscriptsAny_.load(std::memory_order_relaxed) != 0 && !pendingSubscripts().empty();
+    }
+    void parkSubscript(const Expr* e, Value v) {
+        pendingSubscripts().emplace_back(e, std::move(v));
+        pendingSubscriptsAny_.fetch_add(1, std::memory_order_relaxed);
+    }
     void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false, bool mergeGlobals = true);
     void loadModuleImpl(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm);
     // ---- per-unit package stashes: what each compilation unit declared at

@@ -1610,9 +1610,9 @@ Expr* Interpreter::listLiteralItem(Index* ix) {
     if (!plainListLiteral(le) || ix->index->kind == NK::ListExpr || ix->index->kind == NK::Range ||
         ix->index->kind == NK::Whatever) return nullptr;
     Value k = eval(ix->index.get());
-    if (k.t != VT::Int) { pendingSubscripts_.emplace_back(ix->index.get(), k); return nullptr; }
+    if (k.t != VT::Int) { parkSubscript(ix->index.get(), k); return nullptr; }
     long long n = k.toInt();
-    if (n < 0 || n >= (long long)le->items.size()) { pendingSubscripts_.emplace_back(ix->index.get(), k); return nullptr; }
+    if (n < 0 || n >= (long long)le->items.size()) { parkSubscript(ix->index.get(), k); return nullptr; }
     return le->items[(size_t)n].get();
 }
 
