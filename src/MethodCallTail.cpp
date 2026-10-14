@@ -5376,7 +5376,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             BigInt base = inv.big() ? *inv.big() : BigInt(inv.toInt());
             BigInt e = args[0].big() ? *args[0].big() : BigInt(args[0].toInt());
             BigInt mod = args[1].big() ? *args[1].big() : BigInt(args[1].toInt());
-            if (mod.isZero()) return Value::integer(0);
+            // A modulus of zero or less has no residues to answer in; Rakudo
+            // refuses it (libtommath's "Value out of range"), and answering, as
+            // this did, gave 0 for 0 and -12 for `expmod(-3, 5, -7)`.
+            if (mod.sign <= 0)
+                throw RakuError{Value::typeObj("X::AdHoc"),
+                                "expmod: the modulus must be positive, not " + mod.toString()};
             auto modOf = [&](const BigInt& x) { BigInt q, r; BigInt::divmod(x, mod, q, r); if (r.sign < 0) r = r + mod; return r; };
             // A NEGATIVE exponent asks for the modular inverse raised to |e|
             // (Math::NumberTheory's modular-inverse is `power-mod($k, -1, $n)`).

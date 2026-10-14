@@ -268,12 +268,25 @@ checks missed and why the new ones exist.
     cycle: 1/10007 was wrong. Cap now a million, past which it fails; and an
     integral value has no trailing point, as in Rakudo
     (base-repeating-integral-and-long-cycles.raku).
-- **Divergences left as they are, on purpose or for a decision:**
+- **Divergences, and what became of them:**
   - `expmod(a, 0, 1)` is 1, not 0, on both engines (libtommath does not
-    reduce a zero exponent). The oracle encodes Rakudo's answer.
-  - `expmod(3, 5, -7)`: Rakudo dies in libtommath, Raku++ answers 5.
+    reduce a zero exponent). Left; the oracle encodes Rakudo's answer.
+  - `expmod` with a modulus of zero or less answered (5 for
+    `expmod(3, 5, -7)`, -12 for `expmod(-3, 5, -7)`, 0 for a zero modulus)
+    where Rakudo refuses: it now throws X::AdHoc too
+    (expmod-modulus-must-be-positive.raku).
   - `(4/1).base-repeating(2)`: Rakudo answers the decimal "4", Raku++ the
-    base's own "100".
+    base's own "100". Raku++ keeps "100"; the Rakudo fix is a local branch,
+    `fix/base-repeating-integral-radix` in the /Users/ash/rakudo-base-repeating
+    worktree, with its roast test on branch `base-repeating-integral-radix`
+    in that worktree's t/spec. Not submitted anywhere.
+- **The --target=js runtime, checked the same day** (the regressions above
+  under JavaScriptCore): `expmod` answered negative residues for a negative
+  base and died on a negative exponent; `.base-repeating` was `.base`;
+  Rat `.Num` divided two converted doubles; and an integral Num literal
+  past 2**63 compiled to an Int. All fixed to agree with the interpreter;
+  ratToFloat agrees with Python on 20,000 cases including ties and
+  subnormals.
 - **Found, then fixed: large gcd was ~130x slower than Rakudo** (14,000-digit
   operands: 0.9 s vs 7 ms), so FatRat.new on big parts could run for
   minutes: Euclid over a quadratic divmod. It is Lehmer's gcd over the

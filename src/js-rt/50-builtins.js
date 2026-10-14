@@ -68,7 +68,49 @@ function millerRabin(n) {
     }
     return true;
 }
-function expmod(b, e, m) { let base = big(b) % big(m), ex = big(e), mod = big(m), res = 1n; if (ex < 0n) throw new RakuError('expmod with negative exponent'); while (ex > 0n) { if (ex & 1n) res = res * base % mod; base = base * base % mod; ex >>= 1n; } return normBig(res); }
+// As the interpreter's (MethodCallTail.cpp): a modulus of zero or less is
+// refused, as Rakudo refuses it; a negative exponent raises the modular inverse;
+// residues are taken 0..m-1, where JS's `%` keeps the dividend's sign and gave
+// a negative answer for a negative base.
+function expmod(b, e, m) {
+    const mod = big(m);
+    if (mod <= 0n) throw new RakuError('expmod: the modulus must be positive, not ' + mod);
+    const md = (x) => { const r = x % mod; return r < 0n ? r + mod : r; };
+    let base = md(big(b)), ex = big(e), res = 1n;
+    if (ex < 0n) {
+        let [r0, r1, s0, s1] = [base, mod, 1n, 0n];
+        while (r1) { const q = r0 / r1; [r0, r1] = [r1, r0 - q * r1]; [s0, s1] = [s1, s0 - q * s1]; }
+        if (r0 !== 1n) throw new RakuError('expmod: ' + big(b) + ' has no inverse modulo ' + mod);
+        base = md(s0); ex = -ex;
+    }
+    while (ex > 0n) { if (ex & 1n) res = res * base % mod; base = base * base % mod; ex >>= 1n; }
+    return normBig(res);
+}
+// Rat.base-repeating: (the digits up to the cycle, the cycle), as the
+// interpreter's: an integral value has no point, and past a million digits the
+// call fails rather than cut the cycle short.
+function baseRepeating(v, radix = 10) {
+    const x = toNumeric(v);
+    if (!(x instanceof RRat)) throw new RakuError(`No such method 'base-repeating' for invocant of type '${typeName(x)}'`, 'X::Method::NotFound');
+    const b = Number(toInt(radix));
+    if (b < 2 || b > 36) throw new RakuError(`Radix ${b} out of range (allowed: 2..36)`, 'X::Syntax::Number::RadixOutOfRange');
+    if (x.d === 0n) throw new RakuError('Attempt to divide by zero when coercing Rational to Str', 'X::Numeric::DivideByZero');
+    const bb = BigInt(b), neg = x.n < 0n, a = neg ? -x.n : x.n, d = x.d;
+    const whole = (neg ? '-' : '') + (a / d).toString(b).toUpperCase();
+    let rem = a % d;
+    if (rem === 0n) return mkList([whole, '']);
+    const seen = new Map();
+    let digits = '';
+    while (rem !== 0n) {
+        if (seen.has(rem)) { const i = seen.get(rem); return mkList([whole + '.' + digits.slice(0, i), digits.slice(i)]); }
+        if (digits.length >= 1000000) throw new RakuError(`base-repeating: the expansion of ${str(x)} runs past 1000000 digits without repeating`);
+        seen.set(rem, digits.length);
+        rem *= bb;
+        digits += (rem / d).toString(b).toUpperCase();
+        rem %= d;
+    }
+    return mkList([whole + '.' + digits, '']);
+}
 function polymod(v, ...mods) {
     let n = big(v); const out = [];
     // the moduli may be a list, and a lazy one (`2**32 xx *`): stop when nothing is left

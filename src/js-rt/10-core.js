@@ -382,14 +382,32 @@ function toFloat(v) {
         }
     }
 }
+// n/d as the nearest double, ties to even, rounded ONCE — the interpreter's
+// BigInt::ratioToDouble. Converting the parts and dividing rounded three times,
+// so a value halfway between two doubles, or a hair either side, could land an
+// ulp off (ORACLE-PLAN P2). Parts within 2**53 are exact, and one IEEE division
+// rounds correctly; past that: a 55- or 56-bit quotient (fewer on the
+// subnormal grid), rounded half to even with the remainder as the sticky bit.
+const TWO53 = 1n << 53n;
 function ratToFloat(r) {
     if (r.d === 0n) return r.n === 0n ? NaN : (r.n < 0n ? -Infinity : Infinity);
-    const n = Number(r.n), d = Number(r.d);
-    if (Number.isFinite(n) && Number.isFinite(d)) return n / d;
-    // huge parts: scale down with integer division first
-    const sh = r.d.toString().length - 300;
-    if (sh > 0) { const p = 10n ** BigInt(sh); return Number(r.n / p) / Number(r.d / p); }
-    return n / d;
+    const neg = r.n < 0n, n = neg ? -r.n : r.n, d = r.d;
+    if (n <= TWO53 && d <= TWO53) return Number(r.n) / Number(d);
+    const k = bigBitLength(n) - bigBitLength(d);
+    if (k > 1026) return neg ? -Infinity : Infinity;
+    if (k < -1076) return neg ? -0 : 0;
+    const s = Math.min(55 - k, 1076);
+    const n2 = s > 0 ? n << BigInt(s) : n, d2 = s < 0 ? d << BigInt(-s) : d;
+    const q = n2 / d2, rem = n2 % d2;
+    const drop = Math.max(bigBitLength(q) - 53, s - 1074);        // 2 or 3
+    const half = 1n << BigInt(drop - 1), low = q & ((half << 1n) - 1n);
+    let mant = q >> BigInt(drop);
+    if (low > half || (low === half && (rem !== 0n || (mant & 1n)))) mant++;
+    const e = drop - s, m = Number(mant);                          // m <= 2**53: exact
+    const x = e > 1023 ? m * 2 ** (e - 1023) * 2 ** 1023            // overflows to Infinity, as it should
+            : e < -1022 ? m * 2 ** (e + 1074) * 2 ** -1074          // on the subnormal grid: exact
+            : m * 2 ** e;
+    return neg ? -x : x;
 }
 // Int view (truncating), for Int-only operations; dies on a non-integral Num.
 function toInt(v) {

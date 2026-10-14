@@ -776,7 +776,10 @@ struct JsGen {
                 }
                 if (std::isinf(n->v)) return n->v < 0 ? "(-Infinity)" : "Infinity";
                 if (std::isnan(n->v)) return "NaN";
-                if (n->v == (long long)n->v || n->v == 0) return litConst("new R.RNum(" + numLit(n->v) + ")");
+                // An integral Num is boxed, or the runtime reads it as an Int. The
+                // test was `v == (long long)v`, undefined past 2**63 (it saturates
+                // on ARM), so 1.0041590427515434e36 compiled to an Int.
+                if (std::trunc(n->v) == n->v) return litConst("new R.RNum(" + numLit(n->v) + ")");
                 return "(" + numLit(n->v) + ")";
             }
             case NK::StrLit: return jsStr(static_cast<StrLit*>(e)->v);
