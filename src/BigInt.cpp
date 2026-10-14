@@ -157,6 +157,7 @@ static inline BigInt fromMagU64(unsigned long long m, int sign) {
     r.sign = r.mag.empty() ? 0 : sign;
     return r;
 }
+BigInt BigInt::fromU64(unsigned long long m) { return fromMagU64(m, 1); }
 
 #if defined(__SIZEOF_INT128__)
 // The same two helpers one limb-width up. Values in the 64-128 bit band are

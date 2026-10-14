@@ -83,6 +83,11 @@ inline int ctzll(unsigned long long x) {
 #endif
 }
 
+// |v| for any long long, -2**63 included: std::llabs has no answer for that one.
+inline unsigned long long magU(long long v) {
+    return v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
+}
+
 // count leading zeros of a nonzero 64-bit value.
 inline int clzll(unsigned long long x) {
 #if defined(__GNUC__) || defined(__clang__)

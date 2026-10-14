@@ -19438,7 +19438,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // itself, so the temporaries move straight in — `.abs()` here copied both
         // magnitudes for nothing.
         if (l.big() || r.big()) return Value::bigint(BigInt::gcd(l.toBig(), r.toBig()));
-        long long x = std::llabs(l.toInt()), y = std::llabs(r.toInt()); while (y) { long long t = x % y; x = y; y = t; } return Value::integer(x);
+        // UNSIGNED magnitudes: llabs(-2**63) came back -2**63 (ORACLE-PLAN P2).
+        unsigned long long x = magU(l.toInt()), y = magU(r.toInt()); while (y) { unsigned long long t = x % y; x = y; y = t; } return x <= LLONG_MAX ? Value::integer((long long)x) : Value::bigint(BigInt::fromU64(x));
     }
     if (opEq(op, "lcm")) {
         if (l.big() || r.big()) {
@@ -19449,11 +19450,10 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             BigInt::divmod(a, g, q, rem);
             return Value::bigint(q * b);
         }
-        long long x = l.toInt(), y = r.toInt(); if (!x || !y) return Value::integer(0); long long g = std::llabs(x), h = std::llabs(y); while (h) { long long t = g % h; g = h; h = t; }
-        long long res;
-        if (rakupp::mul_ovf(x / g, y, &res)) // exact past long long: redo big
-            return Value::bigint(BigInt(std::llabs(x / g)) * BigInt(std::llabs(y)));
-        return Value::integer(std::llabs(res));
+        unsigned long long x = magU(l.toInt()), y = magU(r.toInt()); if (!x || !y) return Value::integer(0);
+        unsigned long long g = x, h = y; while (h) { unsigned long long t = g % h; g = h; h = t; } const unsigned long long q = x / g;
+        if (q > ~0ull / y) return Value::bigint(BigInt::fromU64(q) * BigInt::fromU64(y));   // past 64 bits
+        return q * y <= LLONG_MAX ? Value::integer((long long)(q * y)) : Value::bigint(BigInt::fromU64(q * y));
     }
     // A TIE keeps the RIGHT operand: `0e0 max 0` is the Int 0 and `0 max 0e0`
     // the Num, because Rakudo takes the left one only on a STRICT win. The two

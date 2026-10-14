@@ -99,6 +99,7 @@ struct BigInt {
 
     BigInt() {}
     BigInt(long long v);
+    static BigInt fromU64(unsigned long long m);   // past LLONG_MAX too
     static BigInt fromString(const std::string& s); // decimal, optional leading sign
 
     bool isZero() const { return sign == 0; }
