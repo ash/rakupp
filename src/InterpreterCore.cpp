@@ -454,6 +454,12 @@ static bool exprYieldsContainer(const Expr* e) {
     }
 }
 
+// …for the value a `return` hands back, asked once per ReturnStmt
+static bool returnYieldsContainer(const ReturnStmt* r) {
+    if (r->yieldsContainer < 0) r->yieldsContainer = exprYieldsContainer(r->value.get()) ? 1 : 0;
+    return r->yieldsContainer == 1;
+}
+
 // A structural copy for the snapshot: an Array/Hash Value shares its payload,
 // so a plain copy would still alias the block's mutations.
 static Value gatherDeepCopy(const Value& v, int depth = 0) {
@@ -2046,7 +2052,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             returnSlipArgs(r, v);
             // An EXPLICIT `return $p` hands the container on; only a routine's
             // implicit tail value is decontainerized (below, at the tail exit).
-            tctx_.valContained = exprYieldsContainer(r->value.get());
+            tctx_.valContained = returnYieldsContainer(r);
             // the routine this `return` was WRITTEN in: when a block carrying it
             // runs inside some other routine, that one must not catch it
             const uint64_t lf = lexicalRoutineFrame();
@@ -7727,7 +7733,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
                 last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut
                      : r->value ? eval(r->value.get()) : Value::nil();
                 if (!(tcx.lvalueOut && r->isRw)) returnSlipArgs(r, last);
-                tcx.valContained = exprYieldsContainer(r->value.get());
+                tcx.valContained = returnYieldsContainer(r);
                 explicitTailReturn = true;
             }
             else last = exec(s, i + 1 != nst);
@@ -9131,7 +9137,7 @@ resumeBody:
                     // `return $p` hands the CONTAINER on. This fast path is the
                     // routine's last statement, so the tail-decontainerizing
                     // line below must not see it as an implicit return.
-                    tcx.valContained = exprYieldsContainer(r->value.get());
+                    tcx.valContained = returnYieldsContainer(r);
                     explicitTailReturn = true;
                 }
                 // …and the same for an `is rw` routine with an IMPLICIT return:
@@ -10903,7 +10909,7 @@ resumeMethodBody:
                     // `return $p` hands the CONTAINER on. This fast path is the
                     // routine's last statement, so the tail-decontainerizing
                     // line below must not see it as an implicit return.
-                    tcx.valContained = exprYieldsContainer(r->value.get());
+                    tcx.valContained = returnYieldsContainer(r);
                     explicitTailReturn = true;
                 }
                 // …and an `is rw` / `is raw` routine with an IMPLICIT return: the

@@ -1215,6 +1215,8 @@ struct ForStmt : Stmt {
 struct ReturnStmt : Stmt {
     ExprPtr value; // may be null
     bool isRw = false; // `return-rw` — return the container itself, not a decontainerized copy
+    // exprYieldsContainer(value), asked on every return, decided once (see ExprStmt)
+    mutable DecidedOnce<signed char> yieldsContainer{-1};
     ReturnStmt(): Stmt(NK::ReturnStmt) {}
 };
 
