@@ -353,6 +353,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
             if (fileName != "-e" && !fileName.empty())
                 precompStoreProgram(fileName, src, sp, prog, finish, parser.opScanned_);
         }
+        parser.releaseTokens();
         stage.lap("parse");
         interp.setArgs(std::move(args));
         interp.finishData_ = finish;

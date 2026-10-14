@@ -2313,6 +2313,26 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
 // below, so the cast back is local to this file.
 using GrammarDynSnap = std::vector<std::pair<std::string, Value>>;
 
+
+// A grammar parse's (rule name, from, to) keys for the action replay below:
+// the names are views of the ParseNodes' own strings, which outlive both
+// sets, so a key costs no copy, and the lookup is one hash, where a
+// std::set<std::tuple<std::string, long, long>> copied the name per insert
+// and compared strings down a tree per probe (4.6% of a grammar parse).
+struct ReplayKey {
+    std::string_view name; long from, to;
+    bool operator==(const ReplayKey& o) const { return from == o.from && to == o.to && name == o.name; }
+};
+struct ReplayKeyHash {
+    size_t operator()(const ReplayKey& k) const {
+        size_t h = std::hash<std::string_view>{}(k.name);
+        h ^= (size_t)k.from * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull + (h << 6) + (h >> 2);
+        h ^= (size_t)k.to * 0xC2B2AE3D27D4EB4Full + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+using ReplayKeySet = std::unordered_set<ReplayKey, ReplayKeyHash>;
+
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions,
                                 const ValueList* ruleArgs, long startPos, long* consumedEnd) {
@@ -2871,7 +2891,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // wins with `<single-quoted>`: single-key's action joined Nils (issue #100).
     // Rakudo fires such a kid on every attempt, having no memo.
     const ParseNode* replayRoot = nullptr;
-    std::set<std::tuple<std::string, long, long>> replayedKeys;
+    ReplayKeySet replayedKeys;
 
     // Turn the recorded parse tree into Match values, running actions bottom-up
     // so `$<child>.made` is available to a parent's action.
@@ -3262,7 +3282,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // ones the tree does not carry, in completion order, exactly as the
         // failure path does.
         if (haveActions && actCls && !completionLog->empty()) {
-            std::set<std::tuple<std::string, long, long>> inTree;
+            ReplayKeySet inTree;
             std::function<void(const ParseNode&)> walk = [&](const ParseNode& pn) {
                 inTree.insert({pn.name, pn.from, pn.to});
                 if (!pn.actualRule.empty()) inTree.insert({pn.actualRule, pn.from, pn.to});
