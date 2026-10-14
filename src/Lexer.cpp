@@ -47,6 +47,8 @@ static bool codeNameApostrophe(const std::string& raw, char next) {
 static bool rxClassOpener(const std::string& raw) {
     const char prev = raw.empty() ? '\0' : raw.back();
     if (prev == '<' || prev == '-' || prev == '+') return true;
+    // the class ASSERTIONS `<?[…]>` and `<![…]>` — `<!before [ … ]>` is a group
+    if ((prev == '?' || prev == '!') && raw.size() >= 2 && raw[raw.size() - 2] == '<') return true;
     size_t k = raw.size();
     while (k > 0 && (raw[k - 1] == ' ' || raw[k - 1] == '\t' || raw[k - 1] == '\n')) k--;
     if (k == 0 || (raw[k - 1] != '+' && raw[k - 1] != '-')) return false;
@@ -2915,7 +2917,9 @@ bool Lexer::tryQuoteForm(Token& out) {
                 if (commentAt == std::string::npos && raw.find(closeS, at) != std::string::npos) commentAt = at;
                 continue;
             }
-            if (blocks && ch == '{') { bd++; raw += advance(); continue; } // enter code block
+            // …and a `{` inside a character class is a member, not a block:
+            // `rx/ <[{"]> /` opened one that never closed, and the scan ran on
+            if (blocks && !inClass && ch == '{') { bd++; raw += advance(); continue; } // enter code block
             // Raku regex/subst pattern: `[ ... ]` groups & char classes (incl. <-[/]>) shield the delimiter
             // Inside a CHARACTER CLASS a `[` is a literal member, not a nested
             // group: `<-[^$\\.*+?()[\]{}|]>` (ECMA262Regex's pattern-character)
@@ -4963,11 +4967,16 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // literal: the `<` then bumped the angle counter, the closing `/` was
                 // never found, and the whole statement failed to parse. (URI strips
                 // wrapping brackets with `/^ \s* ['<' | '"'] /`.)
-                if ((ch == '\'' || ch == '"') && !(angle > 0 && brack > 0) &&
+                //
+                // A class is `inClass` now, handled above, so being inside `<…>` and
+                // `[…]` at once no longer means a class: `<!before ['#']>` is a group
+                // in an assertion, and treating its quote as a member let the `#`
+                // start a comment that ate the closing `/`.
+                if ((ch == '\'' || ch == '"') &&
                     !(ch == '\'' && (rxNameApostrophe(raw, peek(1)) ||
                                      (brace > 0 && codeNameApostrophe(raw, peek(1))))))
                     { quote = ch; raw += advance(); continue; }
-                if ((unsigned char)ch >= 0x80 && !(angle > 0 && brack > 0) && skipUniQuote(raw)) continue;
+                if ((unsigned char)ch >= 0x80 && skipUniQuote(raw)) continue;
                 if (ch == '{') { brace++; raw += advance(); continue; }
                 if (ch == '}' && brace > 0) { brace--; raw += advance(); continue; }
                 if (brace > 0) { raw += advance(); continue; } // code block: consume raw
