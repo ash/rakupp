@@ -407,6 +407,38 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     `say N::<&g>:exists` prints `&gexists => True`, and `my $x =
     N::<&g>:exists` stores `&g`. The `Pkg::<…>` term in src/Parser.cpp
     does not take the postfix adverb a normal subscript does.
+- [ ] **`map` and `grep` over a finite list are eager; Rakudo's are lazy**
+  (found 2026-10-14 by fez; checked against Rakudo 2026.09). b6ac7079 made
+  the one shape that broke real code lazy: a `.first`/`.head` over a plain
+  map/grep chain marks it (LazyChainMark, lazyChainSource in
+  src/InterpreterCalls.cpp) and only the elements it reads are mapped. The
+  general case is still eager, and shows in two places:
+  - A Seq kept for later runs its block where it is written: `my $s =
+    (1..3).map({ print "m$_ " }); say "made"` prints `m1 m2 m3 made`
+    (Rakudo `made m1 m2 m3`).
+  - `for` over a map runs the whole map before the body's first pass:
+    `for (1..3).map({ print "m$_ " }) { print "b$_ " }` is `m1 m2 m3 b1 b2
+    b3` (Rakudo `m1 b1 m2 b2 m3 b3`), and so for grep. Beyond the order of
+    side effects, this costs: `for @files.map(*.slurp) { last if … }` reads
+    every file, and an endless or expensive tail is paid before `last`.
+
+  The pieces exist — the lazy map/grep arms of methodCallTail, the
+  `return`-block map that is already a lazy Seq (mapBlockReturnsOut), and
+  lazyChainSource's in-place reading of an Array — so the change is to let
+  map/grep hand back such a Seq generally and have each eager consumer
+  (list assignment, sinking, `.elems`, …) drain it, and `for` pull from it.
+  The cost is the reason it was not done in passing: the eager loop is the
+  fast path (aliasing, arity > 1, FIRST/NEXT/LAST, the AST-level map fast
+  paths), and a lazy view adds a std::function call and a buffer push per
+  element. Do it with perf-guard numbers for a map-heavy kernel beside it,
+  and keep the eager loop for consumers that drain anyway.
+  - Found on the way, on any lazy source (a `gather`, a lazy map): `.first`
+    with `:end` scans FORWARD — `gather { take 1; take 2; take 3
+    }.first(* > 0, :end)` is 1 (Rakudo 3) — and `.head(*-1)` reads the
+    WhateverCode as 0 and answers `()` (Rakudo `(1 2)`). Both are the lazy
+    `first`/`head` arms of methodCallTail (src/MethodCallTail.cpp);
+    lazyChainConsumer keeps the lazy chain away from both shapes, which is
+    why b6ac7079 does not hit them.
 
 ## 3. Compiled backends
 
