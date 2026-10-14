@@ -63,21 +63,33 @@ struct BitIn {
 struct Huff {
     short count[16];
     short symbol[288];
+    int codes;                       // how many symbols have a code
 };
 
-void buildHuff(Huff& h, const unsigned char* len, int n, const char* what) {
+// Which codes may be other than complete is zlib's rule, since a stream zlib
+// refuses is broken wherever it goes (ORACLE-PLAN P1 found us accepting what
+// it refuses): over-subscribed never; incomplete only as ONE code of one bit,
+// and never for the code-length code; no codes at all only for the distance
+// code, which RFC 1951 3.2.7 allows for a block of literals.
+enum class HuffKind { CodeLengths, Literals, Distances };
+
+void buildHuff(Huff& h, const unsigned char* len, int n, const char* what, HuffKind kind) {
     for (int i = 0; i < 16; i++) h.count[i] = 0;
     for (int i = 0; i < n; i++) h.count[len[i]]++;
-    if (h.count[0] == n) zdie(std::string("inflate: ") + what + " has no codes at all");
+    h.codes = n - h.count[0];
+    if (h.codes == 0) {
+        if (kind == HuffKind::Distances) return;     // decodeSym refuses any use of it
+        zdie(std::string("inflate: ") + what + " has no codes at all");
+    }
 
-    // Over-subscribed is a corrupt stream; INCOMPLETE is legal for the distance
-    // code alone (a block with no matches in it), so the caller decides.
     int left = 1;
     for (int l = 1; l < 16; l++) {
         left <<= 1;
         left -= h.count[l];
         if (left < 0) zdie(std::string("inflate: ") + what + " is over-subscribed");
     }
+    if (left > 0 && (kind == HuffKind::CodeLengths || h.count[1] + h.count[0] != n))
+        zdie(std::string("inflate: ") + what + " is incomplete");
     short offs[16];
     offs[1] = 0;
     for (int l = 1; l < 15; l++) offs[l + 1] = offs[l] + h.count[l];
@@ -115,10 +127,12 @@ void fixedTables(Huff& lit, Huff& dist) {
     for (int i = 144; i < 256; i++) l[i] = 9;
     for (int i = 256; i < 280; i++) l[i] = 7;
     for (int i = 280; i < 288; i++) l[i] = 8;
-    buildHuff(lit, l, 288, "the fixed literal code");
-    unsigned char d[30];
-    for (int i = 0; i < 30; i++) d[i] = 5;
-    buildHuff(dist, d, 30, "the fixed distance code");
+    buildHuff(lit, l, 288, "the fixed literal code", HuffKind::Literals);
+    // 32, as zlib builds it, so the code is complete; 30 and 31 are refused
+    // where they are decoded.
+    unsigned char d[32];
+    for (int i = 0; i < 32; i++) d[i] = 5;
+    buildHuff(dist, d, 32, "the fixed distance code", HuffKind::Distances);
 }
 
 void inflateCodes(BitIn& b, std::string& out, const Huff& lit, const Huff& dist) {
@@ -129,6 +143,7 @@ void inflateCodes(BitIn& b, std::string& out, const Huff& lit, const Huff& dist)
         sym -= 257;
         if (sym >= 29) zdie("inflate: length symbol 285-287 is reserved and cannot appear");
         size_t len = kLenBase[sym] + b.bits(kLenExtra[sym]);
+        if (!dist.codes) zdie("inflate: a match in a block that declared no distance codes");
         int dsym = decodeSym(b, dist);
         if (dsym >= 30) zdie("inflate: distance symbol 30 or 31 is reserved");
         size_t d = kDistBase[dsym] + b.bits(kDistExtra[dsym]);
@@ -171,7 +186,7 @@ void inflateRaw(BitIn& b, std::string& out) {
             std::memset(cl, 0, sizeof cl);
             for (int i = 0; i < ncode; i++) cl[kClOrder[i]] = (unsigned char)b.bits(3);
             Huff clh;
-            buildHuff(clh, cl, 19, "the code-length code");
+            buildHuff(clh, cl, 19, "the code-length code", HuffKind::CodeLengths);
             for (int i = 0; i < nlen + ndist; ) {
                 int sym = decodeSym(b, clh);
                 if (sym < 16) lengths[i++] = (unsigned char)sym;
@@ -190,11 +205,8 @@ void inflateRaw(BitIn& b, std::string& out) {
             }
             if (lengths[256] == 0) zdie("inflate: the block has no end-of-block code");
             Huff lit, dist;
-            buildHuff(lit, lengths, nlen, "the literal/length code");
-            // An INCOMPLETE distance code is legal when the block holds no
-            // matches; buildHuff refuses only the all-zero and over-subscribed
-            // shapes, which are the ones that are always wrong.
-            buildHuff(dist, lengths + nlen, ndist, "the distance code");
+            buildHuff(lit, lengths, nlen, "the literal/length code", HuffKind::Literals);
+            buildHuff(dist, lengths + nlen, ndist, "the distance code", HuffKind::Distances);
             inflateCodes(b, out, lit, dist);
         }
         else zdie("inflate: block type 3 is reserved");
@@ -296,6 +308,27 @@ void codeLengths(const std::vector<uint32_t>& freq, int maxLen, std::vector<unsi
     for (int l = maxLen; l >= 1; l--)
         for (int c = 0; c < blCount[l]; c++)
             if (k < order.size()) len[order[k++]] = (unsigned char)l;
+}
+
+// The code a dynamic block is about to carry must be one zlib's inflate will
+// build (see buildHuff): every length within the limit, and the Kraft sum
+// exactly one, or a single one-bit code where `single` allows it. Checked on
+// every block, because it is cheap and because #159 was a code that failed
+// exactly this and was written anyway: a wrong tree now stops the call
+// instead of producing a stream nobody can read.
+void checkCode(const std::vector<unsigned char>& len, int maxLen, bool single, const char* what) {
+    long long kraft = 0;
+    int codes = 0;
+    for (auto l : len) {
+        if (!l) continue;
+        if (l > maxLen) zdie(std::string("deflate: internal error, the ") + what + " code is longer than its limit; please report it");
+        kraft += 1LL << (maxLen - l);
+        codes++;
+    }
+    if (kraft == (1LL << maxLen)) return;
+    if (single && codes == 1 && kraft == (1LL << (maxLen - 1))) return;
+    zdie(std::string("deflate: internal error, the ") + what + " code is "
+         + (kraft > (1LL << maxLen) ? "over-subscribed" : "incomplete") + "; please report it");
 }
 
 // Canonical codes from lengths, exactly as RFC 1951 section 3.2.2 spells it.
@@ -505,6 +538,9 @@ void deflateBlocks(const std::string& in, int level, std::string& out) {
         emitTokens(b, toks, fixLit, fixLitCode, fixDst, fixDstCode);
     }
     else {
+        checkCode(litLen, 15, false, "literal/length");
+        checkCode(dstLen, 15, true, "distance");
+        checkCode(clLen, 7, false, "code-length");
         b.put(1, 1);
         b.put(2, 2);
         b.put(hlit - 257, 5);
@@ -574,11 +610,23 @@ std::string zlibDeflate(const std::string& in, int level, ZlibFormat fmt) {
     return out;
 }
 
+// The trailer is read where the deflate data ENDS, not from the end of the
+// buffer, and nothing may follow the stream: reading it from the end let a
+// stream with bytes between its last block and its trailer through whenever
+// the checksum still matched (ORACLE-PLAN P1). A gzip file is a series of
+// members (RFC 1952 2.2), which is what `cat a.gz b.gz` makes and what gzip -d
+// reads, so after one member only another may follow.
 std::string zlibInflate(const std::string& in, ZlibFormat fmt) {
     const uint8_t* p = (const uint8_t*)in.data();
     const uint8_t* end = p + in.size();
-    uint32_t wantSum = 0, wantLen = 0;
-    bool haveSum = false;
+    std::string out;
+
+    if (fmt == ZlibFormat::Raw) {
+        BitIn b{p, end};
+        inflateRaw(b, out);
+        if (b.p != end) zdie("uncompress: there are bytes after the end of the deflate stream");
+        return out;
+    }
 
     if (fmt == ZlibFormat::Zlib) {
         if (in.size() < 6) zdie("uncompress: a zlib stream is at least six bytes");
@@ -587,13 +635,22 @@ std::string zlibInflate(const std::string& in, ZlibFormat fmt) {
         if ((cmf >> 4) > 7) zdie("uncompress: the window is larger than 32 KB, which deflate does not define");
         if (((cmf << 8) | flg) % 31) zdie("uncompress: the zlib header check bits do not add up");
         if (flg & 0x20) zdie("uncompress: the stream needs a preset dictionary, which is not supported");
-        p += 2;
-        for (int i = 0; i < 4; i++) wantSum = (wantSum << 8) | end[-4 + i];
-        end -= 4;
-        haveSum = true;
+        BitIn b{p + 2, end};
+        inflateRaw(b, out);
+        if (end - b.p < 4) zdie("uncompress: the Adler-32 trailer is missing");
+        uint32_t want = 0;
+        for (int i = 0; i < 4; i++) want = (want << 8) | b.p[i];
+        if (b.p + 4 != end) zdie("uncompress: there are bytes after the end of the zlib stream");
+        if (zlibAdler32(out) != want) zdie("uncompress: the Adler-32 checksum does not match");
+        return out;
     }
-    else if (fmt == ZlibFormat::Gzip) {
-        if (in.size() < 18) zdie("uncompress: a gzip stream is at least eighteen bytes");
+
+    bool first = true;
+    do {
+        if (!first && (end - p < 18 || p[0] != 0x1F || p[1] != 0x8B))
+            zdie("uncompress: there are bytes after the gzip member that do not start another");
+        first = false;
+        if (end - p < 18) zdie("uncompress: a gzip stream is at least eighteen bytes");
         if (p[0] != 0x1F || p[1] != 0x8B) zdie("uncompress: not a gzip stream (bad magic)");
         if (p[2] != 8) zdie("uncompress: gzip compression method is not deflate");
         unsigned flg = p[3];
@@ -609,26 +666,21 @@ std::string zlibInflate(const std::string& in, ZlibFormat fmt) {
         if (flg & 0x08) { while (p < end && *p) p++; if (p == end) zdie("uncompress: gzip filename is unterminated"); p++; }
         if (flg & 0x10) { while (p < end && *p) p++; if (p == end) zdie("uncompress: gzip comment is unterminated"); p++; }
         if (flg & 0x02) { if (end - p < 2) zdie("uncompress: gzip header CRC is truncated"); p += 2; }
+
+        std::string member;
+        BitIn b{p, end};
+        inflateRaw(b, member);
+        p = b.p;
         if (end - p < 8) zdie("uncompress: gzip trailer is missing");
-        for (int i = 0; i < 4; i++) wantSum |= (uint32_t)end[-8 + i] << (i * 8);
-        for (int i = 0; i < 4; i++) wantLen |= (uint32_t)end[-4 + i] << (i * 8);
-        end -= 8;
-        haveSum = true;
-    }
-    if (p > end) zdie("uncompress: the header is longer than the stream");
-
-    std::string out;
-    BitIn b{p, end};
-    inflateRaw(b, out);
-
-    if (haveSum) {
-        uint32_t got = fmt == ZlibFormat::Zlib ? zlibAdler32(out) : zlibCrc32(out);
-        if (got != wantSum)
-            zdie(fmt == ZlibFormat::Zlib ? "uncompress: the Adler-32 checksum does not match"
-                                         : "uncompress: the CRC-32 checksum does not match");
-        if (fmt == ZlibFormat::Gzip && (uint32_t)(out.size() & 0xFFFFFFFFu) != wantLen)
+        uint32_t wantSum = 0, wantLen = 0;
+        for (int i = 0; i < 4; i++) wantSum |= (uint32_t)p[i] << (i * 8);
+        for (int i = 0; i < 4; i++) wantLen |= (uint32_t)p[4 + i] << (i * 8);
+        p += 8;
+        if (zlibCrc32(member) != wantSum) zdie("uncompress: the CRC-32 checksum does not match");
+        if ((uint32_t)(member.size() & 0xFFFFFFFFu) != wantLen)
             zdie("uncompress: the gzip length field does not match what was decoded");
-    }
+        out += member;
+    } while (p < end);
     return out;
 }
 
