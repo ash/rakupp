@@ -177,12 +177,18 @@ None of the 9 loops in the real workloads was eligible.
 Each item is gated alone, so its effect has a number:
 
 - **`Value::orderVal`:** three prebuilt statics instead of two interns per
-  compare.
+  compare. *Done 2026-10-14.*
 - **The lexer:** a switch on the first byte, with precomputed lengths. Reserve
-  the token vector.
+  the token vector. *Done 2026-10-14:* `kLexOps` indexed by first byte, the
+  token vector reserved at a token per 4 bytes (7.2 measured over 700 files),
+  and the parser's `classifyInfix` — ~150 string compares per token, 13% of
+  `-c` — asked once per spelling. `-c` on a 150k-line program 826 → 632 ms,
+  peak RSS 1,100 → 854 MB.
 - **`$*DISTRO`:** load it lazily, only for `version`, `release`, `desc` and
   `gist`, and read the version with `sysctlbyname("kern.osproductversion")`
-  instead of spawning.
+  instead of spawning. *Done 2026-10-14:* `kern.osproductversion` and
+  `kern.osversion`, `sw_vers` only as a fallback, the licence page only for
+  `.desc`; `rakupp -e '$*DISTRO.is-win'` 40 → under 10 ms.
 - **`precompRead`:**
   - read each file in one call
   - remember each file's hash for the life of the process, so content still
@@ -195,6 +201,14 @@ Each item is gated alone, so its effect has a number:
   - reducers that call no user code — `elems`, `sum`, `min`, `max`, `join` —
     which should borrow as `hashDirect` does (MethodCallTail.cpp ~1778) instead
     of snapshotting through `toList`
+
+  *Done 2026-10-14*, except `join`: `%h.elems` was already answered without
+  Pairs; `STMT for ^$n` walks the Range by its ends (`f($_) for ^5_000_000`
+  peak 410 → 9 MB); `.sum`/`.min`/`.max` with no arguments over a plain Int
+  array (`.sum` over Nums too) fold the live array (borrowedNumericFold), any
+  other element taking the old arms — 20 calls over 1M Ints: `.sum` 0.29 →
+  0.07 s, `.max` 0.43 → 0.05, `.min` 0.26 → 0.05. `.elems` is answered at the
+  method's entry.
 - **Grow arrays by `realloc`** when `bitwiseRelocOk()` holds (ValueVec.h
   ~172–197; `growAndBuild` builds the new element first). A C probe halves
   large arrays on macOS. Linux is not measured. *Done 2026-10-01:* blocks past
@@ -202,20 +216,36 @@ Each item is gated alone, so its effect has a number:
   1M Ints 165 → 83, 1M short Strs 246 → 163, 1M Rats 568 → 485, 200k objects
   894 → 796, 1M `[$_, $_+1]` 455 → 373; perf-guard level.
 - **Cache the "does it do Rational" answer** as a tri-state on `ClassInfo`
-  (MethodCallPart2.cpp ~6174).
+  (MethodCallPart2.cpp ~6174). *Done* (`ClassInfo::rationalNew`), and a plain
+  class's `.new` skips the question altogether since 944fda3b.
 - **Cache a class name's resolution** on its node, keyed by the symbol
-  generation.
+  generation. *Not done, 2026-10-14:* a NameTerm resolves lexically too (a
+  `::T` capture, a `my class`), so a cache needs to know the name is bound in
+  no scope, which nothing records; the NameTerm arm (evalRareExpr) is at most
+  7% inclusive of a 10× `objects` run.
 - **Store `exprYieldsContainer`** on the node instead of walking the AST per
-  statement.
+  statement. *Done:* ExprStmt::yieldsContainer, and ReturnStmt's since
+  2026-10-14.
 - **Precompute placeholder names** and bind them to pad slots; build `@_` only
-  when the block reads it.
+  when the block reads it. *Done 2026-10-14* (`@_` earlier): a block's
+  placeholders are slots of its pad under the bare name, and a `$^a` read is
+  annotated with that slot (resolvePads). `.sort({ $^a.abs <=> $^b.abs || … })`
+  over 100k −12%, `.map({ $^x + $^y })` −24%, a two-placeholder block called
+  300k times −18%.
 - **Grammar replay:** flag tree membership on the node instead of building a
-  `std::set<tuple<string,long,long>>`.
+  `std::set<tuple<string,long,long>>`. *Done 2026-10-14* as a hash set of
+  (name view, from, to): the log entries are not tree nodes, so a flag on the
+  node could not answer for them. `jg.raku parse api.json` 106–109 → 99–102 ms.
 - **`execBlock` and `runLoopBody`** take `shared_ptr<Env>` by `const&`
-  (Interpreter.h ~1146).
-- **`providedArgs.reserve`** (MethodCallPart2.cpp ~626).
+  (Interpreter.h ~1146). *Done 2026-10-14 for runLoopBody* (and
+  runNextPhasers). execBlock and its halves MOVE the parameter into
+  `tctx_.cur`, so by value costs one count already, and a `const&` aliasing a
+  caller's `tctx_.cur` would be emptied by that move.
+- **`providedArgs.reserve`** (MethodCallPart2.cpp ~626). *Done:* eight on the
+  stack, spilling past them.
 - **Free the parser's token vector** after the parse: 48 MB of the 136 MB live
-  heap on a 50k-line file.
+  heap on a 50k-line file. *Done 2026-10-14* (Parser::releaseTokens, on the
+  run path): a 150k-line program resident at 1,108 → 873 MB while it runs.
 - **Stop `Array.shift` being O(n).**
 
 ### P2 — dispatch

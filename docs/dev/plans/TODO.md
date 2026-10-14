@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-11.*
+*Started 2026-10-03. Last updated 2026-10-14.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -154,7 +154,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   per read (Rakudo keeps child objects, but object `eqv` and `.Capture` read
   every attribute key). The `fib` integer kernel moves ±5% with code
   placement in unrelated files: pin its alignment so perf-guard stops seeing
-  it.
+  it. (2026-10-14: perf-guard read it +3.8% after the V6 P1 batch, and 12
+  interleaved runs of fib alone read 51.3 against 50.2 ms, the batch ahead —
+  the wobble, seen again.)
 - [ ] **Run-time quadratics the scaling gate found** (2026-10-10): seven
   common operations whose cost per call grew with the size of what they work
   on. Each is a `known` shape in `t/scaling/run.raku`, a TAP TODO, so the gate
@@ -556,9 +558,11 @@ with its tag, after the release run is green.
   every module the program lacks and offers `rakupp install app.raku` and
   `rakupp --auto app.raku`; only `--auto` fetches (opt-in since the
   revision). `t/deps/run.raku` 52/52 (in CI), Roast list unchanged, the typo
-  guard refuses 4 of 9,698 index names. Next: a failed fetch should remove
-  the dependencies it installed, `RkConfig.deps` (D5), parallel archive
-  fetches (D6).
+  guard refuses 4 of 9,698 index names. The archives a plan needs are
+  fetched side by side by one `curl --parallel` (D6, 2026-10-14; any error
+  falls back to the per-dist fetch). Next: a failed fetch should remove the
+  dependencies it installed, `RkConfig.deps` (D5), and Cro::HTTP's cold
+  install (14.7 s fetched in turn) re-timed.
 - [ ] **Not started**: [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) (`rakupp.lock`,
   `--frozen`) and [UUID-PLAN.md](UUID-PLAN.md) (draft; the distribution's name
   is open).
