@@ -4338,7 +4338,11 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             ac = t == "Int" ? 1 : t == "Str" ? 2 : t == "Num" ? 3 : t == "Bool" ? 4
                : (t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
                   t == "uint" || t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" ||
-                  t == "byte" || t == "atomicint") ? 5
+                  t == "byte" || t == "atomicint" ||
+                  // NativeCall's C spellings are integers too: `sub f(ulong $x)`
+                  // binds an Int in Rakudo, and refused it here
+                  t == "long" || t == "longlong" || t == "ssize_t" ||
+                  t == "ulong" || t == "ulonglong" || t == "size_t") ? 5
                : (t == "num" || t == "num32" || t == "num64") ? 6
                : t == "str" ? 7 : 0;
             p.acceptClass = ac;
@@ -13547,6 +13551,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             // an instance of the pun does R)
             std::string want = ve->declType.c_str();
             if (size_t br = want.find('['); br != std::string::npos && br > 0) want = want.substr(0, br);
+            // NativeCall's C integer spellings take an Int as the sized ones do:
+            // DBDish::mysql declares `our ulong constant ulong_zero is export = 0`,
+            // and refusing it left DBIish unable to load its mysql driver
+            if (want == "long" || want == "longlong" || want == "ssize_t" || want == "bool") want = "int64";
+            else if (want == "ulong" || want == "ulonglong" || want == "size_t") want = "uint64";
             if (Value* p = tctx_.cur->find(ve->name))
                 if (!typeOrSubsetMatches(*p, want))
                     throwTypedV("X::TypeCheck", {{"got", *p}, {"expected", Value::typeObj(ve->declType)}},
