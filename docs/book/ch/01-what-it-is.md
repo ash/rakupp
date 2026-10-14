@@ -132,7 +132,7 @@ for it, and appear where they are relevant:
 | **the Roast harness** | `tools/run-roast.raku`, written in Raku, run by rakupp against the spec suite |
 | **`perf-guard`** | `tools/perf-guard.raku`, the release gate that fails a regression instead of eyeballing one |
 | **the showcase interpreters** | JavaScript, Perl 5, Python 3 and Lisp interpreters *written in Raku*, used as beyond-Roast tests |
-| **`JSON::Native`** | the first native extension module, and the proof the extension ABI works |
+| **the `::Native` modules** | extension modules in C — CSV::Native, TOML::Native, YAML::Native and others; the first, JSON::Native 0.0.x, was the proof the extension ABI works, and has shipped no C since 0.1.0 |
 
 The showcase programs deserve a note here because they recur. An interpreter
 for another language, written in Raku and run by Raku++, exercises grammars,

@@ -99,10 +99,14 @@ and the answer was worse than expected:
 > against an import library the build never produced.
 
 Nobody had reported it, and the reason is the very pattern this chapter
-recommends. A well-written module falls back quietly — `JSON::Native`'s whole
-design is to try the extension and drop back to Raku if it does not load. So on
-Linux it loaded nothing, ran its fallback, and looked like it was working. Users
-would have seen the pure-Raku timings and assumed that was the number.
+recommends. A well-written module falls back quietly, and the one extension
+module there was then — JSON::Native 0.0.1, still called `Rakupp::JSON` — was
+designed to try its C and drop back to Raku if it did not load. So on Linux it
+loaded nothing, ran its fallback, and looked like it was working. Users would
+have seen the fallback's timings and assumed that was the number.
+(JSON::Native has since dropped its C altogether, in 0.1.0; the extension
+modules built after it — CSV::Native, TOML::Native, YAML::Native and the rest
+— follow the same pattern.)
 
 The fix is deliberately narrow: `-Wl,--dynamic-list=…` puts the `rk_*` glob in
 the executable's dynamic symbol table **and nothing else**, where `-rdynamic`
@@ -188,8 +192,8 @@ engine, an enum value is an `Int`, a `Buf` is a `Str` — and none of them arriv
 as that carrier. They are `RK_OTHER`, and `rk_str_get` gives their `Str`
 (`"2026-08-10"`, `Green`), because an extension that was told `RK_HASH` would
 serialise the date's fields, and one told `RK_INT` would write the enum's
-ordinal. JSON::Native's C writer did exactly the first of those until the
-mapping was fixed. The one tagged value that is what it looks like is a `Map`,
+ordinal. JSON::Native's C writer, in the 0.0.x releases that had one, did
+exactly the first of those until the mapping was fixed. The one tagged value that is what it looks like is a `Map`,
 which walks as `RK_HASH`.
 
 ```c
@@ -434,27 +438,79 @@ somewhere unrelated. That is a recorded bug, not a design.
 
 ## The naming convention
 
-A module whose behaviour depends on Raku++ should say so in its name.
-`JSON::Native` tells a reader at the point of `use` that this is not a portable
-choice — better than a footnote in a README, and better than discovering it when
-the deploy target turns out to be Rakudo.
+A module is named for what it does, not for the engine it is fastest on. The
+first extension module was written as `Rakupp::JSON` and renamed
+`JSON::Native` four days later, because the prefix said two wrong things. It
+advertised a coupling the module did not have — it ran on Rakudo, through its
+fallback — so the readers who could use it would never look. And it sat in the
+engine's own namespace, one word from `Rakupp::Internals::JSON`, the
+interpreter's built-in parser: two code paths 46 times apart in speed, with
+names close enough that a slow timing was blamed on the wrong one.
 
-Two rules follow. A `Rakupp::` module is still a normal distribution: installed
-by zef, carrying a `META6.json`, degrading gracefully elsewhere. And **the
-compiler must not special-case a module name.** An early draft of `JSON::Native`
-was built into the interpreter, and `use JSON::Native` intercepted the name
-before module loading — so the real distribution's tests silently exercised the
-built-in copy instead of the extension they were written for. If a name can be a
-module, it must *only* be a module.
+So `Rakupp::` is kept for the narrow case where a portable module could not
+express the same thing, and the test is **would this module mean anything under
+Rakudo?** A module under either kind of name is still a normal distribution:
+installed by zef, carrying a `META6.json`, degrading gracefully elsewhere.
+
+### When the engine answers a module name
+
+An earlier version of this chapter had a second rule: **the compiler must not
+special-case a module name.** An early draft of the JSON module was built into
+the interpreter, and `use` intercepted the name before module loading — so the
+real distribution's tests silently exercised the built-in copy instead of the
+extension they were written for.
+
+The engine now does exactly that, on purpose. Since v3.26.0 it answers
+`use JSON::Native` itself — `dataNativeUse`, in `src/InterpreterModules.cpp` —
+handing out its own codec and reading no module file; `Data::Native`,
+`CSV::Native`, `Digest::Native` and `Compress::Zlib::Native` are answered the
+same way. Since v5.4.0 the answer is exact: what the codec does not cover goes
+to `JSON::Native::Raku`, a pure-Raku fallback bundled in the binary, so the
+results are JSON::Fast's and nothing has to be installed. What the rule had
+ignored is the cost of obeying it. When the engine first answered the name,
+`use JSON::Native` went from 10.4 ms to nothing — the time to find, compile and
+import a 0.0.x distribution and its JSON::Fast dependency, in a program that
+would then have called the engine's codec anyway.
+
+The objection was never to the interception itself. It was that the
+distribution could not reach its own code, and nobody could tell. So the engine
+steps aside, and loads the module like any other, in every case where someone
+has asked for the distribution rather than for JSON:
+
+- **an installed copy newer than the interface the engine implements**, which
+  is 0.1.0 for JSON::Native. That copy knows something the engine does not,
+  and it is how a release of the module takes over with no release of the
+  engine;
+- **a copy in a directory named with `-I`** or `use lib`. That is what
+  `rakupp test` puts on the path, so a distribution's suite runs the
+  distribution's code;
+- **`JSON_NATIVE_BACKEND` naming any path but `engine`**, which is how
+  JSON::Native's own suite drives each of its paths on Raku++;
+- **a versioned `use JSON::Native:ver<…>`**, which asks the store for a
+  distribution, where the engine has one interface version and not a range.
+
+The second and third conditions are the original bug's answer: a suite always
+reaches its own code. And it can show that it did, rather than trust it.
+`json-backend` names the path that answered, and the engine's own answer always
+says `engine`; so a run under `JSON_NATIVE_BACKEND=raku` that reports `raku` —
+which JSON::Native's `t/03-backends.t` asserts — can only have been the
+distribution. What survives of the rule is narrower: **a compiler may answer a
+module name only if the distribution can always have its own code back, and
+anyone can ask which of the two ran.** It is the lesson of the Linux exports
+earlier in this chapter, once more: a quiet substitution needs a way to say out
+loud which path it took.
 
 ## Current limits
 
 - **There is a per-value cost.** Each value crosses as an arena-allocated handle
   and is then copied into its container — roughly one extra `Value` copy per
-  node. Measured on `JSON::Native`: 5.7 ms against 2.7 ms for the same parser
-  compiled into the interpreter. Still 6.6 times faster than Rakudo on that
-  workload, but it means an extension is worth it for **bulk** work, not for a
-  routine called once with two integers.
+  node. Measured on JSON::Native 0.0.1, whose parser was C, in August 2026:
+  5.7 ms for a 278 KB document, against 2.7 ms for the same parser compiled
+  into the interpreter. Still 6.6 times faster than Rakudo on that workload,
+  but it means an extension is worth it for **bulk** work, not for a routine
+  called once with two integers. JSON::Native itself has since dropped its C:
+  by 0.1.0 the engine's own codec had overtaken the extension everywhere, and
+  on Raku++ the module now hands its calls to that.
 - **Hash iteration is still index-based, but no longer quadratic.** The host
   remembers where it was between `rk_key_at` and `rk_val_at` calls, so a
   sequential walk costs O(1) per key. Jumping between two hashes, or writing to
@@ -546,8 +602,8 @@ binary as the interpreter it serves.
 The version-2 work was planned as one feature and turned out to be two, and the
 way that came out is worth recording.
 
-The plan asserted that `JSON::Native`'s `to-json` was still written in Raku
-because the ABI had no way to call back into Raku, and that `rk_call` would fix
+The plan asserted that the `to-json` of JSON::Native 0.0.1 was still written in
+Raku because the ABI had no way to call back into Raku, and that `rk_call` would fix
 it. **The module's own documentation said otherwise**: the real obstacle was
 that hash access was index-based, `std::advance` from the beginning on every
 call, so serialising a hash was quadratic in its size.
