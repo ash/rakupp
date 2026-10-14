@@ -440,6 +440,15 @@ jobs:
           build/rakupp t/oracle/zlib.raku --seed=1000 --rounds=5
           build/rakupp t/oracle/zlib.raku --seconds=45
 
+      # ORACLE-PLAN P2: Int against Python's int (with the integer kernels and
+      # without), FatRat and .Num against Python's Fraction and float.
+      - name: Oracle gate, Int and Rat against Python (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          build/rakupp t/oracle/int.raku --seconds=30
+          RAKUPP_NO_KERNELS=1 build/rakupp t/oracle/int.raku --seconds=20
+          build/rakupp t/oracle/rat.raku --seconds=30
+
       # The embed/ABI gate (ABI-PLAN A0-A2): compiles a C++ host and a C
       # extension against the headers, loads the extension, and checks
       # librakupp's export table against rakupp_ext.h + rakupp.h.

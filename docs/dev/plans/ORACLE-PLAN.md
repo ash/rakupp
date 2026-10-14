@@ -2,9 +2,9 @@
 
 *Written 2026-10-14, the day #159 landed (671e51bd).*
 
-**Status: P0 and P1 are built (2026-10-14), except P1's fuzz harness and the
-new vectors for the shared zlib.vec; see "Done so far" at the end. P2 onward
-not started.**
+**Status: P0, P1 and P2 are built (2026-10-14), except P1's fuzz harness
+and the new vectors for the shared zlib.vec; see "Done so far" at the end.
+P3 onward not started.**
 
 [The dependencies FAQ](https://raku.online/faq/dependencies/) says, in a
 table, that Raku++ carries its own big integers, regex engine, Unicode
@@ -238,3 +238,46 @@ checks missed and why the new ones exist.
     four fixes to the distribution, then add the vectors to both.
   - **the fuzz harness** (Tier C) for inflate under ASan. The soak's mutants
     cover the verdicts but not memory safety under a sanitizer.
+
+### P2 (2026-10-14)
+
+- **t/oracle/int.raku + int-oracle.py**: Int against Python's int, operands
+  in limbs around every threshold of src/BigInt.cpp and in the shapes long
+  division gets wrong, plus the int64 edges; every op its own plain sub so
+  the integer kernels may take it, and CI runs it with and without
+  `RAKUPP_NO_KERNELS=1`. ~900 cases a second here.
+- **t/oracle/rat.raku + rat-oracle.py**: FatRat against Fraction (as
+  `.nude`), rounding ops, `.base-repeating`, and `.Num` of an Int or a
+  FatRat against Python's correctly rounded float(), with exact ties.
+- Every Raku meaning the oracles encode that Python could read differently
+  (negative operands of gcd, lcm, the bitwise ops and shifts; floor `div`
+  and `%`; `round` taking a half up) was checked against Rakudo 2026.09
+  first. They agree.
+- **What they found, all fixed, each with a regression green on Rakudo:**
+  - `gcd`/`lcm` on machine Ints took `std::llabs`, which has no answer for
+    -2**63: `-2**63 gcd 0`, `-2**63 lcm 1` and every lcm with -2**63 came
+    out negative (gcd-lcm-at-int64-min.raku). In the interpreter, so the
+    JIT and `--exe` had it too; checked in all three after the fix.
+  - Rat and FatRat `.Num` with parts past 2**53 rounded an ulp low on an
+    exact tie and just past one: it truncated to 19 decimal digits before
+    strtod rounded. Rakudo is right. BigInt::ratioToDouble rounds once in
+    binary, ties to even, and bounds huge parts by their leading limbs so a
+    14,000-digit FatRat converts in 28 µs (was 820)
+    (rat-num-rounds-ties-to-even.raku).
+  - `.base-repeating` stopped at 10,000 digits and answered with an empty
+    cycle: 1/10007 was wrong. Cap now a million, past which it fails; and an
+    integral value has no trailing point, as in Rakudo
+    (base-repeating-integral-and-long-cycles.raku).
+- **Divergences left as they are, on purpose or for a decision:**
+  - `expmod(a, 0, 1)` is 1, not 0, on both engines (libtommath does not
+    reduce a zero exponent). The oracle encodes Rakudo's answer.
+  - `expmod(3, 5, -7)`: Rakudo dies in libtommath, Raku++ answers 5.
+  - `(4/1).base-repeating(2)`: Rakudo answers the decimal "4", Raku++ the
+    base's own "100".
+- **Found, not fixed: large gcd is ~130x slower than Rakudo** (14,000-digit
+  operands: 0.9 s vs 7 ms), so FatRat.new on big parts can run for minutes.
+  Euclid over a quadratic divmod; it wants a binary or Lehmer gcd. Not a
+  wrong answer, so it is its own task.
+- Not done: the debug-build `q*b + r == a` check in divmod. The oracle now
+  covers division from outside at ~900 cases a second; the check would
+  only add the inputs other tests happen to feed it.
