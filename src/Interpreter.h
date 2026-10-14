@@ -1914,7 +1914,7 @@ public:
     [[noreturn]] static void raiseHanded(HandedError& h);
     // What the built-in `die` throws for these arguments.
     RakuError dieError(ValueList& a);
-    bool runLoopBody(Block* b, std::shared_ptr<Env> scope, const std::string& label = "",
+    bool runLoopBody(Block* b, const std::shared_ptr<Env>& scope, const std::string& label = "",
                      bool isFirst = true, bool isLast = true,
                      ValueList* collect = nullptr,
                      const std::function<void()>& rebind = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
@@ -3112,7 +3112,7 @@ public:
     // block that runs in an env it did not create (a statement-modifier loop body
     // reuses the caller's) must unwind only the temps IT pushed.
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0, int postOk = -1);
-    void runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
+    void runNextPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
     // (the body a loop drives FIRST for is t_poll.firstBody)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.

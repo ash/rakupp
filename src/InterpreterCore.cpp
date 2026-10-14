@@ -1485,7 +1485,10 @@ static const Expr* forBodyTailVar(const Block* body) {
     return e;
 }
 
-bool Interpreter::runLoopBody(Block* body, std::shared_ptr<Env> scope, const std::string& label,
+// (`scope` by reference: every caller holds the frame in a local it does not
+// reassign during the call, and the copy execBlock takes is the one it needs —
+// by value it was two refcount writes more per iteration)
+bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, const std::string& label,
                              bool isFirst, bool isLast, ValueList* collect,
                              const std::function<void()>& rebind) {
     // One thread-local resolution for the whole iteration (see execBlock): a

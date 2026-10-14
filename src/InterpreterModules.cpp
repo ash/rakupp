@@ -2808,7 +2808,7 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
         maybeDieOnFail();
     }
 }
-void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, std::shared_ptr<Env>& scope) {
+void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& scope) {
     // NEXT phasers run in REVERSE declaration order (like LEAVE)
     for (auto it = stmts.rbegin(); it != stmts.rend(); ++it) if ((*it)->kind == NK::Block) {
         auto* b = static_cast<Block*>(it->get());

@@ -9,6 +9,9 @@
 #if !defined(_WIN32)
 #include <unistd.h> // gethostname — $*KERNEL.hostname
 #include <cstdio> // $*DISTRO on macOS (macDistro)
+#if defined(__APPLE__)
+#include <sys/sysctl.h> // sysctlbyname — $*DISTRO's version and build (macDistro)
+#endif
 #include <cstring> // $*DISTRO on macOS (macDistro)
 #include <fstream> // $*DISTRO on macOS (macDistro)
 #include <sstream> // $*DISTRO on macOS (macDistro)
@@ -1401,11 +1404,23 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
 // S32-io/out-buffering.t), and we answered our NAME for it, 0 for the version
 // and the KERNEL release for .release — so a guard Rakudo trips on this OS
 // never fired here. Read once, lazily, on first use.
-struct MacDistro { std::string version, release, desc; bool loaded = false; };
-static const MacDistro& macDistro() {
+struct MacDistro { std::string version, release, desc; bool loaded = false, descLoaded = false; };
+// The two sw_vers fields come from the kernel (kern.osproductversion and
+// kern.osversion hold the same strings): spawning sw_vers cost ~10 ms, 16% of
+// a warm Cro load, for a program that asked `$*DISTRO.is-win`.
+static std::string sysctlString(const char* name) {
+    char buf[256];
+    size_t len = sizeof buf;
+    if (sysctlbyname(name, buf, &len, nullptr, 0) != 0 || len == 0) return std::string();
+    return std::string(buf, strnlen(buf, len));
+}
+static MacDistro& macDistro() {
     static MacDistro d;
     if (d.loaded) return d;
     d.loaded = true;
+    d.version = sysctlString("kern.osproductversion");
+    d.release = sysctlString("kern.osversion");
+    if (!d.version.empty() && !d.release.empty()) return d;
     // --sandbox starts no process, this one included: $*DISTRO answers what
     // it answers when sw_vers is missing
     if (FILE* p = g_sandboxed ? nullptr : popen("sw_vers 2>/dev/null", "r")) {
@@ -1425,6 +1440,13 @@ static const MacDistro& macDistro() {
         }
         pclose(p);
     }
+    return d;
+}
+// .desc alone reads the licence page, so it is read only when .desc is asked
+static const std::string& macDistroDesc() {
+    MacDistro& d = macDistro();
+    if (d.descLoaded) return d.desc;
+    d.descLoaded = true;
     // Rakudo's table, keyed on the WHOLE version string as its own is
     static const std::map<std::string, std::string> kNames = {
         {"10.0", "Cheetah"}, {"10.1", "Puma"}, {"10.2", "Jaguar"}, {"10.3", "Panther"},
@@ -1432,7 +1454,7 @@ static const MacDistro& macDistro() {
         {"10.8", "Mountain Lion"}, {"10.9", "Mavericks"}, {"10.10", "Yosemite"}, {"10.11", "El Capitan"},
     };
     auto it = kNames.find(d.version);
-    if (it != kNames.end()) { d.desc = it->second; return d; }
+    if (it != kNames.end()) { d.desc = it->second; return d.desc; }
     d.desc = "<unknown>";
     std::ifstream in("/System/Library/CoreServices/Setup Assistant.app/Contents/Resources/en.lproj/OSXSoftwareLicense.html",
                      std::ios::binary);
@@ -1447,7 +1469,7 @@ static const MacDistro& macDistro() {
             d.desc = html.substr(at, end == std::string::npos ? std::string::npos : end - at);
         }
     }
-    return d;
+    return d.desc;
 }
 #endif
 
@@ -3785,13 +3807,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "request-garbage-collection") { cycleCollectNow(); runPendingDestroys(); return Value::boolean(true); }
 #if defined(__APPLE__)
         if (inv.hashKind == "Distro") { // what Rakudo reads off `sw_vers` — see macDistro()
-            const MacDistro& md = macDistro();
-            const std::string ver = md.version.empty() ? "0" : md.version;
-            if (m == "version") { Value v = Value::str(ver); v.hashKind = "Version"; return v; }
-            if (m == "release") return Value::str(md.release.empty() ? "unknown" : md.release);
-            if (m == "desc")    return Value::str(md.desc);
             if (m == "auth")    return Value::str("Apple Inc.");
-            if (m == "gist")    return Value::str(name + " (" + ver + ")"); // Systemic.gist: "$name ($version)"
+            if (m == "desc")    return Value::str(macDistroDesc());
+            if (m == "version" || m == "release" || m == "gist") {
+                const MacDistro& md = macDistro();
+                const std::string ver = md.version.empty() ? "0" : md.version;
+                if (m == "version") { Value v = Value::str(ver); v.hashKind = "Version"; return v; }
+                if (m == "release") return Value::str(md.release.empty() ? "unknown" : md.release);
+                return Value::str(name + " (" + ver + ")"); // Systemic.gist: "$name ($version)"
+            }
         }
 #endif
         // $*VM describes THIS engine's runtime. Everything below used to fall

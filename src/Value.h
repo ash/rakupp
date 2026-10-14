@@ -1283,8 +1283,14 @@ struct Value {
     }
     // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
     // its enum TYPE so `.WHAT.^name` is `Order`, not `Int` (Rakudo parity).
+    // Built once: each spelling interns two names, and a sort asks this per compare.
     static Value orderVal(long long c) {
-        Value v = enumVal(c < 0 ? "Less" : c > 0 ? "More" : "Same", c < 0 ? -1 : c > 0 ? 1 : 0);
+        static const Value less = orderMember("Less", -1), same = orderMember("Same", 0),
+                           more = orderMember("More", 1);
+        return c < 0 ? less : c > 0 ? more : same;
+    }
+    static Value orderMember(const char* name, long long c) {
+        Value v = enumVal(name, c);
         v.enumType = "Order";
         return v;
     }
