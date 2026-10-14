@@ -1371,9 +1371,20 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             EndUnitScope endUnit{*this};
             registerEnds(*prog);
             bool initsDone = inits.empty();
-            auto runInitsOnce = [&] {
+            // …and the module's top-level constants from here on are bound first,
+            // up to its next `use`, so an INIT that calls a sub reading one sees
+            // it (#171; see bindConstantEarly)
+            std::set<Stmt*> constEarly;
+            auto runInitsOnce = [&](size_t from) {
                 if (initsDone) return;
                 initsDone = true;
+                std::set<std::string> bound;
+                for (size_t i = from; i < prog->stmts.size(); i++) {
+                    Stmt* s = prog->stmts[i].get();
+                    if (!s) continue;
+                    if (s->kind == NK::UseStmt && !isPragmaName(static_cast<UseStmt*>(s)->module)) break;
+                    if (bindConstantEarly(s, bound)) constEarly.insert(s);
+                }
                 for (auto* b : inits) runHoistedInit(b);
             };
             auto isPrologue = [](Stmt* s) {
@@ -1391,12 +1402,14 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             moduleTopEnvs_.push_back(moduleEnv.get());
             if (loadedModuleEnvSet_.insert(moduleEnv.get()).second) loadedModuleEnvs_.push_back(moduleEnv);
             struct TopPop { std::vector<Env*>& v; ~TopPop() { v.pop_back(); } } topPop{moduleTopEnvs_};
-            for (auto& st : prog->stmts) {
+            for (size_t si = 0; si < prog->stmts.size(); si++) {
+                auto& st = prog->stmts[si];
                 tctx_.endCurTopStmt = st.get();           // for a nested `use` in it
                 if (prog->mayHaveRoutineUse) preloadRoutineUses(st.get());
-                if (!isPrologue(st.get())) runInitsOnce(); // every `use` above us has run
+                if (!isPrologue(st.get())) runInitsOnce(si); // every `use` above us has run
                 if (st->kind == NK::Block && static_cast<Block*>(st.get())->initHoisted)
                     continue; // ran in runInitsOnce, ahead of this mainline
+                if (!constEarly.empty() && constEarly.count(st.get())) continue; // …and so was this
                 if (st->kind == NK::SubDecl && !static_cast<SubDecl*>(st.get())->name.empty() &&
                     !static_cast<SubDecl*>(st.get())->isMethod) {
                     auto* sd = static_cast<SubDecl*>(st.get());
@@ -1411,7 +1424,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 }
                 exec(st.get());
             }
-            runInitsOnce(); // a module that is nothing but `use`s and declarations
+            runInitsOnce(prog->stmts.size()); // a module that is nothing but `use`s and declarations
         }
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
@@ -8115,6 +8128,74 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
     return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
 }
 
+// A `constant` is bound at COMPILE time in Rakudo, so the phasers that run
+// ahead of a unit's mainline — BEGIN, CHECK, INIT — already see its value, and
+// so does a sub such a phaser calls (#171: `constant K = "x"; sub h { K }
+// INIT say h()` in a module died "Undeclared name 'K'"; in a script every
+// phaser read K as Any). rakupp binds a constant when the mainline reaches
+// it. bindConstantEarly runs ONE top-level constant declaration ahead of that,
+// and adds its name to `bound` for the next one to read; the caller has the
+// mainline skip it. It declines (and the declaration waits for the mainline,
+// as before) unless its initializer reaches only what is already there at
+// this point in rakupp too — see constantInitIsStatic — so a constant that
+// names an enum, a subset or a variable is never computed from a stand-in.
+bool Interpreter::constantInitIsStatic(const Expr* e, const std::set<std::string>& bound) {
+    if (!e) return true;
+    auto all = [&](const std::vector<ExprPtr>& v) {
+        for (auto& x : v) if (!constantInitIsStatic(x.get(), bound)) return false;
+        return true;
+    };
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::AllomorphLit:
+            return true;
+        case NK::InterpStr: return all(static_cast<const InterpStr*>(e)->parts);
+        // an earlier constant this pass bound, a core type, a class already declared
+        case NK::NameTerm: { const std::string& n = static_cast<const NameTerm*>(e)->name;
+            return bound.count(n) || isKnownTypeName(n) || classes_.count(n); }
+        case NK::VarExpr: { auto* v = static_cast<const VarExpr*>(e);
+            return !v->declare && bound.count(v->name); }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            return constantInitIsStatic(b->lhs.get(), bound) && constantInitIsStatic(b->rhs.get(), bound); }
+        case NK::Unary: return constantInitIsStatic(static_cast<const Unary*>(e)->operand.get(), bound);
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return constantInitIsStatic(t->cond.get(), bound) && constantInitIsStatic(t->then.get(), bound) &&
+                   constantInitIsStatic(t->els.get(), bound); }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e);
+            return constantInitIsStatic(r->from.get(), bound) && constantInitIsStatic(r->to.get(), bound); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e);
+            return constantInitIsStatic(p->keyExpr.get(), bound) && constantInitIsStatic(p->value.get(), bound); }
+        case NK::ChainExpr: return all(static_cast<const ChainExpr*>(e)->operands);
+        case NK::ListExpr:  return all(static_cast<const ListExpr*>(e)->items);
+        case NK::ArrayLit:  return all(static_cast<const ArrayLit*>(e)->items);
+        case NK::HashLit:   return all(static_cast<const HashLit*>(e)->items);
+        case NK::Index: { auto* i = static_cast<const Index*>(e);
+            return constantInitIsStatic(i->base.get(), bound) && constantInitIsStatic(i->index.get(), bound); }
+        // a sub hoisted by now (or a builtin), with arguments that are static too
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            if (c->callee || c->name.empty()) return false;
+            if (!tctx_.cur->find("&" + c->name) && !builtinRef(c->name)) return false;
+            return all(c->args); }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            if (m->methodExpr) return false;
+            return constantInitIsStatic(m->inv.get(), bound) && all(m->args); }
+        default: return false;
+    }
+}
+bool Interpreter::bindConstantEarly(Stmt* s, std::set<std::string>& bound) {
+    if (!s || s->kind != NK::ExprStmt) return false;
+    Expr* e = static_cast<ExprStmt*>(s)->e.get();
+    if (!e || e->kind != NK::Assign) return false;
+    auto* a = static_cast<Assign*>(e);
+    if (!a->target || a->target->kind != NK::VarExpr) return false;
+    auto* ve = static_cast<VarExpr*>(a->target.get());
+    if (!ve->declare || ve->declScope != "constant") return false;
+    if (!constantInitIsStatic(a->value.get(), bound)) return false;
+    try { exec(s, /*sink=*/true); }
+    catch (RakuError&) { return false; }   // the mainline runs it again, and reports it there
+    bound.insert(ve->name);
+    return true;
+}
+
 // The program's mainline: everything from adopting the unit's revision to the
 // END phasers and the exit code. Runs once per program, so it lives here and
 // not with the evaluator's hot paths in InterpreterCore.cpp.
@@ -8428,7 +8509,7 @@ int Interpreter::run(Program& prog) {
         runStaticPhasers(prog.stmts, tctx_.cur, /*unitIsLive=*/false);
         // BEGIN: source order. What dies in one is a compile-time failure,
         // X::Comp::BeginTime wrapping the original as `.exception`
-        for (auto* b : beginP) {
+        auto runBegin = [&](Block* b) {
             try { runPhaser(b); }
             catch (RakuError& e) {
                 // a routine not declared YET is a compile-time refusal of its own
@@ -8438,6 +8519,27 @@ int Interpreter::run(Program& prog) {
                 throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
                             "An exception occurred while evaluating a BEGIN: " + im);
             }
+        };
+        // …and the top-level constants among them, in the same source order, when
+        // any phaser is to run ahead of the mainline (see bindConstantEarly). Not
+        // past a module's `use`, which loads when the mainline reaches it, nor a
+        // `unit module` header, whose package the mainline enters.
+        std::set<Stmt*> constEarly;
+        if (beginP.empty() && checkP.empty() && initP.empty()) {}
+        else {
+            std::set<std::string> bound;
+            bool open = true;
+            size_t bi = 0;
+            for (auto& st : prog.stmts) {
+                Stmt* s = st.get();
+                if (bi < beginP.size() && s == static_cast<Stmt*>(beginP[bi])) { runBegin(beginP[bi++]); continue; }
+                if (!open || !s) continue;
+                if (s->kind == NK::UseStmt && !isPragmaName(static_cast<UseStmt*>(s)->module)) open = false;
+                else if (s->kind == NK::ClassDecl && static_cast<ClassDecl*>(s)->isPackage &&
+                         !static_cast<ClassDecl*>(s)->bracedBody) open = false;
+                else if (bindConstantEarly(s, bound)) constEarly.insert(s);
+            }
+            for (; bi < beginP.size(); bi++) runBegin(beginP[bi]);
         }
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
         for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
@@ -8450,6 +8552,7 @@ int Interpreter::run(Program& prog) {
         for (auto* s : mainline) {
             tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
             if (prog.mayHaveRoutineUse) preloadRoutineUses(s);
+            if (!constEarly.empty() && constEarly.count(s)) continue;   // bound ahead of the phasers
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
                 !static_cast<SubDecl*>(s)->isMethod) {
                 auto* sd = static_cast<SubDecl*>(s);
