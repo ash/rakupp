@@ -290,7 +290,7 @@ checks missed and why the new ones exist.
 - **Found, then fixed: large gcd was ~130x slower than Rakudo** (14,000-digit
   operands: 0.9 s vs 7 ms), so FatRat.new on big parts could run for
   minutes: Euclid over a quadratic divmod. It is Lehmer's gcd over the
-  binary form now, after the factors of two come out (5 ms there; 14x
+  binary form now, after the factors of two come out (0.8 ms there; 14x
   faster than Rakudo on 475,000-bit odd operands), and int-oracle.py's gcd
   cases reach 2,500 limbs, with Fibonacci neighbours, huge quotients, long
   binary runs and shared powers of two (bigint-gcd-lehmer.raku).
