@@ -4080,4 +4080,19 @@ bool Interpreter::flatLoopBody(Block* b) {
     return flat;
 }
 
+// eval()'s side of the parked subscripts (Interpreter.h): this thread's answer
+// for `e`, collected once. Only called when some thread has one parked.
+bool Interpreter::takeParkedSubscript(const Expr* e, Value& out) {
+    auto& parked = pendingSubscripts();
+    for (size_t i = 0; i < parked.size(); i++)
+        if (parked[i].first == e) {
+            out = std::move(parked[i].second);
+            parked.erase(parked.begin() + i);
+            pendingSubscriptsAny_.fetch_sub(1, std::memory_order_relaxed);
+            return true;
+        }
+    return false;
+}
+
 } // namespace rakupp
+

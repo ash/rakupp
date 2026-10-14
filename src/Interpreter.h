@@ -3213,6 +3213,7 @@ public:
     bool anyPendingSubscripts() const {
         return pendingSubscriptsAny_.load(std::memory_order_relaxed) != 0 && !pendingSubscripts().empty();
     }
+    bool takeParkedSubscript(const Expr* e, Value& out);   // InterpreterCalls.cpp
     void parkSubscript(const Expr* e, Value v) {
         pendingSubscripts().emplace_back(e, std::move(v));
         pendingSubscriptsAny_.fetch_add(1, std::memory_order_relaxed);

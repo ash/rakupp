@@ -4338,11 +4338,8 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             ac = t == "Int" ? 1 : t == "Str" ? 2 : t == "Num" ? 3 : t == "Bool" ? 4
                : (t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" ||
                   t == "uint" || t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" ||
-                  t == "byte" || t == "atomicint" ||
-                  // NativeCall's C spellings are integers too: `sub f(ulong $x)`
-                  // binds an Int in Rakudo, and refused it here
-                  t == "long" || t == "longlong" || t == "ssize_t" ||
-                  t == "ulong" || t == "ulonglong" || t == "size_t") ? 5
+                  t == "byte" || t == "atomicint" || t == "long" || t == "longlong" || t == "ssize_t" ||
+                  t == "ulong" || t == "ulonglong" || t == "size_t") ? 5   // NativeCall's C ints too
                : (t == "num" || t == "num32" || t == "num64") ? 6
                : t == "str" ? 7 : 0;
             p.acceptClass = ac;
@@ -9001,7 +8998,6 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } magicalGuard{tcx, &codeVal, !c.isBlock};
     auto restore = [&] {
         // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
-        // — only a MUTATED one: see the note at the end of callCallableRaw
         if (topicWB && implicitTopic_local) {
             auto it = env->vars.find("$_");
             if (it != env->vars.end() && !it->second.sameRep(*topicWB)) *topicWB = it->second;
@@ -9360,16 +9356,7 @@ resumeBody:
     if (isRoutine && (!isDefined(last) || (last.t == VT::Hash && last.hashKind == "Failure")))
         runLetRestoresOf(tcx.cur);   // (an undefined result is an unsuccessful exit for `let`)
     tcx.cur = saved; tcx.curStateEnv = savedState; tcx.dynStack.pop_back();
-    // a mutated implicit $_ flows back to the caller's element (grep/map aliasing)
-    //
-    // …and only a MUTATED one. Writing back unconditionally stored every
-    // element a `.first`/`.grep`/`.map` block saw into its slot again, so a
-    // block run over a SHARED array — a module's constant list, read by every
-    // request a server answers — wrote into it from every thread at once,
-    // and the refcounts and strings of the elements tore (ThreadSanitizer:
-    // 160 reports here against toList in one minute of a blog server; the
-    // process died with a corrupted heap). A topic that is still what the slot
-    // holds is left alone.
+    // a mutated implicit $_ (only: a SHARED array was raced) flows back to the caller's element
     if (topicWB && implicitTopic_local) {
         auto it = env->vars.find("$_");
         if (it != env->vars.end() && !it->second.sameRep(*topicWB)) *topicWB = it->second;
@@ -13551,9 +13538,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             // an instance of the pun does R)
             std::string want = ve->declType.c_str();
             if (size_t br = want.find('['); br != std::string::npos && br > 0) want = want.substr(0, br);
-            // NativeCall's C integer spellings take an Int as the sized ones do:
-            // DBDish::mysql declares `our ulong constant ulong_zero is export = 0`,
-            // and refusing it left DBIish unable to load its mysql driver
+            // NativeCall's C integer spellings take an Int (DBDish::mysql's `ulong constant`)
             if (want == "long" || want == "longlong" || want == "ssize_t" || want == "bool") want = "int64";
             else if (want == "ulong" || want == "ulonglong" || want == "size_t") want = "uint64";
             if (Value* p = tctx_.cur->find(ve->name))
@@ -16181,18 +16166,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // the object with a plain Hash lost every method the container exists
         // for — DBDish::mysql's Connection.BUILD does exactly this assignment,
         // and `.convert-function` then answered "no such method" on a Hash.
-        //
-        // The object is read under its slot's stripe (torn-copy contract): two
-        // threads assigning one shared variable at once — a module's `our
-        // $REQUEST`, set by every request a server answers — had this check
-        // read the payload while the other store replaced and freed it.
-        bool userStore = false;
-        if (opEq(a->op, "=") && lv->t == VT::Object) {
-            Value cur;
-            { SlotStripe rs(*this, lv); cur = *lv; }
-            userStore = cur.obj() && cur.obj()->cls && cur.obj()->cls->findMethod("STORE");
-        }
-        if (userStore) {
+        // (read under the slot's stripe: another thread may be replacing the object)
+        Value cur;
+        if (opEq(a->op, "=") && lv->t == VT::Object) { SlotStripe rs(*this, lv); cur = *lv; }
+        if (cur.obj() && cur.obj()->cls && cur.obj()->cls->findMethod("STORE")) {
             // …but only for a %/@ variable. A `$` scalar HOLDS its object rather
             // than BEING a container of that type — `my $v = Hash::Ordered.new(…);
             // $v = 1` replaces what the scalar holds. (The container trait itself
@@ -20439,8 +20416,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (haveArg) {
                 bool digits = !arg.empty() && arg.find_first_not_of("0123456789") == std::string::npos;
                 ch = digits ? std::stol(arg) : (long)evalString(arg).toInt();
-                // a CHARACTER index — graphemes, so CR LF and a letter with its
-                // mark count once — as the byte offset the search takes
+                // a CHARACTER (grapheme) index, as the byte offset the search takes
                 contStart = (long)graphemeToByte(subject, ch < 0 ? 0 : ch);
             }
             else if (Value* mv = tctx_.cur ? tctx_.cur->find("$/") : nullptr) {
@@ -29998,16 +29974,8 @@ Value Interpreter::eval(Expr* e) {
     // the wrong slot every time. Data::RandomKeep's reservoir is exactly that
     // shape and silently dropped 13.7% of what it was offered. The first eval
     // parks its answer here for the second one to collect, once.
-    if (RAKUPP_UNLIKELY(pendingSubscriptsAny_.load(std::memory_order_relaxed) != 0)) {
-        auto& parked = pendingSubscripts();
-        for (size_t i = 0; i < parked.size(); i++)
-            if (parked[i].first == e) {
-                Value v = std::move(parked[i].second);
-                parked.erase(parked.begin() + i);
-                pendingSubscriptsAny_.fetch_sub(1, std::memory_order_relaxed);
-                return v;
-            }
-    }
+    if (RAKUPP_UNLIKELY(pendingSubscriptsAny_.load(std::memory_order_relaxed) != 0))
+        if (Value v; takeParkedSubscript(e, v)) return v;
     // a node compiled to a handler runs it (Expr::handler); the switch is the
     // fallback for everything else
     if (Expr::EvalFn h = e->handler) return h(*this, e);
