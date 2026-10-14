@@ -26864,6 +26864,25 @@ Value Interpreter::evalCall(Call* c) {
     // was declared in, outward: `Our::Package::pkg()` inside `package
     // PackageTest` is PackageTest::Our::Package::pkg
     if (Value* f = pkgRelativeRoutine(c->name)) return callCallable(*f, std::move(args), &c->args);
+    // …and the package part may be a name the scope IMPORTED: `use M` brings in
+    // `class C is export`, whose `our sub create` is `&M::C::create` — so
+    // `C::create()` is that sub, as in Rakudo (#169: HarfBuzz's exported
+    // classes each carry an `our sub create`)
+    {
+        const size_t dc = c->name.rfind("::");
+        if (dc != std::string::npos && dc > 0 && !c->callee) {
+            const std::string pkg = c->name.substr(0, dc);
+            Value* pv = tctx_.cur->find(pkg);
+            if (pv && pv->t == VT::Type && !pv->s.empty() && pv->s != pkg) {
+                const std::string full = "&" + pv->s + c->name.substr(dc);
+                if (Value* f = tctx_.cur->find(full)) return callCallable(*f, std::move(args), &c->args);
+                if (global_) {
+                    auto git = global_->vars.find(full);
+                    if (git != global_->vars.end()) return callCallable(git->second, std::move(args), &c->args);
+                }
+            }
+        }
+    }
     // `Foo1::bar(); module Foo1 { our sub bar {…} }` — the package is declared
     // further down, and Rakudo installs it (and its `our` subs) at compile time:
     // build the pending declaration now, then look again (S10-packages/basic.t)
