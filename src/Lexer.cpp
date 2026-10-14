@@ -994,20 +994,38 @@ static const char* kLexOps[] = {
     "..", "::", "<<", ">>",
 };
 
+// kLexOps by first byte, each bucket in the table's own order (so the longest
+// spelling still wins: two spellings that can both match share their first
+// byte), with the lengths taken once. Most bytes start no entry at all.
+struct LexOpIndex {
+    struct Entry { const char* op; unsigned char len; };
+    std::vector<Entry> byFirst[256];
+    LexOpIndex() {
+        for (const char* op : kLexOps)
+            byFirst[(unsigned char)op[0]].push_back({op, (unsigned char)std::strlen(op)});
+    }
+};
+static const LexOpIndex& lexOpIndex() {
+    static const LexOpIndex ix;
+    return ix;
+}
+
 bool Lexer::userOpIsAssignPrefix(const std::string& uo) const {
     size_t e = pos_ + uo.size();
     if (e >= src_.size() || src_[e] != '=') return false;
     // …only for a BUILT-IN spelling a file redeclares; a new one (`%%%=`) is
     // its own operator and then `=`, the assignment metaop over it
-    for (const char* op : kLexOps) if (uo == op) return true;
+    for (const auto& x : lexOpIndex().byFirst[(unsigned char)uo[0]])
+        if (uo.size() == x.len && uo.compare(0, x.len, x.op) == 0) return true;
     return false;
 }
 
 size_t Lexer::builtinOpLenHere() const {
     size_t best = 0;
-    for (const char* op : kLexOps) {
-        const size_t n = std::strlen(op);
-        if (n > best && src_.compare(pos_, n, op) == 0) best = n;
+    if (pos_ >= src_.size()) return 0;
+    for (const auto& e : lexOpIndex().byFirst[(unsigned char)src_[pos_]]) {
+        const size_t n = e.len;
+        if (n > best && src_.compare(pos_, n, e.op) == 0) best = n;
     }
     return best;
 }
@@ -4182,7 +4200,8 @@ Token Lexer::lexOperator(bool termBefore) {
         return make(Tok::Op, pfx);
     }
     // try longest first (skip the textual placeholder)
-    for (const char* op : kLexOps) {
+    for (const auto& e : lexOpIndex().byFirst[(unsigned char)peek()]) {
+        const char* op = e.op;
         size_t n = 0;
         while (op[n] && pos_ + n < src_.size() && src_[pos_ + n] == op[n]) n++;
         if (!op[n]) {
@@ -5220,6 +5239,10 @@ ParseError Lexer::storedLexError(size_t idx) {
 
 std::vector<Token> Lexer::tokenize() {
     std::vector<Token> out;
+    // a token per 7.2 bytes of source over 700 test files and installed
+    // modules, 3.7 in the densest; growing from empty moved every token about
+    // twice, 12% of `-c` on a large program
+    out.reserve(src_.size() / 4 + 16);
     // The unit's own `sub q` / `sub tr` / `sub s` beat the quote forms of those
     // names. One pass over the source, and only when the source mentions `sub`
     // at all; a name the Parser learns from an imported module is added by it.

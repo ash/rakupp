@@ -336,7 +336,8 @@ void Parser::error(const std::string& msg) {
 }
 
 // ---------------- infix table ----------------
-static InfixInfo classifyInfix(const Token& t) {
+static InfixInfo classifyInfix(const Token& t);
+static InfixInfo classifyInfixUncached(const Token& t) {
     InfixInfo in;
     if (t.kind == Tok::Comma) { in.valid = true; in.lbp = BP_COMMA; in.isComma = true; in.op = ","; return in; }
     if (t.kind == Tok::FatArrow) { in.valid = true; in.lbp = BP_ASSIGN; in.isFatArrow = true; in.op = "=>"; return in; }
@@ -562,6 +563,22 @@ static InfixInfo classifyInfix(const Token& t) {
         }
         return in;
     }
+    return in;
+}
+
+// The answer depends on the token's kind and spelling alone, and the chain above
+// is ~150 string compares that every term and operator of a program walks (an
+// identifier that is no infix walks all of the word arm): 13% of `-c` on a large
+// file. So it is asked once per spelling. A spelling that throws (a metaop the
+// grammar refuses) is not remembered and throws again the next time.
+static InfixInfo classifyInfix(const Token& t) {
+    if (t.kind != Tok::Op && t.kind != Tok::Ident) return classifyInfixUncached(t);
+    thread_local std::unordered_map<std::string, InfixInfo> ops, words;
+    auto& memo = t.kind == Tok::Op ? ops : words;
+    auto it = memo.find(t.text);
+    if (it != memo.end()) return it->second;
+    InfixInfo in = classifyInfixUncached(t);
+    if (memo.size() < 4096) memo.emplace(t.text, in);
     return in;
 }
 
