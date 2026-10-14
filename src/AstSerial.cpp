@@ -421,6 +421,7 @@ template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.a
                                                       ioExpr(io, n.argExpr); F(io, n.isNo); F(io, n.isNeed); F(io, n.emptyImport);
                                                       F(io, n.verReq);   // dropping the :ver<…> constraint from the
                                                                          // cache made run 2 load ANY version
+                                                      F(io, n.authReq);
                                                       ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson
 template <class IO> void visit(IO&, EmptyStmt&)     {}
 template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); F(io, n.isMy); }

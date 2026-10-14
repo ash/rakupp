@@ -553,9 +553,10 @@ with its tag, after the release run is green.
   filters, tie); Red #77 (compile-time lexical declaration).
 - [ ] **Missing modules install themselves**: [DEPS-PLAN.md](DEPS-PLAN.md),
   2026-10-14. A `use` of a module that is not installed fetches it into the
-  ordinary store, with no option to type; `RAKUPP_DEPS=0` turns it off. Plan
-  and probes only (Roast collides with no index name; the typo guard blocks
-  31 of 9,698 names). Next: D0, the network-free gate `t/deps/run.raku`.
+  ordinary store, with no option to type; `RAKUPP_DEPS=0` turns it off.
+  D0–D4 built: `t/deps/run.raku` 42/42 (in CI), Roast list unchanged, the
+  typo guard refuses 4 of 9,698 index names. Next: `RkConfig.deps` for
+  embedding hosts (D5) and parallel archive fetches (D6).
 - [ ] **Not started**: [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) (`rakupp.lock`,
   `--frozen`) and [UUID-PLAN.md](UUID-PLAN.md) (draft; the distribution's name
   is open).

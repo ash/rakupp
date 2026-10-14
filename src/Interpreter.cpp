@@ -8157,12 +8157,20 @@ bool rakuppBundledModule(const std::string& name, std::string& pathOut, std::str
 // scanning only the top level.
 static void collectUseNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>& out);
 
+// While collectModuleGraph walks, the names some `use` or `need` asked for —
+// as opposed to a `require` only — with the `:auth<…>` it was written with.
+// Only those may be fetched (DEPS-PLAN: `require` is how code probes for an
+// optional module).
+static thread_local std::map<std::string, std::string>* t_usedNames = nullptr;
+
 static void collectUseNamesStmt(const Stmt* st, std::vector<std::string>& out) {
     if (!st) return;
     switch (st->kind) {
         case NK::UseStmt: {
             auto* u = static_cast<const UseStmt*>(st);
             if (!u->isNo && !u->module.empty() && u->fromLang.empty()) out.push_back(u->module); // `:from<NQP>`: nothing to bundle
+            if (t_usedNames && !u->isNo && !u->isRequire && !u->module.empty() && u->fromLang.empty())
+                t_usedNames->emplace(u->module, u->authReq);
             break;
         }
         case NK::Block: collectUseNames(static_cast<const Block*>(st)->stmts, out); break;
@@ -8429,6 +8437,9 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
     std::set<std::string> seen;
     std::set<std::string> distsSeen;   // a dist's resources travel once, not once per module
     std::vector<std::string> queue;
+    std::map<std::string, std::string> used;
+    struct UsedScope { ~UsedScope() { t_usedNames = nullptr; } } usedScope;
+    t_usedNames = &used;
     collectUseNames(prog.stmts, queue);
     if (nativeLibsOut) collectNativeLibNames(prog.stmts, *nativeLibsOut);
     if (skipsOut) {
@@ -8452,9 +8463,16 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         if (rakuppCompilerAnswersModule(name) &&
             !moduleFileOnPath(name, searchPath, prog.langRev >= 2)) continue;
         std::string path, src;
-        if (!findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2)) {
+        // DEPS-PLAN D4: a compile mode fetches what a `use` needs and nobody
+        // has, so the binary embeds it — the binary itself never fetches.
+        std::string why;
+        auto u = used.find(name);
+        if (!findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2)
+            && !(u != used.end() && depsAsk(name, "", u->second, g_depsProgram, why)
+                 && findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2))) {
             // load from disk at run time — silently before MODULES-PLAN B1
-            if (skipsOut) skipsOut->push_back({name, "not found on the module search path"});
+            if (skipsOut) skipsOut->push_back({name, why.empty() ? std::string("not found on the module search path")
+                                                                 : "not found, and the ecosystem: " + why});
             continue;
         }
         Program mp;

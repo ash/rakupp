@@ -2653,6 +2653,9 @@ int main(int argc, char** argv) {
         argv = installArgv.data();
         argc = (int)installArgv.size();
     }
+    // DEPS-PLAN: an interpreter run asks the installer for a module no search
+    // found (rakupp install --auto). Not the installer and its kin themselves.
+    if (g_embeddedTool.empty()) { g_depsFetch = true; g_depsExe = exePath; }
 
     // A single-dash spelling of a known long option (`-exe`, `-cpp`, `-lint`, …)
     // is a common typo for the `--` form. These names are unambiguous — none is
@@ -3536,6 +3539,9 @@ int main(int argc, char** argv) {
 "\n"
 "Environment:\n"
 "  RAKULIB=dir1,dir2            Extra module search dirs (like -I); ',' or ':'\n"
+"  RAKUPP_DEPS=0                A `use` of a module that is not installed stays an\n"
+"                               error; otherwise rakupp fetches it from the\n"
+"                               ecosystem into ~/.raku and carries on\n"
 "  RAKUPP_GIL=1                 Coordinate threads under a global lock (the\n"
 "                               pre-v3 default; start/worker threads run on\n"
 "                               all cores otherwise)\n"
@@ -4137,6 +4143,7 @@ int main(int argc, char** argv) {
     //   with -I needs nothing at run time.
     if (isCompileMode(mode)) {
         if (!haveSrc) { std::cerr << "Usage: rakupp " << modeTok << " (FILE | -e CODE) [-o OUT] [-I dir] [-O[level]]\n"; return 4; }
+        g_depsProgram = fileName;   // the `installed … for` lines of a compile-time fetch
         // The P5 directives ride the compile modes: `list`/`why:` analyse and
         // stop (no compile); `verify` compiles twice and emits only on proof.
         if (g_slim.directive == SlimDirective::List || g_slim.directive == SlimDirective::Why) {

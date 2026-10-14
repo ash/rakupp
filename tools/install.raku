@@ -68,6 +68,11 @@ sub json-decode(Str $text) {
         ?? ::('Rakupp::Internals::JSON').from-json($text)
         !! Rakudo::Internals::JSON.from-json($text)
 }
+sub json-encode($data --> Str) {
+    $have-own-json
+        ?? ::('Rakupp::Internals::JSON').to-json($data)
+        !! Rakudo::Internals::JSON.to-json($data)
+}
 
 
 # META6 lets a dependency LIST be written three ways, and the ecosystem uses
@@ -1542,6 +1547,10 @@ sub child-env(--> Hash) {
     my $d = test-shim-dir();
     my %env = %*ENV;
     %env<PATH> = $d ~ ':' ~ (%env<PATH> // '') if $d;
+    # A suite or hook that `use`s a module its META6 never declared must fail
+    # here as it does under Rakudo, not fetch it (DEPS-PLAN): otherwise a dist
+    # would pass on this engine only because the engine filled in its META.
+    %env<RAKUPP_DEPS> = '0';
     %env
 }
 
@@ -2309,6 +2318,259 @@ sub store-blobs-intact(Str $prefix, %m, Bool :$verify --> Bool) {
     True
 }
 
+# ---- --auto: a `use` the engine could not find (DEPS-PLAN) -------------------
+# The engine runs `rakupp install --auto --for=PROGRAM IDENTITY…` when a `use`
+# or `need` finds nothing on the search path, in any store or bundled in the
+# binary. This mode answers that one question — can the ecosystem supply it? —
+# and installs what it can. Its contract with the engine:
+#
+#   stdout   one `installed IDENTITY for PROGRAM` line per distribution
+#            written, and nothing else; the engine copies it to its stderr
+#   stderr   on a refusal, the reason, which the engine adds to its error
+#   exit     0 something useful happened (or the store already had it)
+#            3 not in the index          4 the index could not be reached
+#            5 refused by the typo guard 1 anything else
+#
+# No test suites run (most of the ecosystem's could not pass here, so a test
+# gate would make half of it unfetchable), and the REA archive is not
+# consulted for the names asked about: it is 18 MB, and a name only REA has
+# is an old release a program is unlikely to mean. resolve() still reaches
+# REA for a dependency pinned to such a release.
+my constant $AUTO-NOT-FOUND = 3;
+my constant $AUTO-OFFLINE   = 4;
+my constant $AUTO-GUARD     = 5;
+# How long an unreachable index is believed unreachable: a machine with no
+# network pays the connect timeout once, not once per process (a Roast run
+# starts 1,425 of them).
+my constant $OFFLINE-TTL = 600;
+# A name absent from a cache older than this refreshes it once: a module
+# published today is in the live index and not yet in yesterday's copy.
+my constant $MISS-REFRESH-AGE = 3600;
+
+sub file-age(IO::Path $f) { now.to-posix[0] - $f.modified.to-posix[0] }
+
+# The index for --auto: load-index's cache and source, with short timeouts, the
+# offline stamp, and no exception when the network is gone. Nil means there is
+# no index to ask.
+my $AUTO-FETCHED = False;
+sub auto-index(Bool :$refresh) {
+    my $override = %*ENV<RAKUPP_INSTALL_INDEX> // '';
+    if $override ne '' && !$override.starts-with('http') {
+        return Nil unless $override.IO.f;
+        return json-decode($override.IO.slurp);
+    }
+    my $url   = $override ne '' ?? $override !! $INDEX-URL;
+    my $cache = cache-dir.add('index.json');
+    my $stamp = cache-dir.add('offline');
+    my $cached = $cache.e ?? -> { json-decode($cache.slurp) } !! -> { Nil };
+    return $cached() if !$refresh && $cache.e && file-age($cache) < $CACHE-TTL;
+    if $stamp.e && file-age($stamp) < $OFFLINE-TTL {
+        trace("index: offline since {$stamp.modified.DateTime} — not fetching");
+        return $cached();
+    }
+    trace("index: fetching $url (auto)");
+    my $p = run 'curl', '-sSL', '--fail', '--connect-timeout', '5', '--max-time', '60',
+                $url, :out, :err;
+    my $text = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    my $idx = $p.exitcode == 0 ?? (try json-decode($text)) !! Nil;
+    if $idx.defined {
+        $cache.spurt($text);
+        try $stamp.unlink;
+        $AUTO-FETCHED = True;
+        return $idx;
+    }
+    trace("index: $url unreachable (auto) — offline for {$OFFLINE-TTL}s");
+    try $stamp.spurt(~now);
+    $cached()
+}
+
+# How many distributions depend on each module name. Each dist NAME votes
+# once, however many versions of it the index lists.
+sub dependents(@index --> Hash) {
+    my %voters;
+    for @index -> %e {
+        my $who = %e<name> // next;
+        for <depends build-depends test-depends> -> $field {
+            for dep-identities(%e{$field}) -> $id {
+                %voters{parse-identity($id)<name>}{$who} = True;
+            }
+        }
+    }
+    %voters.map({ .key => .value.elems }).Hash
+}
+
+# Edit distance, giving up once it exceeds $max.
+sub near(Str $a, Str $b, Int $max --> Bool) {
+    return False if abs($a.chars - $b.chars) > $max;
+    my @p = 0 .. $b.chars;
+    for 1 .. $a.chars -> $i {
+        my @c = $i;
+        my $best = $i;
+        my $ca = $a.substr($i - 1, 1);
+        for 1 .. $b.chars -> $j {
+            @c[$j] = min(@p[$j] + 1, @c[$j - 1] + 1,
+                         @p[$j - 1] + ($ca eq $b.substr($j - 1, 1) ?? 0 !! 1));
+            $best = @c[$j] if @c[$j] < $best;
+        }
+        return False if $best > $max;
+        @p = @c;
+    }
+    @p[*-1] <= $max
+}
+
+# The typo guard: a module name a far more depended-on one is a typo away
+# from. Fetching runs code the user did not write, so `use JSON::Mask` meant
+# as JSON::Fast must not install whatever is published under that name.
+#
+#   - names compare lowercased; a distance of 1 for a name under 8
+#     characters, 2 otherwise;
+#   - a neighbour that the asked name's own distribution also provides is no
+#     hazard: either spelling installs the same thing (LLM::Function is a
+#     module of LLM::Functions);
+#   - a case-only difference is the strongest signal: the neighbour needs 3
+#     dependents and 3 times the asked name's own;
+#   - any other needs 5 and 10 times, and the asked name is credited with its
+#     providing distribution's standing too (Cro::TCP, a module of the
+#     well-used Cro::Core, is not a typo of Cro::HTTP);
+#   - core names and empty ones (malformed `depends` entries) are never
+#     neighbours; an explicit :auth or :ver on the `use` is intent and passes.
+#
+# On the zef index of 2026-10-14 this refuses 4 of 9,698 module names
+# (DEPS-PLAN.md lists them). Returns the neighbour, or ''.
+sub typo-neighbour(@index, %want --> Str) {
+    return '' if %want<auth> ne '' || %want<ver> ne '';
+    my %dep = dependents(@index);
+    my %provider;   # module or dist name -> the dist names that provide it
+    for @index -> %e {
+        my $d = %e<name> // next;
+        %provider{$d}{$d} = True;
+        %provider{$_}{$d} = True for (%e<provides> // {}).keys;
+    }
+    my $name   = %want<name>;
+    my $own    = %dep{$name} // 0;
+    my $credit = max($own, |(%provider{$name} // {}).keys.map({ %dep{$_} // 0 }));
+    my $lc     = $name.lc;
+    my $max    = $name.chars < 8 ?? 1 !! 2;
+    my @near = %dep.grep(-> $p {
+        my $n = $p.key;
+        $n ne $name && $n.chars >= 2 && !builtin-module($n)
+            && !((%provider{$name} // {}).keys (&) (%provider{$n} // {}).keys)
+            && do {
+                my $case = $n.lc eq $lc;
+                my ($floor, $ratio, $mine) = $case ?? (3, 3, $own) !! (5, 10, $credit);
+                $p.value >= $floor && $p.value >= $ratio * max(1, $mine)
+                    && ($case || near($lc, $n.lc, $max))
+            }
+    });
+    @near ?? @near.max(*.value).key !! ''
+}
+
+# A script's pin record (DEPS-PLAN D3): the versions its fetches chose, so the
+# next run loads those even after a newer one is installed for something else.
+# Keyed by the SHA-1 of the script's resolved path — the engine computes the
+# same key with realpath() — so an edit keeps the pins and a move starts over.
+# Every module a fetched distribution provides is pinned to it; a name pinned
+# before keeps its pin unless this run installed it again.
+sub pin-record-path(Str $program --> IO::Path) {
+    my $d = cache-dir.add('scripts');
+    $d.mkdir unless $d.d;
+    $d.add(sha1-str($program.IO.resolve.Str) ~ '.json')
+}
+sub write-pins(Str $program, @dists) {
+    my $f = pin-record-path($program);
+    my %rec = $f.e ?? ((try json-decode($f.slurp)) // {}) !! {};
+    my %pins = %rec<pins> // {};
+    for @dists -> %e {
+        my %pin = ver => ~(%e<version> // ''), auth => ~(%e<auth> // '');
+        %pins{$_} = %pin for (%e<name>, |(%e<provides> // {}).keys).unique;
+    }
+    $f.spurt: json-encode({ program => $program.IO.resolve.Str, pins => %pins });
+    trace("pins: {%pins.elems} names for $program in $f");
+}
+
+sub auto-install(@missed, Str $for, Str $to --> Int) {
+    my $idx = auto-index();
+    my @index = $idx.defined ?? $idx.list !! ();
+    unless @index {
+        note "could not reach the ecosystem index";
+        return $AUTO-OFFLINE;
+    }
+    trace("auto: {@missed.join(' ')} for $for");
+    my $cache = cache-dir.add('index.json');
+    my $status = 0;
+    my @wants;
+    for @missed -> $id {
+        my %w = parse-identity($id);
+        if !candidates(@index, %w) && !$AUTO-FETCHED && $cache.e
+           && file-age($cache) >= $MISS-REFRESH-AGE
+           && !(cache-dir.add('offline').e && file-age(cache-dir.add('offline')) < $OFFLINE-TTL) {
+            with auto-index(:refresh) -> $fresh { @index = $fresh.list }
+        }
+        if !candidates(@index, %w) {
+            trace("auto: $id is not in the index");
+            note "(not in the ecosystem index either)";
+            $status ||= $AUTO-NOT-FOUND;
+            next;
+        }
+        my $n = typo-neighbour(@index, %w);
+        if $n {
+            my $auth = candidates(@index, %w)[0]<auth> // '…';
+            trace("auto: $id refused — a typo away from $n");
+            note "did you mean $n? (to install %w<name> itself, pin it: use %w<name>:auth<$auth>)";
+            $status ||= $AUTO-GUARD;
+            next;
+        }
+        @wants.push: $id;
+    }
+    # The rest of the program comes along in the same run, so its first miss
+    # is its last: each `use` it makes that the store cannot answer and the
+    # index can, without a guard objection. A refusal there is silent — the
+    # engine asks about that name again if the program really reaches it.
+    if $for ne '-e' && $for ne '-' && $for.IO.f {
+        my @installed = installed-entries($to);
+        for program-wants($for) -> $id {
+            my %w = parse-identity($id);
+            next if @wants.first(* eq $id) || @missed.first(* eq $id);
+            next if candidates(@installed, %w);
+            next unless candidates(@index, %w);
+            next if typo-neighbour(@index, %w);
+            @wants.push: $id;
+        }
+    }
+    return $status unless @wants;
+    my %notes;
+    my @plan = resolve(@index, @wants, %notes, :prefix($to));
+    my %planned;
+    %planned{identity-key(.<name>, .<version>, .<auth>, .<api>)} = True for @plan;
+    my %state = store-state($to, %planned);
+    my %have   = %state<have>;
+    my %broken = %state<broken>;
+    my $program = $for ne '-e' && $for ne '-' && $for.IO.f;
+    my @pinned;
+    LEAVE { write-pins($for, @pinned) if $program && @pinned }
+    for @plan -> %e {
+        next if shadowed-by-rakulib(%e);
+        if %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)} {
+            @pinned.push: %e;
+            next;
+        }
+        my $done = try install-one(%e, $to, :no-test, :%have, :%broken);
+        my $id = %e<dist> // "{%e<name>}:ver<{%e<version> // ''}>:auth<{%e<auth> // ''}>";
+        if $done {
+            say "installed $id for $for";
+            trace("auto: installed $id");
+            @pinned.push: %e;
+        }
+        elsif !$!.Str.contains('already installed') {
+            note "$id: {$!.Str.lines[0]}";
+            trace("auto: FAILED $id — {$!.Str}");
+            return 1;
+        }
+    }
+    0
+}
+
 # Raku's default MAIN parsing stops reading options at the first positional, so
 # `rakupp install Config --no-test` put `--no-test` in @modules and installed
 # with the test gate still on — silently, and the failure message that suggests
@@ -2332,7 +2594,15 @@ sub MAIN(
     Bool :v(:$verbose),        #= show each test file's output as it runs
     Bool :r(:$recursive),      #= a directory's module files at every depth, not only its own
     Str  :$to = home-dir().add('.raku').Str,  #= the CURI store prefix to write
+    Bool :$auto,               #= (the engine's) install what a `use` could not find
+    Str  :$for = '-e',         #= (with --auto) the program that asked
 ) {
+    if $auto {
+        $QUIET = True;
+        CATCH { default { trace("FATAL (auto): " ~ .Str); note .Str.lines[0]; exit 1 } }
+        trace-start();
+        exit auto-install(@modules, $for, $to);
+    }
     if $quiet && $verbose {
         note "rakupp: -q and -v pull in opposite directions — pick one";
         exit 2;

@@ -709,7 +709,10 @@ void Interpreter::preloadRoutineUses(Stmt* top) {
     routineUsesStmt(top, /*inRoutine=*/false, uses, stop);
     for (auto* u : uses)
         if (!loadedModules_.count(u->module) || modulesLoading_.count(u->module))   // (the latter: a cycle)
+        {
+            pendingUseAuth_ = u->authReq;
             loadModule(u->module, {}, /*doImport=*/false, /*quiet=*/false, u->verReq);
+        }
 }
 
 // Take the loader (see loadMut_). Only parallel mode needs it: under the GIL a
@@ -743,11 +746,68 @@ void Interpreter::loadModule(const std::string& name, const std::vector<std::str
     if (mergeGlobals && unitStash_.count(name)) stashImport(importer, name);
 }
 
+// DEPS-PLAN D3: the pin record `rakupp install --auto` wrote for this script,
+// read once — name -> (version, auth). Keyed by the SHA-1 of the script's
+// resolved path, which the installer computes with IO::Path.resolve.
+static bool depsPinFor(const std::string& srcFile, const std::string& name,
+                       std::string& ver, std::string& auth) {
+    static std::once_flag once;
+    static std::map<std::string, std::pair<std::string, std::string>> pins;
+    std::call_once(once, [&] {
+        if (srcFile.empty() || srcFile == "-e" || srcFile == "-") return;
+#ifdef _WIN32
+        char rp[4096];
+        if (!_fullpath(rp, srcFile.c_str(), sizeof rp)) return;
+#else
+        char rp[PATH_MAX];
+        if (!realpath(srcFile.c_str(), rp)) return;
+#endif
+        std::string home = platHomeDir();
+        if (home.empty()) return;
+        std::ifstream f(home + "/.raku/rakupp-install/scripts/" + sha1hex(rp) + ".json");
+        if (!f) return;
+        std::ostringstream ss; ss << f.rdbuf();
+        json::Json j;
+        if (!json::parse(ss.str(), j)) return;
+        const json::Json* p = j.find("pins");
+        if (!p || p->t != json::Json::T::Obj) return;
+        for (auto& kv : p->obj) pins[kv.first] = {kv.second.getStr("ver"), kv.second.getStr("auth")};
+    });
+    auto it = pins.find(name);
+    if (it == pins.end() || it->second.first.empty()) return false;
+    ver = it->second.first;
+    auth = it->second.second;
+    return true;
+}
+
+// The short/ entry for exactly that version (and auth, when the pin has one).
+static bool pickPinnedDist(const std::string& shortDir, const std::string& ver, const std::string& auth,
+                           std::string& entryOut, std::vector<std::string>& linesOut) {
+    DIR* dd = opendir(shortDir.c_str());
+    if (!dd) return false;
+    std::vector<std::string> entries;
+    while (struct dirent* e = readdir(dd)) { std::string n = e->d_name; if (n != "." && n != "..") entries.push_back(n); }
+    closedir(dd);
+    for (auto& cand : entries) {
+        std::ifstream meta(shortDir + "/" + cand);
+        std::vector<std::string> ls; std::string ln;
+        while (std::getline(meta, ln)) ls.push_back(ln);
+        if (ls.size() < 4 || ls[3].empty() || ls[0] != ver) continue;
+        if (!auth.empty() && ls[1] != auth) continue;
+        entryOut = cand; linesOut = std::move(ls);
+        return true;
+    }
+    return false;
+}
+
 void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
     // the evaluated `use Mod EXPR, …` arguments belong to THIS load — take them
     // now, before the module's own `use` statements run through here again
     const ValueList useExtra = std::move(useExprArgs_);
     useExprArgs_.clear();
+    // …and the `:auth<…>` it was written with, before a nested `use` resets it
+    const std::string useAuth = std::move(pendingUseAuth_);
+    pendingUseAuth_.clear();
     StageLoadTimer stageTimer(name, !loadedModules_.count(name)); // --stagestats: a first load, timed
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
@@ -1722,14 +1782,23 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         }
     }
     // 2. installed Rakudo/zef modules: resolve name via the CURI short/ index
-    // (inst# entries from `use lib`/-I/RAKULIB first, then the default repos)
+    // (inst# entries from `use lib`/-I/RAKULIB first, then the default repos).
+    // A lambda, because a module fetched below is searched for here again.
     std::string nameSha = sha1hex(name);
+    // A script whose first run fetched this name loads what that run chose,
+    // unless its `use` now asks for something the pin does not satisfy.
+    std::string pinVer, pinAuth;
+    const bool pinned = depsPinFor(srcFile_, name, pinVer, pinAuth)
+                        && (verReq.empty() || verSatisfies(pinVer, verReq));
+    auto searchStores = [&]() -> bool {
     for (auto& repo : repoPrefixesFor(libPaths_)) {
         // several installed versions may share the short name: take the NEWEST
         // that satisfies the `use` constraint (pickInstalledDist). Taking the
         // first that satisfied loaded whichever version readdir put first.
         std::string entry; std::vector<std::string> lines;
-        if (!pickInstalledDist(repo + "/short/" + nameSha, verReq, entry, lines)) continue;
+        const std::string shortDir = repo + "/short/" + nameSha;
+        if (!(pinned && pickPinnedDist(shortDir, pinVer, pinAuth, entry, lines))
+            && !pickInstalledDist(shortDir, verReq, entry, lines)) continue;
         std::ifstream src(repo + "/sources/" + lines[3]);
         if (!src) continue;
         if (traceLoad)
@@ -1742,8 +1811,11 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         struct RGuard { ValueList& s; ~RGuard() { s.pop_back(); } } rg{resourceStack_};
         struct DGuard { ValueList& s; ~DGuard() { s.pop_back(); } } dg{distStack_};
         loadSource(ss.str(), repo + "/sources/" + lines[3]);
-        return;
+        return true;
     }
+    return false;
+    };
+    if (searchStores()) return;
     // Nothing on the search path or in a store has it: a module this binary
     // BUNDLES answers now, and only now — the opposite of a shadow, so an
     // installed or -I copy always wins over the one compiled in.
@@ -1789,10 +1861,63 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                    ((srcFile_.empty() || srcFile_ == "-e") ? std::string("PROGRAM.raku") : srcFile_) +
                    " -o PROGRAM.js && node PROGRAM.js");
     if (isPragmaName(name) || quiet) return;
+    // DEPS-PLAN: the ecosystem may have it. Never for `require`, which is how
+    // code asks whether an optional module is there.
+    std::string depsReason;
+    if (!requireForm && depsFetch(name, verReq, useAuth, depsReason) && searchStores()) return;
     std::string where = "Could not find " + name + " in:";
     for (auto& b : libPaths_) where += "\n    " + b;
     for (auto& r : rakuRepoPrefixes()) where += "\n    " + r;
+    if (!depsReason.empty()) where += "\n" + depsReason;
     throwTyped("X::CompUnit::UnsatisfiedDependency", {{"specification", name}}, where);
+}
+
+bool g_depsFetch = false;
+std::string g_depsExe;
+std::string g_depsProgram;
+
+// A `use` nothing could answer, put to the installer (DEPS-PLAN): a child
+// `rakupp install --auto --for=PROGRAM IDENTITY`, with RAKUPP_DEPS=0 so that
+// nothing it loads can ask again. Its stdout is the `installed …` lines, copied
+// to our stderr whatever happens; its stderr is the reason it gave nothing,
+// which goes into the error. Each name is asked about once per process.
+bool depsAsk(const std::string& name, const std::string& verReq, const std::string& auth,
+             const std::string& label, std::string& reason) {
+    if (!g_depsFetch || g_depsExe.empty() || sandboxed()) return false;
+    if (const char* e = std::getenv("RAKUPP_DEPS"); e && std::string(e) == "0") return false;
+    {
+        static std::mutex m;
+        static std::set<std::string> asked;
+        std::lock_guard<std::mutex> g(m);
+        if (!asked.insert(name).second) return false;
+    }
+    std::string id = name;
+    if (!verReq.empty()) id += ":ver<" + verReq + ">";
+    if (!auth.empty()) id += ":auth<" + auth + ">";
+    std::vector<std::string> argv = {g_depsExe, "install", "--auto",
+                                     "--for=" + (label.empty() ? std::string("-e") : label), id};
+    std::vector<std::string> env;
+    for (char** ep = rakupp_environ(); ep && *ep; ++ep)
+        if (std::strncmp(*ep, "RAKUPP_DEPS=", 12) != 0) env.push_back(*ep);
+    env.push_back("RAKUPP_DEPS=0");
+    std::string out, err;
+    int rc = -1;
+    spawnWithInput(argv, "", out, rc, nullptr, &env, "", &err);
+    if (!out.empty()) {
+        std::fflush(stdout);
+        std::fwrite(out.data(), 1, out.size(), stderr);
+        std::fflush(stderr);
+    }
+    if (rc == 0) return true;
+    while (!err.empty() && (err.back() == '\n' || err.back() == '\r')) err.pop_back();
+    reason = !err.empty() ? err
+           : "(the ecosystem could not supply it: rakupp install --auto exited " + std::to_string(rc) + ")";
+    return false;
+}
+
+bool Interpreter::depsFetch(const std::string& name, const std::string& verReq,
+                            const std::string& auth, std::string& reason) {
+    return depsAsk(name, verReq, auth, srcFile_, reason);
 }
 
 // The scopes EVALs are running in, innermost last: an EVAL's code runs in the
@@ -4666,6 +4791,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     requireSymbols(stem);
                     return Value::any();
                 }
+                pendingUseAuth_ = u->authReq;
                 loadModule(u->module, u->importArgs, !u->isNeed && !u->emptyImport, /*quiet=*/false, u->verReq,
                            /*requireForm=*/u->isRequire);
                 requireSymbols(u->module);

@@ -293,6 +293,10 @@ export DEBUG=1
 $ rakupp --env-file=.env app.raku
 ```
 
+**`RAKUPP_DEPS=0`** keeps a `use` of a module that is not installed an
+error. Without it, rakupp fetches the module from the ecosystem into
+`~/.raku` and carries on ([MODULES.md](MODULES.md#missing-modules-install-themselves)).
+
 **`RAKUPP_OPT`** holds standing options, prepended to every `rakupp`
 command line — `PERL5OPT`, `NODE_OPTIONS` and `GOFLAGS` are the same idea.
 Tokens are whitespace-separated; a single- or double-quoted token keeps its
@@ -990,6 +994,15 @@ including an explicit cut, which is exactly when you want the proof.
 interpreter never slims.
 
 ## Installing modules
+
+You rarely need to type the command: a `use` of a module that is not
+installed fetches it into the store and the program carries on
+([MODULES.md](MODULES.md#missing-modules-install-themselves) has the rules;
+`RAKUPP_DEPS=0` turns it off). The engine does this by running
+`rakupp install --auto --for=PROGRAM MODULE`, an internal mode: no test
+suites, a typo guard, one `installed …` line per distribution on stdout, and
+exit codes the engine reads (3 not in the index, 4 index unreachable, 5
+refused by the typo guard).
 
 `rakupp install` is the ecosystem installer — a Raku program shipped with
 the release and dispatched by the binary. It writes the same CURI store

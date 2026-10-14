@@ -539,6 +539,14 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp t/install/run.raku
 
+      # The missing-modules gate (DEPS-PLAN): a `use` of a module that is not
+      # installed fetches it — against the same kind of local fixture index,
+      # with a HOME of its own per run. Fetch, the typo guard, the off
+      # switches, pins, and --bundle fetching at compile time. No network.
+      - name: Missing-modules gate (POSIX)
+        if: runner.os != 'Windows'
+        run: build/rakupp t/deps/run.raku
+
       # The installed-binary gate (#118): the binary COPIED into a prefix with no
       # rakulib/ near it, HOME empty, run from outside the checkout — the shims
       # it carries must answer ahead of a decoy on -I, the installer must not

@@ -1225,6 +1225,8 @@ struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} }
 struct UseStmt : Stmt {
     std::string module;
     std::string verReq; // `use Foo:ver<0.0.14+>` — version constraint ('' = any)
+    std::string authReq; // `use Foo:auth<zef:x>` — not a load constraint here; a missing
+                         // module's fetch reads it as intent (DEPS-PLAN's typo guard)
     std::string fromLang; // `use NQPHLL:from<NQP>` — a foreign-language load; NQP is a no-op here (see exec)
     ExprPtr ifCond; // `use Foo:if(EXPR)` — load only when EXPR is true (the ecosystem `if` dist's adverb)
     ExprPtr fileExpr; // `require Stub:file($path)` — load that FILE into the package Stub

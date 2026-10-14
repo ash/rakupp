@@ -90,8 +90,11 @@ $ rakupp app.raku
 ### The five rules
 
 1. **Exact index match only.** The missed name is looked up in the cached zef
-   index, then in REA, by the installer's own `candidates()`: an exact
-   distribution name, or an entry in a distribution's `provides`. A name in
+   index by the installer's own `candidates()`: an exact distribution name,
+   or an entry in a distribution's `provides`. REA is not asked about the
+   missed name: it is 18 MB, and a name only REA has is an old release a
+   program is unlikely to mean (`resolve()` still reaches it for a dependency
+   pinned to one). A name in
    neither fails as it does today. Line 1 of the error stays byte for byte
    `Could not find X in:` ([TRACER.md](../../guide/TRACER.md)'s rule), the
    exception stays `X::CompUnit::UnsatisfiedDependency`, and one line is added
@@ -102,7 +105,8 @@ $ rakupp app.raku
    (`src/Builtins.cpp:7266`, `:7504`) are left alone for the same reason.
 3. **The typo guard.** Fetching a name runs code the user did not write, so a
    misspelt `use` is the real risk. The fetch is refused if a far more depended-on
-   module name is a typo's distance away (measured below). The refusal names
+   module name is a typo's distance away. The rule and its measurement are
+   below. The refusal names
    the neighbour: `did you mean JSON::Fast? (to install JSON::Mask itself,
    pin it: use JSON::Mask:auth<…>)`. An explicit `:auth<…>` or `:ver<…>` on the
    `use` counts as proof of intent and passes the guard. The source says what
@@ -201,8 +205,9 @@ that, even after a newer version has been installed for some other program.
   id, process-wide, so the closure holds too. An edited `use Foo:ver<0.22>`
   that the pin no longer satisfies is resolved again, and the pin is
   rewritten.
-- **An uninstalled pin is fetched again**: the identity is exact, so there is
-  nothing to choose.
+- **An uninstalled pin** should be fetched again: the identity is exact, so
+  there is nothing to choose. Not built yet; today that name loads the newest
+  installed version (Where it stands).
 - Programs from `-e`, stdin and the REPL have no path and get no record.
 - This is deliberately narrower than [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md):
   there is no file in the project, no archive digests and no `--frozen`. If
@@ -232,15 +237,36 @@ The single hit was English prose ("Can use Unicode properties",
 `ThisDoesNotExistAtAll` (`S32-exceptions/misc.t:148`), which no index has, so
 rule 1 leaves them byte-identical with no network access.
 
-**The typo guard blocks 31 of 9,698 names (0.32%).** The rule measured:
-compare lowercased names, and allow a distance of 1 for names under 8 characters
-and 2 otherwise. Block a name when a neighbour has ≥ 5 dependent distributions
-and ≥ 10× the requested name's own. Some of the 31 are exactly the mistakes
-the guard is for: `Pod::To::MarkDown` (Markdown has 26 dependents, MarkDown 0),
-`LLM::Function` (LLM::Functions, 74 against 0), `JSON::Mask` (JSON::Fast,
-1,650 against 0). The rest are real modules with an unlucky name
-(`DBDish`/`DBIish`, `FDF`/`PDF`, `mro`/`Cro`). Each of those still works:
-adding `:auth<…>` to the `use` passes the guard, and the refusal says so.
+**The typo guard refuses 4 of 9,698 names.** Dependents are counted once per
+dependent distribution *name*. The first probe counted index entries, so a
+distribution with 40 releases voted 40 times: JSON::Fast came out at 1,651
+dependents, but 220 distributions depend on it. That inflated count also made
+the first rule (5 dependents and 10 times the asked name's own) look right
+when it was not. With honest counts it missed `Pod::To::MarkDown`, which then
+installed 41 distributions in a test run. A looser bar (5 and 5 times) blocked
+25 names, including real modules (`Digest::SHA1` is not a typo of
+`Digest::SHA`). The rule that shipped, in `typo-neighbour`
+(`tools/install.raku`):
+
+- compare lowercased; allow a distance of 1 for a name under 8 characters,
+  2 otherwise;
+- a neighbour provided by the asked name's own distribution is no hazard:
+  either spelling installs the same thing (`LLM::Function` is a module of
+  LLM::Functions, and `DBDish` of DBIish);
+- a case-only difference is the strongest signal: the neighbour needs 3
+  dependents and 3 times the asked name's own;
+- any other needs 5 and 10 times, and the asked name is credited with its
+  providing distribution's standing too (`Cro::TCP`, a module of the
+  well-used Cro::Core, is not a typo of `Cro::HTTP`);
+- core names and empty ones (malformed `depends` entries give `""` eight
+  dependents) are never neighbours.
+
+On the 2026-10-14 index that refuses exactly `Dist::META` (near Test::META,
+97 dependents against 0), `File::file` (File::Find, 24 against 1),
+`JSON::Mask` (JSON::Fast, 220 against 0) and `Pod::To::MarkDown`
+(Pod::To::Markdown, 5 against 0). Each still installs with `:auth<…>` on
+the `use`, and the refusal prints that spelling. Checking one name against
+the whole index takes about 0.3 s, paid only on a fetch.
 
 **269 module names are published under more than one auth.** Almost all are
 transfers: an author's account rename (`zef:p6steve` → `zef:librasteve`), or
@@ -314,8 +340,10 @@ there as well.
 
 ### D5 — hosts
 
-`RkConfig.deps` for `librakupp` (default off), exposed by the bindings when
-they next move. `--mcp` and `--jupyter` follow the table. `tools/mcp-smoke.raku`
+The switch (`g_depsFetch`) is off unless `main()` turns it on for an
+interpreter run, so `librakupp` hosts, compiled binaries and Raku.js never
+fetch without anyone deciding so. Still to build: `RkConfig.deps`, so a host
+can opt in, exposed by the bindings when they next move. `--mcp` and `--jupyter` follow the table. `tools/mcp-smoke.raku`
 and `tools/jupyter-smoke.raku` get one check each.
 
 ### D6 — docs and speed
@@ -365,4 +393,41 @@ beat.
 
 ## Where it stands
 
-*2026-10-14:* the plan and the four probes above. No code yet. Next: D0.
+*2026-10-14:* D0–D4 are built, and D6's guides.
+
+- **The gate:** `t/deps/run.raku`, 42 checks, all pass. On `7ae228d3` (the
+  plan's commit, before any code) it gave 18 ok and 24 failed: every
+  "fetches" check failed and every "stays fatal" check passed. It runs in
+  CI beside the installer gate.
+- **Other gates on the same build:** `t/install/run.raku` 159/159;
+  `t/run.raku` 1,626/1,626; Roast (checkout `cf28a323c`) 1,425 of 1,425
+  files and 219,207/219,207 tests without skip and todo, with a file list
+  identical to v5.4.1's; `mcp-smoke`, `jupyter-smoke` and `embed-smoke`
+  pass; the source budget is OK. No MinGW compiler on this machine, so the
+  Windows syntax pass is CI's.
+- **Where the code is:** `install --auto` in `tools/install.raku`
+  (`auto-index`, `typo-neighbour`, `auto-install`, `write-pins`);
+  `child-env` gives suites and hooks `RAKUPP_DEPS=0`. In the engine,
+  `depsAsk` runs the child (`src/InterpreterModules.cpp`), the store search
+  in `loadModuleImpl` became a lambda that runs again after a fetch, and
+  `depsPinFor` / `pickPinnedDist` read and apply the pins.
+  `collectModuleGraph` fetches at the compile-time skip, for `use` and
+  `need` only. `UseStmt.authReq` keeps `:auth<…>` (AST cache v45).
+- **The docs:** MODULES.md leads with the feature; CLI.md (the installer
+  section and the environment) and the modules FAQ cover it, and `--help`
+  lists `RAKUPP_DEPS`. The README and the CHANGELOG wait for the release
+  that ships it.
+
+**Open:**
+
+- **D5:** `RkConfig.deps` for embedding hosts.
+- **D6:** fetch archives in parallel. Cro::HTTP's 14.7 s for 21
+  distributions is the number to beat.
+- **Pins on Windows:** the engine keys the record by `_fullpath`, the
+  installer by `IO::Path.resolve`. If the two spell the path differently
+  (case, slashes), the script falls back to the newest version, which is
+  harmless but not pinned. A Windows check belongs in the gate once one can
+  run there.
+- **A pinned version that was uninstalled** loads the newest installed one
+  rather than fetching the pinned one again, as the plan first said.
+- The four open questions above still stand.

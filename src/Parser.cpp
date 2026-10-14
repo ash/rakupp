@@ -16507,6 +16507,7 @@ StmtPtr Parser::parseStatementImpl() {
                     if (!literalish) val.clear();
                 }
                 if (adv == "ver") u->verReq = val;
+                else if (adv == "auth") u->authReq = val;
                 else if (adv == "from") u->fromLang = val;   // `use NQPHLL:from<NQP>`: a foreign load, never searched for here
                 // `use experimental:rakuast` — the TIGHT spelling of a pragma
                 // argument lands in THIS loop (the spaced `use experimental

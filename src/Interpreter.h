@@ -200,6 +200,16 @@ std::string tmpDirPath();
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
                           const ValueList* fill = nullptr);
 extern std::atomic<bool> g_anyShaped;   // has any shaped array been made? (gates the dimension checks)
+// DEPS-PLAN: a `use` that finds nothing asks `g_depsExe install --auto` for it.
+// Off unless main() turns it on for an interpreter run, so a compiled binary,
+// an embedding host and Raku.js never reach the network on their own.
+extern bool g_depsFetch;
+extern std::string g_depsExe;
+extern std::string g_depsProgram;   // what a compile mode is compiling, for the installed lines
+// The fetch itself, shared by the loader and the compile modes: true when the
+// installer put something in the store; else `reason` is what it said.
+bool depsAsk(const std::string& name, const std::string& verReq, const std::string& auth,
+             const std::string& label, std::string& reason);
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
 // Is this text NFC — would nfcNormalize leave it as it is? A Str caches the
@@ -4168,6 +4178,15 @@ public:
     // however the holder grows.
     std::vector<std::shared_ptr<std::vector<Param>>> runtimeParams_;
     std::string srcFile_;             // source file path as invoked
+    // The `:auth<…>` of the `use` being loaded, set by the statement just
+    // before loadModule and taken by loadModuleImpl (DEPS-PLAN): a missing
+    // module's fetch passes it on as proof of intent.
+    std::string pendingUseAuth_;
+    // DEPS-PLAN: ask `rakupp install --auto` for a module no search found.
+    // True when it installed something worth searching again; otherwise
+    // `reason` holds what it said, for the error.
+    bool depsFetch(const std::string& name, const std::string& verReq,
+                   const std::string& auth, std::string& reason);
     // $*PROGRAM-NAME when it is not the source file: a COMPILED binary IS the
     // program, so it is named by the command that ran it (argv[0]), not by the
     // .raku file it was built from — which on the user's machine may not even
