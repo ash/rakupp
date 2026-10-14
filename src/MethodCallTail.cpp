@@ -517,6 +517,50 @@ std::optional<Value> Interpreter::catchAllDelegation(const Value& inv, const MNa
     return std::nullopt;
 }
 
+// The fold behind a borrowed `.sum` / `.min` / `.max` (see methodCallTail):
+// nullopt unless every element is a plain Int (or, for `.sum`, every one a
+// Num), which is what lets it walk the live array — no element of either kind
+// runs user code. An Int sum that leaves int64 goes on through applyArith,
+// where BigInts live; Ints compare as Ints, keeping the first on ties.
+static std::optional<Value> borrowedNumericFold(const ValueList& a, char how) {
+    if (a.empty()) return std::nullopt;
+    auto plainInt = [](const Value& v) {
+        return v.t == VT::Int && !v.x_ && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+    };
+    auto plainNum = [](const Value& v) {
+        return v.t == VT::Num && !v.x_ && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+    };
+    if (plainInt(a[0])) {
+        for (const Value& v : a) if (!plainInt(v)) return std::nullopt;
+        if (how == 's') {
+            long long acc = 0;
+            for (size_t k = 0; k < a.size(); k++) {
+                const long long x = a[k].i;
+                long long next;
+                if (!__builtin_add_overflow(acc, x, &next)) { acc = next; continue; }
+                Value big = Value::integer(acc);
+                for (; k < a.size(); k++) big = applyArith("+", big, a[k]);
+                return big;
+            }
+            return Value::integer(acc);
+        }
+        size_t at = 0;
+        long long best = a[0].i;
+        for (size_t k = 1; k < a.size(); k++) {
+            const long long x = a[k].i;
+            if (how == '<' ? x < best : x > best) { best = x; at = k; }
+        }
+        return a[at];
+    }
+    if (how == 's' && plainNum(a[0])) {
+        for (const Value& v : a) if (!plainNum(v)) return std::nullopt;
+        double acc = 0;   // the Int 0 the general fold starts from, as a Num
+        for (const Value& v : a) { const double x = v.n; acc += x; }
+        return Value::number(acc);
+    }
+    return std::nullopt;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -2329,6 +2373,15 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return m == "push" || m == "append" || m == "unshift" ||
                    m == "prepend" || m == "pop" || m == "shift" || m == "splice";
         };
+        // `.sum`, `.min` and `.max` of a plain array of Ints (or `.sum` of Nums)
+        // read the elements where they are: the snapshot below copied every
+        // element to fold it once. Only when no element could run user code —
+        // an object, a hole, an allomorph or a mixin takes the general arms.
+        if (inv.t == VT::Array && inv.arr() && !inv.ext() && args.empty() &&
+            (m == "sum" || m == "min" || m == "max")) {
+            if (auto r = borrowedNumericFold(*inv.arr(), m == "sum" ? 's' : m == "min" ? '<' : '>'))
+                return r;
+        }
         ValueList items;
         // Hash push/append also skip the snapshot: their arm reads only args and
         // inv.hash, and the per-call pair materialization made `%h.push` in an

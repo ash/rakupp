@@ -3029,6 +3029,28 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
                     { liveSt = st; liveArr = lv.arrS(); }
             }
+            // an integer Range is walked by its ends, as the block form walks
+            // it: flattening it first built every Int at once, 410 MB for
+            // `f($_) for ^5_000_000` where `for ^5_000_000 { f($_) }` takes 9
+            // (one with a BigInt or a degenerate end, or an endless one, which
+            // flattens to a bounded prefix, still takes the flatten below)
+            const RangeEnds* lre = lv.t == VT::Range ? rangeEnds(lv) : nullptr;
+            if (!oneItem && lv.t == VT::Range && !lv.rNum() && !lv.ext() && !lv.big() &&
+                lv.ofType() != "Str" && degenRange(lv) == DegenRange::No &&
+                !(lre && ((lre->from.t == VT::Int && lre->from.big()) || (lre->to.t == VT::Int && lre->to.big()))) &&
+                lv.rTo() < 9000000000000000000LL && lv.rFrom() > -9000000000000000000LL) {
+                const long long lo = lv.rFrom() + (lv.rExFrom() ? 1 : 0);
+                const long long hi = lv.rTo() - (lv.rExTo() ? 1 : 0);
+                const bool imm = immutableQuantSource(fs->list.get()) || immutableLoopSource(fs->list.get());
+                for (long long k = lo; k <= hi; k++) {
+                    Value& tv = env->vars["$_"];
+                    tv = Value::integer(k);
+                    if (imm) tv.readonly = tv.immutableBind = true;
+                    if (!runLoopBody(fs->body.get(), env, fs->label, k == lo, k == hi, col) || k == hi) break;
+                }
+                if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
+                return forResult();
+            }
             if (oneItem) items.push_back(lv);
             else if (lv.t == VT::Array && lv.arr()) {
                 if (!liveArr) { ParStripe cs(*this, lv.arr());
