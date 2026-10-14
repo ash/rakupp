@@ -430,6 +430,16 @@ jobs:
         if: runner.os != 'Windows'
         run: build/rakupp t/stress/run.raku
 
+      # ORACLE-PLAN P1: our DEFLATE/zlib/gzip against real libz (python3's
+      # zlib) and GNU gzip, on generated inputs. Seed 1000's first round is the
+      # one that catches #159, so the fixed rounds run on every push; the timed
+      # run draws a fresh seed, and a failure prints it for `--seed=N --rounds=1`.
+      - name: Oracle gate, zlib against libz (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          build/rakupp t/oracle/zlib.raku --seed=1000 --rounds=5
+          build/rakupp t/oracle/zlib.raku --seconds=45
+
       # The embed/ABI gate (ABI-PLAN A0-A2): compiles a C++ host and a C
       # extension against the headers, loads the extension, and checks
       # librakupp's export table against rakupp_ext.h + rakupp.h.

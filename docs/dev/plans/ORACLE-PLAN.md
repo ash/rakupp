@@ -1,7 +1,10 @@
 # Plan: every in-house algorithm answers to someone else's implementation
 
-*Written 2026-10-14, the day #159 landed (671e51bd). Nothing here is built
-yet.*
+*Written 2026-10-14, the day #159 landed (671e51bd).*
+
+**Status: P0 and P1 are built (2026-10-14), except P1's fuzz harness and the
+new vectors for the shared zlib.vec; see "Done so far" at the end. P2 onward
+not started.**
 
 [The dependencies FAQ](https://raku.online/faq/dependencies/) says, in a
 table, that Raku++ carries its own big integers, regex engine, Unicode
@@ -180,3 +183,58 @@ checks missed and why the new ones exist.
   no findings open;
 - no oracle check can skip silently in a release run;
 - the zlib soak, run on 671e51bd^, fails.
+
+## Done so far
+
+### P0 (2026-10-14)
+
+- **The libz cross-check skipped everywhere, as suspected.** release.yml
+  installs no modules, and `Compress::Zlib` is not installed on the dev
+  machine either: data-native-zlib-reference.raku has been a SKIP in every
+  run it ever had outside the session that wrote it. It stays as it is; the
+  oracle gate below does its job without a module.
+- **tools/gen-vectors.raku is home**, one file for both families
+  (`gen-vectors.raku zlib|digest`), with the master copies' headers. The zlib
+  half now asks python3's zlib, which is libz, instead of Compress::Zlib
+  under Rakudo, so it runs on Raku++. Both regenerate the committed .vec
+  files byte for byte on macOS with zlib 1.2.12.
+- **The encoder checks its own codes.** Before a dynamic block is written,
+  each of its three codes must be complete (one one-bit code allowed for
+  distances) and within its length limit, or the call dies naming the code.
+  With #159's decrement put back, the first round of the soak reports
+  "the code-length code is over-subscribed" instead of a stream nobody reads.
+- Not done: the `q*b + r == a` check in divmod. It costs a multiplication
+  per division, so it belongs behind a build option; that is P2's to decide.
+
+### P1 (2026-10-14)
+
+- **t/oracle/zlib.raku + zlib-oracle.py**, as specified above, in CI on
+  macOS and Linux: five fixed rounds from seed 1000, then 45 s on a fresh
+  seed. About 25 rounds a minute here, each 12 bodies, ~50 libz/gzip
+  streams, ~48 of ours and ~45 mutants.
+- **Acceptance met.** On 671e51bd^ the soak's first round (seed 1000) fails
+  on a 3,311-byte body: our own inflate and libz and gzip all refuse our
+  stream, "invalid code lengths set". So #159 was reachable through the
+  7-bit code-length code with a few KB, not only through the literal tree
+  with a megabyte. The same 23 rounds pass on the fix.
+- **What it found on the first run, all fixed in src/Zlib.cpp with
+  t/regression/zlib-framing-and-code-completeness.raku:**
+  - the zlib and gzip trailers were read from the end of the buffer, not
+    where the deflate data stops: a zlib stream followed by itself inflated,
+    raw deflate ignored bytes after its last block;
+  - two concatenated gzip members (`cat a.gz b.gz`, RFC 1952 2.2, which
+    gzip -d and every other reader accept) were refused with a CRC error;
+  - a block whose distance code has no codes at all, which RFC 1951 3.2.7
+    allows for all-literal data and libz reads, was refused;
+  - incomplete literal/length and code-length codes, which libz refuses,
+    were accepted. Our verdict on every mutant now matches libz's; ~3,000
+    mutants since, no divergence.
+- Not done yet:
+  - **new Tier A vectors.** zlib.vec is shared byte for byte with
+    Compress-Zlib-Native, so a vector added here has to land there in the
+    same change, and the X lines the findings suggest (multi-member gzip,
+    trailing bytes, the crafted blocks) would fail that distribution's C
+    today, which has its own copy of the same framing code. Next: port the
+    four fixes to the distribution, then add the vectors to both.
+  - **the fuzz harness** (Tier C) for inflate under ASan. The soak's mutants
+    cover the verdicts but not memory safety under a sanitizer.
