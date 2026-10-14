@@ -848,10 +848,26 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             while (!w.isZero()) { BigInt q2, r2; BigInt::divmod(w, BigInt(base), q2, r2); ws.insert(ws.begin(), digchr((int)r2.toLL())); w = q2; }
             whole = sign + ws;
         }
+        // An integral value has no point, as Rakudo writes it: `(4/1)` is ("4", "")
+        // in base 10. (Rakudo answers the DECIMAL digits whatever the base; the
+        // digits here are the base's own.)
+        Value out = Value::array(); out.isList = true;
+        if (r.isZero()) {
+            out.arr()->push_back(Value::str(whole));
+            out.arr()->push_back(Value::str(""));
+            return out;
+        }
+        // The cycle of n/d can be d-1 digits long. Past the cap this FAILS: it
+        // used to stop at 10,000 digits and answer them with an empty cycle, so
+        // 1/10007 (a 10,006-digit cycle) came back wrong (ORACLE-PLAN P2).
+        const size_t kMaxDigits = 1000000;
         std::string fracDigits, cycle;
         std::map<std::string, size_t> seen; // remainder -> position in fracDigits
         BigInt rem = r;
-        while (!rem.isZero() && fracDigits.size() < 10000) {
+        while (!rem.isZero()) {
+            if (fracDigits.size() >= kMaxDigits)
+                return armedFailure("X::AdHoc", "base-repeating: the expansion of " + inv.toStr()
+                                    + " runs past " + std::to_string(kMaxDigits) + " digits without repeating");
             std::string key = rem.toString();
             auto it = seen.find(key);
             if (it != seen.end()) { cycle = fracDigits.substr(it->second); fracDigits = fracDigits.substr(0, it->second); break; }
@@ -861,7 +877,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             fracDigits += digchr((int)q2.toLL());
             rem = r2;
         }
-        Value out = Value::array(); out.isList = true;
         out.arr()->push_back(Value::str(whole + "." + fracDigits));
         out.arr()->push_back(Value::str(cycle));
         return out;
