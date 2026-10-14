@@ -20410,16 +20410,12 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (haveArg) {
                 bool digits = !arg.empty() && arg.find_first_not_of("0123456789") == std::string::npos;
                 ch = digits ? std::stol(arg) : (long)evalString(arg).toInt();
-                // character index → byte offset
-                long b = 0;
-                for (long c = 0; c < ch && b < (long)subject.size(); c++) {
-                    b++;
-                    while (b < (long)subject.size() && ((unsigned char)subject[(size_t)b] & 0xC0) == 0x80) b++;
-                }
-                contStart = b;
+                // a CHARACTER index — graphemes, so CR LF and a letter with its
+                // mark count once — as the byte offset the search takes
+                contStart = (long)graphemeToByte(subject, ch < 0 ? 0 : ch);
             }
             else if (Value* mv = tctx_.cur ? tctx_.cur->find("$/") : nullptr) {
-                if (mv->t == VT::Match) contStart = mv->rTo();
+                if (mv->t == VT::Match) contStart = (long)graphemeToByte(subject, mv->rTo());
             }
             pat.erase(i, next - i);
             continue;

@@ -1680,6 +1680,18 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
       }
       realPat = realPat.substr(i);
     }
+    // A position counts CHARACTERS (graphemes) and the subject is UTF-8: the
+    // searches below take a byte offset. Handing them the count unconverted
+    // started the search early after any non-ASCII text, so `:c(N)` could
+    // answer with a match beginning before N — and a `:c($m.to)` scan found
+    // the same match forever. A position past the end matches nothing.
+    if (haveStart) {
+        if (startPos < 0) startPos = 0;
+        const size_t b = graphemeToByte(subj, startPos);
+        if (b >= subj.size() && startPos > 0 && graphemeToByte(subj, startPos - 1) >= subj.size())
+            startPos = (long)subj.size() + 1;           // beyond the last character: no match
+        else startPos = (long)b;
+    }
     if (samecase && !literal) icase = true; // :samecase implies :i for a regex, not a Str pattern
     if (!literal && realPat.empty())
         throw RakuError{Value::typeObj("X::Syntax::Regex::NullRegex"), "Null regex not allowed"};
