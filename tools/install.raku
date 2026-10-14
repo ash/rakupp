@@ -232,7 +232,49 @@ sub fetch-text(Str $url) {
     $out
 }
 
+# DEPS-PLAN D6: the archives a plan needs, fetched side by side by one curl
+# before the installs run one after another — Cro::HTTP's 21 took 14.7 s
+# fetched in turn. URL => the local file holding it; fetch-file takes a
+# prefetched archive from here instead of fetching it again.
+my %PREFETCHED;
+my $PREFETCH-DIR;
+END { run 'rm', '-rf', $PREFETCH-DIR.Str if $PREFETCH-DIR }
+
+sub prefetch-archives(@entries) {
+    my @urls = @entries.grep({ !.<local-root> }).map({ archive-url($_) })
+                       .grep({ .starts-with('https://') || .starts-with('http://') })
+                       .grep({ !%PREFETCHED{$_} }).unique;
+    return if @urls < 2;
+    $PREFETCH-DIR //= $*TMPDIR.add("rakupp-prefetch-{$*PID}");
+    $PREFETCH-DIR.mkdir;
+    my @args = '-sSL', '--fail', '--max-time', '600', '--parallel', '--parallel-max', '6';
+    my %to;
+    for @urls.kv -> $i, $url {
+        %to{$url} = $PREFETCH-DIR.add("{%PREFETCHED.elems + $i}.tar.gz").Str;
+        @args.append: '-o', %to{$url}, $url;
+    }
+    progress("fetching {+@urls} archives");
+    trace("prefetch: {+@urls} archives with one curl --parallel");
+    my $p = run 'curl', |@args, :out, :err;
+    my $err = $p.err.slurp(:close);
+    # Anything short of every archive arriving — a curl without --parallel, one
+    # URL that fails — and nothing is kept: each install then fetches its own
+    # archive and reports its own error, as it did before there was a prefetch.
+    if $p.exitcode != 0 {
+        trace("prefetch: curl exited {$p.exitcode}, each archive is fetched on its own — {$err.lines[0] // ''}");
+        .IO.unlink for %to.values;
+        return;
+    }
+    %PREFETCHED{.key} = .value for %to;
+}
+
 sub fetch-file(Str $url, Str $to) {
+    with %PREFETCHED{$url}:delete -> $have {
+        if $have.IO.f && $have.IO.rename($to) {
+            trace("fetched earlier, in parallel: $url");
+            return;
+        }
+    }
     # file:// is a real URL that names a real local file, so `rakupp install
     # file:///…/Foo.tar.gz` works and the installer gate can exercise the whole
     # URL path — fetch, unpack, find the dist, test, install — without a network.
@@ -1634,7 +1676,7 @@ sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
         $tmp.mkdir;
 
         my $tarball = $tmp.add('dist.tar.gz').Str;
-        progress("fetching $url");
+        progress("fetching $url") unless %PREFETCHED{$url};
         trace("dist {%e<dist> // %e<name>}: fetching $url");
         fetch-file($url, $tarball);
         trace("fetched: {$tarball.IO.s} bytes");
@@ -2550,6 +2592,8 @@ sub auto-install(@missed, Str $for, Str $to --> Int) {
     my $program = $for ne '-e' && $for ne '-' && $for.IO.f;
     my @pinned;
     LEAVE { write-pins($for, @pinned) if $program && @pinned }
+    prefetch-archives(@plan.grep({ !shadowed-by-rakulib($_) &&
+                                   !%have{identity-key(.<name>, .<version>, .<auth>, .<api>)} }));
     for @plan -> %e {
         next if shadowed-by-rakulib(%e);
         if %have{identity-key(%e<name>, %e<version>, %e<auth>, %e<api>)} {
@@ -2927,6 +2971,8 @@ sub MAIN(
     my @named = |@names.map({ parse-identity($_)<name> }), |@local-entries.map(*.<name>),
                 |@program-wants.map({ parse-identity($_)<name> });
     my $test-only-deps = test-only-entries(@plan, @named);
+    prefetch-archives(@plan.grep({ !shadowed-by-rakulib($_) &&
+                                   !%have{identity-key(.<name>, .<version>, .<auth>, .<api>)} }));
     for @plan -> %e {
         my $is-target = $test-only
             && ?(%target{%e<name>} || (%e<provides> // {}).keys.first({ %target{$_} }));

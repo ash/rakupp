@@ -461,8 +461,18 @@ OK.
 **Open:**
 
 - **D5:** `RkConfig.deps` for embedding hosts.
-- **D6:** fetch archives in parallel. Cro::HTTP's 14.7 s for 21
-  distributions is the number to beat.
+- **D6:** fetch archives in parallel. *Done 2026-10-14:* before the
+  installs run, one `curl --parallel --parallel-max 6` fetches every remote
+  archive the plan needs (`prefetch-archives`, tools/install.raku), and
+  `fetch-file` hands the prefetched file on; the checksum gate and the rest
+  of `install-one` are unchanged. Anything short of every archive arriving
+  (a curl without `--parallel`, one failing URL) keeps nothing, and each
+  install fetches its own as before, so the error names that dist. Tested
+  over a local HTTP server: four fixture dists, one curl, each install
+  taking its prefetched archive; with one archive missing, the per-dist
+  fetch reported its 404. A path or `file://` index is not prefetched, so
+  the two gates exercise the old path. Cro::HTTP's 14.7 s for 21
+  distributions is still to be re-timed against the real ecosystem.
 - **Pins on Windows:** the engine keys the record by `_fullpath`, the
   installer by `IO::Path.resolve`. If the two spell the path differently
   (case, slashes), the script falls back to the newest version, which is
