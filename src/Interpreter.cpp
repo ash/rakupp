@@ -5422,6 +5422,10 @@ void Interpreter::notePendingType(ClassDecl* cd) {
     auto& v = pendingTypes_[cd->name];
     if (std::find(v.begin(), v.end(), cd) == v.end()) v.push_back(cd);
     pendingTypeUnit_[cd] = stashUnitHere();   // built early, it is still ITS unit's declaration
+    auto [it, fresh] = pendingTypeSeq_.try_emplace(cd, pendingTypeSeqNext_);
+    if (!fresh) { pendingTypeBySeq_.erase(it->second); it->second = pendingTypeSeqNext_; }
+    if (!cd->isStubDecl) pendingTypeBySeq_[pendingTypeSeqNext_] = cd;
+    pendingTypeSeqNext_++;
 }
 
 bool Interpreter::materializePendingType(const std::string& name) {

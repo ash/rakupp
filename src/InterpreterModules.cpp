@@ -7290,11 +7290,39 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 bool builtNow = false;
                 {
                     auto pend = pendingTypes_.find(cd->name);
-                    bool completionAhead = false;
+                    ClassDecl* completion = nullptr;
                     if (pend != pendingTypes_.end())
                         for (ClassDecl* d : pend->second)
-                            if (d != cd && !d->isStubDecl) completionAhead = true;
-                    if (completionAhead) builtNow = materializePendingType(cd->name);
+                            if (d != cd && !d->isStubDecl) completion = d;
+                    // …and the types declared BETWEEN the stub and the completion
+                    // are built first, in their order: they are compile-time in
+                    // Rakudo too, so the completion's body may already compose
+                    // one (`my class A {...}; my role RH {}; my class A { my
+                    // class Inner does RH {} }` died "Invalid typename 'RH'",
+                    // #172 — PDF::COS::Tie). Nothing past the completion is.
+                    if (completion) {
+                        auto lo = pendingTypeSeq_.find(cd), hi = pendingTypeSeq_.find(completion);
+                        std::vector<std::string> between;
+                        if (lo != pendingTypeSeq_.end() && hi != pendingTypeSeq_.end() && hi->second > lo->second + 1) {
+                            auto unitOf = [&](const ClassDecl* d) -> const std::string* {
+                                auto it = pendingTypeUnit_.find(d);
+                                return it == pendingTypeUnit_.end() ? nullptr : &it->second;
+                            };
+                            const std::string* unit = unitOf(cd);
+                            for (auto it = pendingTypeBySeq_.upper_bound(lo->second);
+                                 it != pendingTypeBySeq_.end() && it->first < hi->second; ) {
+                                ClassDecl* d = it->second;
+                                // (one built since is done with: drop it, so the
+                                // next stub's look does not walk it again)
+                                if (typeDeclBuilt(d)) { it = pendingTypeBySeq_.erase(it); continue; }
+                                const std::string* u = unitOf(d);
+                                if (d->name != cd->name && u && unit && *u == *unit) between.push_back(d->name);
+                                ++it;
+                            }
+                        }
+                        for (auto& n : between) materializePendingType(n);
+                        builtNow = materializePendingType(cd->name);
+                    }
                 }
                 auto ex = classes_.find(clsName);
                 stubOverCompleted = ex != classes_.end() && ex->second &&

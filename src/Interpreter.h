@@ -3210,6 +3210,12 @@ public:
     std::unordered_map<const Env*, std::string> unitOfEnv_;   // a module's file scope → its unit
     std::optional<std::string> stashUnitOverride_;            // a hoisted type built under another unit's lookup
     std::unordered_map<const ClassDecl*, std::string> pendingTypeUnit_;
+    // …and when it was noted: one scope's declarations are noted in one pass,
+    // in textual order, so this orders a stub, its completion and what lies
+    // between them even on one line
+    std::unordered_map<const ClassDecl*, uint64_t> pendingTypeSeq_;
+    std::map<uint64_t, ClassDecl*> pendingTypeBySeq_;   // the non-stub ones, by that order
+    uint64_t pendingTypeSeqNext_ = 0;
     int lexicalPkgDepth_ = 0;   // inside a `my package`'s body: its members are not package-scoped
     std::unordered_map<const void*, std::string> globalishUnits_;   // a globalish-package Stash → its unit
     std::string stashUnitHere();
