@@ -4891,7 +4891,8 @@ void Interpreter::privateSlotsOff(const char* why, int line) {
 // activation boundary, so they are safe to enter.
 std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<StmtPtr>& stmts,
                                                           const std::vector<Param>* params,
-                                                          bool withSelf, const char* who) {
+                                                          bool withSelf, const char* who,
+                                                          const std::vector<std::string>* placeholders) {
     std::lock_guard<std::mutex> lk(padMu_);
     auto hit = padLayouts_.find(&stmts);
     if (hit != padLayouts_.end()) return hit->second;
@@ -4952,6 +4953,18 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                 p.padSlot = ps;                          // TARG C2: the binder
                 p.padOwner = (const void*)layout.get();  // writes slots directly
             }
+    // A block's placeholders are its parameters, bound under the BARE name
+    // (`$^a` and a later `$a` are one variable): slots after the params, so
+    // the binder's define lands in the pad, and a `$^a` read is annotated
+    // with the bare name's slot below instead of building that name per read.
+    auto bareName = [](const std::string& n) {
+        return n.size() > 2 && (n[1] == '^' || n[1] == ':') ? std::string(1, n[0]) + n.substr(2) : n;
+    };
+    if (placeholders)
+        for (auto& pn : *placeholders) {
+            std::string bn = bareName(pn);
+            if (slottable(bn)) layout->add(bn, /*simple=*/false);
+        }
     // A method's `self`: a slot no site is annotated with (reads go through
     // Env::selfSlot), so the per-call define lands in the pad, not the map.
     if (withSelf) layout->add("self");
@@ -5032,6 +5045,13 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
         for (auto& p : *params) {
             auto it = layout->byName.find(p.name);
             if (it != layout->byName.end()) active[p.name] = Act{it->second, layout.get()};
+        }
+    if (placeholders)
+        for (auto& pn : *placeholders) {
+            auto it = layout->byName.find(bareName(pn));
+            if (it == layout->byName.end()) continue;
+            active[pn] = Act{it->second, layout.get()};
+            active[bareName(pn)] = Act{it->second, layout.get()};
         }
 
     // Unary operators whose operand runs immediately, in this frame. Anything

@@ -7575,7 +7575,8 @@ void Interpreter::attachPads(Callable& c, Env& env) {
     if (c.padReady != 1) {
         {
             auto L = resolvePads(*c.body, c.params, c.isMethod && !c.subAsMethod,
-                                 c.name.empty() ? nullptr : c.name.c_str());
+                                 c.name.empty() ? nullptr : c.name.c_str(),
+                                 c.placeholders.empty() ? nullptr : &c.placeholders);
             std::lock_guard<std::mutex> lk(padMu_);
             if (c.padReady != 1) c.padLayout = std::move(L);
         }

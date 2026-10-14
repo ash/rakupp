@@ -2760,7 +2760,8 @@ public:
     std::shared_ptr<const PadLayout> resolvePads(const std::vector<StmtPtr>& stmts,
                                                  const std::vector<Param>* params,
                                                  bool withSelf = false,
-                                                 const char* who = nullptr);   // for RAKUPP_SLOT_TRACE
+                                                 const char* who = nullptr,   // for RAKUPP_SLOT_TRACE
+                                                 const std::vector<std::string>* placeholders = nullptr);
     // …and put a Callable's layout on a fresh call frame, resolving it at the
     // first call. Before any define: the params are the first slots to land.
     void attachPads(Callable& c, Env& env);
