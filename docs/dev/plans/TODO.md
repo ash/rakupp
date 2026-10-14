@@ -391,6 +391,22 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   (`rwLinks`, `copyOutRw`, `builtinTopicWB_`, `ArgWriter`).
   [ROAST-TRACKS-PLAN.md](ROAST-TRACKS-PLAN.md). The B1 coroutine code on
   x86-64 and Windows is only compile-checked; ASan and TSan runs are owed.
+- [ ] **Package-qualified names left by #169** (found 2026-10-14 against
+  Rakudo 2026.09, writing its regression). A qualified CALL through an
+  imported class name works since 3c6cf2d5 (`C::create()` is
+  `&M::C::create`); two neighbours do not.
+  - A qualified VARIABLE through an imported class name does not follow the
+    import: `module M { class C is export { our $v = 5 } }; import M;
+    say $C::v` says (Any) (Rakudo 5). The type object `C` is named `M::C`;
+    the variable lookup needs the same retry the Call evaluator now makes
+    after pkgRelativeRoutine (src/InterpreterCore.cpp), for every sigil and
+    for `C::<$v>`.
+  - A subscript adverb on a stash subscript does not parse in parentheses:
+    `say (N::<&g>:exists)` is "expected ) (got ':')" (Rakudo True), while
+    `(%h<a>:exists)` parses. Unparenthesized it goes wrong quietly:
+    `say N::<&g>:exists` prints `&gexists => True`, and `my $x =
+    N::<&g>:exists` stores `&g`. The `Pkg::<…>` term in src/Parser.cpp
+    does not take the postfix adverb a normal subscript does.
 
 ## 3. Compiled backends
 
