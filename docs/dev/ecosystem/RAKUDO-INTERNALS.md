@@ -43,6 +43,12 @@ observed behaviour, tested against the modules that call them.
   C++ codec** (original code; only the class name is Rakudo's). Typing
   matches JSON::Fast (Int/Rat/Num per `Str.Numeric`), trailing content is
   refused (9072beb — caught by JSON::Native's value-by-value suite).
+  `to-json` is the writer `use JSON::Native` runs, under Rakudo's surface for
+  the method: compact unless `:pretty`, with `:spacing`, `:level` and
+  `:sorted-keys` honoured, which are the calls zef and Rakudo's own
+  installer make. On plain data the text is Rakudo's. Outside it (a Set, an
+  enum, an object) the answer is JSON::Fast's, not that of the older writer
+  Rakudo carries.
 - `Rakudo::Internals.IS-WIN` and `.REGISTER-DYNAMIC` — the platform probe
   and dynamic-variable registration NativeCall dists need at BEGIN time.
 

@@ -303,8 +303,13 @@ struct JsonCfg {
 };
 void jsonSkipWs(const std::string& s, size_t& i, const JsonCfg& cfg);
 bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg);
-bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg);
 
+// ---- the writer ------------------------------------------------------------
+// ONE writer too, JSON::Fast-exact (jfEncode, Builtins.cpp), behind every
+// entry: the JSON::Fast wrapper, `use JSON::Native`, the Data::Native
+// primitives, the Rakupp::Internals::JSON / Rakudo::Internals::JSON class
+// (jsonExactToJson, InterpreterModules.cpp) — and jsonEncode, compact, for the
+// engine's own records, where a value JSON cannot hold is written as its Str.
 std::string jsonEncode(const Value& v);
 
 // The wrapped &to-json / &from-json: try native, fall back to the module's sub.
@@ -326,6 +331,10 @@ using JsonUncovered = std::function<Value(const char* why)>;
 Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
 
 Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
+
+// The class's to-json: jsonToJsonBody, handing what it does not cover to
+// JSON::Native::Raku (the copy bundled in rakulib unless one is installed).
+Value jsonExactToJson(Interpreter& I, ValueList& a);
 
 // Declared at namespace scope, not as block-scope `extern`s inside
 // methodCallInner: MSVC gives a block-scope declaration GLOBAL linkage, so the

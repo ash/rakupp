@@ -229,6 +229,10 @@ static Value jsonRakuFallback(Interpreter& I, bool to, ValueList& args) {
     Value fn = *f;
     return I.callCallable(fn, args);
 }
+// Rakupp::Internals::JSON.to-json (and its Rakudo alias): the same pair.
+Value jsonExactToJson(Interpreter& I, ValueList& a) {
+    return jsonToJsonBody(I, a, [&](const char*) { return jsonRakuFallback(I, true, a); });
+}
 static Value jsonExactRoutine(bool to, const std::map<std::string, bool>& defaults) {
     Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
     w.code()->name = to ? "to-json" : "from-json";

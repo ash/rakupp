@@ -399,8 +399,30 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             return out;
         }
         if (m == "to-json") {
-            // pretty/spec flags are accepted but ignored (compact output)
-            return Value::str(args.empty() ? "null" : jsonEncode(args[0]));
+            // The writer `use JSON::Native` hands out — the codec, and
+            // JSON::Native::Raku for what it does not cover — under this
+            // method's surface: compact unless :pretty, as in Rakudo (zef
+            // passes :pretty, CompUnit::Repository::Installation
+            // :sorted-keys), and a named argument no writer takes is dropped,
+            // as a method's implicit *%_ drops it. Plain data comes out as
+            // Rakudo's; outside it (a Set, an enum, an object) the answer is
+            // JSON::Fast's, not that of the older writer Rakudo carries.
+            ValueList a;
+            bool prettyGiven = false;
+            for (auto& x : args) {
+                if (x.t == VT::Pair && x.namedArg) {
+                    if (x.s == "pretty") prettyGiven = true;
+                    else if (x.s != "level" && x.s != "spacing" && x.s != "sorted-keys" &&
+                             x.s != "enums-as-value") continue;
+                }
+                a.push_back(x);
+            }
+            if (!prettyGiven) {
+                Value p = Value::pair("pretty", Value::boolean(false));
+                p.namedArg = true;
+                a.push_back(p);
+            }
+            return jsonExactToJson(*this, a);
         }
     }
     // Rakupp::Internals::Blob — the engine half of the rakulib

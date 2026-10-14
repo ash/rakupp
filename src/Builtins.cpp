@@ -5485,43 +5485,6 @@ static Value precompRepoObj(std::unordered_map<std::string, std::shared_ptr<Clas
     ro->attrs["store"] = Value::object(so);
     return Value::object(ro);
 }
-static void jfEscape(const std::string& s, std::string& out); // defined below (JSON::Fast codec)
-std::string jsonEncode(const Value& v) {
-    switch (v.t) {
-        case VT::Nil: case VT::Any: case VT::Type: return "null";
-        case VT::Bool: return v.b ? "true" : "false";
-        case VT::Int:  return v.big() ? v.big()->toString() : std::to_string(v.i);
-        case VT::Num: case VT::Rat: {
-            // round-trip doubles (default 6 digits silently truncated); cnum so a
-            // host's locale can never put a comma into JSON
-            char b[40];
-            cnum::snprintf(b, sizeof b, "%.17g", v.toNum());
-            return b;
-        }
-        case VT::Array: {
-            std::string r = "[";
-            if (v.arr()) for (size_t k = 0; k < v.arr()->size(); k++) { if (k) r += ","; r += jsonEncode((*v.arr())[k]); }
-            return r + "]";
-        }
-        case VT::Hash: {
-            // keys go through the SAME escaper as string values — a quote or a
-            // C0 control in a key used to be concatenated raw, emitting invalid
-            // JSON from Rakudo::Internals::JSON.to-json and the dist-META writer
-            std::string r = "{"; bool first = true;
-            if (v.hash()) for (auto& kv : *v.hash()) {
-                if (!first) r += ","; first = false;
-                r += "\""; jfEscape(kv.first, r); r += "\":" + jsonEncode(kv.second);
-            }
-            return r + "}";
-        }
-        default: { // string (and anything stringy)
-            std::string r = "\"";
-            jfEscape(v.toStr(), r);
-            return r + "\"";
-        }
-    }
-}
-
 // ---- JSON::Fast, natively --------------------------------------------------
 // Sparrow6's check engine writes its whole context through JSON::Fast's
 // to-json — 10,000 captured lines meant ~700 ms of interpreted jsonify/
@@ -5596,10 +5559,27 @@ static void jfEscape(const std::string& s, std::string& out) {
     }
 }
 
-// `nanInf` is the $*JSON_NAN_INF_SUPPORT dynamic, read once by the caller: it
-// is invariant across the recursion, like every option here except `level`.
-static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
-                     bool enumsAsValue, bool nanInf, int level, std::string& out) {
+// The writer's options: invariant across the recursion, unlike `level`.
+struct JfOpts {
+    bool pretty = false;
+    int spacing = 2;
+    bool sortedKeys = false;
+    bool enumsAsValue = false;
+    bool nanInf = false;      // the $*JSON_NAN_INF_SUPPORT dynamic, read once by the caller
+    // The engine's own records (jsonEncode) must always be written, so a value
+    // outside the ladder goes in as its Str there instead of being refused.
+    bool strOutside = false;
+};
+
+// A value outside the ladder: the Raku-facing entries refuse it (the wrapper
+// then hands it to JSON::Fast, the primitive raises); an engine record writes
+// its Str.
+static void jfOutside(const Value& v, const JfOpts& o, const char* why, std::string& out) {
+    if (!o.strOutside) throw JsonFastUnsupported{why};
+    out += '"'; jfEscape(v.toStr(), out); out += '"';
+}
+
+static void jfEncode(const Value& v, const JfOpts& o, int level, std::string& out) {
     // jsonify is one big `with obj` — anything undefined lands in its else and
     // renders "null". rtIsDefined is the one rule for that, and it knows what
     // the switch below cannot see: an enum TYPE object materializes as a
@@ -5608,20 +5588,20 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
     // to-json takes Any, so to-json(Mu) dies in the BINDER — fall back and
     // let it (the fast-path regression file pins exactly that).
     if (!rtIsDefined(v)) {
-        if (v.t == VT::Type && v.s == "Mu") throw JsonFastUnsupported{"cannot serialise Mu, whose type is not Any"};
+        if (v.t == VT::Type && v.s == "Mu" && !o.strOutside) throw JsonFastUnsupported{"cannot serialise Mu, whose type is not Any"};
         out += "null";
         return;
     }
     // the ladder is jsonify's, in jsonify's order
     if (!v.enumName.empty()) {           // enum value: its KEY, or with
-        if (!enumsAsValue) {             // :enums-as-value its underlying value
+        if (!o.enumsAsValue) {           // :enums-as-value its underlying value
             out += '"'; jfEscape(v.enumName, out); out += '"';
             return;
         }
         // :enums-as-value wants .value, and this Value carries only the
         // ordinal — a string-valued enum (Blerp (One => "Eins")) would come
         // out as its position. The module reads the real .value; let it.
-        throw JsonFastUnsupported{"cannot serialise a string-valued enum under :enums-as-value"};
+        return jfOutside(v, o, "cannot serialise a string-valued enum under :enums-as-value", out);
     }
     // an allomorph prints its NUMERIC half — jsonify re-dispatches IntStr /
     // RatStr / NumStr through .Int/.Rat/.Num before formatting, so the Str
@@ -5634,10 +5614,10 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             Value plain = v;
             plain.hashKind.clear();
             plain.s.clear();
-            jfEncode(plain, pretty, spacing, sortedKeys, enumsAsValue, nanInf, level, out);
+            jfEncode(plain, o, level, out);
             return;
         }
-        throw JsonFastUnsupported{"cannot serialise a numeric carrying a type tag"};
+        return jfOutside(v, o, "cannot serialise a numeric carrying a type tag", out);
     }
     switch (v.t) {
         case VT::Nil: case VT::Any: out += "null"; return;
@@ -5645,7 +5625,7 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             // jsonify's parameter is Any-constrained at EVERY level, so the one
             // type object it does not render as null is Mu itself — that call
             // dies in the module's own binder, and the module owns that error.
-            if (v.s == "Mu") throw JsonFastUnsupported{"cannot serialise Mu, whose type is not Any"};
+            if (v.s == "Mu" && !o.strOutside) throw JsonFastUnsupported{"cannot serialise Mu, whose type is not Any"};
             out += "null";
             return;
         case VT::Bool: out += v.b ? "true" : "false"; return;
@@ -5665,7 +5645,7 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             // its own parser then refuses, which is the module's business and
             // not ours to improve on. Probed both ways 2026-09-05.
             if (std::isnan(d) || std::isinf(d)) {
-                if (!nanInf) { out += "null"; return; }
+                if (!o.nanInf) { out += "null"; return; }
                 out += std::isnan(d) ? "NaN" : (d < 0 ? "-Inf" : "Inf");
                 return;
             }
@@ -5676,53 +5656,52 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
             return;
         }
         case VT::Str:
-            if (!v.hashKind.empty()) throw JsonFastUnsupported{"cannot serialise a Str carrying a type tag (Buf, IO::Path, …)"};
+            if (!v.hashKind.empty()) return jfOutside(v, o, "cannot serialise a Str carrying a type tag (Buf, IO::Path, …)", out);
             out += '"'; jfEscape(v.s, out); out += '"';
             return;
         case VT::Pair: {                 // a Pair is Associative: one-entry object
-            if (v.pairKey()) throw JsonFastUnsupported{"cannot serialise a Pair whose key is not a Str"};
-            std::string open = "{", close = "}";
-            if (pretty) {
-                std::string ind((size_t)(spacing * (level + 1)), ' ');
-                std::string outd((size_t)(spacing * level), ' ');
+            if (v.pairKey()) return jfOutside(v, o, "cannot serialise a Pair whose key is not a Str", out);
+            if (o.pretty) {
+                std::string ind((size_t)(o.spacing * (level + 1)), ' ');
+                std::string outd((size_t)(o.spacing * level), ' ');
                 out += "{\n" + ind + '"'; jfEscape(v.s, out); out += "\": ";
-                jfEncode(v.pairVal() ? *v.pairVal() : Value::any(), pretty, spacing, sortedKeys, enumsAsValue, nanInf, level + 1, out);
+                jfEncode(v.pairVal() ? *v.pairVal() : Value::any(), o, level + 1, out);
                 out += "\n" + outd + "}";
             } else {
                 out += "{\""; jfEscape(v.s, out); out += "\":";
-                jfEncode(v.pairVal() ? *v.pairVal() : Value::any(), pretty, spacing, sortedKeys, enumsAsValue, nanInf, level, out);
+                jfEncode(v.pairVal() ? *v.pairVal() : Value::any(), o, level, out);
                 out += "}";
             }
             return;
         }
         case VT::Range: {
             Value a = Value::array(); *a.arr() = v.flatten();
-            jfEncode(a, pretty, spacing, sortedKeys, enumsAsValue, nanInf, level, out);
+            jfEncode(a, o, level, out);
             return;
         }
         case VT::Array: {
             // a Capture is not Positional to the module: it dies "Don't know
             // how to jsonify Capture", and that is its answer to give
-            if (v.hashKind == "Capture") throw JsonFastUnsupported{"cannot serialise a Capture"};
-            if (!v.arr()) { out += pretty ? "[\n]" : "[]"; return; }
+            if (v.hashKind == "Capture") return jfOutside(v, o, "cannot serialise a Capture", out);
+            if (!v.arr()) { out += o.pretty ? "[\n]" : "[]"; return; }
             auto& xs = *v.arr();
-            if (pretty) {
+            if (o.pretty) {
                 // JSON::Fast's exact shape: "[\n<ind>… ,\n<ind>… \n<outd>]",
                 // and an EMPTY array renders as "[\n<outd>]"
-                std::string ind((size_t)(spacing * (level + 1)), ' ');
-                std::string outd((size_t)(spacing * level), ' ');
+                std::string ind((size_t)(o.spacing * (level + 1)), ' ');
+                std::string outd((size_t)(o.spacing * level), ' ');
                 out += "[";
                 if (xs.empty()) { out += "\n" + outd + "]"; return; }
                 for (size_t i = 0; i < xs.size(); i++) {
                     out += (i ? ",\n" + ind : "\n" + ind);
-                    jfEncode(xs[i], pretty, spacing, sortedKeys, enumsAsValue, nanInf, level + 1, out);
+                    jfEncode(xs[i], o, level + 1, out);
                 }
                 out += "\n" + outd + "]";
             } else {
                 out += "[";
                 for (size_t i = 0; i < xs.size(); i++) {
                     if (i) out += ",";
-                    jfEncode(xs[i], pretty, spacing, sortedKeys, enumsAsValue, nanInf, level, out);
+                    jfEncode(xs[i], o, level, out);
                 }
                 out += "]";
             }
@@ -5730,20 +5709,21 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
         }
         case VT::Hash: {
             // allomorphs re-dispatch on their numeric half; DateTime, Version,
-            // Supply and every other kinded hash is outside the ladder
+            // Supply and every other kinded hash is outside the ladder. A Map
+            // is the plain Associative it looks like.
             if (v.hashKind == "IntStr" || v.hashKind == "RatStr" || v.hashKind == "NumStr")
-                throw JsonFastUnsupported{"cannot serialise a Hash carrying an allomorph tag"};
-            if (!v.hashKind.empty()) throw JsonFastUnsupported{"cannot serialise a Hash carrying a type tag (Date, DateTime, …)"};
+                return jfOutside(v, o, "cannot serialise a Hash carrying an allomorph tag", out);
+            if (!v.hashKind.empty() && v.hashKind != "Map") return jfOutside(v, o, "cannot serialise a Hash carrying a type tag (Date, DateTime, …)", out);
             // an object hash (`:{ 1 => 1 }`) stores each key under its WHICH
             // ("Int|1"); the module writes `.key.Str`, which only it can reach
-            if (v.objKeyed) throw JsonFastUnsupported{"cannot serialise an object hash"};
-            if (!v.hash()) { out += pretty ? "{\n}" : "{}"; return; }
+            if (v.objKeyed) return jfOutside(v, o, "cannot serialise an object hash", out);
+            if (!v.hash()) { out += o.pretty ? "{\n}" : "{}"; return; }
             auto& h = *v.hash();
             // hashes iterate in INSERTION order here; :sorted-keys sorts by
             // key, exactly like the module's `.sort(*.key)`
             std::vector<std::pair<const std::string*, const Value*>> kvs;
             for (auto& kv : h) kvs.emplace_back(&kv.first, &kv.second);
-            if (sortedKeys && t_jfSortFn && t_jfInterp && kvs.size() > 1) {
+            if (o.sortedKeys && t_jfSortFn && t_jfInterp && kvs.size() > 1) {
                 Value pairs = Value::array(); pairs.isList = true;
                 for (auto& kv : kvs) pairs.arr()->push_back(Value::pair(*kv.first, *kv.second));
                 Value sorted = t_jfInterp->methodCall(pairs, "sort", ValueList{*t_jfSortFn});
@@ -5754,19 +5734,19 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
                 }
                 if (byFn.size() == kvs.size()) kvs.swap(byFn);
             }
-            else if (sortedKeys)
+            else if (o.sortedKeys)
                 std::sort(kvs.begin(), kvs.end(),
                           [](auto& a, auto& b) { return *a.first < *b.first; });
-            if (pretty) {
-                std::string ind((size_t)(spacing * (level + 1)), ' ');
-                std::string outd((size_t)(spacing * level), ' ');
+            if (o.pretty) {
+                std::string ind((size_t)(o.spacing * (level + 1)), ' ');
+                std::string outd((size_t)(o.spacing * level), ' ');
                 out += "{";
                 if (kvs.empty()) { out += "\n" + outd + "}"; return; }
                 bool first = true;
                 for (auto& kv : kvs) {
                     out += (first ? "\n" + ind : ",\n" + ind); first = false;
                     out += '"'; jfEscape(*kv.first, out); out += "\": ";
-                    jfEncode(*kv.second, pretty, spacing, sortedKeys, enumsAsValue, nanInf, level + 1, out);
+                    jfEncode(*kv.second, o, level + 1, out);
                 }
                 out += "\n" + outd + "}";
             } else {
@@ -5775,14 +5755,27 @@ static void jfEncode(const Value& v, bool pretty, int spacing, bool sortedKeys,
                     if (!first) out += ",";
                     first = false;
                     out += '"'; jfEscape(*kv.first, out); out += "\":";
-                    jfEncode(*kv.second, pretty, spacing, sortedKeys, enumsAsValue, nanInf, level, out);
+                    jfEncode(*kv.second, o, level, out);
                 }
                 out += "}";
             }
             return;
         }
-        default: throw JsonFastUnsupported{"cannot serialise a value outside the JSON ladder (an object, a Code, …)"};
+        default: return jfOutside(v, o, "cannot serialise a value outside the JSON ladder (an object, a Code, …)", out);
     }
+}
+
+// The engine's own records — the store's dist/<id>, which zef and every Raku++
+// build read back — through the same writer as every Raku-visible to-json:
+// compact, keys in insertion order. A record cannot be refused half-way
+// through an install, so what JSON cannot hold (a Version or an object in a
+// user-built Distribution's meta) goes in as its Str.
+std::string jsonEncode(const Value& v) {
+    JfOpts o;
+    o.strOutside = true;
+    std::string out;
+    jfEncode(v, o, 0, out);
+    return out;
 }
 
 // $*JSON_NAN_INF_SUPPORT, read once per call. Absent or false means the module's
@@ -5799,22 +5792,23 @@ static bool jsonNanInfWanted(Interpreter&) {
 }
 Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered) {
     const Value* obj = nullptr;
-    bool pretty = true; long long level = 0, spacing = 2; bool enumsAsValue = false;
-    bool sortedKeys = false; const Value* sortFn = nullptr;
+    JfOpts o; o.pretty = true;
+    long long level = 0;
+    const Value* sortFn = nullptr;
     for (auto& x : a) {
         if (x.t == VT::Pair && x.namedArg) {
             bool tv = x.pairVal() && x.pairVal()->truthy();
-            if (x.s == "pretty") pretty = tv;
+            if (x.s == "pretty") o.pretty = tv;
             else if (x.s == "level") level = x.pairVal() ? x.pairVal()->toInt() : 0;
-            else if (x.s == "spacing") spacing = x.pairVal() ? x.pairVal()->toInt() : 2;
-            else if (x.s == "enums-as-value") enumsAsValue = tv;
+            else if (x.s == "spacing") o.spacing = x.pairVal() ? (int)x.pairVal()->toInt() : 2;
+            else if (x.s == "enums-as-value") o.enumsAsValue = tv;
             else if (x.s == "sorted-keys") {
                 // A CALLABLE comparator is not covered by either yet — the
                 // wrapper delegates, the primitive raises. DATA-PLAN P1 lists
                 // it as the primitive's to implement, and it needs the key sort
                 // inside jfEncode to be able to call back into Raku.
                 if (x.pairVal() && x.pairVal()->t == VT::Code) sortFn = x.pairVal();
-                sortedKeys = tv;
+                o.sortedKeys = tv;
             }
             else return uncovered("no adverb of that name");
         }
@@ -5829,8 +5823,8 @@ Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovere
     t_jfInterp = &I; t_jfSortFn = sortFn;
     try {
         std::string out;
-        jfEncode(*obj, pretty, (int)spacing, sortedKeys, enumsAsValue,
-                 jsonNanInfWanted(I), (int)level, out);
+        o.nanInf = jsonNanInfWanted(I);
+        jfEncode(*obj, o, (int)level, out);
         return Value::str(out);
     } catch (JsonFastUnsupported& u) {
         return uncovered(u.why);
