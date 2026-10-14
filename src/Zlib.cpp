@@ -258,36 +258,38 @@ void codeLengths(const std::vector<uint32_t>& freq, int maxLen, std::vector<unsi
 
     // Impose the limit. Count how many codes sit at each length, then move the
     // overflow up one level at a time, each move paid for by demoting the
-    // shallowest available leaf.
+    // deepest leaf above the limit.
     std::vector<int> blCount(maxLen + 2, 0);
-    int over = 0;
-    for (int i = 0; i < n; i++) {
-        if (!len[i]) continue;
-        if (len[i] > maxLen) { over += 1 << (maxLen - 0); len[i] = (unsigned char)maxLen; }
-    }
+    for (int i = 0; i < n; i++)
+        if (len[i] > maxLen) len[i] = (unsigned char)maxLen;
     for (int i = 0; i < n; i++) if (len[i]) blCount[len[i]]++;
     // Kraft sum over 2^-len, in units of 2^-maxLen.
     long long kraft = 0;
     for (int l = 1; l <= maxLen; l++) kraft += (long long)blCount[l] << (maxLen - l);
     const long long full = 1LL << maxLen;
     while (kraft > full) {
-        // Demote a leaf: find the deepest length below maxLen holding one, push
-        // it down one level. Each demotion halves that leaf's share.
+        // Demote a leaf: find the deepest length below maxLen holding one and
+        // push it down one level, where a leaf taken from maxLen becomes its
+        // sibling. The demoted leaf gives back half its 2^(maxLen-l), its new
+        // sibling takes exactly that half, and the maxLen leaf it left frees
+        // one unit: the sum drops by ONE per step, whatever l is. (Taking off
+        // 2^(maxLen-l-1) instead stopped the loop early and wrote an
+        // over-subscribed code once a tree went deeper than maxLen-1; #159.)
         int l = maxLen - 1;
         while (l >= 1 && blCount[l] == 0) l--;
         if (l < 1) break;
         blCount[l]--;
         blCount[l + 1] += 2;
         blCount[maxLen]--;
-        kraft -= 1LL << (maxLen - l - 1);
+        kraft -= 1;
     }
     if (kraft > full) zdie("deflate: cannot fit the code within its length limit");
-    // Rewrite the lengths from blCount, longest symbols first, so the counts
-    // and the per-symbol lengths agree.
+    // Rewrite the lengths from blCount, the longest to the rarest symbols, so
+    // the counts and the per-symbol lengths agree.
     std::vector<int> order;
     for (int i = 0; i < n; i++) if (len[i]) order.push_back(i);
     std::sort(order.begin(), order.end(), [&](int a, int b) {
-        if (len[a] != len[b]) return len[a] > len[b];
+        if (freq[a] != freq[b]) return freq[a] < freq[b];
         return a < b;
     });
     size_t k = 0;

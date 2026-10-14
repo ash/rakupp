@@ -119,6 +119,25 @@ for @bodies -> $b {
 }
 is $rt, 0, "every body round-trips at every level in every framing ({@bodies * 5 * 3} combinations)";
 
+# Issue #159: a megabyte of log lines builds a literal/length tree deeper than
+# 15, and the length limit was imposed with the wrong arithmetic, so the code
+# came out over-subscribed — refused by our inflate and by zlib alike. None of
+# the bodies above is big or varied enough to grow that tree.
+{
+    my $log = (^20000).map({ "2026-10-11 12:{$_ % 60}:{$_ * 7 % 60} host{$_ % 13} pid={$_ * 31 % 9973} GET /api/v{$_ % 3}/item/{$_ * 17 % 1000} status={(200, 404, 500)[$_ % 3]} bytes={$_ * 97 % 65536}\n" }).join.encode;
+    my $deep = 0;
+    for 700, 1024, 1700 -> $kb {
+        my $b = ($log ~ $log).subbuf(0, $kb * 1024);
+        for 1, 6, 9 -> $lvl {
+            $deep++ unless (try uncompress(compress($b, $lvl, :raw), :raw)) eqv $b;
+        }
+    }
+    is $deep, 0, 'log bodies of 700 KB to 1.7 MB round-trip at levels 1, 6 and 9 (#159)';
+    my $mb = $log.subbuf(0, 1024 * 1024);
+    $tmp.spurt(compress($mb, 6, :gzip));
+    is qqx{gunzip -c "$tmp" | wc -c}.trim, '1048576', '…and the system gunzip reads the 1 MB one';
+}
+
 # A stored block is what level 0 is FOR, and an empty input still has to make a
 # legal stream rather than nothing at all.
 ok compress(''.encode).elems > 0, 'compressing nothing still produces a stream';
