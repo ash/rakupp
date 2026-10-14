@@ -12,11 +12,13 @@ a C extension. The point is the same, and so is the most important property —
 **the module versions independently of the compiler.** A faster JSON parser
 should not require a new release of Raku++.
 
-- **Reference implementation:** `JSON::Native` in
+- **Reference implementation:** `TOML::Native` in
   [github.com/ash/raku-modules](https://github.com/ash/raku-modules), whose
-  Raku fallback is hundreds of times slower than its C path. On Raku++ it now
-  reports `json-backend()` as `core` and delegates to the engine's own parser
-  instead, so its published numbers measure that rather than the extension.
+  Raku implementation parses a 2 MB document in 3,452 ms against 18 ms for its
+  C path (Raku++ 4.0.1, 2026-09-23). `JSON::Native` was the first extension
+  module, and the reference until 0.1.0 dropped its C: the engine's own codec
+  had overtaken it, and Raku++ now answers `use JSON::Native` itself — see
+  [When the engine answers a module name](#when-the-engine-answers-a-module-name).
 - **The header:** [`include/rakupp/rakupp_ext.h`](../../include/rakupp/rakupp_ext.h), installed to
   `<prefix>/include/rakupp/rakupp_ext.h`.
 
@@ -333,7 +335,7 @@ extension's lookup to see it; see
 Headers come from `cmake --install`, which lays out
 `<prefix>/{bin,lib,include/rakupp}`. From a git checkout, point at `include/`
 instead — it has the same `rakupp/rakupp_ext.h` shape as an installed prefix.
-`JSON::Native`'s `Build.rakumod` looks in both, and honours `RAKUPP_SRC` for
+`TOML::Native`'s `Build.rakumod` looks in both, and honours `RAKUPP_SRC` for
 the checkout case.
 
 ## Writing a portable module
@@ -452,21 +454,52 @@ everywhere.
 
 ## Naming: the `Rakupp::` convention
 
-A module whose behaviour depends on Raku++ should say so in its name.
-`JSON::Native` tells a reader at the point of `use` that this is not a portable
-choice — better than a footnote in a README, and better than discovering it when
-the deploy target turns out to be Rakudo.
+Name a module for what it does, not for the engine it is fastest on. The first
+extension module was written as `Rakupp::JSON` and renamed `JSON::Native` four
+days later. The prefix advertised a coupling the module did not have — it ran on
+Rakudo, through its fallback — and it sat one word from
+`Rakupp::Internals::JSON`, the interpreter's own parser, close enough that a slow
+timing was blamed on the wrong one.
 
-Two rules that follow:
+`Rakupp::` is for the narrow case where the coupling is real and a portable
+module could not express the same thing. The test is **would this module mean
+anything under Rakudo?** If it would, it gets a functional name, as
+`CSV::Native` and `TOML::Native` do. Under either kind of name it is still a
+normal distribution: installed by zef, carrying a `META6.json`, and degrading
+gracefully rather than refusing to load elsewhere.
 
-- **A `Rakupp::` module is still a normal distribution.** It is installed by zef,
-  it carries a `META6.json`, and it should degrade gracefully rather than refuse
-  to load elsewhere.
-- **The compiler must not special-case a module name.** An early draft of
-  `JSON::Native` was built into the interpreter, and `use JSON::Native`
-  intercepted the name before module loading — so the real distribution's tests
-  silently exercised the built-in copy instead of the extension they were written
-  for. If a name can be a module, it must *only* be a module.
+### When the engine answers a module name
+
+This page used to say **the compiler must not special-case a module name.** An
+early draft of `JSON::Native` was built into the interpreter, and
+`use JSON::Native` intercepted the name before module loading — so the real
+distribution's tests silently exercised the built-in copy instead of the
+extension they were written for.
+
+Raku++ now does that on purpose, for a short fixed list: `JSON::Native`,
+`Data::Native`, `CSV::Native`, `Digest::Native` and `Compress::Zlib::Native`
+(`dataNativeUse`, in
+[src/InterpreterModules.cpp](../../src/InterpreterModules.cpp)). A
+`use JSON::Native` reads no module file and hands out the engine's codec; since
+v5.4.0 it gives JSON::Fast's answers with nothing installed, sending what the
+codec does not cover to a pure-Raku fallback bundled in the binary
+([JSON.md](../internals/JSON.md)). The engine steps aside, and loads the
+distribution like any other module, when:
+
+- an **installed copy is newer** than the interface the engine implements —
+  0.1.0 for `JSON::Native` — so a release of the module takes over with no
+  release of the engine;
+- a directory named with **`-I` or `use lib`** holds it, which is what
+  `rakupp test` does, so a distribution's suite runs the distribution's code;
+- **`JSON_NATIVE_BACKEND`** names a path other than `engine`, which is how
+  `JSON::Native`'s own suite drives each of its paths on Raku++;
+- the `use` asks for a **version**, `use JSON::Native:ver<…>`.
+
+That keeps what the old rule protected: a suite always reaches its own code, and
+it can check which path ran — the engine's own answer reports `json-backend` as
+`engine`. [DATA-NATIVE.md](DATA-NATIVE.md#when-the-module-wins-instead) has the
+full list for the other names. A module of your own is not on the list, and
+`use` of it always loads it.
 
 ## Versioning
 
