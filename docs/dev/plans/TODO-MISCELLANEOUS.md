@@ -325,3 +325,27 @@ plan, move it to [TODO.md](TODO.md).
   Use `cloexecPipe` there too; t/race/spawn-pipe-cloexec.raku is the shape of
   test to extend. Who needs it: any parallel program that runs children with
   `:in` while other threads spawn, such as the Roast harness.
+
+- [ ] **A patch release for an older minor would become "latest"** (found
+  2026-10-10). The way to ship a fix to 5.3 users once 5.4 exists is a
+  release branch cut from the tag (`git switch -c release/5.3 v5.3.0`, cherry
+  pick, gate, tag v5.3.1). Two steps in `.github/workflows/release.yml` would
+  then hand v5.3.1 to everyone: "Attach to Release"
+  (`softprops/action-gh-release`) marks each release as latest by default, so
+  `install.sh` and every `releases/latest/download/` link would serve 5.3.1;
+  and the "Image tags" step always adds `ghcr.io/ash/rakupp:latest`. Compare
+  the tag with the highest existing `v*` tag, and set `make_latest` and the
+  Docker `latest` tag only when it is the newest; the `x.y` image tag is fine
+  as it is. Who needs it: the first patch release cut from a release branch,
+  so it has to land before that.
+
+- [ ] **The release policy is not written down** (found 2026-10-10). Users
+  install tags, not `main`, but nothing says so, and a patch release has so
+  far meant "newer", carrying every commit since the last tag (v5.2.1 had 17,
+  features included). A few lines in docs/guide/INSTALL.md and the README:
+  install releases, `main` is development; the latest minor gets fixes as
+  x.y.z patches cut from a release branch when needed, so a patch holds fixes
+  only; breaking changes come only in a major, with a deprecation warning one
+  minor ahead where possible. docs/dev/RELEASING.md should say how a patch is
+  cut from a release branch. Who needs it: users deciding whether a patch
+  release is safe to take, and the next patch release.
