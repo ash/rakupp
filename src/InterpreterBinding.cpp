@@ -4204,6 +4204,18 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
 // The live chain, innermost first. Shared by every position we record: a
 // throw, a `warn`, the making of a Failure, and a worker breaking a Promise.
 thread_local int g_btSettingFrames = 0;
+// What a `try` block run in place names in its frame (Env::btCalled): an
+// anonymous block of the program's own — a language revision set, so it is not
+// taken for the setting's and hidden (btFrameHidden), as its closure was not.
+static const PRef<Callable>& btInPlaceBlockCode() {
+    static const PRef<Callable> code = [] {
+        auto c = makePayload<Callable>();
+        c->ciM().isBlock = true;
+        c->ciM().langRev = 0;
+        return c;
+    }();
+    return code;
+}
 
 static std::shared_ptr<BtRecord> btCaptureNow() {
     auto& fr = Interpreter::tctx_.callFrames;
@@ -4224,10 +4236,17 @@ static std::shared_ptr<BtRecord> btCaptureNow() {
         // each is a Block frame of its own (kind 1), the innermost at the
         // frame's current line and each one out at the line where the block
         // inside it starts. The walk stops at the activation's own scope.
-        int bl = line;
+        // A `try` block run in place is a printed frame at the line it is
+        // running, as its call was, and what is outside it is at the `try`'s
+        // line, as its call site was.
+        int bl = line, at = line;
         for (Env* e = scope; e && !e->callEnv && !e->routineFrame && !e->unitFrame; e = e->parent.get())
-            if (e->btBlock) { out->frames.push_back(BtFrame{nullptr, bl, 1}); bl = e->btLine; }
-        out->frames.push_back(BtFrame{cv ? cv->codeS() : nullptr, line});
+            if (e->btBlock) {
+                if (e->btCalled) { out->frames.push_back(BtFrame{btInPlaceBlockCode(), at}); at = e->btLine; }
+                else out->frames.push_back(BtFrame{nullptr, bl, 1});
+                bl = e->btLine;
+            }
+        out->frames.push_back(BtFrame{cv ? cv->codeS() : nullptr, at});
         if (idx == 0) break;
         line = fr[idx - 1].line;   // the CALL SITE line inside the next frame out
         scope = fr[idx - 1].callerEnv;

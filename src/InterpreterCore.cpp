@@ -1860,7 +1860,7 @@ struct FramePool {
         // one must not outlive it
         e->routineFrame = e->staticSeeded = e->unitFrame = e->packageFrame = false;
         e->evalFrame = e->stateFrame = e->loopFrame = false;
-        e->btBlock = e->callEnv = false;
+        e->btBlock = e->callEnv = e->btCalled = false;
         e->btLine = 0;
         e->routineFrameId = 0;
         e->strictPragma = e->fatalPragma = 0;
@@ -1884,6 +1884,46 @@ struct PooledFrame {
     ~PooledFrame() { pool.release(std::move(env)); }
 };
 } // namespace
+
+// `try { … }` without the call. A block called with no arguments defines no
+// `$_` and no `@_` of its own, so what the call gave a body runsInPlace has
+// cleared is a scope, the body's pad and the statement loop: those, from the
+// frame pool, here. The call around them (a fresh Callable, then binding,
+// redispatch and dynamic-scope bookkeeping, CATCH and phaser scans) was most of
+// a `try` block's cost. A `return` in it is a ReturnEx and a `next` or `last`
+// a flag either way, so both reach their routine or loop as they did.
+Value Interpreter::runBlockInPlace(BlockExpr* be) {
+    ExecContext& tcx = tctx_;
+    PooledFrame frame_{tcx};
+    auto& env = frame_.env;
+    env->parent = tcx.cur;
+    env->declStmts = &be->body;   // what it declares (see Env::declStmts)
+    env->btBlock = env->btCalled = true;   // still "in block" in a backtrace
+    env->btLine = curLine_;               // …whose call site is this line
+    // a `try` block's own scope is under `use fatal`, as the call made it — and
+    // consumed here, or the first routine the body calls would take it instead
+    if (t_fatalTry) env->fatalPragma = 1;
+    t_fatalTry = false;
+    if (const PadLayout* L = be->inPlaceLayout.get()) {
+        env->layout = L;
+        env->pad.resize(L->names.size());
+    }
+    // restored before the frame goes back to the pool, so a frame nothing
+    // captured is reused
+    struct Restore {
+        ExecContext& t; std::shared_ptr<Env> saved;
+        ~Restore() { t.cur = std::move(saved); }
+    } restore{tcx, std::move(tcx.cur)};
+    tcx.cur = env;
+    if (!staticEnvs_.empty()) seedStaticScope(&be->body, env.get());
+    Value last = Value::nil();
+    const size_t n = be->body.size();
+    for (size_t i = 0; i < n; i++) {
+        last = exec(be->body[i].get(), i + 1 != n);   // non-final statements sink
+        if (tcx.returning || tcx.loopCtl || tcx.givenCtl) break;
+    }
+    return last;
+}
 
 // `return |@rc` slips the elements in as return's ARGUMENTS, and return gives
 // back one List of them (or the one value, alone) — not a Slip that flattens
@@ -24768,10 +24808,10 @@ Value Interpreter::evalUnary(Unary* u) {
         try {
             Value r;
             if (u->operand->kind == NK::BlockExpr) {
-                Value blk = makeClosure(static_cast<BlockExpr*>(u->operand.get()));
+                auto* be = static_cast<BlockExpr*>(u->operand.get());
                 struct FT { ~FT() { t_fatalTry = false; } } ft;
                 t_fatalTry = true;
-                r = callCallable(blk, {});
+                r = runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {});
             }
             else r = eval(u->operand.get());
             // A block that RETURNS a Failure sets `$!` too — it did not throw, but
