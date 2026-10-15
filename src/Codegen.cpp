@@ -3952,6 +3952,40 @@ struct Codegen {
             line(ind, "}");
             return;
         }
+        if (!f->params.empty()) {
+            // `-> $x is copy`, `-> Int $n`, `-> $a, $b?`, `-> *@rest`: a parameter
+            // the plain-name path would drop something from comes as a signature
+            // (Parser's pointyParamNeedsBinding), with no `vars`. Each iteration
+            // binds its chunk through bindParams, as the interpreter does: one
+            // element per positional parameter (one a time for a lone slurpy),
+            // and `$_` stays the outer topic. Binding only `vars` left the names
+            // undeclared, and the C++ did not compile.
+            for (auto& p : f->params) {
+                if (p.named) unsupported("a named loop parameter");
+                if (p.subSig) unsupported("a sub-signature on a loop parameter");
+            }
+            // (`redo` binds the parameters afresh — a fresh `is copy` — which
+            // loopBody's retry does not)
+            for (auto& st : f->body->stmts)
+                if (stmtHasRedo(st.get())) unsupported("`redo` in a loop with a typed or `is copy` parameter");
+            size_t np = 0;
+            for (auto& p : f->params) np += !p.named && !p.slurpy;
+            const std::string n = std::to_string(np ? np : 1);
+            CellScope __cs{this};   // (a parameter a closure captures leaves scope with the loop)
+            std::string lst = gensym("__lst"), i = gensym("__fi"), k = gensym("__k");
+            line(ind, "{");
+            line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
+            line(ind + 1, "for (size_t " + i + " = 0; rtForHas(" + lst + ", " + i + "); " + i + " += " + n + ") {");
+            // (a loop's element is a VALUE, never a named argument)
+            line(ind + 2, "ValueList __a;");
+            line(ind + 2, "for (size_t " + k + " = 0; " + k + " < " + n + " && rtForHas(" + lst + ", " + i + " + " + k +
+                          "); ++" + k + ") { __a.push_back((*" + lst + ".arr())[" + i + " + " + k + "]); __a.back().namedArg = false; }");
+            bindParams(f->params, ind + 2, false);
+            loopBody(f->body.get(), ind + 2, f->label);
+            line(ind + 1, "}");
+            line(ind, "}");
+            return;
+        }
         if (f->vars.size() > 1) { // for @a -> $x, $y { … } : take vars.size() elements per iteration
             size_t n = f->vars.size();
             std::string lst = gensym("__lst"), i = gensym("__fi");

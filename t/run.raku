@@ -753,6 +753,7 @@ section('--target=js (JavaScript backend)');
         item-assign: 133
         item-loop: 11 11
         item-hash: 2
+        loop-param: 10 20 30 | 1/3 3/5 | 1+2 3+0 | 6,7
         END
     ok($got eq $want, "the native binary matches the interpreter on the parity probes");
     diag("got: $got") if $got ne $want;

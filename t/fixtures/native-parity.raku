@@ -109,3 +109,16 @@ say "item-loop: ", $by-var, " ", $by-topic;
 sub hash-param(%h) { my @y = %h; @y.elems }
 my $ih = {a => 1, b => 2};
 say "item-hash: ", hash-param($ih);
+
+# 10. A loop parameter with a trait, a type or a default binds through a
+#     signature (`-> $x is copy`, `-> Int $a`, `-> $a, $b = 0`): compiled,
+#     those names were never declared and the C++ did not build at all.
+my $loop-copy = '';
+for 1, 2, 3 -> $x is copy { $x *= 10; $loop-copy ~= "$x " }
+my $loop-typed = '';
+for 1, 2, 3, 4 -> Int $a, $b is copy { $b++; $loop-typed ~= "$a/$b " }
+my $loop-default = '';
+for 1, 2, 3 -> $a, $b = 0 { $loop-default ~= "$a+$b " }
+my @loop-subs;
+for 1, 2 -> $x is copy { $x += 5; @loop-subs.push: { $x } }
+say "loop-param: ", $loop-copy, "| ", $loop-typed, "| ", $loop-default, "| ", @loop-subs.map({ .() }).join(',');
