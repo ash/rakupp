@@ -292,6 +292,13 @@ In order of evidence per cost:
 2. **Inline storage for `Env::vars`.** Four stable slots with spill, and the
    86 `make_shared<Env>` sites moved onto the slab. It accounts for 99% of the
    mallocs in `for %h.kv -> $k, $v` and 30% of those in `objects`.
+   *Done 2026-10-16* (dca29704), without the inline slots. INTERP-SPEED task 7
+   had already pooled the frames, so a re-measure over 24 shapes found only
+   three that allocated per iteration. A bare block's `$_` map node now comes
+   from the slab (`VarMap` takes `SlabAlloc`), and so does every `Env` (114
+   sites). A body that cannot reach its `state` frame (a whitelist scan,
+   decided once) no longer gets one. `.map({ $_ * 2 })` 1 -> 0 mallocs and
+   −8.9% instructions per element; `try { }` 1 -> 0 and −12.5%.
 3. **Small Rats inline.** The numerator lives in `i` and the denominator in the
    `n` word, promoted to BigInt on overflow; there are 154 `ratN`/`ratD` sites.
    A first step is two inline BigInt limbs, allocated from the slab, which
