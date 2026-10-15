@@ -33,6 +33,9 @@ The user-facing documentation is one level up, in [../](../README.md).
 - **[plans/TODO.md](plans/TODO.md)** — **what is open, across every plan**:
   each unfinished item, the plan that owns it, and its next step. Kept current
   as work starts and finishes; read it first.
+- **[plans/SPEED-BACKLOG.md](plans/SPEED-BACKLOG.md)** — the open speed,
+  memory and load-time items from TODO.md and V6-PLAN, grouped by theme with a
+  complexity estimate for each (2026-10-15).
 - **[plans/VERSIONS.md](plans/VERSIONS.md)** — the single per-version plan
   index: what each major release set out to do, where its plan lived, and
   what it shipped — v1.0.0 through the **v3.0.0** campaign (2026-08-07).

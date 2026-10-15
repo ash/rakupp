@@ -15,6 +15,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 1. Speed (v6)
 
+The same items grouped by theme, with a complexity estimate for each:
+[SPEED-BACKLOG.md](SPEED-BACKLOG.md).
+
 - [ ] **Parallel `.hyper` / `.race` and hyper kernels** (2026-10-09): `.map` /
   `.grep` on a HyperSeq run on the `hyper for` scheduler (runParallel), and
   `»op«` / `».method` over plain Ints and Nums run natively, split over cores
