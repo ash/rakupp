@@ -43,9 +43,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   wall with +1% instructions. Not bisected; instruction counts are a
   deterministic bisect metric here.
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
-  2026-10-05. W1–W4 done; owed: `perf-guard --check` on a quiet machine. Left:
-  `--cnp` kernel entry's slot lookups and three interpreter divergences from
-  Rakudo on native parameters (in the plan).
+  2026-10-05. W1–W4 done, and the three native-parameter divergences from
+  Rakudo (b7c47a57); owed: `perf-guard --check` on a quiet machine. Left:
+  `--cnp` kernel entry's slot lookups (in the plan).
 - [ ] **Append — strings made of pieces**: [APPEND-PLAN.md](APPEND-PLAN.md),
   2026-10-06. Long strings may be views of a shared growable buffer, so
   prepending, `$k = $s` before each append and a `.substr` loop are linear on
@@ -172,6 +172,37 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
     neighbouring shape).
 
 ## 2. Correctness (v5 error batches)
+
+- [ ] **Natives against Rakudo 2026.09**, found 2026-10-15 while fixing
+  Windfall's native-parameter divergences (b7c47a57), each measured:
+  - A boxed Int never reaches a native-int multi candidate in Rakudo:
+    `multi m(int $x) {…}; multi m(Str $x) {…}; m(2**62)` is "Cannot resolve
+    caller m(Int:D)". Raku++ dispatches it to the `int` one.
+  - A `uint` refuses a negative Int at or below -2**31 ("Cannot unbox
+    negative bigint into native unsigned integer": MoarVM keeps those as
+    bigints), parameter and `my uint` alike; Raku++ wraps every negative.
+  - Assignment into a native: a Str into `my int` / `my num` is
+    X::TypeCheck::Assignment (Rakudo: X::AdHoc "This type cannot unbox to a
+    native integer: P6opaque, Str"); `my str $x = 1` stores "1" and
+    `my int $x = @a` the element count, where Rakudo refuses both.
+  - `my atomicint` is not a native container: it stores 2**70 and 1.5, and
+    `$a * 2` at 2**62 is 2**63 (Rakudo: int.min). Parser::isNativeIntTypeName
+    leaves `atomicint` out; adding it made an `atomicint` PARAMETER wrap but
+    left the container unchecked, so it was not done alone.
+  - NativeCall's C spellings as parameters keep their widths in Rakudo:
+    `bool $x` given 2**62 binds 0 (one byte), `long $x * 2` wraps at 64 bits.
+    Raku++ binds the value unchanged (it does refuse what they cannot unbox).
+  - `.REPR` answers P6opaque for a CArray and a Pointer (Rakudo: CArray,
+    CPointer), and autothreads over a Junction (Rakudo: P6opaque).
+  - `.resume` resumes an exception thrown by `die`, or by the engine (Rakudo:
+    "This exception is not resumable").
+- [ ] **S07-hyperrace/basics.t segfaults under load** (found 2026-10-15): in
+  "Concurrent iterator access", ten `start` workers asking one `(^10).race`
+  for `.iterator` at once end the process with SIGSEGV (exit 139) after the
+  HyperSeq half passes, so the file reports 89 of 90. Alone it passes; run in
+  a loop beside a Roast sweep it crashed 1 of 16 times on 5549bf83 and 3 of
+  16 with the native-parameter batch, and two of six sweeps that day caught
+  it (the race is older than the batch, which touches no iterator code).
 
 - [ ] **HyperSeq edges against Rakudo 2026.09** (found 2026-10-09; `.raku`
   and `(1..Inf).hyper.map` fixed 2026-10-10): `.elems` then `.list` answers
@@ -442,6 +473,16 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 
 ## 3. Compiled backends
 
+- [ ] **`--exe -O` and `--cnp` answer regressions wrongly** (the t/exe and
+  `t/jit/run.raku --cnp` gates, 2026-10-15, the same on 5549bf83):
+  - `-O`: t/regression/nfc-join-window.raku's "e + acute" join counts 2
+    codes where the plain build counts 1, and
+    typed-subtree-native-and-rat-leaves.raku's `$un != $neg - $zero` (a
+    `uint8` 255 against an `int8` -1) loses nativeMixedSignNe's False.
+  - `--cnp`: typed-subtree-native-and-rat-leaves.raku's 27, "a FatRat leaf
+    keeps the general path", fails.
+  - Both gates' other difference, lookbehind-lexical-token-window.raku, is a
+    timing line the program prints.
 - [ ] **`--exe` / AOT findings** (t/aot):
   - `&?ROUTINE.name` is empty and `callframe(0).line` is 0.
   - `$Mod::var` of a unit module fails.

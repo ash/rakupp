@@ -30,11 +30,12 @@ were re-run independently of the reviewer that found them.*
 
 ## Where it stands
 
-W1 to W4 are done, except that `perf-guard --check` is still owed and three
-W4 pieces are left (below). W3-5
+W1 to W4 are done, except that `perf-guard --check` is still owed and one
+piece is left (below). W3-5
 and W3-6 were left as they are: each was under 1% of samples, and moving
 `loopNest_` into ExecContext changes how it travels across a gather's
-coroutine switch, which is no low-hanging change. W3-1 to W3-4, with kernels
+coroutine switch, which is no low-hanging change. (W3-5's cost went later,
+with 6ac55398: `loopNest_` lives in `t_poll`, out of a TLS wrapper call.) W3-1 to W3-4, with kernels
 off on both sides (1M iterations): element assignment 219 → 190 ms, a `Numeric`
 parameter 243 → 222 ms, `~~ C` 260 → 250 ms, `~~ Real` 333 → 326 ms.
 Measured against a build of `a3b7644c`, best of 5 interleaved unless noted:
@@ -118,12 +119,23 @@ Still open:
 - ~~The interpreter's own `$s = $s ~ X` is O(n) per iteration (W4-2 fixed the
   kernel only).~~ **Done** in 6fed577d (#130): interpreted and `--cnp` append
   in place; 200k appends well under a second.
-- Three interpreter divergences from Rakudo, seen while fixing `--exe`
+- ~~Three interpreter divergences from Rakudo, seen while fixing `--exe`
   natives: `int $x * 2` at 2**62 does not wrap when `$x` is a parameter (a
   `my int` does); a BigInt into an `int`
   parameter says "72 bit wide" where Rakudo says 71; a wrong kind into a
   native parameter is X::TypeCheck::Binding::Parameter where Rakudo raises
-  X::AdHoc ("cannot unbox").
+  X::AdHoc ("cannot unbox").~~ **Done** in b7c47a57. An `int` or `num`
+  parameter holds a native however its argument arrived, so `$x * 2` wraps
+  and a num product converts into a `my int` (a `num32` one rounds); every
+  native integer parameter refuses a BigInt with `my int`'s width and words;
+  and a native parameter refuses what it cannot unbox with Rakudo's X::AdHoc,
+  worded by type object, P6opaque value or other representation, a Junction
+  included rather than autothreaded. `my int $x = 1.5e0` shares the last
+  wording. Same on `--exe`, `--cnp`, `--jit` and with kernels off; the
+  per-call bind cost of `int`, `num`, `str` and `Int` parameters is flat
+  (3M calls, kernels off). t/regression/native-param-{is-native,
+  bigint-width,refuses-kind}.raku; what else differs on natives is in
+  TODO.md.
 
 ## W1 — wrong answers (do first)
 
