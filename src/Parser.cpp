@@ -15939,7 +15939,7 @@ StmtPtr Parser::parseStatementImpl() {
         // `:label(L)` names it as a term (unless a pseudo-package has the name)
         if (!kPseudoPkgOverLabel.count(lbl)) labelNames_.insert(lbl);
         auto st = parseStatement();
-        if (st) st->label = lbl;
+        if (st) { st->label = lbl; markCoopLoopControl(st.get()); }
         return st;
     }
     const Token& t = cur();

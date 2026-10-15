@@ -205,6 +205,39 @@ void attachAotBodies(const std::string& module, Program& prog) {
         std::fprintf(stderr, "[aot] %s: %zu of %zu routines native\n", module.c_str(), t.n, routines.size());
 }
 
+// ---- the program's own routines (attachMainAot) ----------------------------
+
+const char* const kMainAotKey = "<main>";   // no module is named with a `<`
+
+// FNV-1a over the serialized AST: equal fingerprints, the same tree
+uint64_t aotFingerprint(const std::string& blob) {
+    uint64_t h = 14695981039346656037ULL;
+    for (unsigned char c : blob) { h ^= c; h *= 1099511628211ULL; }
+    return h;
+}
+
+namespace {
+uint64_t g_mainFp = 0;
+bool g_mainFpSet = false;   // written by generated startup code before the program runs
+}
+
+void rakuppRegisterMainAot(uint64_t fingerprint) {
+    g_mainFp = fingerprint;
+    g_mainFpSet = true;
+}
+
+void attachMainAot(Program& prog) {
+    if (!g_mainFpSet || !aotTables().count(kMainAotKey)) return;   // every other binary, and the CLI
+    if (aotFingerprint(serializeAst(prog)) != g_mainFp) {
+        if (aotTrace())
+            std::fprintf(stderr, "[aot] %s: the program parses to another tree than it was compiled from; "
+                                 "running it interpreted\n", kMainAotKey);
+        if (g_aotRunLog) runLogEvent(std::string("refused\t") + kMainAotKey + "\tthe parse differs");
+        return;
+    }
+    attachAotBodies(kMainAotKey, prog);
+}
+
 // ---- what the generated bodies call ----------------------------------------
 //
 // Declared again, by prototype, at the top of the generated translation unit

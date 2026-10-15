@@ -3175,7 +3175,7 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
     if (o->ctl) std::rethrow_exception(o->ctl);
     if (o->resume) return 1;
     ExecContext& tcx = tctx_;
-    if (o->loopCtl) tcx.loopCtl = o->loopCtl;
+    if (o->loopCtl) { tcx.loopCtl = o->loopCtl; tcx.loopCtlLabel = nullptr; }
     if (o->returning) { tcx.returning = true; tcx.returnV = std::move(o->returnV); }
     return 0;
 }

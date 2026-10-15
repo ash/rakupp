@@ -227,6 +227,7 @@ static inline std::string lexicalTypeName(Interpreter& I, const std::string& n) 
     return n;
 }
 bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& out);
+bool boundTypeFor(Interpreter& I, const std::string& n, Value& out);   // InterpreterCore.cpp
 
 // ---- generic role bodies ---------------------------------------------------
 // Every name a subtree MENTIONS — variables with their sigils, terms, routine
@@ -497,6 +498,9 @@ static inline bool nativeRefusesKind(const Value& v, bool isFloat) {
         case VT::Rat: case VT::Complex: return true;
         case VT::Num:                   return !isFloat && !(v.natBits && v.natFloat);
         case VT::Int: case VT::Bool:    return isFloat && !(v.natBits && !v.natFloat);
+        // a Failure (`my num $r = 1e0 / $zero`) is no number either: it was
+        // stored as its hash's size, 2, and the error it carried was lost
+        case VT::Hash:                  return v.hashKind == "Failure";
         default:                        return false;
     }
 }
