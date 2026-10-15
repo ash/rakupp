@@ -114,6 +114,12 @@ The frame every stencil is handed:
 | `interp` | the `Interpreter*` the helpers run against |
 | `err` | `std::exception_ptr*` — where a helper stashes a throw |
 
+The frame is not built per entry. `cnp::run` leases one from a free list kept
+per thread (a kernel that calls a routine whose own loop is a kernel holds
+two), resets its registers to `Int` 0 for the kernel's size, and hands it back
+with every box emptied and no exception kept, so a frame waiting in the list
+pins nothing.
+
 **The rule the whole design rests on:** *no helper a stencil calls may throw.*
 A code buffer has no unwind tables, so a throw crossing one reaches
 `std::terminate`. Every `rk_cnp_*` function wraps its body in a catch-all, puts

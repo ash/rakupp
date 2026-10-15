@@ -43,9 +43,9 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
   wall with +1% instructions. Not bisected; instruction counts are a
   deterministic bisect metric here.
 - [ ] **Windfall review round**: [WINDFALL-PLAN.md](WINDFALL-PLAN.md), started
-  2026-10-05. W1–W4 done, and the three native-parameter divergences from
-  Rakudo (b7c47a57); owed: `perf-guard --check` on a quiet machine. Left:
-  `--cnp` kernel entry's slot lookups (in the plan).
+  2026-10-05. W1–W4 done, and what was left after them: the three
+  native-parameter divergences from Rakudo (b7c47a57) and the `--cnp`
+  kernel entry (783bc53a). Owed: `perf-guard --check` on a quiet machine.
 - [ ] **Append — strings made of pieces**: [APPEND-PLAN.md](APPEND-PLAN.md),
   2026-10-06. Long strings may be views of a shared growable buffer, so
   prepending, `$k = $s` before each append and a `.substr` loop are linear on

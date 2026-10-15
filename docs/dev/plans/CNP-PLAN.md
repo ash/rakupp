@@ -406,7 +406,8 @@ Row by row, because the interesting thing is different in each:
 - **The third row is the one that could have gone the other way**, and it was
   written to find out. An outer `for` that is not eligible around a ten-iteration
   inner `while` enters a kernel 200,000 times, and every entry binds the slots,
-  allocates a register file and boxes the results back. If that entry were
+  allocates a register file and boxes the results back (since 783bc53a the
+  register file is reused, not allocated: WINDFALL-PLAN). If that entry were
   expensive the row would read *slower* than interpreting. It reads 5.6× faster.
   `--jit` is ahead of it, which is exactly the entry cost: its kernel binds a
   `Value&` and allocates nothing.

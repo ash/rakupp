@@ -30,8 +30,8 @@ were re-run independently of the reviewer that found them.*
 
 ## Where it stands
 
-W1 to W4 are done, except that `perf-guard --check` is still owed and one
-piece is left (below). W3-5
+W1 to W4 are done, and so is everything left after them (below), except
+that `perf-guard --check` is still owed. W3-5
 and W3-6 were left as they are: each was under 1% of samples, and moving
 `loopNest_` into ExecContext changes how it travels across a gather's
 coroutine switch, which is no low-hanging change. (W3-5's cost went later,
@@ -103,7 +103,9 @@ W4, against the commit before each round:
 Tried and reverted, the gain did not show: hoisting long string literals in
 `--exe` (W4-11's second half), and an inline register file for `--cnp`
 kernel entry (W4-4's second half — the entry's cost is the slot lookups in
-`runIfReady`, not the allocations).
+`runIfReady`, not the allocations). That last verdict did not survive a
+profile: reusing whole frames, Value boxes included, was the larger half of
+the entry's cost (783bc53a, below).
 
 After the round, rakuglaze's one open snippet (App::RaCoCo's
 `@parts.reverse.List[0] = 'x'`) was fixed with it: a list of an Array's own
@@ -114,8 +116,17 @@ about 50–100 ns per such list (a slice loop +4.7%, `.reverse`/`.sort` +8%), an
 ~1 ns per compiled write into a `$` variable's element.
 
 Still open:
-- `--cnp` kernel entry: `runIfReady` looks every slot up by name, per Env
-  level, on every entry (about 2 µs for a 200k-entry inner loop).
+- ~~`--cnp` kernel entry: `runIfReady` looks every slot up by name, per Env
+  level, on every entry (about 2 µs for a 200k-entry inner loop).~~ **Done**
+  in 783bc53a. Measured, the lookups were the smaller half: an inner
+  `while $j < 3 { … }` entered 200k times (an outer loop `--cnp` refuses,
+  loop kernels off) paid 4,355 instructions per entry, about 2,500 of them
+  building and freeing the register file (four vectors, an 80-byte Value per
+  register) and about 770 binding two slots. Frames now come from a
+  per-thread free list; the entry allocates nothing and builds no string; a
+  pad slot is found by an index remembered per layout and name. 4,355 →
+  1,794 instructions per entry, 104–108 → 86–89 ms; four slots over two
+  scopes in a routine, 5,037 → 2,368 and 126 → 106 ms.
 - ~~The interpreter's own `$s = $s ~ X` is O(n) per iteration (W4-2 fixed the
   kernel only).~~ **Done** in 6fed577d (#130): interpreted and `--cnp` append
   in place; 200k appends well under a second.
