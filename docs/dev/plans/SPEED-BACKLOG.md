@@ -51,7 +51,6 @@ theme the rows are sorted by complexity, largest first.
 | 21 | Slim `VarExpr` (384 B, 23% of a large program's AST) | M | Move its declaration-only fields behind a pointer — V6 P3.8 |
 | 24 | A shaped native array takes ~160 B per element | M | Find what each element costs — TODO.md |
 | 29 | Tails: VALUEHASH step 4, DISPATCH-PERF Ph6, UNBOX P3–P5 | M | [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md), DISPATCH-PERF-PLAN, UNBOX-PLAN |
-| 32 | `my @d = <fresh list>` takes over a uniquely owned buffer instead of copying it | S–M | TODO.md (the `.hyper` item) |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
 
@@ -108,6 +107,9 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **32, `my @d = <fresh list>`** (4a1edb88): a right side no other Value
+  holds hands its buffer to the array instead of being copied. 2M Nums from
+  `»*«`: 46 -> 13 ms.
 - **34–41, the V6 P1 batch** (777f23cf .. 1d7002a5): the lexer and parser
   (`-c` −23%), borrowed `.sum`/`.min`/`.max` and `STMT for ^N` by its ends,
   `exprYieldsContainer` on `return`, placeholders in the pad, grammar replay

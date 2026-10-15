@@ -26,9 +26,8 @@ The same items grouped by theme, with a complexity estimate for each:
   queued on one stripe lock per element). On main as 0f15e190 + f0de6b3e;
   perf-guard A/B of that tree against 6f62635c within 5% (fib +4.7%, code
   placement only); `t/run.raku` 1381/1381 on 5df4494a. Left: worker scaling is ~2.2× on 7
-  workers — per-call interpretation and allocator frees, no lock; and
-  `my @d = <fresh list>` copies every element (34 ms of 2M, against 7 ms for the
-  `»*«` that built it) where a uniquely owned temporary could hand over its buffer.
+  workers — per-call interpretation and allocator frees, no lock.
+  (`my @d = <fresh list>` takes over a uniquely owned buffer since 4a1edb88.)
 - [ ] **Call-path cost shipped in v5.3.0**: against a v5.2.1 build, `privmeth`
   +9.5%, `strpass` +9.0%, `method` +8.6%, `attrread` +5.8% (2026-10-08, two
   interleaved rounds; retired instructions +6-7%), built up over ~120 commits.
