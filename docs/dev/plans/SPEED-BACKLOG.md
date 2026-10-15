@@ -37,7 +37,6 @@ theme the rows are sorted by complexity, largest first.
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
 | 23 | Cache a class name's resolution on its node | M | A NameTerm also resolves lexically (`::T`, `my class`), so the cache needs a record that no scope binds the name; at most ~7% of a 10× `objects` run — V6 P1 |
 | 26 | Built-in methods in interpreted loops: `.map`/`.flat`/`.any` on a Seq; a CStruct's CArray field built once per pointer | M | TODO.md |
-| 38 | `try { }` runs its block as a closure call: 6,480 instructions an iteration, against 30 for a bare block | M | Run the body in place under the handler, as a bare block runs. `$!`, an explicit CATCH, `return` and a Failure it ends on are what the call gives it now. Found by 9's re-measure |
 | 30 | Bisect the interpreted slowdowns shipped in v5.4.0 (`mainwhen` +11%, `sortby` +8%) | S–M | Instruction counts make the bisect deterministic — TODO.md |
 
 ## 2. Memory and value representation
@@ -102,6 +101,11 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **38, `try { }` as a closure call** (6279175b): the block runs where it
+  stands, in a pooled scope with its own pad, when nothing in it needs the
+  call; a body that does keeps it. `try { $t += $_ }` −24%, a `try` that
+  catches a `die` −43% in instructions. The row's "30 for a bare block" was
+  a fused loop kernel: the call was ~2,700 of a `try`'s cost, not 6,000.
 - **9, `Env::vars` and `Env` on the slab** (dca29704): re-measured first. Of 24
   block and call shapes, three still allocated per iteration, and inline
   slots were not the answer to any of them. A bare block's `$_` was a map
