@@ -8462,8 +8462,12 @@ int Interpreter::run(Program& prog) {
                         // leave the variable holding a type object that names no
                         // class. Leave it to the declaration, which runs after.
                         else if (ve->declTypeExpr) { /* declaration handles it */ }
-                        else if (ve->declShape && ve->name[0] == '@')
-                            global_->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
+                        // A SHAPED array is shaped when its declaration runs: a
+                        // BEGIN block sees the empty, unshaped container of the
+                        // declared type, as in Rakudo (`(*)`, 0 elements). Building
+                        // the shaped one here too doubled the peak memory of
+                        // `my int @m[10001;10001]`, and its shape was read before
+                        // `my @k[$n]`'s $n was set.
                         else
                             global_->define(ve->name, declInitial(ve, ve->name[0]));
                     }
