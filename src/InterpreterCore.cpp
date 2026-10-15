@@ -16435,7 +16435,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         packedNow = true;
                     }
                 }
-                if (!packedNow) nv = coerceArray(rhs);
+                // (a fresh list hands its buffer over; only rhs.t is read below)
+                if (!packedNow) nv = coerceArrayTake(rhs);
                 // what an `@` container is ASSIGNED is an Array, lazy or not:
                 // `my @b = (1, 2 ... *)` reifies on demand but is no Seq (it was
                 // the Seq itself, so `.^name` said Seq and `.join` showed none of
@@ -16458,6 +16459,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                         keepType.compare(0, 3, "str") != 0;
                     const bool natFloat = natNum && keepType.compare(0, 3, "num") == 0;
                     const bool natStr = !reset && keepType == "str";
+                    // the container's name and its `:D`/`:U` smiley, asked once
+                    // for the whole list rather than once per element
+                    const std::string tname = targetName('@');
+                    const bool smileyCk = elemSmileyOf(tname) != 0;
                     for (auto& el : *nv.arr()) {
                         const bool hole = el.t == VT::Nil || el.t == VT::Any || el.t == VT::Type;
                         // …and unboxes it EXACTLY: an int array takes an Int that
@@ -16507,13 +16512,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             el = natStr ? Value::str("") : natFloat ? Value::number(0.0) : Value::integer(0);
                             continue;
                         }
-                        el = nilElemDefault(reset ? Value::nil() : el, proto);
+                        // (a defined element is already what the slot stores)
+                        if (reset || el.t == VT::Nil) el = nilElemDefault(Value::nil(), proto);
                         // …and a TYPED one checks it: `my Int @a = 1, "x"` throws
                         if (!want.empty() && !reset) {
                             coerceElemValue(*this, want, el);
-                            checkElemType(want, el, targetName('@'));
+                            checkElemType(want, el, tname);
                         }
-                        checkElemSmiley(targetName('@'), want, el);   // `my Int:D @x = Nil` dies
+                        if (smileyCk) checkElemSmiley(tname, want, el);   // `my Int:D @x = Nil` dies
                     }
                 }
                 // PACKED-ARRAY-PLAN: a full-width `int`/`num` array whose every

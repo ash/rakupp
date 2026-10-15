@@ -720,6 +720,7 @@ static inline void decontCopiedElems(ValueList& l) {
 }
 
 Value coerceArray(const Value& v, bool nativeTarget = false);
+Value coerceArrayTake(Value& v, bool nativeTarget = false);   // …taking a uniquely owned buffer
 Value coerceHash(const Value& v, bool store = false, bool objKeyed = false);
 extern Interpreter* g_cbInterp;
 

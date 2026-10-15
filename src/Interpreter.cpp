@@ -3718,6 +3718,25 @@ Value coerceArray(const Value& v, bool nativeTarget) {
     }
     return a;
 }
+// `my @d = <fresh list>`: when the right side's buffer has no other owner (an
+// operator's or a call's result, never a variable's, whose pad slot holds a
+// second count), the new Array takes it over instead of copying each element
+// and then destroying the original — 34 ms of 2M Nums, against 7 ms for the
+// `»*«` that built them. The elements end up as coerceArray's copy leaves
+// them; `v` keeps its type and is left empty. Anything else copies.
+Value coerceArrayTake(Value& v, bool nativeTarget) {
+    if (v.t != VT::Array || v.pk_ != PK::List || v.itemized || v.ext() || !v.payloadUnique() ||
+        isMultiDimShaped(v))
+        return coerceArray(v, nativeTarget);
+    v.seqTouch();
+    Value r = Value::array(std::move(*v.arr()));
+    r.isList = false;
+    for (auto& e : *r.arr()) {
+        decontCopied(e);
+        if (!nativeTarget && e.natBits) dropNativeTags(e);
+    }
+    return r;
+}
 
 // Assigning an OBJECT to a `%` container asks the object what it holds: Rakudo's
 // hash store walks the right-hand side's `.list`, and the default `Any.list` is
