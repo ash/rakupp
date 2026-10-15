@@ -33,6 +33,7 @@
 #include <vector>
 
 namespace rakupp {
+Value typedElemDefault(const Value& base);   // InterpreterBinding.cpp: what Nil resets a typed element to
 namespace cnp {
 
 // An element store: the register holding the array (an `@name` slot) and one
@@ -390,8 +391,25 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
     }
 }
 
+// PACKED-ARRAY-PLAN batch 3: the word an Int register subscripts in a packed
+// `int`/`num` array register, or null; rtIndexGet and rtIndexRef would unpack
+// the array. Out of range, negative or anything else, the general path answers.
+static PackedArr* packedAt(RkCnpFrame* f, uint64_t base, uint64_t key, size_t& at) {
+    if (f->t[base] != RK_T_BOX || f->t[key] != RK_T_INT) return nullptr;
+    const Value& b = static_cast<Value*>(f->boxes)[base];
+    if (b.t != VT::Array || !b.packedLive() || !b.hashKind.empty() || b.elemDefault()) return nullptr;
+    PackedArr* pa = b.packed();
+    const long long i = f->r[key];
+    if (i < 0 || i >= (long long)pa->w.size()) return nullptr;
+    at = (size_t)i;
+    return pa;
+}
+
 int rk_cnp_idxget(RkCnpFrame* f, uint64_t base, uint64_t key, uint64_t dst, uint64_t isHash) {
     try {
+        size_t at;
+        if (!isHash)
+            if (PackedArr* pa = packedAt(f, base, key, at)) { setReg(f, dst, pa->at(at)); return 0; }
         Value v = rtIndexGet(regValue(f, base), regValue(f, key), isHash != 0);
         setReg(f, dst, v);
         return 0;
@@ -417,6 +435,10 @@ int rk_cnp_alen(RkCnpFrame* f, uint64_t base, uint64_t dst) {
     try {
         if (f->t[base] == RK_T_BOX) {
             const Value& b = static_cast<Value*>(f->boxes)[base];
+            if (b.t == VT::Array && b.packedLive() && b.hashKind.empty() && b.enumName.empty()) {   // (its words)
+                setReg(f, dst, Value::integer((long long)b.packed()->w.size()));
+                return 0;
+            }
             if (b.t == VT::Array && b.arr() && !b.ext() && b.hashKind.empty() && b.enumName.empty()) {
                 setReg(f, dst, Value::integer((long long)b.arr()->size()));
                 return 0;
@@ -434,6 +456,19 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
         // The array register is a box sharing its element storage with the
         // variable, so references into it are references into the variable.
         Value* boxes = static_cast<Value*>(f->boxes);
+        // a machine word into a packed array's word, while no worker runs (a
+        // word written there could race the unpack), as the interpreter's
+        // packed-store lane does
+        if (s.keys.size() == 1 && !s.hash[0]) {
+            size_t at;
+            Interpreter& I = interpOf(f);
+            if (PackedArr* pa = packedAt(f, (uint64_t)s.base, (uint64_t)s.keys[0], at))
+                if (f->t[val] == (pa->isNum ? RK_T_NUM : RK_T_INT) &&
+                    !(I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)) {
+                    pa->w[at] = f->r[val];   // (a Num register holds its bits)
+                    return 0;
+                }
+        }
         if (f->t[s.base] != RK_T_BOX) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot index into a non-container"};
         Value* cur = &boxes[s.base];
         for (size_t i = 0; i + 1 < s.keys.size(); i++)
@@ -442,7 +477,7 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
         // default (Any), a container goes in as one item, a native's tags stay
         // behind, and the stored value is a fresh writable one
         Value v = regValue(f, val);
-        if (v.t == VT::Nil) v = Value::typeObj("Any");
+        if (v.t == VT::Nil) v = cur->ofType().empty() ? Value::typeObj("Any") : typedElemDefault(*cur);   // (`my int @a`: 0)
         v.readonly = v.immutableBind = false;
         if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
         v.natBits = 0; v.natSigned = v.natFloat = false;

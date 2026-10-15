@@ -3167,7 +3167,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         }
         return false;
     };
-    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.arr() && listv.s == "Slip") &&
+    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.s == "Slip" && listv.arr()) &&
         (listv.itemized ||
         (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
          && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'
@@ -3568,7 +3568,18 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             };
             const bool flat = flatLoopBody(fs->body.get());
             TopicAliasFrame taf(tctx_, rw, var, &listv);
+            // --cnp tiers up from here as from the array path below
+            // (jit::synthArrayLoop); the kernel reads the words by index
+            jit::LoopGuard __jg(jit::on() && !col ? jit::siteFor(s) : nullptr);
+            std::shared_ptr<Env> kframe;
             for (;; i++) {
+                if (__jg.site && jit::isReady(__jg.site)) {
+                    if (!kframe) { kframe = std::make_shared<Env>(); kframe->parent = tctx_.cur; }
+                    kframe->define(jit::arrayForIndexSlot(), Value::integer((long long)i));
+                    kframe->define(var, Value::any());
+                    if (jit::runIfReady(__jg.site, *this, kframe.get())) return forResult();
+                }
+                if (__jg.site) jit::tick(__jg.site);
                 Value el;
                 if (!elemAt(i, el)) break;
                 if (flat && topic && scope.use_count() == 1) {
@@ -13624,55 +13635,6 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // linked rw/raw param, push the new value through to the caller immediately
     if (anyRwLinks_) rwWriteThrough(a->target.get());
     return r;
-}
-
-// The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when
-// @a is still packed, the subscript is in range and EXPR's value is a plain
-// machine Int (Num, for a `num` array) — what the boxed element would have
-// held. False before EXPR is evaluated for any other array, and after it for
-// any other value: packedStoreShape held EXPR to an expression with no effects,
-// so the general path's second evaluation of it answers the same value. Off
-// while worker threads run (a word written there could race the unpack).
-// `@m[$i; $j] = EXPR` takes it too, into a shaped array's packed row.
-bool Interpreter::packedElemStore(Assign* a, Value& out) {
-    auto* ix = static_cast<Index*>(a->target.get());
-    if (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0) return false;
-    PackedArr* pa;
-    long long i;
-    if (ix->multiDim) {
-        size_t at;
-        const Value* row = shapedLeafRow(ix, at, true);
-        if (!row || row->t != VT::Array || !row->packedLive()) return false;
-        pa = row->packed();
-        i = (long long)at;
-    }
-    else {
-        auto* bve = static_cast<VarExpr*>(ix->base.get());
-        Value* bp = padPtr(bve);
-        if (!bp) bp = tctx_.cur->find(bve->name);
-        if (!bp || bp->t != VT::Array || !bp->packedLive() || bp->readonly || !bp->hashKind.empty() ||
-            bp->elemDefault())
-            return false;
-        if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
-        else {
-            auto* ive = static_cast<VarExpr*>(ix->index.get());
-            Value* ip = padPtr(ive);
-            if (!ip) ip = tctx_.cur->find(ive->name);
-            if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return false;
-            i = ip->i;
-        }
-        pa = bp->packed();
-    }
-    if (i < 0 || i >= (long long)pa->w.size()) return false;
-    Value v = eval(a->value.get());
-    v.readonly = v.immutableBind = false;
-    if (v.natBits == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
-    if (!plainWordValue(v, pa->isNum)) return false;
-    if (pa->isNum) std::memcpy(&pa->w[(size_t)i], &v.n, 8);
-    else pa->w[(size_t)i] = v.i;
-    if (anyRwLinks_) rwWriteThrough(a->target.get());
-    out = std::move(v);
-    return true;
 }
 
 Value Interpreter::evalAssignInner(Assign* a, bool sink) {
@@ -25117,6 +25079,9 @@ Value Interpreter::evalUnary(Unary* u) {
         // applies to it either. An overflow takes the full path (a bignum).
         // …and `@a[$i]++`, `%h{$k}++`, `$!n++` on an element or untyped
         // attribute that holds one (plainIntStepTarget, out of line)
+        Value packedOut;   // (`@a[$i]++` on a packed array steps its word: packedStep)
+        if (subsets_.empty() && !anyRwLinks_ && u->operand->kind == NK::Index && packedStep(u, packedOut))
+            return packedOut;
         if (subsets_.empty() && !anyRwLinks_)
             if (Value* slot = u->operand->kind == NK::VarExpr && static_cast<VarExpr*>(u->operand.get())->name[1] != '!'
                                   ? plainIntStepSlot(static_cast<VarExpr*>(u->operand.get()))
@@ -31591,7 +31556,8 @@ bool Interpreter::uninitMethodShape(const MethodCall* mc, const Value& inv) {
         if (m[0] != 'S' && m[0] != 'N' && m[0] != 'I') return false;
         return mc->args.empty() && (m == "Str" || m == "Numeric" || m == "Int") && uninitOperand(inv);
     }
-    if (inv.t == VT::Array && inv.arr() && (m[0] == 'j' || m[0] == 's') && (m == "join" || m == "sum")) {
+    if (inv.t == VT::Array && (m[0] == 'j' || m[0] == 's') && (m == "join" || m == "sum") &&
+        !inv.packedLive() && inv.arr()) {   // (the name first: arr() unpacks packed words, never undefined)
         for (auto& el : *inv.arr()) if (uninitOperand(el)) return true;
     }
     return false;

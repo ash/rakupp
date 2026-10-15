@@ -6229,6 +6229,37 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         const long long n = (long long)inv.packed()->w.size();
         return Value::integer(m[0] == 'e' && m[1] == 'l' ? n : n - 1);
     }
+    // …and `.sum` / `.min` / `.max` fold the words, answering what
+    // borrowedNumericFold answers for the same elements boxed: an Int sum
+    // leaving int64 goes on through applyArith, Ints compare as Ints, and a
+    // `num` array folds `.sum` only. Empty, it takes the general arms.
+    if (inv.pk_ == PK::Packed && args.empty() && m.size() == 3 && inv.hashKind.empty() && inv.packedLive() &&
+        builtinExt_.empty() && (opEq(m, "sum") || opEq(m, "min") || opEq(m, "max"))) {
+        const PackedArr* pa = inv.packed();
+        const std::vector<int64_t>& w = pa->w;
+        if (!w.empty() && pa->isNum && m[0] == 's') {
+            double acc = 0;   // the Int 0 the general fold starts from, as a Num
+            for (int64_t x : w) { double d; std::memcpy(&d, &x, 8); acc += d; }
+            return Value::number(acc);
+        }
+        if (!w.empty() && !pa->isNum && m[0] == 's') {
+            long long acc = 0;
+            for (size_t k = 0; k < w.size(); k++) {
+                long long next;
+                if (!add_ovf(acc, (long long)w[k], &next)) { acc = next; continue; }
+                Value big = Value::integer(acc);
+                for (; k < w.size(); k++) big = applyArith("+", big, Value::integer((long long)w[k]));
+                return big;
+            }
+            return Value::integer(acc);
+        }
+        if (!w.empty() && !pa->isNum) {
+            const bool least = m[1] == 'i';
+            long long best = (long long)w[0];
+            for (int64_t x : w) if (least ? (long long)x < best : (long long)x > best) best = (long long)x;
+            return Value::integer(best);
+        }
+    }
     // …and `.push` of plain machine words appends words (not while worker
     // threads run: a word appended there could race the unpack)
     if (inv.pk_ == PK::Packed && !args.empty() && m.size() == 4 && opEq(m, "push") && inv.hashKind.empty() &&

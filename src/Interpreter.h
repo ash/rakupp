@@ -4558,6 +4558,9 @@ private:
     static bool plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes the declaration lane
     static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane
     bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
+    static bool packedIndexShape(const Index* ix);   // `@a[$i]` / `@a[3]`: the packed lanes' 1-D subscript
+    PackedArr* packedWordAt(Index* ix, size_t& at);   // …the word it names in a still-packed array, or null
+    bool packedStep(Unary* u, Value& out);         // `@a[$i]++` on that word (PACKED-ARRAY-PLAN)
     static bool shapedLaneShape(const Index* ix);   // `@m[$i; 2]`: the shaped-array lanes' syntax
     const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null
     bool shapedElemRead(Index* ix, Value& out);    // …and its element, read without the general walk

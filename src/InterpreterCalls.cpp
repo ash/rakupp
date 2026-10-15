@@ -3727,10 +3727,16 @@ static bool packedRhsPure(const Expr* e, int depth = 0) {
     }
 }
 bool Interpreter::packedStoreShape(const Assign* a) {
-    if (!a->target || a->target->kind != NK::Index || a->userOp || !opEq(a->op, "=")) return false;
+    if (!a->target || a->target->kind != NK::Index || a->userOp ||
+        !(opEq(a->op, "=") || opEq(a->op, "+=") || opEq(a->op, "-=") || opEq(a->op, "*=")))
+        return false;
     auto* ix = static_cast<const Index*>(a->target.get());
     // `@m[$i; $j] = EXPR`: a shaped array's packed row
     if (ix->multiDim) return shapedLaneShape(ix) && packedRhsPure(a->value.get());
+    return packedIndexShape(ix) && packedRhsPure(a->value.get());
+}
+// …and the subscript it takes: `@name[$i]` or `@name[3]`, nothing else
+bool Interpreter::packedIndexShape(const Index* ix) {
     if (ix->isHash || ix->multiDim || ix->semicolonSub || ix->zen || !ix->adverb.empty() || !ix->base ||
         ix->base->kind != NK::VarExpr || !ix->index)
         return false;
@@ -3739,9 +3745,105 @@ bool Interpreter::packedStoreShape(const Assign* a) {
         !(ascii::isalpha((unsigned char)bv->name[1]) || bv->name[1] == '_'))
         return false;
     const Expr* ie = ix->index.get();
-    const bool idxOk = ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
-                                              : ie->kind == NK::VarExpr && packedRhsPure(ie);
-    return idxOk && packedRhsPure(a->value.get());
+    return ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
+                                  : ie->kind == NK::VarExpr && packedRhsPure(ie);
+}
+
+// The word a packed `int`/`num` array holds for `@a[$i]` / `@a[3]`, or for
+// `@m[$i; $j]` in a shaped one's packed row: @a a plain lexical that is still
+// packed, writable, with no `is default`, and the subscript a machine Int in
+// range. Null for anything else, before anything with an effect is evaluated.
+PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
+    if (ix->multiDim) {
+        const Value* row = shapedLeafRow(ix, at, true);
+        if (!row || row->t != VT::Array || !row->packedLive()) return nullptr;
+        return at < row->packed()->w.size() ? row->packed() : nullptr;
+    }
+    auto* bve = static_cast<VarExpr*>(ix->base.get());
+    Value* bp = padPtr(bve);
+    if (!bp) bp = tctx_.cur->find(bve->name);
+    if (!bp || bp->t != VT::Array || !bp->packedLive() || bp->readonly || !bp->hashKind.empty() ||
+        bp->elemDefault())
+        return nullptr;
+    long long i;
+    if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
+    else {
+        auto* ive = static_cast<VarExpr*>(ix->index.get());
+        Value* ip = padPtr(ive);
+        if (!ip) ip = tctx_.cur->find(ive->name);
+        if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return nullptr;
+        i = ip->i;
+    }
+    PackedArr* pa = bp->packed();
+    if (i < 0 || i >= (long long)pa->w.size()) return nullptr;
+    at = (size_t)i;
+    return pa;
+}
+
+// The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when
+// @a is still packed, the subscript is in range and EXPR's value is a plain
+// machine Int (Num, for a `num` array) — what the boxed element would have
+// held. False before EXPR is evaluated for any other array, and after it for
+// any other value: packedStoreShape held EXPR to an expression with no effects,
+// so the general path's second evaluation of it answers the same value. Off
+// while worker threads run (a word written there could race the unpack).
+// `@m[$i; $j] = EXPR` takes it too, into a shaped array's packed row; and
+// `+=`, `-=`, `*=` take it when the result is a word again (an Int that
+// overflows, a mixed Int and Num, a user's `infix:<+>` go the general way).
+bool Interpreter::packedElemStore(Assign* a, Value& out) {
+    auto* ix = static_cast<Index*>(a->target.get());
+    if (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0) return false;
+    const char op = opEq(a->op, "=") ? '=' : a->op[0];   // packedStoreShape allowed = += -= *=
+    if (op != '=' && lexShadowPossible(std::string(1, op))) return false;
+    size_t i;
+    PackedArr* pa = packedWordAt(ix, i);
+    if (!pa) return false;
+    Value v = eval(a->value.get());
+    v.readonly = v.immutableBind = false;
+    if (v.natBits == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
+    if (!plainWordValue(v, pa->isNum)) return false;
+    if (op != '=') {
+        if (pa->isNum) {
+            double d; std::memcpy(&d, &pa->w[i], 8);
+            v.n = op == '+' ? d + v.n : op == '-' ? d - v.n : d * v.n;
+        } else {
+            const long long w = (long long)pa->w[i];
+            long long r;
+            if (op == '+' ? add_ovf(w, v.i, &r) : op == '-' ? sub_ovf(w, v.i, &r) : mul_ovf(w, v.i, &r))
+                return false;
+            v.i = r;
+        }
+    }
+    if (pa->isNum) std::memcpy(&pa->w[i], &v.n, 8);
+    else pa->w[i] = v.i;
+    if (anyRwLinks_) rwWriteThrough(a->target.get());
+    out = std::move(v);
+    return true;
+}
+// `@a[$i]++`, `--@m[$i; $j]` on a packed array: the word steps, as
+// plainIntStepTarget steps a boxed element's Int (a Num by 1e0). False, with
+// nothing touched, for any other target and on an Int overflow.
+bool Interpreter::packedStep(Unary* u, Value& out) {
+    Expr* t = u->operand.get();
+    if (t->kind != NK::Index || (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0)) return false;
+    auto* ix = static_cast<Index*>(t);
+    if (ix->multiDim ? !shapedLaneShape(ix) : !packedIndexShape(ix)) return false;
+    size_t i;
+    PackedArr* pa = packedWordAt(ix, i);
+    if (!pa) return false;
+    const bool up = u->op[0] == '+';
+    const Value old = pa->at(i);
+    if (pa->isNum) {
+        const double d = old.n + (up ? 1.0 : -1.0);
+        std::memcpy(&pa->w[i], &d, 8);
+    } else {
+        long long r;
+        if (up ? add_ovf(old.i, 1, &r) : sub_ovf(old.i, 1, &r)) return false;
+        pa->w[i] = r;
+    }
+    if (anyRwLinks_) rwWriteThrough(t);
+    out = u->postfix ? old : pa->at(i);
+    return true;
 }
 
 // The innermost row `@m[$i; …; $k]` names in a shaped array, and the position

@@ -1634,9 +1634,15 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         }
         // An array the kernel indexes must be a plain one: typed, native,
         // shaped, lazy or `is default` arrays store differently, and a List is
-        // immutable. Anything else keeps the loop interpreted.
+        // immutable. Anything else keeps the loop interpreted. A full-width
+        // `int`/`num` array is the exception under --cnp (PACKED-ARRAY-PLAN
+        // batch 3): its element stores are the plain ones but for Nil, which
+        // rk_cnp_idxset resets to the array's zero as the interpreter does,
+        // and a packed one is read and written as words.
+        const std::string& aty = cell->ofType();
+        const bool fullNativeArr = isCnp && (aty == "int" || aty == "int64" || aty == "num" || aty == "num64");
         if (s->slotIndexed[k] == '@' &&
-            (cell->t != VT::Array || cell->isList || !cell->ofType().empty() || cell->shape() ||
+            (cell->t != VT::Array || cell->isList || (!aty.empty() && !fullNativeArr) || cell->shape() ||
              cell->ext() || !cell->hashKind.empty() || cell->elemDefault()))
             return refuse(s, "array " + n + " is not a plain Array (typed, native, shaped, lazy or a List)");
         // …and a hash a plain Hash: not a Set/Bag/Map, typed, object-keyed or `is default`

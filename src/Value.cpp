@@ -5,6 +5,12 @@
 #include <cstring>
 #include "Interpreter.h" // RakuError (zero-denominator Rat Str-coercion throws)
 #include "BuiltinsShared.h" // g_deproxy — a container gists as what it holds
+#if !defined(_WIN32)
+#include <dlfcn.h>      // the packed census names its image's load address
+#endif
+#include <cstdio>
+#include <cstdlib>
+#include <map>
 
 #ifdef RAKUPP_IN_AUDIT
 #include <dlfcn.h>
@@ -314,10 +320,10 @@ bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
 // or Num — under one lock, since two threads may ask at once, and from then on
 // the shared body answers with that list.
 static std::mutex g_packedMu;
-static void packedUnpackBody(PackedArr* p) {
-    if (p->unpacked.load(std::memory_order_acquire)) return;
+static bool packedUnpackBody(PackedArr* p) {   // true: this call unpacked it
+    if (p->unpacked.load(std::memory_order_acquire)) return false;
     std::lock_guard<std::mutex> lk(g_packedMu);
-    if (p->unpacked.load(std::memory_order_relaxed)) return;
+    if (p->unpacked.load(std::memory_order_relaxed)) return false;
     auto l = makePayload<ValueList>();
     l->reserve(p->w.size());
     for (size_t i = 0; i < p->w.size(); i++) l->push_back(p->at(i));
@@ -326,15 +332,43 @@ static void packedUnpackBody(PackedArr* p) {
     // test and reading them (parallel mode is the default), and they cost 8
     // bytes an element beside the 80 just built.
     p->unpacked.store(true, std::memory_order_release);
+    return true;
 }
+// The census of what unpacks (PACKED-ARRAY-PLAN): with RAKUPP_PACKED_CENSUS
+// set, each unpack counts the return address it was asked from, and the
+// table goes to stderr at exit beside the image's load address, for
+// `atos -o build/rakupp -l BASE ADDR…` (addr2line on Linux) to name them.
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_WIN32)
+static std::map<void*, std::pair<size_t, size_t>>* g_packedCensus = nullptr;   // ra -> (arrays, elements)
+static void packedCensusDump() {
+    std::lock_guard<std::mutex> lk(g_packedMu);
+    Dl_info di{};
+    void* base = nullptr;
+    if (!g_packedCensus->empty() && dladdr(g_packedCensus->begin()->first, &di)) base = di.dli_fbase;
+    std::fprintf(stderr, "packed census: %zu call sites (image base %p)\n", g_packedCensus->size(), base);
+    for (auto& kv : *g_packedCensus)
+        std::fprintf(stderr, "  %p  %zu unpacks, %zu elements\n", kv.first, kv.second.first, kv.second.second);
+}
+static void packedCensusNote(void* ra, size_t n) {
+    static const bool on = std::getenv("RAKUPP_PACKED_CENSUS") != nullptr;
+    if (!on) return;
+    std::lock_guard<std::mutex> lk(g_packedMu);
+    if (!g_packedCensus) { g_packedCensus = new std::map<void*, std::pair<size_t, size_t>>(); std::atexit(packedCensusDump); }
+    auto& c = (*g_packedCensus)[ra];
+    c.first++; c.second += n;
+}
+#define RAKUPP_PACKED_NOTE(p) packedCensusNote(__builtin_return_address(0), (p)->w.size())
+#else
+#define RAKUPP_PACKED_NOTE(p) ((void)0)
+#endif
 ValueList* Value::packedUnpack() const {
     PackedArr* p = pv<PackedArr>();
-    packedUnpackBody(p);
+    if (packedUnpackBody(p)) RAKUPP_PACKED_NOTE(p);
     return p->boxed.get();
 }
 PRef<ValueList> Value::packedUnpackS() const {
     PackedArr* p = pv<PackedArr>();
-    packedUnpackBody(p);
+    if (packedUnpackBody(p)) RAKUPP_PACKED_NOTE(p);
     return p->boxed;
 }
 
