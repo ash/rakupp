@@ -537,7 +537,7 @@ static std::optional<Value> borrowedNumericFold(const ValueList& a, char how) {
             for (size_t k = 0; k < a.size(); k++) {
                 const long long x = a[k].i;
                 long long next;
-                if (!__builtin_add_overflow(acc, x, &next)) { acc = next; continue; }
+                if (!add_ovf(acc, x, &next)) { acc = next; continue; }   // (IntOps.h: MSVC has no builtin)
                 Value big = Value::integer(acc);
                 for (; k < a.size(); k++) big = applyArith("+", big, a[k]);
                 return big;
