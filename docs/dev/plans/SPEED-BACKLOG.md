@@ -48,7 +48,6 @@ theme the rows are sorted by complexity, largest first.
 | 9 | Inline slots for `Env::vars`, and `Env` on the slab | L | V6 P3.2 |
 | 10 | Small Rats inline; Pairs with an inline Int/Bool key | L | V6 P3.3–4 |
 | 17 | Packed native arrays, batch 3 | M | `--cnp` on packed registers, the reductions, the census — [PACKED-ARRAY-PLAN.md](PACKED-ARRAY-PLAN.md) |
-| 21 | Slim `VarExpr` (384 B, 23% of a large program's AST) | M | Move its declaration-only fields behind a pointer — V6 P3.8 |
 | 29 | Tails: VALUEHASH step 4, DISPATCH-PERF Ph6, UNBOX P3–P5 | M | [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md), DISPATCH-PERF-PLAN, UNBOX-PLAN |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
@@ -106,6 +105,9 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **21, slim `VarExpr`** (28989c10): a declaration's fields behind one
+  pointer that a plain read shares; 400 -> 136 bytes, `-c` on a 52k-line
+  program 151 -> 136 MB.
 - **24, a shaped native array at ~160 B an element** (6021c2fa, 44ed66bc):
   the mainline pre-declaration built the array a second time, and each
   element was an 80-byte Value; a full-width `int`/`num` shaped array now

@@ -254,6 +254,13 @@ The same items grouped by theme, with a complexity estimate for each:
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
   slot, set by binding and assignment.
+- [ ] **`S17-promise/nonblocking-await.t` crashes ~1 run in 10** (the
+  ledgered flake, PARALLEL-PLAN / CYCLE-GC-PLAN): after test 6, on
+  `$p.break('bust')`, SIGSEGV (exit 134 or 139) in `~ClassInfo` under
+  mixinValue, in a `start` worker inside `die`. A hundred workers die at
+  once, each mixing into its exception and writing `classes_[nc->name] = nc`
+  (InterpreterOperators.cpp) with no lock, so one replaces and frees the
+  class another is using. 6 of 60 at 49c98013. Found 2026-10-15; not started.
 - [ ] **`t/race/varcell.raku` fails again**: 4–17 wrong answers in 200 runs at
   `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
   reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,

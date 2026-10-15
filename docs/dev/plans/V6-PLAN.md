@@ -308,7 +308,10 @@ In order of evidence per cost:
    path) into an immutable per-AST CodeInfo and a closure of about 64 bytes.
    A closure costs ~1.6 KB here and ~0.6 KB on Rakudo.
 8. **Slim `VarExpr`** (384 bytes on the heap; 23% of a large program's AST) by
-   moving its declaration-only fields behind a pointer.
+   moving its declaration-only fields behind a pointer. *Done 2026-10-15*
+   (28989c10): VarDeclInfo, reached through `d()`/`dm()`; 400 -> 136 bytes,
+   `-c` on a 52k-line program 151.4 -> 135.5 MB peak, instructions equal,
+   the AST cache format unchanged.
 9. **Native math phases 2–3** ([NATIVE-MATH-PLAN.md](NATIVE-MATH-PLAN.md)):
    unboxed typed slots in the pads. Re-price them first; the UNBOX lanes landed
    on 2026-09-19 and took phase 4.
