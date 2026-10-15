@@ -3426,6 +3426,21 @@ bool isNativeTypeName(const std::string& n) {
     return t.count(n) > 0;
 }
 
+NatKind nativeKindOf(const std::string& n) {
+    if (n == "int" || n == "int64" || n == "int32" || n == "int16" || n == "int8" || n == "atomicint")
+        return NatKind::Int;
+    if (n == "uint" || n == "uint64" || n == "uint32" || n == "uint16" || n == "uint8" || n == "byte")
+        return NatKind::UInt;
+    if (n == "num" || n == "num64" || n == "num32") return NatKind::Num;
+    if (n == "str") return NatKind::Str;
+    // NativeCall's C spellings are native ints too (Rakudo: `bool` and
+    // `ssize_t` signed, `size_t` unsigned) — but only where the program has
+    // not declared a type of that name itself, which the caller asks
+    if (n == "long" || n == "longlong" || n == "ssize_t" || n == "bool") return NatKind::Int;
+    if (n == "ulong" || n == "ulonglong" || n == "size_t") return NatKind::UInt;
+    return NatKind::None;
+}
+
 bool isKnownTypeName(const std::string& n) {
     if (n.empty()) return false;
     // Asked on hot paths (every `.new` of a user class asks whether it shadows

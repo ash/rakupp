@@ -501,25 +501,20 @@ static inline bool nativeRefusesKind(const Value& v, bool isFloat) {
     }
 }
 
-// The declared spelling of a native container from its slot tags.
-static inline std::string nativeTypeName(int bits, bool isFloat, bool sign) {
-    if (isFloat) return bits == 32 ? "num32" : "num";
-    std::string base = sign ? "int" : "uint";
-    return bits == 64 ? base : base + std::to_string(bits);
-}
-
-// The refusal: an X::AdHoc, the class Rakudo raises. `where` names the target
-// (`$x`, or `parameter $x`).
-[[noreturn]] static inline void throwNativeKind(const Value& v, const std::string& natType, bool isFloat,
-                                         const std::string& where) {
+// The refusal, in Rakudo's words: the value cannot UNBOX to the native. Every
+// number nativeRefusesKind turns away is a P6opaque (Interpreter::
+// throwNativeUnbox words the other representations, for a parameter).
+[[noreturn]] static inline void throwNativeKind(const Value& v, bool isFloat, bool sign) {
     throw RakuError{Value::typeObj("X::AdHoc"),
-        "Cannot put a " + v.typeName() + " (" + v.gist() + ") into the native " +
-        natType + " " + where + ": it holds " +
-        (isFloat ? "a Num" : "an Int") + " only (coerce it with ." + (isFloat ? "Num" : "Int") + ")"};
+        std::string("This type cannot unbox to a native ") +
+        (isFloat ? "number" : sign ? "integer" : "unsigned integer") + ": P6opaque, " + v.typeName()};
 }
-[[noreturn]] static inline void throwNativeKind(const Value& v, int bits, bool isFloat, bool sign,
-                                         const std::string& where) {
-    throwNativeKind(v, nativeTypeName(bits, isFloat, sign), isFloat, where);
+// An Int no machine word holds, into any native integer: the width is the
+// value's bit length, as Rakudo counts it (2**70 is 71 bits wide).
+[[noreturn]] static inline void throwNativeTooWide(const Value& v) {
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        "Cannot unbox " + std::to_string(v.big()->bitLength()) +
+        " bit wide bigint into native integer. Did you mix int and Int or literals?"};
 }
 
 // A value read from a native container carries its tags — operators and multi

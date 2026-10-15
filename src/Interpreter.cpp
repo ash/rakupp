@@ -1308,7 +1308,7 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
 
 void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign) {
     if (bits <= 0) return;
-    if (nativeRefusesKind(v, isFloat)) throwNativeKind(v, bits, isFloat, sign, what);
+    if (nativeRefusesKind(v, isFloat)) throwNativeKind(v, isFloat, sign);
     // a native NUM refuses a Str too (`my num $n; $n = "x"`)
     if (isFloat) {
         if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
@@ -1326,9 +1326,7 @@ void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string
     // width (`my int8 $x = 2**64` too); an unsigned one takes the full 64 bits.
     if (v.t == VT::Int && v.big() &&
         (sign ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
-        throw RakuError{Value::typeObj("X::AdHoc"),
-            "Cannot unbox " + std::to_string(v.big()->bitLength()) +
-            " bit wide bigint into native integer. Did you mix int and Int or literals?"};
+        throwNativeTooWide(v);
 }
 
 // A native container cannot hold a type object, Nil included: `my int $x = Nil`

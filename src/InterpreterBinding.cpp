@@ -4883,29 +4883,110 @@ Value Interpreter::bindTypedParam(Value v, const Param& p) {
     return v;
 }
 // What binding does to the value once the type check has passed: a native
-// parameter takes it as that native (an `int8` wraps, a BigInt no machine word
-// holds is refused), and a boxed one takes the value, not a native.
+// parameter takes it AS that native, so that arithmetic on it is the native
+// candidate however the caller's value arrived — an `int8` wraps, an `int`
+// is a machine int (`$x * 2` at 2**62 wraps to int.min), a `num32` rounds,
+// a BigInt no machine word holds is refused, an IntStr or an enum value
+// becomes its number and a Pointer (or a CPointer class's instance) its
+// address. A boxed parameter takes the value, not a native. An `is rw` / `is raw` `int` or `num` binds the caller's container,
+// which is as it is.
 void Interpreter::bindNativeParam(const Param& p, Value& v) {
-    // a native-int param truncates on bind (see the slow path)
-    // a machine-width `int` does not wrap, but a bigint does not fit it either
-    if (v.t == VT::Bool && p.type == "int") v = Value::integer(v.b ? 1 : 0);
-    if (v.t == VT::Int && v.big() && p.type == "int" && !v.big()->fitsLL())
-        throw RakuError{Value::typeObj("X::AdHoc"),
-            "Cannot unbox " + std::to_string(v.big()->bitLength() + 1) +
-            " bit wide bigint into native integer"};
-    int spec = paramNatSpec(p);
-    if (spec >> 1) {
-        // (…but refuses a value no machine word holds at all)
-        if (v.t == VT::Int && v.big() &&
-            ((spec & 1) ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
-            throw RakuError{Value::typeObj("X::AdHoc"),
-                "Cannot unbox " + std::to_string(v.big()->bitLength() + (spec & 1)) +
-                " bit wide bigint into native integer"};
-        wrapNative(v, spec >> 1, spec & 1);
+    const bool own = !p.isRw && !p.isRaw;
+    switch (paramNativeKind(p)) {
+        case NatKind::Int: case NatKind::UInt: {
+            const int spec = paramNatSpec(p);
+            int bits = spec >> 1; bool sign = spec & 1;
+            if (!bits) {
+                if (p.type != "int" && p.type != "atomicint") return;   // a C spelling: as it is
+                if (v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);
+                if (v.t == VT::Int && v.big() && !v.big()->fitsLL()) throwNativeTooWide(v);
+                if (!own) return;
+                bits = 64; sign = true;
+            }
+            // a value no machine word holds at all is refused, not wrapped
+            // (`sub (int8 $x) {}(2**70)`, S02-types/native.t)
+            if (v.t == VT::Int && v.big() && (sign ? !v.big()->fitsLL() : v.big()->bitLength() > 64))
+                throwNativeTooWide(v);
+            if (v.t == VT::Hash && v.hashKind == "Pointer") v = methodCall(v, "Int", {});   // its address
+            else if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->repr == "CPointer")
+                v = Value::integer(ncRawAddr(v));                                            // a CPointer's
+            wrapNative(v, bits, sign);
+            return;
+        }
+        case NatKind::Num:
+            if (own) wrapNative(v, p.type == "num32" ? 32 : 64, true, /*isFloat=*/true);
+            return;
+        case NatKind::Str:
+            if (own && (v.t != VT::Str || !v.hashKind.empty())) v = Value::str(v.toStr());   // an allomorph's Str
+            return;
+        case NatKind::None:
+            if (v.natBits && own && !paramIsNative(p)) dropNativeTags(v);
+            return;
     }
-    // a boxed parameter takes the VALUE, not the native (see the slow path)
-    else if (v.natBits && !p.isRw && !p.isRaw && !paramIsNative(p))
-        dropNativeTags(v);
+}
+
+// What a parameter's native type unboxes its argument to, None for a boxed
+// one. A C spelling (`long`, `size_t`) may name the program's own subset or
+// class instead; the core natives' names cannot.
+NatKind Interpreter::paramNativeKind(const Param& p) {
+    if (signed char m = p.natKind; m >= 0) return (NatKind)m;
+    if (p.type.empty() || !paramIsNative(p)) { p.natKind = (signed char)NatKind::None; return NatKind::None; }
+    const std::string& t = p.type;
+    const NatKind k = nativeKindOf(t);
+    const bool cSpelling = t == "long" || t == "longlong" || t == "ssize_t" || t == "bool" ||
+                           t == "ulong" || t == "ulonglong" || t == "size_t";
+    if (!cSpelling) p.natKind = (signed char)k;
+    else if (classes_.count(t) || subsets_.count(t)) return NatKind::None;
+    return k;
+}
+
+// What a native parameter of kind `k` binds (typeCheckBind asks before
+// bindNativeParam converts it): into the integer kinds an Int — a Bool, an
+// IntStr, an enum value, a subclass — or a Pointer or a CPointer class's
+// instance, whose address it takes; into num a Num or a NumStr; into str a
+// Str or any allomorph. Nothing else — a native num into an `int` neither,
+// though `my int $i = $a-num` converts — and no type object: Rakudo's binder
+// unboxes, it does not coerce.
+bool Interpreter::nativeParamTakes(const Value& v, NatKind k) {
+    const bool intKind = k == NatKind::Int || k == NatKind::UInt;
+    if (v.hashKind.empty()) {
+        if (intKind && (v.t == VT::Int || v.t == VT::Bool)) return true;
+        if (k == NatKind::Num && v.t == VT::Num) return true;
+        if (k == NatKind::Str && v.t == VT::Str) return true;
+    }
+    if (intKind && v.t == VT::Hash && v.hashKind == "Pointer") return true;
+    if (intKind && v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->repr == "CPointer") return true;
+    if (isJunction(v) || !isDefined(v)) return false;
+    return typeOrSubsetMatches(v, intKind ? "Int" : k == NatKind::Num ? "Num" : "Str");
+}
+
+// Rakudo's binder's refusal, by what arrived: a type object cannot unbox at
+// all; a value whose representation is P6opaque (every ordinary object, a
+// Junction, a Failure) "cannot unbox to a native integer"; one of another
+// representation — a Blob is a VMArray, a CStruct class a CStruct — says so.
+void Interpreter::throwNativeUnbox(const Value& v, NatKind k) {
+    const bool isU = k == NatKind::UInt, isNum = k == NatKind::Num, isStr = k == NatKind::Str;
+    const bool failure = v.t == VT::Hash && v.hashKind == "Failure";
+    if (!isDefined(v) && !failure && !isJunction(v))
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            "Cannot unbox a type object (" + v.typeName() + ") to " +
+            (isU ? "an unsigned int" : isNum ? "a num" : isStr ? "a str" : "int") + "."};
+    std::string repr = "P6opaque", name = "Junction";
+    if (!isJunction(v)) {
+        if (v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->cls->repr.empty()) repr = v.obj()->cls->repr;
+        else if (v.hashKind == "Buf" || v.hashKind == "Blob") repr = "VMArray";
+        else if (v.hashKind == "CArray") repr = "CArray";
+        else if (v.hashKind == "Pointer") repr = "CPointer";
+        try { name = methodCall(v, "^name", {}).toStr(); } catch (...) { name = v.typeName(); }
+    }
+    if (repr == "P6opaque")
+        throw RakuError{Value::typeObj("X::AdHoc"),
+            std::string("This type cannot unbox to a native ") +
+            (isU ? "unsigned integer" : isNum ? "number" : isStr ? "string" : "integer") + ": P6opaque, " + name};
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        "This representation (" + repr + ") cannot unbox to " +
+        (isU ? "an unsigned native int" : isNum ? "a native num" : isStr ? "a native string" : "a native int") +
+        " (for type " + name + ")"};
 }
 RtRoutineFrame::RtRoutineFrame(Interpreter& I)
     : t(I.tctx_), id(++I.tctx_.frameTop), rf(I.tctx_.curRoutineFrame), live(std::make_shared<bool>(true)) {

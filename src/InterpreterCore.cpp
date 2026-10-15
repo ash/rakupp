@@ -221,6 +221,14 @@ static inline bool nativeNeedsCheck(const Value& v, bool isFloat) {
 void wrapNative(Value& v, int bits, bool sign, bool isFloat) {
     if (bits <= 0) return;
     if (isFloat) { // native float container: num32 rounds to float32 precision
+        // (a plain Num is its own value: only the tags change, as for an Int below)
+        if (v.t == VT::Num && !v.x_ && !v.p_ && v.enumName.empty() && v.enumType.empty() && v.hashKind.empty()) {
+            if (bits == 32) v.n = (double)(float)v.n;
+            v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
+            v.isList = v.objKeyed = v.natSigned = false;
+            v.natBits = bits; v.natFloat = true;
+            return;
+        }
         if (bits == 32) { float f = (float)v.toNum(); v = Value::number((double)f); }
         else            v = Value::number(v.toNum());
         v.natBits = bits; v.natFloat = true;
@@ -398,14 +406,12 @@ static bool compoundSrcNative(const std::string& op, const Value& rhs, const Exp
 // result of the wrong kind (`$i /= 2` is a Rat, `$i += 1.5e0` a Num) is refused
 // as `=` refuses it, and the container keeps what it held before the op.
 static void nativeCompoundStore(Value& slot, const Value& before, int bits, bool sign, bool isFloat,
-                                const Expr* target, bool srcNative = false) {
+                                bool srcNative = false) {
     if (srcNative && (slot.t == VT::Int || slot.t == VT::Num)) { wrapNative(slot, bits, sign, isFloat); return; }
     if (nativeRefusesKind(slot, isFloat)) {
         Value got = slot;
         slot = before;
-        throwNativeKind(got, bits, isFloat, sign,
-                        target && target->kind == NK::VarExpr ? static_cast<const VarExpr*>(target)->name
-                                                              : std::string("$x"));
+        throwNativeKind(got, isFloat, sign);
     }
     wrapNative(slot, bits, sign, isFloat);
 }
@@ -4074,6 +4080,15 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
     if (p.codeSig && !codeSigAccepts(p, v, sigEnv))
         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
             "Constraint type check failed in binding to parameter '" + paramShownName(p) + "'"};
+    // A NATIVE parameter takes what unboxes to it and nothing else — a type
+    // object (Nil too), a Str into an `int`, a Num into a `str`, a Junction
+    // (which does not autothread into one) — and refuses the rest as Rakudo's
+    // binder does: an X::AdHoc saying it cannot unbox, not a binding type
+    // check. bindNativeParam then makes what it took the native.
+    if (const NatKind k = paramNativeKind(p); k != NatKind::None) {
+        if (nativeParamTakes(v, k)) return;
+        throwNativeUnbox(v, k);
+    }
     // A bare `::T $x` constrains nothing: T NAMES whatever arrived. Checking
     // the value against a type called T went wrong as soon as one existed —
     // a `my grammar T` in an earlier EVAL (classes_ outlives it) made
@@ -4134,24 +4149,6 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
              {"routine", Value::str("")}, {"param", Value::str(p.name)},
              {"should-be-concrete", Value::boolean(false)}, {"param-is-invocant", Value::boolean(false)}},
             "Parameter '" + p.name + "' must be a type object of type '" + want + "', not an object instance");
-    }
-    // a NATIVE parameter holds no type object: `sub f(int $x) {}; f(Int)`
-    if (v.t == VT::Type && !p.type.empty() && p.type != "void" && isNativeTypeName(p.type))
-        throwTypedV("X::TypeCheck::Binding::Parameter",
-            {{"got", v}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
-            "Cannot unbox a type object (" + v.typeName() + ") to " +
-            (p.type.rfind("num", 0) == 0 ? std::string("a num") : p.type.rfind("str", 0) == 0 ? std::string("a str") : std::string("an int")) + ".");
-    // …nor a number of the other kind: `sub f(num $x) {}; f(1/2)` dies as
-    // `my num $x = 1/2` does, and with the same X::AdHoc Rakudo raises rather
-    // than a binding type check. (A multi candidate that cannot take it was
-    // already passed over by the dispatcher.)
-    if (!p.type.empty() && (p.type[0] == 'i' || p.type[0] == 'u' || p.type[0] == 'n' ||
-                            p.type == "byte" || p.type == "atomicint") && isDefined(v)) {
-        const bool isFloat = p.type == "num" || p.type == "num32" || p.type == "num64";
-        bool sign;
-        if ((isFloat || p.type == "int" || p.type == "atomicint" || Value::natWidthOfType(p.type, sign)) &&
-            nativeRefusesKind(v, isFloat))
-            throwNativeKind(v, p.type, isFloat, "parameter " + p.name);
     }
     // `Any` is everything BELOW Mu, so an Any-constrained parameter takes any
     // value except Mu itself. Asked before the type-object bypass on the next
@@ -5433,47 +5430,27 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 "Constraint type check failed in binding to parameter '" + paramShownName(p) +
                 "'; expected an array of the declared shape"};
     }
-    // a NATIVE-int parameter truncates its argument at bind time, as Rakudo's
-    // does: `sub f(uint32 $n)` called with 2**40+5 binds 5. Digest::RIPEMD's
-    // rotl leans on exactly this — without the wrap its accumulator grew a few
-    // bits every round and the digest was garbage by round three. The wrap also
-    // marks the slot natBits, so assignments inside keep wrapping.
+    // a NATIVE parameter holds its argument as that native from the bind on
+    // (bindNativeParam, shared with the plain-signature path): `sub f(uint32
+    // $n)` called with 2**40+5 binds 5, and `sub f(int $x) { $x * 2 }` wraps.
+    // Digest::RIPEMD's rotl leans on exactly this — without the wrap its
+    // accumulator grew a few bits every round and the digest was garbage by
+    // round three. The wrap also marks the slot natBits, so assignments
+    // inside keep wrapping. (The slot's readonly binding outlives it.)
+    //
+    // A BOXED parameter, readonly or `is copy`, takes a native argument's
+    // value and leaves its tags behind (see dropNativeTags): `sub f($x) { $x
+    // + 1 }` given a native int.max is Int arithmetic in Rakudo and answers
+    // 2**63, not int.min. Only `is rw` / `is raw` bind the caller's native
+    // container itself.
     for (size_t i = 0; i < params.size(); i++) {
         const Param& p = params[i];
         if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
-        const int spec = paramNatSpec(p);
-        bool sign = spec & 1; int bits = spec >> 1;
-        if (!bits && p.type == "int") { bits = 64; sign = true; }   // checked, not wrapped (below)
-        if (!bits) {
-            // an `is copy` parameter is a fresh BOXED container: a native
-            // argument's tags stay behind (see dropNativeTags). So does a
-            // readonly one: `sub f($x) { $x + 1 }` given a native int.max is
-            // Int arithmetic in Rakudo and answers 2**63, not int.min. Only
-            // `is rw` / `is raw` bind the caller's native container itself.
-            if (!p.isRw && !p.isRaw && !paramIsNative(p))
-                if (Value* bound = env->find(slotName(p, i)))
-                    if (bound->natBits) dropNativeTags(*bound);
-            continue;
-        }
         if (Value* bound = env->find(slotName(p, i))) {
-            // a Bool given to a native integer is its Int value: `sub f(int $i)`
-            // called with True binds 1
-            if (bound->t == VT::Bool) *bound = Value::integer(bound->b ? 1 : 0);
-            if (p.type == "int") {
-                if (bound->t == VT::Int && bound->big() && !bound->big()->fitsLL())
-                    throw RakuError{Value::typeObj("X::AdHoc"),
-                        "Cannot unbox " + std::to_string(bound->big()->bitLength() + 1) +
-                        " bit wide bigint into native integer"};
-                continue;
-            }
-            // …but a value no machine word holds at all is refused, not wrapped
-            // (`sub (int $x) {}(99999999999999999999)`, S02-types/native.t)
-            if (bound->t == VT::Int && bound->big() &&
-                (sign ? !bound->big()->fitsLL() : bound->big()->bitLength() > 64))
-                throw RakuError{Value::typeObj("X::AdHoc"),
-                    "Cannot unbox " + std::to_string(bound->big()->bitLength() + (sign ? 1 : 0)) +
-                    " bit wide bigint into native integer"};
-            wrapNative(*bound, bits, sign);
+            if (!bound->natBits && !paramIsNative(p)) continue;
+            const bool ro = bound->readonly;
+            bindNativeParam(p, *bound);
+            bound->readonly = ro;
         }
     }
     // enforce `where` constraints on the bound values (a single sub isn't dispatched,
@@ -7965,9 +7942,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return out;
     }
     // A Junction ARGUMENT autothreads the call — recursively, so nested
-    // junctions thread down to their leaves — unless the parameter's type
-    // accepts a Junction (Mu / Junction). `(-> Any $x { @e.push: $x }).($j)`
-    // visits every leaf eigenstate (S03-junctions/associative.t).
+    // junctions thread down to their leaves — unless the parameter takes it
+    // whole: Mu / Junction, or a native, to refuse it (it cannot unbox one).
+    // `(-> Any $x { @e.push: $x }).($j)` visits every leaf eigenstate (S03-junctions/associative.t).
     if (!noAT && codeVal.t == VT::Code && codeVal.code() && !codeVal.code()->builtin &&
         codeVal.code()->params && !codeVal.code()->isMultiDispatcher) {
         const auto& ps = *codeVal.code()->params;
@@ -7985,7 +7962,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (seen == ai) { p = &pp; break; }
                 seen++;
             }
-            if (p && (p->type == "Mu" || p->type == "Junction" || p->slurpy)) continue;
+            if (p && (p->type == "Mu" || p->type == "Junction" || p->slurpy || paramNativeKind(*p) != NatKind::None)) continue;
             // a subset OF Mu takes the junction whole too: its `where` sees it
             if (p && !p->type.empty()) {
                 std::string t = p->type; int guard = 0;
@@ -8017,7 +7994,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (key == args[ai].s.str()) { p = &pp; break; }
             }
             if (!p) continue;
-            if (p->type == "Mu" || p->type == "Junction") continue;
+            if (p->type == "Mu" || p->type == "Junction" || paramNativeKind(*p) != NatKind::None) continue;
             if (p->type.empty() && codeVal.code()->isBlock) continue;
             const Value jv = *args[ai].pairVal();
             Value out = Value::array(); out.enumName = jv.enumName;
@@ -13051,7 +13028,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 SlotStripe ws(*this, slot);
                                 *slot = std::move(nv);
                             }
-                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
+                            if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl,   // WRAPS an Int, refuses another kind
                                                         compoundSrcNative(bop, rhs, a->value.get(), nfl));
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
                             return sink ? Value::any() : *slot;
@@ -13082,7 +13059,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             SlotStripe ws(*this, slot);
                             *slot = std::move(nv);
                         }
-                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl, a->target.get(),   // WRAPS an Int, refuses another kind
+                        if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl,   // WRAPS an Int, refuses another kind
                                                     compoundSrcNative(bop2, rhs, a->value.get(), nfl));
                         if (anyRwLinks_) rwWriteThrough(a->target.get());
                         return sink ? Value::any() : *slot;
@@ -17446,7 +17423,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (!nm.empty() && nm[0] == '@') { lv->isList = false; lv->s.clear(); lv->itemized = false; }
         }
     }
-    if (nb) nativeCompoundStore(*lv, before, nb, ns, nf, a->target.get(),
+    if (nb) nativeCompoundStore(*lv, before, nb, ns, nf,
                                 compoundSrcNative(binop, rhs, a->value.get(), nf));
     return opDone();
 }

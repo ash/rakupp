@@ -2645,8 +2645,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                         {{"got", v}, {"expected", Value::typeObj("num")}},
                         "Type check failed in assignment; expected num but got Str (" + typeCheckRepr(v) + ")");
                 if (nb && !isBinding && nativeRefusesKind(v, nf))   // `my num ($a, $b) = 1/2, 2e0`
-                    throwNativeKind(v, nb, nf, ns, tgt->kind == NK::VarExpr
-                                                   ? static_cast<VarExpr*>(tgt)->name : std::string("$x"));
+                    throwNativeKind(v, nf, ns);
                 if (!nb && !isBinding && v.natBits) dropNativeTags(v);   // see dropNativeTags
                 *lv = v;
                 if (nb && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))

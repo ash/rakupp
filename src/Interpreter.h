@@ -98,6 +98,12 @@ double numValueOf(Interpreter& I, const Value& v);
 // The NATIVE lowercase type names (int, num, str, int64, …). Deliberately
 // separate from isKnownTypeName, which lists the boxed types.
 bool isNativeTypeName(const std::string& n);
+// What a native PARAMETER unboxes its argument to, as Rakudo's binder names
+// it: the signed ints (`atomicint` is one), the unsigned ones (`byte` is a
+// uint8), num and str. NativeCall's C spellings are ints too (`long`, `bool`;
+// `size_t` unsigned); `array` and `void` are None.
+enum class NatKind : unsigned char { None, Int, UInt, Num, Str };
+NatKind nativeKindOf(const std::string& type);
 Value makeCollation();   // a fresh `Collation` (every level on)
 // Installation-repository prefixes, in resolution order.
 const std::vector<std::string>& rakuRepoPrefixes();
@@ -3000,6 +3006,9 @@ public:
     // (see rtBindTyped below, which settles the common cases inline)
     Value bindTypedParam(Value v, const struct Param& p);
     void bindNativeParam(const struct Param& p, Value& v);   // a native param's wrap / refusal, after the type check
+    NatKind paramNativeKind(const struct Param& p);            // what a native parameter unboxes to (None: boxed)
+    bool nativeParamTakes(const Value& v, NatKind k);         // does a native parameter of kind k bind v?
+    [[noreturn]] void throwNativeUnbox(const Value& v, NatKind k);   // …and Rakudo's refusal when it does not
     Value stepValue(const Value& cur, bool up);              // what `++` / `--` store (.succ / .pred)
     // A typed container (`my Int @a`, `has Str @.d`, `my Str %h`) checks EVERY
     // value that enters an element, exactly as a typed scalar checks its

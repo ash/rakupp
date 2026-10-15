@@ -788,6 +788,11 @@ struct Param {
     //   nativeName — isNativeTypeName(type), a chain of string compares, the
     //              same way: pure, cached unconditionally. -1 = undecided.
     mutable DecidedOnce<signed char> nativeName{-1};
+    //   natKind — Interpreter::paramNativeKind's answer (a NatKind), cached
+    //              once it cannot change: always but for NativeCall's C
+    //              spellings, which a program may declare a type by. -1 =
+    //              undecided.
+    mutable DecidedOnce<signed char> natKind{-1};
     mutable DecidedOnce<signed char> typeKnown{0};
     //   aliasTarget — typeAliasTarget(type), resolved ONCE. That call is a hashed
     //   std::string lookup and multi dispatch asks it per parameter per CANDIDATE,

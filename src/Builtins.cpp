@@ -5939,7 +5939,11 @@ bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, si
         for (const Param& p : *cv->code()->params) {
             if (p.named || p.invocant) continue;
             if (p.slurpy) return true;
-            if (seen == ai) { if (p.type == "Mu" || p.type == "Junction") return true; break; }
+            if (seen == ai) {
+                // (a native parameter takes it whole too, and refuses it: it cannot unbox one)
+                if (p.type == "Mu" || p.type == "Junction" || paramNativeKind(p) != NatKind::None) return true;
+                break;
+            }
             seen++;
         }
     }
