@@ -13632,24 +13632,36 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
 // any other value: packedStoreShape held EXPR to an expression with no effects,
 // so the general path's second evaluation of it answers the same value. Off
 // while worker threads run (a word written there could race the unpack).
+// `@m[$i; $j] = EXPR` takes it too, into a shaped array's packed row.
 bool Interpreter::packedElemStore(Assign* a, Value& out) {
     auto* ix = static_cast<Index*>(a->target.get());
-    auto* bve = static_cast<VarExpr*>(ix->base.get());
-    Value* bp = padPtr(bve);
-    if (!bp) bp = tctx_.cur->find(bve->name);
-    if (!bp || bp->t != VT::Array || !bp->packedLive() || bp->readonly || !bp->hashKind.empty() ||
-        bp->elemDefault() || (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0))
-        return false;
+    if (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0) return false;
+    PackedArr* pa;
     long long i;
-    if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
-    else {
-        auto* ive = static_cast<VarExpr*>(ix->index.get());
-        Value* ip = padPtr(ive);
-        if (!ip) ip = tctx_.cur->find(ive->name);
-        if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return false;
-        i = ip->i;
+    if (ix->multiDim) {
+        size_t at;
+        const Value* row = shapedLeafRow(ix, at, true);
+        if (!row || row->t != VT::Array || !row->packedLive()) return false;
+        pa = row->packed();
+        i = (long long)at;
     }
-    PackedArr* pa = bp->packed();
+    else {
+        auto* bve = static_cast<VarExpr*>(ix->base.get());
+        Value* bp = padPtr(bve);
+        if (!bp) bp = tctx_.cur->find(bve->name);
+        if (!bp || bp->t != VT::Array || !bp->packedLive() || bp->readonly || !bp->hashKind.empty() ||
+            bp->elemDefault())
+            return false;
+        if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
+        else {
+            auto* ive = static_cast<VarExpr*>(ix->index.get());
+            Value* ip = padPtr(ive);
+            if (!ip) ip = tctx_.cur->find(ive->name);
+            if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return false;
+            i = ip->i;
+        }
+        pa = bp->packed();
+    }
     if (i < 0 || i >= (long long)pa->w.size()) return false;
     Value v = eval(a->value.get());
     v.readonly = v.immutableBind = false;
@@ -27099,9 +27111,11 @@ Value Interpreter::evalIndex(Index* idx) {
                 sh = 2; idx->litIdx = static_cast<IntLit*>(idx->index.get())->v;
             }
         }
+        else if (shapedLaneShape(idx)) sh = 3;   // `@m[$i; $j]` on a shaped array (shapedElemRead)
         idx->fastShape = sh;
     }
-    if (idx->fastShape > 0) {
+    if (idx->fastShape == 3) { Value r; if (shapedElemRead(idx, r)) return r; }
+    else if (idx->fastShape > 0) {
         auto* bve = static_cast<VarExpr*>(idx->base.get());
         Value* bp = padPtr(bve);
         if (!bp) bp = tctx_.cur->find(bve->name);

@@ -956,9 +956,36 @@ Value makeShapedContainer(const std::vector<long long>& dims, const std::string&
         elemDef = Value::integer(0);
     else elemDef = Value::typeObj(declType);
     size_t idx = 0;
+    // every row names the same element type, so they share one cold block
+    // (copy-on-write, like any copied Value's) instead of allocating one each:
+    // `my int @m[100000;10]` paid ~500 bytes a row for it
+    Value row = Value::array(); row.ofTypeM() = declType;
+    // PACKED-ARRAY-PLAN: a full-width `int`/`num` array keeps each innermost
+    // row as machine words (8 bytes an element, not an 80-byte Value), which
+    // unpack to exactly the Values below once anything asks for them as Values.
+    // A row whose fill holds anything but plain words is built boxed.
+    const bool asNum = declType == "num" || declType == "num64";
+    const bool packRows = asNum || declType == "int" || declType == "int64";
     std::function<Value(size_t)> mk = [&](size_t lvl) -> Value {
-        Value a = Value::array(); a.ofTypeM() = declType;
+        Value a = row;
         long long n = lvl < dims.size() ? dims[lvl] : 0;
+        if (packRows && lvl + 1 == dims.size()) {
+            auto pa = makePayload<PackedArr>();
+            pa->isNum = asNum;
+            if (n > 0) pa->w.reserve((size_t)n);
+            const size_t start = idx;
+            bool words = true;
+            for (long long i = 0; i < n && words; i++) {
+                if (!(fill && idx < fill->size())) { pa->w.push_back(0); continue; }   // (0.0 is all zero bits)
+                const Value& f = (*fill)[idx++];
+                if (plainWordValue(f, asNum)) pa->w.push_back(f.i);   // (`i` and `n` share one word)
+                else words = false;
+            }
+            if (words) { a.setPacked(pa); return a; }
+            idx = start;
+        }
+        a.setArr(makePayload<ValueList>());
+        if (n > 0) a.arr()->reserve((size_t)n);
         for (long long i = 0; i < n; i++) {
             if (lvl + 1 < dims.size()) a.arr()->push_back(mk(lvl + 1));
             else a.arr()->push_back(fill && idx < fill->size() ? (*fill)[idx++] : elemDef);

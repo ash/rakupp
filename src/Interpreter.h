@@ -4558,6 +4558,9 @@ private:
     static bool plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes the declaration lane
     static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane
     bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
+    static bool shapedLaneShape(const Index* ix);   // `@m[$i; 2]`: the shaped-array lanes' syntax
+    const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null
+    bool shapedElemRead(Index* ix, Value& out);    // …and its element, read without the general walk
     bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
     Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
     static bool nativeDeclShape(const VarExpr* v, const Expr* rhs);   // `my int $x = EXPR` takes the native declaration lane

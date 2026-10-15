@@ -550,7 +550,8 @@ struct Index : Expr { // base[idx] or base{key}
     std::string adverb; // :exists / :delete / :k / :v / :kv / :p  (may start with '!')
     // Fast-path shape for `@arr[$i]` / `@arr[0]`, decided once from the syntax:
     // -1 not yet looked at, 0 none, 1 plain lexical base with a plain lexical
-    // index, 2 plain lexical base with an integer literal index. Same rule as
+    // index, 2 plain lexical base with an integer literal index, 3 a multidim
+    // `@m[$i; 2]` of plain lexicals and literals (shapedLaneShape). Same rule as
     // Binary::fastShape — the SHAPE is cached, never the container or the index
     // value, both of which are read and checked on every evaluation.
     mutable DecidedOnce<signed char> fastShape{-1};

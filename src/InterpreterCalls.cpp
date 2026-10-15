@@ -3729,6 +3729,8 @@ static bool packedRhsPure(const Expr* e, int depth = 0) {
 bool Interpreter::packedStoreShape(const Assign* a) {
     if (!a->target || a->target->kind != NK::Index || a->userOp || !opEq(a->op, "=")) return false;
     auto* ix = static_cast<const Index*>(a->target.get());
+    // `@m[$i; $j] = EXPR`: a shaped array's packed row
+    if (ix->multiDim) return shapedLaneShape(ix) && packedRhsPure(a->value.get());
     if (ix->isHash || ix->multiDim || ix->semicolonSub || ix->zen || !ix->adverb.empty() || !ix->base ||
         ix->base->kind != NK::VarExpr || !ix->index)
         return false;
@@ -3740,6 +3742,90 @@ bool Interpreter::packedStoreShape(const Assign* a) {
     const bool idxOk = ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
                                               : ie->kind == NK::VarExpr && packedRhsPure(ie);
     return idxOk && packedRhsPure(a->value.get());
+}
+
+// The innermost row `@m[$i; …; $k]` names in a shaped array, and the position
+// in it: @m a plain lexical shaped Array, every subscript an Int literal or a
+// plain lexical holding a machine Int inside its dimension, one per dimension.
+// Null for anything else, which the general walk answers (its errors are its
+// own). Evaluates nothing that has effects. The lanes below call it for the
+// shape shapedLaneShape decided.
+const Value* Interpreter::shapedLeafRow(Index* ix, size_t& at, bool forWrite) {
+    auto* bve = static_cast<VarExpr*>(ix->base.get());
+    Value* bp = padPtr(bve);
+    if (!bp) bp = tctx_.cur->find(bve->name);
+    if (!bp || bp->t != VT::Array || !bp->hashKind.empty() || bp->elemDefault() || bp->ext() ||
+        (forWrite && bp->readonly))
+        return nullptr;
+    const auto& shape = bp->shape();
+    const auto& dims = static_cast<ListExpr*>(ix->index.get())->items;
+    if (!shape || shape->size() != dims.size()) return nullptr;
+    const Value* node = bp;
+    for (size_t d = 0; d < dims.size(); d++) {
+        Expr* de = dims[d].get();
+        long long i;
+        if (de->kind == NK::IntLit) i = static_cast<IntLit*>(de)->v;
+        else {
+            auto* ive = static_cast<VarExpr*>(de);
+            Value* ip = padPtr(ive);
+            if (!ip) ip = tctx_.cur->find(ive->name);
+            if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return nullptr;
+            i = ip->i;
+        }
+        if (i < 0 || i >= (*shape)[d]) return nullptr;
+        if (d + 1 == dims.size()) { at = (size_t)i; return node; }
+        if (node->t != VT::Array || node->pk_ != PK::List) return nullptr;
+        const ValueList* l = node->arr();
+        if ((size_t)i >= l->size()) return nullptr;
+        node = &(*l)[(size_t)i];
+    }
+    return nullptr;
+}
+// `@m[$i; $j]` read in that shape: a packed row answers from its words, a
+// boxed one with the element itself — what the general walk hands back for
+// one scalar subscript per dimension, without building its result list.
+bool Interpreter::shapedElemRead(Index* ix, Value& out) {
+    size_t at;
+    const Value* row = shapedLeafRow(ix, at, false);
+    if (!row || row->t != VT::Array) return false;
+    if (row->packedLive()) {
+        const PackedArr* pa = row->packed();
+        if (at >= pa->w.size()) return false;
+        out = pa->at(at);
+        return true;
+    }
+    if (row->pk_ != PK::List && row->pk_ != PK::Packed) return false;   // (an unpacked row reads its Values)
+    const ValueList* l = row->arr();
+    if (at >= l->size()) return false;
+    const Value& slot = (*l)[at];
+    ParStripe rs(*this, &slot);   // the torn-copy contract, as the 1-D read keeps it
+    out = slot;
+    return true;
+}
+// The syntax both lanes need: `@name[A; B; …]` with no adverb, two or more
+// subscripts, each an Int literal or a plain `$` lexical.
+bool Interpreter::shapedLaneShape(const Index* ix) {
+    if (ix->isHash || !ix->multiDim || ix->semicolonSub || ix->zen || !ix->adverb.empty() || !ix->base ||
+        ix->base->kind != NK::VarExpr || !ix->index || ix->index->kind != NK::ListExpr)
+        return false;
+    auto* bv = static_cast<const VarExpr*>(ix->base.get());
+    if (bv->declare || bv->name.size() < 2 || bv->name[0] != '@' ||
+        !(ascii::isalpha((unsigned char)bv->name[1]) || bv->name[1] == '_'))
+        return false;
+    const auto& dims = static_cast<const ListExpr*>(ix->index.get())->items;
+    if (dims.size() < 2) return false;
+    for (auto& de : dims) {
+        if (de->kind == NK::IntLit) {
+            if (!static_cast<const IntLit*>(de.get())->big.empty()) return false;
+            continue;
+        }
+        if (de->kind != NK::VarExpr) return false;
+        auto* ve = static_cast<const VarExpr*>(de.get());
+        if (ve->declare || ve->name.size() < 2 || ve->name[0] != '$' ||
+            !(ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_'))
+            return false;
+    }
+    return true;
 }
 
 // Whether an if/unless/with reads a condition's VALUE rather than only its
