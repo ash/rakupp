@@ -585,17 +585,17 @@ static Value iterEntryPair(const Value& h, const std::string& k, Value& stored) 
     Value rk = hashEntryKey(h, k, stored);
     const std::string& pk = rk.t == VT::Str ? rk.s.str() : k;
     Value p;
-    if (h.t == VT::Hash && h.hashKind.empty() && h.hash() && !stored.pairKey()) {
+    if (h.t == VT::Hash && h.hashKind.empty() && h.hash() && !stored.hasPairKey()) {
         p.t = VT::Pair; p.s = pk;
         p.setPairVal(h.hash()->aliasOf(stored));
         p.setPairLive();
     }
     else {
         Value sv = stored;
-        if (sv.pairKey()) sv.pairKeyM() = nullptr;   // the element rides on the Pair, not its value
+        if (sv.hasPairKey()) sv.pairKeyRawM() = nullptr;   // the element rides on the Pair, not its value
         p = Value::pair(pk, std::move(sv));
     }
-    if (!(rk.t == VT::Str && rk.hashKind.empty())) p.pairKeyM() = std::make_shared<Value>(rk);
+    if (!(rk.t == VT::Str && rk.hashKind.empty())) p.setPairKey(rk);
     return p;
 }
 thread_local ExecContext Interpreter::tctx_;
@@ -2772,7 +2772,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (pv.t == VT::Pair && pv.pairValS() && !pv.pairValRO) {
                     auto scope = std::make_shared<Env>();
                     scope->parent = tctx_.cur;
-                    Value k = pv.pairKey() ? *pv.pairKey() : Value::str(pv.s);
+                    Value k = pv.pairKeyV();
                     if (!(fs->varTraits.size() > 0 && (fs->varTraits[0] & ForStmt::VT_RW))) k.readonly = true;
                     scope->define(fs->vars[0], std::move(k));
                     if (fs->varTraits.size() > 1 && (fs->varTraits[1] & ForStmt::VT_RW))
@@ -2971,7 +2971,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                     bool cont = runLoopBody(fs->body.get(), env, fs->label, i == 0, i + 1 == n, col);
                     if (pr.pairVal()) {
                         Value nv = *pr.pairVal();
-                        nv.pairKeyM() = kv.second.elemKey();
+                        nv.pairKeyRawM() = kv.second.elemKey();
                         kv.second = std::move(nv);
                     }
                     i++;
@@ -3467,7 +3467,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 Value key = Value::array(); key.isList = true;
                 for (auto ix : paths[i]) key.arr()->push_back(Value::integer((long long)ix));
                 Value pr = Value::pair(key.toStr(), *slot);
-                pr.pairKeyM() = std::make_shared<Value>(key);
+                pr.setPairKey(key);
                 if (!var.empty() && var[0] == '$') markTopic(pr, 0);
                 scope->define(var, pr);
                 bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == paths.size(), col);
@@ -3481,7 +3481,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             for (size_t i = 0; i < arr->size(); i++) {
                 freshScope();
                 Value pr = Value::pair(std::to_string(i), (*arr)[i]);
-                pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i));
+                pr.setPairKey(Value::integer((long long)i));
                 // the Pair is a fresh VALUE: `.value = 9` writes through
                 // it, `$_ = 9` has no container to write to
                 if (!var.empty() && var[0] == '$') markTopic(pr, 0);
@@ -3505,7 +3505,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == n, col);
                 if (pr.pairVal()) {
                     Value nv = *pr.pairVal();
-                    nv.pairKeyM() = kv.second.elemKey();
+                    nv.pairKeyRawM() = kv.second.elemKey();
                     kv.second = std::move(nv);
                 }
                 i++;
@@ -4996,7 +4996,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // and `:$referencing! (&code, Str :$model!, *%rest)` takes it apart.
             if (v.t == VT::Array && v.hashKind != "Capture")
                 for (auto& e : inner)
-                    if (e.t == VT::Pair && !e.pairKey()) e.namedArg = true;
+                    if (e.t == VT::Pair && !e.hasPairKey()) e.namedArg = true;
             // a Capture already says which nameds it carries; the accessor
             // fallback is for plain objects only
             if (v.hashKind != "Capture")
@@ -6186,7 +6186,7 @@ static bool subSigArgs(Interpreter& I, const Value& v0, ValueList& out) {
         const bool cap = v.hashKind == "Capture";
         for (auto& e : *v.arr()) {
             Value x = e;
-            if (!cap && x.t == VT::Pair && !x.pairKey()) x.namedArg = true;
+            if (!cap && x.t == VT::Pair && !x.hasPairKey()) x.namedArg = true;
             out.push_back(std::move(x));
         }
         return true;
@@ -6608,7 +6608,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                         auto it = h->find(key); if (it != h->end()) got = &it->second;
                     } else if (av.t == VT::Pair) {
                         if (key == "value" && av.pairVal()) { held = *av.pairVal(); got = &held; }
-                        else if (key == "key") { held = av.pairKey() ? *av.pairKey() : Value::str(av.s); got = &held; }
+                        else if (key == "key") { held = av.pairKeyV(); got = &held; }
                     } else if (av.t == VT::Object && av.obj()) {
                         auto it = av.obj()->attrs.find(key); if (it != av.obj()->attrs.end()) got = &it->second;
                     }
@@ -6979,7 +6979,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 else {
                     inner = *sval.arr();
                     if (sval.hashKind != "Capture")
-                        for (auto& e : inner) if (e.t == VT::Pair && !e.pairKey()) e.namedArg = true;
+                        for (auto& e : inner) if (e.t == VT::Pair && !e.hasPairKey()) e.namedArg = true;
                 }
                 auto tmp = makePayload<Callable>();
                 tmp->ciM().params = p.subSig.get();
@@ -12942,7 +12942,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                    slot->enumName.empty() && slot->natBits == 0) ||
                                   (sv >= 2 && slot->t == VT::Rat && slot->enumName.empty() &&
                                    slot->natBits == 0 && !slot->ext() && !slot->shape() &&
-                                   slot->ofType().empty() && !slot->elemDefault() && !slot->pairKey()) ||
+                                   slot->ofType().empty() && !slot->elemDefault() && !slot->hasPairKey()) ||
                                   (sv == 1 && bareRatValue(*slot));
                     // …and an op= whose operator a user multi may take over core
                     // operands (`multi infix:<+>(Int, Int $b where * > 100)`)
@@ -15251,7 +15251,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // the element's own object, for .keys (see the lvalue arm)
                     if (!(kv.t == VT::Str && kv.hashKind.empty() && kv.enumName.empty())) {
                         Value stored = kv; stored.itemized = false;
-                        nv.pairKeyM() = std::make_shared<Value>(stored);
+                        nv.setPairKey(stored);
                     }
                     (*bp->hash())[key] = std::move(nv);
                 }
@@ -16687,7 +16687,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             Value stored = k; stored.itemized = false;
                             lv->hash()->setObjKey(key, stored);
                             Value sv = e.second;
-                            if (sv.pairKey()) sv.pairKeyM() = std::make_shared<Value>(stored);
+                            if (sv.hasPairKey()) sv.setPairKey(stored);
                             (*lv->hash())[key] = sv;
                         }
                     }
@@ -21226,7 +21226,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         return l.truthy() ? (r.truthy() ? Value::nil() : l) : r; // one true → it; none → last
     if (opEq(op, "=>")) { // `.key <<=>>> .value` — hyper over the pair op; a non-Str key is kept, as `[=>]` keeps it
         Value p = Value::pair(l.toStr(), r);
-        if (l.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(l);
+        if (l.t != VT::Str) p.setPairKey(l);
         return p;
     }
     // the COMMA as an applied operator — `@a >>,<< @b` pairs the two sides up,
@@ -24032,7 +24032,7 @@ static Value slipOf(const Value& v) {
         Value out = Value::array(); out.isList = true; out.s = "Slip";
         for (auto& kv : *v.hash()) {
             Value p = Value::pair(kv.first, kv.second);
-            if (!objHashKeyType(v).empty()) p.pairKeyM() = std::make_shared<Value>(hashEntryKey(v, kv.first, kv.second));
+            if (!objHashKeyType(v).empty()) p.setPairKey(hashEntryKey(v, kv.first, kv.second));
             out.arr()->push_back(std::move(p));
         }
         return out;
@@ -25168,7 +25168,7 @@ Value Interpreter::evalUnary(Unary* u) {
                         Value tv = Value::boolean(true);
                         if (!(k.t == VT::Str && k.hashKind.empty() && k.enumName.empty())) {
                             Value stored = k; stored.itemized = false;
-                            tv.pairKeyM() = std::make_shared<Value>(stored);
+                            tv.setPairKey(stored);
                         }
                         (*bp->hash())[key] = tv;
                     }
@@ -26574,7 +26574,7 @@ Value Interpreter::evalCall(Call* c) {
             if (args[0].t == VT::Hash && args[0].hash() && args[0].hashKind.empty()) {
                 for (auto& kv : *args[0].hash()) {
                     Value pv = Value::pair(kv.first, kv.second);
-                    pv.pairKeyM() = kv.second.elemKey();
+                    pv.pairKeyRawM() = kv.second.elemKey();
                     spread.push_back(std::move(pv));
                 }
             }
@@ -27765,7 +27765,7 @@ Value Interpreter::evalIndex(Index* idx) {
             Value rk = hashEntryKey(base, lv.first, lv.second);
             auto keyPair = [&](const Value& v2) {
                 Value p = Value::pair(lv.first, v2);
-                if (rk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(rk);
+                if (rk.t != VT::Str) p.setPairKey(rk);
                 else p.s = rk.s;
                 return p;
             };
@@ -28082,7 +28082,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 Value keyTuple = Value::array(keys); keyTuple.isList = true;
                 auto tuplePair = [&](const Value& v2) {
                     Value p = Value::pair(keyTuple.toStr(), v2);
-                    p.pairKeyM() = std::make_shared<Value>(keyTuple);
+                    p.setPairKey(keyTuple);
                     return p;
                 };
                 auto emptyList = []() { Value e = Value::array(); e.isList = true; return e; };
@@ -28136,7 +28136,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     Value keyTuple = Value::array(tup); keyTuple.isList = true;
                     auto tuplePair = [&](const Value& v2) {
                         Value p = Value::pair(keyTuple.toStr(), v2);
-                        p.pairKeyM() = std::make_shared<Value>(keyTuple);
+                        p.setPairKey(keyTuple);
                         return p;
                     };
                     if (wantExists) {
@@ -28390,7 +28390,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // not the stringified key a plain Pair would carry.
         auto mkPair = [](const Value& kk, const Value& vv) {
             Value p = Value::pair(kk.toStr(), vv);
-            if (kk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(kk);
+            if (kk.t != VT::Str) p.setPairKey(kk);
             return p;
         };
         // a missing element's reported value is the container's typed default —
@@ -29894,7 +29894,7 @@ struct RatLitParts {
                     kv.t == VT::Range) {
                     // (decontainerized: the KEY of `$s => "x"` is the list, not its Scalar)
                     Value k = kv; k.itemized = false;
-                    pr.pairKeyM() = std::make_shared<Value>(std::move(k));
+                    pr.setPairKey(std::move(k));
                 }
                 return pr;
             }
@@ -30141,7 +30141,7 @@ Value Interpreter::eval(Expr* e) {
                         (v.hashKind.empty() || v.hashKind == "Map")) {
                         for (auto& kv : *v.hash()) {
                             Value p = Value::pair(kv.first, kv.second);
-                            p.pairKeyM() = kv.second.elemKey();
+                            p.pairKeyRawM() = kv.second.elemKey();
                             items.push_back(std::move(p));
                         }
                         continue;

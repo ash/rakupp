@@ -335,7 +335,7 @@ Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Valu
     Value out = Value::array(); out.isList = true;
     for (size_t i : ties) {
         Value p = Value::pair(kvs[i].first.toStr(), kvs[i].second);
-        if (kvs[i].first.t == VT::Int) p.pairKeyM() = std::make_shared<Value>(kvs[i].first);
+        if (kvs[i].first.t == VT::Int) p.setPairKey(kvs[i].first);
         out.arr()->push_back(p);
     }
     return out;
@@ -6112,7 +6112,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (want == 'v' || want == 'm') out.arr()->push_back(sepv);
                     if (want == 'p') {
                         Value pr = Value::pair("0", sepv);
-                        pr.pairKeyM() = std::make_shared<Value>(idx);
+                        pr.setPairKey(idx);
                         out.arr()->push_back(std::move(pr));
                     }
                 }
@@ -6180,7 +6180,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throwTypedV("X::Str::Trans::InvalidArg", {{"got", Value::typeObj("Regex")}},
                             "Only Pair objects are allowed as arguments to Str.trans, got Regex");
             if (a.t == VT::Pair) {
-                const Value* k = a.pairKey() ? a.pairKey().get() : nullptr;
+                std::shared_ptr<Value> kHold = a.pairKeyShared();   // (an inline Int key is made into one)
+                const Value* k = kHold.get();
                 // (a bare `Any.new`/`Mu.new` is no key either: nothing Cool about it)
                 auto badKey = [&](const Value& kv) {
                     if (rtIsDefined(kv) && (kv.typeName() == "Any" || kv.typeName() == "Mu")) return true;
@@ -6277,7 +6278,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
         };
         for (auto& a : args) collect(a);
-        auto isRxPair = [](const Value* pa) { return pa->pairKey() && pa->pairKey()->t == VT::Regex; };
+        auto isRxPair = [](const Value* pa) { return pa->hasPairKey() && pa->nonStrKey().t == VT::Regex; };
         auto sideList = [&](const Value* side, const std::string& strForm,
                             std::vector<Value>& out) -> bool {
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
@@ -6298,7 +6299,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (const Value* pa : mpairs) {
             if (isRxPair(pa)) {
                 Value pin = pa->pairVal() ? *pa->pairVal() : Value::str("");
-                ents.push_back({std::string(), *pa->pairKey(), pin, false});
+                ents.push_back({std::string(), pa->nonStrKey(), pin, false});
                 if (!haveComp) { compTo = pin; haveComp = true; }
             }
             else charPairs.push_back(pa);
@@ -6307,7 +6308,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool lone = !anyArray && charPairs.size() == 1;
         if (lone) {
             std::vector<Value> froms, tos;
-            sideList(charPairs[0]->pairKey().get(), charPairs[0]->s.str(), froms);
+            sideList(charPairs[0]->pairKeyShared().get(), charPairs[0]->s.str(), froms);
             sideList(charPairs[0]->pairVal(),
                      charPairs[0]->pairVal() ? charPairs[0]->pairVal()->toStr() : "", tos);
             // the direct-pair shape: replacement CYCLES — except under :delete,
@@ -6323,7 +6324,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             std::vector<Value> needles; std::vector<Value> pins; std::vector<bool> drops;
             for (const Value* pa : charPairs) {
                 std::vector<Value> froms, tos;
-                sideList(pa->pairKey().get(), pa->s.str(), froms);
+                sideList(pa->pairKeyShared().get(), pa->s.str(), froms);
                 sideList(pa->pairVal(), pa->pairVal() ? pa->pairVal()->toStr() : "", tos);
                 if (!tos.empty() && !haveComp) { compTo = tos.front(); haveComp = true; }
                 // pad a SHORT value side with its last element (or nothing at
@@ -6684,7 +6685,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (want == 'v' || want == 'm' || !want) out.arr()->push_back(sepv);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(seps[k].which), sepv);
-                    pr.pairKeyM() = std::make_shared<Value>(idx);
+                    pr.setPairKey(idx);
                     out.arr()->push_back(std::move(pr));
                 }
             }
@@ -6773,7 +6774,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                     "Cannot resolve caller comb(" + inv.typeName() + ": Pair); "
                     "the Pair form of comb arrived with 6.e"};
-            long long size = args[0].pairKey() ? args[0].pairKey()->toInt() : Value::str(args[0].s).toInt();
+            long long size = args[0].hasPairKey() ? args[0].nonStrKey().toInt() : Value::str(args[0].s).toInt();
             long long gap  = args[0].pairVal() ? args[0].pairVal()->toInt() : 0;
             if (size < 1) size = 1;
             long long stride = size + gap; if (stride < 1) stride = 1;

@@ -101,9 +101,9 @@ static Value bagHashAdd(const Value& inv, const ValueList& args) {
             auto it = inv.hash()->find(kv.first);
             if (it == inv.hash()->end()) (*inv.hash())[kv.first] = kv.second;
             else {
-                auto keep = it->second.pairKey();
+                auto keep = it->second.pairKeyShared();
                 Value c = Value::integer(it->second.toInt() + kv.second.toInt());
-                c.pairKeyM() = keep;
+                c.pairKeyRawM() = keep;
                 it->second = std::move(c);
             }
         }
@@ -246,12 +246,12 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
         // arm below, where the key "elems" numified to 0 and the size became 1
         // with a gap of 1 + 2 — so `(1..5).batch(:2elems)` was `((1,), (4,))`
         // (Nil-Any sheet NA-30).
-        else if (a.t == VT::Pair && !a.pairKey() && a.s == "elems" && a.pairVal()) {
+        else if (a.t == VT::Pair && !a.hasPairKey() && a.s == "elems" && a.pairVal()) {
             long long n = a.pairVal()->toInt(); if (n < 1) n = 1;
             specs.push_back({n, n});
         }
         else if (a.t == VT::Pair && a.pairVal()) {
-            long long n = a.pairKey() ? a.pairKey()->toInt() : std::atoll(a.s.c_str());
+            long long n = a.hasPairKey() ? a.nonStrKey().toInt() : std::atoll(a.s.c_str());
             if (n < 1) n = 1;
             specs.push_back({n, n + a.pairVal()->toInt()});
         }
@@ -567,7 +567,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
     if (m == "fmt" && inv.t == VT::Pair)
         return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
-                                    {inv.pairKey() ? *inv.pairKey() : Value::str(inv.s),
+                                    {inv.pairKeyV(),
                                      inv.pairVal() ? *inv.pairVal() : Value::any()}));
     if (m == "fmt" && inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash)
         return Value::str(doSprintf(args.empty() ? "%s" : a0().toStr(), {inv}));
@@ -959,17 +959,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // methodCallPart3, which runs before this file — no Array arm here.)
     if (inv.t == VT::Pair) {
         if (m == "Pair") return inv;   // .Pair on a Pair is itself
-        if (m == "key") return inv.pairKey() ? *inv.pairKey() : Value::str(inv.s); // object/array keys preserved
+        if (m == "key") return inv.pairKeyV(); // object/array keys preserved
         if (m == "value") {
             if (!inv.pairVal()) return Value::any();
             Value v = *inv.pairVal();
             // an object hash's entry keeps its key object beside the value
             // (elemKey); that is the hash's, and must not travel with the value
             // into whatever it is assigned to next (`%by{…} = .value`)
-            if (v.t != VT::Pair && v.pairKey()) v.pairKeyM() = nullptr;
+            if (v.t != VT::Pair && v.hasPairKey()) v.pairKeyRawM() = nullptr;
             return v;
         }
-        if (m == "kv") { Value o = Value::array({inv.pairKey() ? *inv.pairKey() : Value::str(inv.s), inv.pairVal() ? *inv.pairVal() : Value::any()}); o.isList = true; return o; }
+        if (m == "kv") { Value o = Value::array({inv.pairKeyV(), inv.pairVal() ? *inv.pairVal() : Value::any()}); o.isList = true; return o; }
         // a Pair is Associative on its one key: the value there, Nil elsewhere
         if ((m == "AT-KEY" || m == "EXISTS-KEY") && args.size() == 1) {
             const bool hit = args[0].toStr() == inv.s.str();
@@ -983,8 +983,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value val = inv.pairVal() ? *inv.pairVal() : Value::any();
             // …and the KEY becomes the value as itself too: `(0 => 1).antipair`
             // is `1 => 0`, an Int value
-            Value p = Value::pair(val.toStr(), inv.pairKey() ? *inv.pairKey() : Value::str(inv.s));
-            if (val.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(val);
+            Value p = Value::pair(val.toStr(), inv.pairKeyV());
+            if (val.t != VT::Str) p.setPairKey(val);
             return p;
         }
         // `.freeze` snapshots the value out of its container. rakupp's Pair already
@@ -1002,7 +1002,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // not an index (that is what a Positional would answer).
         if (m == "keys" || m == "values" || m == "pairs") {
             Value o = Value::array(); o.isList = true;
-            o.arr()->push_back(m == "keys"   ? (inv.pairKey() ? *inv.pairKey() : Value::str(inv.s))
+            o.arr()->push_back(m == "keys"   ? (inv.pairKeyV())
                            : m == "values" ? (inv.pairVal() ? *inv.pairVal() : Value::any())
                                            : inv);
             return o;
@@ -1018,20 +1018,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (m == "invert" && val.t == VT::Hash && val.hash()) {
                 Value o2 = Value::array(); o2.isList = true;
                 for (auto& kv : *val.hash()) {
-                    Value p = Value::pair("", inv.pairKey() ? *inv.pairKey() : Value::str(inv.s));
-                    p.pairKeyM() = std::make_shared<Value>(Value::pair(kv.first, kv.second));
+                    Value p = Value::pair("", inv.pairKeyV());
+                    p.setPairKey(Value::pair(kv.first, kv.second));
                     o2.arr()->push_back(std::move(p));
                 }
                 return o2;
             }
             ValueList vs = (m == "invert" && val.t == VT::Array && val.arr()) ? *val.arr() : ValueList{val};
             // the old KEY is the new value as itself (`(42 => 70).invert` is 70 => 42)
-            Value oldKey = inv.pairKey() ? *inv.pairKey() : Value::str(inv.s);
+            Value oldKey = inv.pairKeyV();
             for (auto& v : vs) {
                 Value p = Value::pair(v.toStr(), oldKey);
                 // a Str key needs no separate key VALUE — carrying one makes the
                 // pair render as `"bar" => "foo"` instead of `:bar("foo")`
-                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v);
+                if (v.t != VT::Str) p.setPairKey(v);
                 o.arr()->push_back(std::move(p));
             }
             return o;
@@ -1581,11 +1581,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 Value p;
                 if (anti) { // value => index
                     p = Value::pair(v.toStr(), Value::integer((long long)k));
-                    p.pairKeyM() = std::make_shared<Value>(v);
+                    p.setPairKey(v);
                 }
                 else { // index => value, with an Int key (mirrors the eager arm)
                     p = Value::pair(std::to_string(k), v);
-                    p.pairKeyM() = std::make_shared<Value>(Value::integer((long long)k));
+                    p.setPairKey(Value::integer((long long)k));
                 }
                 cache.push_back(std::move(p));
                 return true;
@@ -1666,7 +1666,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         for (auto& a : args)
             for (auto& x : a.flatten()) {
                 std::string k = baggyKeyStr(x);
-                if (m == "set") { Value b = Value::boolean(true); b.pairKeyM() = baggyKey(x); (*inv.hash())[k] = std::move(b); }
+                if (m == "set") { Value b = Value::boolean(true); b.pairKeyRawM() = baggyKey(x); (*inv.hash())[k] = std::move(b); }
                 else inv.hash()->erase(k);
             }
         return Value::nil();
@@ -1751,8 +1751,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // is keyed by the key's Str
             for (auto& p : toList(methodCall(inv, "pairs", ValueList{}))) {
                 if (p.t != VT::Pair) continue;
-                std::string ks = p.pairKey() ? (p.pairKey()->t == VT::Str ? p.pairKey()->toStr()
-                                                : methodCall(*p.pairKey(), "Str", ValueList{}).toStr())
+                std::string ks = p.hasPairKey() ? (p.nonStrKey().t == VT::Str ? p.nonStrKey().toStr()
+                                                : methodCall(p.nonStrKey(), "Str", ValueList{}).toStr())
                                              : p.s.str();
                 Value np = Value::pair(ks, p.pairVal() ? *p.pairVal() : Value::any()); np.namedArg = true;
                 c.arr()->push_back(std::move(np));
@@ -1798,8 +1798,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         for (auto& e : items)
             if (e.t == VT::Pair) {
                 Value p = e;
-                if (e.pairKey()) {
-                    const Value& k = *e.pairKey();
+                if (e.hasPairKey()) {
+                    const Value& k = e.nonStrKey();
                     // a type object keys by its name — unless its class says
                     // otherwise with a Str method of its own
                     auto ci = k.t == VT::Type ? classes_.find(k.s.str()) : classes_.end();
@@ -1962,7 +1962,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (want == 'k') return key;
             if (want == 'p') {
                 Value p = Value::pair(key.toStr(), raw);
-                p.pairKeyM() = std::make_shared<Value>(key);   // the key is an Int, not its text
+                p.setPairKey(key);   // the key is an Int, not its text
                 return p;
             }
             Value o = Value::array({key, raw}); o.isList = true; return o;
@@ -2531,7 +2531,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                     "Odd number of elements found for .pairup()"};
                 Value p = Value::pair(items[i].toStr(), items[i + 1]);
                 // a non-Str key keeps its own value (`1 => 2`, not `"1" => 2`)
-                if (items[i].t != VT::Str) p.pairKeyM() = std::make_shared<Value>(items[i]);
+                if (items[i].t != VT::Str) p.setPairKey(items[i]);
                 out.arr()->push_back(std::move(p));
                 i++;
             }
@@ -3167,7 +3167,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         Value nested = Value::makeHash();
                         nested.ofTypeM() = "Mu,Mu,Any"; // a nested level is an object hash too
                         nested.objKeyed = true;
-                        nested.pairKeyM() = keyObj(path[d]);
+                        nested.pairKeyRawM() = keyObj(path[d]);
                         (*level->hash())[ks] = std::move(nested);
                     }
                     level = &(*level->hash())[ks];
@@ -3176,13 +3176,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 auto it = level->hash()->find(key);
                 if (it == level->hash()->end()) {
                     Value a = Value::array(); a.arr()->push_back(v);
-                    a.pairKeyM() = keyObj(path.back());
+                    a.pairKeyRawM() = keyObj(path.back());
                     (*level->hash())[key] = std::move(a);
                 }
                 else {
                     if (it->second.t != VT::Array) {
                         Value a = Value::array(); a.arr()->push_back(it->second);
-                        a.pairKeyM() = it->second.pairKey();
+                        a.pairKeyRawM() = it->second.pairKeyShared();
                         it->second = a;
                     }
                     it->second.arr()->push_back(v);
@@ -3526,7 +3526,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (size_t i : at) {
                 if (assocAdv && items[i].t == VT::Pair) {
                     const Value& pv = items[i];
-                    Value k = pv.pairKey() ? *pv.pairKey() : Value::str(pv.s);
+                    Value k = pv.pairKeyV();
                     if (want == 'k' || want == 'm') o.arr()->push_back(k);
                     if (want == 'v' || want == 'm') o.arr()->push_back(pv.pairVal() ? *pv.pairVal() : Value::any());
                     if (want == 'p') o.arr()->push_back(pv);
@@ -3536,7 +3536,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (want == 'v' || want == 'm') o.arr()->push_back(items[i]);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(i), items[i]);
-                    pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i));
+                    pr.setPairKey(Value::integer((long long)i));
                     o.arr()->push_back(std::move(pr));
                 }
             }
@@ -3653,7 +3653,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (want == 'k') return Value::integer((long long)i);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(i), items[i]);
-                    pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i));
+                    pr.setPairKey(Value::integer((long long)i));
                     return pr;
                 }
                 if (want == 'm') { // `.first(:kv)` answers a LIST of two, not a Seq
@@ -4618,7 +4618,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto emit = [&](size_t idx, const Value& v) {
                 if (adv == "k") out.arr()->push_back(Value::integer((long long)idx));
                 else if (adv == "kv") { out.arr()->push_back(Value::integer((long long)idx)); out.arr()->push_back(v); }
-                else if (adv == "p") { Value pr = Value::pair(std::to_string(idx), v); pr.pairKeyM() = std::make_shared<Value>(Value::integer((long long)idx)); out.arr()->push_back(pr); }
+                else if (adv == "p") { Value pr = Value::pair(std::to_string(idx), v); pr.setPairKey(Value::integer((long long)idx)); out.arr()->push_back(pr); }
                 else out.arr()->push_back(v);
             };
             size_t ar = mt.t == VT::Code ? codeArity(mt) : 1; // arity-N blocks test N at a time
@@ -4756,7 +4756,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // an OBJECT hash checks the KEY against its key type, and keys
                 // by identity (`my Int %h{Rat}; %h.push: 1 => 3` dies)
                 if (inv.objKeyed && a.t == VT::Pair) {
-                    Value kobj = a.pairKey() ? *a.pairKey() : Value::str(a.s);
+                    Value kobj = a.pairKeyV();
                     key = objHashIndex(kobj);                       // keyed by identity
                     if (!inv.hash()->count(key)) inv.hash()->setObjKey(key, kobj);
                     const std::string kt = objHashKeyType(inv);
@@ -4793,7 +4793,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (x.t == VT::Hash && x.hash() && (x.hashKind.empty() || x.hashKind == "Map")) {
                         for (auto& kv : *x.hash()) {
                             Value p = Value::pair(kv.first, kv.second);
-                            if (x.objKeyed) p.pairKeyM() = std::make_shared<Value>(hashEntryKey(x, kv.first, kv.second));
+                            if (x.objKeyed) p.setPairKey(hashEntryKey(x, kv.first, kv.second));
                             ar.arr()->push_back(std::move(p));
                         }
                     }
@@ -4853,7 +4853,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto push1 = [&](const Value& v, const Value& k) {
                 Value p = Value::pair(v.toStr(), k);
-                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v); // keep a numeric key numeric
+                if (v.t != VT::Str) p.setPairKey(v); // keep a numeric key numeric
                 out.arr()->push_back(std::move(p));
             };
             // every element is bound to a Pair parameter: an Int dies
@@ -4864,7 +4864,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                 " (" + e.gist() + ")");
             for (auto& e : items) if (e.t == VT::Pair) {
                 Value val = e.pairVal() ? *e.pairVal() : Value::any();
-                Value key = e.pairKey() ? *e.pairKey() : Value::str(e.s);
+                Value key = e.pairKeyV();
                 if (val.t == VT::Array && val.arr()) for (auto& vv : *val.arr()) push1(vv, key);
                 else push1(val, key);
             }
@@ -4874,7 +4874,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto push1 = [&](const Value& v, const Value& k) {
                 Value p = Value::pair(v.toStr(), k);
-                if (v.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(v); // a numeric value stays a numeric key
+                if (v.t != VT::Str) p.setPairKey(v); // a numeric value stays a numeric key
                 out.arr()->push_back(std::move(p));
             };
             for (auto& kv : *inv.hash()) {
@@ -4886,7 +4886,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     for (auto& e : *kv.second.hash()) {
                         Value pr = Value::pair(e.first, e.second);
                         Value p = Value::pair(pr.gist(), key);
-                        p.pairKeyM() = std::make_shared<Value>(pr);
+                        p.setPairKey(pr);
                         out.arr()->push_back(std::move(p));
                     }
                 }
@@ -4993,7 +4993,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             for (auto& kv : *inv.hash()) {
                 Value p = Value::pair(kv.second.toStr(), hashEntryKey(inv, kv.first, kv.second));
-                if (kv.second.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(kv.second); // numeric value -> numeric key
+                if (kv.second.t != VT::Str) p.setPairKey(kv.second); // numeric value -> numeric key
                 out.arr()->push_back(std::move(p));
             }
             return out;
@@ -5008,7 +5008,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     else { Value p = hashEntryPair(inv, kv.first, kv.second);
                            // …and a STR key of an object hash needs recovering
                            // too: the payload indexes by identity (`Str|a`)
-                           if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(key));
+                           if (key.t != VT::Str) p.setPairKey(std::move(key));
                            else p.s = key.s;
                            out.arr()->push_back(std::move(p)); }
                 }
@@ -5023,12 +5023,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (m == "kv") { out.arr()->push_back(Value::integer((long long)i)); out.arr()->push_back(items[i]); }
                     else if (m == "antipairs") { // value => index
                         Value p = Value::pair(items[i].toStr(), Value::integer((long long)i));
-                        p.pairKeyM() = std::make_shared<Value>(items[i]);
+                        p.setPairKey(items[i]);
                         out.arr()->push_back(p);
                     }
                     else {
                         Value p = Value::pair(std::to_string(i), items[i]);
-                        p.pairKeyM() = std::make_shared<Value>(Value::integer((long long)i)); // Int keys
+                        p.setPairKey(Value::integer((long long)i)); // Int keys
                         out.arr()->push_back(p);
                     }
                 }
@@ -5185,7 +5185,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList out;
                     for (auto& kv : *args[0].hash()) {
                         Value p = hashEntryPair(args[0], kv.first, kv.second);
-                        p.pairKeyM() = kv.second.elemKey();
+                        p.pairKeyRawM() = kv.second.elemKey();
                         out.push_back(p);
                     }
                     return out;

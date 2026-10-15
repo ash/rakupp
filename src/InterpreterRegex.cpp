@@ -4121,9 +4121,9 @@ Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, cons
 //     over a misspelt pair used to come back quietly empty.
 bool Interpreter::pairAccepts(const Value& topic, const Value& pair) {
     Value want = pair.pairVal() ? *pair.pairVal() : Value::boolean(true);
-    Value key = pair.pairKey() ? *pair.pairKey() : Value::str(pair.s);
+    Value key = pair.pairKeyV();
     if (topic.t == VT::Pair) {
-        Value tk = topic.pairKey() ? *topic.pairKey() : Value::str(topic.s);
+        Value tk = topic.pairKeyV();
         Value tv = topic.pairVal() ? *topic.pairVal() : Value::any();
         return matcherAccepts(*this, tk, key) && matcherAccepts(*this, tv, want);
     }

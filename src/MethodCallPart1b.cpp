@@ -1223,7 +1223,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         }
         if (!coerceTarget.empty())
             for (auto& x : items) {
-                if (x.t == VT::Pair && x.pairKey()) continue;
+                if (x.t == VT::Pair && x.hasPairKey()) continue;
                 x = coerceToType(x, coerceTarget);
                 if (x.t == VT::Hash && x.hashKind == "Failure") sinkValue(x);   // "a" as an Int key croaks (X::Str::Numeric)
             }

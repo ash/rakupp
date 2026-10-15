@@ -1214,8 +1214,8 @@ std::string Value::gist() const {
             // rendering (`(1 2) => 3`), and a Pair key is parenthesised so the two
             // arrows do not run together (`(red => 2) => apples`). Only the KEY —
             // Rakudo leaves a Pair VALUE bare.
-            std::string k = pairKey() ? (pairKey()->t == VT::Nil ? std::string("Nil") : pairKey()->gist()) : s;
-            if (pairKey() && pairKey()->t == VT::Pair) k = "(" + k + ")";
+            std::string k = hasPairKey() ? (nonStrKey().t == VT::Nil ? std::string("Nil") : nonStrKey().gist()) : s;
+            if (hasPairKey() && nonStrKey().t == VT::Pair) k = "(" + k + ")";
             return k + " => " + (pairVal() ? pairVal()->gist() : "");
         }
         case VT::Str:
@@ -2028,8 +2028,8 @@ static int valueCmpImpl(const Value& a, const Value& b) {
     // Compare the TYPED key (pairKey — an Int/Num/… preserved from `1 => 2`),
     // not the stringified `s`: otherwise `12 => …` sorts before `8 => …`.
     if (a.t == VT::Pair && b.t == VT::Pair) {
-        Value ak = a.pairKey() ? *a.pairKey() : Value::str(a.s);
-        Value bk = b.pairKey() ? *b.pairKey() : Value::str(b.s);
+        Value ak = a.pairKeyV();
+        Value bk = b.pairKeyV();
         int k = valueCmp(ak, bk);
         if (k != 0) return k;
         Value av = a.pairVal() ? *a.pairVal() : Value::any();

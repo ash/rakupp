@@ -2977,7 +2977,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value pr = Value::pair(g.first.toStr(), inner);
                 // a key that is not a Str keeps its object: `1 => …` and
                 // `"1" => …` are different pairs (S-31's identity rule)
-                if (g.first.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(g.first);
+                if (g.first.t != VT::Str) pr.setPairKey(g.first);
                 out.push_back(pr);
             }
             return mkSupply(out);
@@ -6172,7 +6172,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             " but got " + val.typeName() + " (" + val.gist() + ")");
             if (!v.objKeyed) { (*v.hash())[key.toStr()] = val; return; }
             Value stored = val;
-            stored.pairKeyM() = std::make_shared<Value>(key);
+            stored.setPairKey(key);
             (*v.hash())[objHashIndex(key)] = std::move(stored);
         };
         if (inv.s == "Map") v.hashKind = "Map"; // a Map is a distinct (immutable) type
@@ -6216,7 +6216,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 continue;
             }
             if (items[k].t == VT::Pair)
-                put(items[k].pairKey() ? *items[k].pairKey() : Value::str(items[k].s),
+                put(items[k].pairKeyV(),
                     items[k].pairVal() ? *items[k].pairVal() : Value::any());
             else if (k + 1 < items.size()) { put(items[k], items[k + 1]); k++; }
             else throwHashOddNumber((long long)v.hash()->size(), items[k]); // (it dropped the key)
@@ -9866,7 +9866,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Pair)
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "arglist" && (!a.pairVal() || a.pairVal()->truthy()))
-                    return Value::str((inv.pairKey() ? rakuRepr(*inv.pairKey()) : rakuRepr(Value::str(inv.s))) +
+                    return Value::str((inv.hasPairKey() ? rakuRepr(inv.nonStrKey()) : rakuRepr(Value::str(inv.s))) +
                                       " => " + rakuRepr(inv.pairVal() ? *inv.pairVal() : Value::nil()));
         return Value::str(rakuRepr(inv));
     }
@@ -10119,7 +10119,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 ValueList vs = (m == "invert" && v.t == VT::Array && v.arr()) ? *v.arr() : ValueList{v};
                 for (auto& vv : vs) {
                     Value p = Value::pair(vv.toStr(), k);
-                    if (vv.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(vv);
+                    if (vv.t != VT::Str) p.setPairKey(vv);
                     o.arr()->push_back(p);
                 }
             }
@@ -10158,7 +10158,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (inv.t == VT::Match && (m == "orig" || m == "target" || m == "prematch" || m == "postmatch")) {
         // a match against a non-Str topic answers that topic as .orig (keepMatchOrig);
         // .target is always the string that was matched
-        if (m == "orig" && inv.pairKey()) return *inv.pairKey();
+        if (m == "orig" && inv.hasPairKey()) return inv.nonStrKey();
         std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s;
         if (m == "orig" || m == "target") return Value::str(orig);
         if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom(), orig.size())));
@@ -10196,7 +10196,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value o = Value::array(); o.isList = true;
         for (auto& e : entries) {
             Value p = Value::pair(e.first.t == VT::Str ? e.first.s : e.first.toStr(), e.second);
-            if (e.first.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(e.first);
+            if (e.first.t != VT::Str) p.setPairKey(e.first);
             o.arr()->push_back(std::move(p));
         }
         return o;
@@ -10270,7 +10270,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             if (inv.hash()) for (auto& kv : *inv.hash()) {
                 if (m == "kv") { o.arr()->push_back(typedKey(kv)); o.arr()->push_back(kv.second); }
-                else { Value p = hashEntryPair(inv, kv.first, kv.second); p.pairKeyM() = kv.second.elemKey(); o.arr()->push_back(std::move(p)); }
+                else { Value p = hashEntryPair(inv, kv.first, kv.second); p.pairKeyRawM() = kv.second.elemKey(); o.arr()->push_back(std::move(p)); }
             }
         }
         return o;
@@ -11071,7 +11071,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                      (x.hashKind.empty() || x.hashKind == "Map" || quantValueType(x.hashKind))) {
                 for (auto& kv : *x.hash()) {
                     Value p = Value::pair(kv.first, kv.second);
-                    p.pairKeyM() = kv.second.elemKey();
+                    p.pairKeyRawM() = kv.second.elemKey();
                     items.push_back(p);
                 }
             }

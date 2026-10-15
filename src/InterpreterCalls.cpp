@@ -2861,7 +2861,7 @@ Value setWrap(const std::map<std::string, double>& res, int tier, bool mut) {
             // a plain Str keys on its own content and needs no carried element
             const Value& e = rp->second;
             if (!(e.t == VT::Str && e.hashKind.empty() && e.enumName.empty() && !e.isAllomorph()))
-                cnt.pairKeyM() = std::make_shared<Value>(e);
+                cnt.setPairKey(e);
         }
         (*h.hash())[kv.first] = std::move(cnt);
     }
@@ -2956,7 +2956,7 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
             for (auto& x : hay.flatten()) {
                 if (x.t == VT::Pair) { // pair→weight reading, as setWeights has it
                     if (!(x.pairVal() && x.pairVal()->truthy())) continue;
-                    Value el = x.pairKey() ? *x.pairKey() : Value::str(x.s);
+                    Value el = x.pairKeyV();
                     if (elemMatches(el)) return true;
                 }
                 else if (elemMatches(x)) return true;
@@ -2965,7 +2965,7 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
         }
         if (hay.t == VT::Pair)
             return hay.pairVal() && hay.pairVal()->truthy() &&
-                   elemMatches(hay.pairKey() ? *hay.pairKey() : Value::str(hay.s));
+                   elemMatches(hay.pairKeyV());
         return elemMatches(hay); // a scalar is a one-element set
     };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {

@@ -1478,7 +1478,7 @@ ValueList Interpreter::applyTapChain(Value& tap, const Value& in, bool& complete
                         Value inner = Value::makeHash(); inner.hashKind = "Supply";
                         (*inner.hash())["supplier"] = sup;
                         Value pr = Value::pair(k.toStr(), inner);
-                        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+                        if (k.t != VT::Str) pr.setPairKey(k);
                         next.push_back(pr);
                     } else sup = (*seen.hash())[id];
                     ValueList one{v};
@@ -2310,11 +2310,11 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             return std::to_string(v.rFrom()) + (v.rExFrom() ? "^" : "") + ".." + (v.rExTo() ? "^" : "") + std::to_string(v.rTo());
         case VT::Pair: {
             Value val = v.pairVal() ? *v.pairVal() : Value::nil();
-            if (v.pairKey()) { // non-string key (Int, nested Pair, …)
-                std::string krepr = rakuRepr(*v.pairKey(), depth + 1, seen);
-                if (v.pairKey()->t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
+            if (v.hasPairKey()) { // non-string key (Int, nested Pair, …)
+                std::string krepr = rakuRepr(v.nonStrKey(), depth + 1, seen);
+                if (v.nonStrKey().t == VT::Pair) krepr = "(" + krepr + ")"; // parenthesize a pair-key
                 // …and a type-object key, or it would read back as an autoquoted Str
-                else if (v.pairKey()->t == VT::Type || v.pairKey()->t == VT::Any || v.pairKey()->t == VT::Nil) krepr = "(" + krepr + ")";
+                else if (v.nonStrKey().t == VT::Type || v.nonStrKey().t == VT::Any || v.nonStrKey().t == VT::Nil) krepr = "(" + krepr + ")";
                 return krepr + " => " + rakuRepr(val, depth + 1, seen);
             }
             if (!rakuIdentKey(v.s))
@@ -2355,7 +2355,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                     if (e.t == VT::Pair && e.namedArg)
                         o += ":" + e.s + "(" + rakuRepr(e.pairVal() ? *e.pairVal() : Value(), depth + 1, seen) + ")";
                     else if (e.t == VT::Pair)
-                        o += (e.pairKey() ? rakuRepr(*e.pairKey(), depth + 1, seen) : rakuStrLit(e.s.str())) +
+                        o += (e.hasPairKey() ? rakuRepr(e.nonStrKey(), depth + 1, seen) : rakuStrLit(e.s.str())) +
                              " => " + rakuRepr(e.pairVal() ? *e.pairVal() : Value(), depth + 1, seen);
                     else o += rakuRepr(e, depth + 1, seen);
                 }
@@ -2465,7 +2465,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // (baggyKey). `set(1,2).raku` is `Set.new(1,2)`, not `Set.new("1","2")`.
             auto elemRepr = [&](const std::string& k) {
                 const Value& cnt = v.hash()->at(k);
-                return cnt.pairKey() ? rakuRepr(*cnt.pairKey(), depth + 1, seen) : rakuStrLit(k);
+                return cnt.hasPairKey() ? rakuRepr(cnt.nonStrKey(), depth + 1, seen) : rakuStrLit(k);
             };
             // An EMPTY immutable one renders as its SUB form — `set()`, `bag()`,
             // `mix()` — which is how Rakudo writes it and what round-trips. The
@@ -3283,11 +3283,11 @@ ValueList toList(const Value& v) {
             if (kv.second.elemKey()) {
                 const Value& pk2 = *kv.second.elemKey();
                 if (!(pk2.t == VT::Str && pk2.hashKind.empty() && pk2.enumName.empty() && pk2.s == kv.first))
-                    p.pairKeyM() = kv.second.elemKey();
+                    p.pairKeyRawM() = kv.second.elemKey();
             }
             else if (objHash) {
                 Value rk = hashEntryKey(v, kv.first, kv.second);
-                if (rk.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(std::move(rk));
+                if (rk.t != VT::Str) p.setPairKey(std::move(rk));
             }
             out.push_back(std::move(p));
         }
@@ -3848,7 +3848,7 @@ bool deepEq(const Value& a, const Value& b) {
     if (a.t == VT::Pair && b.t == VT::Pair) {
         // typed keys (an object key stringifies with its identity now, so the
         // rendering can't stand in for the key) compare structurally
-        bool keyOk = a.pairKey() && b.pairKey() ? deepEq(*a.pairKey(), *b.pairKey())
+        bool keyOk = a.hasPairKey() && b.hasPairKey() ? deepEq(a.nonStrKey(), b.nonStrKey())
                                             : a.s == b.s;
         return keyOk && deepEq(a.pairVal() ? *a.pairVal() : Value::any(),
                                b.pairVal() ? *b.pairVal() : Value::any());
@@ -4111,7 +4111,7 @@ static bool hashIsIdentity(const Value& v) {
 bool whichIsObjAt(const Value& v) {
     if (v.t == VT::Pair)
         return v.pairLive() ||   // a live container inside: the Pair is an object (pair.t)
-               (v.pairKey() && whichIsObjAt(*v.pairKey())) ||
+               (v.hasPairKey() && whichIsObjAt(v.nonStrKey())) ||
                (v.pairVal() && whichIsObjAt(*v.pairVal()));
     return (v.t == VT::Array && v.hashKind != "Capture" && v.enumName.empty()) ||
            (v.t == VT::Hash && v.hashKind.empty()) ||
@@ -4198,7 +4198,7 @@ std::string whichOf(const Value& v) {
                                             v.pairValRO && v.i ? (void*)(intptr_t)v.i : (void*)v.pairVal());
                               return "Pair" + std::string(buf);
                           }
-                          return "Pair|" + (v.pairKey() ? whichOf(*v.pairKey()) : "Str|" + v.s.str()) +
+                          return "Pair|" + (v.hasPairKey() ? whichOf(v.nonStrKey()) : "Str|" + v.s.str()) +
                                  "|" + (v.pairVal() ? whichOf(*v.pairVal()) : "Any|");
         // a CAPTURE is a VALUE — `\(1,2) === \(1,2)` is True in Rakudo, alone
         // among the Arrays — so it identifies by its PARTS, each with its own
@@ -4338,9 +4338,9 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
     bool isMix = kind.find("Mix") == 0; // Mix weights keep their full numeric value (2.5 stays a Rat)
     auto add = [&](const std::string& k, const Value& cnt, const std::shared_ptr<Value>& tk) {
         auto it = h.hash()->find(k);
-        auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : tk;
+        auto keep = it != h.hash()->end() && it->second.pairKeyRaw() ? it->second.pairKeyRaw() : tk;
         if (isSet) {
-            if (cnt.big() ? cnt.big()->sign > 0 : cnt.i > 0) { Value b = Value::boolean(true); b.pairKeyM() = keep; (*h.hash())[k] = std::move(b); }
+            if (cnt.big() ? cnt.big()->sign > 0 : cnt.i > 0) { Value b = Value::boolean(true); b.pairKeyRawM() = keep; (*h.hash())[k] = std::move(b); }
             else h.hash()->erase(k);
             return;
         }
@@ -4350,7 +4350,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
         // included, which is the whole difference between the two kinds.
         bool drop = isMix ? (c.big() ? c.big()->isZero() : c.i == 0)
                           : (c.big() ? c.big()->sign <= 0 : c.i <= 0);
-        if (!drop) { c.pairKeyM() = keep; (*h.hash())[k] = std::move(c); }
+        if (!drop) { c.pairKeyRawM() = keep; (*h.hash())[k] = std::move(c); }
         else h.hash()->erase(k);
     };
     for (auto& v : items) {
@@ -4387,17 +4387,17 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             // (a BOOL weight is not fractional — `(:a, :b).Mix` is a => 1, not
             // a => True; storing the Bool made that Mix un-`eqv` to <a b>.Mix)
             if (isMix && w.t != VT::Int && w.t != VT::Bool && w.isNumeric()) { // fractional weight
-                const std::string mk = v.pairKey() ? baggyKeyStr(*v.pairKey()) : v.s.str();
+                const std::string mk = v.hasPairKey() ? baggyKeyStr(v.nonStrKey()) : v.s.str();
                 auto it = h.hash()->find(mk);
-                auto keep = it != h.hash()->end() && it->second.pairKey() ? it->second.pairKey() : v.pairKey();
+                auto keep = it != h.hash()->end() && it->second.pairKeyRaw() ? it->second.pairKeyRaw() : v.pairKeyShared();
                 if (it != h.hash()->end()) {
                     // through the EXACT tower, not a C double: the Rats 1/10 and 1/50
                     // summed as doubles gave 0.12000000000000001, and being a Num the
                     // result then printed at full Num precision too
                     Value sum = applyArith("+", it->second, w);
                     if (sum.toNum() == 0.0) h.hash()->erase(mk);
-                    else { sum.pairKeyM() = keep; (*h.hash())[mk] = std::move(sum); }
-                } else if (w.toNum() != 0.0) { w.pairKeyM() = keep; (*h.hash())[mk] = w; }
+                    else { sum.pairKeyRawM() = keep; (*h.hash())[mk] = std::move(sum); }
+                } else if (w.toNum() != 0.0) { w.pairKeyRawM() = keep; (*h.hash())[mk] = w; }
                 continue;
             }
             // Set membership is the value's TRUTHINESS (`:e<meow>` joins, `:0d`/`:f('')`
@@ -4406,8 +4406,8 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             // object hash indexes its own entries by identity, and feeding that
             // index in as an element key made `%objhash.Set` disjoint from the
             // same set built any other way.
-            add(v.pairKey() ? baggyKeyStr(*v.pairKey()) : v.s,
-                isSet ? Value::integer(w.truthy() ? 1 : 0) : exactIntWeight(w), v.pairKey());
+            add(v.hasPairKey() ? baggyKeyStr(v.nonStrKey()) : v.s,
+                isSet ? Value::integer(w.truthy() ? 1 : 0) : exactIntWeight(w), v.pairKeyShared());
         }
         else add(baggyKeyStr(v), Value::integer(1), baggyKey(v));
     }
@@ -5660,7 +5660,7 @@ static void jfEncode(const Value& v, const JfOpts& o, int level, std::string& ou
             out += '"'; jfEscape(v.s, out); out += '"';
             return;
         case VT::Pair: {                 // a Pair is Associative: one-entry object
-            if (v.pairKey()) return jfOutside(v, o, "cannot serialise a Pair whose key is not a Str", out);
+            if (v.hasPairKey()) return jfOutside(v, o, "cannot serialise a Pair whose key is not a Str", out);
             if (o.pretty) {
                 std::string ind((size_t)(o.spacing * (level + 1)), ' ');
                 std::string outd((size_t)(o.spacing * level), ' ');
@@ -8090,8 +8090,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (m == "keys") o.arr()->push_back(e.first);
             else if (m == "values" || m == "flat") o.arr()->push_back(e.second);
             else if (m == "kv") { o.arr()->push_back(e.first); o.arr()->push_back(e.second); }
-            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.pairKeyM() = std::make_shared<Value>(e.first); o.arr()->push_back(std::move(p)); }
-            else { Value p = Value::pair(e.second.toStr(), e.first); p.pairKeyM() = std::make_shared<Value>(e.second); o.arr()->push_back(std::move(p)); } // antipairs
+            else if (m == "pairs") { Value p = Value::pair(e.first.toStr(), e.second); p.setPairKey(e.first); o.arr()->push_back(std::move(p)); }
+            else { Value p = Value::pair(e.second.toStr(), e.first); p.setPairKey(e.second); o.arr()->push_back(std::move(p)); } // antipairs
         }
         return o;
     }
@@ -9648,7 +9648,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Array && inv.s == "WalkList" && inv.arr()) {
         if (m == "invoke" || m == "CALL-ME") {
             auto meths = makePayload<ValueList>(*inv.arr());
-            Value self = inv.pairKey() ? *inv.pairKey() : Value::any();
+            Value self = inv.hasPairKey() ? inv.nonStrKey() : Value::any();
             bool quiet = inv.xr().rExFrom;
             auto idx = std::make_shared<size_t>(0);
             ValueList cargs = args;
@@ -9681,11 +9681,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             Value c = Value::array(); c.isList = true; c.s = "WalkList";
             *c.arr() = *inv.arr();
             if (m == "reverse") std::reverse(c.arr()->begin(), c.arr()->end());
-            c.xw().pairKey = inv.pairKey();
+            c.xw().pairKey = inv.pairKeyShared();
             c.xw().rExFrom = m == "quiet" ? (args.empty() || boolify(args[0])) : inv.xr().rExFrom;
             return c;
         }
-        if (m == "invocant") return inv.pairKey() ? *inv.pairKey() : Value::any();
+        if (m == "invocant") return inv.hasPairKey() ? inv.nonStrKey() : Value::any();
     }
     // `Pair.Pair` — a Pair type object coerces to itself
     if (inv.t == VT::Type && inv.s == "Pair" && m == "Pair") return inv;
@@ -9854,9 +9854,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (m == "keys")      o.arr()->push_back(k);
                 else if (m == "values") o.arr()->push_back(pos[i]);
                 else if (m == "pairs")  { Value p = Value::pair(std::to_string(i), pos[i]);
-                                          p.pairKeyM() = std::make_shared<Value>(k); o.arr()->push_back(p); }
+                                          p.setPairKey(k); o.arr()->push_back(p); }
                 else { Value p = Value::pair(pos[i].toStr(), k); // antipairs: value => key
-                       p.pairKeyM() = std::make_shared<Value>(pos[i]); o.arr()->push_back(p); }
+                       p.setPairKey(pos[i]); o.arr()->push_back(p); }
             }
             for (auto& kv : named) {
                 if (m == "keys")        o.arr()->push_back(Value::str(kv.first));
@@ -9864,7 +9864,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 else if (m == "pairs")  { Value p = Value::pair(kv.first, kv.second);
                                           p.namedArg = true; o.arr()->push_back(p); }
                 else { Value p = Value::pair(kv.second.toStr(), Value::str(kv.first));
-                       p.pairKeyM() = std::make_shared<Value>(kv.second); o.arr()->push_back(p); }
+                       p.setPairKey(kv.second); o.arr()->push_back(p); }
             }
             return o;
         }

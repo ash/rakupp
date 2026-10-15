@@ -696,7 +696,7 @@ static inline Value hashToPairs(const Value& v) {
     bool setty = v.hashKind == "Set" || v.hashKind == "SetHash";
     for (auto& kv : *v.hash()) {
         Value p = setty ? Value::pair(kv.first, Value::boolean(true)) : hashEntryPair(v, kv.first, kv.second);
-        p.pairKeyM() = kv.second.elemKey(); // Set/Bag/Mix: recover the element's original type
+        p.pairKeyRawM() = kv.second.elemKey(); // Set/Bag/Mix: recover the element's original type
         out.arr()->push_back(std::move(p));
     }
     return out;

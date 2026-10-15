@@ -4723,7 +4723,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
             ++*idx;
             if (inner == "=>") {
                 Value p = Value::pair(x.toStr(), y);
-                if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
+                if (x.t != VT::Str) p.setPairKey(x);
                 cache.push_back(p);
             }
             else if (inner.empty() || inner == ",") cache.push_back(Value::list(ValueList{x, y}));
@@ -4744,7 +4744,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         // `1 Z=> 3` keeps the Int key — forcing .toStr() made it "1" => 3
         if (sub == "=>") {
             Value p = Value::pair(x.toStr(), y);
-            if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
+            if (x.t != VT::Str) p.setPairKey(x);
             out.arr()->push_back(p);
         }
         else if (sub.empty() || sub == ",") { // Z / X / Z, / X, — tuples
@@ -7224,7 +7224,7 @@ Value Interpreter::minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs
     for (auto& kv : kvs)
         if (applyArith("cmp", kv.second, best).toInt() == 0) {
             Value p = Value::pair(kv.first.toStr(), kv.second);
-            if (kv.first.t == VT::Int) p.pairKeyM() = std::make_shared<Value>(kv.first);
+            if (kv.first.t == VT::Int) p.setPairKey(kv.first);
             out.arr()->push_back(p);
         }
     return out;

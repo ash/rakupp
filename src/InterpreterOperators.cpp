@@ -425,7 +425,7 @@ Value Interpreter::hyperQuantWeights(const Value& inv, const std::function<Value
         if (setty) { if (!boolify(w)) continue; stored = Value::boolean(true); }
         else if (mixy) { if (w.toNum() == 0) continue; stored = w; }
         else { Value n = w.t == VT::Int ? w : Value::integer((long long)w.toNum()); if (n.toInt() <= 0) continue; stored = n; }
-        stored.pairKeyM() = kv.second.elemKey();
+        stored.pairKeyRawM() = kv.second.elemKey();
         (*out.hash())[kv.first] = std::move(stored);
     }
     return out;
@@ -490,7 +490,7 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
         if (op == "++" || op == "--") {
             Value old = x;
             x = applyBinOp(op == "++" ? "+" : "-", x, Value::integer(1));
-            x.pairKeyM() = old.pairKey();
+            x.pairKeyRawM() = old.pairKeyShared();
             return old;                       // postfix yields the OLD value
         }
         if (userPost) return callCallable(*userPost, ValueList{x});
@@ -508,7 +508,7 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
                 bool gone = k == "MixHash" ? w.toNum() == 0 : w.toNum() <= 0;
                 if (gone) it = v.hash()->erase(it);
                 else {
-                    if (k == "SetHash") { Value t = Value::boolean(true); t.pairKeyM() = w.pairKey(); it->second = t; }
+                    if (k == "SetHash") { Value t = Value::boolean(true); t.pairKeyRawM() = w.pairKeyShared(); it->second = t; }
                     ++it;
                 }
             }
@@ -2831,7 +2831,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         for (size_t k = items.size() - 1; k-- > 0; ) {
             if (op == "=>") { // `[=>] 1,2,3` keeps the Int keys (like Z=>)
                 Value p = Value::pair(items[k].toStr(), acc);
-                if (items[k].t != VT::Str) p.pairKeyM() = std::make_shared<Value>(items[k]);
+                if (items[k].t != VT::Str) p.setPairKey(items[k]);
                 acc = p;
             }
             else acc = applyBinOp(op, items[k], acc);

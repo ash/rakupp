@@ -1048,6 +1048,13 @@ struct Value {
     bool namedArg : 1; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
     bool natSigned : 1;
     bool natFloat : 1; // native float container (num32): truncates to float32 on assignment
+    // A PAIR whose key is a plain Int holds it HERE, in `i` (a Pair has no
+    // other use for the word), instead of in the cold block's pairKey: the
+    // commonest key that is not a Str — `.pairs`, `.kv`, `$_ => …` over a
+    // range — cost a ValueExt and a make_shared<Value> each (SPEED-BACKLOG
+    // 10). Read a Pair's key through hasPairKey()/pairKeyV()/nonStrKey() and
+    // set it through setPairKey(); pairKeyRaw() does not see an inline one.
+    bool keyInt : 1;
     int natBits : 8;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
     // The tag block (VALUE32-PLAN design A, batch 3): `t` and `pk_` stay
     // whole bytes, then the ten flags and `natBits` as bit-fields — 5 bytes
@@ -1061,7 +1068,7 @@ struct Value {
     ~Value();
     unsigned ptrMask() const {
         return (arr() ? 1u : 0) | (hash() ? 2u : 0) | (code() ? 4u : 0) | (pairVal() ? 8u : 0) |
-               (pairKey() ? 16u : 0) | (obj() ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
+               (pairKeyRaw() ? 16u : 0) | (obj() ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
                (ratN() ? 256u : 0) | (ratD() ? 512u : 0) | (shape() ? 1024u : 0);
     }
 #endif
@@ -1080,7 +1087,7 @@ struct Value {
                i == o.i && s.sameRep(o.s) && hashKind == o.hashKind && enumName == o.enumName &&
                enumType == o.enumType && b == o.b && isList == o.isList && itemized == o.itemized &&
                objKeyed == o.objKeyed && readonly == o.readonly && immutableBind == o.immutableBind &&
-               pairValRO == o.pairValRO && namedArg == o.namedArg && natSigned == o.natSigned &&
+               pairValRO == o.pairValRO && namedArg == o.namedArg && natSigned == o.natSigned && keyInt == o.keyInt &&
                natFloat == o.natFloat && natBits == o.natBits;
     }
 
@@ -1221,7 +1228,21 @@ struct Value {
     const std::shared_ptr<BigInt>& big() const { return xr().big; }
     const std::shared_ptr<BigInt>& ratN() const { return xr().ratN; }
     const std::shared_ptr<BigInt>& ratD() const { return xr().ratD; }
-    const std::shared_ptr<Value>& pairKey() const { return xr().pairKey; }
+    // The cold block's key slot: a Pair's key when it is neither the Str in
+    // `s` nor a plain Int held inline (keyInt), and a hash slot's element
+    // (elemKey, below).
+    const std::shared_ptr<Value>& pairKeyRaw() const { return xr().pairKey; }
+    // …and a Pair's key, whatever form it takes: whether it is something other
+    // than the Str in `s`, the key as a Value, and (when hasPairKey()) the
+    // non-Str key itself
+    bool hasPairKey() const { return (keyInt && t == VT::Pair) || xr().pairKey; }
+    Value pairKeyV() const;
+    Value nonStrKey() const;
+    // the key as an object to share (an inline Int is made into one)
+    std::shared_ptr<Value> pairKeyShared() const;
+    // set a Pair's key that is not a Str: a plain Int inline, anything else in
+    // the cold block
+    void setPairKey(Value k);
     // The ELEMENT a hash slot remembers on its stored value (a QuantHash's
     // original element, an object hash's key object). A stored PAIR's pairKey
     // is that Pair's own key, never the slot's: `%h<a> = 1 => 2` must list as
@@ -1245,7 +1266,7 @@ struct Value {
     std::shared_ptr<BigInt>& bigM() { return xw().big; }
     std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
     std::shared_ptr<BigInt>& ratDM() { return xw().ratD; }
-    std::shared_ptr<Value>& pairKeyM() { return xw().pairKey; }
+    std::shared_ptr<Value>& pairKeyRawM() { keyInt = false; return xw().pairKey; }
     std::shared_ptr<Value>& elemDefaultM() { return xw().cw().elemDefault; }
     std::shared_ptr<void>& extM() { return xw().cw().ext; }
     // A Seq's read-once token (SeqToken), when it has one
@@ -1273,7 +1294,7 @@ struct Value {
     // and MSVC refuses it under /std:c++17 (clang and gcc accept it).
     Value() : t(VT::Any), b(false), isList(false), itemized(false), objKeyed(false),
               readonly(false), immutableBind(false), pairValRO(false), namedArg(false),
-              natSigned(false), natFloat(false), natBits(0) {}
+              natSigned(false), natFloat(false), keyInt(false), natBits(0) {}
 
     static Value nil() { Value v; v.t = VT::Nil; return v; }
     static Value any() { Value v; v.t = VT::Any; return v; }
@@ -1561,6 +1582,31 @@ inline const CallableCold& Callable::cold() const { return ci().cold(); }
 inline bool Callable::hasCold() const { return ci().hasCold(); }
 inline CallableCold& Callable::coldM() { return ciM().coldM(); }
 inline size_t Callable::placeholderPos() const { return ci().placeholderPos(); }
+// A Pair's key (Value::keyInt): the inline Int, the cold block's key object,
+// or the Str in `s`
+inline Value Value::pairKeyV() const {
+    if (keyInt && t == VT::Pair) return Value::integer(i);
+    if (const auto& k = xr().pairKey) return *k;
+    return Value::str(s);
+}
+inline Value Value::nonStrKey() const {
+    if (keyInt && t == VT::Pair) return Value::integer(i);
+    return *xr().pairKey;
+}
+inline std::shared_ptr<Value> Value::pairKeyShared() const {
+    if (keyInt && t == VT::Pair) return std::make_shared<Value>(Value::integer(i));
+    return xr().pairKey;
+}
+inline void Value::setPairKey(Value k) {
+    if (t == VT::Pair && plainWordValue(k, false)) {
+        if (x_ && xr().pairKey) xw().pairKey.reset();
+        i = k.i;
+        keyInt = true;
+        return;
+    }
+    keyInt = false;
+    xw().pairKey = std::make_shared<Value>(std::move(k));
+}
 inline PackedArr* Value::packed() const { return pk_ == PK::Packed ? pv<PackedArr>() : nullptr; }
 inline bool Value::packedLive() const {
     return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);

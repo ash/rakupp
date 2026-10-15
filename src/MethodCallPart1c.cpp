@@ -343,7 +343,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         if (!pos.empty())      key = pos[0];
         if (pos.size() >= 2)   val = pos[1];
         Value p = Value::pair(key.toStr(), val);
-        if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(key);
+        if (key.t != VT::Str) p.setPairKey(key);
         // `Pair.new` BINDS its value exactly as `=>` does (sheet HM-18): a
         // literal is read-only, a variable would carry its container. The
         // argument EXPRESSION is what says which, so ask it.

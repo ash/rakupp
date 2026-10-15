@@ -542,7 +542,7 @@ bool valueEqv(const Value& a, const Value& b) {
         case VT::Pair:
             // typed keys compare structurally (an object key's rendering now
             // carries its identity, so `$o => 1 eqv Foo.new => 1` needs the key)
-            return (a.pairKey() && b.pairKey() ? valueEqv(*a.pairKey(), *b.pairKey())
+            return (a.hasPairKey() && b.hasPairKey() ? valueEqv(a.nonStrKey(), b.nonStrKey())
                                            : a.s == b.s) &&
                    valueEqv(a.pairVal() ? *a.pairVal() : Value::any(), b.pairVal() ? *b.pairVal() : Value::any());
         // structural, like Rakudo's default eqv: same class + eqv attributes
@@ -3143,7 +3143,7 @@ Value rtPairKeyed(const Value& kv, Value value) {
         kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
         kv.t == VT::Match || kv.t == VT::Code || kv.t == VT::Regex ||
         kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range)
-        pr.pairKeyM() = std::make_shared<Value>(kv);
+        pr.setPairKey(kv);
     return pr;
 }
 
@@ -3182,7 +3182,7 @@ Value rtPairCurry(const Value& kv, const Value& vv, bool kVar, bool vVar) {
         Value k = resolve(kc);   // key first — argument order matters
         Value v = resolve(vc);
         Value pr = Value::pair(k.toStr(), v);
-        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+        if (k.t != VT::Str) pr.setPairKey(k);
         return pr;
     };
     return code;
@@ -3851,8 +3851,8 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             else if (store && v.objKeyed && !objKeyed) {
                 for (auto& kv : *v.hash()) {
                     Value val = kv.second;
-                    std::string k = val.pairKey() ? val.pairKey()->toStr() : kv.first;
-                    val.pairKeyM().reset();
+                    std::string k = val.hasPairKey() ? val.nonStrKey().toStr() : kv.first;
+                    val.pairKeyRawM().reset();
                     (*h.hash())[k] = std::move(val);
                 }
             }
@@ -3884,7 +3884,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
     for (size_t i = 0; i < items.size(); i++) {
         if (items[i].t == VT::Pair) {
             Value pv = items[i].pairVal() ? *items[i].pairVal() : Value::any();
-            const std::shared_ptr<Value>& pk = items[i].pairKey();
+            const std::shared_ptr<Value> pk = items[i].pairKeyShared();
             // a JUNCTION key autothreads: `'W'|'W*' => X` stores X under BOTH
             // 'W' and 'W*', as Rakudo does when a Junction is assigned as a key
             // (PDF::Content::Ops' %Transition table keys ops by `'W'|'W*'` and
@@ -3898,7 +3898,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             // (a Str key too: the index is an identity string, so nothing else
             // remembers the key's own spelling)
             Value realK = pk ? *pk : Value::str(items[i].s);
-            if (objKeyed) pv.pairKeyM() = std::make_shared<Value>(realK);
+            if (objKeyed) pv.setPairKey(realK);
             (*h.hash())[keyStr(realK, items[i].s)] = pv;
         } else if (items[i].t == VT::Hash && items[i].hash() &&
                    (items[i].hashKind.empty() || items[i].hashKind == "Map") && !items[i].itemized) {
@@ -3910,8 +3910,8 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
                 // (an OBJECT hash's entries go in under their keys' Str form)
                 if (items[i].objKeyed && !objKeyed) {
                     Value val = kv.second;
-                    std::string k = val.pairKey() ? val.pairKey()->toStr() : kv.first;
-                    val.pairKeyM().reset();
+                    std::string k = val.hasPairKey() ? val.nonStrKey().toStr() : kv.first;
+                    val.pairKeyRawM().reset();
                     (*h.hash())[k] = std::move(val);
                 }
                 else (*h.hash())[kv.first] = kv.second;
@@ -3924,7 +3924,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             // answers the Int (`my %h{Mu} = 1, 2, 3, 4` — CBOR::Simple encodes
             // such keys as integers)
             Value stored = items[i + 1];
-            if (objKeyed) stored.pairKeyM() = std::make_shared<Value>(items[i]);
+            if (objKeyed) stored.setPairKey(items[i]);
             (*h.hash())[k2] = std::move(stored);
             i++;
         }
@@ -4411,8 +4411,8 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
     Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
     if (slash && slash->t == VT::Match && slash->rFrom() == m.rFrom() && slash->rTo() == m.rTo() &&
         slash->s == m.s)
-        slash->pairKeyM() = orig;
-    m.pairKeyM() = orig;
+        slash->pairKeyRawM() = orig;
+    m.pairKeyRawM() = orig;
 }
 
 // ---- PARALLEL-SCALING-PLAN P1: which slots another thread may reach ----

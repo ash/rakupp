@@ -578,7 +578,7 @@ void Interpreter::registerBuiltinsPart5() {
     B["pair"] = [](Interpreter&, ValueList& a) -> Value {
         Value k = a.size() > 0 ? a[0] : Value::any();
         Value p = Value::pair(k.toStr(), a.size() > 1 ? a[1] : Value::any());
-        if (k.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(k);
+        if (k.t != VT::Str) p.setPairKey(k);
         return p;
     };
     B["hash"] = [](Interpreter&, ValueList& a) -> Value {
@@ -695,7 +695,7 @@ void Interpreter::registerBuiltinsPart5() {
                     auto it = into->hash()->find(kv.first);
                     Value nv = setty ? Value::boolean(true)
                              : Value::integer((it != into->hash()->end() ? it->second.toInt() : 0) + n);
-                    nv.pairKeyM() = kv.second.elemKey();
+                    nv.pairKeyRawM() = kv.second.elemKey();
                     (*into->hash())[kv.first] = nv;
                 }
                 return *into;
@@ -1192,7 +1192,7 @@ void Interpreter::registerBuiltinsPart5() {
                 // a plain Hash contributes its pairs (a quanthash stays ONE element)
                 for (auto& kv : *a.hash()) {
                     Value p = Value::pair(kv.first, kv.second);
-                    p.pairKeyM() = kv.second.elemKey();
+                    p.pairKeyRawM() = kv.second.elemKey();
                     out.push_back(p);
                 }
             }
