@@ -94,8 +94,14 @@ an interleaved perf-guard A/B, and the memory row.
     written there could race the unpack).
   - A million-element array filled by index, summed by `for` and stepped
     through `$_`: 96 → 16 MB peak, 0.46 → 0.28 s.
+- **Shaped arrays (done, 44ed66bc).** Each innermost row of a full-width
+  `int`/`num` shaped array is packed; `@m[$i; $j]` reads and `@m[$i; $j] =
+  EXPR` stores the word (Index::fastShape 3, and the simpleSlot 7 lane).
+  Roast's deep-recursion-initing-native-array.t: 8.07 -> 1.05 GB.
 - **Batch 3 (next).** `--cnp` on packed registers (a packed `for @a` does not
-  enter a kernel yet), the reductions, and the census below.
+  enter a kernel yet), the reductions, and the census below. Also: `op=` and
+  `++` on an element (`@a[$i] += 1`, `@m[$i; $j]++`) unpack the array, or
+  the row, where the store lane would keep it packed.
 
 ## What would falsify this plan
 

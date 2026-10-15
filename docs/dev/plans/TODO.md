@@ -254,12 +254,6 @@ The same items grouped by theme, with a complexity estimate for each:
   Rakudo reports the binder's type check. Found 2026-10-07 with Graph (#47);
   the `T:D` cases are judged after BUILD now. Next: an "initialized" bit per
   slot, set by binding and assignment.
-- [ ] **A shaped native array takes ~160 bytes an element**: `my int
-  @mat[10001;10001]` alone runs 6.8 s with a 16 GB peak footprint on arm64
-  macOS, where 100M `int`s need 800 MB. On a 3.7 GB RISC-V board the kernel
-  kills integration/deep-recursion-initing-native-array.t. Found 2026-10-08;
-  not started. Next: find what each element costs (a full Value per slot, a
-  copy during construction).
 - [ ] **`t/race/varcell.raku` fails again**: 4–17 wrong answers in 200 runs at
   `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
   reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,

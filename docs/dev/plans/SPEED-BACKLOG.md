@@ -49,7 +49,6 @@ theme the rows are sorted by complexity, largest first.
 | 10 | Small Rats inline; Pairs with an inline Int/Bool key | L | V6 P3.3–4 |
 | 17 | Packed native arrays, batch 3 | M | `--cnp` on packed registers, the reductions, the census — [PACKED-ARRAY-PLAN.md](PACKED-ARRAY-PLAN.md) |
 | 21 | Slim `VarExpr` (384 B, 23% of a large program's AST) | M | Move its declaration-only fields behind a pointer — V6 P3.8 |
-| 24 | A shaped native array takes ~160 B per element | M | Find what each element costs — TODO.md |
 | 29 | Tails: VALUEHASH step 4, DISPATCH-PERF Ph6, UNBOX P3–P5 | M | [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md), DISPATCH-PERF-PLAN, UNBOX-PLAN |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
@@ -107,6 +106,11 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **24, a shaped native array at ~160 B an element** (6021c2fa, 44ed66bc):
+  the mainline pre-declaration built the array a second time, and each
+  element was an 80-byte Value; a full-width `int`/`num` shaped array now
+  keeps its rows as words. deep-recursion-initing-native-array.t 8.07 ->
+  1.05 GB.
 - **32, `my @d = <fresh list>`** (4a1edb88): a right side no other Value
   holds hands its buffer to the array instead of being copied. 2M Nums from
   `»*«`: 46 -> 13 ms.
