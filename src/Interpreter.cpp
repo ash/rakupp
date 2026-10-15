@@ -1203,7 +1203,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
     if (!conc || !role || !role->decl) return false;
     const GenericRoleBody* g = genericRoleBody(role->decl);
     if (!g || !g->any) return false;
-    auto env = std::make_shared<Env>();
+    auto env = makeSlabShared<Env>();
     env->parent = role->declEnv ? role->declEnv : global_;
     env->packageFrame = true;
     env->x().pkgType = conc;
@@ -4140,7 +4140,7 @@ Interpreter::Interpreter() {
         if (const char* ps = std::getenv("RAKUPP_PRIVATE_SLOTS"))
             privateSlots_ = std::string(ps) == "0" ? 0 : std::string(ps) == "all" ? 2 : 1;
     }
-    global_ = std::make_shared<Env>();
+    global_ = makeSlabShared<Env>();
     curPkgEnv_ = global_;
     // tctx_ is thread_local, so it outlives an interpreter: an embedder that
     // runs rk_new/rk_run/rk_free over and over on one thread (Raku.js runs
@@ -5681,7 +5681,7 @@ void Interpreter::preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts) {
             }
         if (!has) { preinstallNestedOurSubs(b->stmts); continue; }
         if (!curPkgEnv_) continue;
-        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
         predeclareSubClosures(b, sc.get());
         auto saved = tctx_.cur;
         tctx_.cur = sc;

@@ -1078,7 +1078,7 @@ void Interpreter::registerBuiltins() {
         // test's arguments (#124: a CLI's t/00-load.t started the app)
         bool ok = true;
         {
-            auto scope = std::make_shared<Env>();
+            auto scope = makeSlabShared<Env>();
             scope->parent = I.tctx_.cur;
             struct CurG { ExecContext& t; std::shared_ptr<Env> s; ~CurG() { t.cur = s; } } cg{I.tctx_, I.tctx_.cur};
             I.tctx_.cur = scope;
@@ -1788,7 +1788,7 @@ void Interpreter::registerBuiltinsPart2() {
         {   // &*ARGS-TO-CAPTURE is the sub actually in force while it runs
             if (userA2C.t == VT::Code) {
                 // &*ARGS-TO-CAPTURE names the sub actually in force while it runs
-                auto scope = std::make_shared<Env>(); scope->parent = I.tctx_.cur;
+                auto scope = makeSlabShared<Env>(); scope->parent = I.tctx_.cur;
                 scope->define("&*ARGS-TO-CAPTURE", userA2C);
                 auto saved = I.tctx_.cur; I.tctx_.cur = scope;
                 I.tctx_.dynStack.push_back(scope.get());
@@ -1827,7 +1827,7 @@ void Interpreter::registerBuiltinsPart2() {
         Value usageText;
         if (userGU.t == VT::Code) {
             Value inForce = userGU;
-            auto scope = std::make_shared<Env>(); scope->parent = I.tctx_.cur;
+            auto scope = makeSlabShared<Env>(); scope->parent = I.tctx_.cur;
             scope->define("&*GENERATE-USAGE", inForce);
             auto saved = I.tctx_.cur; I.tctx_.cur = scope;
             I.tctx_.dynStack.push_back(scope.get());

@@ -568,7 +568,7 @@ void Interpreter::runRoleClassStatements(ClassInfo* cls, const std::string& clsN
         const std::vector<char>& mask = roleClassStatements(r->decl);
         if (std::find(mask.begin(), mask.end(), 1) == mask.end()) continue;
         const GenericRoleBody* g = genericRoleBody(r->decl);   // those run per parameterization
-        auto env = std::make_shared<Env>();
+        auto env = makeSlabShared<Env>();
         env->parent = r->declEnv ? r->declEnv : global_;
         roleClassSelf_.push_back(Value::typeObj(clsName));
         env->selfSlot = &roleClassSelf_.back();
@@ -1017,7 +1017,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // what lets Test::Util's `our sub run` coexist with the built-in `run`:
         // Test::Util's own `is_run` still resolves `run` (via its module closure),
         // while an importer's bare `run(...)` reaches the built-in.
-        auto moduleEnv = std::make_shared<Env>(); moduleEnv->parent = global_;
+        auto moduleEnv = makeSlabShared<Env>(); moduleEnv->parent = global_;
         moduleEnv->unitFrame = true;
         unitOfEnv_[moduleEnv.get()] = name;
         unitStash_[name];
@@ -2186,7 +2186,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                         auto* b = static_cast<Block*>(st.get());
                         if (b->phaser != "BEGIN") continue;
                         if (b->stmtForm) execBlock(b, tctx_.cur);
-                        else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
                     }
                 } catch (...) {}
             }
@@ -2359,7 +2359,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 auto* b = static_cast<Block*>(st.get());
                 if (b->phaser != want) continue;
                 if (b->stmtForm) execBlock(b, tctx_.cur);   // `BEGIN my $x = …` declares out here
-                else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
             }
         return Value::any();
     }
@@ -2829,7 +2829,7 @@ void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, const std::s
     // NEXT phasers run in REVERSE declaration order (like LEAVE)
     for (auto it = stmts.rbegin(); it != stmts.rend(); ++it) if ((*it)->kind == NK::Block) {
         auto* b = static_cast<Block*>(it->get());
-        if (b->phaser == "NEXT") { auto sc = std::make_shared<Env>(); sc->parent = scope; execBlock(b, sc); } }
+        if (b->phaser == "NEXT") { auto sc = makeSlabShared<Env>(); sc->parent = scope; execBlock(b, sc); } }
 }
 // The scope a registered END will run in: the most recent entry of the block
 // that holds it. `for 1..3 -> $i { END say $i }` therefore says 3 — one run,
@@ -2884,7 +2884,7 @@ void Interpreter::runEndBody(const EndPhaser& e) {
     // `END { $dir.IO.spurt("x") }` on a directory that has been removed is the
     // whole shape issue #71 was reported for, and it said nothing at all.
     if (e.entered && e.blk->stmtForm) { execBlock(e.blk, e.env, /*sink=*/true); return; }
-    auto sc = std::make_shared<Env>(); sc->parent = e.env;
+    auto sc = makeSlabShared<Env>(); sc->parent = e.env;
     // NEVER ENTERED: the block holding this phaser did not run, so the
     // containers Rakudo's compile-time pad would have carried never came to
     // exist. A name the body reads is then not a typo but a scope that was
@@ -2958,11 +2958,11 @@ void Interpreter::registerEnds(const Program& prog) {
 }
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "FIRST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        if (b->phaser == "FIRST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
 void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "LAST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        if (b->phaser == "LAST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
 // The `my` names a statement list declares at ITS OWN level (an inner block's
 // declarations belong to that block). Used to give a LEAVE/KEEP/UNDO body the
@@ -3292,7 +3292,7 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
         // A frame of its own to stand in: a worker starts out in the spawner's
         // scope, which they all share, and every body entry saves and restores
         // the current scope — one more shared count per iteration
-        auto own = std::make_shared<Env>();
+        auto own = makeSlabShared<Env>();
         own->parent = loopScope;
         struct CurG { std::shared_ptr<Env> s; ~CurG() { tctx_.cur = std::move(s); } } curG{tctx_.cur};
         tctx_.cur = own;
@@ -3386,7 +3386,7 @@ void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
         return [this, scope, &loopScope, &outerMatch, body, &label, flat, n, &bind, &writeBack]
                (size_t i, ValueList* out) mutable -> bool {
             if (!scope || scope.use_count() > 1) {
-                scope = std::make_shared<Env>();
+                scope = makeSlabShared<Env>();
                 scope->parent = loopScope;
                 scope->define("$/", outerMatch);
             }
@@ -3782,7 +3782,7 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
                 if (!ok) return false;
             }
             if (p->whereExpr) {
-                auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                 env->define("$_", av[i]);
                 if (!p->name.empty()) env->define(p->name, av[i]);
                 auto saved = tctx_.cur; tctx_.cur = env;
@@ -3911,7 +3911,7 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     // RR[::T] does T` (RR[Foo] does Foo) and `role PR1[::T1] does PR00[T1]`
     // (PR1[Int] does PR00[Int]) — evaluated with the parameters bound
     if (role->decl) {
-        auto penv = std::make_shared<Env>();
+        auto penv = makeSlabShared<Env>();
         penv->parent = role->declEnv ? role->declEnv : global_;
         for (auto& b : pun->roleParamBindings) penv->define(b.first, b.second);
         std::vector<std::string> rdoes = role->decl->roles;
@@ -4007,7 +4007,7 @@ void Interpreter::applyRoleTypeParamsToAttrs(ClassInfo* dest) {
 void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList& argv,
                                      const std::shared_ptr<Env>& scope) {
     if (!role->decl || role->decl->roleParams.empty()) return;
-    auto tmp = std::make_shared<Env>();
+    auto tmp = makeSlabShared<Env>();
     tmp->parent = scope ? scope : global_;
     try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
     catch (...) {} // arity/type mismatch: leave unbound rather than abort composition
@@ -4092,7 +4092,7 @@ void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env
         if (!c || !c->ci().body || c->ci().builtin) return;
         auto& scope = scopes[c->closure.get()];
         if (!scope) {
-            scope = std::make_shared<Env>();
+            scope = makeSlabShared<Env>();
             scope->parent = c->closure ? c->closure : global_;
             scope->x().pkgType = conc;   // `self.R::m` in here resolves from THIS parameterization
             for (auto& b : conc->roleParamBindings)
@@ -4135,7 +4135,7 @@ std::shared_ptr<ClassInfo> Interpreter::concretizeRole(const std::shared_ptr<Cla
 // generic R1 every parameterization of R2 would otherwise share.
 void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role) {
     if (!conc || !role || !role->decl || role->decl->roleArgs.empty()) return;
-    auto penv = std::make_shared<Env>();
+    auto penv = makeSlabShared<Env>();
     penv->parent = role->declEnv ? role->declEnv : global_;
     for (auto& b : conc->roleParamBindings)
         if (!b.first.empty() && !penv->local(b.first)) penv->define(b.first, b.second);
@@ -5153,7 +5153,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // `(sig1) | (sig2)` is ONE routine with alternative signatures — its
             // candidates share a single `state`-variable store.
             if (!sd->altParams.empty()) {
-                auto shared = std::make_shared<Env>(); shared->parent = tctx_.cur;
+                auto shared = makeSlabShared<Env>(); shared->parent = tctx_.cur;
                 auto share = [&](Value& c) { std::call_once(c.code()->state.init, [&] { c.code()->state.env = shared; }); };
                 share(code);
                 for (auto& c : altCands) share(c);
@@ -5788,7 +5788,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     global_->define(cd->name, Value::typeObj(cd->name));
                 std::string savedPrefix = tctx_.pkgPrefix;
                 tctx_.pkgPrefix += cd->name + "::";
-                auto pkgEnv = std::make_shared<Env>();
+                auto pkgEnv = makeSlabShared<Env>();
                 pkgEnv->parent = tctx_.cur;
                 pkgEnv->packageFrame = true;
                 auto saved = tctx_.cur; tctx_.cur = pkgEnv;
@@ -6358,7 +6358,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     for (auto& st : *v.code()->ci().body)
                         if (mayHaveStateDecl(st.get())) { anyState = true; break; }
                     if (!anyState) return;
-                    auto e = std::make_shared<Env>();
+                    auto e = makeSlabShared<Env>();
                     e->parent = v.code()->closure ? v.code()->closure : global_;
                     e->stateFrame = true;
                     ci->roleStateEnvs[v.code()] = e;
@@ -6631,7 +6631,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             if (cd->apiExpr)  { try { ci->api  = eval(cd->apiExpr.get()).toStr();  } catch (RakuError&) {} }
             // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
             // and methods/attr-defaults close over it
-            auto bodyEnv = std::make_shared<Env>();
+            auto bodyEnv = makeSlabShared<Env>();
             bodyEnv->parent = tctx_.cur;
             bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
@@ -8097,7 +8097,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
 [[gnu::noinline]] Value Interpreter::execBareBlock(Block* b, bool sink, std::unique_ptr<HandedError>* handOff) {
     if (b->endSlot >= 0 || !b->phaser.empty() || b->stmts.empty() || tctx_.protoDepth > 0)
         return execBareBlockRare(b, sink);
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tctx_.cur;
     scope->btBlock = true; scope->btLine = b->line;   // a frame of its own in `.backtrace.list`
     return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
@@ -8145,7 +8145,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
     // to the ENCLOSING scope — run without a child env
     if (b->stmtForm && !b->phaser.empty())
         return execBlock(b, tctx_.cur, sink);
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tctx_.cur;
     // a bare block is a frame of its own in `.backtrace.list` (see btCaptureNow)
     if (b->phaser.empty() && !b->isCatch) { scope->btBlock = true; scope->btLine = b->line; }
@@ -8310,7 +8310,7 @@ int Interpreter::run(Program& prog) {
     registerEnds(prog);
     auto runPhaser = [&](Block* b) {
         if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
-        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
     };
     // END phasers run in REVERSE SOURCE order, on any exit path — one order for
     // the whole compilation, so a nested END takes its place among the

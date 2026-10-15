@@ -732,7 +732,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // handler feeds the user's block through `.Channel.Supply`, so the
             // block's `await $message.body` waits for fragments that the frame
             // parser — the emitter — has yet to deliver.
-            auto env = std::make_shared<Env>();
+            auto env = makeSlabShared<Env>();
             env->parent = tctx_.cur ? tctx_.cur : global_;
             env->define("$__rakupp_chan", inv);
             auto saved = tctx_.cur;

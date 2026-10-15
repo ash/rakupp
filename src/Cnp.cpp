@@ -366,7 +366,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
             setReg(f, dst, res);
             return 0;
         }
-        auto env = std::make_shared<Env>();
+        auto env = makeSlabShared<Env>();
         env->parent = saved;
         for (size_t k = 0; k < cs.argRegs.size(); k++) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
         Interpreter::tctx_.cur = env;

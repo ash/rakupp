@@ -1197,7 +1197,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         std::shared_ptr<Env> denv;
         auto ensureEnv = [&] {
             if (denv) return;
-            denv = std::make_shared<Env>();
+            denv = makeSlabShared<Env>();
             denv->parent = lvl->declEnv ? lvl->declEnv : savedDenv;
             if (!selfEarlyMade) { selfEarly = Value::object(od); selfEarlyMade = true; }
             denv->define("self", selfEarly);
@@ -3466,7 +3466,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     static_cast<const VarExpr*>(mcd->inv.get())->name.compare(0, 2, "$!") == 0) {
                     auto* mc = mcd;
                     auto saved = I.tctx_.cur;
-                    auto env = std::make_shared<Env>();
+                    auto env = makeSlabShared<Env>();
                     env->parent = declEnv ? declEnv : I.tctx_.cur;
                     env->define("self", a.empty() ? Value::any() : a[0]);
                     I.tctx_.cur = env;
@@ -3475,7 +3475,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& ae : mc->args) margs.push_back(I.eval(ae.get()));
                     return I.methodCall(Value::typeObj(seedType), mc->method, std::move(margs));
                 }
-                auto env = std::make_shared<Env>();
+                auto env = makeSlabShared<Env>();
                 env->parent = declEnv ? declEnv : I.tctx_.cur;
                 env->define("self", a.empty() ? Value::any() : a[0]);
                 auto saved = I.tctx_.cur; I.tctx_.cur = env;
@@ -8689,7 +8689,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // yet (rak takes its phasers first), so the calls then share it.
             Callable& src = *inv.code();
             std::call_once(src.state.init, [&] {
-                src.state.env = std::make_shared<Env>();
+                src.state.env = makeSlabShared<Env>();
                 src.state.env->parent = src.closure ? src.closure : global_;
                 src.state.env->stateFrame = true;
             });

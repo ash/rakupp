@@ -145,7 +145,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                     // the role's parameters are in scope — Red's
                     // `has Bool $.no-prefetch = $!has-one // $no-prefetch // self.type ~~ Positional`
                     auto saved = tctx_.cur;
-                    auto denv = std::make_shared<Env>();
+                    auto denv = makeSlabShared<Env>();
                     denv->parent = role->declEnv ? role->declEnv : tctx_.cur;
                     denv->define("self", base);
                     for (ClassInfo* rb : roleInfos)
@@ -277,7 +277,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             else if (a.def) {
                 auto saved = tctx_.cur;
                 // …with the role's PARAMETERS bound: `role R[$val] { has $.attr = $val }`
-                auto denv = std::make_shared<Env>();
+                auto denv = makeSlabShared<Env>();
                 denv->parent = role->declEnv ? role->declEnv : tctx_.cur;
                 for (auto& b : nc->roleParamBindings)
                     if (!b.first.empty() && !denv->local(b.first)) denv->define(b.first, b.second);
@@ -939,7 +939,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         for (auto* scope : r.chain) {
             auto it = staticEnvs_.find(scope);
             if (it == staticEnvs_.end()) {
-                auto env = std::make_shared<Env>(); env->parent = parent;
+                auto env = makeSlabShared<Env>(); env->parent = parent;
                 std::vector<const VarExpr*> decls;
                 spDeclaredIn(*scope, decls);
                 for (auto* v : decls) env->define(v->name, typedDefault(v->d().declType, v->name[0]));
@@ -980,7 +980,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
                         static_cast<const SubDecl*>(scope[j].get())->name == nm)
                         realLater = true;
                 if (!realLater) continue;
-                if (!ov) { ov = std::make_shared<Env>(); ov->parent = senv; }
+                if (!ov) { ov = makeSlabShared<Env>(); ov->parent = senv; }
                 auto savedCur = tctx_.cur;
                 tctx_.cur = ov;
                 try { exec(scope[i].get()); } catch (...) { tctx_.cur = savedCur; throw; }
@@ -995,7 +995,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             // a statement-form phaser (`BEGIN $x = 1`, `BEGIN my $y = 2`) runs in
             // the scope itself, so a declaration it makes is the scope's
             if (r.blk && r.blk->stmtForm) v = execBlock(r.blk, senv);
-            else if (r.blk) { auto sc = std::make_shared<Env>(); sc->parent = senv; v = execBlock(r.blk, sc); }
+            else if (r.blk) { auto sc = makeSlabShared<Env>(); sc->parent = senv; v = execBlock(r.blk, sc); }
             else v = callCallable(makeClosure(r.be), {});
         } catch (ReturnEx&) {
             // `sub { CHECK return }` — no routine is running at compile time, so
@@ -1618,7 +1618,7 @@ bool Interpreter::runControlException(const Value& ex) {
         ~Repush() { t.controlHandlers.push_back(std::move(h)); }
     } repush{tctx_, handler};
 
-    auto env = std::make_shared<Env>();
+    auto env = makeSlabShared<Env>();
     env->parent = handler.second;
     env->define("$_", ex);
     env->define("$!", ex);

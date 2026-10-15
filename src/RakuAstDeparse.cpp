@@ -889,7 +889,7 @@ Value rakuAstEval(Interpreter& I, const Value& node) {
     // synthetic names. They go in a CHILD scope: the parent link keeps every
     // name the caller had reachable, and the synthetic ones are gone the moment
     // this returns rather than leaking into the scope that asked.
-    auto sc = std::make_shared<Env>();
+    auto sc = makeSlabShared<Env>();
     sc->parent = Interpreter::tctx_.cur;
     for (size_t i = 0; i < side.size(); i++)
         sc->define("$RAKUAST-LIT" + std::to_string(i), side[i]);

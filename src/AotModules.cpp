@@ -314,7 +314,7 @@ Stmt* rtAotStmt(const unsigned char* blob, size_t n) {
 Value rtAotExec(Interpreter& I, Stmt* st, const char* const* names, Value** slots, size_t n,
                 const Value* self, bool sink) {
     ExecContext& tcx = I.tctx_;
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tcx.cur;
     if (self) scope->define("self", *self);
     for (size_t i = 0; i < n; i++) scope->define(names[i], *slots[i]);
@@ -428,7 +428,7 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
         as = slot.get();
     }
     ExecContext& tcx = I.tctx_;
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     (void)inClosure;   // self comes from the scope either way
     scope->parent = tcx.cur;
     scope->define("self", self);
@@ -468,7 +468,7 @@ Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args) 
     Value a = Value::array();
     for (auto& v : args) a.arr()->push_back(std::move(v));
     ExecContext& tcx = I.tctx_;
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tcx.cur;
     scope->define("$\x01aot-inv", *tgt);
     scope->define("@\x01aot-args", std::move(a));

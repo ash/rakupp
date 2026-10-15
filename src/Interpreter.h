@@ -574,7 +574,14 @@ struct VarNameEq {
         return std::memcmp(p, q, n) == 0;
     }
 };
-using VarMap = std::unordered_map<std::string, Value, VarNameHash, VarNameEq>;
+// The nodes (120 bytes: the name and the Value) and the small bucket arrays
+// come from the thread's slab (SlabPool.h), not malloc: a name defined on
+// every call — a bare block's `$_`, which pads cannot hold because `for`,
+// `given` and the statement modifiers rebind the topic implicitly — took a
+// malloc and a free per call, a fifth of a `.map({ $_ * 2 })` element's time
+// (system free reads the clock).
+using VarMap = std::unordered_map<std::string, Value, VarNameHash, VarNameEq,
+                                  SlabAlloc<std::pair<const std::string, Value>>>;
 
 // The `$*x` lookup memo (DynStack, findDynamicSlot) answers a read from deep in
 // a call chain without walking it again — valid only while nothing the walk
@@ -3207,7 +3214,7 @@ public:
     // `sub x {}`) stays inside it. The REPL keeps calling evalString directly,
     // so its lines still share one scope.
     Value evalOwnScope(const std::string& src, bool checkOnly = false) {
-        auto sc = std::make_shared<Env>();
+        auto sc = makeSlabShared<Env>();
         sc->parent = tctx_.cur;
         sc->evalFrame = true;
         struct R { ExecContext& t; std::shared_ptr<Env> s; ~R() { t.cur = s; } } restore{tctx_, tctx_.cur};
@@ -4572,6 +4579,23 @@ private:
     Value* plainIntStepSlot(VarExpr* ve);           // the slot `$n++` steps in place, or null
     bool blockTakesAtArgs(Callable& c);             // does a called block get an `@_`?
     Value* plainIntStepTarget(Expr* e);             // …`@a[$i]++` / `%h{$k}++` / `$!n++`'s, or null
+    // The Env a call's own frame hangs from: the callable's `state` frame, made
+    // on its first call — or, for a body that can reach none (decideStateFrame,
+    // a deep scan), the closure itself. stateEnvOf is then what `state`,
+    // `once` and a flip-flop write to: that frame, or null.
+    const std::shared_ptr<Env>& stateFrameOf(Callable& c) {
+        signed char v = c.ci().stateFrameNeed;
+        if (v < 0) v = decideStateFrame(c);
+        if (!v) return c.closure ? c.closure : global_;
+        std::call_once(c.state.init, [&] {
+            c.state.env = makeSlabShared<Env>();
+            c.state.env->parent = c.closure ? c.closure : global_;
+            c.state.env->stateFrame = true;
+        });
+        return c.state.env;
+    }
+    static Env* stateEnvOf(const Callable& c) { return c.ci().stateFrameNeed == 1 ? c.state.env.get() : nullptr; }
+    signed char decideStateFrame(Callable& c);
     // `EXPR xx N` — `item` is re-evaluated once per copy (it is a THUNK), so the
     // two operands arrive as AST nodes; `Rxx` hands them over the other way round.
     Value xxRepeat(Expr* item, Expr* count);

@@ -1139,7 +1139,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         return false;
     }
     if (si.where) {
-        auto env = std::make_shared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
+        auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
         env->define("$_", sv);
         auto saved = tctx_.cur; tctx_.cur = env;
         bool ok = false;
@@ -3529,7 +3529,7 @@ Value* Interpreter::findDynamicLenient(const std::string& name) {
 // a Code is called with the value (and $_ bound), anything else smartmatches.
 bool Interpreter::attrWhereOk(const void* whereExpr, const Value& v) {
     if (!whereExpr) return true;
-    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
     env->define("$_", v);
     auto saved = tctx_.cur; tctx_.cur = env;
     bool ok = true;
@@ -4832,7 +4832,7 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
         if (ix->index && !ix->multiDim && ix->adverb.empty() &&
             (ix->index->kind == NK::Range || ix->index->kind == NK::ListExpr ||
              ix->index->kind == NK::ArrayLit)) {
-            auto tmpEnv = std::make_shared<Env>(); tmpEnv->parent = tctx_.cur;
+            auto tmpEnv = makeSlabShared<Env>(); tmpEnv->parent = tctx_.cur;
             Value vals = l; vals.isList = true; vals.itemized = false;
             tmpEnv->define("@__hyper_assign", vals);
             Assign tmpA;
@@ -6861,7 +6861,7 @@ bool Interpreter::omittedWherePasses(const Value& cand, const Param& p, size_t i
     Value v = p.sigil == '@' ? Value::array() : p.sigil == '%' ? Value::makeHash()
             : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
     if (p.defaultVal) {
-        auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
+        auto denv = makeSlabShared<Env>(); denv->parent = tctx_.cur;
         for (size_t j = 0; j < pos.size() && j < npositional; j++)
             if (!positional[j]->name.empty() && !positional[j]->subSig)
                 denv->define(positional[j]->name, pos[j]);
@@ -7350,7 +7350,7 @@ Value Interpreter::evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls) {
     bool any = false;
     for (ClassInfo* c = cls; c && !any; c = c->parent.get()) any = !c->roleParamBindings.empty();
     if (!any) return eval(const_cast<Expr*>(dflt));
-    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
     for (ClassInfo* c = cls; c; c = c->parent.get())
         for (auto& b : c->roleParamBindings)
             if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);

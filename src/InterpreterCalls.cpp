@@ -800,7 +800,7 @@ Expr* Interpreter::peelGrepFilter(Expr* listExpr, Expr*& pred) {
 
 bool Interpreter::grepFilterKeeps(Expr* pred, const Value& v) {
     if (!pred) return true;
-    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
     env->define("$_", v);
     auto saved = tctx_.cur; tctx_.cur = env;
     Value pv;
@@ -1300,7 +1300,7 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
         ValueList nw = candidatesOf("new");
         if (nw.empty()) impossible("no acceptable coercion method found");
         via = "new";
-        auto frame = std::make_shared<Env>();
+        auto frame = makeSlabShared<Env>();
         frame->parent = tctx_.cur;
         frame->define("$*COERCION-TYPE", Value::typeObj(coercion.empty() ? target + "(Any)" : coercion));
         auto saved = tctx_.cur;
@@ -2085,7 +2085,7 @@ void Interpreter::runHoistedInit(Block* b) {
     };
     try {
         if (b->stmtForm) execBlock(b, tctx_.cur); // `INIT my $x = …` declares in the enclosing scope
-        else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
     }
     catch (ReturnEx&) { escaped(); }
     if (tctx_.returning) escaped();
@@ -2496,7 +2496,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 if ((lit || w) && vi < vals.size()) {
                     const Value& v = vals[vi];
                     bool ok;
-                    auto wenv = std::make_shared<Env>(); wenv->parent = tctx_.cur;
+                    auto wenv = makeSlabShared<Env>(); wenv->parent = tctx_.cur;
                     wenv->define("$_", v);
                     auto saved = tctx_.cur; tctx_.cur = wenv;
                     try {
@@ -3356,7 +3356,7 @@ const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Para
     if (st == 0 || !scope) return nullptr;
     if (auto* c = static_cast<const WhereCodeCache*>(p.whereCode.get()))
         return c->scope == scope.get() ? &c->code : nullptr;
-    auto env = std::make_shared<Env>();
+    auto env = makeSlabShared<Env>();
     env->parent = scope;
     auto saved = tctx_.cur; tctx_.cur = env;
     Value cv;
@@ -3686,6 +3686,135 @@ bool Interpreter::blockTakesAtArgs(Callable& c) {
         c.ci().blockAtArgs = v;
     }
     return v != 0;
+}
+
+// --- does a body reach its `state` frame? ----------------------------------
+// Every Callable made a `state` Env on its first call, between its closure and
+// each call's frame: where its `state` variables, `once`'s cache, a flip-flop's
+// state and its phasers' closure live. A body with none of them paid for it
+// anyway — a closure made per iteration (`try { }`, a `.map({ … })` inside a
+// loop) once per iteration, and a kept closure carried it: 192 bytes, a third
+// of one. Whether a body can reach it is decided once, by a whitelist walk like
+// the `@_` one above, nested blocks included. Anything it does not know counts
+// as reaching it: a declaration, an EVAL, a regex with a code block, a phaser,
+// and a pseudo-package name (`OUTER::` steps through the chain, and the `state`
+// frame is one of its links).
+static bool exprMayUseState(const Expr* e);
+static bool stmtsMayUseState(const std::vector<StmtPtr>& v);
+static bool paramsMayUseState(const std::vector<Param>& ps) {
+    for (auto& p : ps)
+        if (exprMayUseState(p.defaultVal.get()) || exprMayUseState(p.whereExpr.get()) ||
+            (p.subSig && paramsMayUseState(*p.subSig)))
+            return true;
+    return false;
+}
+static bool blockMayUseState(const Block* b) {
+    return b && (!b->phaser.empty() || b->isCatch || stmtsMayUseState(b->stmts));
+}
+static bool textMayRunCode(const std::string& t) {
+    return t.find('{') != std::string::npos || t.find("state") != std::string::npos;
+}
+static bool nameIsPseudo(const std::string& n) {
+    for (const char* p : {"MY::", "OUR::", "OUTER", "CALLER", "LEXICAL", "UNIT::", "SETTING", "DYNAMIC", "CLIENT"})
+        if (n.find(p) != std::string::npos) return true;
+    return false;
+}
+static bool exprMayUseState(const Expr* e) {
+    if (!e) return false;
+    auto any = [](const std::vector<ExprPtr>& v) {
+        for (auto& x : v) if (exprMayUseState(x.get())) return true;
+        return false;
+    };
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::AllomorphLit:
+        case NK::Whatever: case NK::SelfTerm:
+            return false;
+        case NK::NameTerm: return nameIsPseudo(static_cast<const NameTerm*>(e)->name);
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->viaPseudoPkg || v->pkgSymbol || nameIsPseudo(v->name)) return true;
+            if (v->declare && v->d().declScope == "state") return true;
+            return exprMayUseState(v->d().declDefault.get()) || exprMayUseState(v->d().declShape.get());
+        }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            if (b->op.find("ff") != std::string::npos) return true;   // a flip-flop
+            return exprMayUseState(b->lhs.get()) || exprMayUseState(b->rhs.get()); }
+        case NK::Unary: { auto* u = static_cast<const Unary*>(e);
+            if (u->op == "once") return true;
+            return exprMayUseState(u->operand.get()); }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e);
+            return exprMayUseState(a->target.get()) || exprMayUseState(a->value.get()); }
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            if (c->name == "EVAL" || c->name == "EVALFALLBACK" || c->name == "evalbytes" ||
+                c->name == "EVALFILE" || nameIsPseudo(c->name)) return true;
+            return exprMayUseState(c->callee.get()) || any(c->args); }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            if (m->method == "EVAL") return true;
+            return exprMayUseState(m->inv.get()) || exprMayUseState(m->methodExpr.get()) || any(m->args); }
+        case NK::Index: { auto* i = static_cast<const Index*>(e);
+            return exprMayUseState(i->base.get()) || exprMayUseState(i->index.get()); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return exprMayUseState(t->cond.get()) || exprMayUseState(t->then.get()) ||
+                   exprMayUseState(t->els.get()); }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e);
+            return exprMayUseState(r->from.get()) || exprMayUseState(r->to.get()); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e);
+            return exprMayUseState(p->keyExpr.get()) || exprMayUseState(p->value.get()); }
+        case NK::ListExpr: return any(static_cast<const ListExpr*>(e)->items);
+        case NK::ArrayLit: return any(static_cast<const ArrayLit*>(e)->items);
+        case NK::HashLit: return any(static_cast<const HashLit*>(e)->items);
+        case NK::InterpStr: return any(static_cast<const InterpStr*>(e)->parts);
+        case NK::ChainExpr: return any(static_cast<const ChainExpr*>(e)->operands);
+        case NK::NqpOp: return any(static_cast<const NqpOp*>(e)->args);
+        case NK::RegexLit: return textMayRunCode(static_cast<const RegexLit*>(e)->pattern);
+        case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e);
+            return textMayRunCode(sl->pattern) || textMayRunCode(sl->repl); }
+        case NK::BlockExpr: { auto* b = static_cast<const BlockExpr*>(e);
+            return paramsMayUseState(b->params) || stmtsMayUseState(b->body); }
+        default: return true;   // SymbolicRef and anything not listed
+    }
+}
+static bool stmtMayUseState(const Stmt* s) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::ExprStmt: return exprMayUseState(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::ReturnStmt: return exprMayUseState(static_cast<const ReturnStmt*>(s)->value.get());
+        case NK::Block: return blockMayUseState(static_cast<const Block*>(s));
+        case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt: return false;
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
+            for (auto& br : i->branches)
+                if (exprMayUseState(br.first.get()) || blockMayUseState(br.second.get())) return true;
+            for (auto& bp : i->branchParams) if (paramsMayUseState(bp)) return true;
+            return paramsMayUseState(i->elseParams) || blockMayUseState(i->elseBlock.get()); }
+        case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s);
+            return exprMayUseState(w->cond.get()) || paramsMayUseState(w->params) ||
+                   blockMayUseState(w->body.get()); }
+        case NK::RepeatStmt: { auto* r = static_cast<const RepeatStmt*>(s);
+            return exprMayUseState(r->cond.get()) || blockMayUseState(r->body.get()); }
+        case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
+            return exprMayUseState(f->list.get()) || paramsMayUseState(f->params) ||
+                   blockMayUseState(f->body.get()); }
+        case NK::LoopStmt: { auto* l = static_cast<const LoopStmt*>(s);
+            return exprMayUseState(l->init.get()) || exprMayUseState(l->cond.get()) ||
+                   exprMayUseState(l->incr.get()) || blockMayUseState(l->body.get()); }
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            return exprMayUseState(g->topic.get()) || paramsMayUseState(g->params) ||
+                   paramsMayUseState(g->elseParams) || blockMayUseState(g->body.get()) ||
+                   blockMayUseState(g->elseBody.get()); }
+        case NK::WhenStmt: { auto* w = static_cast<const WhenStmt*>(s);
+            return exprMayUseState(w->cond.get()) || blockMayUseState(w->body.get()); }
+        default: return true;   // declarations, `use`, and anything not listed
+    }
+}
+static bool stmtsMayUseState(const std::vector<StmtPtr>& v) {
+    for (auto& s : v) if (stmtMayUseState(s.get())) return true;
+    return false;
+}
+signed char Interpreter::decideStateFrame(Callable& c) {
+    signed char v = (!c.ci().body || stmtsMayUseState(*c.ci().body) ||
+                     (c.ci().params && paramsMayUseState(*c.ci().params))) ? 1 : 0;
+    c.ci().stateFrameNeed = v;
+    return v;
 }
 
 

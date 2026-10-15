@@ -7092,7 +7092,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     // --installed` lost the option.
                     struct CurG { std::shared_ptr<Env>& c; std::shared_ptr<Env> saved; ~CurG() { c = saved; } }
                         curG{tctx_.cur, tctx_.cur};
-                    if (global_) { auto top = std::make_shared<Env>(); top->parent = global_; tctx_.cur = top; }
+                    if (global_) { auto top = makeSlabShared<Env>(); top->parent = global_; tctx_.cur = top; }
                     int code = 0;
                     try {
                         Lexer lx(content);

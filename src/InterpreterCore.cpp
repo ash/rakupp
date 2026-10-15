@@ -883,7 +883,7 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
     // PREs all run BEFORE any ENTER, wherever they stand in the block.
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "PRE") {
-            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+            auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
             Value r = execBlock(b, sc, /*sink=*/false);
             if (!boolify(r))
                 throwTypedV("X::Phaser::PrePost", {{"phaser", Value::str("PRE")}, {"condition", Value::str(r.gist())}},
@@ -899,7 +899,7 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
         (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser == "ENTER" || (b->phaser == "FIRST" && runFirst)) {
-            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+            auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
             // an ENTER written LAST is the block's value, computed at entry:
             // `sub f { ENTER 'SANDMAN' }` returns SANDMAN (enter-leave.t)
             if (b->phaser == "ENTER" && &s == &stmts.back() && tctx_.cur) {
@@ -970,7 +970,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
         int savedLC = tctx_.loopCtl;
         int savedGC = tctx_.givenCtl; Value savedGV = tctx_.givenV;
         tctx_.returning = false; tctx_.loopCtl = 0; tctx_.givenCtl = 0;
-        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
         // A declaration this block never reached — an early `return` jumped over
         // it — still has a slot in Raku, because the pad is built at compile
         // time. Supply the missing ones as undefined, so a phaser naming one
@@ -1020,7 +1020,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     if (!postRuns && postOk < 0 && tctx_.leaveError) {
         for (auto it = stmts.rbegin(); it != stmts.rend(); ++it)
             if ((*it)->kind == NK::Block && static_cast<Block*>(it->get())->phaser == "POST") {
-                auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+                auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
                 sc->define("$!", exceptionFor(*tctx_.leaveError));
                 try { execBlock(static_cast<Block*>(it->get()), sc, /*sink=*/false); } catch (RakuError&) {}
             }
@@ -1030,7 +1030,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
         for (auto& s : stmts) if (s->kind == NK::Block && static_cast<Block*>(s.get())->phaser == "POST")
             posts.push_back(static_cast<Block*>(s.get()));
         for (auto it = posts.rbegin(); it != posts.rend(); ++it) {
-            auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+            auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
             if (tctx_.leaveResult) sc->define("$_", *tctx_.leaveResult);   // POST sees the return value
             Value r = execBlock(*it, sc, /*sink=*/false);
             if (!boolify(r))
@@ -1750,7 +1750,7 @@ struct LoopStateFrame {
     LoopStateFrame(ExecContext& tc, bool enable)
         : t(tc), savedCur(tc.cur), savedState(tc.curStateEnv), on(enable) {
         if (!on) return;
-        auto frame = std::make_shared<Env>();
+        auto frame = makeSlabShared<Env>();
         frame->parent = tc.cur;
         frame->loopFrame = true; // plain `my` (a while-cond declare) skips past it
         tc.cur = frame;
@@ -1838,7 +1838,7 @@ namespace {
 struct FramePool {
     std::vector<std::shared_ptr<Env>>& free;
     std::shared_ptr<Env> acquire() {
-        if (free.empty()) return std::make_shared<Env>();
+        if (free.empty()) return makeSlabShared<Env>();
         auto e = std::move(free.back());
         free.pop_back();
         return e;
@@ -2137,7 +2137,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                         if (condUsed) {
                             auto ph = computePlaceholders(br.second->stmts);
                             if (ph.size() == 1) {
-                                auto phs = std::make_shared<Env>(); phs->parent = tctx_.cur;
+                                auto phs = makeSlabShared<Env>(); phs->parent = tctx_.cur;
                                 phs->define(ph[0], cv);
                                 return execBlock(br.second.get(), phs);
                             }
@@ -2257,7 +2257,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 // postfix `STMT while COND`: no implicit block — run STMT in the
                 // ENCLOSING scope so a `my` in it declares there (never cleared!)
                 if (ws->modifier) scope = tctx_.cur;
-                else if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                else if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = makeSlabShared<Env>(); scope->parent = tctx_.cur; }
                 else if (!(ws->params.empty() && ws->var.empty() && flatLoopBody(ws->body.get())))
                     scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                 // (a flat, binder-less while body never puts anything in the
@@ -2319,7 +2319,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 else match = rtWhenMatch(*this, topic, cv); // one rule, shared with native codegen
             }
             if (match) {
-                auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+                auto scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
                 Value bv;
                 try { bv = execBlock(w->body.get(), scope); }
                 catch (ProceedEx&) { return Value::any(); } // `proceed`: try the next when
@@ -2345,7 +2345,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                 ls->hasStateCache = (mayHaveStateDecl(ls->init.get()) || mayHaveStateDecl(ls->cond.get()) ||
                                      mayHaveStateDecl(ls->incr.get()) || mayHaveStateDecl(ls->body.get())) ? 1 : 0;
             LoopStateFrame lsf{tctx_, ls->hasStateCache != 0}; // per-execution `state` reset, as in WhileStmt
-            auto outer = std::make_shared<Env>(); outer->parent = tctx_.cur;
+            auto outer = makeSlabShared<Env>(); outer->parent = tctx_.cur;
             // `loop (my $i = 0; …)` declares $i in the ENCLOSING block, the same
             // way a `while` condition's `my` does — it is still in scope after the
             // loop, and a later `loop ($i = 0; …)` reuses it (DBIish's own mysql
@@ -2378,7 +2378,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             break;
                         }
                     }
-                    if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                    if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = makeSlabShared<Env>(); scope->parent = tctx_.cur; }
                     else if (!flatB) scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                     // LAST is not positional in a condition loop; see WhileStmt
                     if (!runLoopBody(ls->body.get(), scope, ls->label, firstIter, false, col)) break;
@@ -2400,7 +2400,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             std::shared_ptr<Env> scope; // reused across iterations unless captured
             Value lastCond = Value::any();   // what `-> $x` binds: the previous condition
             for (;;) {
-                if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = std::make_shared<Env>(); scope->parent = tctx_.cur; }
+                if (!scope || scope.use_count() > 1) { if (scope) scope->cycleNoteKeptSlots(); scope = makeSlabShared<Env>(); scope->parent = tctx_.cur; }
                 else scope->clearBindings(); // reuse buckets, drop last iteration's bindings
                 if (!r->var.empty()) scope->define(r->var, lastCond);
                 // LAST is not positional in a condition loop; see WhileStmt
@@ -2496,7 +2496,7 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
         return r;
     }
-    auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+    auto scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
     // the same aliasing as the modifier form above: `given $str { s/x/y/ }`
     // rewrites $str
     Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
@@ -2697,7 +2697,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                     auto it0 = h->find(keys[i]);
                     if (it0 == h->end()) continue; // removed by an earlier iteration
                     Value w = it0->second;
-                    auto scope = std::make_shared<Env>();
+                    auto scope = makeSlabShared<Env>();
                     scope->parent = tctx_.cur;
                     Value pv; // pairs mode: shared pairVal carries mutations back
                     if (vmode == 1) scope->define(tvar, w);
@@ -2770,7 +2770,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             if (!src && kvMode && !derefSigil && vn.size() > 1 && vn[0] == '$') {
                 Value pv = eval(le);
                 if (pv.t == VT::Pair && pv.pairValS() && !pv.pairValRO) {
-                    auto scope = std::make_shared<Env>();
+                    auto scope = makeSlabShared<Env>();
                     scope->parent = tctx_.cur;
                     Value k = pv.pairKeyV();
                     if (!(fs->varTraits.size() > 0 && (fs->varTraits[0] & ForStmt::VT_RW))) k.readonly = true;
@@ -2807,7 +2807,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 sc->define(fs->vars[k], std::move(v));
             };
             for (size_t i = 0; i < total; i += step) {
-                auto scope = std::make_shared<Env>();
+                auto scope = makeSlabShared<Env>();
                 scope->parent = tctx_.cur;
                 if (kvMode) {
                     bindVar(scope.get(), 0, Value::integer((long long)i));
@@ -2835,7 +2835,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             for (size_t i = 0; i < keys.size(); i++) {
                 auto it0 = h->find(keys[i]);
                 if (it0 == h->end()) continue;
-                auto scope = std::make_shared<Env>();
+                auto scope = makeSlabShared<Env>();
                 scope->parent = tctx_.cur;
                 {
                     Value kv0 = hashEntryKey(*src, it0->first, it0->second);
@@ -3283,7 +3283,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                    ? tctx_.cur->findRaw(sn, &own) : nullptr;
         if (raw && !(own->ex && own->ex->rwLinks.count(sn)) &&
             (raw->isCell() || (!(raw->t == VT::Hash && raw->hashKind == "Proxy") && promotionSafe(own, raw)))) {
-            auto scope = std::make_shared<Env>();
+            auto scope = makeSlabShared<Env>();
             scope->parent = tctx_.cur;
             scope->define(loopVars[0], Value::cellHolder(raw->promoteToCell()));
             runLoopBody(fs->body.get(), scope, fs->label, true, true, col);
@@ -3328,7 +3328,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         auto freshScope = [&]() {
             if (!scope || scope.use_count() > 1) {
                 if (scope) scope->cycleNoteKeptSlots();
-                scope = std::make_shared<Env>();
+                scope = makeSlabShared<Env>();
                 scope->parent = tctx_.cur;
             } else {
                 // reuse buckets, drop last iteration's bindings — all but the
@@ -3388,7 +3388,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             for (k = lo; k <= hi; k++) {
                 if (__jg.site && jit::isReady(__jg.site)) {
                     if (!kframe) {
-                        kframe = std::make_shared<Env>();
+                        kframe = makeSlabShared<Env>();
                         kframe->parent = tctx_.cur;
                         kframe->define(jit::countedForEndSlot(), Value::integer(hi));
                     }
@@ -3574,7 +3574,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             std::shared_ptr<Env> kframe;
             for (;; i++) {
                 if (__jg.site && jit::isReady(__jg.site)) {
-                    if (!kframe) { kframe = std::make_shared<Env>(); kframe->parent = tctx_.cur; }
+                    if (!kframe) { kframe = makeSlabShared<Env>(); kframe->parent = tctx_.cur; }
                     kframe->define(jit::arrayForIndexSlot(), Value::integer((long long)i));
                     kframe->define(var, Value::any());
                     if (jit::runIfReady(__jg.site, *this, kframe.get())) return forResult();
@@ -3747,7 +3747,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             bool wasHole = false;
             for (i = 0; fixedWalk ? i < n0 : growTo(i); i++) {
                 if (__jg.site && jit::isReady(__jg.site)) {
-                    if (!kframe) { kframe = std::make_shared<Env>(); kframe->parent = tctx_.cur; }
+                    if (!kframe) { kframe = makeSlabShared<Env>(); kframe->parent = tctx_.cur; }
                     kframe->define(jit::arrayForIndexSlot(), Value::integer((long long)i));
                     kframe->define(var, var[0] == '@' ? Value::array() : Value::any());
                     if (jit::runIfReady(__jg.site, *this, kframe.get())) return forResult();
@@ -3874,7 +3874,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
         };
         for (size_t i = 0; haveItem(i); i += np) {
-            auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+            auto scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
             // a short LAST chunk binds what there is: defaults fill in,
             // a required parameter left over is an arity error
             ValueList row;
@@ -3905,7 +3905,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                                 return true;
                             }
                         }
-                        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+                        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
                         bindParams(fs->params, r, sc, false, /*blockParams=*/true);
                         std::function<void()> rb2 = [&] { bindParams(fs->params, r, sc, false, /*blockParams=*/true); };
                         return runLoopBody(fs->body.get(), sc, fs->label, i == 0, atEnd(i + np), col, rb2);
@@ -3932,7 +3932,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // `-> ($a,$b,$c)`: each element is unpacked into the vars (one item/iteration).
     if (fs->destructure && !fs->vars.empty()) {
         for (size_t i = 0; haveItem(i); i++) {
-            auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+            auto scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
             ValueList row = itemsR[i].t == VT::Array ? *itemsR[i].arr() : itemsR[i].flatten();
             for (size_t k = 0; k < fs->vars.size(); k++)
                 scope->define(fs->vars[k], k < row.size() ? row[k] : Value::any());
@@ -3958,7 +3958,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     for (size_t i = 0; haveItem(i); i += nvars) {
         if (!scope || scope.use_count() > 1) {
             if (scope) scope->cycleNoteKeptSlots();
-            scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+            scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
         }
         else if (loopVars.empty()) { static const std::string kTopic = "$_"; scope->clearBindingsKeeping(&kTopic, 1); }
         else scope->clearBindingsKeeping(loopVars.data(), loopVars.size());
@@ -5495,7 +5495,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         Value* bound = env->find(slotName(p, i));
         if (!bound) continue;
         Value val = *bound;
-        auto wenv = std::make_shared<Env>(); wenv->parent = env;
+        auto wenv = makeSlabShared<Env>(); wenv->parent = env;
         wenv->define("$_", val);
         auto saved = tctx_.cur; tctx_.cur = wenv;
         bool ok;
@@ -6241,7 +6241,7 @@ bool Interpreter::paramWherePasses(const Value& cand, const Param& p, const Valu
     if (const Value* wc = staticWhereCode(p, params, whereScope)) {
         try { return boolify(callCallable(*wc, ValueList{wv})); } catch (...) { return false; }
     }
-    auto env = std::make_shared<Env>(); env->parent = whereScope;
+    auto env = makeSlabShared<Env>(); env->parent = whereScope;
     // A method's `where` may read the INVOCANT's own state:
     // `multi method tie($lval where $lval ~~ $!type)` is how PDF::COS::Tie
     // picks the candidate for an entry that is already of its declared
@@ -6410,7 +6410,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 if (!capture && isSlip(pos[i])) for (auto& e : *pos[i].arr()) lst.arr()->push_back(e);
                 else lst.arr()->push_back(pos[i]);
             }
-        auto env = std::make_shared<Env>(); env->parent = whereScope;
+        auto env = makeSlabShared<Env>(); env->parent = whereScope;
         if (!slurpyParam->name.empty()) env->define(slurpyParam->name, lst);
         env->define("$_", lst);
         auto saved = tctx_.cur; tctx_.cur = env;
@@ -6444,7 +6444,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     { claimed = true; break; } // renames and aliases claim too, as bindParams knows
             if (!claimed) (*h.hash())[a.s] = a.pairVal() ? *a.pairVal() : Value::boolean(true);
         }
-        auto env = std::make_shared<Env>(); env->parent = whereScope;
+        auto env = makeSlabShared<Env>(); env->parent = whereScope;
         if (!p.name.empty()) env->define(p.name, h);
         env->define("$_", h);
         auto saved = tctx_.cur; tctx_.cur = env;
@@ -7010,7 +7010,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
             if (supplied && isSeqForAtParam(p, v)) v = seqAsBoundList(v);
             if (!supplied && p.defaultVal) {
-                auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
+                auto denv = makeSlabShared<Env>(); denv->parent = tctx_.cur;
                 defineSelf(*denv);
                 // A default may read the parameters declared BEFORE it, as binding
                 // lets it: `:$style = 'double', :$corners where … = W{$style}`. Put
@@ -7050,7 +7050,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 catch (...) { tctx_.cur = dsaved; return -1; }
                 tctx_.cur = dsaved;
             }
-            auto env = std::make_shared<Env>(); env->parent = whereScope;
+            auto env = makeSlabShared<Env>(); env->parent = whereScope;
             // a named's `where` may read the invocant's state too (PDF's reads
             // `$!flush` and calls `self!is-indexed`)
             defineSelf(*env);
@@ -7642,12 +7642,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     DepthGuard guard(tcx.callDepth);
     PooledFrame frame_{tcx};
     auto& env = frame_.env;
-    std::call_once(c.state.init, [&] {
-        c.state.env = std::make_shared<Env>();
-        c.state.env->parent = c.closure ? c.closure : global_;
-        c.state.env->stateFrame = true;
-    });
-    env->parent = c.state.env;
+    env->parent = stateFrameOf(c);
     env->layout = c.ci().padLayout.get();
     env->pad.resize(c.ci().padLayout->names.size());
     // bindParams' simple path, for a parameter with no type and no trait
@@ -7668,7 +7663,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     auto saved = std::move(tcx.cur);
     Env* savedState = tcx.curStateEnv;
     tcx.cur = env;
-    tcx.curStateEnv = c.state.env.get();
+    tcx.curStateEnv = stateEnvOf(c);
     tcx.dynStack.push_back(saved ? saved.get() : global_.get());
     // A LEAVE that dies on the NORMAL exit runs outside the try below, so the
     // hand-written restore after it never ran and the caller's frame stayed on
@@ -8192,7 +8187,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     if (capSub && (maxPos > 0 || unbounded)) { capSub = nullptr; unbounded = true; }
                     if (capSub) {
                         // the capture's own signature takes the arguments
-                        auto tmp = std::make_shared<Env>(); tmp->parent = tctx_.cur;
+                        auto tmp = makeSlabShared<Env>(); tmp->parent = tctx_.cur;
                         ValueList bargs = as;
                         { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx_.subSigBind};
                           bindParams(*capSub->subSig, bargs, tmp); }
@@ -8610,12 +8605,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // Its parent is constant (the closure scope, or global), so create it exactly once
     // — never rewrite it per call. That keeps concurrent invocations of the SAME closure
     // (parallel mode) from racing on c.state.env; call_once gives a lock-free fast path.
-    std::call_once(c.state.init, [&] {
-        c.state.env = std::make_shared<Env>();
-        c.state.env->parent = c.closure ? c.closure : global_;
-        c.state.env->stateFrame = true;
-    });
-    env->parent = c.state.env;
+    // A body that cannot reach it has none (stateFrameOf).
+    env->parent = stateFrameOf(c);
     // Pads (PADS-PLAN.md): every Callable body is a pad owner, resolved at its
     // first call (padReady publishes; the layout itself is cached per BODY, so
     // .assuming wrappers sharing a body agree on slots). The layout goes on
@@ -8943,7 +8934,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     Env* savedState = tcx.curStateEnv;
     tcx.cur = env;
     if (!staticEnvs_.empty() && c.ci().body) seedStaticScope(c.ci().body, env.get());   // see runStaticPhasers
-    tcx.curStateEnv = c.state.env.get();
+    tcx.curStateEnv = stateEnvOf(c);
     tcx.dynStack.push_back(saved ? saved.get() : global_.get()); // caller's scope, for dynamic $*var lookup
     // A LEAVE that dies on the NORMAL exit runs outside the try below, so the
     // hand-written restore after it never ran and the caller's frame stayed on
@@ -10572,13 +10563,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             if (rs != k->roleStateEnvs.end()) stEnv = rs->second;
         }
     }
+    Env* stCur = stEnv.get();   // a role's, or the method's own (or none: stateFrameOf)
     if (!stEnv) {
-        std::call_once(c.state.init, [&] {
-            c.state.env = std::make_shared<Env>();
-            c.state.env->parent = c.closure ? c.closure : global_;
-            c.state.env->stateFrame = true;
-        });
-        stEnv = c.state.env;
+        stEnv = stateFrameOf(c);
+        stCur = stateEnvOf(c);
     }
     env->parent = stEnv;
     // Pads, as callCallableRaw takes them: the params bind into slots, and the
@@ -10712,7 +10700,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // one spliced into env->parent above), not the caller's; RAII restores on
     // every exit path
     Env* savedStateEnv = tcx.curStateEnv;
-    tcx.curStateEnv = stEnv.get(); // the SAME env spliced into env->parent above —
+    tcx.curStateEnv = stCur;       // the SAME env spliced into env->parent above —
                                      // declaring into one and reading through the other
                                      // is "Variable '%lookup' is not declared"
     struct StateGuard { ExecContext& t; Env* s; ~StateGuard() { t.curStateEnv = s; } } stG{tcx, savedStateEnv};
@@ -12679,7 +12667,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     if (doBlockEndsInPlace(e)) {
         auto* be = static_cast<BlockExpr*>(static_cast<Unary*>(e)->operand.get());
         static thread_local std::shared_ptr<Env> doScopeHold;
-        auto scope = std::make_shared<Env>(); scope->parent = tcx.cur;
+        auto scope = makeSlabShared<Env>(); scope->parent = tcx.cur;
         doScopeHold = scope;
         struct CurG { ExecContext& t; std::shared_ptr<Env> s; ~CurG() { t.cur = s; } } cg{tcx, tcx.cur};
         tcx.cur = scope;
@@ -13184,7 +13172,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         }
         else if (rhs.t == VT::Pair) { args.push_back(rhs); args.back().namedArg = true; }
         else args.push_back(rhs);
-        auto env = std::make_shared<Env>();
+        auto env = makeSlabShared<Env>();
         env->parent = tctx_.cur;
         bindParams(be->params, args, env, false, true);
         // the literal capture's own parts, to alias a variable part through `:=`
@@ -20343,7 +20331,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     std::shared_ptr<Env> savedCurWired;
     if (wired) {
         savedCurWired = tctx_.cur;
-        auto matchEnv = std::make_shared<Env>();
+        auto matchEnv = makeSlabShared<Env>();
         matchEnv->parent = std::static_pointer_cast<Env>(rxVal->ext());
         tctx_.cur = matchEnv;
     }
@@ -22440,7 +22428,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 else takeLeft = isDefined(l);                   // notandthen
                 if (takeLeft) return inner == "andthen" ? Value::array() : l;
                 if (inner == "andthen" || inner == "orelse" || inner == "notandthen") {
-                    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                     env->define("$_", l);
                     auto saved = tctx_.cur; tctx_.cur = env;
                     Value v;
@@ -23580,7 +23568,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // the match (`$/` is still found — and set — outside it)
             std::shared_ptr<Env> topicEnv, savedCur;
             if (wantsTopic && !topicSlot) {
-                topicEnv = std::make_shared<Env>();
+                topicEnv = makeSlabShared<Env>();
                 topicEnv->parent = tctx_.cur;
                 topicEnv->define("$_", l);
                 savedCur = tctx_.cur;
@@ -24230,7 +24218,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     else takeLeft = isDefined(l);                   // notandthen
                     if (takeLeft) return inner == "andthen" ? Value::array() : l;
                     if (inner == "andthen" || inner == "orelse" || inner == "notandthen") {
-                        auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                        auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                         env->define("$_", l);
                         auto saved = tctx_.cur; tctx_.cur = env;
                         Value v;
@@ -25798,7 +25786,7 @@ void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
                 if (rhs.t == VT::Nil) return;   // Nil resets to the default
                 std::shared_ptr<Env> owner = tctx_.cur;
                 while (owner.get() != en) owner = owner->parent;
-                auto wenv = std::make_shared<Env>();
+                auto wenv = makeSlabShared<Env>();
                 wenv->parent = owner;
                 wenv->define("$_", rhs);
                 auto saved = tctx_.cur; tctx_.cur = wenv;

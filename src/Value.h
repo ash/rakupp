@@ -606,6 +606,10 @@ struct CodeInfo : RefCounted {
     // a BLOCK that may read `@_` (Interpreter::blockTakesAtArgs, a deep scan): 1,
     // or 0 and a call gives it none. -1 = not yet scanned.
     mutable DecidedOnce<signed char> blockAtArgs{-1};
+    // a body that may reach its `state` frame (Interpreter::stateFrameOf, a deep
+    // scan): 1, or 0 and a call hangs its frame from the closure itself, with no
+    // `state` frame made at all. -1 = not yet scanned.
+    mutable DecidedOnce<signed char> stateFrameNeed{-1};
     // Three more static properties of the AST that callCallableRaw used to
     // recompute on EVERY call. Each is cheap once and worthless repeated; a
     // 73,603-call parse pays for them 73,603 times. -1/undecided as above.

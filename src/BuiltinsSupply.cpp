@@ -101,7 +101,7 @@ int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& 
         // matching `when` reports itself by unwinding, and a callable boundary
         // absorbs that signal as the block's return value. CATCH reads its own
         // clauses the same way. `$_` and `$!` are the exception, as in a CATCH.
-        auto scope = std::make_shared<Env>();
+        auto scope = makeSlabShared<Env>();
         scope->parent = q.code()->closure ? q.code()->closure : tctx_.cur;
         auto savedEnv = tctx_.cur;
         uint64_t savedGF = tctx_.curGivenFrame;

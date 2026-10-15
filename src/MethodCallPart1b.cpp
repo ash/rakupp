@@ -313,7 +313,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         Value r = Value::makeHash();
         r.hashKind = "REPL";
         if (!args.empty()) (*r.hash())["compiler"] = args[0];
-        auto sess = std::make_shared<Env>();
+        auto sess = makeSlabShared<Env>();
         sess->parent = global_;
         // A ROUTINE frame, so a dynamic the session does not declare itself is
         // looked for in the CALLER rather than in global: a weaver wraps each

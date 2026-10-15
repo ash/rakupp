@@ -746,7 +746,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                                 namedRegexKind_[name] = kind;
                                 if (!declSaved) {
                                     declSaved = tctx_.cur;
-                                    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                                    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                                     tctx_.cur = env;
                                 }
                                 i = e - 1;
@@ -770,7 +770,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                             }
                             if (!declSaved) {   // (the rewritten text is kept only with a decl scope)
                                 declSaved = tctx_.cur;
-                                auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                                 tctx_.cur = env;
                             }
                             i = e - 1;
@@ -786,14 +786,14 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                         std::string var = body.substr(0, ne);
                         if (!declSaved) {
                             declSaved = tctx_.cur;
-                            auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                            auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                             tctx_.cur = env;
                         }
                         try {
                             if (word == "state") {
                                 static thread_local std::map<std::string, std::shared_ptr<Env>> stateEnvs;
                                 auto& se = stateEnvs[in + '\x01' + var];
-                                if (!se) { se = std::make_shared<Env>(); se->define(var, Value::any()); }
+                                if (!se) { se = makeSlabShared<Env>(); se->define(var, Value::any()); }
                                 se->parent = tctx_.cur;
                                 auto sv = tctx_.cur; tctx_.cur = se;
                                 try { evalString(body); } catch (...) { tctx_.cur = sv; throw; }
@@ -1179,7 +1179,7 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
                     Value l = evalString("(" + name.substr(us + 1) + ",)");
                     if (l.arr()) av = *l.arr(); else av.push_back(l);
                 }
-                auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                 for (size_t k = 0; k < params.size(); k++) env->define(params[k], k < av.size() ? av[k] : Value::any());
                 struct CurRestore { std::shared_ptr<Env>& cur; std::shared_ptr<Env> saved;
                     ~CurRestore() { cur = saved; } } curRestore{tctx_.cur, tctx_.cur};
@@ -3179,7 +3179,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     ParseNode tree; long endPos = -1;
     bool matched;
     {
-        auto matchScope = std::make_shared<Env>();
+        auto matchScope = makeSlabShared<Env>();
         matchScope->parent = tctx_.cur;
         // A rule's code is LEXICAL to the grammar: `<?{ h($/) }>` calls the
         // `my sub h` beside the grammar's declaration. When that scope is not
@@ -4314,7 +4314,7 @@ Value Interpreter::shortCircuitOp(const std::string& op, Expr* lhs, Expr* rhs) {
         if (op == "andthen" || op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; }
         return l;
     }
-    auto scope = std::make_shared<Env>(); scope->parent = tctx_.cur;
+    auto scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
     scope->define("$_", l);
     auto saved = tctx_.cur; tctx_.cur = scope;
     Value r; try { r = eval(rhs); } catch (...) { tctx_.cur = saved; throw; }

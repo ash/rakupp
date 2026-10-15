@@ -236,7 +236,7 @@ void Interpreter::registerBuiltinsPart3() {
             // threads are reading, is never touched. (Not a scope around the
             // block's closure: a called block finds a dynamic through its
             // callers, not where it was written.)
-            auto own = std::make_shared<Env>();
+            auto own = makeSlabShared<Env>();
             own->parent = Interpreter::tctx_.cur;
             own->define("$*CWD", cwdv);
             auto savedCur = Interpreter::tctx_.cur;
@@ -245,7 +245,7 @@ void Interpreter::registerBuiltinsPart3() {
             ValueList none;
             return I.callCallable(code, none);
         }
-        auto denv = std::make_shared<Env>();
+        auto denv = makeSlabShared<Env>();
         denv->parent = Interpreter::tctx_.cur;
         Value* slot = I.findDynamicLenient("$*CWD");
         Value slotWas = slot ? *slot : Value();
@@ -1505,7 +1505,7 @@ void Interpreter::registerBuiltinsPart4() {
                     std::shared_ptr<ReactCtx> ctx = I.reactStack_.empty() ? nullptr : I.reactStack_.back();
                     // the phasers close over a shim env mirroring each call's
                     // parameters, so `LAST { say $v }` sees the last value
-                    auto phEnv = std::make_shared<Env>();
+                    auto phEnv = makeSlabShared<Env>();
                     phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
@@ -1651,7 +1651,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // had already failed. The phasers close over a shim env that
                     // mirrors each call's parameter bindings, so `LAST { say $c }`
                     // sees the last value (same trick as the from-list path below).
-                    auto phEnv = std::make_shared<Env>();
+                    auto phEnv = makeSlabShared<Env>();
                     phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
@@ -1885,7 +1885,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // the phasers close over a shim env that mirrors each
                     // call's parameter bindings, so `LAST { "Done with $c" }`
                     // sees the LAST value of $c (Rakudo semantics)
-                    auto phEnv = std::make_shared<Env>();
+                    auto phEnv = makeSlabShared<Env>();
                     phEnv->parent = blk.code() ? blk.code()->closure : nullptr;
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
