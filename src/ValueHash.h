@@ -91,6 +91,18 @@ public:
     ~ChunkList() { release(); }
 
     size_t size() const { return n_; }
+    // The elements in order as runs of contiguous storage, f(first, count),
+    // until f answers false: a scan without locate()'s arithmetic per element.
+    template <class F>
+    void runs(F&& f) const {
+        size_t left = n_;
+        for (size_t k = 0; left; k++) {
+            const size_t cap = size_t(1) << (shift_ + k);
+            const size_t m = left < cap ? left : cap;
+            if (!f(static_cast<const T*>(chunk(k)), m)) return;
+            left -= m;
+        }
+    }
     T& operator[](size_t i) { size_t k, o; locate(i, k, o); return chunk(k)[o]; }
     const T& operator[](size_t i) const { size_t k, o; locate(i, k, o); return chunk(k)[o]; }
     T& back() { return (*this)[n_ - 1]; }
@@ -193,6 +205,41 @@ private:
         }
     }
 
+    // A hash of at most kSmall entries has no index (VALUEHASH-SMALL-PLAN step
+    // 4): its lookups scan the entries, comparing the stored hash before the
+    // key, which costs about what a probe does at this size and spares most
+    // objects' attribute tables — and every small hash — the index's
+    // allocation. (At 8 a lookup of the 7th key measured +14%.) The
+    // index is built the first time an insert would pass kSmall entries, and
+    // stays until clear().
+    static constexpr size_t kSmall = 4;
+
+    // The entry holding `key`, or -1; *insertAt as findSlot gives it (SIZE_MAX
+    // for a hash with no index). The probe comes first and the scan is out of
+    // line, so an indexed hash's lookup costs what it did before.
+    int32_t findEntry(const std::string& key, uint64_t h, size_t* insertAt = nullptr) const {
+        if (!index_.empty()) {
+            int32_t s = findSlot(key, h, insertAt);
+            return s < 0 ? -1 : index_[s];
+        }
+        if (insertAt) *insertAt = SIZE_MAX;
+        return E().size() ? scanSmall(key, h) : -1;
+    }
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((noinline))
+#endif
+    int32_t scanSmall(const std::string& key, uint64_t h) const {
+        int32_t found = -1;
+        size_t base = 0;
+        E().runs([&](const Entry* p, size_t m) {
+            for (size_t j = 0; j < m; j++)
+                if (p[j].h == h && !p[j].dead && p[j].kv.first == key) { found = (int32_t)(base + j); return false; }
+            base += m;
+            return true;
+        });
+        return found;
+    }
+
     // The probe slot holding `key`, or the first insertable slot (EMPTY or
     // the earliest tombstone on the path) when absent.
     int32_t findSlot(const std::string& key, uint64_t h, size_t* insertAt = nullptr) const {
@@ -215,6 +262,12 @@ private:
     }
 
     Value& insertNew(const std::string& key, uint64_t h, Value v, size_t slot) {
+        if (index_.empty() && E().size() < kSmall) {   // still small: no index to keep
+            ChunkList<Entry>& es = E();
+            es.emplace_back(key, std::move(v), h);
+            live_++;
+            return es.back().kv.second;
+        }
         if (index_.empty() || (used_ + 1) * 4 > index_.size() * 3) {
             rehash(live_ + 1);
             size_t s2;
@@ -321,35 +374,42 @@ public:
     bool holdsNothing() const { return E().size() == 0 && objKeys_.empty(); }
 
     iterator find(const std::string& key) {
-        int32_t s = findSlot(key, hashKey(key));
-        return s < 0 ? end() : iterator(this, (size_t)index_[s]);
+        int32_t e = findEntry(key, hashKey(key));
+        return e < 0 ? end() : iterator(this, (size_t)e);
     }
     const_iterator find(const std::string& key) const {
-        int32_t s = findSlot(key, hashKey(key));
-        return s < 0 ? end() : const_iterator(this, (size_t)index_[s]);
+        int32_t e = findEntry(key, hashKey(key));
+        return e < 0 ? end() : const_iterator(this, (size_t)e);
     }
-    size_t count(const std::string& key) const { return findSlot(key, hashKey(key)) >= 0 ? 1 : 0; }
+    size_t count(const std::string& key) const { return findEntry(key, hashKey(key)) >= 0 ? 1 : 0; }
 
     Value& operator[](const std::string& key) {
         uint64_t h = hashKey(key);
         size_t slot;
-        int32_t s = findSlot(key, h, &slot);
-        if (s >= 0) return E()[index_[s]].kv.second;
+        int32_t e = findEntry(key, h, &slot);
+        if (e >= 0) return E()[e].kv.second;
         return insertNew(key, h, Value{}, slot);
     }
 
     Value& at(const std::string& key) {
-        int32_t s = findSlot(key, hashKey(key));
-        if (s < 0) throw std::out_of_range("ValueHash::at: " + key);
-        return E()[index_[s]].kv.second;
+        int32_t e = findEntry(key, hashKey(key));
+        if (e < 0) throw std::out_of_range("ValueHash::at: " + key);
+        return E()[e].kv.second;
     }
     const Value& at(const std::string& key) const {
-        int32_t s = findSlot(key, hashKey(key));
-        if (s < 0) throw std::out_of_range("ValueHash::at: " + key);
-        return E()[index_[s]].kv.second;
+        int32_t e = findEntry(key, hashKey(key));
+        if (e < 0) throw std::out_of_range("ValueHash::at: " + key);
+        return E()[e].kv.second;
     }
 
     size_t erase(const std::string& key) {
+        if (index_.empty()) {   // a small hash: the entry is only marked
+            int32_t e = findEntry(key, hashKey(key));
+            if (e < 0) return 0;
+            E()[e].dead = true;
+            live_--;
+            return 1;
+        }
         int32_t s = findSlot(key, hashKey(key));
         if (s < 0) return 0;
         E()[index_[s]].dead = true;
@@ -366,8 +426,8 @@ public:
     std::pair<iterator, bool> insert(const value_type& kv) {
         uint64_t h = hashKey(kv.first);
         size_t slot;
-        int32_t s = findSlot(kv.first, h, &slot);
-        if (s >= 0) return {iterator(this, (size_t)index_[s]), false};
+        int32_t e = findEntry(kv.first, h, &slot);
+        if (e >= 0) return {iterator(this, (size_t)e), false};
         insertNew(kv.first, h, kv.second, slot);
         return {iterator(this, E().size() - 1), true};
     }
