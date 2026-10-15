@@ -45,9 +45,9 @@ theme the rows are sorted by complexity, largest first.
 |---|---|---|---|
 | 4 | Values stop being refcounted, which also answers reference cycles | XL | One measurement decides design B or C — [VALUE32-PLAN.md](VALUE32-PLAN.md), V6 P3.10 |
 | 8 | Split `Callable` (664 B) into a shared CodeInfo and a closure of ~64 B | L | V6 P3.7 |
-| 9 | Inline slots for `Env::vars`, and `Env` on the slab | L | V6 P3.2 |
-| 10 | Small Rats inline; Pairs with an inline Int/Bool key | L | V6 P3.3–4 |
-| 29 | Tails: VALUEHASH step 4, DISPATCH-PERF Ph6, UNBOX P3–P5 | M | [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md), DISPATCH-PERF-PLAN, UNBOX-PLAN |
+| 9 | Inline slots for `Env::vars`, and `Env` on the slab | L | V6 P3.2. Re-measure first: on 2026-10-15 `for %h.kv -> $k, $v` made ~0.1 mallocs an iteration and objects.raku none for frames, so the premise (99% of that loop's mallocs) has moved |
+| 10 | Small Rats inline; Pairs with an inline Int/Bool key | L | V6 P3.3–4. On 2026-10-15 Rat arithmetic made no mallocs per operation; a Pair with an Int key still makes three (104 + 112 + 208 bytes), a Str-keyed one one (`pairVal`'s make_shared) |
+| 29 | Tail: UNBOX P3–P5 (`--exe` lanes across inlined calls, `my int` lanes, Rat lanes) | M–L | Which backend gets this, now that `--cnp` is to be the default, is the maintainer's decision — [UNBOX-PLAN.md](UNBOX-PLAN.md) |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
 
@@ -104,6 +104,10 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **29, two of its three tails** (c37ce984, e46e839b): a hash of up to four
+  entries has no probe index (VALUEHASH step 4: one malloc less per object),
+  and the shared-cell proxy shares one FETCH/STORE pair (DISPATCH-PERF Ph6:
+  an element bind 5 -> 3 mallocs, 2.1 -> 0.6 KB).
 - **17, packed native arrays batch 3** (ff3fcc5b): reductions, op= and `++`
   on the words, `--cnp` kernels over packed arrays, and the unpack census
   (`RAKUPP_PACKED_CENSUS=1`). A 1M `@a[$i] += 1` loop 0.16 -> 0.04 s.

@@ -134,10 +134,8 @@ The same items grouped by theme, with a complexity estimate for each:
   P6 (make `auto` the default) and P7 (`--aot`) follow.
 - [ ] **Small tails**:
   - [VALUE32-PLAN.md](VALUE32-PLAN.md): one measurement decides B versus C.
-  - [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md): step 4, the other 8 of
-    11 allocations per object.
   - [JUNCTION-PLAN.md](JUNCTION-PLAN.md): Ph3, list-associative `|`, `&`, `^`.
-  - [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md): Ph6, plus a per-class
+  - [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md): a per-class
     construction plan.
   - [UNBOX-PLAN.md](UNBOX-PLAN.md): P3–P5, partly overtaken by `--cnp`.
 - [ ] **`--exe` native module bodies**: the remaining cost is method dispatch

@@ -23,7 +23,12 @@ and was checked in C++ under AddressSanitizer across every first-chunk size.
   two-attribute objects plus 50k small hashes, peak RSS 531 → 175 MB (−67%),
   time −16%. That is the case the 4 KB block cost for real.
 
-Step 4 (the census's other rows) is open.
+Step 4 (done 2026-10-15, c37ce984): of the census's other rows, the slab
+work since had taken all but the attribute table's probe index — a 32-byte
+`std::vector<int32_t>` of eight slots for two attributes. A hash of at most
+four entries now has no index and scans its entries, comparing the stored
+hash first; objects.raku 428,683 -> 228,677 mallocs, one per object (the
+entries' chunk), and -2.0% retired instructions.
 
 ## The measurement
 

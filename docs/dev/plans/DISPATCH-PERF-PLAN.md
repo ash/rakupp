@@ -219,6 +219,12 @@ primitives. Give slot proxies a compact representation that `deproxy` and
 `proxyStore` recognise ahead of the generic FETCH/STORE path, keeping the
 `hashKind == "Proxy"` surface so the ~40 existing test sites are untouched.
 
+*Done.* An array slot's proxy was already compact (`kSlotArr`, one shared
+FETCH/STORE pair). The shared-cell proxy behind `@a[$i] := $x`, `%h<k> := $x`
+and `$a := $b` now shares one FETCH and one STORE too, and deproxy/proxyStore
+read and write its cell directly (e46e839b): 200k element binds 1.21M ->
+606k mallocs, 420 -> 126 MB allocated, -21.5% instructions.
+
 ## Gates and measurement
 
 `tools/perf-guard.raku` guards SUB calls well — `fib` is recursive calls and
