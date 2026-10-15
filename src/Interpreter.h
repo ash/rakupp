@@ -981,14 +981,14 @@ struct Env {
         if (name.size() > 9 && name[0] == '&' && name[1] == 'i' &&
             name.compare(0, 8, "&infix:<") == 0 && name.back() == '>' &&
             // (a plain, non-multi `sub infix:<×>` shadows the built-in too)
-            !(v.t == VT::Code && v.code() && !v.code()->name.empty() &&
-              (v.code()->isMultiDispatcher || v.code()->isMultiCandidate || v.code()->isProto)))
+            !(v.t == VT::Code && v.code() && !v.code()->ci().name.empty() &&
+              (v.code()->ci().isMultiDispatcher || v.code()->ci().isMultiCandidate || v.code()->ci().isProto)))
             g_lexShadowMask.fetch_or(1ull << lexShadowSlot(name.data() + 8, name.size() - 9),
                                      std::memory_order_relaxed);
         if (name.size() > 10 && name[0] == '&' && name[1] == 'p' &&
             name.compare(0, 9, "&prefix:<") == 0 &&
-            v.t == VT::Code && v.code() && !v.code()->isMultiDispatcher && !v.code()->isMultiCandidate &&
-            !v.code()->isProto && !v.code()->builtin)
+            v.t == VT::Code && v.code() && !v.code()->ci().isMultiDispatcher && !v.code()->ci().isMultiCandidate &&
+            !v.code()->ci().isProto && !v.code()->ci().builtin)
             g_userPrefixShadow.store(true, std::memory_order_relaxed);
         if (layout) {
             auto it = layout->byName.find(name);
@@ -5102,8 +5102,8 @@ inline Value rtPow(const Value& l, const Value& r) {
 // with a whateverish operand.
 inline Value applyArithValue(const char* op, const Value& l, const Value& r) {
     if (l.t == VT::Whatever || r.t == VT::Whatever ||
-        (l.t == VT::Code && l.code() && l.code()->isWhateverCode) ||
-        (r.t == VT::Code && r.code() && r.code()->isWhateverCode))
+        (l.t == VT::Code && l.code() && l.code()->ci().isWhateverCode) ||
+        (r.t == VT::Code && r.code() && r.code()->ci().isWhateverCode))
         Interpreter::valueSmartmatch_ = true;
     return applyArith(op, l, r);
 }

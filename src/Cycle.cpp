@@ -220,8 +220,16 @@ void forEachEdge(void* key, PK k, F&& f, bool& pin, long& scan) {
             Callable& c = static_cast<Body<Callable>*>(static_cast<Payload*>(key))->v;
             envEdge(c.closure, f);
             envEdge(c.state.env, f);
-            values(c.cold().candidates);
-            values(c.cold().wrappers);
+            // a multi's candidates and a wrapped routine's wrappers live in its
+            // CodeInfo, which other Callables may share: counted as this
+            // routine's edges only when it is the code's one holder, and
+            // otherwise the routine is pinned (its edges would count once for
+            // each sharer, and make what they hold look unreachable)
+            if (!c.cold().candidates.empty() || !c.cold().wrappers.empty()) {
+                if (!c.codeExclusive()) { pin = true; break; }
+                values(c.cold().candidates);
+                values(c.cold().wrappers);
+            }
             if (c.dispatcherC) f((void*)c.dispatcherC.body(), PK::Code, nullptr);
             break;
         }
@@ -269,7 +277,7 @@ void breakBody(Payload* p, PK k) {
             Callable& c = static_cast<Body<Callable>*>(p)->v;
             c.closure.reset();
             c.state.env.reset();
-            if (c.hasCold()) { c.coldM().candidates.clear(); c.coldM().wrappers.clear(); }
+            if (c.hasCold() && c.codeExclusive()) { c.coldM().candidates.clear(); c.coldM().wrappers.clear(); }
             c.dispatcherC.reset();
             break;
         }

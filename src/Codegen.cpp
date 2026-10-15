@@ -893,8 +893,8 @@ struct Codegen {
         // arity, and what `~~ WhateverCode` and `.WHAT` answer. Only the
         // multi-`*` form used to carry it, so `my $i = *-1; @a[$i]` read element
         // ONE and `(* < 1).WHAT` said `(Sub)`.
-        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->isWhateverCode = true; "
-               "_c.code()->whateverArity = " + std::to_string(arity < 1 ? 1 : arity) + "; return _c; }())";
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().isWhateverCode = true; "
+               "_c.code()->ciM().whateverArity = " + std::to_string(arity < 1 ? 1 : arity) + "; return _c; }())";
     }
 
     static bool isSlip(Expr* e) { return e->kind == NK::Unary && static_cast<Unary*>(e)->op == "|" && !static_cast<Unary*>(e)->postfix; }
@@ -1455,9 +1455,9 @@ struct Codegen {
               << "; v.push_back(std::move(p)); }\n";
         b << "        return v; }();\n";
         b << "    static Callable __nc; static const bool __nci = []{ __nc.coldM().isNative = true;\n";
-        b << "        __nc.name = " << cesc(d->name) << "; __nc.coldM().nativeLib = " << cesc(d->nativeLib) << ";\n";
+        b << "        __nc.ciM().name = " << cesc(d->name) << "; __nc.coldM().nativeLib = " << cesc(d->nativeLib) << ";\n";
         b << "        __nc.coldM().nativeSym = " << cesc(sym) << "; __nc.coldM().retType = " << cesc(d->retType) << ";\n";
-        b << "        __nc.params = &__np; return true; }(); (void)__nci;\n";
+        b << "        __nc.ciM().params = &__np; return true; }(); (void)__nci;\n";
         b << "    return RT.callNative(__nc, __a, nullptr);\n";
         return b.str();
     }
@@ -1590,15 +1590,15 @@ struct Codegen {
         return 0;
     }
     static std::string cmpShapeSet(int shape) {
-        return shape ? " _c.code()->cmpShape = " + std::to_string(shape) + ";" : std::string();
+        return shape ? " _c.code()->ciM().cmpShape = " + std::to_string(shape) + ";" : std::string();
     }
     // A named sub's closure, carrying the declared signature
     std::string subSig(const std::string& mk, const SubDecl* d) {
         if (d->params.empty() && !d->hadSig) {
             auto phs = computePlaceholders(d->body);
             if (!phs.empty())
-                return "([&]()->Value{ Value _c = " + mk + "; _c.code()->name = " + cesc(d->name) +
-                       "; _c.code()->placeholders = {" + placeholderList(phs) + "}; return _c; }())";
+                return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().name = " + cesc(d->name) +
+                       "; _c.code()->ciM().placeholders = {" + placeholderList(phs) + "}; return _c; }())";
         }
         return sigWrap(mk, d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u);
     }
@@ -1680,7 +1680,7 @@ struct Codegen {
         // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
         // under their real names, in the sorted order they bind.
         if (!phs.empty())
-            return "([&]()->Value{ Value _c = " + mk + "; _c.code()->placeholders = {" + placeholderList(phs) +
+            return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().placeholders = {" + placeholderList(phs) +
                    "};" + cmpShapeSet(cmpShapeOf(be, phs)) + " return _c; }())";
         if (be->params.empty() && !be->isPointy && !(be->isSub && be->sigParens)) return mk;
         std::string sc = sigWrap(mk, be->params, "", be->retType,
@@ -1691,7 +1691,7 @@ struct Codegen {
         std::vector<std::string> arityPhs;
         for (auto& p : be->params) if (!p.named && !p.slurpy) arityPhs.push_back("$^" + p.name.substr(p.name.empty() ? 0 : 1));
         if (arityPhs.size() <= 1) return sc;
-        return "([&]()->Value{ Value _c = " + sc + "; _c.code()->placeholders = {" + placeholderList(arityPhs) +
+        return "([&]()->Value{ Value _c = " + sc + "; _c.code()->ciM().placeholders = {" + placeholderList(arityPhs) +
                "};" + cmpShapeSet(cmpShapeOf(be, {})) + " return _c; }())";
     }
 

@@ -1942,7 +1942,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         }
         else if (nthVal.t == VT::Code && nthVal.code()) {
             long idx;
-            if (nthVal.code()->isWhateverCode) {
+            if (nthVal.code()->ci().isWhateverCode) {
                 const long tail = std::labs((long)callCallable(nthVal, ValueList{Value::integer(-1)}).toInt());
                 idx = tail >= 1 ? total - tail + 1 : 0;
             } else {
@@ -2870,7 +2870,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             if (howCode.t == VT::Code) {
                 // a METHOD handed back as it was runs as one; anything else —
                 // a wrapper block, the rule itself — is called with the cursor
-                if (howCode.code()->isMethod && !howCode.code()->isRegexRoutine && !howCode.code()->builtin)
+                if (howCode.code()->ci().isMethod && !howCode.code()->ci().isRegexRoutine && !howCode.code()->ci().builtin)
                     r = invokeMethod(howCode, self, std::move(av));
                 else {
                     av.insert(av.begin(), self);
@@ -3407,7 +3407,7 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
             if (Value* f = tctx_.cur->find("&infix:<" + opn + ">")) opv = *f;
             else {   // a built-in infix: a routine value that answers its name
                 opv = Value::closure([](ValueList&) { return Value::nil(); });
-                opv.code()->name = "infix:<" + opn + ">";
+                opv.code()->ciM().name = "infix:<" + opn + ">";
             }
         }
         const std::string msg = "Lists on either side of non-dwimmy hyperop of infix:<" + opn +
@@ -4029,7 +4029,7 @@ Value Interpreter::containerOfExpr(Expr* e) {
             if (base && !ix->isHash && base->t == VT::Array && base->arr() && !base->shape()) {
                 if (PRef<ValueList> arr = base->arrS()) {
                     Value kv = eval(ix->index.get());
-                    if (kv.t == VT::Code && kv.code() && kv.code()->isWhateverCode)
+                    if (kv.t == VT::Code && kv.code() && kv.code()->ci().isWhateverCode)
                         kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
                     long long i = kv.toInt();
                     if (i < 0) negIndexThrow(i);
@@ -4064,8 +4064,8 @@ Value* Interpreter::lexInfixLookup(const std::string& op) {
         auto tw = kUniTwin.find(op);
         if (tw == kUniTwin.end() || !lexShadowPossible(tw->second)) return nullptr;
         Value* f = tctx_.cur->find("&infix:<" + tw->second + ">");
-        if (f && f->t == VT::Code && f->code() && !f->code()->name.empty() &&
-            (f->code()->isMultiDispatcher || f->code()->isMultiCandidate || f->code()->isProto))
+        if (f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
+            (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto))
             return nullptr;
         // …but not from inside that operator's own body: `sub infix:<×>($a, $b)
         // { $a * $b }` means the built-in `*` there, not itself again (the lexer
@@ -4081,8 +4081,8 @@ Value* Interpreter::lexInfixLookup(const std::string& op) {
     // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
     // carries its own name and belongs to the multi-dispatch path (see the
     // g_lexShadowMask note in Interpreter.h).
-    if (f && f->t == VT::Code && f->code() && !f->code()->name.empty() &&
-        (f->code()->isMultiDispatcher || f->code()->isMultiCandidate || f->code()->isProto))
+    if (f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
+        (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto))
         return nullptr;
     return f;
 }
@@ -4094,7 +4094,7 @@ Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, cons
     // through here with real operands. Intercepting the curry itself would call
     // the user's block once, eagerly, with two Whatevers.
     auto wish = [](const Value& v) {
-        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
     };
     if (wish(l) || wish(r)) return nullptr;
     return lexInfixLookup(op);
@@ -4175,11 +4175,11 @@ bool Interpreter::pairAccepts(const Value& topic, const Value& pair) {
 // where `sub always { True }` asks only the sub (S03-smartmatch/any-callable.t)
 ValueList smartmatchCallArgs(const Value& r, const Value& topic) {
     const Callable* c = r.code();
-    if (c && !c->isBlock && !c->isWhateverCode && !c->builtin && c->placeholders.empty() && !c->isMethod) {
-        if (!c->hadSig && !c->usesArgs && !c->name.empty()) return {};
-        if (c->hadSig && c->params) {
+    if (c && !c->ci().isBlock && !c->ci().isWhateverCode && !c->ci().builtin && c->ci().placeholders.empty() && !c->ci().isMethod) {
+        if (!c->ci().hadSig && !c->ci().usesArgs && !c->ci().name.empty()) return {};
+        if (c->ci().hadSig && c->ci().params) {
             bool any = false;
-            for (auto& p : *c->params) if (!p.named) { any = true; break; }
+            for (auto& p : *c->ci().params) if (!p.named) { any = true; break; }
             if (!any) return {};
         }
     }
@@ -4188,7 +4188,7 @@ ValueList smartmatchCallArgs(const Value& r, const Value& topic) {
 
 Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {
     if (l.t == VT::Array) l.seqTouch();   // `$s ~~ …` caches a Seq (SeqToken)
-    if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->isWhateverCode)))
+    if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->ci().isWhateverCode)))
         return applyBinOp(op, l, r);
     struct Drop { ~Drop() { Interpreter::valueSmartmatch_ = false; } } drop;
     Interpreter::valueSmartmatch_ = true;

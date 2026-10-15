@@ -2715,11 +2715,11 @@ size_t codeArity(const Value& code) {
     // A WhateverCode takes one argument per `*` it was written with, and that is
     // how many elements `.map` hands it: `<1 2 3 4>.map(* + *)` is (3, 7), and
     // `%h.kv.map($ns ~ * => *)` pairs each key with its value (YAMLish).
-    if (code.code()->isWhateverCode && code.code()->whateverArity > 1)
-        return (size_t)code.code()->whateverArity;
-    if (code.code()->params) {
+    if (code.code()->ci().isWhateverCode && code.code()->ci().whateverArity > 1)
+        return (size_t)code.code()->ci().whateverArity;
+    if (code.code()->ci().params) {
         size_t n = 0;
-        for (auto& p : *code.code()->params) if (!p.named && !p.slurpy) n++;
+        for (auto& p : *code.code()->ci().params) if (!p.named && !p.slurpy) n++;
         if (n) return n;
     }
     if (size_t n = code.code()->placeholderPos()) return n;
@@ -4708,26 +4708,26 @@ Value makeSignature(const Callable* c) {
     // carries. `^lookup` hands back the dispatcher, so that is what introspection
     // sees — Path::Finder reads `.signature.count` off it to decide how to call
     // the matcher, and an empty one made every proto-declared matcher unusable.
-    bool protoLess = c && c->isMultiDispatcher && !c->params;
-    if (c && c->isMultiDispatcher && !c->params)
+    bool protoLess = c && c->ci().isMultiDispatcher && !c->ci().params;
+    if (c && c->ci().isMultiDispatcher && !c->ci().params)
         for (auto& cand : c->cold().candidates)
-            if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody) &&
-                cand.code()->params) { c = cand.code(); protoLess = false; break; }
+            if (cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody) &&
+                cand.code()->ci().params) { c = cand.code(); protoLess = false; break; }
     // a .assuming wrapper carries its residual params; everything else renders
     // its declared params
     std::vector<const Param*> ps;
     if (c) {
         if (c->cold().hasPrimed) { for (auto& sp : c->cold().primedParams) ps.push_back(sp.get()); }
-        else if (c->params) for (auto& p : *c->params) ps.push_back(&p);
+        else if (c->ci().params) for (auto& p : *c->ci().params) ps.push_back(&p);
     }
     // A routine with NO written signature has the one its body implies: its
     // placeholders (`sub c { $^a }` is `($a)`) and, for `@_` / `%_`, the implicit
     // slurpies (`(*@_, *%_)`)
     std::vector<Param> synth;
-    if (ps.empty() && c && !c->cold().hasPrimed && !c->hadSig &&
-        (!c->placeholders.empty() || c->implicitArgs)) {
-        synth.reserve(c->placeholders.size() + 2);
-        for (auto& ph : c->placeholders) {
+    if (ps.empty() && c && !c->cold().hasPrimed && !c->ci().hadSig &&
+        (!c->ci().placeholders.empty() || c->ci().implicitArgs)) {
+        synth.reserve(c->ci().placeholders.size() + 2);
+        for (auto& ph : c->ci().placeholders) {
             if (ph.size() < 3) continue;
             Param p; p.sigil = ph[0];
             p.name = std::string(1, ph[0]) + ph.substr(2);
@@ -4735,8 +4735,8 @@ Value makeSignature(const Callable* c) {
             p.required = p.named;   // `$:name` is a REQUIRED named: `:$name!`
             synth.push_back(std::move(p));
         }
-        if (c->implicitArgs & 1) { Param p; p.sigil = '@'; p.name = "@_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
-        if (c->implicitArgs & 2) { Param p; p.sigil = '%'; p.name = "%_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
+        if (c->ci().implicitArgs & 1) { Param p; p.sigil = '@'; p.name = "@_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
+        if (c->ci().implicitArgs & 2) { Param p; p.sigil = '%'; p.name = "%_"; p.slurpy = true; p.slurpyKind = 'f'; synth.push_back(std::move(p)); }
         for (auto& p : synth) ps.push_back(&p);
     }
     // A multi with no proto answers the proto Rakudo generates for it,
@@ -4750,8 +4750,8 @@ Value makeSignature(const Callable* c) {
     // `{;}.signature` is `(;; $_? is raw = OUTER::<$_>)`, arity 0 but count 1.
     // `-> {…}` and `sub {…}` do NOT (both are `()`), and a placeholder block has
     // its own real signature — hence the isBlock/!hadSig/no-placeholders guard.
-    if (ps.empty() && c && c->isBlock && !c->hadSig && !c->isSigLiteral &&
-        c->placeholders.empty()) {
+    if (ps.empty() && c && c->ci().isBlock && !c->ci().hadSig && !c->ci().isSigLiteral &&
+        c->ci().placeholders.empty()) {
         Value s = Value::makeHash(); s.hashKind = "Signature";
         (*s.hash())["str"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
         (*s.hash())["rakustr"] = Value::str("(;; $_? is raw = OUTER::<$_>)");
@@ -4805,11 +4805,11 @@ Value makeSignature(const Callable* c) {
     // A METHOD carries an implicit `*%_`, and its signature says so (Rakudo:
     // `method m1($a)` is `(Foo $: $a, *%_)`) — unless it wrote a named slurpy
     // of its own, or its class is `is hidden`, which gives it none
-    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->cold().hasPrimed) {
+    if (c && c->ci().isMethod && !c->ci().isMultiDispatcher && !c->ci().isBlock && !c->cold().hasPrimed) {
         bool ownSlurpy = false;
         for (const Param* pp : ps)
             if (pp->slurpy && (pp->sigil == '%' || pp->sigil == '|' || pp->sigil == '\\')) ownSlurpy = true;
-        if (!ownSlurpy && !(g_pkgIsHidden && !c->pkg.empty() && g_pkgIsHidden(c->pkg))) {
+        if (!ownSlurpy && !(g_pkgIsHidden && !c->ci().pkg.empty() && g_pkgIsHidden(c->ci().pkg))) {
             const char* sep = first ? "" : ", ";
             sig += std::string(sep) + "*%_"; rsig += std::string(sep) + "*%_";
         }
@@ -4820,12 +4820,12 @@ Value makeSignature(const Callable* c) {
     // none. An anonymous method's is Mu. A ROLE's method is left without one:
     // its invocant is whichever class composes it, which the Callable does
     // not know, and the role's own name would be a wrong answer.
-    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->cold().hasPrimed &&
-        !(g_pkgIsRole && !c->pkg.empty() && g_pkgIsRole(c->pkg))) {
+    if (c && c->ci().isMethod && !c->ci().isMultiDispatcher && !c->ci().isBlock && !c->cold().hasPrimed &&
+        !(g_pkgIsRole && !c->ci().pkg.empty() && g_pkgIsRole(c->ci().pkg))) {
         const Param* ip = nullptr;
         for (const Param* pp : ps) if (pp->invocant) { ip = pp; break; }
         std::string ty = ip && !ip->type.empty() && ip->type != "::?CLASS" ? ip->type
-                       : !c->pkg.empty() ? c->pkg : std::string("Mu");
+                       : !c->ci().pkg.empty() ? c->ci().pkg : std::string("Mu");
         if (ip && ip->defConstraint) ty += ip->defConstraint == 1 ? ":D" : ":U";
         const std::string inv = ty + " " + (ip && !ip->name.empty() ? ip->name : std::string("$")) + ":";
         auto lead = [&](std::string& s) {
@@ -4844,7 +4844,7 @@ Value makeSignature(const Callable* c) {
         sig += " --> " + rt; rsig += " --> " + rt;
     }
     else if (c) {   // `--> Nil` / `--> True`: a return value written as one
-        const std::string lit = retLiteralText(c->retLiteral);
+        const std::string lit = retLiteralText(c->ci().retLiteral);
         const std::string shown = lit == "True" || lit == "False" ? "Bool::" + lit : lit;   // as Rakudo renders it
         if (!lit.empty()) { sig += " --> " + shown; rsig += " --> " + shown; }
     }
@@ -4858,10 +4858,10 @@ Value makeSignature(const Callable* c) {
     if (c && !c->cold().retType.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(c->cold().retType));
     // the declared parameters themselves (AST-owned, program lifetime), for
     // Signature ~~ Signature
-    if (c && !c->cold().hasPrimed && c->params && synth.empty()) {
-        (*s.hash())["\x01sigptr"] = Value::integer((long long)(intptr_t)c->params);
+    if (c && !c->cold().hasPrimed && c->ci().params && synth.empty()) {
+        (*s.hash())["\x01sigptr"] = Value::integer((long long)(intptr_t)c->ci().params);
         (*s.hash())["\x01ret"] = Value::str(c->cold().retType);
-        if (c->isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
+        if (c->ci().isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
     }
     (*s.hash())["arity"] = Value::integer(arity);
     (*s.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity()) : Value::integer(count);
@@ -4952,7 +4952,7 @@ Value makeSignature(const Callable* c) {
                 // `(sub ($a) {}).…` is Any. Blocks answered Any here, so a
                 // signature literal never compared equal to the pointy block it
                 // describes (roast S02-names-vars/signature.t).
-                : (c && (c->isSigLiteral || c->isBlock)) ? "Mu" : "Any");
+                : (c && (c->ci().isSigLiteral || c->ci().isBlock)) ? "Mu" : "Any");
             (*pv.hash())["type-obj"] = std::move(tv);
         }
         // trait/shape flags the introspection API exposes one method each for
@@ -4974,9 +4974,9 @@ Value makeSignature(const Callable* c) {
             const std::vector<Param>* sub = p.subSig ? p.subSig.get() : nullptr;
             if (sub) {
                 Callable tmp;
-                tmp.params = sub;
+                tmp.ciM().params = sub;
                 tmp.coldM().retType = p.subSigRet;
-                tmp.hadSig = true;
+                tmp.ciM().hadSig = true;
                 (*pv.hash())["sub_signature"] = makeSignature(&tmp);
             }
             else (*pv.hash())["sub_signature"] = Value::typeObj("Signature");
@@ -5002,7 +5002,7 @@ Value makeSignature(const Callable* c) {
         if (p.defaultVal) {
             const Expr* de = p.defaultVal.get();
             Value dc; dc.t = VT::Code; dc.setCode(makePayload<Callable>());
-            dc.code()->builtin = [de](Interpreter& I, ValueList&) -> Value {
+            dc.code()->ciM().builtin = [de](Interpreter& I, ValueList&) -> Value {
                 return I.eval(const_cast<Expr*>(de));
             };
             (*pv.hash())["default"] = dc;
@@ -5041,7 +5041,7 @@ Value makeSignature(const Callable* c) {
             if (p.whereExpr) {
                 const Expr* we = p.whereExpr.get();
                 Value wc; wc.t = VT::Code; wc.setCode(makePayload<Callable>());
-                wc.code()->builtin = [we](Interpreter& I, ValueList& a) -> Value {
+                wc.code()->ciM().builtin = [we](Interpreter& I, ValueList& a) -> Value {
                     return Value::boolean(I.attrWhereOk(we, a.empty() ? Value::any() : a[0]));
                 };
                 cj.arr()->push_back(std::move(wc));
@@ -5080,7 +5080,7 @@ Value makeSignature(const Callable* c) {
     // in place. The rendered `str` stays as it was — the Callable does not know
     // the class it was declared in, so `Mu $:` would be a worse answer than
     // leaving the invocant out of the rendering.
-    if (c && c->isMethod) {
+    if (c && c->ci().isMethod) {
         bool haveInv = false, haveNamedSlurpy = false;
         for (const Param* pp : ps) {
             if (pp->invocant) haveInv = true;
@@ -5899,10 +5899,10 @@ void Interpreter::wrapJsonFastExports(Env& moduleEnv) {
         Value* gslot = global_ ? global_->find(qual) : nullptr;
         if (!slot && !(gslot && gslot->t == VT::Code)) return;
         Value orig = slot ? *slot : *gslot;
-        if (orig.code() && orig.code()->builtin) return;   // already wrapped
+        if (orig.code() && orig.code()->ci().builtin) return;   // already wrapped
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-        w.code()->name = name + 1;                          // drop the '&'
-        w.code()->builtin = [orig, fn](Interpreter& I2, ValueList& args) -> Value {
+        w.code()->ciM().name = name + 1;                          // drop the '&'
+        w.code()->ciM().builtin = [orig, fn](Interpreter& I2, ValueList& args) -> Value {
             return fn(I2, args, orig);
         };
         if (slot) *slot = w;
@@ -5931,12 +5931,12 @@ bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, si
     Value* mv = cls->findMethod(m);
     if (!mv || mv->t != VT::Code || !mv->code()) return false;
     std::vector<const Value*> cands;
-    if (mv->code()->isMultiDispatcher) for (auto& c : mv->code()->cold().candidates) cands.push_back(&c);
+    if (mv->code()->ci().isMultiDispatcher) for (auto& c : mv->code()->cold().candidates) cands.push_back(&c);
     else cands.push_back(mv);
     for (const Value* cv : cands) {
-        if (!cv->code() || !cv->code()->params) continue;
+        if (!cv->code() || !cv->code()->ci().params) continue;
         size_t seen = 0;
-        for (const Param& p : *cv->code()->params) {
+        for (const Param& p : *cv->code()->ci().params) {
             if (p.named || p.invocant) continue;
             if (p.slurpy) return true;
             if (seen == ai) {
@@ -6495,7 +6495,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             }
         auto st = std::make_shared<std::pair<bool, Value>>(true, Value());
         Value filt; filt.t = VT::Code; filt.setCode(makePayload<Callable>());
-        filt.code()->builtin = [st, asF, withF](Interpreter& I, ValueList& a) -> Value {
+        filt.code()->ciM().builtin = [st, asF, withF](Interpreter& I, ValueList& a) -> Value {
             Value v = a.empty() ? Value::any() : a[0];
             Value k = asF.t == VT::Code ? I.callCallable(asF, ValueList{v}) : v;
             bool keep = st->first ||
@@ -6899,7 +6899,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m)) {
             ClassInfo* owner = nullptr;
             if (Value* um = ci->findMethodForCall(m, langRev_ < 2, &owner)) {
-                if (!(um->t == VT::Code && um->code() && um->code()->isStub))
+                if (!(um->t == VT::Code && um->code() && um->code()->ci().isStub))
                     // hand the resolution on — invokeMethodChain would otherwise
                     // hash and walk for the same name all over again
                     return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
@@ -7936,12 +7936,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return d;
         };
         if (inv.t == VT::Code && inv.code() && !inv.code()->cold().pod.empty())
-            return declarator(inv.code()->cold().pod, inv.code()->cold().podTrail, inv.code()->declLine);
+            return declarator(inv.code()->cold().pod, inv.code()->cold().podTrail, inv.code()->ci().declLine);
         // a dispatch group is documented by its PROTO (a bare multi group has none)
-        if (inv.t == VT::Code && inv.code() && inv.code()->isMultiDispatcher)
+        if (inv.t == VT::Code && inv.code() && inv.code()->ci().isMultiDispatcher)
             for (auto& c : inv.code()->cold().candidates)
-                if (c.code() && (c.code()->isProto || c.code()->isProtoBody) && !c.code()->cold().pod.empty())
-                    return declarator(c.code()->cold().pod, c.code()->cold().podTrail, c.code()->declLine);
+                if (c.code() && (c.code()->ci().isProto || c.code()->ci().isProtoBody) && !c.code()->cold().pod.empty())
+                    return declarator(c.code()->cold().pod, c.code()->cold().podTrail, c.code()->ci().declLine);
         // an Attribute's doc, carried on its meta-object
         if (inv.t == VT::Hash && inv.hashKind == "Attribute" && inv.hash() && inv.hash()->count("why")) {
             auto& h = *inv.hash();
@@ -8230,12 +8230,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // whose candidates all reject the args falls through to the built-in
         // method instead of dying — `augment class DateTime { multi method
         // new(Any:U) {…} }` must leave `DateTime.new($str)` working (JSON::Fast).
-        if (f->code() && f->code()->isMultiDispatcher) {
+        if (f->code() && f->code()->ci().isMultiDispatcher) {
             bool anyFits = false;
             ValueList withInv; withInv.push_back(inv);
             for (auto& a : args) withInv.push_back(a);
             for (auto& c : f->code()->cold().candidates) {
-                if (c.code() && c.code()->isProto) continue;
+                if (c.code() && c.code()->ci().isProto) continue;
                 if (scoreCandidate(c, withInv) >= 0 || scoreCandidate(c, args) >= 0) { anyFits = true; break; }
             }
             if (!anyFits) goto builtinExtFallthrough;
@@ -8834,8 +8834,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-            code.code()->name = mn; code.code()->isMethod = true;
-            code.code()->builtin = [mn](Interpreter& I, ValueList& a) -> Value {
+            code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
+            code.code()->ciM().builtin = [mn](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 Value in2 = a[0]; ValueList rest(a.begin() + 1, a.end());
                 return I.methodCall(in2, mn, rest);
@@ -8939,8 +8939,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             if (mm == "method_names") { o.arr()->push_back(Value::str(mn)); continue; }
                             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
                             std::string mname = mn;
-                            code.code()->name = mname; code.code()->isMethod = true;
-                            code.code()->builtin = [mname](Interpreter& I, ValueList& av) -> Value {
+                            code.code()->ciM().name = mname; code.code()->ciM().isMethod = true;
+                            code.code()->ciM().builtin = [mname](Interpreter& I, ValueList& av) -> Value {
                                 if (av.empty()) return Value::any();
                                 Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
                                 return I.methodCall(in2, mname, rest);
@@ -8951,7 +8951,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 if (mm == "method_table") {
                     Value t = Value::makeHash();
-                    for (auto& c : *o.arr()) (*t.hash())[c.code()->name] = c;
+                    for (auto& c : *o.arr()) (*t.hash())[c.code()->ci().name] = c;
                     return t;
                 }
                 return o;
@@ -9173,8 +9173,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         Value n = Value::pair(kv.first, kv.second); n.namedArg = true; callArgs.push_back(n);
                     }
                 auto tmp = makePayload<Callable>();
-                tmp->params = S;
-                tmp->isMethod = isMeth;   // (and its implicit *%_)
+                tmp->ciM().params = S;
+                tmp->ciM().isMethod = isMeth;   // (and its implicit *%_)
                 tmp->closure = tctx_.cur;
                 Value tv; tv.t = VT::Code; tv.setCode(tmp);
                 try { return Value::boolean(scoreCandidate(tv, callArgs) >= 0); }
@@ -9516,8 +9516,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (size_t k = 0; k + 1 < fmt.size(); k++)
             if (fmt[k] == '%') { if (fmt[k + 1] == '%') k++; else ar++; }
         Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-        code.code()->name = "Format";
-        code.code()->builtin = [fmt](Interpreter& I, ValueList& a) -> Value {
+        code.code()->ciM().name = "Format";
+        code.code()->ciM().builtin = [fmt](Interpreter& I, ValueList& a) -> Value {
             ValueList sa; sa.push_back(Value::str(fmt));
             for (auto& x : a) sa.push_back(x);
             return I.callBuiltin("sprintf", sa);
@@ -9633,7 +9633,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 ClassInfo* r = it->second.get();
                 auto rm = r->methods.find(name);
                 if (rm != r->methods.end() && rm->second.t == VT::Code && rm->second.code() &&
-                    rm->second.code()->isSubmethod)
+                    rm->second.code()->ci().isSubmethod)
                     wl.arr()->push_back(rm->second);
                 for (auto& rn : direct(r)) q.push_back(rn);
             }

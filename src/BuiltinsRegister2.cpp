@@ -429,10 +429,10 @@ void Interpreter::registerBuiltinsPart3() {
     // else, and Red's `grep(not *.name in <b c>)` must build a NotIn AST there)
     auto boolCurry = [](bool negate, const Value& w, Value userOp = Value::any()) -> Value {
         Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-        code.code()->isWhateverCode = true;
-        code.code()->whateverArity = (w.t == VT::Code && w.code() && w.code()->whateverArity > 0) ? w.code()->whateverArity : 1;
+        code.code()->ciM().isWhateverCode = true;
+        code.code()->ciM().whateverArity = (w.t == VT::Code && w.code() && w.code()->ci().whateverArity > 0) ? w.code()->ci().whateverArity : 1;
         Value inner = w;
-        code.code()->builtin = [negate, inner, userOp](Interpreter& I, ValueList& xs) -> Value {
+        code.code()->ciM().builtin = [negate, inner, userOp](Interpreter& I, ValueList& xs) -> Value {
             Value v = inner.t == VT::Whatever ? (xs.empty() ? Value::any() : xs[0])
                                               : I.callCallable(inner, xs);
             if (userOp.t == VT::Code && v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -462,7 +462,7 @@ void Interpreter::registerBuiltinsPart3() {
         return false;
     };
     B["so"] = [boolCurry, userWordPrefix](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->isWhateverCode)))
+        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->ci().isWhateverCode)))
             return boolCurry(false, a[0], [&]() {
                 Value* f = I.tctx_.cur ? I.tctx_.cur->find("&prefix:<so>") : nullptr;
                 return f ? *f : Value::any(); }());
@@ -470,7 +470,7 @@ void Interpreter::registerBuiltinsPart3() {
         return Value::boolean(!a.empty() && I.boolify(a[0]));
     };
     B["not"] = [boolCurry, userWordPrefix](Interpreter& I, ValueList& a) -> Value {
-        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->isWhateverCode)))
+        if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->ci().isWhateverCode)))
             return boolCurry(true, a[0], [&]() {
                 Value* f = I.tctx_.cur ? I.tctx_.cur->find("&prefix:<not>") : nullptr;
                 return f ? *f : Value::any(); }());
@@ -723,18 +723,18 @@ void Interpreter::registerBuiltinsPart3() {
         int rev = I.mainLangRev_;
         std::string pkg = "GLOBAL";
         if (!fr.empty() && fr.back().code && fr.back().code->t == VT::Code && fr.back().code->code()) {
-            const std::string curFile = fr.back().code->code()->declFile;
+            const std::string curFile = fr.back().code->code()->ci().declFile;
             for (size_t i = fr.size() - 1; i-- > 0;) {
                 const Value* cv = fr[i].code;
                 if (!cv || cv->t != VT::Code || !cv->code()) continue;
-                if (cv->code()->declFile == curFile) continue;
-                rev = cv->code()->langRev;
-                const std::string cf = cv->code()->declFile;
+                if (cv->code()->ci().declFile == curFile) continue;
+                rev = cv->code()->ci().langRev;
+                const std::string cf = cv->code()->ci().declFile;
                 pkg.clear();
                 for (size_t j = i + 1; j-- > 0;) {
                     const Value* dv = fr[j].code;
-                    if (!dv || dv->t != VT::Code || !dv->code() || dv->code()->declFile != cf) continue;
-                    if (!dv->code()->pkg.empty()) { pkg = dv->code()->pkg; break; }
+                    if (!dv || dv->t != VT::Code || !dv->code() || dv->code()->ci().declFile != cf) continue;
+                    if (!dv->code()->ci().pkg.empty()) { pkg = dv->code()->ci().pkg; break; }
                 }
                 if (pkg.empty() || pkg == "GLOBAL") {
                     auto uit = I.unitPkgByFile_.find(cf);
@@ -1431,7 +1431,7 @@ void Interpreter::registerBuiltinsPart4() {
                 }
                 Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
                 Value blkCopy = blk;
-                emitW.code()->builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
+                emitW.code()->ciM().builtin = [blkCopy](Interpreter& I2, ValueList& args) -> Value {
                     ValueList one = args;
                     try { return I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                     return Value::any();
@@ -1473,7 +1473,7 @@ void Interpreter::registerBuiltinsPart4() {
                     if (ctx) {
                         std::weak_ptr<ReactCtx> wctx = ctx;
                         doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
-                        doneW.code()->builtin = [wctx, lastP](Interpreter& I2, ValueList&) -> Value {
+                        doneW.code()->ciM().builtin = [wctx, lastP](Interpreter& I2, ValueList&) -> Value {
                             auto c = wctx.lock();
                             I2.runLastPhasers(lastP, c);
                             if (c) { std::lock_guard<std::mutex> lk(c->m); if (c->liveSources > 0) c->liveSources--; c->cv.notify_all(); }
@@ -1510,8 +1510,8 @@ void Interpreter::registerBuiltinsPart4() {
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
-                    if (blk.code() && blk.code()->params)
-                        for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    if (blk.code() && blk.code()->ci().params)
+                        for (auto& p : *blk.code()->ci().params) if (!p.name.empty()) pnames.push_back(p.name);
                     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
                     std::weak_ptr<ReactCtx> wctx = ctx;
                     // The subscription is made NOW — a signal() in it has its
@@ -1579,7 +1579,7 @@ void Interpreter::registerBuiltinsPart4() {
                         }
                     };
                     Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
-                    emitW.code()->builtin = [gate, onEmit](Interpreter& I2, ValueList& args) -> Value {
+                    emitW.code()->ciM().builtin = [gate, onEmit](Interpreter& I2, ValueList& args) -> Value {
                         ValueList a = args;
                         Interpreter* ip = &I2;
                         gate([ip, onEmit, a] { onEmit(*ip, a); });
@@ -1588,7 +1588,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // the block's LAST and QUIT phasers are this subscription's
                     // done and quit (`LAST { done }` ends the react)
                     Value doneW; doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
-                    doneW.code()->builtin = [gate, lastP, release, wctx, endSub](Interpreter& I2, ValueList&) -> Value {
+                    doneW.code()->ciM().builtin = [gate, lastP, release, wctx, endSub](Interpreter& I2, ValueList&) -> Value {
                         Interpreter* ip = &I2;
                         gate([ip, lastP, release, wctx, endSub] {
                             if (endSub()) { ip->runLastPhasers(lastP, wctx.lock()); release(); }
@@ -1596,7 +1596,7 @@ void Interpreter::registerBuiltinsPart4() {
                         return Value::any();
                     };
                     Value quitW; quitW.t = VT::Code; quitW.setCode(makePayload<Callable>());
-                    quitW.code()->builtin = [gate, wctx, quitP, release, endSub](Interpreter& I2, ValueList& a) -> Value {
+                    quitW.code()->ciM().builtin = [gate, wctx, quitP, release, endSub](Interpreter& I2, ValueList& a) -> Value {
                         Interpreter* ip = &I2;
                         ValueList args = a;
                         gate([ip, wctx, quitP, release, endSub, args] {
@@ -1656,10 +1656,10 @@ void Interpreter::registerBuiltinsPart4() {
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
-                    if (blk.code() && blk.code()->params)
-                        for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    if (blk.code() && blk.code()->ci().params)
+                        for (auto& p : *blk.code()->ci().params) if (!p.name.empty()) pnames.push_back(p.name);
                     Value blkInner = blk, shim; shim.t = VT::Code; shim.setCode(makePayload<Callable>());
-                    shim.code()->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
+                    shim.code()->ciM().builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
                         for (size_t i = 0; i < pnames.size(); i++)
                             phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
                         if (!args.empty()) phEnv->define("$_", args[0]);
@@ -1691,7 +1691,7 @@ void Interpreter::registerBuiltinsPart4() {
                     }
                     if (!lastP.empty()) {
                         Value doneW; doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
-                        doneW.code()->builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
+                        doneW.code()->ciM().builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
                             I2.runLastPhasers(lastP, nullptr);
                             return Value::any();
                         };
@@ -1703,7 +1703,7 @@ void Interpreter::registerBuiltinsPart4() {
                         std::weak_ptr<ReactCtx> wctx = rctx;
                         auto th = tapRec.hashS(); // shared: the quit lambda can fire after tapRec's last Value copy dies
                         Value quitW; quitW.t = VT::Code; quitW.setCode(makePayload<Callable>());
-                        quitW.code()->builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
+                        quitW.code()->ciM().builtin = [quitP, wctx, th](Interpreter& I2, ValueList& a) -> Value {
                             (*th)["closed"] = Value::boolean(true);
                             auto c = wctx.lock();
                             // run the phasers under the react ctx: `done` inside a
@@ -1744,7 +1744,7 @@ void Interpreter::registerBuiltinsPart4() {
                     if (rctx) {
                         auto rec = tapRec.hashS();
                         Value closeCb; closeCb.t = VT::Code; closeCb.setCode(makePayload<Callable>());
-                        closeCb.code()->builtin = [rec, sup](Interpreter& I2, ValueList&) -> Value {
+                        closeCb.code()->ciM().builtin = [rec, sup](Interpreter& I2, ValueList&) -> Value {
                             // its own flag: `done` inside the whenever marks the
                             // tap `closed` from the emit fan-out, and the hooks
                             // would then never run
@@ -1796,7 +1796,7 @@ void Interpreter::registerBuiltinsPart4() {
                     Value emitW; emitW.t = VT::Code; emitW.setCode(makePayload<Callable>());
                     Value blkCopy = blk;
                     std::weak_ptr<ReactCtx> bodyCtx = rctx;
-                    emitW.code()->builtin = [blkCopy, bodyCtx](Interpreter& I2, ValueList& args) -> Value {
+                    emitW.code()->ciM().builtin = [blkCopy, bodyCtx](Interpreter& I2, ValueList& args) -> Value {
                         // The body belongs to the REACT, though the value arrives
                         // inside the supply's emit (on whatever thread fed it): its
                         // `done` ends the react, not the supply delivering to it.
@@ -1844,7 +1844,7 @@ void Interpreter::registerBuiltinsPart4() {
                         }
                     };
                     Value quitW; quitW.t = VT::Code; quitW.setCode(makePayload<Callable>());
-                    quitW.code()->builtin = [wctx, quitP, release](Interpreter& I2, ValueList& a) -> Value {
+                    quitW.code()->ciM().builtin = [wctx, quitP, release](Interpreter& I2, ValueList& a) -> Value {
                         auto c = wctx.lock();
                         if (c) I2.reactStack_.push_back(c); // `done` in a QUIT block finds its react
                         for (auto& p : quitP) { ValueList one = a; try { I2.callCallable(p, one); } catch (...) {} }
@@ -1862,7 +1862,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // react: this runs on the source's worker, where nothing has
                     // pushed it. (Log::Timeline's client waits on `LAST done`
                     // after the server hangs up, not on its timeout.)
-                    doneW.code()->builtin = [lastP, release, rctx](Interpreter& I2, ValueList&) -> Value {
+                    doneW.code()->ciM().builtin = [lastP, release, rctx](Interpreter& I2, ValueList&) -> Value {
                         I2.runLastPhasers(lastP, rctx);
                         release();
                         return Value::any();
@@ -1890,11 +1890,11 @@ void Interpreter::registerBuiltinsPart4() {
                     ValueList lastP, quitP;
                     scanSupplyPhasers(blk, &lastP, &quitP, nullptr, phEnv);
                     std::vector<std::string> pnames;
-                    if (blk.code() && blk.code()->params)
-                        for (auto& p : *blk.code()->params) if (!p.name.empty()) pnames.push_back(p.name);
+                    if (blk.code() && blk.code()->ci().params)
+                        for (auto& p : *blk.code()->ci().params) if (!p.name.empty()) pnames.push_back(p.name);
                     Value blkInner = blk;
                     Value shim; shim.t = VT::Code; shim.setCode(makePayload<Callable>());
-                    shim.code()->builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
+                    shim.code()->ciM().builtin = [blkInner, phEnv, pnames](Interpreter& I2, ValueList& args) -> Value {
                         for (size_t i = 0; i < pnames.size(); i++)
                             phEnv->define(pnames[i], i < args.size() ? args[i] : Value::any());
                         if (!args.empty()) phEnv->define("$_", args[0]);
@@ -1911,7 +1911,7 @@ void Interpreter::registerBuiltinsPart4() {
                         // letting it unwind the react (Roast syntax.t's
                         // `whenever Supply.from-list(gather { die })`).
                         Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-                        quitCb.code()->builtin = [quitP, rctx](Interpreter& I2, ValueList& a) -> Value {
+                        quitCb.code()->ciM().builtin = [quitP, rctx](Interpreter& I2, ValueList& a) -> Value {
                             Value ex = a.empty() ? Value::any() : a[0];
                             Value repl;
                             int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);

@@ -310,7 +310,7 @@ struct Compiler {
 };
 
 int paramIndex(const Callable& c, const std::string& name) {
-    const auto& ps = *c.params;
+    const auto& ps = *c.ci().params;
     for (size_t i = 0; i < ps.size(); i++)
         if (ps[i].name == name) return (int)i;
     return -1;
@@ -1053,7 +1053,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             Value* f = scope->find(key);
             if (!f || f->t != VT::Code || !f->code()) { resolveFailed = true; return refuse("a call to " + call->name); }
             Callable& callee = *f->code();
-            if ((int)call->args.size() != (callee.params ? (int)callee.params->size() : -1))
+            if ((int)call->args.size() != (callee.ci().params ? (int)callee.ci().params->size() : -1))
                 return refuse("a call with the wrong number of arguments");
             IKernel* ck = nullptr;
             {
@@ -1436,11 +1436,11 @@ KNode* Compiler::ltail(IKernel& k, const std::vector<StmtPtr>& ss) {
 // itself, which accepts no CATCH, phaser or declaration it cannot model, so
 // nothing a first call works out is needed here.
 bool kernelShape(const Callable& c) {
-    if (c.isBlock || c.isMethod || c.builtin || c.cold().isNative || c.isMultiDispatcher ||
-        c.isMultiCandidate || c.isProto || c.isWhateverCode || c.isRegexRoutine || c.cold().deprecated ||
-        c.testAssertion || !c.hadSig || !c.params || !c.body || c.body->empty() ||
-        !c.placeholders.empty() || c.usesArgs || c.implicitArgs || c.cold().hasPrimed ||
-        c.retLiteral || c.retRw || c.params->size() > (size_t)kMaxParams)
+    if (c.ci().isBlock || c.ci().isMethod || c.ci().builtin || c.cold().isNative || c.ci().isMultiDispatcher ||
+        c.ci().isMultiCandidate || c.ci().isProto || c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().deprecated ||
+        c.ci().testAssertion || !c.ci().hadSig || !c.ci().params || !c.ci().body || c.ci().body->empty() ||
+        !c.ci().placeholders.empty() || c.ci().usesArgs || c.ci().implicitArgs || c.cold().hasPrimed ||
+        c.ci().retLiteral || c.ci().retRw || c.ci().params->size() > (size_t)kMaxParams)
         return false;
     // `--> Int` / `--> Int:D`: every value a kernel returns is a defined Int
     if (!c.cold().retType.empty() &&
@@ -1448,7 +1448,7 @@ bool kernelShape(const Callable& c) {
         return false;
     // …and an `Int` / `Int:D` parameter is one a plain Int binds to as it is
     // (any other argument keeps the call path, and its type check)
-    for (auto& p : *c.params)
+    for (auto& p : *c.ci().params)
         if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
             p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
             p.hadWhere || p.defConstraint == 2 || p.coerce || p.typeCapture || p.codeSig ||
@@ -1460,7 +1460,7 @@ bool kernelShape(const Callable& c) {
 
 // The kernel slot's states: -1 undecided, 0 none, 1 compiled, 2 being compiled.
 bool Compiler::compileSub(Callable& c, IKernel*& out) {
-    auto& slot = c.intKernel;
+    auto& slot = c.ci().intKernel;
     const signed char st = slot.state.load(std::memory_order_acquire);
     if (st == 1 || st == 2) {
         out = static_cast<IKernel*>(slot.k.load(std::memory_order_acquire));
@@ -1475,10 +1475,10 @@ bool Compiler::compileSub(Callable& c, IKernel*& out) {
     if (!slot.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) return false;
     auto* k = new IKernel;
     k->owner = &c;
-    k->nparams = k->nframe = (int)c.params->size();
+    k->nparams = k->nframe = (int)c.ci().params->size();
     slot.k.store(k, std::memory_order_release);
     session.push_back(k);
-    k->body = stmts(*k, c, *c.body, true);
+    k->body = stmts(*k, c, *c.ci().body, true);
     if (!k->body && !resolveFailed) {
         // not one expression: the body as statements, on a frame of the
         // parameters and the sub's own `my`s (an `is copy` parameter is
@@ -1488,11 +1488,11 @@ bool Compiler::compileSub(Callable& c, IKernel*& out) {
         cx.sub = &c;
         cx.nint = k->nparams;
         cx.scopes.emplace_back();
-        for (size_t i = 0; i < c.params->size(); i++)
-            cx.scopes.back().push_back({(*c.params)[i].name, KT::Int, (int)i, !(*c.params)[i].isCopy});
+        for (size_t i = 0; i < c.ci().params->size(); i++)
+            cx.scopes.back().push_back({(*c.ci().params)[i].name, KT::Int, (int)i, !(*c.ci().params)[i].isCopy});
         LoopCx* saved = L;
         L = &cx;
-        k->body = ltail(*k, *c.body);
+        k->body = ltail(*k, *c.ci().body);
         L = saved;
         k->nframe = cx.nint;
         if (cx.nint > kMaxFrame) k->body = nullptr;
@@ -2667,11 +2667,11 @@ void finishSession(Compiler& cc, bool ok, const Callable* asker) {
             link(k->body);
             k->binOps = cc.ops;
             k->usesPrefix = cc.prefix;
-            k->owner->intKernel.state.store(1, std::memory_order_release);
+            k->owner->ci().intKernel.state.store(1, std::memory_order_release);
         }
         else {
-            k->owner->intKernel.k.store(nullptr, std::memory_order_release);
-            k->owner->intKernel.state.store(k->owner == asker ? 0 : -1, std::memory_order_release);
+            k->owner->ci().intKernel.k.store(nullptr, std::memory_order_release);
+            k->owner->ci().intKernel.state.store(k->owner == asker ? 0 : -1, std::memory_order_release);
             delete k;
         }
     }
@@ -2698,62 +2698,62 @@ void intKernelFree(void* k) { delete static_cast<IKernel*>(k); }
 
 bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out) {
     if (g_noKernels || g_traceStmts) return false;
-    signed char st = c.intKernel.state.load(std::memory_order_acquire);
-    if (st == 2) st = awaitKernelVerdict(c.intKernel.state);
+    signed char st = c.ci().intKernel.state.load(std::memory_order_acquire);
+    if (st == 2) st = awaitKernelVerdict(c.ci().intKernel.state);
     if (st == 0 || st == 2) return false;
     if (st < 0) {
         // most routines fail the static test: settle those without the lock
-        if (!kernelShape(c)) { c.intKernel.state.store(0, std::memory_order_relaxed); return false; }
+        if (!kernelShape(c)) { c.ci().intKernel.state.store(0, std::memory_order_relaxed); return false; }
         // a closure made from a body that already has a kernel (or never
         // will) takes that verdict: closures are rebuilt from the AST on
         // every evaluation, and compiling each one cost more than it ran
-        auto& home = (*c.body)[0]->kernelHome;
+        auto& home = (*c.ci().body)[0]->kernelHome;
         if (void* h = home.get()) {
-            if (h == kNeverKernel) { c.intKernel.state.store(0, std::memory_order_relaxed); return false; }
+            if (h == kNeverKernel) { c.ci().intKernel.state.store(0, std::memory_order_relaxed); return false; }
             signed char expect = -1;
-            if (c.intKernel.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) {
-                c.intKernel.borrowed.store(true, std::memory_order_relaxed);
-                c.intKernel.k.store(h, std::memory_order_relaxed);
-                c.intKernel.state.store(1, std::memory_order_release);
+            if (c.ci().intKernel.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) {
+                c.ci().intKernel.borrowed.store(true, std::memory_order_relaxed);
+                c.ci().intKernel.k.store(h, std::memory_order_relaxed);
+                c.ci().intKernel.state.store(1, std::memory_order_release);
                 if (g_kernelTrace)
-                    std::fprintf(stderr, "kernel: %s shared\n", c.name.empty() ? "<anon>" : c.name.c_str());
+                    std::fprintf(stderr, "kernel: %s shared\n", c.ci().name.empty() ? "<anon>" : c.ci().name.c_str());
             }
-            else if (expect == 2) awaitKernelVerdict(c.intKernel.state);   // another thread is deciding
+            else if (expect == 2) awaitKernelVerdict(c.ci().intKernel.state);   // another thread is deciding
         }
         std::unique_lock<std::mutex> lk(g_compileMu, std::defer_lock);
-        st = c.intKernel.state.load(std::memory_order_acquire);
+        st = c.ci().intKernel.state.load(std::memory_order_acquire);
         if (st < 0) {
             lk.lock();
-            st = c.intKernel.state.load(std::memory_order_acquire);
+            st = c.ci().intKernel.state.load(std::memory_order_acquire);
         }
         if (st < 0) {
             CompilingHere ch;
             Compiler cc;
             cc.global = global_.get();
             IKernel* root = nullptr;
-            const bool ok = cc.compileSub(c, root) && root == static_cast<IKernel*>(c.intKernel.k.load());
+            const bool ok = cc.compileSub(c, root) && root == static_cast<IKernel*>(c.ci().intKernel.k.load());
             finishSession(cc, ok, &c);
-            if (!ok && c.intKernel.state.load() != 0) c.intKernel.state.store(0, std::memory_order_release);
+            if (!ok && c.ci().intKernel.state.load() != 0) c.ci().intKernel.state.store(0, std::memory_order_release);
             // what depends on the body alone is shared through its AST: a
             // kernel that calls nothing, or a verdict the syntax gave
-            auto& home = (*c.body)[0]->kernelHome;
+            auto& home = (*c.ci().body)[0]->kernelHome;
             if (ok && root->callees.empty()) {
-                if (home.publish(root) == root) c.intKernel.borrowed.store(true, std::memory_order_relaxed);
+                if (home.publish(root) == root) c.ci().intKernel.borrowed.store(true, std::memory_order_relaxed);
             }
             else if (!ok && !cc.resolveFailed)
                 home.publish(kNeverKernel);
             if (g_kernelTrace)
-                std::fprintf(stderr, "kernel: %s %s\n", c.name.empty() ? "<anon>" : c.name.c_str(),
+                std::fprintf(stderr, "kernel: %s %s\n", c.ci().name.empty() ? "<anon>" : c.ci().name.c_str(),
                              ok ? "compiled" : "declined");
-            st = c.intKernel.state.load(std::memory_order_acquire);
+            st = c.ci().intKernel.state.load(std::memory_order_acquire);
         }
         if (st == 2) {   // another thread's compile, under way: its verdict
             if (lk.owns_lock()) lk.unlock();
-            st = awaitKernelVerdict(c.intKernel.state);
+            st = awaitKernelVerdict(c.ci().intKernel.state);
         }
         if (st != 1) return false;
     }
-    auto* k = static_cast<IKernel*>(c.intKernel.k.load(std::memory_order_acquire));
+    auto* k = static_cast<IKernel*>(c.ci().intKernel.k.load(std::memory_order_acquire));
     if (!k || args.size() != (size_t)k->nparams) return false;
     int64_t a[kMaxFrame];
     for (size_t i = 0; i < args.size(); i++) {
@@ -2779,14 +2779,14 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
     const int64_t v = krun(k->body, a, R);
     if (R.bail) {
         if (g_kernelTrace)
-            std::fprintf(stderr, "kernel: %s bailed\n", c.name.empty() ? "<anon>" : c.name.c_str());
+            std::fprintf(stderr, "kernel: %s bailed\n", c.ci().name.empty() ? "<anon>" : c.ci().name.c_str());
         // a kernel that keeps bailing (its numbers outgrow int64) stops trying
-        const unsigned char b = c.intKernel.bails.load(std::memory_order_relaxed);
-        if (b >= 8) c.intKernel.state.store(0, std::memory_order_release);
-        else c.intKernel.bails.store((unsigned char)(b + 1), std::memory_order_relaxed);
+        const unsigned char b = c.ci().intKernel.bails.load(std::memory_order_relaxed);
+        if (b >= 8) c.ci().intKernel.state.store(0, std::memory_order_release);
+        else c.ci().intKernel.bails.store((unsigned char)(b + 1), std::memory_order_relaxed);
         return false;
     }
-    if (c.intKernel.bails.load(std::memory_order_relaxed)) c.intKernel.bails.store(0, std::memory_order_relaxed);
+    if (c.ci().intKernel.bails.load(std::memory_order_relaxed)) c.ci().intKernel.bails.store(0, std::memory_order_relaxed);
     out = Value::integer(v);
     return true;
 }

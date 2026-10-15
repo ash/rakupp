@@ -420,8 +420,8 @@ Value extLoadModule(const std::string& path, std::string& errOut,
         Value code;
         code.t = VT::Code;
         code.setCode(makePayload<Callable>());
-        code.code()->name = nm;
-        code.code()->builtin = [fn, nm](Interpreter& I, ValueList& a) -> Value {
+        code.code()->ciM().name = nm;
+        code.code()->ciM().builtin = [fn, nm](Interpreter& I, ValueList& a) -> Value {
             ExtCtx ctx;
             ctx.args = &a;
             ctx.interp = &I;

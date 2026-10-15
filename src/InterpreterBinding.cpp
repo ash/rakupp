@@ -163,74 +163,112 @@ static void* dlopenLib(const std::string& lib) {
 }
 
 // ----------------- expressions -----------------
+// makeClosure's template (BlockExpr::closureTmpl): the CodeInfo every closure
+// of one block shares, and the context it was built in. A closure made in
+// another context — a different language revision, RakuAST pragma, file or
+// package — builds its own and leaves the template as it is.
+namespace {
+struct ClosureTemplate {
+    Callable::CodeInfoPtr code;
+    int langRev;
+    bool rakuAst;
+    IStr declFile;
+    std::string pkgPrefix;
+};
+struct ClosureTmplFreeInit {
+    ClosureTmplFreeInit() {
+        g_closureTmplFree.store([](void* p) { delete static_cast<ClosureTemplate*>(p); }, std::memory_order_release);
+    }
+} g_closureTmplFreeInit;
+}
+
 Value Interpreter::makeClosure(BlockExpr* be) {
     Value code; code.t = VT::Code;
     code.setCode(makePayload<Callable>());
-    code.code()->params = &be->params;
-    code.code()->body = &be->body;
-    code.code()->langRev = langRev_;
-    code.code()->rakuAst = rakuAstPragma_;
     code.code()->closure = tctx_.cur;
-    code.code()->isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
-    // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
-    // first argument and binds `self`, exactly as a declared one does.
-    code.code()->isMethod = be->isMethodTerm;
-    code.code()->isSubmethod = be->isSubmethodTerm;
-    // a NAMED sub term keeps its name: `my $s = sub bar {}` and
-    // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
-    if (!be->termName.empty()) code.code()->name = be->termName;
-    // `-> | --> Nil {}` / `sub (--> 5) {}`: the return literal is the body's last
-    // statement, and the signature still shows it (`:(| --> Nil)`), as a
-    // declared sub's does
-    if (be->retLiteralPresent && !be->body.empty() && be->body.back()->kind == NK::ExprStmt)
-        code.code()->retLiteral = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
-    // a NAMED method term inside a class body is still that class's method
-    // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
-    if (be->isMethodTerm && !be->termName.empty()) {
-        code.code()->name = be->termName;
-        std::string pk = tctx_.pkgPrefix;
-        if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
-        auto ci = classes_.find(pk);
-        if (ci != classes_.end() && ci->second) {
-            code.code()->pkg = ci->second->name;   // whose `is hidden` it answers to
-            if (!ci->second->methods.count(be->termName)) ci->second->methods[be->termName] = code;
+    // The code is the block's, not this closure's: the first closure builds it
+    // and publishes it as the block's template, and every later one made in
+    // the same context shares it (SPEED-BACKLOG 8: a closure no longer copies
+    // ~330 bytes of code or re-derives its placeholders and first-call
+    // caches). A method term installs itself into its class, so it builds its
+    // own each time; a build that throws publishes nothing.
+    const bool cacheable = !be->isMethodTerm;
+    const IStr file = declFileNowI();
+    auto* tmpl = cacheable ? static_cast<ClosureTemplate*>(be->closureTmpl.load(std::memory_order_acquire)) : nullptr;
+    if (tmpl && tmpl->langRev == langRev_ && tmpl->rakuAst == rakuAstPragma_ && tmpl->declFile == file &&
+        tmpl->pkgPrefix == tctx_.pkgPrefix)
+        code.code()->info = tmpl->code;
+    else {
+        code.code()->ciM().params = &be->params;
+        code.code()->ciM().body = &be->body;
+        code.code()->ciM().langRev = langRev_;
+        code.code()->ciM().rakuAst = rakuAstPragma_;
+        code.code()->ciM().isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
+        // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
+        // first argument and binds `self`, exactly as a declared one does.
+        code.code()->ciM().isMethod = be->isMethodTerm;
+        code.code()->ciM().isSubmethod = be->isSubmethodTerm;
+        // a NAMED sub term keeps its name: `my $s = sub bar {}` and
+        // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
+        if (!be->termName.empty()) code.code()->ciM().name = be->termName;
+        // `-> | --> Nil {}` / `sub (--> 5) {}`: the return literal is the body's last
+        // statement, and the signature still shows it (`:(| --> Nil)`), as a
+        // declared sub's does
+        if (be->retLiteralPresent && !be->body.empty() && be->body.back()->kind == NK::ExprStmt)
+            code.code()->ciM().retLiteral = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
+        // a NAMED method term inside a class body is still that class's method
+        // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
+        if (be->isMethodTerm && !be->termName.empty()) {
+            code.code()->ciM().name = be->termName;
+            std::string pk = tctx_.pkgPrefix;
+            if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
+            auto ci = classes_.find(pk);
+            if (ci != classes_.end() && ci->second) {
+                code.code()->ciM().pkg = ci->second->name;   // whose `is hidden` it answers to
+                if (!ci->second->methods.count(be->termName)) ci->second->methods[be->termName] = code;
+            }
         }
-    }
-    code.code()->declFile = declFileNowI();
-    code.code()->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
-    // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
-    // `()` and only a bare `{;}` gets the implicit `$_`
-    // …and so did an anonymous `sub ($x) {…}` that wrote parameters
-    code.code()->hadSig = be->isPointy || (be->isSub && !be->params.empty());
-    if (!be->retType.empty()) code.code()->coldM().retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
-    code.code()->retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
-    if (!be->pod.empty()) { code.code()->coldM().pod = be->pod; code.code()->coldM().podTrail = be->podTrail; code.code()->declLine = be->podLine; }
-    // a block knows where it was written: `-> { }.line`
-    if (!code.code()->declLine && be->line > 0) code.code()->declLine = be->line;
-    if (be->params.empty()) {
-        code.code()->placeholders = computePlaceholders(be->body);
-        // `{ $^a + @_.sum }(1, 2, 3)` — `@_` / `%_` beside the placeholders
-        // take what they leave over, so the bind has to know they are there
-        if (!code.code()->placeholders.empty()) {
+        code.code()->ciM().declFile = file;
+        code.code()->ciM().isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
+        // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
+        // `()` and only a bare `{;}` gets the implicit `$_`
+        // …and so did an anonymous `sub ($x) {…}` that wrote parameters
+        code.code()->ciM().hadSig = be->isPointy || (be->isSub && !be->params.empty());
+        if (!be->retType.empty()) code.code()->coldM().retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
+        code.code()->ciM().retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
+        if (!be->pod.empty()) { code.code()->coldM().pod = be->pod; code.code()->coldM().podTrail = be->podTrail; code.code()->ciM().declLine = be->podLine; }
+        // a block knows where it was written: `-> { }.line`
+        if (!code.code()->ci().declLine && be->line > 0) code.code()->ciM().declLine = be->line;
+        if (be->params.empty()) {
+            code.code()->ciM().placeholders = computePlaceholders(be->body);
+            // `{ $^a + @_.sum }(1, 2, 3)` — `@_` / `%_` beside the placeholders
+            // take what they leave over, so the bind has to know they are there
+            if (!code.code()->ci().placeholders.empty()) {
+                std::set<std::string> ph2;
+                for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
+                code.code()->ciM().implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+            }
+        }
+        // a WRITTEN signature — `-> {…}`, `sub () {…}` — forbids placeholders
+        if (be->isPointy || be->sigParens)
+            for (auto& ph : code.code()->ci().placeholders)
+                if (ph.size() > 1 && (ph[1] == '^' || ph[1] == ':'))
+                    throwTyped("X::Signature::Placeholder", {{"placeholder", ph}},
+                               "Placeholder variable '" + ph + "' cannot override existing signature");
+        // an anonymous `sub {…}` without parameters has the empty signature too,
+        // unless its body reads @_/%_: `sub () { 42 }(23)` dies
+        if (be->isSub && !be->isMethodTerm && be->params.empty() && code.code()->ci().placeholders.empty()) {
             std::set<std::string> ph2;
             for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
-            code.code()->implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+            code.code()->ciM().usesArgs = ph2.count("@_") || ph2.count("%_");
+            code.code()->ciM().implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+            code.code()->ciM().hadSig = true;
         }
-    }
-    // a WRITTEN signature — `-> {…}`, `sub () {…}` — forbids placeholders
-    if (be->isPointy || be->sigParens)
-        for (auto& ph : code.code()->placeholders)
-            if (ph.size() > 1 && (ph[1] == '^' || ph[1] == ':'))
-                throwTyped("X::Signature::Placeholder", {{"placeholder", ph}},
-                           "Placeholder variable '" + ph + "' cannot override existing signature");
-    // an anonymous `sub {…}` without parameters has the empty signature too,
-    // unless its body reads @_/%_: `sub () { 42 }(23)` dies
-    if (be->isSub && !be->isMethodTerm && be->params.empty() && code.code()->placeholders.empty()) {
-        std::set<std::string> ph2;
-        for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
-        code.code()->usesArgs = ph2.count("@_") || ph2.count("%_");
-        code.code()->implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
-        code.code()->hadSig = true;
+        if (cacheable && !tmpl) {
+            auto* nt = new ClosureTemplate{code.code()->info, langRev_, rakuAstPragma_, file, tctx_.pkgPrefix};
+            void* expect = nullptr;
+            if (!be->closureTmpl.compare_exchange_strong(expect, nt, std::memory_order_acq_rel)) delete nt;
+        }
     }
     // An anonymous `sub (…) {…}` or `-> … {…}` carries parameter traits just as a
     // declared sub does, and reaches none of the declaration paths: the trait on
@@ -717,19 +755,19 @@ bool Interpreter::codeSigAccepts(const Param& p, const Value& code, Env* sigEnv)
     // the code's positionals, as Parameters would list them
     struct TP { std::string type; bool optional, slurpy; };
     std::vector<TP> tpos;
-    if (c.params && (c.hadSig || !c.params->empty())) {
-        for (auto& q : *c.params) {
+    if (c.ci().params && (c.ci().hadSig || !c.ci().params->empty())) {
+        for (auto& q : *c.ci().params) {
             if (q.named || q.invocant) continue;
             bool sl = q.slurpy || q.sigil == '|';
-            tpos.push_back({q.type.empty() ? std::string(c.isBlock ? "Mu" : "Any") : q.type,
+            tpos.push_back({q.type.empty() ? std::string(c.ci().isBlock ? "Mu" : "Any") : q.type,
                             q.optional || q.defaultVal != nullptr, sl});
         }
     }
-    else if (!c.placeholders.empty()) {
-        for (auto& ph : c.placeholders)
+    else if (!c.ci().placeholders.empty()) {
+        for (auto& ph : c.ci().placeholders)
             if (!ph.empty() && ph.find(':') == std::string::npos) tpos.push_back({"Mu", false, false});
     }
-    else if (c.isBlock) tpos.push_back({"Mu", true, false});   // `{ … }`: an optional $_
+    else if (c.ci().isBlock) tpos.push_back({"Mu", true, false});   // `{ … }`: an optional $_
     std::vector<const Param*> spos;
     for (auto& q : *p.codeSig) if (!q.named && !q.invocant) spos.push_back(&q);
     size_t si = 0, ti = 0;
@@ -1459,10 +1497,10 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
 bool Interpreter::multiTie(const Value& a, const Value& b) {
     const Callable* ca = a.code();
     const Callable* cb = b.code();
-    if (!ca || !cb || !ca->params || !cb->params) return false;
-    if (ca->isDefaultCand || cb->isDefaultCand || ca->pkg != cb->pkg) return false;
+    if (!ca || !cb || !ca->ci().params || !cb->ci().params) return false;
+    if (ca->ci().isDefaultCand || cb->ci().isDefaultCand || ca->ci().pkg != cb->ci().pkg) return false;
     auto positional = [](const Callable* c, std::vector<const Param*>& out) -> bool {
-        for (auto& p : *c->params) {
+        for (auto& p : *c->ci().params) {
             if (p.invocant) continue;
             if (p.named) return false;
             if (p.pastDoubleSemi) break;
@@ -1478,7 +1516,7 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
     // `multi a(;; Int $a)` is as ambiguous as two identical signatures
     if (pa.empty()) {
         auto afterSemi = [](const Callable* c) {
-            for (auto& p : *c->params) if (!p.invocant && !p.named && p.pastDoubleSemi) return true;
+            for (auto& p : *c->ci().params) if (!p.invocant && !p.named && p.pastDoubleSemi) return true;
             return false;
         };
         return afterSemi(ca) && afterSemi(cb);
@@ -1548,7 +1586,7 @@ void Interpreter::throwIfAmbiguous(const Callable& c, const Value* best, const V
         catch (...) {}
     }
     throw RakuError{Value::typeObj("X::Multi::Ambiguous"),
-                    "Ambiguous call to '" + c.name + "(" + prof + ")'; these signatures all match:" + sigs};
+                    "Ambiguous call to '" + c.ci().name + "(" + prof + ")'; these signatures all match:" + sigs};
 }
 
 // A user `multi infix:<op>` whose operands are CORE values joins the same
@@ -1586,10 +1624,10 @@ static bool userInfixCoreType(const std::string& t) {
 // The two positional parameters a binary candidate dispatches on, or false
 // when it has some other shape (a slurpy, an optional, a named it requires…).
 static bool userInfixParams(const Callable* c, const Param*& a, const Param*& b) {
-    if (!c || !c->params) return false;
+    if (!c || !c->ci().params) return false;
     const Param* ps[2] = {nullptr, nullptr};
     int n = 0;
-    for (auto& p : *c->params) {
+    for (auto& p : *c->ci().params) {
         if (p.invocant) continue;
         if (p.named) { if (p.required) return false; continue; }
         if (p.pastDoubleSemi || p.slurpy || p.optional || p.defaultVal || p.subSig || p.coerce ||
@@ -1644,7 +1682,7 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     static thread_local std::string key;
     key.assign("&infix:<").append(op).append(">");
     Value* f = tctx_.cur->find(key);
-    if (!f || f->t != VT::Code || !f->code() || !f->code()->isMultiDispatcher) return false;
+    if (!f || f->t != VT::Code || !f->code() || !f->code()->ci().isMultiDispatcher) return false;
     // the built-in candidate these operands meet
     const std::string tl = l.typeName(), tr = r.typeName();
     auto intish = [](const std::string& t) { return t == "Int" || t == "Bool"; };
@@ -1662,10 +1700,10 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     const Value* tied = nullptr;
     for (auto& cand : f->code()->cold().candidates) {
         const Callable* c = cand.code();
-        if (!c || c->isProto || c->isProtoBody) continue;
+        if (!c || c->ci().isProto || c->ci().isProtoBody) continue;
         const Param *pa, *pb;
         if (!userInfixParams(c, pa, pb) || scoreCandidate(cand, args) < 0) continue;
-        bool constrained = c->isDefaultCand, narrower = false, broader = false;
+        bool constrained = c->ci().isDefaultCand, narrower = false, broader = false;
         const Param* ps[2] = {pa, pb};
         for (int i = 0; i < 2; i++) {
             const Param& p = *ps[i];
@@ -2202,7 +2240,7 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
                 if (f.t != VT::Hash || !f.hash()) continue;
                 auto& h = *f.hash();
                 auto fi = h.find("file"), li = h.find("line"), ci = h.find("code");
-                std::string nm = ci != h.end() && ci->second.code() ? ci->second.code()->name : "<unit>";
+                std::string nm = ci != h.end() && ci->second.code() ? ci->second.code()->ci().name : "<unit>";
                 o += (f2 ? "" : ",\n"); f2 = false;
                 o += "      { \"file\" : " + jstr(fi != h.end() ? fi->second.toStr() : "") +
                      ", \"line\" : " + (li != h.end() ? li->second.toStr() : "0") +
@@ -2517,11 +2555,11 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
         return idxW(base.obj()->boxed(), std::move(key), isHash);
     // @a[*-1] / @a[*] against an infinite lazy array can't know the end
     if (base.t == VT::Array && base.ext() && std::static_pointer_cast<LazySeqState>(base.ext())->infinite
-        && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode)))
+        && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)))
         throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
     long long n = (base.t == VT::Array && base.arr()) ? (long long)base.arr()->size()
                 : base.t == VT::Range ? (long long)base.flatten().size() : 0;
-    if (key.t == VT::Code && key.code() && key.code()->isWhateverCode)
+    if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         key = callCallable(key, ValueList{Value::integer(n)});
     if (key.t == VT::Whatever) { // @a[*] — the whole list / %h{*} — all values
         Value o = Value::array(); o.isList = true;
@@ -2745,7 +2783,7 @@ std::shared_ptr<std::string> Interpreter::deprecationFor(SubDecl* sd) {
 // A call of a deprecated routine: remembered by (kind, name, package, advice),
 // with the line it was made from, until `Deprecation.report` collects them.
 void Interpreter::noteDeprecatedCall(const Callable& c, int line) {
-    noteDeprecation(c.isMethod ? "Method" : "Sub", c.name, c.pkg.empty() ? "GLOBAL" : c.pkg, *c.cold().deprecated, line);
+    noteDeprecation(c.ci().isMethod ? "Method" : "Sub", c.ci().name, c.ci().pkg.empty() ? "GLOBAL" : c.ci().pkg, *c.cold().deprecated, line);
 }
 void Interpreter::noteDeprecation(const std::string& kind, const std::string& name, const std::string& from,
                                   const std::string& with, int line) {
@@ -3574,13 +3612,13 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // `sub MAIN($a is rw)` — nothing on a command line can be written back to
     {
         std::vector<const Value*> cands;
-        if (mainSub.code() && mainSub.code()->isMultiDispatcher)
+        if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher)
             for (auto& c : mainSub.code()->cold().candidates) cands.push_back(&c);
         else if (mainSub.code()) cands.push_back(&mainSub);
         bool rw = false;
         for (const Value* c : cands)
-            if (c->code() && c->code()->params)
-                for (auto& p : *c->code()->params) if (p.isRw) rw = true;
+            if (c->code() && c->code()->ci().params)
+                for (auto& p : *c->code()->ci().params) if (p.isRw) rw = true;
         if (rw)
             std::cerr << "Potential difficulties:\n    'is rw' on parameters of 'sub MAIN' usually "
                          "cannot be satisfied.\n    Did you mean 'is copy'?\n";
@@ -3597,9 +3635,9 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // (`--foo abc` -> `--foo=abc`) into the classic parse.
     const bool namedAnywhere = mainNamedAnywhere();
     auto pairedArgs = [&](const Value& cand) -> ValueList {
-        if (!cand.code() || !cand.code()->params) return rtMainArgs(argv_, namedAnywhere, this);
+        if (!cand.code() || !cand.code()->ci().params) return rtMainArgs(argv_, namedAnywhere, this);
         std::set<std::string> keys;
-        for (auto& p : *cand.code()->params) {
+        for (auto& p : *cand.code()->ci().params) {
             if (!p.named || p.type != "Str") continue;
             std::string k = !p.namedKey.empty() ? p.namedKey
                           : (p.name.size() > 1 ? p.name.substr(1) : "");
@@ -3648,13 +3686,13 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     std::set<std::string> listNamed, scalarNamed;
     {
         std::vector<const Value*> cands;
-        if (mainSub.code() && mainSub.code()->isMultiDispatcher)
+        if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher)
             for (auto& c : mainSub.code()->cold().candidates) cands.push_back(&c);
         else if (mainSub.code()) cands.push_back(&mainSub);
         for (const Value* c : cands) {
-            if (!c->code() || !c->code()->params) continue;
-            if (c->code()->isProto || c->code()->isProtoBody) continue;
-            for (auto& p : *c->code()->params) {
+            if (!c->code() || !c->code()->ci().params) continue;
+            if (c->code()->ci().isProto || c->code()->ci().isProtoBody) continue;
+            for (auto& p : *c->code()->ci().params) {
                 if (!p.named || p.slurpy) continue;
                 std::set<std::string>& into = p.sigil == '@' ? listNamed : scalarNamed;
                 if (!p.namedKey.empty()) into.insert(p.namedKey);
@@ -3675,19 +3713,19 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
             a.setPairVal(makePayload<Value>(std::move(lst)));
         }
     };
-    if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
+    if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) {
         mainMatches = false;
         for (auto& cand : mainSub.code()->cold().candidates) {
             // (an explicit `proto MAIN(|) {*}` is no candidate: its `|` takes
             // anything, and then the real dispatch found none — Cro's CLI
             // declares one, and `cro --help` died where it should print usage)
-            if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody)) continue;
+            if (cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody)) continue;
             ValueList mc = pairedArgs(cand);
             listifyNamed(mc);
             if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
         }
     }
-    else if (mainSub.code() && mainSub.code()->params) { // single MAIN: same bind check
+    else if (mainSub.code() && mainSub.code()->ci().params) { // single MAIN: same bind check
         margs = pairedArgs(mainSub);
         listifyNamed(margs);
         mainMatches = scoreCandidate(mainSub, margs) >= 0;
@@ -3746,8 +3784,8 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
     mainSigProg_ = prg; // the Params below are borrowed from this tree
     auto mk = [&](SubDecl* d) {
         Value v = Value::closure(fn);
-        v.code()->name = "MAIN";
-        v.code()->params = &d->params;
+        v.code()->ciM().name = "MAIN";
+        v.code()->ciM().params = &d->params;
         v.code()->coldM().pod = d->pod;
         return v;
     };
@@ -3755,8 +3793,8 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
     if (cands.size() == 1 && !cands[0]->isMulti) main = mk(cands[0]);
     else {
         main = Value::closure(fn);
-        main.code()->name = "MAIN";
-        main.code()->isMultiDispatcher = true;
+        main.code()->ciM().name = "MAIN";
+        main.code()->ciM().isMultiDispatcher = true;
         for (auto* d : cands) main.code()->coldM().candidates.push_back(mk(d));
     }
     global_->define("&MAIN", main);
@@ -3770,7 +3808,7 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
 int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
     Value* mainSub = global_ ? global_->find("&MAIN") : nullptr;
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code() ||
-        (!mainSub->code()->params && !mainSub->code()->isMultiDispatcher)) {
+        (!mainSub->code()->ci().params && !mainSub->code()->ci().isMultiDispatcher)) {
         refreshArgvFromLiveArgs();
         ValueList margs = rtMainArgs(argv_, mainNamedAnywhere(), this);
         sinkReturnedValue(fn(margs));
@@ -3843,7 +3881,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // subscript however it arrived. Native codegen picks idxW when it can SEE
     // the star written in the subscript; when the star came through a variable
     // (`my $i = *-1; @a[$i]`) only the KEY knows, and this read element one.
-    if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode))
+    if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode))
         if (g_cbInterp) return g_cbInterp->idxW(base, key, isHash);
     // An INFINITE range subscript (`@a[1..Inf]`, `@a[$s ..^ $e]` with $e = Inf)
     // is lazy and stops at the end of the list, as the interpreter's does;
@@ -4263,19 +4301,19 @@ std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
 // `block ` (two spaces before `at`) for an anonymous one.
 static std::string btFrameName(const Callable* c, bool outermost) {
     if (!c) return outermost ? "block <unit>" : "block ";
-    std::string kind = c->isSubmethod    ? "submethod"
-                     : c->isMethod       ? "method"
-                     : c->isRegexRoutine ? "regex"
-                     : c->isBlock        ? "block"
+    std::string kind = c->ci().isSubmethod    ? "submethod"
+                     : c->ci().isMethod       ? "method"
+                     : c->ci().isRegexRoutine ? "regex"
+                     : c->ci().isBlock        ? "block"
                                          : "sub";
     // A method's DECLARING package goes in the name: Rakudo prints a bare
     // `in method new`, which in a program with six classes says nothing about
     // which `new` ran. `Foo::new` costs four characters and answers it, and it
     // stays inside the name part that consumers of `in X at FILE line N` skip.
-    std::string nm = c->name;
-    if (!c->pkg.empty() && c->pkg != "GLOBAL" && !nm.empty() &&
+    std::string nm = c->ci().name;
+    if (!c->ci().pkg.empty() && c->ci().pkg != "GLOBAL" && !nm.empty() &&
         nm.find("::") == std::string::npos)
-        nm = c->pkg + "::" + nm;
+        nm = c->ci().pkg + "::" + nm;
     return kind + " " + nm;
 }
 
@@ -4283,7 +4321,7 @@ static std::string btFrameName(const Callable* c, bool outermost) {
 // currying, `.assuming` wrappers, `wrap` shims. They are Rakudo's `is-hidden`
 // frames: real activations, but not places the reader wrote code.
 static bool btFrameHidden(const Callable* c) {
-    return c && (c->isWhateverCode || (c->name.empty() && c->isBlock && c->langRev == -1));
+    return c && (c->ci().isWhateverCode || (c->ci().name.empty() && c->ci().isBlock && c->ci().langRev == -1));
 }
 
 Interpreter::BtStyle Interpreter::btStyleForStderr() {
@@ -4324,7 +4362,7 @@ std::string Interpreter::renderFrames(const BtRecord& rec, const BtStyle& st) {
         if (fr[i].kind) continue;   // bare-block and setting frames are the list's, not the printout's
         const Callable* c = fr[i].code.get();
         if (!st.full && btFrameHidden(c)) continue;
-        std::string file = c && !c->declFile.empty() ? c->declFile
+        std::string file = c && !c->ci().declFile.empty() ? c->ci().declFile
                          : (!originFile.empty() ? originFile : srcFileAbs_);
         out.push_back({btFrameName(c, i + 1 == n),
                        btDisplayPath(file, srcFileAbs_, srcFile_), file, fr[i].line});
@@ -4447,7 +4485,7 @@ static Value btStandInCode(int which) {
         auto mk = [](const char* name, bool block, bool method) {
             Value cv; cv.t = VT::Code;
             auto c = makePayload<Callable>();
-            c->name = name; c->isBlock = block; c->isMethod = method;
+            c->ciM().name = name; c->ciM().isBlock = block; c->ciM().isMethod = method;
             cv.setCode(c);
             return cv;
         };
@@ -4472,7 +4510,7 @@ Value Interpreter::backtraceOf(const Value& exObj) {
     Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
     const auto& frs = raw->frames;
     auto fileOf = [&](const Callable* c) {
-        return c && !c->declFile.empty() ? c->declFile : (!origin.empty() ? origin : srcFileAbs_);
+        return c && !c->ci().declFile.empty() ? c->ci().declFile : (!origin.empty() ? origin : srcFileAbs_);
     };
     for (size_t i = 0; i < frs.size(); i++) {
         const BtFrame& f = frs[i];
@@ -4522,7 +4560,7 @@ Value Interpreter::captureBacktrace() {
         const Value* code = idx > 0 ? fr[idx - 1].code : nullptr;
         Value f = Value::makeHash(); f.hashKind = "BacktraceFrame";
         std::string file;
-        if (code && code->code() && !code->code()->declFile.empty()) file = code->code()->declFile;
+        if (code && code->code() && !code->code()->ci().declFile.empty()) file = code->code()->ci().declFile;
         // no declaring routine (the mainline, or a bare block): the file whose
         // top level is running — the program, or the module / EVALFILE'd file
         // that switched curDeclFile_ underneath it
@@ -5075,11 +5113,11 @@ Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const cha
         list = slot.get();
     }
     Callable* cc = c.code();
-    cc->params = list;
-    if (name && *name) cc->name = name;
+    cc->ciM().params = list;
+    if (name && *name) cc->ciM().name = name;
     if (retType && *retType) cc->coldM().retType = retType;
-    if (cflags & RSC_BLOCK) cc->isBlock = true;
-    if (cflags & RSC_HADSIG) cc->hadSig = true;
+    if (cflags & RSC_BLOCK) cc->ciM().isBlock = true;
+    if (cflags & RSC_HADSIG) cc->ciM().hadSig = true;
     return c;
 }
 Value rtSlurpyPos(const ValueList& a, size_t from) {
@@ -5876,11 +5914,11 @@ long long Interpreter::runCallback(int slot, long long a0, long long a1, long lo
     Value cb = g_cbSlots[slot];
     if (cb.t != VT::Code) return 0;
     NcWord raw[6] = {a0, a1, a2, a3, a4, a5};
-    size_t arity = (cb.code() && cb.code()->params) ? cb.code()->params->size() : 2;
+    size_t arity = (cb.code() && cb.code()->ci().params) ? cb.code()->ci().params->size() : 2;
     if (arity > 6) arity = 6;
     ValueList as;
     for (size_t i = 0; i < arity; i++) {
-        std::string pt = (cb.code() && cb.code()->params && i < cb.code()->params->size()) ? (*cb.code()->params)[i].type : "";
+        std::string pt = (cb.code() && cb.code()->ci().params && i < cb.code()->ci().params->size()) ? (*cb.code()->ci().params)[i].type : "";
         if (pt == "Pointer" || pt.rfind("Pointer[", 0) == 0) as.push_back(ncMakePointer(pt, (void*)(intptr_t)raw[i]));
         else if (pt == "num" || pt == "num64" || pt == "num32") { double d; std::memcpy(&d, &raw[i], 8); as.push_back(Value::number(d)); }
         else as.push_back(Value::integer(raw[i]));
@@ -6019,7 +6057,7 @@ static void* ncCallbackPtr(const Value& v, const std::vector<Param>* declSig = n
         if (it != g_ncClosures.end()) return it->second->code;
         auto* cl = new NcClosure();
         cl->fn = v;
-        const std::vector<Param>* ps = v.code()->params;
+        const std::vector<Param>* ps = v.code()->ci().params;
         // No signature at all: assume the two-argument comparator shape, which
         // is what the fixed pool defaulted to and covers qsort/bsearch.
         size_t arity = declSig && !declSig->empty() ? declSig->size() : ps ? ps->size() : 2;
@@ -6083,7 +6121,7 @@ static ffi::Type* ncFfiRetType(const std::string& rt) {
 // Still unsupported on both paths: C structs passed or returned BY VALUE.
 Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs, size_t rwArgOff) {
     // --sandbox: native code can do anything the process can (src/Sandbox.h)
-    if (g_sandboxChecks) sandboxRefuse(*this, (c.name.empty() ? std::string("a routine") : c.name) + " (is native)",
+    if (g_sandboxChecks) sandboxRefuse(*this, (c.ci().name.empty() ? std::string("a routine") : c.ci().name) + " (is native)",
                                    SandboxCap::Ffi);
     // Resolve the symbol ONCE per Callable and cache the function pointer. This
     // used to run on every call, and the dlopen candidate loop is the expensive
@@ -6143,10 +6181,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             try {
                 Value r = eval(const_cast<Expr*>(c.cold().nativeSymExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                if (isDefined(r) && !r.toStr().empty()) c.coldM().nativeSym = r.toStr();
+                if (isDefined(r) && !r.toStr().empty()) c.cold().nativeSym = r.toStr();   // (call-time caches: mutable)
             } catch (RakuError&) {}
             tctx_.cur = savedEnv;
-            c.coldM().nativeSymExpr = nullptr; // once, not per call
+            c.cold().nativeSymExpr = nullptr; // once, not per call
         }
         sym = dlsym(handle, c.cold().nativeSym.c_str());
         if (!sym) {
@@ -6178,10 +6216,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         // whose library is absent instead of dying.
         if (!sym) throw RakuError{Value::typeObj("X::AdHoc"),
             "Cannot locate symbol '" + c.cold().nativeSym + "' in native library '" + lib + "'"};
-        c.coldM().nativeSymCache = sym;
+        c.cold().nativeSymCache = sym;
     }
 
-    const std::vector<Param>* prm = c.params;
+    const std::vector<Param>* prm = c.ci().params;
     // A NativeCall METHOD prepends its invocant to `args`. If the signature
     // SPELLS the invocant (`method mysql_query(MYSQL:D: Str $sql)`) the two line
     // up already; if it does not (`method PQescapeByteaConn(Buf, size_t, size_t
@@ -6480,7 +6518,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             nc->atypes.assign(atypes, atypes + na); nc->rtype = rtype;
             nc->variadic = variadic; nc->nfixed = (unsigned)(variadic ? nfixed : 0);
             if (prepInto(nc->cif.buf, nc->atypes.data()) == 0) {
-                c.coldM().nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
+                c.cold().nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
                 cifp = nc->cif.buf;
             }
             else delete nc;
@@ -6768,8 +6806,8 @@ Value Interpreter::paramObjectFor(const Param& p) {
     const std::vector<Param>* ps = tctx_.bindingParams;
     if (!ps || ps->empty() || &p < ps->data() || &p >= ps->data() + ps->size()) return Value::any();
     Callable tmp;
-    tmp.params = ps;
-    tmp.hadSig = true;
+    tmp.ciM().params = ps;
+    tmp.ciM().hadSig = true;
     Value sig = makeSignature(&tmp);
     if (sig.t != VT::Hash || !sig.hash()) return Value::any();
     auto it = sig.hash()->find("params");
@@ -7094,7 +7132,7 @@ Value Interpreter::fatalCheckedMethodCall(Expr* e) {
 // level), which has no Block value of its own: a plain one, implicit `$_`.
 Value Interpreter::inlineBlockValue() {
     Value b; b.t = VT::Code; b.setCode(makePayload<Callable>());
-    b.code()->isBlock = true;
+    b.code()->ciM().isBlock = true;
     return b;
 }
 

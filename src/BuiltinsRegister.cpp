@@ -215,8 +215,8 @@ void Interpreter::registerBuiltins() {
                             "rakupp-json-codec: no codec named '" + which + "'"};
         Value fallback = a[1];
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-        w.code()->name = which;
-        w.code()->builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
+        w.code()->ciM().name = which;
+        w.code()->ciM().builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
             auto handOver = [&](const char*) { return I.callCallable(fallback, args, nullptr, false, /*arityCheck=*/true); };
             return to ? jsonToJsonBody(I, args, handOver) : jsonFromJsonBody(I, args, handOver);
         };
@@ -543,7 +543,7 @@ void Interpreter::registerBuiltins() {
         // invocant itself and wants the rest only.
         const bool inMethod = d && !d->wrapperFrame && I.tctx_.curRoutineVal &&
                               I.tctx_.curRoutineVal->t == VT::Code && I.tctx_.curRoutineVal->code() &&
-                              I.tctx_.curRoutineVal->code()->isMethod;
+                              I.tctx_.curRoutineVal->code()->ci().isMethod;
         return Value::closure([nextFn, inMethod](ValueList& a) -> Value {
             ValueList copy = a;
             if (inMethod && !copy.empty()) copy.erase(copy.begin());
@@ -1811,11 +1811,11 @@ void Interpreter::registerBuiltinsPart2() {
 
         // --- 2. dispatch --------------------------------------------------
         bool matches = true;
-        if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
+        if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) {
             matches = false;
             for (auto& cand : mainSub.code()->cold().candidates)
                 if (I.scoreCandidate(cand, margs) >= 0) { matches = true; break; }
-        } else if (mainSub.code() && mainSub.code()->params) {
+        } else if (mainSub.code() && mainSub.code()->ci().params) {
             matches = I.scoreCandidate(mainSub, margs) >= 0;
         }
         if (matches) return I.callCallable(mainSub, margs);
@@ -2710,7 +2710,7 @@ void Interpreter::registerBuiltinsPart2() {
             Interpreter& I;
             SubMark(Interpreter& i, bool isSub) : I(i) { I.subtestIsSub_.push_back(isSub); }
             ~SubMark() { I.subtestIsSub_.pop_back(); }
-        } mark{I, code.t == VT::Code && code.code() && !code.code()->isBlock};
+        } mark{I, code.t == VT::Code && code.code() && !code.code()->ci().isBlock};
         return Value::boolean(I.runSubtestFrame(desc, [&]() {
             if (code.t == VT::Code) I.callCallable(code, {});
         }));

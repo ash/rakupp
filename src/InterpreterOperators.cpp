@@ -10,7 +10,7 @@ namespace rakupp {
 // this site? Currying is syntactic, so only a written star composes.
 bool Interpreter::whateverArrivedAsValue(Binary* b, const Value& l, const Value& r) {
     auto wish = [](const Value& v) {
-        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
     };
     if (!wish(l) && !wish(r)) return false;
     return !exprHasWhateverLit(b->lhs.get()) && !exprHasWhateverLit(b->rhs.get());
@@ -234,7 +234,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             auto have = nc->methods.find(kv.first);
             if (have != nc->methods.end() && have->second.t == VT::Code && kv.second.t == VT::Code &&
                 have->second.code() && kv.second.code() &&
-                have->second.code()->isMultiDispatcher && kv.second.code()->isMultiDispatcher) {
+                have->second.code()->ci().isMultiDispatcher && kv.second.code()->ci().isMultiDispatcher) {
                 auto merged = makePayload<Callable>(*have->second.code());
                 for (auto& cand : kv.second.code()->cold().candidates) merged->coldM().candidates.push_back(cand);
                 Value mv = have->second; mv.setCode(merged);
@@ -352,7 +352,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     // `but VALUE` — a constant method named after the value's type (Str/Bool/Int/…).
     for (auto& vm : valueMixins) {
         Value method = Value::closure([vm](ValueList&) { return vm; });
-        method.code()->isMethod = true;
+        method.code()->ciM().isMethod = true;
         nc->methods[vm.typeName()] = method;
         // …and an ENUM value mixes in its enum as a role: a method per
         // member, True for the one mixed in (`$x but Maybe(Yes)` answers
@@ -367,7 +367,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                 for (auto& kv : *en.hash()) {
                     const bool mine = kv.first == vm.enumName.c_str();
                     Value m = Value::closure([mine](ValueList&) { return Value::boolean(mine); });
-                    m.code()->isMethod = true;
+                    m.code()->ciM().isMethod = true;
                     if (!nc->methods.count(kv.first)) nc->methods[kv.first] = m;
                 }
         }
@@ -559,8 +559,8 @@ static Value negInt(long long i) {
 
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     if (v.t == VT::Array) v.seqTouch();   // `+$s` is its count: a Seq is cached (SeqToken)
-    if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->isWhateverCode &&
-        !v.code()->isBlock)
+    if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->ci().isWhateverCode &&
+        !v.code()->ci().isBlock)
         throwCodeNumeric(v);
     // `+Mu` / `-Mu`: Mu is below Any, and the prefix has no candidate for it
     if ((op == "+" || op == "-") && v.t == VT::Type && v.s == "Mu")
@@ -1804,7 +1804,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
         auto ci = classes_.find(v.s);
         if (ci != classes_.end() && ci->second && !ci->second->isRole)
             if (Value* gm = ci->second->findMethod("gist"))
-                if (gm->t == VT::Code && gm->code() && !gm->code()->builtin)
+                if (gm->t == VT::Code && gm->code() && !gm->code()->ci().builtin)
                     return invokeMethodChain("gist", ci->second.get(), v, {}, nullptr).toStr();
     }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -1971,13 +1971,13 @@ std::string Interpreter::strOf(const Value& v) {
     // `$block.join` both produced it — and never told anyone it was a mistake.
     // (.gist and .raku still show the routine; only .Str is empty.)
     if (v.t == VT::Code) {
-        bool block = v.code() && v.code()->isBlock;
+        bool block = v.code() && v.code()->ci().isBlock;
         std::string msg = std::string(block ? "Block" : "Sub") +
                           " object coerced to string (please use .gist or .raku to do that)";
         if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
         // A NAMED routine still stringifies to its bare name (`~&infix:<+>` is
         // "infix:<+>"); only a block or an anonymous routine yields "".
-        return block || !v.code() ? "" : v.code()->name;
+        return block || !v.code() ? "" : v.code()->ci().name;
     }
     // Stringifying a container READS it, so a Proxy runs its FETCH. The subscript
     // path deliberately hands back the container (that is how a write reaches
@@ -2445,17 +2445,17 @@ const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::str
     }
     if (top->shadowsAttrs == 0) return bare;
     const Callable* rc = tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code ? tctx_.curRoutineVal->code() : nullptr;
-    if (!rc || rc->pkg.empty()) return bare;
+    if (!rc || rc->ci().pkg.empty()) return bare;
     ClassInfo* first = nullptr; bool ownerDeclares = false;
     for (ClassInfo* c = top; c; c = c->parent.get())
         for (auto& a : c->attrs)
             if (a.name == bare) {
                 if (!first) first = c;
-                if (c->name == rc->pkg) ownerDeclares = true;
+                if (c->name == rc->ci().pkg) ownerDeclares = true;
                 break;
             }
-    if (!first || !ownerDeclares || first->name == rc->pkg) return bare;
-    buf = rc->pkg + "\x01" + bare;
+    if (!first || !ownerDeclares || first->name == rc->ci().pkg) return bare;
+    buf = rc->ci().pkg + "\x01" + bare;
     return buf;
 }
 
@@ -2471,7 +2471,7 @@ void Interpreter::checkPrivatePermission(const std::string& qualified) {
     ClassInfo* target = ti->second.get();
     std::string caller;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code())
-        caller = tctx_.curRoutineVal->code()->pkg;
+        caller = tctx_.curRoutineVal->code()->ci().pkg;
     ClassInfo* callerCls = nullptr;
     if (!caller.empty() && caller != "GLOBAL") {
         auto ci = classes_.find(caller);
@@ -2497,7 +2497,7 @@ void Interpreter::requirePrivateCallScope(const std::string& name) {
     if (tctx_.cur->findSelf()) return;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
         tctx_.curRoutineVal->code()) {
-        const std::string& pkg = tctx_.curRoutineVal->code()->pkg;
+        const std::string& pkg = tctx_.curRoutineVal->code()->ci().pkg;
         if (!pkg.empty() && pkg != "GLOBAL") {
             auto pit = classes_.find(pkg);
             if (pit != classes_.end() && pit->second &&
@@ -2514,7 +2514,7 @@ Value* Interpreter::pkgRelativeRoutine(const std::string& name) {
     if (name.find("::") == std::string::npos || !tctx_.cur) return nullptr;
     std::string pre;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code())
-        pre = tctx_.curRoutineVal->code()->pkg;
+        pre = tctx_.curRoutineVal->code()->ci().pkg;
     if (pre == "GLOBAL") pre.clear();
     if (pre.empty() && !tctx_.pkgPrefix.empty()) pre = tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2);
     while (!pre.empty()) {
@@ -2657,7 +2657,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     // adjacent pair must hold
     if (!scan && tctx_.cur && items.size() >= 2)
         if (Value* uf = tctx_.cur->find("&infix:<" + op + ">"))
-            if (uf->t == VT::Code && uf->code() && uf->code()->assocChain) {
+            if (uf->t == VT::Code && uf->code() && uf->code()->ci().assocChain) {
                 for (size_t i = 0; i + 1 < items.size(); i++)
                     if (!callCallable(*uf, ValueList{items[i], items[i + 1]}).truthy())
                         return Value::boolean(false);
@@ -2667,13 +2667,13 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     // items per step — the .reduce method knows how
     if (tctx_.cur)
         if (Value* uf = tctx_.cur->find("&infix:<" + op + ">"))
-            if (uf->t == VT::Code && uf->code() && !uf->code()->isMultiDispatcher) {
+            if (uf->t == VT::Code && uf->code() && !uf->code()->ci().isMultiDispatcher) {
                 size_t arity = 0;
-                if (uf->code()->params && !uf->code()->params->empty()) {
-                    for (auto& pp : *uf->code()->params)
+                if (uf->code()->ci().params && !uf->code()->ci().params->empty()) {
+                    for (auto& pp : *uf->code()->ci().params)
                         if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) arity++;
                 } else
-                    for (auto& ph : uf->code()->placeholders)
+                    for (auto& ph : uf->code()->ci().placeholders)
                         if (!ph.empty() && ph.find(':') == std::string::npos) arity++;
                 if (arity > 2) {
                     Value lst = Value::array(items); lst.isList = true;

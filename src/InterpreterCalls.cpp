@@ -100,16 +100,16 @@ bool Interpreter::methodMayYieldContainer(const std::string& name) {
         for (auto& a : kv.second->attrs)
             if (a.pub && a.rw && a.name == name) return true;   // `has $.v is rw`
         auto mit = kv.second->methods.find(name);
-        if (mit != kv.second->methods.end() && mit->second.code() && mit->second.code()->retRw)
+        if (mit != kv.second->methods.end() && mit->second.code() && mit->second.code()->ci().retRw)
             return true;                                        // `method m() is rw`
     }
     return false;
 }
 
 bool Interpreter::rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>* rwArgs) {
-    if (!rwArgs || !cand.code() || !cand.code()->params) return false;
+    if (!rwArgs || !cand.code() || !cand.code()->ci().params) return false;
     size_t pi = 0;
-    for (auto& p : *cand.code()->params) {
+    for (auto& p : *cand.code()->ci().params) {
         if (p.invocant) continue;
         if (p.slurpy) break;
         if (p.named) continue;
@@ -125,9 +125,9 @@ bool Interpreter::rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>
 bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
                                      const std::vector<ExprPtr>* rwArgs, const ValueList* vals) {
     (void)nargs;
-    if (!rwArgs || !cand.code() || !cand.code()->params) return false;
+    if (!rwArgs || !cand.code() || !cand.code()->ci().params) return false;
     size_t pi = 0;
-    for (auto& p : *cand.code()->params) {
+    for (auto& p : *cand.code()->ci().params) {
         if (p.invocant) continue;
         if (p.slurpy) break;      // mirrors setupRwLinks' positional indexing
         if (p.named) continue;
@@ -1268,13 +1268,13 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
             auto mit = k->methods.find(name);
             if (mit != k->methods.end() && mit->second.t == VT::Code && mit->second.code()) {
                 const auto& c = mit->second.code();
-                if (c->isMultiDispatcher) {
+                if (c->ci().isMultiDispatcher) {
                     for (auto& cand : c->cold().candidates)
-                        if (cand.t == VT::Code && cand.code() && !cand.code()->isProto &&
-                            !(cand.code()->isSubmethod && k != tc))
+                        if (cand.t == VT::Code && cand.code() && !cand.code()->ci().isProto &&
+                            !(cand.code()->ci().isSubmethod && k != tc))
                             out.push_back(cand);
                 }
-                else if (!(c->isSubmethod && k != tc)) { out.push_back(mit->second); return false; }
+                else if (!(c->ci().isSubmethod && k != tc)) { out.push_back(mit->second); return false; }
             }
             if (!walk(k->parent.get())) return false;
             for (auto& e : k->extraParents) if (!walk(e.get())) return false;
@@ -1287,9 +1287,9 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
     };
     auto dispatch = [&](const char* name, ValueList cands) {
         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
-        disp.code()->name = name;
-        disp.code()->isMultiDispatcher = true;
-        disp.code()->isMethod = true;
+        disp.code()->ciM().name = name;
+        disp.code()->ciM().isMultiDispatcher = true;
+        disp.code()->ciM().isMethod = true;
         disp.code()->coldM().candidates = std::move(cands);
         return invokeMethod(disp, Value::typeObj(target), ValueList{v});
     };
@@ -1417,7 +1417,7 @@ Value Interpreter::deproxy(Value v) {
         if (it == v.hash()->end()) return v;
         // FETCH may be written as a `method` — XML::Element's is — in which case the
         // Proxy is its INVOCANT, not its first positional.
-        if (it->second.t == VT::Code && it->second.code() && it->second.code()->isMethod)
+        if (it->second.t == VT::Code && it->second.code() && it->second.code()->ci().isMethod)
             return invokeMethod(it->second, v, {});
         return callCallable(it->second, { v });
     }
@@ -1434,7 +1434,7 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
     if (it == proxy.hash()->end()) return v;
     // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
     // first positional. Both spellings appear in the wild — XML uses the method form.
-    if (it->second.t == VT::Code && it->second.code() && it->second.code()->isMethod)
+    if (it->second.t == VT::Code && it->second.code() && it->second.code()->ci().isMethod)
         return invokeMethod(it->second, proxy, { v });
     return codeArity(it->second) >= 2 ? callCallable(it->second, { proxy, v })
                                       : callCallable(it->second, { v });
@@ -1792,7 +1792,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
     };
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
-    fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
+    fetch.code()->ciM().builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
         Value s = cur(I);
         if (s.t == VT::Object && s.obj() && s.obj()->hasBoxed) s = s.obj()->boxed();
         ValueList sa{Value::integer(from)};
@@ -1800,7 +1800,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
         return I.methodCall(s, "substr", sa);
     };
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
-    store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
+    store.code()->ciM().builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
         Value nv = sa.empty() ? Value::str("") : sa.back();
         Value out = I.spliceStr(cur(I), from, len, nv);
         if (Value* p = owner->local(vname)) { ParStripe ws(I, p); *p = out; }
@@ -1921,11 +1921,11 @@ static bool forTailVarsStmt(const Stmt* s, std::vector<const void*>& out) {
 Value Interpreter::makePairCellProxy(PRef<Value> cell) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
-    fetch.code()->builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
+    fetch.code()->ciM().builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
     static const std::vector<Param> kTwoPair(2);
-    store.code()->params = &kTwoPair;                  // proxyStore's `sub ($, $v)` shape
-    store.code()->builtin = [cell](Interpreter&, ValueList& sa) -> Value {
+    store.code()->ciM().params = &kTwoPair;                  // proxyStore's `sub ($, $v)` shape
+    store.code()->ciM().builtin = [cell](Interpreter&, ValueList& sa) -> Value {
         if (sa.size() >= 2) *cell = sa[1];
         return *cell;
     };
@@ -1940,7 +1940,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     // builtin never binds its params, so they cost nothing else.
     static const Value kFetch = [] {
         Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
-        f.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
+        f.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
             if (a.empty() || !a[0].hash()) return Value::any();
             return I.slotProxyRead(a[0]);
         };
@@ -1949,8 +1949,8 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     static const Value kStore = [] {
         Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
         static const std::vector<Param> kTwo(2);
-        st.code()->params = &kTwo;
-        st.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
+        st.code()->ciM().params = &kTwo;
+        st.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
             if (a.size() < 2 || !a[0].hash()) return a.empty() ? Value::any() : a.back();
             return I.slotProxyWrite(a[0], a[1]);
         };
@@ -1974,7 +1974,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
 const Value& cellProxyFetch() {
     static const Value k = [] {
         Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
-        f.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+        f.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
             PRef<Value> c = a.empty() ? nullptr : cellOfProxy(&a[0]);
             return c ? *c : Value::any();
         };
@@ -1986,8 +1986,8 @@ const Value& cellProxyStore() {
     static const Value k = [] {
         Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
         static const std::vector<Param> kTwo(2);
-        st.code()->params = &kTwo;
-        st.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+        st.code()->ciM().params = &kTwo;
+        st.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
             PRef<Value> c = a.size() < 2 ? nullptr : cellOfProxy(&a[0]);
             if (!c) return a.empty() ? Value::any() : a.back();
             *c = a[1];
@@ -2285,10 +2285,10 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
     if (a->target->kind == NK::Call && a->op.size() == 1 && a->op[0] == '=') {
         auto* c = static_cast<Call*>(a->target.get());
         Value* fp = c->name.empty() || c->callee ? nullptr : tctx_.cur->find(callAmpName(c));
-        if (fp && fp->t == VT::Code && fp->code() && !fp->code()->builtin && !fp->code()->retRw) {
+        if (fp && fp->t == VT::Code && fp->code() && !fp->code()->ci().builtin && !fp->code()->ci().retRw) {
             bool anyRw = false;
             for (auto& cand : fp->code()->cold().candidates)
-                if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { anyRw = true; break; }
+                if (cand.t == VT::Code && cand.code() && cand.code()->ci().retRw) { anyRw = true; break; }
             if (!anyRw) {
                 Value got = evalCall(c);
                 if (got.t == VT::Hash && got.hashKind == "Proxy" && got.hash()) got = deproxy(got);
@@ -2337,7 +2337,7 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
 // with (elems, elems), which is Rakudo's WhateverCode.POSITIONS. Fed once, the
 // second star saw no argument at all and the slice was `2..-1`: empty.
 Value Interpreter::whateverPos(const Value& code, long long n) {
-    long long ar = code.code() ? std::max(1LL, code.code()->whateverArity) : 1;
+    long long ar = code.code() ? std::max(1LL, code.code()->ci().whateverArity) : 1;
     ValueList as;
     for (long long i = 0; i < ar; i++) as.push_back(Value::integer(n));
     return callCallable(code, std::move(as));
@@ -3201,7 +3201,7 @@ bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
         auto ci = g_revInterp->classes_.find(v.s);
         if (ci == g_revInterp->classes_.end() || !ci->second || ci->second->isRole) return false;
         Value* m = ci->second->findMethod(method);
-        if (!m || m->t != VT::Code || !m->code() || m->code()->builtin) return false;
+        if (!m || m->t != VT::Code || !m->code() || m->code()->ci().builtin) return false;
         static thread_local int tdepth = 0;
         if (tdepth > 8) return false;
         struct D { D() { tdepth++; } ~D() { tdepth--; } } d;
@@ -3212,7 +3212,7 @@ bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
     }
     if (!g_revInterp || v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
     Value* m = v.obj()->cls->findMethod(method);
-    if (!m || m->t != VT::Code || !m->code() || m->code()->builtin) return false;
+    if (!m || m->t != VT::Code || !m->code() || m->code()->ci().builtin) return false;
     static thread_local int depth = 0;
     if (depth > 8) return false;
     struct D { D() { depth++; } ~D() { depth--; } } d;
@@ -3233,17 +3233,17 @@ Value composeCode(const Value& fV, const Value& gV) {
         ValueList none;
         try { slip = g_revInterp->methodCall(fV, "count", none).toNum() > 1; } catch (...) {}
     }
-    code.code()->builtin = [fV, gV, slip](Interpreter& I, ValueList& a) -> Value {
+    code.code()->ciM().builtin = [fV, gV, slip](Interpreter& I, ValueList& a) -> Value {
         Value gr = I.callCallable(gV, a);
         if (slip && (gr.t == VT::Array || gr.t == VT::Range) && !gr.itemized)
             return I.callCallable(fV, gr.flatten());
         return I.callCallable(fV, ValueList{ gr });
     };
     if (gV.t == VT::Code && gV.code()) {
-        code.code()->params = gV.code()->params;
-        code.code()->placeholders = gV.code()->placeholders;
-        if (gV.code()->isWhateverCode && gV.code()->whateverArity > 1)
-            code.code()->whateverArity = gV.code()->whateverArity;
+        code.code()->ciM().params = gV.code()->ci().params;
+        code.code()->ciM().placeholders = gV.code()->ci().placeholders;
+        if (gV.code()->ci().isWhateverCode && gV.code()->ci().whateverArity > 1)
+            code.code()->ciM().whateverArity = gV.code()->ci().whateverArity;
     }
     if (fV.t == VT::Code && fV.code() && !fV.code()->cold().retType.empty()) code.code()->coldM().retType = fV.code()->cold().retType;
     return code;
@@ -3362,7 +3362,7 @@ const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Para
     Value cv;
     try { cv = eval(p.whereExpr.get()); } catch (...) { tctx_.cur = saved; p.whereStatic = 0; return nullptr; }
     tctx_.cur = saved;
-    if (!(cv.t == VT::Code && cv.code() && (cv.code()->isWhateverCode || cv.code()->isBlock))) {
+    if (!(cv.t == VT::Code && cv.code() && (cv.code()->ci().isWhateverCode || cv.code()->ci().isBlock))) {
         p.whereStatic = 0;
         return nullptr;
     }
@@ -3454,9 +3454,9 @@ static int dispatchCandidatesCacheable(const Callable& c, const Classes& classes
     for (auto& cand : c.cold().candidates) {
         const Callable* cc = cand.code();
         if (!cc) return false;
-        if (cc->isProto || cc->isProtoBody) continue;
-        if (!cc->params || cc->isDefaultCand || !cc->cold().wrappers.empty()) return 0;
-        for (auto& p : *cc->params) {
+        if (cc->ci().isProto || cc->ci().isProtoBody) continue;
+        if (!cc->ci().params || cc->ci().isDefaultCand || !cc->cold().wrappers.empty()) return 0;
+        for (auto& p : *cc->ci().params) {
             if (p.slurpy && p.sigil == '%' && !p.whereExpr) continue;   // a method's implicit *%_
             if (p.named || p.slurpy || p.sigil != '$' || p.hadWhere || p.litVal ||
                 p.subSig || p.codeSig || p.coerce || p.typeCapture || p.isRw || p.defaultVal ||
@@ -3495,7 +3495,7 @@ const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, co
         const Value& cand = c.cold().candidates[ci];
         size_t i = 0;
         int k = 0;
-        for (auto& p : *cand.code()->params) {
+        for (auto& p : *cand.code()->ci().params) {
             if (p.named || p.invocant || p.slurpy) continue;
             if (i >= as.size()) break;
             if (p.whereExpr) {
@@ -3533,11 +3533,11 @@ void Interpreter::dispatchCacheRecord(Callable& c, uint32_t pattern, const Value
 void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best) {
     if (c.dispatchCache.p.load(std::memory_order_relaxed)) return;   // published once
     const uint32_t ncand = (uint32_t)c.cold().candidates.size();
-    if (c.dispatchCacheable < 0 || c.dispatchCacheN != ncand) {
-        c.dispatchCacheable = (signed char)dispatchCandidatesCacheable(c, classes_, subsets_);
-        c.dispatchCacheN = ncand;
+    if (c.ci().dispatchCacheable < 0 || c.ci().dispatchCacheN != ncand) {
+        c.ci().dispatchCacheable = (signed char)dispatchCandidatesCacheable(c, classes_, subsets_);
+        c.ci().dispatchCacheN = ncand;
     }
-    if (c.dispatchCacheable != 1 && c.dispatchCacheable != 2) return;
+    if (c.ci().dispatchCacheable != 1 && c.ci().dispatchCacheable != 2) return;
     auto* e = new DispatchCacheEntry;
     if (!dispatchKey(self, as, e->key, e->nkey) || best < c.cold().candidates.data() ||
         best >= c.cold().candidates.data() + ncand) {
@@ -3547,16 +3547,16 @@ void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const Value
     e->gen = g_symbolGen.load(std::memory_order_relaxed);
     e->ncand = ncand;
     e->best = (uint32_t)(best - c.cold().candidates.data());
-    if (c.dispatchCacheable == 2) {
+    if (c.ci().dispatchCacheable == 2) {
         // which candidates match the shape (scored with every `where` assumed
         // to pass, which evaluates none), and each one's outcome bits
         uint8_t off = 0;
         for (uint32_t ci = 0; ci < ncand; ci++) {
             const Value& cand = c.cold().candidates[ci];
             const Callable* cc = cand.code();
-            if (!cc || cc->isProto || cc->isProtoBody) continue;
+            if (!cc || cc->ci().isProto || cc->ci().isProtoBody) continue;
             uint8_t nw = 0;
-            for (auto& p : *cc->params) if (p.whereExpr) nw++;
+            for (auto& p : *cc->ci().params) if (p.whereExpr) nw++;
             WhereAssume all; all.bits = ~uint64_t(0);
             if (scoreCandidate(cand, as, nullptr, self, &all) < 0) continue;
             e->relevant |= (uint8_t)(1u << ci);
@@ -3679,11 +3679,11 @@ static bool stmtsMayReadAtArgs(const std::vector<StmtPtr>& v) {
     return false;
 }
 bool Interpreter::blockTakesAtArgs(Callable& c) {
-    signed char v = c.blockAtArgs;
+    signed char v = c.ci().blockAtArgs;
     if (v < 0) {
-        v = (!c.isBlock || !c.body || stmtsMayReadAtArgs(*c.body) ||
-             (c.params && paramsMayReadAtArgs(*c.params))) ? 1 : 0;
-        c.blockAtArgs = v;
+        v = (!c.ci().isBlock || !c.ci().body || stmtsMayReadAtArgs(*c.ci().body) ||
+             (c.ci().params && paramsMayReadAtArgs(*c.ci().params))) ? 1 : 0;
+        c.ci().blockAtArgs = v;
     }
     return v != 0;
 }
@@ -4357,8 +4357,8 @@ Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const
     if (m == "map") {   // the lazy map arm takes one element per call, and no loop phasers
         const Value& fn = args[0];
         if (fn.t != VT::Code || !fn.code() || codeArity(fn) != 1) return inv;
-        if (fn.code()->body)
-            for (auto& s : *fn.code()->body)
+        if (fn.code()->ci().body)
+            for (auto& s : *fn.code()->ci().body)
                 if (s->kind == NK::Block) {
                     const std::string& ph = static_cast<Block*>(s.get())->phaser;
                     if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") return inv;

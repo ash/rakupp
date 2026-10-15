@@ -139,7 +139,7 @@ RAKUPP_CONSTINIT extern thread_local const Value* g_rxRoutine;
 
 // A block used as a subscript dimension that is NOT a WhateverCode: `{0,1}`.
 static inline bool isSliceBlock(const Value& k) {
-    return k.t == VT::Code && k.code() && !k.code()->isWhateverCode;
+    return k.t == VT::Code && k.code() && !k.code()->ci().isWhateverCode;
 }
 static inline bool isDefined(const Value& v) { return rtIsDefined(v); }
 static inline bool isDefinite(const Value& v) { return rtIsDefinite(v); }
@@ -1318,9 +1318,9 @@ static inline bool boxedIteration(const Value& v) {
 static inline void slotProxyPair(Value& proxy, std::function<Value(Interpreter&, ValueList&)> f,
                           std::function<Value(Interpreter&, ValueList&)> s) {
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
-    fetch.code()->builtin = std::move(f);
+    fetch.code()->ciM().builtin = std::move(f);
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
-    store.code()->builtin = std::move(s);
+    store.code()->ciM().builtin = std::move(s);
     (*proxy.hash())["FETCH"] = fetch;
     (*proxy.hash())["STORE"] = store;
 }
@@ -1587,8 +1587,8 @@ static inline std::string privMixinKey(const std::string& name) { return "\x01" 
 // Code has no numeric value: `+&f` and `&f + 1` find no Numeric candidate
 [[noreturn]] static inline void throwCodeNumeric(const Value& v) {
     const Callable* c = v.code();
-    std::string t = c && c->isWhateverCode ? "WhateverCode" : c && c->isMethod ? "Method"
-                  : c && c->isBlock ? "Block" : "Sub";
+    std::string t = c && c->ci().isWhateverCode ? "WhateverCode" : c && c->ci().isMethod ? "Method"
+                  : c && c->ci().isBlock ? "Block" : "Sub";
     throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                     "Cannot resolve caller Numeric(" + t + ":D: ); none of these signatures matches:\n"
                     "    (Mu:U \\v: *%_)"};
@@ -1666,7 +1666,7 @@ struct TranspCall {
     ExecContext* t = nullptr;
     TranspCall(ExecContext& tc, const Value& f) {
         // with no handler registered there is none a count could matter to
-        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->builtin && !f.code()->cold().isNative) {
+        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->ci().builtin && !f.code()->cold().isNative) {
             t = &tc; ++t->transpFrames;
         }
     }

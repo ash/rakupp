@@ -351,9 +351,9 @@ int rk_register(RkInterp rk, const char* name, RkHostFn fn, void* userdata) {
     Value code;
     code.t = VT::Code;
     code.setCode(makePayload<Callable>());
-    code.code()->name = name;
+    code.code()->ciM().name = name;
     std::string nm = name;
-    code.code()->builtin = [fn, userdata, nm](Interpreter& I, ValueList& a) -> Value {
+    code.code()->ciM().builtin = [fn, userdata, nm](Interpreter& I, ValueList& a) -> Value {
         ExtCtx ctx;
         ctx.args = &a;
         ctx.interp = &I;

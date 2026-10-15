@@ -134,7 +134,7 @@ void Interpreter::registerBuiltinsPart5() {
             if (ctx->inBody && !ctx->closeRebound && ctx->tap && I.tctx_.cur) {
                 ctx->closeRebound = true;
                 for (auto& cp : ctx->tap->closePhasers)
-                    if (cp.t == VT::Code && cp.code() && !cp.code()->builtin && cp.code()->body)
+                    if (cp.t == VT::Code && cp.code() && !cp.code()->ci().builtin && cp.code()->ci().body)
                         cp.code()->closure = I.tctx_.cur;
             }
             if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
@@ -282,10 +282,10 @@ void Interpreter::registerBuiltinsPart5() {
         };
         // a block taking SEVERAL elements at a time (`map -> $a, $b { … }, @list`)
         // is the method's business: it knows how to chunk by arity
-        if (a.size() >= 2 && a[0].t == VT::Code && a[0].code() && a[0].code()->params) {
+        if (a.size() >= 2 && a[0].t == VT::Code && a[0].code() && a[0].code()->ci().params) {
             size_t npos = 0;
-            for (auto& p : *a[0].code()->params) if (!p.named && !p.slurpy) npos++;
-            if (npos > 1 || !a[0].code()->placeholders.empty()) {
+            for (auto& p : *a[0].code()->ci().params) if (!p.named && !p.slurpy) npos++;
+            if (npos > 1 || !a[0].code()->ci().placeholders.empty()) {
                 Value lst = Value::array(); lst.isList = true;
                 if (a.size() == 2) *lst.arr() = toList(a[1]);
                 else for (size_t i = 1; i < a.size(); i++) {
@@ -655,7 +655,7 @@ void Interpreter::registerBuiltinsPart5() {
                 ValueList parts = t.t == VT::Array && t.arr() ? *t.arr() : ValueList{t};
                 // an OPERATOR folds with its own associativity, as `[**]` and
                 // `[eqv]` would: `zip(…):with(&infix:<**>)` is right-associative
-                const std::string& wn = with.code() ? with.code()->name : std::string();
+                const std::string& wn = with.code() ? with.code()->ci().name : std::string();
                 if (wn.size() > 8 && wn.compare(0, 7, "infix:<") == 0 && wn.back() == '>' && parts.size() > 1) {
                     out.arr()->push_back(I.applyReducePublic(wn.substr(7, wn.size() - 8), parts));
                     continue;
@@ -917,10 +917,10 @@ void Interpreter::registerBuiltinsPart5() {
                     owned->push_back(std::move(p));
                 }
             Value f = Value::closure([](ValueList&) { return Value::any(); }); // never reached: isNative wins
-            f.code()->name = "nativecast";
+            f.code()->ciM().name = "nativecast";
             f.code()->coldM().isNative = true;
             f.code()->coldM().nativeSymCache = (void*)(intptr_t)Interpreter::ncRawAddr(a[1]);
-            f.code()->params = owned.get();
+            f.code()->ciM().params = owned.get();
             auto rit = a[0].hash()->find("returns");
             if (rit != a[0].hash()->end() && rit->second.t == VT::Type && rit->second.s != "Mu")
                 f.code()->coldM().retType = std::string(rit->second.s.str());

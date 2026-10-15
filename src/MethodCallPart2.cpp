@@ -57,9 +57,9 @@ static long long supplyByArity(const rakupp::Value& c) {
     using namespace rakupp;
     if (c.t != VT::Code || !c.code()) return 1;
     const Callable* k = c.code();
-    if (k->isWhateverCode) return k->whateverArity > 1 ? k->whateverArity : 1;
+    if (k->ci().isWhateverCode) return k->ci().whateverArity > 1 ? k->ci().whateverArity : 1;
     long long n = 0;
-    if (k->params) { for (auto& pp : *k->params) if (!pp.slurpy && !pp.named && !pp.optional) n++; }
+    if (k->ci().params) { for (auto& pp : *k->ci().params) if (!pp.slurpy && !pp.named && !pp.optional) n++; }
     else n = (long long)k->placeholderPos();
     return n ? n : 1;
 }
@@ -510,7 +510,7 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
         for (ClassInfo* p : parents) runRoleHooks(p, which, depth + 1);
         auto it = r->methods.find(which);
         if (it == r->methods.end() || it->second.t != VT::Code || !it->second.code() ||
-            !it->second.code()->isSubmethod) return;
+            !it->second.code()->ci().isSubmethod) return;
         for (ClassInfo* p : parents) {
             auto pt = p->methods.find(which);
             if (pt != p->methods.end() && pt->second.code() == it->second.code()) return;
@@ -643,9 +643,9 @@ static Value builtinCanStub(const std::string& mn, const ClassInfo* ci) {
         !ci->findRule(mn) && !(iterDefaults.count(mn) && doesIterator()))
         return Value::nil();
     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-    stub.code()->name = mn; stub.code()->isMethod = true;
+    stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
     std::string mnc = mn;
-    stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+    stub.code()->ciM().builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::any();
         ValueList rest(a.begin() + 1, a.end());
         return I.methodCall(a[0], mnc, std::move(rest));
@@ -909,7 +909,7 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
         Value lineCb = cb;
         auto carry = std::make_shared<std::string>(); // the tail of the last chunk
-        w.code()->builtin = [lineCb, chomp, carry](Interpreter& I, ValueList& a) -> Value {
+        w.code()->ciM().builtin = [lineCb, chomp, carry](Interpreter& I, ValueList& a) -> Value {
             bool final = a.size() > 1 && a[1].truthy();  // stream ended: release the tail
             *carry += a.empty() ? "" : a[0].toStr();
             std::string data; data.swap(*carry);
@@ -1112,7 +1112,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         if (ci2 < 8 && ownBuild[ci2] >= 0) return ownBuild[ci2] != 0;
         auto bm = oc->methods.find("BUILD");
         const bool own = bm != oc->methods.end() && bm->second.t == VT::Code && bm->second.code() &&
-                         bm->second.code()->isSubmethod && !oc->roleSubmethods.count("BUILD");
+                         bm->second.code()->ci().isSubmethod && !oc->roleSubmethods.count("BUILD");
         if (ci2 < 8) ownBuild[ci2] = own ? 1 : 0;
         return own;
     };
@@ -1477,22 +1477,22 @@ static const std::string& macDistroDesc() {
 // that name (a plain sub installed as a method takes the invocant as its first
 // positional; an existing single method becomes the group's first candidate).
 void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand) {
-    if (cand.t == VT::Code && cand.code() && !cand.code()->isMethod &&
-        !cand.code()->subAsMethod) {
+    if (cand.t == VT::Code && cand.code() && !cand.code()->ci().isMethod &&
+        !cand.code()->ci().subAsMethod) {
         auto clone = makePayload<Callable>(*cand.code());
-        clone->subAsMethod = true;
+        clone->ciM().subAsMethod = true;
         Value c2; c2.t = VT::Code; c2.setCode(std::move(clone));
         cand = std::move(c2);
     }
     auto it = ci->methods.find(mname);
     if (it != ci->methods.end() && it->second.t == VT::Code && it->second.code() &&
-        it->second.code()->isMultiDispatcher)
+        it->second.code()->ci().isMultiDispatcher)
         it->second.code()->coldM().candidates.push_back(cand);
     else {
         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
-        disp.code()->name = mname;
-        disp.code()->isMultiDispatcher = true;
-        disp.code()->isMethod = true;   // the GROUP is a Method, as a declared one is
+        disp.code()->ciM().name = mname;
+        disp.code()->ciM().isMultiDispatcher = true;
+        disp.code()->ciM().isMethod = true;   // the GROUP is a Method, as a declared one is
         if (it != ci->methods.end() && it->second.t == VT::Code)
             disp.code()->coldM().candidates.push_back(it->second);
         disp.code()->coldM().candidates.push_back(cand);
@@ -1961,11 +1961,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (auto& f : fire) f();
             };
             Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-            emitCb.code()->builtin = [last](Interpreter&, ValueList& a) -> Value { if (!a.empty()) *last = a[0]; return Value::any(); };
+            emitCb.code()->ciM().builtin = [last](Interpreter&, ValueList& a) -> Value { if (!a.empty()) *last = a[0]; return Value::any(); };
             Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
-            doneCb.code()->builtin = [settle, last](Interpreter&, ValueList&) -> Value { settle(false, *last); return Value::any(); };
+            doneCb.code()->ciM().builtin = [settle, last](Interpreter&, ValueList&) -> Value { settle(false, *last); return Value::any(); };
             Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-            quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value { settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any(); };
+            quitCb.code()->ciM().builtin = [settle](Interpreter&, ValueList& a) -> Value { settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any(); };
             tapSupply(inv, emitCb, doneCb, quitCb);
             return p;
         }
@@ -2094,17 +2094,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                 };
                 Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-                emitCb.code()->builtin = [ch](Interpreter&, ValueList& a) -> Value {
+                emitCb.code()->ciM().builtin = [ch](Interpreter&, ValueList& a) -> Value {
                     std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
                     if (!a.empty()) (*ch)["queue"].arr()->push_back(a[0]);
                     return Value::any();
                 };
                 Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
-                doneCb.code()->builtin = [settle](Interpreter&, ValueList&) -> Value {
+                doneCb.code()->ciM().builtin = [settle](Interpreter&, ValueList&) -> Value {
                     settle(false, Value::any()); return Value::any();
                 };
                 Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-                quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value {
+                quitCb.code()->ciM().builtin = [settle](Interpreter&, ValueList& a) -> Value {
                     settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any();
                 };
                 tapSupply(inv, emitCb, doneCb, quitCb);
@@ -2157,10 +2157,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (!listy && m == "start" && !args.empty() && args[0].t == VT::Code) {
             Value code = args[0];
             Value mapper; mapper.t = VT::Code; mapper.setCode(makePayload<Callable>());
-            mapper.code()->builtin = [code](Interpreter& I, ValueList& a) -> Value {
+            mapper.code()->ciM().builtin = [code](Interpreter& I, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
                 Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
-                body.code()->builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
+                body.code()->ciM().builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
                     ValueList one{v}; return I2.callCallable(code, one);
                 };
                 Value pr = I.spawnPromise(body);
@@ -2203,15 +2203,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // blocks can be awaited where their results are asked for)
             Value code = args[0];
             Value mapper; mapper.t = VT::Code; mapper.setCode(makePayload<Callable>());
-            mapper.code()->builtin = [code](Interpreter& I, ValueList& a) -> Value {
+            mapper.code()->ciM().builtin = [code](Interpreter& I, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
                 Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
-                body.code()->builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
+                body.code()->ciM().builtin = [code, v](Interpreter& I2, ValueList&) -> Value {
                     ValueList one{v}; return I2.callCallable(code, one);
                 };
                 Value pr = I.spawnPromise(body);
                 Value blk; blk.t = VT::Code; blk.setCode(makePayload<Callable>());
-                blk.code()->builtin = [pr](Interpreter& I2, ValueList&) -> Value {
+                blk.code()->ciM().builtin = [pr](Interpreter& I2, ValueList&) -> Value {
                     Value p = pr; ValueList na;
                     Value r = I2.methodCall(p, "result", na);   // waits; raises if broken
                     ValueList one{r};
@@ -2280,7 +2280,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "Seq") o.s = "Seq";
             auto cell = o.arrS();
             Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-            emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
+            emitCb.code()->ciM().builtin = [cell](Interpreter&, ValueList& a) -> Value {
                 if (!a.empty()) cell->push_back(a[0]);
                 return Value::any();
             };
@@ -2293,14 +2293,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto fin = std::make_shared<int>(0);          // 0 running, 1 done, 2 quit
             auto err = std::make_shared<Value>();
             Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-            emitCb.code()->builtin = [out](Interpreter&, ValueList& a) -> Value {
+            emitCb.code()->ciM().builtin = [out](Interpreter&, ValueList& a) -> Value {
                 if (!a.empty()) out->push_back(a[0]);
                 return Value::any();
             };
             Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
-            doneCb.code()->builtin = [fin](Interpreter&, ValueList&) -> Value { if (!*fin) *fin = 1; return Value::any(); };
+            doneCb.code()->ciM().builtin = [fin](Interpreter&, ValueList&) -> Value { if (!*fin) *fin = 1; return Value::any(); };
             Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-            quitCb.code()->builtin = [fin, err](Interpreter&, ValueList& a) -> Value {
+            quitCb.code()->ciM().builtin = [fin, err](Interpreter&, ValueList& a) -> Value {
                 if (!*fin) { *fin = 2; *err = a.empty() ? Value::any() : a[0]; }
                 return Value::any();
             };
@@ -2505,7 +2505,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // the channel's reader runs on another thread: push under its lock
             // (the stripe is chosen by address, so a raw pointer is enough —
             // holding the channel here would close a supplier→tap→channel cycle)
-            emitCb.code()->builtin = [qarr, key = (const void*)c.hash()](Interpreter&, ValueList& a) -> Value {
+            emitCb.code()->ciM().builtin = [qarr, key = (const void*)c.hash()](Interpreter&, ValueList& a) -> Value {
                 std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(key));
                 if (!a.empty()) qarr->push_back(a[0]);
                 return Value::any();
@@ -2537,9 +2537,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
             };
             Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
-            doneCb.code()->builtin = [settle](Interpreter&, ValueList&) -> Value { settle(false, Value::any()); return Value::any(); };
+            doneCb.code()->ciM().builtin = [settle](Interpreter&, ValueList&) -> Value { settle(false, Value::any()); return Value::any(); };
             Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-            quitCb.code()->builtin = [settle](Interpreter&, ValueList& a) -> Value {
+            quitCb.code()->ciM().builtin = [settle](Interpreter&, ValueList& a) -> Value {
                 settle(true, a.empty() ? Value::str("quit") : a[0]); return Value::any();
             };
             (*tapRec.hash())["done"] = doneCb;
@@ -2788,16 +2788,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // far has no taps, and are dropped
             Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
             Value supCopy = sup;
-            emitCb.code()->builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
+            emitCb.code()->ciM().builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
                 ValueList one{a.empty() ? Value::any() : a[0]};
                 Value s2 = supCopy; return I.methodCall(s2, "emit", one);
             };
             Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
-            doneCb.code()->builtin = [supCopy](Interpreter& I, ValueList&) -> Value {
+            doneCb.code()->ciM().builtin = [supCopy](Interpreter& I, ValueList&) -> Value {
                 ValueList na; Value s2 = supCopy; return I.methodCall(s2, "done", na);
             };
             Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-            quitCb.code()->builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
+            quitCb.code()->ciM().builtin = [supCopy](Interpreter& I, ValueList& a) -> Value {
                 ValueList one{a.empty() ? Value::any() : a[0]};
                 Value s2 = supCopy; try { return I.methodCall(s2, "quit", one); } catch (...) { return Value::any(); }
             };
@@ -3197,7 +3197,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value seen = Value::array(); seen.isList = true;
                 auto cell = seen.arrS();
                 Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-                emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
+                emitCb.code()->ciM().builtin = [cell](Interpreter&, ValueList& a) -> Value {
                     if (!a.empty()) cell->push_back(a[0]);
                     return Value::any();
                 };
@@ -3231,16 +3231,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto state = std::make_shared<std::atomic<int>>(0);   // 1 done, 2 quit
                 auto quitV = std::make_shared<Value>();
                 Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
-                emitCb.code()->builtin = [cell](Interpreter&, ValueList& a) -> Value {
+                emitCb.code()->ciM().builtin = [cell](Interpreter&, ValueList& a) -> Value {
                     if (!a.empty()) cell->push_back(a[0]);
                     return Value::any();
                 };
                 Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
-                doneCb.code()->builtin = [state](Interpreter&, ValueList&) -> Value {
+                doneCb.code()->ciM().builtin = [state](Interpreter&, ValueList&) -> Value {
                     int z = 0; state->compare_exchange_strong(z, 1); return Value::any();
                 };
                 Value quitCb; quitCb.t = VT::Code; quitCb.setCode(makePayload<Callable>());
-                quitCb.code()->builtin = [state, quitV](Interpreter&, ValueList& a) -> Value {
+                quitCb.code()->ciM().builtin = [state, quitV](Interpreter&, ValueList& a) -> Value {
                     if (!a.empty()) *quitV = a[0];
                     state->store(2); return Value::any();
                 };
@@ -3457,9 +3457,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // thunk calls the method on that type (Red's timestamp columns)
             std::string seedType = ca->type.empty() ? std::string("Any") : ca->type;
             Value thunk; thunk.t = VT::Code; thunk.setCode(makePayload<Callable>());
-            thunk.code()->isMethod = true;
-            thunk.code()->name = "build";
-            thunk.code()->builtin = [def, declEnv, seedType](Interpreter& I, ValueList& a) -> Value {
+            thunk.code()->ciM().isMethod = true;
+            thunk.code()->ciM().name = "build";
+            thunk.code()->ciM().builtin = [def, declEnv, seedType](Interpreter& I, ValueList& a) -> Value {
                 // (the parser desugars `.= m(…)` to `$!x.m(…)` on the attribute itself)
                 const MethodCall* mcd = def->kind == NK::MethodCall ? static_cast<const MethodCall*>(def) : nullptr;
                 if (mcd && mcd->inv && mcd->inv->kind == NK::VarExpr &&
@@ -4274,7 +4274,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if ((m == "andthen" || m == "orelse") && !args.empty() && args[0].t == VT::Code) {
             Value cb = args[0]; const bool isAnd = m == "andthen";
             Value wrap; wrap.t = VT::Code; wrap.setCode(makePayload<Callable>());
-            wrap.code()->builtin = [cb, isAnd](Interpreter& I, ValueList& a) -> Value {
+            wrap.code()->ciM().builtin = [cb, isAnd](Interpreter& I, ValueList& a) -> Value {
                 Value p = a.empty() ? Value::any() : a[0];
                 const bool kept = I.methodCall(p, "status", ValueList{}).toStr() == "Kept";
                 if (kept == isAnd) return I.callCallable(cb, ValueList{p});
@@ -4785,7 +4785,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // parsed after the day, so record it and resolve once both are known.
             bool lastDay = false;
             auto isWhatever = [](const Value& v) {
-                return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+                return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
             };
 
             ValueList pos;
@@ -5401,7 +5401,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const bool setting = fr.hash()->count("setting") > 0;
                 auto it = fr.hash()->find("code");
                 const bool routine = it != fr.hash()->end() && it->second.t == VT::Code && it->second.code() &&
-                                     !it->second.code()->isBlock && !it->second.code()->name.empty();
+                                     !it->second.code()->ci().isBlock && !it->second.code()->ci().name.empty();
                 if (m == "concise" ? routine && !setting : routine || !setting) out += fr.toStr();
             }
             return Value::str(out);
@@ -5435,8 +5435,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "is-routine") {
             auto it = inv.hash()->find("code");
             return Value::boolean(it != inv.hash()->end() && it->second.t == VT::Code &&
-                                  it->second.code() && !it->second.code()->isBlock &&
-                                  !it->second.code()->name.empty());
+                                  it->second.code() && !it->second.code()->ci().isBlock &&
+                                  !it->second.code()->ci().name.empty());
         }
         if (m == "subname") {
             auto it = inv.hash()->find("code");
@@ -5444,7 +5444,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // and a frame whose subname is "" is indistinguishable from a
             // bare block to anything walking the list
             if (it == inv.hash()->end() || !it->second.code()) return Value::str("<unit>");
-            return Value::str(it->second.code()->name);
+            return Value::str(it->second.code()->ci().name);
         }
         if (m == "gist" || m == "Str") {
             Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
@@ -5507,7 +5507,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "code") {
                 if (it != inv.hash()->end()) return it->second;
                 Value u; u.t = VT::Code; u.setCode(makePayload<Callable>());
-                u.code()->name = "<unit>";        // the mainline is not a routine
+                u.code()->ciM().name = "<unit>";        // the mainline is not a routine
                 return u;
             }
             return Value::makeHash();
@@ -6642,16 +6642,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     std::string pat = rit->second;
                     std::string kind = c->ruleKind.count(mn) ? c->ruleKind[mn] : "regex";
                     Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-                    code.code()->name = mn;
-                    code.code()->isMethod = true;
-                    code.code()->isRegexRoutine = true;
+                    code.code()->ciM().name = mn;
+                    code.code()->ciM().isMethod = true;
+                    code.code()->ciM().isRegexRoutine = true;
                     auto pit = c->rulePod.find(mn);
                     if (pit != c->rulePod.end()) {
                         code.code()->coldM().pod = std::get<0>(pit->second);
                         code.code()->coldM().podTrail = std::get<1>(pit->second);
-                        code.code()->declLine = std::get<2>(pit->second);
+                        code.code()->ciM().declLine = std::get<2>(pit->second);
                     }
-                    code.code()->builtin = [pat, kind, mn](Interpreter& I, ValueList& a) -> Value {
+                    code.code()->ciM().builtin = [pat, kind, mn](Interpreter& I, ValueList& a) -> Value {
                         if (a.empty()) return Value::nil();
                         // …and handed a grammar CURSOR (a metaclass's find_method
                         // wrapper calling the rule it was given, `$meth($c, |args)`),
@@ -6676,9 +6676,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (a.pub && a.name == mn) {
                             Value code; code.t = VT::Code;
                             code.setCode(makePayload<Callable>());
-                            code.code()->name = mn; code.code()->isMethod = true;
-                            code.code()->retRw = a.rw;   // `.rw` answers for an `is rw` accessor
-                            code.code()->builtin = [mn](Interpreter& I, ValueList& av) -> Value {
+                            code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
+                            code.code()->ciM().retRw = a.rw;   // `.rw` answers for an `is rw` accessor
+                            code.code()->ciM().builtin = [mn](Interpreter& I, ValueList& av) -> Value {
                                 if (av.empty()) return Value::any();
                                 Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
                                 return I.methodCall(in2, mn, rest);
@@ -6702,8 +6702,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (fromBuiltin && isContainerMethodName(mn)) {
                         Value code; code.t = VT::Code;
                         code.setCode(makePayload<Callable>());
-                        code.code()->name = mn; code.code()->isMethod = true;
-                        code.code()->builtin = [mn, nativeBase](Interpreter& I, ValueList& av) -> Value {
+                        code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
+                        code.code()->ciM().builtin = [mn, nativeBase](Interpreter& I, ValueList& av) -> Value {
                             if (av.empty()) return Value::any();
                             Value in2 = av[0]; ValueList rest(av.begin() + 1, av.end());
                             // The ORIGINAL is what the caller asked for, so reach
@@ -6764,10 +6764,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // dispatching. Rakudo re-adds each candidate with
                     // ^add_multi_method; here the dispatcher already holds them, so
                     // install that.
-                    if (add.t == VT::Code && add.code() && add.code()->isProto)
+                    if (add.t == VT::Code && add.code() && add.code()->ci().isProto)
                         for (auto& kv : ci->methods) {
                             if (!(kv.second.t == VT::Code && kv.second.code() &&
-                                  kv.second.code()->isMultiDispatcher)) continue;
+                                  kv.second.code()->ci().isMultiDispatcher)) continue;
                             bool holdsIt = false;
                             for (auto& cand : kv.second.code()->cold().candidates)
                                 if (cand.code() == add.code()) { holdsIt = true; break; }
@@ -6780,10 +6780,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // the sub ran with no arguments at all and `obj` was Any. The
                     // Callable is shared, so the flag rides on a CLONE: the same
                     // `&sub` may still be called as a sub elsewhere.
-                    if (add.t == VT::Code && add.code() && !add.code()->isMethod &&
-                        !add.code()->subAsMethod) {
+                    if (add.t == VT::Code && add.code() && !add.code()->ci().isMethod &&
+                        !add.code()->ci().subAsMethod) {
                         auto clone = makePayload<Callable>(*add.code());
-                        clone->subAsMethod = true;
+                        clone->ciM().subAsMethod = true;
                         Value m2; m2.t = VT::Code; m2.setCode(std::move(clone));
                         add = std::move(m2);
                     }
@@ -6793,9 +6793,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (add.t == VT::Array || add.t == VT::Hash || add.t == VT::Str || add.t == VT::Int) {
                         const std::string what = add.typeName();
                         Value bad; bad.t = VT::Code; bad.setCode(makePayload<Callable>());
-                        bad.code()->name = args[0].toStr();
-                        bad.code()->isMethod = true;
-                        bad.code()->builtin = [what](Interpreter&, ValueList&) -> Value {
+                        bad.code()->ciM().name = args[0].toStr();
+                        bad.code()->ciM().isMethod = true;
+                        bad.code()->ciM().builtin = [what](Interpreter&, ValueList&) -> Value {
                             throw RakuError{Value::typeObj("X::AdHoc"),
                                             "Cannot invoke object with invocation handler of type " + what};
                         };
@@ -7030,7 +7030,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (ClassInfo* c2 = ci.get(); c2; c2 = c2->parent.get()) {
                         auto it = c2->methods.find(mn);
                         if (it != c2->methods.end() && it->second.t == VT::Code && it->second.code() &&
-                            !(c2 != ci.get() && it->second.code()->isSubmethod) &&   // not inherited
+                            !(c2 != ci.get() && it->second.code()->ci().isSubmethod) &&   // not inherited
                             seen.insert(it->second.code()).second)
                             out.arr()->push_back(it->second);
                     }
@@ -7043,9 +7043,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         const ClassAttr* at = c2->findAttr(mn);
                         if (at && at->pub) {
                             Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-                            stub.code()->name = mn; stub.code()->isMethod = true;
+                            stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                             std::string mnc = mn;
-                            stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                            stub.code()->ciM().builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
                                 if (a.empty()) return Value::any();
                                 ValueList rest(a.begin() + 1, a.end());
                                 return I.methodCall(a[0], mnc, std::move(rest));
@@ -7077,7 +7077,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "submethod_table" && ci) {
                 Value out = Value::makeHash();
                 for (auto& kv : ci->methods)
-                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->isSubmethod &&
+                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->ci().isSubmethod &&
                         !ci->roleSubmethodsHidden.count(kv.first) && !(kv.first.size() && kv.first[0] == '!'))
                         (*out.hash())[kv.first] = kv.second;
                 return out;
@@ -7121,10 +7121,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (local && !seen.insert(at.name).second) continue;
                         if (names) { out.arr()->push_back(Value::str(at.name)); continue; }
                         Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-                        stub.code()->name = at.name; stub.code()->isMethod = true;
+                        stub.code()->ciM().name = at.name; stub.code()->ciM().isMethod = true;
                         std::string an = at.name;
                         if (!at.type.empty()) stub.code()->coldM().retType = at.type;
-                        stub.code()->builtin = [an](Interpreter& I, ValueList& a) -> Value {
+                        stub.code()->ciM().builtin = [an](Interpreter& I, ValueList& a) -> Value {
                             if (a.empty()) return Value::any();
                             ValueList rest(a.begin() + 1, a.end());
                             return I.methodCall(a[0], an, std::move(rest));
@@ -7530,7 +7530,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // TWEAK, so as not to shadow a model's.
             if (m == "declares_method" && !args.empty()) {
                 std::string mn = args[0].t == VT::Code && args[0].code()
-                               ? args[0].code()->name : args[0].toStr();
+                               ? args[0].code()->ci().name : args[0].toStr();
                 auto dm = ci->methods.find(mn);   // Rakudo hands back the METHOD
                 return dm != ci->methods.end() ? dm->second : Value::boolean(false);
             }
@@ -7581,11 +7581,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (m == "new" && !m.skipOwn) {
                 Value* um = ci->findMethod("new");
                 bool useCustom = um != nullptr;
-                if (um && um->code() && um->code()->isMultiDispatcher) {
+                if (um && um->code() && um->code()->ci().isMultiDispatcher) {
                     useCustom = false;
                     bool hasProto = false;
                     for (auto& cand : um->code()->cold().candidates) {
-                        if (cand.code() && cand.code()->isProto) { hasProto = true; continue; }
+                        if (cand.code() && cand.code()->ci().isProto) { hasProto = true; continue; }
                         if (scoreCandidate(cand, args) >= 0) { useCustom = true; break; }
                     }
                     // A class that writes its own `proto method new(|)` REPLACES the
@@ -7628,7 +7628,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // stub is called
                 if (ci->isRole && m == "new")
                     for (auto& mk : ci->methods)
-                        if (mk.second.t == VT::Code && mk.second.code() && mk.second.code()->isStub)
+                        if (mk.second.t == VT::Code && mk.second.code() && mk.second.code()->ci().isStub)
                             throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Method '" + mk.first + "' must be implemented by " + ci->name +
                                 " because it is required by roles: " + ci->name + "."};
@@ -8150,7 +8150,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // a role's STUB method (`method body-serializer-selector() { ... }`)
             // is satisfied by the class's public attribute of the same name —
             // the accessor must win over executing the stub
-            bool stubOverAttr = um0->t == VT::Code && um0->code() && um0->code()->isStub;
+            bool stubOverAttr = um0->t == VT::Code && um0->code() && um0->code()->ci().isStub;
             if (stubOverAttr) {
                 const ClassAttr* at0 = ci->findAttr(m);
                 stubOverAttr = at0 && at0->pub;
@@ -8161,10 +8161,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // takes falls through to it. (The type-object path already knows this;
             // the instance path was throwing before it got there.)
             bool passToDefault = false;
-            if (m == "new" && um0->t == VT::Code && um0->code() && um0->code()->isMultiDispatcher) {
+            if (m == "new" && um0->t == VT::Code && um0->code() && um0->code()->ci().isMultiDispatcher) {
                 passToDefault = true;
                 for (auto& cand : um0->code()->cold().candidates) {
-                    if (cand.code() && cand.code()->isProto) { passToDefault = false; break; }
+                    if (cand.code() && cand.code()->ci().isProto) { passToDefault = false; break; }
                     if (scoreCandidate(cand, args) >= 0) { passToDefault = false; break; }
                 }
             }
@@ -8379,7 +8379,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         else {
         Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         std::string mc = m; ValueList ar = args;
-        code.code()->builtin = [mc, ar](Interpreter& I, ValueList& a) -> Value {
+        code.code()->ciM().builtin = [mc, ar](Interpreter& I, ValueList& a) -> Value {
             Value arg = a.empty() ? Value::any() : a[0];
             ValueList aa = ar;
             return I.methodCall(arg, mc, aa);
@@ -8421,8 +8421,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // each candidate whether its `.file` ends with the module's own path,
         // so without them the module exported nothing at all.
         if ((m == "file" || m == "line") && args.empty()) {
-            if (m == "line") return Value::integer(inv.code()->declLine);
-            const std::string& f = inv.code()->declFile;
+            if (m == "line") return Value::integer(inv.code()->ci().declLine);
+            const std::string& f = inv.code()->ci().declFile;
             // a routine the runtime made up has no declaration site of its own;
             // Rakudo names the setting for those, and so do we
             return Value::str(f.empty() ? std::string("SETTING::src/core.c/") : f);
@@ -8430,7 +8430,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "assuming") { // partial application: &f.assuming(a,b)(c) == f(a,b,c)
             Value orig = inv; ValueList pre = args;
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-            code.code()->builtin = [orig, pre](Interpreter& I, ValueList& a) -> Value {
+            code.code()->ciM().builtin = [orig, pre](Interpreter& I, ValueList& a) -> Value {
                 // a `*` in the priming is a hole: the call's next positional
                 // fills it, so `f.assuming(*, 2)(1)` calls `f(1, 2)`
                 ValueList pos, nam;
@@ -8446,7 +8446,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             // residual signature: params the priming bound disappear; the rest
             // (unbound positional tail, unbound nameds, slurpies) remain
-            if (inv.code()->params || inv.code()->cold().hasPrimed) {
+            if (inv.code()->ci().params || inv.code()->cold().hasPrimed) {
                 ValueList posArgs; std::map<std::string, Value> namedBound;
                 for (auto& a : pre) {
                     if (a.t == VT::Pair) namedBound[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
@@ -8458,12 +8458,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // but only for a sub whose signature is the whole story (a body
                 // using @_ / $^a placeholders takes whatever it's given)
                 Value bindErr = Value::nil();
-                bool checkBind = !inv.code()->usesArgs && inv.code()->placeholders.empty();
+                bool checkBind = !inv.code()->ci().usesArgs && inv.code()->ci().placeholders.empty();
                 std::set<std::string> namedSeen; bool posSlurpy = false, namedSlurpy = false;
                 // priming an already-primed sub re-primes its residual signature
                 std::vector<const Param*> src;
                 if (inv.code()->cold().hasPrimed) for (auto& sp : inv.code()->cold().primedParams) src.push_back(sp.get());
-                else if (inv.code()->params) for (auto& p : *inv.code()->params) src.push_back(&p);
+                else if (inv.code()->ci().params) for (auto& p : *inv.code()->ci().params) src.push_back(&p);
                 size_t pos = 0;
                 code.code()->coldM().hasPrimed = true;
                 for (const Param* pp : src) {
@@ -8562,24 +8562,24 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto countedParams = [&](std::vector<const Param*>& out) {
             const Callable* c = inv.code();
             if (c->cold().hasPrimed) { for (auto& sp : c->cold().primedParams) out.push_back(sp.get()); }
-            else if (c->params) for (auto& p : *c->params) out.push_back(&p);
+            else if (c->ci().params) for (auto& p : *c->ci().params) out.push_back(&p);
         };
         // A METHOD's signature begins with its invocant, which is positional
         // and required: `method al()` has arity 1 and count 1 in Rakudo (an
         // explicit `$self:` is already among the params and counts there)
         auto implicitInvocant = [&]() -> long long {
             const Callable* c = inv.code();
-            if (!c->isMethod || c->cold().hasPrimed) return 0;
-            if (c->params) for (auto& p : *c->params) if (p.invocant) return 0;
+            if (!c->ci().isMethod || c->cold().hasPrimed) return 0;
+            if (c->ci().params) for (auto& p : *c->ci().params) if (p.invocant) return 0;
             return 1;
         };
         // a multi's arity/count are its PROTO's, which `.signature` renders
-        if ((m == "arity" || m == "count") && inv.code()->isMultiDispatcher) {
+        if ((m == "arity" || m == "count") && inv.code()->ci().isMultiDispatcher) {
             Value sig = methodCall(inv, "signature", ValueList{});
             if (sig.t == VT::Hash && sig.hash() && sig.hash()->count(m)) return (*sig.hash())[m];
         }
         if (m == "arity") {
-            if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
+            if (inv.code()->ci().isWhateverCode) return Value::integer(std::max(1LL, inv.code()->ci().whateverArity));
             std::vector<const Param*> ps; countedParams(ps);
             long long n = 0;
             // `hasPrimed || params` is "this routine has a parameter list at all".
@@ -8587,9 +8587,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // through to the placeholder count.
             // (a placeholder block carries an EMPTY param list — its arity is
             // the placeholders' count)
-            const bool byPlaceholders = !inv.code()->cold().hasPrimed && !inv.code()->placeholders.empty() &&
-                                        (!inv.code()->params || inv.code()->params->empty());
-            if (!byPlaceholders && (inv.code()->cold().hasPrimed || inv.code()->params)) {
+            const bool byPlaceholders = !inv.code()->cold().hasPrimed && !inv.code()->ci().placeholders.empty() &&
+                                        (!inv.code()->ci().params || inv.code()->ci().params->empty());
+            if (!byPlaceholders && (inv.code()->cold().hasPrimed || inv.code()->ci().params)) {
                 // (a DEFAULT makes a parameter optional as surely as `?` does)
                 for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional && !p->defaultVal) n++;
             }
@@ -8597,20 +8597,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::integer(n + implicitInvocant());
         }
         if (m == "count") { // required + optional positionals; a slurpy makes it Inf
-            if (inv.code()->isWhateverCode) return Value::integer(std::max(1LL, inv.code()->whateverArity));
+            if (inv.code()->ci().isWhateverCode) return Value::integer(std::max(1LL, inv.code()->ci().whateverArity));
             // a BARE block's signature is `(;; $_? is raw)`: arity 0, count 1
             // (one that reads `@_` has `(*@_)` instead: count Inf)
-            if (inv.code()->isBlock && !inv.code()->hadSig && !inv.code()->isMethod &&
-                (!inv.code()->params || inv.code()->params->empty()) && inv.code()->placeholders.empty() &&
+            if (inv.code()->ci().isBlock && !inv.code()->ci().hadSig && !inv.code()->ci().isMethod &&
+                (!inv.code()->ci().params || inv.code()->ci().params->empty()) && inv.code()->ci().placeholders.empty() &&
                 !inv.code()->cold().hasPrimed) {
                 if (bodyUsesAtUnderscore(inv.code())) return Value::number(std::numeric_limits<double>::infinity());
                 return Value::integer(1);
             }
             std::vector<const Param*> ps; countedParams(ps);
             long long n = 0; bool slurpy = false;
-            const bool byPlaceholders = !inv.code()->cold().hasPrimed && !inv.code()->placeholders.empty() &&
-                                        (!inv.code()->params || inv.code()->params->empty());
-            if (!byPlaceholders && (inv.code()->cold().hasPrimed || inv.code()->params)) for (const Param* pp : ps) {
+            const bool byPlaceholders = !inv.code()->cold().hasPrimed && !inv.code()->ci().placeholders.empty() &&
+                                        (!inv.code()->ci().params || inv.code()->ci().params->empty());
+            if (!byPlaceholders && (inv.code()->cold().hasPrimed || inv.code()->ci().params)) for (const Param* pp : ps) {
                 const Param& p = *pp;
                 if (p.named) continue;
                 // `*%opts` slurps NAMED arguments and accepts no positional at
@@ -8639,7 +8639,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // something «» would treat specially (a guillemet, a sigil), and
             // then `<op>` again with the brackets backslashed: infix:«>=»,
             // infix:<~~\>»>, infix:<$\>>.
-            const std::string nm = inv.code()->name;
+            const std::string nm = inv.code()->ci().name;
             size_t colon = nm.find(":<");
             if (colon != std::string::npos && colon > 0 && nm.size() > colon + 3 && nm.back() == '>' &&
                 nm.find(':') == colon) {
@@ -8664,7 +8664,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // runs a pattern's FIRST/NEXT/LAST phasers itself, around its own loop:
         // the phaser block becomes a Callable closing over the pattern's scope
         if (m == "has-loop-phasers" || m == "callable_for_phaser") {
-            const std::vector<StmtPtr>* body = inv.code()->body;
+            const std::vector<StmtPtr>* body = inv.code()->ci().body;
             const std::string want = (m == "callable_for_phaser" && !args.empty()) ? args[0].toStr() : "";
             Block* found = nullptr; bool any = false;
             if (body)
@@ -8680,8 +8680,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (!found) return Value::nil();
             static std::vector<Param> noParams;
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-            code.code()->params = &noParams;
-            code.code()->body = &found->stmts;
+            code.code()->ciM().params = &noParams;
+            code.code()->ciM().body = &found->stmts;
             // The phaser closes over the block's `state` frame, which sits
             // between the block's closure and each call's own frame: rak's
             // `{ state $s = 0; NEXT $s++; LAST say "$s files"; … }` reads the
@@ -8720,20 +8720,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         }
                 }
             }
-            code.code()->langRev = inv.code()->langRev;
-            code.code()->declFile = inv.code()->declFile;
-            code.code()->isBlock = true;
+            code.code()->ciM().langRev = inv.code()->ci().langRev;
+            code.code()->ciM().declFile = inv.code()->ci().declFile;
+            code.code()->ciM().isBlock = true;
             // Running the FIRST taken out IS that closure's FIRST: rak calls it
             // once before the search and then calls the pattern per item, which
             // must not run it a second time (FIRST runs once per clone).
             if (want == "FIRST") {
                 Value inner = code, owner = inv;
                 Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-                w.code()->params = &noParams;
-                w.code()->isBlock = true;
-                w.code()->langRev = inv.code()->langRev;
-                w.code()->declFile = inv.code()->declFile;
-                w.code()->builtin = [inner, owner](Interpreter& I, ValueList&) -> Value {
+                w.code()->ciM().params = &noParams;
+                w.code()->ciM().isBlock = true;
+                w.code()->ciM().langRev = inv.code()->ci().langRev;
+                w.code()->ciM().declFile = inv.code()->ci().declFile;
+                w.code()->ciM().builtin = [inner, owner](Interpreter& I, ValueList&) -> Value {
                     owner.code()->state.firstDone.store(true, std::memory_order_release);
                     return I.callCallable(inner, ValueList{});
                 };
@@ -8744,7 +8744,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "returns" || m == "of") {
             const std::string& rt = inv.code()->cold().retType;
             if (rt.empty()) {   // `--> Nil` is a value, and still what the routine returns
-                const std::string lit = retLiteralText(inv.code()->retLiteral);
+                const std::string lit = retLiteralText(inv.code()->ci().retLiteral);
                 if (lit == "True" || lit == "False") return Value::typeObj("Bool");
                 return Value::typeObj(lit.empty() ? std::string("Mu") : lit);
             }
@@ -8757,8 +8757,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::typeObj(retTypeName(rt));
         }
         if (m == "signature") return makeSignature(inv.code());
-        if (m == "yada") return Value::boolean(inv.code()->isStub);   // a `{ ... }` / `{ !!! }` body
-        if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->isMultiDispatcher);
+        if (m == "yada") return Value::boolean(inv.code()->ci().isStub);   // a `{ ... }` / `{ !!! }` body
+        if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->ci().isMultiDispatcher);
         // `$block.ACCEPTS($x)` is `$block($x)` — a Callable used as a matcher
         // (paths' `$!dir-matcher.ACCEPTS($name)` is how every directory is
         // filtered, and the default matcher is a pointy block)
@@ -8774,7 +8774,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // position evaluates to) contributes its candidates.
         if (m == "add_dispatchee" && !args.empty() && args[0].t == VT::Code && args[0].code()) {
             auto disp = inv.code();
-            disp->isMultiDispatcher = true;
+            disp->ciM().isMultiDispatcher = true;
             auto add = [&](const Value& c) {
                 if (!c.code()) return;
                 // already in the group — a multi that attached itself at its
@@ -8782,35 +8782,35 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // Callable, so the declaration (body + signature) is the identity
                 for (auto& have : disp->cold().candidates)
                     if (have.code() && (have.code() == c.code() ||
-                                        (have.code()->body && have.code()->body == c.code()->body &&
-                                         have.code()->params == c.code()->params)))
+                                        (have.code()->ci().body && have.code()->ci().body == c.code()->ci().body &&
+                                         have.code()->ci().params == c.code()->ci().params)))
                         return;
-                c.code()->isMultiCandidate = true;
+                c.code()->ciM().isMultiCandidate = true;
                 disp->coldM().candidates.push_back(c);
             };
-            if (args[0].code()->isMultiDispatcher) for (auto& c : args[0].code()->cold().candidates) add(c);
+            if (args[0].code()->ci().isMultiDispatcher) for (auto& c : args[0].code()->cold().candidates) add(c);
             else add(args[0]);
             return inv;
         }
         if (m == "candidates") {
             Value out = Value::array(); out.isList = true;
-            if (inv.code()->isMultiDispatcher) {
+            if (inv.code()->ci().isMultiDispatcher) {
                 // A METHOD group derives from its parents' groups of the same
                 // name: their multis come first, farthest ancestor first, then
                 // the class's own — so `C2.^find_method('bar').candidates[0]` is
                 // C1's (S06-advanced/wrap.t). Ours holds only its own.
-                if (inv.code()->isMethod && !inv.code()->name.empty() && !inv.code()->pkg.empty()) {
-                    auto ci = classes_.find(inv.code()->pkg);
+                if (inv.code()->ci().isMethod && !inv.code()->ci().name.empty() && !inv.code()->ci().pkg.empty()) {
+                    auto ci = classes_.find(inv.code()->ci().pkg);
                     if (ci != classes_.end() && ci->second) {
                         std::vector<ClassInfo*> chain;
                         for (ClassInfo* p = ci->second->parent.get(); p; p = p->parent.get()) chain.push_back(p);
                         for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
-                            auto mit = (*it)->methods.find(inv.code()->name);
+                            auto mit = (*it)->methods.find(inv.code()->ci().name);
                             if (mit == (*it)->methods.end() || mit->second.t != VT::Code || !mit->second.code() ||
-                                !mit->second.code()->isMultiDispatcher || mit->second.code() == inv.code())
+                                !mit->second.code()->ci().isMultiDispatcher || mit->second.code() == inv.code())
                                 continue;
                             for (auto& c : mit->second.code()->cold().candidates)
-                                if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody)))
+                                if (!(c.code() && (c.code()->ci().isProto || c.code()->ci().isProtoBody)))
                                     out.arr()->push_back(c);
                         }
                     }
@@ -8819,7 +8819,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // the group's own `proto … {*}` is the dispatcher, not a
                     // candidate: Rakudo lists the multis only
                     // (with or without a body of its own)
-                    if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody)))
+                    if (!(c.code() && (c.code()->ci().isProto || c.code()->ci().isProtoBody)))
                         out.arr()->push_back(c);
             }
             else out.arr()->push_back(inv);
@@ -8833,19 +8833,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value d; d.t = VT::Code; d.setCode(inv.code()->dispatcherC);
                 return d;
             }
-            if (inv.code()->isMultiDispatcher) return inv;
+            if (inv.code()->ci().isMultiDispatcher) return inv;
             // a `multi` candidate: find the group that holds it — the class's
             // method of that name, or the sub of that name in scope
-            if (!inv.code()->name.empty()) {
-                const std::string nm = inv.code()->name;
+            if (!inv.code()->ci().name.empty()) {
+                const std::string nm = inv.code()->ci().name;
                 auto holds = [&](const Value& d) {
-                    if (d.t != VT::Code || !d.code() || !d.code()->isMultiDispatcher) return false;
+                    if (d.t != VT::Code || !d.code() || !d.code()->ci().isMultiDispatcher) return false;
                     for (auto& c : d.code()->cold().candidates)
-                        if (c.code() == inv.code() || (c.code() && c.code()->body && c.code()->body == inv.code()->body))
+                        if (c.code() == inv.code() || (c.code() && c.code()->ci().body && c.code()->ci().body == inv.code()->ci().body))
                             return true;
                     return false;
                 };
-                if (inv.code()->isMethod) {
+                if (inv.code()->ci().isMethod) {
                     for (auto& kv : classes_) {
                         auto mit = kv.second->methods.find(nm);
                         if (mit != kv.second->methods.end() && holds(mit->second)) return mit->second;
@@ -9673,9 +9673,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool isDT = inv.hashKind == "DateTime";
             if (dateish.count(mn) || (isDT ? timeOnly.count(mn) : dateOnly.count(mn))) {
                 Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-                stub.code()->name = mn; stub.code()->isMethod = true;
+                stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                 std::string mnc = mn;
-                stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                stub.code()->ciM().builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
                     if (a.empty()) return Value::any();
                     ValueList rest(a.begin() + 1, a.end());
                     return I.methodCall(a[0], mnc, std::move(rest));
@@ -9697,9 +9697,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 "DESTROY", "new", "defined" };
             if (kHandle.count(mn)) {
                 Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-                stub.code()->name = mn; stub.code()->isMethod = true;
+                stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                 std::string mnc = mn;
-                stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                stub.code()->ciM().builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
                     if (a.empty()) return Value::any();
                     ValueList rest(a.begin() + 1, a.end());
                     return I.methodCall(a[0], mnc, std::move(rest));
@@ -9716,7 +9716,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             for (ClassInfo* c2 = ci; c2; c2 = c2->parent.get()) {
                 auto it = c2->methods.find(mn);
                 if (it != c2->methods.end() && it->second.t == VT::Code && it->second.code() &&
-                    !(c2 != ci && it->second.code()->isSubmethod) &&   // a submethod is not inherited
+                    !(c2 != ci && it->second.code()->ci().isSubmethod) &&   // a submethod is not inherited
                     seen.insert(it->second.code()).second)
                     out.arr()->push_back(it->second);
             }
@@ -9729,9 +9729,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const ClassAttr* at = c2->findAttr(mn);
                 if (at && at->pub) {
                     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-                    stub.code()->name = mn; stub.code()->isMethod = true;
+                    stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                     std::string mnc = mn;
-                    stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                    stub.code()->ciM().builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
                         if (a.empty()) return Value::any();
                         ValueList rest(a.begin() + 1, a.end());
                         return I.methodCall(a[0], mnc, std::move(rest));
@@ -9785,9 +9785,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // the permissive answer this fallback has always given)
                 if (probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
                     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
-                    stub.code()->name = mn; stub.code()->isMethod = true;
+                    stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                     std::string mnc = mn;
-                    stub.code()->builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
+                    stub.code()->ciM().builtin = [mnc](Interpreter& I, ValueList& a) -> Value {
                         if (a.empty()) return Value::any();
                         ValueList rest(a.begin() + 1, a.end());
                         return I.methodCall(a[0], mnc, std::move(rest));

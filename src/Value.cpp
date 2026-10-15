@@ -373,6 +373,7 @@ PRef<ValueList> Value::packedUnpackS() const {
 }
 
 const CallableCold kNoCallableCold{};   // what a Callable without a cold block reads (Value.h)
+CodeInfo kNoCodeInfo;   // …and what one with no code of its own reads
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ObjMethodStrFn g_objMethodStr = nullptr; // installed by InterpreterCalls.cpp (see Value.h)
@@ -833,8 +834,8 @@ std::string Value::toStr() const {
         const Value* c = get("code");
         std::string kind = "block", name = "<unit>";
         if (c && c->t == VT::Code && c->code()) {
-            name = c->code()->name;
-            kind = c->code()->isMethod ? "method" : c->code()->isBlock || name.empty() ? "block" : "sub";
+            name = c->code()->ci().name;
+            kind = c->code()->ci().isMethod ? "method" : c->code()->ci().isBlock || name.empty() ? "block" : "sub";
         }
         const Value* f = get("file");
         const Value* l = get("line");
@@ -1045,9 +1046,9 @@ std::string Value::toStr() const {
         // the generic form (Rakudo prints an address there, which is not
         // reproducible and not worth reproducing)
         // …and a METHOD as its bare name: `C.^methods` says (foo bar)
-        case VT::Code: return code() && !code()->name.empty() &&
-                              code()->name.rfind("anon", 0) != 0
-                            ? (code()->isMethod ? std::string() : std::string("&")) + code()->name
+        case VT::Code: return code() && !code()->ci().name.empty() &&
+                              code()->ci().name.rfind("anon", 0) != 0
+                            ? (code()->ci().isMethod ? std::string() : std::string("&")) + code()->ci().name
                             : "sub { ... }";
         case VT::Whatever: return "*";
         case VT::Object:
@@ -1437,7 +1438,7 @@ std::string Value::gist() const {
             return mg(*this, 0);
         }
         case VT::Code:
-            if (code() && code()->isWhateverCode) return "WhateverCode.new"; // say (* > 2)
+            if (code() && code()->ci().isWhateverCode) return "WhateverCode.new"; // say (* > 2)
             return toStr();
         default: return toStr();
     }
@@ -1519,10 +1520,10 @@ std::string Value::typeName() const {
                             if (it != hash()->end()) return it->second.toStr();
                         }
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
-        case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
-                             : code() && code()->isRegexRoutine ? "Regex"
-                             : code() && code()->isSubmethod ? "Submethod"
-                             : code() && code()->isMethod ? "Method" : code() && code()->isBlock ? "Block" : "Sub";
+        case VT::Code:  return code() && code()->ci().isWhateverCode ? "WhateverCode"
+                             : code() && code()->ci().isRegexRoutine ? "Regex"
+                             : code() && code()->ci().isSubmethod ? "Submethod"
+                             : code() && code()->ci().isMethod ? "Method" : code() && code()->ci().isBlock ? "Block" : "Sub";
         case VT::Rat:   return fatRat() ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";

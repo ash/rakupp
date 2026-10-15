@@ -1254,17 +1254,17 @@ int Lower::expr(Expr* e) {
             // lowered as an expression. No call happens at all.
             if (inl) {
                 auto it = inl->find(c->name);
-                if (it != inl->end() && it->second->params && it->second->params->size() == c->args.size()) {
+                if (it != inl->end() && it->second->ci().params && it->second->ci().params->size() == c->args.size()) {
                     const Callable& cb = *it->second;
                     std::map<std::string, int> ps;
                     for (size_t k = 0; k < c->args.size(); k++) {
                         int r = temp();
                         exprInto(c->args[k].get(), r);
                         if (bad()) return 0;
-                        ps[(*cb.params)[k].name] = r;
+                        ps[(*cb.ci().params)[k].name] = r;
                     }
                     scopes.push_back(std::move(ps));
-                    auto* body = static_cast<ExprStmt*>((*cb.body)[0].get())->e.get();
+                    auto* body = static_cast<ExprStmt*>((*cb.ci().body)[0].get())->e.get();
                     int r = expr(body);
                     scopes.pop_back();
                     return r;
@@ -1637,13 +1637,13 @@ bool inlineExpr(const Expr* e, const std::set<std::string>& params, Env* env) {
 }  // namespace
 
 const Expr* inlineBody(const Callable& c, Env* env) {
-    if (c.isMultiDispatcher || c.isMultiCandidate || c.isProto || c.isMethod || c.isBlock ||
-        c.isWhateverCode || c.isRegexRoutine || c.cold().isNative || c.cold().deprecated || !c.cold().retType.empty() ||
-        c.retRw || !c.cold().wrappers.empty() || !c.placeholders.empty() || !c.params || !c.body ||
-        c.body->size() != 1)
+    if (c.ci().isMultiDispatcher || c.ci().isMultiCandidate || c.ci().isProto || c.ci().isMethod || c.ci().isBlock ||
+        c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().isNative || c.cold().deprecated || !c.cold().retType.empty() ||
+        c.ci().retRw || !c.cold().wrappers.empty() || !c.ci().placeholders.empty() || !c.ci().params || !c.ci().body ||
+        c.ci().body->size() != 1)
         return nullptr;
     std::set<std::string> params;
-    for (const Param& p : *c.params) {
+    for (const Param& p : *c.ci().params) {
         if (p.name.size() < 2 || p.sigil != '$' || !(std::isalpha((unsigned char)p.name[1]) || p.name[1] == '_'))
             return nullptr;
         if (!p.type.empty() || p.typeCapture || p.whereExpr || p.litVal || p.defaultVal || p.subSig ||
@@ -1652,7 +1652,7 @@ const Expr* inlineBody(const Callable& c, Env* env) {
             return nullptr;
         params.insert(p.name);
     }
-    const Stmt* st = (*c.body)[0].get();
+    const Stmt* st = (*c.ci().body)[0].get();
     if (!st || st->kind != NK::ExprStmt) return nullptr;
     const Expr* e = static_cast<const ExprStmt*>(st)->e.get();
     return inlineExpr(e, params, env) ? e : nullptr;

@@ -885,6 +885,9 @@ enum : unsigned { RSC_BLOCK = 1, RSC_HADSIG = 2 };
 
 struct SubTraitSpec { std::string name; ExprPtr arg; }; // `is traced` / `is role('admin')`
 
+// Frees a BlockExpr's closure template (makeClosure's, opaque here); set by
+// the interpreter, so a tool that never makes closures has nothing to free.
+inline std::atomic<void (*)(void*)> g_closureTmplFree{nullptr};
 struct BlockExpr : Expr {
     std::vector<Param> params; // for pointy blocks / placeholder
     std::vector<StmtPtr> body;
@@ -903,7 +906,15 @@ struct BlockExpr : Expr {
     std::string podTrail;      // …its `#=` part alone
     int podLine = 0;
     std::string phaser;        // `my $x = BEGIN { … }` — an expression-position BEGIN/CHECK/INIT
+    // The code every closure of this block shares, built by the first one
+    // (makeClosure's ClosureTemplate: a CodeInfo and the context it was built
+    // in). Null until then; freed with the node.
+    mutable std::atomic<void*> closureTmpl{nullptr};
     BlockExpr(): Expr(NK::BlockExpr) {}
+    ~BlockExpr() override {
+        if (void* t = closureTmpl.load(std::memory_order_acquire))
+            if (auto f = g_closureTmplFree.load(std::memory_order_acquire)) f(t);
+    }
 };
 
 // ---- Statements ----

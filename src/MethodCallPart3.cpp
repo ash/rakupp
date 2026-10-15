@@ -300,8 +300,8 @@ static void refuseNumericOnCode(Interpreter& I, const Value& inv, const std::str
 // A bare `{ … }` block takes its implicit `$_`: no argument or one positional
 // (`{ $_ }.cando(\("x"))` finds it).
 static bool implicitTopicBlock(const Value& c) {
-    return c.code()->isBlock && !c.code()->hadSig && !c.code()->isSigLiteral &&
-           c.code()->placeholders.empty() && (!c.code()->params || c.code()->params->empty());
+    return c.code()->ci().isBlock && !c.code()->ci().hadSig && !c.code()->ci().isSigLiteral &&
+           c.code()->ci().placeholders.empty() && (!c.code()->ci().params || c.code()->ci().params->empty());
 }
 static bool takesImplicitTopic(const ValueList& call) {
     size_t npos = 0;
@@ -1417,18 +1417,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // part of the parameter list — `$m.cando: \(Jar, 'GET', 'x')` asks whether
         // `method add($, $)` accepts the two that follow.
         auto forCand = [&](const Value& c) {
-            if (!(c.t == VT::Code && c.code() && c.code()->isMethod)) return call;
+            if (!(c.t == VT::Code && c.code() && c.code()->ci().isMethod)) return call;
             ValueList rest;
             for (size_t i = 1; i < call.size(); i++) rest.push_back(call[i]);
             return rest;
         };
         Value out = Value::array(); out.isList = true;
         // a WhateverCode takes exactly as many positionals as it has stars
-        if (inv.code()->isWhateverCode && inv.code()->cold().candidates.empty() &&
-            (!inv.code()->params || inv.code()->params->empty())) {
+        if (inv.code()->ci().isWhateverCode && inv.code()->cold().candidates.empty() &&
+            (!inv.code()->ci().params || inv.code()->ci().params->empty())) {
             size_t npos = 0; bool named = false;
             for (auto& x : call) { if (x.t == VT::Pair && x.namedArg) named = true; else npos++; }
-            long long ar = inv.code()->whateverArity > 0 ? inv.code()->whateverArity : 1;
+            long long ar = inv.code()->ci().whateverArity > 0 ? inv.code()->ci().whateverArity : 1;
             if (!named && (long long)npos == ar) out.arr()->push_back(inv);
             return out;
         }
@@ -1436,7 +1436,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // flagged as a dispatcher, and scoring ITS signature accepts anything.
         if (!inv.code()->cold().candidates.empty()) {
             for (auto& c : inv.code()->cold().candidates) {
-                if (c.t == VT::Code && c.code() && c.code()->isProto) continue; // the proto
+                if (c.t == VT::Code && c.code() && c.code()->ci().isProto) continue; // the proto
                                         // defines the group; its `|` accepts anything
                 if (scoreCandidate(c, forCand(c)) >= 0) out.arr()->push_back(c);
             }
@@ -1445,14 +1445,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     if (m == "package" && inv.t == VT::Code && inv.code())
-        return Value::typeObj(inv.code()->pkg.empty() ? "GLOBAL" : inv.code()->pkg);
+        return Value::typeObj(inv.code()->ci().pkg.empty() ? "GLOBAL" : inv.code()->ci().pkg);
     // `.rw` — was the routine declared `is rw`/`is raw`? (Method::Protected picks
     // its wrapper by it)
-    if (m == "rw" && inv.t == VT::Code && inv.code()) return Value::boolean(inv.code()->retRw);
+    if (m == "rw" && inv.t == VT::Code && inv.code()) return Value::boolean(inv.code()->ci().retRw);
     // `.set_name($n)` — Routine's name setter (a cloned wrapper takes the
     // wrapped method's name in Method::Protected)
     if (m == "set_name" && inv.t == VT::Code && inv.code() && !args.empty()) {
-        inv.code()->name = args[0].toStr();
+        inv.code()->ciM().name = args[0].toStr();
         return inv;
     }
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
@@ -5778,8 +5778,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // the same source, compiled the same way, that `~~ &NAME` runs.
     if (rxIdx < 0)
         for (size_t i = 0; i < args.size(); i++)
-            if (args[i].t == VT::Code && args[i].code() && args[i].code()->isRegexRoutine) {
-                auto it = namedRegex_.find(args[i].code()->name);
+            if (args[i].t == VT::Code && args[i].code() && args[i].code()->ci().isRegexRoutine) {
+                auto it = namedRegex_.find(args[i].code()->ci().name);
                 if (it == namedRegex_.end()) continue;
                 args[i] = Value::regex(it->second);
                 rxIdx = (int)i;
@@ -6028,7 +6028,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
                     if (e == b || !tctx_.cur) continue;
                     Value* rv = tctx_.cur->find("&" + pat.substr(b, e - b));
-                    if (rv && rv->t == VT::Code && rv->code() && rv->code()->isRegexRoutine) bareCode = true;
+                    if (rv && rv->t == VT::Code && rv->code() && rv->code()->ci().isRegexRoutine) bareCode = true;
                 }
                 if (bareCode) {
                     Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;

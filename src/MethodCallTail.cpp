@@ -369,12 +369,12 @@ static bool stmtReturnsOut(const Stmt* s) {
     }
 }
 static bool mapBlockReturnsOut(const Value& fn) {
-    if (fn.t != VT::Code || !fn.code() || !fn.code()->body || fn.code()->builtin) return false;
+    if (fn.t != VT::Code || !fn.code() || !fn.code()->ci().body || fn.code()->ci().builtin) return false;
     thread_local std::unordered_map<const void*, bool> seen;   // per body, asked once
-    const void* key = fn.code()->body;
+    const void* key = fn.code()->ci().body;
     auto it = seen.find(key);
     if (it != seen.end()) return it->second;
-    bool r = bodyReturnsOut(*fn.code()->body);
+    bool r = bodyReturnsOut(*fn.code()->ci().body);
     seen.emplace(key, r);
     return r;
 }
@@ -414,8 +414,8 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
     const Value fn = args[0];
     const Callable& c = *fn.code();
     if (mapBlockReturnsOut(fn)) return false;
-    if (c.body)
-        for (auto& s : *c.body) {
+    if (c.ci().body)
+        for (auto& s : *c.ci().body) {
             if (s->kind == NK::Block) {
                 const std::string& ph = static_cast<Block*>(s.get())->phaser;
                 if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") return false;
@@ -426,9 +426,9 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
     if (!isMap && ar > 1) return false;
     // (as the serial map: a chunk short of the REQUIRED parameters dies)
     size_t required = ar;
-    if (c.params && !c.params->empty()) {
+    if (c.ci().params && !c.ci().params->empty()) {
         size_t req = 0;
-        for (auto& pp : *c.params)
+        for (auto& pp : *c.ci().params)
             if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
         if (req <= ar) required = req;
     }
@@ -436,7 +436,7 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
     // the elements of its own batches
     ValueList* const src = ar == 1 && inv.t == VT::Array && inv.arr() &&
                            items.size() == inv.arr()->size() ? inv.arr() : nullptr;
-    const bool asRoutine = c.isBlock;
+    const bool asRoutine = c.ci().isBlock;
     const size_t total = items.size();
     const auto cfg = hyperCfgOf(inv);
     ValueList res;
@@ -2076,7 +2076,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (lz.t == VT::Array && lz.ext()) return methodCall(lz, m, args, rwArgs);
         }
         if (m == "reduce" && !args.empty() && args[0].t == VT::Code) {
-            std::string n = args[0].code() ? args[0].code()->name : std::string(), op;
+            std::string n = args[0].code() ? args[0].code()->ci().name : std::string(), op;
             if (n.rfind("infix:<", 0) == 0 && n.back() == '>') op = n.substr(7, n.size() - 8);
             Value r; endlessReduce(op, inv, r); return r; // throws when there is no answer
         }
@@ -2860,8 +2860,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // the only place the associativity is recorded.
         auto rightAssoc = [this](const Value& f) {
             if (f.t != VT::Code || !f.code()) return false;
-            if (f.code()->assocRight) return true;   // `sub f is assoc<right>`
-            const std::string& n = f.code()->name;
+            if (f.code()->ci().assocRight) return true;   // `sub f is assoc<right>`
+            const std::string& n = f.code()->ci().name;
             if (n.rfind("infix:<", 0) != 0 || n.size() < 9) return false;
             std::string op = n.substr(7, n.size() - 8);
             return op == "**" || op == "=>" || rightAssocOps_.count(op) > 0;
@@ -2870,7 +2870,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // over NOTHING an operator answers its identity — `().reduce(&[+])`
             // is 0 — which the [op] metaop already knows how to look up
             if (items.empty()) {
-                const std::string& cn = args[0].code() ? args[0].code()->name : std::string();
+                const std::string& cn = args[0].code() ? args[0].code()->ci().name : std::string();
                 if (cn.rfind("infix:<", 0) == 0 && cn.back() == '>') {
                     ValueList none;
                     return applyReduce(cn.substr(7, cn.size() - 8), none);
@@ -2889,8 +2889,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (items.size() == 1) {
                 size_t req = 0;
                 if (args[0].code()) {
-                    if (args[0].code()->params && !args[0].code()->params->empty()) {
-                        for (auto& pp : *args[0].code()->params)
+                    if (args[0].code()->ci().params && !args[0].code()->ci().params->empty()) {
+                        for (auto& pp : *args[0].code()->ci().params)
                             if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
                     } else req = args[0].code()->placeholderPos();
                 }
@@ -2903,7 +2903,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // the SHORT-CIRCUIT operators fold the Rakudo way: a Callable item is
             // a thunk, run only when reached (`(True, &falseish).reduce(&infix:<&&>)`)
             if (args[0].code()) {
-                const std::string& rn = args[0].code()->name;
+                const std::string& rn = args[0].code()->ci().name;
                 const bool andOp = rn == "infix:<&&>" || rn == "infix:<and>";
                 const bool orOp = rn == "infix:<||>" || rn == "infix:<or>";
                 if (andOp || orOp) {
@@ -2923,7 +2923,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // comparison does: `(5,4,3,2,1).reduce(&infix:<eog>)` is
             // 5 eog 4 && 4 eog 3 && …, False at the first pair that fails
             // (S32-list/reduce.t)
-            if (args[0].code() && args[0].code()->assocChain) {
+            if (args[0].code() && args[0].code()->ci().assocChain) {
                 for (size_t k = 0; k + 1 < items.size(); k++)
                     if (!callCallable(args[0], ValueList{items[k], items[k + 1]}).truthy())
                         return Value::boolean(false);
@@ -2934,11 +2934,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             {
                 size_t arity = 0;
                 if (args[0].code()) {
-                    if (args[0].code()->params && !args[0].code()->params->empty()) {
-                        for (auto& pp : *args[0].code()->params)
+                    if (args[0].code()->ci().params && !args[0].code()->ci().params->empty()) {
+                        for (auto& pp : *args[0].code()->ci().params)
                             if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) arity++;
                     } else
-                        for (auto& ph : args[0].code()->placeholders)
+                        for (auto& ph : args[0].code()->ci().placeholders)
                             if (!ph.empty() && ph.find(':') == std::string::npos) arity++;
                 }
                 if (arity > 2 && items.size() >= arity) {
@@ -2982,8 +2982,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // so `(%h, |@path).reduce: -> $h is raw, $k { $h{$k} }` ends on the
             // leaf — and assigning through it vivifies the path (S32-list/reduce.t)
             const Callable* rc = args[0].code();
-            const bool rawAcc = rc && rc->isBlock && rc->params && !rc->params->empty() &&
-                                ((*rc->params)[0].isRaw || (*rc->params)[0].isRw);
+            const bool rawAcc = rc && rc->ci().isBlock && rc->ci().params && !rc->ci().params->empty() &&
+                                ((*rc->ci().params)[0].isRaw || (*rc->ci().params)[0].isRw);
             Value acc = items[0];
             try {
                 for (size_t k = 1; k < items.size(); k++) {
@@ -3003,11 +3003,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             {
                 size_t arity = 0;
                 if (args[0].code()) {
-                    if (args[0].code()->params && !args[0].code()->params->empty()) {
-                        for (auto& pp : *args[0].code()->params)
+                    if (args[0].code()->ci().params && !args[0].code()->ci().params->empty()) {
+                        for (auto& pp : *args[0].code()->ci().params)
                             if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) arity++;
                     } else
-                        for (auto& ph : args[0].code()->placeholders)
+                        for (auto& ph : args[0].code()->ci().placeholders)
                             if (!ph.empty() && ph.find(':') == std::string::npos) arity++;
                 }
                 if (arity > 2) {
@@ -3403,8 +3403,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             bool comparator = false;
             if (mapper.t == VT::Code && mapper.code()) {
                 auto* cc = mapper.code();
-                size_t ar = cc->params && !cc->params->empty() ? cc->params->size()
-                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholderPos());
+                size_t ar = cc->ci().params && !cc->ci().params->empty() ? cc->ci().params->size()
+                          : (cc->ci().placeholders.empty() ? (size_t)cc->ci().whateverArity : cc->placeholderPos());
                 comparator = ar >= 2;
             }
             auto cmp = [&](const Value& a, const Value& ak, const Value& b, const Value& bk) {
@@ -3493,8 +3493,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             bool comparator = false;
             if (mapper.t == VT::Code && mapper.code()) {
                 auto* cc = mapper.code();
-                size_t ar = cc->params && !cc->params->empty() ? cc->params->size()
-                          : (cc->placeholders.empty() ? (size_t)cc->whateverArity : cc->placeholderPos());
+                size_t ar = cc->ci().params && !cc->ci().params->empty() ? cc->ci().params->size()
+                          : (cc->ci().placeholders.empty() ? (size_t)cc->ci().whateverArity : cc->placeholderPos());
                 comparator = ar >= 2;
             }
             Value best, bestKey; bool started = false;
@@ -4090,11 +4090,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (size_t i = 0; i < order.size(); i++) order[i] = i;
             if (!args.empty() && args[0].t == VT::Code) {
                 Value blk = args[0];
-                size_t arity = blk.code()->params && !blk.code()->params->empty()
-                    ? blk.code()->params->size()
-                    : (blk.code()->placeholders.empty() ? (size_t)blk.code()->whateverArity : blk.code()->placeholderPos());
+                size_t arity = blk.code()->ci().params && !blk.code()->ci().params->empty()
+                    ? blk.code()->ci().params->size()
+                    : (blk.code()->ci().placeholders.empty() ? (size_t)blk.code()->ci().whateverArity : blk.code()->placeholderPos());
                 // a 0-arity comparator ((1..10).sort(&rand)) has no candidate
-                if (arity == 0 && blk.code()->params && blk.code()->hadSig)
+                if (arity == 0 && blk.code()->ci().params && blk.code()->ci().hadSig)
                     throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
                         "Uncallable 0-arity comparator for sort"};
                 if (arity >= 2) {
@@ -4119,24 +4119,24 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     int cmpOp = 0;          // 1 <=>, 2 cmp, 3 leg
                     bool cmpSwapped = false;
                     if (const Callable* c = blk.code();
-                        c && !c->isMultiDispatcher && !c->isMultiCandidate && c->cold().wrappers.empty() &&
-                        c->body && c->body->size() == 1) {
+                        c && !c->ci().isMultiDispatcher && !c->ci().isMultiCandidate && c->cold().wrappers.empty() &&
+                        c->ci().body && c->ci().body->size() == 1) {
                         std::string pa, pb;
-                        if ((!c->params || c->params->empty()) && c->placeholders.size() == 2 &&
-                            c->placeholders[0].size() > 2 && c->placeholders[0][1] == '^' &&
-                            c->placeholders[1].size() > 2 && c->placeholders[1][1] == '^') {
-                            pa = c->placeholders[0]; pb = c->placeholders[1];
+                        if ((!c->ci().params || c->ci().params->empty()) && c->ci().placeholders.size() == 2 &&
+                            c->ci().placeholders[0].size() > 2 && c->ci().placeholders[0][1] == '^' &&
+                            c->ci().placeholders[1].size() > 2 && c->ci().placeholders[1][1] == '^') {
+                            pa = c->ci().placeholders[0]; pb = c->ci().placeholders[1];
                         }
-                        else if (c->placeholders.empty() && c->params && c->params->size() == 2) {
+                        else if (c->ci().placeholders.empty() && c->ci().params && c->ci().params->size() == 2) {
                             bool plain = true;
-                            for (const Param& p : *c->params)
+                            for (const Param& p : *c->ci().params)
                                 if (p.sigil != '$' || p.name.size() < 2 || !p.type.empty() || p.typeCapture ||
                                     p.whereExpr || p.litVal || p.defaultVal || p.subSig || p.codeSig || p.named ||
                                     p.slurpy || p.optional || p.isRw || p.isRaw || p.isCopy || p.coerce ||
                                     p.defConstraint || !p.userTraits.empty() || p.invocant) { plain = false; break; }
-                            if (plain) { pa = (*c->params)[0].name; pb = (*c->params)[1].name; }
+                            if (plain) { pa = (*c->ci().params)[0].name; pb = (*c->ci().params)[1].name; }
                         }
-                        const Stmt* st0 = (*c->body)[0].get();
+                        const Stmt* st0 = (*c->ci().body)[0].get();
                         if (!pa.empty() && st0 && st0->kind == NK::ExprStmt) {
                             const Expr* e0 = static_cast<const ExprStmt*>(st0)->e.get();
                             if (e0 && e0->kind == NK::Binary) {
@@ -4156,9 +4156,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     }
                     // …and a COMPILED block (no tree to read) carries the shape
                     // its compiler found (Callable::cmpShape)
-                    if (!cmpOp && blk.code() && !blk.code()->body && blk.code()->cmpShape) {
+                    if (!cmpOp && blk.code() && !blk.code()->ci().body && blk.code()->ci().cmpShape) {
                         static const char* const kShapeOps[] = {"", "<=>", "cmp", "leg"};
-                        const int sh = blk.code()->cmpShape;
+                        const int sh = blk.code()->ci().cmpShape;
                         const int op = sh < 0 ? -sh : sh;
                         if (op >= 1 && op <= 3 && !lexShadowPossible(kShapeOps[op])) {
                             cmpOp = op;
@@ -4509,8 +4509,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // with loop semantics in the block's own env (Base64's encoder
                 // computes its padding in a LAST that reads the block param).
                 bool loopPh = false;
-                if (args[0].code() && args[0].code()->body)
-                    for (auto& s : *args[0].code()->body)
+                if (args[0].code() && args[0].code()->ci().body)
+                    for (auto& s : *args[0].code()->ci().body)
                         if (s->kind == NK::Block) {
                             const std::string& ph = static_cast<Block*>(s.get())->phaser;
                             if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") { loopPh = true; break; }
@@ -4521,9 +4521,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // `-> $a, $b?` takes the short one happily (Nil-Any sheet
                 // NA-20; roast S32-list/map.t asserts the death).
                 size_t required = ar;
-                if (args[0].code() && args[0].code()->params && !args[0].code()->params->empty()) {
+                if (args[0].code() && args[0].code()->ci().params && !args[0].code()->ci().params->empty()) {
                     size_t req = 0;
-                    for (auto& pp : *args[0].code()->params)
+                    for (auto& pp : *args[0].code()->ci().params)
                         if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) req++;
                     if (req <= ar) required = req;
                 }

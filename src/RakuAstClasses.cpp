@@ -89,8 +89,8 @@ const Registry* build() {
     auto method = [](BuiltinFn fn) {
         Value v; v.t = VT::Code;
         auto c = makePayload<Callable>();
-        c->builtin = std::move(fn);
-        c->isMethod = true;
+        c->ciM().builtin = std::move(fn);
+        c->ciM().isMethod = true;
         v.setCode(std::move(c));
         return v;
     };
