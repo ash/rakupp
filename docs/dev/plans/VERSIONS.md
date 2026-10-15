@@ -436,6 +436,25 @@ Beside them, one feature: `use` in the web editions (issue #83). The plan is
   `--target=js`, and the raku.online module collection lists only
   distributions whose tests pass on Raku.js.
 
+## v7.0.0 — forming (2026-10-15)
+
+Not yet a settled campaign. It starts after v6. One pillar is decided and
+written, and the rest of the list is open:
+
+1. **Parallel numeric Raku**
+   ([NUMERIC-PARALLEL-PLAN.md](NUMERIC-PARALLEL-PLAN.md)).
+   - **What:** the forms Raku already has for data parallelism run near the
+     hardware's speed over native arrays, with no new syntax. The forms are
+     the hyper operators, `[op]` and `[\op]`, `.hyper`/`.race`, and `hyper
+     for`/`race for`.
+   - **Where it starts:** the hyper operators already run as native loops on
+     every core, but their answers come back as boxed Values. Reductions are
+     serial and unpack the array. Worker loops over native arrays run
+     interpreted.
+   - **The number:** `[+] (@a »*« @b)` over two 10⁷-element `num` arrays within
+     2× of a C loop on the same threads. Today it is 62× a single C thread
+     (317 ms against 5.1 ms).
+
 ---
 
 *Keeping this current: when a campaign is decided, add its section here
