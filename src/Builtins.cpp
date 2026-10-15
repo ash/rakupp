@@ -1836,6 +1836,16 @@ Value coerceToSigil(Value v, char sigil) {
             return v;
         }
         if (v.t == VT::Nil || v.t == VT::Any) return v;
+        // …and a HASH (a Map, a Set, a Bag…) is its pairs, as in `my @a = %h`:
+        // `T.new(a => {k => 1})` and `has @.a = {k => 1}` hold [k => 1], where
+        // they held the one Hash. An ITEMIZED hash (`$%h`, a `$h` holding one)
+        // stays one element; rtArrayVal decides both, for list assignment too.
+        if (v.t == VT::Hash && v.hash()) {
+            const IStr& k = v.hashKind;
+            if (k.empty() || k == "Map" || k == "Set" || k == "SetHash" || k == "Bag" ||
+                k == "BagHash" || k == "Mix" || k == "MixHash")
+                return rtArrayVal(v);
+        }
         Value a = Value::array();
         if (v.t == VT::Range) *a.arr() = v.flatten(); else a.arr()->push_back(v);
         return a;

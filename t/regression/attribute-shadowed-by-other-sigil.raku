@@ -34,12 +34,12 @@ class A { has @.data; method a-data { @!data } }
 class B is A { has %.data; method b-data { %!data } }
 
 ck B.new.data.^name, 'Hash', "the child's accessor answers the child's Hash";
-ck B.new(data => (a => 1,)).data, {a => 1}, 'a named argument reaches the child attribute';
-ck B.new(data => (a => 1,)).a-data, [a => 1], '…and the parent attribute, as its own Array';
-ck B.new(data => (a => 1,)).A::data, [a => 1], "the qualified accessor reads the parent's";
-ck B.new(data => (a => 1,)).raku, 'B.new(data => {:a(1)}, data => [:a(1)])', '.raku shows each one';
+ck B.new(data => {a => 1}).data, {a => 1}, 'a named argument reaches the child attribute';
+ck B.new(data => {a => 1}).a-data, [a => 1], '…and the parent attribute, as its own Array';
+ck B.new(data => {a => 1}).A::data, [a => 1], "the qualified accessor reads the parent's";
+ck B.new(data => {a => 1}).raku, 'B.new(data => {:a(1)}, data => [:a(1)])', '.raku shows each one';
 {
-    my $b = B.new(data => (a => 1,));
+    my $b = B.new(data => {a => 1});
     my ($ah, $aa) = B.^attributes.sort(*.name);   # %!data (B's), @!data (A's)
     ck $ah.get_value($b), {a => 1}, "get_value through the child's Attribute";
     ck $aa.get_value($b), [a => 1], "get_value through the parent's Attribute";
