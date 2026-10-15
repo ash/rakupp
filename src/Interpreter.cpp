@@ -5426,6 +5426,34 @@ void Interpreter::notePendingType(ClassDecl* cd) {
     pendingTypeSeqNext_++;
 }
 
+// A stub's early completion (`my class A {...}` … `my class A { … }`) runs
+// its body before the types declared BETWEEN the two, which are
+// compile-time in Rakudo too: the completion may already compose one (`my
+// class A {...}; my role RH {}; my class A { my class Inner does RH {} }`
+// died "Invalid typename 'RH'", #172 — PDF::COS::Tie). So those are built
+// first, in their order, from the same unit. Nothing past the completion is.
+void Interpreter::materializeTypesBetween(const ClassDecl* stub, const ClassDecl* completion) {
+    auto lo = pendingTypeSeq_.find(stub), hi = pendingTypeSeq_.find(completion);
+    if (lo == pendingTypeSeq_.end() || hi == pendingTypeSeq_.end() || hi->second <= lo->second + 1) return;
+    auto unitOf = [&](const ClassDecl* d) -> const std::string* {
+        auto it = pendingTypeUnit_.find(d);
+        return it == pendingTypeUnit_.end() ? nullptr : &it->second;
+    };
+    const std::string* unit = unitOf(stub);
+    std::vector<std::string> between;
+    for (auto it = pendingTypeBySeq_.upper_bound(lo->second);
+         it != pendingTypeBySeq_.end() && it->first < hi->second; ) {
+        ClassDecl* d = it->second;
+        // (one built since is done with: drop it, so the next stub's look
+        // does not walk it again)
+        if (typeDeclBuilt(d)) { it = pendingTypeBySeq_.erase(it); continue; }
+        const std::string* u = unitOf(d);
+        if (d->name != stub->name && u && unit && *u == *unit) between.push_back(d->name);
+        ++it;
+    }
+    for (auto& n : between) materializePendingType(n);
+}
+
 bool Interpreter::materializePendingType(const std::string& name) {
     auto it = pendingTypes_.find(name);
     if (it == pendingTypes_.end()) return false;

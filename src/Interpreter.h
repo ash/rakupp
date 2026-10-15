@@ -3140,6 +3140,7 @@ public:
     bool typeDeclBuilt(const ClassDecl* cd);   // this very declaration already made its type
     void notePendingType(ClassDecl* cd);
     bool materializePendingType(const std::string& name); // true while hoistSubs is registering (defers trait application)
+    void materializeTypesBetween(const ClassDecl* stub, const ClassDecl* completion);   // #172: what lies between, first
     void breakSelfClosures(const std::shared_ptr<Env>& env); // drop the closure back-edge of any non-escaped nested sub, so a frame with a self-closured sub can be freed (a frame something else still holds keeps them)
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     // ENTER/FIRST at block entry (source order). `firstOnce` is the closure being
