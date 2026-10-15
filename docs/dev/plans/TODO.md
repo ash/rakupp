@@ -503,6 +503,19 @@ The same items grouped by theme, with a complexity estimate for each:
   - Rakudo dies on `<`, `<=>`, `%` and `mod` over a Pointer; Raku++ answers.
   - A `*` under a user operator (`*!`, `* quack 5`) is refused and bundled;
     the emitter does not build the curry natively.
+  - An `EVAL` that names a local of the native code around it fails:
+    `sub f { my $x = 1; EVAL '$x = 5'; $x }` dies "Variable '$x' is not
+    declared" in a natively compiled program (2026-10-16, the same on
+    fda1712a). A routine's native body under bundling (a module's, or a
+    bundled program's own) stays interpreted instead when its body holds an
+    EVAL or a run-time name lookup (Codegen aotIneligible); the whole-program
+    path still needs the same refusal, or a way to publish its locals.
+  - A `my $*X` in a routine's native body under bundling (rtAotDeclDyn) was
+    not where a dynamic lookup finds it — `my $*OUT = FakeIO.new; code();
+    $*OUT.Str` read the real STDOUT (roast S16-io/say.t; a module's sub the
+    same on fda1712a). Such a routine now keeps its interpreted body
+    (Codegen dynDecl, routine-wide); a native version is owed, starting from
+    why a full dynamic walk skips the frame the body declared it in.
 - [ ] **`--target=js`**: [TRANSPILE-PLAN.md](TRANSPILE-PLAN.md). The corpus
   gate has never been green. Open: the slot-binding half of the container
   model; `use` refused (exit 5, see V6 P7); `t/js/run.raku` does not pass MAIN
