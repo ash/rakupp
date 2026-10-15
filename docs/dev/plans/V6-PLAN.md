@@ -307,6 +307,10 @@ In order of evidence per cost:
 7. **Split `Callable`** (664 bytes, plus a per-closure copy of the `declFile`
    path) into an immutable per-AST CodeInfo and a closure of about 64 bytes.
    A closure costs ~1.6 KB here and ~0.6 KB on Rakudo.
+   *Step 1, 2026-10-15* (f7d4dc67): the fields most routines never set
+   (candidates, native-call state, wrappers, pod, `is DEPRECATED`, the return
+   type, `.assuming`'s signature) moved to CallableCold behind one pointer;
+   Callable 704 -> 424 bytes, 100k kept closures 125.6 -> 94.4 MB peak.
 8. **Slim `VarExpr`** (384 bytes on the heap; 23% of a large program's AST) by
    moving its declaration-only fields behind a pointer. *Done 2026-10-15*
    (28989c10): VarDeclInfo, reached through `d()`/`dm()`; 400 -> 136 bytes,
