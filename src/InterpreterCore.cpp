@@ -3244,14 +3244,12 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         if (quantSrc && v.t == VT::Pair) v.pairValRO = true; // `.value = 9 for $bag.pairs`
     };
     auto asTopic = [&](Value v, const std::string& nm, size_t k) {
-        if (v.t == VT::Array && !v.itemized && !nm.empty() && nm[0] == '$' &&
-            (arrayElemSrc || nm != "$_"))
-            v.itemized = true;
-        // …and a SIGILLESS one binds the element's own Scalar, itemized as
-        // `$_` is: `for [[1,2],[3,4]] -> \row { … for row }` runs once a row
-        if (v.t == VT::Array && !v.itemized && arrayElemSrc && !nm.empty() &&
-            (ascii::isalpha((unsigned char)nm[0]) || nm[0] == '_'))
-            v.itemized = true;
+        // a `$` variable holds an Array or a Hash as ONE item (itemizeScalar), and
+        // so does a SIGILLESS one over an array's elements, as `$_` does there:
+        // `for [[1,2],[3,4]] -> \row { … for row }` runs once a row
+        if (!nm.empty() && ((nm[0] == '$' && (arrayElemSrc || nm != "$_")) ||
+                            (arrayElemSrc && (ascii::isalpha((unsigned char)nm[0]) || nm[0] == '_'))))
+            itemizeScalar(v);
         // …and an `@` or `%` parameter binds the array or hash ITSELF,
         // not the item container it came in: `for %h.kv -> $k, @rows`
         // then iterates @rows' elements, as a sub's `@rows` would
@@ -7662,8 +7660,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         Value v = std::move(args[i]);
         if (v.natBits) dropNativeTags(v);   // a boxed parameter takes the VALUE
         v.readonly = true;
-        if ((v.t == VT::Array || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map"))) &&
-            !v.itemized) v.itemized = true;
+        itemizeScalar(v);
         const int ps = params[i].padSlot;
         env->pad[ps] = std::move(v);
         live |= (uint64_t)1 << ps;
@@ -8881,10 +8878,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // both spellings made two diverging copies (Digest::MD5's padding
             // block pushes via $^b and reads via $b). Lookups of the caret/colon
             // spelling translate to the bare name at resolve time.
-            if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
-                env->define(std::string(1, pn[0]) + pn.substr(2), v);
-            else
-                env->define(pn, v);
+            if (pn[0] == '$') itemizeScalar(v);   // `$^a` is a `$` parameter
+            env->define(pn.size() > 2 && (pn[1] == '^' || pn[1] == ':') ? std::string(1, pn[0]) + pn.substr(2) : pn, v);
         }
         if (c.implicitArgs & 3) {
             // `@_` / `%_` beside placeholders take only what they left over
@@ -10684,6 +10679,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 std::string key = pn.substr(2);
                 for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal()) { v = *a.pairVal(); break; }
             } else if (posK < args.size()) v = args[posK++];
+            if (pn[0] == '$') itemizeScalar(v);
             // one slot under the bare name — see the main binder
             if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
                 env->define(std::string(1, pn[0]) + pn.substr(2), v);

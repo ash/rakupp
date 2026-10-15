@@ -530,10 +530,10 @@ struct Codegen {
         if (u->op == "decont") // `$x<>` — the value, out of its item container
             return "([&]()->Value{ Value _v = " + x +
                    "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";
-        if (u->op == "ctx$") // $(...) — an array becomes one non-flattening item
-            return "([&]()->Value{ Value _v = " + x + "; if (_v.t==VT::Array) _v.itemized=true; return _v; }())";
-        if (u->op == "ctx@") // @(...) — one-level list context
-            return "rtArrayVal(" + x + ")";
+        if (u->op == "ctx$") // $(...) — an array or a hash becomes one non-flattening item
+            return "itemizedScalar(" + x + ")";
+        if (u->op == "ctx@") // @(...) — one-level list context, of an item too (`@($x)`)
+            return "rtArrayVal(unitemized(" + x + "))";
         if (u->op == "|") return "rtSlipShallow(" + x + ")"; // |x in value position: one-level marker
         unsupported("prefix operator '" + u->op + "'");
     }
@@ -1384,6 +1384,15 @@ struct Codegen {
         return declVar(rakuName, init);
     }
 
+    // What binding a parameter or a loop variable of `sigil` does to the value,
+    // as the interpreter's bindParams does (Value.h): a `$` one holds an Array
+    // or a Hash as ONE item (`sub f($d) { my @y = $d }` is one element), an `@`
+    // or `%` one holds the container itself, never an item of it.
+    static std::string bindAs(char sigil, const std::string& init) {
+        if (sigil == '$') return "itemizedScalar(" + init + ")";
+        if (sigil == '@' || sigil == '%') return "unitemized(" + init + ")";
+        return init;
+    }
     std::string declVar(const std::string& rakuName, const std::string& init) {
         if (rakuName.size() > 1 && rakuName[1] == '*') return dynDecl(rakuName) + " = " + init;
         // A sigilless name (`my \x`, `sub f(\x)`) is read back as a bare term,
@@ -1632,13 +1641,14 @@ struct Codegen {
                 for (auto& ph : phs) if (ph.size() > 2 && ph[1] == ':') anyNamed = true;
                 size_t k = 0;
                 for (auto& ph : phs) {
+                    const std::string v = "Value " + mangleVar(ph) + " = ";
                     if (ph.size() > 2 && ph[1] == ':')
-                        line(0, "Value " + mangleVar(ph) + " = rtNamed(__a, " + cesc(ph.substr(2)) + ");");
+                        line(0, v + bindAs(ph[0], "rtNamed(__a, " + cesc(ph.substr(2)) + ")") + ";");
                     else if (anyNamed)
-                        line(0, "Value " + mangleVar(ph) + " = rtPos(__a, " + std::to_string(k++) + ");");
+                        line(0, v + bindAs(ph[0], "rtPos(__a, " + std::to_string(k++) + ")") + ";");
                     else {
-                        line(0, "Value " + mangleVar(ph) + " = (__a.size() > " + std::to_string(k) +
-                                " ? __a[" + std::to_string(k) + "] : Value::any());");
+                        line(0, v + bindAs(ph[0], "(__a.size() > " + std::to_string(k) +
+                                " ? __a[" + std::to_string(k) + "] : Value::any())") + ";");
                         k++;
                     }
                 }
@@ -3935,8 +3945,8 @@ struct Codegen {
             line(ind + 1, "for (size_t " + fi + " = 0; rtForHas(" + lst + ", " + fi + "); ++" + fi + ") {");
             line(ind + 2, "auto& " + el + " = (*" + lst + ".arr())[" + fi + "];");
             for (size_t k = 0; k < names.size(); k++)
-                line(ind + 2, declVar(names[k], "rtIndexGet(" + el +
-                              ", Value::integer(" + std::to_string(k) + "LL), false)") + ";");
+                line(ind + 2, declVar(names[k], bindAs(names[k][0], "rtIndexGet(" + el +
+                              ", Value::integer(" + std::to_string(k) + "LL), false)")) + ";");
             loopBody(f->body.get(), ind + 2, f->label);
             line(ind + 1, "}");
             line(ind, "}");
@@ -3949,8 +3959,8 @@ struct Codegen {
             line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + i + " = 0; rtForHas(" + lst + ", " + i + "); " + i + " += " + std::to_string(n) + ") {");
             for (size_t k = 0; k < n; k++)
-                line(ind + 2, declVar(f->vars[k], "(rtForHas(" + lst + ", " + i + "+" + std::to_string(k) + ") ? (*" + lst +
-                              ".arr())[" + i + "+" + std::to_string(k) + "] : Value::any())") + ";");
+                line(ind + 2, declVar(f->vars[k], bindAs(f->vars[k][0], "(rtForHas(" + lst + ", " + i + "+" + std::to_string(k) +
+                              ") ? (*" + lst + ".arr())[" + i + "+" + std::to_string(k) + "] : Value::any())")) + ";");
             loopBody(f->body.get(), ind + 2, f->label);
             line(ind + 1, "}");
             line(ind, "}");
@@ -3991,7 +4001,7 @@ struct Codegen {
                                     + hi + " = (long long)" + lst + ".arr()->size() - 1; }");
             line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
             std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr())[" + i + "]";
-            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], elem) + ";");
+            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], bindAs(f->vars[0][0], elem)) + ";");
             else line(ind + 2, "Value " + topic + " = " + elem + ";");
             topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
@@ -3999,12 +4009,20 @@ struct Codegen {
             line(ind + 1, "}");
         } else {
             std::string lst = gensym("__lst"), el = gensym("__e");
-            std::string fi = gensym("__fi");
-            line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
+            std::string fi = gensym("__fi"), src = gensym("__src"), ae = gensym("__ae");
+            // Each element of an ARRAY lives in a scalar container, so `$_` over
+            // one is an item (`for @rows { my @r = $_ }` takes each row whole);
+            // a List's elements are bare. The interpreter's arrayElemSrc.
+            if (f->vars.empty()) {
+                line(ind + 1, "Value " + src + " = " + ex(f->list.get()) + ";");
+                line(ind + 1, "const bool " + ae + " = " + src + ".t == VT::Array && !" + src + ".isList;");
+                line(ind + 1, "Value " + lst + " = rtForList(" + src + ");");
+            }
+            else line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + fi + " = 0; rtForHas(" + lst + ", " + fi + "); ++" + fi + ") {");
             line(ind + 2, "auto& " + el + " = (*" + lst + ".arr())[" + fi + "];");
-            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], el) + ";");
-            else line(ind + 2, "Value " + topic + " = " + el + ";");
+            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], bindAs(f->vars[0][0], el)) + ";");
+            else line(ind + 2, "Value " + topic + " = " + ae + " ? itemizedScalar(" + el + ") : " + el + ";");
             topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
             topics.pop_back();
@@ -5874,7 +5892,10 @@ struct Codegen {
             if (typed) pd = typedParamDesc(p, ind);
             auto typedInit = [&](const std::string& got) { return typed ? bindTypedExpr(got, pd, p) : got; };
             // a param mutated by an inner closure binds as a shared cell (declVar)
-            auto bind = [&](const std::string& init) {
+            auto bind = [&](const std::string& got) {
+                // (`is raw` binds the container as it came; the invocant and a
+                // slurpy are never an item)
+                const std::string init = p.invocant || p.slurpy || p.isRaw ? got : bindAs(p.sigil, got);
                 if (p.name.empty()) line(ind, "Value __anon" + std::to_string(anon++) + " = " + init + ";");
                 else line(ind, declVar(p.name, init) + ";");
             };
@@ -6173,12 +6194,16 @@ struct Codegen {
                 else fwd += "rtPos(__a, " + std::to_string(i) + ")";
             }
             line(0, "static Value " + fnName + "(" + sig + ") {");
-            for (size_t i = 0; i < ps.size(); i++)
+            for (size_t i = 0; i < ps.size(); i++) {
+                std::string nm = anyCell ? "__p" + std::to_string(i) : mangleVar(ps[i].name);
                 if (checkedParam(ps[i]) && !ps[i].name.empty()) {
-                    std::string nm = anyCell ? "__p" + std::to_string(i) : mangleVar(ps[i].name);
                     std::string pd = typedParamDesc(ps[i], 1);
                     line(1, nm + " = " + bindTypedExpr("std::move(" + nm + ")", pd, ps[i]) + ";");
                 }
+                // …and each `$` one holds what it was given as ONE item, as the
+                // boxed path's bindParams has it (bindAs)
+                if (!ps[i].isRaw) line(1, "itemizeScalar(" + nm + ");");
+            }
             if (!kernelName.empty() && !anyCell) {
                 std::vector<std::string> ka;
                 for (auto& p : ps) ka.push_back(mangleVar(p.name));

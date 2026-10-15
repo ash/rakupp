@@ -84,3 +84,28 @@ say "cycle: ", @cyc.gist, " ", @cyc.gist.chars < 100;
 #    …and .Str, which lives here rather than in t/regression/ because Rakudo
 #    hangs on it and that file is run by both engines.
 say "cycle-str: ", @cyc.Str.chars < 100;
+
+# 9. A `$` parameter, placeholder or loop variable holds an Array or a Hash as
+#    ONE item, and list assignment keeps an itemized Array whole: compiled,
+#    `sub f($d) { my @y = $d }` spread [1, 2, 3] into three elements.
+sub item-pos($d) { my @y = $d; @y.elems }
+sub item-named(:$d) { my @y = $d; @y.elems }
+sub item-default($d = [1, 2, 3]) { my @y = $d; @y.elems }
+sub item-raku(:$d) { $d.raku }
+say "item-param: ", item-pos([1, 2, 3]), item-pos({a => 1, b => 2}), item-named(d => [1, 2, 3]),
+    item-default(), { my @y = $^a; @y.elems }([1, 2, 3]), " ", item-raku(d => [1, 2]);
+my $ia = [1, 2, 3];
+my @ib = $ia;
+my @ic = |$ia;
+my @id = @($ia);
+say "item-assign: ", @ib.elems, @ic.elems, @id.elems;
+my @rows = [1, 2], [3, 4];
+my $by-var = '';
+for @rows -> $r { my @y = $r; $by-var ~= @y.elems }
+my $by-topic = '';
+for @rows { my @y = $_; $by-topic ~= @y.elems }
+say "item-loop: ", $by-var, " ", $by-topic;
+#    …and a `%` parameter binds the Hash an item holds, not the item
+sub hash-param(%h) { my @y = %h; @y.elems }
+my $ih = {a => 1, b => 2};
+say "item-hash: ", hash-param($ih);

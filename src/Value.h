@@ -1522,6 +1522,10 @@ inline ValueMap& Value::hashRef() {
 inline void itemizeScalar(Value& v) {
     if (v.t == VT::Array || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map"))) v.itemized = true;
 }
+// …as expressions, for the code `--exe` emits: what a `$` parameter holds,
+// and what an `@` or `%` one does (the container itself, never an item of it)
+inline Value itemizedScalar(Value v) { itemizeScalar(v); return v; }
+inline Value unitemized(Value v) { if (v.t == VT::Array || v.t == VT::Hash) v.itemized = false; return v; }
 
 // The Pair a hash hands out for one of its entries (`.pairs`, iteration, `my @a
 // = %h`). A plain Hash's Pair holds the entry's own CONTAINER — `.value = 42`

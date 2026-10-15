@@ -3195,7 +3195,8 @@ Value rtPairOf(const Value& kv, Value value, bool kVar, bool vVar) {
 
 Value rtSlipOf(const Value& v);   // InterpreterCore.cpp — the interpreter's own `|`
 Value rtSlipShallow(const Value& v) {
-    if (v.t == VT::Array && v.arr()) { Value r = v; r.isList = true; r.s = "Slip"; return r; }
+    // (out of its item container: `|$x` with an Array in $x slips its elements)
+    if (v.t == VT::Array && v.arr()) { Value r = v; r.isList = true; r.s = "Slip"; r.itemized = false; return r; }
     // A Hash/Map slips its pairs, out of its item container too: `(|$h, 5)` and
     // `%(|$h, k => 1)` spread the pairs of the Hash in $h, as the interpreter's
     // list and hash composers do.
@@ -3497,6 +3498,9 @@ Value rtArrayVal(const Value& v) {
     // builds the List form its other callers want, so untag it here (LA-04).
     if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }
     if (v.t == VT::Array && v.arr()) {
+        // …and so is an itemized Array, as coerceArray has it for the interpreter:
+        // `my $x = [1, 2, 3]; my @a = $x` is [[1 2 3]], and compiled it was three
+        if (v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
         if (v.ext()) { // a lazy seq stays lazy; a finite gather does not
             Value r = reifyIfFinite(v);
             if (v.s == "Seq" && r.arrS() != v.arrS()) deproxyElems(r);
