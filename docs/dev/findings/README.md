@@ -240,6 +240,20 @@ logs and the reviews. This page is the complete list.
   `rakupp` (0.9×), eager tree conversion 1.5×. Lazy field-by-field access got
   a quarter to a half slower than with the 4.0.1 library while the engine-side walk
   did not, so the extra time is in crossing the C interface. Cause open.
+- **[FORTRAN-LESSONS-2026-10-15.md](FORTRAN-LESSONS-2026-10-15.md)**
+  *(2026-10-15, at 5.4.1-77-g0d779b9b)* — what makes Fortran fast, read from
+  gfortran's, Flang's and LFortran's sources, set against Raku++ on the same
+  numeric kernels. Fortran's speed comes from facts the language gives the
+  compiler: fixed types, trip counts fixed at entry, contiguous arrays, no
+  aliasing. Raku has most of them. The largest measured gaps are places where
+  Raku++ does not use them:
+  - `my num`/`my int` make `--exe -O` 90× slower than untyped variables;
+  - `-> int $i` keeps a loop out of `--cnp` (20×);
+  - `@m[$i;$j]` keeps a matmul out of `--cnp` (630× C);
+  - `.max` over a `num` array unpacks it (30–60×).
+
+  Eight borrowings, ranked; loop versioning and one-block shaped arrays are
+  the two larger ones.
 
 ## One-off bug reports
 
