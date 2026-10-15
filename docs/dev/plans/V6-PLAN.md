@@ -311,6 +311,9 @@ In order of evidence per cost:
    (candidates, native-call state, wrappers, pod, `is DEPRECATED`, the return
    type, `.assuming`'s signature) moved to CallableCold behind one pointer;
    Callable 704 -> 424 bytes, 100k kept closures 125.6 -> 94.4 MB peak.
+   *Step 2, done* (82311947): everything about the code in a copy-on-write
+   CodeInfo, built once per block and shared by its closures; Callable 88
+   bytes, 100k kept closures 61.6 MB, closure creation -5% instructions.
 8. **Slim `VarExpr`** (384 bytes on the heap; 23% of a large program's AST) by
    moving its declaration-only fields behind a pointer. *Done 2026-10-15*
    (28989c10): VarDeclInfo, reached through `d()`/`dm()`; 400 -> 136 bytes,
