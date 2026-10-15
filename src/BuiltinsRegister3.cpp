@@ -918,12 +918,12 @@ void Interpreter::registerBuiltinsPart5() {
                 }
             Value f = Value::closure([](ValueList&) { return Value::any(); }); // never reached: isNative wins
             f.code()->name = "nativecast";
-            f.code()->isNative = true;
-            f.code()->nativeSymCache = (void*)(intptr_t)Interpreter::ncRawAddr(a[1]);
+            f.code()->coldM().isNative = true;
+            f.code()->coldM().nativeSymCache = (void*)(intptr_t)Interpreter::ncRawAddr(a[1]);
             f.code()->params = owned.get();
             auto rit = a[0].hash()->find("returns");
             if (rit != a[0].hash()->end() && rit->second.t == VT::Type && rit->second.s != "Mu")
-                f.code()->retType = std::string(rit->second.s.str());
+                f.code()->coldM().retType = std::string(rit->second.s.str());
             I.runtimeParams_.push_back(std::move(owned));
             return f;
         }

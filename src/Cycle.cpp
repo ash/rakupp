@@ -220,8 +220,8 @@ void forEachEdge(void* key, PK k, F&& f, bool& pin, long& scan) {
             Callable& c = static_cast<Body<Callable>*>(static_cast<Payload*>(key))->v;
             envEdge(c.closure, f);
             envEdge(c.state.env, f);
-            values(c.candidates);
-            values(c.wrappers);
+            values(c.cold().candidates);
+            values(c.cold().wrappers);
             if (c.dispatcherC) f((void*)c.dispatcherC.body(), PK::Code, nullptr);
             break;
         }
@@ -269,8 +269,7 @@ void breakBody(Payload* p, PK k) {
             Callable& c = static_cast<Body<Callable>*>(p)->v;
             c.closure.reset();
             c.state.env.reset();
-            c.candidates.clear();
-            c.wrappers.clear();
+            if (c.hasCold()) { c.coldM().candidates.clear(); c.coldM().wrappers.clear(); }
             c.dispatcherC.reset();
             break;
         }

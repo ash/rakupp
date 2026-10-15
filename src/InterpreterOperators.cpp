@@ -236,7 +236,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                 have->second.code() && kv.second.code() &&
                 have->second.code()->isMultiDispatcher && kv.second.code()->isMultiDispatcher) {
                 auto merged = makePayload<Callable>(*have->second.code());
-                for (auto& cand : kv.second.code()->candidates) merged->candidates.push_back(cand);
+                for (auto& cand : kv.second.code()->cold().candidates) merged->coldM().candidates.push_back(cand);
                 Value mv = have->second; mv.setCode(merged);
                 have->second = mv;
                 continue;

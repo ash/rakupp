@@ -4710,21 +4710,21 @@ Value makeSignature(const Callable* c) {
     // the matcher, and an empty one made every proto-declared matcher unusable.
     bool protoLess = c && c->isMultiDispatcher && !c->params;
     if (c && c->isMultiDispatcher && !c->params)
-        for (auto& cand : c->candidates)
+        for (auto& cand : c->cold().candidates)
             if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody) &&
                 cand.code()->params) { c = cand.code(); protoLess = false; break; }
     // a .assuming wrapper carries its residual params; everything else renders
     // its declared params
     std::vector<const Param*> ps;
     if (c) {
-        if (c->hasPrimed) { for (auto& sp : c->primedParams) ps.push_back(sp.get()); }
+        if (c->cold().hasPrimed) { for (auto& sp : c->cold().primedParams) ps.push_back(sp.get()); }
         else if (c->params) for (auto& p : *c->params) ps.push_back(&p);
     }
     // A routine with NO written signature has the one its body implies: its
     // placeholders (`sub c { $^a }` is `($a)`) and, for `@_` / `%_`, the implicit
     // slurpies (`(*@_, *%_)`)
     std::vector<Param> synth;
-    if (ps.empty() && c && !c->hasPrimed && !c->hadSig &&
+    if (ps.empty() && c && !c->cold().hasPrimed && !c->hadSig &&
         (!c->placeholders.empty() || c->implicitArgs)) {
         synth.reserve(c->placeholders.size() + 2);
         for (auto& ph : c->placeholders) {
@@ -4805,7 +4805,7 @@ Value makeSignature(const Callable* c) {
     // A METHOD carries an implicit `*%_`, and its signature says so (Rakudo:
     // `method m1($a)` is `(Foo $: $a, *%_)`) — unless it wrote a named slurpy
     // of its own, or its class is `is hidden`, which gives it none
-    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->hasPrimed) {
+    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->cold().hasPrimed) {
         bool ownSlurpy = false;
         for (const Param* pp : ps)
             if (pp->slurpy && (pp->sigil == '%' || pp->sigil == '|' || pp->sigil == '\\')) ownSlurpy = true;
@@ -4820,7 +4820,7 @@ Value makeSignature(const Callable* c) {
     // none. An anonymous method's is Mu. A ROLE's method is left without one:
     // its invocant is whichever class composes it, which the Callable does
     // not know, and the role's own name would be a wrong answer.
-    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->hasPrimed &&
+    if (c && c->isMethod && !c->isMultiDispatcher && !c->isBlock && !c->cold().hasPrimed &&
         !(g_pkgIsRole && !c->pkg.empty() && g_pkgIsRole(c->pkg))) {
         const Param* ip = nullptr;
         for (const Param* pp : ps) if (pp->invocant) { ip = pp; break; }
@@ -4838,8 +4838,8 @@ Value makeSignature(const Callable* c) {
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)
     // (Rakudo separates with a space either way, so an empty parameter list
     // renders as `( --> Str)`)
-    if (c && !c->retType.empty()) {
-        std::string rt = c->retType;
+    if (c && !c->cold().retType.empty()) {
+        std::string rt = c->cold().retType;
         if (char sm = retTypeSmiley(rt)) rt = retTypeName(rt) + ":" + std::string(1, sm);
         sig += " --> " + rt; rsig += " --> " + rt;
     }
@@ -4855,12 +4855,12 @@ Value makeSignature(const Callable* c) {
     // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
-    if (c && !c->retType.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(c->retType));
+    if (c && !c->cold().retType.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(c->cold().retType));
     // the declared parameters themselves (AST-owned, program lifetime), for
     // Signature ~~ Signature
-    if (c && !c->hasPrimed && c->params && synth.empty()) {
+    if (c && !c->cold().hasPrimed && c->params && synth.empty()) {
         (*s.hash())["\x01sigptr"] = Value::integer((long long)(intptr_t)c->params);
-        (*s.hash())["\x01ret"] = Value::str(c->retType);
+        (*s.hash())["\x01ret"] = Value::str(c->cold().retType);
         if (c->isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
     }
     (*s.hash())["arity"] = Value::integer(arity);
@@ -4975,7 +4975,7 @@ Value makeSignature(const Callable* c) {
             if (sub) {
                 Callable tmp;
                 tmp.params = sub;
-                tmp.retType = p.subSigRet;
+                tmp.coldM().retType = p.subSigRet;
                 tmp.hadSig = true;
                 (*pv.hash())["sub_signature"] = makeSignature(&tmp);
             }
@@ -5931,7 +5931,7 @@ bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, si
     Value* mv = cls->findMethod(m);
     if (!mv || mv->t != VT::Code || !mv->code()) return false;
     std::vector<const Value*> cands;
-    if (mv->code()->isMultiDispatcher) for (auto& c : mv->code()->candidates) cands.push_back(&c);
+    if (mv->code()->isMultiDispatcher) for (auto& c : mv->code()->cold().candidates) cands.push_back(&c);
     else cands.push_back(mv);
     for (const Value* cv : cands) {
         if (!cv->code() || !cv->code()->params) continue;
@@ -7935,13 +7935,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     }
             return d;
         };
-        if (inv.t == VT::Code && inv.code() && !inv.code()->pod.empty())
-            return declarator(inv.code()->pod, inv.code()->podTrail, inv.code()->declLine);
+        if (inv.t == VT::Code && inv.code() && !inv.code()->cold().pod.empty())
+            return declarator(inv.code()->cold().pod, inv.code()->cold().podTrail, inv.code()->declLine);
         // a dispatch group is documented by its PROTO (a bare multi group has none)
         if (inv.t == VT::Code && inv.code() && inv.code()->isMultiDispatcher)
-            for (auto& c : inv.code()->candidates)
-                if (c.code() && (c.code()->isProto || c.code()->isProtoBody) && !c.code()->pod.empty())
-                    return declarator(c.code()->pod, c.code()->podTrail, c.code()->declLine);
+            for (auto& c : inv.code()->cold().candidates)
+                if (c.code() && (c.code()->isProto || c.code()->isProtoBody) && !c.code()->cold().pod.empty())
+                    return declarator(c.code()->cold().pod, c.code()->cold().podTrail, c.code()->declLine);
         // an Attribute's doc, carried on its meta-object
         if (inv.t == VT::Hash && inv.hashKind == "Attribute" && inv.hash() && inv.hash()->count("why")) {
             auto& h = *inv.hash();
@@ -8234,7 +8234,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             bool anyFits = false;
             ValueList withInv; withInv.push_back(inv);
             for (auto& a : args) withInv.push_back(a);
-            for (auto& c : f->code()->candidates) {
+            for (auto& c : f->code()->cold().candidates) {
                 if (c.code() && c.code()->isProto) continue;
                 if (scoreCandidate(c, withInv) >= 0 || scoreCandidate(c, args) >= 0) { anyFits = true; break; }
             }

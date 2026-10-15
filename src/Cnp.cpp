@@ -1638,8 +1638,8 @@ bool inlineExpr(const Expr* e, const std::set<std::string>& params, Env* env) {
 
 const Expr* inlineBody(const Callable& c, Env* env) {
     if (c.isMultiDispatcher || c.isMultiCandidate || c.isProto || c.isMethod || c.isBlock ||
-        c.isWhateverCode || c.isRegexRoutine || c.isNative || c.deprecated || !c.retType.empty() ||
-        c.retRw || !c.wrappers.empty() || !c.placeholders.empty() || !c.params || !c.body ||
+        c.isWhateverCode || c.isRegexRoutine || c.cold().isNative || c.cold().deprecated || !c.cold().retType.empty() ||
+        c.retRw || !c.cold().wrappers.empty() || !c.placeholders.empty() || !c.params || !c.body ||
         c.body->size() != 1)
         return nullptr;
     std::set<std::string> params;

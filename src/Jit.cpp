@@ -1594,7 +1594,7 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         };
         bool bad = rwParams(*f);
         if (f->code()->isMultiDispatcher)
-            for (auto& c : f->code()->candidates) bad = bad || rwParams(c);
+            for (auto& c : f->code()->cold().candidates) bad = bad || rwParams(c);
         if (bad) return refuse(s, "the loop calls " + nm + ", which binds an argument `is rw` or `is raw`");
     }
 

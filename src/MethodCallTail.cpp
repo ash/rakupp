@@ -4119,7 +4119,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     int cmpOp = 0;          // 1 <=>, 2 cmp, 3 leg
                     bool cmpSwapped = false;
                     if (const Callable* c = blk.code();
-                        c && !c->isMultiDispatcher && !c->isMultiCandidate && c->wrappers.empty() &&
+                        c && !c->isMultiDispatcher && !c->isMultiCandidate && c->cold().wrappers.empty() &&
                         c->body && c->body->size() == 1) {
                         std::string pa, pb;
                         if ((!c->params || c->params->empty()) && c->placeholders.size() == 2 &&

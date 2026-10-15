@@ -1248,7 +1248,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
         for (auto& kv : env->vars) {
             if (kv.first.empty() || kv.first[0] != '&' || kv.second.t != VT::Code || !kv.second.code()) continue;
             Callable* c = kv.second.code();
-            if (c->isMultiDispatcher) { for (auto& cand : c->candidates) if (cand.code()) cand.code()->roleConcrete = true; }
+            if (c->isMultiDispatcher) { for (auto& cand : c->cold().candidates) if (cand.code()) cand.code()->roleConcrete = true; }
             else if (c->closure == env) c->roleConcrete = true;
         }
     };
@@ -1801,7 +1801,7 @@ std::string Interpreter::mainUsage() {
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code()) return "";
     ValueList cands;
     if (mainSub->code()->isMultiDispatcher) {
-        for (auto& c : mainSub->code()->candidates)   // (a proto is no usage line)
+        for (auto& c : mainSub->code()->cold().candidates)   // (a proto is no usage line)
             if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody))) cands.push_back(c);
     }
     else cands.push_back(*mainSub);
@@ -1872,7 +1872,7 @@ std::string Interpreter::mainUsage() {
         }
         line += named + positional;
         // …and the routine's own `#|` becomes the candidate's description.
-        if (!cand.code()->pod.empty()) line += " -- " + cand.code()->pod;
+        if (!cand.code()->cold().pod.empty()) line += " -- " + cand.code()->cold().pod;
         out += line + "\n";
     }
     if (!opts.empty()) {
@@ -3990,7 +3990,7 @@ thread_local std::vector<Interpreter::ProtoCtx> Interpreter::protoStack_;
 // to it is simply the routine, and a `{*}` in it then reports the same no-match Rakudo
 // would.
 const Value* Interpreter::protoBodyOf(const Callable& c) {
-    for (auto& cand : c.candidates)
+    for (auto& cand : c.cold().candidates)
         if (cand.code() && cand.code()->isProtoBody) return &cand;
     return nullptr;
 }
@@ -5731,7 +5731,7 @@ void Interpreter::applyParamTraits(const std::vector<Param>& params, const Value
     // proto's, not the candidate's.
     const Callable* c = fn.code();
     if (c->params != &params)
-        for (auto& cand : c->candidates)
+        for (auto& cand : c->cold().candidates)
             if (cand.t == VT::Code && cand.code() && cand.code()->params == &params) {
                 c = cand.code(); break;
             }

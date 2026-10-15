@@ -886,8 +886,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                         Value* have = tctx_.cur->local(se.key);
                         if (have && have->t == VT::Code && have->code() && have->code()->isMultiDispatcher &&
                             have->code() != se.value.code()) {
-                            auto& cands = have->code()->candidates;
-                            for (auto& c : se.value.code()->candidates) {
+                            auto& cands = have->code()->coldM().candidates;
+                            for (auto& c : se.value.code()->cold().candidates) {
                                 bool dup = false;
                                 for (auto& h : cands)
                                     if (h.code() && c.code() && h.code()->body == c.code()->body &&
@@ -1216,8 +1216,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     Value* have = saved->local(k);
                     if (have && have->t == VT::Code && have->code() && have->code()->isMultiDispatcher &&
                         have->code() != kv.second.code()) {
-                        auto& cands = have->code()->candidates;
-                        for (auto& c : kv.second.code()->candidates) {
+                        auto& cands = have->code()->coldM().candidates;
+                        for (auto& c : kv.second.code()->cold().candidates) {
                             bool dup = false;
                             for (auto& h : cands)
                                 if (h.code() && c.code() && h.code()->body == c.code()->body &&
@@ -3210,7 +3210,7 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
             auto* c = static_cast<Call*>(e);
             if (!c->callee && c->name == "die" && !tctx_.cur->find(callAmpName(c))) {
                 auto rit = builtinRefs_.find(c->name);
-                if (rit == builtinRefs_.end() || !rit->second.code() || rit->second.code()->wrappers.empty()) {
+                if (rit == builtinRefs_.end() || !rit->second.code() || rit->second.code()->cold().wrappers.empty()) {
                     if (s->line > 0) curLine_ = s->line;
                     if (g_traceStmts) traceStmt(s);
                     tctx_.curStmtExpr = e;
@@ -4108,7 +4108,7 @@ void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env
         if (m.t != VT::Code || !m.code()) continue;
         if (m.code()->isMultiDispatcher) {
             auto disp = makePayload<Callable>(*m.code());
-            for (auto& cand : disp->candidates)
+            for (auto& cand : disp->coldM().candidates)
                 if (cand.t == VT::Code && cand.code()) reclose(cand);
             m.setCode(std::move(disp));
         }
@@ -4799,12 +4799,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                     Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                                     fresh.code()->name = have->code()->name;
                                     fresh.code()->isMultiDispatcher = true;
-                                    fresh.code()->candidates = have->code()->candidates;
+                                    fresh.code()->coldM().candidates = have->code()->cold().candidates;
                                     tctx_.cur->define(bare, fresh);
                                     have = tctx_.cur->local(bare);
                                 }
-                                auto& cands = have->code()->candidates;
-                                for (auto& c : kv.second.code()->candidates) {
+                                auto& cands = have->code()->coldM().candidates;
+                                for (auto& c : kv.second.code()->cold().candidates) {
                                     bool dup = false;
                                     for (auto& h : cands)
                                         if (h.code() && c.code() && h.code()->body == c.code()->body &&
@@ -4964,12 +4964,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 c.code()->assocRight = sd->assocRight;
                 c.code()->assocNon = sd->assocNon;
                 c.code()->assocChain = sd->assocChain;
-                c.code()->retType = qualifyDeclType(sd->retType);
+                c.code()->coldM().retType = qualifyDeclType(sd->retType);
                 c.code()->retRw = sd->retRw;
                 c.code()->declFile = declFileNowI();
                 c.code()->declLine = sd->line;
-                c.code()->pod = sd->pod; c.code()->podTrail = sd->podTrail;
-                if (sd->deprecated) c.code()->deprecated = deprecationFor(sd);
+                c.code()->coldM().pod = sd->pod; c.code()->coldM().podTrail = sd->podTrail;
+                if (sd->deprecated) c.code()->coldM().deprecated = deprecationFor(sd);
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
                 c.code()->isMethod = sd->isMethod;
@@ -4994,15 +4994,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     static_cast<ExprStmt*>(sd->body[0].get())->e &&
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
                 c.code()->isProtoBody = sd->isProto && !c.code()->isProto;
-                if (sd->isNative) { c.code()->isNative = true; c.code()->nativeLib = sd->nativeLib;
-                                    c.code()->nativeLibSub = sd->nativeLibSub;
+                if (sd->isNative) { c.code()->coldM().isNative = true; c.code()->coldM().nativeLib = sd->nativeLib;
+                                    c.code()->coldM().nativeLibSub = sd->nativeLibSub;
                     // `is native(EXPR)` — evaluate NOW, in the declaring module's
                     // scope, where `constant SHA1 = %?RESOURCES<libraries/sha1>`
                     // is visible (Rakudo's trait-application time). An undefined
                     // result (`is native(Str)`) keeps the default namespace. If
                     // the eval dies (forward reference), keep the AST for one
                     // retry at first call.
-                    if (sd->nativeLibExpr && c.code()->nativeLib.empty() && c.code()->nativeLibSub.empty()) {
+                    if (sd->nativeLibExpr && c.code()->cold().nativeLib.empty() && c.code()->cold().nativeLibSub.empty()) {
                         // …but NOT while hoisting: the module's own `constant
                         // LIB = …` has not executed yet, so the only LIB this
                         // eval can find is a bare global some OTHER module
@@ -5013,13 +5013,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             try {
                                 Value r = eval(sd->nativeLibExpr.get());
                                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                                if (isDefined(r)) c.code()->nativeLib = ncLibNameOf(r);
+                                if (isDefined(r)) c.code()->coldM().nativeLib = ncLibNameOf(r);
                             } catch (RakuError&) {}
                         }
                         // No lib yet? Keep the AST and retry at first call, in
                         // the closure (the constant is visible there by then).
-                        if (c.code()->nativeLib.empty())
-                            c.code()->nativeLibExpr = sd->nativeLibExpr.get();
+                        if (c.code()->cold().nativeLib.empty())
+                            c.code()->coldM().nativeLibExpr = sd->nativeLibExpr.get();
                     }
                     // `is symbol(EXPR)`: unlike the library above, a computed name is
                     // resolved at FIRST CALL, never here. The helper that computes it
@@ -5027,8 +5027,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // the library is not loadable yet, so the probe answers 0, which
                     // OpenSSL::Stack's real_symbol caches in a `state` and hands back
                     // the pre-1.1 spelling for every symbol from then on.
-                    if (sd->nativeSymExpr) c.code()->nativeSymExpr = sd->nativeSymExpr.get();
-                                    c.code()->nativeSym = sd->nativeSym.empty() ? sname : sd->nativeSym; }
+                    if (sd->nativeSymExpr) c.code()->coldM().nativeSymExpr = sd->nativeSymExpr.get();
+                                    c.code()->coldM().nativeSym = sd->nativeSym.empty() ? sname : sd->nativeSym; }
                 for (auto& p : *prms) {
                     // a default makes no sense on a slurpy or a required param
                     // (an anonymous one, `*@`, has no name to report)
@@ -5175,7 +5175,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                         fresh.code()->name = sname;
                         fresh.code()->isMultiDispatcher = true;
-                        if (!sd->isProto) fresh.code()->candidates = existing->code()->candidates;
+                        if (!sd->isProto) fresh.code()->coldM().candidates = existing->code()->cold().candidates;
                         tctx_.cur->define(key, fresh);
                         existing = tctx_.cur->local(key);
                     }
@@ -5200,12 +5200,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // declaration (its body) is the identity; a repeat is a no-op.
                     auto joins = [&](const Value& c) {
                         if (!c.code()) return;
-                        for (auto& have : disp->candidates)
+                        for (auto& have : disp->cold().candidates)
                             if (have.code() && have.code()->body && have.code()->body == c.code()->body &&
                                 have.code()->params == c.code()->params)
                                 return;
                         c.code()->isMultiCandidate = true;
-                        disp->candidates.push_back(c);
+                        disp->coldM().candidates.push_back(c);
                         noteUserInfixCandidate(sname, c.code());
                     };
                     joins(code);
@@ -5560,10 +5560,10 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     code.setCode(makePayload<Callable>());
                     code.code()->name = md->name;
                     code.code()->params = &md->params;
-                    code.code()->retType = qualifyDeclType(md->retType);
+                    code.code()->coldM().retType = qualifyDeclType(md->retType);
                     code.code()->retRw = md->retRw;
-                    code.code()->pod = md->pod; code.code()->podTrail = md->podTrail;
-                    if (md->deprecated) code.code()->deprecated = deprecationFor(md);
+                    code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
+                    if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md);
                     code.code()->body = &md->body;
                     code.code()->langRev = langRev_;
                     code.code()->rakuAst = rakuAstPragma_;
@@ -5580,7 +5580,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         auto it = tbl.find(md->name);
                         if (it != tbl.end() && it->second.code() && it->second.code()->isMultiDispatcher) {
                             if (code.code()) code.code()->isMultiCandidate = true;
-                            it->second.code()->candidates.push_back(code);
+                            it->second.code()->coldM().candidates.push_back(code);
                             return;
                         }
                         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
@@ -5591,7 +5591,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         disp.code()->isMethod = true;
                         disp.code()->pkg = cd->name;   // see the class path
                         if (code.code()) code.code()->isMultiCandidate = true;
-                        disp.code()->candidates.push_back(code);
+                        disp.code()->coldM().candidates.push_back(code);
                         tbl[md->name] = disp;
                         return;
                     }
@@ -6211,8 +6211,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             auto codeIsStub = [](const Value& v) -> bool {
                 if (v.t != VT::Code || !v.code()) return false;
                 if (v.code()->isMultiDispatcher) {
-                    if (v.code()->candidates.empty()) return true;
-                    for (auto& c : v.code()->candidates) if (!(c.code() && c.code()->isStub)) return false;
+                    if (v.code()->cold().candidates.empty()) return true;
+                    for (auto& c : v.code()->cold().candidates) if (!(c.code() && c.code()->isStub)) return false;
                     return true;
                 }
                 return v.code()->isStub;
@@ -6231,7 +6231,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 fresh->pkg = v.code()->pkg; fresh->name = v.code()->name;
                 fresh->isMultiDispatcher = true; fresh->isProto = v.code()->isProto;
                 fresh->isMethod = v.code()->isMethod;
-                fresh->candidates = v.code()->candidates;
+                fresh->coldM().candidates = v.code()->cold().candidates;
                 nv.setCode(fresh);
                 return nv;
             };
@@ -6329,7 +6329,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // at all, so two roles carrying the same one do not conflict
                     if ((langRev_ >= 2 || role->langRev >= 2) && kv.second.code()->isSubmethod) continue;
                     if (kv.second.code()->isMultiDispatcher) {
-                        for (auto& c : kv.second.code()->candidates)
+                        for (auto& c : kv.second.code()->cold().candidates)
                             if (c.code() && !c.code()->isStub) { provided[kv.first][sigKeyParams(c.code()->params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
                     }
                     else if (!kv.second.code()->isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(provider); }
@@ -6350,7 +6350,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 std::function<void(const Value&)> noteRoleState = [&](const Value& v) {
                     if (v.t != VT::Code || !v.code()) return;
                     if (v.code()->isMultiDispatcher) {
-                        for (auto& cand : v.code()->candidates) noteRoleState(cand);
+                        for (auto& cand : v.code()->cold().candidates) noteRoleState(cand);
                         return;
                     }
                     if (!v.code()->body || ci->roleStateEnvs.count(v.code())) return;
@@ -6493,17 +6493,17 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (e.code() == kv.second.code()) continue; // identical method (diamond)
                     bool exDisp = e.t == VT::Code && e.code() && e.code()->isMultiDispatcher;
                     if (exDisp && newDisp) {
-                        for (auto& c : kv.second.code()->candidates) {
+                        for (auto& c : kv.second.code()->cold().candidates) {
                             std::string sk = sigKeyParams(c.code() ? c.code()->params : nullptr, c.code());
                             bool cStub = c.code() && c.code()->isStub;
                             bool placed = false;
-                            for (auto& e2 : e.code()->candidates) {
+                            for (auto& e2 : e.code()->coldM().candidates) {
                                 if (sigKeyParams(e2.code() ? e2.code()->params : nullptr, e2.code()) != sk) continue;
                                 bool eStub = e2.code() && e2.code()->isStub;
                                 if (eStub && !cStub) e2 = c; // implementation replaces stub
                                 placed = true; break;
                             }
-                            if (!placed) e.code()->candidates.push_back(c);
+                            if (!placed) e.code()->coldM().candidates.push_back(c);
                         }
                         continue;
                     }
@@ -6902,7 +6902,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // a role method, and GLOBAL made every method look class-borne
                 code.code()->pkg = clsName;
                 code.code()->params = &md->params;
-                code.code()->retType = qualifyDeclType(md->retType, clsName);
+                code.code()->coldM().retType = qualifyDeclType(md->retType, clsName);
                 code.code()->retRw = md->retRw;
                 code.code()->body = &md->body;
                 code.code()->langRev = langRev_;
@@ -6911,8 +6911,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
                 // a method's own declarator pod — `#|` above it, `#=` below — is
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
-                code.code()->pod = md->pod; code.code()->podTrail = md->podTrail;
-                if (md->deprecated) code.code()->deprecated = deprecationFor(md.get());
+                code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
+                if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md.get());
                 code.code()->declFile = declFileNowI();
                 code.code()->declLine = md->line;
                 code.code()->isStub = stmtIsStub(md->body);
@@ -6957,25 +6957,25 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // to its `{*}` body and answered Whatever — every DBDish::mysql
                 // and Oracle call, which declare their whole API this way.
                 if (md->isNative) {
-                    code.code()->isNative   = true;
-                    code.code()->nativeLib  = md->nativeLib;
-                    code.code()->nativeLibSub = md->nativeLibSub;
+                    code.code()->coldM().isNative   = true;
+                    code.code()->coldM().nativeLib  = md->nativeLib;
+                    code.code()->coldM().nativeLibSub = md->nativeLibSub;
                     // `is native(EXPR)`: the class body has already run its own
                     // `constant LIB = …` by the time methods are built, so it
                     // resolves here; keep the AST for the first-call retry when
                     // it does not (a forward reference).
-                    if (md->nativeLibExpr && code.code()->nativeLib.empty() &&
-                        code.code()->nativeLibSub.empty()) {
+                    if (md->nativeLibExpr && code.code()->cold().nativeLib.empty() &&
+                        code.code()->cold().nativeLibSub.empty()) {
                         try {
                             Value r = eval(md->nativeLibExpr.get());
                             if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                            if (isDefined(r)) code.code()->nativeLib = ncLibNameOf(r);
+                            if (isDefined(r)) code.code()->coldM().nativeLib = ncLibNameOf(r);
                         } catch (RakuError&) {}
-                        if (code.code()->nativeLib.empty())
-                            code.code()->nativeLibExpr = md->nativeLibExpr.get();
+                        if (code.code()->cold().nativeLib.empty())
+                            code.code()->coldM().nativeLibExpr = md->nativeLibExpr.get();
                     }
-                    if (md->nativeSymExpr) code.code()->nativeSymExpr = md->nativeSymExpr.get();
-                    code.code()->nativeSym = md->nativeSym.empty() ? mdName : md->nativeSym;
+                    if (md->nativeSymExpr) code.code()->coldM().nativeSymExpr = md->nativeSymExpr.get();
+                    code.code()->coldM().nativeSym = md->nativeSym.empty() ? mdName : md->nativeSym;
                 }
                 // a PURE `{*}` proto method is the group definition, not a candidate
                 // — same rule as the sub path. Without this the proto entered the
@@ -6994,7 +6994,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (it != ci->methods.end() && it->second.code() && it->second.code()->isMultiDispatcher) {
                         // an own candidate overrides a same-signature candidate
                         // composed from a role (never another own candidate)
-                        auto& cands = it->second.code()->candidates;
+                        auto& cands = it->second.code()->coldM().candidates;
                         std::string sk = sigKeyParams(code.code()->params);
                         cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const Value& c){
                             return c.code() && !ownParams.count(c.code()->params) &&
@@ -7020,8 +7020,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         // here, `Color.new(rgb => [22, 42])` built a black Color
                         if (it != ci->methods.end() && it->second.code() &&
                             (it->second.code()->isProto || it->second.code()->isProtoBody))
-                            disp.code()->candidates.push_back(it->second);
-                        disp.code()->candidates.push_back(code);
+                            disp.code()->coldM().candidates.push_back(it->second);
+                        disp.code()->coldM().candidates.push_back(code);
                         ci->methods[key] = disp;
                     }
                 } else {
@@ -7055,8 +7055,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         auto it = ci->methods.find(kv.first);
                         if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
                             !it->second.code()->isMultiDispatcher) continue;
-                        auto& cands = it->second.code()->candidates;
-                        for (auto& rc : rv.code()->candidates) {
+                        auto& cands = it->second.code()->coldM().candidates;
+                        for (auto& rc : rv.code()->cold().candidates) {
                             if (!rc.code() || rc.code()->isStub || rc.code()->isProto) continue;
                             std::string sk = sigKeyParams(rc.code()->params, rc.code());
                             bool have = false;
@@ -7118,7 +7118,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     auto mit = c->methods.find(n);
                     if (mit != c->methods.end() && mit->second.t == VT::Code && mit->second.code()) {
                         if (mit->second.code()->isMultiDispatcher) {
-                            for (auto& cand : mit->second.code()->candidates)
+                            for (auto& cand : mit->second.code()->cold().candidates)
                                 if (cand.code() && !cand.code()->isStub &&
                                     (!sig || sigKeyParams(cand.code()->params, cand.code()) == *sig)) return true;
                         }
@@ -7173,7 +7173,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     Value& mv = mit->second; bool drop = false;
                     if (mv.t == VT::Code && mv.code()) {
                         if (mv.code()->isMultiDispatcher) {
-                            auto& cs = mv.code()->candidates;
+                            auto& cs = mv.code()->coldM().candidates;
                             cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const Value& c){
                                 return c.code() && c.code()->isStub && !ownParams.count(c.code()->params); }), cs.end());
                             drop = cs.empty();
@@ -7734,7 +7734,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         auto it = classes_.find(pos[1]->type);
                         if (it != classes_.end() && it->second && !it->second->isRole) narrow.push_back(it->second.get());
                     };
-                    if (tm->code()->isMultiDispatcher) for (auto& c : tm->code()->candidates) scan(c);
+                    if (tm->code()->isMultiDispatcher) for (auto& c : tm->code()->cold().candidates) scan(c);
                     else scan(*tm);
                     auto isA = [](ClassInfo* c, ClassInfo* want) {
                         std::function<bool(ClassInfo*)> walk = [&](ClassInfo* k) {

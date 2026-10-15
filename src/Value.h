@@ -490,6 +490,47 @@ struct KernelSlot {
 
 struct ClassInfo;   // (checkRetType's shortcut below names one)
 // A callable: either a user sub (params+body+closure) or a builtin.
+// The fields of a Callable that most routines never set — multi-dispatch
+// candidates, the native-call state, wrappers, declarator pod, `is
+// DEPRECATED`, a declared return type, an `.assuming` residual signature —
+// behind one pointer, so a closure does not carry ~330 bytes of them
+// (SPEED-BACKLOG 8, step 1; Callable 704 -> ~390 bytes).
+struct CallableCold {
+    ValueList candidates;                          // multi-dispatch candidates
+    std::shared_ptr<std::string> deprecated;        // `is DEPRECATED`: what to use instead (null = not)
+    // Declared return type (`of`/`returns`/`-->`), "" = none. A COERCING one
+    // keeps its parens — `Map()` — because that is the whole difference between
+    // checking the returned value and converting it; retTypeName() below hands
+    // out the plain type name for everyone who only wants that.
+    std::string retType;
+    ValueList wrappers;                              // &routine.wrap({…}) stack (outermost last); .unwrap pops
+    bool isNative = false;                            // `is native` — a C FFI call
+    std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
+    std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path
+    const Expr* nativeLibExpr = nullptr;             // `is native(EXPR)` whose declaration-time eval failed —
+                                                     // retried once at first call (AST outlives the interpreter)
+    const Expr* nativeSymExpr = nullptr;             // ditto for `is symbol(EXPR)` — a computed C symbol name
+    void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
+                                                      // (5 dlopen candidates per call cost a flat ~67 µs)
+    // Prepared libffi call interface, built once per signature. ffi_prep_cif is
+    // ~80 ns — 20% of a whole crossing — so it must not run per call. Opaque
+    // here; see ncFreeCif. OWNED (~Callable frees it), so a copy must start
+    // empty rather than inherit the pointer and free it a second time; the
+    // clone simply prepares its own on first call.
+    struct CifSlot {
+        void* p = nullptr;
+        CifSlot() = default;
+        CifSlot(const CifSlot&) {}
+    };
+    CifSlot nativeCifCache;
+    std::string pod;                                  // `#|` leading declarator pod (.WHY)
+    std::string podTrail;                             // …its `#=` part alone
+    bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
+    std::vector<std::shared_ptr<Param>> primedParams; // the residual signature (copies: a primed named param
+                                                      // survives with the primed value as its default)
+};
+extern const CallableCold kNoCallableCold;   // Value.cpp: every field at its default
+
 struct Callable {
     std::string pkg; // enclosing package name ("" = GLOBAL) — &?ROUTINE.package
     std::string name;
@@ -603,7 +644,6 @@ struct Callable {
         for (auto& p : placeholders) if (p.size() > 1 && p[1] != ':') n++;
         return n;
     }
-    ValueList candidates;                          // multi-dispatch candidates
     // A multi dispatcher's monomorphic cache: the argument shape of a dispatch
     // it could cache and the candidate that won it (Interpreter's
     // dispatchCacheLookup). Not copied with the Callable, freed with it.
@@ -658,7 +698,6 @@ struct Callable {
     MixinInfo& mixinsRW() { if (!mixins.p) mixins.p = std::make_unique<MixinInfo>(); return *mixins.p; }
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
-    std::shared_ptr<std::string> deprecated;        // `is DEPRECATED`: what to use instead (null = not)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
     // A plain SUB installed as a method (`.^add_method($name, &sub)`): Rakudo
     // hands such a routine the invocant as its FIRST POSITIONAL, which is why
@@ -668,37 +707,29 @@ struct Callable {
     bool isSubmethod = false;                       // `submethod` — NOT inherited by subclasses
     bool isBlock = false;                            // a bare { } block (no `return`), not a Sub/Routine
     bool isRegexRoutine = false;                     // `my regex R {…}` / token / rule — .^name is Regex, not Sub
-    // Declared return type (`of`/`returns`/`-->`), "" = none. A COERCING one
-    // keeps its parens — `Map()` — because that is the whole difference between
-    // checking the returned value and converting it; retTypeName() below hands
-    // out the plain type name for everyone who only wants that.
-    std::string retType;
     bool retRw = false;                              // `is rw`/`is raw` on the routine: its result IS a container
     const struct Expr* retLiteral = nullptr;         // `--> 6`: a bare `return` still answers 6
     bool assocRight = false;                         // `is assoc<right>` — reductions fold from the right
     bool assocNon = false;                           // `is assoc<non>` — an EVAL'd chain of it is refused
     bool assocChain = false;                         // `is assoc<chain>` — a reduction tests each adjacent pair
-    ValueList wrappers;                              // &routine.wrap({…}) stack (outermost last); .unwrap pops
-    bool isNative = false;                            // `is native` — a C FFI call
-    std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
-    std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path
-    const Expr* nativeLibExpr = nullptr;             // `is native(EXPR)` whose declaration-time eval failed —
-                                                     // retried once at first call (AST outlives the interpreter)
-    const Expr* nativeSymExpr = nullptr;             // ditto for `is symbol(EXPR)` — a computed C symbol name
-    void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
-                                                      // (5 dlopen candidates per call cost a flat ~67 µs)
-    // Prepared libffi call interface, built once per signature. ffi_prep_cif is
-    // ~80 ns — 20% of a whole crossing — so it must not run per call. Opaque
-    // here; see ncFreeCif. OWNED (~Callable frees it), so a copy must start
-    // empty rather than inherit the pointer and free it a second time; the
-    // clone simply prepares its own on first call.
-    struct CifSlot {
-        void* p = nullptr;
-        CifSlot() = default;
-        CifSlot(const CifSlot&) {}
-    };
-    CifSlot nativeCifCache;
     ~Callable();
+    // The fields most routines never set (CallableCold): read through cold(),
+    // which answers shared defaults for a Callable without a block of its own,
+    // written through coldM(), which gives it one. A copy deep-copies the block.
+    struct ColdPtr {
+        CallableCold* p = const_cast<CallableCold*>(&kNoCallableCold);
+        bool own = false;
+        ColdPtr() = default;
+        ColdPtr(const ColdPtr& o);              // (defined below Value: the block holds Values)
+        ColdPtr& operator=(const ColdPtr& o);
+        ColdPtr(ColdPtr&& o) noexcept : p(o.p), own(o.own) { o.own = false; o.p = const_cast<CallableCold*>(&kNoCallableCold); }
+        ColdPtr& operator=(ColdPtr&& o) noexcept;
+        ~ColdPtr() { reset(); }
+        void reset();
+    } coldp;
+    const CallableCold& cold() const { return *coldp.p; }
+    bool hasCold() const { return coldp.own; }
+    CallableCold& coldM();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool testAssertion = false; // `is test-assertion` (see Interpreter::testAssertLine_)
     bool isNodal = false;       // `is nodal` (see the hyper callable path)
@@ -707,13 +738,8 @@ struct Callable {
     bool isDefaultCand = false;                       // `multi … is default` — wins a dispatch tie
     bool hiddenFromUsage = false;                     // `is hidden-from-USAGE` — a MAIN candidate $*USAGE leaves out
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
-    std::string pod;                                  // `#|` leading declarator pod (.WHY)
-    std::string podTrail;                             // …its `#=` part alone
     bool isSigLiteral = false;                        // built by `:( … )` — a bare Signature, not a routine's
                                                       // (an unconstrained param is Mu there, Any on a routine)
-    bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
-    std::vector<std::shared_ptr<Param>> primedParams; // the residual signature (copies: a primed named param
-                                                      // survives with the primed value as its default)
 };
 
 enum class VT : uint8_t { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
@@ -1455,6 +1481,19 @@ inline bool plainWordValue(const Value& v, bool asNum) {
            !v.isList && !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg &&
            v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
 }
+// Callable::ColdPtr's members that copy or free a CallableCold, which holds
+// Values and so is complete only from here
+inline Callable::ColdPtr::ColdPtr(const ColdPtr& o) { if (o.own) { p = new CallableCold(*o.p); own = true; } }
+inline Callable::ColdPtr& Callable::ColdPtr::operator=(const ColdPtr& o) {
+    if (this != &o) { reset(); if (o.own) { p = new CallableCold(*o.p); own = true; } }
+    return *this;
+}
+inline Callable::ColdPtr& Callable::ColdPtr::operator=(ColdPtr&& o) noexcept {
+    if (this != &o) { reset(); p = o.p; own = o.own; o.own = false; o.p = const_cast<CallableCold*>(&kNoCallableCold); }
+    return *this;
+}
+inline void Callable::ColdPtr::reset() { if (own) delete p; p = const_cast<CallableCold*>(&kNoCallableCold); own = false; }
+inline CallableCold& Callable::coldM() { if (!coldp.own) { coldp.p = new CallableCold(); coldp.own = true; } return *coldp.p; }
 inline PackedArr* Value::packed() const { return pk_ == PK::Packed ? pv<PackedArr>() : nullptr; }
 inline bool Value::packedLive() const {
     return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);
@@ -2004,9 +2043,9 @@ struct ClassInfo {
             if (r && r->code() && (!c->isRole || !roleSubs)) {
                 if (r->code()->isSubmethod) return nullptr;
                 // …and a `multi submethod` group is no more inheritable
-                if (r->code()->isMultiDispatcher && !r->code()->candidates.empty()) {
+                if (r->code()->isMultiDispatcher && !r->code()->cold().candidates.empty()) {
                     bool allSub = true;
-                    for (auto& cd : r->code()->candidates)
+                    for (auto& cd : r->code()->cold().candidates)
                         if (!cd.code() || !cd.code()->isSubmethod) { allSub = false; break; }
                     if (allSub) return nullptr;
                 }

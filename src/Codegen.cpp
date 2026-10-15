@@ -1454,9 +1454,9 @@ struct Codegen {
               << (p.slurpy ? "; p.slurpy = true" : "")
               << "; v.push_back(std::move(p)); }\n";
         b << "        return v; }();\n";
-        b << "    static Callable __nc; static const bool __nci = []{ __nc.isNative = true;\n";
-        b << "        __nc.name = " << cesc(d->name) << "; __nc.nativeLib = " << cesc(d->nativeLib) << ";\n";
-        b << "        __nc.nativeSym = " << cesc(sym) << "; __nc.retType = " << cesc(d->retType) << ";\n";
+        b << "    static Callable __nc; static const bool __nci = []{ __nc.coldM().isNative = true;\n";
+        b << "        __nc.name = " << cesc(d->name) << "; __nc.coldM().nativeLib = " << cesc(d->nativeLib) << ";\n";
+        b << "        __nc.coldM().nativeSym = " << cesc(sym) << "; __nc.coldM().retType = " << cesc(d->retType) << ";\n";
         b << "        __nc.params = &__np; return true; }(); (void)__nci;\n";
         b << "    return RT.callNative(__nc, __a, nullptr);\n";
         return b.str();

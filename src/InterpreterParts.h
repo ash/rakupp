@@ -1666,7 +1666,7 @@ struct TranspCall {
     ExecContext* t = nullptr;
     TranspCall(ExecContext& tc, const Value& f) {
         // with no handler registered there is none a count could matter to
-        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->builtin && !f.code()->isNative) {
+        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->builtin && !f.code()->cold().isNative) {
             t = &tc; ++t->transpFrames;
         }
     }

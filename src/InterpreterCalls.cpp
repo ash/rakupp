@@ -1269,7 +1269,7 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
             if (mit != k->methods.end() && mit->second.t == VT::Code && mit->second.code()) {
                 const auto& c = mit->second.code();
                 if (c->isMultiDispatcher) {
-                    for (auto& cand : c->candidates)
+                    for (auto& cand : c->cold().candidates)
                         if (cand.t == VT::Code && cand.code() && !cand.code()->isProto &&
                             !(cand.code()->isSubmethod && k != tc))
                             out.push_back(cand);
@@ -1290,7 +1290,7 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
         disp.code()->name = name;
         disp.code()->isMultiDispatcher = true;
         disp.code()->isMethod = true;
-        disp.code()->candidates = std::move(cands);
+        disp.code()->coldM().candidates = std::move(cands);
         return invokeMethod(disp, Value::typeObj(target), ValueList{v});
     };
     Value r;
@@ -2287,7 +2287,7 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
         Value* fp = c->name.empty() || c->callee ? nullptr : tctx_.cur->find(callAmpName(c));
         if (fp && fp->t == VT::Code && fp->code() && !fp->code()->builtin && !fp->code()->retRw) {
             bool anyRw = false;
-            for (auto& cand : fp->code()->candidates)
+            for (auto& cand : fp->code()->cold().candidates)
                 if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { anyRw = true; break; }
             if (!anyRw) {
                 Value got = evalCall(c);
@@ -3245,7 +3245,7 @@ Value composeCode(const Value& fV, const Value& gV) {
         if (gV.code()->isWhateverCode && gV.code()->whateverArity > 1)
             code.code()->whateverArity = gV.code()->whateverArity;
     }
-    if (fV.t == VT::Code && fV.code()) code.code()->retType = fV.code()->retType;
+    if (fV.t == VT::Code && fV.code() && !fV.code()->cold().retType.empty()) code.code()->coldM().retType = fV.code()->cold().retType;
     return code;
 }
 
@@ -3451,11 +3451,11 @@ static int dispatchCandidatesCacheable(const Callable& c, const Classes& classes
     int wheres = 0;
     static const std::set<std::string> kNominal = {"", "Any", "Mu", "Int", "Str", "Num", "Real",
                                                    "Numeric", "Cool", "Stringy"};
-    for (auto& cand : c.candidates) {
+    for (auto& cand : c.cold().candidates) {
         const Callable* cc = cand.code();
         if (!cc) return false;
         if (cc->isProto || cc->isProtoBody) continue;
-        if (!cc->params || cc->isDefaultCand || !cc->wrappers.empty()) return 0;
+        if (!cc->params || cc->isDefaultCand || !cc->cold().wrappers.empty()) return 0;
         for (auto& p : *cc->params) {
             if (p.slurpy && p.sigil == '%' && !p.whereExpr) continue;   // a method's implicit *%_
             if (p.named || p.slurpy || p.sigil != '$' || p.hadWhere || p.litVal ||
@@ -3474,25 +3474,25 @@ static int dispatchCandidatesCacheable(const Callable& c, const Classes& classes
         }
     }
     if (!wheres) return 1;
-    return wheres <= kWhereMaxBits && c.candidates.size() <= (size_t)kWhereMaxCand ? 2 : 0;
+    return wheres <= kWhereMaxBits && c.cold().candidates.size() <= (size_t)kWhereMaxCand ? 2 : 0;
 }
 
 const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as,
                                               uint32_t* pattern) {
     if (pattern) *pattern = UINT32_MAX;
     auto* e = static_cast<const DispatchCacheEntry*>(c.dispatchCache.p.load(std::memory_order_acquire));
-    if (!e || e->ncand != c.candidates.size() || e->gen != g_symbolGen.load(std::memory_order_relaxed))
+    if (!e || e->ncand != c.cold().candidates.size() || e->gen != g_symbolGen.load(std::memory_order_relaxed))
         return nullptr;
     uint64_t key[8]; uint32_t n;
     if (!dispatchKey(self, as, key, n) || n != e->nkey) return nullptr;
     for (uint32_t k = 0; k < n; k++) if (key[k] != e->key[k]) return nullptr;
-    if (!e->nwhere) return &c.candidates[e->best];
+    if (!e->nwhere) return &c.cold().candidates[e->best];
     if (!pattern) return nullptr;
     // the outcomes of the matching candidates' `where`s, in declaration order
     uint32_t bits = 0;
     for (uint32_t ci = 0; ci < e->ncand; ci++) {
         if (!((e->relevant >> ci) & 1) || !e->wcnt[ci]) continue;
-        const Value& cand = c.candidates[ci];
+        const Value& cand = c.cold().candidates[ci];
         size_t i = 0;
         int k = 0;
         for (auto& p : *cand.code()->params) {
@@ -3507,15 +3507,15 @@ const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, co
         }
     }
     const int8_t w = e->win[bits].load(std::memory_order_relaxed);
-    if (w >= 0) return &c.candidates[(size_t)w];
+    if (w >= 0) return &c.cold().candidates[(size_t)w];
     *pattern = bits;
     return nullptr;
 }
 
 bool Interpreter::dispatchWhereBits(const Callable& c, const Value* cand, uint32_t pattern, WhereAssume& out) {
     auto* e = static_cast<const DispatchCacheEntry*>(c.dispatchCache.p.load(std::memory_order_acquire));
-    if (!e || !e->nwhere || cand < c.candidates.data() || cand >= c.candidates.data() + e->ncand) return false;
-    const size_t ci = (size_t)(cand - c.candidates.data());
+    if (!e || !e->nwhere || cand < c.cold().candidates.data() || cand >= c.cold().candidates.data() + e->ncand) return false;
+    const size_t ci = (size_t)(cand - c.cold().candidates.data());
     out.next = 0;
     // a candidate that does not match the shape has no outcomes: assumed failed
     out.bits = ((e->relevant >> ci) & 1) ? (pattern >> e->woff[ci]) & ((1u << e->wcnt[ci]) - 1) : 0;
@@ -3525,34 +3525,34 @@ bool Interpreter::dispatchWhereBits(const Callable& c, const Value* cand, uint32
 void Interpreter::dispatchCacheRecord(Callable& c, uint32_t pattern, const Value* best) {
     auto* e = static_cast<const DispatchCacheEntry*>(c.dispatchCache.p.load(std::memory_order_acquire));
     if (!e || !e->nwhere || pattern >= (1u << kWhereMaxBits) || !best ||
-        best < c.candidates.data() || best >= c.candidates.data() + e->ncand)
+        best < c.cold().candidates.data() || best >= c.cold().candidates.data() + e->ncand)
         return;
-    e->win[pattern].store((int8_t)(best - c.candidates.data()), std::memory_order_relaxed);
+    e->win[pattern].store((int8_t)(best - c.cold().candidates.data()), std::memory_order_relaxed);
 }
 
 void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best) {
     if (c.dispatchCache.p.load(std::memory_order_relaxed)) return;   // published once
-    const uint32_t ncand = (uint32_t)c.candidates.size();
+    const uint32_t ncand = (uint32_t)c.cold().candidates.size();
     if (c.dispatchCacheable < 0 || c.dispatchCacheN != ncand) {
         c.dispatchCacheable = (signed char)dispatchCandidatesCacheable(c, classes_, subsets_);
         c.dispatchCacheN = ncand;
     }
     if (c.dispatchCacheable != 1 && c.dispatchCacheable != 2) return;
     auto* e = new DispatchCacheEntry;
-    if (!dispatchKey(self, as, e->key, e->nkey) || best < c.candidates.data() ||
-        best >= c.candidates.data() + ncand) {
+    if (!dispatchKey(self, as, e->key, e->nkey) || best < c.cold().candidates.data() ||
+        best >= c.cold().candidates.data() + ncand) {
         delete e;
         return;
     }
     e->gen = g_symbolGen.load(std::memory_order_relaxed);
     e->ncand = ncand;
-    e->best = (uint32_t)(best - c.candidates.data());
+    e->best = (uint32_t)(best - c.cold().candidates.data());
     if (c.dispatchCacheable == 2) {
         // which candidates match the shape (scored with every `where` assumed
         // to pass, which evaluates none), and each one's outcome bits
         uint8_t off = 0;
         for (uint32_t ci = 0; ci < ncand; ci++) {
-            const Value& cand = c.candidates[ci];
+            const Value& cand = c.cold().candidates[ci];
             const Callable* cc = cand.code();
             if (!cc || cc->isProto || cc->isProtoBody) continue;
             uint8_t nw = 0;

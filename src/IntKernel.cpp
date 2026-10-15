@@ -1436,15 +1436,15 @@ KNode* Compiler::ltail(IKernel& k, const std::vector<StmtPtr>& ss) {
 // itself, which accepts no CATCH, phaser or declaration it cannot model, so
 // nothing a first call works out is needed here.
 bool kernelShape(const Callable& c) {
-    if (c.isBlock || c.isMethod || c.builtin || c.isNative || c.isMultiDispatcher ||
-        c.isMultiCandidate || c.isProto || c.isWhateverCode || c.isRegexRoutine || c.deprecated ||
+    if (c.isBlock || c.isMethod || c.builtin || c.cold().isNative || c.isMultiDispatcher ||
+        c.isMultiCandidate || c.isProto || c.isWhateverCode || c.isRegexRoutine || c.cold().deprecated ||
         c.testAssertion || !c.hadSig || !c.params || !c.body || c.body->empty() ||
-        !c.placeholders.empty() || c.usesArgs || c.implicitArgs || c.hasPrimed ||
+        !c.placeholders.empty() || c.usesArgs || c.implicitArgs || c.cold().hasPrimed ||
         c.retLiteral || c.retRw || c.params->size() > (size_t)kMaxParams)
         return false;
     // `--> Int` / `--> Int:D`: every value a kernel returns is a defined Int
-    if (!c.retType.empty() &&
-        (retTypeCoerces(c.retType) || retTypeName(c.retType) != "Int" || retTypeSmiley(c.retType) == 'U'))
+    if (!c.cold().retType.empty() &&
+        (retTypeCoerces(c.cold().retType) || retTypeName(c.cold().retType) != "Int" || retTypeSmiley(c.cold().retType) == 'U'))
         return false;
     // …and an `Int` / `Int:D` parameter is one a plain Int binds to as it is
     // (any other argument keeps the call path, and its type check)
@@ -2683,7 +2683,7 @@ void finishSession(Compiler& cc, bool ok, const Callable* asker) {
 bool callsBound(const std::vector<IKernel*>& graph) {
     for (auto* g : graph) {
         for (auto* o : g->calleeOwners)
-            if (!o->wrappers.empty()) return false;
+            if (!o->cold().wrappers.empty()) return false;
         for (auto& kc : g->calls) {
             const Value* f = g->scope ? g->scope->find(kc.first) : nullptr;
             if (!f || f->t != VT::Code || f->code() != kc.second) return false;
@@ -2760,7 +2760,7 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
         if (!plainIntArg(args[i])) return false;
         a[i] = args[i].i;
     }
-    if (!c.wrappers.empty() || !callsBound(k->graph)) return false;
+    if (!c.cold().wrappers.empty() || !callsBound(k->graph)) return false;
     for (auto& op : k->binOps)
         if (opShadowed(op)) return false;
     if (k->usesPrefix && g_userPrefixShadow.load(std::memory_order_relaxed)) return false;

@@ -202,9 +202,9 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // `()` and only a bare `{;}` gets the implicit `$_`
     // …and so did an anonymous `sub ($x) {…}` that wrote parameters
     code.code()->hadSig = be->isPointy || (be->isSub && !be->params.empty());
-    code.code()->retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
+    if (!be->retType.empty()) code.code()->coldM().retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
     code.code()->retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
-    if (!be->pod.empty()) { code.code()->pod = be->pod; code.code()->podTrail = be->podTrail; code.code()->declLine = be->podLine; }
+    if (!be->pod.empty()) { code.code()->coldM().pod = be->pod; code.code()->coldM().podTrail = be->podTrail; code.code()->declLine = be->podLine; }
     // a block knows where it was written: `-> { }.line`
     if (!code.code()->declLine && be->line > 0) code.code()->declLine = be->line;
     if (be->params.empty()) {
@@ -767,7 +767,7 @@ bool Interpreter::codeSigAccepts(const Param& p, const Value& code, Env* sigEnv)
         if (size_t x = t.find('\x01'); x != std::string::npos) t = t.substr(0, x);
         return t.empty() ? std::string("Mu") : t;
     };
-    return norm(p.codeSigRet) == norm(c.retType);
+    return norm(p.codeSigRet) == norm(c.cold().retType);
 }
 
 // Does an argument satisfy a parameter type-constraint name?
@@ -1660,7 +1660,7 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     enum { Lose, Tie, Win };
     int verdict = Lose;
     const Value* tied = nullptr;
-    for (auto& cand : f->code()->candidates) {
+    for (auto& cand : f->code()->cold().candidates) {
         const Callable* c = cand.code();
         if (!c || c->isProto || c->isProtoBody) continue;
         const Param *pa, *pb;
@@ -2095,7 +2095,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
     // the map is empty until someone takes a `&builtin` reference.
     if (!builtinRefs_.empty()) {
         auto rit = builtinRefs_.find(name);
-        if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->wrappers.empty())
+        if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->cold().wrappers.empty())
             return callCallable(rit->second, std::move(args));
     }
     auto it = builtins_.find(name);
@@ -2745,7 +2745,7 @@ std::shared_ptr<std::string> Interpreter::deprecationFor(SubDecl* sd) {
 // A call of a deprecated routine: remembered by (kind, name, package, advice),
 // with the line it was made from, until `Deprecation.report` collects them.
 void Interpreter::noteDeprecatedCall(const Callable& c, int line) {
-    noteDeprecation(c.isMethod ? "Method" : "Sub", c.name, c.pkg.empty() ? "GLOBAL" : c.pkg, *c.deprecated, line);
+    noteDeprecation(c.isMethod ? "Method" : "Sub", c.name, c.pkg.empty() ? "GLOBAL" : c.pkg, *c.cold().deprecated, line);
 }
 void Interpreter::noteDeprecation(const std::string& kind, const std::string& name, const std::string& from,
                                   const std::string& with, int line) {
@@ -3575,7 +3575,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     {
         std::vector<const Value*> cands;
         if (mainSub.code() && mainSub.code()->isMultiDispatcher)
-            for (auto& c : mainSub.code()->candidates) cands.push_back(&c);
+            for (auto& c : mainSub.code()->cold().candidates) cands.push_back(&c);
         else if (mainSub.code()) cands.push_back(&mainSub);
         bool rw = false;
         for (const Value* c : cands)
@@ -3649,7 +3649,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     {
         std::vector<const Value*> cands;
         if (mainSub.code() && mainSub.code()->isMultiDispatcher)
-            for (auto& c : mainSub.code()->candidates) cands.push_back(&c);
+            for (auto& c : mainSub.code()->cold().candidates) cands.push_back(&c);
         else if (mainSub.code()) cands.push_back(&mainSub);
         for (const Value* c : cands) {
             if (!c->code() || !c->code()->params) continue;
@@ -3677,7 +3677,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     };
     if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
         mainMatches = false;
-        for (auto& cand : mainSub.code()->candidates) {
+        for (auto& cand : mainSub.code()->cold().candidates) {
             // (an explicit `proto MAIN(|) {*}` is no candidate: its `|` takes
             // anything, and then the real dispatch found none — Cro's CLI
             // declares one, and `cro --help` died where it should print usage)
@@ -3748,7 +3748,7 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
         Value v = Value::closure(fn);
         v.code()->name = "MAIN";
         v.code()->params = &d->params;
-        v.code()->pod = d->pod;
+        v.code()->coldM().pod = d->pod;
         return v;
     };
     Value main;
@@ -3757,7 +3757,7 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
         main = Value::closure(fn);
         main.code()->name = "MAIN";
         main.code()->isMultiDispatcher = true;
-        for (auto* d : cands) main.code()->candidates.push_back(mk(d));
+        for (auto* d : cands) main.code()->coldM().candidates.push_back(mk(d));
     }
     global_->define("&MAIN", main);
 }
@@ -5077,7 +5077,7 @@ Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const cha
     Callable* cc = c.code();
     cc->params = list;
     if (name && *name) cc->name = name;
-    if (retType && *retType) cc->retType = retType;
+    if (retType && *retType) cc->coldM().retType = retType;
     if (cflags & RSC_BLOCK) cc->isBlock = true;
     if (cflags & RSC_HADSIG) cc->hadSig = true;
     return c;
@@ -6029,7 +6029,7 @@ static void* ncCallbackPtr(const Value& v, const std::vector<Param>* declSig = n
             cl->ptypes.push_back(pt);
             cl->atypes.push_back(ncFfiCbParamType(pt));
         }
-        cl->rtype = ncFfiCbRetType(retTypeName(v.code()->retType));
+        cl->rtype = ncFfiCbRetType(retTypeName(v.code()->cold().retType));
         cl->writable = F.closure_alloc(512, &cl->code);
         if (cl->writable && cl->code && cl->rtype &&
             F.prep(cl->cif.buf, F.abi, (unsigned)cl->atypes.size(), cl->rtype,
@@ -6095,24 +6095,24 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // shares through its shared_ptr. Benign race: two threads resolving the
     // same sub store the same pointer. dlclose is never called, so the pointer
     // stays valid for the life of the process.
-    void* sym = c.nativeSymCache;
+    void* sym = c.cold().nativeSymCache;
     if (!sym) {
         void* handle = RTLD_DEFAULT;
         // `is native(&sub)`: call the sub now to get the library path (a full
         // path or bare name). Resolved once here, like Rakudo.
-        std::string lib = c.nativeLib;
-        if (lib.empty() && !c.nativeLibSub.empty()) {
+        std::string lib = c.cold().nativeLib;
+        if (lib.empty() && !c.cold().nativeLibSub.empty()) {
             // the provider sub lives in the DECLARING module — resolve it in
             // the sub's own closure first; the caller's env only as a fallback
             Value* f = nullptr;
-            if (c.closure) f = c.closure->find("&" + c.nativeLibSub);
-            if (!f) f = tctx_.cur->find("&" + c.nativeLibSub);
+            if (c.closure) f = c.closure->find("&" + c.cold().nativeLibSub);
+            if (!f) f = tctx_.cur->find("&" + c.cold().nativeLibSub);
             if (f) {
                 ValueList none; Value r = callCallable(*f, none);
                 lib = r.toStr();
             }
         }
-        if (lib.empty() && c.nativeLibExpr) {
+        if (lib.empty() && c.cold().nativeLibExpr) {
             // Declaration-time eval failed or answered nothing — retry in the
             // sub's OWN closure (its module's constants live there, and the
             // caller's env can hold a SAME-NAMED constant from another module:
@@ -6123,14 +6123,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             auto savedEnv = tctx_.cur;
             if (c.closure) tctx_.cur = c.closure;
             try {
-                Value r = eval(const_cast<Expr*>(c.nativeLibExpr));
+                Value r = eval(const_cast<Expr*>(c.cold().nativeLibExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
                 if (isDefined(r)) lib = ncLibNameOf(r);
             } catch (RakuError&) {}
             tctx_.cur = savedEnv;
         }
         if (!lib.empty()) handle = dlopenLib(lib); // name as-is, then platform-decorated forms
-        if (c.nativeSymExpr) {
+        if (c.cold().nativeSymExpr) {
             // A computed `is symbol(…)` the declaration was too early to evaluate:
             // now the library is loaded, so the version probe it asks can answer.
             // Evaluate it in the sub's OWN scope, not the caller's — the helper
@@ -6141,14 +6141,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             auto savedEnv = tctx_.cur;
             if (c.closure) tctx_.cur = c.closure;
             try {
-                Value r = eval(const_cast<Expr*>(c.nativeSymExpr));
+                Value r = eval(const_cast<Expr*>(c.cold().nativeSymExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                if (isDefined(r) && !r.toStr().empty()) c.nativeSym = r.toStr();
+                if (isDefined(r) && !r.toStr().empty()) c.coldM().nativeSym = r.toStr();
             } catch (RakuError&) {}
             tctx_.cur = savedEnv;
-            c.nativeSymExpr = nullptr; // once, not per call
+            c.coldM().nativeSymExpr = nullptr; // once, not per call
         }
-        sym = dlsym(handle, c.nativeSym.c_str());
+        sym = dlsym(handle, c.cold().nativeSym.c_str());
         if (!sym) {
             // Some libraries expose a renamed symbol behind a compat macro the header
             // resolves at C compile time but that isn't a real exported symbol (so a
@@ -6168,7 +6168,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                 // take the reference, and the caller's X509_free would over-free.)
                 {"SSL_get1_peer_certificate", "SSL_get_peer_certificate"},
             };
-            auto it = aliases.find(c.nativeSym);
+            auto it = aliases.find(c.cold().nativeSym);
             if (it != aliases.end()) sym = dlsym(handle, it->second.c_str());
         }
         // Rakudo's exact wording, deliberately: this text is a de-facto INTERFACE.
@@ -6177,8 +6177,8 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         // X::DBIish::LibraryMissing, which is what makes its suite SKIP a driver
         // whose library is absent instead of dying.
         if (!sym) throw RakuError{Value::typeObj("X::AdHoc"),
-            "Cannot locate symbol '" + c.nativeSym + "' in native library '" + lib + "'"};
-        c.nativeSymCache = sym;
+            "Cannot locate symbol '" + c.cold().nativeSym + "' in native library '" + lib + "'"};
+        c.coldM().nativeSymCache = sym;
     }
 
     const std::vector<Param>* prm = c.params;
@@ -6424,12 +6424,12 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // matched no arm and `malloc` handed back a bare Int instead of a Pointer.
     // (`--> PwStruct` already resolved, but only in the class arm, via ncClass.)
     std::string rtAlias;
-    if (!c.retType.empty() && c.closure && !ncKnownRetSpelling(retTypeName(c.retType)))
-        if (Value* cv = c.closure->find(retTypeName(c.retType)))
+    if (!c.cold().retType.empty() && c.closure && !ncKnownRetSpelling(retTypeName(c.cold().retType)))
+        if (Value* cv = c.closure->find(retTypeName(c.cold().retType)))
             if (cv->t == VT::Type && !cv->s.empty())
                 rtAlias = (!cv->ofType().empty() && cv->s.find('[') == std::string::npos)
                         ? cv->s.str() + "[" + std::string(cv->ofType()) + "]" : cv->s.str();
-    const std::string rt = rtAlias.empty() ? retTypeName(c.retType) : rtAlias;
+    const std::string rt = rtAlias.empty() ? retTypeName(c.cold().retType) : rtAlias;
     bool retFP  = ncIsFloatType(rt);
     bool retF32 = (rt == "num32");
     if (retF32 && needFfi.empty()) needFfi = "a num32 return value";
@@ -6469,18 +6469,18 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             return variadic ? F.prep_var(buf, F.abi, (unsigned)nfixed, (unsigned)na, rtype, na ? at : nullptr)
                             : F.prep(buf, F.abi, (unsigned)na, rtype, na ? at : nullptr);
         };
-        NcCif* cached = (NcCif*)c.nativeCifCache.p;
+        NcCif* cached = (NcCif*)c.cold().nativeCifCache.p;
         if (cached && cached->rtype == rtype && cached->variadic == variadic &&
             cached->nfixed == (unsigned)(variadic ? nfixed : 0) &&
             cached->atypes.size() == na &&
             std::equal(cached->atypes.begin(), cached->atypes.end(), atypes))
             cifp = cached->cif.buf;
-        if (!cifp && !c.nativeCifCache.p) {
+        if (!cifp && !c.cold().nativeCifCache.p) {
             auto* nc = new NcCif();
             nc->atypes.assign(atypes, atypes + na); nc->rtype = rtype;
             nc->variadic = variadic; nc->nfixed = (unsigned)(variadic ? nfixed : 0);
             if (prepInto(nc->cif.buf, nc->atypes.data()) == 0) {
-                c.nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
+                c.coldM().nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
                 cifp = nc->cif.buf;
             }
             else delete nc;
@@ -6489,7 +6489,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         if (!cifp) {      // are not worth memsetting on every crossing
             if (prepInto(local.buf, atypes) != 0)
                 throw RakuError{Value::typeObj("X::NYI"),
-                    "NativeCall: libffi cannot describe the signature of '" + c.nativeSym + "'"};
+                    "NativeCall: libffi cannot describe the signature of '" + c.cold().nativeSym + "'"};
             cifp = local.buf;
         }
         // The return buffer must be at least ffi_arg wide: libffi widens any
@@ -6559,8 +6559,8 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             return o;
         };
         std::string line = "[ffi] ";
-        if (!c.nativeLib.empty()) line += c.nativeLib + ":";
-        line += c.nativeSym + "(";
+        if (!c.cold().nativeLib.empty()) line += c.cold().nativeLib + ":";
+        line += c.cold().nativeSym + "(";
         for (size_t i = 0; i < slots.size(); i++) {
             if (i) line += ", ";
             const Value& v = args[i];

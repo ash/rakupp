@@ -5305,7 +5305,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // `Callable &x` types what x RETURNS: the code has to be declared
             // to return one — a bare block (`{ 'block' }`) declares nothing
             else if (p.sigil == '&' && !p.type.empty() && p.type != "Mu" && !p.codeSig &&
-                     v.t == VT::Code && v.code() && v.code()->retType.empty() &&
+                     v.t == VT::Code && v.code() && v.code()->cold().retType.empty() &&
                      (v.code()->isBlock || v.code()->isWhateverCode) && isKnownTypeName(p.type))
                 throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                     "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected " +
@@ -5562,7 +5562,7 @@ static bool typeParamMatches(const Value& l, const Value& r) {
     if (l.t == VT::Object) return true;
     // `&f ~~ Callable[Int]`: a routine is parameterized by its RETURN type
     if (l.t == VT::Code && l.code() && want.size() == 1) {
-        std::string rt = l.code()->retType;
+        std::string rt = l.code()->cold().retType;
         if (size_t pp = rt.find('('); pp != std::string::npos) rt = rt.substr(0, pp);
         if (size_t x = rt.find('\x01'); x != std::string::npos) rt = rt.substr(0, x);
         if (rt.empty()) rt = "Mu";
@@ -6665,8 +6665,8 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 "Callable", "Code", "Routine", "Sub", "Method", "Block", "Regex", "WhateverCode",
                 "Submethod", "Macro"};
             if (!p->type.empty() && p->type != "Any" && p->type != "Mu" && !kCallableTypes.count(p->type) &&
-                pos[i].t == VT::Code && pos[i].code() && !pos[i].code()->retType.empty()) {
-                std::string rt = pos[i].code()->retType;
+                pos[i].t == VT::Code && pos[i].code() && !pos[i].code()->cold().retType.empty()) {
+                std::string rt = pos[i].code()->cold().retType;
                 if (size_t pp = rt.find('('); pp != std::string::npos) rt = rt.substr(0, pp);
                 if (rt != p->type && !typeNameConforms(rt, p->type, std::string(), std::string())) return -1;
                 score += 8;
@@ -7527,8 +7527,8 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
     // A wrapped routine (&r.wrap({…})) runs its wrapper stack first. Each wrapper's
     // `callsame`/`nextsame` drops to the next inner wrapper, finally to the original
     // routine body (callCallableRaw). Wrappers are consulted outermost-first.
-    if (codeVal.t == VT::Code && codeVal.code() && !codeVal.code()->wrappers.empty()) {
-        const auto& wraps = codeVal.code()->wrappers;
+    if (codeVal.t == VT::Code && codeVal.code() && !codeVal.code()->cold().wrappers.empty()) {
+        const auto& wraps = codeVal.code()->cold().wrappers;
         const size_t wrapBase = redispatchStack_.size();
         std::function<Value(int, ValueList)> runLevel =
             [&](int level, ValueList as) -> Value {
@@ -7553,7 +7553,7 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
     }
     return dropNativeTag(callCallableRaw(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified));
 }
-Callable::~Callable() { delete (NcCif*)nativeCifCache.p; }
+Callable::~Callable() { if (coldp.own) delete (NcCif*)coldp.p->nativeCifCache.p; }
 
 // run `let` restorations for the current env — only on UNSUCCESSFUL exits
 static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
@@ -7606,11 +7606,11 @@ static bool plainSubShape(Callable& c) {
     if (c.padReady != 1 || c.catchScan.get() < 0 || c.controlScan.get() < 0 ||
         (signed char)c.hoistNeed < 0 || c.arityShape.get() < 0)
         return false;                                   // not settled yet
-    bool plain = !c.isBlock && !c.isMethod && !c.builtin && !c.isNative && !c.isMultiDispatcher &&
+    bool plain = !c.isBlock && !c.isMethod && !c.builtin && !c.cold().isNative && !c.isMultiDispatcher &&
                  !c.isMultiCandidate && !c.isProto && !c.isWhateverCode && !c.isRegexRoutine &&
-                 !c.deprecated && !c.testAssertion && c.hadSig && c.params && c.body &&
-                 c.placeholders.empty() && !c.usesArgs && !c.implicitArgs && !c.hasPrimed &&
-                 c.retType.empty() && !c.retLiteral && !c.retRw && c.padLayout &&
+                 !c.cold().deprecated && !c.testAssertion && c.hadSig && c.params && c.body &&
+                 c.placeholders.empty() && !c.usesArgs && !c.implicitArgs && !c.cold().hasPrimed &&
+                 c.cold().retType.empty() && !c.retLiteral && !c.retRw && c.padLayout &&
                  bodyEntryWork(c) == 0 && c.catchScan.get() == 0 && c.controlScan.get() == 0 &&
                  (signed char)c.hoistNeed == 0 && c.arityShape.get() == 1 && !c.arityUnbounded;
     if (plain)
@@ -7941,7 +7941,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     int lpc = tcx.loopPhaserCtl; tcx.loopPhaserCtl = 0; // one-shot: loop-phaser control from an iterating driver (map)
     bool implicitTopic_local = false;
     // A Format template (q:o/…/) is callable: it applies as sprintf over the args.
-    if (codeVal.t == VT::Code && codeVal.code() && codeVal.code()->isNative) return callNative(*codeVal.code(), args, rwArgs);
+    if (codeVal.t == VT::Code && codeVal.code() && codeVal.code()->cold().isNative) return callNative(*codeVal.code(), args, rwArgs);
     if (codeVal.t == VT::Hash && codeVal.hashKind == "Format") {
         std::string fmt = codeVal.hash() && codeVal.hash()->count("fmt") ? (*codeVal.hash())["fmt"].toStr() : "";
         return Value::str(doSprintf(fmt, args));
@@ -8139,7 +8139,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // carries its invocant and an implicit *%_.
             if (visited.empty() && c.protoShapeScan.get() != 0) {
                 const Callable* proto = nullptr;
-                for (auto& pc : c.candidates)
+                for (auto& pc : c.cold().candidates)
                     if (pc.code() && pc.code()->isProto && !pc.code()->isMethod) { proto = pc.code(); break; }
                 if (c.protoShapeScan.get() < 0) c.protoShapeScan = proto ? 1 : 0;
                 if (proto) {
@@ -8239,7 +8239,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 static const std::set<std::string> kCore = {"Int", "Str", "Num", "Rat", "Complex", "Bool"};
                 if (c.protoTypedScan.get() < 0) {
                     bool typed = false;
-                    for (auto& pc : c.candidates)
+                    for (auto& pc : c.cold().candidates)
                         if (pc.code() && (pc.code()->isProto || pc.code()->isProtoBody) && pc.code()->params)
                             for (auto& p : *pc.code()->params)
                                 if (!p.invocant && !p.named && !p.slurpy && p.sigil == '$' && kCore.count(p.type))
@@ -8247,7 +8247,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     c.protoTypedScan = typed ? 1 : 0;
                 }
                 if (c.protoTypedScan.get() == 1)
-                    for (auto& pc : c.candidates) {
+                    for (auto& pc : c.cold().candidates) {
                         if (!pc.code() || !(pc.code()->isProto || pc.code()->isProtoBody) || !pc.code()->params) continue;
                         size_t i = 0; bool bad = false; std::string sigt;
                         for (auto& p : *pc.code()->params) {
@@ -8282,7 +8282,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 ? dispatchCacheLookup(c, nullptr, as, &wherePattern) : nullptr;
             if (cached) { best = cached; bestScore = 0; }
             else
-            for (auto& cand : c.candidates) {
+            for (auto& cand : c.cold().candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
                 if (visited.contains(&cand)) continue;
@@ -8371,7 +8371,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // refuses the literal: Rakudo's compile-time X::TypeCheck::Argument,
                 // with the blame on the proto
                 if (rwArgs && rwArgs->size() == as.size())
-                    for (auto& pc : c.candidates) {
+                    for (auto& pc : c.cold().candidates) {
                         if (!pc.code() || !(pc.code()->isProto || pc.code()->isProtoBody) || !pc.code()->params) continue;
                         static const std::set<std::string> kCore = {"Int", "Str", "Num", "Rat", "Complex", "Bool"};
                         size_t i = 0; bool bad = false; std::string sigt;
@@ -8396,7 +8396,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     }
                 // …and then the candidates' signatures, as Rakudo lists them
                 std::string sigs;
-                for (auto& cand : c.candidates) {
+                for (auto& cand : c.cold().candidates) {
                     if (!cand.code() || cand.code()->isProto || cand.code()->isProtoBody) continue;
                     try {
                         Value sg = methodCall(cand, "signature", {});
@@ -8424,7 +8424,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             const NextProbe probe{this, &c, &visited, redispatchStack_.size()};
             rc.hasNext = [p = &probe]() {
                 const ValueList& sa = redispatchStack_[p->at].sameArgs;
-                for (auto& cand : p->cs->candidates)
+                for (auto& cand : p->cs->cold().candidates)
                     if (cand.code() && !cand.code()->isProto && !cand.code()->isProtoBody &&
                         !p->visited->contains(&cand) && p->I->scoreCandidate(cand, sa) >= 0) return true;
                 return false;
@@ -8637,7 +8637,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // A named sub WITHOUT a signature has the empty one — `sub simple { }`
     // takes nothing — unless its body reads @_ (positionals) or %_ (nameds)
     if (!c.hadSig && !c.name.empty() && c.name != "MAIN" && !c.isBlock && !c.isMethod && !c.isProto &&
-        !c.isMultiDispatcher && !c.isWhateverCode && !c.isNative && !c.builtin &&
+        !c.isMultiDispatcher && !c.isWhateverCode && !c.cold().isNative && !c.builtin &&
         c.placeholders.empty() && c.body && !(c.implicitArgs & 1 && c.implicitArgs & 2)) {
         size_t npos = 0; std::string firstNamed;
         for (auto& a : args) {
@@ -8656,7 +8656,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // a POINTY block has a real signature too: `-> { }(23)` and
             // `-> $x { }()` die when the caller invokes it directly
             !c.isMethod && !c.isProto && !c.isMultiDispatcher &&
-            !c.isWhateverCode && !c.isNative && !c.builtin && !c.hasPrimed &&
+            !c.isWhateverCode && !c.cold().isNative && !c.builtin && !c.cold().hasPrimed &&
             c.placeholders.empty() && !c.usesArgs) ? 1 : 0; // `sub f { @_ }` slurps implicitly
         if (applies) {
             bool unbounded = false;
@@ -8961,7 +8961,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // caller.
     const int callLine = curLine_;
     tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
-    if (codeVal.code()->deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
+    if (codeVal.code()->cold().deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
         ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
     } cfG{tcx, this, callLine};
@@ -9213,7 +9213,7 @@ resumeBody:
         // Failure from `fail` still gets through)
         if (c.retLiteral && !(r.v.t == VT::Hash && r.v.hashKind == "Failure"))
             r.v = eval(const_cast<Expr*>(c.retLiteral));
-        return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
+        return c.cold().retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
     } catch (BreakGivenEx& b) { // `when` matched in this block: its value is the block's result
         if (c.body) runLeavePhasers(*c.body);
         restore();
@@ -9253,7 +9253,7 @@ resumeBody:
                 restore();
                 if (!isRoutine) throw;
                 copyOutRw(c.params, env, rwArgs);
-                return c.retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
+                return c.cold().retType.empty() ? std::move(r.v) : checkRetType(c, std::move(r.v));
             }
             catch (RakuError& e2) {   // die/rethrow from CATCH: the handlers further out first
                 markHandlerError(e2, catchReg.serial);
@@ -9349,7 +9349,7 @@ resumeBody:
         if (it != env->vars.end() && !it->second.sameRep(*topicWB)) *topicWB = it->second;
     }
     copyOutRw(c.params, env, rwArgs);
-    return c.retType.empty() ? std::move(last) : checkRetType(c, std::move(last));
+    return c.cold().retType.empty() ? std::move(last) : checkRetType(c, std::move(last));
 }
 
 // What checkRetType's shortcut may accept for `c.retType`: 1 a user class
@@ -9358,10 +9358,10 @@ resumeBody:
 // must itself be a registered class (or Bool), so no type capture of the
 // signature can stand for it (capturedType refuses a class name).
 unsigned Interpreter::retFastDecide(const Callable& c) {
-    if (retTypeCoerces(c.retType)) return 0;
-    const char sm = retTypeSmiley(c.retType);
+    if (retTypeCoerces(c.cold().retType)) return 0;
+    const char sm = retTypeSmiley(c.cold().retType);
     if (sm && sm != 'D') return 0;
-    const std::string base = retTypeName(c.retType);
+    const std::string base = retTypeName(c.cold().retType);
     if (base.empty() || base.find_first_of("[(\x01") != std::string::npos) return 0;
     const unsigned d = sm == 'D' ? 4 : 0;
     if (base == "Bool") return classes_.count("Bool") || subsets_.count("Bool") ? 0 : 2 | d;
@@ -9376,7 +9376,7 @@ unsigned Interpreter::retFastDecide(const Callable& c) {
 
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
-    if (c.retType.empty()) return v;
+    if (c.cold().retType.empty()) return v;
     // The shortcut (Callable::retFastKey): `--> HeapNode` / `--> Bool:D` resolved
     // once per symbol generation instead of from its name on every return —
     // LeftistHeap's four typed private methods made this a quarter of a call.
@@ -9411,11 +9411,11 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // `ret_T(Rat:D, Rat)` fails the definedness, `--> T:D()` coerces into it
     // (S06-signature/type-capture.t)
     {
-        const std::string base = retTypeName(c.retType);
+        const std::string base = retTypeName(c.cold().retType);
         Value cap;
-        if (c.retType.compare(0, base.size(), base) == 0 &&
+        if (c.cold().retType.compare(0, base.size(), base) == 0 &&
             capturedType(*this, tctx_.curRoutineEnv, base, cap)) {
-            std::string rest = c.retType.substr(base.size());
+            std::string rest = c.cold().retType.substr(base.size());
             std::string cs = cap.s;
             const bool restSmiley = rest.size() >= 2 && rest[0] == '\x01';
             const bool restCoerces = !rest.empty() && rest.back() == ')';
@@ -9424,7 +9424,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
             // parts: "\x01D" in C++ is ONE hex escape, 0x1D)
             if (!restSmiley && cap.i) { cs += '\x01'; cs += cap.i == 1 ? 'D' : 'U'; }
             Callable bound = c;
-            bound.retType = cs + rest;
+            bound.coldM().retType = cs + rest;
             return checkRetType(bound, std::move(v));
         }
     }
@@ -9432,18 +9432,18 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // passes, one the SOURCE type refuses is a return type-check failure, and
     // a conversion that does not land on the target is X::Coerce::Impossible.
     // Nil and a Failure pass through untouched.
-    if (retTypeCoerces(c.retType)) {
+    if (retTypeCoerces(c.cold().retType)) {
         if (v.t == VT::Nil || (v.t == VT::Hash && v.hashKind == "Failure")) return v;
-        const std::string target = resolveClassAlias(retTypeName(c.retType));
-        const char tsm = retTypeSmiley(c.retType);
-        std::string from = retTypeCoerceFrom(c.retType); char fsm = 0;
+        const std::string target = resolveClassAlias(retTypeName(c.cold().retType));
+        const char tsm = retTypeSmiley(c.cold().retType);
+        std::string from = retTypeCoerceFrom(c.cold().retType); char fsm = 0;
         if (from.size() > 2 && from[from.size() - 2] == ':') { fsm = from.back(); from.resize(from.size() - 2); }
         auto fits = [&](const Value& x) {
             return typeOrSubsetMatches(x, target) && (tsm != 'D' || isDefined(x)) && (tsm != 'U' || !isDefined(x));
         };
         if (fits(v)) return v;
-        const std::string disp = retTypeName(c.retType) + (tsm ? std::string(":") + tsm : "") +
-                                 "(" + retTypeCoerceFrom(c.retType) + ")";
+        const std::string disp = retTypeName(c.cold().retType) + (tsm ? std::string(":") + tsm : "") +
+                                 "(" + retTypeCoerceFrom(c.cold().retType) + ")";
         if ((!from.empty() && from != "Any" && from != "Mu" && !typeOrSubsetMatches(v, from)) ||
             (fsm == 'D' && !isDefined(v)) || (fsm == 'U' && isDefined(v)))
             throwTypedV("X::TypeCheck::Return",
@@ -9468,16 +9468,16 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         return r;
     }
     // `--> Int:D` / `--> Int:U`: check the type bare, then the definedness
-    if (char sm = retTypeSmiley(c.retType)) {
+    if (char sm = retTypeSmiley(c.cold().retType)) {
         Callable bare = c;
-        bare.retType = retTypeName(c.retType);
+        bare.coldM().retType = retTypeName(c.cold().retType);
         v = checkRetType(bare, std::move(v));
         if (v.t == VT::Nil || (v.t == VT::Hash && v.hashKind == "Failure")) return v;
         const bool def = isDefinite(v);
         if ((sm == 'D' && !def) || (sm == 'U' && def))
             throwTypedV("X::TypeCheck::Return",
-                        {{"got", v}, {"expected", Value::typeObj(bare.retType)}},
-                        "Type check failed for return value; expected " + bare.retType + ":" + std::string(1, sm) +
+                        {{"got", v}, {"expected", Value::typeObj(bare.cold().retType)}},
+                        "Type check failed for return value; expected " + bare.cold().retType + ":" + std::string(1, sm) +
                         " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
         return v;
     }
@@ -9508,7 +9508,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // RetUse` whose `--> Line` means RetUse::Line cannot be resolved at
     // declaration time, because the class registers its methods before its
     // nested declarations run. At the call everything is registered.
-    std::string retName = resolveClassAlias(qualifyDeclType(c.retType, c.pkg));
+    std::string retName = resolveClassAlias(qualifyDeclType(c.cold().retType, c.pkg));
     // A `constant` bound to a type object NAMES a type: `my constant DH = Pointer;
     // sub get_dh2048() returns DH {…}`. Nothing registers such a name as a class,
     // so this check called it undeclared and the routine died the moment it
@@ -9564,8 +9564,8 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         !subsets_.count(retName) && !isKnownTypeName(retName) &&
         !isNativeTypeName(retName))
         throwTyped("X::Undeclared",
-                   {{"what", "Type"}, {"symbol", c.retType}},
-                   "Type '" + c.retType + "' is not declared");
+                   {{"what", "Type"}, {"symbol", c.cold().retType}},
+                   "Type '" + c.cold().retType + "' is not declared");
     // …and so does NIL — the "no value" sentinel satisfies every return
     // constraint (roast: "Can return Nil through subset typecheck")
     if (v.t == VT::Nil) return v;
@@ -10165,7 +10165,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // (`$mysql.mysql_query($sql)` is `mysql_query(mysql, sql)`; a type-object
     // invocant marshals as NULL, which is exactly what `mysql_init(MYSQL:U:)`
     // is declared to take.) Its `{*}` body is a stub, so it must never run.
-    if (codeVal.code()->isNative) {
+    if (codeVal.code()->cold().isNative) {
         ValueList na; na.reserve(args.size() + 1);
         na.push_back(self);
         for (auto& a : args) na.push_back(a);
@@ -10233,8 +10233,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // does for subs (`K.^find_method('add-tap').wrap: -> \s, |q {…}` —
     // Log::Async's import tests). The wrapper receives (self, |args);
     // callsame/nextsame drop one level, ending at the original body.
-    if (!codeVal.code()->wrappers.empty() && !skipWrappers) {
-        const auto& wraps = codeVal.code()->wrappers;
+    if (!codeVal.code()->cold().wrappers.empty() && !skipWrappers) {
+        const auto& wraps = codeVal.code()->cold().wrappers;
         const size_t wrapBase = redispatchStack_.size();
         const ValueList origArgs = args;   // (moved into withInv below)
         std::function<Value(int, ValueList)> runLevel =
@@ -10327,7 +10327,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 ? dispatchCacheLookup(c, &selfCopy, as, &wherePattern) : nullptr;
             if (cached) { best = cached; bestScore = 0; }
             else
-            for (auto& cand : c.candidates) {
+            for (auto& cand : c.cold().candidates) {
                 if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
                 if (visited.contains(&cand)) continue;
@@ -10433,7 +10433,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (c.name == "new" && selfCopy.t == VT::Type) {
                     bool allNamed = true, ownProto = false;
                     for (auto& a : as) if (!(a.t == VT::Pair && a.namedArg)) { allNamed = false; break; }
-                    for (auto& pc : c.candidates)
+                    for (auto& pc : c.cold().candidates)
                         if (pc.code() && (pc.code()->isProto || pc.code()->isProtoBody)) { ownProto = true; break; }
                     if (allNamed && !ownProto) return methodCall(selfCopy, "new", as, nullptr, /*skipOwn=*/true);
                 }
@@ -10721,7 +10721,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // callCallableRaw — a method body advances curLine_ exactly like a sub's
     const int callLine = curLine_;
     tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
-    if (codeVal.code()->deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
+    if (codeVal.code()->cold().deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct DynGuard { ExecContext& t; Interpreter* self; int line;
         ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
     } dynG{tcx, this, callLine};
@@ -12140,7 +12140,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // methods `multi method num1(Mu:U:) is rw` return a Proxy
                 bool mvRw = mv && mv->t == VT::Code && mv->code() && mv->code()->retRw;
                 if (!mvRw && mv && mv->t == VT::Code && mv->code() && mv->code()->isMultiDispatcher)
-                    for (auto& cand : mv->code()->candidates)
+                    for (auto& cand : mv->code()->cold().candidates)
                         if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { mvRw = true; break; }
                 if (mvRw) {
                     static thread_local Value rwHold;
@@ -12611,7 +12611,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `is rw` and let a non-rw winner fall back to the held value,
             // exactly as the method arm does
             if (!rw)
-                for (auto& cand : fp->code()->candidates)
+                for (auto& cand : fp->code()->cold().candidates)
                     if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { rw = true; break; }
         }
         // `$mv('b') = 7, 8` — an object called through an `is rw` CALL-ME
@@ -13358,7 +13358,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 bool takes = true;
                 if (f->code() && f->code()->isMultiDispatcher) {
                     takes = false;
-                    for (auto& cand : f->code()->candidates)
+                    for (auto& cand : f->code()->cold().candidates)
                         if (scoreCandidate(cand, args) >= 0) { takes = true; break; }
                 }
                 if (takes) return callCallable(*f, std::move(args), &b.v);
@@ -13494,11 +13494,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         Value* now = tctx_.cur->find(ve->name);
         if (now && now->t == VT::Code && now->code() && now->code()->isMultiDispatcher &&
             now->code() != priorDisp.code())
-            for (auto& c : priorDisp.code()->candidates) {
+            for (auto& c : priorDisp.code()->cold().candidates) {
                 bool have = false;
-                for (auto& h : now->code()->candidates)
+                for (auto& h : now->code()->cold().candidates)
                     if (h.code() == c.code() || (h.code() && c.code() && h.code()->body == c.code()->body)) { have = true; break; }
-                if (!have) now->code()->candidates.push_back(c);
+                if (!have) now->code()->coldM().candidates.push_back(c);
             }
     }
     if (a->target->kind == NK::VarExpr) {
@@ -23208,14 +23208,14 @@ Value Interpreter::evalBinary(Binary* b) {
                 // same sub sees it. (Cloning here read better and matched
                 // Rakudo worse — a second reference went on being a plain sub.)
                 Value r = base;
-                r.code()->isNative  = true;
-                r.code()->nativeLib = soname;
+                r.code()->coldM().isNative  = true;
+                r.code()->coldM().nativeLib = soname;
                 // the C symbol is the routine's own name — empty for the
                 // anonymous closure LibraryCheck hands it, which is why a
                 // library that DOES load then fails at the symbol instead. That
                 // is Rakudo's behaviour too, and the caller reads it as "the
                 // library is there".
-                if (r.code()->nativeSym.empty()) r.code()->nativeSym = r.code()->name;
+                if (r.code()->coldM().nativeSym.empty()) r.code()->coldM().nativeSym = r.code()->name;
                 r.code()->mixinsRW().roles.push_back("NativeCall::Native");
                 if (opEq(op, "does") && b->lhs->kind == NK::VarExpr)
                     try { if (Value* lv = lvalue(b->lhs.get())) *lv = r; } catch (...) {}
@@ -23437,7 +23437,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (Value* f = tctx_.cur->find(callAmpName(c))) return callCallable(*f, std::move(args));
                 if (!builtinRefs_.empty()) {
                     auto rit = builtinRefs_.find(c->name);
-                    if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->wrappers.empty())
+                    if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->cold().wrappers.empty())
                         return callCallable(rit->second, std::move(args));
                 }
                 auto it = builtins_.find(c->name);
@@ -26337,7 +26337,7 @@ Value Interpreter::evalCall(Call* c) {
             // a WRAPPED builtin goes the long way so its wrapper stack runs
             if (!builtinRefs_.empty()) {
                 auto rit = builtinRefs_.find(c->name);
-                if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->wrappers.empty())
+                if (rit != builtinRefs_.end() && rit->second.code() && !rit->second.code()->cold().wrappers.empty())
                     return callCallable(rit->second, std::move(args));
             }
             // `abs($u)` / `floor($u)` of an undefined value: 0, with the numeric
@@ -30056,7 +30056,7 @@ Value Interpreter::eval(Expr* e) {
                         bool takes = true;
                         if (f->code()->isMultiDispatcher) {
                             takes = false;
-                            for (auto& cand : f->code()->candidates)
+                            for (auto& cand : f->code()->cold().candidates)
                                 if (scoreCandidate(cand, args) >= 0) { takes = true; break; }
                         }
                         else if (f->code()->params) {
@@ -31229,7 +31229,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
                 c.code()->name = bare;
                 c.code()->isMultiCandidate = true;
-                c.code()->retType = "Nil";
+                c.code()->coldM().retType = "Nil";
                 sigStore.emplace_back();
                 auto& ps = sigStore.back();
                 if (withLabel) { ps.emplace_back(); ps.back().name = "$x"; ps.back().type = "Label"; ps.back().defConstraint = 1; }
@@ -31237,7 +31237,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 c.code()->hadSig = true;
                 c.code()->builtin = thrower;
                 c.code()->dispatcherC = p.codeS();
-                p.code()->candidates.push_back(std::move(c));
+                p.code()->coldM().candidates.push_back(std::move(c));
             }
             return ctl[bare] = p;
         }
@@ -31275,7 +31275,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                                  cand("Routine",   "$r",     "DEPRECATED"),
                                  cand("Attribute", "$attr",  "required") }) {
                     c.code()->dispatcherC = p.codeS();
-                    p.code()->candidates.push_back(std::move(c));
+                    p.code()->coldM().candidates.push_back(std::move(c));
                 }
                 return p;
             }();

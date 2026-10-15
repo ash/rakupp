@@ -372,6 +372,8 @@ PRef<ValueList> Value::packedUnpackS() const {
     return p->boxed;
 }
 
+const CallableCold kNoCallableCold{};   // what a Callable without a cold block reads (Value.h)
+
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ObjMethodStrFn g_objMethodStr = nullptr; // installed by InterpreterCalls.cpp (see Value.h)
 TypeDispNameFn g_typeDispName = nullptr; // installed by InterpreterBinding.cpp (see Value.h)

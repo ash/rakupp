@@ -1487,15 +1487,15 @@ void insertRuntimeMulti(ClassInfo* ci, const std::string& mname, Value cand) {
     auto it = ci->methods.find(mname);
     if (it != ci->methods.end() && it->second.t == VT::Code && it->second.code() &&
         it->second.code()->isMultiDispatcher)
-        it->second.code()->candidates.push_back(cand);
+        it->second.code()->coldM().candidates.push_back(cand);
     else {
         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
         disp.code()->name = mname;
         disp.code()->isMultiDispatcher = true;
         disp.code()->isMethod = true;   // the GROUP is a Method, as a declared one is
         if (it != ci->methods.end() && it->second.t == VT::Code)
-            disp.code()->candidates.push_back(it->second);
-        disp.code()->candidates.push_back(cand);
+            disp.code()->coldM().candidates.push_back(it->second);
+        disp.code()->coldM().candidates.push_back(cand);
         ci->methods[mname] = disp;
     }
 }
@@ -6647,8 +6647,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     code.code()->isRegexRoutine = true;
                     auto pit = c->rulePod.find(mn);
                     if (pit != c->rulePod.end()) {
-                        code.code()->pod = std::get<0>(pit->second);
-                        code.code()->podTrail = std::get<1>(pit->second);
+                        code.code()->coldM().pod = std::get<0>(pit->second);
+                        code.code()->coldM().podTrail = std::get<1>(pit->second);
                         code.code()->declLine = std::get<2>(pit->second);
                     }
                     code.code()->builtin = [pat, kind, mn](Interpreter& I, ValueList& a) -> Value {
@@ -6769,7 +6769,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             if (!(kv.second.t == VT::Code && kv.second.code() &&
                                   kv.second.code()->isMultiDispatcher)) continue;
                             bool holdsIt = false;
-                            for (auto& cand : kv.second.code()->candidates)
+                            for (auto& cand : kv.second.code()->cold().candidates)
                                 if (cand.code() == add.code()) { holdsIt = true; break; }
                             if (holdsIt) { add = kv.second; break; }
                         }
@@ -7123,7 +7123,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                         stub.code()->name = at.name; stub.code()->isMethod = true;
                         std::string an = at.name;
-                        stub.code()->retType = at.type.empty() ? "" : at.type;
+                        if (!at.type.empty()) stub.code()->coldM().retType = at.type;
                         stub.code()->builtin = [an](Interpreter& I, ValueList& a) -> Value {
                             if (a.empty()) return Value::any();
                             ValueList rest(a.begin() + 1, a.end());
@@ -7584,7 +7584,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (um && um->code() && um->code()->isMultiDispatcher) {
                     useCustom = false;
                     bool hasProto = false;
-                    for (auto& cand : um->code()->candidates) {
+                    for (auto& cand : um->code()->cold().candidates) {
                         if (cand.code() && cand.code()->isProto) { hasProto = true; continue; }
                         if (scoreCandidate(cand, args) >= 0) { useCustom = true; break; }
                     }
@@ -8163,7 +8163,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool passToDefault = false;
             if (m == "new" && um0->t == VT::Code && um0->code() && um0->code()->isMultiDispatcher) {
                 passToDefault = true;
-                for (auto& cand : um0->code()->candidates) {
+                for (auto& cand : um0->code()->cold().candidates) {
                     if (cand.code() && cand.code()->isProto) { passToDefault = false; break; }
                     if (scoreCandidate(cand, args) >= 0) { passToDefault = false; break; }
                 }
@@ -8446,7 +8446,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             // residual signature: params the priming bound disappear; the rest
             // (unbound positional tail, unbound nameds, slurpies) remain
-            if (inv.code()->params || inv.code()->hasPrimed) {
+            if (inv.code()->params || inv.code()->cold().hasPrimed) {
                 ValueList posArgs; std::map<std::string, Value> namedBound;
                 for (auto& a : pre) {
                     if (a.t == VT::Pair) namedBound[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
@@ -8462,16 +8462,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::set<std::string> namedSeen; bool posSlurpy = false, namedSlurpy = false;
                 // priming an already-primed sub re-primes its residual signature
                 std::vector<const Param*> src;
-                if (inv.code()->hasPrimed) for (auto& sp : inv.code()->primedParams) src.push_back(sp.get());
+                if (inv.code()->cold().hasPrimed) for (auto& sp : inv.code()->cold().primedParams) src.push_back(sp.get());
                 else if (inv.code()->params) for (auto& p : *inv.code()->params) src.push_back(&p);
                 size_t pos = 0;
-                code.code()->hasPrimed = true;
+                code.code()->coldM().hasPrimed = true;
                 for (const Param* pp : src) {
                     const Param& p = *pp;
                     if (p.invocant) continue;
                     auto keep = [&]() -> Param& {
-                        code.code()->primedParams.push_back(signatureParamCopy(p));
-                        Param& q = *code.code()->primedParams.back();
+                        code.code()->coldM().primedParams.push_back(signatureParamCopy(p));
+                        Param& q = *code.code()->cold().primedParams.back();
                         auto tb = typeBind.find(q.type);
                         if (tb != typeBind.end()) { q.type = tb->second; q.typeCapture = false; }
                         return q;
@@ -8561,7 +8561,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // said 0 while `&k.signature.arity` said 1. Same source for both now.
         auto countedParams = [&](std::vector<const Param*>& out) {
             const Callable* c = inv.code();
-            if (c->hasPrimed) { for (auto& sp : c->primedParams) out.push_back(sp.get()); }
+            if (c->cold().hasPrimed) { for (auto& sp : c->cold().primedParams) out.push_back(sp.get()); }
             else if (c->params) for (auto& p : *c->params) out.push_back(&p);
         };
         // A METHOD's signature begins with its invocant, which is positional
@@ -8569,7 +8569,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // explicit `$self:` is already among the params and counts there)
         auto implicitInvocant = [&]() -> long long {
             const Callable* c = inv.code();
-            if (!c->isMethod || c->hasPrimed) return 0;
+            if (!c->isMethod || c->cold().hasPrimed) return 0;
             if (c->params) for (auto& p : *c->params) if (p.invocant) return 0;
             return 1;
         };
@@ -8587,9 +8587,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // through to the placeholder count.
             // (a placeholder block carries an EMPTY param list — its arity is
             // the placeholders' count)
-            const bool byPlaceholders = !inv.code()->hasPrimed && !inv.code()->placeholders.empty() &&
+            const bool byPlaceholders = !inv.code()->cold().hasPrimed && !inv.code()->placeholders.empty() &&
                                         (!inv.code()->params || inv.code()->params->empty());
-            if (!byPlaceholders && (inv.code()->hasPrimed || inv.code()->params)) {
+            if (!byPlaceholders && (inv.code()->cold().hasPrimed || inv.code()->params)) {
                 // (a DEFAULT makes a parameter optional as surely as `?` does)
                 for (const Param* p : ps) if (!p->slurpy && !p->named && !p->optional && !p->defaultVal) n++;
             }
@@ -8602,15 +8602,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // (one that reads `@_` has `(*@_)` instead: count Inf)
             if (inv.code()->isBlock && !inv.code()->hadSig && !inv.code()->isMethod &&
                 (!inv.code()->params || inv.code()->params->empty()) && inv.code()->placeholders.empty() &&
-                !inv.code()->hasPrimed) {
+                !inv.code()->cold().hasPrimed) {
                 if (bodyUsesAtUnderscore(inv.code())) return Value::number(std::numeric_limits<double>::infinity());
                 return Value::integer(1);
             }
             std::vector<const Param*> ps; countedParams(ps);
             long long n = 0; bool slurpy = false;
-            const bool byPlaceholders = !inv.code()->hasPrimed && !inv.code()->placeholders.empty() &&
+            const bool byPlaceholders = !inv.code()->cold().hasPrimed && !inv.code()->placeholders.empty() &&
                                         (!inv.code()->params || inv.code()->params->empty());
-            if (!byPlaceholders && (inv.code()->hasPrimed || inv.code()->params)) for (const Param* pp : ps) {
+            if (!byPlaceholders && (inv.code()->cold().hasPrimed || inv.code()->params)) for (const Param* pp : ps) {
                 const Param& p = *pp;
                 if (p.named) continue;
                 // `*%opts` slurps NAMED arguments and accepts no positional at
@@ -8742,7 +8742,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return code;
         }
         if (m == "returns" || m == "of") {
-            const std::string& rt = inv.code()->retType;
+            const std::string& rt = inv.code()->cold().retType;
             if (rt.empty()) {   // `--> Nil` is a value, and still what the routine returns
                 const std::string lit = retLiteralText(inv.code()->retLiteral);
                 if (lit == "True" || lit == "False") return Value::typeObj("Bool");
@@ -8780,15 +8780,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // already in the group — a multi that attached itself at its
                 // declaration, possibly reaching here as a CLONE of that
                 // Callable, so the declaration (body + signature) is the identity
-                for (auto& have : disp->candidates)
+                for (auto& have : disp->cold().candidates)
                     if (have.code() && (have.code() == c.code() ||
                                         (have.code()->body && have.code()->body == c.code()->body &&
                                          have.code()->params == c.code()->params)))
                         return;
                 c.code()->isMultiCandidate = true;
-                disp->candidates.push_back(c);
+                disp->coldM().candidates.push_back(c);
             };
-            if (args[0].code()->isMultiDispatcher) for (auto& c : args[0].code()->candidates) add(c);
+            if (args[0].code()->isMultiDispatcher) for (auto& c : args[0].code()->cold().candidates) add(c);
             else add(args[0]);
             return inv;
         }
@@ -8809,13 +8809,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             if (mit == (*it)->methods.end() || mit->second.t != VT::Code || !mit->second.code() ||
                                 !mit->second.code()->isMultiDispatcher || mit->second.code() == inv.code())
                                 continue;
-                            for (auto& c : mit->second.code()->candidates)
+                            for (auto& c : mit->second.code()->cold().candidates)
                                 if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody)))
                                     out.arr()->push_back(c);
                         }
                     }
                 }
-                for (auto& c : inv.code()->candidates)
+                for (auto& c : inv.code()->cold().candidates)
                     // the group's own `proto … {*}` is the dispatcher, not a
                     // candidate: Rakudo lists the multis only
                     // (with or without a body of its own)
@@ -8840,7 +8840,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const std::string nm = inv.code()->name;
                 auto holds = [&](const Value& d) {
                     if (d.t != VT::Code || !d.code() || !d.code()->isMultiDispatcher) return false;
-                    for (auto& c : d.code()->candidates)
+                    for (auto& c : d.code()->cold().candidates)
                         if (c.code() == inv.code() || (c.code() && c.code()->body && c.code()->body == inv.code()->body))
                             return true;
                     return false;
@@ -8863,7 +8863,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // the Callable is shared (shared_ptr), every reference — including calls
         // through the routine's name — sees the wrap. Returns a handle for .unwrap.
         if (m == "wrap" && !args.empty()) {
-            inv.code()->wrappers.push_back(args[0]);
+            inv.code()->coldM().wrappers.push_back(args[0]);
             noteSymbolMutation("routine .wrap");
             Value h = Value::makeHash(); h.hashKind = "WrapHandle";
             (*h.hash())["routine"] = inv;               // keep the Callable alive
@@ -8873,7 +8873,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // &routine.unwrap($handle) / .unwrap — remove a wrapper. With a handle, remove
         // that specific wrapper; otherwise pop the most-recent one (LIFO).
         if (m == "unwrap") {
-            auto& ws = inv.code()->wrappers;
+            auto& ws = inv.code()->coldM().wrappers;
             // the argument must be the handle `.wrap` returned
             if (!args.empty() && !(args[0].t == VT::Hash && args[0].hashKind == "WrapHandle"))
                 throwTypedV("X::Routine::Unwrap", {},

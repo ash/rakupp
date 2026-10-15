@@ -1424,7 +1424,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         };
         Value out = Value::array(); out.isList = true;
         // a WhateverCode takes exactly as many positionals as it has stars
-        if (inv.code()->isWhateverCode && inv.code()->candidates.empty() &&
+        if (inv.code()->isWhateverCode && inv.code()->cold().candidates.empty() &&
             (!inv.code()->params || inv.code()->params->empty())) {
             size_t npos = 0; bool named = false;
             for (auto& x : call) { if (x.t == VT::Pair && x.namedArg) named = true; else npos++; }
@@ -1434,8 +1434,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         // Candidates, whenever there are any — an explicit `proto g(|) {*}` is not
         // flagged as a dispatcher, and scoring ITS signature accepts anything.
-        if (!inv.code()->candidates.empty()) {
-            for (auto& c : inv.code()->candidates) {
+        if (!inv.code()->cold().candidates.empty()) {
+            for (auto& c : inv.code()->cold().candidates) {
                 if (c.t == VT::Code && c.code() && c.code()->isProto) continue; // the proto
                                         // defines the group; its `|` accepts anything
                 if (scoreCandidate(c, forCand(c)) >= 0) out.arr()->push_back(c);

@@ -1813,7 +1813,7 @@ void Interpreter::registerBuiltinsPart2() {
         bool matches = true;
         if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
             matches = false;
-            for (auto& cand : mainSub.code()->candidates)
+            for (auto& cand : mainSub.code()->cold().candidates)
                 if (I.scoreCandidate(cand, margs) >= 0) { matches = true; break; }
         } else if (mainSub.code() && mainSub.code()->params) {
             matches = I.scoreCandidate(mainSub, margs) >= 0;
