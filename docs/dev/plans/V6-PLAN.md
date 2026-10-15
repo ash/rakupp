@@ -296,8 +296,15 @@ In order of evidence per cost:
    `n` word, promoted to BigInt on overflow; there are 154 `ratN`/`ratD` sites.
    A first step is two inline BigInt limbs, allocated from the slab, which
    takes four mallocs per Rat operation to none.
+   *2026-10-15:* re-measured, Rat arithmetic already makes no malloc per
+   operation (the slab work since); the inline form is a memory question now,
+   not an allocation one.
 4. **Pairs with an inline Int/Bool key,** and `pairVal` allocated through
    `makePayload`. There are 83 `make_shared<Value>` sites that bypass the slab.
+   *Done 2026-10-15* (37823d31) for Int keys: a plain Int key sits in the
+   Pair's own word (keyInt); `pairVal` was already a payload. 100k Int-keyed
+   Pairs 303k -> 104k mallocs, `(^100_000).pairs` -45% instructions. Bool keys
+   still take the cold block.
 5. **`ObjectData::boxed` behind a pointer.** It is 128 of the 280 bytes and is
    used only for mixins over non-objects.
    *Done 2026-10-01:* a lazily allocated slot behind `ObjectData::boxed()`;

@@ -45,7 +45,6 @@ theme the rows are sorted by complexity, largest first.
 |---|---|---|---|
 | 4 | Values stop being refcounted, which also answers reference cycles | XL | One measurement decides design B or C — [VALUE32-PLAN.md](VALUE32-PLAN.md), V6 P3.10 |
 | 9 | Inline slots for `Env::vars`, and `Env` on the slab | L | V6 P3.2. Re-measure first: on 2026-10-15 `for %h.kv -> $k, $v` made ~0.1 mallocs an iteration and objects.raku none for frames, so the premise (99% of that loop's mallocs) has moved |
-| 10 | Small Rats inline; Pairs with an inline Int/Bool key | L | V6 P3.3–4. On 2026-10-15 Rat arithmetic made no mallocs per operation; a Pair with an Int key still makes three (104 + 112 + 208 bytes), a Str-keyed one one (`pairVal`'s make_shared) |
 | 29 | Tail: UNBOX P3–P5 (`--exe` lanes across inlined calls, `my int` lanes, Rat lanes) | M–L | Which backend gets this, now that `--cnp` is to be the default, is the maintainer's decision — [UNBOX-PLAN.md](UNBOX-PLAN.md) |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
@@ -103,6 +102,10 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **10, Pairs with an inline Int key** (37823d31): a plain Int key in the
+  Pair's own word; 100k Int-keyed Pairs 303k -> 104k mallocs, 53.8 -> 21.6 MB.
+  The Rat half had no mallocs left to save. The concurrency it surfaced in
+  a file handle's hash is fixed in c3dafd36.
 - **8, `Callable` split** (f7d4dc67, 82311947): the code is a copy-on-write
   CodeInfo every closure of one block shares; a Callable is its scope and
   its state, 704 -> 88 bytes. 100k kept closures 125.6 -> 61.6 MB.
