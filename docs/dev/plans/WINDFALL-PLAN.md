@@ -30,8 +30,8 @@ were re-run independently of the reviewer that found them.*
 
 ## Where it stands
 
-W1 to W4 are done, and so is everything left after them (below), except
-that `perf-guard --check` is still owed. W3-5
+The round is done: W1 to W4, everything left after them (below), and the
+perf-guard it owed (2026-10-15, below). W3-5
 and W3-6 were left as they are: each was under 1% of samples, and moving
 `loopNest_` into ExecContext changes how it travels across a gather's
 coroutine switch, which is no low-hanging change. (W3-5's cost went later,
@@ -147,6 +147,19 @@ Still open:
   (3M calls, kernels off). t/regression/native-param-{is-native,
   bigint-width,refuses-kind}.raku; what else differs on natives is in
   TODO.md.
+
+**perf-guard, 2026-10-15.** `--check` passes, but its baseline (v5.2.0) was
+recorded on an Apple M3 and was run here on an M4, so it says little. What
+does is an A/B on one machine: a3b7644c against 7cd0b50e (the round, with
+the fix for the costs it put on every call), perf-guard's 19 kernels of the
+time. Retired instructions are within 1% on every kernel (subcall +0.99%,
+junction +0.80%, the rest smaller) but hash, 16% fewer, and every kernel
+gives the same output; best of five interleaved runs is within 2.2% on wall
+time, hash -16%. The runs spread 5-59% with the desktop closed down to the
+Claude app, so the instruction counts are the figure to trust, and they say
+7cd0b50e's remaining "1-2% on call and assignment kernels", measured at load
+7, was that load. The two batches after the round, against 5549bf83: within
+0.8% on all 24 kernels, strpass -1.3% and subcall -1.8%.
 
 ## W1 — wrong answers (do first)
 
