@@ -1412,6 +1412,7 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
 Value Interpreter::deproxy(Value v) {
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) {
         { size_t idx = 0; if (slotProxyTarget(v, idx)) return slotProxyRead(v); }   // compact slot: no call
+        if (PRef<Value> c = cellOfProxy(&v)) return *c;   // a shared cell (makeSharedCellProxy): no call
         auto it = v.hash()->find("FETCH");
         if (it == v.hash()->end()) return v;
         // FETCH may be written as a `method` — XML::Element's is — in which case the
@@ -1428,6 +1429,7 @@ Value Interpreter::deproxy(Value v) {
 // SECOND parameter; a one-parameter STORE still gets just the value.
 Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
     { size_t idx = 0; if (slotProxyTarget(proxy, idx)) return slotProxyWrite(proxy, v); }   // compact slot: no call
+    if (PRef<Value> c = cellOfProxy(&proxy)) { *c = v; return *c; }   // a shared cell: no call
     auto it = proxy.hash()->find("STORE");
     if (it == proxy.hash()->end()) return v;
     // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
@@ -1732,10 +1734,8 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
             Value* op = owner->local(src);
             if (!op) return Value::any();
             // a bound-to-bound chain: deref one more Proxy level
-            if (op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
-                auto f2 = op->hash()->find("FETCH");
-                if (f2 != op->hash()->end()) { ValueList none; return I.callCallable(f2->second, none); }
-            }
+            if (op->t == VT::Hash && op->hashKind == "Proxy" && op->hash() && op->hash()->count("FETCH"))
+                return I.deproxy(*op);
             // the copy under the slot's stripe (torn-copy contract): a Proxy
             // travels, and the frame's own thread may be storing meanwhile
             ParStripe rs(I, op);
@@ -1744,10 +1744,8 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
         [owner, src](Interpreter& I, ValueList& sa) -> Value {
             Value nv = sa.empty() ? Value::any() : sa[0];
             Value* op = owner->local(src);
-            if (op && op->t == VT::Hash && op->hashKind == "Proxy" && op->hash()) {
-                auto s2 = op->hash()->find("STORE");
-                if (s2 != op->hash()->end()) { ValueList one{nv}; return I.callCallable(s2->second, one); }
-            }
+            if (op && op->t == VT::Hash && op->hashKind == "Proxy" && op->hash() && op->hash()->count("STORE"))
+                return I.proxyStore(*op, nv);
             if (op) { ParStripe ws(I, op); *op = nv; }   // as FETCH
             else owner->define(src, nv);
             return nv;
@@ -1967,6 +1965,37 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     (*proxy.hash())["FETCH"] = kFetch;
     (*proxy.hash())["STORE"] = kStore;
     return proxy;
+}
+
+// FETCH and STORE of every shared-cell proxy (makeSharedCellProxy), built
+// once: they find the cell through the proxy, which deproxy hands FETCH and
+// proxyStore hands a two-parameter STORE, where a pair per proxy cost two
+// 720-byte Callables for each `@a[$i] := $x` (DISPATCH-PERF-PLAN Ph6).
+const Value& cellProxyFetch() {
+    static const Value k = [] {
+        Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
+        f.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+            PRef<Value> c = a.empty() ? nullptr : cellOfProxy(&a[0]);
+            return c ? *c : Value::any();
+        };
+        return f;
+    }();
+    return k;
+}
+const Value& cellProxyStore() {
+    static const Value k = [] {
+        Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
+        static const std::vector<Param> kTwo(2);
+        st.code()->params = &kTwo;
+        st.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+            PRef<Value> c = a.size() < 2 ? nullptr : cellOfProxy(&a[0]);
+            if (!c) return a.empty() ? Value::any() : a.back();
+            *c = a[1];
+            return *c;
+        };
+        return st;
+    }();
+    return k;
 }
 
 // The compact slot's target, or null when this proxy is not one.

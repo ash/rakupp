@@ -1341,17 +1341,15 @@ static inline void slotProxyPair(Value& proxy, std::function<Value(Interpreter&,
 // both names then proxy. A later `$b := …` overwrites $b's slot outright,
 // dropping its proxy and leaving the cell — and $a — exactly as they were.
 extern const char* kCellKey;
+const Value& cellProxyFetch();   // InterpreterCalls.cpp: the FETCH and STORE every
+const Value& cellProxyStore();   // cell proxy shares, finding its cell through the proxy
 static inline Value makeSharedCellProxy(PRef<Value> cell) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     // the opaque `ext` handle is a shared_ptr<void>: the cell rides in it boxed
     Value handle = Value::any(); handle.extM() = std::make_shared<PRef<Value>>(cell);
     (*proxy.hash())[kCellKey] = handle;
-    slotProxyPair(proxy,
-        [cell](Interpreter&, ValueList&) -> Value { return *cell; },
-        [cell](Interpreter&, ValueList& sa) -> Value {
-            *cell = sa.empty() ? Value::any() : sa[0];
-            return *cell;
-        });
+    (*proxy.hash())["FETCH"] = cellProxyFetch();
+    (*proxy.hash())["STORE"] = cellProxyStore();
     return proxy;
 }
 
