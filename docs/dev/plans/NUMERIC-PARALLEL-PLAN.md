@@ -1,6 +1,8 @@
 # Plan: parallel numeric Raku — the hyper forms at the hardware's speed
 
 *Written 2026-10-15, before any code, as a v7 pillar ([VERSIONS.md](VERSIONS.md)).
+Its twin is [TEXT-PLAN.md](TEXT-PLAN.md), whose T6 is the bridge between the
+two: fields cut from text become native arrays here.
 [PARALLEL-PLAN.md](PARALLEL-PLAN.md) made threads the default and safe;
 [PARALLEL-SCALING-PLAN.md](PARALLEL-SCALING-PLAN.md) made `start` scale. This
 plan is about data parallelism over numbers. Raku already has the forms for it:

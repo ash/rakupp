@@ -438,8 +438,10 @@ Beside them, one feature: `use` in the web editions (issue #83). The plan is
 
 ## v7.0.0 — forming (2026-10-15)
 
-Not yet a settled campaign. It starts after v6. One pillar is decided and
-written, and the rest of the list is open:
+Not yet a settled campaign. It starts after v6. Two pillars are decided and
+written, and the rest of the list is open. Together they are one idea: **one
+engine with two strong directions, numbers and text**. The text pillar's T6
+is the bridge between them, from fields into native arrays.
 
 1. **Parallel numeric Raku**
    ([NUMERIC-PARALLEL-PLAN.md](NUMERIC-PARALLEL-PLAN.md)).
@@ -454,6 +456,18 @@ written, and the rest of the list is open:
    - **The number:** `[+] (@a »*« @b)` over two 10⁷-element `num` arrays within
      2× of a C loop on the same threads. Today it is 62× a single C thread
      (317 ms against 5.1 ms).
+2. **Text Raku** ([TEXT-PLAN.md](TEXT-PLAN.md)).
+   - **What:** Perl's job at Perl's speed, keeping Raku's grapheme strings,
+     grammars and Unicode by default.
+   - **Where it starts:** line input is eager, output unbuffered, `.trans` is
+     100× Perl, and `.` in a regex computes a grapheme boundary per character.
+     Raku++ already has Perl's one-liner flags, and its regexes are 3–13×
+     faster than Rakudo's.
+   - **The number:** a 17-task text suite with line-for-line Perl twins, at or
+     below Perl's time by geometric mean, and no task worse than 2×. Today the
+     mean is 7.3× and the worst is 100×. Also: line reading in memory that does
+     not grow with the file, and a `.race` over the lines that beats Perl's
+     single thread.
 
 ---
 
