@@ -2531,6 +2531,10 @@ void Interpreter::registerBuiltinsPart2() {
         (*h.hash())["path"] = Value::str(path);
         (*h.hash())["mode"] = Value::str(mode);
         (*h.hash())["buffer"] = Value::str("");
+        // here from the start, not inserted by the first write: threads that
+        // print to one handle read its hash outside the output lock, and an
+        // insert can grow the hash under them (concurrent-output.raku)
+        (*h.hash())["wrote"] = Value::boolean(false);
         if (openedFd >= 0) {
             Value fv = Value::integer(openedFd);
             fv.extM() = std::make_shared<WriteFd>(openedFd);

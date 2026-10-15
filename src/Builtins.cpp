@@ -5342,12 +5342,16 @@ bool Interpreter::fhFlush(const Value& h) {
 void Interpreter::fhWrite(const Value& h, const std::string& s) {
     auto m = h.hashS();
     if (!m) return;
-    // -1: no file behind this handle, so no size can ever force a write out.
-    long long size = fhWritesToFile(*m) ? fhOutBuffer(h) : -1;
     // Appending is a READ-MODIFY-WRITE on state the handle shares, so two
     // threads writing to one file both read the buffer, both append, and one
-    // write is simply lost. Under the output lock it is one update at a time.
+    // write is simply lost. Under the output lock it is one update at a time —
+    // and so is READING the handle: the first write inserts "buffer" into this
+    // hash, which can build its probe index under a thread that was reading
+    // the path or the buffer size outside the lock (a crash, ~2% of
+    // t/regression/concurrent-output.raku runs under load).
     std::lock_guard<std::mutex> lk(rtOutMutex());
+    // -1: no file behind this handle, so no size can ever force a write out.
+    long long size = fhWritesToFile(*m) ? fhOutBuffer(h) : -1;
     {   // Room for it: hold it back. This is the ONLY branch a buffered handle
         // takes, and it is the hot one.
         Value& buf = (*m)["buffer"];
