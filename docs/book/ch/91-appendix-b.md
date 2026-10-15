@@ -190,6 +190,7 @@ follow Rakudo's spelling because test harnesses set them.
 | Define | Effect |
 |---|---|
 | `RAKUPP_PTR_CENSUS` | count which combinations of `Value`'s eleven pointers are actually live together — the empirical input to shrinking the struct |
+| `RAKUPP_STR_CENSUS` | count the strings a `Value` makes, copies and writes, by length — the measurement that picked VALUE32-PLAN's design C, a 15-byte inline string, over B, a body for every string (tools/str-census.md) |
 | `_GLIBCXX_USE_CXX11_ABI` | relevant only because it is the ABI break copy-on-write strings caused (Chapter 9) |
 
 The pointer census is a good example of the project's habit: before collapsing

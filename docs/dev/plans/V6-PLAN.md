@@ -301,7 +301,7 @@ In order of evidence per cost:
    not an allocation one.
 4. **Pairs with an inline Int/Bool key,** and `pairVal` allocated through
    `makePayload`. There are 83 `make_shared<Value>` sites that bypass the slab.
-   *Done 2026-10-15* (37823d31) for Int keys: a plain Int key sits in the
+   *Done 2026-10-15* (9b3ed082) for Int keys: a plain Int key sits in the
    Pair's own word (keyInt); `pairVal` was already a payload. 100k Int-keyed
    Pairs 303k -> 104k mallocs, `(^100_000).pairs` -45% instructions. Bool keys
    still take the cold block.
@@ -318,7 +318,7 @@ In order of evidence per cost:
    (candidates, native-call state, wrappers, pod, `is DEPRECATED`, the return
    type, `.assuming`'s signature) moved to CallableCold behind one pointer;
    Callable 704 -> 424 bytes, 100k kept closures 125.6 -> 94.4 MB peak.
-   *Step 2, done* (82311947): everything about the code in a copy-on-write
+   *Step 2, done* (6d67f0cd): everything about the code in a copy-on-write
    CodeInfo, built once per block and shared by its closures; Callable 88
    bytes, 100k kept closures 61.6 MB, closure creation -5% instructions.
 8. **Slim `VarExpr`** (384 bytes on the heap; 23% of a large program's AST) by
@@ -332,6 +332,10 @@ In order of evidence per cost:
 10. **The endgame** ([VALUE32-PLAN.md](VALUE32-PLAN.md)):
     - design A: *landed at 80 bytes* (22605246), −2.6% mean and a third less
       memory; the step to 72 measured +1.8% and was not kept, so A ends there
+    - B or C for the string: *measured 2026-10-15*, C (tools/str-census.md).
+      B adds 7–17% allocations across bench and Roast, and up to several
+      times that on string programs. C adds 0.5%. C's 16-byte string takes
+      `Value` from 80 to 64 bytes and is the next step
     - then the question the plan leaves open, whether values stop being
       refcounted; that is also the answer to reference cycles
 

@@ -136,6 +136,21 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
 // debug mode that proves the readers, as RAKUPP_NO_KERNELS does the kernels.
 extern bool g_strViewsForced;
 
+// VALUE32-PLAN's B-or-C measurement (tools/str-census.md): what a Value's
+// string costs by length band — the strings made, the copies, and the inline
+// texts an instance wrote itself, which is what design B would give a body of
+// its own. Compiled out of every normal build; Value.cpp dumps it at exit.
+#ifdef RAKUPP_STR_CENSUS
+#define RAKUPP_STR_CEN(...) __VA_ARGS__
+void strCensusTake(size_t n);
+void strCensusCopy(size_t n, bool shared);
+void strCensusLife(size_t n);
+// held around the evaluation of a string literal: the strings take() makes
+// meanwhile are re-made literals, which B could share from the AST instead
+struct StrCenLit { StrCenLit(); ~StrCenLit(); };
+#else
+#define RAKUPP_STR_CEN(...)
+#endif
 class CowStr {
     // Exactly one of these carries the value: `p_` when set, otherwise `s_`.
     std::string s_;
@@ -144,6 +159,14 @@ class CowStr {
     // it saves (an allocation per string). Above it, copying is the thing we are
     // here to avoid.
     static constexpr size_t kPromote = 23;
+#ifdef RAKUPP_STR_CENSUS
+    // `fresh_`: this instance wrote its inline text (B would hold a body for
+    // it). `shared_`: copied since, so B's next write detaches into another.
+    bool fresh_ = false;
+    mutable bool shared_ = false;
+    void cenEnd() { if (fresh_ && !p_ && !s_.empty()) strCensusLife(s_.size()); fresh_ = shared_ = false; }
+    void cenWrite() { if (shared_ || !fresh_) { cenEnd(); fresh_ = true; } }
+#endif
 public:
     // The same string, cheaply: one shared body, or the same short text.
     bool sameRep(const CowStr& o) const {
@@ -152,11 +175,16 @@ public:
 private:
 
     void take(std::string x) {
+#ifdef RAKUPP_STR_CENSUS
+        strCensusTake(x.size());
+        cenEnd();
+#endif
         if (x.size() >= kPromote) {
             p_ = g_strViewsForced ? forcedView(x) : makeRef<const StrBody>(std::move(x));
             s_.clear();
         }
         else { s_ = std::move(x); p_.reset(); }
+        RAKUPP_STR_CEN(fresh_ = !p_;)
     }
     static Ref<const StrBody> forcedView(const std::string& x);
 
@@ -169,10 +197,27 @@ public:
     // actually want to convert.
     explicit CowStr(const char* x) { take(std::string(x)); }
     explicit CowStr(std::string x) { take(std::move(x)); }
+#ifdef RAKUPP_STR_CENSUS
+    CowStr(const CowStr& o) : s_(o.s_), p_(o.p_) { strCensusCopy(o.size(), (bool)o.p_); o.shared_ = true; }
+    CowStr& operator=(const CowStr& o) {
+        if (this == &o) return *this;
+        cenEnd(); s_ = o.s_; p_ = o.p_; strCensusCopy(o.size(), (bool)o.p_); o.shared_ = true; return *this;
+    }
+    CowStr(CowStr&& o) noexcept : s_(std::move(o.s_)), p_(std::move(o.p_)), fresh_(o.fresh_), shared_(o.shared_) {
+        o.fresh_ = o.shared_ = false;
+    }
+    CowStr& operator=(CowStr&& o) noexcept {
+        if (this == &o) return *this;
+        cenEnd(); s_ = std::move(o.s_); p_ = std::move(o.p_); fresh_ = o.fresh_; shared_ = o.shared_;
+        o.fresh_ = o.shared_ = false; return *this;
+    }
+    ~CowStr() { cenEnd(); }
+#else
     CowStr(const CowStr&) = default;
-    CowStr(CowStr&&) noexcept = default;
     CowStr& operator=(const CowStr&) = default;
+    CowStr(CowStr&&) noexcept = default;
     CowStr& operator=(CowStr&&) noexcept = default;
+#endif
     CowStr& operator=(std::string x) { take(std::move(x)); return *this; }
     CowStr& operator=(const char* x) { take(std::string(x)); return *this; }
 
@@ -189,7 +234,7 @@ public:
     // must outlive the call. Left inline, a short buffer could only give C a
     // pointer to a temporary COPY — mysql_stmt_bind_result filled memory no one
     // read, and the copy was recycled underneath the driver.
-    void promote() { if (!p_) { p_ = makeRef<const StrBody>(std::move(s_)); s_.clear(); } }
+    void promote() { if (!p_) { p_ = makeRef<const StrBody>(std::move(s_)); s_.clear(); RAKUPP_STR_CEN(fresh_ = shared_ = false;) } }
 
     // Write access that KEEPS the shared body. A Buf is a reference-semantics
     // container in Raku — `my $c = $b; $c[0] = 9` is visible through `$b` — and
@@ -199,7 +244,7 @@ public:
     // scanning flags are invalidated: the byte-offset index tables are built by
     // positional STRING ops, which no byte buffer runs.
     char* mutInPlace() {
-        if (!p_) return s_.empty() ? nullptr : &s_[0];
+        if (!p_) { RAKUPP_STR_CEN(cenWrite();) return s_.empty() ? nullptr : &s_[0]; }
         if (p_->view) p_ = makeRef<const StrBody>(std::string(p_->str()));   // (a Buf is never a view)
         StrBody* b = const_cast<StrBody*>(p_.get());
         b->allAscii.store(-1, std::memory_order_relaxed);
@@ -229,6 +274,7 @@ public:
             }
             s_ = p_->str(); p_.reset();
         }
+        RAKUPP_STR_CEN(cenWrite();)
         return s_;
     }
     // The cache lives on the shared body, so it survives only for promoted
@@ -257,7 +303,7 @@ public:
     std::string::const_iterator end()   const { return str().end(); }
 
     // Mutating forwards — each detaches.
-    void clear() { p_.reset(); s_.clear(); }
+    void clear() { RAKUPP_STR_CEN(cenEnd();) p_.reset(); s_.clear(); }
     void pop_back() { mut().pop_back(); }
     void resize(size_t n) { mut().resize(n); }
     void resize(size_t n, char c) { mut().resize(n, c); }
@@ -1479,7 +1525,7 @@ struct Value {
         return 0;
     }
 };
-#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS)
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS) && !defined(RAKUPP_STR_CENSUS)
 // 80 bytes (VALUE32-PLAN design A, batches 1-4; it was 128). The size is a
 // measured decision, not a packing accident: while the batches ran, every
 // freed byte was held so that each one was judged on its own — 120 bytes cost
