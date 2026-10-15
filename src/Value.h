@@ -1516,6 +1516,13 @@ inline ValueMap& Value::hashRef() {
     return r;
 }
 
+// What a `$` parameter does to an Array or a Hash it binds, as an argument or
+// as its default: holds it as ONE thing, so `my @a = $x` is one element and
+// `.raku` shows `$[…]`. (`is raw` binds the container itself and does not.)
+inline void itemizeScalar(Value& v) {
+    if (v.t == VT::Array || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map"))) v.itemized = true;
+}
+
 // The Pair a hash hands out for one of its entries (`.pairs`, iteration, `my @a
 // = %h`). A plain Hash's Pair holds the entry's own CONTAINER — `.value = 42`
 // writes the hash, and a later `%h<k> = 5` shows through the Pair, as Rakudo's

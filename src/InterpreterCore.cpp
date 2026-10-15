@@ -4596,8 +4596,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // `is raw` binds the caller's container and IS writable, same as `is rw`
                     v.readonly = !params[i].isRw && !params[i].isRaw;
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
-                    if ((v.t == VT::Array || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map"))) &&
-                        !v.itemized && !params[i].isRaw) v.itemized = true;
+                    if (!params[i].isRaw) itemizeScalar(v);
                     // TARG C2: an annotated param writes its slot directly —
                     // same publication order as define() (value, release-bit,
                     // twin erase) — when the frame carries the layout the
@@ -4664,6 +4663,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             env->define(self->name, self->sigil == '&' ? Value::nil() : Value::typeObj("Mu"));
         Value v; try { v = eval(e); } catch (...) { tctx_.cur = saved; throw; }
         tctx_.cur = saved;
+        if (self && self->sigil == '$' && !self->isRaw && !self->invocant) itemizeScalar(v);
         // an `is copy` parameter copies its DEFAULT as it copies an argument:
         // `:@items is copy = @defaults` must not hand the body @defaults itself,
         // or the first call's pushes are every later call's default
@@ -5093,6 +5093,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 }
                 else if (p.sigil == '%') {
                     if (!(bv.t == VT::Hash && bv.hash() && !p.isCopy)) bv = coerceHash(bv);
+                    bv.itemized = false;   // (the positional arm's rule)
                 }
                 // coercion type on a NAMED param (`IO:D() :$cwd`) — the positional
                 // arm has always done this; without it `:cwd("/tmp")` stayed a Str
@@ -5101,6 +5102,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (!p.coerce && !p.type.empty()) bv = coerceViaSubset(bv, p.type);
                 if (p.coerce && !p.type.empty() && bv.typeName() != p.type)
                     bv = coerceToType(bv, p.type);
+                if (p.sigil == '$' && !p.isRaw) itemizeScalar(bv);   // as a positional `$` does
                 if (!p.name.empty() || !p.subSig) env->define(slotName(p, pidx), bv);
                 if (!p.captureName.empty())
                     env->define(p.captureName, bv.t == VT::Type ? bv : Value::typeObj(bv.typeName()));
@@ -5283,6 +5285,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Associative but got " +
                         v.typeName() + " (" + typeCheckRepr(v) + ")");
                 else if (!(v.t == VT::Hash && v.hash() && !p.isCopy)) v = coerceHash(v);
+                if (v.t == VT::Hash) v.itemized = false;   // `%h` holds the hash, never an item of one
             }
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
@@ -5327,9 +5330,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // the same way, which is how a Weekly Challenge author's test
             // descriptions came out unparenthesised here. `is raw` hands over the
             // container itself and so does NOT itemize.
-            if (p.sigil == '$' && !p.isRaw && !p.invocant && !p.slurpy &&
-                (v.t == VT::Array || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map"))) && !v.itemized)
-                v.itemized = true;
+            if (p.sigil == '$' && !p.isRaw && !p.invocant && !p.slurpy) itemizeScalar(v);
             env->define(slotName(p, pidx), v);
             // `::T $x` — a TYPE CAPTURE names the type of whatever was bound, for
             // the rest of the signature and the whole body. The name was declared
