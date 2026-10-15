@@ -1372,7 +1372,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto ended = std::make_shared<bool>(false);
             std::weak_ptr<LazySeqState> stw = st;   // weak: st owns the closure
             const bool alias = lst->aliasSource;   // an Array's own elements: `$_` writes reach them
-            st->appendNext = [self, src, fn, spos, ended, stw, alias](ValueList& cache) -> bool {
+            const bool itemSrc = alias && !inv.isList;   // …each one an item (see the eager snapshot)
+            st->appendNext = [self, src, fn, spos, ended, stw, alias, itemSrc](ValueList& cache) -> bool {
                 for (;;) {
                     if (*ended) return false;
                     size_t si = *spos;
@@ -1380,6 +1381,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (si >= src.arr()->size()) return false;
                     (*spos)++;
                     ValueList one{ (*src.arr())[si] };
+                    if (itemSrc) itemizeScalar(one[0]);
                     if (alias) self->tctx_.topicWriteback = &(*src.arr())[si];
                     // `last` ends the map and `next` skips the element, as in the
                     // eager loop: `(^Inf).map({ last if $_ > 2; $_ })` is (0 1 2)
@@ -1425,7 +1427,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto spos = std::make_shared<size_t>(0); // next unexamined source index
             Interpreter* self = this;
             std::weak_ptr<LazySeqState> stw = st; // weak: st owns the closure
-            st->appendNext = [self, src, pred, spos, stw](ValueList& cache) -> bool {
+            const bool itemSrc = lst->aliasSource && !inv.isList;   // an Array's elements are items
+            st->appendNext = [self, src, pred, spos, stw, itemSrc](ValueList& cache) -> bool {
                 for (long long tries = 0; tries < 1000000; tries++) { // bail on a never-matching predicate
                     self->materializeLazy(src, *spos + 1);
                     if (*spos >= src.arr()->size()) {
@@ -1437,6 +1440,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         return false;
                     }
                     Value v = (*src.arr())[(*spos)++];
+                    if (itemSrc) itemizeScalar(v);
                     bool match;
                     if (pred.t == VT::Code) {
                         self->tctx_.topicWriteback = &(*src.arr())[*spos - 1]; // $_ mutations alias the element
@@ -1445,6 +1449,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         catch (NextEx&) { self->tctx_.topicWriteback = nullptr; continue; }     // `next` skips
                         catch (RedoEx&) { self->tctx_.topicWriteback = nullptr; (*spos)--; continue; } // `redo` retries
                         v = (*src.arr())[*spos - 1]; // keep the (possibly mutated) value
+                        if (itemSrc) itemizeScalar(v);
                     } else match = self->boolify(self->smartmatchValue("~~", v, pred));   // a Regex, a type, a value
                     if (match) { cache.push_back(v); return true; }
                 }
@@ -2413,6 +2418,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             (m == "values" || m == "keys" || m == "kv" || m == "pairs" || m == "antipairs");
         if (!(inv.t == VT::Array && inv.arr() && !inv.ext() && throughHandle()) && !hashPush && !hashDirect)
             items = toList(inv);
+        // Each element of an ARRAY lives in a Scalar container, so a method that
+        // hands the elements to a block, or hands them back, hands out ITEMS:
+        // `@rows.map({ my @r = $_ })` takes each row whole, and `@rows.grep(…)`
+        // and `.head` answer `$[1, 2]`. A List's elements are bare, and `.List`
+        // is the one view of an Array that drops the containers (Rakudo).
+        const bool elemItems = inv.t == VT::Array && !inv.isList && inv.hashKind.empty() && inv.enumName.empty();
+        if (elemItems && !items.empty() &&
+            (m == "map" || m == "flatmap" || m == "grep" || m == "first" || m == "sort" ||
+             m == "classify" || m == "categorize" || m == "min" || m == "max" || m == "minmax" ||
+             m == "unique" || m == "squish" || m == "head" || m == "tail" || m == "skip" ||
+             m == "reverse" || m == "Seq" || m == "list" || m == "cache" || m == "eager" ||
+             m == "Slip" || m == "values" || m == "rotor" || m == "batch" || m == "toggle"))
+            for (auto& e : items) itemizeScalar(e);
         // `.map` / `.grep` on what `.hyper` / `.race` answered run over worker
         // threads (hyperSeqCall). One that has to stay serial takes the
         // ordinary arm, and still answers a HyperSeq / RaceSeq.
@@ -4636,8 +4654,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     catch (NextEx&) { tctx_.topicWriteback = nullptr; continue; } // `next` skips the element
                     catch (RedoEx&) { tctx_.topicWriteback = nullptr; gi -= ar; continue; } // `redo` retries it
                     // (a hole of an `is default` array still reads as its default)
-                    if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any))
+                    if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any)) {
                         v = (*inv.arr())[gi];
+                        if (elemItems) itemizeScalar(v);   // (an element, as the snapshot hands it out)
+                    }
                     // an N-at-a-time block keeps each matching GROUP whole:
                     // `(1,1,2,3).grep({ ($^a + $^b) %% 2 })` is ((1 1),)
                     if (match && ar > 1 && adv == "v") {

@@ -3957,7 +3957,12 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             if (base.t == VT::Array && (v.t == VT::Nil || v.t == VT::Any) &&
                 (base.elemDefault() || !base.ofType().empty()))
                 return arrayMissingDefault(base);
-            return v;
+            // an Array's element lives in a Scalar container, so an Array or a
+            // Hash read out of one is an item, as the interpreter's itemizeElem
+            // has it (a List's elements are bare)
+            Value r = v;
+            if (base.t == VT::Array && !base.isList && !v.ext()) itemizeScalar(r);
+            return r;
         }
     }
     // A Blob/Buf and a NativeCall CArray index their ELEMENTS, as the

@@ -26902,8 +26902,9 @@ Value Interpreter::evalCall(Call* c) {
 // single $("b","c") instead of two strings, and it rejected them.
 // Already-itemized elements are left alone: a list may legitimately hold one.
 static Value itemizeElem(const Value& v, bool fromList = false) {
-    if (fromList || v.t != VT::Array || v.itemized || v.ext()) return v;
-    Value r = v; r.itemized = true; return r;
+    Value r = v;
+    if (!fromList && !v.ext()) itemizeScalar(r);   // a Hash element too: `@hs[1]` is `${…}`
+    return r;
 }
 
 Value Interpreter::evalIndex(Index* idx) {
