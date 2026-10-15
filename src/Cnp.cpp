@@ -28,6 +28,7 @@
 #include <cstring>
 #include <exception>
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -74,13 +75,51 @@ struct Frame {
     std::vector<int64_t> den;   // the Rat lane's denominators
     std::exception_ptr   err;
 
-    explicit Frame(size_t n) : r(n, 0), t(n, RK_T_INT), boxes(n), den(n, 1) {
+    explicit Frame(size_t n) { reset(n); }
+    // Fresh registers for a kernel of `n`: every Int 0, every denominator 1,
+    // every box empty (release() left them so).
+    void reset(size_t n) {
+        r.assign(n, 0);
+        t.assign(n, RK_T_INT);
+        boxes.resize(n);
+        den.assign(n, 1);
+        abi = RkCnpFrame{};
         abi.r = r.data();
         abi.t = t.data();
         abi.boxes = boxes.data();
         abi.err = &err;
         abi.den = den.data();
     }
+    // …and after the run: a register lets go of what it held, so a frame
+    // waiting in the pool pins no string, object or exception.
+    void release() {
+        for (Value& b : boxes) b = Value();
+        err = nullptr;
+    }
+};
+
+// The register files, reused. Entering a kernel built a Frame each time —
+// four vectors, and a Value per register made and destroyed — which was more
+// than half of what an inner loop paid per entry (WINDFALL-PLAN W4-4: 200k
+// entries of a 3-iteration loop, 4,400 instructions each). A free list per
+// thread rather than one frame: a kernel that calls a routine whose own loop
+// is a kernel holds two at once. It keeps a few; a deeper nest allocates.
+thread_local std::vector<std::unique_ptr<Frame>> t_framePool;
+
+struct FrameLease {
+    std::unique_ptr<Frame> f;
+    explicit FrameLease(size_t n) {
+        if (t_framePool.empty()) { f = std::make_unique<Frame>(n); return; }
+        f = std::move(t_framePool.back());
+        t_framePool.pop_back();
+        f->reset(n);
+    }
+    ~FrameLease() {
+        f->release();
+        if (t_framePool.size() < 4) t_framePool.push_back(std::move(f));
+    }
+    FrameLease(const FrameLease&) = delete;
+    FrameLease& operator=(const FrameLease&) = delete;
 };
 
 // Everything a helper needs is reachable through the ABI struct's own fields,
@@ -1631,7 +1670,8 @@ bool run(Kernel* k, Interpreter& I, Value** slots, const std::vector<bool>& writ
                 return false;
             }
 
-    Frame f(k->nregs);
+    FrameLease lease(k->nregs);
+    Frame& f = *lease.f;
     f.abi.interp = &I;
     f.abi.consts = (void*)&k->consts;
     f.abi.calls = (void*)&k->calls;

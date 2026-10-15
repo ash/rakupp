@@ -126,6 +126,13 @@ struct Site {
     std::vector<std::string> callNames;      // routines a copy-and-patch kernel calls (TYPES-PLAN N5)
     std::set<std::string> arrays;            // `@name` slots it indexes, checked plain at entry
     std::map<std::string, const Callable*> inlined;   // subs compiled in place, checked the same at entry
+    // What every entry asks, decided when the site is: the routine names as
+    // the scope spells them (`&f`), and per slot whether the kernel indexes it
+    // as an array ('@') or a hash ('%'), so an entry builds no string and
+    // walks no set.
+    std::vector<std::string> callKeys;                              // parallel to callNames
+    std::vector<std::pair<std::string, const Callable*>> inlinedKeys;   // `inlined`, keyed `&f`
+    std::vector<char> slotIndexed;                                  // parallel to slots
 };
 
 // The name a counted `for`'s synthetic condition reads its end bound from. It
@@ -1123,6 +1130,11 @@ void examine(Site* s) {
     s->arrays = sc.arrays;
     s->slotWritten.clear();
     for (const std::string& n : sc.slots) s->slotWritten.push_back(sc.written.count(n) != 0);
+    s->callKeys.clear();
+    for (const std::string& nm : s->callNames) s->callKeys.push_back("&" + nm);
+    s->slotIndexed.clear();
+    for (const std::string& n : sc.slots)
+        s->slotIndexed.push_back(sc.arrays.count(n) && (n[0] == '@' || n[0] == '%') ? n[0] : 0);
     // ONE exported name, the same in every kernel. It has to be independent of
     // this run: the cache key is the kernel's SOURCE, so a name derived from the
     // AST node's address (which moves between runs) put a different name in the
@@ -1175,6 +1187,8 @@ void startCompile(Site* s) {
                 if (Value* f = env->find("&" + nm))
                     if (f->t == VT::Code && f->code() && cnp::inlineBody(*f->code(), env))
                         s->inlined[nm] = f->code();
+        s->inlinedKeys.clear();
+        for (auto& kv : s->inlined) s->inlinedKeys.emplace_back("&" + kv.first, kv.second);
         cnp::Kernel* k = cnp::compile(s->emit, s->slots, why, &s->inlined);
         if (!k) {
             s->why = why;
@@ -1445,6 +1459,23 @@ void tick(Site* s) {
     startCompile(target);
 }
 
+// A pad layout's index for a slot's name, remembered per thread. Both halves
+// of the key live as long as the program and never change — a layout is
+// complete before any frame of its body runs (a pad never grows), and a
+// site's slot names are fixed once it is examined — so a remembered answer
+// is the answer, and an entry finds a pad slot without hashing its name
+// (WINDFALL-PLAN W4-4). A collision only costs the lookup it would have made.
+struct PadIndexMemo { const PadLayout* layout; const std::string* name; int idx; };
+static thread_local PadIndexMemo t_padIndexMemo[64];
+
+static int padIndexOf(PadIndexMemo* memo, const PadLayout* L, const std::string& n) {
+    PadIndexMemo& m = memo[(((uintptr_t)L >> 4) ^ ((uintptr_t)&n >> 3)) & 63];
+    if (m.layout == L && m.name == &n) return m.idx;
+    auto it = L->byName.find(n);
+    m = {L, &n, it == L->byName.end() ? -1 : it->second};
+    return m.idx;
+}
+
 // A kernel that cannot be entered HERE is retired, not retried. Without this the
 // bind ran again on every iteration — the lookups, the guards and (under
 // --jit=verbose) a line of output per iteration — which is slower than simply
@@ -1547,14 +1578,14 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
     // A sub compiled in place must still be the sub this name finds: a
     // rebinding (`&f = …`, or another loop entering from a scope where `f` is
     // someone else's) keeps the loop interpreted.
-    for (auto& kv : s->inlined) {
-        const Value* f = env ? env->find("&" + kv.first) : nullptr;
+    for (auto& kv : s->inlinedKeys) {
+        const Value* f = env ? env->find(kv.first) : nullptr;
         if (!f || f->t != VT::Code || f->code() != kv.second)
-            return refuse(s, "the loop compiled " + kv.first + " in place, and the name now finds another routine");
+            return refuse(s, "the loop compiled " + kv.first.substr(1) + " in place, and the name now finds another routine");
     }
-    for (const std::string& nm : s->callNames) {
-        const Value* f = nullptr;
-        for (Env* e = env; e && !f; e = e->parent.get()) f = e->find("&" + nm);
+    for (size_t c = 0; c < s->callNames.size(); c++) {
+        const std::string& nm = s->callNames[c];
+        const Value* f = env ? env->find(s->callKeys[c]) : nullptr;   // (find walks the whole chain)
         if (!f || f->t != VT::Code || !f->code()) continue;   // a builtin, or not a routine
         auto rwParams = [](const Value& v) {
             if (v.t != VT::Code || !v.code() || !v.code()->params) return false;
@@ -1567,16 +1598,26 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         if (bad) return refuse(s, "the loop calls " + nm + ", which binds an argument `is rw` or `is raw`");
     }
 
-    std::vector<Value*> slots;
-    slots.reserve(s->slots.size());
-    for (size_t k = 0; k < s->slots.size(); k++) {
+    // (a loop has a handful of slots: they are bound into a buffer on the
+    // stack, and only a long list takes one on the heap)
+    const size_t nslots = s->slots.size();
+    Value* slotBuf[16];
+    std::vector<Value*> slotHeap;
+    Value** slots = slotBuf;
+    if (nslots > 16) { slotHeap.resize(nslots); slots = slotHeap.data(); }
+    PadIndexMemo* padMemo = nslots ? t_padIndexMemo : nullptr;
+    for (size_t k = 0; k < nslots; k++) {
         const std::string& n = s->slots[k];
         Value* cell = nullptr;
         Env* owner = nullptr;
+        // (Env::find's walk, map first, then the pad by remembered index)
         for (Env* e = env; e; e = e->parent.get()) {
-            auto it = e->vars.find(n);
-            if (it != e->vars.end()) { cell = it->second.deref(); owner = e; break; }
-            if (e->layout) if (Value* p = e->padFind(n)) { cell = p->deref(); owner = e; break; }
+            if (!e->vars.empty()) {
+                auto it = e->vars.find(n);
+                if (it != e->vars.end()) { cell = it->second.deref(); owner = e; break; }
+            }
+            if (e->layout)
+                if (Value* p = e->padSlotIfLive(padIndexOf(padMemo, e->layout, n))) { cell = p->deref(); owner = e; break; }
         }
         if (!cell) return refuse(s, "slot " + n + " is not in scope at kernel entry");
         if (mustBePrivate) {
@@ -1594,12 +1635,12 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         // An array the kernel indexes must be a plain one: typed, native,
         // shaped, lazy or `is default` arrays store differently, and a List is
         // immutable. Anything else keeps the loop interpreted.
-        if (s->arrays.count(n) && n[0] == '@' &&
+        if (s->slotIndexed[k] == '@' &&
             (cell->t != VT::Array || cell->isList || !cell->ofType().empty() || cell->shape() ||
              cell->ext() || !cell->hashKind.empty() || cell->elemDefault()))
             return refuse(s, "array " + n + " is not a plain Array (typed, native, shaped, lazy or a List)");
         // …and a hash a plain Hash: not a Set/Bag/Map, typed, object-keyed or `is default`
-        if (s->arrays.count(n) && n[0] == '%' &&
+        if (s->slotIndexed[k] == '%' &&
             (cell->t != VT::Hash || !cell->hash() || !cell->hashKind.empty() || cell->objKeyed ||
              !cell->ofType().empty() || cell->elemDefault()))
             return refuse(s, "hash " + n + " is not a plain Hash (a Set/Bag/Map, typed or object-keyed)");
@@ -1609,7 +1650,7 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         // apply, an `is rw` caller slot to write through — and the kernel
         // assigns the container directly, so it would honour none of them. A
         // slot the kernel only reads is unaffected by all of it.
-        if (!s->slotWritten[k]) { slots.push_back(cell); continue; }
+        if (!s->slotWritten[k]) { slots[k] = cell; continue; }
         // A counted `for`'s loop variable is the one slot the kernel DRIVES
         // rather than merely assigns, and `readonly` on it describes the
         // interpreter's own binding, not behaviour a store would skip: the
@@ -1652,7 +1693,7 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
                 x.rwSynced.count(n) || x.rwDead.count(n))
                 return refuse(s, "slot " + n + " has container traits the kernel would have to honour");
         }
-        slots.push_back(cell);
+        slots[k] = cell;
     }
     g_entered.fetch_add(1, std::memory_order_relaxed);
     if (isCnp) {
@@ -1661,7 +1702,7 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         // `run` answers false for exactly one thing the guards above cannot
         // see, two names sharing a single container.
         std::string why;
-        if (!cnp::run(ck, I, slots.empty() ? nullptr : slots.data(), s->slotWritten, why))
+        if (!cnp::run(ck, I, nslots ? slots : nullptr, s->slotWritten, why))
             return refuse(s, why);
         return true;
     }
@@ -1673,7 +1714,7 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
     // `--exe` reports no line at all for the same program, so this is the
     // compiled backends' shared limitation, answered a little better here.
     I.restoreTestLine(s->loop->line);
-    fn(&I, slots.empty() ? nullptr : slots.data());
+    fn(&I, nslots ? slots : nullptr);
     return true;
 }
 

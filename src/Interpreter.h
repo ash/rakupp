@@ -912,9 +912,12 @@ struct Env {
     }
     Value* padFind(const std::string& name) {
         auto it = layout->byName.find(name);
-        if (it != layout->byName.end() &&
-            ((padLive.load(std::memory_order_acquire) >> it->second) & 1))
-            return &pad[it->second];
+        return it != layout->byName.end() ? padSlotIfLive(it->second) : nullptr;
+    }
+    // padFind with the layout's index for the name already in hand (-1: the
+    // layout has no such name)
+    Value* padSlotIfLive(int i) {
+        if (i >= 0 && ((padLive.load(std::memory_order_acquire) >> i) & 1)) return &pad[i];
         return nullptr;
     }
     // THIS scope only — map or live pad slot, no parent walk (the declare
