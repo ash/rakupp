@@ -2620,7 +2620,15 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                     for (auto& a2 : v.obj()->cls->attrs) if (&a2 == at) own = true;
                     if (!own || v.obj()->cls->name == "X::AdHoc" || v.obj()->cls->name == "Exception") continue;
                 }
-                auto it = v.obj()->attrs.find(at->name);
+                // (a parent's attribute that a subclass declares again keeps a
+                // slot of its own: ClassInfo::attrSlot)
+                const std::string* slot = &at->name;
+                std::string slotBuf;
+                bool placed = false;
+                for (const ClassInfo* c = v.obj()->cls.get(); c && !placed; c = c->parent.get())
+                    for (auto& a2 : c->attrs)
+                        if (&a2 == at) { slot = &v.obj()->cls->attrSlot(c, *at, slotBuf); placed = true; break; }
+                auto it = v.obj()->attrs.find(*slot);
                 // an UNSET typed attribute shows its declared type (`i => Int`)
                 Value av = it != v.obj()->attrs.end() ? it->second
                          : (at->type.empty() ? Value::any() : Value::typeObj(at->type));
@@ -6060,8 +6068,14 @@ const Value* Interpreter::plainAccessorSlot(const Value& inv, const std::string&
     if (!at || !at->pub || at->deprecated) return nullptr;
     if (!ci->delegatedNames.empty() && ci->delegatedNames.count(m)) return nullptr;
     if (ci->findMethodForCall(m, langRev_ < 2)) return nullptr;
+    // A public `$` attribute found first is the most-derived of its name, kept
+    // under that name. An `@`/`%` one may be a sigil twin, kept as "@name"
+    // (ClassInfo::findAccessorAttr).
+    const std::string* slot = &m;
+    std::string slotBuf;
+    if (at->sigil != '$') ci->findAccessorAttr(m, slot, slotBuf);
     static const Value kAny = Value::any();
-    auto it = inv.obj()->attrs.find(m);
+    auto it = inv.obj()->attrs.find(*slot);
     return it != inv.obj()->attrs.end() ? &it->second : &kAny;
 }
 

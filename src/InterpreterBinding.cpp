@@ -2937,14 +2937,18 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
         return (*base.hash())[name];
     }
     if (base.t == VT::Object && base.obj()) {
+        // (the accessor's own attribute and key: ClassInfo::findAccessorAttr)
+        const std::string* slot = nullptr;
+        std::string slotBuf;
+        const ClassAttr* acc = base.obj()->cls ? base.obj()->cls->findAccessorAttr(name, slot, slotBuf) : nullptr;
         for (ClassInfo* ci = base.obj()->cls.get(); ci; ci = ci->parent.get())
             for (auto& at : ci->attrs)
                 // public @./%. attrs assign through the accessor without `is rw`
-                if (at.name == name &&
+                if (at.name == name && (!acc || &at == acc) &&
                     !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
                     throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable '" + name + "'"};
-        return base.obj()->attrs[name];
+        return base.obj()->attrs[acc ? *slot : name];
     }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }

@@ -4009,10 +4009,17 @@ static Value unpassedDefault(const std::string& type, char sigil, bool blockPara
 // The routine whose signature is being bound, for its name in that message
 // (set around the two routine-level bindParams calls; a block is `<anon>`).
 static thread_local const std::string* t_bindRoutine = nullptr;
+// …and the routine itself: its package decides which class's slot an
+// attributive parameter (`submethod BUILD(:$!x)`) writes, and `&?ROUTINE` is
+// not yet the routine while its signature binds (attrParamSlot)
+static thread_local const Callable* t_bindCallable = nullptr;
 struct BindRoutineName {
     const std::string* saved;
-    explicit BindRoutineName(const std::string* n) : saved(t_bindRoutine) { t_bindRoutine = n; }
-    ~BindRoutineName() { t_bindRoutine = saved; }
+    const Callable* savedC;
+    explicit BindRoutineName(const Callable& c) : saved(t_bindRoutine), savedC(t_bindCallable) {
+        t_bindRoutine = &c.name; t_bindCallable = &c;
+    }
+    ~BindRoutineName() { t_bindRoutine = saved; t_bindCallable = savedC; }
 };
 void Interpreter::refuseUnpassedDefinite(const Param& p) {
     if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
@@ -4772,7 +4779,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     else if (p.name[0] == '%') av = coerceHash(av);
                     else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
                     checkAttrParamStore(av, *sp, p.name.substr(2), v.t == VT::Nil);
-                    sp->obj()->attrs[p.name.substr(2)] = std::move(av);
+                    attrParamRef(sp->obj(), p.name, t_bindCallable) = std::move(av);
                 }
         };
         if (p.slurpy && p.sigil == '$' && !p.subSig) { // `*$f`: the next positional, as it is
@@ -4788,7 +4795,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // the invocant, as `:$!x` does: `C.new(a => 1).f` is {a => 1}
                 if (p.name.size() > 2 && p.name[1] == '!')
                     if (Value* sp = env->find("self"))
-                        if (sp->t == VT::Object && sp->obj()) sp->obj()->attrs[p.name.substr(2)] = h;
+                        if (sp->t == VT::Object && sp->obj()) attrParamRef(sp->obj(), p.name, t_bindCallable) = h;
                 // `*%opts (Int :date-local-offset($))` — the slurped nameds bind
                 // to the sub-signature too, which types and checks them
                 if (p.subSig) {
@@ -4938,7 +4945,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // …and `*@!items`, an attributive positional slurpy, the same way
                 if (!capture && p.name.size() > 2 && p.name[1] == '!')
                     if (Value* sp = env->find("self"))
-                        if (sp->t == VT::Object && sp->obj()) sp->obj()->attrs[p.name.substr(2)] = coerceArray(a);
+                        if (sp->t == VT::Object && sp->obj()) attrParamRef(sp->obj(), p.name, t_bindCallable) = coerceArray(a);
                 // capture sub-signature `|c($x, :$y!)` — unpack the slurped
                 // positionals AND the call's named args into the inner params
                 if (p.subSig) {
@@ -5347,7 +5354,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         else if (p.name[0] == '%') av = coerceHash(av);
                         else av = nilResetForAttrSlot(av, *sp, p.name.substr(2));
                         checkAttrParamStore(av, *sp, p.name.substr(2), v.t == VT::Nil);
-                        sp->obj()->attrs[p.name.substr(2)] = std::move(av);
+                        attrParamRef(sp->obj(), p.name, t_bindCallable) = std::move(av);
                     }
             }
         } else if (p.subSig) {
@@ -8791,7 +8798,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (c.params && !c.params->empty()) {
-        BindRoutineName brn(&c.name);
+        BindRoutineName brn(c);
         bindParams(*c.params, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.params, env, rwArgs,
@@ -10496,9 +10503,10 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                     for (auto& md : selfCopy.obj()->cls->decl->methods)
                         if (md && md->name == c.name) { declaredHere = true; break; }
                 if (!declaredHere && selfCopy.t == VT::Object && selfCopy.obj() && selfCopy.obj()->cls && as.empty()) {
-                    const ClassAttr* ca = selfCopy.obj()->cls->findAttr(c.name);
-                    if (ca && ca->pub) {
-                        auto it = selfCopy.obj()->attrs.find(c.name);
+                    const std::string* slot = nullptr;
+                    std::string slotBuf;
+                    if (selfCopy.obj()->cls->findAccessorAttr(c.name, slot, slotBuf)) {
+                        auto it = selfCopy.obj()->attrs.find(*slot);
                         if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
                     }
                 }
@@ -10657,7 +10665,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
     }
     if (c.params && !c.params->empty()) {
-        BindRoutineName brn(&c.name);
+        BindRoutineName brn(c);
         bindParams(*c.params, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
                    whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
@@ -12332,10 +12340,12 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 char sigil = an.empty() ? '$' : an[0];
                 while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
                 auto& attrs = obj.obj()->attrs;
-                auto it = attrs.find(an);
+                std::string slotBuf;
+                const std::string& slot = attributeSlot(*base->hash(), *obj.obj(), an, sigil, slotBuf);
+                auto it = attrs.find(slot);
                 if (it == attrs.end())
-                    it = attrs.emplace(an, sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash()
-                                                                        : Value::any()).first;
+                    it = attrs.emplace(slot, sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash()
+                                                                          : Value::any()).first;
                 return &it->second;
             }
         }
@@ -12459,6 +12469,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (base->obj()->cls)
                 if (Value* mv = base->obj()->cls->findMethod(mcName))
                     rwMethod = mv->t == VT::Code && mv->code() && mv->code()->retRw;
+            // The accessor answers for the most-derived PUBLIC attribute of the
+            // name, under the key its object keeps it (a sigil twin, or a
+            // parent's slot under a subclass's private `$!x`)
+            const std::string* accSlot = nullptr;
+            std::string accBuf;
+            const ClassAttr* acc = !mc->bang && base->obj()->cls
+                ? base->obj()->cls->findAccessorAttr(mcName, accSlot, accBuf) : nullptr;
             if (!mc->bang && !asInvocant && !rwMethod)
                 for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                     for (auto& at : ci->attrs)
@@ -12466,7 +12483,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         // without `is rw` (list-assign replaces the container's
                         // contents — Cro: `.body-parsers = @!body-parsers`); only
                         // $-attrs need the rw trait
-                        if (at.name == mcName &&
+                        if (at.name == mcName && (!acc || &at == acc) &&
                             !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
                             throw RakuError{Value::typeObj("X::Assignment::RO"),
                                 "Cannot modify an immutable '" + mcName + "'"};
@@ -12482,7 +12499,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             tcx.lastLvalueAttr = nullptr;
             for (ClassInfo* ci = base->obj()->cls.get(); ci; ci = ci->parent.get())
                 for (auto& at : ci->attrs)
-                    if (at.name == mcName) {
+                    if (at.name == mcName && (!acc || &at == acc)) {
                         g_lvAttrSigil = at.sigil;
                         if (at.sigil == '$') tcx.lastLvalueAttr = &at;
                         if (at.sigil == '$' && !at.type.empty() &&
@@ -12507,7 +12524,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (shadowed && qualDeclares)
                     return &base->obj()->attrs[mc->methodQual + "\x01" + mcName];
             }
-            return &base->obj()->attrs[mcName];
+            return &base->obj()->attrs[acc ? *accSlot : mcName];
         }
     }
     // `$(expr)` as an assignment target: the itemization wrapper is transparent
@@ -14413,9 +14430,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value iv = go(m2->inv.get());
                 if (iv.t != VT::Object || !iv.obj() || !iv.obj()->cls || iv.obj()->cls->findMethod(m2->method))
                     throw std::runtime_error("not a plain accessor");
-                const ClassAttr* at = iv.obj()->cls->findAttr(m2->method);
-                if (!at || !at->pub) throw std::runtime_error("not a plain accessor");
-                auto it = iv.obj()->attrs.find(m2->method);
+                const std::string* slot = nullptr;
+                std::string slotBuf;
+                if (!iv.obj()->cls->findAccessorAttr(m2->method, slot, slotBuf))
+                    throw std::runtime_error("not a plain accessor");
+                auto it = iv.obj()->attrs.find(*slot);
                 return it != iv.obj()->attrs.end() ? it->second : Value::any();
             };
             return go(e);
@@ -14424,10 +14443,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             mc->inv->kind == NK::MethodCall && plainAccessorChain(mc->inv.get())) {
             try {
                 Value invv = accessorValue(mc->inv.get());
-                if (invv.t == VT::Object && invv.obj()) {
-                    for (ClassInfo* ci = invv.obj()->cls.get(); ci && sigil == '$'; ci = ci->parent.get())
-                        for (auto& at : ci->attrs)
-                            if (at.name == mc->method && at.pub && (at.sigil == '@' || at.sigil == '%')) { sigil = at.sigil; break; }
+                if (invv.t == VT::Object && invv.obj() && invv.obj()->cls) {
+                    const std::string* slot = nullptr;
+                    std::string slotBuf;
+                    const ClassAttr* at = invv.obj()->cls->findAccessorAttr(mc->method, slot, slotBuf);
+                    if (at && (at->sigil == '@' || at->sigil == '%')) sigil = at->sigil;
                 }
             } catch (...) {}
         }
@@ -14449,10 +14469,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             try {
                 Value invv = eval(mc->inv.get());
-                if (invv.t == VT::Object && invv.obj()) {
-                    for (ClassInfo* ci = invv.obj()->cls.get(); ci && sigil == '$'; ci = ci->parent.get())
-                        for (auto& at : ci->attrs)
-                            if (at.name == mname && at.pub && (at.sigil == '@' || at.sigil == '%')) { sigil = at.sigil; break; }
+                if (invv.t == VT::Object && invv.obj() && invv.obj()->cls) {
+                    const std::string* slot = nullptr;
+                    std::string slotBuf;
+                    const ClassAttr* at = invv.obj()->cls->findAccessorAttr(mname, slot, slotBuf);
+                    if (at && (at->sigil == '@' || at->sigil == '%')) sigil = at->sigil;
                 }
             } catch (...) {}
         }
@@ -32043,6 +32064,18 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             }
             if (mc->hyper) return hyperQualifiedCall(mc->method, qual, inv, ma);   // `@objs>>.HA::m`
             return invokeMethodChain(mc->method, qual, inv, ma, &mc->args);
+        }
+        // `$o.A::data` where A's `data` is the GENERATED accessor: it reads
+        // A's own attribute, which a subclass declaring the name keeps apart.
+        // Ordinary dispatch on the bare name would answer the subclass's.
+        if (cit != classes_.end() && !mc->hyper && mc->args.empty() &&
+            inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
+            const std::string* slot = nullptr;
+            std::string slotBuf;
+            if (inv.obj()->cls->findAccessorAttr(mc->method, slot, slotBuf, cit->second.get())) {
+                auto it = inv.obj()->attrs.find(*slot);
+                return it != inv.obj()->attrs.end() ? it->second : Value::any();
+            }
         }
         // A BUILT-IN qualifier (`self.Mu::Str`, `self.Any::gist`) names a
         // type above every user class, so it means the built-in behaviour —

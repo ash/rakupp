@@ -2434,7 +2434,8 @@ std::unique_lock<std::recursive_mutex> Interpreter::lockStripe(const void* p) {
 // most-derived declaration keeps the bare slot; an ancestor's is qualified by
 // its class ("Parent\x01priv"), and so is `$!name` read from that ancestor's
 // methods. Classes without such shadowing pay one cached flag test.
-const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf) {
+const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf,
+                                            const Callable* rc) {
     if (!od || !od->cls) return bare;
     ClassInfo* top = od->cls.get();
     if (top->shadowsAttrs < 0) {
@@ -2444,7 +2445,7 @@ const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::str
         top->shadowsAttrs = dup ? 1 : 0;
     }
     if (top->shadowsAttrs == 0) return bare;
-    const Callable* rc = tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code ? tctx_.curRoutineVal->code() : nullptr;
+    if (!rc) rc = tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code ? tctx_.curRoutineVal->code() : nullptr;
     if (!rc || rc->pkg.empty()) return bare;
     ClassInfo* first = nullptr; bool ownerDeclares = false;
     for (ClassInfo* c = top; c; c = c->parent.get())
@@ -2457,6 +2458,22 @@ const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::str
     if (!first || !ownerDeclares || first->name == rc->pkg) return bare;
     buf = rc->pkg + "\x01" + bare;
     return buf;
+}
+
+// The slot an attributive parameter `pname` of `rc` writes — `submethod
+// BUILD(:$!x)`, `method m($!x)`, `*@!items`: the one `$!x` reads in its body,
+// a sigil twin's own key when the object has one, else attrSlotFor's. Writing
+// the bare name put a parent BUILD's `:$!x` into the SUBCLASS's attribute of
+// that name.
+Value& Interpreter::attrParamRef(ObjectData* od, const std::string& pname, const Callable* rc) {
+    const std::string bare = pname.substr(2);
+    std::string buf;
+    if (pname[0] != '$') {
+        buf = pname[0] + bare;
+        auto it = od->attrs.find(buf);
+        if (it != od->attrs.end()) return it->second;
+    }
+    return od->attrs[attrSlotFor(od, bare, buf, rc)];
 }
 
 // `$o!Pkg::meth` from outside Pkg: only a package Pkg `trusts` may call it.

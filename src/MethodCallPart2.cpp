@@ -582,6 +582,19 @@ static bool isContainerMethodName(const std::string& mn) {
     return kContainerMethods.count(mn) != 0;
 }
 
+const std::string& attributeSlot(const ValueMap& meta, const ObjectData& od, const std::string& an,
+                                 char sigil, std::string& buf) {
+    auto pk = meta.find("package");
+    if (!od.cls || pk == meta.end()) return an;
+    for (const ClassInfo* c = od.cls.get(); c; c = c->parent.get())
+        if (pk->second.s == c->name) {
+            for (auto& a : c->attrs)
+                if (a.name == an && a.sigil == sigil) return od.cls->attrSlot(c, a, buf);
+            break;
+        }
+    return an;
+}
+
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName) {
     if (a.metaObj.t == VT::Hash && a.metaObj.hash()) {
         // a ROLE's attribute composed into a class belongs to the CLASS: the
@@ -1116,23 +1129,30 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         if (ci2 < 8) ownBuild[ci2] = own ? 1 : 0;
         return own;
     };
+    // A named argument sets each attribute of its name that is public (or
+    // `is built`), at every level of the chain: `class B is A { has %.data }`
+    // over A's `has @.data` fills both from `data => …`, and a subclass's private
+    // `$!x` neither takes the value nor keeps it from its parent's `$.x`.
+    auto buildable = [](const ClassAttr& a) { return (a.pub || a.built) && !a.notBuilt; };
     for (auto& arg : args)
         if (arg.t == VT::Pair) {
-            const ClassAttr* pat = ci->findAttr(arg.s);
             // a class with its OWN BUILD initialises its attributes itself: the
             // default constructor does not bind them from named args (Rakudo's
             // BUILDPLAN), though their defaults still apply
-            if (pat) {
-                for (size_t ci2 = 0; ci2 < nChain; ci2++) {
-                    ClassInfo* oc = chainAt(ci2);
-                    bool owns = false;
-                    for (auto& a2 : oc->attrs) if (&a2 == pat) { owns = true; break; }
-                    if (!owns) continue;
-                    if (levelOwnsBuild(ci2)) pat = nullptr;
-                    break;
-                }
+            const ClassAttr* pat = nullptr;
+            bool onChain = false;
+            for (size_t ci2 = 0; ci2 < nChain && !pat; ci2++)
+                for (auto& a2 : chainAt(ci2)->attrs)
+                    if (a2.name == arg.s && buildable(a2)) {
+                        onChain = true;
+                        if (!levelOwnsBuild(ci2)) pat = &a2;
+                        break;
+                    }
+            if (!onChain) {   // one inherited through a SECOND parent (the pass at the end)
+                pat = ci->findAttr(arg.s);
+                if (pat && !buildable(*pat)) pat = nullptr;
             }
-            if (pat && (pat->pub || pat->built) && !pat->notBuilt) {
+            if (pat) {
                 const std::string& k = arg.s;
                 bool seen = false;
                 for (auto& pv : providedArgs)
@@ -1145,20 +1165,18 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     // clobbered each other (Auth::SCRAM's callable ended up holding
     // the enum). A non-$ twin stores under "&name"/"@name"/"%name";
     // the read/write paths try that spelling first.
-    // Only a NON-$ attribute can need the sigil-prefixed spelling, and most
-    // classes have none — yet this map was built on every construction, one
-    // red-black node plus a std::set allocation per attribute per ancestor.
-    // Build it on first demand instead; a class of plain `$` attributes, which
-    // is the common one, never touches it.
-    std::map<std::string, std::set<char>> nameSigils;
-    bool sigilsBuilt = false;
-    auto sigilCount = [&](const std::string& nm) -> size_t {
-        if (!sigilsBuilt) {
-            sigilsBuilt = true;
-            for (ClassInfo* c = ci.get(); c; c = c->parent.get())
-                for (auto& a2 : c->attrs) nameSigils[a2.name].insert(a2.sigil);
-        }
-        return nameSigils[nm].size();
+    // Twins are a matter of ONE class. The same name declared again by a
+    // subclass, whatever its sigil, is shadowing: the ancestor's slot is the
+    // class-qualified one below and the subclass keeps the bare name, which is
+    // where its accessor reads (ClassInfo::findAccessorAttr). Counting sigils
+    // over the whole chain put `class B is A { has %.data }` under "%data",
+    // beside A's `has @.data`, and left `B.new.data` answering Any.
+    // Only a NON-$ attribute can need the sigil-prefixed spelling, so a class of
+    // plain `$` attributes, the common one, never scans for its twin.
+    auto hasTwin = [](const ClassInfo* lvl, const ClassAttr& at) {
+        for (auto& a2 : lvl->attrs)
+            if (a2.sigil != at.sigil && a2.name == at.name) return true;
+        return false;
     };
     // a role's type-capture parameter, resolved per object (see roleTypeIn)
     auto resolveRoleType = [&](const std::string& t) -> const std::string& {
@@ -1223,7 +1241,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             // construction.
             std::string slotBuf;
             const std::string* slotp = &at.name;
-            if (at.sigil != '$' && sigilCount(at.name) > 1) {
+            if (at.sigil != '$' && hasTwin(lvl, at)) {
                 slotBuf = std::string(1, at.sigil) + at.name;
                 slotp = &slotBuf;
             }
@@ -1234,11 +1252,11 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                 for (auto& a2 : chainAt(k)->attrs) if (a2.name == at.name) { shadowedHere = true; break; }
             if (shadowedHere) { slotBuf = lvl->name + "\x01" + at.name; slotp = &slotBuf; }
             const std::string& slot = *slotp;
-            const bool slotIsName = (slotp == &at.name);
             ProvidedArg* provided = nullptr;
             for (auto& pv : providedArgs)
                 if (*pv.name == at.name) { provided = &pv; break; }
-            if (provided && (slotIsName || shadowedHere)) {
+            if (provided && (!buildable(at) || levelOwnsBuild(lvlIx))) provided = nullptr;
+            if (provided) {
                 // (an `is default` is evaluated in this level's scope, as a default is)
                 if (at.defaultTrait && provided->val && provided->val->t == VT::Nil) ensureEnv();
                 Value stored = typedContainer(
@@ -1384,9 +1402,8 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     // same slot, from the same argument, through the same coercion, so a second
     // pass over every named argument re-hashed the name and re-ran
     // typedContainer/coerceToSigil to store what was already there. What is left
-    // for this pass is what the walk cannot reach: a sigil twin, whose slot is
-    // "&name" rather than the bare name the caller passed, and an attribute
-    // inherited through a SECOND parent, since the walk follows `parent` alone.
+    // for this pass is what the walk cannot reach: an attribute inherited
+    // through a SECOND parent, since the walk follows `parent` alone.
     for (auto& pv : providedArgs)
         if (!pv.bound)
             od->attrs[*pv.name] = typedContainer(
@@ -3505,6 +3522,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
             Value obj = args[0];
             if (obj.t == VT::Object && obj.obj()) {
+                // (a subclass declaring the name again keeps it apart)
+                std::string slotBuf;
+                const std::string* slot = &attributeSlot(h, *obj.obj(), an, sigil, slotBuf);
                 if (m == "set_value" && args.size() > 1) {
                     Value v = args[1];
                     // `set_value(Mu $obj, Mu \value)` binds the value RAW: a
@@ -3522,10 +3542,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             if (raw->t == VT::Hash && raw->hashKind == "Proxy") v = *raw;
                     }
                     if (sigil == '@' && v.t == VT::Range) { Value a = Value::array(); *a.arr() = v.flatten(); a.isList = true; v = a; }
-                    obj.obj()->attrs[an] = v;
+                    obj.obj()->attrs[*slot] = v;
                     return v;
                 }
-                auto it = obj.obj()->attrs.find(an);
+                auto it = obj.obj()->attrs.find(*slot);
                 if (it != obj.obj()->attrs.end()) return it->second;
                 // uninitialised: the attribute's declared default kind
                 return sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash() : Value::any();
@@ -8237,8 +8257,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.obj()->attrs.find(m);
             if (it != inv.obj()->attrs.end()) return it->second;
         }
-        const ClassAttr* at = ci->findAttr(m);
-        if (at && at->pub) {
+        const std::string* slot = nullptr;
+        std::string slotBuf;
+        const ClassAttr* at = ci->findAccessorAttr(m, slot, slotBuf);
+        if (at) {
             if (at->deprecated) {   // `has $.foo is DEPRECATED`: report the accessor's use
                 std::string from = ci->name;
                 for (ClassInfo* k = ci.get(); k; k = k->parent.get())
@@ -8254,7 +8276,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     throw RakuError{Value::typeObj("X::AdHoc"),
                         "Too many positionals passed; expected 1 argument but got " + std::to_string(pos + 1)};
             }
-            auto it = inv.obj()->attrs.find(m);
+            auto it = inv.obj()->attrs.find(*slot);
             // X::AdHoc.message IS its payload stringified (Rakudo defines the
             // method that way), so `X::AdHoc.new(payload => "boom").message`
             // answers "boom" and not an undefined attribute. Only the

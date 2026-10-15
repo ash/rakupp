@@ -2975,7 +2975,11 @@ public:
     std::mutex beginCacheMu_;
     void checkBareSubsetDecl(const VarExpr* ve, char sigil);
     void checkPrivatePermission(const std::string& qualified);
-    const std::string& attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf);
+    // `rc`: the routine whose `$!x` it is (default: the running one)
+    const std::string& attrSlotFor(const ObjectData* od, const std::string& bare, std::string& buf,
+                                   const Callable* rc = nullptr);
+    // the slot an attributive parameter `pname` (`submethod BUILD(:$!x)`) of `rc` writes (InterpreterOperators.cpp)
+    Value& attrParamRef(ObjectData* od, const std::string& pname, const Callable* rc);
     // a `$!x` parameter's value, checked as an assignment to the attribute (MethodCallPart2.cpp)
     void checkAttrParamStore(Value& v, const Value& self, const std::string& bare, bool wasNil);
     // a short type name resolved where the routine was declared (InterpreterCore.cpp)

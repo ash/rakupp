@@ -1829,6 +1829,12 @@ struct ClassAttr {
 // The Attribute meta-object for one declared attribute, built once and cached on
 // the ClassAttr (MethodCallPart2.cpp) — user `is` traits mix roles into it.
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName);
+// …and the key an object's attribute map keeps the attribute that meta-object
+// describes under (bare name `an`, sigil `sigil`): ClassInfo::attrSlot, from
+// the class the meta-object names as its package.
+struct ObjectData;
+const std::string& attributeSlot(const ValueMap& meta, const ObjectData& od, const std::string& an,
+                                 char sigil, std::string& buf);
 
 // The box Param::metaBox points at (Ast.h forward-declares it): one Parameter
 // meta-object, kept alive by the parameter it describes.
@@ -2096,6 +2102,44 @@ struct ClassInfo {
         for (auto& a : attrs) if (a.name == n) return &a;
         if (parent) { if (const ClassAttr* r = parent->findAttr(n)) return r; }
         for (auto& p : extraParents) if (p) { if (const ClassAttr* r = p->findAttr(n)) return r; }
+        return nullptr;
+    }
+    // Where an instance of this class keeps `at`, an attribute `owner`
+    // declares (Interpreter::runAttrDefaults decides it): under "Owner\x01name"
+    // when a more-derived class declares the name too, whatever its sigil
+    // (`class B is A { has %.data }` over A's `has @.data`); under its sigil
+    // twin "@name" when `owner` declares the name with another sigil too
+    // (`has @.x; has $!x`); otherwise under the name itself.
+    const std::string& attrSlot(const ClassInfo* owner, const ClassAttr& at, std::string& buf) const {
+        bool shadowed = false;
+        const ClassInfo* c = this;
+        for (; c && c != owner; c = c->parent.get())
+            for (auto& a : c->attrs)
+                if (a.name == at.name) { shadowed = true; break; }
+        if (!c) return at.name;   // inherited through a SECOND parent: the bare name
+        if (shadowed) { buf = owner->name + "\x01" + at.name; return buf; }
+        if (at.sigil != '$')
+            for (auto& a : owner->attrs)
+                if (a.sigil != at.sigil && a.name == at.name) { buf = std::string(1, at.sigil) + at.name; return buf; }
+        return at.name;
+    }
+    // The attribute the generated accessor `.n` reads, and its slot (attrSlot).
+    // It is the most-derived PUBLIC declaration: a subclass's private `$!n`
+    // does not hide its parent's `$.n`. `from`, an ancestor, starts the search
+    // there instead, for the qualified `$o.A::n`.
+    const ClassAttr* findAccessorAttr(const std::string& n, const std::string*& key, std::string& buf,
+                                      const ClassInfo* from = nullptr) const {
+        for (const ClassInfo* c = this; c; c = c->parent.get()) {
+            if (c == from) from = nullptr;
+            if (from) continue;
+            for (auto& a : c->attrs)
+                if (a.pub && a.name == n) { key = &attrSlot(c, a, buf); return &a; }
+        }
+        if (from) return nullptr;
+        // one inherited through a SECOND parent sits under its bare name
+        for (const ClassInfo* c = this; c; c = c->parent.get())
+            for (auto& p : c->extraParents)
+                if (p) if (const ClassAttr* r = p->findAccessorAttr(n, key, buf)) { key = &r->name; return r; }
         return nullptr;
     }
 };
