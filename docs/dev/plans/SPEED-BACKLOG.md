@@ -47,7 +47,6 @@ theme the rows are sorted by complexity, largest first.
 | 8 | Split `Callable` (664 B) into a shared CodeInfo and a closure of ~64 B | L | V6 P3.7 |
 | 9 | Inline slots for `Env::vars`, and `Env` on the slab | L | V6 P3.2 |
 | 10 | Small Rats inline; Pairs with an inline Int/Bool key | L | V6 P3.3–4 |
-| 17 | Packed native arrays, batch 3 | M | `--cnp` on packed registers, the reductions, the census — [PACKED-ARRAY-PLAN.md](PACKED-ARRAY-PLAN.md) |
 | 29 | Tails: VALUEHASH step 4, DISPATCH-PERF Ph6, UNBOX P3–P5 | M | [VALUEHASH-SMALL-PLAN.md](VALUEHASH-SMALL-PLAN.md), DISPATCH-PERF-PLAN, UNBOX-PLAN |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
@@ -105,6 +104,9 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **17, packed native arrays batch 3** (ff3fcc5b): reductions, op= and `++`
+  on the words, `--cnp` kernels over packed arrays, and the unpack census
+  (`RAKUPP_PACKED_CENSUS=1`). A 1M `@a[$i] += 1` loop 0.16 -> 0.04 s.
 - **21, slim `VarExpr`** (28989c10): a declaration's fields behind one
   pointer that a plain read shares; 400 -> 136 bytes, `-c` on a 52k-line
   program 151 -> 136 MB.

@@ -120,8 +120,6 @@ The same items grouped by theme, with a complexity estimate for each:
   the threaded-program gap; P4 make it the default and remove `--jit`.
 - [ ] **`--types`**: paused 2026-09-29. [TYPES-PLAN.md](TYPES-PLAN.md). N1 the
   switch, N2 the checked rule, N3 measure on Roast and the battery, N7 Str.
-- [ ] **Packed native arrays**: [PACKED-ARRAY-PLAN.md](PACKED-ARRAY-PLAN.md).
-  Batch 3: `--cnp` on packed registers, the reductions, the census.
 - [ ] **V6 phases not started**: [V6-PLAN.md](V6-PLAN.md). P0 steady-state
   measurements on a quiet machine; P4 compile and load time (the precomp key
   is a decision for the maintainer); P5 `--exe` size and fallback coverage;

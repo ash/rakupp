@@ -98,10 +98,23 @@ an interleaved perf-guard A/B, and the memory row.
   `int`/`num` shaped array is packed; `@m[$i; $j]` reads and `@m[$i; $j] =
   EXPR` stores the word (Index::fastShape 3, and the simpleSlot 7 lane).
   Roast's deep-recursion-initing-native-array.t: 8.07 -> 1.05 GB.
-- **Batch 3 (next).** `--cnp` on packed registers (a packed `for @a` does not
-  enter a kernel yet), the reductions, and the census below. Also: `op=` and
-  `++` on an element (`@a[$i] += 1`, `@m[$i; $j]++`) unpack the array, or
-  the row, where the store lane would keep it packed.
+- **Batch 3 (done, ff3fcc5b).** `.sum`/`.min`/`.max` fold the words; the
+  store lane takes `+=`, `-=`, `*=` and `@a[$i]++` steps the word; under
+  `--cnp` a full-width `int`/`num` array may enter a kernel, whose idxget,
+  alen and idxset use the words, and a packed `for @a` tiers up. Two checks
+  had been unpacking every array they saw: uninitMethodShape asked `arr()`
+  before the method's name (so `@a.elems` unpacked), and `for` asked it
+  before testing for a Slip. A 1M-element `@a[$i] += 1` loop: 0.16 -> 0.04 s,
+  86 -> 9.5 MB.
+- **The census.** `RAKUPP_PACKED_CENSUS=1` prints, at exit, each return
+  address an unpack was asked from (name them with `atos -o build/rakupp -l
+  BASE ADDR` or addr2line). Over the examples and `types/` benchmarks: one
+  program declares a native array, and nothing unpacks. Over the 14 Roast and
+  regression programs that do, by caller: other methods (10; `.join`,
+  `.raku` …), `eqv`/`is-deeply` (5), `lvalue` for the element forms no lane
+  takes (5), rtShapedStore and argument spreading (2 each), a coercion, a
+  slice and evalAssignInner (1 each). Those are the candidates for a next
+  batch, if a real program shows them.
 
 ## What would falsify this plan
 
