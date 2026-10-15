@@ -230,7 +230,7 @@ struct Linter {
                 else
                     collectDeclTargets(e, targets);
                 for (auto* v : targets)
-                    if ((v->declScope == "my" || v->declScope == "state") &&
+                    if ((v->d().declScope == "my" || v->d().declScope == "state") &&
                         eligibleVarName(v->name))
                         declare(v->name, s->line, 'v', true);
             }
@@ -278,11 +278,11 @@ struct Linter {
         switch (e->kind) {
             case NK::VarExpr: {
                 auto* v = static_cast<VarExpr*>(e);
-                if (v->declDefault) walkExpr(v->declDefault.get());
+                if (v->d().declDefault) walkExpr(v->d().declDefault.get());
                 if (v->declare) {
                     // A mid-expression declaration (e.g. `if my $x = f()`); the
                     // statement-level ones are already predeclared.
-                    if ((v->declScope == "my" || v->declScope == "state") &&
+                    if ((v->d().declScope == "my" || v->d().declScope == "state") &&
                         eligibleVarName(v->name) && !cur().find(v->name))
                         declare(v->name, lineOf(v), 'v', true);
                     return;

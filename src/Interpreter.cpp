@@ -1144,7 +1144,7 @@ const Interpreter::GenericRoleBody* Interpreter::genericRoleBody(const ClassDecl
             if (ex && ex->kind == NK::Assign) {
                 const Expr* t = static_cast<const Assign*>(ex)->target.get();
                 const Expr* v = static_cast<const Assign*>(ex)->value.get();
-                if (t && t->kind == NK::VarExpr && static_cast<const VarExpr*>(t)->declScope == "constant") continue;
+                if (t && t->kind == NK::VarExpr && static_cast<const VarExpr*>(t)->d().declScope == "constant") continue;
                 if (v && v->kind == NK::BlockExpr && !static_cast<const BlockExpr*>(v)->phaser.empty()) continue;   // `my $x = BEGIN { … }`
                 if (v && v->kind == NK::Unary && static_cast<const Unary*>(v)->op == "BEGIN") continue;              // `my $x = BEGIN …`
             }
@@ -1282,8 +1282,8 @@ void Interpreter::applyContainerElemType(ClassAttr& a) {
 
 Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // `my ::foo $x` with no `foo` anywhere: $x holds a BARE type of that name
-    if (ve && !ve->declStubType.empty() && sigil == '$' && ve->declType.empty()) {
-        const std::string& sn = ve->declStubType;
+    if (ve && !ve->d().declStubType.empty() && sigil == '$' && ve->d().declType.empty()) {
+        const std::string& sn = ve->d().declStubType;
         if (!classes_.count(sn) && !isKnownTypeName(sn) && !(tctx_.cur && tctx_.cur->find(sn))) {
             bareStubTypes_.insert(sn);
             return Value::typeObj(sn);
@@ -1296,41 +1296,41 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // is answered "known".
     // Rakudo reports it as a group: the undeclared type (with its "Did you
     // mean" suggestions) as the sorrow, and the declaration it broke as the panic.
-    if (ve && !ve->declType.empty() && !ve->declTypeExpr &&
-        (!declTypeIsKnown(ve->declType) || requireHidden(ve->declType))) {
-        auto sug = typeSuggestions(ve->declType);
+    if (ve && !ve->d().declType.empty() && !ve->d().declTypeExpr &&
+        (!declTypeIsKnown(ve->d().declType) || requireHidden(ve->d().declType))) {
+        auto sug = typeSuggestions(ve->d().declType);
         Value sl = Value::array(); sl.isList = true;
         for (auto& n : sug) sl.arr()->push_back(Value::str(n));
-        std::string msg = "Type '" + ve->declType + "' is not declared" + didYouMean(sug);
+        std::string msg = "Type '" + ve->d().declType + "' is not declared" + didYouMean(sug);
         Value und = makeTypedEx("X::Undeclared",
-            {{"symbol", Value::str(ve->declType)}, {"what", Value::str("Type")}, {"suggestions", sl}}, msg);
+            {{"symbol", Value::str(ve->d().declType)}, {"what", Value::str("Type")}, {"suggestions", sl}}, msg);
         Value sorrows = Value::array(); sorrows.isList = true;
         sorrows.arr()->push_back(und);
         Value panic = makeTypedEx("X::Syntax::Malformed", {{"what", Value::str("my")}}, "Malformed my");
         throwTypedV("X::Comp::Group", {{"sorrows", sorrows}, {"panic", panic}}, msg + "\nMalformed my");
     }
-    if (ve && ve->declTypeExpr && sigil == '$') {
+    if (ve && ve->d().declTypeExpr && sigil == '$') {
         try {
-            Value t = eval(ve->declTypeExpr.get());
+            Value t = eval(ve->d().declTypeExpr.get());
             if (t.t == VT::Type) return t;
         } catch (RakuError&) {}   // unresolvable: fall back to the textual type
     }
-    if (ve && sigil == '$' && !ve->declType.empty()) {
+    if (ve && sigil == '$' && !ve->d().declType.empty()) {
         Value cap;
-        if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) { cap.i = 0; return cap; }
+        if (capturedType(*this, tctx_.cur.get(), ve->d().declType, cap)) { cap.i = 0; return cap; }
     }
     // A coercion type on an `@`/`%` is its ELEMENTS' type, and the container
     // keeps it whole: `my Hash() %h` is Rakudo's Hash[Hash(Any)], so every
     // later store into an element coerces (see coerceElemValue), and `.of`
     // says Hash(Any). The value half of an object hash's "value,key" spec.
-    if (ve && (sigil == '@' || sigil == '%') && !ve->declCoerce.empty()) {
-        const std::string& dt = ve->declType;
+    if (ve && (sigil == '@' || sigil == '%') && !ve->d().declCoerce.empty()) {
+        const std::string& dt = ve->d().declType;
         size_t comma = dt.find(',');
-        if (dt.substr(0, comma) == ve->declCoerce)
-            return typedDefault(ve->declCoerce + "(" + (ve->declCoerceFrom.empty() ? "Any" : ve->declCoerceFrom) +
+        if (dt.substr(0, comma) == ve->d().declCoerce)
+            return typedDefault(ve->d().declCoerce + "(" + (ve->d().declCoerceFrom.empty() ? "Any" : ve->d().declCoerceFrom) +
                                 ")" + (comma == std::string::npos ? std::string() : dt.substr(comma)), sigil);
     }
-    return typedDefault(ve ? ve->declType : std::string(), sigil);
+    return typedDefault(ve ? ve->d().declType : std::string(), sigil);
 }
 
 void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign) {
@@ -1366,7 +1366,7 @@ void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
     if (target && target->kind == NK::VarExpr) {
         auto* tv = static_cast<const VarExpr*>(target);
         if (tv->declare && tv->name.size() > 1 && tv->name[0] == '$') {
-            const std::string& t = tv->declType;
+            const std::string& t = tv->d().declType;
             if (t == "str") kind = "str";
             else if (t.rfind("num", 0) == 0 && (t.size() == 3 || t == "num32" || t == "num64")) kind = "num";
             else if (t == "int" || t == "uint" || t == "byte" ||
@@ -1463,7 +1463,7 @@ void gatherWritesExpr(const Expr* e, std::set<std::string>& writes,
         case NK::VarExpr: {
             auto* v = static_cast<const VarExpr*>(e);
             if (v->declare) declared.insert(v->name);
-            gatherWritesExpr(v->declDefault.get(), writes, declared);
+            gatherWritesExpr(v->d().declDefault.get(), writes, declared);
             break;
         }
         case NK::Assign: { auto* a = static_cast<const Assign*>(e);
@@ -1554,7 +1554,7 @@ static bool initFreeExpr(Expr* e, std::set<std::string>& decl) {
     if (!e) return false;
     switch (e->kind) {
         case NK::VarExpr: { auto* v = static_cast<VarExpr*>(e);
-            if (v->declare) { decl.insert(v->name); return initFreeExpr(v->declDefault.get(), decl); }
+            if (v->declare) { decl.insert(v->name); return initFreeExpr(v->d().declDefault.get(), decl); }
             // dynamics ($*x) and compile-time vars ($?FILE) do not resolve
             // lexically, so an early run finds them the same way a late one does
             if (v->name.size() > 1 && (v->name[1] == '*' || v->name[1] == '?')) return false;
@@ -4622,13 +4622,13 @@ struct ShareSweep {
             case NK::AllomorphLit: expr(static_cast<const AllomorphLit*>(e)->num.get()); break;
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                if (v->viaPseudoPkg && shareIsDynScopePkg(v->pseudoPkg)) programOff("a dynamic-scope pseudo-package");
+                if (v->viaPseudoPkg && shareIsDynScopePkg(v->d().pseudoPkg)) programOff("a dynamic-scope pseudo-package");
                 if (!v->declare && v->name.size() > 1 && v->name[0] == '&' &&
                     (v->name.find("EVAL") != std::string::npos || v->name.find("callframe") != std::string::npos))
                     programOff("&EVAL or &callframe as a value");
                 if (!v->declare) mention(v);
-                expr(v->declDefault.get()); expr(v->declShape.get()); expr(v->declTypeExpr.get());
-                expr(v->declWhereExpr);
+                expr(v->d().declDefault.get()); expr(v->d().declShape.get()); expr(v->d().declTypeExpr.get());
+                expr(v->d().declWhereExpr);
                 break;
             }
             case NK::Assign: { auto* a = static_cast<const Assign*>(e); expr(a->target.get()); expr(a->value.get()); break; }
@@ -4954,10 +4954,10 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     // machinery that keys per-scope side tables by name in OTHER structures
     // (shapes, dynamics, coercion types, `is default`, Set/Bag containers).
     auto slottableDecl = [&](const VarExpr* v) {
-        return v->declare && v->declScope == "my" && slottable(v->name) &&
-               !v->declDynamic && !v->declShape && !v->processScoped &&
-               !v->pkgSymbol && !v->viaPseudoPkg && !v->declDefault &&
-               v->containerIs.empty() && v->declCoerce.empty() && !v->namedBind;
+        return v->declare && v->d().declScope == "my" && slottable(v->name) &&
+               !v->d().declDynamic && !v->d().declShape && !v->processScoped &&
+               !v->pkgSymbol && !v->viaPseudoPkg && !v->d().declDefault &&
+               v->d().containerIs.empty() && v->d().declCoerce.empty() && !v->d().namedBind;
     };
     // The two top-level statement shapes that declare owner-level lexicals:
     // `my $x;` / `my $x = E;` / `my ($a, $b) = E;` (plain `=` only — `:=`
@@ -5019,8 +5019,8 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
             std::vector<const VarExpr*> ds;
             declaredVars(s.get(), ds);
             for (auto* v : ds)
-                L.add(v->name, /*simple=*/v->declType.empty() ||
-                    (!ascii::isupper((unsigned char)v->declType[0]) && v->declType != "atomicint"));
+                L.add(v->name, /*simple=*/v->d().declType.empty() ||
+                    (!ascii::isupper((unsigned char)v->d().declType[0]) && v->d().declType != "atomicint"));
             if (s->kind == NK::VarDecl) {
                 auto* vd = static_cast<const VarDecl*>(s.get());
                 if (vd->scope == "my")
@@ -5121,7 +5121,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
                     // of the current scope, whatever its declarator
                     deactivate(v->name);
                 }
-                if (v->declDefault) self(self, v->declDefault.get());
+                if (v->d().declDefault) self(self, v->d().declDefault.get());
                 break;
             }
             case NK::Assign: { auto* a = static_cast<const Assign*>(e); self(self, a->value.get()); self(self, a->target.get()); break; }
@@ -5543,8 +5543,8 @@ void collectMentionedE(const Expr* e, std::set<std::string>& out) {
         case NK::VarExpr: {
             auto* v = static_cast<const VarExpr*>(e);
             if (!v->declare && !v->name.empty()) out.insert(v->name);
-            collectMentionedE(v->declDefault.get(), out);
-            collectMentionedE(v->declShape.get(), out);
+            collectMentionedE(v->d().declDefault.get(), out);
+            collectMentionedE(v->d().declShape.get(), out);
             break;
         }
         case NK::ListExpr:  each(static_cast<const ListExpr*>(e)->items); break;
@@ -5625,7 +5625,7 @@ void Interpreter::predeclareSubClosures(Block* b, Env* env) {
     auto one = [&](const Expr* x) {
         if (!x || x->kind != NK::VarExpr) return;
         auto* ve = static_cast<const VarExpr*>(x);
-        if (ve->declare && ve->declScope == "my" && !ve->name.empty()) decls.push_back(ve);
+        if (ve->declare && ve->d().declScope == "my" && !ve->name.empty()) decls.push_back(ve);
     };
     for (auto& s : b->stmts) {
         if (s->kind != NK::ExprStmt) continue;
@@ -5651,8 +5651,8 @@ void Interpreter::predeclareSubClosures(Block* b, Env* env) {
         // what the variable IS (`my %h is Set`) and a plain Hash put here first
         // would leave the trait nothing to replace; a parameterized declared
         // type cannot be evaluated this early; a shaped array needs its dims.
-        if (!ve->containerIs.empty() && (ve->name[0] == '%' || ve->name[0] == '@')) continue;
-        if (ve->declTypeExpr || ve->declShape) continue;
+        if (!ve->d().containerIs.empty() && (ve->name[0] == '%' || ve->name[0] == '@')) continue;
+        if (ve->d().declTypeExpr || ve->d().declShape) continue;
         any = true;
         if (env->local(ve->name)) continue;
         // A declared type that names nothing is the DECLARATION's error to

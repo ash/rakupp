@@ -714,8 +714,8 @@ struct Lower {
     // checked as the interpreter checks one, and its operations wrap.
     static char natKind(const VarExpr* v) {
         if (v->declare)
-            return v->declType == "int" || v->declType == "int64" ? 'i'
-                 : v->declType == "num" || v->declType == "num64" ? 'n' : 0;
+            return v->d().declType == "int" || v->d().declType == "int64" ? 'i'
+                 : v->d().declType == "num" || v->d().declType == "num64" ? 'n' : 0;
         return v->nativeIntRead ? 'i' : v->nativeNumRead ? 'n' : 0;
     }
     // Store `src` into the variable `v`'s register `dst`. Into a native the

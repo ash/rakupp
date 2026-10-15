@@ -862,10 +862,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 // Anything beyond a bare `my $x` changes what an assignment
                 // means (a type check, a coercion, a container trait, `our` /
                 // `state` storage).
-                if (a->op != "=" || L->inModifier || tv->declScope != "my" || !tv->declType.empty() ||
-                    !tv->declCoerce.empty() || tv->declDefault || tv->declDynamic || tv->declExport ||
-                    !tv->containerIs.empty() || tv->declShape || tv->declTypeExpr || tv->declSmiley ||
-                    tv->declWhereExpr || tv->declHasWhere || !tv->declStubType.empty() || tv->pkgSymbol ||
+                if (a->op != "=" || L->inModifier || tv->d().declScope != "my" || !tv->d().declType.empty() ||
+                    !tv->d().declCoerce.empty() || tv->d().declDefault || tv->d().declDynamic || tv->d().declExport ||
+                    !tv->d().containerIs.empty() || tv->d().declShape || tv->d().declTypeExpr || tv->d().declSmiley ||
+                    tv->d().declWhereExpr || tv->d().declHasWhere || !tv->d().declStubType.empty() || tv->pkgSymbol ||
                     tv->viaPseudoPkg || !plainScalarName(tv->name) || mentions(a->value.get(), tv->name))
                     return refuse("a declaration with a type, a trait or its own name");
                 KNode* v = expr(k, c, a->value.get(), false, vt);

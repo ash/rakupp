@@ -1709,11 +1709,11 @@ static void checkLiteralDeclType(const Expr* target, const Expr* value, int line
     auto* ve = static_cast<const VarExpr*>(target);
     if (ve->name.empty() || ve->name[0] != '$') return;
     if (!ve->declare && !varType) return;
-    const std::string& declType = ve->declare ? ve->declType : *varType;
+    const std::string& declType = ve->declare ? ve->d().declType : *varType;
     if (declType.empty()) return;
     // a COERCION type (`my Rat(Str) $v = 1`) decides at run time, where the
     // refusal is X::TypeCheck::Assignment, not this compile-time wording
-    if (ve->declare && !ve->declCoerce.empty()) return;
+    if (ve->declare && !ve->d().declCoerce.empty()) return;
     static const std::set<std::string> kInt = {"Int", "int", "int8", "int16", "int32",
         "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte"};
     static const std::set<std::string> kRat = {"Rat", "rat", "rat32", "rat64", "FatRat"};
@@ -3214,7 +3214,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 if (parenned_.count(lhs.get())) listAssign = true;
                 // `constant C = 1, 2, 3` takes the whole list, whatever the sigil
                 auto* dv = static_cast<VarExpr*>(lhs.get());
-                if (dv->declare && dv->declScope == "constant") listAssign = true;
+                if (dv->declare && dv->d().declScope == "constant") listAssign = true;
                 // …and so does a SIGILLESS declaration: `my \x = 1, 2, 3` binds the List
                 if (dv->declare && !nm.empty() && !std::strchr("$@%&", nm[0])) listAssign = true;
             }
@@ -5271,8 +5271,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (!param.empty()) t += "[" + param + "]";
             for (size_t j = 0; j <= k; j++) advance();   // type [: smiley] constant
             ExprPtr d = parseDeclarator("constant");
-            if (d && d->kind == NK::VarExpr && static_cast<VarExpr*>(d.get())->declType.empty())
-                static_cast<VarExpr*>(d.get())->declType = t;
+            if (d && d->kind == NK::VarExpr && static_cast<VarExpr*>(d.get())->d().declType.empty())
+                static_cast<VarExpr*>(d.get())->dm().declType = t;
             return d;
         }
     }
@@ -5285,15 +5285,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                             (isOp(".") && peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore)))
             sigillessRO_.insert(nm);   // (`my \x .= new` binds a value too)
         auto ve = std::make_unique<VarExpr>(nm);
-        ve->declare = true; ve->declScope = scope;
+        ve->declare = true; ve->dm().declScope = scope;
         // …traits included: `my constant \COLORS is export(:colors) = %( … )`
         // (Color::Names). Left in the token stream, the trait made the `=` look
         // like an assignment TO it — "Target is not assignable".
         lastIsExport_ = false;
-        skipTraits(scope != "has", &ve->declDefault);
+        skipTraits(scope != "has", &ve->dm().declDefault);
         // …and `is export` on the constant is a fact the interpreter needs: a
         // `unit class` body publishes nothing on its own (Color::Names::X11)
-        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
+        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
         return ve;
     }
     // `my multi sub NAME(…) {…}` / `my proto sub NAME(|) {*}` in expression
@@ -5347,10 +5347,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         std::string nm = advance().text;
         sigilless_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
-        ve->declare = true; ve->declScope = scope;
+        ve->declare = true; ve->dm().declScope = scope;
         lastIsExport_ = false;
-        skipTraits(scope != "has", &ve->declDefault);
-        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
+        skipTraits(scope != "has", &ve->dm().declDefault);
+        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
         return ve;
     }
     if (isKind(Tok::Ident)) {
@@ -5475,14 +5475,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                             (isOp(".") && peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore)))
             sigillessRO_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
-        ve->declare = true; ve->declScope = scope; ve->declType = type;
+        ve->declare = true; ve->dm().declScope = scope; ve->dm().declType = type;
         // …and it can carry traits like any other declarator: Color::Names writes
         // `my constant \COLORS is export(:colors) = %( … )`. Without this the
         // trait stayed in the token stream and the `=` looked like an assignment
         // to `is export(:colors)`, which is "Target is not assignable".
         lastIsExport_ = false;
-        skipTraits(scope != "has", &ve->declDefault);
-        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
+        skipTraits(scope != "has", &ve->dm().declDefault);
+        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
         return ve;
     }
     // `my :($sigil, $type) := do given …` — a SIGNATURE literal standing where a
@@ -5523,7 +5523,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 std::string nm = advance().text;
                 declTypeNames_.insert(nm); typeCaptureNames_.insert(nm);
                 auto ve = std::make_unique<VarExpr>(nm);
-                ve->declare = true; ve->declScope = scope;
+                ve->declare = true; ve->dm().declScope = scope;
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
@@ -5533,13 +5533,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 if (!nm.empty()) sigilless_.insert(nm);
                 if (!nm.empty()) sigillessRO_.insert(nm);
                 auto ve = std::make_unique<VarExpr>(nm);
-                ve->declare = true; ve->declScope = scope;
+                ve->declare = true; ve->dm().declScope = scope;
                 if (isIdent("where")) {
                     advance();
                     ExprPtr we = parseExpr(BP_COMMA + 1);
-                    ve->declHasWhere = true;
-                    ve->declWhereOwn = std::shared_ptr<Expr>(we.release());
-                    ve->declWhereExpr = ve->declWhereOwn.get();
+                    ve->dm().declHasWhere = true;
+                    ve->dm().declWhereOwn = std::shared_ptr<Expr>(we.release());
+                    ve->dm().declWhereExpr = ve->d().declWhereOwn.get();
                 }
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
@@ -5558,7 +5558,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 // anonymous slurpy `my ($one, *@) = 1..4` — swallow the rest
                 advance(); advance();
                 auto ve = std::make_unique<VarExpr>("");
-                ve->declare = true; ve->declScope = scope;
+                ve->declare = true; ve->dm().declScope = scope;
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
@@ -5605,7 +5605,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (isOp(":") && peek().kind == Tok::Var) {
                 advance();
                 auto ve = std::make_unique<VarExpr>(advance().text);
-                ve->declare = true; ve->declScope = scope; ve->namedBind = true;
+                ve->declare = true; ve->dm().declScope = scope; ve->dm().namedBind = true;
                 list->items.push_back(std::move(ve));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
@@ -5619,7 +5619,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 (peek().kind == Tok::Comma || peek().kind == Tok::RParen)) {
                 advance();
                 auto anon = std::make_unique<VarExpr>(std::string("$") + kAnonSlot);
-                anon->declare = true; anon->declScope = scope;
+                anon->declare = true; anon->dm().declScope = scope;
                 list->items.push_back(std::move(anon));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
@@ -5630,10 +5630,10 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 // …but it CONSTRAINS that slot: `my ("foo") = "bar"` dies
                 ExprPtr litE = parsePrimary();
                 auto anon = std::make_unique<VarExpr>(std::string("$") + kAnonSlot);
-                anon->declare = true; anon->declScope = scope;
-                anon->declHasWhere = true;
-                anon->declWhereOwn = std::shared_ptr<Expr>(litE.release());
-                anon->declWhereExpr = anon->declWhereOwn.get();
+                anon->declare = true; anon->dm().declScope = scope;
+                anon->dm().declHasWhere = true;
+                anon->dm().declWhereOwn = std::shared_ptr<Expr>(litE.release());
+                anon->dm().declWhereExpr = anon->d().declWhereOwn.get();
                 list->items.push_back(std::move(anon));
                 if (!matchKind(Tok::Comma)) break;
                 continue;
@@ -5643,7 +5643,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             if (dnm.size() == 1 && std::strchr("$@%&", dnm[0])) dnm += kAnonSlot; // `my ($, $b)`: unnameable, as above
             if (scope == "my" || scope == "state") noteLexDecl(dnm, pos_ - 1, cur().line);
             auto ve = std::make_unique<VarExpr>(dnm);
-            ve->declare = true; ve->declScope = scope;
+            ve->declare = true; ve->dm().declScope = scope;
             // `my ($x?) := ()` — the signature markers. A declaration list binds
             // POSITIONALLY, and a position the right-hand side does not reach
             // already yields an undefined value, which is exactly what optional
@@ -5659,8 +5659,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // trait after the parenthesis to every item)
             if (isIdent("is") || isIdent("will")) {
                 lastIsDynamic_ = false;
-                skipTraits(scope != "has", &ve->declDefault);
-                if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
+                skipTraits(scope != "has", &ve->dm().declDefault);
+                if (lastIsDynamic_) { ve->dm().declDynamic = true; lastIsDynamic_ = false; }
                 lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false;
                 lastWillPhaser_.clear(); lastWillBlock_.reset(); earlierWills_.clear();
             }
@@ -5675,15 +5675,15 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 throw ParseError("Variable " + dnm + " has conflicting types " + type + " and " + t2,
                                  cur().line, "X::Syntax::Variable::ConflictingTypes",
                                  {{"outer", type}, {"inner", t2}});
-            ve->declType = t2.empty() ? type : t2;
-            ve->declCoerce = coerce2.empty() ? coerceTo : coerce2;  // `my Int() ($a, $b)` / `my ($a, Int() $b)`
-            if (t2.empty() && declSmiley && declSmiley != '_') ve->declSmiley = declSmiley;   // `my Int:D ($x = 5)`
+            ve->dm().declType = t2.empty() ? type : t2;
+            ve->dm().declCoerce = coerce2.empty() ? coerceTo : coerce2;  // `my Int() ($a, $b)` / `my ($a, Int() $b)`
+            if (t2.empty() && declSmiley && declSmiley != '_') ve->dm().declSmiley = declSmiley;   // `my Int:D ($x = 5)`
             if (isIdent("where")) {
                 advance();
                 ExprPtr we = parseExpr(BP_COMMA + 1);
-                ve->declHasWhere = true;
-                ve->declWhereOwn = std::shared_ptr<Expr>(we.release());
-                ve->declWhereExpr = ve->declWhereOwn.get();
+                ve->dm().declHasWhere = true;
+                ve->dm().declWhereOwn = std::shared_ptr<Expr>(we.release());
+                ve->dm().declWhereExpr = ve->d().declWhereOwn.get();
             }
             if (isOp("=") ) { // per-item initializer: `my Int:D ($x = 5)`
                 advance();
@@ -5712,7 +5712,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 VarExpr* v = dynamic_cast<VarExpr*>(it.get());
                 if (!v)
                     if (auto* as = dynamic_cast<Assign*>(it.get())) v = dynamic_cast<VarExpr*>(as->target.get());
-                if (v && (dynScopeAll_ || dynScopeNames_.count(v->name))) v->declDynamic = true;
+                if (v && (dynScopeAll_ || dynScopeNames_.count(v->name))) v->dm().declDynamic = true;
             }
         // `my ($a, $b) is default(42)` / `is dynamic` — a trait after the list
         // applies to EVERY variable in it. Each one needs its own default
@@ -5726,9 +5726,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 if (!v) continue;
                 pos_ = traitsAt;
                 lastIsDynamic_ = false;
-                skipTraits(scope != "has", &v->declDefault);
-                if (lastIsDynamic_) { v->declDynamic = true; lastIsDynamic_ = false; }
-                if (dynScopeAll_ || dynScopeNames_.count(v->name)) v->declDynamic = true;   // `use dynamic-scope`
+                skipTraits(scope != "has", &v->dm().declDefault);
+                if (lastIsDynamic_) { v->dm().declDynamic = true; lastIsDynamic_ = false; }
+                if (dynScopeAll_ || dynScopeNames_.count(v->name)) v->dm().declDynamic = true;   // `use dynamic-scope`
                 traitsEnd = pos_;
             }
             if (traitsEnd == traitsAt) skipTraits(scope != "has");
@@ -5840,17 +5840,17 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             else if (std::string o3 = opOf("postfix"); !o3.empty()) regSet('P', userPostfix_, o3);
         }
         auto ve = std::make_unique<VarExpr>(vname);
-        ve->declare = true; ve->declScope = scope; ve->declType = type; ve->declCoerce = coerceTo;
-        ve->declStubType = stubType;
-        ve->declCoerceFrom = coerceFrom;
-        ve->declTypeExpr = std::move(typeExpr);
+        ve->declare = true; ve->dm().declScope = scope; ve->dm().declType = type; ve->dm().declCoerce = coerceTo;
+        ve->dm().declStubType = stubType;
+        ve->dm().declCoerceFrom = coerceFrom;
+        ve->dm().declTypeExpr = std::move(typeExpr);
         // the smiley: written on the type, else the `use variables` default
         // (which applies to a TYPED declaration only)
-        if (declSmiley) ve->declSmiley = declSmiley;
+        if (declSmiley) ve->dm().declSmiley = declSmiley;
         else if (varsPragma_ && !type.empty() && (scope == "my" || scope == "our" || scope == "state")) {
-            ve->declSmiley = varsPragma_; ve->declSmileyImplicit = true;
+            ve->dm().declSmiley = varsPragma_; ve->dm().declSmileyImplicit = true;
         }
-        if (ve->declSmiley == '_') ve->declSmiley = 0;
+        if (ve->d().declSmiley == '_') ve->dm().declSmiley = 0;
         // shaped array `my @a[3]` / `my @a[2;2]`: the `[...]` right after the sigil
         // (no space) is a dimension list, not a subscript. Semicolons separate dims.
         if (ve->name[0] == '@' && isKind(Tok::LBracket) && !cur().spaceBefore) {
@@ -5870,7 +5870,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             }
             expectKind(Tok::RBracket, "]");
             if (!dims->items.empty())
-                ve->declShape = dims->items.size() == 1 ? std::move(dims->items[0]) : std::move(dims);
+                ve->dm().declShape = dims->items.size() == 1 ? std::move(dims->items[0]) : std::move(dims);
         }
         // `%a{Str}` — hash key-type shape declaration; the key type may carry a
         // smiley: `state %converter-for-type{Any:U}` (Getopt::Long). Unconsumed,
@@ -5901,8 +5901,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             advance();
             std::string ot = advance().text;
             // `my Int $a of Str` — two different types for one variable
-            if (!ve->declType.empty() && ve->declType != ot) {
-                const std::string msg = ot + " not allowed here; variable list already declared with type " + ve->declType;
+            if (!ve->d().declType.empty() && ve->d().declType != ot) {
+                const std::string msg = ot + " not allowed here; variable list already declared with type " + ve->d().declType;
                 // …and a SECOND `of` further on (`… is default("z") of Rat`) is
                 // a second sorrow: Rakudo reports the lot as one X::Comp::Group
                 for (size_t k = pos_; k < toks_.size() && toks_[k].line == toks_[pos_ - 1].line &&
@@ -5914,25 +5914,25 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                          cur().line, "X::Comp::Group",
                                          {{"sorrow", "X::Syntax::Variable::ConflictingTypes"}, {"sorrow-msg", msg},
                                           {"sorrow-what", ve->name}});
-                throw ParseError("Variable " + ve->name + " has conflicting types " + ve->declType + " and " + ot,
+                throw ParseError("Variable " + ve->name + " has conflicting types " + ve->d().declType + " and " + ot,
                                  cur().line, "X::Syntax::Variable::ConflictingTypes",
-                                 {{"outer", ve->declType}, {"inner", ot}});
+                                 {{"outer", ve->d().declType}, {"inner", ot}});
             }
-            ve->declType = ot;
+            ve->dm().declType = ot;
         }
         // Hash[valueType,keyType] — an object hash with no explicit value type is
         // Hash[Any, KeyType], so a missing key answers Any (Rakudo)
         // An object hash with no declared VALUE type takes Mu from 6.e and Any
         // before it — `my %h{Str}; %h<nope>.WHAT` is Mu there, Any here.
         if (!keyType.empty())
-            ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
+            ve->dm().declType = (ve->d().declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->d().declType) + "," + keyType;
         lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
         lastWillPhaser_.clear(); lastWillBlock_.reset(); earlierWills_.clear(); lastOfType_.clear(); lastDoesRoles_.clear();
         lastUserTraits_.clear();
         {
             struct Collect { bool& f; Collect(bool& F, bool on) : f(F) { f = on; } ~Collect() { f = false; } }
                 collect(collectUserTraits_, scope != "has" && scope != "constant");
-            skipTraits(scope != "has", &ve->declDefault);
+            skipTraits(scope != "has", &ve->dm().declDefault);
         }
         // a USER trait is called once the variable exists: `\x01var-trait`
         // hands it the Variable (Interpreter::applyVarTrait)
@@ -5961,13 +5961,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         }
         lastDoesRoles_.clear();
         if (!lastOfType_.empty()) {
-            if (ve->declType.empty() || ve->declType.find(',') == std::string::npos) ve->declType = lastOfType_;
+            if (ve->d().declType.empty() || ve->d().declType.find(',') == std::string::npos) ve->dm().declType = lastOfType_;
             lastOfType_.clear();
         }
-        if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
-        if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
+        if (!lastContainerIs_.empty()) { ve->dm().containerIs = lastContainerIs_; lastContainerIs_.clear(); }
+        if (lastIsDynamic_) { ve->dm().declDynamic = true; lastIsDynamic_ = false; }
         if ((scope == "my" || scope == "state") && (dynScopeAll_ || dynScopeNames_.count(ve->name)))
-            ve->declDynamic = true;   // `use dynamic-scope`
+            ve->dm().declDynamic = true;   // `use dynamic-scope`
         // `my $x is export` — only an `our` variable is in a package to export
         if (lastIsExport_ && (scope == "my" || scope == "state") && !ve->name.empty() &&
             std::strchr("$@%&", ve->name[0]))
@@ -5976,8 +5976,8 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                              "X::Comp::Trait::Scope",
                              {{"type", "is"}, {"subtype", "export"}, {"declaring", "variable"},
                               {"scope", scope}, {"supported", "our"}});
-        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
-        if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
+        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
+        if (!lastContainerOf_.empty()) { ve->dm().containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         if (lastWillBlock_) {
             // desugar `my $x will leave {…}` into `LEAVE {…}($x)` right after
             // this statement — the block loops flush pendingStmts_; calling the
@@ -6003,9 +6003,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         if (isIdent("where")) {
             advance();
             ExprPtr we = parseExpr(BP_ASSIGN + 1);
-            ve->declHasWhere = true;
-            ve->declWhereOwn = std::shared_ptr<Expr>(we.release());
-            ve->declWhereExpr = ve->declWhereOwn.get();
+            ve->dm().declHasWhere = true;
+            ve->dm().declWhereOwn = std::shared_ptr<Expr>(we.release());
+            ve->dm().declWhereExpr = ve->d().declWhereOwn.get();
         }
         return ve;
     }
@@ -6027,13 +6027,13 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // prefix, giving "Undefined routine 'CSI'" (Terminal::ANSI does this).
         sigilless_.insert(cname);
         auto ve = std::make_unique<VarExpr>(cname);
-        ve->declare = true; ve->declScope = scope;
+        ve->declare = true; ve->dm().declScope = scope;
         lastIsExport_ = false;
         skipTraits();
         // `constant \COLORS is export(:colors) = …` — the trait was skipped and
         // its flag left set for the NEXT declaration to pick up; a constant in
         // a `unit class` body is published nowhere else (Color::Names::X11)
-        if (lastIsExport_) { ve->declExport = true; lastIsExport_ = false; }
+        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
         // `constant foo;` — a constant must be initialized
         if (isKind(Tok::Semicolon) || isKind(Tok::End))
             throw ParseError("Missing initializer on constant declaration",
@@ -6046,25 +6046,25 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         (isKind(Tok::Var) && cur().text.size() == 1)) {
         std::string sig = advance().text;
         auto ve = std::make_unique<VarExpr>(sig + freshAnonSlot());
-        ve->declare = true; ve->declScope = scope; ve->declType = type;
+        ve->declare = true; ve->dm().declScope = scope; ve->dm().declType = type;
         // anonymous object hash `my %{Str:D} is default(…)` — the braced key type
         if (sig == "%" && isKind(Tok::LBrace) && peek().kind == Tok::Ident) {
             advance();
             std::string keyType = advance().text;
             if (isOp(":") && peek().kind == Tok::Ident) { advance(); advance(); } // :D/:U smiley
             matchKind(Tok::RBrace);
-            ve->declType = (ve->declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->declType) + "," + keyType;
+            ve->dm().declType = (ve->d().declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->d().declType) + "," + keyType;
         }
         lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false;
-        skipTraits(scope != "has", &ve->declDefault);
-        if (lastIsDynamic_) { ve->declDynamic = true; lastIsDynamic_ = false; }
+        skipTraits(scope != "has", &ve->dm().declDefault);
+        if (lastIsDynamic_) { ve->dm().declDynamic = true; lastIsDynamic_ = false; }
         if ((scope == "my" || scope == "state") && (dynScopeAll_ || dynScopeNames_.count(ve->name)))
-            ve->declDynamic = true;   // `use dynamic-scope`
-        if (!lastContainerOf_.empty()) { ve->containerOf = lastContainerOf_; lastContainerOf_.clear(); }
+            ve->dm().declDynamic = true;   // `use dynamic-scope`
+        if (!lastContainerOf_.empty()) { ve->dm().containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         // `my % is Hash::Ordered = …` — an ANONYMOUS variable takes the container
         // trait exactly as a named one does; dropping it left a plain Hash, and the
         // assignment that follows never reached the container type's STORE.
-        if (!lastContainerIs_.empty()) { ve->containerIs = lastContainerIs_; lastContainerIs_.clear(); }
+        if (!lastContainerIs_.empty()) { ve->dm().containerIs = lastContainerIs_; lastContainerIs_.clear(); }
         return ve;
     }
     // A BAREWORD where the variable should be is the sigilless slip — `my Int a`
@@ -6830,7 +6830,7 @@ ExprPtr Parser::parsePrimary() {
         // "not declared" for a name only the package holds
         if (langRev_ >= 2 && symName.size() > 1 && std::strchr("$@%", symName[0])) {
             rv->viaPseudoPkg = true;
-            rv->pseudoPkg = "ROOT";
+            rv->dm().pseudoPkg = "ROOT";
         }
         return rv;
     }
@@ -7585,7 +7585,7 @@ ExprPtr Parser::parsePrimary() {
                 (cur().text[0] == '@' || cur().text[0] == '%') &&
                 peek().kind == Tok::Op && peek().text == "=") {
                 auto ave = std::make_unique<VarExpr>(advance().text + kAnonSlot);
-                ave->declare = true; ave->declScope = "my";
+                ave->declare = true; ave->dm().declScope = "my";
                 return ave;
             }
             // bare `$` as a TERM is an anonymous STATE variable — each textual
@@ -7597,7 +7597,7 @@ ExprPtr Parser::parsePrimary() {
                 !(peek().kind == Tok::Op && peek().text == "<" && !peek().spaceBefore)) {
                 int ln = cur().line; advance();
                 auto e = std::make_unique<VarExpr>("$anon--state--" + std::to_string(anonStateN_++));
-                e->declare = true; e->declScope = "state";
+                e->declare = true; e->dm().declScope = "state";
                 e->line = ln;
                 return e;
             }
@@ -7777,7 +7777,7 @@ ExprPtr Parser::parsePrimary() {
                 stripped = stripPseudoPkg(stripped);
             }
             auto e = std::make_unique<VarExpr>(stripped);
-            if (callerSetting) { e->viaPseudoPkg = true; e->pseudoPkg = "CORE"; }
+            if (callerSetting) { e->viaPseudoPkg = true; e->dm().pseudoPkg = "CORE"; }
             e->processScoped = raw.find("PROCESS::") != std::string::npos;
             if (raw.size() > 2 && raw[1] == '*' && raw == e->name && !dynUsed_.empty())
                 dynUsed_.back().insert(raw);
@@ -7832,7 +7832,7 @@ ExprPtr Parser::parsePrimary() {
             if (raw.size() > 1 && std::strchr("$@%&", raw[0]) &&
                 (raw.compare(1, 6, "CORE::") == 0 || (raw.compare(1, 9, "SETTING::") == 0 && !strictSep_))) {
                 e->viaPseudoPkg = true;
-                e->pseudoPkg    = "CORE";
+                e->dm().pseudoPkg    = "CORE";
             }
             // `$OUR::x` names the CURRENT package's `our $x` — which an inner
             // block may have declared, out of lexical reach (roast pseudo-6*.t)
@@ -7844,7 +7844,7 @@ ExprPtr Parser::parsePrimary() {
                 raw.find("::", ourEnd) == std::string::npos) {
                 if (ourEnd > 6) { e->name = "$" + raw.substr(ourEnd); e->syncAttrCache(); }
                 e->viaPseudoPkg = true;
-                e->pseudoPkg    = "OUR";
+                e->dm().pseudoPkg    = "OUR";
             }
             e->line = ln; return e;
         }
@@ -8075,8 +8075,8 @@ ExprPtr Parser::parsePrimary() {
             // A SECOND pair of parens finishes a WhateverCode: `((*.flip)).assuming(42)`
             // calls the WhateverCode's own .assuming, where one pair curries it.
             if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e.get())->declare &&
-                static_cast<VarExpr*>(e.get())->declScope == "state")
-                static_cast<VarExpr*>(e.get())->stateInParens = true;
+                static_cast<VarExpr*>(e.get())->d().declScope == "state")
+                static_cast<VarExpr*>(e.get())->dm().stateInParens = true;
             if (e && parenned_.count(e.get())) {
                 if (e->kind == NK::Binary) static_cast<Binary*>(e.get())->curryClosed = true;
                 else if (e->kind == NK::MethodCall) static_cast<MethodCall*>(e.get())->curryClosed = true;
@@ -8444,7 +8444,7 @@ ExprPtr Parser::parsePrimary() {
                 peek().kind == Tok::Op && peek().text == "=" && peek().spaceBefore) {
                 advance();
                 auto ve = std::make_unique<VarExpr>(t.text + kAnonSlot);
-                ve->declare = true; ve->declScope = "my";
+                ve->declare = true; ve->dm().declScope = "my";
                 return ve;
             }
             // `&%dispatch{$key}` / `&@handlers[$i]` — the CODE sigil on a hash/array
@@ -9262,7 +9262,7 @@ ExprPtr Parser::parsePrimary() {
                 // must not share (and race on) the ones it was started beside
                 for (const char* fresh : {"$/", "$!"}) {
                     auto ve = std::make_unique<VarExpr>(fresh);
-                    ve->declare = true; ve->declScope = "my";
+                    ve->declare = true; ve->dm().declScope = "my";
                     auto es = std::make_unique<ExprStmt>();
                     es->e = std::move(ve);
                     be->body.insert(be->body.begin(), std::move(es));
@@ -9313,7 +9313,7 @@ ExprPtr Parser::parsePrimary() {
                             const std::string& nm = static_cast<VarExpr*>(decl.get())->name;
                             listTarget = !nm.empty() && (nm[0] == '@' || nm[0] == '%');
                             // `constant C = 1, 2, 3` takes the whole list, whatever the sigil
-                            if (static_cast<VarExpr*>(decl.get())->declScope == "constant") listTarget = true;
+                            if (static_cast<VarExpr*>(decl.get())->d().declScope == "constant") listTarget = true;
                             // …and so does a SIGILLESS one: `my \s = 1, 2, 4 ... 16` binds the Seq
                             if (!nm.empty() && !std::strchr("$@%&", nm[0])) listTarget = true;
                         }
@@ -9337,8 +9337,8 @@ ExprPtr Parser::parsePrimary() {
                             auto* dv = static_cast<VarExpr*>(as->target.get());
                             const std::string& nm = dv->name;
                             if (nm.size() > 1 && std::strchr("$@%", nm[0]) && (std::isalpha((unsigned char)nm[1]) || (nm[1] == '_' && nm.size() > 2)) &&
-                                dv->declScope != "constant" &&
-                                dv->declScope != "state")
+                                dv->d().declScope != "constant" &&
+                                dv->d().declScope != "state")
                             {
                                 // only a DIRECT read counts: a block, closure or routine
                                 // in the initializer is its own scope (and may declare
@@ -9580,7 +9580,7 @@ ExprPtr Parser::parsePrimary() {
                     auto pv = std::make_unique<VarExpr>(sym);
                     pv->processScoped = (pseudoPkg == "PROCESS");
                     pv->viaPseudoPkg  = true;
-                    pv->pseudoPkg     = pseudoPkg;
+                    pv->dm().pseudoPkg     = pseudoPkg;
                     return pv;
                 }
             }
@@ -11182,8 +11182,8 @@ void Parser::noteScalarDecls(const Expr* e) {
     if (e->kind != NK::VarExpr) return;
     auto* ve = static_cast<const VarExpr*>(e);
     if (!ve->declare || ve->name.size() < 2 || ve->name[0] != '$') return;
-    scalarDeclTypes_.back()[ve->name] = ve->declType;
-    nativeIntDecl_.back()[ve->name] = nativeScalarKind(ve->declType);
+    scalarDeclTypes_.back()[ve->name] = ve->d().declType;
+    nativeIntDecl_.back()[ve->name] = nativeScalarKind(ve->d().declType);
 }
 
 char Parser::nativeScalarKind(const std::string& t) {
@@ -13940,7 +13940,7 @@ void desugarDotDecl(Expr* e, ClassDecl& cd, int line) {
     if (e->kind != NK::VarExpr) return;
     auto* v = static_cast<VarExpr*>(e);
     if (!v->declare || v->name.size() < 3 || v->name[1] != '.') return;
-    if (v->declScope != "my" && v->declScope != "our" && v->declScope != "state") return;
+    if (v->d().declScope != "my" && v->d().declScope != "our" && v->d().declScope != "state") return;
     std::string bare = v->name.substr(2);
     v->name = dotDeclLexName(v->name);
     v->syncAttrCache(); // the renamed node is a plain lexical, not an attribute
@@ -15805,7 +15805,7 @@ StmtPtr Parser::parseStatement() {
             if (t && t->kind == NK::VarExpr && (as->op == "=" || as->op == ":="))
                 dv = static_cast<VarExpr*>(t);
         }
-        else if (e0 && e0->kind == NK::VarExpr && static_cast<VarExpr*>(e0)->declDefault)
+        else if (e0 && e0->kind == NK::VarExpr && static_cast<VarExpr*>(e0)->d().declDefault)
             dv = static_cast<VarExpr*>(e0);
         // …and only the `my $x = …` spelling: `(my @a) = […@a…]` (what `.raku`
         // writes for a self-referencing array) assigns after declaring
@@ -15815,7 +15815,7 @@ StmtPtr Parser::parseStatement() {
         // caller's $*OUT, which the new one has not shadowed yet)
         if (dv && declStart && dv->declare && dv->name.size() > 1 && std::strchr("$@%", dv->name[0]) &&
             dv->name[1] != '*' &&
-            (dv->declScope == "my" || dv->declScope == "state")) {
+            (dv->d().declScope == "my" || dv->d().declScope == "state")) {
             static const std::set<std::string> kMods = {
                 "if", "unless", "for", "while", "until", "with", "without", "given", "when"};
             // a routine or pointy block in the initializer declares names of its own
@@ -15841,20 +15841,20 @@ StmtPtr Parser::parseStatement() {
         Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
         if (e && e->kind == NK::VarExpr) {
             auto* ve = static_cast<VarExpr*>(e);
-            if (ve->declare) ve->declBare = true;
+            if (ve->declare) ve->dm().declBare = true;
             // `my \foo;` — a sigilless name is BOUND at its declaration, so
             // it needs something to bind
             if (ve->declare && !ve->name.empty() && !std::strchr("$@%&", ve->name[0]) &&
-                (ve->declScope == "my" || ve->declScope == "our" || ve->declScope == "state"))
+                (ve->d().declScope == "my" || ve->d().declScope == "our" || ve->d().declScope == "state"))
                 throw ParseError("Term definition requires an initializer", line,
                                  "X::Syntax::Term::MissingInitializer", {});
-            if (ve->declare && ve->declSmiley == 'D' && !ve->declDefault && !ve->declHasWhere && !ve->name.empty() &&
+            if (ve->declare && ve->d().declSmiley == 'D' && !ve->d().declDefault && !ve->d().declHasWhere && !ve->name.empty() &&
                 ve->name[0] == '$') {
-                const std::string ty = ve->declType + ":D";
+                const std::string ty = ve->d().declType + ":D";
                 std::vector<std::pair<std::string, std::string>> at = {{"type", ty}};
-                if (ve->declSmileyImplicit) at.push_back({"implicit", ":D by pragma"});
+                if (ve->d().declSmileyImplicit) at.push_back({"implicit", ":D by pragma"});
                 throw ParseError("Variable definition of type " + ty +
-                                 (ve->declSmileyImplicit ? " (implicit :D by pragma)" : "") +
+                                 (ve->d().declSmileyImplicit ? " (implicit :D by pragma)" : "") +
                                  " requires an initializer", line,
                                  "X::Syntax::Variable::MissingInitializer", at);
             }
@@ -16094,8 +16094,8 @@ StmtPtr Parser::parseStatementImpl() {
                 if (wasMy && st && st->kind == NK::ExprStmt) {
                     Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
                     if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
-                    if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declScope == "constant")
-                        static_cast<VarExpr*>(e)->declMyConstant = true;
+                    if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->d().declScope == "constant")
+                        static_cast<VarExpr*>(e)->dm().declMyConstant = true;
                 }
                 // `anon class C {…}` keeps the NAME C — `.^name` answers it —
                 // but installs the symbol nowhere, so `C` afterwards is
@@ -16138,8 +16138,8 @@ StmtPtr Parser::parseStatementImpl() {
                 if (kw != "my" || !st || st->kind != NK::ExprStmt) return;
                 Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
                 if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
-                if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declScope == "constant")
-                    static_cast<VarExpr*>(e)->declMyConstant = true;
+                if (e && e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->d().declScope == "constant")
+                    static_cast<VarExpr*>(e)->dm().declMyConstant = true;
             };
             // (the type may carry a smiley: `my Int:D constant \a .= new: 42`)
             const bool smileyDecl = peek().kind == Tok::Ident && peek(2).kind == Tok::Op && peek(2).text == ":" &&
@@ -16173,8 +16173,8 @@ StmtPtr Parser::parseStatementImpl() {
                         e = static_cast<Assign*>(e)->target.get();
                     if (e && e->kind == NK::VarExpr) {
                         auto* ve = static_cast<VarExpr*>(e);
-                        if (ve->declare && ve->declScope == "constant" && ve->declType.empty())
-                            ve->declType = prefixType;
+                        if (ve->declare && ve->d().declScope == "constant" && ve->d().declType.empty())
+                            ve->dm().declType = prefixType;
                     }
                 }
                 markMyConstant(st);
@@ -16209,8 +16209,8 @@ StmtPtr Parser::parseStatementImpl() {
                         else if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
                         if (e && e->kind == NK::VarExpr) {
                             auto* ve = static_cast<VarExpr*>(e);
-                            if (ve->declare && ve->declScope == "constant" && ve->declType.empty())
-                                ve->declType = prefixType;
+                            if (ve->declare && ve->d().declScope == "constant" && ve->d().declType.empty())
+                                ve->dm().declType = prefixType;
                         }
                     }
                     markMyConstant(st);
@@ -17249,7 +17249,7 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                 // …but a `constant &infix:<☄> := &infix:<☃>` ALIASES a routine
                 // that may still take candidates: `multi infix:<☄>` after it is fine
                 if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&' &&
-                    ve->declScope != "constant")
+                    ve->d().declScope != "constant")
                     subs[ve->name.substr(1)] |= 1;
             }
             continue;

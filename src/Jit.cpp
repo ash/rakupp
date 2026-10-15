@@ -359,16 +359,16 @@ void Scan::expr(Expr* e) {
                 // means (a type check, a coercion, a container trait, `our`/
                 // `state` storage), and the kernel writes the container
                 // directly. Refuse the lot.
-                if (v->declScope != "my" && !v->declScope.empty()) { fail("a " + v->declScope + " declaration"); return; }
+                if (v->d().declScope != "my" && !v->d().declScope.empty()) { fail("a " + v->d().declScope + " declaration"); return; }
                 // …except, for copy-and-patch, a full-width native: `my int $k`
                 // and `my num $t` are registers of that kind, and the lowering
                 // checks and wraps every store to them as the interpreter does
                 const bool cnpNative = g_opt.backend == Backend::Cnp &&
-                    (v->declType == "int" || v->declType == "int64" ||
-                     v->declType == "num" || v->declType == "num64");
-                if ((!v->declType.empty() && !cnpNative) || !v->declCoerce.empty() || v->declDefault ||
-                    v->declDynamic || v->declExport || !v->containerIs.empty() ||
-                    v->declShape || v->declTypeExpr || v->pkgSymbol || v->viaPseudoPkg) {
+                    (v->d().declType == "int" || v->d().declType == "int64" ||
+                     v->d().declType == "num" || v->d().declType == "num64");
+                if ((!v->d().declType.empty() && !cnpNative) || !v->d().declCoerce.empty() || v->d().declDefault ||
+                    v->d().declDynamic || v->d().declExport || !v->d().containerIs.empty() ||
+                    v->d().declShape || v->d().declTypeExpr || v->pkgSymbol || v->viaPseudoPkg) {
                     fail("a declaration with a type or trait"); return;
                 }
                 if (scopes.empty()) { fail("a declaration outside any scope"); return; }
@@ -946,7 +946,7 @@ LoopStmt* nestedForLoopImpl(ForStmt* fs) {
         auto mkVar = [&](const std::string& n, bool decl) {
             auto* v = new VarExpr(n);
             v->line = fs->line;
-            if (decl) { v->declare = true; v->declScope = "my"; }
+            if (decl) { v->declare = true; v->dm().declScope = "my"; }
             return v;
         };
         const std::string endName = "$__jit_end_" + std::to_string((unsigned long long)(uintptr_t)fs);

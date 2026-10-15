@@ -670,12 +670,12 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
                 // `found` tracks the STATIC half of the test — that a candidate
                 // exists at all. Whether it actually needs defining on this call
                 // is the dynamic `env->vars.count` below, which must stay per-call.
-                if (cond && v->declare && v->declScope == "my" && !v->name.empty()) {
+                if (cond && v->declare && v->d().declScope == "my" && !v->name.empty()) {
                     found = true;
                     if (!env->local(v->name))
                         env->define(v->name, declInitial(v, v->name[0]));
                 }
-                if (v->declDefault) self(self, v->declDefault.get(), cond);
+                if (v->d().declDefault) self(self, v->d().declDefault.get(), cond);
                 break;
             }
             case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); self(self, t->cond.get(), cond); self(self, t->then.get(), true); self(self, t->els.get(), true); break; }
@@ -1925,7 +1925,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     return regexMatch(rxSubject(topic), rl->pattern);
                 }
             }
-            if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declBare) {
+            if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->d().declBare) {
                 auto* ve = static_cast<VarExpr*>(e);
                 if (!ve->name.empty()) checkBareSubsetDecl(ve, ve->name[0]);
             }
@@ -9755,7 +9755,7 @@ static bool sigillessDeclBind(const Assign* a) {
     if (!a || !a->target || !a->value || a->target->kind != NK::VarExpr ||
         !(opEq(a->op, "=") || opEq(a->op, ":="))) return false;
     auto* v = static_cast<const VarExpr*>(a->target.get());
-    return v->declare && v->declScope == "my" && !v->name.empty() && !std::strchr("$@%&", v->name[0]);
+    return v->declare && v->d().declScope == "my" && !v->name.empty() && !std::strchr("$@%&", v->name[0]);
 }
 
 
@@ -11060,6 +11060,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     }
     if (e->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(e);
+        const VarDeclInfo& vd = ve->d();   // (its declaration fields, read many times below)
         char sigil = ve->name.empty() ? '$' : ve->name[0];
         // process-immutable dynamics; a user `my $*PID` shadow stays assignable
         if (!ve->declare && (ve->name == "$*PID" || ve->name == "$*EXECUTABLE" ||
@@ -11079,13 +11080,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
         // `DYNAMIC::<$*x> := v` binds wherever the lookup finds `$*x` — a
         // caller's, else GLOBAL's `$x`, else PROCESS's (pseudo-6e.t)
-        if (ve->viaPseudoPkg && ve->pseudoPkg == "DYNAMIC" && !ve->declare &&
+        if (ve->viaPseudoPkg && vd.pseudoPkg == "DYNAMIC" && !ve->declare &&
             ve->name.size() > 2 && ve->name[1] == '*')
             if (Value* p = findDynamicViaGlobal(ve->name)) return p;
         // `OUR::<$x> = …` at the top level, with no `our $x` anywhere: the
         // package variable springs into being, as `$GLOBAL::x = …` does
         // (pseudo-6e.t's root subtest writes one and reads it back)
-        if (ve->viaPseudoPkg && ve->pseudoPkg == "OUR" && !ve->declare && global_ &&
+        if (ve->viaPseudoPkg && vd.pseudoPkg == "OUR" && !ve->declare && global_ &&
             tctx_.pkgPrefix.empty() && ve->name.size() > 1 && std::strchr("$@%", ve->name[0]) &&
             tctx_.cur && !tctx_.cur->find(ve->name)) {
             global_->define(ve->name, defaultFor(sigil));
@@ -11093,13 +11094,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         }
 
         if (ve->declare) {
-            if (ve->declScope == "state" && tcx.curStateEnv) { // persistent across calls
+            if (vd.declScope == "state" && tcx.curStateEnv) { // persistent across calls
                 if (!tcx.curStateEnv->vars.count(ve->name)) {
                     tcx.curStateEnv->define(ve->name, declInitial(ve, sigil));
                     // its TYPE, which later assignments check (see evalVarDecl)
-                    if (sigil == '$' && !ve->declType.empty() && !ve->declDefault &&
+                    if (sigil == '$' && !vd.declType.empty() && !vd.declDefault &&
                         !tcx.curStateEnv->xr().varDefault.count(ve->name))
-                        tcx.curStateEnv->x().varDefault[ve->name] = Value::typeObj(ve->declType);
+                        tcx.curStateEnv->x().varDefault[ve->name] = Value::typeObj(vd.declType);
                 }
                 return &tcx.curStateEnv->vars[ve->name];
             }
@@ -11119,20 +11120,20 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // detaches a rebound source from its aliases. A plain value is left
             // to make a fresh container as before — nothing can be watching it,
             // and a loop body's `my` must stay one variable per turn.
-            if (ve->declScope == "my") {
+            if (vd.declScope == "my") {
                 Value* have = de->localRaw(ve->name);
                 if (have && have->isCell()) return have->deref();
                 if (have && have->t == VT::Hash && have->hashKind == "Proxy") return have;
             }
             Value init = declInitial(ve, sigil);
-            if (ve->declShape && sigil == '@') // shaped array `my @a[2;3]`
-                init = makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType);
-            if (!ve->containerIs.empty() && (sigil == '%' || sigil == '@')) {
+            if (vd.declShape && sigil == '@') // shaped array `my @a[2;3]`
+                init = makeShapedContainer(evalShapeDims(vd.declShape.get()), vd.declType);
+            if (!vd.containerIs.empty() && (sigil == '%' || sigil == '@')) {
                 static const std::set<std::string> quant = {
                     "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-                if (sigil == '%' && quant.count(ve->containerIs)) { // my %h is Set — an empty Setty
-                    init = makeBaggy({}, ve->containerIs);
-                    init.ofTypeM() = ve->containerOf; // `is Bag[Int]` keys on Int
+                if (sigil == '%' && quant.count(vd.containerIs)) { // my %h is Set — an empty Setty
+                    init = makeBaggy({}, vd.containerIs);
+                    init.ofTypeM() = vd.containerOf; // `is Bag[Int]` keys on Int
                 }
                 // A USER container type: the VARIABLE *is* an instance of it, so
                 // its own methods answer. `my %h is MyHash` where MyHash does
@@ -11141,50 +11142,50 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // and every method the role supplies (.Str/.raku/.Slip/…) was
                 // answered by the built-in Hash instead. The ATTRIBUTE form
                 // (`has %.a is Type`) already did this; the `my` form did not.
-                else if (classes_.count(ve->containerIs)) {
+                else if (classes_.count(vd.containerIs)) {
                     ValueList none;
-                    auto cci = classes_[ve->containerIs];
+                    auto cci = classes_[vd.containerIs];
                     // an ARRAY subclass that fixes the element type (`class A is
                     // Array[Str] { }`) is that typed Array here — what a store into
                     // the variable keeps (S05-grammar/inheritance.t)
                     if (sigil == '@' && cci && cci->nativeParent == "Array" && !cci->nativeOf.empty())
                         init = rtTypedDefault(cci->nativeOf.c_str(), '@');
-                    else init = methodCall(Value::typeObj(ve->containerIs), "new", none);
+                    else init = methodCall(Value::typeObj(vd.containerIs), "new", none);
                 }
                 // `my @list is List = 1, 2, 3` — the variable holds a List, not
                 // an Array: `.^name` says List and it compares equal to one
                 // (JSON::Fast::Hyper's suite round-trips such a list through
                 // from-json's `.List` and asks is-deeply)
-                else if (sigil == '@' && ve->containerIs == "List") init.isList = true;
+                else if (sigil == '@' && vd.containerIs == "List") init.isList = true;
             }
-            if (!ve->declType.empty()) checkDeclTypeSane(ve);
-            if (ve->declSmiley) { de->x().varSmiley[ve->name] = ve->declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D $x` / `my Int:D @a`
-            if (ve->declWhereExpr && !ve->name.empty() && ve->name[0] == '$')
-                de->x().varWhere[ve->name] = ve->declWhereExpr;   // `my $x where Int|Num`
-                if (ve->declDefault) { // `is default(v)`: initial AND reset value
-                Value dv = eval(ve->declDefault.get());
-                checkDeclDefault(ve->declType, sigil, dv, false, ve->declSmiley);
+            if (!vd.declType.empty()) checkDeclTypeSane(ve);
+            if (vd.declSmiley) { de->x().varSmiley[ve->name] = vd.declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D $x` / `my Int:D @a`
+            if (vd.declWhereExpr && !ve->name.empty() && ve->name[0] == '$')
+                de->x().varWhere[ve->name] = vd.declWhereExpr;   // `my $x where Int|Num`
+                if (vd.declDefault) { // `is default(v)`: initial AND reset value
+                Value dv = eval(vd.declDefault.get());
+                checkDeclDefault(vd.declType, sigil, dv, false, vd.declSmiley);
                 if (sigil == '@' || sigil == '%') // container stays empty; v is the ELEMENT default
                     init.elemDefaultM() = std::make_shared<Value>(dv);
                 else {
                     init = dv; de->x().varDefault[ve->name] = dv;
-                    if (dv.t == VT::Type && (ve->declType.empty() || ve->declType == "Mu" || ve->declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
-                    else if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
-                        de->x().varDefaultType[ve->name] = Value::typeObj(ve->declType);
+                    if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
+                    else if (sigil == '$' && !vd.declType.empty() && ascii::isupper((unsigned char)vd.declType[0]))
+                        de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
                 }
             }
-            else if (sigil == '$' && !ve->declType.empty() && (ascii::isupper((unsigned char)ve->declType[0]) || ve->declType == "atomicint")) {
+            else if (sigil == '$' && !vd.declType.empty() && (ascii::isupper((unsigned char)vd.declType[0]) || vd.declType == "atomicint")) {
                 // `$x = Nil` resets to (Type) — the CAPTURED type for `my T $x`
                 // in a routine with `::T` in its signature (see capturedType)
                 Value cap;
-                if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) { cap.i = 0; init = cap; }
-                else cap = Value::typeObj(ve->declType);
+                if (capturedType(*this, tctx_.cur.get(), vd.declType, cap)) { cap.i = 0; init = cap; }
+                else cap = Value::typeObj(vd.declType);
                 de->x().varDefault[ve->name] = cap;
             }
-            if (!ve->declCoerce.empty())   // `my Int() $x` / `my Rat(Str) @a` coerce every later assignment
-                de->x().varCoerce[ve->name] = ve->declCoerce;
-                if (!ve->declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = ve->declCoerceFrom;
-            if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+            if (!vd.declCoerce.empty())   // `my Int() $x` / `my Rat(Str) @a` coerce every later assignment
+                de->x().varCoerce[ve->name] = vd.declCoerce;
+                if (!vd.declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = vd.declCoerceFrom;
+            if (vd.declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
             return &de->define(ve->name, std::move(init));
         }
         // attribute lvalue: $.x / $!x
@@ -12859,7 +12860,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
                     if (!tv->declare && tv->padSlot >= 0 && !tv->name.empty() &&
-                        tv->name[0] == '$' && tv->declCoerce.empty() && tv->name != "$*USAGE") {
+                        tv->name[0] == '$' && tv->d().declCoerce.empty() && tv->name != "$*USAGE") {
                         if (opEq(a->op, "=")) cls = 1;
                         else if (opEq(a->op, "+=")) cls = 2;
                         else if (opEq(a->op, "-=")) cls = 3;
@@ -12868,7 +12869,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     }
                     // `$!name = EXPR`: the attribute lane (attrAssignLane)
                     else if (!tv->declare && opEq(a->op, "=") && tv->name.size() > 2 && tv->name[0] == '$' &&
-                             tv->name[1] == '!' && tv->attrTwin.empty() && tv->declCoerce.empty())
+                             tv->name[1] == '!' && tv->attrTwin.empty() && tv->d().declCoerce.empty())
                         cls = 8;
                 }
                 a->simpleSlot = cls;
@@ -13118,7 +13119,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // and store through the container the literal already holds.
     if (opEq(a->op, "=") && a->target && a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
-        if (ve->declare && ve->declScope == "my" && ve->name.size() > 1 &&
+        if (ve->declare && ve->d().declScope == "my" && ve->name.size() > 1 &&
             (ve->name[0] == '@' || ve->name[0] == '%') && a->value) {
             std::set<std::string> mentioned;
             collectMentionedE(a->value.get(), mentioned);
@@ -13295,7 +13296,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         Assign alias;
                         alias.op = ":=";
                         auto tv = std::make_unique<VarExpr>(key);
-                        if (stashPkg == "OUR") { tv->viaPseudoPkg = true; tv->pseudoPkg = "OUR"; }
+                        if (stashPkg == "OUR") { tv->viaPseudoPkg = true; tv->dm().pseudoPkg = "OUR"; }
                         alias.target = std::move(tv);
                         alias.value.reset(a->value.get());
                         struct Give { Assign& a; ~Give() { a.value.release(); } } give{alias};
@@ -13321,7 +13322,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // binding INTO the setting: `&CORE::none := &f` / `$CORE::_ := 50`
         if (a->target->kind == NK::VarExpr) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
-            if (tv->viaPseudoPkg && tv->pseudoPkg == "CORE" && !tv->declare && tv->name.size() > 1) {
+            if (tv->viaPseudoPkg && tv->d().pseudoPkg == "CORE" && !tv->declare && tv->name.size() > 1) {
                 Value v = eval(a->value.get());
                 if (tv->name[0] == '&') builtinRefs_[tv->name.substr(1)] = v;
                 else coreVars_[tv->name] = v;
@@ -13389,7 +13390,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     Value priorDisp;
     if (a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
-        if (ve->declare && ve->declScope == "constant" && ve->name.size() > 1 && ve->name[0] == '&')
+        if (ve->declare && ve->d().declScope == "constant" && ve->name.size() > 1 && ve->name[0] == '&')
             if (Value* p = tctx_.cur->find(ve->name))
                 if (p->t == VT::Code && p->code() && p->code()->isMultiDispatcher) priorDisp = *p;
     }
@@ -13397,7 +13398,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // is an X::Comp::BeginTime wrapping the original
     const bool constInit = a->target->kind == NK::VarExpr &&
         static_cast<VarExpr*>(a->target.get())->declare &&
-        static_cast<VarExpr*>(a->target.get())->declScope == "constant";
+        static_cast<VarExpr*>(a->target.get())->d().declScope == "constant";
     Value r;
     bool sameTypeOk = false;
     Value* ctSlot = constInit ? nullptr : compoundCheckSlot(a, sameTypeOk);
@@ -13491,7 +13492,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     }
     if (a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
-        if (ve->declare && ve->containerIs == "List")
+        if (ve->declare && ve->d().containerIs == "List")
             if (Value* cur = tctx_.cur->find(ve->name)) cur->readonly = true;
         // `our $x = v` anywhere publishes the initialized value to the package
         // (GLOBAL) stash — `$OUR::x` / `$GLOBAL::x` find it from other scopes
@@ -13500,7 +13501,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // asks for the library path, and `Compress::Zlib::Raw::Z_OK` the same.
         // Constants are not `our`, but Rakudo installs them in the package's
         // symbol table all the same, and we published nothing.
-        if (ve->declare && ve->declScope == "constant" && !ve->name.empty()) {
+        if (ve->declare && ve->d().declScope == "constant" && !ve->name.empty()) {
             constantNames_.insert(ve->name.c_str());
             // `constant Bar = Foo` is a lexical alias (see lexicalAliasAccepts)
             if (!g_lexTypeAlias.load(std::memory_order_relaxed))
@@ -13508,34 +13509,34 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     g_lexTypeAlias.store(true, std::memory_order_relaxed);
         }
         // a TYPED constant checks its value: `my IO::Path constant C = 42` dies
-        if (ve->declare && ve->declScope == "constant" && !ve->declType.empty() &&
-            ve->declType != "Mu" && ve->declType != "Any" && !ve->name.empty()) {
+        if (ve->declare && ve->d().declScope == "constant" && !ve->d().declType.empty() &&
+            ve->d().declType != "Mu" && ve->d().declType != "Any" && !ve->name.empty()) {
             // (a parameterized role type `R[T]` is judged by the role it names —
             // an instance of the pun does R)
-            std::string want = ve->declType.c_str();
+            std::string want = ve->d().declType.c_str();
             if (size_t br = want.find('['); br != std::string::npos && br > 0) want = want.substr(0, br);
             // NativeCall's C integer spellings take an Int (DBDish::mysql's `ulong constant`)
             if (want == "long" || want == "longlong" || want == "ssize_t" || want == "bool") want = "int64";
             else if (want == "ulong" || want == "ulonglong" || want == "size_t") want = "uint64";
             if (Value* p = tctx_.cur->find(ve->name))
                 if (!typeOrSubsetMatches(*p, want))
-                    throwTypedV("X::TypeCheck", {{"got", *p}, {"expected", Value::typeObj(ve->declType)}},
+                    throwTypedV("X::TypeCheck", {{"got", *p}, {"expected", Value::typeObj(ve->d().declType)}},
                                 "Type check failed in constant " + std::string(ve->name.c_str()) +
-                                "; expected " + std::string(ve->declType.c_str()) +
+                                "; expected " + std::string(ve->d().declType.c_str()) +
                                 " but got " + p->typeName());
         }
         // …and outside any package a bare/`our` constant is still a PACKAGE
         // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL)
-        if (ve->declare && ve->declScope == "constant" && tctx_.pkgPrefix.empty() &&
-            !ve->declMyConstant && !ve->name.empty() && tctx_.cur != global_ &&
+        if (ve->declare && ve->d().declScope == "constant" && tctx_.pkgPrefix.empty() &&
+            !ve->d().declMyConstant && !ve->name.empty() && tctx_.cur != global_ &&
             !global_->local(ve->name)) {
             if (Value* p = tctx_.cur->find(ve->name)) {
                 noteSymbolMutation("constant publish");
                 global_->define(ve->name, *p);
             }
         }
-        if (ve->declare && ve->declScope == "constant" && !tctx_.pkgPrefix.empty() &&
-            !ve->declMyConstant && !ve->name.empty()) {   // `my constant` stays lexical
+        if (ve->declare && ve->d().declScope == "constant" && !tctx_.pkgPrefix.empty() &&
+            !ve->d().declMyConstant && !ve->name.empty()) {   // `my constant` stays lexical
             if (Value* p = tctx_.cur->find(ve->name)) {
                 std::string bare = ve->name;
                 std::string sigil;
@@ -13545,7 +13546,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 global_->define(sigil + tctx_.pkgPrefix + bare, *p);
             }
         }
-        if (ve->declare && ve->declScope == "our" && ve->name.size() > 1) {
+        if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1) {
             if (Value* p = tctx_.cur->find(ve->name)) {
                 std::string qual = ourPublishedName(ve->name, tctx_.pkgPrefix);
                 noteSymbolMutation("our-declaration publish");
@@ -13568,7 +13569,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 // The owning scope must not BE the global one: a proxy from a
                 // slot to itself would fetch through itself forever.
                 std::shared_ptr<Env> ourOwner;
-                if (!ve->declExport && ve->name[0] != '&' && global_)
+                if (!ve->d().declExport && ve->name[0] != '&' && global_)
                     for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                         if (en->local(ve->name)) {
                             if (en.get() != global_.get()) ourOwner = en;
@@ -13576,12 +13577,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         }
                 if (ourOwner) global_->define(qual, makeEnvSlotProxy(ourOwner, ve->name));
                 else global_->define(qual, *p);
-                if (ve->declExport) publishOurExport(ve->name, *p);   // `M::EXPORT::DEFAULT::<&f>`
+                if (ve->d().declExport) publishOurExport(ve->name, *p);   // `M::EXPORT::DEFAULT::<&f>`
                 // `our %x is export` — the importer sees the BARE name too. In a
                 // `unit class` the declaration lives in the CLASS body, so the
                 // module-load republish never saw it (Date::Names keeps its
                 // language tables that way).
-                if (ve->declExport) {
+                if (ve->d().declExport) {
                     Value copy = *p;
                     // In a MODULE the exported `our` variable is one container,
                     // shared with the importer: keep only the global slot and
@@ -13611,7 +13612,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // same publish. A `unit module` republishes its whole scope, so the
         // constant reached importers there and nowhere else — Color::Names
         // keeps every one of its twelve palettes behind exactly this line.
-        else if (ve->declare && ve->declScope == "constant" && ve->declExport &&
+        else if (ve->declare && ve->d().declScope == "constant" && ve->d().declExport &&
                  !ve->name.empty()) {
             if (Value* p = tctx_.cur->find(ve->name)) {
                 if (curPkgEnv_) curPkgEnv_->define(ve->name, *p);
@@ -13819,9 +13820,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // it afterwards (a rehash under their lookups). Declare it first.
     if (a->target && a->target->kind == NK::VarExpr && everSpawned_.load(std::memory_order_relaxed)) {
         auto* dv = static_cast<VarExpr*>(a->target.get());
-        if (dv->declare && dv->declScope == "my" && dv->name.size() > 1 && std::strchr("$@%", dv->name[0]) &&
+        if (dv->declare && dv->d().declScope == "my" && dv->name.size() > 1 && std::strchr("$@%", dv->name[0]) &&
             tctx_.cur && !tctx_.cur->local(dv->name) && assignSpawns(a))
-            tctx_.cur->define(dv->name, typedDefault(dv->declType, dv->name[0]));
+            tctx_.cur->define(dv->name, typedDefault(dv->d().declType, dv->name[0]));
     }
     // `@a[0]:v = …` — the :v adverb hands out values, not containers
     if (opEq(a->op, "=") && a->target && a->target->kind == NK::Index &&
@@ -13912,11 +13913,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         const char sg = cv->name.empty() ? 0 : cv->name[0];
         // `my Int constant @c` — a typed @/% constant would be a parameterized
         // one, which Raku forbids
-        if (cv->declare && cv->declScope == "constant" && !cv->declType.empty() &&
+        if (cv->declare && cv->d().declScope == "constant" && !cv->d().declType.empty() &&
             (sg == '@' || sg == '%'))
             throwTyped("X::ParametricConstant", {},
                        "Parameterization of constants is forbidden");
-        if (cv->declare && cv->declScope == "constant" &&
+        if (cv->declare && cv->d().declScope == "constant" &&
             (sg == '@' || sg == '%' || sg == '$')) {
             Value v = eval(a->value.get());
             if (sg == '@') {
@@ -14072,7 +14073,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // probe on every `my $x = …` (perf-guard caught loopsum +12%).
     if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(a->target.get());
-        if (ve->declare && ve->declScope == "my" && ve->name.size() > 2 &&
+        if (ve->declare && ve->d().declScope == "my" && ve->name.size() > 2 &&
             ve->name[1] == '*' &&
             (ve->name[0] == '$' || ve->name[0] == '@' || ve->name[0] == '%') &&
             !tctx_.cur->vars.count(ve->name))
@@ -14179,7 +14180,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto* tv = static_cast<VarExpr*>(a->target.get());
         static const std::set<std::string> blobTypes = {
             "Blob", "Buf", "blob8", "blob16", "blob32", "blob64", "buf8", "buf16", "buf32", "buf64"};
-        std::string ct = tv->containerIs;
+        std::string ct = tv->d().containerIs;
         if (!ct.empty() && !blobTypes.count(ct) && tctx_.cur)   // a sigilless term naming the type
             if (Value* tp = tctx_.cur->find(ct)) if (tp->t == VT::Type) ct = tp->s;
         // `my @slice := @array[1, 2]; @slice = <A B C D>`: a List whose elements
@@ -14256,7 +14257,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         auto* lst0 = static_cast<ListExpr*>(a->target.get());
         bool anyNamed = false;
         for (auto& it : lst0->items)
-            if (it->kind == NK::VarExpr && static_cast<VarExpr*>(it.get())->namedBind) { anyNamed = true; break; }
+            if (it->kind == NK::VarExpr && static_cast<VarExpr*>(it.get())->d().namedBind) { anyNamed = true; break; }
         if (anyNamed) {
             Value rhs = eval(a->value.get());
             for (auto& it : lst0->items) {
@@ -14295,7 +14296,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         for (auto& it : tl->items) {
             if (!it || it->kind != NK::VarExpr) { allState = false; break; }
             auto* iv = static_cast<VarExpr*>(it.get());
-            if (!iv->declare || iv->declScope != "state" || !tctx_.curStateEnv->vars.count(iv->name)) {
+            if (!iv->declare || iv->d().declScope != "state" || !tctx_.curStateEnv->vars.count(iv->name)) {
                 allState = false; break;
             }
         }
@@ -14328,7 +14329,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         for (auto& it : tl->items) {
             if (!it || it->kind != NK::VarExpr) continue;
             auto* ve = static_cast<VarExpr*>(it.get());
-            if (!ve->declare || ve->declScope != "my" || ve->name.size() < 2 ||
+            if (!ve->declare || ve->d().declScope != "my" || ve->name.size() < 2 ||
                 (ve->name[0] != '@' && ve->name[0] != '%')) continue;
             std::set<std::string> mentioned;
             collectMentionedE(a->value.get(), mentioned);
@@ -14402,7 +14403,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // (a `my` only: re-evaluating an `our` is what publishes it)
             auto* iv = static_cast<VarExpr*>(it.get());
             const bool wasDecl = iv->declare;
-            if (iv->declScope == "my") iv->declare = false;
+            if (iv->d().declScope == "my") iv->declare = false;
             struct Re { VarExpr* v; bool d; ~Re() { v->declare = d; } } re{iv, wasDecl};
             Value v = eval(it.get());
             char sg = static_cast<VarExpr*>(it.get())->name[0];
@@ -14507,7 +14508,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // EXCEPT the anonymous `$`: `$ = EXPR` is a plain ASSIGNMENT to an anonymous
         // state slot, re-run on every evaluation (zef's `::($ = $module)` idiom relies
         // on it; only the slot persists — for `$++`-style counters).
-        if (opEq(a->op, "=") && ve->declare && ve->declScope == "state" && !ve->stateInParens &&
+        if (opEq(a->op, "=") && ve->declare && ve->d().declScope == "state" && !ve->d().stateInParens &&
             tctx_.curStateEnv && tctx_.curStateEnv->vars.count(ve->name) &&
             ve->name.rfind("$anon--state--", 0) != 0 &&
             !consumeStatePreseed(tctx_.curStateEnv, ve->name))
@@ -14877,7 +14878,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // ARRAY, which IS a container and which Rakudo accepts: PDF's
             // password check is `my uint8 @computed := $.compute-user(…)`, and
             // it could not run at all.
-            if (tv->declare && natTy.count(tv->declType) &&
+            if (tv->declare && natTy.count(tv->d().declType) &&
                 !tv->name.empty() && tv->name[0] == '$')
                 throwTyped("X::Bind::NativeType", {{"name", tv->name}},
                            "Cannot bind to natively typed variable '" + tv->name +
@@ -14897,15 +14898,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (part->kind != NK::StrLit) return false;
                 return true;
             };
-            if (tv->declare && kBindChecked.count(tv->declType) &&
+            if (tv->declare && kBindChecked.count(tv->d().declType) &&
                 (a->value->kind == NK::IntLit || a->value->kind == NK::NumLit ||
                  a->value->kind == NK::StrLit || a->value->kind == NK::BoolLit ||
                  constStr(a->value.get()))) {
                 Value bv = eval(a->value.get());
-                if (!rtTypeMatch(bv, tv->declType))
+                if (!rtTypeMatch(bv, tv->d().declType))
                     throwTypedV("X::TypeCheck::Binding",
-                        {{"got", bv}, {"expected", Value::typeObj(tv->declType)}},
-                        "Type check failed in binding; expected " + tv->declType +
+                        {{"got", bv}, {"expected", Value::typeObj(tv->d().declType)}},
+                        "Type check failed in binding; expected " + tv->d().declType +
                         " but got " + bv.typeName() + " (" + typeCheckRepr(bv) + ")");
             }
         }
@@ -15526,7 +15527,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if ((opEq(a->op, ":=") ||
              (opEq(a->op, "=") && a->target->kind == NK::VarExpr &&
               static_cast<VarExpr*>(a->target.get())->declare &&
-              static_cast<VarExpr*>(a->target.get())->declScope == "constant")) &&
+              static_cast<VarExpr*>(a->target.get())->d().declScope == "constant")) &&
             a->target->kind == NK::VarExpr &&
             !static_cast<VarExpr*>(a->target.get())->name.empty() &&
             static_cast<VarExpr*>(a->target.get())->name[0] == '@' &&
@@ -15940,7 +15941,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
-            const std::string& ct = static_cast<VarExpr*>(a->target.get())->declCoerce;
+            const std::string& ct = static_cast<VarExpr*>(a->target.get())->d().declCoerce;
             // On a `@` or `%` the coercion is the ELEMENT's, not the container's:
             // `my Int() @a` is Rakudo's Array[Int(Any)]. Coercing the whole right
             // side instead turned `my Int() @b = "3", "4"` into [2] — the list
@@ -15952,7 +15953,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 auto* tve = static_cast<VarExpr*>(a->target.get());
                 char sg = tve->name[0];
                 if (sg == '@' || sg == '%') coerceElems(rhs, ct, sg);
-                else if (!tve->declCoerceFrom.empty()) rhs = coerceVarValue(rhs, ct, tve->declCoerceFrom, tve->name);
+                else if (!tve->d().declCoerceFrom.empty()) rhs = coerceVarValue(rhs, ct, tve->d().declCoerceFrom, tve->name);
                 else rhs = coerceToType(rhs, ct);
             }
             // …and a LATER `@a = …` to a `my Rat(Str) @a` coerces its elements too
@@ -16594,7 +16595,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // flags, so put the trait back
             if (opEq(a->op, "=") && a->target->kind == NK::VarExpr && lv->t == VT::Array) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
-                if (tv->declare && tv->containerIs == "List") lv->isList = true;
+                if (tv->declare && tv->d().containerIs == "List") lv->isList = true;
             }
         }
         else if (sigil == '%') {
@@ -16623,7 +16624,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // that merely happens to hold Ints (S02-types/set.t)
                 if (a->target->kind == NK::VarExpr && rhs.hashKind.empty()) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
-                    const std::string& dt = tv->declType;
+                    const std::string& dt = tv->d().declType;
                     if (tv->declare && !dt.empty() && dt != "Any" && dt != "Mu" &&
                         dt.find_first_of(",[(:") == std::string::npos && classes_.count(dt) + isKnownTypeName(dt) > 0) {
                         const std::string& rt = rhs.ofType();
@@ -16702,7 +16703,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // takes; from here on it is immutable (a re-assignment dies)
                 if (opEq(a->op, "=") && a->target->kind == NK::VarExpr && lv->t == VT::Hash) {
                     auto* tv = static_cast<VarExpr*>(a->target.get());
-                    if (tv->declare && tv->containerIs == "Map") lv->hashKind = "Map";
+                    if (tv->declare && tv->d().containerIs == "Map") lv->hashKind = "Map";
                 }
                 // a COERCION key type (`my %h{Int(Str)} = "10" => 42`): every key
                 // is coerced on the way in, as a single-key store does
@@ -16756,7 +16757,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                  // container to reset, and the name is Nil itself)
                  !sigillessDeclBind(a) &&
                  !(static_cast<VarExpr*>(a->target.get())->declare &&
-                   static_cast<VarExpr*>(a->target.get())->declScope == "constant")) {
+                   static_cast<VarExpr*>(a->target.get())->d().declScope == "constant")) {
             // assigning Nil restores the container's default (is default / (Type) / Any)
             // …except in a native, which has no undefined value to reset to
             nativeUndefCheck(rhs, a->target.get(), lv);
@@ -17004,7 +17005,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // store, since that store is the one write it is allowed.
         if (a->target->kind == NK::VarExpr) {
             auto* tv = static_cast<VarExpr*>(a->target.get());
-            if (tv->declare && tv->declScope == "constant") lv->readonly = true;
+            if (tv->declare && tv->d().declScope == "constant") lv->readonly = true;
         }
 
         // Binding a VALUE into a hash or array element puts it in the slot with
@@ -22252,12 +22253,12 @@ static bool rhsMayName(const Expr* e, const std::string& name, int depth = 0) {
 }
 bool Interpreter::nativeDeclShape(const VarExpr* v, const Expr* rhs) {
     int bits; bool sign, isFloat;
-    if (!v->declare || v->declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
         !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->synthTopic || v->heredocOuter ||
-        v->stateInParens || !v->declStubType.empty() || !nativeDeclSpec(v->declType, bits, sign, isFloat) ||
-        !v->declCoerce.empty() || v->declDefault || v->declDynamic || v->declExport || v->declSmiley ||
-        v->declWhereExpr || v->declHasWhere || v->declMyConstant || v->pkgSymbol || !v->containerIs.empty() ||
-        v->declShape || v->declTypeExpr || v->namedBind || v->viaPseudoPkg || v->processScoped)
+        v->d().stateInParens || !v->d().declStubType.empty() || !nativeDeclSpec(v->d().declType, bits, sign, isFloat) ||
+        !v->d().declCoerce.empty() || v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley ||
+        v->d().declWhereExpr || v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
+        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped)
         return false;
     return rhs && !rhsMayName(rhs, v->name);
 }
@@ -22270,7 +22271,7 @@ bool Interpreter::nativeDeclShape(const VarExpr* v, const Expr* rhs) {
     Value* have = de->localRaw(tv->name);
     if (have && (have->isCell() || (have->t == VT::Hash && have->hashKind == "Proxy"))) return nullptr;
     int bits; bool sign, isFloat;
-    nativeDeclSpec(tv->declType, bits, sign, isFloat);
+    nativeDeclSpec(tv->d().declType, bits, sign, isFloat);
     Value rv = evalValueOf(a->value.get());
     if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, tv, nullptr);
     rv.readonly = rv.immutableBind = false;
@@ -30551,6 +30552,7 @@ Value Interpreter::eval(Expr* e) {
 // longer size the frame every expression is evaluated in.
 Value Interpreter::evalVarExpr(Expr* e) {
     auto* ve = static_cast<VarExpr*>(e);
+    const VarDeclInfo& vd = ve->d();   // (its declaration fields, read many times below)
     char sigil = ve->name.empty() ? '$' : ve->name[0];
     // a tail a `for` modifier's block may end on (forTailVarsExpr):
     // leave the slot this read comes from, for the loop to alias
@@ -30564,7 +30566,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // `$OUR::x` inside a package is THAT package's variable — found
     // under its qualified name, and never a same-named outer lexical
     // (`$OUR::x30` in `package A36` does not see GLOBAL's `our $x30`)
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "OUR" && !ve->declare &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "OUR" && !ve->declare &&
         !tctx_.pkgPrefix.empty() && ve->name.size() > 1) {
         const std::string q = "$" + tctx_.pkgPrefix + ve->name.substr(1);
         if (Value* p = tctx_.cur->find(q)) return *p;
@@ -30573,12 +30575,12 @@ Value Interpreter::evalVarExpr(Expr* e) {
     }
     // `DYNAMIC::<$*x>` resolves as Rakudo's dynamic lookup does: the
     // call chain, then GLOBAL's `$x`, then PROCESS's (pseudo-6e.t)
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "DYNAMIC" && !ve->declare &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "DYNAMIC" && !ve->declare &&
         ve->name.size() > 2 && ve->name[1] == '*')
         if (Value* p = findDynamicViaGlobal(ve->name)) return *p;
     // …and DYNAMIC:: means what IT says: a plain lexical that is not
     // `is dynamic` is refused, as a Failure, from 6.e (pseudo-6e.t)
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "DYNAMIC" && sixE() && !ve->declare &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "DYNAMIC" && sixE() && !ve->declare &&
         ve->name.size() > 1 && std::strchr("$@%", ve->name[0]) &&
         !std::strchr("*?!.^:", ve->name[1]) && ve->name != "$_" && ve->name != "$/") {
         for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
@@ -30596,7 +30598,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // loop body or a routine the mainline's `my $x` is not MY:: (Rakudo: Nil
     // before 6.e, a Failure after). Only a scope that has an Env of its own
     // can be asked; one run in its parent's still sees the parent's.
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "MY" && !ve->declare && ve->name.size() > 1 &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "MY" && !ve->declare && ve->name.size() > 1 &&
         std::strchr("$@%", ve->name[0]) && !std::strchr("*?!.^:", ve->name[1]) && tctx_.cur &&
         !tctx_.cur->local(ve->name)) {
         if (!sixE()) return Value::nil();
@@ -30609,7 +30611,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // — it is found by walking the caller chain — so asking for one
     // through LEXICAL:: is an error there, where before it quietly
     // answered with the dynamic.
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "LEXICAL" && sixE() &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "LEXICAL" && sixE() &&
         ve->name.size() > 1 && ve->name[1] == '*')
         throw RakuError{Value::typeObj("X::Bind::Slice"),
             "Cannot access '" + ve->name + "' through LEXICAL, because it is not declared as lexical"};
@@ -30620,12 +30622,12 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // `&prompt` and delegates the ordinary case to `CORE::<&prompt>`
     // reached ITSELF, so `prompt` recursed until the stack gave out.
     // Rakudo answers the builtin there; now so does this.
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "CORE" && sigil != '&' && !ve->declare &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "CORE" && sigil != '&' && !ve->declare &&
         !coreVars_.empty()) {
         auto cv = coreVars_.find(ve->name);
         if (cv != coreVars_.end()) return cv->second;
     }
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "CORE" && sigil == '&' &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "CORE" && sigil == '&' &&
         ve->name.size() > 1 && !ve->declare) {
         if (const Value* bref = builtinRef(ve->name.substr(1))) return *bref;
         // not a builtin at all: fall through to the ordinary lookup
@@ -30633,7 +30635,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // `SETTING::<$x>` for a program's variable: the calling code's inside
     // a 6.c/6.d EVAL (evalSettingSymbol); anywhere else the setting is
     // CORE, whose own variables are the only ones there
-    if (ve->viaPseudoPkg && ve->pseudoPkg == "SETTING" && sigil != '&' && !ve->declare &&
+    if (ve->viaPseudoPkg && vd.pseudoPkg == "SETTING" && sigil != '&' && !ve->declare &&
         ve->name.size() > 1 && (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
         Value sv;
         if (evalSettingSymbol(ve->name, sv)) return sv;
@@ -30973,37 +30975,37 @@ Value Interpreter::evalVarExpr(Expr* e) {
     if (ve->name == "$*HOME") return dynVar("$*HOME");
     }
     if (ve->declare) {
-        if (ve->declScope == "state" && tctx_.curStateEnv) { // persistent across calls
+        if (vd.declScope == "state" && tctx_.curStateEnv) { // persistent across calls
             if (!tctx_.curStateEnv->vars.count(ve->name)) {
                 Value init = declInitial(ve, sigil);
                 // `state @a is Buf` / `state %h is BagHash` — the container trait
                 // decides what the state variable IS, as for `my`
-                if (!ve->containerIs.empty() && (sigil == '%' || sigil == '@')) {
+                if (!vd.containerIs.empty() && (sigil == '%' || sigil == '@')) {
                     static const std::set<std::string> quant = {
                         "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
                     static const std::set<std::string> blobTypes = {
                         "Blob", "Buf", "blob8", "blob16", "blob32", "blob64", "buf8", "buf16", "buf32", "buf64"};
-                    if (sigil == '%' && quant.count(ve->containerIs)) {
-                        init = makeBaggy({}, ve->containerIs);
-                        init.ofTypeM() = ve->containerOf;
+                    if (sigil == '%' && quant.count(vd.containerIs)) {
+                        init = makeBaggy({}, vd.containerIs);
+                        init.ofTypeM() = vd.containerOf;
                     }
-                    else if (classes_.count(ve->containerIs) || (sigil == '@' && blobTypes.count(ve->containerIs))) {
+                    else if (classes_.count(vd.containerIs) || (sigil == '@' && blobTypes.count(vd.containerIs))) {
                         ValueList none;
-                        init = methodCall(Value::typeObj(ve->containerIs), "new", none);
+                        init = methodCall(Value::typeObj(vd.containerIs), "new", none);
                     }
                 }
                 // `state %pc is default({…})` — the element default, as for `my`;
                 // on a scalar the initial AND reset value
-                if (ve->declDefault) {
-                    Value dv = eval(ve->declDefault.get());
-                    checkDeclDefault(ve->declType, sigil, dv, false, ve->declSmiley);
+                if (vd.declDefault) {
+                    Value dv = eval(vd.declDefault.get());
+                    checkDeclDefault(vd.declType, sigil, dv, false, vd.declSmiley);
                     if (sigil == '@' || sigil == '%') {
                         if (init.t != VT::Array && init.t != VT::Hash)
                             init = sigil == '@' ? Value::array() : Value::makeHash();
                         init.elemDefaultM() = std::make_shared<Value>(dv);
                     } else {
                         tctx_.curStateEnv->x().varDefault[ve->name] = dv;
-                        if (dv.t == VT::Type && ve->declType.empty())
+                        if (dv.t == VT::Type && vd.declType.empty())
                             tctx_.curStateEnv->x().varDefaultUntyped.insert(ve->name);
                         init = dv;
                     }
@@ -31011,9 +31013,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 tctx_.curStateEnv->define(ve->name, init);
                 // …and its TYPE, which a later assignment checks as for `my`:
                 // `sub f { state Str $s; $s = 5 }` dies
-                if (sigil == '$' && !ve->declType.empty() && !ve->declDefault &&
+                if (sigil == '$' && !vd.declType.empty() && !vd.declDefault &&
                     !tctx_.curStateEnv->xr().varDefault.count(ve->name))
-                    tctx_.curStateEnv->x().varDefault[ve->name] = Value::typeObj(ve->declType);
+                    tctx_.curStateEnv->x().varDefault[ve->name] = Value::typeObj(vd.declType);
             }
             return tctx_.curStateEnv->vars[ve->name];
         }
@@ -31024,12 +31026,12 @@ Value Interpreter::evalVarExpr(Expr* e) {
         Env* de = deh.get();
         // the first run of a scope a BEGIN-time phaser already filled:
         // `my $x;` declares what is there, it does not reset it
-        if (de->staticSeeded && ve->declScope == "my")
+        if (de->staticSeeded && vd.declScope == "my")
             if (Value* have = de->local(ve->name)) return *have;
         // `our &foo;` re-declaration: bind to the existing package (global) code
         // symbol — e.g. an `our sub` defined in a sibling block. Restricted to the
         // `&` sigil so scalar/array/hash `our` vars keep their assignable containers.
-        if (ve->declScope == "our" && sigil == '&' && curPkgEnv_ && curPkgEnv_ != tctx_.cur)
+        if (vd.declScope == "our" && sigil == '&' && curPkgEnv_ && curPkgEnv_ != tctx_.cur)
             if (Value* g = curPkgEnv_->find(ve->name)) { de->define(ve->name, *g); return *g; }
         // `our $x is export` in a MODULE is one container, not two. Declared
         // in the module scope it was COPIED out at publish time, so every
@@ -31037,9 +31039,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // Time::gmtime's `:FIELDS` variables read back undefined however
         // many times gmtime() had filled them in. Declare it where both
         // sides look — the global the importer's bare name resolves to.
-        if (ve->declScope == "our" && ve->declExport && sigil != '&' &&
+        if (vd.declScope == "our" && vd.declExport && sigil != '&' &&
             global_ && curPkgEnv_ && curPkgEnv_.get() != global_.get() &&
-            !ve->declShape && !ve->declDefault && ve->containerIs.empty()) {
+            !vd.declShape && !vd.declDefault && vd.containerIs.empty()) {
             // …and the qualified name is a view onto it: with no initialiser
             // the publish in evalAssign never runs, so `$M::X` was whatever
             // its first writer autovivified (#170)
@@ -31059,7 +31061,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // Same VIEW onto the same slot as the initialised form gets, and
         // the same rule about the owning scope: not the global one, or
         // the view would fetch through itself forever.
-        if (ve->declScope == "our" && sigil != '&' && !ve->declExport &&
+        if (vd.declScope == "our" && sigil != '&' && !vd.declExport &&
             global_ && deh.get() != global_.get() && ve->name.size() > 1) {
             // …and a package variable an earlier `our` already published is
             // the SAME variable: `sub foo { our $foo = 3 }; foo(); our $foo`
@@ -31088,8 +31090,8 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // `my Ta $c` in one EVAL must not leave its type constraint on a later
         // `my Tc $c`.
         // `my Array[Numerix] $x` — a type argument nothing declares
-    if (ve->declType.find('[') != std::string::npos) {
-        const std::string& dt = ve->declType;
+    if (vd.declType.find('[') != std::string::npos) {
+        const std::string& dt = vd.declType;
         size_t i = 0;
         while (i < dt.size()) {
             if (!ascii::isupper((unsigned char)dt[i]) || (i > 0 && (ascii::isalnum((unsigned char)dt[i - 1]) || dt[i - 1] == ':' || dt[i - 1] == '-' || dt[i - 1] == '_'))) { i++; continue; }
@@ -31108,12 +31110,12 @@ Value Interpreter::evalVarExpr(Expr* e) {
             throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undeclared name '" + tn + "'"};
         }
     }
-    if (ve->declSmiley) { de->x().varSmiley[ve->name] = ve->declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D $x` / `my Int:D @a`
-    if (ve->declWhereExpr && !ve->name.empty() && ve->name[0] == '$')
-        de->x().varWhere[ve->name] = ve->declWhereExpr;   // `my $x where Int|Num`
-        if (ve->declDefault) { // `is default(v)`: initial AND reset value
-            Value dv = eval(ve->declDefault.get());
-            checkDeclDefault(ve->declType, sigil, dv, false, ve->declSmiley);
+    if (vd.declSmiley) { de->x().varSmiley[ve->name] = vd.declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D $x` / `my Int:D @a`
+    if (vd.declWhereExpr && !ve->name.empty() && ve->name[0] == '$')
+        de->x().varWhere[ve->name] = vd.declWhereExpr;   // `my $x where Int|Num`
+        if (vd.declDefault) { // `is default(v)`: initial AND reset value
+            Value dv = eval(vd.declDefault.get());
+            checkDeclDefault(vd.declType, sigil, dv, false, vd.declSmiley);
             if (sigil == '@' || sigil == '%') { // container stays empty; v is the ELEMENT default
                 // …but the DECLARED type still applies: `my Int @a is
                 // default(0)` is an Array[Int], and building a bare
@@ -31128,39 +31130,39 @@ Value Interpreter::evalVarExpr(Expr* e) {
                                                 // its slot; vars[] would split it
             }
             de->x().varDefault[ve->name] = dv;
-            if (dv.t == VT::Type && (ve->declType.empty() || ve->declType == "Mu" || ve->declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
-            else if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0]))
-                de->x().varDefaultType[ve->name] = Value::typeObj(ve->declType);
+            if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
+            else if (sigil == '$' && !vd.declType.empty() && ascii::isupper((unsigned char)vd.declType[0]))
+                de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
             return de->define(ve->name, dv);
         }
-        if (ve->declShape && sigil == '@') { // shaped array `my @a[2;3]`
-            return de->define(ve->name, makeShapedContainer(evalShapeDims(ve->declShape.get()), ve->declType));
+        if (vd.declShape && sigil == '@') { // shaped array `my @a[2;3]`
+            return de->define(ve->name, makeShapedContainer(evalShapeDims(vd.declShape.get()), vd.declType));
         }
-        if (ve->declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+        if (vd.declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
         // `my %h is Set;` / `my %h is MyHash;` with NO initialiser — the
         // same container trait the assignment path honours. Declared on
         // its own the trait was dropped, so `my %i is NoAT-KEY;` (how
         // Hash::Agnostic's suite checks a role's required methods) left a
         // plain Hash behind and every check about it asked the wrong
         // object.
-        if (!ve->containerIs.empty() && (sigil == '%' || sigil == '@')) {
+        if (!vd.containerIs.empty() && (sigil == '%' || sigil == '@')) {
             static const std::set<std::string> quant = {
                 "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-            if (sigil == '%' && quant.count(ve->containerIs)) {
-                Value c = makeBaggy({}, ve->containerIs);
-                c.ofTypeM() = ve->containerOf;
+            if (sigil == '%' && quant.count(vd.containerIs)) {
+                Value c = makeBaggy({}, vd.containerIs);
+                c.ofTypeM() = vd.containerOf;
                 return de->define(ve->name, std::move(c));
             }
-            if (classes_.count(ve->containerIs)) {
+            if (classes_.count(vd.containerIs)) {
                 ValueList none;
                 return de->define(ve->name,
-                                  methodCall(Value::typeObj(ve->containerIs), "new", none));
+                                  methodCall(Value::typeObj(vd.containerIs), "new", none));
             }
             // `my @a is buf16;` — an empty Buf of that type
             if (sigil == '@') {
                 static const std::set<std::string> blobTypes = {
                     "Blob", "Buf", "blob8", "blob16", "blob32", "blob64", "buf8", "buf16", "buf32", "buf64"};
-                std::string ct = ve->containerIs;
+                std::string ct = vd.containerIs;
                 if (!blobTypes.count(ct) && tctx_.cur)
                     if (Value* tp = tctx_.cur->find(ct)) if (tp->t == VT::Type) ct = tp->s;
                 if (blobTypes.count(ct)) {
@@ -31169,20 +31171,20 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 }
             }
         }
-        if (!ve->declType.empty()) checkDeclTypeSane(ve);
-        if (!ve->declType.empty() || !de->local(ve->name)) {
-            if (sigil == '$' && !ve->declType.empty() && ascii::isupper((unsigned char)ve->declType[0])) {
+        if (!vd.declType.empty()) checkDeclTypeSane(ve);
+        if (!vd.declType.empty() || !de->local(ve->name)) {
+            if (sigil == '$' && !vd.declType.empty() && ascii::isupper((unsigned char)vd.declType[0])) {
                 // `$x = Nil` resets to (Type) — a captured `my T $x`, to
                 // the type T bound for this call, which is also what the
                 // assignments are then checked against
                 Value cap;
-                if (capturedType(*this, tctx_.cur.get(), ve->declType, cap)) cap.i = 0;
-                else cap = Value::typeObj(ve->declType);
+                if (capturedType(*this, tctx_.cur.get(), vd.declType, cap)) cap.i = 0;
+                else cap = Value::typeObj(vd.declType);
                 de->x().varDefault[ve->name] = cap;
             }
-            if (!ve->declCoerce.empty())
-                de->x().varCoerce[ve->name] = ve->declCoerce;
-        if (!ve->declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = ve->declCoerceFrom;
+            if (!vd.declCoerce.empty())
+                de->x().varCoerce[ve->name] = vd.declCoerce;
+        if (!vd.declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = vd.declCoerceFrom;
             return de->define(ve->name, declInitial(ve, sigil));
         }
         Value* dp = de->local(ve->name);
@@ -31726,16 +31728,16 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // everything after the sixteenth round of every SHA-256 was wrong.
     if (mc->mutate && mc->inv && mc->inv->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(mc->inv.get());
-        if (ve->declare && ve->declScope == "state" && tctx_.curStateEnv &&
+        if (ve->declare && ve->d().declScope == "state" && tctx_.curStateEnv &&
             tctx_.curStateEnv->vars.count(ve->name) &&
             !consumeStatePreseed(tctx_.curStateEnv, ve->name))
             return tctx_.curStateEnv->vars[ve->name];
         // `my C constant T .= new(…)` — a typed CONSTANT's `.=` calls on
         // its declared type, as `my C $x .= new` does on its container's
-        if (ve->declare && ve->declScope == "constant" && !ve->declType.empty()) {
+        if (ve->declare && ve->d().declScope == "constant" && !ve->d().declType.empty()) {
             // (a parameterized one, `Array[Numeric]`, is its base type
             // carrying the parameter — the shape `Array[Numeric]` evaluates to)
-            const std::string& dt = ve->declType;
+            const std::string& dt = ve->d().declType;
             const size_t br = dt.find('[');
             NameTerm tn(br != std::string::npos && dt.back() == ']' ? dt.substr(0, br) : dt);
             tn.line = mc->line;
@@ -31751,7 +31753,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
         // the name is bound to the answer
         if (ve->declare && !ve->name.empty() && !std::strchr("$@%&", ve->name[0])) {
             Value typ = Value::typeObj("Mu");
-            if (!ve->declType.empty()) { NameTerm tn(ve->declType); tn.line = mc->line; typ = eval(&tn); }
+            if (!ve->d().declType.empty()) { NameTerm tn(ve->d().declType); tn.line = mc->line; typ = eval(&tn); }
             ValueList cargs = evalArgs(mc->args);
             Value res = methodCall(typ, mc->method, cargs);
             eval(mc->inv.get());                       // declare the name

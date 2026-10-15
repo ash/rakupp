@@ -830,13 +830,13 @@ void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr
     auto one = [&](const Expr* e) {
         if (e && e->kind == NK::VarExpr) {
             auto* v = static_cast<const VarExpr*>(e);
-            if (v->declare && v->declScope == "my" && v->name.size() > 1 && std::strchr("$@%", v->name[0])) out.push_back(v);
+            if (v->declare && v->d().declScope == "my" && v->name.size() > 1 && std::strchr("$@%", v->name[0])) out.push_back(v);
         }
         else if (e && e->kind == NK::ListExpr)
             for (auto& it : static_cast<const ListExpr*>(e)->items)
                 if (it && it->kind == NK::VarExpr) {
                     auto* v = static_cast<const VarExpr*>(it.get());
-                    if (v->declare && v->declScope == "my" && v->name.size() > 1 && std::strchr("$@%", v->name[0])) out.push_back(v);
+                    if (v->declare && v->d().declScope == "my" && v->name.size() > 1 && std::strchr("$@%", v->name[0])) out.push_back(v);
                 }
     };
     for (auto& s : body) {
@@ -881,7 +881,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             }
         // (`my $str ~= 'o'` is not an initializer that wipes: it appends to
         // whatever an INIT already left there)
-        for (auto* v : decls) if (!init.count(v->name) && v->containerIs.empty()) unitBare.insert(v->name);
+        for (auto* v : decls) if (!init.count(v->name) && v->d().containerIs.empty()) unitBare.insert(v->name);
     }
     // Only a phaser whose variables all live in the scopes being made static —
     // or, for an EVAL, in the live code around it — runs early. One that reads
@@ -942,7 +942,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
                 auto env = std::make_shared<Env>(); env->parent = parent;
                 std::vector<const VarExpr*> decls;
                 spDeclaredIn(*scope, decls);
-                for (auto* v : decls) env->define(v->name, typedDefault(v->declType, v->name[0]));
+                for (auto* v : decls) env->define(v->name, typedDefault(v->d().declType, v->name[0]));
                 it = staticEnvs_.emplace(scope, env).first;
             }
             parent = it->second;

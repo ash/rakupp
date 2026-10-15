@@ -8701,7 +8701,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             {
                 Env& se = *src.state.env;
                 auto seed = [&](const VarExpr* v) {
-                    if (!v || !v->declare || v->declScope != "state" || v->name.size() < 2 ||
+                    if (!v || !v->declare || v->d().declScope != "state" || v->name.size() < 2 ||
                         v->name.rfind("$anon--state--", 0) == 0 || se.vars.count(v->name)) return;
                     const char sg = v->name[0];
                     se.define(v->name, sg == '@' ? Value::array() : sg == '%' ? Value::makeHash() : Value::any());

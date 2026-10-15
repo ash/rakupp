@@ -122,11 +122,11 @@ struct Checker {
         switch (e->kind) {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                if (v->declare) (v->declScope == "our" ? declareOur(v->name) : declare(v->name));
+                if (v->declare) (v->d().declScope == "our" ? declareOur(v->name) : declare(v->name));
                 declarePlaceholder(v->name);
-                collectExpr(v->declDefault.get());
-                collectExpr(v->declShape.get());
-                collectExpr(v->declTypeExpr.get());
+                collectExpr(v->d().declDefault.get());
+                collectExpr(v->d().declShape.get());
+                collectExpr(v->d().declTypeExpr.get());
                 return;
             }
             case NK::Assign: {
@@ -308,9 +308,9 @@ struct Checker {
         switch (e->kind) {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                walkExpr(v->declDefault.get());
-                walkExpr(v->declShape.get());
-                walkExpr(v->declTypeExpr.get());
+                walkExpr(v->d().declDefault.get());
+                walkExpr(v->d().declShape.get());
+                walkExpr(v->d().declTypeExpr.get());
                 if (v->declare) { declare(v->name); return; }
                 use(v);
                 return;

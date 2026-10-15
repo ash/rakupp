@@ -295,11 +295,11 @@ struct NameScan {
             auto* v = static_cast<const VarExpr*>(e);
             refs.insert(v->name);
             if (v->declare) decl(v->name);
-            words(v->declType); words(v->declCoerce); words(v->declCoerceFrom);
-            words(v->containerIs); words(v->containerOf);
-            if (!v->declStubType.empty()) decl(v->declStubType);
-            expr(v->declDefault.get()); expr(v->declShape.get()); expr(v->declTypeExpr.get());
-            expr(v->declWhereExpr);
+            words(v->d().declType); words(v->d().declCoerce); words(v->d().declCoerceFrom);
+            words(v->d().containerIs); words(v->d().containerOf);
+            if (!v->d().declStubType.empty()) decl(v->d().declStubType);
+            expr(v->d().declDefault.get()); expr(v->d().declShape.get()); expr(v->d().declTypeExpr.get());
+            expr(v->d().declWhereExpr);
             break;
         }
         case NK::NameTerm: {

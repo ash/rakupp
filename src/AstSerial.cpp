@@ -235,24 +235,38 @@ template <class IO> void visit(IO& io, RegexLit& n) { F(io, n.pattern); F(io, n.
 template <class IO> void visit(IO& io, SubstLit& n) { F(io, n.pattern); F(io, n.repl); F(io, n.nonMut); }
 template <class IO> void visit(IO& io, ChainExpr& n){ ioExprVec(io, n.operands); ioVec(io, n.ops); }
 template <class IO> void visit(IO& io, InterpStr& n){ ioExprVec(io, n.parts); }
-template <class IO> void visit(IO& io, VarExpr& n)  { F(io, n.name); F(io, n.declare); F(io, n.declScope);
-                                                      F(io, n.declType); F(io, n.declCoerce);
-                                                      ioExpr(io, n.declDefault);
-                                                      F(io, n.declDynamic); F(io, n.declExport); F(io, n.pkgSymbol);
-                                                      F(io, n.containerIs); F(io, n.containerOf);
-                                                      ioExpr(io, n.declShape); F(io, n.namedBind);
-                                                      F(io, n.processScoped);
-                                                      F(io, n.synthTopic);      // P1 surface fact
-                                                      // …and the two that were never written at all: a cached
-                                                      // unit came back with `$::($n)` reading as an ordinary
-                                                      // lexical, which is a different program. Found while the
-                                                      // version was bumping anyway, so users pay ONE cache
-                                                      // invalidation rather than two.
-                                                      F(io, n.viaPseudoPkg); F(io, n.pseudoPkg);
-                                                      ioExpr(io, n.declTypeExpr);
-                                                      F(io, n.nativeStrRead); F(io, n.nativeIntRead);
-                                                      F(io, n.nativeNumRead);
-                                                      n.syncAttrCache(); }  // derived from `name`, not stored
+// The declaration's fields (VarDeclInfo) are written from the node's block,
+// or as the defaults when it has none, in the order they always had; read
+// back into a block of their own that the node keeps only when one of them
+// is set, so a cached unit's plain variable reads carry none, as a parsed
+// program's do.
+template <class IO> void visit(IO& io, VarExpr& n)  {
+    VarDeclInfo scratch;
+    VarDeclInfo& d = (IO::reading || !n.hasDecl()) ? scratch : n.dm();
+    F(io, n.name); F(io, n.declare); F(io, d.declScope);
+    F(io, d.declType); F(io, d.declCoerce);
+    ioExpr(io, d.declDefault);
+    F(io, d.declDynamic); F(io, d.declExport); F(io, n.pkgSymbol);
+    F(io, d.containerIs); F(io, d.containerOf);
+    ioExpr(io, d.declShape); F(io, d.namedBind);
+    F(io, n.processScoped);
+    F(io, n.synthTopic);      // P1 surface fact
+    // …and the two that were never written at all: a cached
+    // unit came back with `$::($n)` reading as an ordinary
+    // lexical, which is a different program. Found while the
+    // version was bumping anyway, so users pay ONE cache
+    // invalidation rather than two.
+    F(io, n.viaPseudoPkg); F(io, d.pseudoPkg);
+    ioExpr(io, d.declTypeExpr);
+    F(io, n.nativeStrRead); F(io, n.nativeIntRead);
+    F(io, n.nativeNumRead);
+    if constexpr (IO::reading) {
+        if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
+            d.declDynamic || d.declExport || !d.containerIs.empty() || !d.containerOf.empty() ||
+            d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr)
+            n.dm() = std::move(scratch);
+    }
+    n.syncAttrCache(); }  // derived from `name`, not stored
 template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); F(io, n.noAutoQuote); F(io, n.pkgSelf); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }
 template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr); ioExprVec(io, n.segs);

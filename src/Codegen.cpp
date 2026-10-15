@@ -273,10 +273,10 @@ struct Codegen {
                     auto* v = static_cast<VarExpr*>(e);
                     if (v->declare) {
                         declare(v->name, v);
-                        if (v->declDynamic) rwAmbiguous_.insert(v->name);   // a callee reaches it as CALLER::
+                        if (v->d().declDynamic) rwAmbiguous_.insert(v->name);   // a callee reaches it as CALLER::
                     }
                     else use(v);
-                    ex(v->declDefault.get()); ex(v->declShape.get()); ex(v->declTypeExpr.get());
+                    ex(v->d().declDefault.get()); ex(v->d().declShape.get()); ex(v->d().declTypeExpr.get());
                     return; }
                 case NK::ListExpr: for (auto& x : static_cast<ListExpr*>(e)->items) ex(x.get()); return;
                 case NK::ArrayLit: for (auto& x : static_cast<ArrayLit*>(e)->items) ex(x.get()); return;
@@ -627,14 +627,14 @@ struct Codegen {
         // its block; a C++ local is made afresh each time — `for ^2 { state $n;
         // say $n++ }` printed 0 0 — and `(state $n)++` / `@a[$++]` named a
         // local nothing declared, failing the whole C++ build
-        if (v->declScope == "state") unsupported("a `state` variable");
-        if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->declType.empty())
-            unsupported("a typed " + std::string(1, n[0]) + " variable (my " + v->declType + " " + n + ")");
-        if (v->declDefault) unsupported("an `is default` variable");
-        if (!v->declCoerce.empty()) unsupported("a coercion-typed variable");
-        if (!v->containerIs.empty() || !v->containerOf.empty()) unsupported("a container-type trait on a variable");
-        if (v->declSmiley) unsupported("a `:D`/`:U` variable");
-        if (v->declWhereExpr || v->declHasWhere) unsupported("a `where`-constrained variable");
+        if (v->d().declScope == "state") unsupported("a `state` variable");
+        if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->d().declType.empty())
+            unsupported("a typed " + std::string(1, n[0]) + " variable (my " + v->d().declType + " " + n + ")");
+        if (v->d().declDefault) unsupported("an `is default` variable");
+        if (!v->d().declCoerce.empty()) unsupported("a coercion-typed variable");
+        if (!v->d().containerIs.empty() || !v->d().containerOf.empty()) unsupported("a container-type trait on a variable");
+        if (v->d().declSmiley) unsupported("a `:D`/`:U` variable");
+        if (v->d().declWhereExpr || v->d().declHasWhere) unsupported("a `where`-constrained variable");
     }
 
     // `$Foo::greeting` — a package-qualified name lives in a package's stash,
@@ -1075,7 +1075,7 @@ struct Codegen {
                     auto* v = static_cast<VarExpr*>(e);
                     // a SHAPED declaration builds its dimensions where it is written,
                     // so leave that one where it is
-                    if (v->declare && !v->declShape) declare(v->name, v->declType);
+                    if (v->declare && !v->d().declShape) declare(v->name, v->d().declType);
                 } else if (e->kind == NK::ListExpr) {
                     // `my $lo = -1.35, my $hi = 1.35;` — a comma list of
                     // declarations, so each item may be an assignment of its own
@@ -1084,7 +1084,7 @@ struct Codegen {
                         if (x && x->kind == NK::Assign) x = static_cast<Assign*>(x)->target.get();
                         if (x && x->kind == NK::VarExpr) {
                             auto* v = static_cast<VarExpr*>(x);
-                            if (v->declare && !v->declShape) declare(v->name, v->declType);
+                            if (v->declare && !v->d().declShape) declare(v->name, v->d().declType);
                         }
                     }
                 }
@@ -1352,17 +1352,17 @@ struct Codegen {
     }
 
     std::string shapedInit(VarExpr* v, const std::string& rhs = "") {
-        if (!v->declShape || v->name.empty() || v->name[0] != '@') return "";
+        if (!v->d().declShape || v->name.empty() || v->name[0] != '@') return "";
         std::vector<Expr*> dims;
-        if (v->declShape->kind == NK::ListExpr)
-            for (auto& d : static_cast<ListExpr*>(v->declShape.get())->items) dims.push_back(d.get());
-        else dims.push_back(v->declShape.get());
+        if (v->d().declShape->kind == NK::ListExpr)
+            for (auto& d : static_cast<ListExpr*>(v->d().declShape.get())->items) dims.push_back(d.get());
+        else dims.push_back(v->d().declShape.get());
         std::string mk = "rtShapedArray(ValueList{";
         for (size_t i = 0; i < dims.size(); i++) { if (i) mk += ", "; mk += ex(dims[i]); }
-        mk += "}, " + cesc(v->declType) + ")";
+        mk += "}, " + cesc(v->d().declType) + ")";
         if (rhs.empty()) return mk;
         return "([&]()->Value{ Value __sh = " + mk + "; rtShapedStore(__sh, " + rhs
-             + ", " + cesc(v->declType) + "); return __sh; }())";
+             + ", " + cesc(v->d().declType) + "); return __sh; }())";
     }
 
     // The slot a `my $*X` declares. At the top level that is the program's own
@@ -2549,7 +2549,7 @@ struct Codegen {
                         return "(" + coerceFor(a->target.get(), exArg(a->value.get())) + ")";
                     if (hoisted.count(v->name)) { // pre-declared by hoistExprDecls
                         // …but a hoisted declaration was declared WITHOUT its shape
-                        if (v->declShape) unsupported("a shaped declaration in expression position");
+                        if (v->d().declShape) unsupported("a shaped declaration in expression position");
                         return "(" + mangleVar(v->name) + " = " + coerceFor(a->target.get(), exArg(a->value.get())) + ")";
                     }
                     unsupported("declaration used as a sub-expression");
@@ -3045,8 +3045,8 @@ struct Codegen {
                         static_cast<VarExpr*>(mc->inv.get())->declare) {
                         auto* v = static_cast<VarExpr*>(mc->inv.get());
                         refuseDeclTraits(v);
-                        std::string init = v->declType.empty() ? "Value::any()"
-                                         : "Value::typeObj(" + cesc(v->declType) + ")";
+                        std::string init = v->d().declType.empty() ? "Value::any()"
+                                         : "Value::typeObj(" + cesc(v->d().declType) + ")";
                         std::string name = mc->meta ? "^" + mc->method : mc->method;
                         line(ind, declVar(v->name, "RT.methodCall(" + init + ", "
                                 + cesc(name) + ", " + argsVL(mc->args) + ")") + ";");
@@ -3119,7 +3119,7 @@ struct Codegen {
                         if (!sh.empty()) line(ind, mangleVar(nm) + " = " + sh + ";");
                         return;
                     }
-                    line(ind, declVar(nm, sh.empty() ? declInit(dv->declType, sigil) : sh) + ";");
+                    line(ind, declVar(nm, sh.empty() ? declInit(dv->d().declType, sigil) : sh) + ";");
                     return;
                 }
                 // bare declaration list `my ($x, $y, $k);` — declare each, no value
@@ -3135,7 +3135,7 @@ struct Codegen {
                             refuseDeclTraits(static_cast<VarExpr*>(it.get()));
                             if (atTopLevel_ && topVars_.count(nm)) continue; // global
                             char sigil = nm.empty() ? '$' : nm[0];
-                            line(ind, declVar(nm, declInit(static_cast<VarExpr*>(it.get())->declType, sigil)) + ";");
+                            line(ind, declVar(nm, declInit(static_cast<VarExpr*>(it.get())->d().declType, sigil)) + ";");
                         }
                         return;
                     }
@@ -3380,8 +3380,8 @@ struct Codegen {
             // so the plain assignment around it keeps the variable native.
             if (!n.empty() && n[0] == '$') {
                 const std::string src = value && nativeNumericStatic(value) ? "true" : "false";
-                if (v->declare && isNativeScalarDecl(v->declType))
-                    return "rtNativeValue(" + rhs + ", " + cesc(v->declType) + ", " + cesc(n) + ", " + src + ")";
+                if (v->declare && isNativeScalarDecl(v->d().declType))
+                    return "rtNativeValue(" + rhs + ", " + cesc(v->d().declType) + ", " + cesc(n) + ", " + src + ")";
                 if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
                     return "rtNativeValueLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
@@ -4755,12 +4755,12 @@ struct Codegen {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 if (tv->declare) {
                     if (a->op != "=") { U.fail(); return; }
-                    if (!(tv->declScope.empty() || tv->declScope == "my")) { U.fail(); return; }
-                    const char nk = tv->declType == "int" || tv->declType == "int64" ? 'i'
-                                  : tv->declType == "num" || tv->declType == "num64" ? 'n' : 0;
-                    if ((!tv->declType.empty() && !nk) || !tv->declCoerce.empty() || tv->declDefault ||
-                        tv->declDynamic || tv->declExport || !tv->containerIs.empty() ||
-                        tv->declShape || tv->declTypeExpr || tv->pkgSymbol || tv->viaPseudoPkg) {
+                    if (!(tv->d().declScope.empty() || tv->d().declScope == "my")) { U.fail(); return; }
+                    const char nk = tv->d().declType == "int" || tv->d().declType == "int64" ? 'i'
+                                  : tv->d().declType == "num" || tv->d().declType == "num64" ? 'n' : 0;
+                    if ((!tv->d().declType.empty() && !nk) || !tv->d().declCoerce.empty() || tv->d().declDefault ||
+                        tv->d().declDynamic || tv->d().declExport || !tv->d().containerIs.empty() ||
+                        tv->d().declShape || tv->d().declTypeExpr || tv->pkgSymbol || tv->viaPseudoPkg) {
                         U.fail(); return;
                     }
                     // a native in a loop HEADER outlives the lane in a box the
@@ -6369,7 +6369,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             // sigilled vars need a name beyond the sigil; sigilless (constant \W) are fine at 1 char
             bool sigilled = !nm.empty() && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%' || nm[0] == '&');
             if (nm.size() > 1 && nm[1] == '*') return; // dynamics live in the runtime env
-            if (sigilled ? nm.size() > 1 : !nm.empty()) fn(nm, static_cast<VarExpr*>(x)->declType);
+            if (sigilled ? nm.size() > 1 : !nm.empty()) fn(nm, static_cast<VarExpr*>(x)->d().declType);
         };
         if (!st || st->kind != NK::ExprStmt) return;
         Expr* e = static_cast<ExprStmt*>(st)->e.get();
@@ -6396,7 +6396,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             auto* tv = static_cast<VarExpr*>(a->target.get());
             Expr* v = a->value.get();
             if (v && v->kind == NK::Unary && static_cast<Unary*>(v)->op == "-") v = static_cast<Unary*>(v)->operand.get();
-            const bool num = a->op == "=" && tv->declType.empty() && v && v->kind == NK::NumLit &&
+            const bool num = a->op == "=" && tv->d().declType.empty() && v && v->kind == NK::NumLit &&
                              !static_cast<NumLit*>(v)->isRat && !static_cast<NumLit*>(v)->imaginary;
             (num ? g.topNumInit_ : otherInit).insert(tv->name);
         }

@@ -394,13 +394,13 @@ struct Builder {
         std::string bare  = sigilless ? v->name
                           : (v->name.size() > 1 ? v->name.substr(1) : std::string());
         std::initializer_list<std::pair<const char*, Value>> attrs = {
-            {"scope", Value::str(v->declScope.empty() ? "my" : v->declScope)},
+            {"scope", Value::str(v->d().declScope.empty() ? "my" : v->d().declScope)},
             {"sigil", Value::str(sigil)},
             {"desigilname", name(bare)},
         };
         Value n = node("VarDeclaration::Simple", attrs);
-        if (!v->declType.empty())
-            n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(v->declType)}});
+        if (!v->d().declType.empty())
+            n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(v->d().declType)}});
         return n;
     }
 

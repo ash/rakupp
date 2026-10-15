@@ -1041,7 +1041,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
             if (e && e->kind == NK::VarExpr) {
                 const auto* ve = static_cast<const VarExpr*>(e);
-                if (ve->declExport && ve->name.size() > 1 && ve->name[0] == '&') exported.insert(ve->name.substr(1));
+                if (ve->d().declExport && ve->name.size() > 1 && ve->name[0] == '&') exported.insert(ve->name.substr(1));
             }
         }
         // …and the `our sub`s a module declares with no package of its own in
@@ -2315,7 +2315,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                     std::vector<const VarExpr*> decls;
                     spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(e->declStmts), decls);
                     for (auto* v : decls)
-                        if (v->name == u.name) { verdict = v->declType.empty() ? 2 : 3; break; }
+                        if (v->name == u.name) { verdict = v->d().declType.empty() ? 2 : 3; break; }
                 }
             }
             if (verdict == 1 || (verdict == 0 && tctx_.cur && tctx_.cur->find(u.name))) continue;
@@ -2388,8 +2388,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
                 if (!e || e->kind != NK::VarExpr) continue;
                 auto* ve = static_cast<VarExpr*>(e);
-                if (!ve->declare || ve->declScope != "my" || ve->name.empty()) continue;
-                if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) continue;
+                if (!ve->declare || ve->d().declScope != "my" || ve->name.empty()) continue;
+                if (!ve->d().containerIs.empty() || ve->d().declTypeExpr || ve->d().declShape) continue;
                 if (!tctx_.cur->local(ve->name)) tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
             }
         }
@@ -2430,8 +2430,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         auto* ve = static_cast<VarExpr*>(t);
         // only a plain `my`: `state`, `our` and the trait/parameterized forms
         // own machinery that the declaration itself has to run
-        if (!ve->declare || ve->declScope != "my" || ve->name.empty()) return;
-        if (!ve->containerIs.empty() || ve->declTypeExpr || ve->declShape) return;
+        if (!ve->declare || ve->d().declScope != "my" || ve->name.empty()) return;
+        if (!ve->d().containerIs.empty() || ve->d().declTypeExpr || ve->d().declShape) return;
         if (tctx_.cur->local(ve->name)) return;
         tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
     };
@@ -4272,7 +4272,7 @@ bool mayHaveStateDecl(const Expr* e) {
             return false;
         case NK::VarExpr: {
             auto* v = static_cast<const VarExpr*>(e);
-            return v->declare && v->declScope == "state";
+            return v->declare && v->d().declScope == "state";
         }
         case NK::InterpStr: {
             for (auto& part : static_cast<const InterpStr*>(e)->parts)
@@ -5832,8 +5832,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (e && e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
                     if (e && e->kind == NK::VarExpr) {
                         auto* v = static_cast<VarExpr*>(e);
-                        if (v->declare && v->declScope == "our") ourVars.insert(v->name);
-                        if (v->declMyConstant) lexicalOnly.insert(v->name);
+                        if (v->declare && v->d().declScope == "our") ourVars.insert(v->name);
+                        if (v->d().declMyConstant) lexicalOnly.insert(v->name);
                     }
                 }
                 for (auto& kv : pkgEnv->vars) {
@@ -8212,7 +8212,7 @@ bool Interpreter::bindConstantEarly(Stmt* s, std::set<std::string>& bound) {
     auto* a = static_cast<Assign*>(e);
     if (!a->target || a->target->kind != NK::VarExpr) return false;
     auto* ve = static_cast<VarExpr*>(a->target.get());
-    if (!ve->declare || ve->declScope != "constant") return false;
+    if (!ve->declare || ve->d().declScope != "constant") return false;
     if (!constantInitIsStatic(a->value.get(), bound)) return false;
     try { exec(s, /*sink=*/true); }
     catch (RakuError&) { return false; }   // the mainline runs it again, and reports it there
@@ -8452,7 +8452,7 @@ int Interpreter::run(Program& prog) {
                         // that the trait can no longer replace — which is why a
                         // mainline `my %h is Set;` stayed a Hash while the same line
                         // inside a block did not.
-                        if (!ve->containerIs.empty() &&
+                        if (!ve->d().containerIs.empty() &&
                             (ve->name[0] == '%' || ve->name[0] == '@')) { /* declaration handles it */ }
                         // Same reasoning for a PARAMETERIZED declared type
                         // (`my BinaryHeap::MinHeap[{ … }] $h`): the base type
@@ -8461,7 +8461,7 @@ int Interpreter::run(Program& prog) {
                         // evaluated, and pre-defining the textual fallback would
                         // leave the variable holding a type object that names no
                         // class. Leave it to the declaration, which runs after.
-                        else if (ve->declTypeExpr) { /* declaration handles it */ }
+                        else if (ve->d().declTypeExpr) { /* declaration handles it */ }
                         // A SHAPED array is shaped when its declaration runs: a
                         // BEGIN block sees the empty, unshaped container of the
                         // declared type, as in Rakudo (`(*)`, 0 elements). Building
@@ -8488,14 +8488,14 @@ int Interpreter::run(Program& prog) {
             if (s->kind == NK::ExprStmt) { Expr* e = static_cast<ExprStmt*>(s)->e.get();
                 if (e && e->kind == NK::VarExpr) dve = static_cast<VarExpr*>(e);
                 else if (e && e->kind == NK::Assign) { auto* a = static_cast<Assign*>(e); if (a->target && a->target->kind == NK::VarExpr) dve = static_cast<VarExpr*>(a->target.get()); } }
-            if (dve) dtype = dve->declType;
+            if (dve) dtype = dve->d().declType;
             // …and the same deferral the predeclare walk makes: a container trait
             // decides what the variable IS, and pre-defining a plain Hash here
             // left the trait nothing to act on.
-            if (dve && !dve->containerIs.empty() && (nm[0] == '%' || nm[0] == '@')) continue;
+            if (dve && !dve->d().containerIs.empty() && (nm[0] == '%' || nm[0] == '@')) continue;
             // …and for a parameterized declared type, whose base comes from a
             // module that has not been `use`d yet at this point
-            if (dve && dve->declTypeExpr) continue;
+            if (dve && dve->d().declTypeExpr) continue;
             global_->define(nm, typedDefault(dtype, nm[0])); }
         // the same modifier/ternary-buried declarations the block path hoists
         // (`my $x = E if COND` at file scope must declare $x even when COND is
@@ -8605,8 +8605,8 @@ int Interpreter::run(Program& prog) {
                 global_->local(nm)) {
                 auto* a = static_cast<Assign*>(static_cast<ExprStmt*>(s)->e.get());
                 if (a->kind == NK::Assign && !opEq(a->op, "=") && !opEq(a->op, ":=") && a->op.size() > 1 &&
-                    a->op.back() == '=' && static_cast<VarExpr*>(a->target.get())->declScope == "my" &&
-                    static_cast<VarExpr*>(a->target.get())->declType.empty()) {
+                    a->op.back() == '=' && static_cast<VarExpr*>(a->target.get())->d().declScope == "my" &&
+                    static_cast<VarExpr*>(a->target.get())->d().declType.empty()) {
                     auto* ve = static_cast<VarExpr*>(a->target.get());
                     ve->declare = false;
                     struct Re { VarExpr* v; ~Re() { v->declare = true; } } re{ve};
@@ -8623,16 +8623,16 @@ int Interpreter::run(Program& prog) {
                         auto* ve0 = static_cast<VarExpr*>(e0);
                         if (e0->line > 0) curLine_ = e0->line;
                         checkBareSubsetDecl(ve0, ve0->name[0]);
-                        if (ve0->declSmiley) { global_->x().varSmiley[ve0->name] = ve0->declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D @a …;`
-                        if (ve0->declWhereExpr && ve0->name[0] == '$')
-                            global_->x().varWhere[ve0->name] = ve0->declWhereExpr;   // `my $x where Int;`
+                        if (ve0->d().declSmiley) { global_->x().varSmiley[ve0->name] = ve0->d().declSmiley; elemSmileyDeclared_.store(true, std::memory_order_relaxed); } // `my Int:D @a …;`
+                        if (ve0->d().declWhereExpr && ve0->name[0] == '$')
+                            global_->x().varWhere[ve0->name] = ve0->d().declWhereExpr;   // `my $x where Int;`
                         // the SHAPE is evaluated when the declaration runs — the
                         // hoist saw `my int @m[$size; $size]` before $size was set
-                        if (ve0->declShape && ve0->name[0] == '@' && !ve0->declDefault)
-                            global_->define(ve0->name, makeShapedContainer(evalShapeDims(ve0->declShape.get()), ve0->declType));
-                        if (ve0->declDefault) {
-                            Value dv = eval(ve0->declDefault.get());
-                            checkDeclDefault(ve0->declType, ve0->name[0], dv, false, ve0->declSmiley);
+                        if (ve0->d().declShape && ve0->name[0] == '@' && !ve0->d().declDefault)
+                            global_->define(ve0->name, makeShapedContainer(evalShapeDims(ve0->d().declShape.get()), ve0->d().declType));
+                        if (ve0->d().declDefault) {
+                            Value dv = eval(ve0->d().declDefault.get());
+                            checkDeclDefault(ve0->d().declType, ve0->name[0], dv, false, ve0->d().declSmiley);
                             if (ve0->name[0] == '@' || ve0->name[0] == '%') {
                                 // container stays empty; v is the ELEMENT default —
                                 // but the DECLARED type still applies, so build the
@@ -8648,29 +8648,29 @@ int Interpreter::run(Program& prog) {
                                 global_->x().varDefault[ve0->name] = dv;
                                 // a TYPE default on an untyped (Mu/Any) variable is a reset value,
                                 // no constraint: `my $v is default(Int); $v = Num` holds Num
-                                if (dv.t == VT::Type && (ve0->declType.empty() || ve0->declType == "Mu" ||
-                                                         ve0->declType == "Any"))
+                                if (dv.t == VT::Type && (ve0->d().declType.empty() || ve0->d().declType == "Mu" ||
+                                                         ve0->d().declType == "Any"))
                                     global_->x().varDefaultUntyped.insert(ve0->name);
                                 // …and a typed one keeps its type beside the reset value
-                                else if (!ve0->declType.empty() && ascii::isupper((unsigned char)ve0->declType[0]))
-                                    global_->x().varDefaultType[ve0->name] = Value::typeObj(ve0->declType);
+                                else if (!ve0->d().declType.empty() && ascii::isupper((unsigned char)ve0->d().declType[0]))
+                                    global_->x().varDefaultType[ve0->name] = Value::typeObj(ve0->d().declType);
                                 global_->vars[ve0->name] = dv;
                             }
                         }
-                        else if (ve0->name[0] == '$' && !ve0->declType.empty() &&
-                                 ascii::isupper((unsigned char)ve0->declType[0]))
-                            global_->x().varDefault[ve0->name] = Value::typeObj(ve0->declType);
+                        else if (ve0->name[0] == '$' && !ve0->d().declType.empty() &&
+                                 ascii::isupper((unsigned char)ve0->d().declType[0]))
+                            global_->x().varDefault[ve0->name] = Value::typeObj(ve0->d().declType);
                         // …its coercion type, for the same reason: a hoisted
                         // `my Int() $x;` never reaches the declaration path that
                         // would have recorded it, and the later `$x = "7"` would
                         // then be refused rather than converted.
-                        if (!ve0->declCoerce.empty())
-                            global_->x().varCoerce[ve0->name] = ve0->declCoerce;
-                            if (!ve0->declCoerceFrom.empty()) global_->x().varCoerce[ve0->name + "\x01from"] = ve0->declCoerceFrom;
+                        if (!ve0->d().declCoerce.empty())
+                            global_->x().varCoerce[ve0->name] = ve0->d().declCoerce;
+                            if (!ve0->d().declCoerceFrom.empty()) global_->x().varCoerce[ve0->name + "\x01from"] = ve0->d().declCoerceFrom;
                         // …and its `is dynamic`, which the skipped declaration would
                         // otherwise never record (a mainline `my $x is dynamic;` with
                         // no initializer is hoisted here and never evaluated)
-                        if (ve0->declDynamic) global_->x().varDynamic.insert(ve0->name);
+                        if (ve0->d().declDynamic) global_->x().varDynamic.insert(ve0->name);
                     }
                 }
                 continue;

@@ -265,8 +265,8 @@ struct Scan {
             case NK::VarExpr: {
                 auto* v = static_cast<VarExpr*>(e);
                 noteName(v->name);
-                walkE(v->declDefault.get());
-                walkE(v->declShape.get());
+                walkE(v->d().declDefault.get());
+                walkE(v->d().declShape.get());
                 break;
             }
             case NK::NameTerm: noteName(static_cast<NameTerm*>(e)->name); break;

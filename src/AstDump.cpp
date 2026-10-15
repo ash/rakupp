@@ -71,8 +71,8 @@ struct Dumper {
             case NK::StrLit: line(ind, "StrLit \"" + trunc(static_cast<const StrLit*>(e)->v) + "\""); return;
             case NK::BoolLit: line(ind, std::string("BoolLit ") + (static_cast<const BoolLit*>(e)->v ? "True" : "False")); return;
             case NK::VarExpr: { auto* v = static_cast<const VarExpr*>(e);
-                line(ind, "VarExpr " + v->name + (v->declare ? " [decl " + (v->declScope.empty() ? "my" : v->declScope) +
-                          (v->declType.empty() ? "" : " " + v->declType) + "]" : "")); return; }
+                line(ind, "VarExpr " + v->name + (v->declare ? " [decl " + (v->d().declScope.empty() ? "my" : v->d().declScope) +
+                          (v->d().declType.empty() ? "" : " " + v->d().declType) + "]" : "")); return; }
             case NK::NameTerm: line(ind, "NameTerm " + static_cast<const NameTerm*>(e)->name); return;
             case NK::SelfTerm: line(ind, "self"); return;
             case NK::Whatever: line(ind, "Whatever *"); return;

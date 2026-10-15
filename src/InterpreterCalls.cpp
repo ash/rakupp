@@ -1534,7 +1534,7 @@ PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
     if (!e || e->kind != NK::VarExpr || !tctx_.cur) return nullptr;
     // `SETTING::<$x>` / `PROCESS::<$x>` name ANOTHER scope's variable, by
     // that package's rules — never the lexical `$x` the name would find here
-    if (!static_cast<const VarExpr*>(e)->pseudoPkg.empty() || static_cast<const VarExpr*>(e)->processScoped)
+    if (!static_cast<const VarExpr*>(e)->d().pseudoPkg.empty() || static_cast<const VarExpr*>(e)->processScoped)
         return nullptr;
     const std::string& n = static_cast<const VarExpr*>(e)->name;
     // A SIGILLESS name bound to a container (`sub f(\t)` handed `$x`) IS that
@@ -2463,7 +2463,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             if (!isBinding) {
                 const bool lit = tgt->kind == NK::StrLit || tgt->kind == NK::IntLit ||
                                  tgt->kind == NK::NumLit || tgt->kind == NK::InterpStr;
-                const Expr* w = tgt->kind == NK::VarExpr ? static_cast<VarExpr*>(tgt)->declWhereExpr : nullptr;
+                const Expr* w = tgt->kind == NK::VarExpr ? static_cast<VarExpr*>(tgt)->d().declWhereExpr : nullptr;
                 if ((lit || w) && vi < vals.size()) {
                     const Value& v = vals[vi];
                     bool ok;
@@ -2599,7 +2599,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             // a TYPED slot the list does not reach holds its type object:
             // `my Str ($a) = ()` leaves $a as (Str)
             if (noValue && !isBinding && tgt->kind == NK::VarExpr) {
-                const std::string& dt = static_cast<VarExpr*>(tgt)->declType;
+                const std::string& dt = static_cast<VarExpr*>(tgt)->d().declType;
                 if (!dt.empty() && ascii::isupper((unsigned char)dt[0])) v = Value::typeObj(dt);
             }
             if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
@@ -2608,7 +2608,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 // path does for `my Int() $x = "42"`: `my ($before, Int() $linenr)
                 // = $line.split(…)` (Backtrace::Files) wants the number, not the Str.
                 if (!isBinding && tgt->kind == NK::VarExpr) {
-                    const std::string& ct = static_cast<VarExpr*>(tgt)->declCoerce;
+                    const std::string& ct = static_cast<VarExpr*>(tgt)->d().declCoerce;
                     if (!ct.empty()) v = coerceToType(v, ct);
                 }
                 Value* lv = lvalue(tgt);
@@ -2628,7 +2628,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 }
                 // a TYPED slot checks what it is given, as `my Str $x = 3` does:
                 // `my (Str $x) = 3` dies
-                if (!isBinding && tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->declType.empty()) {
+                if (!isBinding && tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->d().declType.empty()) {
                     const std::string& nm = static_cast<VarExpr*>(tgt)->name;
                     if (!nm.empty() && nm[0] == '$') {
                         enforceTypedAssign(nm, v);
@@ -3577,7 +3577,7 @@ static bool exprMayReadAtArgs(const Expr* e) {
         case NK::VarExpr: {
             auto* v = static_cast<const VarExpr*>(e);
             if (v->name == "@_" || v->name == "%_") return true;
-            return exprMayReadAtArgs(v->declDefault.get()) || exprMayReadAtArgs(v->declShape.get());
+            return exprMayReadAtArgs(v->d().declDefault.get()) || exprMayReadAtArgs(v->d().declShape.get());
         }
         case NK::Binary: { auto* b = static_cast<const Binary*>(e);
             return exprMayReadAtArgs(b->lhs.get()) || exprMayReadAtArgs(b->rhs.get()); }
@@ -3666,12 +3666,12 @@ bool Interpreter::blockTakesAtArgs(Callable& c) {
 // container type — and a right side declLaneRhs can evaluate.
 bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
     // (`$` and a letter or underscore: no twigil, no special variable)
-    if (!v->declare || v->declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->stateInParens ||
-        !v->declStubType.empty() || !v->declType.empty() || !v->declCoerce.empty() ||
-        v->declDefault || v->declDynamic || v->declExport || v->declSmiley || v->declWhereExpr ||
-        v->declHasWhere || v->declMyConstant || v->pkgSymbol || !v->containerIs.empty() ||
-        v->declShape || v->declTypeExpr || v->namedBind || v->viaPseudoPkg || v->processScoped ||
+    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
+        !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
+        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
+        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
+        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
         v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
         return false;
     if (!rhs) return false;
@@ -4065,7 +4065,7 @@ static bool flatScanExpr(const Expr* e) {
         case NK::VarExpr: {
             auto* v = static_cast<const VarExpr*>(e);
             if (v->declare) return false;             // `(my $t = …)` mid-expression
-            return flatScanExpr(v->declDefault.get());
+            return flatScanExpr(v->d().declDefault.get());
         }
         case NK::SymbolicRef: return false;           // `::('$x') = …` defines by name
         case NK::Call: {

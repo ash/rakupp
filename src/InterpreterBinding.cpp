@@ -455,14 +455,14 @@ void Interpreter::checkNativeArrayParam(const std::string& t) {
 }
 
 void Interpreter::checkDeclTypeSane(const VarExpr* ve) {
-    checkNativeArrayParam(ve->declType);
+    checkNativeArrayParam(ve->d().declType);
     // `my package A {}; my A $a` — a package is no type
-    if (!ve->declType.empty() && nameIsPackageNow(ve->declType))
-        throwTypedV("X::Syntax::Variable::BadType", {{"type", Value::typeObj(ve->declType)}},
-                    "'" + ve->declType + "' cannot be used as a type");
+    if (!ve->d().declType.empty() && nameIsPackageNow(ve->d().declType))
+        throwTypedV("X::Syntax::Variable::BadType", {{"type", Value::typeObj(ve->d().declType)}},
+                    "'" + ve->d().declType + "' cannot be used as a type");
     // `my Array[Numerix] $x` — a type argument nothing declares
-    if (ve->declType.find('[') != std::string::npos) {
-        const std::string& dt = ve->declType;
+    if (ve->d().declType.find('[') != std::string::npos) {
+        const std::string& dt = ve->d().declType;
         size_t i = 0;
         while (i < dt.size()) {
             if (!ascii::isupper((unsigned char)dt[i]) || (i > 0 && (ascii::isalnum((unsigned char)dt[i - 1]) || dt[i - 1] == ':' || dt[i - 1] == '-' || dt[i - 1] == '_'))) { i++; continue; }
@@ -1006,14 +1006,14 @@ bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 // `my S $s;` whose subset refuses that type object (`of Int:D`, `where
 // .defined`) has nothing to hold.
 void Interpreter::checkBareSubsetDecl(const VarExpr* ve, char sigil) {
-    if (!ve->declBare || sigil != '$' || ve->declDefault || ve->declType.empty()) return;
-    auto si = subsets_.find(ve->declType);
+    if (!ve->d().declBare || sigil != '$' || ve->d().declDefault || ve->d().declType.empty()) return;
+    auto si = subsets_.find(ve->d().declType);
     // a DEFINITE coercion base (`subset S of Str:D(Rat)`) has no type object
     // to start from under any revision (S02-types/nominalizables.t)
     if (si != subsets_.end() && si->second.coerce && si->second.defConstraint == 1)
         throwTypedV("X::Syntax::Variable::MissingInitializer",
-            {{"type", Value::str(ve->declType)}, {"implicit", Value::str(": by pragma")}},
-            "Variable definition of type " + ve->declType +
+            {{"type", Value::str(ve->d().declType)}, {"implicit", Value::str(": by pragma")}},
+            "Variable definition of type " + ve->d().declType +
             " (implicit : by pragma) needs to be given an initializer");
     if (si == subsets_.end() || si->second.langRev < 2) return;
     std::string base = si->second.base;
@@ -1024,10 +1024,10 @@ void Interpreter::checkBareSubsetDecl(const VarExpr* ve, char sigil) {
     }
     auto colon = base.find(':');
     if (colon != std::string::npos) base.resize(colon);
-    if (!base.empty() && !subsetMatches(ve->declType, Value::typeObj(base), 0))
+    if (!base.empty() && !subsetMatches(ve->d().declType, Value::typeObj(base), 0))
         throwTypedV("X::Syntax::Variable::MissingInitializer",
-            {{"type", Value::str(ve->declType)}, {"implicit", Value::str(": by pragma")}},
-            "Variable definition of type " + ve->declType +
+            {{"type", Value::str(ve->d().declType)}, {"implicit", Value::str(": by pragma")}},
+            "Variable definition of type " + ve->d().declType +
             " (implicit : by pragma) needs to be given an initializer");
 }
 
@@ -3117,7 +3117,7 @@ bool Interpreter::frameSymbol(Env* f, const std::string& key, Value& out) {
         std::vector<const VarExpr*> decls;
         spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
         for (auto* v : decls)
-            if (v->name == key) { out = typedDefault(v->declType, key[0]); return true; }
+            if (v->name == key) { out = typedDefault(v->d().declType, key[0]); return true; }
     }
     return false;
 }
@@ -3166,7 +3166,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
                 std::vector<const VarExpr*> decls;
                 spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
                 for (auto* v : decls)
-                    if (v->name == key) { o = typedDefault(v->declType, key[0]); return true; }
+                    if (v->name == key) { o = typedDefault(v->d().declType, key[0]); return true; }
             }
         }
         return false;
@@ -3237,7 +3237,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     if (std::strchr("$@%&", key[0])) {
         VarExpr ve(key);
         ve.viaPseudoPkg = true;
-        ve.pseudoPkg = pk;
+        ve.dm().pseudoPkg = pk;
         try {
             out = eval(&ve);
             if (out.t == VT::Hash && out.hashKind == "Failure") return false;
@@ -3307,13 +3307,13 @@ static const VarExpr* dynDeclaredLater(const Env* e, const std::string& name) {
         if (!x) return nullptr;
         if (x->kind == NK::VarExpr) {
             auto* v = static_cast<const VarExpr*>(x);
-            return v->declare && v->declScope == "my" && v->name == name ? v : nullptr;
+            return v->declare && v->d().declScope == "my" && v->name == name ? v : nullptr;
         }
         if (x->kind == NK::ListExpr)
             for (auto& it : static_cast<const ListExpr*>(x)->items)
                 if (it && it->kind == NK::VarExpr) {
                     auto* v = static_cast<const VarExpr*>(it.get());
-                    if (v->declare && v->declScope == "my" && v->name == name) return v;
+                    if (v->declare && v->d().declScope == "my" && v->name == name) return v;
                 }
         return nullptr;
     };
@@ -3347,7 +3347,7 @@ Value* Interpreter::dynCallerFrame(Env* e, const std::string& name, const Env* s
             if (const VarExpr* v = dynDeclaredLater(e, name)) {
                 Interpreter* I = liveTarget();
                 if (I && !(I->parallelMode_ && I->liveWorkers_.load(std::memory_order_acquire) > 0))
-                    return e->define(name, typedDefault(v->declType, name[0])).deref();
+                    return e->define(name, typedDefault(v->d().declType, name[0])).deref();
                 t_dynPendingSkips++;
             }
         if (e->routineFrame || e->callEnv) return nullptr;

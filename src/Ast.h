@@ -218,6 +218,42 @@ struct InterpStr : Expr {
     InterpStr(): Expr(NK::InterpStr) {}
 };
 
+// The fields only a DECLARATION carries (`my Int $x is default(0) where …`),
+// and the pseudo-package a `MY::<$x>` read names: behind one pointer on
+// VarExpr, so the far commoner plain read of a variable carries none of them
+// (V6-PLAN P3.8: VarExpr was 400 bytes, 23% of a large program's AST).
+struct VarDeclInfo {
+    std::string declScope;       // my / our / state / constant
+    std::string declStubType;    // `my ::foo $x`: the type NAME it introduces (value: that bare type)
+    std::string declType;        // optional type constraint (ignored at runtime for now)
+    std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
+    std::string declCoerceFrom;  // …and its SOURCE spec (`Str`, or a nested `Int(Cool)`)
+    bool stateInParens = false;  // `(state @foo) = …` — assigned EVERY time, unlike `state @foo = …`
+    ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
+    bool declDynamic = false;    // `my $x is dynamic` — visible to callees, and .dynamic says so
+    bool declExport = false;     // `our %x is export` — importers see the BARE name
+    char declSmiley = 0;         // `my Int:D $x` / `:U` / `:_` (explicit or `use variables`); 0 = none
+    bool declSmileyImplicit = false;
+    const struct Expr* declWhereExpr = nullptr; // …the constraint itself (owned by declWhereOwn)
+    std::shared_ptr<struct Expr> declWhereOwn;
+    bool declBare = false;       // the statement is ONLY this declaration (no initializer)
+    bool declHasWhere = false;   // `my Int:D $x where …` — Rakudo asks no initializer then // …and it came from `use variables`, not the declaration
+    bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
+    std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
+    std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
+    ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
+    // `my BinaryHeap::MinHeap[{ … }] $h` — the declared type PARAMETERIZED with
+    // something that is not a plain type list. declType holds the group's source
+    // text, which is right for `CArray[uint8]` (a name the runtime knows) and a
+    // fiction for anything else, so the type is also kept as the expression
+    // `Type[args]` and evaluated at declaration time to get the real type object.
+    ExprPtr declTypeExpr;
+    bool namedBind = false;      // `my (:@a, :@b) := %h` — binds the RHS hash's value by bare name
+    std::string pseudoPkg;       // `MY::<$x>`: which pseudo-package (VarExpr::viaPseudoPkg), for the rules that differ per package
+};
+// What a VarExpr with no VarDeclInfo reads: every field at its default.
+inline const VarDeclInfo kNoDeclInfo{};
+
 struct VarExpr : Expr {
     std::string name; // includes sigil
     bool declare = false;        // `my $x` style declaration
@@ -240,40 +276,14 @@ struct VarExpr : Expr {
     // not one. Integer operators on it are the native, wrapping candidates.
     bool nativeIntRead = false;
     bool nativeNumRead = false;  // …and the same for a variable declared `num` / `num64`
-    std::string declScope;       // my / our / state / constant
-    std::string declStubType;    // `my ::foo $x`: the type NAME it introduces (value: that bare type)
-    std::string declType;        // optional type constraint (ignored at runtime for now)
-    std::string declCoerce;      // coercion-type target: `my Int(Str) $x` coerces assigned values to Int
-    std::string declCoerceFrom;  // …and its SOURCE spec (`Str`, or a nested `Int(Cool)`)
-    bool stateInParens = false;  // `(state @foo) = …` — assigned EVERY time, unlike `state @foo = …`
-    ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
-    bool declDynamic = false;    // `my $x is dynamic` — visible to callees, and .dynamic says so
-    bool declExport = false;     // `our %x is export` — importers see the BARE name
-    char declSmiley = 0;         // `my Int:D $x` / `:U` / `:_` (explicit or `use variables`); 0 = none
-    bool declSmileyImplicit = false;
-    const struct Expr* declWhereExpr = nullptr; // …the constraint itself (owned by declWhereOwn)
-    std::shared_ptr<struct Expr> declWhereOwn;
-    bool declBare = false;       // the statement is ONLY this declaration (no initializer)
-    bool declHasWhere = false;   // `my Int:D $x where …` — Rakudo asks no initializer then // …and it came from `use variables`, not the declaration
-    bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
     bool pkgSymbol = false;      // `Foo::<bar>` — a package symbol-table slot; assigning autovivifies it
-    std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
-    std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
-    ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
-    // `my BinaryHeap::MinHeap[{ … }] $h` — the declared type PARAMETERIZED with
-    // something that is not a plain type list. declType holds the group's source
-    // text, which is right for `CArray[uint8]` (a name the runtime knows) and a
-    // fiction for anything else, so the type is also kept as the expression
-    // `Type[args]` and evaluated at declaration time to get the real type object.
-    ExprPtr declTypeExpr;
-    bool namedBind = false;      // `my (:@a, :@b) := %h` — binds the RHS hash's value by bare name
     // Written as a pseudo-package lookup (`MY::<$x>`, `LEXICAL::<$y>`): a MISS is
     // an answer, not a compile error. Rakudo hands back Nil before 6.e and a
     // Failure from 6.e on; a bare `$x` that is not declared stays fatal.
     bool viaPseudoPkg = false;
-    std::string pseudoPkg;       // which one, for the rules that differ per package
     bool processScoped = false;  // written `PROCESS::<$x>` / `$PROCESS::x` — assignment
                                  // installs into the PROCESS scope, not the current one
+    bool ownDecl = false;        // dp (below) is this node's own block, freed with it
     // Pad resolution (PADS-PLAN.md): filled once by resolvePads when this
     // reference is dominated by a declaration of its owner or of an inline
     // block inside it. padOwner is that PadLayout's ADDRESS: compared against
@@ -308,7 +318,20 @@ struct VarExpr : Expr {
     // none of the spellings eval answers by name first (`CORE-SETTING-REV`,
     // `&CORE::…`). 1 yes, 0 no, -1 not yet decided (see eval's VarExpr arm).
     mutable DecidedOnce<signed char> plainRead{-1};
+    // The declaration's fields (VarDeclInfo), or the shared defaults when the
+    // node has none of its own: never null, so d() is one load (a null test
+    // there cost a typed declaration ~100 instructions over its field reads).
+    // dm() is for writing, and gives the node its own block the first time.
+    // Ownership is the flag, not a comparison with &kNoDeclInfo, which a
+    // shared-library build may hold a copy of per library.
+    VarDeclInfo* dp = const_cast<VarDeclInfo*>(&kNoDeclInfo);
+    const VarDeclInfo& d() const { return *dp; }
+    VarDeclInfo& dm() { if (!ownDecl) { dp = new VarDeclInfo(); ownDecl = true; } return *dp; }
+    bool hasDecl() const { return ownDecl; }
     explicit VarExpr(std::string n): Expr(NK::VarExpr), name(std::move(n)) { syncAttrCache(); }
+    ~VarExpr() override { if (ownDecl) delete dp; }
+    VarExpr(const VarExpr&) = delete;
+    VarExpr& operator=(const VarExpr&) = delete;
 };
 
 // bareword used as a term (type name, enum, sub w/o parens handled separately)

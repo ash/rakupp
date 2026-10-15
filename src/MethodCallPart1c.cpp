@@ -353,8 +353,8 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // through `.value` is checked against the type (see lvalue())
             if (const Expr* ae = (*rwArgs)[1].get(); ae && ae->kind == NK::VarExpr) {
                 auto* ve = static_cast<const VarExpr*>(ae);
-                if (ve->declare && !ve->declType.empty() && !ve->name.empty() && ve->name[0] == '$')
-                    p.ofTypeM() = ve->declType;
+                if (ve->declare && !ve->d().declType.empty() && !ve->name.empty() && ve->name[0] == '$')
+                    p.ofTypeM() = ve->d().declType;
             }
         }
         return p;

@@ -389,8 +389,8 @@ struct Visitor {
         switch (e->kind) {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                expr(v->declDefault.get()); expr(v->declShape.get()); expr(v->declTypeExpr.get());
-                expr(v->declWhereExpr);
+                expr(v->d().declDefault.get()); expr(v->d().declShape.get()); expr(v->d().declTypeExpr.get());
+                expr(v->d().declWhereExpr);
                 return;
             }
             case NK::Call: {
@@ -656,10 +656,10 @@ struct Checker {
     ArgT declaredVarType(const VarExpr* v) {
         ArgT a;
         const std::string& n = v->name;
-        if (n.size() < 2 || !v->declCoerce.empty() || v->declWhereExpr || v->declHasWhere || v->declTypeExpr ||
-            !v->containerIs.empty() || !v->declStubType.empty() || v->declShape || v->declScope == "constant")
+        if (n.size() < 2 || !v->d().declCoerce.empty() || v->d().declWhereExpr || v->d().declHasWhere || v->d().declTypeExpr ||
+            !v->d().containerIs.empty() || !v->d().declStubType.empty() || v->d().declShape || v->d().declScope == "constant")
             return a;
-        containerType(n[0], v->declType, /*exact=*/true, a);
+        containerType(n[0], v->d().declType, /*exact=*/true, a);
         return a;
     }
 
@@ -743,14 +743,14 @@ struct Checker {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
                 if (v->declare) {
-                    if (v->declScope == "constant") {
+                    if (v->d().declScope == "constant") {
                         std::string n = v->name;
                         if (!n.empty() && std::strchr("$@%&\\", n[0])) n = n.substr(1);
                         cur().terms.insert(n);
                     }
                     else declareVar(v->name, declaredVarType(v));
                 }
-                collectExpr(v->declDefault.get());
+                collectExpr(v->d().declDefault.get());
                 return;
             }
             case NK::Assign: {
@@ -921,7 +921,7 @@ struct Checker {
             }
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                walkExpr(v->declDefault.get()); walkExpr(v->declShape.get()); walkExpr(v->declTypeExpr.get());
+                walkExpr(v->d().declDefault.get()); walkExpr(v->d().declShape.get()); walkExpr(v->d().declTypeExpr.get());
                 return;
             }
             case NK::MethodCall: {

@@ -154,7 +154,7 @@ void forEachChild(Node* n, const std::function<void(Node*)>& f) {
     auto PS = [&](const std::vector<Param>& ps) { for (auto& p : ps) { E(p.defaultVal); E(p.whereExpr); E(p.litVal); if (p.subSig) for (auto& q : *p.subSig) { E(q.defaultVal); E(q.whereExpr); } } };
     switch (n->kind) {
         case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(n)->parts) E(p); break;
-        case NK::VarExpr: { auto* v = static_cast<VarExpr*>(n); E(v->declDefault); E(v->declShape); E(v->declTypeExpr); break; }
+        case NK::VarExpr: { auto* v = static_cast<VarExpr*>(n); E(v->d().declDefault); E(v->d().declShape); E(v->d().declTypeExpr); break; }
         case NK::ListExpr: for (auto& p : static_cast<ListExpr*>(n)->items) E(p); break;
         case NK::SymbolicRef: { auto* s = static_cast<SymbolicRef*>(n); E(s->nameExpr); for (auto& p : s->segs) E(p); break; }
         case NK::ArrayLit: for (auto& p : static_cast<ArrayLit*>(n)->items) E(p); break;
@@ -400,7 +400,7 @@ struct JsGen {
                     if (st->kind == NK::ExprStmt) {
                         Expr* e = static_cast<ExprStmt*>(st)->e.get();
                         if (e->kind == NK::Assign) e = static_cast<Assign*>(e)->target.get();
-                        if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); if (v->declare && (v->declScope == "our" || v->declScope == "constant") && !pkg.empty()) declVars.push_back({ v, pkg }); }
+                        if (e->kind == NK::VarExpr) { auto* v = static_cast<VarExpr*>(e); if (v->declare && (v->d().declScope == "our" || v->d().declScope == "constant") && !pkg.empty()) declVars.push_back({ v, pkg }); }
                     }
                 }
             };
@@ -802,7 +802,7 @@ struct JsGen {
             case NK::VarExpr: {
                 auto* v = static_cast<VarExpr*>(e);
                 if (v->declare) {   // hoisted by the enclosing statement: a plain reference now
-                    if (v->declScope == "state") { for (int i = (int)fns.size() - 1; i >= 0; i--) { auto sa = fns[i].stateAlias.find(mangleVar(v->name)); if (sa != fns[i].stateAlias.end()) return sa->second; } }
+                    if (v->d().declScope == "state") { for (int i = (int)fns.size() - 1; i >= 0; i--) { auto sa = fns[i].stateAlias.find(mangleVar(v->name)); if (sa != fns[i].stateAlias.end()) return sa->second; } }
                     if (v->name[0] == '@') return mangleVar(v->name) + " = R.mkArray([])";
                     if (v->name[0] == '%') return mangleVar(v->name) + " = R.mkHash()";
                     return mangleVar(v->name);
@@ -1109,12 +1109,12 @@ struct JsGen {
     }
     string declDefault(VarExpr* v) {
         char sig = v->name[0];
-        if (v->declDefault && (sig == '@' || sig == '%')) return "R.withDefault(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + exArg(v->declDefault.get()) + ")";
-        if (v->declDefault) return exArg(v->declDefault.get());
-        if ((sig == '@' || sig == '%') && !v->declType.empty()) return "R.withOf(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + typeObj(v->declType, v->line) + ")";
+        if (v->d().declDefault && (sig == '@' || sig == '%')) return "R.withDefault(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + exArg(v->d().declDefault.get()) + ")";
+        if (v->d().declDefault) return exArg(v->d().declDefault.get());
+        if ((sig == '@' || sig == '%') && !v->d().declType.empty()) return "R.withOf(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + typeObj(v->d().declType, v->line) + ")";
         if (sig == '@') return "R.mkArray([])";
         if (sig == '%') return "R.mkHash()";
-        if (!v->declType.empty()) return typeObj(v->declType, v->line);
+        if (!v->d().declType.empty()) return typeObj(v->d().declType, v->line);
         return "R.Any";
     }
     string typeObj(const string& name, int lineNo) {
@@ -1454,7 +1454,7 @@ struct JsGen {
             {   // `:my $x` declared in one block is read by the pattern's other closures: hoist it to the enclosing routine
                 std::vector<VarExpr*> ds;
                 for (auto& st : prog.stmts) { collectExprDecls(st.get(), ds); if (st->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(st.get())->names) { fn().declared.push_back("let " + mangleVar(nm) + " = R.Any;"); predeclared.insert(mangleVar(nm)); } }
-                for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant" && mangleVar(v->name) != "_anon") { fn().declared.push_back("let " + mangleVar(v->name) + emptyFor(v->name) + ";"); predeclared.insert(mangleVar(v->name)); }
+                for (auto* v : ds) if (v->d().declScope != "state" && v->d().declScope != "constant" && mangleVar(v->name) != "_anon") { fn().declared.push_back("let " + mangleVar(v->name) + emptyFor(v->name) + ";"); predeclared.insert(mangleVar(v->name)); }
             }
             string body = fnBody(false, [&]() { fn().slashParam = true; fn().usesSlash = true; emitStmts(prog.stmts, 2, false); }, 2);
             return "(v__slash) => {\n" + body + "    }";
@@ -1642,7 +1642,7 @@ struct JsGen {
             string callee = "R.mc(" + t + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
             if (m->inv->kind == NK::VarExpr && static_cast<VarExpr*>(m->inv.get())->declare) {
                 auto* v = static_cast<VarExpr*>(m->inv.get());
-                string ty = v->name[0] == '@' ? "R.mkArray([])" : v->name[0] == '%' ? "R.mkHash()" : v->declType.empty() ? "R.Any" : typeObj(v->declType, m->line);
+                string ty = v->name[0] == '@' ? "R.mkArray([])" : v->name[0] == '%' ? "R.mkHash()" : v->d().declType.empty() ? "R.Any" : typeObj(v->d().declType, m->line);
                 return "(" + mangleVar(v->name) + " = R.mc(" + ty + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + "))";
             }
             return lvExpr(lv, t + " = " + lv.get + ", " + lv.set(callee));
@@ -1893,7 +1893,7 @@ struct JsGen {
             std::vector<string> names;
             for (auto* s : main) {
                 std::vector<VarExpr*> ds; collectExprDecls(s, ds);
-                for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant" && mangleVar(v->name) != "_anon") names.push_back(mangleVar(v->name));
+                for (auto* v : ds) if (v->d().declScope != "state" && v->d().declScope != "constant" && mangleVar(v->name) != "_anon") names.push_back(mangleVar(v->name));
                 if (s->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(s)->names) if (mangleVar(nm) != "_anon") names.push_back(mangleVar(nm));
             }
             if (!names.empty()) { string l = "let "; for (size_t i = 0; i < names.size(); i++) l += (i ? ", " : "") + names[i]; line(ind, l + ";"); for (auto& nm : names) predeclared.insert(nm); }
@@ -1957,7 +1957,7 @@ struct JsGen {
         std::vector<VarExpr*> ds;
         collectExprDecls(n, ds);
         for (auto* v : ds) {
-            if (v->declScope == "state") { stateSlot(v, ind); continue; }
+            if (v->d().declScope == "state") { stateSlot(v, ind); continue; }
             string kw = declKw(mangleVar(v->name), "let "); if (!kw.empty()) line(ind, kw + mangleVar(v->name) + ";");
         }
     }
@@ -2053,12 +2053,12 @@ struct JsGen {
         // declarations
         if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) {
             auto* v = static_cast<VarExpr*>(e);
-            if (v->declScope == "state") { string slot = stateSlot(v, ind); if (tail) line(ind, ret(slot)); return; }
+            if (v->d().declScope == "state") { string slot = stateSlot(v, ind); if (tail) line(ind, ret(slot)); return; }
             if (v->name.size() > 2 && v->name[1] == '*') { line(ind, "R.dynSet(" + jsStr(v->name) + ", " + declDefault(v) + ");"); return; }
             if (v->name[0] == '&') declareCode(v->name.substr(1));
             else if (v->name[0] != '$' && v->name[0] != '@' && v->name[0] != '%') declareSigilless(v->name);
-            if (!v->declTypeExpr && !v->declShape) {
-                line(ind, declKw(mangleVar(v->name), v->declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + declDefault(v) + ";");
+            if (!v->d().declTypeExpr && !v->d().declShape) {
+                line(ind, declKw(mangleVar(v->name), v->d().declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + declDefault(v) + ";");
                 if (tail) line(ind, ret(mangleVar(v->name)));
                 return;
             }
@@ -2069,9 +2069,9 @@ struct JsGen {
             Expr* t = a->target.get();
             if (t->kind == NK::VarExpr && static_cast<VarExpr*>(t)->declare && (a->op == "=" || a->op == ":=")) {
                 auto* v = static_cast<VarExpr*>(t);
-                if (v->declShape) refuse("a shaped array declaration", v->line);
+                if (v->d().declShape) refuse("a shaped array declaration", v->line);
                 hoistExprDecls(a->value.get(), ind);
-                if (v->declScope == "state") {
+                if (v->d().declScope == "state") {
                     string slot = "_state" + std::to_string(++stateN);
                     prelude.push_back("let " + slot + ", " + slot + "_init = false;");
                     string init = v->name[0] == '@' ? "R.newArray(" + listSource(a->value.get()) + ")" : v->name[0] == '%' ? "R.newHash(" + listSource(a->value.get()) + ")" : exArg(a->value.get());
@@ -2088,11 +2088,11 @@ struct JsGen {
                 if ((sig == '@' || sig == '%') && a->op == ":=") init = exArg(a->value.get());   // binding: the object itself
                 else if (sig == '@') init = "R.newArray(" + listSource(a->value.get()) + ")";
                 else if (sig == '%') init = "R.newHash(" + listSource(a->value.get()) + ")";
-                else if (!v->declCoerce.empty()) init = "R.coerce(" + typeObj(v->declCoerce, v->line) + ", " + exArg(a->value.get()) + ")";
+                else if (!v->d().declCoerce.empty()) init = "R.coerce(" + typeObj(v->d().declCoerce, v->line) + ", " + exArg(a->value.get()) + ")";
                 else init = exArg(a->value.get());
-                if ((sig == '@' || sig == '%') && !v->declType.empty()) init = "R.withOf(" + init + ", " + typeObj(v->declType, v->line) + ")";
-                if ((sig == '@' || sig == '%') && v->declDefault) init = "R.withDefault(" + init + ", " + exArg(v->declDefault.get()) + ")";   // `is default(v)`: what a missing element answers
-                line(ind, declKw(mangleVar(v->name), v->declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + init + ";");
+                if ((sig == '@' || sig == '%') && !v->d().declType.empty()) init = "R.withOf(" + init + ", " + typeObj(v->d().declType, v->line) + ")";
+                if ((sig == '@' || sig == '%') && v->d().declDefault) init = "R.withDefault(" + init + ", " + exArg(v->d().declDefault.get()) + ")";   // `is default(v)`: what a missing element answers
+                line(ind, declKw(mangleVar(v->name), v->d().declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + init + ";");
                 if (tail) line(ind, ret(mangleVar(v->name)));
                 return;
             }
@@ -2149,7 +2149,7 @@ struct JsGen {
         if (!b) return;
         std::vector<VarExpr*> ds;
         for (auto& st : b->stmts) { collectExprDecls(st.get(), ds); if (st->kind == NK::VarDecl) for (auto& nm : static_cast<VarDecl*>(st.get())->names) { line(ind, "let " + mangleVar(nm) + emptyFor(nm) + ";"); predeclared.insert(mangleVar(nm)); } }
-        for (auto* v : ds) if (v->declScope != "state" && v->declScope != "constant" && mangleVar(v->name) != "_anon") { line(ind, "let " + mangleVar(v->name) + emptyFor(v->name) + ";"); predeclared.insert(mangleVar(v->name)); }
+        for (auto* v : ds) if (v->d().declScope != "state" && v->d().declScope != "constant" && mangleVar(v->name) != "_anon") { line(ind, "let " + mangleVar(v->name) + emptyFor(v->name) + ";"); predeclared.insert(mangleVar(v->name)); }
     }
     void ifStmt(IfStmt* s, int ind, bool tail) {
         if (s->modifier) for (auto& br : s->branches) hoistModifierDecls(br.second.get(), ind);
