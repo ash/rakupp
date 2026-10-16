@@ -82,6 +82,13 @@ Pioneer (64 cores at 2 GHz) — and
 ARM64, so it is just as lazy. One thing differs: `--cnp` has no native
 stencils for the architecture, so its kernels run interpreted.
 
+**Alpine**, and any other Linux whose C library is musl, has archives of its
+own for x86-64 and ARM64, and the one-liner picks them: it asks `ldd` which
+libc the system runs on. The glibc archive does not start on musl at all — the
+shell says "not found" about a file that is there — and the musl one does not
+start on glibc. They are built on Alpine 3.21 and need musl 1.2.5, which is
+Alpine 3.21 or newer. `--exe` needs a C++ compiler there too: `apk add g++`.
+
 ### Debian and Ubuntu: a `.deb`
 
 The same release as a Debian package, for x86-64 and ARM64, if you would
@@ -381,7 +388,7 @@ docker build --build-arg RAKUPP_VERSION=v5.0.1 -t rakupp:5.0.1 .
 
 ## Prebuilt archives
 
-Every release ships seven self-contained archives on the
+Every release ships nine self-contained archives on the
 [Releases page](https://github.com/ash/rakupp/releases/latest), each with a
 `.sha256` beside it, and each built and smoke-tested in CI on the platform it
 targets — except RISC-V, which is cross-compiled and tested under emulation:
@@ -392,6 +399,8 @@ targets — except RISC-V, which is cross-compiled and tested under emulation:
 | Linux, x86-64 | `rakupp-linux-x86_64.tar.gz` — static libstdc++, glibc 2.28+ |
 | Linux, ARM64 | `rakupp-linux-aarch64.tar.gz` — Raspberry Pi, Graviton, Ampere; glibc 2.28+ |
 | Linux, RISC-V | `rakupp-linux-riscv64.tar.gz` — static libstdc++, glibc 2.35+ (Ubuntu 22.04, Debian 13) |
+| Linux, x86-64, musl | `rakupp-linux-x86_64-musl.tar.gz` — Alpine 3.21+ and other musl systems; static libstdc++ |
+| Linux, ARM64, musl | `rakupp-linux-aarch64-musl.tar.gz` — the same, for ARM64 |
 | OpenBSD, x86-64 | `rakupp-openbsd-x86_64.tar.gz` — base clang, for the OpenBSD release it was built on |
 | Windows, x64 | `rakupp-windows-x64.zip` — MSVC, static CRT, no redistributable |
 | Windows, x64 (MinGW) | `rakupp-windows-x64-mingw.zip` — for a MinGW-w64 / MSYS2 toolchain |

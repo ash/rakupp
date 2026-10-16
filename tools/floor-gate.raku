@@ -20,6 +20,8 @@
 #   --exe --static    compiles against the packaged archives, runs, and needs
 #                     no libstdc++.so / libgcc_s.so; the default link is the
 #                     control, so the check can fail
+# A musl layout (bin/rakupp's interpreter is ld-musl) has no floor to read;
+# there both binaries must ask for musl's libc and for no glibc library.
 #
 # Usage:  rakupp tools/floor-gate.raku dist/rakupp
 # Contract: exit 0 + last line PASS. Linux only; elsewhere it says so and
@@ -38,6 +40,16 @@ constant GLIBC-FLOOR           = '2.28';    # manylinux_2_28: RHEL 8, Debian 10,
 constant GLIBCXX-FLOOR         = '3.4.29';  # GCC 11's libstdc++, the container's gcc-toolset-11
 constant GLIBC-FLOOR-RISCV64   = '2.35';    # the Ubuntu 22.04 sysroot: Ubuntu 22.04, Debian 13 and newer
 constant GLIBCXX-FLOOR-RISCV64 = '3.4.30';  # GCC 12's libstdc++, Ubuntu 22.04's libstdc++6
+
+# The musl archives (release.yml's linux-musl job) are built on Alpine 3.21,
+# and there is no number to read back from them: musl versions no symbols, and
+# Alpine builds libstdc++ without them too (no GLIBCXX_*). Their floor is
+# Alpine 3.21 by construction. What CAN be read is which libraries they ask
+# for: musl's libc, and no glibc library at all -- the whole reason these
+# archives exist. (librakupp.so does need a version named GLIBC_2.0, from
+# libgcc_s.so.1: libgcc's oldest version node carries that name. NEEDED, not
+# the version names, is what tells the libcs apart.)
+constant GLIBC-SONAMES = <libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1>;
 
 my $dist  = @*ARGS[0] // 'dist/rakupp';
 my $tools = %*ENV<FLOOR_GATE_TOOLS> // '';
@@ -85,10 +97,26 @@ for $objdump, $readelf, $nm -> $t {
     }
 }
 my ($elf-header)  = sh($readelf, '-h', "$dist/bin/rakupp");
+my ($interp)      = sh($readelf, '-l', "$dist/bin/rakupp");
 my $riscv64       = $elf-header.contains('RISC-V');
+my $musl          = $interp.contains('ld-musl-');
 my $glibc-floor   = $riscv64 ?? GLIBC-FLOOR-RISCV64   !! GLIBC-FLOOR;
 my $glibcxx-floor = $riscv64 ?? GLIBCXX-FLOOR-RISCV64 !! GLIBCXX-FLOOR;
-say "floor gate on $dist: glibc <= $glibc-floor, libstdc++ <= GLIBCXX_$glibcxx-floor";
+say $musl ?? "floor gate on $dist: musl (Alpine 3.21), no glibc library"
+          !! "floor gate on $dist: glibc <= $glibc-floor, libstdc++ <= GLIBCXX_$glibcxx-floor";
+
+# musl: what a binary asks for is its libc by name; glibc: the symbol versions
+sub libc-ok(Str $what, Str $dynsyms, @needed) {
+    if $musl {
+        check ?@needed.grep(*.starts-with('libc.musl-')), "$what: needs musl's libc";
+        my @glibc = @needed.grep({ $_ (elem) GLIBC-SONAMES || .starts-with('ld-linux') });
+        check !@glibc, "$what: needs no glibc library{@glibc ?? ' (' ~ @glibc.join(' ') ~ ')' !! ''}";
+    }
+    else {
+        my $g = glibc-of($dynsyms);
+        check $g && vkey($g) <= vkey($glibc-floor), "$what: glibc floor within $glibc-floor";
+    }
+}
 
 # ---- bin/rakupp -----------------------------------------------------------
 my $bin = "$dist/bin/rakupp";
@@ -96,12 +124,11 @@ my $bin = "$dist/bin/rakupp";
     check $bin.IO.e, "$bin exists";
     my ($dyn, $rc, $e) = sh($objdump, '-T', $bin);
     check $rc == 0, "$objdump reads bin/rakupp";
-    my $g = glibc-of($dyn);
-    say "  bin/rakupp needs glibc {$g || '?'}";
-    check $g && vkey($g) <= vkey($glibc-floor), "bin/rakupp: glibc floor within $glibc-floor";
+    say "  bin/rakupp needs glibc {glibc-of($dyn) || '?'}" unless $musl;
     my ($d, $rc2, $e2) = sh($readelf, '-d', $bin);
     my @needed = needed-of($d);
     say "  bin/rakupp NEEDED: {@needed.join(' ')}";
+    libc-ok('bin/rakupp', $dyn, @needed);
     check @needed.elems > 0 && !@needed.grep(*.starts-with('libstdc++')),
           'bin/rakupp carries its libstdc++ (no libstdc++.so in NEEDED)';
 }
@@ -112,12 +139,13 @@ my $bin = "$dist/bin/rakupp";
     check ?@so, 'lib/ holds librakupp.so (RAKUPP_BUILD_SHARED=ON)';
     for @so.head -> $so {                 # one name is enough: the others are the same file
         my ($dyn, $rc, $e) = sh($objdump, '-T', $so.Str);
-        my $g = glibc-of($dyn);
         my $x = glibcxx-of($dyn);
-        say "  {$so.basename} needs glibc {$g || '?'}, libstdc++ GLIBCXX {$x || '(none: static)'}";
-        check $g && vkey($g) <= vkey($glibc-floor), "{$so.basename}: glibc floor within $glibc-floor";
+        say $musl ?? "  {$so.basename} needs musl, and Alpine's unversioned libstdc++"
+                  !! "  {$so.basename} needs glibc {glibc-of($dyn) || '?'}, libstdc++ GLIBCXX {$x || '(none: static)'}";
+        my ($d, $rc2, $e2) = sh($readelf, '-d', $so.Str);
+        libc-ok($so.basename, $dyn, needed-of($d));
         check !$x || vkey($x) <= vkey($glibcxx-floor),
-              "{$so.basename}: libstdc++ floor within GLIBCXX_$glibcxx-floor";
+              "{$so.basename}: libstdc++ floor within GLIBCXX_$glibcxx-floor" unless $musl;
     }
 }
 
@@ -149,7 +177,7 @@ else {
         my ($d, $rc2, $e2) = sh($readelf, '-d', $st);
         my @needed = needed-of($d);
         my ($dyn, $rc3, $e3) = sh($objdump, '-T', $st);
-        say "  --static program NEEDED: {@needed.join(' ')}; glibc {glibc-of($dyn) || '?'} (this machine's)";
+        say "  --static program NEEDED: {@needed.join(' ')}; {$musl ?? 'musl' !! "glibc {glibc-of($dyn) || '?'}"} (this machine's)";
         check @needed.elems > 0 && !@needed.grep({ .starts-with('libstdc++') || .starts-with('libgcc_s') }),
               'the --static program needs no libstdc++.so or libgcc_s.so';
     }

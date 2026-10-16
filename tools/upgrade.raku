@@ -45,6 +45,8 @@ my constant ASSETS = <
     rakupp-linux-x86_64.tar.gz
     rakupp-linux-aarch64.tar.gz
     rakupp-linux-riscv64.tar.gz
+    rakupp-linux-x86_64-musl.tar.gz
+    rakupp-linux-aarch64-musl.tar.gz
     rakupp-openbsd-x86_64.tar.gz
     rakupp-windows-x64.zip
     rakupp-windows-x64-mingw.zip
@@ -154,12 +156,27 @@ sub latest-tag(--> Str) {
     return ~$0;
 }
 
+# musl or glibc: the libc THIS binary was built for, which --version names
+# ("x86_64-linux-musl"). An upgrade replaces this binary, so it fetches the same
+# build -- the two Linux builds do not start on each other's libc.
+sub musl-build(--> Bool) {
+    my $p = run $*EXECUTABLE.absolute, '--version', :out, :err;
+    my $v = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    so $v.contains('-linux-musl');
+}
+
 sub asset-for-platform(--> Str) {
     given $*KERNEL.name {
         when 'darwin'  { return 'rakupp-macos-universal.tar.gz' }
         when 'win32'   { return 'rakupp-windows-x64.zip' }
         when 'linux'   {
             my $hw = $*KERNEL.hardware;
+            if musl-build() {
+                return $hw ~~ /^ [aarch64 | arm64] $/ ?? 'rakupp-linux-aarch64-musl.tar.gz'
+                    !! $hw ~~ /^ [x86_64 | amd64] $/  ?? 'rakupp-linux-x86_64-musl.tar.gz'
+                    !!                                   Str;
+            }
             return $hw ~~ /^ [aarch64 | arm64] $/ ?? 'rakupp-linux-aarch64.tar.gz'
                 !! $hw eq 'riscv64'               ?? 'rakupp-linux-riscv64.tar.gz'
                 !!                                   'rakupp-linux-x86_64.tar.gz';

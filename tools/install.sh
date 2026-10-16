@@ -118,6 +118,28 @@ ask() {
 # prints the source build and stops, because someone who typed a one-liner did
 # not ask for a ten-minute compile.
 # ---------------------------------------------------------------------------
+
+# musl or glibc. Linux has two builds, and neither starts on the other's
+# system: the glibc one asks for /lib64/ld-linux-x86-64.so.2, which Alpine does
+# not have, and the musl one for Alpine's ld-musl. What counts is the libc the
+# system RUNS on, not one that is merely installed beside it (Debian packages
+# musl too), so ask the system's own ldd, which names its libc in --version --
+# on musl on stderr, with exit 1. Without an ldd, the loader that is present
+# decides.
+is_musl() {
+    if have ldd; then
+        ldd --version 2>&1 | grep -qi musl
+        return
+    fi
+    for _l in /lib/ld-linux*.so.* /lib64/ld-linux*.so.*; do
+        if [ -e "$_l" ]; then return 1; fi
+    done
+    for _l in /lib/ld-musl-*.so.1; do
+        if [ -e "$_l" ]; then return 0; fi
+    done
+    return 1
+}
+
 detect_asset() {
     _os=$(uname -s 2>/dev/null || echo unknown)
     _arch=$(uname -m 2>/dev/null || echo unknown)
@@ -128,12 +150,20 @@ detect_asset() {
             # the same file.
             echo 'rakupp-macos-universal.tar.gz' ;;
         Linux)
-            case "$_arch" in
-                x86_64|amd64)  echo 'rakupp-linux-x86_64.tar.gz' ;;
-                aarch64|arm64) echo 'rakupp-linux-aarch64.tar.gz' ;;
-                riscv64)       echo 'rakupp-linux-riscv64.tar.gz' ;;
-                *) echo '' ;;
-            esac ;;
+            if is_musl; then
+                case "$_arch" in
+                    x86_64|amd64)  echo 'rakupp-linux-x86_64-musl.tar.gz' ;;
+                    aarch64|arm64) echo 'rakupp-linux-aarch64-musl.tar.gz' ;;
+                    *) echo '' ;;
+                esac
+            else
+                case "$_arch" in
+                    x86_64|amd64)  echo 'rakupp-linux-x86_64.tar.gz' ;;
+                    aarch64|arm64) echo 'rakupp-linux-aarch64.tar.gz' ;;
+                    riscv64)       echo 'rakupp-linux-riscv64.tar.gz' ;;
+                    *) echo '' ;;
+                esac
+            fi ;;
         OpenBSD)
             case "$_arch" in
                 x86_64|amd64) echo 'rakupp-openbsd-x86_64.tar.gz' ;;
@@ -144,8 +174,10 @@ detect_asset() {
 }
 
 no_binary_for_this_machine() {
+    _what="$(uname -s 2>/dev/null || echo '?') $(uname -m 2>/dev/null || echo '?')"
+    if [ "$(uname -s 2>/dev/null || true)" = Linux ] && is_musl; then _what="$_what (musl)"; fi
     cat >&2 <<EOT
-rakupp install: no prebuilt archive for $(uname -s 2>/dev/null || echo '?') $(uname -m 2>/dev/null || echo '?').
+rakupp install: no prebuilt archive for $_what.
 
     Raku++ has no third-party dependencies, so building it needs CMake and a
     C++17 compiler and nothing else:
