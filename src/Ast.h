@@ -910,8 +910,8 @@ struct BlockExpr : Expr {
     // (makeClosure's ClosureTemplate: a CodeInfo and the context it was built
     // in). Null until then; freed with the node.
     mutable std::atomic<void*> closureTmpl{nullptr};
-    // `try { … }` runs this body where it stands, in a pooled scope carrying
-    // the body's own pad, when nothing in it needs a call of its own
+    // `try`, `do` and `quietly` run this body where it stands, in a pooled scope
+    // carrying the body's own pad, when nothing in it needs a call of its own
     // (Interpreter::runsInPlace): 1, or 0 and it is called as a closure;
     // -1 = not yet decided. The layout is written before the flag publishes it.
     mutable std::shared_ptr<const PadLayout> inPlaceLayout;

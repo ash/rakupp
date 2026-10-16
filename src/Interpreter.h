@@ -786,8 +786,8 @@ struct Env {
     bool btBlock = false;
     bool callEnv = false;
     // …and a btBlock that is a block CALLED, not inlined, in Rakudo's frames —
-    // a `try` block run in place (runBlockInPlace): a printed frame of its own,
-    // "in block", as the closure it stands in for was.
+    // a `try`, `do` or `quietly` block run in place (runBlockInPlace): a
+    // printed frame of its own, "in block", as the closure it stands in for was.
     bool btCalled = false;
     int btLine = 0;
     uint64_t routineFrameId = 0; // …and its frame number, what a lexical `return` targets
@@ -4600,8 +4600,9 @@ private:
     }
     static Env* stateEnvOf(const Callable& c) { return c.ci().stateFrameNeed == 1 ? c.state.env.get() : nullptr; }
     signed char decideStateFrame(Callable& c);
-    // `try { … }` without the call (InterpreterCalls.cpp decides, once per node,
-    // whether nothing in the body needs one; InterpreterCore.cpp runs it)
+    // `try`/`do`/`quietly { … }` without the call (InterpreterCalls.cpp decides,
+    // once per node, whether nothing in the body needs one; InterpreterCore.cpp
+    // runs it)
     bool runsInPlace(BlockExpr* be);
     Value runBlockInPlace(BlockExpr* be);
     // `EXPR xx N` — `item` is re-evaluated once per copy (it is a THUNK), so the

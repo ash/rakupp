@@ -1885,13 +1885,13 @@ struct PooledFrame {
 };
 } // namespace
 
-// `try { … }` without the call. A block called with no arguments defines no
-// `$_` and no `@_` of its own, so what the call gave a body runsInPlace has
-// cleared is a scope, the body's pad and the statement loop: those, from the
-// frame pool, here. The call around them (a fresh Callable, then binding,
-// redispatch and dynamic-scope bookkeeping, CATCH and phaser scans) was most of
-// a `try` block's cost. A `return` in it is a ReturnEx and a `next` or `last`
-// a flag either way, so both reach their routine or loop as they did.
+// `try`, `do` and `quietly { … }` without the call. A block called with no
+// arguments defines no `$_` and no `@_` of its own, so what the call gave a
+// body runsInPlace has cleared is a scope, the body's pad and the statement
+// loop: those, from the frame pool, here. The call around them (a fresh
+// Callable, binding, redispatch and dynamic-scope bookkeeping, CATCH and phaser
+// scans) was most of such a block's cost. A `return` is a ReturnEx and `next`
+// or `last` a flag either way, so both reach their routine or loop as they did.
 Value Interpreter::runBlockInPlace(BlockExpr* be) {
     ExecContext& tcx = tctx_;
     PooledFrame frame_{tcx};
@@ -24665,7 +24665,7 @@ Value Interpreter::evalUnary(Unary* u) {
                         "Placeholder variable '" + ph +
                         "' may not be used here because the surrounding block does not take a signature");
             }
-            return callCallable(makeClosure(be), {});
+            return runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {});
         }
         return eval(u->operand.get());
     }
@@ -24926,9 +24926,9 @@ Value Interpreter::evalUnary(Unary* u) {
     if (opEq(u->op, "quietly")) { // suppress warn() output within the block
         quietDepth_++;
         try {
-            Value r = u->operand->kind == NK::BlockExpr
-                ? callCallable(makeClosure(static_cast<BlockExpr*>(u->operand.get())), {})
-                : eval(u->operand.get());
+            auto* be = u->operand->kind == NK::BlockExpr ? static_cast<BlockExpr*>(u->operand.get()) : nullptr;
+            Value r = !be ? eval(u->operand.get())
+                    : runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {});
             quietDepth_--;
             return r;
         }

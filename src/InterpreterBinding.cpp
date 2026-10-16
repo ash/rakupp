@@ -4204,7 +4204,7 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
 // The live chain, innermost first. Shared by every position we record: a
 // throw, a `warn`, the making of a Failure, and a worker breaking a Promise.
 thread_local int g_btSettingFrames = 0;
-// What a `try` block run in place names in its frame (Env::btCalled): an
+// What a block run in place names in its frame (Env::btCalled): an
 // anonymous block of the program's own — a language revision set, so it is not
 // taken for the setting's and hidden (btFrameHidden), as its closure was not.
 static const PRef<Callable>& btInPlaceBlockCode() {
@@ -4236,9 +4236,9 @@ static std::shared_ptr<BtRecord> btCaptureNow() {
         // each is a Block frame of its own (kind 1), the innermost at the
         // frame's current line and each one out at the line where the block
         // inside it starts. The walk stops at the activation's own scope.
-        // A `try` block run in place is a printed frame at the line it is
-        // running, as its call was, and what is outside it is at the `try`'s
-        // line, as its call site was.
+        // A `try`/`do` block run in place is a printed frame at the line it
+        // is running, as its call was, and what is outside it is at the
+        // block's line, as its call site was.
         int bl = line, at = line;
         for (Env* e = scope; e && !e->callEnv && !e->routineFrame && !e->unitFrame; e = e->parent.get())
             if (e->btBlock) {

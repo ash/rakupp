@@ -3700,8 +3700,8 @@ bool Interpreter::blockTakesAtArgs(Callable& c) {
 // and a pseudo-package name (`OUTER::` steps through the chain, and the `state`
 // frame is one of its links).
 //
-// InPlace asks the same walk a second question: can a `try` block run where it
-// stands instead of being called (runsInPlace)? On top of a state frame, that
+// InPlace asks the same walk a second question: can a `try`, `do` or `quietly`
+// block run where it stands instead of being called (runsInPlace)? On top of a state frame, that
 // rules out what only the call gives a block: `@_`/`%_`, a placeholder, `&?BLOCK`
 // and the other `?` names, `temp`/`let` (restored at the call's exit), `fail`
 // and `leave` (answered by it), a `when`/`default` (whose match ends the block,
