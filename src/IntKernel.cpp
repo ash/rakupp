@@ -781,6 +781,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 t = compare ? KT::Bool : KT::Exact;
                 return n;
             }
+            // two Ints under `/` make a Rat; without 128-bit integers there is
+            // no exact lane, and the Num lane below would answer a Num
+            else if (!kHasExact && lt == KT::Int && rt == KT::Int && kop == KOp::NDiv)
+                return refuse("a Rat without 128-bit integers");
             else if ((lt == KT::Num || lt == KT::Int) && (rt == KT::Num || rt == KT::Int) && L && !L->sub) {
                 switch (kop) {
                     case KOp::Add: kop = KOp::NAdd; break;
@@ -896,6 +900,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 return refuse("an Int variable given a Rat (compiled again)");
             }
             if (tt == KT::Int && vt == KT::Int && a->op == "/=") {
+                // the promotion makes an exact slot, which needs 128-bit
+                // integers: without them (MSVC, 32-bit targets) the loop ran
+                // exact ops that were compiled out, and crashed
+                if (!kHasExact) return refuse("a Rat without 128-bit integers");
                 if (const LSym* s = lookup(tv->name); s && s->ro) return refuse("an assignment to a loop variable");
                 if (!L->promoted(tv->name)) L->promote.push_back(tv->name);
                 L->again = true;

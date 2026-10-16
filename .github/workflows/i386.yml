@@ -1,0 +1,106 @@
+name: i386
+
+# Builds and tests rakupp on 32-bit x86 (i386, Alpine Linux, musl).
+#
+# Nothing ships from here. It exists because someone ran a rakupp they had
+# built themselves on 32-bit Alpine inside v86, a browser x86 emulator, and
+# nothing here had ever compiled the engine for a target with 32-bit pointers
+# and no __int128 at once (wasm32 has 32-bit pointers, MSVC has no __int128;
+# GCC's i386 has neither). So this is where that combination is checked.
+#
+# On demand only (Actions tab -> i386 -> Run workflow, or
+# `gh workflow run i386.yml --repo ash/rakupp`), and a workflow of its own
+# rather than a row in release.yml, so an i386 failure never holds up a push or
+# a release -- the same arrangement as riscv64.yml.
+#
+# The i386 Alpine image runs natively on the x86-64 runner: the kernel runs
+# 32-bit code itself, no QEMU. -msse2 -mfpmath=sse because the i386 default is
+# x87 arithmetic, which keeps 80-bit intermediates and rounds twice, so Num
+# results would differ in the last digit from every other build -- and the
+# goldens are byte-for-byte. It needs SSE2: a Pentium 4 or later.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: linux-i386-musl
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # release.yml's linux-musl image, for i386 -- the official alpine from its
+      # ECR Public mirror, the runner's uid as a user of its own, TMPDIR on the
+      # checkout's mount (release.yml says why).
+      - name: Build + gate image (Alpine 3.21, x86)
+        run: |
+          docker run --name mu --platform linux/386 -e U="$(id -u)" public.ecr.aws/docker/library/alpine:3.21 sh -ec '
+            apk add --no-cache -q clang g++ cmake make binutils linux-headers file git \
+                                  perl python3 sqlite sqlite-libs libuuid curl procps bash
+            adduser -D -u "$U" rk
+            uname -m
+            ldd --version 2>&1 | head -1
+            clang++ --version | head -1'
+          docker commit mu rakupp-i386
+          docker rm mu
+          up=$(dirname "$GITHUB_WORKSPACE")
+          mkdir -p "$up/tmp"
+          echo "MU=docker run --rm --platform linux/386 -u $(id -u):$(id -g) -e TMPDIR=$up/tmp -v $up:$up -w $GITHUB_WORKSPACE rakupp-i386" >> "$GITHUB_ENV"
+
+      - name: Configure + build + install layout
+        id: build
+        run: |
+          $MU sh -ec '
+            CC=clang CXX=clang++ CFLAGS="-msse2 -mfpmath=sse" CXXFLAGS="-msse2 -mfpmath=sse" \
+              cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON \
+                    "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+            cmake --build build -j 4
+            cmake --install build --prefix dist/rakupp'
+          $MU build/rakupp --version
+          $MU file build/rakupp
+
+      # The gates release.yml's linux-musl job runs. Each one runs even when an
+      # earlier one failed, so one look shows every gate that breaks on 32 bits,
+      # not just the first.
+      - name: Smoke test
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: $MU build/rakupp tools/smoke.raku
+
+      - name: Smoke test -e
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          out=$($MU build/rakupp -e 'say 6 * 7')
+          echo "got: [$out]"
+          test "$out" = "42"
+
+      - name: Smoke test --exe
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: $MU sh -ec 'build/rakupp --exe tools/smoke.raku -o smoke-native; ./smoke-native'
+
+      - name: Example & showcase suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: $MU build/rakupp t/run.raku
+
+      - name: Concurrency stress matrix
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: $MU build/rakupp t/stress/run.raku
+
+      - name: Embed + extension ABI gate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: $MU build/rakupp tools/embed-smoke.raku build
+
+      - name: Package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: tar -C dist -czf rakupp-linux-i386-musl.tar.gz rakupp
+
+      - name: Upload build artifact
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rakupp-linux-i386-musl
+          path: rakupp-linux-i386-musl.tar.gz
