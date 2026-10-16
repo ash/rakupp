@@ -38,6 +38,8 @@ theme the rows are sorted by complexity, largest first.
 | 23 | Cache a class name's resolution on its node | M | A NameTerm also resolves lexically (`::T`, `my class`), so the cache needs a record that no scope binds the name; at most ~7% of a 10× `objects` run — V6 P1 |
 | 26 | Built-in methods in interpreted loops: `.map`/`.flat`/`.any` on a Seq; a CStruct's CArray field built once per pointer | M | TODO.md |
 | 30 | Bisect the interpreted slowdowns shipped in v5.4.0 (`mainwhen` +11%, `sortby` +8%) | S–M | Instruction counts make the bisect deterministic — TODO.md |
+| 42 | `$v ~~ Int` against a core type object: ~0.55 µs compiled, ~1 µs interpreted | M | rtSmartmatch's type-object arm, ahead of the general smartmatch — float report 2026-10-15, item 8 |
+| 43 | A `constant` reference keeps a sub off the int kernels: two of them 561 ns a call, two literals 7.8 | S–M | The kernel compiler refuses the NameTerm; a top-level `constant` bound to an Int literal can be read as the literal — float report, item 11 |
 
 ## 2. Memory and value representation
 
@@ -58,6 +60,10 @@ theme the rows are sorted by complexity, largest first.
 | 15 | `--exe` build time: split the mainline into chunks (`range-int.t` 52 s at -O2) | L | V6 P5 |
 | 33 | The compile modes (`--exe`, `--cpp`, `--target=js`) parse the program twice | S–M | Reuse the parse `declCheckGate` makes — src/main.cpp |
 | 35 | `--slim` review: what it actually removes | S–M | Binary size; the 12.5 / 12.75 MB budgets are a stopgap — [SLIM-PLAN.md](SLIM-PLAN.md) |
+| 44 | `--exe`: one refused construct (a CATCH, a phaser, `my num @a`, a kept List) bundles the program — its routines now keep native bodies, but its mainline and anonymous blocks are interpreted, and a call into a native body costs an interpreted call (~250 ns) | M–L | Mainline loops and block closures as native bodies, and a cheaper interpreter-to-native call — float report, items 2, 4, 14; feeds #3 and #45 |
+| 45 | `--exe`: a module routine called from the program costs ~6× a local one (68 vs 10.6 ns) | L | The call goes through callEnvFirstAmp and the interpreter's binding, and the native body runs inside that — float report, item 10; near #13 |
+| 46 | `--exe`: a native-typed value is still a boxed Value; a `num`-typed sub is ~2.4× its untyped twin (62 vs 26 ns) | L | Typed locals as C++ doubles/int64s; the stores, ops and `int` kernels are done — float report, item 16; near #29 |
+| 47 | `--exe`: a `my sub` is called through `RT.dynVar("&name")` and callCallable, ~170 ns against ~25 for a top-level sub | M | A direct call needs the arity proved at the call site and a handle to the closure that cannot outlive it — float report, item 9 |
 
 ## 4. Lists, strings and laziness
 
@@ -109,6 +115,21 @@ theme the rows are sorted by complexity, largest first.
   call; a body that does keeps it. `try { $t += $_ }` −24%, a `try` that
   catches a `die` −43% in instructions. The row's "30 for a bare block" was
   a fused loop kernel: the call was ~2,700 of a `try`'s cost, not 6,000.
+- **The float report** (2026-10-15, a float-heavy program run interpreted
+  and as `--exe -O`; t/regression/float-exe-report.raku). Per probe, ns/op,
+  `--exe -O` before → after: Num `$a * $b + $a` 41 → 17, `+&`/`+>` 84 → 9,
+  `($x * 2**52).Int` 125 → 19, `Any` 210 → 8, `101 <= $f < 200` 30 → 13,
+  `.key`/`.value` 386 → 27, three labelled `next` 21,282 → 177 (interpreted
+  209,490 → 1,962). An `int`-typed sub interpreted 555 → 5.2 ns (it is an
+  int kernel now); a compiled loop that reads a Num it never writes 339 → 18
+  ns a call untyped, 506 → 59 as a `num` parameter.
+  Correctness on the way: a Failure stored in a native, a typed `for`
+  parameter, `for $*IN.lines` and a gather in a compiled loop, `Empty`,
+  `Int(True)`/`Int(NaN)`. And a program `--exe` has to bundle keeps native
+  bodies for its own routines, matched to the binary's run-time parse by an
+  AST fingerprint (AotModules.h attachMainAot): a Mandelbrot routine in a
+  program with one `CATCH` elsewhere 30 → 3.7 ms (3.5 fully native). Open
+  from it: 42–47.
 - **9, `Env::vars` and `Env` on the slab** (dca29704): re-measured first. Of 24
   block and call shapes, three still allocated per iteration, and inline
   slots were not the answer to any of them. A bare block's `$_` was a map

@@ -1629,6 +1629,15 @@ struct ExecContext {
     // `type.^name`: the `^` ladder's .HOW fallback must not send them back.
     std::set<std::string> metaForwarding;
     uint64_t curLoopFrame = kNoFrame; // frameTop when the innermost native loop body runs
+    // A cooperative LABELLED next/last (loopCtl 1/2): the label of the loop it
+    // is for. Every loop it reaches first ends and leaves it set, and the loop
+    // wearing the label takes it. Null for the unlabelled form — every setter
+    // of that form clears it, so a stale one is never read.
+    const std::string* loopCtlLabel = nullptr;
+    // The labelled loops whose body is running on this thread, innermost last:
+    // the label and the frame the body runs in. A marked last/next (Ast.h
+    // LastStmt::coop) goes cooperative only when its loop is in this frame.
+    std::vector<std::pair<const std::string*, uint64_t>> labelLoops;
     // Cooperative `when`/`default`/`succeed`: a match in the SAME callable frame
     // as its enclosing given (or loop) body sets givenCtl instead of throwing
     // BreakGivenEx — the block executors break out and the given/loop consumes
@@ -2419,6 +2428,11 @@ public:
     void checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr, char smiley = 0); // `is default(v)` vs the declared type
     Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
+    bool rtStableNameTerm(const std::string& n, Value& out); // …once, for a name codegen proved unbound
+    // `Int(x)` / `Str()` / `Int(Any)`: a type name CALLED, once it is known to
+    // be no routine (evalCall's coercion arm, and codegen's way into it)
+    bool typeCallCore(const std::string& name, ValueList& args, bool parenned, Value& out);
+    Value rtTypeCall(const char* name, ValueList args, bool parenned);
     void registerNamedRegex(const std::string& name, const std::string& pattern, const std::string& kind) {
         namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)
     }
@@ -4729,6 +4743,21 @@ bool  rtUserPrefix(Value (*fn)(ValueList), const Value& v, Value& out);
 // case as native int64, else fall back to the general applyArith. Semantics are
 // identical — this only skips the string dispatch + boxing on the hot Int path.
 inline bool rtBothInt(const Value& l, const Value& r) { return l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big(); }
+// …and the Num lane beside it: a Num, with a Num or a machine Int on the other
+// side, neither carrying a tag (an Instant, a Duration or a NumStr is a tagged
+// number and keeps the general path). What these answer is applyArithGeneral's
+// double arm, operator for operator — which reads a native's value as it reads
+// any other, so a native width does not matter here; rtNativeArith tags the
+// result. Without them every Num `*` and `<` walked a page of tests first.
+inline bool rtNumOperand(const Value& v, double& d) {
+    if (!v.hashKind.empty()) return false;
+    if (v.t == VT::Num) { d = v.n; return true; }
+    if (v.t == VT::Int && !v.big()) { d = (double)v.i; return true; }
+    return false;
+}
+inline bool rtNumPair(const Value& l, const Value& r, double& a, double& b) {
+    return (l.t == VT::Num || r.t == VT::Num) && rtNumOperand(l, a) && rtNumOperand(r, b);
+}
 // -O int lanes (Codegen pass 3): may this box be read as / stored into a raw int64?
 // A store additionally requires no enum identity (writing .i under an enumName
 // would leave the stale name as the value's stringification).
@@ -4742,7 +4771,7 @@ void rtHintsReset();                     // forget what was said (the REPL, per 
 // --exe natives (Interpreter.cpp "natives for the compiling backends")
 Value rtNativeValue(const Value& v, const std::string& type, const std::string& name, bool srcNative);
 Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& name, bool srcNative);
-Value rtNativeArith(const char* op, const Value& l, const Value& r);
+Value rtNativeArithSlow(const char* op, const Value& l, const Value& r);   // rtNativeArith, below, in full
 Value rtNativeNeg(const Value& v);
 void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign);
 // A native container is a lane slot only at full width: `int` is an int64 the
@@ -4796,19 +4825,120 @@ inline void rtLaneAppend(std::string& d, const std::string& r) {
 // switch folds to a single comparison. This is plumbing, not speculation — it
 // is on in every mode, like the `rtLtB` condition lane and the cached builtin
 // pointers (DISPATCH.md); what `-O` adds on top is emitting `rtAdd` directly.
+// The general path's double arm for a one- or two-character op over two
+// doubles; false for any other op, and for the cases that arm hands on (a zero
+// divisor, which is a Failure; an underflowing `**`).
+inline bool rtNumArith(const char* op, double a, double b, Value& out) {
+    const char c0 = op[0], c1 = c0 ? op[1] : '\0';
+    if (c1 && op[2]) return false;
+    switch (c0) {
+        case '+': if (c1) return false; out = Value::number(a + b); return true;
+        case '-': if (c1) return false; out = Value::number(a - b); return true;
+        case '*':
+            if (!c1) { out = Value::number(a * b); return true; }
+            if (c1 == '*') {
+                double res = std::pow(a, b);
+                if (res == 0 && a != 0 && !std::isnan(a) && std::isfinite(b)) return false;
+                out = Value::number(res);
+                return true;
+            }
+            return false;
+        case '/': if (c1 || b == 0.0) return false; out = Value::number(a / b); return true;
+        case '<': if (c1 && c1 != '=') return false; out = Value::boolean(c1 ? a <= b : a < b); return true;
+        case '>': if (c1 && c1 != '=') return false; out = Value::boolean(c1 ? a >= b : a > b); return true;
+        case '=': if (c1 != '=') return false; out = Value::boolean(a == b); return true;
+        case '!': if (c1 != '=') return false; out = Value::boolean(a != b); return true;
+        default: return false;
+    }
+}
+// `+&` `+|` `+^` `+<` `+>` (c1 is the second character) over two machine Ints:
+// what the general path's bitwise arms answer. False for a shift they hand on —
+// a negative count, which shifts the other way, or a result past int64.
+inline bool rtIntBitOp(char c1, long long a, long long b, long long& z) {
+    switch (c1) {
+        case '&': z = a & b; return true;
+        case '|': z = a | b; return true;
+        case '^': z = a ^ b; return true;
+        case '<':
+            if (b < 0 || b >= 62 || a <= -(1LL << (62 - b)) || a >= (1LL << (62 - b))) return false;
+            z = (long long)((unsigned long long)a << b);
+            return true;
+        case '>':
+            if (b < 0) return false;
+            z = b >= 63 ? (a < 0 ? -1 : 0) : (a >> b);
+            return true;
+        default: return false;
+    }
+}
 inline Value applyArith(const char* op, const Value& l, const Value& r) {
-    if (rtBothInt(l, r) && op[0] != '\0' && op[1] == '\0') {
+    if (rtBothInt(l, r) && op[0] != '\0') {
         long long a = l.i, b = r.i, z;
-        switch (op[0]) {
-            case '+': if (!rakupp::add_ovf(a, b, &z)) return Value::integer(z); break;
-            case '-': if (!rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
-            case '*': if (!rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
-            case '<': return Value::boolean(a < b);
-            case '>': return Value::boolean(a > b);
-            default: break;
+        if (op[1] == '\0') {
+            switch (op[0]) {
+                case '+': if (!rakupp::add_ovf(a, b, &z)) return Value::integer(z); break;
+                case '-': if (!rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
+                case '*': if (!rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
+                case '<': return Value::boolean(a < b);
+                case '>': return Value::boolean(a > b);
+                default: break;
+            }
+        }
+        else if (op[0] == '+' && op[2] == '\0' && rtIntBitOp(op[1], a, b, z)) return Value::integer(z);
+    }
+    // (a Num goes on to the string form, whose Num arm answers it: inlined at
+    // every call site, a second arm here cost the Int-and-Str code its size)
+    return applyArith(std::string(op), l, r);
+}
+// A NATIVE operation (codegen: Ast.h nativeNumericStatic). Its common cases
+// inline — `+ - *` over two plain Ints, wrapping at 64 bits as rtNativeIntOp
+// does, and the Num lane — tagged as rtNativeArithSlow tags them; every other
+// case is that function. Each op had gone through a std::string built from the
+// literal and a chain of compares, on every evaluation.
+inline Value rtNativeArith(const char* op, const Value& l, const Value& r) {
+    if (op[0] != '\0' && op[1] == '\0') {
+        if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() && l.hashKind.empty() && r.hashKind.empty() &&
+            l.enumName.empty() && r.enumName.empty()) {
+            const unsigned long long a = (unsigned long long)l.i, b = (unsigned long long)r.i;
+            long long x;
+            switch (op[0]) {
+                case '+': x = (long long)(a + b); break;
+                case '-': x = (long long)(a - b); break;
+                case '*': x = (long long)(a * b); break;
+                default: return rtNativeArithSlow(op, l, r);
+            }
+            Value out = Value::integer(x); out.natBits = 64; out.natSigned = true;
+            return out;
+        }
+        double a, b;
+        if (Value res; rtNumPair(l, r, a, b) && rtNumArith(op, a, b, res)) {
+            if (res.t == VT::Num) { res.natBits = 64; res.natFloat = true; }
+            return res;
         }
     }
-    return applyArith(std::string(op), l, r);
+    return rtNativeArithSlow(op, l, r);
+}
+// The store into a native (codegen): a plain Num into a `num`, or a plain
+// machine Int into an `int`, changes only the tags — wrapNative's own fast arms,
+// after nativeAssignCheck has nothing to say about either. Anything else takes
+// rtNativeValue / rtNativeValueLike, which built two std::strings per store.
+inline bool rtNativeStoreFast(Value& v, bool isFloat) {
+    if (v.x_ || v.p_ || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty()) return false;
+    if (isFloat ? v.t != VT::Num : v.t != VT::Int) return false;
+    v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
+    v.isList = v.objKeyed = false;
+    v.natBits = 64; v.natFloat = isFloat; v.natSigned = !isFloat;
+    return true;
+}
+inline Value rtNativeStore(Value v, const char* type, const char* name, bool srcNative) {
+    const bool num = std::strcmp(type, "num") == 0 || std::strcmp(type, "num64") == 0;
+    if ((num || std::strcmp(type, "int") == 0 || std::strcmp(type, "int64") == 0) && rtNativeStoreFast(v, num))
+        return v;
+    return rtNativeValue(v, type, name, srcNative);
+}
+inline Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
+    if (!slot.natBits) return v;   // not (or no longer) a native container
+    if (slot.natBits == 64 && (slot.natFloat || slot.natSigned) && rtNativeStoreFast(v, slot.natFloat)) return v;
+    return rtNativeValueLike(slot, v, name, srcNative);
 }
 
 // `$x *= $y` where the destination IS the left operand. `dst = applyArith("*",
@@ -4840,23 +4970,31 @@ inline Value& applyArithInto(const std::string& op, Value& dst, const Value& r) 
     dst = applyArith(op, dst, r);
     return dst;
 }
-inline Value rtAdd(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("+", l, r); }
-inline Value rtSub(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("-", l, r); }
-inline Value rtMul(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); return applyArith("*", l, r); }
-inline Value rtLt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); return applyArith("<",  l, r); }
-inline Value rtLe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i <= r.i); return applyArith("<=", l, r); }
-inline Value rtGt(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i >  r.i); return applyArith(">",  l, r); }
-inline Value rtGe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i >= r.i); return applyArith(">=", l, r); }
-inline Value rtEq(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); return applyArith("==", l, r); }
-inline Value rtNe(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); return applyArith("!=", l, r); }
+inline Value rtAdd(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a + b); return applyArith("+", l, r); }
+inline Value rtSub(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a - b); return applyArith("-", l, r); }
+inline Value rtMul(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a * b); return applyArith("*", l, r); }
+// `/` has no Int case (two Ints make a Rat); a zero divisor is the general path's Failure
+inline Value rtSlash(const Value& l, const Value& r) { double a, b; if (rtNumPair(l, r, a, b) && b != 0.0) return Value::number(a / b); return applyArith("/", l, r); }
+inline Value rtLt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a <  b); return applyArith("<",  l, r); }
+inline Value rtLe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i <= r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a <= b); return applyArith("<=", l, r); }
+inline Value rtGt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i >  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a >  b); return applyArith(">",  l, r); }
+inline Value rtGe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i >= r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a >= b); return applyArith(">=", l, r); }
+inline Value rtEq(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a == b); return applyArith("==", l, r); }
+inline Value rtNe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a != b); return applyArith("!=", l, r); }
 // Native-bool comparison for boolean context (if/while/ternary): skips building
-// a Bool Value and re-reading it. Int fast path, else the general operator.
-inline bool rtLtB(const Value& l, const Value& r) { if (rtBothInt(l, r)) return l.i <  r.i; return applyArith("<",  l, r).truthy(); }
-inline bool rtLeB(const Value& l, const Value& r) { if (rtBothInt(l, r)) return l.i <= r.i; return applyArith("<=", l, r).truthy(); }
-inline bool rtGtB(const Value& l, const Value& r) { if (rtBothInt(l, r)) return l.i >  r.i; return applyArith(">",  l, r).truthy(); }
-inline bool rtGeB(const Value& l, const Value& r) { if (rtBothInt(l, r)) return l.i >= r.i; return applyArith(">=", l, r).truthy(); }
-inline bool rtEqB(const Value& l, const Value& r) { if (rtBothInt(l, r)) return l.i == r.i; return applyArith("==", l, r).truthy(); }
-inline bool rtNeB(const Value& l, const Value& r) { if (rtBothInt(l, r)) return l.i != r.i; return applyArith("!=", l, r).truthy(); }
+// a Bool Value and re-reading it. Int and Num fast paths, else the general operator.
+inline bool rtLtB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i <  r.i; if (rtNumPair(l, r, a, b)) return a <  b; return applyArith("<",  l, r).truthy(); }
+inline bool rtLeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i <= r.i; if (rtNumPair(l, r, a, b)) return a <= b; return applyArith("<=", l, r).truthy(); }
+inline bool rtGtB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i >  r.i; if (rtNumPair(l, r, a, b)) return a >  b; return applyArith(">",  l, r).truthy(); }
+inline bool rtGeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i >= r.i; if (rtNumPair(l, r, a, b)) return a >= b; return applyArith(">=", l, r).truthy(); }
+inline bool rtEqB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i == r.i; if (rtNumPair(l, r, a, b)) return a == b; return applyArith("==", l, r).truthy(); }
+inline bool rtNeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i != r.i; if (rtNumPair(l, r, a, b)) return a != b; return applyArith("!=", l, r).truthy(); }
+// `+&` `+|` `+^` `+<` `+>`: the machine-Int case inline (rtIntBitOp), as `%` and `div` have
+inline Value rtBitAnd(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::integer(l.i & r.i); return applyArith("+&", l, r); }
+inline Value rtBitOr(const Value& l, const Value& r)  { if (rtBothInt(l, r)) return Value::integer(l.i | r.i); return applyArith("+|", l, r); }
+inline Value rtBitXor(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::integer(l.i ^ r.i); return applyArith("+^", l, r); }
+inline Value rtShl(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && rtIntBitOp('<', l.i, r.i, z)) return Value::integer(z); return applyArith("+<", l, r); }
+inline Value rtShr(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && rtIntBitOp('>', l.i, r.i, z)) return Value::integer(z); return applyArith("+>", l, r); }
 // Floor integer division (`div`) — Raku rounds toward -∞, unlike C++ `/`.
 inline Value rtDiv(const Value& l, const Value& r) {
     if (rtBothInt(l, r) && r.i != 0) { long long q = l.i / r.i; if ((l.i % r.i) && ((l.i < 0) != (r.i < 0))) q--; return Value::integer(q); }
@@ -4884,6 +5022,30 @@ inline Value rtBAbs(Interpreter& I, const Value& v) {
     if (v.t == VT::Int && !v.big() && I.builtinExt_.empty() && v.i != std::numeric_limits<long long>::min())
         return Value::integer(v.i < 0 ? -v.i : v.i);   // plain-Int hot path, inlined at the call site (-2**63 takes the slow path: its abs is a BigInt)
     return rtBAbsSlow(I, v);
+}
+// -O method calls with no arguments, inline for the invocant they are nearly
+// always asked of — `.key` / `.value` on a Pair (methodCall's Pair arm, in
+// MethodCallTail.cpp) and `.Int` on a plain Num inside int64 (truncation) —
+// and methodCall for every other invocant, and for all of them while an
+// `augment` is live. Through methodCall each was ~300 ns, against ~40 for `[0]`.
+inline Value rtMKey(Interpreter& I, const Value& v) {
+    if (v.t == VT::Pair && I.builtinExt_.empty()) return v.pairKeyV();
+    return I.methodCall(v, "key", ValueList{});
+}
+inline Value rtMValue(Interpreter& I, const Value& v) {
+    if (v.t == VT::Pair && I.builtinExt_.empty()) {
+        if (!v.pairVal()) return Value::any();
+        Value r = *v.pairVal();
+        if (r.t != VT::Pair && r.hasPairKey()) r.pairKeyRawM() = nullptr;   // an object hash's key stays the hash's
+        return r;
+    }
+    return I.methodCall(v, "value", ValueList{});
+}
+inline Value rtMInt(Interpreter& I, const Value& v) {
+    if (v.t == VT::Num && v.hashKind.empty() && v.enumName.empty() && !v.x_ && I.builtinExt_.empty() &&
+        v.n > -9.2e18 && v.n < 9.2e18)   // (NaN fails both tests)
+        return Value::integer((long long)v.n);   // the cast truncates toward zero, as .Int does
+    return I.methodCall(v, "Int", ValueList{});
 }
 // The sweep: every named builtin mirrors its sub form EXACTLY (each body is the
 // old registered lambda's 1-arg case, verbatim). Delegators keep full
@@ -5079,6 +5241,15 @@ Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args);
 Value rtArrayVal(const Value& v);
 inline Value rtForList(const Value& v) {
     if (v.itemized && (v.t == VT::Array || v.t == VT::Hash)) { Value a = Value::array(); a.arr()->push_back(v); return a; }
+    // A source the interpreter's `for` iterates LIVE (execForStmt's liveSt)
+    // stays lazy here as well, and rtForHas grows it a turn at a time: an
+    // endless one, a STREAMING one and an unfinished gather. rtArrayVal reads a
+    // handle's lines to the end first, so a compiled `for $*IN.lines` answered
+    // nothing until stdin was closed, and a gather ran ahead of its loop body.
+    if (v.t == VT::Array && v.arr() && v.ext() && !isMultiDimShaped(v)) {
+        auto st = std::static_pointer_cast<LazySeqState>(v.ext());
+        if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted))) return v;
+    }
     return rtArrayVal(v);
 }
 // Does element `i` of what a `for` iterates exist (native codegen)? A lazy

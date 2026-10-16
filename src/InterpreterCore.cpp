@@ -4,6 +4,11 @@
 #include "InterpreterParts.h"
 #include "AotModules.h"
 #include <array>   // kShape in the typed-store check; MSVC does not bring it in through the headers
+#if defined(__linux__)
+#include <sys/resource.h>   // RLIMIT_STACK: the main thread's stack on musl (currentThreadStackSize)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace rakupp {
 
@@ -200,7 +205,7 @@ static void shapedBoundsCheck(const std::shared_ptr<std::vector<long long>>& sha
 // naming a registered type under another registry name (`G::A` inside
 // R[Int], which is R::G::A[Int]) is that type. False when the name answers
 // for itself; a real type of that name always does.
-static bool boundTypeFor(Interpreter& I, const std::string& n, Value& out) {
+bool boundTypeFor(Interpreter& I, const std::string& n, Value& out) {
     if (n.empty() || !Interpreter::tctx_.cur || !ascii::isupper((unsigned char)n[0])) return false;
     if (I.classes_.count(n) || isKnownTypeName(n)) return false;
     if (capturedType(I, Interpreter::tctx_.cur.get(), n, out)) return true;
@@ -967,9 +972,9 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
     // then restore so the outer transfer still happens.
     for (auto it = leaves.rbegin(); it != leaves.rend(); ++it) {
         bool savedRet = tctx_.returning; Value savedRV = tctx_.returnV;
-        int savedLC = tctx_.loopCtl;
+        int savedLC = tctx_.loopCtl; const std::string* savedLL = tctx_.loopCtlLabel;
         int savedGC = tctx_.givenCtl; Value savedGV = tctx_.givenV;
-        tctx_.returning = false; tctx_.loopCtl = 0; tctx_.givenCtl = 0;
+        tctx_.returning = false; tctx_.loopCtl = 0; tctx_.loopCtlLabel = nullptr; tctx_.givenCtl = 0;
         auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
         // A declaration this block never reached — an early `return` jumped over
         // it — still has a slot in Raku, because the pad is built at compile
@@ -985,6 +990,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
         }
         auto restoreFlags = [&] {
             tctx_.returning = savedRet; tctx_.returnV = std::move(savedRV); tctx_.loopCtl = savedLC;
+            tctx_.loopCtlLabel = savedLL;
             tctx_.givenCtl = savedGC; tctx_.givenV = std::move(savedGV);
         };
         // a block left by an exception shows it to its LEAVEs as `$!`
@@ -1612,6 +1618,21 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
               // unaffected: the handler consumes its flag before we get here.
               if (tc.loopCtl) { // cooperative next/last/redo from this loop's body
                   tc.givenCtl = 0;
+                  // a LABELLED one for an outer loop ends this one, as its
+                  // exception does (no NEXT or LAST of this loop's runs), and
+                  // travels on, label and all, to the body that loop runs
+                  if (tc.loopCtlLabel) {
+                      if (*tc.loopCtlLabel != label) {
+                          if (collect) {   // a loop in value position: the exception form (markCoop keeps them out)
+                              const std::string lb = *tc.loopCtlLabel;
+                              const int c = tc.loopCtl; tc.loopCtl = 0; tc.loopCtlLabel = nullptr;
+                              if (c == 2) throw LastEx{lb};
+                              throw NextEx{lb};
+                          }
+                          t_poll.firstBody = savedSF; return false;
+                      }
+                      tc.loopCtlLabel = nullptr;
+                  }
                   int ctl = tc.loopCtl; tc.loopCtl = 0;
                   if (ctl == 3) { if (rebind) rebind(); continue; } // redo: rerun the body (fresh `is copy` params — Rakudo re-binds; S04-statements/redo.t needs the refresh to terminate)
                   if (ctl == 1) {
@@ -1936,6 +1957,34 @@ static inline void returnSlipArgs(const ReturnStmt* r, Value& v) {
     else { v.s = ""; v.isList = true; }
 }
 
+// Is the innermost running loop that wears `label` running its body in THIS
+// frame? Then a last/next marked `coop` (Ast.h) can reach it as a flag: every
+// loop between ends on seeing it, and the statements between break off.
+// Out of line, with the flags it sets, so exec — whose frame every statement
+// pays for — gains one call in its last/next arms and nothing else.
+[[gnu::noinline]] static bool coopLabelLoopIn(ExecContext& tc, const std::string& label, int ctl) {
+    for (auto it = tc.labelLoops.rbegin(); it != tc.labelLoops.rend(); ++it)
+        if (*it->first == label) {
+            if (it->second != tc.frameTop) return false;
+            tc.loopCtl = ctl; tc.loopCtlLabel = &label;
+            return true;
+        }
+    return false;
+}
+// …recorded by a labelled `for` statement for as long as it runs: its body
+// runs in the frame the statement does. Once per loop, not per iteration.
+// Only `for` records one: its runner is out of exec already, and a local in
+// exec's own while/loop/repeat arms would grow the frame every statement
+// pays for. A labelled while/loop/repeat — and a body run anywhere else, a
+// `hyper`/`race` worker — finds no entry, and the control keeps its exception.
+struct LabelLoopScope {
+    ExecContext& t; const bool on;
+    LabelLoopScope(ExecContext& c, const std::string& l) : t(c), on(!l.empty()) {
+        if (on) t.labelLoops.emplace_back(&l, t.frameTop);
+    }
+    ~LabelLoopScope() { if (on) t.labelLoops.pop_back(); }
+};
+
 Value Interpreter::exec(Stmt* s, bool sink) {
 #ifdef RAKUPP_NODE_COUNT
     extern unsigned long long g_execStmts;
@@ -2126,23 +2175,31 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             throw ReturnEx{v};
         }
         case NK::LastStmt: {
-            const std::string& t = static_cast<LastStmt*>(s)->target;
-            if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
-                tctx_.loopCtl = 2; return Value::any(); // cooperative last
+            auto* ls = static_cast<LastStmt*>(s);
+            const std::string& t = ls->target;
+            if (tctx_.frameTop == tctx_.curLoopFrame) {
+                if (t.empty()) { tctx_.loopCtl = 2; tctx_.loopCtlLabel = nullptr; return Value::any(); } // cooperative last
+                if (ls->coop && coopLabelLoopIn(tctx_, t, 2)) return Value::any();
             }
             throw LastEx{t};
         }
         case NK::NextStmt: {
-            const std::string& t = static_cast<NextStmt*>(s)->target;
-            if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
-                tctx_.loopCtl = 1; return Value::any(); // cooperative next
+            auto* ns = static_cast<NextStmt*>(s);
+            const std::string& t = ns->target;
+            if (tctx_.frameTop == tctx_.curLoopFrame) {
+                if (t.empty()) { tctx_.loopCtl = 1; tctx_.loopCtlLabel = nullptr; return Value::any(); } // cooperative next
+                // a labelled one, cooperative too when its loop runs in this frame
+                // with nothing but statements between: as an exception it cost
+                // ~60 µs a jump, nearly all of it the unwinder reading the call-site
+                // tables of every interpreter frame it crossed
+                if (ns->coop && coopLabelLoopIn(tctx_, t, 1)) return Value::any();
             }
             throw NextEx{t};
         }
         case NK::RedoStmt: {
             const std::string& t = static_cast<RedoStmt*>(s)->target;
             if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
-                tctx_.loopCtl = 3; return Value::any(); // cooperative redo
+                tctx_.loopCtl = 3; tctx_.loopCtlLabel = nullptr; return Value::any(); // cooperative redo
             }
             throw RedoEx{t};
         }
@@ -2656,6 +2713,7 @@ static inline bool sameBoundValue(const Value& now, const Value& was) {
 // the call it costs here is nothing.
 Value Interpreter::execForStmt(Stmt* s, bool sink) {
     auto* fs = static_cast<ForStmt*>(s);
+    LabelLoopScope lls{tctx_, fs->label};
     ValueList collected; ValueList* col = fs->asExpr ? &collected : nullptr;
     if (fs->hasStateCache < 0)
         fs->hasStateCache = (mayHaveStateDecl(fs->list.get()) || mayHaveStateDecl(fs->body.get())) ? 1 : 0;
@@ -7374,6 +7432,20 @@ static size_t currentThreadStackSize() {
         pthread_attr_getstack(&attr, &base, &sz);
         pthread_attr_destroy(&attr);
     }
+#if defined(__linux__) && !defined(__GLIBC__)
+    // musl answers for the MAIN thread with the part of its stack mapped so
+    // far -- it probes with mremap -- not what the stack may grow to, so the
+    // main thread of a program embedding librakupp looked like ~100 KiB and its
+    // first host-function call was already "Too many levels of recursion". The
+    // kernel grows that stack to RLIMIT_STACK, which is what glibc reports.
+    if (getpid() == (pid_t)syscall(SYS_gettid)) {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+            const size_t cap = rl.rlim_cur == RLIM_INFINITY ? (size_t(8) << 20) : (size_t)rl.rlim_cur;
+            if (cap > sz) sz = cap;
+        }
+    }
+#endif
     return sz ? sz : (size_t(8) << 20);
 #endif
 }
@@ -17573,7 +17645,7 @@ static ValueList listCtx(const Value& v) {
         long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
         ValueList out;
         for (long long i = 0; i < n; i++)
-            out.push_back(Interpreter::ncReadElem((long long)(intptr_t)v.s.data(), et, i));
+            out.push_back(Interpreter::ncReadElem((long long)(uintptr_t)v.s.data(), et, i));
         return out;
     }
     return v.flatten();
@@ -17726,7 +17798,8 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         long long a = l.i, b = r.i, z;
         char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
         switch (c0) {
-            case '+': if (c1 == '\0' && !rakupp::add_ovf(a, b, &z)) return Value::integer(z); break;
+            case '+': if (c1 == '\0' && !rakupp::add_ovf(a, b, &z)) return Value::integer(z);
+                      if (c1 != '\0' && rtIntBitOp(c1, a, b, z)) return Value::integer(z); break;   // +& +| +^ +< +>
             case '-': if (c1 == '\0' && !rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
             case '*': if (c1 == '\0' && !rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
             case '<': if (c1 == '\0') return Value::boolean(a < b);
@@ -17748,6 +17821,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
         l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
         if (op.size() == 3 && op[0] == '=' && op[1] == '=' && op[2] == '=') return Value::boolean(l.i == r.i);
         if (op.size() == 4 && op[0] == '!' && op[1] == '=' && op[2] == '=' && op[3] == '=') return Value::boolean(l.i != r.i);
+    }
+    // A Num with a Num or machine Int: the general path's double arm, without
+    // the page of tests in front of it (Interpreter.h rtNumPair, rtNumArith)
+    if ((l.t == VT::Num || r.t == VT::Num) && !op.empty() && op.size() <= 2) {
+        double a, b;
+        if (Value out; rtNumPair(l, r, a, b) && rtNumArith(op.c_str(), a, b, out)) return out;
     }
     return applyArithGeneral(op, l, r);
 }
@@ -24185,6 +24264,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (tctx_.frameTop == tctx_.curLoopFrame &&
             u == tctx_.curStmtExpr) {
             tctx_.loopCtl = opEq(u->op, "next") ? 1 : opEq(u->op, "last") ? 2 : 3; // cooperative
+            tctx_.loopCtlLabel = nullptr;
             return Value::any();
         }
         if (opEq(u->op, "last")) throw LastEx{};
@@ -26709,73 +26789,7 @@ Value Interpreter::evalCall(Call* c) {
             }
             return methodCall(Value::list(flat), c->name, ValueList{});
         }
-        // A type name applied to NOTHING, or to a single TYPE OBJECT, is the
-        // COERCION TYPE and not a call: `Int()` is `Int(Any)`, `A(Any)` is
-        // `A(Any)`, and both answer a Metamodel::CoercionHOW. Rakudo reads it
-        // that way even when the class has a CALL-ME — `A()` is the coercion
-        // where `A.()` is the call — so this comes before every coercer below.
-        if (c->parenned && !c->callee) {
-            bool typeArg = args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
-                           args[0].ofType().empty() && args[0].s.find('(') == std::string::npos;
-            // A name BOUND to a type first — a role's type capture, `T()` in
-            // R[Int], is Int(Any), and `T($v)` coerces to Int — ahead of any
-            // registered type, which a capture of the same name never is
-            {
-                Value bt;
-                if ((args.empty() || typeArg) && boundTypeFor(*this, c->name, bt))
-                    return Value::typeObj(bt.s.str() + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")");
-                if (args.size() == 1 && !args[0].namedArg && !classes_.count(c->name) &&
-                    capturedType(*this, tctx_.cur.get(), c->name, bt))
-                    return coerceToType(args[0], bt.s.str());
-            }
-            // A MODULE or PACKAGE is a type here too. It is registered in
-            // pkgKind_ rather than classes_, so `module foo {}; foo()` was
-            // "Undefined routine 'foo'" where Rakudo answers the coercion type
-            // `foo(Any)` — the same answer it gives for a class.
-            if ((args.empty() || typeArg) &&
-                (isKnownTypeName(c->name) || classes_.count(resolveClassAlias(c->name)) ||
-                 pkgKind_.count(c->name))) {
-                std::string tgt = classes_.count(resolveClassAlias(c->name))
-                                      ? resolveClassAlias(c->name) : c->name;
-                return Value::typeObj(tgt + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")");
-            }
-        }
-        // `Hash(…)` / `Map(…)`: the whole argument list becomes ONE hash, later
-        // keys winning — which is how a sub layers defaults, computed values
-        // and extras into the hash it returns (`Hash(%defaults, %computed,
-        // %extra)`). The generic coercion path below reaches only args[0], so
-        // every argument after the first used to be dropped in silence.
-        if ((c->name == "Hash" || c->name == "Map") && args.size() > 1)
-            return methodCall(Value::typeObj(c->name), "new", args);
-        // `DateTime($instant)` / `Date($str)` coercion routines == .new
-        if ((c->name == "DateTime" || c->name == "Date") && !args.empty())
-            return methodCall(Value::typeObj(c->name), "new", args);
-        // `Uni(97)` / `NFC(...)` etc. coercion routines build a Uni from codepoints
-        if ((c->name == "Uni" || c->name == "NFC" || c->name == "NFD" ||
-             c->name == "NFKC" || c->name == "NFKD"))
-            return methodCall(Value::typeObj(c->name), "new", args);
-        static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
-        if (coerce.count(c->name)) {
-            if (args.empty())
-                return c->name == "Str" ? Value::str("")
-                     : c->name == "Bool" ? Value::boolean(false)
-                     : c->name == "Num" ? Value::number(0) : Value::integer(0);
-            Value a0 = args[0];
-            if (c->name == "Str") return Value::str(strOf(a0));
-            if (c->name == "Bool") return Value::boolean(boolify(a0));
-            if (a0.t == VT::Object && a0.obj() && a0.obj()->cls) { // honour .Int/.Num/.Numeric
-                if (Value* m = a0.obj()->cls->findMethod(c->name)) { ValueList none; a0 = invokeMethod(*m, a0, none); }
-            }
-            if (a0.t == VT::Complex && (c->name == "Int" || c->name == "Num" ||
-                                        c->name == "Real" || c->name == "Rat"))
-                return methodCall(a0, c->name, {}); // $*TOLERANCE-aware imaginary-part check
-            if (c->name == "Int" && a0.t == VT::Rat) return methodCall(a0, "Int", {}); // 0-denominator fails X::Numeric::DivideByZero
-            if (c->name == "Int" && a0.t == VT::Num) return numToIntExact(std::trunc(a0.n)); // exact past 2**63 (toInt saturates)
-            if (c->name == "Int") return Value::integer(a0.toInt());
-            if (c->name == "Num" || c->name == "Real") return Value::number(a0.toNum());
-            if (c->name == "Rat") return methodCall(a0, "Rat", {}); // CF approximation for Num
-            return a0.isNumeric() ? a0 : Value::number(a0.toNum()); // Numeric
-        }
+        if (Value out; typeCallCore(c->name, args, c->parenned && !c->callee, out)) return out;
     }
     // type-object coercion call: Any(x) / Mu(x) / Cool(x) is the value itself
     if ((c->name == "Any" || c->name == "Mu" || c->name == "Cool") && c->args.size() == 1)
@@ -27453,7 +27467,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
                                       : (base.enumName.empty() ? std::string("int64") : base.enumName.str());
                 long long addr = live ? (*base.hash())["addr"].toInt()
-                                      : (long long)(intptr_t)base.s.data();
+                                      : (long long)(uintptr_t)base.s.data();
                 long long lim = live ? -1 : (long long)(base.s.size() / (size_t)ncElemSize(et));
                 Value out = Value::array(); out.isList = true; out.s = "Seq"; // a slice is a Seq
                 for (auto& e : kv.flatten()) {
@@ -29478,6 +29492,7 @@ struct RatLitParts {
             if (opEq(n, "next") || opEq(n, "last") || opEq(n, "redo")) {
                 if (tctx_.frameTop == tctx_.curLoopFrame) {
                     tctx_.loopCtl = opEq(n, "next") ? 1 : opEq(n, "last") ? 2 : 3; // cooperative
+                    tctx_.loopCtlLabel = nullptr;
                     return Value::any();
                 }
                 if (opEq(n, "next")) throw NextEx{};
@@ -31598,30 +31613,6 @@ bool Interpreter::uninitMethodShape(const MethodCall* mc, const Value& inv) {
     }
     return false;
 }
-Value Interpreter::uninitMethodCall(const MethodCall* mc, const Value& inv) {
-    const std::string& m = mc->method;
-    if (inv.t != VT::Array) {
-        // (a type object's .Numeric/.Int is a candidate of its own, which names nothing)
-        UninitNameScope nm(*this, inv.t == VT::Any || m == "Str" ? uninitNameOf(mc->inv.get()) : std::string());
-        if (m == "Str" && (inv.t == VT::Any || !classes_.count(std::string(inv.s.c_str())))) {
-            warnUninitStr(inv);
-            return Value::str("");
-        }
-        if (inv.t == VT::Any) { warnUninitNum(inv); return Value::integer(0); }
-        return methodCall(inv, m, ValueList{});
-    }
-    std::string name;
-    if (m == "join" && mc->inv->kind == NK::VarExpr) name = uninitNameOf(mc->inv.get());
-    else if (m == "sum" && mc->inv->kind == NK::ListExpr) {
-        auto& items = static_cast<ListExpr*>(mc->inv.get())->items;
-        if (items.size() == inv.arr()->size())
-            for (size_t k = 0; k < items.size(); k++)
-                if (uninitOperand((*inv.arr())[k])) { name = uninitNameOf(items[k].get()); break; }
-    }
-    UninitNameScope nm(*this, std::move(name));
-    ValueList args = evalArgs(mc->args);
-    return methodCall(inv, m, std::move(args), &mc->args);
-}
 
 Value Interpreter::evalMethodCallExpr(Expr* e) {
     auto* mc = static_cast<MethodCall*>(e);
@@ -32130,7 +32121,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             // …and the Pair stays the object it was: a container pair
             // identifies by its payload, which the copy replaces, so its
             // WHICH is kept in the (otherwise unused) `i` (01-misc.t)
-            if (p.pairLive() && !p.i) p.i = (long long)(intptr_t)p.pairVal();
+            if (p.pairLive() && !p.i) p.i = (long long)(uintptr_t)p.pairVal();
             p.setPairVal(makePayload<Value>(v));
             p.pairValRO = true;
             p.b = false;                       // no longer pairLive

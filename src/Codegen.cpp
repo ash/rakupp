@@ -422,6 +422,8 @@ struct Codegen {
     // too, which costs native speed and never correctness.
     bool keptListVar_ = false;
     bool listWriteVia_ = false;
+    int keptListLine_ = 0, listWriteLine_ = 0;   // where each was first seen, for the note
+    int curStmtLine_ = 0;   // the statement being emitted (an expression often carries no line)
     std::set<std::string> keptNames_, writtenNames_;
     const std::vector<Param>* curParams_ = nullptr;   // the routine bodyDef is emitting
     // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}`
@@ -446,7 +448,7 @@ struct Codegen {
                 any = true;
             }
         }
-        if (any) keptListVar_ = true;
+        if (any) { keptListVar_ = true; if (!keptListLine_) keptListLine_ = e->line ? e->line : curStmtLine_; }
         return any;
     }
     // `my $m = (…)` / `$m := (…)` / `my \m = (…)` / `@o[0] = (…)`: the
@@ -470,7 +472,11 @@ struct Codegen {
     // interpreter's bindSlurpyContainers) — `f($x)` writes $x, `f(1)` refuses —
     // and the native Array holds copies that took any write.
     void noteIndexWrite(const Expr* base) {
-        if (!base || base->kind != NK::VarExpr) { listWriteVia_ = true; return; }
+        auto via = [&] {
+            listWriteVia_ = true;
+            if (!listWriteLine_) listWriteLine_ = base && base->line ? base->line : curStmtLine_;
+        };
+        if (!base || base->kind != NK::VarExpr) { via(); return; }
         const std::string& n = static_cast<const VarExpr*>(base)->name;
         if (n.empty()) return;
         writtenNames_.insert(n);   // `@a[0] = 10` writes the container `(@a[0], 3)` shares
@@ -478,10 +484,10 @@ struct Codegen {
             for (const Param& p : *curParams_)
                 if (p.name == n) {
                     if (p.slurpy) unsupported("a write into an element of a slurpy parameter");
-                    listWriteVia_ = true;
+                    via();
                     return;
                 }
-        if (n[0] == '$' || ascii::isalpha((unsigned char)n[0]) || n[0] == '_') listWriteVia_ = true;
+        if (n[0] == '$' || ascii::isalpha((unsigned char)n[0]) || n[0] == '_') via();
     }
     std::set<std::string> enumKeys;      // enum value names (bound as globals)
     std::set<std::string> classNames;    // user class/role names (resolve as type objects)
@@ -692,6 +698,55 @@ struct Codegen {
     std::set<std::string> callEnvNames_;   // sub names a call resolves through the env
     std::set<std::string> rwSubNames_, rwMethodNames_;   // see AotNames
     std::set<std::string> aotTypeNames_;   // types the module graph declares (AotNames::types)
+
+    // ---- bare core type names (NameTerm) ----
+    // What the parser saw this unit declare (Program::declaredTypeNames /
+    // declaredTermNames, typeNamesOpaque) and its source text: set by
+    // transpileToCpp only, so a module routine never takes the shortcut below.
+    const Program* prog_ = nullptr;
+    std::string srcText_;
+    // Does the source bind `n` as a routine or a sigilless term anywhere —
+    // `sub n`, `&n`, `\n`, `constant n`, `term:<n>`? A text scan, so it says yes
+    // to a mention in a comment or a string too, which only costs the shortcut.
+    bool srcBindsName(const std::string& n) const {
+        auto identCh = [](char c) { return ascii::isalnum((unsigned char)c) || c == '_'; };
+        static const char* const kDecl[] = {"sub", "method", "submethod", "multi", "proto", "only",
+                                            "constant", "regex", "token", "rule"};
+        for (size_t at = srcText_.find(n); at != std::string::npos; at = srcText_.find(n, at + 1)) {
+            const size_t end = at + n.size();
+            // the whole identifier: `Int-ish` and `Intx` are other names
+            if (end < srcText_.size() && (identCh(srcText_[end]) ||
+                ((srcText_[end] == '-' || srcText_[end] == '\'') && end + 1 < srcText_.size() &&
+                 (ascii::isalpha((unsigned char)srcText_[end + 1]) || srcText_[end + 1] == '_'))))
+                continue;
+            if (at == 0) continue;
+            const char before = srcText_[at - 1];
+            if (before == '&' || before == '\\' || before == '<') return true;   // &n, \n, term:<n>
+            if (identCh(before) || before == '-' || before == '\'') continue;
+            // a declarator, then whitespace, then the name
+            size_t k = at;
+            while (k > 0 && ascii::isspace((unsigned char)srcText_[k - 1])) k--;
+            if (k == at) continue;
+            for (const char* d : kDecl) {
+                const size_t dl = std::strlen(d);
+                if (k >= dl && srcText_.compare(k - dl, dl, d) == 0 && (k == dl || !identCh(srcText_[k - dl - 1])))
+                    return true;
+            }
+        }
+        return false;
+    }
+    // A core type name (`Int`, `Any`, `Str`) this program binds nowhere — no
+    // type, sub, constant or sigilless term of that name here, and none that a
+    // module it uses exports — resolves the same way on every evaluation. Its
+    // site then asks rtNameTerm once, where every evaluation walked the scope
+    // chain twice and a page of string tests (~200 ns a mention).
+    bool stableNameTerm(const std::string& n) const {
+        if (!prog_ || srcText_.empty() || prog_->typeNamesOpaque || n == "Empty" || !isKnownTypeName(n))
+            return false;
+        if (prog_->declaredTypeNames.count(n) || prog_->declaredTermNames.count(n)) return false;
+        if (moduleExports_.count(n) || callEnvNames_.count(n) || envSubs.count(n)) return false;
+        return !srcBindsName(n);
+    }
     // A call argument a callee's `is rw` parameter could write back into.
     static bool writableArg(Expr* a) {
         if (a && a->kind == NK::Unary && static_cast<Unary*>(a)->op == "|") a = static_cast<Unary*>(a)->operand.get();
@@ -983,17 +1038,21 @@ struct Codegen {
 
     // A lexical `sub f (…) { … }` inside a block becomes a native closure stored
     // in the runtime env, so calls (including self-recursive ones) resolve by name.
+    // a labelled native loop being emitted (loopLabels_, below)
+    struct LoopLabel { std::string label, nextAt, lastAt; bool usedNext = false, usedLast = false; };
     struct BodyScope {
         Codegen* g;
         std::set<std::string> savedHoisted, savedSpecials, savedEnvSubs, savedCells, savedCodeVars, savedReads, savedReadonly;
         std::vector<std::string> savedCellsLive;
         int savedDepth;
+        std::vector<LoopLabel> savedLabels;
         BodyScope(Codegen* g_, bool closure) : g(g_),
             savedHoisted(g_->hoisted), savedSpecials(g_->boundSpecials),
             savedEnvSubs(g_->envSubs), savedCells(g_->cellVars_),
             savedCodeVars(g_->codeVars), savedReads(g_->readCaptures_), savedReadonly(g_->readonlyVars_),
-            savedCellsLive(g_->cellsLive_), savedDepth(g_->loopDepth_) {
+            savedCellsLive(g_->cellsLive_), savedDepth(g_->loopDepth_), savedLabels(std::move(g_->loopLabels_)) {
             g->loopDepth_ = 0;               // break/continue never cross a C++ function boundary
+            g->loopLabels_.clear();          // …nor does a goto
             if (!closure) { g->hoisted.clear(); g->boundSpecials.clear(); g->cellVars_.clear(); g->cellsLive_.clear(); }
             // a closure inherits the lexical sets (copy-in); additions are discarded on exit
         }
@@ -1007,6 +1066,7 @@ struct Codegen {
             g->readCaptures_ = std::move(savedReads);
             g->readonlyVars_ = std::move(savedReadonly);
             g->loopDepth_ = savedDepth;
+            g->loopLabels_ = std::move(savedLabels);
         }
     };
 
@@ -1366,13 +1426,18 @@ struct Codegen {
     }
 
     // The slot a `my $*X` declares. At the top level that is the program's own
-    // scope. In a module routine it is the routine's frame, where the callees'
-    // dynamic lookup finds it and the caller's `$*X` stays as it was; a native
-    // closure or a compiled sub has no frame of its own, and finding the
-    // caller's `$*X` instead OVERWROTE it — so those are refused.
+    // scope. A native closure or a compiled sub has no frame of its own, and
+    // finding the caller's `$*X` instead OVERWROTE it — so those are refused.
+    // So is a module routine's (or a bundled program's) native body, for the
+    // whole routine: the slot rtAotDeclDyn declares in its frame is not where
+    // a dynamic lookup finds it — `my $*OUT = FakeIO.new; code(); $*OUT.Str`
+    // read the real STDOUT, from the body and from `code` alike (roast
+    // S16-io/say.t; the same on fda1712a for a module's sub). Delegating just
+    // the declaration would declare it in a scope of the statement's own.
     std::string dynDecl(const std::string& nm) {
         if (atTopLevel_) return "RT.dynVarRef(" + cesc(nm) + ")";
-        if (moduleMode_ && !inClosure()) return "rtAotDeclDyn(__env, " + cesc(nm) + ")";
+        if (moduleMode_ && !inClosure())
+            throw CodegenError{"a dynamic variable declared inside a routine", /*routineWide=*/true};
         unsupported("a dynamic variable declared inside a routine");
     }
 
@@ -1968,6 +2033,10 @@ struct Codegen {
                 // which compiled code does not carry, and rtNameTerm would mint a
                 // type object named L — so the program is bundled instead
                 if (labelNames.count(n)) unsupported("the statement label '" + n + "' used as a term");
+                // a core type name nothing can rebind: resolved once per site
+                if (stableNameTerm(n))
+                    return "([&]() -> Value { static Value __v; static const bool __ok = RT.rtStableNameTerm(" +
+                           cesc(n) + ", __v); return __ok ? __v : RT.rtNameTerm(" + cesc(n) + "); }())";
                 // anything else resolves at runtime like the interpreter's NameTerm:
                 // env value, zero-arg &routine/builtin call, else a type object
                 return "RT.rtNameTerm(" + cesc(n) + ")";
@@ -2031,6 +2100,7 @@ struct Codegen {
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
+                    LoopJumpBarrier __bar{this};   // the body is a lambda: no break/continue/goto out of it
                     if (u->operand->kind == NK::BlockExpr) {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
                         body = capture([&]() {
@@ -2072,6 +2142,7 @@ struct Codegen {
                 if (u->op == "gather") { // gather { … take … } — probe-and-double lazy, like the interp
                     std::string body;
                     Nest __nest{this, 'b'};   // lazy: the body may run after the routine has returned
+                    LoopJumpBarrier __bar{this};   // …in a lambda of its own: no break/continue/goto out of it
                     gatherDepth_++;   // loops in here check the probe's budget per iteration
                     if (u->operand->kind == NK::BlockExpr) {
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
@@ -2095,7 +2166,7 @@ struct Codegen {
                     std::string add = "rtStep(_o, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
                     if (auto* nv = nativeScalarRef(u->operand.get()))   // a native wraps, and stays native
-                        add = "rtNativeValueLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
+                        add = "rtNativeStoreLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
                            "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())");
@@ -2106,7 +2177,7 @@ struct Codegen {
                     std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
                     if (auto* nv = nativeScalarRef(u->operand.get()))
-                        add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
+                        add = "rtNativeStoreLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
                            "; _r=" + add + "; return _r; }())");
@@ -2347,8 +2418,17 @@ struct Codegen {
                 // at run time.
                 if (!c->callee && !userSubs.count(c->name) && !multiNames.count(c->name) &&
                     !codeVars.count(c->name) && !envSubs.count(c->name) && !callEnvNames_.count(c->name) &&
-                    (isKnownTypeName(c->name) || classNames.count(c->name) || aotTypeNames_.count(c->name)))
+                    (isKnownTypeName(c->name) || classNames.count(c->name) || aotTypeNames_.count(c->name))) {
+                    // the core scalar coercers answer in Interpreter::typeCallCore,
+                    // which is the interpreter's own arm for them — a class or a
+                    // module type of the same name keeps the refusal
+                    static const std::set<std::string> kCore = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
+                    if (kCore.count(c->name) && !classNames.count(c->name) && !aotTypeNames_.count(c->name) &&
+                        !moduleExports_.count(c->name))
+                        return "RT.rtTypeCall(" + cesc(c->name) + ", " + argsVL(c->args) + ", " +
+                               (c->parenned ? "true" : "false") + ")";
                     unsupported("a type-coercion call " + c->name + "(…)");
+                }
                 bool slip = false;
                 for (auto& a : c->args) if (isSlip(a.get())) slip = true;
                 std::string vl = argsVL(c->args);
@@ -2538,6 +2618,11 @@ struct Codegen {
                 // `*.value.defined` is one closure calling .value then .defined —
                 // curried again, .defined was asked of the inner WhateverCode,
                 // which is always defined, so `.grep(*.value.defined)` kept all.
+                // -O: `.key` / `.value` / `.Int` with no arguments (rtMKey, …)
+                if (optimize_ && m->args.empty() && !m->meta && !m->bang && !hasWhatever(e) &&
+                    (name == "key" || name == "value" || name == "Int"))
+                    return std::string(name == "key" ? "rtMKey" : name == "value" ? "rtMValue" : "rtMInt") +
+                           "(RT, " + ex(m->inv.get()) + ")";
                 return "RT.methodCall(" + (wcDepth > 0 && hasWhatever(e) ? ex(m->inv.get()) : exArg(m->inv.get())) +
                        ", " + cesc(name) + ", " + argsVL(m->args) + ")";
             }
@@ -2561,9 +2646,16 @@ struct Codegen {
                 std::string binds, cond;
                 for (size_t k = 0; k < ch->operands.size(); k++)
                     binds += "Value _c" + std::to_string(k) + "=(" + ex(ch->operands[k].get()) + "); ";
+                // each link's truth: the numeric six through their inline Int/Num
+                // lanes (rtLtB…, which ARE `applyArith(op, …).truthy()` past them)
+                static const std::map<std::string, std::string> kB = {
+                    {"<", "rtLtB"}, {"<=", "rtLeB"}, {">", "rtGtB"}, {">=", "rtGeB"}, {"==", "rtEqB"}, {"!=", "rtNeB"}};
                 for (size_t k = 0; k < ch->ops.size(); k++) {
                     if (k) cond += " && ";
-                    cond += "applyArith(" + cesc(ch->ops[k]) + ", _c" + std::to_string(k) + ", _c" + std::to_string(k + 1) + ").truthy()";
+                    const std::string a = "_c" + std::to_string(k), b = "_c" + std::to_string(k + 1);
+                    auto bf = kB.find(ch->ops[k]);
+                    cond += bf != kB.end() ? bf->second + "(" + a + ", " + b + ")"
+                                           : "applyArith(" + cesc(ch->ops[k]) + ", " + a + ", " + b + ").truthy()";
                 }
                 return "([&]()->Value{ " + binds + "return Value::boolean(" + cond + "); }())";
             }
@@ -2719,6 +2811,13 @@ struct Codegen {
         for (auto& s : stmts) {
             if (s->kind == NK::Block) {
                 auto* b = static_cast<Block*>(s.get());
+                // A CONTROL block is an isCatch block too, but it handles the
+                // CONTROL exceptions — `last A`, `next`, `warn` — which are no
+                // RakuError, and which compiled code raises as a C++ exception
+                // or a goto. Wrapped as a CATCH it never saw one: `A: for 1 {
+                // for 1 { last A }; CONTROL { default { die $_ } } }` went on
+                // silently where the interpreter (and Rakudo) die with CX::Last.
+                if (b->isCatch && b->phaser == "CONTROL") unsupported("a CONTROL block");
                 if (b->isCatch) { catchBlk = b; continue; }
                 const std::string& ph = b->phaser;
                 // An INIT runs once before the MAINLINE, wherever it is written —
@@ -2811,6 +2910,21 @@ struct Codegen {
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
     std::set<std::string> envSubs;  // lexical subs registered in the runtime env (`sub f {…}` inside a block)
     int loopDepth_ = 0;             // native loops enclosing the emission point IN THIS function body
+    // The LABELLED native loops among them, innermost last: `next L` / `last L`
+    // inside one is a goto to its continue or break point (loopBody), where the
+    // exception form cost microseconds a jump — the unwinder walking every
+    // frame's tables. Saved and emptied wherever loopDepth_ is reset.
+    std::vector<LoopLabel> loopLabels_;
+    // A statement lambda (`do {…}`, `try {…}`, `gather {…}`, a redo retry) is
+    // a C++ function of its own: no break, continue or goto reaches out of it,
+    // so inside it a loop control takes the exception form.
+    struct LoopJumpBarrier {
+        Codegen* g; int depth; std::vector<LoopLabel> labels;
+        explicit LoopJumpBarrier(Codegen* c) : g(c), depth(c->loopDepth_), labels(std::move(c->loopLabels_)) {
+            g->loopDepth_ = 0; g->loopLabels_.clear();
+        }
+        ~LoopJumpBarrier() { g->loopDepth_ = depth; g->loopLabels_ = std::move(labels); }
+    };
     // gather blocks enclosing the emission point. A loop inside one gets a
     // per-iteration gather-probe check (loopBody); every other loop — the hot
     // benchmark kernels — emits exactly what it emitted before.
@@ -2860,7 +2974,16 @@ struct Codegen {
     // native closure the frame may already be gone, so nothing is delegated
     // there. Anything else the interpreter runs exactly as it would have.
     void stmt(Stmt* s, int ind) {
-        if (!moduleMode_ || inClosure()) { stmtNative(s, ind); return; }
+        if (!moduleMode_ || inClosure()) {
+            // a refusal names the innermost statement it came from: the note
+            // that the whole program is being bundled has to say where to look
+            const int savedLine = curStmtLine_;
+            if (s && s->line) curStmtLine_ = s->line;
+            try { stmtNative(s, ind); }
+            catch (CodegenError& e) { if (!e.line && s) e.line = s->line; curStmtLine_ = savedLine; throw; }
+            curStmtLine_ = savedLine;
+            return;
+        }
         auto savedHoisted = hoisted; auto savedRefs = aotRefs_; auto savedCells = cellsLive_;
         auto savedCodeVars = codeVars; auto savedEnvSubs = envSubs; auto savedSpecials = boundSpecials;
         const size_t savedPre = aotPreamble_.size();
@@ -3091,7 +3214,7 @@ struct Codegen {
                         std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                           ", [&]() -> Interpreter& { return RT; })";
                         if (auto* nv = nativeScalarRef(u->operand.get()))
-                            add = "rtNativeValueLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
+                            add = "rtNativeStoreLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
                                   cesc(nv->name) + ", true)";
                         line(ind, "{ Value& _r = " + stepLvalueExpr(u) + "; _r = " + add + "; }");
                         if (std::string w = viewSyncWrap(u->operand.get(), "Value()"); w != "Value()")
@@ -3194,13 +3317,19 @@ struct Codegen {
             }
             case NK::LastStmt: {
                 const std::string& lb = static_cast<LastStmt*>(s)->target;
-                if (!lb.empty()) line(ind, "rtThrowLast(" + cesc(lb) + ");");
+                if (!lb.empty()) {
+                    if (LoopLabel* ll = nativeLoopLabel(lb)) { ll->usedLast = true; line(ind, "goto " + ll->lastAt + ";"); }
+                    else line(ind, "rtThrowLast(" + cesc(lb) + ");");
+                }
                 else line(ind, loopDepth_ ? "break;" : "rtThrowLast();");
                 return;
             }
             case NK::NextStmt: {
                 const std::string& lb = static_cast<NextStmt*>(s)->target;
-                if (!lb.empty()) line(ind, "rtThrowNext(" + cesc(lb) + ");");
+                if (!lb.empty()) {
+                    if (LoopLabel* ll = nativeLoopLabel(lb)) { ll->usedNext = true; line(ind, "goto " + ll->nextAt + ";"); }
+                    else line(ind, "rtThrowNext(" + cesc(lb) + ");");
+                }
                 else line(ind, loopDepth_ ? "continue;" : "rtThrowNext();");
                 return;
             }
@@ -3381,9 +3510,9 @@ struct Codegen {
             if (!n.empty() && n[0] == '$') {
                 const std::string src = value && nativeNumericStatic(value) ? "true" : "false";
                 if (v->declare && isNativeScalarDecl(v->d().declType))
-                    return "rtNativeValue(" + rhs + ", " + cesc(v->d().declType) + ", " + cesc(n) + ", " + src + ")";
+                    return "rtNativeStore(" + rhs + ", " + cesc(v->d().declType) + ", " + cesc(n) + ", " + src + ")";
                 if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
-                    return "rtNativeValueLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
+                    return "rtNativeStoreLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
                 // `=` does: `my $a = [1, 2]; for $a { … }` is one iteration, and
                 // `.raku` says `$[1, 2]`. (What can only be a scalar skips it.)
@@ -3618,7 +3747,7 @@ struct Codegen {
                 (nativeNumericStatic(ve) || (tv->nativeIntRead ? vInt : vNum));
             std::string val = nativeOp ? "rtNativeArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")"
                                        : "applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
-            return lhs + " = rtNativeValueLike(" + lhs + ", " + val + ", " + cesc(tv->name) + ", " +
+            return lhs + " = rtNativeStoreLike(" + lhs + ", " + val + ", " + cesc(tv->name) + ", " +
                    (nativeOp && binop != "div" && binop != "%" && binop != "mod" ? "true" : "false") + ")";
         }
         if (binop == "||") return lhs + " = RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + ")";
@@ -3702,6 +3831,15 @@ struct Codegen {
         }
     }
 
+    // The labelled native loop `next L` / `last L` can jump to, or null when
+    // there is none in this C++ function (the exception form then).
+    LoopLabel* nativeLoopLabel(const std::string& label) {
+        if (loopDepth_ == 0) return nullptr;
+        for (auto it = loopLabels_.rbegin(); it != loopLabels_.rend(); ++it)
+            if (it->label == label) return &*it;
+        return nullptr;
+    }
+
     void loopBody(Block* b, int ind, const std::string& label = "") {
         // A gather probe spends its budget on WORK, not only on takes: a block
         // that stops taking and keeps looping (`gather for 1..* { take $_ if 45
@@ -3720,9 +3858,10 @@ struct Codegen {
             line(ind, "{ int " + lc + " = 0;");
             line(ind, "for (bool " + ag + " = true; " + ag + "; ) { " + ag + " = false;");
             line(ind + 1, "try {");
-            int savedDepth = loopDepth_; loopDepth_ = 0;
-            block(b, ind + 2);
-            loopDepth_ = savedDepth;
+            {
+                LoopJumpBarrier __bar{this};
+                block(b, ind + 2);
+            }
             line(ind + 1, "} catch (const RedoEx& __e) { if (" + pass + ") throw; " + ag + " = true; }");
             line(ind + 1, "catch (const NextEx& __e) { if (" + pass + ") throw; " + lc + " = 1; }");
             line(ind + 1, "catch (const LastEx& __e) { if (" + pass + ") throw; " + lc + " = 2; }");
@@ -3732,9 +3871,20 @@ struct Codegen {
             line(ind, "}");
             return;
         }
+        if (!label.empty()) loopLabels_.push_back({label, gensym("__nx"), gensym("__lx")});
         loopDepth_++;
         std::string body = capture([&]() { block(b, ind + 1); });
         loopDepth_--;
+        LoopLabel jumps;
+        if (!label.empty()) { jumps = std::move(loopLabels_.back()); loopLabels_.pop_back(); }
+        // what a `next`/`last` of this label jumped to: this loop's continue
+        // point (the body's end) and its break point. The body goes in a scope
+        // of its own first, so no jump passes a declaration still in scope.
+        auto jumpTargets = [&]() {
+            if (jumps.usedLast) line(ind, "if (false) { " + jumps.lastAt + ": break; }");
+            if (jumps.usedNext) line(ind, jumps.nextAt + ": ;");
+        };
+        const bool jumped = jumps.usedNext || jumps.usedLast;
         // a body that provably cannot raise a control signal (no user-code calls,
         // no closures, no throw helpers) runs bare — the hot benchmark kernels
         // (loopsum) stay wrapper-free for the optimizer
@@ -3745,7 +3895,14 @@ struct Codegen {
                          body.find("rtCallB(") != std::string::npos || // a stored closure invoked via a builtin can signal too
                          body.find("v_c") != std::string::npos ||      // code-var reads (grep(&f, @a) where &f says `last`)
                          body.find("Value::closure") != std::string::npos;
-        if (!canSignal) { out << body; return; }
+        if (!canSignal) {
+            if (!jumped) { out << body; return; }
+            line(ind, "{");
+            out << body;
+            line(ind, "}");
+            jumpTargets();
+            return;
+        }
         // the cycle collector's safe point (Cycle.h): compiled frames are not
         // Envs, so no scope exit of theirs offers one; the previous
         // iteration's locals are gone here, as an interpreted loop's are
@@ -3756,6 +3913,7 @@ struct Codegen {
         line(ind, "} catch (const NextEx& __e) { if (" + pass + ") throw; continue; }"
                   " catch (const LastEx& __e) { if (" + pass + ") throw; break; }"
                   " catch (const RedoEx& __e) { throw; }");
+        jumpTargets();
     }
 
     // Does a statement WRITE the topic — `$_ = …`, `$_ /= 2`, `$_++`, `.=`, a
@@ -3956,8 +4114,33 @@ struct Codegen {
             line(ind, "}");
             return;
         }
-        std::string topic = f->vars.empty() ? gensym("v__t") : mangleVar(f->vars[0]);
+        // `for @v -> num $x` / `-> Int $i` / `-> int $i`: a signature of ONE
+        // typed parameter, which the parser keeps in `params` rather than
+        // `vars`. It binds as a routine's typed parameter does (rtBindTyped:
+        // the type check, the coercion, a native's tags). Left to the paths
+        // below it was never declared, and clang refused the program
+        // ("undeclared identifier 'v_sx'") instead of it being bundled.
+        const Param* tp = nullptr;
+        if (!f->destructure && !f->params.empty()) {
+            if (f->params.size() != 1 || !f->vars.empty()) unsupported("a `for` signature of several parameters");
+            const Param& p = f->params[0];
+            if (p.name.size() < 2 || p.sigil != '$' || p.named || p.slurpy || p.invocant || p.optional ||
+                p.defaultVal || p.whereExpr || p.defConstraint || p.subSig || p.codeSig || p.isRw || p.isRaw ||
+                p.typeCapture || !p.captureName.empty() || !p.userTraits.empty() || !p.shapeDims.empty())
+                unsupported("a `for` parameter of this form");
+            tp = &p;
+            if (!p.isCopy) readonlyVars_.insert(p.name);
+        }
+        std::string topic = tp ? mangleVar(tp->name) : f->vars.empty() ? gensym("v__t") : mangleVar(f->vars[0]);
         line(ind, "{");
+        std::string tpd;   // the typed parameter's descriptor, built once (typedParamDesc)
+        if (tp && checkedParam(*tp)) tpd = typedParamDesc(*tp, ind + 1);
+        // the loop variable's declaration, from the element expression
+        auto declLoopVar = [&](const std::string& elem) {
+            if (tp) return declVar(tp->name, tpd.empty() ? elem : bindTypedExpr(elem, tpd, *tp)) + ";";
+            if (!f->vars.empty()) return declVar(f->vars[0], elem) + ";";
+            return "Value " + topic + " = " + elem + ";";
+        };
         // `^N` is `0..^N`: the same counted loop, rather than a list of N
         // elements built first (and a fractional N keeps its last element)
         Unary* upto = nullptr;
@@ -3991,8 +4174,7 @@ struct Codegen {
                                     + hi + " = (long long)" + lst + ".arr()->size() - 1; }");
             line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
             std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr())[" + i + "]";
-            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], elem) + ";");
-            else line(ind + 2, "Value " + topic + " = " + elem + ";");
+            line(ind + 2, declLoopVar(elem));
             topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
             topics.pop_back();
@@ -4003,8 +4185,7 @@ struct Codegen {
             line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + fi + " = 0; rtForHas(" + lst + ", " + fi + "); ++" + fi + ") {");
             line(ind + 2, "auto& " + el + " = (*" + lst + ".arr())[" + fi + "];");
-            if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], el) + ";");
-            else line(ind + 2, "Value " + topic + " = " + el + ";");
+            line(ind + 2, declLoopVar(el));
             topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
             topics.pop_back();
@@ -4013,11 +4194,27 @@ struct Codegen {
         line(ind, "}");
     }
 
+    // A bare block runs where it stands, and as a routine's last statement its
+    // last statement's value is the routine's: `sub f { { 3 } }` is 3 (roast
+    // S02-types/anon_block.t). Run as a plain statement it was Any. One holding
+    // a phaser or a CATCH keeps that path (emitSeq orders them), as an empty one.
+    static bool valueBlock(Stmt* s) {
+        if (s->kind != NK::Block) return false;
+        auto* b = static_cast<Block*>(s);
+        if (b->isCatch || !b->phaser.empty() || b->stmts.empty()) return false;
+        for (auto& x : b->stmts)
+            if (x && x->kind == NK::Block &&
+                (static_cast<Block*>(x.get())->isCatch || !static_cast<Block*>(x.get())->phaser.empty()))
+                return false;
+        return true;
+    }
+
     // ---- value-position statements: a sub body ending in if/given returns the branch value ----
     void stmtValue(Stmt* s, int ind, const std::string& dst) {
         if (s->kind == NK::ExprStmt)  { line(ind, dst + " = " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";"); return; }
         if (s->kind == NK::IfStmt)    { ifValue(static_cast<IfStmt*>(s), ind, dst); return; }
         if (s->kind == NK::GivenStmt) { givenValue(static_cast<GivenStmt*>(s), ind, dst); return; }
+        if (valueBlock(s)) { line(ind, "{"); blockValue(static_cast<Block*>(s), ind + 1, dst); line(ind, "}"); return; }
         stmt(s, ind); // no value to capture; dst keeps its prior content
     }
     void blockValue(Block* b, int ind, const std::string& dst) {
@@ -4146,14 +4343,17 @@ struct Codegen {
     std::map<std::string, int> kernelSubs_;   // name -> arity
     std::string kernelText_;                  // preamble + forward decls + definitions
 
-    // (an `Int` parameter is one: the entry guard's __kInt already proves it)
+    // (an `Int` parameter is one: the entry guard's __kInt already proves it;
+    // an `int` one too, whose guard __kIntN also takes a native int's value)
+    static bool kernelNativeInt(const std::string& t) { return t == "int" || t == "int64"; }
     static bool kernelParams(const std::vector<Param>& ps) {
         if (ps.size() > 6) return false;
         for (const Param& p : ps)
             if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy ||
                 p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
                 p.hadWhere || p.defConstraint || p.coerce || p.typeCapture || p.codeSig ||
-                !p.captureName.empty() || (!p.type.empty() && p.type != "Int") || p.name.size() < 2 ||
+                !p.captureName.empty() || (!p.type.empty() && p.type != "Int" && !kernelNativeInt(p.type)) ||
+                p.name.size() < 2 ||
                 (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.' || p.name[1] == '^')))
                 return false;
         return true;
@@ -4184,10 +4384,18 @@ struct Codegen {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
                 if (v->declare || v->viaPseudoPkg || v->pkgSymbol || v->processScoped ||
-                    v->nativeIntRead || v->nativeNumRead || v->nativeStrRead || v->synthTopic)
+                    v->nativeNumRead || v->nativeStrRead || v->synthTopic)
                     return "";
                 for (size_t i = 0; i < ps.size(); i++)
-                    if (ps[i].name == v->name) { isInt = true; return "p" + std::to_string(i); }
+                    if (ps[i].name == v->name) {
+                        // an `int` parameter's reads are marked native; to the
+                        // twin, which holds every value as an int64, it is a
+                        // parameter like any other (an overflow bails, and the
+                        // Value function then wraps as a native int does)
+                        if (v->nativeIntRead && !kernelNativeInt(ps[i].type)) return "";
+                        isInt = true;
+                        return "p" + std::to_string(i);
+                    }
                 return "";
             }
             case NK::Unary: {
@@ -4336,8 +4544,12 @@ struct Codegen {
         if (srcText.find("wrap") != std::string::npos) return;
         std::map<std::string, SubDecl*> cand;
         for (SubDecl* d : subs) {
+            // `--> Int` / `--> int`: what a twin returns, a plain Int, is what
+            // the Value function gives back for either
+            const bool retOk = d->retType.empty() || d->retType == "Int" || d->retType == "Int:D" ||
+                               kernelNativeInt(d->retType);
             if (d->isMulti || d->isProto || d->isMethod || d->isNative || d->retRw ||
-                d->retLiteralPresent || !d->retType.empty() || d->deprecated || d->testAssertion ||
+                d->retLiteralPresent || !retOk || d->deprecated || d->testAssertion ||
                 !d->traits.empty() || !d->altParams.empty() || d->nameExpr || d->body.empty() ||
                 multiNames.count(d->name) || rwSubs.count(d->name) || moduleExports_.count(d->name) ||
                 d->name.find(':') != std::string::npos)
@@ -4371,6 +4583,13 @@ struct Codegen {
             "static inline bool __kInt(const Value& v) {\n"
             "    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned &&\n"
             "           !v.natFloat && !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() &&\n"
+            "           v.enumType.empty() && v.hashKind.empty() && v.s.empty();\n"
+            "}\n"
+            "// …an `int` parameter's: that, or a native int's own value\n"
+            "static inline bool __kIntN(const Value& v) {\n"
+            "    if (!v.natBits) return __kInt(v);\n"
+            "    return v.natBits == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&\n"
+            "           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() &&\n"
             "           v.enumType.empty() && v.hashKind.empty() && v.s.empty();\n"
             "}\n"
             "static inline int64_t __kAdd(int64_t a, int64_t b, __KR& r) { long long z = 0; if (rakupp::add_ovf(a, b, &z)) r.bail = true; return z; }\n"
@@ -4418,7 +4637,12 @@ struct Codegen {
             for (int i = 0; i < ar; i++) a.push_back("__a[" + std::to_string(i) + "]");
         }
         else if (a.empty()) guard = "__a.empty()";
-        for (auto& x : a) guard += (guard.empty() ? "" : " && ") + std::string("__kInt(") + x + ")";
+        const std::vector<Param>* ps = nullptr;
+        if (auto sd = subDecls_.find(name); sd != subDecls_.end()) ps = &sigOf(sd->second);
+        for (size_t i = 0; i < a.size(); i++) {
+            const bool nat = ps && i < ps->size() && kernelNativeInt((*ps)[i].type);
+            guard += (guard.empty() ? "" : " && ") + std::string(nat ? "__kIntN(" : "__kInt(") + a[i] + ")";
+        }
         std::string call = kName(name) + "(";
         for (auto& x : a) call += x + ".i, ";
         call += "__kr)";
@@ -4456,7 +4680,8 @@ struct Codegen {
         if (!optimize_) return "";
         static const std::map<std::string, std::string> m = {
             {"+", "rtAdd"}, {"-", "rtSub"}, {"*", "rtMul"}, {"~", "rtConcat"}, {"%", "rtMod"}, {"mod", "rtModOp"}, {"%%", "rtDivides"},
-            {"**", "rtPow"}, {"div", "rtDiv"},
+            {"**", "rtPow"}, {"div", "rtDiv"}, {"/", "rtSlash"},
+            {"+&", "rtBitAnd"}, {"+|", "rtBitOr"}, {"+^", "rtBitXor"}, {"+<", "rtShl"}, {"+>", "rtShr"},
             {"<", "rtLt"}, {"<=", "rtLe"}, {">", "rtGt"}, {">=", "rtGe"}, {"==", "rtEq"}, {"!=", "rtNe"},
             // string comparisons: plain Str/Str compares byte-wise inline; tagged
             // values (Version/enum/junction/…) fall back to the full chain
@@ -4663,9 +4888,18 @@ struct Codegen {
         // variable, a `my int`. A string operator never turns one into a Str slot.
         std::set<std::string> pinned;
         std::vector<Expr*> topicExpr;   // the open `given`s' topics, innermost last (typing)
+        // A slot the loop only READS, seen with nothing to type it: every node
+        // that reads it (pass 1), and the reads whose other operand is a float
+        // (the classifying pass after the fixpoint). When the two agree the box
+        // may hold an Int or a Num: each read converts an Int to a Num anyway,
+        // so the lane reads either as a double (dualRead).
+        std::map<std::string, std::set<Expr*>> readNodes;
+        std::set<Expr*> floatReads;
+        std::set<std::string> dualRead;
         bool ok = true;
         void fail() { ok = false; }
     };
+    bool uClassify_ = false;   // uTypeOf is filling ULoop::floatReads
 
     // `$name` a lane may hold: exactly what laneVar accepts, minus the topic —
     // `$_` is bound by whatever encloses the loop and a lane must not outlive
@@ -4712,6 +4946,18 @@ struct Codegen {
     LT uSeed(const std::string& nm) const {
         return atTopLevel_ && topNumInit_.count(nm) ? LT::F64 : LT::I64;
     }
+    // Is `$name` DECLARED a float: a `num`/`Num` parameter of the routine being
+    // emitted, or a top-level `my num`/`my Num`? (A wrong answer costs only the
+    // lane: its rtNumSlot guard sends anything else to the boxed loop.)
+    bool floatDeclared(const std::string& nm) const {
+        auto isFloat = [](const std::string& t) { return t == "num" || t == "num64" || t == "Num"; };
+        if (curParams_)
+            for (const Param& p : *curParams_)
+                if (p.name == nm) return isFloat(p.type) && !p.coerce;
+        if (!atTopLevel_) return false;
+        auto it = topVarTypes_.find(nm);
+        return it != topVarTypes_.end() && isFloat(it->second);
+    }
     void uCollectExpr(Expr* e, ULoop& U) {
         if (!U.ok || !e) return;
         switch (e->kind) {
@@ -4742,6 +4988,7 @@ struct Codegen {
                 }
                 if (nm == "$_" && !U.topics.count(nm)) { U.fail(); return; }
                 U.slots.emplace(nm, uSeed(nm));
+                U.readNodes[nm].insert(e);
                 return;
             }
             case NK::Assign: {
@@ -5097,6 +5344,14 @@ struct Codegen {
                 uCondCtx_ = logical;
                 LT r = uTypeOf(b->rhs.get(), U, changed);
                 if (l == LT::STR || r == LT::STR) { U.fail(); return LT::I64; }   // a Str is no number here
+                if (uClassify_) {   // a read whose other operand is a float (see ULoop::readNodes)
+                    static const std::set<std::string> conv = {
+                        "+", "-", "*", "/", "**", "<", "<=", ">", ">=", "==", "!=" };
+                    if (conv.count(b->op)) {
+                        if (r == LT::F64 && b->lhs && b->lhs->kind == NK::VarExpr) U.floatReads.insert(b->lhs.get());
+                        if (l == LT::F64 && b->rhs && b->rhs->kind == NK::VarExpr) U.floatReads.insert(b->rhs.get());
+                    }
+                }
                 static const std::set<std::string> cmp = {
                     "<", "<=", ">", ">=", "==", "!=", "&&", "||" };
                 if (cmp.count(b->op)) return LT::I64;              // a truth value
@@ -5677,6 +5932,14 @@ struct Codegen {
         if (loop->kind == NK::ForStmt)   // …and so its own read-only variable (forStmt marks it)
             for (auto& v : static_cast<ForStmt*>(loop)->vars) if (U.written.count(v)) return false;
 
+        // A slot the loop only READS gets no type from an assignment, so it sat
+        // at I64 — and a `num` parameter failed its rtIntSlot guard on every
+        // entry, sending the loop to its boxed form. One DECLARED a float (a
+        // `num`/`Num` parameter, a top-level `my num`) is a float slot.
+        for (auto& kv : U.slots)
+            if (kv.second == LT::I64 && !U.written.count(kv.first) && !U.pinned.count(kv.first) &&
+                floatDeclared(kv.first))
+                kv.second = LT::F64;
         // Fixpoint: widen a slot to F64 the moment anything float reaches it, and
         // re-run until nothing moves. Bounded by the slot count (a slot can only
         // widen once), with a margin.
@@ -5689,6 +5952,28 @@ struct Codegen {
         if (!U.ok) return false;
         for (auto& nd : U.natDecl)
             if (nd.second == 'i' && U.slots[nd.first] == LT::F64) return false;
+        // …and an UNTYPED read-only slot every read of which meets a float: it
+        // is read as a double whether its box holds a Num or an Int, which is
+        // what each of those operators does with an Int (see ULoop::readNodes).
+        // No expression changes type: every one it is in was a float already.
+        {
+            bool unused = false;
+            uClassify_ = true;
+            uTypeStmt(loop, U, unused);
+            uClassify_ = false;
+            if (!U.ok) return false;
+            for (auto& kv : U.slots) {
+                const std::string& n = kv.first;
+                if (kv.second != LT::I64 || U.written.count(n) || U.pinned.count(n) || U.topics.count(n) ||
+                    U.escapes.count(n) || U.local.count(n))
+                    continue;
+                auto rn = U.readNodes.find(n);
+                if (rn == U.readNodes.end() || rn->second.empty()) continue;
+                bool all = true;
+                for (Expr* x : rn->second) if (!U.floatReads.count(x)) { all = false; break; }
+                if (all) { kv.second = LT::F64; U.dualRead.insert(n); }
+            }
+        }
 
         // Set up the lane's locals. Order matters only for readability, so the
         // map's own (name) order is used, which makes the emitted C++ stable
@@ -5720,13 +6005,24 @@ struct Codegen {
 
         line(ind, "{ bool " + ok + " = false; do { // -O unboxed loop lane (UNBOX-PLAN.md)");
         std::vector<std::string> guards;
-        for (auto& n : names)
+        for (auto& n : names) {
+            if (U.dualRead.count(n)) {   // a Num, or an Int read as one
+                guards.push_back("(rtNumSlot(" + varRef(n) + ") || rtIntBox(" + varRef(n) + "))");
+                continue;
+            }
             guards.push_back(std::string(uType_[n] == LT::F64 ? "rtNumSlot(" : uType_[n] == LT::STR ? "rtStrSlot("
                                                                                        : "rtIntSlot(") + varRef(n) + ")");
+        }
         if (!guards.empty()) line(ind + 1, "if (!(" + joinAnd(guards) + ")) break;");
-        for (auto& n : names)
+        for (auto& n : names) {
+            if (U.dualRead.count(n)) {
+                line(ind + 1, std::string(uCType(LT::F64)) + uLocal_[n] + " = " + varRef(n) + ".t == VT::Num ? " +
+                              varRef(n) + ".n : (double)" + varRef(n) + ".i;");
+                continue;
+            }
             line(ind + 1, std::string(uCType(uType_[n])) + uLocal_[n] + " = " + varRef(n)
                         + (uType_[n] == LT::F64 ? ".n;" : uType_[n] == LT::STR ? ".s.str();" : ".i;"));
+        }
         // A header `my` is declared here rather than where it is written, so the
         // store-back after the loop can still see it. Its value on the way in is
         // never read: the header assigns it before anything else runs.
@@ -5748,8 +6044,9 @@ struct Codegen {
                 std::string e = gensym("__ue");
                 entry.push_back(e);
                 // (a Str slot's box is never written before the commit, so
-                // it needs no snapshot to be rewound to)
-                if (uType_[n] != LT::STR)
+                // it needs no snapshot to be rewound to — nor is a box the
+                // loop only reads, which may even hold an Int read as a double)
+                if (uType_[n] != LT::STR && U.written.count(n))
                     line(ind + 1, std::string(uCType(uType_[n])) + e + " = " + uLocal_[n] + ";");
             }
         line(ind + 1, "bool " + uBail_ + " = false; (void)" + uBail_ + ";");
@@ -5763,7 +6060,7 @@ struct Codegen {
         if (canBail) {
             line(ind + 1, "if (" + uBail_ + ") {");
             for (size_t i = 0; i < names.size(); i++)
-                if (uType_[names[i]] != LT::STR)
+                if (uType_[names[i]] != LT::STR && U.written.count(names[i]))
                     line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
             line(ind + 2, "break;");
             line(ind + 1, "}");
@@ -6136,8 +6433,8 @@ struct Codegen {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
                 line(1, "return " + tailExpr(static_cast<ExprStmt*>(s)) + ";");
-            else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
-                std::string rv = gensym("__rv"); // trailing if/given: the matched branch's value
+            else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt || valueBlock(s))) {
+                std::string rv = gensym("__rv"); // trailing if/given/block: the matched branch's value
                 line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
                 stmtValue(s, 1, rv);
                 line(1, "return " + rv + ";");
@@ -6346,6 +6643,8 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     g.optimize_ = optimize;
     g.labelNames = prog.labelNames;
     g.moduleExports_ = moduleExports;
+    g.prog_ = &prog;
+    g.srcText_ = srcText;
     { // what `no strict` makes legal here — see Codegen::laxVars_
         LaxVars lv = findLaxVars(prog, srcText);
         g.laxVars_ = std::move(lv.names);
@@ -6649,8 +6948,11 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "    std::pair<int, char**> __ctx{argc, argv};\n"
              "    return rakupp::rakuppMainOnBigStack(&__rakupp_main_body, &__ctx);\n}\n";
     // (see keptListVar_: only known once every statement is emitted)
+    // (two places, neither of them at fault alone: both lines are named)
     if (g.keptListVar_ && g.listWriteVia_)
-        unsupported("a List that holds a variable's container, written through a subscript");
+        unsupported("a List that holds a variable's container (line " + std::to_string(g.keptListLine_) +
+                    "), anywhere in a program that writes through a subscript of a scalar or parameter (line " +
+                    std::to_string(g.listWriteLine_) + ")");
     for (const std::string& n : g.keptNames_)
         if (g.writtenNames_.count(n))
             unsupported("a List that holds " + n + "'s container, read after " + n + " is written");
@@ -6690,6 +6992,37 @@ const char* aotIneligible(SubDecl* d) {
             auto* b = static_cast<Block*>(st.get());
             if (b->isCatch || !b->phaser.empty()) return "a phaser or CATCH block";
         }
+    // Code that finds a variable by its NAME at run time — EVAL, EVALFILE, a
+    // symbolic or pseudo-package lookup — looks in the frame for the routine's
+    // locals, which a native body keeps as C++ variables the interpreter
+    // cannot see: `my $pod; EVAL '… $pod = …'; $pod` answered Any (roast
+    // S26-documentation/12-non-breaking-space.t, once a bundled program's own
+    // routines had native bodies). Anywhere in the body, closures included;
+    // a node the dump cannot name (`Expr?`: `::(…)`, CALLER::) counts as one.
+    {
+        Program p;
+        for (auto& st : d->body) p.stmts.emplace_back(st.get());
+        std::ostringstream dump;
+        try { dumpAst(p, dump); } catch (...) {}
+        for (auto& st : p.stmts) st.release();   // the routine's AST still owns them
+        std::istringstream in(dump.str());
+        for (std::string ln; std::getline(in, ln);) {
+            const size_t a = ln.find_first_not_of(' ');
+            if (a == std::string::npos) continue;
+            const std::string row = ln.substr(a);
+            if (row.rfind("Expr?", 0) == 0 || row.rfind("Stmt?", 0) == 0)
+                return "a construct that may look names up at run time";
+            const size_t bar = row.find("\xE2\x94\x82 ");
+            if (bar == std::string::npos) continue;
+            const std::string node = row.substr(0, row.find(' '));
+            std::string detail = row.substr(bar + 4);
+            detail.erase(0, detail.find_first_not_of(' '));
+            const std::string first = detail.substr(0, detail.find(' '));
+            if ((node == "Call" && (first == "EVAL" || first == "EVALFILE" || first == "__sym-lookup")) ||
+                (node == "MethodCall" && (first == ".EVAL" || first == ".EVALFILE")))
+                return "an EVAL or a name looked up at run time";
+        }
+    }
     return nullptr;
 }
 

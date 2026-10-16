@@ -294,6 +294,7 @@ does not work from a static executable).
 | **Windows**, MinGW build | Windows only (`-static`) | the MinGW DLLs beside it or on `PATH`: `libstdc++-6`, `libgcc_s_seh-1`, `libwinpthread-1` | Windows only |
 | **OpenBSD** | the OpenBSD release it was built on | the same | the same — no effect |
 | **Linux** riscv64 | glibc 2.35+; libstdc++ inside | glibc 2.35+ **and** the machine's libstdc++, GCC 11's or newer (`GLIBCXX_3.4.29`) | glibc 2.35+ |
+| **Linux** musl (Alpine) x86_64, ARM64 | Alpine 3.21+ (musl 1.2.5); libstdc++ inside | Alpine 3.21+ **and** its libstdc++ (`apk add libstdc++`, which `g++` brings) | Alpine 3.21+ |
 
 Two things decide the Linux numbers, and neither is the machine that runs
 `--exe`:
@@ -304,8 +305,11 @@ Two things decide the Linux numbers, and neither is the machine that runs
   compiled program inherits that floor from the runtime archive it links —
   whatever built it. riscv64 has no manylinux image, so its archive is
   cross-compiled against an Ubuntu 22.04 sysroot instead (glibc 2.35, GCC 11's
-  libstdc++ headers). `tools/floor-gate.raku` reads the numbers back from the
-  packaged binaries in CI and fails the build when they move.
+  libstdc++ headers). The musl archives are built on Alpine 3.21 itself
+  (musl 1.2.5, Clang, GCC 14's libstdc++); a glibc binary does not start on
+  musl at all, nor a musl one on glibc. `tools/floor-gate.raku` reads the
+  numbers back from the packaged binaries in CI and fails the build when they
+  move.
 - **Compiled programs link `libstdc++` dynamically by default**, like every
   other C++ program on the machine, so a binary built on one distribution can
   fail to start on an older one with `GLIBCXX_3.4.30 not found`. `--static`

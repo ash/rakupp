@@ -89,6 +89,13 @@ than computing the wrong answer:
 | any floating-point argument, on Windows x64 | that ABI assigns argument registers by *position*, not by bank: a `double` is read from `XMM2` only if it is the third argument. The fixed prototype can only place floats after its integers, so it would call with the value in the wrong place. SysV-AMD64 and AArch64 have independent banks, and are fine |
 | more than 64 **distinct** callbacks in one program | the trampoline pool holds 64 |
 
+**On 32-bit x86 (i386) the fallback is exact.** There every argument goes on
+the stack, in order, at its own width, so instead of a register prototype the
+call lays out cdecl's stack words itself: `num32` arguments and returns,
+variadic calls and up to 128 bytes of arguments all work without libffi. What
+is left of the table is the 64-callback pool, and more than 128 bytes of
+arguments.
+
 ```
 $ RAKUPP_FFI=0 rakupp ldexpf.raku
 NativeCall: a num32 argument needs libffi, which is not available (disabled by RAKUPP_FFI)

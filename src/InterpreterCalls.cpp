@@ -4556,5 +4556,91 @@ Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const
     return inv;   // lazy already (its arms answer), or nothing this knows how to read lazily
 }
 
+// The coercion-type CALL of a type name — `Int(x)`, `Str()`, `Hash(a, b)`,
+// `Int(Any)` — once the name is known to be no routine. True with `out` set
+// when it answers; evalCall runs it, and compiled code reaches it through
+// rtTypeCall, so the two read the same rules. `parenned`: written with
+// parentheses, and no callee expression.
+bool Interpreter::typeCallCore(const std::string& name, ValueList& args, bool parenned, Value& out) {
+    // A type name applied to NOTHING, or to a single TYPE OBJECT, is the
+    // COERCION TYPE and not a call: `Int()` is `Int(Any)`, `A(Any)` is
+    // `A(Any)`, and both answer a Metamodel::CoercionHOW. Rakudo reads it
+    // that way even when the class has a CALL-ME — `A()` is the coercion
+    // where `A.()` is the call — so this comes before every coercer below.
+    if (parenned) {
+        bool typeArg = args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
+                       args[0].ofType().empty() && args[0].s.find('(') == std::string::npos;
+        // A name BOUND to a type first — a role's type capture, `T()` in
+        // R[Int], is Int(Any), and `T($v)` coerces to Int — ahead of any
+        // registered type, which a capture of the same name never is
+        {
+            Value bt;
+            if ((args.empty() || typeArg) && boundTypeFor(*this, name, bt))
+                { out = Value::typeObj(bt.s.str() + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
+            if (args.size() == 1 && !args[0].namedArg && !classes_.count(name) &&
+                capturedType(*this, tctx_.cur.get(), name, bt))
+                { out = coerceToType(args[0], bt.s.str()); return true; }
+        }
+        // A MODULE or PACKAGE is a type here too. It is registered in
+        // pkgKind_ rather than classes_, so `module foo {}; foo()` was
+        // "Undefined routine 'foo'" where Rakudo answers the coercion type
+        // `foo(Any)` — the same answer it gives for a class.
+        if ((args.empty() || typeArg) &&
+            (isKnownTypeName(name) || classes_.count(resolveClassAlias(name)) ||
+             pkgKind_.count(name))) {
+            std::string tgt = classes_.count(resolveClassAlias(name))
+                                  ? resolveClassAlias(name) : name;
+            { out = Value::typeObj(tgt + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
+        }
+    }
+    // `Hash(…)` / `Map(…)`: the whole argument list becomes ONE hash, later
+    // keys winning — which is how a sub layers defaults, computed values
+    // and extras into the hash it returns (`Hash(%defaults, %computed,
+    // %extra)`). The generic coercion path below reaches only args[0], so
+    // every argument after the first used to be dropped in silence.
+    if ((name == "Hash" || name == "Map") && args.size() > 1)
+        { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    // `DateTime($instant)` / `Date($str)` coercion routines == .new
+    if ((name == "DateTime" || name == "Date") && !args.empty())
+        { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    // `Uni(97)` / `NFC(...)` etc. coercion routines build a Uni from codepoints
+    if ((name == "Uni" || name == "NFC" || name == "NFD" ||
+         name == "NFKC" || name == "NFKD"))
+        { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
+    if (coerce.count(name)) {
+        if (args.empty())
+            { out = name == "Str" ? Value::str("")
+                     : name == "Bool" ? Value::boolean(false)
+                     : name == "Num" ? Value::number(0) : Value::integer(0); return true; }
+        Value a0 = args[0];
+        if (name == "Str") { out = Value::str(strOf(a0)); return true; }
+        if (name == "Bool") { out = Value::boolean(boolify(a0)); return true; }
+        if (a0.t == VT::Object && a0.obj() && a0.obj()->cls) { // honour .Int/.Num/.Numeric
+            if (Value* m = a0.obj()->cls->findMethod(name)) { ValueList none; a0 = invokeMethod(*m, a0, none); }
+        }
+        if (a0.t == VT::Complex && (name == "Int" || name == "Num" ||
+                                    name == "Real" || name == "Rat"))
+            { out = methodCall(a0, name, {}); return true; } // $*TOLERANCE-aware imaginary-part check
+        if (name == "Int" && a0.t == VT::Rat) { out = methodCall(a0, "Int", {}); return true; } // 0-denominator fails X::Numeric::DivideByZero
+        // a Bool IS an Int, and comes back as itself (Rakudo: `Int(True)` is True)
+        if (name == "Int" && a0.t == VT::Bool) { out = a0; return true; }
+        // NaN and the infinities have no Int: X::Numeric::CannotConvert, as `.Int` says
+        // (numToIntExact made NaN 0 and Inf the int64 maximum)
+        if (name == "Int" && a0.t == VT::Num && !std::isfinite(a0.n)) { out = methodCall(a0, "Int", {}); return true; }
+        if (name == "Int" && a0.t == VT::Num) { out = numToIntExact(std::trunc(a0.n)); return true; } // exact past 2**63 (toInt saturates)
+        if (name == "Int") { out = Value::integer(a0.toInt()); return true; }
+        if (name == "Num" || name == "Real") { out = Value::number(a0.toNum()); return true; }
+        if (name == "Rat") { out = methodCall(a0, "Rat", {}); return true; } // CF approximation for Num
+        { out = a0.isNumeric() ? a0 : Value::number(a0.toNum()); return true; } // Numeric
+    }
+    return false;
+}
+Value Interpreter::rtTypeCall(const char* name, ValueList args, bool parenned) {
+    Value out;
+    if (typeCallCore(name, args, parenned, out)) return out;
+    throw RakuError{Value::typeObj("X::AdHoc"), std::string("Undefined routine '") + name + "'"};
+}
+
 } // namespace rakupp
 

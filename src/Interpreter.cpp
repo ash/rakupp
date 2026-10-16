@@ -334,11 +334,11 @@ static bool ncStructEqv(const Value& a, const Value& b) {
         // Str is a char* the struct points AT, and its length is its own — so it
         // is the one pointer field that can be, and in Rakudo is, compared.
         if (bt == "Str") {
-            long long x = 0, y = 0;
-            std::memcpy(&x, (void*)(intptr_t)(pa + off), 8);
-            std::memcpy(&y, (void*)(intptr_t)(pb + off), 8);
+            const char* x = nullptr; const char* y = nullptr;   // pointer-wide, not 8 bytes
+            std::memcpy(&x, (void*)(intptr_t)(pa + off), sizeof x);
+            std::memcpy(&y, (void*)(intptr_t)(pb + off), sizeof y);
             if (!x || !y) { if (x != y) return false; continue; }
-            if (std::strcmp((const char*)(intptr_t)x, (const char*)(intptr_t)y) != 0) return false;
+            if (std::strcmp(x, y) != 0) return false;
             continue;
         }
         // Pointer, CArray and a nested class field are all bare addresses: not
@@ -1413,7 +1413,7 @@ Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& na
     if (!slot.natBits) return v;   // not (or no longer) a native container
     return nativeStoreValue(v, slot.natBits, slot.natSigned, slot.natFloat, name, srcNative);
 }
-Value rtNativeArith(const char* op, const Value& l, const Value& r) {
+Value rtNativeArithSlow(const char* op, const Value& l, const Value& r) {
     auto plainInt = [](const Value& v) {
         return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
     };
@@ -1425,7 +1425,9 @@ Value rtNativeArith(const char* op, const Value& l, const Value& r) {
         }
         if (std::string(op) == "**" && r.i < 0) return Value::integer(0);   // see nativeIntPowNegative
     }
-    Value res = applyArith(op, l, r);
+    Value res;
+    double a, b;
+    if (!rtNumPair(l, r, a, b) || !rtNumArith(op, a, b, res)) res = applyArith(op, l, r);
     if (res.t == VT::Num) { res.natBits = 64; res.natFloat = true; }
     return res;
 }
@@ -3045,6 +3047,10 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
 }
 
 Value Interpreter::rtNameTerm(const std::string& n) {
+    // the Empty term, ahead of every lookup as the NameTerm eval has it: the
+    // empty-Slip SINGLETON unless a class of that name exists. Resolved as a
+    // builtin it was a fresh empty list, which `(1, Empty, 2)` kept as an element.
+    if (n == "Empty" && !classes_.count(n)) return emptySlipSingleton();
     if (tctx_.cur) {
         if (Value* p = tctx_.cur->find(n)) // bound slot: fetch, as the eval path does
             return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
@@ -3058,6 +3064,17 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // numeric payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
     { Value c; if (coreEnumValue(n, c)) return c; }
     return Value::typeObj(n);
+}
+// A site of a core type name the program binds nowhere (Codegen::stableNameTerm)
+// asks this once and keeps the answer. False — ask rtNameTerm every time — when
+// the answer is a computed constant or a builtin's, which is a CALL and need
+// not give the same value twice.
+bool Interpreter::rtStableNameTerm(const std::string& n, Value& out) {
+    { Value c; if (nameTermConstant(n, c, sixE())) return false; }
+    auto it = builtins_.find(n);
+    if (it != builtins_.end() && builtinVisible(n)) return false;
+    out = rtNameTerm(n);
+    return true;
 }
 
 // k => v at a call site (native codegen): a syntactic identifier-keyed pair is

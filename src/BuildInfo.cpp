@@ -7,6 +7,8 @@
 // build timestamp into itself.
 #include "BuildInfo.h"
 
+#include <climits>      // on glibc this pulls in <features.h>, the one place __GLIBC__ is defined
+
 #if __has_include("rakupp_build.h")
 #include "rakupp_build.h"
 #endif
@@ -46,6 +48,11 @@
 #define RAKUPP_OS "win32"
 #elif defined(__APPLE__)
 #define RAKUPP_OS "darwin"
+// musl defines no macro of its own, on purpose, so it is the Linux libc that
+// is none of the others. It matters in a bug report: the musl and the glibc
+// archives are different builds, and neither starts on the other's system.
+#elif defined(__linux__) && !defined(__GLIBC__) && !defined(__ANDROID__) && !defined(__UCLIBC__)
+#define RAKUPP_OS "linux-musl"
 #elif defined(__linux__)
 #define RAKUPP_OS "linux"
 #elif defined(__FreeBSD__)

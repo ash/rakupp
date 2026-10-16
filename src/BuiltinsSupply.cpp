@@ -1525,7 +1525,7 @@ std::unique_lock<std::recursive_mutex> lockTapRecord(const ValueMap& rec) {
     return std::unique_lock<std::recursive_mutex>(supplierMutex((const void*)(intptr_t)k->second.i));
 }
 void stampTapRecord(ValueMap& rec, const ValueMap* sup) {
-    rec[kTapSupKey] = Value::integer((long long)(intptr_t)sup);
+    rec[kTapSupKey] = Value::integer((long long)(uintptr_t)sup);
 }
 template <class H> static void closeTapRecord(H& rec) {
     auto lk = lockTapRecord(rec);

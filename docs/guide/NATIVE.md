@@ -32,7 +32,7 @@ program, so they run at interp speed; `--exe` is the mode measured here.
 
 Two things a reader meets early and this page used not to prepare them for.
 
-**It falls back silently, to bundling.** Four NativeCall shapes are not
+**It falls back to bundling, with a note on stderr.** Four NativeCall shapes are not
 transpiled yet, and `--exe` bundles the whole program with the interpreter
 instead — which is correct, and runs at interpreter speed, so none of the
 numbers below apply to it. It says so on stderr as it happens:
@@ -46,6 +46,35 @@ note: a NativeCall sub with `is native(&sub)` — …
 
 The same four are listed from the NativeCall side in
 [FFI.md](FFI.md#what-happens-when-there-is-no-libffi); this is the same list, not a second one.
+
+They are not the only ones. A phaser, a `CATCH` block in some positions, a
+`CONTROL` block, a native or typed
+array (`my num @a`, `array[num]`, a `num @x` parameter), a parameterized type,
+and a List of variables (`f(($a, $b))`) in a program that also writes through a
+subscript of a scalar or a parameter are refused the same way. The note names
+the line:
+
+```
+note: phaser / CATCH block (line 12) — not yet natively compiled; bundling the program with the interpreter instead, its routines compiled natively where they can be.
+--exe: 29 of 30 program routines compiled natively
+```
+
+The bundled program still gets native code for its routines: each sub and
+method whose body compiles runs natively, called by the interpreter, as an
+embedded module's routines are, while the mainline and the routines that
+cannot compile (the one holding the `CATCH`, here) are interpreted. A routine
+with loops of arithmetic runs at close to native speed that way — a Mandelbrot
+loop in a program with one `CATCH` elsewhere took 3.7 ms bundled, 3.5 ms fully
+native and 30 ms interpreted — but a call into one costs what an interpreted
+call costs, so many small routines called from the mainline gain little.
+`RAKUPP_NO_AOT=1` runs such a binary with every body interpreted. The bodies
+cost build time — a C++ compile, where a bundle used to need none: about
+3 s instead of 1 s for a program of 30 routines.
+
+The binary parses its source again when it runs, and attaches the bodies only
+to a parse that matches the one they were compiled from; a program that a
+slang or a localization rewrites as it is read runs fully interpreted.
+A `--exe` build that fell back says `"mode":"bundle"` under `rakupp --exe-info`.
 
 **And it can fail to build.** A program that reads a `use`d module's `our`
 variable (`$Mod::thing`) does not survive the C++ compile step: the generated

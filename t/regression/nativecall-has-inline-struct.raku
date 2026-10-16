@@ -21,10 +21,12 @@ class Three is repr('CStruct') { has int32 $.x is rw; has int32 $.y is rw; has i
 class Inline is repr('CStruct') { has int8 $.tag is rw; HAS Three $.t; has int8 $.end is rw; }
 class ByPtr  is repr('CStruct') { has int8 $.tag is rw; has Three $.t;  has int8 $.end is rw; }
 
-# 1. layout: the inline member is 12 bytes aligned to 4, the pointer one is 8 to 8
+# 1. layout: the inline member is 12 bytes aligned to 4, the pointer one is a
+#    machine pointer -- 8 to 8, or on a 32-bit target 4 to 4
+my $ptr = nativesizeof(Pointer);
 check(nativesizeof(Three)  == 12, 'sizeof the inner struct');
 check(nativesizeof(Inline) == 20, 'HAS lays the struct out in place');
-check(nativesizeof(ByPtr)  == 24, 'has of the same type is still a pointer');
+check(nativesizeof(ByPtr)  == ($ptr == 8 ?? 24 !! 12), 'has of the same type is still a pointer');
 
 # 2. the view writes through to the OUTER struct's memory, at the right offset
 my $o = Inline.new;
@@ -63,6 +65,7 @@ check($calls == 2,     'and calls the accessor twice, as before');
 class U is repr('CUnion') { HAS Three $.t; has int64 $.n is rw; }
 my $rakupp = $*RAKU.compiler.name eq 'Raku++';
 my $usize  = nativesizeof(U);
-check($usize == ($rakupp ?? 16 !! 12), "union sizeof is $usize");
+# (i386 aligns an int64 to 4 inside a struct or union, so there C says 12 too)
+check($usize == ($rakupp && $ptr == 8 ?? 16 !! 12), "union sizeof is $usize");
 
 if @fail { note "FAILED: @fail[]"; say 'FAIL' } else { say 'PASS' }

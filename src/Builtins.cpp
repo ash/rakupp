@@ -4859,7 +4859,7 @@ Value makeSignature(const Callable* c) {
     // the declared parameters themselves (AST-owned, program lifetime), for
     // Signature ~~ Signature
     if (c && !c->cold().hasPrimed && c->ci().params && synth.empty()) {
-        (*s.hash())["\x01sigptr"] = Value::integer((long long)(intptr_t)c->ci().params);
+        (*s.hash())["\x01sigptr"] = Value::integer((long long)(uintptr_t)c->ci().params);
         (*s.hash())["\x01ret"] = Value::str(c->cold().retType);
         if (c->ci().isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
     }
@@ -10103,12 +10103,18 @@ std::optional<Value> Interpreter::ncStructFieldGet(const Value& inv, const std::
                 type = inner;
             }
             std::string bt = type.substr(0, type.find('['));
-            if (bt == "Str") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8); return p ? Value::str(std::string((const char*)(intptr_t)p)) : Value::typeObj("Str"); }
+            // a pointer field is a machine pointer wide: 8 bytes read on a
+            // 32-bit target took the next field (or the bytes past the struct)
+            // as its high half, and a NULL char* read as non-null
+            auto readPtr = [](long long a) -> long long {
+                void* q; std::memcpy(&q, (void*)(intptr_t)a, sizeof q); return (long long)(uintptr_t)q;
+            };
+            if (bt == "Str") { long long p = readPtr(fa); return p ? Value::str(std::string((const char*)(intptr_t)p)) : Value::typeObj("Str"); }
             // (a NULL Pointer or CArray field reads as the type object, as a
             // NULL struct field does below — Rakudo's `.defined` is False)
-            if (bt == "Pointer") { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+            if (bt == "Pointer") { long long p = readPtr(fa);
                                    return p ? ncMakePointer(type, (void*)(intptr_t)p) : Value::typeObj(type); }
-            if (bt == "CArray")  { long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+            if (bt == "CArray")  { long long p = readPtr(fa);
                                    if (!p) return Value::typeObj(type);
                                    // a view of the CArray stored there knows its
                                    // length while the field still points at its
@@ -10118,12 +10124,12 @@ std::optional<Value> Interpreter::ncStructFieldGet(const Value& inv, const std::
                                    auto kp = inv.obj()->attrs.find("__native_keep_" + m);
                                    if (kp != inv.obj()->attrs.end() && kp->second.t == VT::Str &&
                                        kp->second.hashKind == "CArray" &&
-                                       (long long)(intptr_t)kp->second.s.data() == p)
+                                       (long long)(uintptr_t)kp->second.s.data() == p)
                                        (*live.hash())["elems"] = methodCall(kp->second, "elems", ValueList{});
                                    return live; }
             auto cit = classes_.find(type);
             if (cit != classes_.end()) { // nested CStruct/CPointer field → box the pointer
-                long long p; std::memcpy(&p, (void*)(intptr_t)fa, 8);
+                long long p = readPtr(fa);
                 if (!p) return Value::typeObj(cit->second->name);   // NULL is the type object, as Rakudo reads it
                 Value o; o.t = VT::Object; o.setObj(makePayload<ObjectData>());
                 o.obj()->cls = cit->second; o.obj()->attrs["__native_ptr"] = Value::integer(p);

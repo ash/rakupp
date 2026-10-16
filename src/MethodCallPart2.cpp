@@ -7692,12 +7692,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     void* mem = calloc(1, size ? (size_t)size : 1);
                     auto od = makePayload<ObjectData>();
                     od->cls = ci;
-                    od->attrs["__native_ptr"] = Value::integer((long long)(intptr_t)mem);
+                    od->attrs["__native_ptr"] = Value::integer((long long)(uintptr_t)mem);
                     od->attrs["__cstruct_owned"] = Value::boolean(true);
                     Value self = Value::object(od);
                     for (auto& arg : args) if (arg.t == VT::Pair && arg.pairVal()) {
                         std::string type; long long off = Interpreter::ncFieldOffset(ci.get(), arg.s, type);
-                        if (off >= 0) Interpreter::ncWriteElem((long long)(intptr_t)mem + off, type, 0, *arg.pairVal());
+                        if (off >= 0) Interpreter::ncWriteElem((long long)(uintptr_t)mem + off, type, 0, *arg.pairVal());
                     }
                     runBuildChain(ci.get(), self, args);
                     maybeRegisterDestroy(self);
@@ -10903,7 +10903,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                       : inv.t == VT::Array && inv.arr()  ? (const void*)inv.arr()
                       : inv.t == VT::Hash && inv.hash()  ? (const void*)inv.hash()
                       : (const void*)&inv;
-        return Value::integer((long long)(intptr_t)p);
+        return Value::integer((long long)(uintptr_t)p);
     }
     // `.REPR` — the representation a type was declared with. NativeCall code
     // gates on it (NativeHelpers::CStruct's `pointer-to(Mu:D $s where .REPR eq

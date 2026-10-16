@@ -117,6 +117,7 @@ enum class KOp : uint8_t {
     SNum,     // a Num's text
     // more integer operators and pure methods
     Pow, Min, Max, Abs, Sign,
+    BAnd, BOr, BXor, Shl, Shr,   // +& +| +^ +< +>
     Ord, Uc, Lc, Substr,
     // exact numbers (KT::Exact): an Int or a Rat. A node returns the
     // numerator and leaves the denominator in the loop frame's kDenSlot, 0
@@ -169,6 +170,7 @@ constexpr int kMaxFrame = 32;   // a sub kernel's parameters and `my`s
 struct IKernel {
     Callable* owner = nullptr;
     int nparams = 0;
+    unsigned natParams = 0;                // bit i: parameter i is an `int`, which a native int binds to as well
     int nframe = 0;                        // parameters + locals: the frame a call allocates
     KNode* body = nullptr;
     std::vector<std::unique_ptr<KNode>> nodes;
@@ -314,6 +316,16 @@ int paramIndex(const Callable& c, const std::string& name) {
     for (size_t i = 0; i < ps.size(); i++)
         if (ps[i].name == name) return (int)i;
     return -1;
+}
+
+// A full-width native int: what a kernel's int64 holds exactly (a sized one
+// wraps at its own width, which no bail would catch)
+bool nativeIntTypeName(const std::string& t) { return t == "int" || t == "int64"; }
+// Is `name` a parameter of `c` declared `int`? Its reads are then marked
+// nativeIntRead, and that is the one mark a plain read of it carries.
+bool nativeIntParam(const Callable& c, const std::string& name) {
+    const int i = paramIndex(c, name);
+    return i >= 0 && nativeIntTypeName((*c.ci().params)[i].type);
 }
 
 bool plainVarRead(const VarExpr* v) {
@@ -589,7 +601,12 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
         }
         case NK::VarExpr: {
             auto* v = static_cast<VarExpr*>(e);
-            if (!plainVarRead(v)) return refuse("variable " + v->name + " (a declaration or a special form)");
+            // an `int` parameter's reads are marked native: to a sub kernel,
+            // which holds every value as an int64, it is a parameter like any other
+            const bool natParam = !L && v->nativeIntRead && !v->declare && !v->viaPseudoPkg && !v->pkgSymbol &&
+                                  !v->processScoped && !v->nativeNumRead && !v->nativeStrRead && !v->synthTopic &&
+                                  nativeIntParam(*c, v->name);
+            if (!natParam && !plainVarRead(v)) return refuse("variable " + v->name + " (a declaration or a special form)");
             if (!L) {
                 const int i = paramIndex(*c, v->name);
                 if (i < 0) return nullptr;
@@ -724,6 +741,12 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // It was missing, so time-parts' loop never became a kernel.
             else if (op == "%" || op == "mod") kop = KOp::Mod;
             else if (op == "%%") { kop = KOp::DivBy; compare = true; }
+            // the bitwise ops take two Ints only: the Rat and Num arms below refuse them
+            else if (op == "+&") kop = KOp::BAnd;
+            else if (op == "+|") kop = KOp::BOr;
+            else if (op == "+^") kop = KOp::BXor;
+            else if (op == "+<") kop = KOp::Shl;
+            else if (op == "+>") kop = KOp::Shr;
             else if (op == "<") { kop = KOp::Lt; compare = true; }
             else if (op == "<=") { kop = KOp::Le; compare = true; }
             else if (op == ">") { kop = KOp::Gt; compare = true; }
@@ -781,6 +804,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 t = compare ? KT::Bool : KT::Exact;
                 return n;
             }
+            // two Ints under `/` make a Rat; without 128-bit integers there is
+            // no exact lane, and the Num lane below would answer a Num
+            else if (!kHasExact && lt == KT::Int && rt == KT::Int && kop == KOp::NDiv)
+                return refuse("a Rat without 128-bit integers");
             else if ((lt == KT::Num || lt == KT::Int) && (rt == KT::Num || rt == KT::Int) && L && !L->sub) {
                 switch (kop) {
                     case KOp::Add: kop = KOp::NAdd; break;
@@ -896,6 +923,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 return refuse("an Int variable given a Rat (compiled again)");
             }
             if (tt == KT::Int && vt == KT::Int && a->op == "/=") {
+                // the promotion makes an exact slot, which needs 128-bit
+                // integers: without them (MSVC, 32-bit targets) the loop ran
+                // exact ops that were compiled out, and crashed
+                if (!kHasExact) return refuse("a Rat without 128-bit integers");
                 if (const LSym* s = lookup(tv->name); s && s->ro) return refuse("an assignment to a loop variable");
                 if (!L->promoted(tv->name)) L->promote.push_back(tv->name);
                 L->again = true;
@@ -1442,18 +1473,22 @@ bool kernelShape(const Callable& c) {
         !c.ci().placeholders.empty() || c.ci().usesArgs || c.ci().implicitArgs || c.cold().hasPrimed ||
         c.ci().retLiteral || c.ci().retRw || c.ci().params->size() > (size_t)kMaxParams)
         return false;
-    // `--> Int` / `--> Int:D`: every value a kernel returns is a defined Int
+    // `--> Int` / `--> Int:D`: every value a kernel returns is a defined Int —
+    // and `--> int`, whose value the generic path hands back as a plain Int too
     if (!c.cold().retType.empty() &&
-        (retTypeCoerces(c.cold().retType) || retTypeName(c.cold().retType) != "Int" || retTypeSmiley(c.cold().retType) == 'U'))
+        (retTypeCoerces(c.cold().retType) || retTypeSmiley(c.cold().retType) == 'U' ||
+         !(retTypeName(c.cold().retType) == "Int" || nativeIntTypeName(retTypeName(c.cold().retType)))))
         return false;
     // …and an `Int` / `Int:D` parameter is one a plain Int binds to as it is
-    // (any other argument keeps the call path, and its type check)
+    // (any other argument keeps the call path, and its type check). An `int`
+    // one is too: overflow bails, as it does everywhere in a kernel, and the
+    // generic path then does the 64-bit wrap a native int does.
     for (auto& p : *c.ci().params)
         if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
             p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
             p.hadWhere || p.defConstraint == 2 || p.coerce || p.typeCapture || p.codeSig ||
-            !p.captureName.empty() || !(p.type.empty() || p.type == "Int") || p.name.size() < 2 ||
-            (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')))
+            !p.captureName.empty() || !(p.type.empty() || p.type == "Int" || nativeIntTypeName(p.type)) ||
+            p.name.size() < 2 || (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')))
             return false;
     return true;
 }
@@ -1476,6 +1511,8 @@ bool Compiler::compileSub(Callable& c, IKernel*& out) {
     auto* k = new IKernel;
     k->owner = &c;
     k->nparams = k->nframe = (int)c.ci().params->size();
+    for (int i = 0; i < k->nparams; i++)
+        if (nativeIntTypeName((*c.ci().params)[i].type)) k->natParams |= 1u << i;
     slot.k.store(k, std::memory_order_release);
     session.push_back(k);
     k->body = stmts(*k, c, *c.ci().body, true);
@@ -1630,6 +1667,19 @@ template <KOp OP>
     }
     else if constexpr (OP == KOp::Min) return x < y ? x : y;
     else if constexpr (OP == KOp::Max) return x > y ? x : y;
+    else if constexpr (OP == KOp::BAnd) return x & y;
+    else if constexpr (OP == KOp::BOr) return x | y;
+    else if constexpr (OP == KOp::BXor) return x ^ y;
+    else if constexpr (OP == KOp::Shl) {
+        // what the generic `+<` shifts in place; a negative count (the other
+        // direction) or a result that needs a BigInt is the generic path's
+        if (y < 0 || y >= 62 || x <= -(1LL << (62 - y)) || x >= (1LL << (62 - y))) { R.bail = true; return 0; }
+        return (int64_t)((uint64_t)x << y);
+    }
+    else if constexpr (OP == KOp::Shr) {
+        if (y < 0) { R.bail = true; return 0; }
+        return y >= 63 ? (x < 0 ? -1 : 0) : (x >> y);
+    }
     else if constexpr (OP == KOp::Lt) return x < y;
     else if constexpr (OP == KOp::Le) return x <= y;
     else if constexpr (OP == KOp::Gt) return x > y;
@@ -2494,6 +2544,11 @@ void link(KNode* n) {
         case KOp::Pow: n->fn = binFn<KOp::Pow, kX, kX>; break;
         case KOp::Min: n->fn = binPick<KOp::Min>(l, r); break;
         case KOp::Max: n->fn = binPick<KOp::Max>(l, r); break;
+        case KOp::BAnd: n->fn = binPick<KOp::BAnd>(l, r); break;
+        case KOp::BOr: n->fn = binPick<KOp::BOr>(l, r); break;
+        case KOp::BXor: n->fn = binPick<KOp::BXor>(l, r); break;
+        case KOp::Shl: n->fn = binFn<KOp::Shl, kX, kX>; break;
+        case KOp::Shr: n->fn = binFn<KOp::Shr, kX, kX>; break;
         case KOp::Abs: n->fn = absFn; break;
         case KOp::Sign: n->fn = signFn; break;
         case KOp::Ord: n->fn = ordFn; break;
@@ -2560,6 +2615,13 @@ bool opShadowed(const std::string& op) {
 // An argument the kernel may take as its number alone.
 inline bool plainIntArg(const Value& v) {
     return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty() && v.s.empty();
+}
+// …and one an `int` parameter takes as its number: that, or a native int's own value
+inline bool nativeIntArg(const Value& v) {
+    if (v.natBits == 0) return plainIntArg(v);
+    return v.natBits == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&
            !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
            v.hashKind.empty() && v.s.empty();
 }
@@ -2757,7 +2819,7 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
     if (!k || args.size() != (size_t)k->nparams) return false;
     int64_t a[kMaxFrame];
     for (size_t i = 0; i < args.size(); i++) {
-        if (!plainIntArg(args[i])) return false;
+        if (!((k->natParams >> i) & 1 ? nativeIntArg(args[i]) : plainIntArg(args[i]))) return false;
         a[i] = args[i].i;
     }
     if (!c.cold().wrappers.empty() || !callsBound(k->graph)) return false;

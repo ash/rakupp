@@ -19,6 +19,7 @@
 // called by the compiler on the blob it embeds and by the loader on the blob
 // it reads back, so the n-th routine is the same SubDecl on both sides.
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -57,6 +58,19 @@ void rakuppRegisterModuleAot(const char* module, const AotEntry* table, size_t n
 // table, or a table that does not fit the AST it was built for, attaches
 // nothing and runs interpreted.
 void attachAotBodies(const std::string& module, Program& prog);
+
+// The PROGRAM's own routines, in a binary `--exe` had to bundle (a construct
+// outside the native subset somewhere): compiled the way a module's are and
+// registered under kMainAotKey, with the fingerprint of the AST they were
+// compiled from. Such a binary parses its source again at run time, and
+// attachMainAot attaches the bodies only to a parse that serializes to the
+// same bytes — a slang, a localized program, a module found somewhere else,
+// anything that makes the two parses differ, and the program runs
+// interpreted, as every bundled program did before.
+extern const char* const kMainAotKey;
+uint64_t aotFingerprint(const std::string& blob);
+void rakuppRegisterMainAot(uint64_t fingerprint);
+void attachMainAot(Program& prog);
 
 // RAKUPP_AOT_RUNLOG=FILE (t/aot/): the binary records what became of each
 // module's table (attached, refused, disabled) and how often each native body

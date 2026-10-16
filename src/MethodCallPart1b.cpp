@@ -143,7 +143,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 else if (et == "Str") { bytes.append((size_t)esz, '\0'); strArgs.push_back(a); }
                 else {
                     size_t at = bytes.size(); bytes.append((size_t)esz, '\0');
-                    Interpreter::ncWriteElem((long long)(intptr_t)(bytes.data() + at), et, 0, a);
+                    Interpreter::ncWriteElem((long long)(uintptr_t)(bytes.data() + at), et, 0, a);
                 }
             }
             Value c = Value::str(bytes); c.hashKind = "CArray";
@@ -154,8 +154,8 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             c.s.promote();
             // the pointers can only be filled once `c` exists to own the strings
             for (size_t k = 0; k < strArgs.size(); k++) {
-                long long p = Interpreter::ncOwnStrElem(c, strArgs[k]);
-                std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &p, sizeof p);
+                void* p = (void*)(intptr_t)Interpreter::ncOwnStrElem(c, strArgs[k]);
+                std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &p, sizeof p);   // a pointer-wide slot
             }
             // CArray[SomeCStruct]: each slot holds its object's address, and
             // the array holds the object
@@ -181,10 +181,11 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                     void* mem = calloc(1, (size_t)std::max<long long>(ncStructSize(eci.get()), 1));
                     Value o = Value::object(makePayload<ObjectData>());
                     o.obj()->cls = eci;
-                    o.obj()->attrs["__native_ptr"] = Value::integer((long long)(intptr_t)mem);
+                    o.obj()->attrs["__native_ptr"] = Value::integer((long long)(uintptr_t)mem);
                     o.obj()->attrs["__cstruct_owned"] = Value::boolean(true);
-                    long long p = (long long)(intptr_t)mem;
-                    std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &p, sizeof p);
+                    // the slot is pointer-wide: a long long here overran it on
+                    // a 32-bit target, into the next slot and past the buffer
+                    std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &mem, sizeof mem);
                     ncKeepClassElem(c, k, o);
                 }
             c.enumName = et;
@@ -232,7 +233,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         long long n = w > 0 ? (long long)(inv.s.size() / (size_t)w) : 0;
         Value out = Value::array(); out.isList = (m != "Array");
         for (long long i = 0; i < n; i++)
-            out.arr()->push_back(ncClassElem(ncReadElem((long long)(intptr_t)inv.s.data(), et, i), &inv, et, i));
+            out.arr()->push_back(ncClassElem(ncReadElem((long long)(uintptr_t)inv.s.data(), et, i), &inv, et, i));
         if (m == "Seq") out.s = "Seq";
         static const std::set<std::string> direct = {"list", "values", "List", "Array", "Seq"};
         if (direct.count(m)) return out;

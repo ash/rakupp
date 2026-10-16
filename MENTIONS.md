@@ -36,6 +36,9 @@ say something worth quoting.
 | 29 September 2026 | [Raku Weekly 2026.39](https://rakuweekly.blog/2026/09/29/2026-39-mainstreamed/) | Elizabeth Mattijsen | the v5.0.0 post: 100.00% of Roast |
 | 5 October 2026 | [Raku Weekly 2026.40](https://rakuweekly.blog/2026/10/05/2026-40-pythonesque/) | Elizabeth Mattijsen | Raku++ as a Python module, the Junctions post; the rename credits three viable implementations |
 | 5 October 2026 | [Is generative AI killing or saving Raku?](https://dev.to/2colours/is-generative-ai-killing-or-saving-raku-37ai) on dev.to | 2colours | Raku++ and Mutsu as the end of Rakudo's monopoly; Junctions as a language problem; questions to the implementors |
+| 10 October 2026 | [compiler-explorer#9257](https://github.com/compiler-explorer/compiler-explorer/issues/9257) on GitHub | Ang3lERR404 | a request to add Raku++ v5.3.0 to Compiler Explorer as an alternate Raku compiler |
+| 12 October 2026 | [Raku Weekly 2026.41](https://rakuweekly.blog/2026/10/12/2026-41-riscy-business/) | Elizabeth Mattijsen | the RISC-V and module-install posts, Webraku; a corner on the 2colours article |
+| 14 October 2026 | [on Hacker News](https://news.ycombinator.com/item?id=50091511) | F3nd0, Elizabeth Mattijsen | Raku++ named in passing as a vibe-coded project; the reply that it is not, and the definitions of the term |
 
 ## Raku Weekly News
 
@@ -104,6 +107,17 @@ After that it has been steady, roughly a mention per release or per post:
   implementations of the language, Rakudo only one of them, and the
   developers of Raku++ and Mutsu have promised to send their news in.
   L10N::RU, L10N::LV and L10N::UK are in the module list again.
+- [**2026.41 Riscy Business**](https://rakuweekly.blog/2026/10/12/2026-41-riscy-business/)
+  (12 October 2026) — the issue opens on the week's two posts,
+  [Raku++ on RISC-V](https://andrewshitov.com/2026/10/09/raku-on-risc-v/),
+  which the title plays on, and
+  [the module-install one](https://andrewshitov.com/2026/10/10/better-ways-to-install-modules-in-raku/),
+  and on [Webraku](https://raku.land/zef:ash/Webraku), a full-stack web
+  framework for Raku. A *Marton's Corner* follows on the 2colours article —
+  the issue names its author as Marton Polgar — and links
+  [Andrew's comment](https://dev.to/andrewshitov/comment/3gij4) under it and
+  the discussion on r/rakulang and Mastodon. Math::Wavelet and Webraku are in
+  the new-module list, JSON::Native among the updated ones.
 
 ## perlancar, August 2026
 
@@ -167,6 +181,25 @@ how authoritative Rakudo's behaviour is to them, short and long term, and
 what they do where Raku leaves behaviour unspecified; what the primary
 motive was; and how string and regex performance look. It also asks whether
 the use of the raku.online domain was discussed in the community.
+
+## Hacker News, October 2026
+
+A mention in passing, in the comments under a
+[story about the Iosevka font](https://news.ycombinator.com/item?id=50084240)
+(14 October 2026). Under a comment arguing that LLMs will not take off in
+coding, F3nd0 [wrote](https://news.ycombinator.com/item?id=50091511) of being
+unsure what to think of their capabilities, and curious where ambitious
+vibe-coded projects like Raku++ will go, with a link to the repository.
+
+Elizabeth Mattijsen [replied](https://news.ycombinator.com/item?id=50096580)
+that Raku++ is not vibe coding, linking
+[Andrew's comment](https://dev.to/andrewshitov/comment/3gij4) under the
+2colours article. F3nd0 [answered](https://news.ycombinator.com/item?id=50099390)
+the next day with dictionary definitions: where the term means instructing an
+AI to write code, as Merriam-Webster, Cambridge and Collins have it, Raku++
+is vibe-coded; where it also means not understanding the generated code well,
+as Wiktionary adds, it is not. The comment ends by asking which definition is
+the more correct one.
 
 ## Adding an entry
 

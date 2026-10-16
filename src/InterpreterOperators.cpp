@@ -1180,12 +1180,13 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.topicWriteback, b.topicWriteback); swap(a.pendingRwSlots, b.pendingRwSlots);
     swap(a.pendingArgWriter, b.pendingArgWriter); swap(a.noAutothread, b.noAutothread);
     swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
+    swap(a.loopCtlLabel, b.loopCtlLabel); swap(a.labelLoops, b.labelLoops);
     swap(a.uninitName, b.uninitName); swap(a.bindingParams, b.bindingParams); swap(a.keepListOf, b.keepListOf); swap(a.lvalueListSlot, b.lvalueListSlot);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1448,
+static_assert(sizeof(ExecContext) == 1480,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1598,6 +1599,33 @@ std::string Interpreter::uninitNameOf(Expr* e) {
         return ix->isHash ? bn + "{'" + key + "'}" : bn + "[" + key + "]";
     }
     return "";
+}
+
+// The call uninitMethodShape (InterpreterCore.cpp) picked out: a `.Str`,
+// `.Numeric`, `.Int`, `.join` or `.sum` that warns about an undefined value.
+Value Interpreter::uninitMethodCall(const MethodCall* mc, const Value& inv) {
+    const std::string& m = mc->method;
+    if (inv.t != VT::Array) {
+        // (a type object's .Numeric/.Int is a candidate of its own, which names nothing)
+        UninitNameScope nm(*this, inv.t == VT::Any || m == "Str" ? uninitNameOf(mc->inv.get()) : std::string());
+        if (m == "Str" && (inv.t == VT::Any || !classes_.count(std::string(inv.s.c_str())))) {
+            warnUninitStr(inv);
+            return Value::str("");
+        }
+        if (inv.t == VT::Any) { warnUninitNum(inv); return Value::integer(0); }
+        return methodCall(inv, m, ValueList{});
+    }
+    std::string name;
+    if (m == "join" && mc->inv->kind == NK::VarExpr) name = uninitNameOf(mc->inv.get());
+    else if (m == "sum" && mc->inv->kind == NK::ListExpr) {
+        auto& items = static_cast<ListExpr*>(mc->inv.get())->items;
+        if (items.size() == inv.arr()->size())
+            for (size_t k = 0; k < items.size(); k++)
+                if (uninitOperand((*inv.arr())[k])) { name = uninitNameOf(items[k].get()); break; }
+    }
+    UninitNameScope nm(*this, std::move(name));
+    ValueList args = evalArgs(mc->args);
+    return methodCall(inv, m, std::move(args), &mc->args);
 }
 bool Interpreter::runControlWarn(const std::string& msg) {
     if (tctx_.controlHandlers.empty()) return false;

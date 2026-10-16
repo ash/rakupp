@@ -3481,7 +3481,7 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
             int w = Interpreter::ncElemSize(et);
             long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
             for (long long i = 0; i < n; i++)
-                out.arr()->push_back(Interpreter::ncReadElem((long long)(intptr_t)v.s.data(), et, i));
+                out.arr()->push_back(Interpreter::ncReadElem((long long)(uintptr_t)v.s.data(), et, i));
             v = out;
         }
     };
