@@ -4,6 +4,7 @@ name: build & release
 # attaches the packaged binaries to a GitHub Release.
 #   - macOS   : universal binary (arm64 + x86_64), Apple Clang
 #   - Linux   : x86_64, GCC, statically linked libstdc++/libgcc for portability
+#   - Linux musl (Alpine): x86_64 + aarch64, built on Alpine (the linux-musl job)
 #   - Windows : x64, native MSVC
 #   - OpenBSD : x86_64, base clang/libc++ (packaged by the openbsd job below)
 # The `wasm` job additionally attaches the Raku.js WebAssembly build (playground
@@ -1389,6 +1390,147 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: rakupp-linux-riscv64.tar.gz*
+
+  # Alpine, and every other Linux whose libc is musl. The linux-* archives the
+  # build job makes are glibc builds, and on a musl system they do not start
+  # at all: the kernel finds no /lib/ld-linux-*.so, and the shell reports "not
+  # found" for a file that is plainly there. tools/install.sh used to hand them
+  # to Alpine anyway. These are built ON Alpine, against its musl, with the
+  # Clang and the static libstdc++/libgcc of the glibc legs, so all the binary
+  # asks of the machine is musl's own loader.
+  #
+  # Not -static, though musl makes that easy and the result would start on any
+  # Linux at all: a static musl executable has no dlopen, and NativeCall,
+  # compiled extensions and --jit all load code at run time. COMPILERS.md
+  # ("What runs where") draws the same line for --static.
+  #
+  # Alpine 3.21 sets the floor: musl 1.2.5, and GCC 14's libstdc++ for what
+  # --exe links on the user's machine (floor-gate.raku holds it there). The
+  # image is the official alpine from its ECR Public mirror, as in the riscv64
+  # job: Docker Hub rate-limits shared runners.
+  #
+  # Every step runs inside the container -- Ubuntu cannot start a musl binary
+  # any more than Alpine can start a glibc one -- as the runner's own uid, so
+  # the workspace stays the runner's and the regression files that need a
+  # non-root user have one. Both architectures run natively, no QEMU, so the
+  # example suite runs here, which it cannot under the riscv64 emulator.
+  linux-musl:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    name: linux-x86_64-musl }
+          - { os: ubuntu-24.04-arm, name: linux-aarch64-musl }
+    steps:
+      - uses: actions/checkout@v7
+
+      # One image for the build and every gate: the compilers (g++ is also what
+      # --exe calls), binutils for the floor gate, and what the example suite's
+      # regression files reach for (libuuid: NativeCall's `is native('uuid')`,
+      # which Ubuntu has and Alpine does not). The runner's uid gets a user of
+      # its own, so HOME and getpwuid answer as they would on any machine.
+      #
+      # TMPDIR is on the SAME mount as the checkout: the suite hides a fixture
+      # by renaming it into $*TMPDIR, and a rename from the bind-mounted
+      # checkout to the container's own /tmp fails with EXDEV -- the fixture
+      # stayed where it was, and the control that proves it is gone failed. So
+      # the checkout's parent is mounted, and tmp/ beside the checkout is used.
+      - name: Build + gate image (Alpine 3.21)
+        run: |
+          docker run --name mu -e U="$(id -u)" public.ecr.aws/docker/library/alpine:3.21 sh -ec '
+            apk add --no-cache -q clang g++ cmake make binutils linux-headers file git \
+                                  perl python3 sqlite sqlite-libs libuuid curl procps bash
+            adduser -D -u "$U" rk
+            cat /etc/alpine-release
+            ldd --version 2>&1 | head -2'
+          docker commit mu rakupp-musl
+          docker rm mu
+          up=$(dirname "$GITHUB_WORKSPACE")
+          mkdir -p "$up/tmp"
+          echo "MU=docker run --rm -u $(id -u):$(id -g) -e TMPDIR=$up/tmp -v $up:$up -w $GITHUB_WORKSPACE rakupp-musl" >> "$GITHUB_ENV"
+
+      - name: Configure + build + install layout (Alpine, Clang, static libstdc++)
+        run: |
+          $MU sh -ec '
+            CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON \
+                  "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+            cmake --build build -j 4
+            cmake --install build --prefix dist/rakupp'
+          $MU build/rakupp --version
+          $MU build/rakupp --version | grep -q -- '-linux-musl$'
+
+      - name: Smoke test
+        run: $MU build/rakupp tools/smoke.raku
+
+      - name: Smoke test -e
+        run: |
+          out=$($MU build/rakupp -e 'say 6 * 7')
+          echo "got: [$out]"
+          test "$out" = "42"
+
+      - name: Smoke test --exe
+        run: $MU sh -ec 'build/rakupp --exe tools/smoke.raku -o smoke-native; ./smoke-native'
+
+      - name: Smoke test --exe from install layout
+        run: $MU sh -ec 'dist/rakupp/bin/rakupp --exe -e "say 6 * 7" -o dist-native; test "$(./dist-native)" = 42'
+
+      - name: Example & showcase suite
+        run: $MU build/rakupp t/run.raku
+
+      - name: Concurrency stress matrix
+        run: $MU build/rakupp t/stress/run.raku
+
+      - name: Embed + extension ABI gate
+        run: $MU build/rakupp tools/embed-smoke.raku build
+
+      - name: Standalone binary gate
+        run: $MU build/rakupp t/standalone/run.raku
+
+      - name: Installed-binary gate
+        run: $MU build/rakupp t/installed/run.raku
+
+      # Run by the musl rakupp itself, so its --exe --static checks compile
+      # and run on Alpine.
+      - name: Floor gate
+        run: $MU build/rakupp tools/floor-gate.raku dist/rakupp
+
+      - name: Package
+        run: |
+          cp README.md LICENSE dist/rakupp/
+          tar -C dist -czf rakupp-${{ matrix.name }}.tar.gz rakupp
+          sha256sum rakupp-${{ matrix.name }}.tar.gz > rakupp-${{ matrix.name }}.tar.gz.sha256
+
+      # The installer gate under the shell it was written for and never ran
+      # under: BusyBox ash.
+      - name: Smoke test install.sh (Alpine, ash)
+        run: $MU sh t/unix/install.sh rakupp-${{ matrix.name }}.tar.gz
+
+      # The gate above fakes the machine to check every route. This is the
+      # real one: left to decide for itself on Alpine, the installer reaches
+      # for this job's archive. A curl that only fails keeps it offline -- the
+      # archive is named in the "downloading" line before anything is fetched.
+      - name: install.sh picks the musl archive on Alpine
+        run: |
+          $MU sh -c 'mkdir -p /tmp/nonet && printf "#!/bin/sh\nexit 22\n" > /tmp/nonet/curl && chmod +x /tmp/nonet/curl
+                     PATH=/tmp/nonet:$PATH sh tools/install.sh --yes --dir /tmp/x' > picks.txt 2>&1 || true
+          cat picks.txt
+          grep -q '^==> downloading .*/rakupp-${{ matrix.name }}.tar.gz$' picks.txt
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rakupp-${{ matrix.name }}
+          path: rakupp-${{ matrix.name }}.tar.gz*
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: rakupp-${{ matrix.name }}.tar.gz*
 
   # `curl -fsSL https://raku.online/install.sh | sh` is the headline install
   # command in the README, in docs/guide/INSTALL.md and on the front page — and

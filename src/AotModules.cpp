@@ -288,7 +288,7 @@ Value rtAotParam(Env* frame, const char* name) {
 Value rtAotParamAt(Env* frame, const std::string& name, std::atomic<uint64_t>& cache) {
     if (frame && frame->layout && frame->vars.empty()) {
         const auto L = reinterpret_cast<uintptr_t>(frame->layout);
-        if ((L >> 48) == 0) {
+        if (((uint64_t)L >> 48) == 0) {     // widened first: on a 32-bit target L >> 48 is undefined
             uint64_t k = cache.load(std::memory_order_relaxed);
             if ((k >> 16) != L) {
                 auto it = frame->layout->byName.find(name);

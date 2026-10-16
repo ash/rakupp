@@ -60,6 +60,7 @@ my $child = Q:to/END/.subst('LIBPATH', $dylib.absolute, :g);
     sub call_back(&cb (int64, int64 --> int64), int64, int64 --> int64)
         is native('LIBPATH') { * }
 
+    say "psize=", nativesizeof(Pointer);
     say "sum16=", sum16(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
     my $p = big_ptr();
     say "ptr=", +$p;
@@ -78,12 +79,14 @@ sub crossings($label, %env-extra) {
     %got;
 }
 
-# 1+2+…+16, and 0x1234500000 — written out, not asked of the library.
-my %want = sum16 => '136', ptr => '78187069440',
-           echo  => '78187069440', cb => '78187069441';
-
 my %ffi   = crossings('libffi',   {});
 my %blind = crossings('fallback', { RAKUPP_FFI => '0' });
+
+# 1+2+…+16, and 0x1234500000 — written out, not asked of the library. On a
+# 32-bit target the C side cannot hold that address: its own cast keeps the low
+# half, 0x34500000, and that is what must come back.
+my $addr  = (%ffi<psize> // '8') eq '8' ?? '78187069440' !! '877658112';
+my %want = sum16 => '136', ptr => $addr, echo => $addr, cb => '78187069441', psize => %ffi<psize> // '8';
 
 for %want.keys.sort -> $k {
     @fail.push("libffi $k: got {%ffi{$k}   // '<none>'}, want %want{$k}") unless (%ffi{$k}   // '') eq %want{$k};

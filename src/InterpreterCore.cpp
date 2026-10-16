@@ -4,6 +4,11 @@
 #include "InterpreterParts.h"
 #include "AotModules.h"
 #include <array>   // kShape in the typed-store check; MSVC does not bring it in through the headers
+#if defined(__linux__)
+#include <sys/resource.h>   // RLIMIT_STACK: the main thread's stack on musl (currentThreadStackSize)
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace rakupp {
 
@@ -7387,6 +7392,20 @@ static size_t currentThreadStackSize() {
         pthread_attr_getstack(&attr, &base, &sz);
         pthread_attr_destroy(&attr);
     }
+#if defined(__linux__) && !defined(__GLIBC__)
+    // musl answers for the MAIN thread with the part of its stack mapped so
+    // far -- it probes with mremap -- not what the stack may grow to, so the
+    // main thread of a program embedding librakupp looked like ~100 KiB and its
+    // first host-function call was already "Too many levels of recursion". The
+    // kernel grows that stack to RLIMIT_STACK, which is what glibc reports.
+    if (getpid() == (pid_t)syscall(SYS_gettid)) {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_STACK, &rl) == 0) {
+            const size_t cap = rl.rlim_cur == RLIM_INFINITY ? (size_t(8) << 20) : (size_t)rl.rlim_cur;
+            if (cap > sz) sz = cap;
+        }
+    }
+#endif
     return sz ? sz : (size_t(8) << 20);
 #endif
 }
@@ -17598,7 +17617,7 @@ static ValueList listCtx(const Value& v) {
         long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
         ValueList out;
         for (long long i = 0; i < n; i++)
-            out.push_back(Interpreter::ncReadElem((long long)(intptr_t)v.s.data(), et, i));
+            out.push_back(Interpreter::ncReadElem((long long)(uintptr_t)v.s.data(), et, i));
         return out;
     }
     return v.flatten();
@@ -27420,7 +27439,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
                                       : (base.enumName.empty() ? std::string("int64") : base.enumName.str());
                 long long addr = live ? (*base.hash())["addr"].toInt()
-                                      : (long long)(intptr_t)base.s.data();
+                                      : (long long)(uintptr_t)base.s.data();
                 long long lim = live ? -1 : (long long)(base.s.size() / (size_t)ncElemSize(et));
                 Value out = Value::array(); out.isList = true; out.s = "Seq"; // a slice is a Seq
                 for (auto& e : kv.flatten()) {
@@ -32093,7 +32112,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             // …and the Pair stays the object it was: a container pair
             // identifies by its payload, which the copy replaces, so its
             // WHICH is kept in the (otherwise unused) `i` (01-misc.t)
-            if (p.pairLive() && !p.i) p.i = (long long)(intptr_t)p.pairVal();
+            if (p.pairLive() && !p.i) p.i = (long long)(uintptr_t)p.pairVal();
             p.setPairVal(makePayload<Value>(v));
             p.pairValRO = true;
             p.b = false;                       // no longer pairLive

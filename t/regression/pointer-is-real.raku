@@ -14,7 +14,8 @@ sub ck($got, $want, $what) { @fail.push("$what: got {$got.raku}") unless $got eq
 
 my $p = Pointer.new(4096);
 ck abs($p),               4096, 'abs $p is the Int address';
-ck abs(Pointer.new(-5)),  5,    'abs of a negative address is an Int';
+# (on a 32-bit target an address is 32 unsigned bits, so -5 is 2**32 - 5 there)
+ck abs(Pointer.new(-5)),  nativesizeof(Pointer) == 8 ?? 5 !! 2**32 - 5, 'abs of a negative address is an Int';
 
 if $*VM.name ne 'moar' {
     my $end = Pointer.new(4096 + 64);

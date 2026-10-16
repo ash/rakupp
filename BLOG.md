@@ -29,6 +29,9 @@ What other people write about Raku++ is a different file:
 | 15 September 2026 | [Raku: la lingua dove posso parlare italiano](https://andrewshitov.com/2026/09/15/raku-la-lingua-dove-posso-parlare-italiano/) | The L10N modules: Raku keywords in Italian and other languages. |
 | 17 September 2026 | [Raku++ module manager](https://andrewshitov.com/2026/09/17/raku-module-manager/) | The v4.0.0 release, "Raku that travels", and the module manager that brought 1000 ecosystem modules to Raku++. |
 | 29 September 2026 | [Raku++ v5.0.0 reaches 100.00% of Roast](https://andrewshitov.com/2026/09/29/raku-v5-0-0-reaches-100-00-of-roast/) | The v5.0.0 release: 100.00% of Roast, the official Raku test suite. |
+| 3 October 2026 | [Using Raku in Python](https://andrewshitov.com/2026/10/03/using-raku-in-python/) | The `rakulang` package on PyPI: Raku++ inside a Python program with no Raku engine installed, `eval` and `call`, and Raku grammars with their actions. |
+| 3 October 2026 | [Raku: a language where a value can have several values at once (Part 2)](https://andrewshitov.com/2026/10/03/raku-a-language-where-a-value-can-have-several-values-at-once-part-2/) | Junctions in `grep`, `first` and comparisons, with types and ranges, and FizzBuzz with `3 & 5`. |
+| 9 October 2026 | [Raku++ on RISC-V and more](https://andrewshitov.com/2026/10/09/raku-on-risc-v/) | The v5.3.0 release with a prebuilt RISC-V binary, tested on a Banana Pi BPI-F3, and the platforms Raku++ runs on. |
 | 10 October 2026 | [Better ways to install modules in Raku++](https://andrewshitov.com/2026/10/10/better-ways-to-install-modules-in-raku/) | `rakupp install prog.raku` installs the modules a program uses; `rakupp install -r lib` installs a folder of module files, with or without a META6.json. |
 
 ## On dev.to
@@ -43,3 +46,4 @@ The series [What you can do with Raku and Raku++](https://dev.to/andrewshitov/se
 | 30 August 2026 | [Raku: a language that counts to infinity (Part 2)](https://dev.to/andrewshitov/raku-a-language-that-counts-to-infinity-part-2-3ph7) |
 | 13 September 2026 | [Raku: a language where a value can have several values at once (Part 1)](https://dev.to/andrewshitov/raku-a-language-where-a-value-can-have-several-values-at-once-part-1-13fk) |
 | 15 September 2026 | [Raku: la lingua dove posso parlare italiano](https://dev.to/andrewshitov/raku-la-lingua-dove-posso-parlare-italiano-k8h) |
+| 3 October 2026 | [Raku: a language where a value can have several values at once (Part 2)](https://dev.to/andrewshitov/raku-a-language-where-a-value-can-have-several-values-at-once-part-2-4e06) |

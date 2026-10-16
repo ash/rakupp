@@ -334,11 +334,11 @@ static bool ncStructEqv(const Value& a, const Value& b) {
         // Str is a char* the struct points AT, and its length is its own — so it
         // is the one pointer field that can be, and in Rakudo is, compared.
         if (bt == "Str") {
-            long long x = 0, y = 0;
-            std::memcpy(&x, (void*)(intptr_t)(pa + off), 8);
-            std::memcpy(&y, (void*)(intptr_t)(pb + off), 8);
+            const char* x = nullptr; const char* y = nullptr;   // pointer-wide, not 8 bytes
+            std::memcpy(&x, (void*)(intptr_t)(pa + off), sizeof x);
+            std::memcpy(&y, (void*)(intptr_t)(pb + off), sizeof y);
             if (!x || !y) { if (x != y) return false; continue; }
-            if (std::strcmp((const char*)(intptr_t)x, (const char*)(intptr_t)y) != 0) return false;
+            if (std::strcmp(x, y) != 0) return false;
             continue;
         }
         // Pointer, CArray and a nested class field are all bare addresses: not
