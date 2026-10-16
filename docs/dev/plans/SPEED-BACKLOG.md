@@ -101,6 +101,9 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **`do { }` and `quietly { }`, after 38** (205f5e97): the same in-place
+  path as `try`. `do { … }` −32.5% and `quietly { … }` −33.4% in
+  instructions; a `when` in a `do`, `state`, `temp` or a phaser keep the call.
 - **38, `try { }` as a closure call** (6279175b): the block runs where it
   stands, in a pooled scope with its own pad, when nothing in it needs the
   call; a body that does keeps it. `try { $t += $_ }` −24%, a `try` that
