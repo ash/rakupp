@@ -17564,7 +17564,7 @@ static ValueList listCtx(const Value& v) {
         long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
         ValueList out;
         for (long long i = 0; i < n; i++)
-            out.push_back(Interpreter::ncReadElem((long long)(intptr_t)v.s.data(), et, i));
+            out.push_back(Interpreter::ncReadElem((long long)(uintptr_t)v.s.data(), et, i));
         return out;
     }
     return v.flatten();
@@ -27444,7 +27444,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
                                       : (base.enumName.empty() ? std::string("int64") : base.enumName.str());
                 long long addr = live ? (*base.hash())["addr"].toInt()
-                                      : (long long)(intptr_t)base.s.data();
+                                      : (long long)(uintptr_t)base.s.data();
                 long long lim = live ? -1 : (long long)(base.s.size() / (size_t)ncElemSize(et));
                 Value out = Value::array(); out.isList = true; out.s = "Seq"; // a slice is a Seq
                 for (auto& e : kv.flatten()) {
@@ -32116,7 +32116,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             // …and the Pair stays the object it was: a container pair
             // identifies by its payload, which the copy replaces, so its
             // WHICH is kept in the (otherwise unused) `i` (01-misc.t)
-            if (p.pairLive() && !p.i) p.i = (long long)(intptr_t)p.pairVal();
+            if (p.pairLive() && !p.i) p.i = (long long)(uintptr_t)p.pairVal();
             p.setPairVal(makePayload<Value>(v));
             p.pairValRO = true;
             p.b = false;                       // no longer pairLive

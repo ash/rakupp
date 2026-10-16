@@ -3,6 +3,7 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
 #include "Sandbox.h"
+#include <cstddef>   // offsetof: a CStruct member's alignment, as C lays it out
 
 namespace rakupp {
 
@@ -4009,7 +4010,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
         int w = Interpreter::ncElemSize(et);
         if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
-        Value el = Interpreter::ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+        Value el = Interpreter::ncReadElem((long long)(uintptr_t)base.s.data(), et, i);
         if (g_cbInterp) el = g_cbInterp->ncClassElem(std::move(el), &base, et, i);
         if (Interpreter::ncIsPointerElem(et) && el.t == VT::Int && g_cbInterp)
             return g_cbInterp->ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
@@ -5395,6 +5396,16 @@ typedef long long (*NcFnI)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWo
 typedef double    (*NcFnD)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
                            NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
                            double,double,double,double,double,double,double,double);
+#if defined(__i386__) || defined(_M_IX86)
+// i386 passes everything on the stack, so its fallback takes 32 plain words
+// (see callNative): the arguments are laid out in them as cdecl would.
+#define NC_U4  uint32_t, uint32_t, uint32_t, uint32_t
+#define NC_U32 NC_U4, NC_U4, NC_U4, NC_U4, NC_U4, NC_U4, NC_U4, NC_U4
+typedef unsigned long long (*NcFn32I)(NC_U32);
+typedef double             (*NcFn32D)(NC_U32);
+#undef NC_U32
+#undef NC_U4
+#endif
 // native scalar type → byte width and signedness (for is-rw copy-back, cglobal,
 // Pointer.deref). 0 ⇒ not a plain native scalar.
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
@@ -5415,8 +5426,20 @@ int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
     if (t == "uint16") { sign = false; return 2; }
     if (t == "int32" || t == "long32") return 4;
     if (t == "uint32") { sign = false; return 4; }
-    if (t == "int" || t == "int64" || t == "long" || t == "longlong" || t == "ssize_t" || t == "Int") return 8;
-    if (t == "uint" || t == "uint64" || t == "ulong" || t == "ulonglong" || t == "size_t") { sign = false; return 8; }
+    if (t == "int" || t == "int64" || t == "longlong" || t == "Int") return 8;
+    if (t == "uint" || t == "uint64" || t == "ulonglong") { sign = false; return 8; }
+    // C's `long` and `size_t` are the machine's own: 8 bytes on 64-bit Unix,
+    // 4 on a 32-bit target, where answering 8 pushed every later argument
+    // four bytes along. (Windows keeps 8 for `long` for now; its C long is 4.)
+#if defined(_WIN32)
+    constexpr int kLong = 8;
+#else
+    constexpr int kLong = (int)sizeof(long);
+#endif
+    if (t == "long")    return kLong;
+    if (t == "ulong")   { sign = false; return kLong; }
+    if (t == "ssize_t") return (int)sizeof(size_t);
+    if (t == "size_t")  { sign = false; return (int)sizeof(size_t); }
     // C's `bool` is ONE byte, not a machine word. It used to answer 8 here,
     // which made `nativesizeof(bool)` and every CArray[bool] stride wrong and
     // read a whole register back from a one-byte return.
@@ -5442,14 +5465,14 @@ static bool ncKnownRetSpelling(const std::string& t) {
 // A live Pointer holds { addr, of } — deref reads native memory of type `of`.
 Value Interpreter::ncMakePointer(const std::string& type, void* p) {
     Value v = Value::makeHash(); v.hashKind = "Pointer";
-    (*v.hash())["addr"] = Value::integer((long long)(intptr_t)p);
+    (*v.hash())["addr"] = Value::integer((long long)(uintptr_t)p);
     (*v.hash())["of"]   = Value::str(ncElemType(type));
     return v;
 }
 // A live CArray[T] holds { addr, of } — element access reads native memory.
 Value Interpreter::ncMakeLiveCArray(const std::string& type, void* p) {
     Value v = Value::makeHash(); v.hashKind = "CArray";
-    (*v.hash())["addr"] = Value::integer((long long)(intptr_t)p);
+    (*v.hash())["addr"] = Value::integer((long long)(uintptr_t)p);
     std::string of = ncElemType(type);
     (*v.hash())["of"]   = Value::str(of.empty() ? "int64" : of);
     return v;
@@ -5472,7 +5495,9 @@ int Interpreter::ncElemSize(const std::string& t) {
 Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long long index) {
     if (!addr) return Value::any();
     bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt);
-    if (w == 0) w = 8; // pointer-sized default (Pointer[T], opaque)
+    // not a scalar: a machine pointer (Pointer[T], Str, opaque), unsigned — on
+    // a 32-bit target an address above 2 GiB is not a negative number
+    if (w == 0) { w = (int)sizeof(void*); sgn = false; }
     const char* base = (const char*)(intptr_t)addr + index * w;
     if (isFlt) {
         if (w == 4) { float x; std::memcpy(&x, base, 4); return Value::number((double)x); }
@@ -5497,7 +5522,7 @@ Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long lo
 // Write one native scalar `val` at addr[index] of type ofType.
 void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long long index, const Value& val) {
     if (!addr) return;
-    bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt); if (w == 0) w = 8;
+    bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt); if (w == 0) w = (int)sizeof(void*);
     char* base = (char*)(intptr_t)addr + index * w;
     if (isFlt) {
         if (w == 4) { float x = (float)val.toNum(); std::memcpy(base, &x, 4); }
@@ -5512,7 +5537,7 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
     long long v = val.t == VT::Object || val.t == VT::Hash ? Interpreter::ncRawAddr(val)
                 : val.t == VT::Str && (val.hashKind == "CArray" || val.hashKind == "Buf" || val.hashKind == "Blob")
                     ? Interpreter::ncRawAddr(val)
-                : val.t == VT::Str ? (long long)(intptr_t)val.s.c_str() : val.toInt();
+                : val.t == VT::Str ? (long long)(uintptr_t)val.s.c_str() : val.toInt();
     switch (w) {
         case 1: { int8_t  x = (int8_t)v;  std::memcpy(base, &x, 1); break; }
         case 2: { int16_t x = (int16_t)v; std::memcpy(base, &x, 2); break; }
@@ -5555,7 +5580,7 @@ long long Interpreter::ncOwnStrElem(Value& arr, const Value& v) {
     if (!isDefined(v)) return 0;   // an undefined Str is C's NULL
     auto& strs = ncCArrayKeep(arr).strs;
     strs.push_back(std::make_shared<std::string>(v.toStr()));
-    return (long long)(intptr_t)strs.back()->c_str();
+    return (long long)(uintptr_t)strs.back()->c_str();
 }
 
 // The element type of `CArray[N-Error]` was read as an 8-byte integer: the
@@ -5607,7 +5632,7 @@ Value Interpreter::ncLocalAt(const Value& arr, long long i) {
         if (ncIsPointerElem(et)) return Value::any();
         return et.compare(0, 3, "num") == 0 ? Value::number(0.0) : Value::integer(0);
     }
-    Value el = ncClassElem(ncReadElem((long long)(intptr_t)arr.s.data(), et, i), &arr, et, i);
+    Value el = ncClassElem(ncReadElem((long long)(uintptr_t)arr.s.data(), et, i), &arr, et, i);
     // an element that is ITSELF a pointer stays usable as one, so
     // `$out[0][^$n]` can read through what a native call wrote there
     // (a Str element already came back dereferenced — leave it be)
@@ -5625,13 +5650,13 @@ void Interpreter::ncLocalAssign(Value& arr, long long i, const Value& v) {
     const size_t need = (size_t)(i + 1) * (size_t)esz;
     if (arr.s.size() < need) arr.s.resize(need, '\0');
     if (et == "Str") { // the slot is a char* into memory the array owns
-        long long p = ncOwnStrElem(arr, v);
+        void* p = (void*)(intptr_t)ncOwnStrElem(arr, v);
         // IN PLACE: `mut()` forks the shared buffer, and the
-        // buffer is what C was handed (see CArray.new).
+        // buffer is what C was handed (see CArray.new). Pointer-wide.
         std::memcpy(arr.s.mutInPlace() + (size_t)i * esz, &p, sizeof p);
     }
     else {
-        ncWriteElem((long long)(intptr_t)arr.s.data(), et, i, v);
+        ncWriteElem((long long)(uintptr_t)arr.s.data(), et, i, v);
         if (ncElemClass(et)) ncKeepClassElem(arr, i, v);
     }
 }
@@ -5642,7 +5667,7 @@ static std::string carrayStrImpl(const Value& c) {
     std::string out;
     for (long long i = 0; w > 0 && (i + 1) * w <= (long long)c.s.size(); i++) {
         if (i) out += ' ';
-        out += Interpreter::ncReadElem((long long)(intptr_t)c.s.data(), et, i).toStr();
+        out += Interpreter::ncReadElem((long long)(uintptr_t)c.s.data(), et, i).toStr();
     }
     return out;
 }
@@ -5667,8 +5692,10 @@ void Interpreter::ncStoreStructField(Value& inv, const std::string& field, const
     if ((bt == "CArray" || bt == "Pointer") && rhs.t == VT::Str &&
         (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" || rhs.hashKind == "Blob")) {
         Value& kept = (inv.obj()->attrs["__native_keep_" + field] = rhs);
-        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "int64", 0,
-                    Value::integer((long long)(intptr_t)kept.s.data()));
+        // an address, pointer-wide: "int64" wrote 8 bytes and, on a 32-bit
+        // target, the next field's 4 with them
+        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "Pointer", 0,
+                    Value::integer((long long)(uintptr_t)kept.s.data()));
     }
     else ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
 }
@@ -5760,6 +5787,12 @@ std::shared_ptr<ClassInfo> Interpreter::ncInlineClass(const std::string& type) {
 // so it is as wide as that struct and aligned like its widest field. Taking the
 // size for the alignment too would be wrong the moment it is not a power of two
 // (a 12-byte struct aligns to 4, not 12).
+namespace {
+struct NcAlignDoubleProbe { char c; double d; };
+struct NcAlignInt64Probe  { char c; long long d; };
+}
+static constexpr long long kNcAlignDouble = offsetof(NcAlignDoubleProbe, d);
+static constexpr long long kNcAlignInt64  = offsetof(NcAlignInt64Probe, d);
 void Interpreter::ncMemberLayout(const ClassAttr& a, const std::string& at,
                                  long long& w, long long& align) {
     // A struct that inlines itself (only reachable by reopening one) has no
@@ -5774,7 +5807,11 @@ void Interpreter::ncMemberLayout(const ClassAttr& a, const std::string& at,
         return;
     }
     bool sgn, isF; int sw = ncScalarWidth(at, sgn, isF);
-    w = align = sw ? sw : 8;
+    w = align = sw ? sw : (long long)sizeof(void*);
+    // An 8-byte scalar aligns as the C compiler aligns it INSIDE a struct: 8
+    // on 64-bit targets, but 4 on i386, where `struct { int a; double b; }`
+    // is 12 bytes with b at offset 4.
+    if (w == 8) align = isF ? kNcAlignDouble : kNcAlignInt64;
 }
 // A struct's own alignment: the widest alignment any member needs.
 long long Interpreter::ncStructAlign(ClassInfo* ci) {
@@ -5879,9 +5916,9 @@ long long Interpreter::ncRawAddr(const Value& v) {
             std::lock_guard<std::mutex> lk(m);
             retained.push_back(body);
             if (retained.size() > 256) retained.pop_front();
-            return (long long)(intptr_t)body->str().data();
+            return (long long)(uintptr_t)body->str().data();
         }
-        return (long long)(intptr_t)v.s.data();
+        return (long long)(uintptr_t)v.s.data();
     }
     if (v.t == VT::Int) return v.i;
     return 0;
@@ -5932,9 +5969,41 @@ long long Interpreter::runCallback(int slot, long long a0, long long a1, long lo
 // arguments — but its parameters must be pointer-wide or a 64-bit LPARAM (and
 // the LRESULT going back) is truncated on Windows. A WNDPROC is exactly this
 // shape, and its lParam carries pointers.
+#if defined(__i386__) || defined(_M_IX86)
+// i386: the C caller pushed each argument at its own width -- a double or a
+// 64-bit integer is two stack words -- so trampolines of fixed 8-byte
+// parameters read them out of step. These take plain words and regroup them,
+// by the callback's own parameter types, into the 64-bit values runCallback
+// expects (a num as its bit pattern). A narrow integer arrives already
+// widened to a word by the caller, signed or not as its type says.
+static long long cbRun32(int slot, const uint32_t* w, size_t nw) {
+    if (!g_cbInterp || slot < 0 || slot >= (int)g_cbSlots.size()) return 0;
+    const Value& cb = g_cbSlots[slot];
+    const std::vector<Param>* ps = cb.code() ? cb.code()->ci().params : nullptr;
+    long long a[6] = {0};
+    size_t k = 0;
+    for (size_t i = 0; i < 6 && k < nw; i++) {
+        const std::string pt = ps && i < ps->size() ? (*ps)[i].type : std::string();
+        bool sg, fl; const int wd = ncScalarWidth(pt, sg, fl);
+        if (fl && wd == 4)              { float f; std::memcpy(&f, &w[k++], 4); double d = f; std::memcpy(&a[i], &d, 8); }
+        else if (wd == 8 && k + 1 < nw) { std::memcpy(&a[i], &w[k], 8); k += 2; }
+        else if (wd && !sg)             a[i] = (long long)w[k++];
+        else if (wd || pt.empty())      a[i] = (long long)(int32_t)w[k++];
+        else                            a[i] = (long long)w[k++];   // a pointer: an address, unsigned
+    }
+    return g_cbInterp->runCallback(slot, a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+template<int N> static long long cbTramp(uint32_t a, uint32_t b, uint32_t c, uint32_t d,
+                                         uint32_t e, uint32_t f, uint32_t g, uint32_t h,
+                                         uint32_t i, uint32_t j, uint32_t k, uint32_t l) {
+    const uint32_t w[12] = {a, b, c, d, e, f, g, h, i, j, k, l};
+    return cbRun32(N, w, 12);
+}
+#else
 template<int N> static NcWord cbTramp(NcWord a, NcWord b, NcWord c, NcWord d, NcWord e, NcWord f) {
     return g_cbInterp ? g_cbInterp->runCallback(N, a, b, c, d, e, f) : 0;
 }
+#endif
 template<int... Is> static void cbFill(void** t, std::integer_sequence<int, Is...>) {
     ((t[Is] = (void*)&cbTramp<Is>), ...);
 }
@@ -5966,9 +6035,16 @@ static std::map<Callable*, NcClosure*> g_ncClosures;
 // A callback parameter's declared Raku type → its libffi type. An undeclared
 // parameter is a pointer-sized integer, which is what the old trampoline pool
 // always assumed.
+// An undeclared callback parameter is a machine word, as C passes an int or a
+// pointer: 8 bytes on a 64-bit target, 4 on a 32-bit one, where reading 8 took
+// the next argument's bytes as well.
+static ffi::Type* ncFfiWordType() {
+    const ffi::Lib& F = ffi::lib();
+    return sizeof(void*) >= 8 ? F.t_sint64 : F.t_sint32;
+}
 static ffi::Type* ncFfiCbParamType(const std::string& pt) {
     const ffi::Lib& F = ffi::lib();
-    if (pt.empty()) return F.t_sint64;
+    if (pt.empty()) return ncFfiWordType();
     if (pt == "Str" || pt == "Pointer" || pt.rfind("Pointer[", 0) == 0 ||
         pt == "CArray" || pt.rfind("CArray[", 0) == 0) return F.t_pointer;
     bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
@@ -5980,20 +6056,29 @@ static ffi::Type* ncFfiCbParamType(const std::string& pt) {
 // ignores the register.
 static ffi::Type* ncFfiCbRetType(const std::string& rt) {
     const ffi::Lib& F = ffi::lib();
+    // 64 bits even on a 32-bit target: there libffi returns it in EDX:EAX,
+    // and a caller that wanted an int reads EAX alone -- while one that
+    // wanted an int64 gets its high half instead of whatever EDX held
     if (rt.empty()) return F.t_sint64;
     if (rt == "void" || rt == "Nil") return F.t_void;
     return ncFfiRetType(rt);
 }
 
+// libffi's closure return buffer is ffi_arg wide (a machine word), or the
+// return type's own width when that is wider: an int64 on a 32-bit target.
+// Writing a full long long into a 4-byte one overran it.
+static size_t ncClosureRetWidth(const ffi::Type* t) {
+    return (sizeof(void*) >= 8 || (t && t->size > 4)) ? 8 : 4;
+}
 static void ncClosureTramp(void*, void* ret, void** args, void* user) {
     if (g_cbInterp) g_cbInterp->runFfiClosure(user, ret, args);
-    else if (ret)   std::memset(ret, 0, sizeof(long long));
+    else if (ret)   std::memset(ret, 0, sizeof(void*));
 }
 
 void Interpreter::runFfiClosure(void* user, void* ret, void** args) {
     NcClosure* cl = (NcClosure*)user;
     const ffi::Lib& F = ffi::lib();
-    auto zero = [&] { if (ret && cl->rtype != F.t_void) std::memset(ret, 0, sizeof(long long)); };
+    auto zero = [&] { if (ret && cl->rtype != F.t_void) std::memset(ret, 0, ncClosureRetWidth(cl->rtype)); };
     if (!onRakuThread()) {
         // The C library stored this callback and is firing it from a thread of
         // its own. There is no interpreter state to run in; returning zero is
@@ -6037,7 +6122,7 @@ void Interpreter::runFfiClosure(void* user, void* ret, void** args) {
     else if (cl->rtype == F.t_double)  { double x = r.toNum();        std::memcpy(ret, &x, 8); }
     else if (cl->rtype == F.t_pointer) { void* p = (void*)(intptr_t)ncRawAddr(r); std::memcpy(ret, &p, sizeof p); }
     else { // libffi's closure contract: integers narrower than ffi_arg are written full-width
-        long long x = r.toInt(); std::memcpy(ret, &x, sizeof(long long));
+        long long x = r.toInt(); std::memcpy(ret, &x, ncClosureRetWidth(cl->rtype));
     }
 }
 
@@ -6285,6 +6370,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         double fbNum   = 0;
         bool   fbFloat = false;
         bool   fbPtr   = false;   // for the trace: render as an address
+        unsigned char fbWidth = 0; // the declared width: i386 lays the stack out by it
     };
     std::vector<NcSlot> slots(args.size());
     std::string needFfi;
@@ -6306,11 +6392,13 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         void* q = const_cast<void*>(p);
         std::memcpy(s.raw, &q, sizeof q);
         s.type  = F.t_pointer;
-        s.fbInt = (NcWord)(intptr_t)q;
+        s.fbInt = (NcWord)(uintptr_t)q;
         s.fbPtr = true;
+        s.fbWidth = (unsigned char)sizeof q;
     };
     auto putInt = [](NcSlot& s, long long v, int w, bool sgn) {
-        if (w == 0) { w = 8; sgn = true; }
+        // undeclared: a machine word, as C passes an int or a long
+        if (w == 0) { w = (int)sizeof(void*); sgn = true; }
         switch (w) { // narrow to the declared width — libffi reads exactly `w` bytes
             case 1: { int8_t  x = (int8_t)v;  std::memcpy(s.raw, &x, 1); break; }
             case 2: { int16_t x = (int16_t)v; std::memcpy(s.raw, &x, 2); break; }
@@ -6319,6 +6407,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         }
         s.type  = ffi::scalar(w, sgn, false);
         s.fbInt = (NcWord)v;
+        s.fbWidth = (unsigned char)w;
     };
     auto putNum = [&F, &needFfi](NcSlot& s, double v, int w) {
         if (w == 4) { // a real 32-bit float: the fallback would pass a double
@@ -6327,6 +6416,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         }
         else { std::memcpy(s.raw, &v, 8); s.type = F.t_double; }
         s.fbNum = v; s.fbFloat = true;
+        s.fbWidth = (unsigned char)(w == 4 ? 4 : 8);
     };
 
     for (size_t i = 0; i < args.size(); i++) {
@@ -6539,12 +6629,51 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             else        std::memcpy(&rd, rbuf, 8);
         }
         else if (rtype != F.t_void) {
+            // ffi_arg wide, or the type's own width when that is wider: an
+            // int64 return on a 32-bit target is 8 bytes past a 4-byte ffi_arg
             unsigned long long u = 0;
-            std::memcpy(&u, rbuf, sizeof(void*) >= 8 ? 8 : 4);
+            std::memcpy(&u, rbuf, (sizeof(void*) >= 8 || rtype->size > 4) ? 8 : 4);
             ri = (NcWord)u;
         }
     }
     else {
+#if defined(__i386__) || defined(_M_IX86)
+        // No libffi on i386 (cdecl): EVERY argument goes on the stack, in
+        // declaration order, at its own width rounded up to four bytes. So the
+        // fallback can be exact here, where the 64-bit one approximates with
+        // register banks: lay the arguments out as stack words and call
+        // through a prototype of plain words. A float is its four bytes, a
+        // double or a 64-bit integer two words, low first; the callee reads
+        // what it declared and the caller cleans up, so the unused tail is
+        // harmless. That places num32 and `...` arguments too, which is why
+        // needFfi is not consulted.
+        (void)needFfi;
+        uint32_t W[32] = {0}; size_t nw = 0;
+        for (auto& s : slots) {
+            uint32_t w2[2] = {0, 0}; size_t k = 1;
+            if (s.fbFloat && s.fbWidth == 4) { float x = (float)s.fbNum; std::memcpy(w2, &x, 4); }
+            else if (s.fbFloat)               { std::memcpy(w2, &s.fbNum, 8); k = 2; }
+            else if (s.fbWidth == 8)          { std::memcpy(w2, &s.fbInt, 8); k = 2; }
+            else                              { w2[0] = (uint32_t)s.fbInt; }
+            if (nw + k > 32)
+                throw RakuError{Value::typeObj("X::NYI"),
+                    "NativeCall: more than 128 bytes of arguments needs libffi, which is not available (" + F.why + ")"};
+            for (size_t j = 0; j < k; j++) W[nw++] = w2[j];
+        }
+#define NC_W4(b) W[b], W[b + 1], W[b + 2], W[b + 3]
+#define NC_W32 NC_W4(0), NC_W4(4), NC_W4(8), NC_W4(12), NC_W4(16), NC_W4(20), NC_W4(24), NC_W4(28)
+        // a float or double comes back in st(0), which a double-returning
+        // prototype reads whichever it was; an integer in EAX, with EDX the
+        // high half of a 64-bit one and garbage otherwise
+        if (retFP) rd = ((NcFn32D)sym)(NC_W32);
+        else {
+            unsigned long long r = ((NcFn32I)sym)(NC_W32);
+            bool rs, rf;
+            ri = ncScalarWidth(rt, rs, rf) == 8 ? (NcWord)r : (NcWord)(uint32_t)r;
+        }
+#undef NC_W32
+#undef NC_W4
+#else
         // No libffi: the fixed over-wide prototype. It cannot place arguments
         // that are not register-sized, so say so rather than call wrongly.
         if (!needFfi.empty())
@@ -6574,6 +6703,22 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7],
                                      G[8],G[9],G[10],G[11],G[12],G[13],G[14],G[15],
                                      D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+#endif
+    }
+
+    // Integer return: the value comes back in a 64-bit register but a narrower
+    // return type (int32/uint16/…) only fills the low bits — truncate and
+    // sign/zero-extend to the DECLARED width, or a returned int32 -1 reads back as
+    // 0xFFFFFFFF (4294967295) and `$rc < 0` never holds (BIO_read's would-block).
+    // Before the trace, so it shows the value the program gets.
+    {
+        bool rsgn, rflt; int rw = ncScalarWidth(rt, rsgn, rflt);
+        if (rw > 0 && rw < 8 && !rflt) {
+            unsigned long long mask = (1ULL << (rw * 8)) - 1;
+            unsigned long long u = (unsigned long long)ri & mask;
+            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (NcWord)(u | ~mask);
+            else ri = (NcWord)u;
+        }
     }
 
     if (g_ncTrace) {
@@ -6702,19 +6847,6 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             return o;
         }
     }
-    // Integer return: the value comes back in a 64-bit register but a narrower
-    // return type (int32/uint16/…) only fills the low bits — truncate and
-    // sign/zero-extend to the DECLARED width, or a returned int32 -1 reads back as
-    // 0xFFFFFFFF (4294967295) and `$rc < 0` never holds (BIO_read's would-block).
-    {
-        bool rsgn, rflt; int rw = ncScalarWidth(rt, rsgn, rflt);
-        if (rw > 0 && rw < 8 && !rflt) {
-            unsigned long long mask = (1ULL << (rw * 8)) - 1;
-            unsigned long long u = (unsigned long long)ri & mask;
-            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (NcWord)(u | ~mask);
-            else ri = (NcWord)u;
-        }
-    }
     return Value::integer(ri);
 }
 
@@ -6764,7 +6896,7 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
         const char* p = *(const char**)addr;
         return p ? Value::str(std::string(p)) : Value::typeObj("Str");
     }
-    return ncReadElem((long long)(intptr_t)addr, type, 0);
+    return ncReadElem((long long)(uintptr_t)addr, type, 0);
 }
 
 
