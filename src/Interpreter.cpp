@@ -1750,6 +1750,89 @@ void Interpreter::sinkReturnedValue(const Value& r) {
     sinkValue(r);
 }
 
+// Can a routine's body touch the topic: `$_` itself, a `.method` on it (the
+// parser writes `$_` as its invocant), a bare regex or `s///` that matches it,
+// a `when`? A node kind this does not look into counts as yes, so the answer
+// errs towards giving the routine its `$_`. A nested `sub` has its own topic.
+// A routine whose body cannot is spared defining one on every call
+// (bindRoutineParams); a method call paid ~14% for it.
+static bool mayUseTopicStmt(const Stmt* s);
+static bool mayUseTopicBody(const std::vector<StmtPtr>& b) {
+    for (auto& s : b) if (mayUseTopicStmt(s.get())) return true;
+    return false;
+}
+static bool mayUseTopic(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::NameTerm:
+        case NK::Whatever: case NK::SelfTerm: case NK::AllomorphLit:
+            return false;
+        case NK::VarExpr: { auto* v = static_cast<const VarExpr*>(e);
+            return v->name == "$_" || mayUseTopic(v->d().declDefault.get()); }
+        case NK::RegexLit: case NK::SubstLit: return true;
+        case NK::InterpStr: for (auto& x : static_cast<const InterpStr*>(e)->parts) if (mayUseTopic(x.get())) return true; return false;
+        case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) if (mayUseTopic(x.get())) return true; return false;
+        case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) if (mayUseTopic(x.get())) return true; return false;
+        case NK::HashLit: for (auto& x : static_cast<const HashLit*>(e)->items) if (mayUseTopic(x.get())) return true; return false;
+        case NK::ChainExpr: for (auto& x : static_cast<const ChainExpr*>(e)->operands) if (mayUseTopic(x.get())) return true; return false;
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e); return mayUseTopic(a->target.get()) || mayUseTopic(a->value.get()); }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e); return mayUseTopic(b->lhs.get()) || mayUseTopic(b->rhs.get()); }
+        case NK::Unary: return mayUseTopic(static_cast<const Unary*>(e)->operand.get());
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            if (mayUseTopic(c->callee.get())) return true;
+            for (auto& a : c->args) if (mayUseTopic(a.get())) return true;
+            return false; }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            if (mayUseTopic(m->inv.get())) return true;
+            for (auto& a : m->args) if (mayUseTopic(a.get())) return true;
+            return false; }
+        case NK::Index: { auto* i = static_cast<const Index*>(e); return mayUseTopic(i->base.get()) || mayUseTopic(i->index.get()); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return mayUseTopic(t->cond.get()) || mayUseTopic(t->then.get()) || mayUseTopic(t->els.get()); }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); return mayUseTopic(r->from.get()) || mayUseTopic(r->to.get()); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); return mayUseTopic(p->keyExpr.get()) || mayUseTopic(p->value.get()); }
+        case NK::BlockExpr: { auto* b = static_cast<const BlockExpr*>(e);
+            if (b->isSub) return false;   // an anonymous sub has its own
+            for (auto& p : b->params) if (p.defaultVal) return true;
+            return mayUseTopicBody(b->body); }
+        default: return true;   // (NqpOp, SymbolicRef `CALLER::<$_>`, …: not looked into)
+    }
+}
+static bool mayUseTopicStmt(const Stmt* s) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::ExprStmt: return mayUseTopic(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::ReturnStmt: return mayUseTopic(static_cast<const ReturnStmt*>(s)->value.get());
+        case NK::VarDecl: return mayUseTopic(static_cast<const VarDecl*>(s)->init.get());
+        case NK::Block: return mayUseTopicBody(static_cast<const Block*>(s)->stmts);
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
+            for (auto& br : i->branches)
+                if (mayUseTopic(br.first.get()) || (br.second && mayUseTopicBody(br.second->stmts))) return true;
+            return i->elseBlock && mayUseTopicBody(i->elseBlock->stmts); }
+        case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s);
+            return mayUseTopic(w->cond.get()) || (w->body && mayUseTopicBody(w->body->stmts)); }
+        case NK::RepeatStmt: { auto* r = static_cast<const RepeatStmt*>(s);
+            return mayUseTopic(r->cond.get()) || (r->body && mayUseTopicBody(r->body->stmts)); }
+        case NK::LoopStmt: { auto* l = static_cast<const LoopStmt*>(s);
+            return mayUseTopic(l->init.get()) || mayUseTopic(l->cond.get()) || mayUseTopic(l->incr.get()) ||
+                   (l->body && mayUseTopicBody(l->body->stmts)); }
+        case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
+            return mayUseTopic(f->list.get()) || (f->body && mayUseTopicBody(f->body->stmts)); }
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            return mayUseTopic(g->topic.get()) || (g->body && mayUseTopicBody(g->body->stmts)) ||
+                   (g->elseBody && mayUseTopicBody(g->elseBody->stmts)); }
+        case NK::SubDecl: case NK::ClassDecl: case NK::EnumDecl: case NK::SubsetDecl: case NK::NamedRegexDecl:
+        case NK::UseStmt: case NK::EmptyStmt: case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt:
+            return false;
+        default: return true;   // a `when` among them
+    }
+}
+bool Interpreter::bodyMayUseTopic(const Callable& c) {
+    signed char t = c.topicScan;
+    if (t < 0) c.topicScan = t = (c.body && mayUseTopicBody(*c.body)) ? 1 : 0;
+    return t != 0;
+}
+
 bool Interpreter::bodyUsesAtUnderscore(const Callable* c) {
     if (!c || !c->body) return false;
     std::set<std::string> ph;

@@ -122,3 +122,16 @@ for 1, 2, 3 -> $a, $b = 0 { $loop-default ~= "$a+$b " }
 my @loop-subs;
 for 1, 2 -> $x is copy { $x += 5; @loop-subs.push: { $x } }
 say "loop-param: ", $loop-copy, "| ", $loop-typed, "| ", $loop-default, "| ", @loop-subs.map({ .() }).join(',');
+
+# 11. A pointy loop leaves `$_` alone, as does a pointy given/with, and every
+#     routine has a `$_` of its own: compiled, `for 1, 2 -> $x { .say }` said
+#     the element, and a sub read (and wrote) the mainline's `$_`.
+$_ = 'outer';
+my $topic-loop = '';
+for 1, 2 -> $x { $topic-loop ~= $_ ~ ' ' }
+for <a> { for 1, 2 -> $x { $topic-loop ~= $_ ~ $x ~ ' ' } }
+given 5 -> $x { $topic-loop ~= $_ ~ $x }
+sub topic-own($v) { $_ // 'U' }
+sub topic-param($_) { $_ }
+sub topic-write { $_ = 'mine'; $_ }
+say "topic: ", $topic-loop, "| ", topic-own(1), ' ', topic-param('p'), ' ', topic-write(), ' ', $_;

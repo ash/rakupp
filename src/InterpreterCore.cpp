@@ -4007,18 +4007,24 @@ static Value unpassedDefault(const std::string& type, char sigil, bool blockPara
 // The routine whose signature is being bound, for its name in that message
 // (set around the two routine-level bindParams calls; a block is `<anon>`).
 static thread_local const std::string* t_bindRoutine = nullptr;
-// …and the routine itself: its package decides which class's slot an
-// attributive parameter (`submethod BUILD(:$!x)`) writes, and `&?ROUTINE` is
-// not yet the routine while its signature binds (attrParamSlot)
+// …and the routine itself, whose package decides which class's slot an attributive
+// parameter writes (attrParamRef): `&?ROUTINE` is not yet it while its signature binds
 static thread_local const Callable* t_bindCallable = nullptr;
 struct BindRoutineName {
-    const std::string* saved;
-    const Callable* savedC;
-    explicit BindRoutineName(const Callable& c) : saved(t_bindRoutine), savedC(t_bindCallable) {
-        t_bindRoutine = &c.name; t_bindCallable = &c;
-    }
+    const std::string* saved; const Callable* savedC;
+    explicit BindRoutineName(const Callable& c) : saved(t_bindRoutine), savedC(t_bindCallable) { t_bindRoutine = &c.name; t_bindCallable = &c; }
     ~BindRoutineName() { t_bindRoutine = saved; t_bindCallable = savedC; }
 };
+// A routine's signature, and its OWN `$_` (a `$_` parameter, or a fresh one): never the
+// caller's or the mainline's (Rakudo). A pointy block (blockParams) keeps the outer one.
+void Interpreter::bindRoutineParams(const Callable& c, ValueList& args, std::shared_ptr<Env>& env,
+                                    bool methodCtx, bool blockParams, bool whereVerified) {
+    BindRoutineName brn(c);
+    bindParams(*c.params, args, env, methodCtx, blockParams, whereVerified);
+    if (blockParams || !bodyMayUseTopic(c)) return;
+    for (auto& p : *c.params) if (p.name == "$_") return;
+    env->define("$_", Value::any());
+}
 void Interpreter::refuseUnpassedDefinite(const Param& p) {
     if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
     std::string routine = t_bindRoutine && !t_bindRoutine->empty() ? *t_bindRoutine : std::string("<anon>");
@@ -8796,8 +8802,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (c.params && !c.params->empty()) {
-        BindRoutineName brn(c);
-        bindParams(*c.params, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
+        bindRoutineParams(c, args, env, c.isMethod && methodTakesAnyNamed(c, args), c.isBlock, whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.params, env, rwArgs,
                          !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
@@ -10661,9 +10666,8 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         }
     }
     if (c.params && !c.params->empty()) {
-        BindRoutineName brn(c);
-        bindParams(*c.params, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
-                   whereVerified);
+        bindRoutineParams(c, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
+                          whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.params, env, rwArgs,
                          !c.isMultiDispatcher && !c.isMultiCandidate); // rw/raw write-through
@@ -10693,6 +10697,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         signed char at = c.atArgsScan;
         if (at < 0) c.atArgsScan = at = bodyUsesAtUnderscore(&c) ? 1 : 0;
         if (at) env->define("@_", Value::array(args));
+        if (bodyMayUseTopic(c)) env->define("$_", Value::any());   // (a method's own `$_`: bindRoutineParams)
     }
     // the implicit *%_ EVERY method carries, signature or none: a paramless
     // `method new()` still collects its named args there — DBDish::SQLite's

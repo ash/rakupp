@@ -548,6 +548,9 @@ struct Callable {
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
     // parameters builds that array only then. -1 = not yet scanned.
     DecidedOnce<signed char> atArgsScan{-1};
+    // 1 = the body may touch the topic (bodyMayUseTopic): only then does a call
+    // give the routine a `$_` of its own. -1 = not yet scanned.
+    mutable DecidedOnce<signed char> topicScan{-1};
     // a BLOCK that may read `@_` (Interpreter::blockTakesAtArgs, a deep scan): 1,
     // or 0 and a call gives it none. -1 = not yet scanned.
     DecidedOnce<signed char> blockAtArgs{-1};

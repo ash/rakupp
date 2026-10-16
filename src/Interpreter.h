@@ -2393,7 +2393,8 @@ public:
                // tags (`use experimental :rakuast`) is otherwise indistinguishable
                // from the bare pragma once codegen has emitted the call
                const std::vector<std::string>& importArgs = {}); // `use`/`no MODULE` (used by codegen)
-    bool bodyUsesAtUnderscore(const Callable* c);   // does a block's body read @_ (its implicit `*@_`)?
+    bool bodyUsesAtUnderscore(const Callable* c);
+    bool bodyMayUseTopic(const Callable& c);         // may its body touch `$_`? (Interpreter.cpp)   // does a block's body read @_ (its implicit `*@_`)?
     Value coerceVarValue(const Value& rhs, const std::string& target, const std::string& from,
                          const std::string& nm);   // `my Str(Int(Cool)) $x = …`
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
@@ -4669,6 +4670,9 @@ private:
     Value evalInterp(InterpStr* s);
 
     Value makeClosure(BlockExpr* be);
+    // bindParams for a routine's own signature, and the routine's own `$_` (InterpreterCore.cpp)
+    void bindRoutineParams(const Callable& c, ValueList& args, std::shared_ptr<Env>& env,
+                           bool methodCtx, bool blockParams, bool whereVerified);
     void bindParams(const std::vector<Param>& params, ValueList& args, std::shared_ptr<Env>& env,
                     bool methodCtx = false, // methods have an implicit *%_ (extra nameds ignored)
                     // A BLOCK's untyped parameter is Mu-constrained; a Routine's

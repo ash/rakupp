@@ -4001,6 +4001,11 @@ struct Codegen {
             return;
         }
         std::string topic = f->vars.empty() ? gensym("v__t") : mangleVar(f->vars[0]);
+        // Only a loop WITHOUT a signature binds `$_` (or one that names it,
+        // `-> $_`): `for @a -> $x { … $_ … }` reads the topic outside the loop,
+        // as the interpreter's and Rakudo's do. Pushing `$x` as the topic made
+        // `$_` the element in compiled code.
+        const bool topicLoop = f->vars.empty() || f->vars[0] == "$_";
         line(ind, "{");
         // `^N` is `0..^N`: the same counted loop, rather than a list of N
         // elements built first (and a fractional N keeps its last element)
@@ -4037,9 +4042,9 @@ struct Codegen {
             std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr())[" + i + "]";
             if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], bindAs(f->vars[0][0], elem)) + ";");
             else line(ind + 2, "Value " + topic + " = " + elem + ";");
-            topics.push_back(topic);
+            if (topicLoop) topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
-            topics.pop_back();
+            if (topicLoop) topics.pop_back();
             line(ind + 1, "}");
         } else {
             std::string lst = gensym("__lst"), el = gensym("__e");
@@ -4057,9 +4062,9 @@ struct Codegen {
             line(ind + 2, "auto& " + el + " = (*" + lst + ".arr())[" + fi + "];");
             if (!f->vars.empty()) line(ind + 2, declVar(f->vars[0], bindAs(f->vars[0][0], el)) + ";");
             else line(ind + 2, "Value " + topic + " = " + ae + " ? itemizedScalar(" + el + ") : " + el + ";");
-            topics.push_back(topic);
+            if (topicLoop) topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
-            topics.pop_back();
+            if (topicLoop) topics.pop_back();
             line(ind + 1, "}");
         }
         line(ind, "}");
@@ -4100,14 +4105,19 @@ struct Codegen {
             std::string def = "rtIsDefined(" + topic + ")"; // one definedness rule (Failure/enum-type aware), same as `//`
             line(ind + 1, "if (" + (g->defGuard == 1 ? def : "!" + def) + ") {");
             if (!g->var.empty()) line(ind + 2, declVar(g->var, topic) + ";");   // `with X -> $y`
-            topics.push_back(topic);
+            const bool own = g->var.empty() || g->var == "$_";   // a pointy one leaves `$_` alone
+            if (own) topics.push_back(topic);
             blockValue(g->body.get(), ind + 2, dst);
-            topics.pop_back();
+            if (own) topics.pop_back();
             line(ind + 1, "}");
             if (g->hasElse && g->elseBody) {
                 line(ind + 1, "else {");
                 if (!g->elseVar.empty()) line(ind + 2, declVar(g->elseVar, topic) + ";");
+                // a plain `else` has the tested value as `$_`; a pointy one does not
+                const bool ownElse = g->elseVar.empty() || g->elseVar == "$_";
+                if (ownElse) topics.push_back(topic);
                 blockValue(g->elseBody.get(), ind + 2, dst);
+                if (ownElse) topics.pop_back();
                 line(ind + 1, "}");
             }
             line(ind, "}");
@@ -4117,13 +4127,16 @@ struct Codegen {
         line(ind, "{");
         line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
         if (!g->var.empty()) line(ind + 1, declVar(g->var, topic) + ";");   // `given X -> $y`
-        topics.push_back(topic);
+        // a pointy `given X -> $y` leaves `$_` alone, and its `when` tests that
+        const bool own = g->var.empty() || g->var == "$_";
+        const std::string wt = own ? topic : curTopicExpr();
+        if (own) topics.push_back(topic);
         for (size_t si = 0; si < g->body->stmts.size(); si++) {
             Stmt* st = g->body->stmts[si].get();
             if (st->kind == NK::WhenStmt) {
                 auto* w = static_cast<WhenStmt*>(st);
                 if (w->isDefault) line(ind + 1, "{");
-                else line(ind + 1, "if (" + whenCond(topic, w->cond.get()) + ") {");
+                else line(ind + 1, "if (" + whenCond(wt, w->cond.get()) + ") {");
                 blockValue(w->body.get(), ind + 2, dst);
                 line(ind + 2, "goto " + done + ";");
                 line(ind + 1, "}");
@@ -4133,7 +4146,7 @@ struct Codegen {
                 stmt(st, ind + 1);
             }
         }
-        topics.pop_back();
+        if (own) topics.pop_back();
         line(ind + 1, done + ": ;");
         line(ind, "}");
     }
@@ -4151,14 +4164,18 @@ struct Codegen {
             // `with X -> $y { }` binds $y to the topic as well (it was dropped,
             // and $y read an outer variable or a type object of that name)
             if (!g->var.empty()) line(ind + 2, declVar(g->var, topic) + ";");
-            topics.push_back(topic);
+            const bool own = g->var.empty() || g->var == "$_";   // a pointy one leaves `$_` alone
+            if (own) topics.push_back(topic);
             block(g->body.get(), ind + 2);
-            topics.pop_back();
+            if (own) topics.pop_back();
             line(ind + 1, "}");
             if (g->hasElse && g->elseBody) {
                 line(ind + 1, "else {");
                 if (!g->elseVar.empty()) line(ind + 2, declVar(g->elseVar, topic) + ";");
+                const bool ownElse = g->elseVar.empty() || g->elseVar == "$_";   // (as the value form)
+                if (ownElse) topics.push_back(topic);
                 block(g->elseBody.get(), ind + 2);
+                if (ownElse) topics.pop_back();
                 line(ind + 1, "}");
             }
             line(ind, "}");
@@ -4168,12 +4185,14 @@ struct Codegen {
         line(ind, "{");
         line(ind + 1, "Value " + topic + " = " + ex(g->topic.get()) + ";");
         if (!g->var.empty()) line(ind + 1, declVar(g->var, topic) + ";");   // `given X -> $y { }`
-        topics.push_back(topic);
+        const bool own = g->var.empty() || g->var == "$_";   // (as the value form above)
+        const std::string wt = own ? topic : curTopicExpr();
+        if (own) topics.push_back(topic);
         for (auto& st : g->body->stmts) {
             if (st->kind == NK::WhenStmt) {
                 auto* w = static_cast<WhenStmt*>(st.get());
                 if (w->isDefault) line(ind + 1, "{");
-                else line(ind + 1, "if (" + whenCond(topic, w->cond.get()) + ") {");
+                else line(ind + 1, "if (" + whenCond(wt, w->cond.get()) + ") {");
                 block(w->body.get(), ind + 2);
                 line(ind + 2, "goto " + done + ";");
                 line(ind + 1, "}");
@@ -4181,7 +4200,7 @@ struct Codegen {
                 stmt(st.get(), ind + 1); // a bare statement inside given runs unconditionally
             }
         }
-        topics.pop_back();
+        if (own) topics.pop_back();
         line(ind + 1, done + ": ;");
         line(ind, "}");
     }
@@ -6028,6 +6047,8 @@ struct Codegen {
                 line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
                 bindParams(md->params, 1, true);
                 self_ = "__self";
+                topics.push_back(routineTopic(&md->params, 1));   // (a method's own `$_`)
+                struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
                 hoistLexicalSubs(md->body, 1);
                 for (size_t i = 0; i < md->body.size(); i++) {
                     Stmt* s = md->body[i].get();
@@ -6185,7 +6206,21 @@ struct Codegen {
     }
 
     // Emit the statements of a sub body (last ExprStmt becomes the return value).
-    void emitBody(const std::vector<StmtPtr>& body) {
+    // A routine's OWN `$_` (Rakudo gives every routine one): its `$_` parameter,
+    // or a fresh undefined one, so `$_` in its body never reads the caller's or
+    // the mainline's, and a write to it stays in the routine. The caller pushes
+    // it on `topics` for the body and pops it after.
+    std::string routineTopic(const std::vector<Param>* ps, int ind) {
+        if (ps) for (auto& p : *ps) if (p.name == "$_") return mangleVar("$_");
+        std::string t = gensym("v__rt");
+        line(ind, "Value " + t + " = Value::any(); (void)" + t + ";");
+        return t;
+    }
+    // (the topic in force here: `$_` read in this scope)
+    std::string curTopicExpr() const { return topics.empty() ? "RT.dynVar(\"$_\")" : topics.back(); }
+    void emitBody(const std::vector<StmtPtr>& body, const std::vector<Param>* ps = nullptr) {
+        topics.push_back(routineTopic(ps, 1));
+        struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
         hoistLexicalSubs(body, 1);
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
@@ -6248,7 +6283,7 @@ struct Codegen {
                 if (anyCell)
                     for (size_t i = 0; i < ps.size(); i++)
                         line(2, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
-                emitBody(body);
+                emitBody(body, &ps);
             });
             if (__fs.used()) out << "    " << framePrologue();
             line(1, "try {");
@@ -6272,7 +6307,7 @@ struct Codegen {
         FrameScope __fs{this};
         std::string text = capture([&]() {
             bindParams(ps, 2, false);
-            emitBody(body);
+            emitBody(body, &ps);
         });
         if (__fs.used()) out << "    " << framePrologue();
         line(1, "try {");
@@ -6811,7 +6846,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
         }
         g.markParams(d->params);
         g.line(2, "try {");
-        g.emitBody(d->body);
+        g.emitBody(d->body, &d->params);
         g.line(2, "} catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }");
     });
     if (refsOut) *refsOut = g.aotRefs_;
