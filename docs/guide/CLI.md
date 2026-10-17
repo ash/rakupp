@@ -950,8 +950,16 @@ the rebuild flag:
 |---------------------|-------------------------------|-------------------------------------------|
 | `unicode-names`     | the Unicode name/numeric tables | `uniname`, `uniparse`, `unival`         |
 | `unicode-collation` | the DUCET tables              | `unicmp`, `coll`, `.collate`              |
-| `unicode-props`     | Script/Block/Bidi_Class ranges, and the properties only `uniprop` names (Age, Line_Break, East_Asian_Width, …) | `uniprop('Script')`, `uniprop('Line_Break')`, `<:Script<…>>`, … |
+| `unicode-props`     | Script/Block/Bidi_Class ranges, the binary properties (Math, Emoji, ID_Start, …), and the properties only `uniprop` names (Age, Line_Break, East_Asian_Width, …) | `uniprop('Script')`, `uniprop('Math')`, `<:Script<…>>`, `<:Emoji>`, … |
 | `eval`              | the lexer and parser          | `EVAL`, `require`, runtime-compiled regexes |
+
+What none of them takes: the general category and the ordinary regex classes
+(`\w`, `<alpha>`, `<:Lu>`), case mapping, normalization, grapheme breaking,
+digits and fractions in numification (`"½".Numeric`). A module the engine
+answers itself (`use Data::Native`, `JSON::Native` and their siblings) is part
+of the runtime, not a module loaded from disk, and the few classes the runtime
+keeps as Raku source (the Supply combinators, `Channel.Supply`,
+`IO::CatHandle`) travel pre-parsed in a binary that cut `eval`.
 
 ```
 rakupp --exe --slim                     prog.raku   # the button: sound automatic pruning

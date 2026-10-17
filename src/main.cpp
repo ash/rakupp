@@ -25,6 +25,7 @@
 #include "AstSerial.h"
 #include "AotModules.h"
 #include "SlimScan.h"
+#include "BuiltinRakuSrc.h"
 #include "RakuAstClasses.h"
 #include "Interpreter.h"
 #include "CallCheck.h"
@@ -285,6 +286,8 @@ struct SlimSpec {
     std::string whyFeat;                         // why:FEAT — which feature to explain
 };
 static SlimSpec g_slim;                 // default = level `safe`, nothing cut
+static bool g_slimScanned = false;      // applySlimScan ran, so g_slimBuiltinTags is this program's
+static std::set<std::string> g_slimBuiltinTags; // …the builtin Raku it names (SlimScanResult::builtinTags)
 static bool g_standalone = false;       // --standalone: an unembeddable module is a build ERROR (MODULES-PLAN B2)
 // --static: link the C++ runtime INTO the compiled binary where the platform
 // has one to link — libstdc++/libgcc on Linux, the whole MinGW runtime on
@@ -511,6 +514,53 @@ static std::string slimMarker() { return std::string("RAKUPP-EXE-") + "MANIFEST 
 // clang at -O2 elides an unescaped volatile local, initializer and all —
 // measured, not hypothetical — but a call into another TU with the address
 // as argument is beyond any optimizer's reach.
+// A binary with `eval` cut has no parser, so the builtin Raku the runtime
+// compiles on first use (BuiltinRakuSrc.h: the Supply combinators,
+// Channel.Supply, and IO::CatHandle / IO::Notification when the program names
+// them) travels PRE-PARSED: each snippet parsed here as evalString parses it,
+// serialized, and registered by the binary's start-up, where evalString finds
+// it by its text. One that will not parse or serialize is left out, and its
+// first use throws X::Feature::NotBuilt as it did before. Without a scan
+// (explicit cuts only), every snippet travels.
+static std::string slimPreparsedTU() {
+    static std::string memo;
+    static bool done = false;
+    if (done) return memo;
+    done = true;
+    std::ostringstream d, c;
+    for (size_t i = 0; i < kBuiltinRakuSrcsN; i++) {
+        const BuiltinRakuSrc& b = kBuiltinRakuSrcs[i];
+        if (b.needs && g_slimScanned && !g_slimBuiltinTags.count(b.needs)) continue;
+        std::string blob;
+        try {
+            const std::string src = b.src;
+            Lexer lx(src);
+            lx.tolerant_ = true;
+            Parser ps(lx.tokenize());
+            ps.src_ = &src;
+            ps.strictSep_ = true;
+            Program p = ps.parseProgram();
+            blob = serializeAst(p);
+        } catch (...) {
+            if (!g_quiet) std::cerr << "--slim: the builtin " << b.name << " does not pre-parse; "
+                                       "a binary without `eval` cannot run it\n";
+            continue;
+        }
+        d << "static const unsigned char kPreparsed" << i << "[] = {";
+        for (size_t k = 0; k < blob.size(); k++) d << (k ? "," : "") << (unsigned)(unsigned char)blob[k];
+        d << "};\n";
+        c << "    rakupp::rakuppRegisterPreparsed(" << i << ", reinterpret_cast<const char*>(kPreparsed"
+          << i << "), sizeof kPreparsed" << i << ");\n";
+    }
+    if (c.str().empty()) return memo;
+    // size_t spelled as sizeof's own type: the generated file includes no
+    // header, and `unsigned long` is 32 bits on 64-bit Windows (issue #80)
+    memo = "\n// The builtin Raku, pre-parsed: this binary has no parser (BuiltinRakuSrc.h).\n" + d.str() +
+           "namespace rakupp { void rakuppRegisterPreparsed(decltype(sizeof 0), const char*, decltype(sizeof 0)); }\n"
+           "namespace { struct RkPreparsed { RkPreparsed() {\n" + c.str() + "} } rk_preparsed; }\n";
+    return memo;
+}
+
 static std::string slimManifestTU(const char* how) {
     std::string cut;
     for (int i = 0; i < 4; i++)
@@ -530,7 +580,8 @@ static std::string slimManifestTU(const char* how) {
            "namespace rakupp { void rakuppKeepManifest(const char*); }\n"
            "namespace { struct RkKeepManifest { RkKeepManifest() {\n"
            "    rakupp::rakuppKeepManifest(rakupp_exe_manifest);\n"
-           "} } rk_keep_manifest; }\n";
+           "} } rk_keep_manifest; }\n" +
+           (g_slim.cut[kSlimEval] ? slimPreparsedTU() : std::string());
 }
 
 // The ONE place a feature's fate is decided from (spec, scan) — the compile
@@ -599,6 +650,8 @@ static void applySlimScan(const SlimScanResult& sr) {
     slimDecide(sr, d);
     for (int i = 0; i < 4; i++)
         if (d[i].cut) g_slim.cut[i] = true;
+    g_slimScanned = true;
+    g_slimBuiltinTags = sr.builtinTags;
 }
 
 // --exe-info FILE: print the embedded manifest of a rakupp-compiled binary.
@@ -1180,7 +1233,7 @@ static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
         progs[mi] = std::move(p);
     }
     for (size_t mi = 0; mi < mods.size(); mi++) {
-        if (!progs[mi]) continue;
+        if (!progs[mi] || mods[mi].interpretOnly) continue;   // a builtin's fallback stays interpreted
         Program& prog = *progs[mi];
         std::vector<SubDecl*> routines;
         forEachAotRoutine(prog, [&](SubDecl* sd) { routines.push_back(sd); });
@@ -1818,9 +1871,9 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         // collides with a built-in has to be known to reach it at all.
         std::set<std::string> moduleExports;
         std::vector<ModuleSkip> skips;
-        std::set<std::string> natives;
+        std::set<std::string> natives, engineAnswered;
         auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports,
-                                       &skips, &natives);
+                                       &skips, &natives, nullptr, &engineAnswered);
         if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
         aotMods = mods;
         cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src);
@@ -1837,7 +1890,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         // graph codegen just compiled — and only AFTER transpile succeeded:
         // the CodegenError fallback above bundles an interpreter, where
         // nothing can be proven unused (compileToExe says so itself).
-        if (slimScans()) applySlimScan(slimScan(prog, mods));
+        if (slimScans()) applySlimScan(slimScan(prog, mods, engineAnswered));
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
@@ -2017,7 +2070,7 @@ static int slimHelp(const std::string& selfExe) {
         "features (+keep / -cut, overriding the level; a named feature beats a group):\n";
     const char* what[4] = {"uniname/uniparse/unival",
                            "unicmp, coll, .collate (DUCET)",
-                           "uniprop Script/Block/Bidi_Class",
+                           "uniprop by name, <:Prop> regexes",
                            "EVAL, require, regex code blocks"};
     for (int i = 0; i < 4; i++) {
         char line[128];
@@ -2053,6 +2106,7 @@ static int slimExplain(const std::string& src, const std::string& srcName,
                        const char* modeNote) {
     Program prog;
     std::vector<BundledModule> mods;
+    std::set<std::string> engineAnswered;
     try {
         Lexer lexer(src);
         lexer.tolerant_ = true;
@@ -2061,12 +2115,13 @@ static int slimExplain(const std::string& src, const std::string& srcName,
         parser.libPaths_ = effectiveSearchPath(libPaths);
         parser.srcFile_ = srcName;
         prog = parser.parseProgram();
-        mods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+        mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), nullptr, nullptr, nullptr,
+                                  nullptr, &engineAnswered);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
     }
-    SlimScanResult sr = slimScan(prog, mods);
+    SlimScanResult sr = slimScan(prog, mods, engineAnswered);
     SlimDecision d[4];
     slimDecide(sr, d);
     const char* lvl = g_slim.level == SlimLevel::None ? "none"

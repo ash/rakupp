@@ -78,6 +78,9 @@ bool uniNumValue(uint32_t cp, long long& num, long long& den);
 // probe form: false instead of throwing when --slim cut the table (lexer use)
 bool uniNumValueQuiet(uint32_t cp, long long& num, long long& den); // numeric value as num/den
 int uniDigitValue(uint32_t cp); // Nd decimal digit 0-9, -1 otherwise (never-cut table)
+bool uniFractionValue(uint32_t cp, long long& num, long long& den); // a fraction char's value (never-cut table)
+bool uniIdContinue(uint32_t cp);       // ID_Continue, from rt's never-cut copy (the parser asks it)
+bool uniUnifiedIdeograph(uint32_t cp); // Unified_Ideograph, likewise (collation's implicit weights)
 std::string uniGeneralCategory(uint32_t cp);                   // 2-letter general category ("Nd", "Lu", "Cn"…)
 std::string uniScript(uint32_t cp);                            // approximate script ("Latin", "Greek"…)
 bool uniMatchesProp(uint32_t cp, const std::string& prop);     // regex <:Prop> / char-property test

@@ -18313,4 +18313,12 @@ extern const PropRange BINPROPS[] = {
   {0x3D000,0x3FC3F,66},
 };
 extern const size_t BINPROPS_N = 18303;
+
+// The SLIM seam (src/ucd_seam.h), feature unicode-props: the only way the
+// runtime reaches these tables. Nothing but uniprop, unimatch and a regex
+// <:Prop> naming a binary property reads them; the two the never-cut code
+// asks by name are copied out to unicode_props_core_gen.cpp.
+const PropRange* binPropsTable(size_t* n, const char* const** names, size_t* nnames) {
+    *n = BINPROPS_N; *names = PROPNAMES; *nnames = PROPNAMES_N; return BINPROPS;
+}
 }} // namespace rakupp::ucd

@@ -35,6 +35,7 @@
 #include "Unicode.h"
 #include "RakuAstClasses.h"
 
+#include <cstring>
 #include <set>
 
 namespace rakupp {
@@ -69,13 +70,16 @@ struct Scan {
         while (i < n.size() && (n[i] == '&' || n[i] == '$' || n[i] == '@' || n[i] == '%')) i++;
         return n.substr(i);
     }
-    void noteName(const std::string& raw) {           // a reference by name
+    // `judged`: a call of the uniprop family whose ARGUMENTS noteUniprop reads
+    // next. Every other mention (`&uniprop`, `.&uniprop`, a name term) has no
+    // arguments to read, so it keeps both groups the family can reach.
+    void noteName(const std::string& raw, bool judged = false) {
         std::string n = stripped(raw);
         static const std::set<std::string> namesFns = {"uniname", "uninames", "uniparse",
-                                                       "unival", "univals"};
+                                                       "parse-names", "unival", "univals"};
         static const std::set<std::string> propsFns = {"uniprop", "uniprops", "unimatch"};
         if (namesFns.count(n)) use(F_NAMES, n);
-        if (propsFns.count(n)) { use(F_PROPS, n); use(F_NAMES, n); } // bare &uniprop: args unknown
+        if (propsFns.count(n) && !judged) { use(F_PROPS, n); use(F_NAMES, n); }
         if (n == "collate") use(F_COLL, "collate");
         if (n == "infix:<unicmp>" || n == "infix:<coll>" ||
             n == "[unicmp]" || n == "[coll]") use(F_COLL, "a " + n + " reference");
@@ -95,35 +99,91 @@ struct Scan {
         if (n == "use-ok") { use(F_EVAL, n); trigger("use-ok (a run-time require)"); }
         if (n == "eval-dies-ok" || n == "eval-lives-ok") { use(F_EVAL, n); trigger(n + " (EVAL)"); }
         if (raw == "$*COLLATION") use(F_COLL, "$*COLLATION");
+        // The run-time faces of the compiler and the module loader: each one
+        // reads, parses or loads code the scan never sees (Builtins.cpp,
+        // MethodCallPart1b.cpp) — the `require` of a method's clothing.
+        static const std::set<std::string> loaders = {
+            "load-source", "load-source-file", "repl-eval", "try-load", "need", "run-script",
+            "CompUnit::Loader", "CompUnit::PrecompilationRepository::Default", "REPL"};
+        // (a bare name only — a method or a term — never `$need` or `&need`)
+        if (raw == n && loaders.count(n)) { use(F_EVAL, n); trigger(n + " (loads or compiles code at run time)"); }
+        // the two builtin classes kept as Raku source, compiled on first use:
+        // named, they travel pre-parsed when `eval` is cut (BuiltinRakuSrc.h)
+        if (n == "IO::CatHandle") r.builtinTags.insert("cathandle");
+        if (n.compare(0, 16, "IO::Notification") == 0 || n == "watch") r.builtinTags.insert("notification");
     }
-    void noteOp(const std::string& op) {
-        if (op == "unicmp" || op == "coll") use(F_COLL, "the " + op + " operator");
+    // Also the meta-operator forms: Rcoll, Zcoll, Xcoll, »coll«, [coll] and
+    // [\coll] all apply the same infix (InterpreterCore.cpp applyArith).
+    void noteOp(const std::string& op0) {
+        std::string op;
+        for (char c : op0) if (!std::strchr("[]\\<>", c)) op += c;
+        for (const char* h : {"\u00ab", "\u00bb"})              // « »
+            for (size_t p; (p = op.find(h)) != std::string::npos; ) op.erase(p, 2);
+        while (!op.empty() && std::strchr("RZXS!", op[0]) && op != "coll" && op != "unicmp") op.erase(0, 1);
+        if (op == "unicmp" || op == "coll") use(F_COLL, "the " + op0 + " operator");
     }
-    // uniprop-family call with these arguments (invocant excluded).
+    // A string known at compile time: 'single-quoted' is a StrLit, and
+    // "double-quoted" an InterpStr whose parts are all literal.
+    static bool constStr(const Expr* a, std::string& out) {
+        if (!a) return false;
+        if (a->kind == NK::StrLit) { out = static_cast<const StrLit*>(a)->v; return true; }
+        if (a->kind != NK::InterpStr) return false;
+        out.clear();
+        for (auto& p : static_cast<const InterpStr*>(a)->parts) {
+            if (!p || p->kind != NK::StrLit) return false;
+            out += static_cast<const StrLit*>(p.get())->v;
+        }
+        return true;
+    }
+    static std::string loose(const std::string& p) {
+        std::string norm;
+        for (char c : p) if (ascii::isalnum((unsigned char)c)) norm += (char)ascii::tolower((unsigned char)c);
+        return norm;
+    }
+    // A uniprop-family CALL, judged by its arguments (invocant excluded;
+    // propIdx is where the property name sits). Any argument whose position is
+    // not what it looks like (a slip, a named one) makes the name computed.
     void noteUniprop(const std::string& fn, const std::vector<ExprPtr>& args, size_t propIdx) {
-        if (fn == "uniprops") { use(F_PROPS, fn); use(F_NAMES, fn); return; } // reports many properties
-        if (args.size() <= propIdx) return;            // default = General_Category: never cut
-        Expr* a = args[propIdx].get();
-        if (a && a->kind == NK::StrLit) {
-            std::string p = static_cast<StrLit*>(a)->v;
-            std::string norm;
-            for (char c : p) if (ascii::isalnum((unsigned char)c)) norm += (char)ascii::tolower((unsigned char)c);
-            if (norm == "name" || norm == "na" || norm == "numericvalue" || norm == "nv")
-                { use(F_NAMES, fn + "('" + p + "')"); return; } // Name/Numeric_Value live in the names tables
-            // unimatch hands its argument to the regex matcher; uniprop
-            // resolves the name in an order of its own
-            if (fn == "unimatch" ? uniPropNeedsCutTables(p) : uniUnipropNeedsCutTables(p))
-                use(F_PROPS, fn + "('" + p + "')");
+        auto computed = [&]() {
+            use(F_PROPS, fn + " with a computed property name");
+            use(F_NAMES, fn + " with a computed property name");
+        };
+        for (auto& a : args)
+            if (!a || a->kind == NK::Pair ||
+                (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|")) { computed(); return; }
+        if (fn == "unimatch") {
+            // unimatch(c, value [, property]) — BuiltinsRegister2.cpp. Given a
+            // property, only Script and Block read a cut table. Without one, a
+            // value the category does not match falls through to the props
+            // matcher and then to the BLOCK names, whatever the value is, so the
+            // two-argument form reaches unicode-props for any character it
+            // rejects. Neither form reads a names table.
+            if (args.size() <= propIdx) return;        // fewer than two: False, reads nothing
+            if (args.size() <= propIdx + 1) { use(F_PROPS, fn + " (it falls back to the block names)"); return; }
+            std::string p;
+            if (!constStr(args[propIdx + 1].get(), p)) { use(F_PROPS, fn + " with a computed property name"); return; }
+            const std::string n = loose(p);
+            if (n == "script" || n == "sc" || n == "block" || n == "blk") use(F_PROPS, fn + "(…, '" + p + "')");
             return;
         }
-        use(F_PROPS, fn + " with a computed property name");
-        use(F_NAMES, fn + " with a computed property name");
+        // uniprop and uniprops resolve the name the same way (MethodCallPart3.cpp,
+        // the `one` lambda); uniprops just asks it of every codepoint.
+        if (args.size() <= propIdx) return;            // default = General_Category: never cut
+        std::string p;
+        if (!constStr(args[propIdx].get(), p)) { computed(); return; }
+        // Name and Numeric_Value live in the names tables — matched EXACTLY, as
+        // the method matches them: 'Na' is East_Asian_Width's value Narrow, and
+        // 'name' falls through to the binary properties, both unicode-props.
+        if (p == "Name" || p == "na" || p == "Numeric_Value" || p == "nv")
+            { use(F_NAMES, fn + "('" + p + "')"); return; }
+        if (uniUnipropNeedsCutTables(p)) use(F_PROPS, fn + "('" + p + "')");
     }
 
     // ---- regex pattern text -------------------------------------------------
     // Extract a brace-balanced block starting at pat[i] == '{'; returns the
     // inside or fails (quote-aware — a '}' inside a string must not close it).
-    static bool extractBlock(const std::string& pat, size_t i, std::string& body, size_t& end) {
+    static bool extractBlock(const std::string& pat, size_t i, std::string& body, size_t& end,
+                             char open = '{', char close = '}') {
         int depth = 0; char q = 0; bool esc = false;
         size_t start = i + 1;
         for (; i < pat.size(); i++) {
@@ -132,11 +192,13 @@ struct Scan {
             if (c == '\\') { esc = true; continue; }
             if (q) { if (c == q) q = 0; continue; }
             if (c == '\'' || c == '"') { q = c; continue; }
-            if (c == '{') depth++;
-            else if (c == '}' && --depth == 0) { body = pat.substr(start, i - start); end = i; return true; }
+            if (c == open) depth++;
+            else if (c == close && --depth == 0) { body = pat.substr(start, i - start); end = i; return true; }
         }
         return false;
     }
+    static bool identStart(char c) { return ascii::isalpha((unsigned char)c) || c == '_'; }
+    static bool identChar(char c) { return ascii::isalnum((unsigned char)c) || c == '_' || c == '-'; }
     void scanEmbeddedCode(const std::string& code);     // parse + walk (defined below)
 
     void scanPattern(const std::string& pat) {
@@ -170,12 +232,32 @@ struct Scan {
                         if (extractBlock(pat, j, b, e)) { scanEmbeddedCode(b); i = e; continue; } }
                     continue;
                 }
+                if (j + 2 < pat.size() && pat[j] == ':' && pat[j+1] == ':' && pat[j+2] == '(') {
+                    use(F_EVAL, "a symbolic subrule <::(…)>");   // the name is computed, then looked up
+                    trigger("a symbolic subrule (<::(…)>)");
+                    continue;
+                }
+                if (j < pat.size() && pat[j] == '&') {           // <&rx> / <&rx(args)>
+                    size_t k = j + 1;
+                    while (k < pat.size() && (identChar(pat[k]) || pat[k] == ':')) k++;
+                    if (k < pat.size() && pat[k] == '(') use(F_EVAL, "<&rx(…)> arguments in a regex");
+                    i = k - 1; continue;
+                }
                 if (j < pat.size() && pat[j] == ':') {  // <:Prop> / <:!Prop> / <:sc<…>>
                     size_t k = j + 1;
                     if (k < pat.size() && pat[k] == '!') k++;
                     size_t s = k;
                     while (k < pat.size() && (ascii::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
                     std::string name = pat.substr(s, k - s);
+                    if (k < pat.size() && pat[k] == '(') {
+                        // <:Name(/LATIN/)>, <:nv(0^..^1)>: a code assertion over
+                        // .uniname / .unival / .uniprop (Regex.cpp), so the parser
+                        // and whichever table the property lives in
+                        use(F_EVAL, "<:" + name + "(…)> in a regex");
+                        use(F_NAMES, "<:" + name + "(…)> in a regex");
+                        use(F_PROPS, "<:" + name + "(…)> in a regex");
+                        i = k - 1; continue;
+                    }
                     if (k < pat.size() && pat[k] == '<') {          // value form: name<val>
                         size_t v = k + 1, vend = pat.find('>', v);
                         if (vend != std::string::npos) {
@@ -188,7 +270,49 @@ struct Scan {
                         use(F_PROPS, "<:" + name + "> in a regex");
                     i = k - 1; continue;
                 }
+                // <name(args)>, <.name(args)>, <name: args>: the arguments are
+                // Raku, evaluated when the rule runs (InterpreterRegex.cpp) — a
+                // method call's always, a subrule's unless a plain literal
+                {
+                    size_t k = j;
+                    if (k < pat.size() && pat[k] == '.') k++;
+                    // (twice for an alias, `<name=.method(args)>`: the target is the call)
+                    for (int part = 0; part < 2 && k < pat.size() && identStart(pat[k]); part++) {
+                        for (;;) {                       // the name, `::` parts included
+                            while (k < pat.size() && identChar(pat[k])) k++;
+                            if (k + 1 < pat.size() && pat[k] == ':' && pat[k+1] == ':') { k += 2; continue; }
+                            break;
+                        }
+                        if (k < pat.size() && (pat[k] == '(' || pat[k] == ':')) {
+                            use(F_EVAL, "a subrule or method with arguments in a regex");
+                            break;
+                        }
+                        if (k >= pat.size() || pat[k] != '=') break;
+                        k++;
+                        if (k < pat.size() && (pat[k] == '.' || pat[k] == '&')) k++;
+                    }
+                }
                 continue;
+            }
+            if ((c == '$' || c == '@') && i + 1 < pat.size()) {
+                const char n = pat[i+1];
+                // $( … ) / @( … ): an expression, evaluated at match time
+                if (n == '(') {
+                    use(F_EVAL, std::string(1, c) + "(…) in a regex");
+                    std::string b; size_t e;
+                    if (extractBlock(pat, i + 1, b, e, '(', ')')) { scanEmbeddedCode(b); i = e; }
+                    else trigger("a regex interpolation the scan could not extract");
+                    continue;
+                }
+                // a variable atom ($x, $*dyn, @list, $!attr, $.meth): the engine
+                // asks the interpreter for its value (Regex.cpp hooks), and a
+                // grammar rule compiles natively with it inside. `$` before
+                // anything else is an anchor; $0 / $<name> / $/ are the match's.
+                if (identStart(n) || ((n == '*' || n == '?' || n == '!' || n == '.') &&
+                                      i + 2 < pat.size() && identStart(pat[i+2]))) {
+                    use(F_EVAL, "a variable interpolated into a regex");
+                    continue;
+                }
             }
             if (c == '{') {                             // a literal code block: visible source
                 use(F_EVAL, "a regex code block");      // evalString runs it at match time
@@ -198,11 +322,27 @@ struct Scan {
                 continue;
             }
             if (c == ':' && i + 1 < pat.size() &&
-                (ascii::isalpha((unsigned char)pat[i+1]) || pat[i+1] == '_')) {
+                (ascii::isalpha((unsigned char)pat[i+1]) || pat[i+1] == '_' || pat[i+1] == '!')) {
+                // a `+:Prop` / `-:Prop` member of a composed class — `<[a..z] +
+                // :Han>`, `<:L - :Latin>`, `<+:Lu +:Greek>` — is a property like
+                // the first one (Regex.cpp, the +rule/-rule members)
+                size_t b = i;
+                while (b > 0 && (pat[b-1] == ' ' || pat[b-1] == '\t')) b--;
+                if (b > 0 && (pat[b-1] == '+' || pat[b-1] == '-')) {
+                    size_t s = i + 1 + (pat[i+1] == '!'), k = s;
+                    while (k < pat.size() && (ascii::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
+                    const std::string name = pat.substr(s, k - s);
+                    if (!name.empty() && ((k < pat.size() && pat[k] == '<') || uniPropNeedsCutTables(name)))
+                        use(F_PROPS, "+:" + name + " in a regex class");
+                    i = k - 1; continue;
+                }
+                if (pat[i+1] == '!') continue;
                 size_t k = i + 1;
                 while (k < pat.size() && (ascii::isalnum((unsigned char)pat[k]) || pat[k] == '_')) k++;
                 std::string adv = pat.substr(i + 1, k - i - 1);
-                if (adv == "my") use(F_EVAL, ":my in a regex"); // executes via evalString
+                // the declarators run through evalString, :my and its siblings
+                if (adv == "my" || adv == "our" || adv == "constant" || adv == "state" ||
+                    adv == "temp" || adv == "let") use(F_EVAL, ":" + adv + " in a regex");
                 if (k < pat.size() && pat[k] == '(')
                     use(F_EVAL, ":" + adv + "(…) in a regex");  // the argument evaluates
                 i = k - 1; continue;
@@ -224,6 +364,9 @@ struct Scan {
                 else trigger("an s/// replacement block the scan could not extract");
                 continue;
             }
+            if (c == '$' && i + 2 < repl.size() && repl[i + 1] == '/' &&
+                (repl[i + 2] == '[' || repl[i + 2] == '.' || repl[i + 2] == '<' || repl[i + 2] == '{'))
+                use(F_EVAL, "an s/// replacement indexing $/");   // InterpreterRegex.cpp evaluates it
             if ((c == '$' || c == '@') && i + 1 < repl.size()) {
                 char n = repl[i + 1];
                 // $0 / $<name> are capture refs the engine resolves itself; a
@@ -304,21 +447,25 @@ struct Scan {
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
                 if (u->op == "require") { use(F_EVAL, "require"); trigger("require"); }
+                noteOp(u->op);                          // [coll] and its siblings
                 walkE(u->operand.get());
                 break;
             }
             case NK::Call: {
                 auto* c = static_cast<Call*>(e);
                 if (!c->name.empty()) {
-                    noteName(c->name);
-                    if (c->name == "uniprop" || c->name == "uniprops" || c->name == "unimatch")
-                        noteUniprop(c->name, c->args, 1);
+                    const bool judged = c->name == "uniprop" || c->name == "uniprops" || c->name == "unimatch";
+                    noteName(c->name, judged);
+                    if (judged) noteUniprop(c->name, c->args, 1);
                     if (c->name == "EVALFILE") { use(F_EVAL, "EVALFILE"); trigger("EVALFILE"); }
-                    // throws-like's FIRST argument may be a string of code —
-                    // which the builtin EVALs. A block argument is ordinary.
-                    if (c->name == "throws-like" && !c->args.empty() &&
-                        c->args[0] && c->args[0]->kind == NK::StrLit)
-                        { use(F_EVAL, "throws-like with code in a string"); trigger("throws-like (EVAL)"); }
+                    // throws-like's and fails-like's FIRST argument may be a
+                    // string of code, which the builtin EVALs — a literal, an
+                    // interpolated string or a variable holding one alike. Only
+                    // a block is known not to be.
+                    if ((c->name == "throws-like" || c->name == "fails-like") && !c->args.empty() &&
+                        (!c->args[0] || c->args[0]->kind != NK::BlockExpr))
+                        { use(F_EVAL, c->name + " with code in a string");
+                          trigger(c->name + " (EVAL of a string)"); }
                 }
                 walkE(c->callee.get());
                 for (auto& a : c->args) walkE(a.get());
@@ -331,9 +478,9 @@ struct Scan {
                     walkE(m->methodExpr.get());
                 }
                 else {
-                    noteName(m->method);
-                    if (m->method == "uniprop" || m->method == "uniprops" || m->method == "unimatch")
-                        noteUniprop(m->method, m->args, 0);
+                    const bool judged = m->method == "uniprop" || m->method == "uniprops" || m->method == "unimatch";
+                    noteName(m->method, judged);
+                    if (judged) noteUniprop(m->method, m->args, 0);
                     if (m->meta && (m->method == "lookup" || m->method == "find_method" ||
                                     m->method == "can"))
                         trigger("a metamodel lookup (.^" + m->method + ")");
@@ -363,6 +510,9 @@ struct Scan {
                     use(F_PROPS, "an nqp Unicode property read");
                     use(F_NAMES, "an nqp Unicode property read");
                 }
+                // unipvalcode asks the binary-property table whether its
+                // property is one (BuiltinsNqp.cpp, uniPvalCodeOf)
+                if (q->op == NqpOpc::UniPvalCode) use(F_PROPS, "nqp::unipvalcode");
                 for (auto& a : q->args) walkE(a.get());
                 break;
             }
@@ -428,7 +578,16 @@ struct Scan {
                     for (auto& ut : a.userTraits) walkE(ut.second.get());
                 }
                 for (auto& m : c->methods) walkS(m.get());
-                for (auto& r0 : c->rules) scanPattern(r0.pattern);
+                for (auto& r0 : c->rules) {
+                    scanPattern(r0.pattern);
+                    // `token x:sym(EXPR)`: the name's key is evaluated when the
+                    // grammar is installed (InterpreterModules.cpp installRuleResolved)
+                    if (r0.name.find(":sym<\x02") != std::string::npos) use(F_EVAL, "a computed :sym<…> rule name");
+                }
+                // `is RakuAST::Node` / `does RakuAST::…` reach the class registry
+                noteName(c->parent);
+                for (auto& p0 : c->extraParents) noteName(p0);
+                for (auto& r0 : c->roles) noteName(r0);
                 walkE(c->verExpr.get()); walkE(c->authExpr.get()); walkE(c->apiExpr.get());
                 walkParams(c->roleParams);
                 for (auto& ra : c->roleArgs) for (auto& a : ra.second) walkE(a.get());
@@ -470,6 +629,9 @@ struct Scan {
             case NK::UseStmt: {
                 auto* u = static_cast<UseStmt*>(s);
                 if (!u->module.empty() && !u->isNo) useNames.insert(u->module);
+                // `import Cls` turns the class's `is export` methods into subs
+                // by compiling a wrapper for each (InterpreterModules.cpp)
+                if (u->isImport) use(F_EVAL, "import (its exported methods compile at run time)");
                 // `use experimental :rakuast` asks for the class registry, which
                 // lives in the parse archive — same reason as a RakuAST:: name.
                 if (u->module == "experimental" && !u->isNo)
@@ -515,7 +677,8 @@ void Scan::scanEmbeddedCode(const std::string& code) {
 
 } // namespace
 
-SlimScanResult slimScan(const Program& prog, const std::vector<BundledModule>& mods) {
+SlimScanResult slimScan(const Program& prog, const std::vector<BundledModule>& mods,
+                        const std::set<std::string>& engineAnswered) {
     Scan sc;
     for (auto& s : prog.stmts) sc.walkS(s.get());
     std::set<std::string> embedded;
@@ -531,9 +694,13 @@ SlimScanResult slimScan(const Program& prog, const std::vector<BundledModule>& m
     // Trigger 4: a `use`d module that is NOT riding along in the embedded
     // graph — unresolvable, unparseable or unserializable, all of which
     // collectModuleGraph skips silently — will be loaded from DISK at run
-    // time: code the scan never saw, plus the parser to load it.
+    // time: code the scan never saw, plus the parser to load it. A module the
+    // ENGINE answers (collectModuleGraph's engineAnswered: Data::Native and its
+    // siblings, `use`d in a form the engine takes) has no code to see: the
+    // binary carries its primitives, and in a compiled binary the engine's
+    // answer is final (dataNativeUse), so nothing is read from disk (#166).
     for (const auto& name : sc.useNames) {
-        if (embedded.count(name) || isPragmaName(name)) continue;
+        if (embedded.count(name) || isPragmaName(name) || engineAnswered.count(name)) continue;
         sc.curLine = 0;
         sc.use(F_EVAL, "module " + name + " loaded from disk at run time");
         sc.trigger("module " + name + " is not embedded (loaded from disk at run time)");

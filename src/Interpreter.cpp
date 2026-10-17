@@ -850,20 +850,18 @@ Value numifyStr(const std::string& in) {
             auto cps = utf8cp(s);
             if (cps.size() == 1 && cps[0] >= 0x80) {
                 long long num, den;
-                if (uniNumValueQuiet(cps[0], num, den)) {
-                    // A fraction by its VALUE covers every one of them but
-                    // U+2189 VULGAR FRACTION ZERO THIRDS, whose value Unicode
-                    // records as plain 0 — so the NAME settles that one. It is
-                    // also what keeps a Roman numeral, an ideographic number and
-                    // a Tamil number out: those carry a numeric value too.
-                    // …and the answer is the ALLOMORPH: `"½".Numeric` is
-                    // `RatStr.new(0.5, "½")`, keeping the character it was
-                    // written as, which is what `val` then hands on.
-                    if (den != 1 || uniNameOf(cps[0]).rfind("VULGAR FRACTION", 0) == 0) {
-                        Value r = Value::rat(BigInt(num), BigInt(den == 0 ? 1 : den));
-                        r.hashKind = "RatStr"; r.s = s;
-                        return r;
-                    }
+                // A fraction by its VALUE covers every one of them but U+2189
+                // VULGAR FRACTION ZERO THIRDS, whose value Unicode records as
+                // plain 0 — so the generator adds that one by its NAME. Either
+                // way it keeps a Roman numeral, an ideographic number and a
+                // Tamil number out: those carry a numeric value too, an integer.
+                // …and the answer is the ALLOMORPH: `"½".Numeric` is
+                // `RatStr.new(0.5, "½")`, keeping the character it was written
+                // as, which is what `val` then hands on.
+                if (uniFractionValue(cps[0], num, den)) {
+                    Value r = Value::rat(BigInt(num), BigInt(den == 0 ? 1 : den));
+                    r.hashKind = "RatStr"; r.s = s;
+                    return r;
                 }
             }
         }
@@ -8275,7 +8273,9 @@ static bool findModuleSourceFor(const std::string& name,
         pathOut = repo + "/sources/" + lines[3]; srcOut = ss.str();
         return true;
     }
-    return false;
+    // …and last, as in the loader, a copy this binary bundles: JSON::Native::Raku,
+    // which a compile mode has to find to embed it beside the json codecs.
+    return rakuppBundledModule(name, pathOut, srcOut);
 }
 
 // Directory-only existence check: does a plain `-I`/`use lib` entry hold this
@@ -8363,15 +8363,38 @@ static void collectUseNames(const std::vector<StmtPtr>& stmts, std::vector<std::
 // Only those may be fetched (DEPS-PLAN: `require` is how code probes for an
 // optional module).
 static thread_local std::map<std::string, std::string>* t_usedNames = nullptr;
+// …and the modules the engine answers (Data::Native and its siblings) that
+// some statement loads in a form the engine does NOT answer: `need`, `require`,
+// `use M ()` or a version (dataNativeUse). Those load the distribution, so the
+// graph collects it like any other module.
+static thread_local std::set<std::string>* t_engineDiskUses = nullptr;
+// …and which modules the graph holds only as a builtin's fallback, against
+// the ones some statement names (BundledModule::interpretOnly).
+static thread_local std::set<std::string>* t_fallbackMods = nullptr;
+static thread_local std::set<std::string>* t_namedMods = nullptr;
 
 static void collectUseNamesStmt(const Stmt* st, std::vector<std::string>& out) {
     if (!st) return;
     switch (st->kind) {
         case NK::UseStmt: {
             auto* u = static_cast<const UseStmt*>(st);
-            if (!u->isNo && !u->module.empty() && u->fromLang.empty()) out.push_back(u->module); // `:from<NQP>`: nothing to bundle
+            if (!u->isNo && !u->module.empty() && u->fromLang.empty()) {
+                out.push_back(u->module); // `:from<NQP>`: nothing to bundle
+                if (t_namedMods) t_namedMods->insert(u->module);
+            }
             if (t_usedNames && !u->isNo && !u->isRequire && !u->module.empty() && u->fromLang.empty())
                 t_usedNames->emplace(u->module, u->authReq);
+            if (!u->isNo && !u->isImport && u->fromLang.empty() && rakuppCompilerAnswersModule(u->module)) {
+                if (u->isNeed || u->isRequire || u->emptyImport || !u->verReq.empty()) {
+                    if (t_engineDiskUses) t_engineDiskUses->insert(u->module);
+                }
+                // the json codecs' fallback travels with them (not a fetchable
+                // name, so it stays out of t_usedNames)
+                else if (rakuppAnsweredUseHandsOutJson(u->module, u->importArgs)) {
+                    out.push_back("JSON::Native::Raku");
+                    if (t_fallbackMods) t_fallbackMods->insert("JSON::Native::Raku");
+                }
+            }
             break;
         }
         case NK::Block: collectUseNames(static_cast<const Block*>(st)->stmts, out); break;
@@ -8634,17 +8657,28 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               std::set<std::string>* exportsOut,
                                               std::vector<ModuleSkip>* skipsOut,
                                               std::set<std::string>* nativeLibsOut,
-                                              std::set<std::string>* usedOut) {
+                                              std::set<std::string>* usedOut,
+                                              std::set<std::string>* engineAnsweredOut) {
     std::vector<BundledModule> out;
     std::set<std::string> seen;
     std::set<std::string> distsSeen;   // a dist's resources travel once, not once per module
     std::vector<std::string> queue;
     std::map<std::string, std::string> used;
+    std::set<std::string> engineDiskUses, engineAnswered, fallbackMods, namedMods;
     struct UsedScope {
         std::map<std::string, std::string>& used; std::set<std::string>* out;
-        ~UsedScope() { t_usedNames = nullptr; if (out) for (auto& kv : used) out->insert(kv.first); }
-    } usedScope{used, usedOut};
+        std::set<std::string>& answered; std::set<std::string>* answeredOut;
+        ~UsedScope() {
+            t_usedNames = nullptr; t_engineDiskUses = nullptr;
+            t_fallbackMods = nullptr; t_namedMods = nullptr;
+            if (out) for (auto& kv : used) out->insert(kv.first);
+            if (answeredOut) answeredOut->insert(answered.begin(), answered.end());
+        }
+    } usedScope{used, usedOut, engineAnswered, engineAnsweredOut};
     t_usedNames = &used;
+    t_engineDiskUses = &engineDiskUses;
+    t_fallbackMods = &fallbackMods;
+    t_namedMods = &namedMods;
     collectUseNames(prog.stmts, queue);
     if (nativeLibsOut) collectNativeLibNames(prog.stmts, *nativeLibsOut);
     if (skipsOut) {
@@ -8654,7 +8688,17 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
             "a runtime-computed `require ::($name)` — its target cannot be known at compile time"});
     }
 
-    for (size_t qi = 0; qi < queue.size(); qi++) {
+    for (size_t qi = 0; ; qi++) {
+        if (qi == queue.size()) {
+            // A module parsed late may `need` what an earlier `use` left to the
+            // engine: that statement loads the distribution, so collect it now.
+            bool more = false;
+            for (auto it = engineAnswered.begin(); it != engineAnswered.end(); ) {
+                if (!engineDiskUses.count(*it)) { ++it; continue; }
+                seen.erase(*it); queue.push_back(*it); it = engineAnswered.erase(it); more = true;
+            }
+            if (!more) break;
+        }
         const std::string name = queue[qi];
         if (name.empty() || !seen.insert(name).second) continue;
         if (isPragmaName(name)) continue;                 // no file behind it
@@ -8663,10 +8707,16 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         // a skip is not merely noisy: --standalone refuses to build when the
         // skip list is non-empty, so `rakupp --exe --standalone` on a program
         // using Data::Native was refused for needing a disk it does not touch.
-        // An explicit -I still wins here exactly as it does in the loader, so a
-        // checkout under -I is collected and embedded normally.
-        if (rakuppCompilerAnswersModule(name) &&
-            !moduleFileOnPath(name, searchPath, prog.langRev >= 2)) continue;
+        // Whatever makes the loader step aside makes the graph collect it
+        // instead: an explicit -I copy, a newer installed distribution, a `use`
+        // in a form the engine does not answer. The binary then takes the
+        // embedded copy, and otherwise the engine — never the disk it runs on.
+        if (rakuppCompilerAnswersModule(name) && !engineDiskUses.count(name) &&
+            !moduleFileOnPath(name, searchPath, prog.langRev >= 2) &&
+            !rakuppNewerDistInstalled(name, searchPath)) {
+            engineAnswered.insert(name);
+            continue;
+        }
         std::string path, src;
         // DEPS-PLAN D4: a compile mode fetches what a `use` needs and nobody
         // has, so the binary embeds it — the binary itself never fetches.
@@ -8717,6 +8767,7 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         // loaded from none. The resources and META6 ride on the FIRST module of
         // each dist, so a dist providing a dozen modules carries one copy.
         BundledModule bm{name, std::move(blob), std::move(finish), std::move(src)};
+        bm.interpretOnly = fallbackMods.count(name) && !namedMods.count(name);
         std::string distKey, distMeta;
         std::vector<BundledResource> res;
         if (embeddedDistContext(path, name, distKey, distMeta, res)) {

@@ -4997,6 +4997,9 @@ bool Regex::matchAt(const std::string& subject, long pos, RxMatch& out, const Su
 
 // Resolve a `\c[…]` character name: full Unicode name, common control abbreviation, or decimal.
 static int32_t namedCp(const std::string& nm) {
+    // a decimal first: no character's name starts with a digit, and `\c65` /
+    // `<[\c32..\c126]>` must not need the name table (--slim cuts it)
+    if (!nm.empty() && ascii::isdigit((unsigned char)nm[0])) return (int32_t)std::strtol(nm.c_str(), nullptr, 10);
     int32_t cp = uniCharByName(nm);
     if (cp >= 0) return cp;
     static const std::map<std::string, int> ab = {

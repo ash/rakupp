@@ -251,15 +251,25 @@ Short list on purpose. A knob nobody can reason about is worse than no knob.
 |---|---|---|---|
 | `unicode-names` | `NAMES`, `NUMV` | 1.75 MB | `uniname`, `uninames`, `uniparse`, `unival`, `univals`, and the `.uniname`/`.uniparse`/`.unival` methods |
 | `unicode-collation` | DUCET `COLLCE`/`COLLSING`/`COLLCONTR` | 0.74 MB | `unicmp`, the `coll` operator, `.collate`, `$*COLLATION` |
-| `unicode-props` | `SCRIPTS`, `BLOCKS`, `BIDI`, and `unicode_props2_gen` (since 2026-10-17) | 0.40 MB | `uniprop` family with a non-literal property name, or naming a property those tables hold (Script, Block, Bidi_Class, Age, Line_Break, East_Asian_Width, …); regex `<:Script<…>>`, `<:Block<…>>`, bidi classes, and the value form of every enumerated property (`<:Line_Break<AL>>`) |
+| `unicode-props` | `SCRIPTS`, `BLOCKS`, `BIDI`, `unicode_props2_gen` and the binary properties `unicode_props_gen` (both since 2026-10-17) | 0.61 MB | `uniprop` family with a non-literal property name, or naming a property those tables hold (Script, Block, Bidi_Class, Age, Line_Break, East_Asian_Width, every binary property, …); `unimatch` in its two-argument form or naming Script or Block; regex `<:Script<…>>`, `<:Block<…>>`, `<:Math>`, bidi classes, and the value form of every enumerated property (`<:Line_Break<AL>>`) |
 | `eval` | `Lexer`, `Parser` | 0.55 MB | `EVAL`, `EVALFILE`, `require`, a regex built from a runtime string |
 
-**Not cuttable, deliberately:** `unicode_props_gen`, `unicode_norm_gen`,
-`unicode_case_gen`, `unicode_gb_gen`, `unicode_gen`. General category, binary
-properties, normalization, case mapping and grapheme breaking are reached by
-ordinary string operations — `.uc`, `.chars`, any regex, any comparison.
-Cutting them would mean analysing every string expression in the program,
-which is the analysis this plan is built to avoid.
+**Not cuttable, deliberately:** `unicode_norm_gen`, `unicode_case_gen`,
+`unicode_gb_gen`, `unicode_gen`. General category, normalization, case mapping
+and grapheme breaking are reached by ordinary string operations — `.uc`,
+`.chars`, any regex, any comparison. Cutting them would mean analysing every
+string expression in the program, which is the analysis this plan is built to
+avoid. `unicode_gen` also carries `FRAC`, the fractions out of NUMV, because
+plain numification reads them (`"½".Numeric`).
+
+`unicode_props_gen`, the binary properties, was on that list until
+2026-10-17, and wrongly: the ordinary regex classes (`\w`, `<alpha>`,
+`<:Lu>`, `<:space>`) answer from the general category before any binary
+property is consulted, and the only other readers are `uniprop`, `unimatch`,
+a regex `<:Prop>` naming one, the parser's interpolation scan (ID_Continue)
+and collation's implicit weights (Unified_Ideograph). The last two read a
+never-cut copy, `unicode_props_core_gen.cpp`, and the table moved behind
+`ucd::binPropsTable` into `unicode-props`: 214,624 bytes off every slim hello.
 
 `unicode_props2_gen` was on that list until 2026-10-17, by its name rather
 than its contents. Its tables are the enumerated properties (Age, Line_Break,
@@ -628,6 +638,66 @@ in the style the CLI campaign established.
 > names all four features in the manifest and still matches; `verify`
 > agree-path golden'd there, refuse-path in `t/slim/run.raku` (now 48
 > checks). CLI.md gets the directive table, README the size row.
+
+### The 2026-10-17 revision — what the cut list had stopped matching
+
+Two months and some 40,000 lines of engine after P4, the question "does
+`--slim` still cut what is unused, and only that?" was asked again: issue
+#166, then a linker map of a slim hello, then an audit of every caller of
+every seam accessor and of the parser's entry points. It found the cut list
+both too timid and, in places, wrong.
+
+Too timid:
+
+- **Engine-answered modules were "loaded from disk"** (issue #166). `use
+  Data::Native` and its four siblings are answered from builtins
+  (DATA-PLAN P6), and collectModuleGraph already knew it; the scan's
+  trigger 4 did not, so any such program kept every feature. The collector
+  now reports what it left to the engine and the scan exempts exactly
+  those. A compiled binary takes that answer as final (`dataNativeUse`
+  step 0): an embedded copy if the compile made one, else the engine,
+  never a file on the machine running it. The json codecs' fallback,
+  JSON::Native::Raku, is embedded beside them (AST only, interpreted: 50 KB
+  rather than the 383 KB its routines cost compiled), which also fixed full
+  binaries dying "Could not find JSON::Native::Raku" on a clean machine.
+- **Every `uniprop` call kept two features**, whatever its argument: the
+  name check marked the family like a bare `&uniprop` before the per-argument
+  rule ran. Calls are judged by their argument now, a double-quoted literal
+  included, with `uniprop`'s own resolution order mirrored exactly
+  (`uniUnipropNeedsCutTables`).
+- **The binary properties**, above.
+
+Wrong — each a binary that built, ran and then misbehaved:
+
+- `"½".Numeric` with `unicode-names` cut answered "not a number" (silently:
+  a probe returned null). It reads `FRAC` now.
+- Builtin Raku compiled at run time needed the parser: `$supply.map`,
+  `.grep`, `.do`, `.stable`, `.delayed`, `$channel.Supply`,
+  `IO::CatHandle`, `IO::Notification`. These are in one table now
+  (BuiltinRakuSrc.h); a compile that cuts `eval` pre-parses them and the
+  binary registers the ASTs, which evalString reads in place of the text
+  (1.8 KB for the always-carried ones; the two classes only when named).
+- Scan rules that were missing: `\c65` (now resolved without the name
+  table), composed-class members (`<[a..z] + :Han>`), `<:Prop(…)>`,
+  `$( … )` and variable atoms in grammar rules, `<.method(args)>`,
+  `<::(…)>`, `<&rx(…)>`, `:our`/`:state`/`:temp`/`:let`, `$/[…]` in a
+  replacement, `parse-names`, the collation meta-operators, `fails-like` and
+  non-literal `throws-like` code, `nqp::unipvalcode`, `import`, a computed
+  `:sym<…>`, `is RakuAST::…`, and the run-time loader APIs (`load-source`,
+  `repl-eval`, `.need`, …).
+- Three lenient catches swallowed `X::Feature::NotBuilt` (throws-like,
+  fails-like, an `import`'s method wrappers); they rethrow it.
+
+Gates: `t/slim/run.raku` 92/92 (was 61); `tools/slim-diff.raku` 1,045 of
+1,074 byte-identical, 0 different (18 do not build natively at all, 9 disagree
+with themselves, 2 time out); `t/run.raku` 1672/1672; `t/oracle/unicode.raku
+--only=props` every code point; Roast unchanged, 1425/1425 files and 220,845
+tests in a clean worktree before and after. The differential needed two harness
+fixes to finish at all: each binary's own path is normalized out of its output,
+and the harness reaps its shell — rakupp leaves a zombie for a `run` whose
+`.exitcode` nobody reads, and a full corpus run had reached the per-user process
+limit near program 475, after which every build "did not compile".
+Size, arm64 on the dev box: `--slim=-all` hello 12,879,880 → 12,666,168.
 
 ### P6 — flip `auto` to the default
 

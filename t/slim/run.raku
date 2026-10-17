@@ -185,6 +185,15 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # is the interpreter: InterpreterCore, MethodCall*, Builtins*, Regex, nothing
 # CLI-only. The x86_64 slice, derived at the 7.8% spread, is ≈13,866,000 and
 # over this line, as it already was before the move; CI measures arm64 only.
+#
+# Later the same day the question went one level down, to the largest single
+# symbols in that map: ucd::BINPROPS, the binary properties (219,640 bytes),
+# was filed with the string-operation tables but is read only by uniprop,
+# unimatch and a <:Prop> naming one (the regex classes answer from the
+# general category first). It rides unicode-props now, with ID_Continue and
+# Unified_Ideograph copied out for the parser and collation, and this box's
+# arm64 hello-all went 12,879,880 → 12,665,256; the builtin Raku a binary
+# without `eval` now carries pre-parsed puts back 912 bytes (12,666,168).
 my $full-size;
 my $all-size;
 
@@ -415,12 +424,19 @@ my $catch = probe('catch.raku', q:to/END/);
 # unicode-props, and two names reach them that the regex rules read as a
 # category letter: the value in <:Hangul_Syllable_Type<L>>, and .uniprop('W'),
 # which uniprop answers as East_Asian_Width. Each alone must keep the feature.
-# (Today ANY uniprop call keeps it, because noteName marks every call like a
-# bare &uniprop, so the .uniprop('W') case guards the per-name rule underneath
-# for the day that blanket goes. The regex case is live now: before the props2
-# tables moved, the scan proved it unused.)
+# A uniprop CALL is judged by its property argument (since 2026-10-17; before,
+# every call kept props and names like a bare &uniprop). The binary properties
+# (unicode_props_gen.cpp) ride unicode-props too, and uniprop resolves a name
+# its own way: .uniprop('Lowercase') is the binary property, where the regex
+# <:Lowercase> is the category Ll.
 for ('up-w',    q{print 'a'.uniprop('W');},                                         'Na',
                 '.uniprop(\'W\') (East_Asian_Width by a value name)'),
+    ('up-math', q{print '∑'.uniprop('Math');},                                     'True',
+                ".uniprop('Math') (a binary property)"),
+    ('up-lower', q{print 'a'.uniprop("Lowercase");},                               'True',
+                '.uniprop("Lowercase") (the binary property, not the category)'),
+    ('rx-math', q{print '∑' ~~ /<:Math>/ ?? 'M' !! 'N';},                          'M',
+                'a <:Math> regex (a binary property)'),
     ('rx-hst',  q{print "\x[1100]" ~~ /<:Hangul_Syllable_Type<L>>/ ?? 'M' !! 'N';}, 'M',
                 'a <:Hangul_Syllable_Type<L>> regex'),
     # …and an alias the never-cut tables do not spell: <:ccc<A>> is 230,
@@ -440,9 +456,9 @@ for ('up-w',    q{print 'a'.uniprop('W');},                                     
           "exit $xc: $out / $err / $line";
 }
 # …and with the feature cut by hand, an enumerated property throws, while the
-# uniprop names that resolve from never-cut tables (a binary property, the
-# default General_Category, a case mapping) pass the enumerated-property
-# lookup without touching it.
+# uniprop names that resolve from never-cut tables (the default
+# General_Category, a case mapping, a category value) pass the
+# enumerated-property lookup without touching it.
 {
     my $src = probe('cut-enum.raku', q{print 'a'.uniprop('Line_Break');});
     my ($rc, $log, $bin) = compile($src, 'cut-enum-bin', '--exe', '--slim=-unicode-props');
@@ -455,12 +471,66 @@ for ('up-w',    q{print 'a'.uniprop('W');},                                     
 }
 {
     my $src = probe('cut-enum-safe.raku',
-        q{print 'a'.uniprop('Alphabetic'), '|', 'a'.uniprop, '|', 'a'.uniprop('Uppercase_Mapping');});
+        q{print 'a'.uniprop('Lu'), '|', 'a'.uniprop, '|', 'a'.uniprop('Uppercase_Mapping');});
     my ($rc, $log, $bin) = compile($src, 'cut-enum-safe-bin', '--exe', '--slim=-unicode-props');
     check $rc == 0, '-unicode-props compiles never-cut uniprop lookups', $log;
     my ($xc, $out, $err) = run-bin($bin);
-    check $xc == 0 && $out eq 'True|Ll|A',
+    check $xc == 0 && $out eq 'Ll|Ll|A',
           '…and they answer without touching the cut tables', "exit $xc: $out / $err";
+}
+{
+    my $src = probe('cut-binprop.raku', q{print '∑'.uniprop('Math');});
+    my ($rc, $log, $bin) = compile($src, 'cut-binprop-bin', '--exe', '--slim=-unicode-props');
+    check $rc == 0, '-unicode-props compiles a binary-property lookup against the stub archive', $log;
+    my ($xc, $, $err) = run-bin($bin);
+    check $xc == 1 && $err.contains("needs the 'unicode-props' feature") && $err.contains('binary'),
+          'the cut unicode-props covers the binary properties, and says so', "exit $xc: $err";
+}
+# Two binary properties are asked by NAME from never-cut code, and read rt's
+# own copy (unicode_props_core_gen.cpp): ID_Continue, which the parser asks of
+# a non-ASCII character after an interpolated variable, and Unified_Ideograph,
+# which collation asks of a Han character. Neither EVAL nor unicmp may need
+# the props feature for them; the ordinary regex classes answer from the
+# general category before any binary property.
+{
+    my $src = probe('cut-props-core.raku',
+        q{print EVAL('my $v = 1; my $vкнига = 2; "$vкнига|$v…"'), '|', ('b' unicmp '中'), '|',
+               <中 b 丁>.collate.join, '|', ('Ab1' ~~ /^\w+$/ && 'a' ~~ /<alpha>/ ?? 'M' !! 'N');});
+    my ($rc, $log, $bin) = compile($src, 'cut-props-core-bin', '--exe', '--slim=-unicode-props');
+    check $rc == 0, '-unicode-props compiles EVAL interpolation, Han collation and \\w', $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    check $xc == 0 && $out eq '2|1…|Less|b丁中|M',
+          '…and none of them needs the cut binary-property table', "exit $xc: $out / $err";
+}
+# A double-quoted property name is an InterpStr of one literal, still known at
+# compile time: the scan keeps props for Script and cuts names.
+{
+    my $src = probe('up-script-dq.raku', q{print 'A'.uniprop("Script");});
+    my ($rc, $log, $bin) = compile($src, 'up-script-dq-bin', '--exe', '--slim');
+    check $rc == 0, '.uniprop("Script") compiles under --slim', $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq 'Latin' && !$line.contains('"unicode-props"')
+                   && $line.contains('"unicode-names"'),
+          'a literal uniprop property keeps only the group it names', "exit $xc: $out / $err / $line";
+}
+# Numifying a lone fraction character reads a never-cut copy of those rows
+# (unicode_gen.cpp's FRAC), not NUMV. While it read NUMV through the quiet
+# probe, a binary with unicode-names cut (by the scan: nothing here names it)
+# called "½" not a number at all: a silently different answer, not a throw.
+{
+    my $src = probe('frac.raku',
+        q{print "½".Numeric + 0, '|', "⅓" + 1, '|', "↉".Numeric + 0, '|', "Ⅻ".Numeric.defined;});
+    my ($rc, $log, $bin) = compile($src, 'frac-bin', '--exe', '--slim');
+    check $rc == 0, 'fraction numification compiles under --slim', $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq '0.5|1.333333|0|False' && $line.contains('"unicode-names"'),
+          'a lone fraction numifies with unicode-names cut', "exit $xc: $out / $err / $line";
 }
 # nqp::getuniprop_* names its property by a NUMBER and reads it through
 # .uniprop, so the scan cannot see which: both groups behind uniprop stay.
@@ -474,7 +544,95 @@ for ('up-w',    q{print 'a'.uniprop('W');},                                     
           'the scan keeps unicode-props and unicode-names for an nqp property read', $out;
 }
 
-# ---- 6a2. builtin wrappers around dynamic loading are triggers --------------
+# ---- 6a1. a module the engine answers is not a disk load (issue #166) -------
+# `use Data::Native` and its siblings are answered from the binary's own
+# builtins: there is no code for the scan to see, and in a compiled binary the
+# engine's answer is final, so --slim cuts all four. The json codecs' fallback
+# (JSON::Native::Raku, for what the codec does not cover) travels embedded, so
+# that call answers the same slim and full, with no module on any search path.
+{
+    my $src = probe('dn-zlib.raku', q{use Data::Native :zlib; print crc32(Blob.new(1, 2, 3));});
+    my ($rc, $log, $bin) = compile($src, 'dn-zlib-bin', '--exe', '--slim');
+    check $rc == 0 && !$log.contains('keeping every feature'),
+          'use Data::Native :zlib is no dynamic construct under --slim', $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq '1438416925'
+          && <unicode-names unicode-collation unicode-props eval>.map({ $line.contains("\"$_\"") }).all.so,
+          '…all four features are cut, and crc32 answers', "exit $xc: $out / $err / $line";
+}
+{
+    my $src = probe('jn-fallback.raku', q:to/END/);
+        use JSON::Native;
+        class P { has $.x = 1 }
+        print to-json([1, {a => 2}], :!pretty), '|';
+        print (try to-json(P.new)) // $!.message;
+        END
+    my ($rc, $log, $bin) = compile($src, 'jn-fallback-bin', '--exe', '--slim');
+    check $rc == 0 && $log.contains('JSON::Native::Raku'),
+          'use JSON::Native embeds the codec fallback', $log;
+    my $p = run $bin, :out, :err, :cwd($tmp.Str), :env(%(PATH => '/usr/bin:/bin', HOME => $tmp.Str));
+    my ($out, $err) = $p.out.slurp(:close), $p.err.slurp(:close);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $p.exitcode == 0 && $out eq '[1,{"a":2}]|Don\'t know how to jsonify P' && $line.contains('"eval"'),
+          '…and an uncovered to-json answers from it, parser cut, nothing on disk',
+          "exit {$p.exitcode}: $out / $err / $line";
+}
+
+# ---- 6a2. the builtin Raku travels pre-parsed when eval is cut ---------------
+# The runtime keeps a few classes and combinators as Raku source, compiled on
+# first use (BuiltinRakuSrc.h). A binary without a parser carries their ASTs
+# instead, so none of these may need the eval feature the scan proved unused.
+{
+    my $src = probe('builtin-raku.raku', q:to/END/);
+        my $s = supply { emit 1; emit 2 };
+        $s.map(* * 2).tap({ print $_, ' ' });
+        $s.grep(* > 1).tap({ print $_, ' ' });
+        my $c = Channel.new; $c.send(5); $c.close;
+        react { whenever $c.Supply { print $_, ' ' } }
+        react { whenever supply { emit 3 }.stable(0.01) { print $_, ' ' } }
+        print IO::Notification::Change.new(path => 'p', event => FileChanged).path;
+        END
+    my ($rc, $log, $bin) = compile($src, 'builtin-raku-bin', '--exe', '--slim');
+    check $rc == 0, 'Supply combinators, Channel.Supply and IO::Notification compile under --slim', $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq '2 4 2 5 3 p' && $line.contains('"eval"'),
+          '…and run with the parser cut, from their pre-parsed ASTs', "exit $xc: $out / $err / $line";
+}
+{
+    my $src = probe('cathandle.raku', q{print IO::CatHandle.new($*IN).lines.join('+');});
+    my ($rc, $log, $bin) = compile($src, 'cathandle-bin', '--exe', '--slim');
+    check $rc == 0, 'IO::CatHandle compiles under --slim', $log;
+    my $p = run $bin, :in, :out, :err;
+    $p.in.print("a\nb\n"); $p.in.close;
+    my ($out, $err) = $p.out.slurp(:close), $p.err.slurp(:close);
+    check $p.exitcode == 0 && $out eq 'a+b', '…and reads with the parser cut', "exit {$p.exitcode}: $out / $err";
+}
+# Constructs the scan reads since the 2026-10-17 audit, each a cut that used
+# to be wrong: a bare decimal \c65 resolves without the name table now; a
+# composed class's later members are properties too; a grammar's method call
+# with arguments evaluates them; 'Na' is East_Asian_Width, not Name.
+for ('c-decimal', q{print 'A~' ~~ /\c65 <[\c32..\c126]>/ ?? 'M' !! 'N';},           'M'),
+    ('rx-member', q{print '中' ~~ /<[a..z] + :Han>/ && 'Ж' ~~ /<+:Lu +:Cyrillic>/ ?? 'M' !! 'N';}, 'M'),
+    ('rx-member-gc', q{print 'a1' ~~ /^<:L + :N>+$/ ?? 'M' !! 'N';},                     'M'),
+    ('gr-method', q{grammar G { token TOP { 'a' <.f('x')> }; method f($x) { self } }; print so G.parse('a');}, 'True'),
+    ('up-na',     q{print 'a'.uniprop('Na');},                                            'Na')
+-> ($name, $code, $want) {
+    my $src = probe("{$name}.raku", $code);
+    my ($rc, $log, $bin) = compile($src, "{$name}-bin", '--exe', '--slim');
+    my ($xc, $out, $err) = run-bin($bin);
+    check $rc == 0 && $xc == 0 && $out eq $want,
+          "--slim keeps what $name needs, and answers $want", "rc $rc exit $xc: $out / $err / $log";
+}
+
+# ---- 6a3. builtin wrappers around dynamic loading are triggers --------------
 # use-ok is a require in sub's clothing (the builtin Test module) — found by
 # the battery leg of the differential when a slim'd 01-load.t threw where the
 # full build passed. The scan must keep everything for it, like for require.

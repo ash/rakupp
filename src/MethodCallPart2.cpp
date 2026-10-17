@@ -1,5 +1,6 @@
 #include "CNumeric.h"
 #include "Sandbox.h"
+#include "BuiltinRakuSrc.h"   // the Supply combinators written in Raku
 #include "AsciiCtype.h"
 #include "Coro.h" // RAKUPP_HAVE_CORO: which form a Seq over a user iterator takes
 #include "BuiltinsShared.h" // timerRemainingSecs — Promise.in/.at state is time-derived
@@ -1997,11 +1998,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto saved = tctx_.cur;
                 tctx_.cur = global_;
                 try {
-                    code = evalString(m == "stable"
-                        ? "(-> $s, $time { supply { my $gen = 0; whenever $s -> \\v { my $mine = ++$gen; "
-                          "whenever Promise.in($time) { emit v if $gen == $mine } } } })"
-                        : "(-> $s, $time { supply { whenever $s -> \\v { "
-                          "whenever Promise.in($time) { emit v } } } })");
+                    code = evalString(m == "stable" ? kSupplyStableSrc : kSupplyDelayedSrc); // BuiltinRakuSrc.cpp
                 }
                 catch (...) { tctx_.cur = saved; throw; }
                 tctx_.cur = saved;
@@ -2053,11 +2050,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     auto saved = tctx_.cur;
                     tctx_.cur = global_;
                     try {
-                        code = evalString(m == "map"
-                            ? "(-> $s, &f { supply { whenever $s -> \\v { emit f(v) } } })"
-                            : m == "grep"
-                            ? "(-> $s, Mu $t { supply { whenever $s -> \\v { emit v if v ~~ $t } } })"
-                            : "(-> $s, &f { supply { whenever $s -> \\v { f(v); emit v } } })");
+                        code = evalString(m == "map" ? kSupplyMapSrc
+                                          : m == "grep" ? kSupplyGrepSrc : kSupplyDoSrc); // BuiltinRakuSrc.cpp
                     }
                     catch (...) { tctx_.cur = saved; throw; }
                     tctx_.cur = saved;

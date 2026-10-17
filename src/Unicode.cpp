@@ -16,8 +16,8 @@ namespace rakupp {
 namespace ucd {
 // Only the NEVER-CUT tables are named here (SLIM-PLAN: reached by ordinary
 // string operations, so no stub will ever stand behind them). The cuttable
-// groups — NAMES/NUMV, the collation triple, SCRIPTS/BLOCKS/BIDI and the
-// uniprop-only tables of unicode_props2_gen.cpp — have no extern in this file
+// groups — NAMES/NUMV, the collation triple, SCRIPTS/BLOCKS/BIDI, the binary
+// properties and the uniprop-only tables of unicode_props2_gen.cpp — have no extern in this file
 // at all: they are reached through ucd_seam.h's accessors,
 // and a new direct reference is a compile error, not a hole in the seam.
 extern const uint32_t CCC[];    extern const size_t CCC_N;
@@ -27,9 +27,11 @@ extern const uint32_t COMP[];   extern const size_t COMP_N;
 extern const uint32_t GBRANGE[]; extern const size_t GBRANGE_N; // real UAX#29 classes + ExtPict, as ranges
 extern const uint32_t INCB[]; extern const size_t INCB_N; // Indic_Conjunct_Break (rule GB9c)
 extern const char* const CATNAMES[]; extern const uint32_t GCAT[]; extern const size_t GCAT_N;
-extern const char* const PROPNAMES[]; extern const size_t PROPNAMES_N;
-struct PropRange { uint32_t lo, hi; uint16_t prop; };
-extern const PropRange BINPROPS[]; extern const size_t BINPROPS_N; // DerivedCoreProperties + PropList
+extern const int32_t FRAC[]; extern const size_t FRAC_N; // the fractions out of NUMV (unicode_gen.cpp), never cut
+// the binary properties the never-cut code asks by NAME (unicode_props_core_gen.cpp):
+// (lo, hi) pairs sorted by lo — the rest of BINPROPS is behind binPropsTable
+extern const uint32_t IDCONT[]; extern const size_t IDCONT_N; // ID_Continue
+extern const uint32_t UIDEO[];  extern const size_t UIDEO_N;  // Unified_Ideograph
 // case tables (unicode_case_gen.cpp): SIMPLE are (cp,mapped) pairs; FULL/FOLD are (cp,m0,m1,m2) quads
 extern const uint32_t SUPPER[]; extern const size_t SUPPER_N;
 extern const uint32_t SLOWER[]; extern const size_t SLOWER_N;
@@ -237,8 +239,10 @@ static const char* uniBidiClass(uint32_t c) {
 static int uniBinProp(uint32_t cp, const std::string& norm) {
     static std::unordered_map<std::string, std::vector<std::pair<uint32_t, uint32_t>>> M = [] {
         std::unordered_map<std::string, std::vector<std::pair<uint32_t, uint32_t>>> m;
-        for (size_t i = 0; i < ucd::BINPROPS_N; i++)
-            m[ucd::PROPNAMES[ucd::BINPROPS[i].prop]].push_back({ucd::BINPROPS[i].lo, ucd::BINPROPS[i].hi});
+        size_t n, nn; const char* const* names;
+        const ucd::PropRange* T = ucd::binPropsTable(&n, &names, &nn); // seam: throws when cut
+        for (size_t i = 0; i < n; i++)
+            m[names[T[i].prop]].push_back({T[i].lo, T[i].hi});
         return m;
     }();
     auto it = M.find(norm);
@@ -249,6 +253,18 @@ static int uniBinProp(uint32_t cp, const std::string& norm) {
         if (cp < v[mid].first) hi = mid; else if (cp > v[mid].second) lo = mid + 1; else return 1; }
     return 0;
 }
+
+static bool inRanges(const uint32_t* R, size_t n, uint32_t cp) {   // (lo, hi) pairs, sorted
+    size_t lo = 0, hi = n;
+    while (lo < hi) { size_t mid = (lo + hi) / 2;
+        if (cp < R[mid * 2]) hi = mid; else if (cp > R[mid * 2 + 1]) lo = mid + 1; else return true; }
+    return false;
+}
+// The two binary properties never-cut code asks by name, from rt's own copy:
+// the parser (does this char continue an interpolated name?) and collation
+// (a Han character's implicit weight). Same answer as uniBinaryProp gives.
+bool uniIdContinue(uint32_t cp)      { return inRanges(ucd::IDCONT, ucd::IDCONT_N, cp); }
+bool uniUnifiedIdeograph(uint32_t cp) { return inRanges(ucd::UIDEO, ucd::UIDEO_N, cp); }
 
 // Strict binary-property test for uniprop(): 1/0 if `prop` is a known binary
 // property, -1 if it is not one (so the caller does NOT fall back to a lenient match).
@@ -562,25 +578,30 @@ bool uniPropNeedsCutTables(const std::string& p) {
         "Ps","Pe","Pi","Pf","Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
     for (auto* k : K) if (p == k) return false;
     if (!gcShortName(p).empty()) return false;                          // any gc name, loosely
-    if (uniBinProp('A', normProp(p)) >= 0) return false;   // known binary property name
-    return true; // script, In-block, or unknown: all reach the cuttable tables
+    return true; // binary property, script, In-block, or unknown: all reach the cuttable tables
 }
 
 // The same question for `.uniprop('p')`, which is NOT the regex question: the
 // method resolves a name in its own order (MethodCallPart3.cpp, the `one`
-// lambda), and it answers some names a regex reads as a category from a
-// cuttable table: `.uniprop('W')` is East_Asian_Width, not a category letter.
-// So everything the regex predicate keeps, plus every name that order sends
-// to unicode_props2_gen.cpp. Change one, change both.
+// lambda), matching it EXACTLY, and every name it does not answer early ends
+// in the binary-property table — `.uniprop('Lowercase')` is the binary
+// property where the regex `<:Lowercase>` is the category Ll. So this is the
+// list of names that order answers from never-cut tables, spelled as it
+// spells them, and every other name reaches a cut one. (Name and
+// Numeric_Value read the names tables; SlimScan asks that first.) Change one,
+// change both.
 bool uniUnipropNeedsCutTables(const std::string& p) {
-    if (uniPropNeedsCutTables(p)) return true;
-    if (enumPropKey(normProp(p))) return true;                        // enumPropTable
-    static const std::set<std::string> kCut = {
-        "Unicode_1_Name", "na1", "Jamo_Short_Name", "JSN",            // their own tables
-        "Bidi_Paired_Bracket", "bpb", "Bidi_Paired_Bracket_Type", "bpt",
-        "W", "Na", "F", "H",                                          // East_Asian_Width values
+    static const std::set<std::string> kKept = {
+        "General_Category", "gc", "Indic_Conjunct_Break", "InCB",
+        "Uppercase_Mapping", "uc", "Lowercase_Mapping", "lc", "Titlecase_Mapping", "tc",
+        "Case_Folding", "cf", "Simple_Uppercase_Mapping", "suc", "Simple_Lowercase_Mapping", "slc",
+        "Simple_Titlecase_Mapping", "stc", "Simple_Case_Folding", "scf",
+        "Bidi_Mirroring_Glyph", "bmg", "ISO_Comment", "isc",
+        // a two-letter General_Category value answers the category
+        "Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd","Ps","Pe","Pi","Pf",
+        "Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn",
     };
-    return kCut.count(p) > 0;
+    return kKept.count(p) == 0;
 }
 
 // UAX #29 grapheme-break properties
@@ -878,7 +899,7 @@ void ucaImplicit(uint32_t cp, uint16_t& aaaa, uint16_t& bbbb) {
             if (uniGeneralCategory(cp) == "Cn") break; // unassigned: FBC0 below
             aaaa = s.base; bbbb = (uint16_t)((cp - s.from) | 0x8000); return;
         }
-    bool han = uniBinProp(cp, "unifiedideograph") == 1;
+    bool han = uniUnifiedIdeograph(cp);
     uint16_t base = !han ? 0xFBC0
                   : ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF)) ? 0xFB40 : 0xFB80;
     aaaa = (uint16_t)(base + (cp >> 15));
@@ -1241,6 +1262,22 @@ bool uniNumValueQuiet(uint32_t cp, long long& num, long long& den) {
         size_t mid = (lo + hi) / 2;
         uint32_t c = (uint32_t)V[mid * 3];
         if (c == cp) { num = V[mid * 3 + 1]; den = V[mid * 3 + 2]; return true; }
+        if (cp < c) hi = mid; else lo = mid + 1;
+    }
+    return false;
+}
+
+// A lone fraction character's value — every codepoint whose numeric value is
+// not an integer, plus the VULGAR FRACTIONs whose value is (U+2189). Plain
+// numification asks it (`"½".Numeric` is 0.5), so it reads a never-cut copy
+// of those rows rather than NUMV: a --slim binary that cut unicode-names used
+// to get its probe's null back here and call "½" not a number at all.
+bool uniFractionValue(uint32_t cp, long long& num, long long& den) {
+    size_t lo = 0, hi = ucd::FRAC_N;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        uint32_t c = (uint32_t)ucd::FRAC[mid * 3];
+        if (c == cp) { num = ucd::FRAC[mid * 3 + 1]; den = ucd::FRAC[mid * 3 + 2]; return true; }
         if (cp < c) hi = mid; else lo = mid + 1;
     }
     return false;

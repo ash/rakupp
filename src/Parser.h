@@ -67,6 +67,12 @@ bool rakuppShadowModule(const std::string& name, std::string& pathOut, std::stri
 bool rakuppCompilerAnswersModule(const std::string& name);
 // The names such a `use` provides, for the declaration checker.
 void rakuppCompilerAnsweredNames(const std::string& module, std::set<std::string>& out);
+// An installed distribution newer than the engine's interface for that name,
+// which `use` loads instead (collectModuleGraph embeds it).
+bool rakuppNewerDistInstalled(const std::string& name, const std::vector<std::string>& searchPath);
+// Does an answered `use` of `module` with these imports hand out the json
+// codecs, whose fallback (JSON::Native::Raku) a compiled binary must carry?
+bool rakuppAnsweredUseHandsOutJson(const std::string& module, const std::vector<std::string>& importArgs);
 // Is this module in a plain DIRECTORY on the search path (a `-I` or `use lib`
 // entry)? Deliberately not a store lookup: an explicit path beats the
 // compiler's own answer, an installed copy does not.

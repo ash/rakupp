@@ -21,6 +21,9 @@ namespace rakupp {
 // means a future rt could self-report what it was built as.
 static const char* g_exeManifest = nullptr;
 void rakuppKeepManifest(const char* m) { g_exeManifest = m; }
+// Every compile mode embeds a manifest and the interpreter never does, so its
+// presence is the answer to "was this process compiled?" (dataNativeUse asks).
+bool rakuppIsCompiledBinary() { return g_exeManifest != nullptr; }
 
 [[noreturn]] void featureMissing(const char* feature, const char* neededFor) {
     throw FeatureNotBuilt{{Value::typeObj("X::Feature::NotBuilt"),

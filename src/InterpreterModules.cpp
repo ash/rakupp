@@ -6,6 +6,7 @@
 #include "Sandbox.h"
 #include "AotModules.h"
 #include "CallCheck.h"
+#include "BuiltinRakuSrc.h"   // evalString: the builtin Raku a --slim binary carries pre-parsed
 
 namespace rakupp {
 extern std::atomic<bool> g_lexTypeAlias;   // InterpreterOperators.cpp: a type was bound under another name
@@ -277,6 +278,47 @@ void rakuppCompilerAnsweredNames(const std::string& module, std::set<std::string
     }
 }
 
+// Step (2b) of dataNativeUse below, for the compile modes: an INSTALLED
+// distribution of this name newer than the interface this engine implements,
+// which a `use` loads instead of the engine answering. collectModuleGraph asks
+// it so that a compiled binary embeds what this interpreter would have loaded.
+bool rakuppNewerDistInstalled(const std::string& name, const std::vector<std::string>& searchPath) {
+    for (const DataNativeModule* m = kDataNativeModules; m->module; m++) {
+        if (name != m->module) continue;
+        if (!m->interfaceVer || !*m->interfaceVer) return false;
+        const std::string nameSha = sha1hex(name);
+        for (auto& repo : repoPrefixesFor(searchPath)) {
+            std::string entry;
+            std::vector<std::string> lines;
+            if (!pickInstalledDist(repo + "/short/" + nameSha, "", entry, lines)) continue;
+            if (!lines.empty() && verCmp(lines[0], m->interfaceVer) > 0) return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+// Does an answered `use` hand out the json tag's codecs? What they do not
+// cover goes to JSON::Native::Raku (jsonRakuFallback), loaded by the first
+// call that needs it, so a compile mode embeds that module beside them: a
+// binary must not reach for it on disk, and a --slim one that cut its parser
+// could not read it there.
+bool rakuppAnsweredUseHandsOutJson(const std::string& module, const std::vector<std::string>& importArgs) {
+    for (const DataNativeModule* m = kDataNativeModules; m->module; m++) {
+        if (module != m->module) continue;
+        bool hasJson = false;
+        for (const char* const* t = m->tags; *t; t++) hasJson |= std::string(*t) == "json";
+        if (!hasJson) return false;
+        // JSON::Native's import list is JSON::Fast's options, not tags
+        if (module == "JSON::Native" || importArgs.empty()) return true;
+        for (auto& w : importArgs) if (w == "json" || w == "all") return true;
+        return false;
+    }
+    return false;
+}
+
+bool rakuppIsCompiledBinary();   // FeatureGate.cpp: this process is an --exe/--bundle/--aot binary
+
 bool Interpreter::dataNativeUse(const std::string& name,
                                 const std::vector<std::string>& importArgs,
                                 bool doImport, const std::string& verReq) {
@@ -284,6 +326,16 @@ bool Interpreter::dataNativeUse(const std::string& name,
     for (const DataNativeModule* m = kDataNativeModules; m->module; m++)
         if (name == m->module) { mod = m; break; }
     if (!mod) return false;
+
+    // (0) A COMPILED binary does what its compile decided (collectModuleGraph):
+    // a copy it embedded is the answer, and otherwise the engine is. The
+    // step-asides below, (1), (2b) and (2c), look at the -I paths, the store and
+    // the environment of the machine RUNNING it, which is right for an
+    // interpreter and wrong for a binary: it would load code the compile never
+    // saw, from a disk the binary was built not to need, and a --slim binary
+    // that cut its parser could not read that code at all (issue #166).
+    const bool compiled = rakuppIsCompiledBinary();
+    if (compiled && findEmbeddedModule(name)) return false;
 
     // (2) a versioned request belongs to the store, not to us. `use
     // Data::Native:ver<0.2+>` asked for something specific; answering it from
@@ -293,7 +345,7 @@ bool Interpreter::dataNativeUse(const std::string& name,
     // (2c) JSON_NATIVE_BACKEND naming another of JSON::Native's paths is a
     // request for the distribution, which is how its own suite tests them.
     const bool jsonNative = name == "JSON::Native";
-    if (jsonNative) {
+    if (jsonNative && !compiled) {
         const char* b = std::getenv("JSON_NATIVE_BACKEND");
         if (b && *b && std::string(b) != "engine") return false;
     }
@@ -306,7 +358,7 @@ bool Interpreter::dataNativeUse(const std::string& name,
     // meant an INSTALLED copy beat the compiler — which is exactly backwards,
     // and left `use JSON::Native` loading the distribution and its JSON::Fast
     // dependency on a machine that had it installed.
-    if (moduleFileOnPath(name, libPaths_, sixE())) return false;
+    if (!compiled && moduleFileOnPath(name, libPaths_, sixE())) return false;
 
     // (2b) an INSTALLED distribution newer than the interface this engine
     // implements knows something the compiler does not, so the compiler steps
@@ -315,17 +367,8 @@ bool Interpreter::dataNativeUse(const std::string& name,
     // engine release, exactly as it would on Rakudo.
     //
     // One store lookup, against loading the module and its whole dependency
-    // tree — which is the cost this interception exists to avoid. `entry` and
-    // `lines` are discarded; only the version in lines[0] is being asked about.
-    if (mod->interfaceVer && *mod->interfaceVer) {
-        std::string nameSha = sha1hex(name);
-        for (auto& repo : repoPrefixesFor(libPaths_)) {
-            std::string entry;
-            std::vector<std::string> lines;
-            if (!pickInstalledDist(repo + "/short/" + nameSha, "", entry, lines)) continue;
-            if (!lines.empty() && verCmp(lines[0], mod->interfaceVer) > 0) return false;
-        }
-    }
+    // tree — which is the cost this interception exists to avoid.
+    if (!compiled && rakuppNewerDistInstalled(name, libPaths_)) return false;
 
     // Which of this module's tags the engine can actually answer. A tag whose
     // primitives are not registered is not claimed, so a family the engine has
@@ -2075,211 +2118,217 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         }
         return false;
     }() ? parsePod(src, /*strict=*/true) : ValueList{});
-    Lexer lexer(src);
-    // the caller's operator spellings, so `EVAL '"a" (C) "b"'` lexes `(C)` whole
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
-        for (auto& kv : e->vars) {
-            const std::string& n = kv.first;
-            size_t lt = n.find(":<");
-            if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
-                std::string kind = n.substr(1, lt - 1);
-                std::string opn = n.substr(lt + 2, n.size() - lt - 3);
-                if (kind == "infix" || kind == "prefix" || kind == "postfix")
-                    lexer.noteUserOp(opn, false);
-                else if ((kind == "circumfix" || kind == "postcircumfix") && opn.find(' ') != std::string::npos) {
-                    lexer.noteUserOp(opn.substr(0, opn.find(' ')), false);
-                    lexer.noteUserOp(opn.substr(opn.find(' ') + 1), false);
-                }
-            }
-            // …and its sigilless TERMS that are no plain word (`my \term:<ℵ₀>`)
-            else if (!n.empty() && !std::strchr("$@%&", n[0]) && (unsigned char)n.back() >= 0x80)
-                lexer.noteUserOp(n, true);
-        }
     auto prog = std::make_shared<Program>();
-    try {
-        lexer.tolerant_ = true;
-        auto etoks = lexer.tokenize();
-        applyL10NSlang(src, etoks);   // `EVAL 'use L10N::AF; …'` reads Afrikaans too
-        Parser parser(std::move(etoks));
-        parser.src_ = &src;         // `EVAL 'use Slang::Date; 2023-01-99'` reads the slang too
-        parser.libPaths_ = libPaths_;  // …and resolves it (and any operator scan) on the interpreter's own search path
-        parser.strictSep_ = true; // EVAL snippets get "two terms in a row" strictness
-        parser.evalSelfInScope_ = tctx_.cur && tctx_.cur->findSelf();   // the code runs inside a method
-        // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
-        // — and the plain routines in scope, which parse as LISTOPS (so a `?? f !!`
-        // in the snippet is the same gobbled `!!` it would be in the file)
+    // A builtin's own Raku that this binary carries pre-parsed (BuiltinRakuSrc.h):
+    // a --slim compile that cut the parser embedded its AST, which runs here
+    // exactly as the text would have. Otherwise: lex and parse the source.
+    if (const std::string* pre = rakuppPreparsedFor(src)) deserializeAst(*pre, *prog);
+    else {
+        Lexer lexer(src);
+        // the caller's operator spellings, so `EVAL '"a" (C) "b"'` lexes `(C)` whole
         for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
             for (auto& kv : e->vars) {
-                const std::string& n = kv.first; // e.g. "&infix:<fromplus>"
-                if (n.size() > 1 && n[0] == '&' && n.find(':') == std::string::npos &&
-                    (ascii::isalpha((unsigned char)n[1]) || n[1] == '_') &&
-                    kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->ci().builtin)
-                    parser.declareKnownSub(n.substr(1));
+                const std::string& n = kv.first;
                 size_t lt = n.find(":<");
                 if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
                     std::string kind = n.substr(1, lt - 1);
-                    if (kind == "infix" || kind == "prefix" || kind == "postfix" ||
-                        kind == "circumfix" || kind == "postcircumfix") {
-                        parser.declareUserOp(kind, n.substr(lt + 2, n.size() - lt - 3));
-                        if (kind == "infix" && kv.second.t == VT::Code && kv.second.code() &&
-                            kv.second.code()->ci().assocNon)
-                            parser.declareUserOp("infix-non", n.substr(lt + 2, n.size() - lt - 3));
+                    std::string opn = n.substr(lt + 2, n.size() - lt - 3);
+                    if (kind == "infix" || kind == "prefix" || kind == "postfix")
+                        lexer.noteUserOp(opn, false);
+                    else if ((kind == "circumfix" || kind == "postcircumfix") && opn.find(' ') != std::string::npos) {
+                        lexer.noteUserOp(opn.substr(0, opn.find(' ')), false);
+                        lexer.noteUserOp(opn.substr(opn.find(' ') + 1), false);
                     }
                 }
+                // …and its sigilless TERMS that are no plain word (`my \term:<ℵ₀>`)
+                else if (!n.empty() && !std::strchr("$@%&", n[0]) && (unsigned char)n.back() >= 0x80)
+                    lexer.noteUserOp(n, true);
             }
-        *prog = parser.parseProgram();
-        // `CATCH { when X::Y {} }`: a type-like name before a statement's block
-        // that nothing declares is, to Rakudo, a call that swallowed the block —
-        // a compile-time group raised before anything runs, whether or not the
-        // `when` ever does (S32-exceptions/misc.t)
-        for (auto& gs : parser.gobbleSites_)
-            if (!bareNameResolves(gs.name, *prog)) {
-                std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
-                                 "it's a class that's not declared or available in this scope?)";
-                std::string pw = "block (apparently claimed by '" + gs.shown + "')";
-                throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
-                                 {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
-                                  {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
-                                  {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
-            }
-        // `EVAL 'return 1; self!typo()'` in a method: a private method the class
-        // does not have is a COMPILE-time error, raised before anything runs
-        // (integration/advent2011-day11.t)
-        if (!parser.evalPrivCalls_.empty() && tctx_.cur)
-            if (Value* sp = tctx_.cur->findSelf())
-                if (sp->t == VT::Object && sp->obj() && sp->obj()->cls)
-                    for (auto& pc : parser.evalPrivCalls_)
-                        if (!sp->obj()->cls->findMethod("!" + pc.first))
-                            throw ParseError("No such private method '!" + pc.first + "' for invocant of type '" +
-                                             sp->obj()->cls->name + "'", pc.second, "X::Method::NotFound",
-                                             {{"method", pc.first}, {"typename", sp->obj()->cls->name},
-                                              {"private", "True"}});
-    } catch (ParseError& e) {
-        // REPL: the input just ran out (unclosed block/paren/heredoc). Report it
-        // as "incomplete" so the caller can ask for the next line, rather than
-        // raising a syntax error the user would have to work around.
-        if (incompleteOut && e.atEof) { *incompleteOut = true; return Value::any(); }
-        // A BEGIN runs as it is PARSED, so one written above the line that fails
-        // has already run when the error is reported: `EVAL q[BEGIN { $t =
-        // 'begin' }; …; 1 1]` leaves $t 'begin' (S04-phasers/begin.t). The
-        // source above the failing line is parsed again on its own, and its
-        // top-level BEGIN blocks run in the caller's scope; a prefix that does
-        // not parse runs nothing, and nothing else in it runs at all.
-        if (!incompleteOut && e.line > 1 && src.find("BEGIN") != std::string::npos) {
-            size_t cut = 0;
-            for (int ln = 1; ln < e.line && cut != std::string::npos; ln++) {
-                cut = src.find('\n', cut);
-                if (cut != std::string::npos) cut++;
-            }
-            if (cut != std::string::npos && cut > 0) {
-                const std::string pre = src.substr(0, cut);
-                try {
-                    Lexer pl(pre);
-                    pl.tolerant_ = true;
-                    Parser pp(pl.tokenize());
-                    pp.src_ = &pre;
-                    pp.libPaths_ = libPaths_;
-                    pp.strictSep_ = true;
-                    Program pprog = pp.parseProgram();
-                    for (auto& st : pprog.stmts) {
-                        if (!st || st->kind != NK::Block) continue;
-                        auto* b = static_cast<Block*>(st.get());
-                        if (b->phaser != "BEGIN") continue;
-                        if (b->stmtForm) execBlock(b, tctx_.cur);
-                        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+        try {
+            lexer.tolerant_ = true;
+            auto etoks = lexer.tokenize();
+            applyL10NSlang(src, etoks);   // `EVAL 'use L10N::AF; …'` reads Afrikaans too
+            Parser parser(std::move(etoks));
+            parser.src_ = &src;         // `EVAL 'use Slang::Date; 2023-01-99'` reads the slang too
+            parser.libPaths_ = libPaths_;  // …and resolves it (and any operator scan) on the interpreter's own search path
+            parser.strictSep_ = true; // EVAL snippets get "two terms in a row" strictness
+            parser.evalSelfInScope_ = tctx_.cur && tctx_.cur->findSelf();   // the code runs inside a method
+            // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
+            // — and the plain routines in scope, which parse as LISTOPS (so a `?? f !!`
+            // in the snippet is the same gobbled `!!` it would be in the file)
+            for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+                for (auto& kv : e->vars) {
+                    const std::string& n = kv.first; // e.g. "&infix:<fromplus>"
+                    if (n.size() > 1 && n[0] == '&' && n.find(':') == std::string::npos &&
+                        (ascii::isalpha((unsigned char)n[1]) || n[1] == '_') &&
+                        kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->ci().builtin)
+                        parser.declareKnownSub(n.substr(1));
+                    size_t lt = n.find(":<");
+                    if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
+                        std::string kind = n.substr(1, lt - 1);
+                        if (kind == "infix" || kind == "prefix" || kind == "postfix" ||
+                            kind == "circumfix" || kind == "postcircumfix") {
+                            parser.declareUserOp(kind, n.substr(lt + 2, n.size() - lt - 3));
+                            if (kind == "infix" && kv.second.t == VT::Code && kv.second.code() &&
+                                kv.second.code()->ci().assocNon)
+                                parser.declareUserOp("infix-non", n.substr(lt + 2, n.size() - lt - 3));
+                        }
                     }
-                } catch (...) {}
-            }
-        }
-        if (e.exType == "X::Package::Stubbed") {
-            // the space-joined `packages` names become a real list attribute
-            std::string names;
-            for (auto& kv : e.exAttrs) if (kv.first == "packages") names = kv.second;
-            Value arr = Value::array(); arr.isList = true;
-            size_t p = 0;
-            while (p < names.size()) {
-                size_t q = names.find(' ', p);
-                arr.arr()->push_back(Value::str(names.substr(p, q - p)));
-                if (q == std::string::npos) break;
-                p = q + 1;
-            }
-            throwTypedV("X::Package::Stubbed", {{"packages", arr}}, e.what());
-        }
-        if (e.exType == "X::Undeclared::Symbols")
-            for (auto& kv : e.exAttrs)
-                if (kv.first == "post_types") {
-                    // `post_types` is a hash of the name to the lines that used it
-                    Value h = Value::makeHash();
-                    Value lines = Value::array(); lines.isList = true;
-                    lines.arr()->push_back(Value::integer(e.line));
-                    (*h.hash())[kv.second] = lines;
-                    throwTypedV("X::Undeclared::Symbols", {{"post_types", h}}, e.what());
                 }
-        if (e.exType == "X::Syntax::Number::LiteralType") {
-            // the two attributes are OBJECTS, not text: `:vartype(Int)` is the
-            // type and `:value(NaN)` the number, which is what throws-like asks
-            std::string vt = "Int", val = "0";
-            for (auto& kv : e.exAttrs) {
-                if (kv.first == "vartype") vt = kv.second;
-                else if (kv.first == "value") val = kv.second;
-            }
-            throwTypedV("X::Syntax::Number::LiteralType",
-                        {{"vartype", Value::typeObj(vt)}, {"value", numifyStr(val)}}, e.what());
-        }
-        if (e.exType == "X::Comp::Group") {
-            // parse-level group diagnostic: the `sorrow` attr names the inner
-            // exception type; rebuild it as a real object list in .sorrows
-            // (…and `panic` the fatal one, `worry` a warning; each may carry
-            // its own message and `what`)
-            std::string stype, smsg, swhat, ptype, pmsg, pwhat, ppre, ppost, wmsg, sline, pline;
-            for (auto& kv : e.exAttrs) {
-                if (kv.first == "sorrow-line") sline = kv.second;
-                else if (kv.first == "panic-line") pline = kv.second;
-                else if (kv.first == "sorrow") stype = kv.second;
-                else if (kv.first == "sorrow-msg") smsg = kv.second;
-                else if (kv.first == "sorrow-what") swhat = kv.second;
-                else if (kv.first == "panic") ptype = kv.second;
-                else if (kv.first == "panic-msg") pmsg = kv.second;
-                else if (kv.first == "panic-what") pwhat = kv.second;
-                else if (kv.first == "panic-pre") ppre = kv.second;
-                else if (kv.first == "panic-post") ppost = kv.second;
-                else if (kv.first == "worry") wmsg = kv.second;
-            }
-            auto mk = [&](const std::string& t, const std::string& m, const std::string& w,
-                          const std::string* pre = nullptr, const std::string* post = nullptr,
-                          const std::string& ln = std::string()) {
-                std::vector<std::pair<std::string, Value>> a;
-                if (!w.empty()) a.emplace_back("what", Value::str(w));
-                if (pre && (!pre->empty() || !post->empty())) {
-                    a.emplace_back("pre", Value::str(*pre));
-                    a.emplace_back("post", Value::str(*post));
+            *prog = parser.parseProgram();
+            // `CATCH { when X::Y {} }`: a type-like name before a statement's block
+            // that nothing declares is, to Rakudo, a call that swallowed the block —
+            // a compile-time group raised before anything runs, whether or not the
+            // `when` ever does (S32-exceptions/misc.t)
+            for (auto& gs : parser.gobbleSites_)
+                if (!bareNameResolves(gs.name, *prog)) {
+                    std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
+                                     "it's a class that's not declared or available in this scope?)";
+                    std::string pw = "block (apparently claimed by '" + gs.shown + "')";
+                    throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
+                                     {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
+                                      {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
+                                      {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
                 }
-                if (t == "X::Comp::AdHoc") a.emplace_back("payload", Value::str(m));
-                if (!ln.empty()) a.emplace_back("line", Value::integer(std::stoll(ln)));
-                return makeTypedEx(t, std::move(a), m);
-            };
-            std::vector<std::pair<std::string, Value>> ga;
-            Value arr = Value::array(); arr.isList = true;
-            if (!stype.empty() || ptype.empty())
-                arr.arr()->push_back(mk(stype.empty() ? "X::AdHoc" : stype, smsg.empty() ? e.what() : smsg, swhat,
-                                        nullptr, nullptr, sline));
-            ga.emplace_back("sorrows", arr);
-            if (!ptype.empty()) ga.emplace_back("panic", mk(ptype, pmsg.empty() ? e.what() : pmsg, pwhat, &ppre, &ppost, pline));
-            if (!wmsg.empty()) {
-                Value wa = Value::array(); wa.isList = true;
-                wa.arr()->push_back(mk("X::Comp::AdHoc", wmsg, ""));
-                ga.emplace_back("worries", wa);
+            // `EVAL 'return 1; self!typo()'` in a method: a private method the class
+            // does not have is a COMPILE-time error, raised before anything runs
+            // (integration/advent2011-day11.t)
+            if (!parser.evalPrivCalls_.empty() && tctx_.cur)
+                if (Value* sp = tctx_.cur->findSelf())
+                    if (sp->t == VT::Object && sp->obj() && sp->obj()->cls)
+                        for (auto& pc : parser.evalPrivCalls_)
+                            if (!sp->obj()->cls->findMethod("!" + pc.first))
+                                throw ParseError("No such private method '!" + pc.first + "' for invocant of type '" +
+                                                 sp->obj()->cls->name + "'", pc.second, "X::Method::NotFound",
+                                                 {{"method", pc.first}, {"typename", sp->obj()->cls->name},
+                                                  {"private", "True"}});
+        } catch (ParseError& e) {
+            // REPL: the input just ran out (unclosed block/paren/heredoc). Report it
+            // as "incomplete" so the caller can ask for the next line, rather than
+            // raising a syntax error the user would have to work around.
+            if (incompleteOut && e.atEof) { *incompleteOut = true; return Value::any(); }
+            // A BEGIN runs as it is PARSED, so one written above the line that fails
+            // has already run when the error is reported: `EVAL q[BEGIN { $t =
+            // 'begin' }; …; 1 1]` leaves $t 'begin' (S04-phasers/begin.t). The
+            // source above the failing line is parsed again on its own, and its
+            // top-level BEGIN blocks run in the caller's scope; a prefix that does
+            // not parse runs nothing, and nothing else in it runs at all.
+            if (!incompleteOut && e.line > 1 && src.find("BEGIN") != std::string::npos) {
+                size_t cut = 0;
+                for (int ln = 1; ln < e.line && cut != std::string::npos; ln++) {
+                    cut = src.find('\n', cut);
+                    if (cut != std::string::npos) cut++;
+                }
+                if (cut != std::string::npos && cut > 0) {
+                    const std::string pre = src.substr(0, cut);
+                    try {
+                        Lexer pl(pre);
+                        pl.tolerant_ = true;
+                        Parser pp(pl.tokenize());
+                        pp.src_ = &pre;
+                        pp.libPaths_ = libPaths_;
+                        pp.strictSep_ = true;
+                        Program pprog = pp.parseProgram();
+                        for (auto& st : pprog.stmts) {
+                            if (!st || st->kind != NK::Block) continue;
+                            auto* b = static_cast<Block*>(st.get());
+                            if (b->phaser != "BEGIN") continue;
+                            if (b->stmtForm) execBlock(b, tctx_.cur);
+                            else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                        }
+                    } catch (...) {}
+                }
             }
-            throwTypedV("X::Comp::Group", std::move(ga), e.what());
+            if (e.exType == "X::Package::Stubbed") {
+                // the space-joined `packages` names become a real list attribute
+                std::string names;
+                for (auto& kv : e.exAttrs) if (kv.first == "packages") names = kv.second;
+                Value arr = Value::array(); arr.isList = true;
+                size_t p = 0;
+                while (p < names.size()) {
+                    size_t q = names.find(' ', p);
+                    arr.arr()->push_back(Value::str(names.substr(p, q - p)));
+                    if (q == std::string::npos) break;
+                    p = q + 1;
+                }
+                throwTypedV("X::Package::Stubbed", {{"packages", arr}}, e.what());
+            }
+            if (e.exType == "X::Undeclared::Symbols")
+                for (auto& kv : e.exAttrs)
+                    if (kv.first == "post_types") {
+                        // `post_types` is a hash of the name to the lines that used it
+                        Value h = Value::makeHash();
+                        Value lines = Value::array(); lines.isList = true;
+                        lines.arr()->push_back(Value::integer(e.line));
+                        (*h.hash())[kv.second] = lines;
+                        throwTypedV("X::Undeclared::Symbols", {{"post_types", h}}, e.what());
+                    }
+            if (e.exType == "X::Syntax::Number::LiteralType") {
+                // the two attributes are OBJECTS, not text: `:vartype(Int)` is the
+                // type and `:value(NaN)` the number, which is what throws-like asks
+                std::string vt = "Int", val = "0";
+                for (auto& kv : e.exAttrs) {
+                    if (kv.first == "vartype") vt = kv.second;
+                    else if (kv.first == "value") val = kv.second;
+                }
+                throwTypedV("X::Syntax::Number::LiteralType",
+                            {{"vartype", Value::typeObj(vt)}, {"value", numifyStr(val)}}, e.what());
+            }
+            if (e.exType == "X::Comp::Group") {
+                // parse-level group diagnostic: the `sorrow` attr names the inner
+                // exception type; rebuild it as a real object list in .sorrows
+                // (…and `panic` the fatal one, `worry` a warning; each may carry
+                // its own message and `what`)
+                std::string stype, smsg, swhat, ptype, pmsg, pwhat, ppre, ppost, wmsg, sline, pline;
+                for (auto& kv : e.exAttrs) {
+                    if (kv.first == "sorrow-line") sline = kv.second;
+                    else if (kv.first == "panic-line") pline = kv.second;
+                    else if (kv.first == "sorrow") stype = kv.second;
+                    else if (kv.first == "sorrow-msg") smsg = kv.second;
+                    else if (kv.first == "sorrow-what") swhat = kv.second;
+                    else if (kv.first == "panic") ptype = kv.second;
+                    else if (kv.first == "panic-msg") pmsg = kv.second;
+                    else if (kv.first == "panic-what") pwhat = kv.second;
+                    else if (kv.first == "panic-pre") ppre = kv.second;
+                    else if (kv.first == "panic-post") ppost = kv.second;
+                    else if (kv.first == "worry") wmsg = kv.second;
+                }
+                auto mk = [&](const std::string& t, const std::string& m, const std::string& w,
+                              const std::string* pre = nullptr, const std::string* post = nullptr,
+                              const std::string& ln = std::string()) {
+                    std::vector<std::pair<std::string, Value>> a;
+                    if (!w.empty()) a.emplace_back("what", Value::str(w));
+                    if (pre && (!pre->empty() || !post->empty())) {
+                        a.emplace_back("pre", Value::str(*pre));
+                        a.emplace_back("post", Value::str(*post));
+                    }
+                    if (t == "X::Comp::AdHoc") a.emplace_back("payload", Value::str(m));
+                    if (!ln.empty()) a.emplace_back("line", Value::integer(std::stoll(ln)));
+                    return makeTypedEx(t, std::move(a), m);
+                };
+                std::vector<std::pair<std::string, Value>> ga;
+                Value arr = Value::array(); arr.isList = true;
+                if (!stype.empty() || ptype.empty())
+                    arr.arr()->push_back(mk(stype.empty() ? "X::AdHoc" : stype, smsg.empty() ? e.what() : smsg, swhat,
+                                            nullptr, nullptr, sline));
+                ga.emplace_back("sorrows", arr);
+                if (!ptype.empty()) ga.emplace_back("panic", mk(ptype, pmsg.empty() ? e.what() : pmsg, pwhat, &ppre, &ppost, pline));
+                if (!wmsg.empty()) {
+                    Value wa = Value::array(); wa.isList = true;
+                    wa.arr()->push_back(mk("X::Comp::AdHoc", wmsg, ""));
+                    ga.emplace_back("worries", wa);
+                }
+                throwTypedV("X::Comp::Group", std::move(ga), e.what());
+            }
+            if (!e.exType.empty()) {   // typed compile diagnostic — and where it was found
+                auto at = e.exAttrs;
+                bool haveLine = false;
+                for (auto& kv : at) if (kv.first == "line") haveLine = true;
+                if (!haveLine && e.line > 0) at.emplace_back("line", std::to_string(e.line));
+                throwTyped(e.exType, at, e.what());
+            }
+            throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
         }
-        if (!e.exType.empty()) {   // typed compile diagnostic — and where it was found
-            auto at = e.exAttrs;
-            bool haveLine = false;
-            for (auto& kv : at) if (kv.first == "line") haveLine = true;
-            if (!haveLine && e.line > 0) at.emplace_back("line", std::to_string(e.line));
-            throwTyped(e.exType, at, e.what());
-        }
-        throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
     }
     // a placeholder in the EVAL mainline has no signature to attach to (only
     // for user-level EVAL: internal reparses, e.g. S{}=repl, must stay silent)
@@ -4732,7 +4781,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 for (size_t k = 0; (k = q.find('"', k)) != std::string::npos; k += 2) q.insert(k, "\\");
                                 src += "multi " + mn + "(" + u->module + " $self, |c) is raw { $self.\"" + q + "\"(|c) }\n";
                             }
-                            try { evalString(src); } catch (RakuError&) {}
+                            try { evalString(src); }
+                            catch (FeatureNotBuilt&) { throw; }   // --slim cut the parser: say so
+                            catch (RakuError&) {}
                         }
                     }
                     const std::string pfx = u->module + "::";

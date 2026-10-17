@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "BuiltinRakuSrc.h"
 #include "Sandbox.h"
 
 namespace rakupp {
@@ -9,7 +10,8 @@ static long long g_spawnedSeq = 0;
 
 // IO::Notification, as Rakudo's CORE declares it: the events IO::Path.watch
 // emits, which user code also builds (Cro's recursive watcher re-emits its own).
-static const char* const kIoNotificationSrc = R"RAKUNOTIFY(
+// (In the builtin-Raku table, BuiltinRakuSrc.h, so a --slim binary can carry it pre-parsed.)
+const char* const kIoNotificationSrc = R"RAKUNOTIFY(
 class IO::Notification {
     method watch-path(Str() $path, :$scheduler) { $path.IO.watch }
 }
@@ -738,7 +740,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             auto saved = tctx_.cur;
             tctx_.cur = env;
             struct Restore { ExecContext& t; std::shared_ptr<Env> e; ~Restore() { t.cur = e; } } restore{tctx_, saved};
-            return evalString("supply { whenever $__rakupp_chan -> \\v { emit v } }");
+            return evalString(kChannelSupplySrc);   // BuiltinRakuSrc.cpp
         }
         if (m == "elems") { std::lock_guard<std::recursive_mutex> lk(chm); return Value::integer((long long)q.size()); }
     }

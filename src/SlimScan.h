@@ -8,6 +8,7 @@
 // The default answer to uncertainty is always "keep".
 
 #include "Ast.h"
+#include <set>
 #include <string>
 #include <vector>
 
@@ -26,8 +27,16 @@ struct SlimScanResult {
     // shows them all. `where` is "" for the mainline, else the module name.
     struct Site { int feat; std::string what; std::string where; int line; };
     std::vector<Site> sites;
+    // The builtin Raku (BuiltinRakuSrc.h) a program may reach through a name,
+    // by the table's `needs` tag ("cathandle", "notification"): a compile that
+    // cuts `eval` carries those pre-parsed, beside the always-carried ones.
+    std::set<std::string> builtinTags;
 };
 
-SlimScanResult slimScan(const Program& prog, const std::vector<BundledModule>& mods);
+// `engineAnswered`: the modules collectModuleGraph left to the engine's own
+// builtins (Data::Native and its siblings) — `use`d, not embedded, and not a
+// disk load either.
+SlimScanResult slimScan(const Program& prog, const std::vector<BundledModule>& mods,
+                        const std::set<std::string>& engineAnswered);
 
 }

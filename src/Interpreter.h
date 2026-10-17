@@ -372,6 +372,11 @@ struct BundledModule {
     std::string name, blob, finish, src;
     std::string distKey, distMeta;
     std::vector<BundledResource> resources;
+    // Carried for a builtin's rare fallback rather than `use`d by the program
+    // (JSON::Native::Raku behind the json codecs): it travels as its AST, and
+    // the compile modes leave its routines interpreted — natively compiled,
+    // that one module is 333 KB of binary for calls almost no program makes.
+    bool interpretOnly = false;
 };
 
 // Resolve `prog`'s TRANSITIVE `use` graph against `searchPath` and return each
@@ -388,6 +393,12 @@ struct BundledModule {
 // in the graph — including ones left out of the returned table. Codegen needs
 // them: a compiled call is resolved by name at compile time, so it has to know
 // which names a module is about to take over (see collectExportedSubNames).
+//
+// `engineAnsweredOut`, when given, collects the modules left to the ENGINE
+// (Data::Native and its siblings): neither embedded nor skipped, because the
+// binary answers them from its own builtins. The --slim scan reads it to tell
+// them from a module that will be loaded from disk (issue #166).
+//
 // A module the graph could NOT embed, and why — the compile modes report
 // these (MODULES-PLAN B1) and --standalone turns them into build errors (B2).
 // `name` is "<dynamic require>" for a runtime-computed `require ::($n)`,
@@ -402,7 +413,8 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
                                               std::set<std::string>* exportsOut = nullptr,
                                               std::vector<ModuleSkip>* skipsOut = nullptr,
                                               std::set<std::string>* nativeLibsOut = nullptr,
-                                              std::set<std::string>* usedOut = nullptr);
+                                              std::set<std::string>* usedOut = nullptr,
+                                              std::set<std::string>* engineAnsweredOut = nullptr);
 
 // The `is export` sub names declared by `stmts` (recursing into braced
 // module/package bodies). This is the scan that decides whether a module sub may

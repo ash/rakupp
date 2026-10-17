@@ -41,6 +41,7 @@ struct SeqEnt { const char* name; uint32_t off, len; };
 struct BlockEnt { uint32_t lo, hi; const char* name; };
 struct ScriptEnt { uint32_t lo, hi; const char* name; };
 struct BidiEnt { uint32_t lo, hi; const char* bc; };
+struct PropRange { uint32_t lo, hi; uint16_t prop; };
 
 // feature `unicode-names` — unicode_names.cpp (tools/gen-unicode.raku)
 const NameEnt*  namesTable(size_t* n);   // sorted by name; n = entries
@@ -79,5 +80,14 @@ const uint32_t* bidiBracketTable(size_t* n); // (cp, paired, 1 open / 2 close) r
 // "prop;alias;alias…", the property normalized ("ea", "sc", "ccc", …); n = rows.
 // <:Prop<Value>> asks it only when the spelling differs from the value's own.
 const char* const* valueAliasTable(size_t* n);
+// …and the BINARY properties (unicode_props_gen.cpp, tools/gen_unicode_props.py):
+// (lo, hi, prop) ranges grouped by property and sorted by lo within each,
+// n = rows; *names = the normalized property names a row's `prop` indexes.
+// Read only by uniprop, unimatch and a regex <:Prop> naming one — ordinary
+// regex classes (\w, <alpha>, <:Lu>) answer from the general category first.
+// The two the never-cut code asks by name, ID_Continue (the parser) and
+// Unified_Ideograph (collation), have their own copy in rt:
+// unicode_props_core_gen.cpp, read by uniIdContinue / uniUnifiedIdeograph.
+const PropRange* binPropsTable(size_t* n, const char* const** names, size_t* nnames);
 
 } }

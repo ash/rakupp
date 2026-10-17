@@ -1280,7 +1280,12 @@ void Interpreter::registerBuiltins() {
                 // where Rakudo's own throws-like reaches the death by
                 // stringifying the argument (Str sheet ST-27).
                 else I.sinkValue(a[0]);
-            } catch (RakuError& e) { threw = true; thrown = I.exceptionFor(e); }
+            }
+            catch (FeatureNotBuilt& e) {   // a --slim cut is the build's verdict, not the code's death —
+                if (a.size() < 2 || a[1].t != VT::Type || a[1].s != "X::Feature::NotBuilt") throw;
+                threw = true; thrown = I.exceptionFor(e);   // …unless that is what is asked about
+            }
+            catch (RakuError& e) { threw = true; thrown = I.exceptionFor(e); }
             I.emitTest(threw, !a.empty() && a[0].t == VT::Str ? "'" + a[0].s + "' died" : "code dies");
             if (!threw) {  // nothing to inspect: every later assertion is skipped, not failed
                 for (int k = 1; k < n; k++) skipLine("Code did not die, can not check exception");
@@ -1372,7 +1377,9 @@ void Interpreter::registerBuiltins() {
                 // threw": not a pass. (Left to propagate, it unwound the test
                 // file's own mainline.)
                 failed = false;
-            } catch (RakuError& e) {
+            }
+            catch (FeatureNotBuilt&) { throw; }   // a --slim cut: loud, as throws-like's
+            catch (RakuError& e) {
                 if (e.payload.t == VT::Type && e.payload.s == "X::Match::Bool") throw; // matcher misuse propagates
                 failed = false; // thrown exception: fails-like does not pass
             }

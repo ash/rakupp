@@ -16,6 +16,7 @@ my $ALIAS = "tools/ucd/NameAliases-$VER.txt";
 my @names;      # "NAME\t cp" pairs (tab-joined, sorted by name at the end)
 my %seen-name;
 my @numv;       # flattened cp, numerator, denominator
+my %vulgar;     # cps named VULGAR FRACTION … (U+2189 is one whose value is a plain 0)
 my @gcat;       # category runs: [start, end, cat-index]
 
 # fixed category order — must match CATNAMES in the C++ lookup code
@@ -60,6 +61,7 @@ for $UD.IO.lines -> $line {
 
     add-cat($cp, $cp, $cat);
 
+    %vulgar{$cp} = True if $name.starts-with('VULGAR FRACTION');
     unless $name.starts-with('<') {
         @names.push($name ~ "\t" ~ $cp ~ "\t0");
         %seen-name{$name} = 1;
@@ -156,7 +158,26 @@ for @gcat -> $v {
 @out2.push: $line;
 @out2.push: '};';
 @out2.push: "extern const size_t GCAT_N = {@gcat.elems};";
+# The fractions, out of NUMV: a lone one of these numifies (`"½".Numeric` is
+# 0.5), so ordinary string-to-number code reads them, and NUMV is the
+# unicode-names feature that --slim cuts. Every codepoint whose numeric value
+# is not an integer, plus the VULGAR FRACTIONs whose value is (U+2189, zero
+# thirds), as (cp, numerator, denominator) rows sorted by cp — never cut.
+my @frac;
+for ^(@numv.elems div 3) -> $i {
+    my ($cp, $num, $den) = @numv[$i * 3 .. $i * 3 + 2];
+    @frac.push($cp, $num, $den) if $den != 1 || %vulgar{$cp};
+}
+@out2.push: 'extern const int32_t FRAC[] = {';
+$line = '  ';
+for @frac -> $v {
+    $line ~= $v ~ ',';
+    if $line.chars > 100 { @out2.push($line); $line = '  '; }
+}
+@out2.push: $line;
+@out2.push: '};';
+@out2.push: "extern const size_t FRAC_N = {@frac.elems div 3};";
 @out2.push: '} }';
 'src/unicode_gen.cpp'.IO.spurt(@out2.join("\n") ~ "\n");
 
-say "names={@names.elems} numv={@numv.elems div 3} gcat-ranges={@gcat.elems div 3}";
+say "names={@names.elems} numv={@numv.elems div 3} gcat-ranges={@gcat.elems div 3} frac={@frac.elems div 3}";

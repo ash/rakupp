@@ -188,11 +188,11 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 
 | Generator | Output | Source data | Version |
 |---|---|---|---|
-| **`tools/gen-unicode.raku`** (Raku, run by rakupp itself) | `src/unicode_gen.cpp`, `src/unicode_names.cpp` | UnicodeData, NameAliases, DerivedNumericValues (names, categories, numeric values incl. Unihan numerals) | **18.0** |
+| **`tools/gen-unicode.raku`** (Raku, run by rakupp itself) | `src/unicode_gen.cpp`, `src/unicode_names.cpp` | UnicodeData, NameAliases, DerivedNumericValues (names, categories, numeric values incl. Unihan numerals; the fractions again in `unicode_gen.cpp`, which `--slim` never cuts, for numification) | **18.0** |
 | `tools/gen_unicode_gb.py` | `src/unicode_gb_gen.cpp` | GraphemeBreakProperty, emoji-data, DerivedCoreProperties (InCB) | **18.0** |
 | `tools/gen_unicode_norm.py` | `src/unicode_norm_gen.cpp` | UnicodeData, DerivedNormalizationProps | **18.0** |
 | `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **18.0** |
-| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **18.0** |
+| `tools/gen_unicode_props.py` etc. | `src/unicode_{props,props_core,scripts,blocks,bidi}_gen.cpp` (`props_core`: ID_Continue and Unified_Ideograph, which `--slim` never cuts) | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **18.0** |
 | **`tools/gen_unicode_case.raku`** (Raku) | `src/unicode_case_gen.cpp` | UnicodeData (simple), SpecialCasing (full 1:N), CaseFolding | **18.0** |
 | **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp`, `src/unicode_mirror_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, PropertyValueAliases (for `<:Prop<Value>>`), BidiMirroring (the second file, which `--slim` never cuts) | **18.0** |
 

@@ -60,7 +60,7 @@ $tmp.mkdir;
 # Perl because the shim already depends on /usr/bin/perl and POSIX sh has no
 # sane way to walk a process tree.
 my $reaper = $tmp.add('reap.pl');
-$reaper.spurt: q:to/PERL/;
+my $reaper-src = q:to/PERL/;
     # kill the process TREE rooted at each PID given, deepest-first, repeatedly:
     # the chain spawns while it is being killed, and every generation is its own
     # process-group leader, so one `kill -9 -PGID` misses all but the first.
@@ -81,11 +81,18 @@ $reaper.spurt: q:to/PERL/;
     }
     kill 'KILL', @roots;
     PERL
+$reaper.spurt: $reaper-src;
 
+# Why the last build failed: its last line of output, which the "do not compile"
+# list prints beside the name. On 2026-10-17 a run reported 608 of 1,074
+# programs as not compiling, examples/fibonacci.raku among them; every one built
+# by hand, and the count said nothing about what had gone wrong.
+my $build-why = '';
 sub build($src, $out, *@extra) {
     my @inc = @libs.map({ ('-I', $_).Slip });
     my $p = run $*EXECUTABLE, '--exe', $src.Str, '-o', $out.Str, |@inc, |@extra, :out, :err;
-    $p.out.slurp(:close); $p.err.slurp(:close);
+    my $log = $p.out.slurp(:close) ~ $p.err.slurp(:close);
+    $build-why = $log.lines.grep(*.trim.chars).tail // "exit {$p.exitcode}";
     $p.exitcode == 0
 }
 
@@ -105,6 +112,13 @@ sub run-bin($bin) {
             ~ "echo 1 > '{$tf}'; fi; wait \$P; echo \$? > '{$rc}'";
     my $sh = run '/bin/sh', '-c', $cmd, :cwd($ROOT.Str), :out, :err;
     $sh.out.slurp(:close); $sh.err.slurp(:close);
+    # Read the exit code even though the shell's is not the answer: rakupp reaps
+    # a child only when that is asked for, and closing its pipes is not enough
+    # (Rakudo's IO::Pipe.close waits; rakupp's does not). Unasked, every call
+    # left a zombie, about two a program — and around program 475 the harness
+    # hit the per-user process limit, after which every build "did not
+    # compile" (2026-10-17, twice).
+    $sh.exitcode;
     my $timed = $tf.IO.e;
     my $x = $rc.IO.e ?? $rc.IO.slurp.trim.Int !! -1;
     my ($ot, $et) = ($o.IO.e ?? $o.IO.slurp !! '', $e.IO.e ?? $e.IO.slurp !! '');
@@ -116,6 +130,11 @@ sub compare($file, $full, $slim) {
     my ($xf, $of, $ef, $tof) = run-bin($full);
     my ($xs, $os, $es, $tos) = run-bin($slim);
     return 'TIMEOUT' if $tof || $tos;
+    # a program that names $*EXECUTABLE (a spawn's failure message, "the
+    # highlighter was …") prints each binary's own path: the two sides differ
+    # in that and nothing else, so the path is the same placeholder on both
+    ($of, $ef) = ($of, $ef).map(*.subst($full.Str, '<BINARY>', :g));
+    ($os, $es) = ($os, $es).map(*.subst($slim.Str, '<BINARY>', :g));
     return '' if $xf == $xs && $of eq $os && $ef eq $es;
     my @why;
     @why.push("exit $xf vs $xs")           if $xf != $xs;
@@ -130,8 +149,18 @@ my @nocompile;
 my @nondet;      # disagrees with itself: rand/timing — the differential cannot judge it
 my @timeout;     # hit the per-run cap (self-spawning $*EXECUTABLE tests, hangs)
 
+my $previous = '';
 for @files -> $f {
     $n++;
+    # a corpus program that removes what it should not can take the scratch
+    # dir with it, and every build after it then "does not compile": put the
+    # dir back, and say which program ran last
+    unless $tmp.d {
+        $tmp.mkdir;
+        $reaper.spurt: $reaper-src;
+        note "slim-diff: the scratch dir vanished after $previous — recreated";
+    }
+    $previous = $f.basename;
     # NOTE on programs that spawn $*EXECUTABLE (49 of this corpus do): under the
     # interpreter that reaches rakupp, but COMPILED it is the binary itself, which
     # carries one program — so the spawn re-runs the program that did the spawning.
@@ -144,7 +173,7 @@ for @files -> $f {
     my $full = $tmp.add("full-$n");
     my $slim = $tmp.add("slim-$n");
     unless build($f, $full) {
-        @nocompile.push($f.basename);   # does not compile at all: not this gate's business
+        @nocompile.push("{$f.basename} ({$build-why.substr(0, 90)})");   # not this gate's business
         next;
     }
     unless build($f, $slim, '--slim') {
@@ -218,7 +247,8 @@ say "slim-diff: {$pass} identical of {$n} programs "
 # emits C++ referencing an undeclared `v_ac` and fails to build. slim-diff called
 # that "not this gate's business" and optbench only ever tries its own kernels,
 # so nothing in the release was looking at it.
-say "  do not compile ({@nocompile.elems}): {@nocompile.join(', ')}" if @nocompile;
+say "  do not compile ({@nocompile.elems}):" if @nocompile;
+say "    $_" for @nocompile;
 say "  nondeterministic (self-disagreeing): {@nondet.join(', ')}" if @nondet;
 say "  timed out (not judged): {@timeout.join(', ')}" if @timeout;
 if @failed {

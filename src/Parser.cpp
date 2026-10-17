@@ -10643,7 +10643,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     auto identContAt = [&](size_t p, size_t& len) -> bool {
         if ((unsigned char)raw[p] < 0x80) { len = 1; return isIdentCont(raw[p]); }
         uint32_t cp = cpAtRaw(p, len);
-        return uniBinaryProp(cp, "ID_Continue") == 1;
+        return uniIdContinue(cp);   // rt's own copy: EVAL needs no unicode-props for it
     };
     // The `-`/`'` join, with a possibly NON-ASCII letter after it.
     // `rakuIdentJoins` is a byte test, so it answers no for `markup-Δ` — and
