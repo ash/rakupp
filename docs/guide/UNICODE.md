@@ -132,7 +132,15 @@ say "café" unicmp "cafz";    # Less   (é sorts right after e, not past z)
 - Regex property classes: `<:Lu>`, `<:Latin>`, `<:Script<Greek>>`,
   `<:bc<L>>` (bidi class), `<:InBasicLatin>` (blocks), and the binary
   properties from `PropList.txt`/`DerivedCoreProperties.txt`
-  (`<:Math>`, `<:Soft_Dotted>`, …). **Caveat:** the derived properties that
+  (`<:Math>`, `<:Soft_Dotted>`, …). A property with its value,
+  `<:Prop<Value>>`, takes the property by any name and the value by any of the
+  aliases `PropertyValueAliases.txt` gives it, loosely (case, spaces,
+  underscores and hyphens do not count): `<:ea<W>>` and `<:East_Asian_Width<Wide>>`,
+  `<:sc<Cyrl>>` and `<:Script<Cyrillic>>`, `<:Age<V1_1>>` and `<:Age<1.1>>`,
+  `<:ccc<A>>` and `<:ccc<230>>`, `<:gc<Uppercase_Letter>>`. That holds for
+  General_Category, Script, Block, Bidi_Class, Canonical_Combining_Class and the
+  enumerated properties above; a value the property does not have matches
+  nothing. **Caveat:** the derived properties that
   follow from case — `<:Upper>`, `<:Lower>` and `<:Alpha>` — are answered by
   general category today, so a character that is `Uppercase` without being `Lu`
   (Roman numeral `Ⅹ`, general category `Nl`) does not match; `<:Lu>` and the
@@ -186,7 +194,7 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 | `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **18.0** |
 | `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **18.0** |
 | **`tools/gen_unicode_case.raku`** (Raku) | `src/unicode_case_gen.cpp` | UnicodeData (simple), SpecialCasing (full 1:N), CaseFolding | **18.0** |
-| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp`, `src/unicode_mirror_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, BidiMirroring (the second file, which `--slim` never cuts) | **18.0** |
+| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp`, `src/unicode_mirror_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, PropertyValueAliases (for `<:Prop<Value>>`), BidiMirroring (the second file, which `--slim` never cuts) | **18.0** |
 
 Every table is pinned at **Unicode 18.0**, the version Roast's generated test
 files (GraphemeBreakTest, emoji-test, CollationTest) assert against. The

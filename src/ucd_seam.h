@@ -75,5 +75,9 @@ const uint32_t* enumPropTable(const char* key, size_t* n, const char* const** va
 const uint32_t* unicode1NameTable(size_t* n, const char* const** strs);  // sorted cps; n = entries
 const uint32_t* jamoShortNameTable(size_t* n, const char* const** strs); // sorted cps; n = entries
 const uint32_t* bidiBracketTable(size_t* n); // (cp, paired, 1 open / 2 close) rows; n = uint32 count
+// PropertyValueAliases.txt for the cuttable properties: rows of
+// "prop;alias;alias…", the property normalized ("ea", "sc", "ccc", …); n = rows.
+// <:Prop<Value>> asks it only when the spelling differs from the value's own.
+const char* const* valueAliasTable(size_t* n);
 
 } }

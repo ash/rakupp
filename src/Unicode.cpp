@@ -53,31 +53,32 @@ static std::string enumLookup(const uint32_t* r, size_t n3, const char* const* v
 }
 // An enumerated property's NAME (already normalized: lowercase, separators
 // dropped) → its table key in unicode_props2_gen.cpp, plus the value a
-// codepoint the table does not list takes. Null for any other name. Touches
-// no table, so the SLIM scan's predicates below ask it too.
-struct EnumPropKey { const char* key; const char* dflt; };
+// codepoint the table does not list takes, and its short name as
+// PropertyValueAliases.txt's rows begin (normalized). Null for any other name.
+// Touches no table, so the SLIM scan's predicates below ask it too.
+struct EnumPropKey { const char* key; const char* dflt; const char* alias; };
 static const EnumPropKey* enumPropKey(const std::string& p) {
     static const struct { const char* name; EnumPropKey k; } kNames[] = {
-        {"age", {"AGE", "Unassigned"}},
-        {"linebreak", {"LB", "XX"}},             {"lb", {"LB", "XX"}},
-        {"wordbreak", {"WB", "Other"}},          {"wb", {"WB", "Other"}},
-        {"sentencebreak", {"SB", "Other"}},      {"sb", {"SB", "Other"}},
-        {"graphemeclusterbreak", {"GCB", "Other"}}, {"gcb", {"GCB", "Other"}},
-        {"eastasianwidth", {"EAW", "N"}},        {"ea", {"EAW", "N"}},
-        {"hangulsyllabletype", {"HST", "NA"}},   {"hst", {"HST", "NA"}},
-        {"decompositiontype", {"DT", "None"}},   {"dt", {"DT", "None"}},
-        {"numerictype", {"NT", "None"}},         {"nt", {"NT", "None"}},
+        {"age", {"AGE", "Unassigned", "age"}},
+        {"linebreak", {"LB", "XX", "lb"}},             {"lb", {"LB", "XX", "lb"}},
+        {"wordbreak", {"WB", "Other", "wb"}},          {"wb", {"WB", "Other", "wb"}},
+        {"sentencebreak", {"SB", "Other", "sb"}},      {"sb", {"SB", "Other", "sb"}},
+        {"graphemeclusterbreak", {"GCB", "Other", "gcb"}}, {"gcb", {"GCB", "Other", "gcb"}},
+        {"eastasianwidth", {"EAW", "N", "ea"}},        {"ea", {"EAW", "N", "ea"}},
+        {"hangulsyllabletype", {"HST", "NA", "hst"}},   {"hst", {"HST", "NA", "hst"}},
+        {"decompositiontype", {"DT", "None", "dt"}},   {"dt", {"DT", "None", "dt"}},
+        {"numerictype", {"NT", "None", "nt"}},         {"nt", {"NT", "None", "nt"}},
         // Joining_Type's default is computed, not listed (uniEnumProp below)
-        {"joiningtype", {"JT", ""}},             {"jt", {"JT", ""}},
-        {"joininggroup", {"JG", "No_Joining_Group"}}, {"jg", {"JG", "No_Joining_Group"}},
+        {"joiningtype", {"JT", "", "jt"}},             {"jt", {"JT", "", "jt"}},
+        {"joininggroup", {"JG", "No_Joining_Group", "jg"}}, {"jg", {"JG", "No_Joining_Group", "jg"}},
         // the four normalization quick checks: every codepoint the UCD file
         // does not list is "Yes", and the values are reported by full name
-        {"nfcquickcheck", {"NFCQC", "Yes"}},     {"nfcqc", {"NFCQC", "Yes"}},
-        {"nfdquickcheck", {"NFDQC", "Yes"}},     {"nfdqc", {"NFDQC", "Yes"}},
-        {"nfkcquickcheck", {"NFKCQC", "Yes"}},   {"nfkcqc", {"NFKCQC", "Yes"}},
-        {"nfkdquickcheck", {"NFKDQC", "Yes"}},   {"nfkdqc", {"NFKDQC", "Yes"}},
-        {"indicpositionalcategory", {"INPC", "NA"}}, {"inpc", {"INPC", "NA"}},
-        {"indicsyllabiccategory", {"INSC", "Other"}}, {"insc", {"INSC", "Other"}},
+        {"nfcquickcheck", {"NFCQC", "Yes", "nfcqc"}},     {"nfcqc", {"NFCQC", "Yes", "nfcqc"}},
+        {"nfdquickcheck", {"NFDQC", "Yes", "nfdqc"}},     {"nfdqc", {"NFDQC", "Yes", "nfdqc"}},
+        {"nfkcquickcheck", {"NFKCQC", "Yes", "nfkcqc"}},   {"nfkcqc", {"NFKCQC", "Yes", "nfkcqc"}},
+        {"nfkdquickcheck", {"NFKDQC", "Yes", "nfkdqc"}},   {"nfkdqc", {"NFKDQC", "Yes", "nfkdqc"}},
+        {"indicpositionalcategory", {"INPC", "NA", "inpc"}}, {"inpc", {"INPC", "NA", "inpc"}},
+        {"indicsyllabiccategory", {"INSC", "Other", "insc"}}, {"insc", {"INSC", "Other", "insc"}},
     };
     for (auto& e : kNames) if (p == e.name) return &e.k;
     return nullptr;
@@ -318,6 +319,97 @@ static std::string normProp(const std::string& s) {
     return n;
 }
 
+// General_Category by any of its names, loosely: PropertyValueAliases.txt's gc
+// rows (18.0), spelled here because General_Category is never cut and the
+// generated alias table is. Answers the short value ("Lu", "L", "LC"), or ""
+// for no such value.
+static std::string gcShortName(const std::string& v) {
+    static const std::unordered_map<std::string, std::string> M = [] {
+        static const char* const rows[][3] = {
+        {"C", "Other"},
+        {"Cc", "Control", "cntrl"},
+        {"Cf", "Format"},
+        {"Cn", "Unassigned"},
+        {"Co", "Private_Use"},
+        {"Cs", "Surrogate"},
+        {"L", "Letter"},
+        {"LC", "Cased_Letter"},
+        {"Ll", "Lowercase_Letter"},
+        {"Lm", "Modifier_Letter"},
+        {"Lo", "Other_Letter"},
+        {"Lt", "Titlecase_Letter"},
+        {"Lu", "Uppercase_Letter"},
+        {"M", "Mark", "Combining_Mark"},
+        {"Mc", "Spacing_Mark"},
+        {"Me", "Enclosing_Mark"},
+        {"Mn", "Nonspacing_Mark"},
+        {"N", "Number"},
+        {"Nd", "Decimal_Number", "digit"},
+        {"Nl", "Letter_Number"},
+        {"No", "Other_Number"},
+        {"P", "Punctuation", "punct"},
+        {"Pc", "Connector_Punctuation"},
+        {"Pd", "Dash_Punctuation"},
+        {"Pe", "Close_Punctuation"},
+        {"Pf", "Final_Punctuation"},
+        {"Pi", "Initial_Punctuation"},
+        {"Po", "Other_Punctuation"},
+        {"Ps", "Open_Punctuation"},
+        {"S", "Symbol"},
+        {"Sc", "Currency_Symbol"},
+        {"Sk", "Modifier_Symbol"},
+        {"Sm", "Math_Symbol"},
+        {"So", "Other_Symbol"},
+        {"Z", "Separator"},
+        {"Zl", "Line_Separator"},
+        {"Zp", "Paragraph_Separator"},
+        {"Zs", "Space_Separator"},
+        };
+        std::unordered_map<std::string, std::string> m;
+        for (auto& r : rows)
+            for (const char* a : r) if (a) m.emplace(normProp(a), r[0]);
+        return m;
+    }();
+    auto it = M.find(normProp(v));
+    return it == M.end() ? std::string() : it->second;
+}
+// Is `cat` (a code point's two-letter category) in the gc value `g`, which is
+// a two-letter value, a one-letter group, or LC?
+static bool gcIn(const std::string& cat, const std::string& g) {
+    if (g == "LC") return cat == "Lu" || cat == "Ll" || cat == "Lt";
+    if (g.size() == 1) return !cat.empty() && cat[0] == g[0];
+    return cat == g;
+}
+// <:Prop<Value>>: does `asked` name the same value as `stored`, the code
+// point's own value as its table spells it? Any alias of it does (UAX #44 LM3:
+// case, spaces, underscores and hyphens do not count). Equal spellings answer
+// at once; otherwise both are looked up in the PropertyValueAliases table,
+// whose rows begin with `prop`, the property's normalized short name. That
+// table is cut with unicode-props, beside the tables these properties read.
+static bool valueAliasMatch(const char* prop, const std::string& stored, const std::string& asked) {
+    std::string s = normProp(stored), a = normProp(asked);
+    if (s == a) return true;
+    static const std::unordered_map<std::string, size_t> row = [] {
+        std::unordered_map<std::string, size_t> m;
+        size_t n; const char* const* T = ucd::valueAliasTable(&n); // seam: throws when cut
+        for (size_t i = 0; i < n; i++) {
+            const char* r = T[i];
+            const char* semi = std::strchr(r, ';');
+            std::string pr(r, semi);
+            for (const char* q = semi + 1;;) {
+                const char* e = std::strchr(q, ';');
+                m.emplace(pr + ':' + normProp(e ? std::string(q, e) : std::string(q)), i);
+                if (!e) break;
+                q = e + 1;
+            }
+        }
+        return m;
+    }();
+    auto si = row.find(std::string(prop) + ':' + s);
+    auto ai = row.find(std::string(prop) + ':' + a);
+    return si != row.end() && ai != row.end() && si->second == ai->second;
+}
+
 bool uniMatchesProp(uint32_t cp, const std::string& p) {
     // property-with-value form: <:bc<L>> (Bidi_Class), <:sc<Latin>>/<:Script<…>>,
     // <:gc<Lu>> (General_Category).  p arrives as e.g. "bc<L>".
@@ -325,19 +417,29 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     if (lt != std::string::npos && !p.empty() && p.back() == '>') {
         std::string prop = normProp(p.substr(0, lt));
         std::string val = p.substr(lt + 1, p.size() - lt - 2);
-        if (prop == "bc" || prop == "bidiclass")
-            return normProp(uniBidiClass(cp)) == normProp(val);
-        // an ENUMERATED property with its value: <:Numeric_Type<Digit>>,
-        // <:Line_Break<AL>> — compare the codepoint's own value. These tables
-        // are cuttable (unicode-props), but uniEnumProp touches one only when
-        // the name IS an enumerated property, so <:gc<Lu>> and <:sc<…>> pass
-        // through here without reaching it.
-        {
-            std::string ev = uniEnumProp(p.substr(0, lt), cp);
-            if (!ev.empty()) return normProp(ev) == normProp(val);
+        // A property this knows answers by its own value, which the asked
+        // value matches under any of its aliases (<:ea<W>> and <:ea<Wide>>,
+        // <:sc<Latn>>, <:Age<V1_1>>); an asked value that is none of them
+        // matches nothing. General_Category reads only never-cut tables, so
+        // <:gc<Lu>> works with unicode-props cut; every other one here needs it.
+        if (prop == "gc" || prop == "generalcategory") {
+            std::string g = gcShortName(val);
+            return !g.empty() && gcIn(uniGeneralCategory(cp), g);
         }
-        // sc/script/gc/generalcategory and unknown property keys alike: the
-        // bare-value handlers match on the value alone
+        if (prop == "bc" || prop == "bidiclass")
+            return valueAliasMatch("bc", uniBidiClass(cp), val);
+        if (prop == "sc" || prop == "script")
+            return valueAliasMatch("sc", uniScript(cp), val);
+        if (prop == "blk" || prop == "block") {
+            std::string b = uniBlockName(cp);
+            return valueAliasMatch("blk", b.empty() ? "No_Block" : b, val);
+        }
+        if (prop == "ccc" || prop == "canonicalcombiningclass")
+            return valueAliasMatch("ccc", std::to_string(uniCombiningClass(cp)), val);
+        // an ENUMERATED property: <:Numeric_Type<Digit>>, <:Line_Break<AL>>
+        if (const EnumPropKey* k = enumPropKey(prop))
+            return valueAliasMatch(k->alias, uniEnumProp(prop, cp), val);
+        // an unknown property key: the bare-value handlers match the value alone
         return uniMatchesProp(cp, val);
     }
     // ORDER MATTERS from here down, and not for speed: everything up to the
@@ -371,20 +473,12 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     static const char* K[] = {"Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd",
         "Ps","Pe","Pi","Pf","Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
     for (auto* k : K) if (p == k) return cat == p;
-    // long general-category names: <:UppercaseLetter> == <:Lu> == <:!Cn> …
-    static const std::pair<const char*, const char*> LONG[] = {
-        {"UppercaseLetter","Lu"},{"LowercaseLetter","Ll"},{"TitlecaseLetter","Lt"},
-        {"ModifierLetter","Lm"},{"OtherLetter","Lo"},{"NonspacingMark","Mn"},
-        {"SpacingMark","Mc"},{"EnclosingMark","Me"},{"DecimalNumber","Nd"},
-        {"LetterNumber","Nl"},{"OtherNumber","No"},{"ConnectorPunctuation","Pc"},
-        {"DashPunctuation","Pd"},{"OpenPunctuation","Ps"},{"ClosePunctuation","Pe"},
-        {"InitialPunctuation","Pi"},{"FinalPunctuation","Pf"},{"OtherPunctuation","Po"},
-        {"MathSymbol","Sm"},{"CurrencySymbol","Sc"},{"ModifierSymbol","Sk"},
-        {"OtherSymbol","So"},{"SpaceSeparator","Zs"},{"LineSeparator","Zl"},
-        {"ParagraphSeparator","Zp"},{"Control","Cc"},{"Format","Cf"},
-        {"Surrogate","Cs"},{"PrivateUse","Co"},{"Unassigned","Cn"},
-    };
-    for (auto& lp : LONG) if (p == lp.first) return cat == lp.second;
+    // any other General_Category name, loosely: <:Uppercase_Letter> ==
+    // <:UppercaseLetter> == <:Lu>, <:Combining_Mark> == <:M>
+    {
+        std::string g = gcShortName(p);
+        if (!g.empty()) return gcIn(cat, g);
+    }
     // binary Unicode property (Math, Soft_Dotted, White_Space, Other_Math, …)
     {
         std::string norm;
@@ -445,7 +539,10 @@ bool uniPropNeedsCutTables(const std::string& p) {
     size_t lt = p.find('<');
     if (lt != std::string::npos && !p.empty() && p.back() == '>') {
         std::string prop = normProp(p.substr(0, lt));
-        if (prop == "bc" || prop == "bidiclass") return true;          // bidiTable
+        if (prop == "gc" || prop == "generalcategory") return false;  // gcShortName, GCAT
+        if (prop == "bc" || prop == "bidiclass" || prop == "sc" || prop == "script" ||
+            prop == "blk" || prop == "block" ||
+            prop == "ccc" || prop == "canonicalcombiningclass") return true; // + valueAliasTable
         if (enumPropKey(prop)) return true;                            // enumPropTable
         return uniPropNeedsCutTables(p.substr(lt + 1, p.size() - lt - 2));
     }
@@ -464,14 +561,7 @@ bool uniPropNeedsCutTables(const std::string& p) {
     static const char* K[] = {"Lu","Ll","Lt","Lm","Lo","Mn","Mc","Me","Nd","Nl","No","Pc","Pd",
         "Ps","Pe","Pi","Pf","Po","Sm","Sc","Sk","So","Zs","Zl","Zp","Cc","Cf","Cs","Co","Cn"};
     for (auto* k : K) if (p == k) return false;
-    static const char* LONGN[] = {"UppercaseLetter","LowercaseLetter","TitlecaseLetter",
-        "ModifierLetter","OtherLetter","NonspacingMark","SpacingMark","EnclosingMark",
-        "DecimalNumber","LetterNumber","OtherNumber","ConnectorPunctuation","DashPunctuation",
-        "OpenPunctuation","ClosePunctuation","InitialPunctuation","FinalPunctuation",
-        "OtherPunctuation","MathSymbol","CurrencySymbol","ModifierSymbol","OtherSymbol",
-        "SpaceSeparator","LineSeparator","ParagraphSeparator","Control","Format",
-        "Surrogate","PrivateUse","Unassigned"};
-    for (auto* k : LONGN) if (p == k) return false;
+    if (!gcShortName(p).empty()) return false;                          // any gc name, loosely
     if (uniBinProp('A', normProp(p)) >= 0) return false;   // known binary property name
     return true; // script, In-block, or unknown: all reach the cuttable tables
 }

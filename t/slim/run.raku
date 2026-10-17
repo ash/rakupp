@@ -398,6 +398,19 @@ my $catch = probe('catch.raku', q:to/END/);
     check $xc == 0 && $out eq 'M' && $line.contains('"unicode-props"'),
           '<:Lu>/<:Nd> resolve from never-cut tables, so props still cuts — and matches', "$out / $line";
 }
+{
+    # General_Category's long names are spelled in Unicode.cpp, never cut
+    my $gcl = probe('rx-gc-long.raku',
+        q{print 'A' ~~ /<:gc<Uppercase_Letter>>/ && 'a' !~~ /<:Uppercase_Letter>/ ?? 'M' !! 'N';});
+    my ($rc, $log, $bin) = compile($gcl, 'rx-gc-long-bin', '--exe', '--slim');
+    check $rc == 0, 'a long-name category regex compiles under --slim', $log;
+    my ($xc, $out, $) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq 'M' && $line.contains('"unicode-props"'),
+          '<:gc<Uppercase_Letter>>/<:Uppercase_Letter> need no cut table, so props still cuts — and matches', "$out / $line";
+}
 # The enumerated properties (unicode_props2_gen.cpp) are cut with the rest of
 # unicode-props, and two names reach them that the regex rules read as a
 # category letter: the value in <:Hangul_Syllable_Type<L>>, and .uniprop('W'),
@@ -409,7 +422,11 @@ my $catch = probe('catch.raku', q:to/END/);
 for ('up-w',    q{print 'a'.uniprop('W');},                                         'Na',
                 '.uniprop(\'W\') (East_Asian_Width by a value name)'),
     ('rx-hst',  q{print "\x[1100]" ~~ /<:Hangul_Syllable_Type<L>>/ ?? 'M' !! 'N';}, 'M',
-                'a <:Hangul_Syllable_Type<L>> regex')
+                'a <:Hangul_Syllable_Type<L>> regex'),
+    # …and an alias the never-cut tables do not spell: <:ccc<A>> is 230,
+    # found through the PropertyValueAliases table, which rides the cut
+    ('rx-ccc',  q{print "\x[301]" ~~ /<:ccc<A>>/ ?? 'M' !! 'N';},                  'M',
+                'a <:ccc<A>> regex (an alias from the cut alias table)')
 -> ($name, $code, $want, $what) {
     my $src = probe("{$name}.raku", $code);
     my ($rc, $log, $bin) = compile($src, "{$name}-bin", '--exe', '--slim');

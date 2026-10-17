@@ -32,5 +32,9 @@ const uint32_t* jamoShortNameTable(size_t*, const char* const**) {
 const uint32_t* bidiBracketTable(size_t*) {
     featureMissing("unicode-props", "uniprop('Bidi_Paired_Bracket') (the paired-bracket table)");
 }
+const char* const* valueAliasTable(size_t*) {
+    featureMissing("unicode-props", "<:Prop<Value>> naming a value by another of its aliases "
+                                    "(the PropertyValueAliases table)");
+}
 
 } }

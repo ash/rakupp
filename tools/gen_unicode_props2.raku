@@ -4,7 +4,8 @@
 #   Age, Line_Break, Word_Break, Sentence_Break, Grapheme_Cluster_Break,
 #   East_Asian_Width, Hangul_Syllable_Type, Joining_Type, Joining_Group,
 #   Decomposition_Type, Numeric_Type, the four quick checks, the two Indic
-#   categories, and Unicode_1_Name, Jamo_Short_Name, Bidi_Paired_Bracket —
+#   categories, and Unicode_1_Name, Jamo_Short_Name, Bidi_Paired_Bracket,
+#   and every value's aliases (PropertyValueAliases) —
 # and src/unicode_mirror_gen.cpp, the Bidi_Mirroring_Glyph map.
 #
 # Two files because they sit on opposite sides of the SLIM seam (ucd_seam.h).
@@ -163,6 +164,33 @@ for @brk -> $r { $brow ~= "0x{$r[0].base(16)},0x{$r[1].base(16)},{$r[2] eq 'o' ?
 @out.push: "\};";
 @out.push: "extern const size_t BIDIBRACKET_N = {@brk.elems * 3};";
 
+# PropertyValueAliases: every spelling of every value of the properties above,
+# and of Script, Block, Bidi_Class and Canonical_Combining_Class, so that
+# <:Prop<Value>> takes any of them (UAX #44 LM3 loose matching). A row is
+# "prop;alias;alias…", the property normalized (lowercase, separators
+# dropped) and the aliases as the file spells them. A row whose spellings all
+# normalize alike is left out: comparing the value itself already answers it.
+# General_Category is not here. It is never cut, so Unicode.cpp spells its
+# aliases itself.
+my %va-want = <age bc blk ccc dt ea gcb hst inpc insc jg jt lb nt
+               nfcqc nfdqc nfkcqc nfkdqc sb sc wb>.Set;
+sub va-norm($s) { $s.lc.comb.grep(/<[a..z0..9]>/).join }
+my @va;
+for p('PropertyValueAliases').IO.lines -> $line {
+    my $l = $line.split('#')[0].trim;
+    next unless $l;
+    my @f = $l.split(';').map(*.trim);
+    my $prop = va-norm(@f[0]);
+    next unless %va-want{$prop};
+    my @names = @f[1..*];
+    next if @names.map(&va-norm).unique.elems == 1;
+    @va.push: ($prop, |@names).join(';');
+}
+@out.push: "extern const char* const VALUE_ALIASES[] = \{";
+@out.push: '  "' ~ $_ ~ '",' for @va;
+@out.push: "\};";
+@out.push: "extern const size_t VALUE_ALIASES_N = {@va.elems};";
+
 # The SLIM seam (src/ucd_seam.h): the only way the runtime reaches the tables
 # above, so this file and stub_ucd_props.cpp are interchangeable at link time.
 @out.push: '';
@@ -176,6 +204,7 @@ for <AGE LB WB SB GCB EAW HST DT NT JT JG NFCQC NFDQC NFKCQC NFKDQC INPC INSC> -
 @out.push: 'const uint32_t* unicode1NameTable(size_t* n, const char* const** strs) { *n = U1NAME_N; *strs = U1NAME_STRS; return U1NAME_CPS; }';
 @out.push: 'const uint32_t* jamoShortNameTable(size_t* n, const char* const** strs) { *n = JAMOSN_N; *strs = JAMOSN_STRS; return JAMOSN_CPS; }';
 @out.push: 'const uint32_t* bidiBracketTable(size_t* n) { *n = BIDIBRACKET_N; return BIDIBRACKET; }';
+@out.push: 'const char* const* valueAliasTable(size_t* n) { *n = VALUE_ALIASES_N; return VALUE_ALIASES; }';
 @out.push: '}}';
 spurt 'src/unicode_props2_gen.cpp', @out.join("\n") ~ "\n";
 say "wrote src/unicode_props2_gen.cpp";

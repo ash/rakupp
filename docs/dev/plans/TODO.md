@@ -173,6 +173,14 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **A bare `<:Name>` the engine does not know matches every character**:
+  `'A' ~~ /<:Bogus_Thing>/` is True (Rakudo 2026.09: False). The last line of
+  uniMatchesProp's bare form answers True for a name it cannot place, on
+  purpose ("an unmodelled script"); the same rule made `<:sc<Latn>>` and
+  `<:Uppercase_Letter>` match everything until 2026-10-17, when the value form
+  and the long category names stopped reaching it. Short script codes in the
+  bare form (`<:Latn>`) still do. Deciding needs a look at who relies on the
+  rule; the alias table (`ucd::valueAliasTable`) can resolve `<:Latn>` now.
 - [ ] **Natives against Rakudo 2026.09**, found 2026-10-15 while fixing
   Windfall's native-parameter divergences (b7c47a57), each measured:
   - A boxed Int never reaches a native-int multi candidate in Rakudo:
