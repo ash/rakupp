@@ -4525,8 +4525,34 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `Rational[Int,Int].new(3,10)` — the parameterized role constructs a Rat
     // (JSON::Fast's roundtrip test builds one directly)
     if (inv.t == VT::Type && (inv.s == "Rat" || inv.s == "FatRat" || inv.s == "Rational") && m == "new") {
-        BigInt n = args.size() > 0 ? args[0].toBig() : BigInt(0);
-        BigInt d = args.size() > 1 ? args[1].toBig() : BigInt(1);
+        // The signature is `(Int:D \nu = 0, Int:D \de = 1)`, and the binder
+        // refuses anything else: a Rat or Num here used to be truncated through
+        // toBig — FatRat.new(1, 18890217959702350060800.0) built a wrong value
+        // instead of dying (issue #173).
+        ValueList pos;
+        for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
+        if (pos.size() > 2)
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                "Too many positionals passed; expected 1 to 3 arguments but got " + std::to_string(pos.size() + 1)};
+        static const char* const pname[] = {"nu", "de"};
+        for (size_t k = 0; k < pos.size(); k++) {
+            const Value& a = pos[k];
+            const std::string p = pname[k];
+            if (!typeOrSubsetMatches(a, "Int"))
+                throwTypedV("X::TypeCheck::Binding::Parameter",
+                    {{"got", a}, {"expected", Value::typeObj("Int")}, {"symbol", Value::str(p)}},
+                    "Type check failed in binding to parameter '" + p + "'; expected Int but got " +
+                    a.typeName() + " (" + typeCheckRepr(a) + ")");
+            if (!rtIsDefinite(a))
+                throwTypedV("X::Parameter::InvalidConcreteness",
+                    {{"expected", Value::str("Int")}, {"got", Value::str(a.typeName())},
+                     {"routine", Value::str("new")}, {"param", Value::str(p)},
+                     {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(false)}},
+                    "Parameter '" + p + "' of routine 'new' must be an object instance of type\n'Int', "
+                    "not a type object of type '" + a.typeName() + "'. Did you forget a '.new'?");
+        }
+        BigInt n = pos.size() > 0 ? pos[0].toBig() : BigInt(0);
+        BigInt d = pos.size() > 1 ? pos[1].toBig() : BigInt(1);
         Value v = Value::ratZ(std::move(n), std::move(d));
         if (inv.s == "FatRat") v.fatRatM() = true;
         // Rat denominators are capped at uint64 (FatRat is arbitrary): a wider one

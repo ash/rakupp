@@ -833,16 +833,23 @@ static std::string numToStr(double n) {
     return buf;
 }
 
-static std::string ratToStr(const BigInt& num, const BigInt& den) {
+static std::string ratToStr(const BigInt& num, const BigInt& den, bool fat) {
     if (den.isZero()) return "0";
     bool neg = (num.sign < 0) != (den.sign < 0);
     std::string sign = neg ? "-" : "";
     BigInt n = num.abs(), d = den.abs();
-    { BigInt ip, rem; BigInt::divmod(n, d, ip, rem);
-      if (rem.isZero()) return ip.isZero() ? "0" : sign + ip.toString(); } // integer-valued
-    // Rakudo Rat.Str: fractional digits = max(6, #digits(denominator) + 1),
-    // the value rounded to that many places, then trailing zeros trimmed.
-    long long fracDigits = std::max<long long>(6, (long long)d.toString().size() + 1);
+    BigInt whole;
+    { BigInt rem; BigInt::divmod(n, d, whole, rem);
+      if (rem.isZero()) return whole.isZero() ? "0" : sign + whole.toString(); } // integer-valued
+    // Rakudo Rational.Str: 6 fractional digits below a denominator of 100000;
+    // from there a Rat gets #digits(denominator) + 1 and a FatRat
+    // #digits(denominator) + #digits(whole part) + 5 — 6.019220737414433984,
+    // not the Rat's 6.0192207374144 (issue #173). The value is rounded to
+    // that many places, then trailing zeros are trimmed.
+    long long denDigits = (long long)d.toString().size();
+    long long fracDigits = denDigits < 6 ? 6
+                         : fat ? denDigits + (long long)whole.toString().size() + 5
+                               : denDigits + 1;
     BigInt scaled = n * BigInt(10).pow(fracDigits);
     BigInt q, r; BigInt::divmod(scaled, d, q, r);
     if ((r * BigInt(2) - d).sign >= 0) q = q + BigInt(1); // round half up
@@ -921,10 +928,13 @@ std::string Value::toStr() const {
             return r + (im() < 0 || i2[0] == '-' ? "" : "+") + i2 + (std::isfinite(im()) ? "i" : "\\i");
         }
         case VT::Rat:
-            if (ratN() && ratD() && ratD()->isZero()) // Rakudo dies on Str-coercing a zero-denominator Rat
+            // Rakudo dies on Str-coercing a zero-denominator Rat, naming the
+            // numerator (normalised to 1 or -1) unless it is 0
+            if (ratN() && ratD() && ratD()->isZero())
                 throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                                "Attempt to divide by zero when coercing Rational to Str"};
-            return (ratN() && ratD()) ? ratToStr(*ratN(), *ratD()) : "0";
+                                "Attempt to divide " + (ratN()->isZero() ? std::string() : ratN()->toString() + " ") +
+                                "by zero when coercing Rational to Str"};
+            return (ratN() && ratD()) ? ratToStr(*ratN(), *ratD(), fatRat()) : "0";
         case VT::Str:  return s;
         // IterationEnd is a SENTINEL, not a type object — it stringifies bare.
         //
