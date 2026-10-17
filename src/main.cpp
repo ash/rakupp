@@ -1059,8 +1059,36 @@ struct ModuleAot {
     std::vector<AotSkipped> skipped;    // …and the ones it declined, with the reason
     int total = 0;                      // …out of this many
     bool disabled = false;              // RAKUPP_NO_AOT=1 at compile time
+    // A bundled program's own routines ride along as the module kMainAotKey;
+    // this is the fingerprint of the tree they were compiled from (attachMainAot)
+    uint64_t mainFp = 0;
     int live() const { int n = 0; for (auto& r : routines) n += !r.dropped; return n; }
 };
+// The program as a bundled binary will parse it when it runs (Runtime.cpp's
+// rakuppRunOn): the same lexer and parser settings and the name it will run
+// under, so that the two trees serialize alike and attachMainAot takes the
+// bodies compiled from this one. (A localized program is rewritten at run
+// time only; its trees differ, and it runs interpreted.)
+static bool parseAsBundled(const std::string& src, const std::string& runName,
+                           const std::vector<std::string>& libPaths, Program& out) {
+    try {
+        Lexer lexer(src);
+        lexer.tolerant_ = true;
+        auto tokens = lexer.tokenize();
+        Parser parser(std::move(tokens));
+        parser.declPod_ = lexer.declPod_;
+        parser.leadPod_ = lexer.leadPod_;
+        parser.libPaths_ = effectiveSearchPath(libPaths);   // a `use`d module's operators, as embedded
+        parser.srcFile_ = runName;
+        parser.src_ = &src;
+        if (const char* rl = std::getenv("RAKULIB"))
+            for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
+        out = parser.parseProgram();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 static bool aotEnvOn(const char* name) { const char* e = std::getenv(name); return e && *e && *e != '0'; }
 // RAKUPP_AOT_FAULT_CXX=NAME[,NAME…] (test-only, t/aot/): the native body of each
 // routine so named gets a line the C++ compiler rejects, to prove that a body
@@ -1219,6 +1247,8 @@ static void assembleModuleAot(const std::vector<BundledModule>& mods, const Modu
         d << "};\n";
         c << "  rakupp::rakuppRegisterModuleAot(" << aotStrLit(mods[mi].name) << ", kAot" << mi
           << ", sizeof kAot" << mi << " / sizeof kAot" << mi << "[0]);\n";
+        if (mods[mi].name == kMainAotKey)   // the program's own: the tree they fit
+            c << "  rakupp::rakuppRegisterMainAot(" << a.mainFp << "ULL);\n";
     }
     d << "#pragma pop_macro(\"RT\")\n";
     decls = d.str();
@@ -1293,19 +1323,32 @@ static int compileDroppingAot(const std::string& cmd, const std::string& genPath
     }
     removeFile(diagPath);
     writeAotReport(aot, mods, rc);
-    if (aot.total > 0 && !g_quiet)
-        std::cerr << mode << ": " << aot.live() << " of " << aot.total << " module routines compiled natively\n";
+    if (aot.total > 0 && !g_quiet) {
+        // the program's own routines (a bundled one's) apart from its modules'
+        int progTotal = 0, progLive = 0;
+        for (auto& r : aot.routines)
+            if (mods[r.mod].name == kMainAotKey) { progTotal++; progLive += !r.dropped; }
+        for (auto& s : aot.skipped)
+            if (mods[s.mod].name == kMainAotKey) progTotal++;
+        if (progTotal > 0)
+            std::cerr << mode << ": " << progLive << " of " << progTotal << " program routines compiled natively\n";
+        if (aot.total > progTotal)
+            std::cerr << mode << ": " << aot.live() - progLive << " of " << aot.total - progTotal
+                      << " module routines compiled natively\n";
+    }
     return rc;
 }
 
 // Bundle a Raku program into a standalone native executable: generate a
 // small C++ stub that embeds the program source and calls the runtime, then
 // link it against librakupp_rt.a (statically, so the result needs no rakupp).
-// `moduleBodies`: also compile the routines of the modules it embeds to native
-// bodies (AotModules.h) — for the `--exe` fallback, which was asked for speed.
-// A plain `--bundle` keeps its fast build and interprets them.
+// `moduleBodies`: also compile the routines of the modules it embeds, and the
+// program's own, to native bodies (AotModules.h) — for the `--exe` fallback,
+// which was asked for speed (`optimize`: its -O). A plain `--bundle` keeps its
+// fast build and interprets them.
 static int compileToExe(const std::string& src, const std::string& srcName, std::string outPath, const std::string& selfExe,
-                        const std::vector<std::string>& libPaths = {}, bool moduleBodies = false) {
+                        const std::vector<std::string>& libPaths = {}, bool moduleBodies = false,
+                        bool optimize = false) {
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
     if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
@@ -1388,8 +1431,20 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                                           &skips, &natives);
                 if (!reportModuleEmbedding("--bundle", mods, skips, natives)) return 4;
                 if (moduleBodies) {
-                    aot = buildModuleAot(mods, exports);
                     aotMods = mods;
+                    // …and the program's own routines, as a module of its own:
+                    // one construct outside the native subset no longer costs
+                    // every routine its native body (attachMainAot)
+                    uint64_t fp = 0;
+                    if (Program mp; !aotEnvOn("RAKUPP_NO_AOT") && parseAsBundled(src, baseOf(srcName), libPaths, mp)) {
+                        BundledModule mm;
+                        mm.name = kMainAotKey;
+                        mm.blob = serializeAst(mp);
+                        fp = aotFingerprint(mm.blob);
+                        aotMods.push_back(std::move(mm));
+                    }
+                    aot = buildModuleAot(aotMods, exports, optimize);
+                    aot.mainFp = fp;
                 }
             } catch (const ParseError&) {}
             std::ostringstream decls, calls;
@@ -1789,9 +1844,10 @@ static int compileNative(const std::string& src, const std::string& srcName, std
     } catch (const CodegenError& e) {
         // Any construct outside the native subset: fall back to AOT bundling so
         // `--exe` still produces a correct binary for the full language.
-        std::cerr << "note: " << e.msg << " — not yet natively compiled; "
-                     "bundling the whole program with the interpreter instead.\n";
-        return compileToExe(src, srcName, outPath, selfExe, libPaths, /*moduleBodies=*/true); // keep -I modules bundled
+        std::cerr << "note: " << e.msg << (e.line ? " (line " + std::to_string(e.line) + ")" : std::string())
+                  << " — not yet natively compiled; bundling the program with the interpreter "
+                     "instead, its routines compiled natively where they can be.\n";
+        return compileToExe(src, srcName, outPath, selfExe, libPaths, /*moduleBodies=*/true, optimize); // keep -I modules bundled
     }
 
     std::string lib, inc;

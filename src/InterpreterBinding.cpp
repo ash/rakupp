@@ -3,6 +3,7 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
 #include "Sandbox.h"
+#include <cstddef>   // offsetof: a CStruct member's alignment, as C lays it out
 
 namespace rakupp {
 
@@ -163,74 +164,112 @@ static void* dlopenLib(const std::string& lib) {
 }
 
 // ----------------- expressions -----------------
+// makeClosure's template (BlockExpr::closureTmpl): the CodeInfo every closure
+// of one block shares, and the context it was built in. A closure made in
+// another context — a different language revision, RakuAST pragma, file or
+// package — builds its own and leaves the template as it is.
+namespace {
+struct ClosureTemplate {
+    Callable::CodeInfoPtr code;
+    int langRev;
+    bool rakuAst;
+    IStr declFile;
+    std::string pkgPrefix;
+};
+struct ClosureTmplFreeInit {
+    ClosureTmplFreeInit() {
+        g_closureTmplFree.store([](void* p) { delete static_cast<ClosureTemplate*>(p); }, std::memory_order_release);
+    }
+} g_closureTmplFreeInit;
+}
+
 Value Interpreter::makeClosure(BlockExpr* be) {
     Value code; code.t = VT::Code;
     code.setCode(makePayload<Callable>());
-    code.code()->params = &be->params;
-    code.code()->body = &be->body;
-    code.code()->langRev = langRev_;
-    code.code()->rakuAst = rakuAstPragma_;
     code.code()->closure = tctx_.cur;
-    code.code()->isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
-    // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
-    // first argument and binds `self`, exactly as a declared one does.
-    code.code()->isMethod = be->isMethodTerm;
-    code.code()->isSubmethod = be->isSubmethodTerm;
-    // a NAMED sub term keeps its name: `my $s = sub bar {}` and
-    // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
-    if (!be->termName.empty()) code.code()->name = be->termName;
-    // `-> | --> Nil {}` / `sub (--> 5) {}`: the return literal is the body's last
-    // statement, and the signature still shows it (`:(| --> Nil)`), as a
-    // declared sub's does
-    if (be->retLiteralPresent && !be->body.empty() && be->body.back()->kind == NK::ExprStmt)
-        code.code()->retLiteral = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
-    // a NAMED method term inside a class body is still that class's method
-    // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
-    if (be->isMethodTerm && !be->termName.empty()) {
-        code.code()->name = be->termName;
-        std::string pk = tctx_.pkgPrefix;
-        if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
-        auto ci = classes_.find(pk);
-        if (ci != classes_.end() && ci->second) {
-            code.code()->pkg = ci->second->name;   // whose `is hidden` it answers to
-            if (!ci->second->methods.count(be->termName)) ci->second->methods[be->termName] = code;
+    // The code is the block's, not this closure's: the first closure builds it
+    // and publishes it as the block's template, and every later one made in
+    // the same context shares it (SPEED-BACKLOG 8: a closure no longer copies
+    // ~330 bytes of code or re-derives its placeholders and first-call
+    // caches). A method term installs itself into its class, so it builds its
+    // own each time; a build that throws publishes nothing.
+    const bool cacheable = !be->isMethodTerm;
+    const IStr file = declFileNowI();
+    auto* tmpl = cacheable ? static_cast<ClosureTemplate*>(be->closureTmpl.load(std::memory_order_acquire)) : nullptr;
+    if (tmpl && tmpl->langRev == langRev_ && tmpl->rakuAst == rakuAstPragma_ && tmpl->declFile == file &&
+        tmpl->pkgPrefix == tctx_.pkgPrefix)
+        code.code()->info = tmpl->code;
+    else {
+        code.code()->ciM().params = &be->params;
+        code.code()->ciM().body = &be->body;
+        code.code()->ciM().langRev = langRev_;
+        code.code()->ciM().rakuAst = rakuAstPragma_;
+        code.code()->ciM().isBlock = !be->isSub; // a bare { } / pointy block is a Block; `sub {…}` stays a Sub
+        // `my $m = method ($inv: $p) {…}` — an anonymous METHOD takes its invocant as the
+        // first argument and binds `self`, exactly as a declared one does.
+        code.code()->ciM().isMethod = be->isMethodTerm;
+        code.code()->ciM().isSubmethod = be->isSubmethodTerm;
+        // a NAMED sub term keeps its name: `my $s = sub bar {}` and
+        // `anon sub hmac (…) {}` answer "bar" and "hmac" to .name
+        if (!be->termName.empty()) code.code()->ciM().name = be->termName;
+        // `-> | --> Nil {}` / `sub (--> 5) {}`: the return literal is the body's last
+        // statement, and the signature still shows it (`:(| --> Nil)`), as a
+        // declared sub's does
+        if (be->retLiteralPresent && !be->body.empty() && be->body.back()->kind == NK::ExprStmt)
+            code.code()->ciM().retLiteral = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
+        // a NAMED method term inside a class body is still that class's method
+        // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
+        if (be->isMethodTerm && !be->termName.empty()) {
+            code.code()->ciM().name = be->termName;
+            std::string pk = tctx_.pkgPrefix;
+            if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
+            auto ci = classes_.find(pk);
+            if (ci != classes_.end() && ci->second) {
+                code.code()->ciM().pkg = ci->second->name;   // whose `is hidden` it answers to
+                if (!ci->second->methods.count(be->termName)) ci->second->methods[be->termName] = code;
+            }
         }
-    }
-    code.code()->declFile = declFileNowI();
-    code.code()->isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
-    // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
-    // `()` and only a bare `{;}` gets the implicit `$_`
-    // …and so did an anonymous `sub ($x) {…}` that wrote parameters
-    code.code()->hadSig = be->isPointy || (be->isSub && !be->params.empty());
-    if (!be->retType.empty()) code.code()->coldM().retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
-    code.code()->retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
-    if (!be->pod.empty()) { code.code()->coldM().pod = be->pod; code.code()->coldM().podTrail = be->podTrail; code.code()->declLine = be->podLine; }
-    // a block knows where it was written: `-> { }.line`
-    if (!code.code()->declLine && be->line > 0) code.code()->declLine = be->line;
-    if (be->params.empty()) {
-        code.code()->placeholders = computePlaceholders(be->body);
-        // `{ $^a + @_.sum }(1, 2, 3)` — `@_` / `%_` beside the placeholders
-        // take what they leave over, so the bind has to know they are there
-        if (!code.code()->placeholders.empty()) {
+        code.code()->ciM().declFile = file;
+        code.code()->ciM().isStub = stmtIsStub(be->body);   // `(sub f() { ... }).yada`
+        // a POINTY block wrote its signature, even when it is empty — so `-> {;}` is
+        // `()` and only a bare `{;}` gets the implicit `$_`
+        // …and so did an anonymous `sub ($x) {…}` that wrote parameters
+        code.code()->ciM().hadSig = be->isPointy || (be->isSub && !be->params.empty());
+        if (!be->retType.empty()) code.code()->coldM().retType = qualifyDeclType(be->retType); // `-> $x --> Int {…}` / `sub (--> Int) {…}`
+        code.code()->ciM().retRw = be->retRw;     // `sub (…) is rw {…}` — the result is a container
+        if (!be->pod.empty()) { code.code()->coldM().pod = be->pod; code.code()->coldM().podTrail = be->podTrail; code.code()->ciM().declLine = be->podLine; }
+        // a block knows where it was written: `-> { }.line`
+        if (!code.code()->ci().declLine && be->line > 0) code.code()->ciM().declLine = be->line;
+        if (be->params.empty()) {
+            code.code()->ciM().placeholders = computePlaceholders(be->body);
+            // `{ $^a + @_.sum }(1, 2, 3)` — `@_` / `%_` beside the placeholders
+            // take what they leave over, so the bind has to know they are there
+            if (!code.code()->ci().placeholders.empty()) {
+                std::set<std::string> ph2;
+                for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
+                code.code()->ciM().implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+            }
+        }
+        // a WRITTEN signature — `-> {…}`, `sub () {…}` — forbids placeholders
+        if (be->isPointy || be->sigParens)
+            for (auto& ph : code.code()->ci().placeholders)
+                if (ph.size() > 1 && (ph[1] == '^' || ph[1] == ':'))
+                    throwTyped("X::Signature::Placeholder", {{"placeholder", ph}},
+                               "Placeholder variable '" + ph + "' cannot override existing signature");
+        // an anonymous `sub {…}` without parameters has the empty signature too,
+        // unless its body reads @_/%_: `sub () { 42 }(23)` dies
+        if (be->isSub && !be->isMethodTerm && be->params.empty() && code.code()->ci().placeholders.empty()) {
             std::set<std::string> ph2;
             for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
-            code.code()->implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+            code.code()->ciM().usesArgs = ph2.count("@_") || ph2.count("%_");
+            code.code()->ciM().implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+            code.code()->ciM().hadSig = true;
         }
-    }
-    // a WRITTEN signature — `-> {…}`, `sub () {…}` — forbids placeholders
-    if (be->isPointy || be->sigParens)
-        for (auto& ph : code.code()->placeholders)
-            if (ph.size() > 1 && (ph[1] == '^' || ph[1] == ':'))
-                throwTyped("X::Signature::Placeholder", {{"placeholder", ph}},
-                           "Placeholder variable '" + ph + "' cannot override existing signature");
-    // an anonymous `sub {…}` without parameters has the empty signature too,
-    // unless its body reads @_/%_: `sub () { 42 }(23)` dies
-    if (be->isSub && !be->isMethodTerm && be->params.empty() && code.code()->placeholders.empty()) {
-        std::set<std::string> ph2;
-        for (auto& s2 : be->body) collectPHStmt(s2.get(), ph2);
-        code.code()->usesArgs = ph2.count("@_") || ph2.count("%_");
-        code.code()->implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
-        code.code()->hadSig = true;
+        if (cacheable && !tmpl) {
+            auto* nt = new ClosureTemplate{code.code()->info, langRev_, rakuAstPragma_, file, tctx_.pkgPrefix};
+            void* expect = nullptr;
+            if (!be->closureTmpl.compare_exchange_strong(expect, nt, std::memory_order_acq_rel)) delete nt;
+        }
     }
     // An anonymous `sub (…) {…}` or `-> … {…}` carries parameter traits just as a
     // declared sub does, and reaches none of the declaration paths: the trait on
@@ -717,19 +756,19 @@ bool Interpreter::codeSigAccepts(const Param& p, const Value& code, Env* sigEnv)
     // the code's positionals, as Parameters would list them
     struct TP { std::string type; bool optional, slurpy; };
     std::vector<TP> tpos;
-    if (c.params && (c.hadSig || !c.params->empty())) {
-        for (auto& q : *c.params) {
+    if (c.ci().params && (c.ci().hadSig || !c.ci().params->empty())) {
+        for (auto& q : *c.ci().params) {
             if (q.named || q.invocant) continue;
             bool sl = q.slurpy || q.sigil == '|';
-            tpos.push_back({q.type.empty() ? std::string(c.isBlock ? "Mu" : "Any") : q.type,
+            tpos.push_back({q.type.empty() ? std::string(c.ci().isBlock ? "Mu" : "Any") : q.type,
                             q.optional || q.defaultVal != nullptr, sl});
         }
     }
-    else if (!c.placeholders.empty()) {
-        for (auto& ph : c.placeholders)
+    else if (!c.ci().placeholders.empty()) {
+        for (auto& ph : c.ci().placeholders)
             if (!ph.empty() && ph.find(':') == std::string::npos) tpos.push_back({"Mu", false, false});
     }
-    else if (c.isBlock) tpos.push_back({"Mu", true, false});   // `{ … }`: an optional $_
+    else if (c.ci().isBlock) tpos.push_back({"Mu", true, false});   // `{ … }`: an optional $_
     std::vector<const Param*> spos;
     for (auto& q : *p.codeSig) if (!q.named && !q.invocant) spos.push_back(&q);
     size_t si = 0, ti = 0;
@@ -1101,7 +1140,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         return false;
     }
     if (si.where) {
-        auto env = std::make_shared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
+        auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
         env->define("$_", sv);
         auto saved = tctx_.cur; tctx_.cur = env;
         bool ok = false;
@@ -1459,10 +1498,10 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
 bool Interpreter::multiTie(const Value& a, const Value& b) {
     const Callable* ca = a.code();
     const Callable* cb = b.code();
-    if (!ca || !cb || !ca->params || !cb->params) return false;
-    if (ca->isDefaultCand || cb->isDefaultCand || ca->pkg != cb->pkg) return false;
+    if (!ca || !cb || !ca->ci().params || !cb->ci().params) return false;
+    if (ca->ci().isDefaultCand || cb->ci().isDefaultCand || ca->ci().pkg != cb->ci().pkg) return false;
     auto positional = [](const Callable* c, std::vector<const Param*>& out) -> bool {
-        for (auto& p : *c->params) {
+        for (auto& p : *c->ci().params) {
             if (p.invocant) continue;
             if (p.named) return false;
             if (p.pastDoubleSemi) break;
@@ -1478,7 +1517,7 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
     // `multi a(;; Int $a)` is as ambiguous as two identical signatures
     if (pa.empty()) {
         auto afterSemi = [](const Callable* c) {
-            for (auto& p : *c->params) if (!p.invocant && !p.named && p.pastDoubleSemi) return true;
+            for (auto& p : *c->ci().params) if (!p.invocant && !p.named && p.pastDoubleSemi) return true;
             return false;
         };
         return afterSemi(ca) && afterSemi(cb);
@@ -1548,7 +1587,7 @@ void Interpreter::throwIfAmbiguous(const Callable& c, const Value* best, const V
         catch (...) {}
     }
     throw RakuError{Value::typeObj("X::Multi::Ambiguous"),
-                    "Ambiguous call to '" + c.name + "(" + prof + ")'; these signatures all match:" + sigs};
+                    "Ambiguous call to '" + c.ci().name + "(" + prof + ")'; these signatures all match:" + sigs};
 }
 
 // A user `multi infix:<op>` whose operands are CORE values joins the same
@@ -1586,10 +1625,10 @@ static bool userInfixCoreType(const std::string& t) {
 // The two positional parameters a binary candidate dispatches on, or false
 // when it has some other shape (a slurpy, an optional, a named it requires…).
 static bool userInfixParams(const Callable* c, const Param*& a, const Param*& b) {
-    if (!c || !c->params) return false;
+    if (!c || !c->ci().params) return false;
     const Param* ps[2] = {nullptr, nullptr};
     int n = 0;
-    for (auto& p : *c->params) {
+    for (auto& p : *c->ci().params) {
         if (p.invocant) continue;
         if (p.named) { if (p.required) return false; continue; }
         if (p.pastDoubleSemi || p.slurpy || p.optional || p.defaultVal || p.subSig || p.coerce ||
@@ -1644,7 +1683,7 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     static thread_local std::string key;
     key.assign("&infix:<").append(op).append(">");
     Value* f = tctx_.cur->find(key);
-    if (!f || f->t != VT::Code || !f->code() || !f->code()->isMultiDispatcher) return false;
+    if (!f || f->t != VT::Code || !f->code() || !f->code()->ci().isMultiDispatcher) return false;
     // the built-in candidate these operands meet
     const std::string tl = l.typeName(), tr = r.typeName();
     auto intish = [](const std::string& t) { return t == "Int" || t == "Bool"; };
@@ -1662,10 +1701,10 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     const Value* tied = nullptr;
     for (auto& cand : f->code()->cold().candidates) {
         const Callable* c = cand.code();
-        if (!c || c->isProto || c->isProtoBody) continue;
+        if (!c || c->ci().isProto || c->ci().isProtoBody) continue;
         const Param *pa, *pb;
         if (!userInfixParams(c, pa, pb) || scoreCandidate(cand, args) < 0) continue;
-        bool constrained = c->isDefaultCand, narrower = false, broader = false;
+        bool constrained = c->ci().isDefaultCand, narrower = false, broader = false;
         const Param* ps[2] = {pa, pb};
         for (int i = 0; i < 2; i++) {
             const Param& p = *ps[i];
@@ -2202,7 +2241,7 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
                 if (f.t != VT::Hash || !f.hash()) continue;
                 auto& h = *f.hash();
                 auto fi = h.find("file"), li = h.find("line"), ci = h.find("code");
-                std::string nm = ci != h.end() && ci->second.code() ? ci->second.code()->name : "<unit>";
+                std::string nm = ci != h.end() && ci->second.code() ? ci->second.code()->ci().name : "<unit>";
                 o += (f2 ? "" : ",\n"); f2 = false;
                 o += "      { \"file\" : " + jstr(fi != h.end() ? fi->second.toStr() : "") +
                      ", \"line\" : " + (li != h.end() ? li->second.toStr() : "0") +
@@ -2517,11 +2556,11 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
         return idxW(base.obj()->boxed(), std::move(key), isHash);
     // @a[*-1] / @a[*] against an infinite lazy array can't know the end
     if (base.t == VT::Array && base.ext() && std::static_pointer_cast<LazySeqState>(base.ext())->infinite
-        && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode)))
+        && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)))
         throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
     long long n = (base.t == VT::Array && base.arr()) ? (long long)base.arr()->size()
                 : base.t == VT::Range ? (long long)base.flatten().size() : 0;
-    if (key.t == VT::Code && key.code() && key.code()->isWhateverCode)
+    if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         key = callCallable(key, ValueList{Value::integer(n)});
     if (key.t == VT::Whatever) { // @a[*] — the whole list / %h{*} — all values
         Value o = Value::array(); o.isList = true;
@@ -2745,7 +2784,7 @@ std::shared_ptr<std::string> Interpreter::deprecationFor(SubDecl* sd) {
 // A call of a deprecated routine: remembered by (kind, name, package, advice),
 // with the line it was made from, until `Deprecation.report` collects them.
 void Interpreter::noteDeprecatedCall(const Callable& c, int line) {
-    noteDeprecation(c.isMethod ? "Method" : "Sub", c.name, c.pkg.empty() ? "GLOBAL" : c.pkg, *c.cold().deprecated, line);
+    noteDeprecation(c.ci().isMethod ? "Method" : "Sub", c.ci().name, c.ci().pkg.empty() ? "GLOBAL" : c.ci().pkg, *c.cold().deprecated, line);
 }
 void Interpreter::noteDeprecation(const std::string& kind, const std::string& name, const std::string& from,
                                   const std::string& with, int line) {
@@ -3495,7 +3534,7 @@ Value* Interpreter::findDynamicLenient(const std::string& name) {
 // a Code is called with the value (and $_ bound), anything else smartmatches.
 bool Interpreter::attrWhereOk(const void* whereExpr, const Value& v) {
     if (!whereExpr) return true;
-    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
     env->define("$_", v);
     auto saved = tctx_.cur; tctx_.cur = env;
     bool ok = true;
@@ -3578,13 +3617,13 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // `sub MAIN($a is rw)` — nothing on a command line can be written back to
     {
         std::vector<const Value*> cands;
-        if (mainSub.code() && mainSub.code()->isMultiDispatcher)
+        if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher)
             for (auto& c : mainSub.code()->cold().candidates) cands.push_back(&c);
         else if (mainSub.code()) cands.push_back(&mainSub);
         bool rw = false;
         for (const Value* c : cands)
-            if (c->code() && c->code()->params)
-                for (auto& p : *c->code()->params) if (p.isRw) rw = true;
+            if (c->code() && c->code()->ci().params)
+                for (auto& p : *c->code()->ci().params) if (p.isRw) rw = true;
         if (rw)
             std::cerr << "Potential difficulties:\n    'is rw' on parameters of 'sub MAIN' usually "
                          "cannot be satisfied.\n    Did you mean 'is copy'?\n";
@@ -3601,9 +3640,9 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     // (`--foo abc` -> `--foo=abc`) into the classic parse.
     const bool namedAnywhere = mainNamedAnywhere();
     auto pairedArgs = [&](const Value& cand) -> ValueList {
-        if (!cand.code() || !cand.code()->params) return rtMainArgs(argv_, namedAnywhere, this);
+        if (!cand.code() || !cand.code()->ci().params) return rtMainArgs(argv_, namedAnywhere, this);
         std::set<std::string> keys;
-        for (auto& p : *cand.code()->params) {
+        for (auto& p : *cand.code()->ci().params) {
             if (!p.named || p.type != "Str") continue;
             std::string k = !p.namedKey.empty() ? p.namedKey
                           : (p.name.size() > 1 ? p.name.substr(1) : "");
@@ -3652,13 +3691,13 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     std::set<std::string> listNamed, scalarNamed;
     {
         std::vector<const Value*> cands;
-        if (mainSub.code() && mainSub.code()->isMultiDispatcher)
+        if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher)
             for (auto& c : mainSub.code()->cold().candidates) cands.push_back(&c);
         else if (mainSub.code()) cands.push_back(&mainSub);
         for (const Value* c : cands) {
-            if (!c->code() || !c->code()->params) continue;
-            if (c->code()->isProto || c->code()->isProtoBody) continue;
-            for (auto& p : *c->code()->params) {
+            if (!c->code() || !c->code()->ci().params) continue;
+            if (c->code()->ci().isProto || c->code()->ci().isProtoBody) continue;
+            for (auto& p : *c->code()->ci().params) {
                 if (!p.named || p.slurpy) continue;
                 std::set<std::string>& into = p.sigil == '@' ? listNamed : scalarNamed;
                 if (!p.namedKey.empty()) into.insert(p.namedKey);
@@ -3679,19 +3718,19 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
             a.setPairVal(makePayload<Value>(std::move(lst)));
         }
     };
-    if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
+    if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) {
         mainMatches = false;
         for (auto& cand : mainSub.code()->cold().candidates) {
             // (an explicit `proto MAIN(|) {*}` is no candidate: its `|` takes
             // anything, and then the real dispatch found none — Cro's CLI
             // declares one, and `cro --help` died where it should print usage)
-            if (cand.code() && (cand.code()->isProto || cand.code()->isProtoBody)) continue;
+            if (cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody)) continue;
             ValueList mc = pairedArgs(cand);
             listifyNamed(mc);
             if (scoreCandidate(cand, mc) >= 0) { mainMatches = true; margs = std::move(mc); break; }
         }
     }
-    else if (mainSub.code() && mainSub.code()->params) { // single MAIN: same bind check
+    else if (mainSub.code() && mainSub.code()->ci().params) { // single MAIN: same bind check
         margs = pairedArgs(mainSub);
         listifyNamed(margs);
         mainMatches = scoreCandidate(mainSub, margs) >= 0;
@@ -3750,8 +3789,8 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
     mainSigProg_ = prg; // the Params below are borrowed from this tree
     auto mk = [&](SubDecl* d) {
         Value v = Value::closure(fn);
-        v.code()->name = "MAIN";
-        v.code()->params = &d->params;
+        v.code()->ciM().name = "MAIN";
+        v.code()->ciM().params = &d->params;
         v.code()->coldM().pod = d->pod;
         return v;
     };
@@ -3759,8 +3798,8 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
     if (cands.size() == 1 && !cands[0]->isMulti) main = mk(cands[0]);
     else {
         main = Value::closure(fn);
-        main.code()->name = "MAIN";
-        main.code()->isMultiDispatcher = true;
+        main.code()->ciM().name = "MAIN";
+        main.code()->ciM().isMultiDispatcher = true;
         for (auto* d : cands) main.code()->coldM().candidates.push_back(mk(d));
     }
     global_->define("&MAIN", main);
@@ -3774,7 +3813,7 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
 int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
     Value* mainSub = global_ ? global_->find("&MAIN") : nullptr;
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code() ||
-        (!mainSub->code()->params && !mainSub->code()->isMultiDispatcher)) {
+        (!mainSub->code()->ci().params && !mainSub->code()->ci().isMultiDispatcher)) {
         refreshArgvFromLiveArgs();
         ValueList margs = rtMainArgs(argv_, mainNamedAnywhere(), this);
         sinkReturnedValue(fn(margs));
@@ -3847,7 +3886,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // subscript however it arrived. Native codegen picks idxW when it can SEE
     // the star written in the subscript; when the star came through a variable
     // (`my $i = *-1; @a[$i]`) only the KEY knows, and this read element one.
-    if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->isWhateverCode))
+    if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode))
         if (g_cbInterp) return g_cbInterp->idxW(base, key, isHash);
     // An INFINITE range subscript (`@a[1..Inf]`, `@a[$s ..^ $e]` with $e = Inf)
     // is lazy and stops at the end of the list, as the interpreter's does;
@@ -3980,7 +4019,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
         int w = Interpreter::ncElemSize(et);
         if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
-        Value el = Interpreter::ncReadElem((long long)(intptr_t)base.s.data(), et, i);
+        Value el = Interpreter::ncReadElem((long long)(uintptr_t)base.s.data(), et, i);
         if (g_cbInterp) el = g_cbInterp->ncClassElem(std::move(el), &base, et, i);
         if (Interpreter::ncIsPointerElem(et) && el.t == VT::Int && g_cbInterp)
             return g_cbInterp->ncMakeLiveCArray(et, (void*)(intptr_t)el.toInt());
@@ -4175,6 +4214,18 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
 // The live chain, innermost first. Shared by every position we record: a
 // throw, a `warn`, the making of a Failure, and a worker breaking a Promise.
 thread_local int g_btSettingFrames = 0;
+// What a block run in place names in its frame (Env::btCalled): an
+// anonymous block of the program's own — a language revision set, so it is not
+// taken for the setting's and hidden (btFrameHidden), as its closure was not.
+static const PRef<Callable>& btInPlaceBlockCode() {
+    static const PRef<Callable> code = [] {
+        auto c = makePayload<Callable>();
+        c->ciM().isBlock = true;
+        c->ciM().langRev = 0;
+        return c;
+    }();
+    return code;
+}
 
 static std::shared_ptr<BtRecord> btCaptureNow() {
     auto& fr = Interpreter::tctx_.callFrames;
@@ -4195,10 +4246,17 @@ static std::shared_ptr<BtRecord> btCaptureNow() {
         // each is a Block frame of its own (kind 1), the innermost at the
         // frame's current line and each one out at the line where the block
         // inside it starts. The walk stops at the activation's own scope.
-        int bl = line;
+        // A `try`/`do` block run in place is a printed frame at the line it
+        // is running, as its call was, and what is outside it is at the
+        // block's line, as its call site was.
+        int bl = line, at = line;
         for (Env* e = scope; e && !e->callEnv && !e->routineFrame && !e->unitFrame; e = e->parent.get())
-            if (e->btBlock) { out->frames.push_back(BtFrame{nullptr, bl, 1}); bl = e->btLine; }
-        out->frames.push_back(BtFrame{cv ? cv->codeS() : nullptr, line});
+            if (e->btBlock) {
+                if (e->btCalled) { out->frames.push_back(BtFrame{btInPlaceBlockCode(), at}); at = e->btLine; }
+                else out->frames.push_back(BtFrame{nullptr, bl, 1});
+                bl = e->btLine;
+            }
+        out->frames.push_back(BtFrame{cv ? cv->codeS() : nullptr, at});
         if (idx == 0) break;
         line = fr[idx - 1].line;   // the CALL SITE line inside the next frame out
         scope = fr[idx - 1].callerEnv;
@@ -4272,19 +4330,19 @@ std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
 // `block ` (two spaces before `at`) for an anonymous one.
 static std::string btFrameName(const Callable* c, bool outermost) {
     if (!c) return outermost ? "block <unit>" : "block ";
-    std::string kind = c->isSubmethod    ? "submethod"
-                     : c->isMethod       ? "method"
-                     : c->isRegexRoutine ? "regex"
-                     : c->isBlock        ? "block"
+    std::string kind = c->ci().isSubmethod    ? "submethod"
+                     : c->ci().isMethod       ? "method"
+                     : c->ci().isRegexRoutine ? "regex"
+                     : c->ci().isBlock        ? "block"
                                          : "sub";
     // A method's DECLARING package goes in the name: Rakudo prints a bare
     // `in method new`, which in a program with six classes says nothing about
     // which `new` ran. `Foo::new` costs four characters and answers it, and it
     // stays inside the name part that consumers of `in X at FILE line N` skip.
-    std::string nm = c->name;
-    if (!c->pkg.empty() && c->pkg != "GLOBAL" && !nm.empty() &&
+    std::string nm = c->ci().name;
+    if (!c->ci().pkg.empty() && c->ci().pkg != "GLOBAL" && !nm.empty() &&
         nm.find("::") == std::string::npos)
-        nm = c->pkg + "::" + nm;
+        nm = c->ci().pkg + "::" + nm;
     return kind + " " + nm;
 }
 
@@ -4292,7 +4350,7 @@ static std::string btFrameName(const Callable* c, bool outermost) {
 // currying, `.assuming` wrappers, `wrap` shims. They are Rakudo's `is-hidden`
 // frames: real activations, but not places the reader wrote code.
 static bool btFrameHidden(const Callable* c) {
-    return c && (c->isWhateverCode || (c->name.empty() && c->isBlock && c->langRev == -1));
+    return c && (c->ci().isWhateverCode || (c->ci().name.empty() && c->ci().isBlock && c->ci().langRev == -1));
 }
 
 Interpreter::BtStyle Interpreter::btStyleForStderr() {
@@ -4333,7 +4391,7 @@ std::string Interpreter::renderFrames(const BtRecord& rec, const BtStyle& st) {
         if (fr[i].kind) continue;   // bare-block and setting frames are the list's, not the printout's
         const Callable* c = fr[i].code.get();
         if (!st.full && btFrameHidden(c)) continue;
-        std::string file = c && !c->declFile.empty() ? c->declFile
+        std::string file = c && !c->ci().declFile.empty() ? c->ci().declFile
                          : (!originFile.empty() ? originFile : srcFileAbs_);
         out.push_back({btFrameName(c, i + 1 == n),
                        btDisplayPath(file, srcFileAbs_, srcFile_), file, fr[i].line});
@@ -4456,7 +4514,7 @@ static Value btStandInCode(int which) {
         auto mk = [](const char* name, bool block, bool method) {
             Value cv; cv.t = VT::Code;
             auto c = makePayload<Callable>();
-            c->name = name; c->isBlock = block; c->isMethod = method;
+            c->ciM().name = name; c->ciM().isBlock = block; c->ciM().isMethod = method;
             cv.setCode(c);
             return cv;
         };
@@ -4481,7 +4539,7 @@ Value Interpreter::backtraceOf(const Value& exObj) {
     Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
     const auto& frs = raw->frames;
     auto fileOf = [&](const Callable* c) {
-        return c && !c->declFile.empty() ? c->declFile : (!origin.empty() ? origin : srcFileAbs_);
+        return c && !c->ci().declFile.empty() ? c->ci().declFile : (!origin.empty() ? origin : srcFileAbs_);
     };
     for (size_t i = 0; i < frs.size(); i++) {
         const BtFrame& f = frs[i];
@@ -4531,7 +4589,7 @@ Value Interpreter::captureBacktrace() {
         const Value* code = idx > 0 ? fr[idx - 1].code : nullptr;
         Value f = Value::makeHash(); f.hashKind = "BacktraceFrame";
         std::string file;
-        if (code && code->code() && !code->code()->declFile.empty()) file = code->code()->declFile;
+        if (code && code->code() && !code->code()->ci().declFile.empty()) file = code->code()->ci().declFile;
         // no declaring routine (the mainline, or a bare block): the file whose
         // top level is running — the program, or the module / EVALFILE'd file
         // that switched curDeclFile_ underneath it
@@ -4694,7 +4752,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
             ++*idx;
             if (inner == "=>") {
                 Value p = Value::pair(x.toStr(), y);
-                if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
+                if (x.t != VT::Str) p.setPairKey(x);
                 cache.push_back(p);
             }
             else if (inner.empty() || inner == ",") cache.push_back(Value::list(ValueList{x, y}));
@@ -4715,7 +4773,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         // `1 Z=> 3` keeps the Int key — forcing .toStr() made it "1" => 3
         if (sub == "=>") {
             Value p = Value::pair(x.toStr(), y);
-            if (x.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(x);
+            if (x.t != VT::Str) p.setPairKey(x);
             out.arr()->push_back(p);
         }
         else if (sub.empty() || sub == ",") { // Z / X / Z, / X, — tuples
@@ -4803,7 +4861,7 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
         if (ix->index && !ix->multiDim && ix->adverb.empty() &&
             (ix->index->kind == NK::Range || ix->index->kind == NK::ListExpr ||
              ix->index->kind == NK::ArrayLit)) {
-            auto tmpEnv = std::make_shared<Env>(); tmpEnv->parent = tctx_.cur;
+            auto tmpEnv = makeSlabShared<Env>(); tmpEnv->parent = tctx_.cur;
             Value vals = l; vals.isList = true; vals.itemized = false;
             tmpEnv->define("@__hyper_assign", vals);
             Assign tmpA;
@@ -5084,11 +5142,11 @@ Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const cha
         list = slot.get();
     }
     Callable* cc = c.code();
-    cc->params = list;
-    if (name && *name) cc->name = name;
+    cc->ciM().params = list;
+    if (name && *name) cc->ciM().name = name;
     if (retType && *retType) cc->coldM().retType = retType;
-    if (cflags & RSC_BLOCK) cc->isBlock = true;
-    if (cflags & RSC_HADSIG) cc->hadSig = true;
+    if (cflags & RSC_BLOCK) cc->ciM().isBlock = true;
+    if (cflags & RSC_HADSIG) cc->ciM().hadSig = true;
     return c;
 }
 Value rtSlurpyPos(const ValueList& a, size_t from) {
@@ -5366,6 +5424,16 @@ typedef long long (*NcFnI)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWo
 typedef double    (*NcFnD)(NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
                            NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,NcWord,
                            double,double,double,double,double,double,double,double);
+#if defined(__i386__) || defined(_M_IX86)
+// i386 passes everything on the stack, so its fallback takes 32 plain words
+// (see callNative): the arguments are laid out in them as cdecl would.
+#define NC_U4  uint32_t, uint32_t, uint32_t, uint32_t
+#define NC_U32 NC_U4, NC_U4, NC_U4, NC_U4, NC_U4, NC_U4, NC_U4, NC_U4
+typedef unsigned long long (*NcFn32I)(NC_U32);
+typedef double             (*NcFn32D)(NC_U32);
+#undef NC_U32
+#undef NC_U4
+#endif
 // native scalar type → byte width and signedness (for is-rw copy-back, cglobal,
 // Pointer.deref). 0 ⇒ not a plain native scalar.
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
@@ -5386,8 +5454,20 @@ int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat) {
     if (t == "uint16") { sign = false; return 2; }
     if (t == "int32" || t == "long32") return 4;
     if (t == "uint32") { sign = false; return 4; }
-    if (t == "int" || t == "int64" || t == "long" || t == "longlong" || t == "ssize_t" || t == "Int") return 8;
-    if (t == "uint" || t == "uint64" || t == "ulong" || t == "ulonglong" || t == "size_t") { sign = false; return 8; }
+    if (t == "int" || t == "int64" || t == "longlong" || t == "Int") return 8;
+    if (t == "uint" || t == "uint64" || t == "ulonglong") { sign = false; return 8; }
+    // C's `long` and `size_t` are the machine's own: 8 bytes on 64-bit Unix,
+    // 4 on a 32-bit target, where answering 8 pushed every later argument
+    // four bytes along. (Windows keeps 8 for `long` for now; its C long is 4.)
+#if defined(_WIN32)
+    constexpr int kLong = 8;
+#else
+    constexpr int kLong = (int)sizeof(long);
+#endif
+    if (t == "long")    return kLong;
+    if (t == "ulong")   { sign = false; return kLong; }
+    if (t == "ssize_t") return (int)sizeof(size_t);
+    if (t == "size_t")  { sign = false; return (int)sizeof(size_t); }
     // C's `bool` is ONE byte, not a machine word. It used to answer 8 here,
     // which made `nativesizeof(bool)` and every CArray[bool] stride wrong and
     // read a whole register back from a one-byte return.
@@ -5413,14 +5493,14 @@ static bool ncKnownRetSpelling(const std::string& t) {
 // A live Pointer holds { addr, of } — deref reads native memory of type `of`.
 Value Interpreter::ncMakePointer(const std::string& type, void* p) {
     Value v = Value::makeHash(); v.hashKind = "Pointer";
-    (*v.hash())["addr"] = Value::integer((long long)(intptr_t)p);
+    (*v.hash())["addr"] = Value::integer((long long)(uintptr_t)p);
     (*v.hash())["of"]   = Value::str(ncElemType(type));
     return v;
 }
 // A live CArray[T] holds { addr, of } — element access reads native memory.
 Value Interpreter::ncMakeLiveCArray(const std::string& type, void* p) {
     Value v = Value::makeHash(); v.hashKind = "CArray";
-    (*v.hash())["addr"] = Value::integer((long long)(intptr_t)p);
+    (*v.hash())["addr"] = Value::integer((long long)(uintptr_t)p);
     std::string of = ncElemType(type);
     (*v.hash())["of"]   = Value::str(of.empty() ? "int64" : of);
     return v;
@@ -5443,7 +5523,9 @@ int Interpreter::ncElemSize(const std::string& t) {
 Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long long index) {
     if (!addr) return Value::any();
     bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt);
-    if (w == 0) w = 8; // pointer-sized default (Pointer[T], opaque)
+    // not a scalar: a machine pointer (Pointer[T], Str, opaque), unsigned — on
+    // a 32-bit target an address above 2 GiB is not a negative number
+    if (w == 0) { w = (int)sizeof(void*); sgn = false; }
     const char* base = (const char*)(intptr_t)addr + index * w;
     if (isFlt) {
         if (w == 4) { float x; std::memcpy(&x, base, 4); return Value::number((double)x); }
@@ -5468,7 +5550,7 @@ Value Interpreter::ncReadElem(long long addr, const std::string& ofType, long lo
 // Write one native scalar `val` at addr[index] of type ofType.
 void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long long index, const Value& val) {
     if (!addr) return;
-    bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt); if (w == 0) w = 8;
+    bool sgn, isFlt; int w = ncScalarWidth(ofType, sgn, isFlt); if (w == 0) w = (int)sizeof(void*);
     char* base = (char*)(intptr_t)addr + index * w;
     if (isFlt) {
         if (w == 4) { float x = (float)val.toNum(); std::memcpy(base, &x, 4); }
@@ -5483,7 +5565,7 @@ void Interpreter::ncWriteElem(long long addr, const std::string& ofType, long lo
     long long v = val.t == VT::Object || val.t == VT::Hash ? Interpreter::ncRawAddr(val)
                 : val.t == VT::Str && (val.hashKind == "CArray" || val.hashKind == "Buf" || val.hashKind == "Blob")
                     ? Interpreter::ncRawAddr(val)
-                : val.t == VT::Str ? (long long)(intptr_t)val.s.c_str() : val.toInt();
+                : val.t == VT::Str ? (long long)(uintptr_t)val.s.c_str() : val.toInt();
     switch (w) {
         case 1: { int8_t  x = (int8_t)v;  std::memcpy(base, &x, 1); break; }
         case 2: { int16_t x = (int16_t)v; std::memcpy(base, &x, 2); break; }
@@ -5526,7 +5608,7 @@ long long Interpreter::ncOwnStrElem(Value& arr, const Value& v) {
     if (!isDefined(v)) return 0;   // an undefined Str is C's NULL
     auto& strs = ncCArrayKeep(arr).strs;
     strs.push_back(std::make_shared<std::string>(v.toStr()));
-    return (long long)(intptr_t)strs.back()->c_str();
+    return (long long)(uintptr_t)strs.back()->c_str();
 }
 
 // The element type of `CArray[N-Error]` was read as an 8-byte integer: the
@@ -5578,7 +5660,7 @@ Value Interpreter::ncLocalAt(const Value& arr, long long i) {
         if (ncIsPointerElem(et)) return Value::any();
         return et.compare(0, 3, "num") == 0 ? Value::number(0.0) : Value::integer(0);
     }
-    Value el = ncClassElem(ncReadElem((long long)(intptr_t)arr.s.data(), et, i), &arr, et, i);
+    Value el = ncClassElem(ncReadElem((long long)(uintptr_t)arr.s.data(), et, i), &arr, et, i);
     // an element that is ITSELF a pointer stays usable as one, so
     // `$out[0][^$n]` can read through what a native call wrote there
     // (a Str element already came back dereferenced — leave it be)
@@ -5596,13 +5678,13 @@ void Interpreter::ncLocalAssign(Value& arr, long long i, const Value& v) {
     const size_t need = (size_t)(i + 1) * (size_t)esz;
     if (arr.s.size() < need) arr.s.resize(need, '\0');
     if (et == "Str") { // the slot is a char* into memory the array owns
-        long long p = ncOwnStrElem(arr, v);
+        void* p = (void*)(intptr_t)ncOwnStrElem(arr, v);
         // IN PLACE: `mut()` forks the shared buffer, and the
-        // buffer is what C was handed (see CArray.new).
+        // buffer is what C was handed (see CArray.new). Pointer-wide.
         std::memcpy(arr.s.mutInPlace() + (size_t)i * esz, &p, sizeof p);
     }
     else {
-        ncWriteElem((long long)(intptr_t)arr.s.data(), et, i, v);
+        ncWriteElem((long long)(uintptr_t)arr.s.data(), et, i, v);
         if (ncElemClass(et)) ncKeepClassElem(arr, i, v);
     }
 }
@@ -5613,7 +5695,7 @@ static std::string carrayStrImpl(const Value& c) {
     std::string out;
     for (long long i = 0; w > 0 && (i + 1) * w <= (long long)c.s.size(); i++) {
         if (i) out += ' ';
-        out += Interpreter::ncReadElem((long long)(intptr_t)c.s.data(), et, i).toStr();
+        out += Interpreter::ncReadElem((long long)(uintptr_t)c.s.data(), et, i).toStr();
     }
     return out;
 }
@@ -5638,8 +5720,10 @@ void Interpreter::ncStoreStructField(Value& inv, const std::string& field, const
     if ((bt == "CArray" || bt == "Pointer") && rhs.t == VT::Str &&
         (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" || rhs.hashKind == "Blob")) {
         Value& kept = (inv.obj()->attrs["__native_keep_" + field] = rhs);
-        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "int64", 0,
-                    Value::integer((long long)(intptr_t)kept.s.data()));
+        // an address, pointer-wide: "int64" wrote 8 bytes and, on a 32-bit
+        // target, the next field's 4 with them
+        ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "Pointer", 0,
+                    Value::integer((long long)(uintptr_t)kept.s.data()));
     }
     else ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
 }
@@ -5731,6 +5815,12 @@ std::shared_ptr<ClassInfo> Interpreter::ncInlineClass(const std::string& type) {
 // so it is as wide as that struct and aligned like its widest field. Taking the
 // size for the alignment too would be wrong the moment it is not a power of two
 // (a 12-byte struct aligns to 4, not 12).
+namespace {
+struct NcAlignDoubleProbe { char c; double d; };
+struct NcAlignInt64Probe  { char c; long long d; };
+}
+static constexpr long long kNcAlignDouble = offsetof(NcAlignDoubleProbe, d);
+static constexpr long long kNcAlignInt64  = offsetof(NcAlignInt64Probe, d);
 void Interpreter::ncMemberLayout(const ClassAttr& a, const std::string& at,
                                  long long& w, long long& align) {
     // A struct that inlines itself (only reachable by reopening one) has no
@@ -5745,7 +5835,11 @@ void Interpreter::ncMemberLayout(const ClassAttr& a, const std::string& at,
         return;
     }
     bool sgn, isF; int sw = ncScalarWidth(at, sgn, isF);
-    w = align = sw ? sw : 8;
+    w = align = sw ? sw : (long long)sizeof(void*);
+    // An 8-byte scalar aligns as the C compiler aligns it INSIDE a struct: 8
+    // on 64-bit targets, but 4 on i386, where `struct { int a; double b; }`
+    // is 12 bytes with b at offset 4.
+    if (w == 8) align = isF ? kNcAlignDouble : kNcAlignInt64;
 }
 // A struct's own alignment: the widest alignment any member needs.
 long long Interpreter::ncStructAlign(ClassInfo* ci) {
@@ -5850,9 +5944,9 @@ long long Interpreter::ncRawAddr(const Value& v) {
             std::lock_guard<std::mutex> lk(m);
             retained.push_back(body);
             if (retained.size() > 256) retained.pop_front();
-            return (long long)(intptr_t)body->str().data();
+            return (long long)(uintptr_t)body->str().data();
         }
-        return (long long)(intptr_t)v.s.data();
+        return (long long)(uintptr_t)v.s.data();
     }
     if (v.t == VT::Int) return v.i;
     return 0;
@@ -5885,11 +5979,11 @@ long long Interpreter::runCallback(int slot, long long a0, long long a1, long lo
     Value cb = g_cbSlots[slot];
     if (cb.t != VT::Code) return 0;
     NcWord raw[6] = {a0, a1, a2, a3, a4, a5};
-    size_t arity = (cb.code() && cb.code()->params) ? cb.code()->params->size() : 2;
+    size_t arity = (cb.code() && cb.code()->ci().params) ? cb.code()->ci().params->size() : 2;
     if (arity > 6) arity = 6;
     ValueList as;
     for (size_t i = 0; i < arity; i++) {
-        std::string pt = (cb.code() && cb.code()->params && i < cb.code()->params->size()) ? (*cb.code()->params)[i].type : "";
+        std::string pt = (cb.code() && cb.code()->ci().params && i < cb.code()->ci().params->size()) ? (*cb.code()->ci().params)[i].type : "";
         if (pt == "Pointer" || pt.rfind("Pointer[", 0) == 0) as.push_back(ncMakePointer(pt, (void*)(intptr_t)raw[i]));
         else if (pt == "num" || pt == "num64" || pt == "num32") { double d; std::memcpy(&d, &raw[i], 8); as.push_back(Value::number(d)); }
         else as.push_back(Value::integer(raw[i]));
@@ -5903,9 +5997,41 @@ long long Interpreter::runCallback(int slot, long long a0, long long a1, long lo
 // arguments — but its parameters must be pointer-wide or a 64-bit LPARAM (and
 // the LRESULT going back) is truncated on Windows. A WNDPROC is exactly this
 // shape, and its lParam carries pointers.
+#if defined(__i386__) || defined(_M_IX86)
+// i386: the C caller pushed each argument at its own width -- a double or a
+// 64-bit integer is two stack words -- so trampolines of fixed 8-byte
+// parameters read them out of step. These take plain words and regroup them,
+// by the callback's own parameter types, into the 64-bit values runCallback
+// expects (a num as its bit pattern). A narrow integer arrives already
+// widened to a word by the caller, signed or not as its type says.
+static long long cbRun32(int slot, const uint32_t* w, size_t nw) {
+    if (!g_cbInterp || slot < 0 || slot >= (int)g_cbSlots.size()) return 0;
+    const Value& cb = g_cbSlots[slot];
+    const std::vector<Param>* ps = cb.code() ? cb.code()->ci().params : nullptr;
+    long long a[6] = {0};
+    size_t k = 0;
+    for (size_t i = 0; i < 6 && k < nw; i++) {
+        const std::string pt = ps && i < ps->size() ? (*ps)[i].type : std::string();
+        bool sg, fl; const int wd = ncScalarWidth(pt, sg, fl);
+        if (fl && wd == 4)              { float f; std::memcpy(&f, &w[k++], 4); double d = f; std::memcpy(&a[i], &d, 8); }
+        else if (wd == 8 && k + 1 < nw) { std::memcpy(&a[i], &w[k], 8); k += 2; }
+        else if (wd && !sg)             a[i] = (long long)w[k++];
+        else if (wd || pt.empty())      a[i] = (long long)(int32_t)w[k++];
+        else                            a[i] = (long long)w[k++];   // a pointer: an address, unsigned
+    }
+    return g_cbInterp->runCallback(slot, a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+template<int N> static long long cbTramp(uint32_t a, uint32_t b, uint32_t c, uint32_t d,
+                                         uint32_t e, uint32_t f, uint32_t g, uint32_t h,
+                                         uint32_t i, uint32_t j, uint32_t k, uint32_t l) {
+    const uint32_t w[12] = {a, b, c, d, e, f, g, h, i, j, k, l};
+    return cbRun32(N, w, 12);
+}
+#else
 template<int N> static NcWord cbTramp(NcWord a, NcWord b, NcWord c, NcWord d, NcWord e, NcWord f) {
     return g_cbInterp ? g_cbInterp->runCallback(N, a, b, c, d, e, f) : 0;
 }
+#endif
 template<int... Is> static void cbFill(void** t, std::integer_sequence<int, Is...>) {
     ((t[Is] = (void*)&cbTramp<Is>), ...);
 }
@@ -5937,9 +6063,16 @@ static std::map<Callable*, NcClosure*> g_ncClosures;
 // A callback parameter's declared Raku type → its libffi type. An undeclared
 // parameter is a pointer-sized integer, which is what the old trampoline pool
 // always assumed.
+// An undeclared callback parameter is a machine word, as C passes an int or a
+// pointer: 8 bytes on a 64-bit target, 4 on a 32-bit one, where reading 8 took
+// the next argument's bytes as well.
+static ffi::Type* ncFfiWordType() {
+    const ffi::Lib& F = ffi::lib();
+    return sizeof(void*) >= 8 ? F.t_sint64 : F.t_sint32;
+}
 static ffi::Type* ncFfiCbParamType(const std::string& pt) {
     const ffi::Lib& F = ffi::lib();
-    if (pt.empty()) return F.t_sint64;
+    if (pt.empty()) return ncFfiWordType();
     if (pt == "Str" || pt == "Pointer" || pt.rfind("Pointer[", 0) == 0 ||
         pt == "CArray" || pt.rfind("CArray[", 0) == 0) return F.t_pointer;
     bool sgn, isFlt; int w = ncScalarWidth(pt, sgn, isFlt);
@@ -5951,20 +6084,29 @@ static ffi::Type* ncFfiCbParamType(const std::string& pt) {
 // ignores the register.
 static ffi::Type* ncFfiCbRetType(const std::string& rt) {
     const ffi::Lib& F = ffi::lib();
+    // 64 bits even on a 32-bit target: there libffi returns it in EDX:EAX,
+    // and a caller that wanted an int reads EAX alone -- while one that
+    // wanted an int64 gets its high half instead of whatever EDX held
     if (rt.empty()) return F.t_sint64;
     if (rt == "void" || rt == "Nil") return F.t_void;
     return ncFfiRetType(rt);
 }
 
+// libffi's closure return buffer is ffi_arg wide (a machine word), or the
+// return type's own width when that is wider: an int64 on a 32-bit target.
+// Writing a full long long into a 4-byte one overran it.
+static size_t ncClosureRetWidth(const ffi::Type* t) {
+    return (sizeof(void*) >= 8 || (t && t->size > 4)) ? 8 : 4;
+}
 static void ncClosureTramp(void*, void* ret, void** args, void* user) {
     if (g_cbInterp) g_cbInterp->runFfiClosure(user, ret, args);
-    else if (ret)   std::memset(ret, 0, sizeof(long long));
+    else if (ret)   std::memset(ret, 0, sizeof(void*));
 }
 
 void Interpreter::runFfiClosure(void* user, void* ret, void** args) {
     NcClosure* cl = (NcClosure*)user;
     const ffi::Lib& F = ffi::lib();
-    auto zero = [&] { if (ret && cl->rtype != F.t_void) std::memset(ret, 0, sizeof(long long)); };
+    auto zero = [&] { if (ret && cl->rtype != F.t_void) std::memset(ret, 0, ncClosureRetWidth(cl->rtype)); };
     if (!onRakuThread()) {
         // The C library stored this callback and is firing it from a thread of
         // its own. There is no interpreter state to run in; returning zero is
@@ -6008,7 +6150,7 @@ void Interpreter::runFfiClosure(void* user, void* ret, void** args) {
     else if (cl->rtype == F.t_double)  { double x = r.toNum();        std::memcpy(ret, &x, 8); }
     else if (cl->rtype == F.t_pointer) { void* p = (void*)(intptr_t)ncRawAddr(r); std::memcpy(ret, &p, sizeof p); }
     else { // libffi's closure contract: integers narrower than ffi_arg are written full-width
-        long long x = r.toInt(); std::memcpy(ret, &x, sizeof(long long));
+        long long x = r.toInt(); std::memcpy(ret, &x, ncClosureRetWidth(cl->rtype));
     }
 }
 
@@ -6028,7 +6170,7 @@ static void* ncCallbackPtr(const Value& v, const std::vector<Param>* declSig = n
         if (it != g_ncClosures.end()) return it->second->code;
         auto* cl = new NcClosure();
         cl->fn = v;
-        const std::vector<Param>* ps = v.code()->params;
+        const std::vector<Param>* ps = v.code()->ci().params;
         // No signature at all: assume the two-argument comparator shape, which
         // is what the fixed pool defaulted to and covers qsort/bsearch.
         size_t arity = declSig && !declSig->empty() ? declSig->size() : ps ? ps->size() : 2;
@@ -6092,7 +6234,7 @@ static ffi::Type* ncFfiRetType(const std::string& rt) {
 // Still unsupported on both paths: C structs passed or returned BY VALUE.
 Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs, size_t rwArgOff) {
     // --sandbox: native code can do anything the process can (src/Sandbox.h)
-    if (g_sandboxChecks) sandboxRefuse(*this, (c.name.empty() ? std::string("a routine") : c.name) + " (is native)",
+    if (g_sandboxChecks) sandboxRefuse(*this, (c.ci().name.empty() ? std::string("a routine") : c.ci().name) + " (is native)",
                                    SandboxCap::Ffi);
     // Resolve the symbol ONCE per Callable and cache the function pointer. This
     // used to run on every call, and the dlopen candidate loop is the expensive
@@ -6152,10 +6294,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             try {
                 Value r = eval(const_cast<Expr*>(c.cold().nativeSymExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
-                if (isDefined(r) && !r.toStr().empty()) c.coldM().nativeSym = r.toStr();
+                if (isDefined(r) && !r.toStr().empty()) c.cold().nativeSym = r.toStr();   // (call-time caches: mutable)
             } catch (RakuError&) {}
             tctx_.cur = savedEnv;
-            c.coldM().nativeSymExpr = nullptr; // once, not per call
+            c.cold().nativeSymExpr = nullptr; // once, not per call
         }
         sym = dlsym(handle, c.cold().nativeSym.c_str());
         if (!sym) {
@@ -6187,10 +6329,10 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         // whose library is absent instead of dying.
         if (!sym) throw RakuError{Value::typeObj("X::AdHoc"),
             "Cannot locate symbol '" + c.cold().nativeSym + "' in native library '" + lib + "'"};
-        c.coldM().nativeSymCache = sym;
+        c.cold().nativeSymCache = sym;
     }
 
-    const std::vector<Param>* prm = c.params;
+    const std::vector<Param>* prm = c.ci().params;
     // A NativeCall METHOD prepends its invocant to `args`. If the signature
     // SPELLS the invocant (`method mysql_query(MYSQL:D: Str $sql)`) the two line
     // up already; if it does not (`method PQescapeByteaConn(Buf, size_t, size_t
@@ -6256,6 +6398,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         double fbNum   = 0;
         bool   fbFloat = false;
         bool   fbPtr   = false;   // for the trace: render as an address
+        unsigned char fbWidth = 0; // the declared width: i386 lays the stack out by it
     };
     std::vector<NcSlot> slots(args.size());
     std::string needFfi;
@@ -6277,11 +6420,13 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         void* q = const_cast<void*>(p);
         std::memcpy(s.raw, &q, sizeof q);
         s.type  = F.t_pointer;
-        s.fbInt = (NcWord)(intptr_t)q;
+        s.fbInt = (NcWord)(uintptr_t)q;
         s.fbPtr = true;
+        s.fbWidth = (unsigned char)sizeof q;
     };
     auto putInt = [](NcSlot& s, long long v, int w, bool sgn) {
-        if (w == 0) { w = 8; sgn = true; }
+        // undeclared: a machine word, as C passes an int or a long
+        if (w == 0) { w = (int)sizeof(void*); sgn = true; }
         switch (w) { // narrow to the declared width — libffi reads exactly `w` bytes
             case 1: { int8_t  x = (int8_t)v;  std::memcpy(s.raw, &x, 1); break; }
             case 2: { int16_t x = (int16_t)v; std::memcpy(s.raw, &x, 2); break; }
@@ -6290,6 +6435,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         }
         s.type  = ffi::scalar(w, sgn, false);
         s.fbInt = (NcWord)v;
+        s.fbWidth = (unsigned char)w;
     };
     auto putNum = [&F, &needFfi](NcSlot& s, double v, int w) {
         if (w == 4) { // a real 32-bit float: the fallback would pass a double
@@ -6298,6 +6444,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         }
         else { std::memcpy(s.raw, &v, 8); s.type = F.t_double; }
         s.fbNum = v; s.fbFloat = true;
+        s.fbWidth = (unsigned char)(w == 4 ? 4 : 8);
     };
 
     for (size_t i = 0; i < args.size(); i++) {
@@ -6489,7 +6636,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             nc->atypes.assign(atypes, atypes + na); nc->rtype = rtype;
             nc->variadic = variadic; nc->nfixed = (unsigned)(variadic ? nfixed : 0);
             if (prepInto(nc->cif.buf, nc->atypes.data()) == 0) {
-                c.coldM().nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
+                c.cold().nativeCifCache.p = nc;   // published once; a racing thread stores the same shape
                 cifp = nc->cif.buf;
             }
             else delete nc;
@@ -6510,12 +6657,51 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             else        std::memcpy(&rd, rbuf, 8);
         }
         else if (rtype != F.t_void) {
+            // ffi_arg wide, or the type's own width when that is wider: an
+            // int64 return on a 32-bit target is 8 bytes past a 4-byte ffi_arg
             unsigned long long u = 0;
-            std::memcpy(&u, rbuf, sizeof(void*) >= 8 ? 8 : 4);
+            std::memcpy(&u, rbuf, (sizeof(void*) >= 8 || rtype->size > 4) ? 8 : 4);
             ri = (NcWord)u;
         }
     }
     else {
+#if defined(__i386__) || defined(_M_IX86)
+        // No libffi on i386 (cdecl): EVERY argument goes on the stack, in
+        // declaration order, at its own width rounded up to four bytes. So the
+        // fallback can be exact here, where the 64-bit one approximates with
+        // register banks: lay the arguments out as stack words and call
+        // through a prototype of plain words. A float is its four bytes, a
+        // double or a 64-bit integer two words, low first; the callee reads
+        // what it declared and the caller cleans up, so the unused tail is
+        // harmless. That places num32 and `...` arguments too, which is why
+        // needFfi is not consulted.
+        (void)needFfi;
+        uint32_t W[32] = {0}; size_t nw = 0;
+        for (auto& s : slots) {
+            uint32_t w2[2] = {0, 0}; size_t k = 1;
+            if (s.fbFloat && s.fbWidth == 4) { float x = (float)s.fbNum; std::memcpy(w2, &x, 4); }
+            else if (s.fbFloat)               { std::memcpy(w2, &s.fbNum, 8); k = 2; }
+            else if (s.fbWidth == 8)          { std::memcpy(w2, &s.fbInt, 8); k = 2; }
+            else                              { w2[0] = (uint32_t)s.fbInt; }
+            if (nw + k > 32)
+                throw RakuError{Value::typeObj("X::NYI"),
+                    "NativeCall: more than 128 bytes of arguments needs libffi, which is not available (" + F.why + ")"};
+            for (size_t j = 0; j < k; j++) W[nw++] = w2[j];
+        }
+#define NC_W4(b) W[b], W[b + 1], W[b + 2], W[b + 3]
+#define NC_W32 NC_W4(0), NC_W4(4), NC_W4(8), NC_W4(12), NC_W4(16), NC_W4(20), NC_W4(24), NC_W4(28)
+        // a float or double comes back in st(0), which a double-returning
+        // prototype reads whichever it was; an integer in EAX, with EDX the
+        // high half of a 64-bit one and garbage otherwise
+        if (retFP) rd = ((NcFn32D)sym)(NC_W32);
+        else {
+            unsigned long long r = ((NcFn32I)sym)(NC_W32);
+            bool rs, rf;
+            ri = ncScalarWidth(rt, rs, rf) == 8 ? (NcWord)r : (NcWord)(uint32_t)r;
+        }
+#undef NC_W32
+#undef NC_W4
+#else
         // No libffi: the fixed over-wide prototype. It cannot place arguments
         // that are not register-sized, so say so rather than call wrongly.
         if (!needFfi.empty())
@@ -6545,6 +6731,22 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         else       ri = ((NcFnI)sym)(G[0],G[1],G[2],G[3],G[4],G[5],G[6],G[7],
                                      G[8],G[9],G[10],G[11],G[12],G[13],G[14],G[15],
                                      D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
+#endif
+    }
+
+    // Integer return: the value comes back in a 64-bit register but a narrower
+    // return type (int32/uint16/…) only fills the low bits — truncate and
+    // sign/zero-extend to the DECLARED width, or a returned int32 -1 reads back as
+    // 0xFFFFFFFF (4294967295) and `$rc < 0` never holds (BIO_read's would-block).
+    // Before the trace, so it shows the value the program gets.
+    {
+        bool rsgn, rflt; int rw = ncScalarWidth(rt, rsgn, rflt);
+        if (rw > 0 && rw < 8 && !rflt) {
+            unsigned long long mask = (1ULL << (rw * 8)) - 1;
+            unsigned long long u = (unsigned long long)ri & mask;
+            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (NcWord)(u | ~mask);
+            else ri = (NcWord)u;
+        }
     }
 
     if (g_ncTrace) {
@@ -6673,19 +6875,6 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             return o;
         }
     }
-    // Integer return: the value comes back in a 64-bit register but a narrower
-    // return type (int32/uint16/…) only fills the low bits — truncate and
-    // sign/zero-extend to the DECLARED width, or a returned int32 -1 reads back as
-    // 0xFFFFFFFF (4294967295) and `$rc < 0` never holds (BIO_read's would-block).
-    {
-        bool rsgn, rflt; int rw = ncScalarWidth(rt, rsgn, rflt);
-        if (rw > 0 && rw < 8 && !rflt) {
-            unsigned long long mask = (1ULL << (rw * 8)) - 1;
-            unsigned long long u = (unsigned long long)ri & mask;
-            if (rsgn && (u & (1ULL << (rw * 8 - 1)))) ri = (NcWord)(u | ~mask);
-            else ri = (NcWord)u;
-        }
-    }
     return Value::integer(ri);
 }
 
@@ -6735,7 +6924,7 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
         const char* p = *(const char**)addr;
         return p ? Value::str(std::string(p)) : Value::typeObj("Str");
     }
-    return ncReadElem((long long)(intptr_t)addr, type, 0);
+    return ncReadElem((long long)(uintptr_t)addr, type, 0);
 }
 
 
@@ -6777,8 +6966,8 @@ Value Interpreter::paramObjectFor(const Param& p) {
     const std::vector<Param>* ps = tctx_.bindingParams;
     if (!ps || ps->empty() || &p < ps->data() || &p >= ps->data() + ps->size()) return Value::any();
     Callable tmp;
-    tmp.params = ps;
-    tmp.hadSig = true;
+    tmp.ciM().params = ps;
+    tmp.ciM().hadSig = true;
     Value sig = makeSignature(&tmp);
     if (sig.t != VT::Hash || !sig.hash()) return Value::any();
     auto it = sig.hash()->find("params");
@@ -6832,7 +7021,7 @@ bool Interpreter::omittedWherePasses(const Value& cand, const Param& p, size_t i
     Value v = p.sigil == '@' ? Value::array() : p.sigil == '%' ? Value::makeHash()
             : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
     if (p.defaultVal) {
-        auto denv = std::make_shared<Env>(); denv->parent = tctx_.cur;
+        auto denv = makeSlabShared<Env>(); denv->parent = tctx_.cur;
         for (size_t j = 0; j < pos.size() && j < npositional; j++)
             if (!positional[j]->name.empty() && !positional[j]->subSig)
                 denv->define(positional[j]->name, pos[j]);
@@ -7103,7 +7292,7 @@ Value Interpreter::fatalCheckedMethodCall(Expr* e) {
 // level), which has no Block value of its own: a plain one, implicit `$_`.
 Value Interpreter::inlineBlockValue() {
     Value b; b.t = VT::Code; b.setCode(makePayload<Callable>());
-    b.code()->isBlock = true;
+    b.code()->ciM().isBlock = true;
     return b;
 }
 
@@ -7195,7 +7384,7 @@ Value Interpreter::minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs
     for (auto& kv : kvs)
         if (applyArith("cmp", kv.second, best).toInt() == 0) {
             Value p = Value::pair(kv.first.toStr(), kv.second);
-            if (kv.first.t == VT::Int) p.pairKeyM() = std::make_shared<Value>(kv.first);
+            if (kv.first.t == VT::Int) p.setPairKey(kv.first);
             out.arr()->push_back(p);
         }
     return out;
@@ -7321,7 +7510,7 @@ Value Interpreter::evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls) {
     bool any = false;
     for (ClassInfo* c = cls; c && !any; c = c->parent.get()) any = !c->roleParamBindings.empty();
     if (!any) return eval(const_cast<Expr*>(dflt));
-    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
     for (ClassInfo* c = cls; c; c = c->parent.get())
         for (auto& b : c->roleParamBindings)
             if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);

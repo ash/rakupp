@@ -215,8 +215,8 @@ void Interpreter::registerBuiltins() {
                             "rakupp-json-codec: no codec named '" + which + "'"};
         Value fallback = a[1];
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-        w.code()->name = which;
-        w.code()->builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
+        w.code()->ciM().name = which;
+        w.code()->ciM().builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
             auto handOver = [&](const char*) { return I.callCallable(fallback, args, nullptr, false, /*arityCheck=*/true); };
             return to ? jsonToJsonBody(I, args, handOver) : jsonFromJsonBody(I, args, handOver);
         };
@@ -543,7 +543,7 @@ void Interpreter::registerBuiltins() {
         // invocant itself and wants the rest only.
         const bool inMethod = d && !d->wrapperFrame && I.tctx_.curRoutineVal &&
                               I.tctx_.curRoutineVal->t == VT::Code && I.tctx_.curRoutineVal->code() &&
-                              I.tctx_.curRoutineVal->code()->isMethod;
+                              I.tctx_.curRoutineVal->code()->ci().isMethod;
         return Value::closure([nextFn, inMethod](ValueList& a) -> Value {
             ValueList copy = a;
             if (inMethod && !copy.empty()) copy.erase(copy.begin());
@@ -1078,7 +1078,7 @@ void Interpreter::registerBuiltins() {
         // test's arguments (#124: a CLI's t/00-load.t started the app)
         bool ok = true;
         {
-            auto scope = std::make_shared<Env>();
+            auto scope = makeSlabShared<Env>();
             scope->parent = I.tctx_.cur;
             struct CurG { ExecContext& t; std::shared_ptr<Env> s; ~CurG() { t.cur = s; } } cg{I.tctx_, I.tctx_.cur};
             I.tctx_.cur = scope;
@@ -1788,7 +1788,7 @@ void Interpreter::registerBuiltinsPart2() {
         {   // &*ARGS-TO-CAPTURE is the sub actually in force while it runs
             if (userA2C.t == VT::Code) {
                 // &*ARGS-TO-CAPTURE names the sub actually in force while it runs
-                auto scope = std::make_shared<Env>(); scope->parent = I.tctx_.cur;
+                auto scope = makeSlabShared<Env>(); scope->parent = I.tctx_.cur;
                 scope->define("&*ARGS-TO-CAPTURE", userA2C);
                 auto saved = I.tctx_.cur; I.tctx_.cur = scope;
                 I.tctx_.dynStack.push_back(scope.get());
@@ -1811,11 +1811,11 @@ void Interpreter::registerBuiltinsPart2() {
 
         // --- 2. dispatch --------------------------------------------------
         bool matches = true;
-        if (mainSub.code() && mainSub.code()->isMultiDispatcher) {
+        if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) {
             matches = false;
             for (auto& cand : mainSub.code()->cold().candidates)
                 if (I.scoreCandidate(cand, margs) >= 0) { matches = true; break; }
-        } else if (mainSub.code() && mainSub.code()->params) {
+        } else if (mainSub.code() && mainSub.code()->ci().params) {
             matches = I.scoreCandidate(mainSub, margs) >= 0;
         }
         if (matches) return I.callCallable(mainSub, margs);
@@ -1827,7 +1827,7 @@ void Interpreter::registerBuiltinsPart2() {
         Value usageText;
         if (userGU.t == VT::Code) {
             Value inForce = userGU;
-            auto scope = std::make_shared<Env>(); scope->parent = I.tctx_.cur;
+            auto scope = makeSlabShared<Env>(); scope->parent = I.tctx_.cur;
             scope->define("&*GENERATE-USAGE", inForce);
             auto saved = I.tctx_.cur; I.tctx_.cur = scope;
             I.tctx_.dynStack.push_back(scope.get());
@@ -2531,6 +2531,10 @@ void Interpreter::registerBuiltinsPart2() {
         (*h.hash())["path"] = Value::str(path);
         (*h.hash())["mode"] = Value::str(mode);
         (*h.hash())["buffer"] = Value::str("");
+        // here from the start, not inserted by the first write: threads that
+        // print to one handle read its hash outside the output lock, and an
+        // insert can grow the hash under them (concurrent-output.raku)
+        (*h.hash())["wrote"] = Value::boolean(false);
         if (openedFd >= 0) {
             Value fv = Value::integer(openedFd);
             fv.extM() = std::make_shared<WriteFd>(openedFd);
@@ -2710,7 +2714,7 @@ void Interpreter::registerBuiltinsPart2() {
             Interpreter& I;
             SubMark(Interpreter& i, bool isSub) : I(i) { I.subtestIsSub_.push_back(isSub); }
             ~SubMark() { I.subtestIsSub_.pop_back(); }
-        } mark{I, code.t == VT::Code && code.code() && !code.code()->isBlock};
+        } mark{I, code.t == VT::Code && code.code() && !code.code()->ci().isBlock};
         return Value::boolean(I.runSubtestFrame(desc, [&]() {
             if (code.t == VT::Code) I.callCallable(code, {});
         }));

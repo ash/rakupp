@@ -100,16 +100,16 @@ bool Interpreter::methodMayYieldContainer(const std::string& name) {
         for (auto& a : kv.second->attrs)
             if (a.pub && a.rw && a.name == name) return true;   // `has $.v is rw`
         auto mit = kv.second->methods.find(name);
-        if (mit != kv.second->methods.end() && mit->second.code() && mit->second.code()->retRw)
+        if (mit != kv.second->methods.end() && mit->second.code() && mit->second.code()->ci().retRw)
             return true;                                        // `method m() is rw`
     }
     return false;
 }
 
 bool Interpreter::rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>* rwArgs) {
-    if (!rwArgs || !cand.code() || !cand.code()->params) return false;
+    if (!rwArgs || !cand.code() || !cand.code()->ci().params) return false;
     size_t pi = 0;
-    for (auto& p : *cand.code()->params) {
+    for (auto& p : *cand.code()->ci().params) {
         if (p.invocant) continue;
         if (p.slurpy) break;
         if (p.named) continue;
@@ -125,9 +125,9 @@ bool Interpreter::rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>
 bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
                                      const std::vector<ExprPtr>* rwArgs, const ValueList* vals) {
     (void)nargs;
-    if (!rwArgs || !cand.code() || !cand.code()->params) return false;
+    if (!rwArgs || !cand.code() || !cand.code()->ci().params) return false;
     size_t pi = 0;
-    for (auto& p : *cand.code()->params) {
+    for (auto& p : *cand.code()->ci().params) {
         if (p.invocant) continue;
         if (p.slurpy) break;      // mirrors setupRwLinks' positional indexing
         if (p.named) continue;
@@ -800,7 +800,7 @@ Expr* Interpreter::peelGrepFilter(Expr* listExpr, Expr*& pred) {
 
 bool Interpreter::grepFilterKeeps(Expr* pred, const Value& v) {
     if (!pred) return true;
-    auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
     env->define("$_", v);
     auto saved = tctx_.cur; tctx_.cur = env;
     Value pv;
@@ -1268,13 +1268,13 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
             auto mit = k->methods.find(name);
             if (mit != k->methods.end() && mit->second.t == VT::Code && mit->second.code()) {
                 const auto& c = mit->second.code();
-                if (c->isMultiDispatcher) {
+                if (c->ci().isMultiDispatcher) {
                     for (auto& cand : c->cold().candidates)
-                        if (cand.t == VT::Code && cand.code() && !cand.code()->isProto &&
-                            !(cand.code()->isSubmethod && k != tc))
+                        if (cand.t == VT::Code && cand.code() && !cand.code()->ci().isProto &&
+                            !(cand.code()->ci().isSubmethod && k != tc))
                             out.push_back(cand);
                 }
-                else if (!(c->isSubmethod && k != tc)) { out.push_back(mit->second); return false; }
+                else if (!(c->ci().isSubmethod && k != tc)) { out.push_back(mit->second); return false; }
             }
             if (!walk(k->parent.get())) return false;
             for (auto& e : k->extraParents) if (!walk(e.get())) return false;
@@ -1287,9 +1287,9 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
     };
     auto dispatch = [&](const char* name, ValueList cands) {
         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
-        disp.code()->name = name;
-        disp.code()->isMultiDispatcher = true;
-        disp.code()->isMethod = true;
+        disp.code()->ciM().name = name;
+        disp.code()->ciM().isMultiDispatcher = true;
+        disp.code()->ciM().isMethod = true;
         disp.code()->coldM().candidates = std::move(cands);
         return invokeMethod(disp, Value::typeObj(target), ValueList{v});
     };
@@ -1300,7 +1300,7 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
         ValueList nw = candidatesOf("new");
         if (nw.empty()) impossible("no acceptable coercion method found");
         via = "new";
-        auto frame = std::make_shared<Env>();
+        auto frame = makeSlabShared<Env>();
         frame->parent = tctx_.cur;
         frame->define("$*COERCION-TYPE", Value::typeObj(coercion.empty() ? target + "(Any)" : coercion));
         auto saved = tctx_.cur;
@@ -1417,7 +1417,7 @@ Value Interpreter::deproxy(Value v) {
         if (it == v.hash()->end()) return v;
         // FETCH may be written as a `method` — XML::Element's is — in which case the
         // Proxy is its INVOCANT, not its first positional.
-        if (it->second.t == VT::Code && it->second.code() && it->second.code()->isMethod)
+        if (it->second.t == VT::Code && it->second.code() && it->second.code()->ci().isMethod)
             return invokeMethod(it->second, v, {});
         return callCallable(it->second, { v });
     }
@@ -1434,7 +1434,7 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
     if (it == proxy.hash()->end()) return v;
     // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
     // first positional. Both spellings appear in the wild — XML uses the method form.
-    if (it->second.t == VT::Code && it->second.code() && it->second.code()->isMethod)
+    if (it->second.t == VT::Code && it->second.code() && it->second.code()->ci().isMethod)
         return invokeMethod(it->second, proxy, { v });
     return codeArity(it->second) >= 2 ? callCallable(it->second, { proxy, v })
                                       : callCallable(it->second, { v });
@@ -1792,7 +1792,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
     };
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
-    fetch.code()->builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
+    fetch.code()->ciM().builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
         Value s = cur(I);
         if (s.t == VT::Object && s.obj() && s.obj()->hasBoxed) s = s.obj()->boxed();
         ValueList sa{Value::integer(from)};
@@ -1800,7 +1800,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
         return I.methodCall(s, "substr", sa);
     };
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
-    store.code()->builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
+    store.code()->ciM().builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
         Value nv = sa.empty() ? Value::str("") : sa.back();
         Value out = I.spliceStr(cur(I), from, len, nv);
         if (Value* p = owner->local(vname)) { ParStripe ws(I, p); *p = out; }
@@ -1921,11 +1921,11 @@ static bool forTailVarsStmt(const Stmt* s, std::vector<const void*>& out) {
 Value Interpreter::makePairCellProxy(PRef<Value> cell) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
-    fetch.code()->builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
+    fetch.code()->ciM().builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
     static const std::vector<Param> kTwoPair(2);
-    store.code()->params = &kTwoPair;                  // proxyStore's `sub ($, $v)` shape
-    store.code()->builtin = [cell](Interpreter&, ValueList& sa) -> Value {
+    store.code()->ciM().params = &kTwoPair;                  // proxyStore's `sub ($, $v)` shape
+    store.code()->ciM().builtin = [cell](Interpreter&, ValueList& sa) -> Value {
         if (sa.size() >= 2) *cell = sa[1];
         return *cell;
     };
@@ -1940,7 +1940,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     // builtin never binds its params, so they cost nothing else.
     static const Value kFetch = [] {
         Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
-        f.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
+        f.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
             if (a.empty() || !a[0].hash()) return Value::any();
             return I.slotProxyRead(a[0]);
         };
@@ -1949,8 +1949,8 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     static const Value kStore = [] {
         Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
         static const std::vector<Param> kTwo(2);
-        st.code()->params = &kTwo;
-        st.code()->builtin = [](Interpreter& I, ValueList& a) -> Value {
+        st.code()->ciM().params = &kTwo;
+        st.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
             if (a.size() < 2 || !a[0].hash()) return a.empty() ? Value::any() : a.back();
             return I.slotProxyWrite(a[0], a[1]);
         };
@@ -1974,7 +1974,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
 const Value& cellProxyFetch() {
     static const Value k = [] {
         Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
-        f.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+        f.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
             PRef<Value> c = a.empty() ? nullptr : cellOfProxy(&a[0]);
             return c ? *c : Value::any();
         };
@@ -1986,8 +1986,8 @@ const Value& cellProxyStore() {
     static const Value k = [] {
         Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
         static const std::vector<Param> kTwo(2);
-        st.code()->params = &kTwo;
-        st.code()->builtin = [](Interpreter&, ValueList& a) -> Value {
+        st.code()->ciM().params = &kTwo;
+        st.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
             PRef<Value> c = a.size() < 2 ? nullptr : cellOfProxy(&a[0]);
             if (!c) return a.empty() ? Value::any() : a.back();
             *c = a[1];
@@ -2085,7 +2085,7 @@ void Interpreter::runHoistedInit(Block* b) {
     };
     try {
         if (b->stmtForm) execBlock(b, tctx_.cur); // `INIT my $x = …` declares in the enclosing scope
-        else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
     }
     catch (ReturnEx&) { escaped(); }
     if (tctx_.returning) escaped();
@@ -2285,10 +2285,10 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
     if (a->target->kind == NK::Call && a->op.size() == 1 && a->op[0] == '=') {
         auto* c = static_cast<Call*>(a->target.get());
         Value* fp = c->name.empty() || c->callee ? nullptr : tctx_.cur->find(callAmpName(c));
-        if (fp && fp->t == VT::Code && fp->code() && !fp->code()->builtin && !fp->code()->retRw) {
+        if (fp && fp->t == VT::Code && fp->code() && !fp->code()->ci().builtin && !fp->code()->ci().retRw) {
             bool anyRw = false;
             for (auto& cand : fp->code()->cold().candidates)
-                if (cand.t == VT::Code && cand.code() && cand.code()->retRw) { anyRw = true; break; }
+                if (cand.t == VT::Code && cand.code() && cand.code()->ci().retRw) { anyRw = true; break; }
             if (!anyRw) {
                 Value got = evalCall(c);
                 if (got.t == VT::Hash && got.hashKind == "Proxy" && got.hash()) got = deproxy(got);
@@ -2337,7 +2337,7 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
 // with (elems, elems), which is Rakudo's WhateverCode.POSITIONS. Fed once, the
 // second star saw no argument at all and the slice was `2..-1`: empty.
 Value Interpreter::whateverPos(const Value& code, long long n) {
-    long long ar = code.code() ? std::max(1LL, code.code()->whateverArity) : 1;
+    long long ar = code.code() ? std::max(1LL, code.code()->ci().whateverArity) : 1;
     ValueList as;
     for (long long i = 0; i < ar; i++) as.push_back(Value::integer(n));
     return callCallable(code, std::move(as));
@@ -2496,7 +2496,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 if ((lit || w) && vi < vals.size()) {
                     const Value& v = vals[vi];
                     bool ok;
-                    auto wenv = std::make_shared<Env>(); wenv->parent = tctx_.cur;
+                    auto wenv = makeSlabShared<Env>(); wenv->parent = tctx_.cur;
                     wenv->define("$_", v);
                     auto saved = tctx_.cur; tctx_.cur = wenv;
                     try {
@@ -2861,7 +2861,7 @@ Value setWrap(const std::map<std::string, double>& res, int tier, bool mut) {
             // a plain Str keys on its own content and needs no carried element
             const Value& e = rp->second;
             if (!(e.t == VT::Str && e.hashKind.empty() && e.enumName.empty() && !e.isAllomorph()))
-                cnt.pairKeyM() = std::make_shared<Value>(e);
+                cnt.setPairKey(e);
         }
         (*h.hash())[kv.first] = std::move(cnt);
     }
@@ -2956,7 +2956,7 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
             for (auto& x : hay.flatten()) {
                 if (x.t == VT::Pair) { // pair→weight reading, as setWeights has it
                     if (!(x.pairVal() && x.pairVal()->truthy())) continue;
-                    Value el = x.pairKey() ? *x.pairKey() : Value::str(x.s);
+                    Value el = x.pairKeyV();
                     if (elemMatches(el)) return true;
                 }
                 else if (elemMatches(x)) return true;
@@ -2965,7 +2965,7 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
         }
         if (hay.t == VT::Pair)
             return hay.pairVal() && hay.pairVal()->truthy() &&
-                   elemMatches(hay.pairKey() ? *hay.pairKey() : Value::str(hay.s));
+                   elemMatches(hay.pairKeyV());
         return elemMatches(hay); // a scalar is a one-element set
     };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {
@@ -3201,7 +3201,7 @@ bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
         auto ci = g_revInterp->classes_.find(v.s);
         if (ci == g_revInterp->classes_.end() || !ci->second || ci->second->isRole) return false;
         Value* m = ci->second->findMethod(method);
-        if (!m || m->t != VT::Code || !m->code() || m->code()->builtin) return false;
+        if (!m || m->t != VT::Code || !m->code() || m->code()->ci().builtin) return false;
         static thread_local int tdepth = 0;
         if (tdepth > 8) return false;
         struct D { D() { tdepth++; } ~D() { tdepth--; } } d;
@@ -3212,7 +3212,7 @@ bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
     }
     if (!g_revInterp || v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
     Value* m = v.obj()->cls->findMethod(method);
-    if (!m || m->t != VT::Code || !m->code() || m->code()->builtin) return false;
+    if (!m || m->t != VT::Code || !m->code() || m->code()->ci().builtin) return false;
     static thread_local int depth = 0;
     if (depth > 8) return false;
     struct D { D() { depth++; } ~D() { depth--; } } d;
@@ -3233,17 +3233,17 @@ Value composeCode(const Value& fV, const Value& gV) {
         ValueList none;
         try { slip = g_revInterp->methodCall(fV, "count", none).toNum() > 1; } catch (...) {}
     }
-    code.code()->builtin = [fV, gV, slip](Interpreter& I, ValueList& a) -> Value {
+    code.code()->ciM().builtin = [fV, gV, slip](Interpreter& I, ValueList& a) -> Value {
         Value gr = I.callCallable(gV, a);
         if (slip && (gr.t == VT::Array || gr.t == VT::Range) && !gr.itemized)
             return I.callCallable(fV, gr.flatten());
         return I.callCallable(fV, ValueList{ gr });
     };
     if (gV.t == VT::Code && gV.code()) {
-        code.code()->params = gV.code()->params;
-        code.code()->placeholders = gV.code()->placeholders;
-        if (gV.code()->isWhateverCode && gV.code()->whateverArity > 1)
-            code.code()->whateverArity = gV.code()->whateverArity;
+        code.code()->ciM().params = gV.code()->ci().params;
+        code.code()->ciM().placeholders = gV.code()->ci().placeholders;
+        if (gV.code()->ci().isWhateverCode && gV.code()->ci().whateverArity > 1)
+            code.code()->ciM().whateverArity = gV.code()->ci().whateverArity;
     }
     if (fV.t == VT::Code && fV.code() && !fV.code()->cold().retType.empty()) code.code()->coldM().retType = fV.code()->cold().retType;
     return code;
@@ -3356,13 +3356,13 @@ const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Para
     if (st == 0 || !scope) return nullptr;
     if (auto* c = static_cast<const WhereCodeCache*>(p.whereCode.get()))
         return c->scope == scope.get() ? &c->code : nullptr;
-    auto env = std::make_shared<Env>();
+    auto env = makeSlabShared<Env>();
     env->parent = scope;
     auto saved = tctx_.cur; tctx_.cur = env;
     Value cv;
     try { cv = eval(p.whereExpr.get()); } catch (...) { tctx_.cur = saved; p.whereStatic = 0; return nullptr; }
     tctx_.cur = saved;
-    if (!(cv.t == VT::Code && cv.code() && (cv.code()->isWhateverCode || cv.code()->isBlock))) {
+    if (!(cv.t == VT::Code && cv.code() && (cv.code()->ci().isWhateverCode || cv.code()->ci().isBlock))) {
         p.whereStatic = 0;
         return nullptr;
     }
@@ -3454,9 +3454,9 @@ static int dispatchCandidatesCacheable(const Callable& c, const Classes& classes
     for (auto& cand : c.cold().candidates) {
         const Callable* cc = cand.code();
         if (!cc) return false;
-        if (cc->isProto || cc->isProtoBody) continue;
-        if (!cc->params || cc->isDefaultCand || !cc->cold().wrappers.empty()) return 0;
-        for (auto& p : *cc->params) {
+        if (cc->ci().isProto || cc->ci().isProtoBody) continue;
+        if (!cc->ci().params || cc->ci().isDefaultCand || !cc->cold().wrappers.empty()) return 0;
+        for (auto& p : *cc->ci().params) {
             if (p.slurpy && p.sigil == '%' && !p.whereExpr) continue;   // a method's implicit *%_
             if (p.named || p.slurpy || p.sigil != '$' || p.hadWhere || p.litVal ||
                 p.subSig || p.codeSig || p.coerce || p.typeCapture || p.isRw || p.defaultVal ||
@@ -3495,7 +3495,7 @@ const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, co
         const Value& cand = c.cold().candidates[ci];
         size_t i = 0;
         int k = 0;
-        for (auto& p : *cand.code()->params) {
+        for (auto& p : *cand.code()->ci().params) {
             if (p.named || p.invocant || p.slurpy) continue;
             if (i >= as.size()) break;
             if (p.whereExpr) {
@@ -3533,11 +3533,11 @@ void Interpreter::dispatchCacheRecord(Callable& c, uint32_t pattern, const Value
 void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best) {
     if (c.dispatchCache.p.load(std::memory_order_relaxed)) return;   // published once
     const uint32_t ncand = (uint32_t)c.cold().candidates.size();
-    if (c.dispatchCacheable < 0 || c.dispatchCacheN != ncand) {
-        c.dispatchCacheable = (signed char)dispatchCandidatesCacheable(c, classes_, subsets_);
-        c.dispatchCacheN = ncand;
+    if (c.ci().dispatchCacheable < 0 || c.ci().dispatchCacheN != ncand) {
+        c.ci().dispatchCacheable = (signed char)dispatchCandidatesCacheable(c, classes_, subsets_);
+        c.ci().dispatchCacheN = ncand;
     }
-    if (c.dispatchCacheable != 1 && c.dispatchCacheable != 2) return;
+    if (c.ci().dispatchCacheable != 1 && c.ci().dispatchCacheable != 2) return;
     auto* e = new DispatchCacheEntry;
     if (!dispatchKey(self, as, e->key, e->nkey) || best < c.cold().candidates.data() ||
         best >= c.cold().candidates.data() + ncand) {
@@ -3547,16 +3547,16 @@ void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const Value
     e->gen = g_symbolGen.load(std::memory_order_relaxed);
     e->ncand = ncand;
     e->best = (uint32_t)(best - c.cold().candidates.data());
-    if (c.dispatchCacheable == 2) {
+    if (c.ci().dispatchCacheable == 2) {
         // which candidates match the shape (scored with every `where` assumed
         // to pass, which evaluates none), and each one's outcome bits
         uint8_t off = 0;
         for (uint32_t ci = 0; ci < ncand; ci++) {
             const Value& cand = c.cold().candidates[ci];
             const Callable* cc = cand.code();
-            if (!cc || cc->isProto || cc->isProtoBody) continue;
+            if (!cc || cc->ci().isProto || cc->ci().isProtoBody) continue;
             uint8_t nw = 0;
-            for (auto& p : *cc->params) if (p.whereExpr) nw++;
+            for (auto& p : *cc->ci().params) if (p.whereExpr) nw++;
             WhereAssume all; all.bits = ~uint64_t(0);
             if (scoreCandidate(cand, as, nullptr, self, &all) < 0) continue;
             e->relevant |= (uint8_t)(1u << ci);
@@ -3679,13 +3679,177 @@ static bool stmtsMayReadAtArgs(const std::vector<StmtPtr>& v) {
     return false;
 }
 bool Interpreter::blockTakesAtArgs(Callable& c) {
-    signed char v = c.blockAtArgs;
+    signed char v = c.ci().blockAtArgs;
     if (v < 0) {
-        v = (!c.isBlock || !c.body || stmtsMayReadAtArgs(*c.body) ||
-             (c.params && paramsMayReadAtArgs(*c.params))) ? 1 : 0;
-        c.blockAtArgs = v;
+        v = (!c.ci().isBlock || !c.ci().body || stmtsMayReadAtArgs(*c.ci().body) ||
+             (c.ci().params && paramsMayReadAtArgs(*c.ci().params))) ? 1 : 0;
+        c.ci().blockAtArgs = v;
     }
     return v != 0;
+}
+
+// --- does a body reach its `state` frame? ----------------------------------
+// Every Callable made a `state` Env on its first call, between its closure and
+// each call's frame: where its `state` variables, `once`'s cache, a flip-flop's
+// state and its phasers' closure live. A body with none of them paid for it
+// anyway — a closure made per iteration (`try { }`, a `.map({ … })` inside a
+// loop) once per iteration, and a kept closure that had run carried it: 192
+// bytes. Whether a body can reach it is decided once, by a whitelist walk like
+// the `@_` one above, nested blocks included. Anything it does not know counts
+// as reaching it: a declaration, an EVAL, a regex with a code block, a phaser,
+// and a pseudo-package name (`OUTER::` steps through the chain, and the `state`
+// frame is one of its links).
+//
+// InPlace asks the same walk a second question: can a `try`, `do` or `quietly`
+// block run where it stands instead of being called (runsInPlace)? On top of a state frame, that
+// rules out what only the call gives a block: `@_`/`%_`, a placeholder, `&?BLOCK`
+// and the other `?` names, `temp`/`let` (restored at the call's exit), `fail`
+// and `leave` (answered by it), a `when`/`default` (whose match ends the block,
+// not the `given` around it), callframe and the redispatchers.
+template <bool InPlace> static bool exprMayUseState(const Expr* e);
+template <bool InPlace> static bool stmtsMayUseState(const std::vector<StmtPtr>& v);
+template <bool InPlace> static bool paramsMayUseState(const std::vector<Param>& ps) {
+    for (auto& p : ps)
+        if (exprMayUseState<InPlace>(p.defaultVal.get()) || exprMayUseState<InPlace>(p.whereExpr.get()) ||
+            (p.subSig && paramsMayUseState<InPlace>(*p.subSig)))
+            return true;
+    return false;
+}
+template <bool InPlace> static bool blockMayUseState(const Block* b) {
+    return b && (!b->phaser.empty() || b->isCatch || stmtsMayUseState<InPlace>(b->stmts));
+}
+static bool textMayRunCode(const std::string& t) {
+    return t.find('{') != std::string::npos || t.find("state") != std::string::npos;
+}
+static bool nameIsPseudo(const std::string& n) {
+    for (const char* p : {"MY::", "OUR::", "OUTER", "CALLER", "LEXICAL", "UNIT::", "SETTING", "DYNAMIC", "CLIENT"})
+        if (n.find(p) != std::string::npos) return true;
+    return false;
+}
+static bool callNeedsOwnCall(const std::string& n) {
+    for (const char* p : {"temp", "let", "fail", "leave", "callframe", "nextsame", "callsame", "nextwith", "callwith",
+                          "samewith", "nextcallee", "lastcall", "succeed", "proceed"})
+        if (n == p) return true;
+    return false;
+}
+template <bool InPlace> static bool exprMayUseState(const Expr* e) {
+    if (!e) return false;
+    auto any = [](const std::vector<ExprPtr>& v) {
+        for (auto& x : v) if (exprMayUseState<InPlace>(x.get())) return true;
+        return false;
+    };
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::AllomorphLit:
+        case NK::Whatever: case NK::SelfTerm:
+            return false;
+        case NK::NameTerm: return nameIsPseudo(static_cast<const NameTerm*>(e)->name);
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            if (v->viaPseudoPkg || v->pkgSymbol || nameIsPseudo(v->name)) return true;
+            if (v->declare && v->d().declScope == "state") return true;
+            if (InPlace && (v->name == "@_" || v->name == "%_" ||
+                            (v->name.size() > 1 && (v->name[1] == '^' || v->name[1] == ':' || v->name[1] == '?'))))
+                return true;
+            return exprMayUseState<InPlace>(v->d().declDefault.get()) || exprMayUseState<InPlace>(v->d().declShape.get());
+        }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e);
+            if (b->op.find("ff") != std::string::npos) return true;   // a flip-flop
+            return exprMayUseState<InPlace>(b->lhs.get()) || exprMayUseState<InPlace>(b->rhs.get()); }
+        case NK::Unary: { auto* u = static_cast<const Unary*>(e);
+            if (u->op == "once") return true;
+            return exprMayUseState<InPlace>(u->operand.get()); }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e);
+            return exprMayUseState<InPlace>(a->target.get()) || exprMayUseState<InPlace>(a->value.get()); }
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            if (c->name == "EVAL" || c->name == "EVALFALLBACK" || c->name == "evalbytes" ||
+                c->name == "EVALFILE" || nameIsPseudo(c->name)) return true;
+            if (InPlace && callNeedsOwnCall(c->name)) return true;
+            return exprMayUseState<InPlace>(c->callee.get()) || any(c->args); }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
+            if (m->method == "EVAL") return true;
+            return exprMayUseState<InPlace>(m->inv.get()) || exprMayUseState<InPlace>(m->methodExpr.get()) || any(m->args); }
+        case NK::Index: { auto* i = static_cast<const Index*>(e);
+            return exprMayUseState<InPlace>(i->base.get()) || exprMayUseState<InPlace>(i->index.get()); }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e);
+            return exprMayUseState<InPlace>(t->cond.get()) || exprMayUseState<InPlace>(t->then.get()) ||
+                   exprMayUseState<InPlace>(t->els.get()); }
+        case NK::Range: { auto* r = static_cast<const RangeExpr*>(e);
+            return exprMayUseState<InPlace>(r->from.get()) || exprMayUseState<InPlace>(r->to.get()); }
+        case NK::Pair: { auto* p = static_cast<const PairExpr*>(e);
+            return exprMayUseState<InPlace>(p->keyExpr.get()) || exprMayUseState<InPlace>(p->value.get()); }
+        case NK::ListExpr: return any(static_cast<const ListExpr*>(e)->items);
+        case NK::ArrayLit: return any(static_cast<const ArrayLit*>(e)->items);
+        case NK::HashLit: return any(static_cast<const HashLit*>(e)->items);
+        case NK::InterpStr: return any(static_cast<const InterpStr*>(e)->parts);
+        case NK::ChainExpr: return any(static_cast<const ChainExpr*>(e)->operands);
+        case NK::NqpOp: return any(static_cast<const NqpOp*>(e)->args);
+        case NK::RegexLit: return textMayRunCode(static_cast<const RegexLit*>(e)->pattern);
+        case NK::SubstLit: { auto* sl = static_cast<const SubstLit*>(e);
+            return textMayRunCode(sl->pattern) || textMayRunCode(sl->repl); }
+        case NK::BlockExpr: { auto* b = static_cast<const BlockExpr*>(e);
+            return paramsMayUseState<InPlace>(b->params) || stmtsMayUseState<InPlace>(b->body); }
+        default: return true;   // SymbolicRef and anything not listed
+    }
+}
+template <bool InPlace> static bool stmtMayUseState(const Stmt* s) {
+    if (!s) return false;
+    switch (s->kind) {
+        case NK::ExprStmt: return exprMayUseState<InPlace>(static_cast<const ExprStmt*>(s)->e.get());
+        case NK::ReturnStmt: return exprMayUseState<InPlace>(static_cast<const ReturnStmt*>(s)->value.get());
+        case NK::Block: return blockMayUseState<InPlace>(static_cast<const Block*>(s));
+        case NK::LastStmt: case NK::NextStmt: case NK::RedoStmt: case NK::EmptyStmt: return false;
+        case NK::IfStmt: { auto* i = static_cast<const IfStmt*>(s);
+            for (auto& br : i->branches)
+                if (exprMayUseState<InPlace>(br.first.get()) || blockMayUseState<InPlace>(br.second.get())) return true;
+            for (auto& bp : i->branchParams) if (paramsMayUseState<InPlace>(bp)) return true;
+            return paramsMayUseState<InPlace>(i->elseParams) || blockMayUseState<InPlace>(i->elseBlock.get()); }
+        case NK::WhileStmt: { auto* w = static_cast<const WhileStmt*>(s);
+            return exprMayUseState<InPlace>(w->cond.get()) || paramsMayUseState<InPlace>(w->params) ||
+                   blockMayUseState<InPlace>(w->body.get()); }
+        case NK::RepeatStmt: { auto* r = static_cast<const RepeatStmt*>(s);
+            return exprMayUseState<InPlace>(r->cond.get()) || blockMayUseState<InPlace>(r->body.get()); }
+        case NK::ForStmt: { auto* f = static_cast<const ForStmt*>(s);
+            return exprMayUseState<InPlace>(f->list.get()) || paramsMayUseState<InPlace>(f->params) ||
+                   blockMayUseState<InPlace>(f->body.get()); }
+        case NK::LoopStmt: { auto* l = static_cast<const LoopStmt*>(s);
+            return exprMayUseState<InPlace>(l->init.get()) || exprMayUseState<InPlace>(l->cond.get()) ||
+                   exprMayUseState<InPlace>(l->incr.get()) || blockMayUseState<InPlace>(l->body.get()); }
+        case NK::GivenStmt: { auto* g = static_cast<const GivenStmt*>(s);
+            return exprMayUseState<InPlace>(g->topic.get()) || paramsMayUseState<InPlace>(g->params) ||
+                   paramsMayUseState<InPlace>(g->elseParams) || blockMayUseState<InPlace>(g->body.get()) ||
+                   blockMayUseState<InPlace>(g->elseBody.get()); }
+        case NK::WhenStmt: { auto* w = static_cast<const WhenStmt*>(s);
+            if (InPlace) return true;
+            return exprMayUseState<InPlace>(w->cond.get()) || blockMayUseState<InPlace>(w->body.get()); }
+        default: return true;   // declarations, `use`, and anything not listed
+    }
+}
+template <bool InPlace> static bool stmtsMayUseState(const std::vector<StmtPtr>& v) {
+    for (auto& s : v) if (stmtMayUseState<InPlace>(s.get())) return true;
+    return false;
+}
+signed char Interpreter::decideStateFrame(Callable& c) {
+    signed char v = (!c.ci().body || stmtsMayUseState<false>(*c.ci().body) ||
+                     (c.ci().params && paramsMayUseState<false>(*c.ci().params))) ? 1 : 0;
+    c.ci().stateFrameNeed = v;
+    return v;
+}
+bool Interpreter::runsInPlace(BlockExpr* be) {
+    signed char v = be->inPlace;
+    if (v >= 0) return v == 1;
+    const bool ok = be->params.empty() && !be->isSub && !be->isPointy && be->phaser.empty() &&
+                    !stmtsMayUseState<true>(be->body);
+    // the layout the call would have attached (attachPads, same arguments, so
+    // the same cached layout), resolved once here instead of on every run
+    std::shared_ptr<const PadLayout> L;
+    if (ok) L = resolvePads(be->body, &be->params, false, nullptr, nullptr);
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    if (be->inPlace < 0) {
+        be->inPlaceLayout = std::move(L);
+        be->inPlace = ok ? 1 : 0;
+    }
+    return be->inPlace == 1;
 }
 
 
@@ -4357,8 +4521,8 @@ Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const
     if (m == "map") {   // the lazy map arm takes one element per call, and no loop phasers
         const Value& fn = args[0];
         if (fn.t != VT::Code || !fn.code() || codeArity(fn) != 1) return inv;
-        if (fn.code()->body)
-            for (auto& s : *fn.code()->body)
+        if (fn.code()->ci().body)
+            for (auto& s : *fn.code()->ci().body)
                 if (s->kind == NK::Block) {
                     const std::string& ph = static_cast<Block*>(s.get())->phaser;
                     if (ph == "FIRST" || ph == "NEXT" || ph == "LAST") return inv;
@@ -4390,6 +4554,92 @@ Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const
         return lz;
     }
     return inv;   // lazy already (its arms answer), or nothing this knows how to read lazily
+}
+
+// The coercion-type CALL of a type name — `Int(x)`, `Str()`, `Hash(a, b)`,
+// `Int(Any)` — once the name is known to be no routine. True with `out` set
+// when it answers; evalCall runs it, and compiled code reaches it through
+// rtTypeCall, so the two read the same rules. `parenned`: written with
+// parentheses, and no callee expression.
+bool Interpreter::typeCallCore(const std::string& name, ValueList& args, bool parenned, Value& out) {
+    // A type name applied to NOTHING, or to a single TYPE OBJECT, is the
+    // COERCION TYPE and not a call: `Int()` is `Int(Any)`, `A(Any)` is
+    // `A(Any)`, and both answer a Metamodel::CoercionHOW. Rakudo reads it
+    // that way even when the class has a CALL-ME — `A()` is the coercion
+    // where `A.()` is the call — so this comes before every coercer below.
+    if (parenned) {
+        bool typeArg = args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
+                       args[0].ofType().empty() && args[0].s.find('(') == std::string::npos;
+        // A name BOUND to a type first — a role's type capture, `T()` in
+        // R[Int], is Int(Any), and `T($v)` coerces to Int — ahead of any
+        // registered type, which a capture of the same name never is
+        {
+            Value bt;
+            if ((args.empty() || typeArg) && boundTypeFor(*this, name, bt))
+                { out = Value::typeObj(bt.s.str() + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
+            if (args.size() == 1 && !args[0].namedArg && !classes_.count(name) &&
+                capturedType(*this, tctx_.cur.get(), name, bt))
+                { out = coerceToType(args[0], bt.s.str()); return true; }
+        }
+        // A MODULE or PACKAGE is a type here too. It is registered in
+        // pkgKind_ rather than classes_, so `module foo {}; foo()` was
+        // "Undefined routine 'foo'" where Rakudo answers the coercion type
+        // `foo(Any)` — the same answer it gives for a class.
+        if ((args.empty() || typeArg) &&
+            (isKnownTypeName(name) || classes_.count(resolveClassAlias(name)) ||
+             pkgKind_.count(name))) {
+            std::string tgt = classes_.count(resolveClassAlias(name))
+                                  ? resolveClassAlias(name) : name;
+            { out = Value::typeObj(tgt + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
+        }
+    }
+    // `Hash(…)` / `Map(…)`: the whole argument list becomes ONE hash, later
+    // keys winning — which is how a sub layers defaults, computed values
+    // and extras into the hash it returns (`Hash(%defaults, %computed,
+    // %extra)`). The generic coercion path below reaches only args[0], so
+    // every argument after the first used to be dropped in silence.
+    if ((name == "Hash" || name == "Map") && args.size() > 1)
+        { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    // `DateTime($instant)` / `Date($str)` coercion routines == .new
+    if ((name == "DateTime" || name == "Date") && !args.empty())
+        { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    // `Uni(97)` / `NFC(...)` etc. coercion routines build a Uni from codepoints
+    if ((name == "Uni" || name == "NFC" || name == "NFD" ||
+         name == "NFKC" || name == "NFKD"))
+        { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
+    if (coerce.count(name)) {
+        if (args.empty())
+            { out = name == "Str" ? Value::str("")
+                     : name == "Bool" ? Value::boolean(false)
+                     : name == "Num" ? Value::number(0) : Value::integer(0); return true; }
+        Value a0 = args[0];
+        if (name == "Str") { out = Value::str(strOf(a0)); return true; }
+        if (name == "Bool") { out = Value::boolean(boolify(a0)); return true; }
+        if (a0.t == VT::Object && a0.obj() && a0.obj()->cls) { // honour .Int/.Num/.Numeric
+            if (Value* m = a0.obj()->cls->findMethod(name)) { ValueList none; a0 = invokeMethod(*m, a0, none); }
+        }
+        if (a0.t == VT::Complex && (name == "Int" || name == "Num" ||
+                                    name == "Real" || name == "Rat"))
+            { out = methodCall(a0, name, {}); return true; } // $*TOLERANCE-aware imaginary-part check
+        if (name == "Int" && a0.t == VT::Rat) { out = methodCall(a0, "Int", {}); return true; } // 0-denominator fails X::Numeric::DivideByZero
+        // a Bool IS an Int, and comes back as itself (Rakudo: `Int(True)` is True)
+        if (name == "Int" && a0.t == VT::Bool) { out = a0; return true; }
+        // NaN and the infinities have no Int: X::Numeric::CannotConvert, as `.Int` says
+        // (numToIntExact made NaN 0 and Inf the int64 maximum)
+        if (name == "Int" && a0.t == VT::Num && !std::isfinite(a0.n)) { out = methodCall(a0, "Int", {}); return true; }
+        if (name == "Int" && a0.t == VT::Num) { out = numToIntExact(std::trunc(a0.n)); return true; } // exact past 2**63 (toInt saturates)
+        if (name == "Int") { out = Value::integer(a0.toInt()); return true; }
+        if (name == "Num" || name == "Real") { out = Value::number(a0.toNum()); return true; }
+        if (name == "Rat") { out = methodCall(a0, "Rat", {}); return true; } // CF approximation for Num
+        { out = a0.isNumeric() ? a0 : Value::number(a0.toNum()); return true; } // Numeric
+    }
+    return false;
+}
+Value Interpreter::rtTypeCall(const char* name, ValueList args, bool parenned) {
+    Value out;
+    if (typeCallCore(name, args, parenned, out)) return out;
+    throw RakuError{Value::typeObj("X::AdHoc"), std::string("Undefined routine '") + name + "'"};
 }
 
 } // namespace rakupp

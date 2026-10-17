@@ -8,7 +8,9 @@
 #   3. variadic calls — `*@args` marks where C's `...` begins. Silently wrong
 #      before on every ABI that passes varargs on the stack (Apple ARM64).
 #   4. typed callbacks: Pointer parameters, any arity, more than 64 of them
-#   5. without libffi the same programs must THROW, never compute garbage
+#   5. without libffi the same programs must THROW, never compute garbage —
+#      except on i386, whose fallback lays the arguments on the stack exactly as
+#      cdecl does, so there they must come back RIGHT
 # Portable — system libc/libm only, no C compiler needed.
 # Contract: exit 0 + last line PASS.
 use NativeCall;
@@ -30,8 +32,10 @@ sub snprintf(Buf, size_t, Str, *@args --> int32) is native {*}
 @fail.push("sizeof-int ({nativesizeof(int)})")       unless nativesizeof(int)   == 8;
 @fail.push("sizeof-bool ({nativesizeof(bool)})")     unless nativesizeof(bool)  == 1;
 @fail.push("sizeof-num32 ({nativesizeof(num32)})")   unless nativesizeof(num32) == 4;
+# (i386 aligns a double to 4 inside a struct, so there it is 4 + 8 + 1 → 16)
 class Layout is repr('CStruct') { has int32 $.i; has num64 $.d; has uint8 $.b; }
-@fail.push("sizeof-cstruct ({nativesizeof(Layout)})") unless nativesizeof(Layout) == 24;
+my $layout-size = nativesizeof(Pointer) == 8 ?? 24 !! 16;
+@fail.push("sizeof-cstruct ({nativesizeof(Layout)})") unless nativesizeof(Layout) == $layout-size;
 # a CUnion overlays its fields at offset 0 and is as wide as its widest member
 class U is repr('CUnion') { has int32 $.i is rw; has num64 $.d is rw; has uint8 $.b is rw; }
 @fail.push("sizeof-cunion ({nativesizeof(U)})") unless nativesizeof(U) == 8;
@@ -44,17 +48,35 @@ $u.i = 0x41424344;
 # Which backend is live? RAKUPP_FFI=0 (and any platform without a libffi to
 # load) takes the fixed-prototype path, where every check below is expected to
 # THROW instead — that is the whole point of section 5, so the file has to
-# assert the other half of the contract there rather than skip.
-my $ffi = ?(try ldexpf(3e0, 2) == 12e0);
+# assert the other half of the contract there rather than skip. Asked of the
+# engine (its trace marks a call `[no libffi]`), not inferred from a num32
+# call coming back right: on i386 the fallback gets that right too.
+my $probe = $*TMPDIR.add("nc-backend-{$*PID}.raku");
+$probe.spurt: "use NativeCall; sub abs(int32 --> int32) is native \{*}; abs(1);\n";
+%*ENV<RAKUPP_FFI_TRACE> = '1';
+my $pp = run($*EXECUTABLE.absolute, $probe.absolute, :out, :err);
+%*ENV<RAKUPP_FFI_TRACE>:delete;
+$pp.out.slurp(:close);
+my $ffi = !$pp.err.slurp(:close).contains('[no libffi]');
+$probe.unlink;
+# i386 passes every argument on the stack, so its fallback can place what a
+# register-bank one cannot (rakupp's callNative lays out cdecl's stack words)
+my $stack-fallback = !$ffi && nativesizeof(Pointer) == 4;
 
 unless $ffi {
-    for 'num32'    => { ldexpf(3e0, 2) },
-        'num32-ret'=> { strtof('2.5', Pointer) },
-        'variadic' => { snprintf(buf8.allocate(8), 8, "%d", 1) },
-        'seventeen-args' => { seventeen(-7,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16) }
+    for 'num32'    => { ldexpf(3e0, 2) == 12e0 },
+        'num32-ret'=> { strtof('2.5', Pointer) == 2.5e0 },
+        'variadic' => { my $b = buf8.allocate(8); snprintf($b, 8, "%d", 1) == 1 && $b[0] == 0x31 },
+        'seventeen-args' => { seventeen(-7,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16) == 7 }
     -> (:key($what), :value($try)) {
-        my $threw = ?(try { $try(); False } // True);
-        @fail.push("no-libffi: $what should throw") unless $threw;
+        if $stack-fallback {
+            my $right = try $try();
+            @fail.push("no-libffi i386: $what should come back right") unless $right;
+        }
+        else {
+            my $threw = ?(try { $try(); False } // True);
+            @fail.push("no-libffi: $what should throw") unless $threw;
+        }
     }
     # …while nine integers are inside the prototype's sixteen, and must come
     # back right rather than throw
@@ -126,11 +148,17 @@ $child.spurt: q:to/SRC/;
     SRC
 %*ENV<RAKUPP_FFI> = '0';
 my $p = run($*EXECUTABLE.absolute, $child.absolute, :out, :err);
-my $err = $p.err.slurp(:close); $p.out.slurp(:close);
+my $err = $p.err.slurp(:close); my $out = $p.out.slurp(:close);
 %*ENV<RAKUPP_FFI>:delete;
 $child.unlink;
-@fail.push("fallback-loud ({$err.lines.head // 'no error'})")
-    unless $err.contains('num32') && $err.contains('libffi');
+if nativesizeof(Pointer) == 4 {
+    # i386's fallback places a float as the four bytes it is
+    @fail.push("fallback-i386 ({$out.trim || $err.lines.head // 'nothing'})") unless $out.trim eq '12';
+}
+else {
+    @fail.push("fallback-loud ({$err.lines.head // 'no error'})")
+        unless $err.contains('num32') && $err.contains('libffi');
+}
 
 # 5b. RAKUPP_FFI_TRACE reports what ACTUALLY crossed. The check that matters is
 #     the `2`: strlen stops at the NUL byte, so a trace echoing the Raku value

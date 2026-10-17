@@ -647,6 +647,76 @@ section D and by ~1,500 sites of blast radius, in opposite directions. Decide
 it with a real workload after A lands, when the rest of the struct is no longer
 confounding the string measurement.
 
+### B versus C, measured 2026-10-15
+
+**C.** B's source compatibility costs 7–17% more allocations across whole
+corpora, and several times that on the programs that work with strings. C costs
+half a percent.
+
+A stopped at 80 bytes, not 56, so the 32 in the ladder is out of reach either
+way. What the two designs buy now is `CowStr`'s 32 of the 80 bytes. B's 8-byte
+handle makes a `Value` 56 bytes, and C's 16-byte string makes it 64.
+
+The build is [tools/str-census.md](../../../tools/str-census.md). It counts the
+inline texts that a `Value` writes itself, which are the bodies B would
+allocate and today does not, along with every copy, by length. Joined per
+process with tools/malloc-census.c, it gives each design's extra allocations as
+a share of what each program allocates today. There are two corpora. The first
+is the 47 programs under tools/bench and examples. The second is Roast,
+counting the 1,501 processes that have a malloc count. B′ is B with every
+string literal sharing one body kept on its AST node, which is B at its best.
+
+| | bench + examples | Roast |
+|---|---:|---:|
+| mallocs today | 9.2M | 70.6M |
+| B adds | +22.6% | +17.3% |
+| B′ adds | +7.0% | +7.1% |
+| C adds | +0.4% | +0.5% |
+| processes where B′ adds over 10% | 7 of 47 | 61 of 1,501 |
+| processes where C adds over 10% | 0 | 3 |
+
+- **Inline strings are very short.** In Roast, 86% of the texts written inline
+  are 1–7 bytes, 11.5% are 8–15 and 2.6% are 16–22. Nothing over 22 stays
+  inline, because `take()` promotes it. A 15-byte cut keeps 97% of them inline.
+  A 24-byte form would also keep the 16–22 band, which is 2.6% of the texts
+  and 0.8% of the short copies, at a cost of 8 more bytes in every `Value`
+  (72 rather than 64).
+- **B's allocations fall on the string programs.** Even with literals shared,
+  B adds 106% on `sortby`, 65% on `regex`, 37% on `textsplit` and 18% on
+  `json-gen`. In Roast it adds 80–117% on the sprintf files and 357% on
+  S12-methods/private.t.
+- **Copies outnumber creations.** Roast copies a short non-empty string 45.7M
+  times and makes 12.2M of them. B turns each of those copies into an atomic
+  increment and a later decrement. Today and under C, a copy is a byte copy.
+- **Three quarters of all string copies are empty.** In Roast, 152M of the
+  201M copies are the empty string of a `Value` that is not a Str. Every copy
+  of a `Value` pays for 32 bytes of `CowStr`, whatever its type. B (one null
+  pointer) and C (16 bytes) both make those copies cheaper, so this is not a
+  difference between them.
+- **Most short strings are literals, made again on every evaluation.**
+  `Value::str(lit->v)` copies the AST's `std::string` each time: 7.2M of the
+  12.2M short strings in Roast, and 1.44M of 2.08M in the benchmarks. Today and
+  under C that is a byte copy. Under B it would be an allocation, unless the
+  AST node keeps a body, which is the gap between B and B′. Literals of 23
+  bytes or more already cost a malloc and a body per evaluation today. That is
+  95k evaluations in Roast and 2k in the benchmarks, too few to chase on their
+  own.
+
+So C's cost is the type change that "The last 24 bytes are all string"
+describes, about 1,549 sites moving to `std::string_view`. It is not an
+allocation cost. B's lower cost in sites comes with an allocation tax that no
+other part of the representation pays back. Three things would reopen B. One
+is a C sweep found to be much larger than that count, which was taken
+2026-09-02, so the compiler should recount the sites first. Another is a
+measurement in which a 64-byte `Value` gains nothing over 80. The third is
+values ceasing to be refcounted, which removes B's atomic copy but not its
+allocation.
+
+The next step is C: `CowStr` at 16 bytes, holding up to 15 bytes inline with a
+length byte or a `Ref<const StrBody>`, which brings `Value` from 80 to 64. It
+is measured the way A was, with the field order included, because field offsets
+alone moved kernels by several percent in batch 2.
+
 ## Why 16 bytes is an architecture change, not a layout change
 
 Slim16 measures 24x on the array build. It is worth saying plainly what that

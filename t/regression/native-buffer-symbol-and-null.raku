@@ -56,10 +56,10 @@ ok('putenv kept our bytes', getenv($var), $val);
 
 # ---- 2. a computed `is symbol(…)` -------------------------------------------
 my sub pick(Str $stem --> Str) { 'str' ~ $stem }
-sub my-length(Str --> int64) is native is symbol(pick('len')) { * }
+sub my-length(Str --> size_t) is native is symbol(pick('len')) { * }
 ok('computed symbol resolves', my-length('hello'), 5);
 # the literal form still works, and so does no-symbol-at-all
-sub strlen(Str --> int64) is native { * }
+sub strlen(Str --> size_t) is native { * }
 ok('the sub name is the default', strlen('worlds'), 6);
 
 # ---- 3. a buffer does the buffer roles --------------------------------------

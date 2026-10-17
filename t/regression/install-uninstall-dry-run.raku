@@ -41,14 +41,18 @@ sub installer(*@args) {
 }
 
 # Every file in the store, with its content, so "nothing changed" is checked
-# on what is there and not on what the tool says.
+# on what is there and not on what the tool says. A symlink is recorded by
+# where it points: on a machine with no rakupp on PATH the installer links
+# bin/rakupp to the engine, and reading through that link took the whole
+# binary in as a List of Ints -- gigabytes, which a 4 GB container did not have.
 sub snapshot() {
     my %s;
     my @todo = $store;
     while @todo {
         my $d = @todo.shift;
         for $d.dir -> $e {
-            if $e.d { @todo.push: $e }
+            if $e.l { %s{$e.relative($store)} = "-> {$e.readlink}" }
+            elsif $e.d { @todo.push: $e }
             elsif $e.basename ne 'repo.lock' { %s{$e.relative($store)} = $e.slurp(:bin).List }
         }
     }

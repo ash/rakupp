@@ -205,6 +205,39 @@ void attachAotBodies(const std::string& module, Program& prog) {
         std::fprintf(stderr, "[aot] %s: %zu of %zu routines native\n", module.c_str(), t.n, routines.size());
 }
 
+// ---- the program's own routines (attachMainAot) ----------------------------
+
+const char* const kMainAotKey = "<main>";   // no module is named with a `<`
+
+// FNV-1a over the serialized AST: equal fingerprints, the same tree
+uint64_t aotFingerprint(const std::string& blob) {
+    uint64_t h = 14695981039346656037ULL;
+    for (unsigned char c : blob) { h ^= c; h *= 1099511628211ULL; }
+    return h;
+}
+
+namespace {
+uint64_t g_mainFp = 0;
+bool g_mainFpSet = false;   // written by generated startup code before the program runs
+}
+
+void rakuppRegisterMainAot(uint64_t fingerprint) {
+    g_mainFp = fingerprint;
+    g_mainFpSet = true;
+}
+
+void attachMainAot(Program& prog) {
+    if (!g_mainFpSet || !aotTables().count(kMainAotKey)) return;   // every other binary, and the CLI
+    if (aotFingerprint(serializeAst(prog)) != g_mainFp) {
+        if (aotTrace())
+            std::fprintf(stderr, "[aot] %s: the program parses to another tree than it was compiled from; "
+                                 "running it interpreted\n", kMainAotKey);
+        if (g_aotRunLog) runLogEvent(std::string("refused\t") + kMainAotKey + "\tthe parse differs");
+        return;
+    }
+    attachAotBodies(kMainAotKey, prog);
+}
+
 // ---- what the generated bodies call ----------------------------------------
 //
 // Declared again, by prototype, at the top of the generated translation unit
@@ -255,7 +288,7 @@ Value rtAotParam(Env* frame, const char* name) {
 Value rtAotParamAt(Env* frame, const std::string& name, std::atomic<uint64_t>& cache) {
     if (frame && frame->layout && frame->vars.empty()) {
         const auto L = reinterpret_cast<uintptr_t>(frame->layout);
-        if ((L >> 48) == 0) {
+        if (((uint64_t)L >> 48) == 0) {     // widened first: on a 32-bit target L >> 48 is undefined
             uint64_t k = cache.load(std::memory_order_relaxed);
             if ((k >> 16) != L) {
                 auto it = frame->layout->byName.find(name);
@@ -314,7 +347,7 @@ Stmt* rtAotStmt(const unsigned char* blob, size_t n) {
 Value rtAotExec(Interpreter& I, Stmt* st, const char* const* names, Value** slots, size_t n,
                 const Value* self, bool sink) {
     ExecContext& tcx = I.tctx_;
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tcx.cur;
     if (self) scope->define("self", *self);
     for (size_t i = 0; i < n; i++) scope->define(names[i], *slots[i]);
@@ -428,7 +461,7 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
         as = slot.get();
     }
     ExecContext& tcx = I.tctx_;
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     (void)inClosure;   // self comes from the scope either way
     scope->parent = tcx.cur;
     scope->define("self", self);
@@ -468,7 +501,7 @@ Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args) 
     Value a = Value::array();
     for (auto& v : args) a.arr()->push_back(std::move(v));
     ExecContext& tcx = I.tctx_;
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tcx.cur;
     scope->define("$\x01aot-inv", *tgt);
     scope->define("@\x01aot-args", std::move(a));

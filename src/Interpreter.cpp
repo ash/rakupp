@@ -334,11 +334,11 @@ static bool ncStructEqv(const Value& a, const Value& b) {
         // Str is a char* the struct points AT, and its length is its own — so it
         // is the one pointer field that can be, and in Rakudo is, compared.
         if (bt == "Str") {
-            long long x = 0, y = 0;
-            std::memcpy(&x, (void*)(intptr_t)(pa + off), 8);
-            std::memcpy(&y, (void*)(intptr_t)(pb + off), 8);
+            const char* x = nullptr; const char* y = nullptr;   // pointer-wide, not 8 bytes
+            std::memcpy(&x, (void*)(intptr_t)(pa + off), sizeof x);
+            std::memcpy(&y, (void*)(intptr_t)(pb + off), sizeof y);
             if (!x || !y) { if (x != y) return false; continue; }
-            if (std::strcmp((const char*)(intptr_t)x, (const char*)(intptr_t)y) != 0) return false;
+            if (std::strcmp(x, y) != 0) return false;
             continue;
         }
         // Pointer, CArray and a nested class field are all bare addresses: not
@@ -450,8 +450,8 @@ bool valueEqv(const Value& a, const Value& b) {
     // comparison operator with `$op_std eqv &[~~]`, and never matched. User
     // routines keep pointer identity.
     if (a.t == VT::Code && a.code() && b.code() && a.code() != b.code() &&
-        a.code()->builtin && b.code()->builtin && !a.code()->name.empty())
-        return a.code()->name == b.code()->name;
+        a.code()->ci().builtin && b.code()->ci().builtin && !a.code()->ci().name.empty())
+        return a.code()->ci().name == b.code()->ci().name;
     // …and an allomorph is its own type: `42 eqv <42>` is False although both are
     // VT::Int. They differ only in their WHICH, which carries both halves.
     if (a.isAllomorph() || b.isAllomorph()) return whichOf(a) == whichOf(b);
@@ -542,7 +542,7 @@ bool valueEqv(const Value& a, const Value& b) {
         case VT::Pair:
             // typed keys compare structurally (an object key's rendering now
             // carries its identity, so `$o => 1 eqv Foo.new => 1` needs the key)
-            return (a.pairKey() && b.pairKey() ? valueEqv(*a.pairKey(), *b.pairKey())
+            return (a.hasPairKey() && b.hasPairKey() ? valueEqv(a.nonStrKey(), b.nonStrKey())
                                            : a.s == b.s) &&
                    valueEqv(a.pairVal() ? *a.pairVal() : Value::any(), b.pairVal() ? *b.pairVal() : Value::any());
         // structural, like Rakudo's default eqv: same class + eqv attributes
@@ -1203,7 +1203,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
     if (!conc || !role || !role->decl) return false;
     const GenericRoleBody* g = genericRoleBody(role->decl);
     if (!g || !g->any) return false;
-    auto env = std::make_shared<Env>();
+    auto env = makeSlabShared<Env>();
     env->parent = role->declEnv ? role->declEnv : global_;
     env->packageFrame = true;
     env->x().pkgType = conc;
@@ -1235,8 +1235,8 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
         // the role body — are not what the calls here find)
         for (auto& nm : groups) {
             Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
-            fresh.code()->name = nm;
-            fresh.code()->isMultiDispatcher = true;
+            fresh.code()->ciM().name = nm;
+            fresh.code()->ciM().isMultiDispatcher = true;
             env->define("&" + nm, fresh);
         }
         for (auto& st : body)
@@ -1248,8 +1248,8 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
         for (auto& kv : env->vars) {
             if (kv.first.empty() || kv.first[0] != '&' || kv.second.t != VT::Code || !kv.second.code()) continue;
             Callable* c = kv.second.code();
-            if (c->isMultiDispatcher) { for (auto& cand : c->cold().candidates) if (cand.code()) cand.code()->roleConcrete = true; }
-            else if (c->closure == env) c->roleConcrete = true;
+            if (c->ci().isMultiDispatcher) { for (auto& cand : c->cold().candidates) if (cand.code()) cand.code()->ciM().roleConcrete = true; }
+            else if (c->closure == env) c->ciM().roleConcrete = true;
         }
     };
     markConcrete();
@@ -1413,7 +1413,7 @@ Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& na
     if (!slot.natBits) return v;   // not (or no longer) a native container
     return nativeStoreValue(v, slot.natBits, slot.natSigned, slot.natFloat, name, srcNative);
 }
-Value rtNativeArith(const char* op, const Value& l, const Value& r) {
+Value rtNativeArithSlow(const char* op, const Value& l, const Value& r) {
     auto plainInt = [](const Value& v) {
         return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
     };
@@ -1425,7 +1425,9 @@ Value rtNativeArith(const char* op, const Value& l, const Value& r) {
         }
         if (std::string(op) == "**" && r.i < 0) return Value::integer(0);   // see nativeIntPowNegative
     }
-    Value res = applyArith(op, l, r);
+    Value res;
+    double a, b;
+    if (!rtNumPair(l, r, a, b) || !rtNumArith(op, a, b, res)) res = applyArith(op, l, r);
     if (res.t == VT::Num) { res.natBits = 64; res.natFloat = true; }
     return res;
 }
@@ -1828,15 +1830,16 @@ static bool mayUseTopicStmt(const Stmt* s) {
     }
 }
 bool Interpreter::bodyMayUseTopic(const Callable& c) {
-    signed char t = c.topicScan;
-    if (t < 0) c.topicScan = t = (c.body && mayUseTopicBody(*c.body)) ? 1 : 0;
+    const CodeInfo& ci = c.ci();
+    signed char t = ci.topicScan;
+    if (t < 0) ci.topicScan = t = (ci.body && mayUseTopicBody(*ci.body)) ? 1 : 0;
     return t != 0;
 }
 
 bool Interpreter::bodyUsesAtUnderscore(const Callable* c) {
-    if (!c || !c->body) return false;
+    if (!c || !c->ci().body) return false;
     std::set<std::string> ph;
-    for (auto& s : *c->body) collectPHStmt(s.get(), ph);
+    for (auto& s : *c->ci().body) collectPHStmt(s.get(), ph);
     return ph.count("@_") > 0;
 }
 
@@ -1883,14 +1886,14 @@ std::string Interpreter::mainUsage() {
     if (!mainSub && global_) mainSub = global_->find("&MAIN");
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code()) return "";
     ValueList cands;
-    if (mainSub->code()->isMultiDispatcher) {
+    if (mainSub->code()->ci().isMultiDispatcher) {
         for (auto& c : mainSub->code()->cold().candidates)   // (a proto is no usage line)
-            if (!(c.code() && (c.code()->isProto || c.code()->isProtoBody))) cands.push_back(c);
+            if (!(c.code() && (c.code()->ci().isProto || c.code()->ci().isProtoBody))) cands.push_back(c);
     }
     else cands.push_back(*mainSub);
     // a candidate marked `is hidden-from-USAGE` is not advertised
     cands.erase(std::remove_if(cands.begin(), cands.end(),
-                               [](const Value& c) { return c.code() && c.code()->hiddenFromUsage; }),
+                               [](const Value& c) { return c.code() && c.code()->ci().hiddenFromUsage; }),
                 cands.end());
     std::string out = "Usage:\n";
     struct Opt { std::string label, desc, def; };
@@ -1901,13 +1904,13 @@ std::string Interpreter::mainUsage() {
              ? n.substr(1) : n;
     };
     for (auto& cand : cands) {
-        if (!cand.code() || !cand.code()->params) continue;
+        if (!cand.code() || !cand.code()->ci().params) continue;
         std::string line = "  " + (progName().empty() ? std::string("<program>") : progName());
         // Rakudo lists the OPTIONS first and the positionals after, whatever
         // order they were declared in — so the two are collected separately and
         // joined below. (The option list underneath keeps declaration order.)
         std::string named, positional;
-        for (auto& p : *cand.code()->params) {
+        for (auto& p : *cand.code()->ci().params) {
             std::string label;
             if (p.litVal) { positional += " " + eval(p.litVal.get()).toStr(); continue; }
             if (p.named) {
@@ -2537,30 +2540,30 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // (`sub { [*] @_[*-1], @_ + 1 }` — a body using @_, or a declared *@slurpy).
         long long arity = 1;
         if (hasGen && gen.code()) {
-            bool slurpy = gen.code()->usesArgs;
-            if (gen.code()->params)
-                for (auto& p : *gen.code()->params) if (p.slurpy) { slurpy = true; break; }
+            bool slurpy = gen.code()->ci().usesArgs;
+            if (gen.code()->ci().params)
+                for (auto& p : *gen.code()->ci().params) if (p.slurpy) { slurpy = true; break; }
             // an ANONYMOUS `sub { … @_ … }` is built without usesArgs being computed,
             // so look for @_/%_ in the body here too
-            if (!slurpy && gen.code()->body && (!gen.code()->params || gen.code()->params->empty())) {
+            if (!slurpy && gen.code()->ci().body && (!gen.code()->ci().params || gen.code()->ci().params->empty())) {
                 std::set<std::string> ph2;
-                for (auto& s2 : *gen.code()->body) collectPHStmt(s2.get(), ph2);
+                for (auto& s2 : *gen.code()->ci().body) collectPHStmt(s2.get(), ph2);
                 slurpy = ph2.count("@_") || ph2.count("%_");
             }
             if (slurpy)                                 arity = 0;
-            else if (gen.code()->whateverArity > 0)       arity = gen.code()->whateverArity;
-            else if (!gen.code()->placeholders.empty())   arity = (long long)gen.code()->placeholderPos();
-            else if (gen.code()->params && !gen.code()->params->empty()) arity = (long long)gen.code()->params->size();
+            else if (gen.code()->ci().whateverArity > 0)       arity = gen.code()->ci().whateverArity;
+            else if (!gen.code()->ci().placeholders.empty())   arity = (long long)gen.code()->placeholderPos();
+            else if (gen.code()->ci().params && !gen.code()->ci().params->empty()) arity = (long long)gen.code()->ci().params->size();
         }
         // …and how many of those it cannot do without: a generator handed fewer
         // elements than that dies as its binder would (Rakudo: `^1, *+* … *` is
         // "Too few positionals passed; expected 2 arguments but got 1") rather
         // than being fed made-up zeros
         long long needArity = arity;
-        if (hasGen && gen.code() && arity > 0 && gen.code()->whateverArity <= 0 &&
-            gen.code()->placeholders.empty() && gen.code()->params) {
+        if (hasGen && gen.code() && arity > 0 && gen.code()->ci().whateverArity <= 0 &&
+            gen.code()->ci().placeholders.empty() && gen.code()->ci().params) {
             needArity = 0;
-            for (auto& p : *gen.code()->params)
+            for (auto& p : *gen.code()->ci().params)
                 if (!p.named && !p.slurpy && !p.optional && !p.defaultVal) needArity++;
         }
         auto tooFew = [needArity](size_t n) {
@@ -2670,17 +2673,17 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // seeds themselves first (`1, 2, 4 ... * > 3` is (1 2 4))
         // a SLURPY endpoint block (`{ @_ eq "1 2 3" }`) sees every element so far
         bool endSlurpy = false;
-        if (endCode && r.code() && r.code()->body && (!r.code()->params || r.code()->params->empty()) &&
-            r.code()->placeholders.empty()) {
+        if (endCode && r.code() && r.code()->ci().body && (!r.code()->ci().params || r.code()->ci().params->empty()) &&
+            r.code()->ci().placeholders.empty()) {
             std::set<std::string> ph2;
-            for (auto& s2 : *r.code()->body) collectPHStmt(s2.get(), ph2);
+            for (auto& s2 : *r.code()->ci().body) collectPHStmt(s2.get(), ph2);
             endSlurpy = ph2.count("@_") > 0;
         }
         long long endArity = 1;
         if (endCode && !endSlurpy && r.code()) {
-            if (r.code()->whateverArity > 1) endArity = r.code()->whateverArity;
+            if (r.code()->ci().whateverArity > 1) endArity = r.code()->ci().whateverArity;
             else if (r.code()->placeholderPos() > 1) endArity = (long long)r.code()->placeholderPos();
-            else if (r.code()->params && r.code()->params->size() > 1) endArity = (long long)r.code()->params->size();
+            else if (r.code()->ci().params && r.code()->ci().params->size() > 1) endArity = (long long)r.code()->ci().params->size();
         }
         auto endAccepts = [&](const Value& v, size_t nBefore) -> bool {
             if (endArity > 1) {   // the last N elements, this one included
@@ -3128,6 +3131,10 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
 }
 
 Value Interpreter::rtNameTerm(const std::string& n) {
+    // the Empty term, ahead of every lookup as the NameTerm eval has it: the
+    // empty-Slip SINGLETON unless a class of that name exists. Resolved as a
+    // builtin it was a fresh empty list, which `(1, Empty, 2)` kept as an element.
+    if (n == "Empty" && !classes_.count(n)) return emptySlipSingleton();
     if (tctx_.cur) {
         if (Value* p = tctx_.cur->find(n)) // bound slot: fetch, as the eval path does
             return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
@@ -3141,6 +3148,17 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // numeric payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
     { Value c; if (coreEnumValue(n, c)) return c; }
     return Value::typeObj(n);
+}
+// A site of a core type name the program binds nowhere (Codegen::stableNameTerm)
+// asks this once and keeps the answer. False — ask rtNameTerm every time — when
+// the answer is a computed constant or a builtin's, which is a CALL and need
+// not give the same value twice.
+bool Interpreter::rtStableNameTerm(const std::string& n, Value& out) {
+    { Value c; if (nameTermConstant(n, c, sixE())) return false; }
+    auto it = builtins_.find(n);
+    if (it != builtins_.end() && builtinVisible(n)) return false;
+    out = rtNameTerm(n);
+    return true;
 }
 
 // k => v at a call site (native codegen): a syntactic identifier-keyed pair is
@@ -3205,7 +3223,7 @@ Value& rtIndexRefW(Value& base, const Value& key) {
     Value* b = base.deref();
     const long long n = b->t == VT::Array && b->arr() ? (long long)b->arr()->size() : 0;
     if (key.t == VT::Whatever) idx = Value::integer(n);
-    else if (key.t == VT::Code && key.code() && key.code()->isWhateverCode)
+    else if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         if (Interpreter* I = Interpreter::liveTarget()) idx = I->callCallable(key, ValueList{Value::integer(n)});
     return rtIndexRef(base, idx, false);
 }
@@ -3226,7 +3244,7 @@ Value rtPairKeyed(const Value& kv, Value value) {
         kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
         kv.t == VT::Match || kv.t == VT::Code || kv.t == VT::Regex ||
         kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range)
-        pr.pairKeyM() = std::make_shared<Value>(kv);
+        pr.setPairKey(kv);
     return pr;
 }
 
@@ -3237,25 +3255,25 @@ Value rtPairKeyed(const Value& kv, Value value) {
 // neither side curries; the caller then builds the Pair.
 Value rtPairCurry(const Value& kv, const Value& vv, bool kVar, bool vVar) {
     auto curries = [](const Value& v) {
-        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
     };
     if (!((curries(kv) && !kVar) || (curries(vv) && !vVar))) return Value::any();
     Value kc = kv, vc = vv;
     Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-    code.code()->isWhateverCode = true;
+    code.code()->ciM().isWhateverCode = true;
     auto arityOf = [&](const Value& x) -> long long {
         if (x.t == VT::Whatever) return 1;
-        if (x.t == VT::Code && x.code() && x.code()->isWhateverCode)
-            return x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+        if (x.t == VT::Code && x.code() && x.code()->ci().isWhateverCode)
+            return x.code()->ci().whateverArity > 0 ? x.code()->ci().whateverArity : 1;
         return 0;
     };
-    code.code()->whateverArity = arityOf(kc) + arityOf(vc);
-    code.code()->builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
+    code.code()->ciM().whateverArity = arityOf(kc) + arityOf(vc);
+    code.code()->ciM().builtin = [kc, vc](Interpreter& I, ValueList& a) -> Value {
         size_t idx = 0;
         auto resolve = [&](const Value& x) -> Value {
             if (x.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
-            if (x.t == VT::Code && x.code() && x.code()->isWhateverCode) {
-                long long ar = x.code()->whateverArity > 0 ? x.code()->whateverArity : 1;
+            if (x.t == VT::Code && x.code() && x.code()->ci().isWhateverCode) {
+                long long ar = x.code()->ci().whateverArity > 0 ? x.code()->ci().whateverArity : 1;
                 ValueList sub;
                 for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
                 return I.callCallable(x, sub);
@@ -3265,7 +3283,7 @@ Value rtPairCurry(const Value& kv, const Value& vv, bool kVar, bool vVar) {
         Value k = resolve(kc);   // key first — argument order matters
         Value v = resolve(vc);
         Value pr = Value::pair(k.toStr(), v);
-        if (k.t != VT::Str) pr.pairKeyM() = std::make_shared<Value>(k);
+        if (k.t != VT::Str) pr.setPairKey(k);
         return pr;
     };
     return code;
@@ -3702,7 +3720,7 @@ void Interpreter::runDestroyChain(const PRef<ObjectData>& od) {
             auto parents = roleParents(r);
             auto it = r->methods.find("DESTROY");
             bool own = it != r->methods.end() && it->second.t == VT::Code && it->second.code() &&
-                       it->second.code()->isSubmethod;
+                       it->second.code()->ci().isSubmethod;
             for (ClassInfo* p : parents) {
                 if (!own) break;
                 auto pt = p->methods.find("DESTROY");
@@ -3938,8 +3956,8 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             else if (store && v.objKeyed && !objKeyed) {
                 for (auto& kv : *v.hash()) {
                     Value val = kv.second;
-                    std::string k = val.pairKey() ? val.pairKey()->toStr() : kv.first;
-                    val.pairKeyM().reset();
+                    std::string k = val.hasPairKey() ? val.nonStrKey().toStr() : kv.first;
+                    val.pairKeyRawM().reset();
                     (*h.hash())[k] = std::move(val);
                 }
             }
@@ -3971,7 +3989,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
     for (size_t i = 0; i < items.size(); i++) {
         if (items[i].t == VT::Pair) {
             Value pv = items[i].pairVal() ? *items[i].pairVal() : Value::any();
-            const std::shared_ptr<Value>& pk = items[i].pairKey();
+            const std::shared_ptr<Value> pk = items[i].pairKeyShared();
             // a JUNCTION key autothreads: `'W'|'W*' => X` stores X under BOTH
             // 'W' and 'W*', as Rakudo does when a Junction is assigned as a key
             // (PDF::Content::Ops' %Transition table keys ops by `'W'|'W*'` and
@@ -3985,7 +4003,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             // (a Str key too: the index is an identity string, so nothing else
             // remembers the key's own spelling)
             Value realK = pk ? *pk : Value::str(items[i].s);
-            if (objKeyed) pv.pairKeyM() = std::make_shared<Value>(realK);
+            if (objKeyed) pv.setPairKey(realK);
             (*h.hash())[keyStr(realK, items[i].s)] = pv;
         } else if (items[i].t == VT::Hash && items[i].hash() &&
                    (items[i].hashKind.empty() || items[i].hashKind == "Map") && !items[i].itemized) {
@@ -3997,8 +4015,8 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
                 // (an OBJECT hash's entries go in under their keys' Str form)
                 if (items[i].objKeyed && !objKeyed) {
                     Value val = kv.second;
-                    std::string k = val.pairKey() ? val.pairKey()->toStr() : kv.first;
-                    val.pairKeyM().reset();
+                    std::string k = val.hasPairKey() ? val.nonStrKey().toStr() : kv.first;
+                    val.pairKeyRawM().reset();
                     (*h.hash())[k] = std::move(val);
                 }
                 else (*h.hash())[kv.first] = kv.second;
@@ -4011,7 +4029,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
             // answers the Int (`my %h{Mu} = 1, 2, 3, 4` — CBOR::Simple encodes
             // such keys as integers)
             Value stored = items[i + 1];
-            if (objKeyed) stored.pairKeyM() = std::make_shared<Value>(items[i]);
+            if (objKeyed) stored.setPairKey(items[i]);
             (*h.hash())[k2] = std::move(stored);
             i++;
         }
@@ -4078,7 +4096,7 @@ thread_local std::vector<Interpreter::ProtoCtx> Interpreter::protoStack_;
 // would.
 const Value* Interpreter::protoBodyOf(const Callable& c) {
     for (auto& cand : c.cold().candidates)
-        if (cand.code() && cand.code()->isProtoBody) return &cand;
+        if (cand.code() && cand.code()->ci().isProtoBody) return &cand;
     return nullptr;
 }
 // The `{*}` inside a proto body: hand the proto's own arguments to the best candidate.
@@ -4227,7 +4245,7 @@ Interpreter::Interpreter() {
         if (const char* ps = std::getenv("RAKUPP_PRIVATE_SLOTS"))
             privateSlots_ = std::string(ps) == "0" ? 0 : std::string(ps) == "all" ? 2 : 1;
     }
-    global_ = std::make_shared<Env>();
+    global_ = makeSlabShared<Env>();
     curPkgEnv_ = global_;
     // tctx_ is thread_local, so it outlives an interpreter: an embedder that
     // runs rk_new/rk_run/rk_free over and over on one thread (Raku.js runs
@@ -4390,10 +4408,10 @@ Interpreter::Interpreter() {
             ps->name = "PseudoStash";
             for (const char* mn : {"AT-KEY", "EXISTS-KEY", "BIND-KEY", "ASSIGN-KEY", "DELETE-KEY", "WHO"}) {
                 Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-                code.code()->name = mn; code.code()->isMethod = true; code.code()->subAsMethod = true;
-                code.code()->pkg = "PseudoStash";
+                code.code()->ciM().name = mn; code.code()->ciM().isMethod = true; code.code()->ciM().subAsMethod = true;
+                code.code()->ciM().pkg = "PseudoStash";
                 std::string m = mn;
-                code.code()->builtin = [m](Interpreter& I, ValueList& a) -> Value {
+                code.code()->ciM().builtin = [m](Interpreter& I, ValueList& a) -> Value {
                     if (a.empty()) return Value::nil();
                     Value self = a[0];
                     ValueList rest(a.begin() + 1, a.end());
@@ -4498,8 +4516,8 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
     Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
     if (slash && slash->t == VT::Match && slash->rFrom() == m.rFrom() && slash->rTo() == m.rTo() &&
         slash->s == m.s)
-        slash->pairKeyM() = orig;
-    m.pairKeyM() = orig;
+        slash->pairKeyRawM() = orig;
+    m.pairKeyRawM() = orig;
 }
 
 // ---- PARALLEL-SCALING-PLAN P1: which slots another thread may reach ----
@@ -5768,7 +5786,7 @@ void Interpreter::preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts) {
             }
         if (!has) { preinstallNestedOurSubs(b->stmts); continue; }
         if (!curPkgEnv_) continue;
-        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur;
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
         predeclareSubClosures(b, sc.get());
         auto saved = tctx_.cur;
         tctx_.cur = sc;
@@ -5817,12 +5835,12 @@ void Interpreter::applyParamTraits(const std::vector<Param>& params, const Value
     // answers with the dispatcher, and the dispatcher's own params are the
     // proto's, not the candidate's.
     const Callable* c = fn.code();
-    if (c->params != &params)
+    if (c->ci().params != &params)
         for (auto& cand : c->cold().candidates)
-            if (cand.t == VT::Code && cand.code() && cand.code()->params == &params) {
+            if (cand.t == VT::Code && cand.code() && cand.code()->ci().params == &params) {
                 c = cand.code(); break;
             }
-    if (c->params != &params) return;
+    if (c->ci().params != &params) return;
     Value sig = makeSignature(c);
     if (!sig.hash()) return;
     Value& pl = (*sig.hash())["params"];
@@ -5936,8 +5954,8 @@ bool Interpreter::routineTraitKnown(const std::string& n) {
     return kBuiltin.count(n) || classes_.count(n) || isKnownTypeName(n);
 }
 void Interpreter::unknownRoutineTrait(const std::string& name, const Value& code) {
-    const std::string decl = code.t == VT::Code && code.code() && code.code()->isMethod
-                           ? (code.code()->isSubmethod ? "submethod" : "method") : "sub";
+    const std::string decl = code.t == VT::Code && code.code() && code.code()->ci().isMethod
+                           ? (code.code()->ci().isSubmethod ? "submethod" : "method") : "sub";
     throwTypedV("X::Comp::Trait::Unknown",
         {{"type", Value::str("is")}, {"subtype", Value::str(name)}, {"declaring", Value::str(decl)}},
         "Can't use unknown trait 'is' -> '" + name + "' in " + decl + " declaration.");

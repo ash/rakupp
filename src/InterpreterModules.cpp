@@ -235,8 +235,8 @@ Value jsonExactToJson(Interpreter& I, ValueList& a) {
 }
 static Value jsonExactRoutine(bool to, const std::map<std::string, bool>& defaults) {
     Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-    w.code()->name = to ? "to-json" : "from-json";
-    w.code()->builtin = [to, defaults](Interpreter& I, ValueList& args) -> Value {
+    w.code()->ciM().name = to ? "to-json" : "from-json";
+    w.code()->ciM().builtin = [to, defaults](Interpreter& I, ValueList& args) -> Value {
         ValueList a = args;
         for (auto& d : defaults) {
             bool given = false;
@@ -431,8 +431,8 @@ bool Interpreter::dataNativeUse(const std::string& name,
             // parsing and for writing (Data::Native's tag says 'core')
             if (jsonNative && nm == "json-backend") {
                 Value jb; jb.t = VT::Code; jb.setCode(makePayload<Callable>());
-                jb.code()->name = "json-backend";
-                jb.code()->builtin = [](Interpreter&, ValueList&) -> Value { return Value::str("engine"); };
+                jb.code()->ciM().name = "json-backend";
+                jb.code()->ciM().builtin = [](Interpreter&, ValueList&) -> Value { return Value::str("engine"); };
                 tctx_.cur->define("&json-backend", jb);
                 continue;
             }
@@ -455,14 +455,14 @@ const Value* Interpreter::builtinRef(const std::string& name) {
     // under; `md5` is what the routine is called in the program that imported
     // it, so that is what `&md5.name` and a backtrace should say. Without this
     // the answer depended on whether `&::('rakupp-md5')` or a `use` ran first.
-    code.code()->name = name;
+    code.code()->ciM().name = name;
     if (name.compare(0, 7, "rakupp-") == 0) {
         std::string bare = name.substr(7);
         for (const DataNativeTag* d = kDataNativeTags; d->tag; d++)
             for (const char* const* n = d->names; *n; n++)
-                if (bare == *n) code.code()->name = bare;
+                if (bare == *n) code.code()->ciM().name = bare;
     }
-    code.code()->builtin = bit->second;
+    code.code()->ciM().builtin = bit->second;
     return &(builtinRefs_[name] = code);
 }
 
@@ -568,7 +568,7 @@ void Interpreter::runRoleClassStatements(ClassInfo* cls, const std::string& clsN
         const std::vector<char>& mask = roleClassStatements(r->decl);
         if (std::find(mask.begin(), mask.end(), 1) == mask.end()) continue;
         const GenericRoleBody* g = genericRoleBody(r->decl);   // those run per parameterization
-        auto env = std::make_shared<Env>();
+        auto env = makeSlabShared<Env>();
         env->parent = r->declEnv ? r->declEnv : global_;
         roleClassSelf_.push_back(Value::typeObj(clsName));
         env->selfSlot = &roleClassSelf_.back();
@@ -882,16 +882,16 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // an imported MULTI joins a same-named multi the scope
                     // already declared (`use Foo; multi waz($x) {…}` sees both)
                     if (want && se.value.t == VT::Code && se.value.code() &&
-                        se.value.code()->isMultiDispatcher) {
+                        se.value.code()->ci().isMultiDispatcher) {
                         Value* have = tctx_.cur->local(se.key);
-                        if (have && have->t == VT::Code && have->code() && have->code()->isMultiDispatcher &&
+                        if (have && have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
                             have->code() != se.value.code()) {
                             auto& cands = have->code()->coldM().candidates;
                             for (auto& c : se.value.code()->cold().candidates) {
                                 bool dup = false;
                                 for (auto& h : cands)
-                                    if (h.code() && c.code() && h.code()->body == c.code()->body &&
-                                        h.code()->params == c.code()->params) { dup = true; break; }
+                                    if (h.code() && c.code() && h.code()->ci().body == c.code()->ci().body &&
+                                        h.code()->ci().params == c.code()->ci().params) { dup = true; break; }
                                 if (!dup) cands.push_back(c);
                             }
                             continue;
@@ -1017,7 +1017,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // what lets Test::Util's `our sub run` coexist with the built-in `run`:
         // Test::Util's own `is_run` still resolves `run` (via its module closure),
         // while an importer's bare `run(...)` reaches the built-in.
-        auto moduleEnv = std::make_shared<Env>(); moduleEnv->parent = global_;
+        auto moduleEnv = makeSlabShared<Env>(); moduleEnv->parent = global_;
         moduleEnv->unitFrame = true;
         unitOfEnv_[moduleEnv.get()] = name;
         unitStash_[name];
@@ -1212,16 +1212,16 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 // same name (`use Foo; multi waz($x) {…}` dispatches to both)
                 if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) &&
                     doImport && saved && kv.second.t == VT::Code && kv.second.code() &&
-                    kv.second.code()->isMultiDispatcher) {
+                    kv.second.code()->ci().isMultiDispatcher) {
                     Value* have = saved->local(k);
-                    if (have && have->t == VT::Code && have->code() && have->code()->isMultiDispatcher &&
+                    if (have && have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
                         have->code() != kv.second.code()) {
                         auto& cands = have->code()->coldM().candidates;
                         for (auto& c : kv.second.code()->cold().candidates) {
                             bool dup = false;
                             for (auto& h : cands)
-                                if (h.code() && c.code() && h.code()->body == c.code()->body &&
-                                    h.code()->params == c.code()->params) { dup = true; break; }
+                                if (h.code() && c.code() && h.code()->ci().body == c.code()->ci().body &&
+                                    h.code()->ci().params == c.code()->ci().params) { dup = true; break; }
                             if (!dup) cands.push_back(c);
                         }
                         continue;
@@ -1482,7 +1482,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             // …the COMPUNIT's EXPORT only: one written after `unit module Foo`
             // is Foo::EXPORT, a sub of the package, and Rakudo never calls it
             if (it != moduleEnv->vars.end() && it->second.t == VT::Code && it->second.code() &&
-                !it->second.code()->pkg.empty() && it->second.code()->pkg != "GLOBAL")
+                !it->second.code()->ci().pkg.empty() && it->second.code()->ci().pkg != "GLOBAL")
                 it = moduleEnv->vars.end();
             if (it != moduleEnv->vars.end() && it->second.t == VT::Code)
                 moduleExportSubs_[name] = it->second;   // for repeat `use`s
@@ -2113,7 +2113,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 const std::string& n = kv.first; // e.g. "&infix:<fromplus>"
                 if (n.size() > 1 && n[0] == '&' && n.find(':') == std::string::npos &&
                     (ascii::isalpha((unsigned char)n[1]) || n[1] == '_') &&
-                    kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->builtin)
+                    kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->ci().builtin)
                     parser.declareKnownSub(n.substr(1));
                 size_t lt = n.find(":<");
                 if (n.size() > 1 && n[0] == '&' && lt != std::string::npos && n.back() == '>') {
@@ -2122,7 +2122,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                         kind == "circumfix" || kind == "postcircumfix") {
                         parser.declareUserOp(kind, n.substr(lt + 2, n.size() - lt - 3));
                         if (kind == "infix" && kv.second.t == VT::Code && kv.second.code() &&
-                            kv.second.code()->assocNon)
+                            kv.second.code()->ci().assocNon)
                             parser.declareUserOp("infix-non", n.substr(lt + 2, n.size() - lt - 3));
                     }
                 }
@@ -2186,7 +2186,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                         auto* b = static_cast<Block*>(st.get());
                         if (b->phaser != "BEGIN") continue;
                         if (b->stmtForm) execBlock(b, tctx_.cur);
-                        else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
                     }
                 } catch (...) {}
             }
@@ -2359,7 +2359,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 auto* b = static_cast<Block*>(st.get());
                 if (b->phaser != want) continue;
                 if (b->stmtForm) execBlock(b, tctx_.cur);   // `BEGIN my $x = …` declares out here
-                else { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
             }
         return Value::any();
     }
@@ -2617,7 +2617,7 @@ void Interpreter::traceStmt(Stmt* s) {
     auto& fr = tctx_.callFrames;
     if (!fr.empty() && fr.back().code) {
         auto c = fr.back().code->codeS();
-        if (c) file = c->declFile;
+        if (c) file = c->ci().declFile;
     }
     if (file.empty()) file = curDeclFile();   // a module body while it loads, else the program
     std::string text = srcLineOf(file, ln);
@@ -2656,7 +2656,7 @@ std::string Interpreter::declFileNow() {
     if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
         if (const Value* cv = fr.back().code)
             if (auto c = cv->codeS())
-                if (!c->declFile.empty()) return c->declFile;
+                if (!c->ci().declFile.empty()) return c->ci().declFile;
     return curDeclFile();
 }
 
@@ -2668,7 +2668,7 @@ IStr Interpreter::declFileNowI() {
     if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
         if (const Value* cv = fr.back().code)
             if (auto c = cv->codeS())
-                if (!c->declFile.empty()) return c->declFile;
+                if (!c->ci().declFile.empty()) return c->ci().declFile;
     thread_local std::string lastS;
     thread_local IStr lastI;
     const std::string& cur = curDeclFileRef();
@@ -2681,7 +2681,7 @@ std::string Interpreter::fileConstNow() {
     auto& fr = tctx_.callFrames;
     if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
         if (const Value* cv = fr.back().code)
-            if (auto c = cv->codeS()) f = c->declFile;
+            if (auto c = cv->codeS()) f = c->ci().declFile;
     if (f.empty()) f = curDeclFile();
     // a program with no file — -e code, stdin — answers its plain name, as
     // Rakudo does (the cwd-prefixed form is for backtrace .file lookups)
@@ -2829,7 +2829,7 @@ void Interpreter::runNextPhasers(const std::vector<StmtPtr>& stmts, const std::s
     // NEXT phasers run in REVERSE declaration order (like LEAVE)
     for (auto it = stmts.rbegin(); it != stmts.rend(); ++it) if ((*it)->kind == NK::Block) {
         auto* b = static_cast<Block*>(it->get());
-        if (b->phaser == "NEXT") { auto sc = std::make_shared<Env>(); sc->parent = scope; execBlock(b, sc); } }
+        if (b->phaser == "NEXT") { auto sc = makeSlabShared<Env>(); sc->parent = scope; execBlock(b, sc); } }
 }
 // The scope a registered END will run in: the most recent entry of the block
 // that holds it. `for 1..3 -> $i { END say $i }` therefore says 3 — one run,
@@ -2884,7 +2884,7 @@ void Interpreter::runEndBody(const EndPhaser& e) {
     // `END { $dir.IO.spurt("x") }` on a directory that has been removed is the
     // whole shape issue #71 was reported for, and it said nothing at all.
     if (e.entered && e.blk->stmtForm) { execBlock(e.blk, e.env, /*sink=*/true); return; }
-    auto sc = std::make_shared<Env>(); sc->parent = e.env;
+    auto sc = makeSlabShared<Env>(); sc->parent = e.env;
     // NEVER ENTERED: the block holding this phaser did not run, so the
     // containers Rakudo's compile-time pad would have carried never came to
     // exist. A name the body reads is then not a typo but a scope that was
@@ -2958,11 +2958,11 @@ void Interpreter::registerEnds(const Program& prog) {
 }
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "FIRST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        if (b->phaser == "FIRST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
 void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "LAST") { auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        if (b->phaser == "LAST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
 }
 // The `my` names a statement list declares at ITS OWN level (an inner block's
 // declarations belong to that block). Used to give a LEAVE/KEEP/UNDO body the
@@ -3175,7 +3175,7 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
     if (o->ctl) std::rethrow_exception(o->ctl);
     if (o->resume) return 1;
     ExecContext& tcx = tctx_;
-    if (o->loopCtl) tcx.loopCtl = o->loopCtl;
+    if (o->loopCtl) { tcx.loopCtl = o->loopCtl; tcx.loopCtlLabel = nullptr; }
     if (o->returning) { tcx.returning = true; tcx.returnV = std::move(o->returnV); }
     return 0;
 }
@@ -3287,12 +3287,12 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
     const bool keep = collect != nullptr;
     Value work; work.t = VT::Code; work.setCode(makePayload<Callable>());
     // (`worker` is the caller's, alive until every worker has finished)
-    work.code()->builtin = [run, lower, loopScope, keep, n, nb, batch, &worker]
+    work.code()->ciM().builtin = [run, lower, loopScope, keep, n, nb, batch, &worker]
                            (Interpreter&, ValueList&) -> Value {
         // A frame of its own to stand in: a worker starts out in the spawner's
         // scope, which they all share, and every body entry saves and restores
         // the current scope — one more shared count per iteration
-        auto own = std::make_shared<Env>();
+        auto own = makeSlabShared<Env>();
         own->parent = loopScope;
         struct CurG { std::shared_ptr<Env> s; ~CurG() { tctx_.cur = std::move(s); } } curG{tctx_.cur};
         tctx_.cur = own;
@@ -3329,7 +3329,7 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
     // short of the cap the batches run on this thread instead.
     if (liveWorkers_.load(std::memory_order_relaxed) + (int)degree > 256) {
         ValueList none;
-        work.code()->builtin(*this, none);
+        work.code()->ci().builtin(*this, none);
     }
     else {
         std::vector<Value> workers;
@@ -3386,7 +3386,7 @@ void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
         return [this, scope, &loopScope, &outerMatch, body, &label, flat, n, &bind, &writeBack]
                (size_t i, ValueList* out) mutable -> bool {
             if (!scope || scope.use_count() > 1) {
-                scope = std::make_shared<Env>();
+                scope = makeSlabShared<Env>();
                 scope->parent = loopScope;
                 scope->define("$/", outerMatch);
             }
@@ -3782,7 +3782,7 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
                 if (!ok) return false;
             }
             if (p->whereExpr) {
-                auto env = std::make_shared<Env>(); env->parent = tctx_.cur;
+                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
                 env->define("$_", av[i]);
                 if (!p->name.empty()) env->define(p->name, av[i]);
                 auto saved = tctx_.cur; tctx_.cur = env;
@@ -3911,7 +3911,7 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     // RR[::T] does T` (RR[Foo] does Foo) and `role PR1[::T1] does PR00[T1]`
     // (PR1[Int] does PR00[Int]) — evaluated with the parameters bound
     if (role->decl) {
-        auto penv = std::make_shared<Env>();
+        auto penv = makeSlabShared<Env>();
         penv->parent = role->declEnv ? role->declEnv : global_;
         for (auto& b : pun->roleParamBindings) penv->define(b.first, b.second);
         std::vector<std::string> rdoes = role->decl->roles;
@@ -4007,7 +4007,7 @@ void Interpreter::applyRoleTypeParamsToAttrs(ClassInfo* dest) {
 void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList& argv,
                                      const std::shared_ptr<Env>& scope) {
     if (!role->decl || role->decl->roleParams.empty()) return;
-    auto tmp = std::make_shared<Env>();
+    auto tmp = makeSlabShared<Env>();
     tmp->parent = scope ? scope : global_;
     try { bindParams(role->decl->roleParams, argv, tmp, /*methodCtx=*/false); }
     catch (...) {} // arity/type mismatch: leave unbound rather than abort composition
@@ -4089,10 +4089,10 @@ void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env
     if (bodyScope && concScope) scopes[bodyScope] = concScope;
     auto reclose = [&](Value& m) {
         const Callable* c = m.code();
-        if (!c || !c->body || c->builtin) return;
+        if (!c || !c->ci().body || c->ci().builtin) return;
         auto& scope = scopes[c->closure.get()];
         if (!scope) {
-            scope = std::make_shared<Env>();
+            scope = makeSlabShared<Env>();
             scope->parent = c->closure ? c->closure : global_;
             scope->x().pkgType = conc;   // `self.R::m` in here resolves from THIS parameterization
             for (auto& b : conc->roleParamBindings)
@@ -4100,13 +4100,13 @@ void Interpreter::recloseRoleMethods(const std::shared_ptr<ClassInfo>& conc, Env
         }
         auto copy = makePayload<Callable>(*c);
         copy->closure = scope;
-        copy->roleConcrete = true;
+        copy->ciM().roleConcrete = true;
         m.setCode(std::move(copy));
     };
     for (auto& kv : conc->methods) {
         Value& m = kv.second;
         if (m.t != VT::Code || !m.code()) continue;
-        if (m.code()->isMultiDispatcher) {
+        if (m.code()->ci().isMultiDispatcher) {
             auto disp = makePayload<Callable>(*m.code());
             for (auto& cand : disp->coldM().candidates)
                 if (cand.t == VT::Code && cand.code()) reclose(cand);
@@ -4135,7 +4135,7 @@ std::shared_ptr<ClassInfo> Interpreter::concretizeRole(const std::shared_ptr<Cla
 // generic R1 every parameterization of R2 would otherwise share.
 void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, ClassInfo* role) {
     if (!conc || !role || !role->decl || role->decl->roleArgs.empty()) return;
-    auto penv = std::make_shared<Env>();
+    auto penv = makeSlabShared<Env>();
     penv->parent = role->declEnv ? role->declEnv : global_;
     for (auto& b : conc->roleParamBindings)
         if (!b.first.empty() && !penv->local(b.first)) penv->define(b.first, b.second);
@@ -4478,11 +4478,11 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             std::string pat = nr->pattern;
             std::string kind = nr->kind;          // regex / token / rule — decides the flags
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-            code.code()->name = nr->name;
-            code.code()->isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
+            code.code()->ciM().name = nr->name;
+            code.code()->ciM().isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
             // (the regex's own code blocks see it as `&?ROUTINE`: it is handed in)
             Callable* selfW = code.code();   // not owned: see PRef::fromObject
-            code.code()->builtin = [pat, kind, selfW](Interpreter& I, ValueList& a) -> Value {
+            code.code()->ciM().builtin = [pat, kind, selfW](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::nil();
                 Value selfV;
                 // the routine is running, so its caller holds it alive: take a
@@ -4792,13 +4792,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             // an imported MULTI joins the multi already in scope:
                             // this scope's own group, or a new one here that starts
                             // from the outer group's candidates
-                            if (have->t == VT::Code && have->code() && have->code()->isMultiDispatcher &&
+                            if (have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
                                 kv.second.t == VT::Code && kv.second.code() &&
-                                kv.second.code()->isMultiDispatcher && have->code() != kv.second.code()) {
+                                kv.second.code()->ci().isMultiDispatcher && have->code() != kv.second.code()) {
                                 if (tctx_.cur->local(bare) != have) {
                                     Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
-                                    fresh.code()->name = have->code()->name;
-                                    fresh.code()->isMultiDispatcher = true;
+                                    fresh.code()->ciM().name = have->code()->ci().name;
+                                    fresh.code()->ciM().isMultiDispatcher = true;
                                     fresh.code()->coldM().candidates = have->code()->cold().candidates;
                                     tctx_.cur->define(bare, fresh);
                                     have = tctx_.cur->local(bare);
@@ -4807,8 +4807,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 for (auto& c : kv.second.code()->cold().candidates) {
                                     bool dup = false;
                                     for (auto& h : cands)
-                                        if (h.code() && c.code() && h.code()->body == c.code()->body &&
-                                            h.code()->params == c.code()->params) { dup = true; break; }
+                                        if (h.code() && c.code() && h.code()->ci().body == c.code()->ci().body &&
+                                            h.code()->ci().params == c.code()->ci().params) { dup = true; break; }
                                     if (!dup) cands.push_back(c);
                                 }
                             }
@@ -4914,17 +4914,17 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             const std::string& sname = dynSubName.empty() ? sd->name : dynSubName;
             auto makeCand = [&](const std::vector<Param>* prms) {
                 Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
-                c.code()->name = sname;
-                c.code()->pkg = !sd->pkgOfExport.empty() ? sd->pkgOfExport
+                c.code()->ciM().name = sname;
+                c.code()->ciM().pkg = !sd->pkgOfExport.empty() ? sd->pkgOfExport
                             : tctx_.pkgPrefix.empty() ? "GLOBAL"
                             : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
-                c.code()->params = prms;
-                c.code()->body = &sd->body;
-                c.code()->langRev = langRev_;
-                c.code()->rakuAst = rakuAstPragma_;
+                c.code()->ciM().params = prms;
+                c.code()->ciM().body = &sd->body;
+                c.code()->ciM().langRev = langRev_;
+                c.code()->ciM().rakuAst = rakuAstPragma_;
                 c.code()->closure = tctx_.cur;
                 if (sd->retLiteralPresent && !sd->body.empty() && sd->body.back()->kind == NK::ExprStmt)
-                    c.code()->retLiteral = static_cast<const ExprStmt*>(sd->body.back().get())->e.get();
+                    c.code()->ciM().retLiteral = static_cast<const ExprStmt*>(sd->body.back().get())->e.get();
                 // `sub foo(A $a)` where A is a package or module: no type
                 if (!hoistingSubs_)
                     for (auto& p : *prms) {
@@ -4961,39 +4961,39 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // `sub infix:<↑>(…) is assoc<right>` — reductions over it fold from the right
                 if (sd->assocRight && sname.rfind("infix:<", 0) == 0 && sname.size() > 8 && sname.back() == '>')
                     rightAssocOps_.insert(sname.substr(7, sname.size() - 8));
-                c.code()->assocRight = sd->assocRight;
-                c.code()->assocNon = sd->assocNon;
-                c.code()->assocChain = sd->assocChain;
+                c.code()->ciM().assocRight = sd->assocRight;
+                c.code()->ciM().assocNon = sd->assocNon;
+                c.code()->ciM().assocChain = sd->assocChain;
                 c.code()->coldM().retType = qualifyDeclType(sd->retType);
-                c.code()->retRw = sd->retRw;
-                c.code()->declFile = declFileNowI();
-                c.code()->declLine = sd->line;
+                c.code()->ciM().retRw = sd->retRw;
+                c.code()->ciM().declFile = declFileNowI();
+                c.code()->ciM().declLine = sd->line;
                 c.code()->coldM().pod = sd->pod; c.code()->coldM().podTrail = sd->podTrail;
                 if (sd->deprecated) c.code()->coldM().deprecated = deprecationFor(sd);
                 // a statement-level `my method m {…}` is a SubDecl with isMethod set;
                 // dropping the flag here meant callCallable never bound `self`
-                c.code()->isMethod = sd->isMethod;
-                c.code()->isStub = stmtIsStub(sd->body);
-                c.code()->testAssertion = sd->testAssertion;
-                c.code()->isNodal = sd->isNodal;
+                c.code()->ciM().isMethod = sd->isMethod;
+                c.code()->ciM().isStub = stmtIsStub(sd->body);
+                c.code()->ciM().testAssertion = sd->testAssertion;
+                c.code()->ciM().isNodal = sd->isNodal;
                 {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
                     std::set<std::string> ph2;
                     for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
-                    c.code()->usesArgs = ph2.count("@_") || ph2.count("%_");
-                    c.code()->implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
+                    c.code()->ciM().usesArgs = ph2.count("@_") || ph2.count("%_");
+                    c.code()->ciM().implicitArgs = (ph2.count("@_") ? 1 : 0) | (ph2.count("%_") ? 2 : 0);
                     for (auto& st : sd->traits)
-                        if (st.name == "hidden-from-USAGE") c.code()->hiddenFromUsage = true;
-                        else if (st.name == "default") c.code()->isDefaultCand = true;
-                    c.code()->hadSig = sd->hadSig;
+                        if (st.name == "hidden-from-USAGE") c.code()->ciM().hiddenFromUsage = true;
+                        else if (st.name == "default") c.code()->ciM().isDefaultCand = true;
+                    c.code()->ciM().hadSig = sd->hadSig;
                 }
                 // Only a PURE `{*}` proto (a bare redispatcher) is excluded from
                 // dispatch; a proto with a real body (or an operator proto with no
                 // multis) stays a callable candidate.
-                c.code()->isProto = sd->isProto && sd->body.size() == 1 &&
+                c.code()->ciM().isProto = sd->isProto && sd->body.size() == 1 &&
                     sd->body[0]->kind == NK::ExprStmt &&
                     static_cast<ExprStmt*>(sd->body[0].get())->e &&
                     static_cast<ExprStmt*>(sd->body[0].get())->e->kind == NK::Whatever;
-                c.code()->isProtoBody = sd->isProto && !c.code()->isProto;
+                c.code()->ciM().isProtoBody = sd->isProto && !c.code()->ci().isProto;
                 if (sd->isNative) { c.code()->coldM().isNative = true; c.code()->coldM().nativeLib = sd->nativeLib;
                                     c.code()->coldM().nativeLibSub = sd->nativeLibSub;
                     // `is native(EXPR)` — evaluate NOW, in the declaring module's
@@ -5106,13 +5106,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 repr + " is already specified in the signature");
                 }
                 if (prms->empty()) {
-                    c.code()->placeholders = computePlaceholders(sd->body);
+                    c.code()->ciM().placeholders = computePlaceholders(sd->body);
                     // an explicit signature — even `()` — forbids placeholders
-                    if (sd->hadSig && !c.code()->placeholders.empty())
+                    if (sd->hadSig && !c.code()->ci().placeholders.empty())
                         throwTyped("X::Signature::Placeholder",
-                            {{"placeholder", c.code()->placeholders[0]},
+                            {{"placeholder", c.code()->ci().placeholders[0]},
                              {"line", std::to_string(sd->line > 0 ? sd->line : 1)}},
-                            "Placeholder variable '" + c.code()->placeholders[0] +
+                            "Placeholder variable '" + c.code()->ci().placeholders[0] +
                             "' cannot override existing signature");
                 }
                 // …and so does a NON-empty one on a sub (`sub f($a) { %_ }`); a
@@ -5153,7 +5153,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // `(sig1) | (sig2)` is ONE routine with alternative signatures — its
             // candidates share a single `state`-variable store.
             if (!sd->altParams.empty()) {
-                auto shared = std::make_shared<Env>(); shared->parent = tctx_.cur;
+                auto shared = makeSlabShared<Env>(); shared->parent = tctx_.cur;
                 auto share = [&](Value& c) { std::call_once(c.code()->state.init, [&] { c.code()->state.env = shared; }); };
                 share(code);
                 for (auto& c : altCands) share(c);
@@ -5171,27 +5171,27 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // Joining the outer group leaked inner candidates out of the
                     // block, and a proto could not isolate them at all.
                     if (existing && existing->t == VT::Code && existing->code() &&
-                        existing->code()->isMultiDispatcher && tctx_.cur->local(key) != existing) {
+                        existing->code()->ci().isMultiDispatcher && tctx_.cur->local(key) != existing) {
                         Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
-                        fresh.code()->name = sname;
-                        fresh.code()->isMultiDispatcher = true;
+                        fresh.code()->ciM().name = sname;
+                        fresh.code()->ciM().isMultiDispatcher = true;
                         if (!sd->isProto) fresh.code()->coldM().candidates = existing->code()->cold().candidates;
                         tctx_.cur->define(key, fresh);
                         existing = tctx_.cur->local(key);
                     }
-                    if (existing && existing->t == VT::Code && existing->code() && existing->code()->isMultiDispatcher) {
+                    if (existing && existing->t == VT::Code && existing->code() && existing->code()->ci().isMultiDispatcher) {
                         disp = existing->code(); dispVal = *existing;
                     } else {
                         dispVal.t = VT::Code; dispVal.setCode(makePayload<Callable>());
-                        dispVal.code()->name = sname;
-                        dispVal.code()->isMultiDispatcher = true;
+                        dispVal.code()->ciM().name = sname;
+                        dispVal.code()->ciM().isMultiDispatcher = true;
                         disp = dispVal.code();
                         tctx_.cur->define(key, dispVal);
                     }
                     // the group is where its PROTO was written: `&zp.file` / `.line`
                     if (sd->isProto && code.code() && disp) {
-                        disp->declFile = code.code()->declFile;
-                        disp->declLine = code.code()->declLine;
+                        disp->ciM().declFile = code.code()->ci().declFile;
+                        disp->ciM().declLine = code.code()->ci().declLine;
                     }
                     // A declaration inside a block runs twice — hoisted at the
                     // block's entry, then again in sequence — and used to join
@@ -5201,10 +5201,10 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     auto joins = [&](const Value& c) {
                         if (!c.code()) return;
                         for (auto& have : disp->cold().candidates)
-                            if (have.code() && have.code()->body && have.code()->body == c.code()->body &&
-                                have.code()->params == c.code()->params)
+                            if (have.code() && have.code()->ci().body && have.code()->ci().body == c.code()->ci().body &&
+                                have.code()->ci().params == c.code()->ci().params)
                                 return;
-                        c.code()->isMultiCandidate = true;
+                        c.code()->ciM().isMultiCandidate = true;
                         disp->coldM().candidates.push_back(c);
                         noteUserInfixCandidate(sname, c.code());
                     };
@@ -5231,10 +5231,10 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // = 42; method bar { $a } }` — `.bar` after `.foo` answers 42
                 if (sd->isMethod && !sd->isPrivate && !hoistingSubs_ && tctx_.curRoutineVal &&
                     tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code() &&
-                    tctx_.curRoutineVal->code()->isMethod) {
-                    auto ci = classes_.find(tctx_.curRoutineVal->code()->pkg);
+                    tctx_.curRoutineVal->code()->ci().isMethod) {
+                    auto ci = classes_.find(tctx_.curRoutineVal->code()->ci().pkg);
                     if (ci != classes_.end() && ci->second && !ci->second->isRole) {
-                        code.code()->pkg = ci->second->name;
+                        code.code()->ciM().pkg = ci->second->name;
                         ci->second->methods[sname] = code;
                     }
                 }
@@ -5244,8 +5244,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 if (!sd->isMulti && !sd->isProto && !sd->isMethod && !hoistingSubs_)
                     if (Value* prev = tctx_.cur->local("&" + sname))
                         if (prev->t == VT::Code && prev->code() && code.code() && routineFromElsewhere(*prev) &&
-                            !prev->code()->isStub && !prev->code()->isMultiDispatcher &&
-                            prev->code()->body && prev->code()->body != code.code()->body)
+                            !prev->code()->ci().isStub && !prev->code()->ci().isMultiDispatcher &&
+                            prev->code()->ci().body && prev->code()->ci().body != code.code()->ci().body)
                             throwTypedV("X::Redeclaration",
                                 {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
                                 "Redeclaration of routine '" + sname + "'");
@@ -5268,8 +5268,8 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         if (!had) had = curPkgEnv_->local("\x01OUR&" + sname);   // an EVAL-born one
                         if (had)
                             if (had->t == VT::Code && had->code() && code.code() &&
-                                had->code()->body && had->code()->body != code.code()->body &&
-                                !had->code()->isMultiDispatcher)
+                                had->code()->ci().body && had->code()->ci().body != code.code()->ci().body &&
+                                !had->code()->ci().isMultiDispatcher)
                                 throwTypedV("X::Redeclaration",
                                     {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
                                     "Redeclaration of routine '" + sname + "'");
@@ -5446,7 +5446,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             } routinePkg(tctx_.pkgPrefix);
             if (cd->isMy && !cd->isAugment && !cd->name.empty() && cd->name.find("::") == std::string::npos &&
                 tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code()) {
-                const std::string& pk = tctx_.curRoutineVal->code()->pkg;
+                const std::string& pk = tctx_.curRoutineVal->code()->ci().pkg;
                 if (!pk.empty() && pk != "GLOBAL" && tctx_.pkgPrefix != pk + "::") {
                     routinePkg.saved = tctx_.pkgPrefix; routinePkg.on = true;
                     tctx_.pkgPrefix = pk + "::";
@@ -5558,39 +5558,39 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 auto buildMethod = [&](SubDecl* md) {
                     Value code; code.t = VT::Code;
                     code.setCode(makePayload<Callable>());
-                    code.code()->name = md->name;
-                    code.code()->params = &md->params;
+                    code.code()->ciM().name = md->name;
+                    code.code()->ciM().params = &md->params;
                     code.code()->coldM().retType = qualifyDeclType(md->retType);
-                    code.code()->retRw = md->retRw;
+                    code.code()->ciM().retRw = md->retRw;
                     code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
                     if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md);
-                    code.code()->body = &md->body;
-                    code.code()->langRev = langRev_;
-                    code.code()->rakuAst = rakuAstPragma_;
+                    code.code()->ciM().body = &md->body;
+                    code.code()->ciM().langRev = langRev_;
+                    code.code()->ciM().rakuAst = rakuAstPragma_;
                     code.code()->closure = tctx_.cur;
-                    code.code()->isMethod = true;
-                    code.code()->declFile = declFileNowI();
-                    code.code()->declLine = md->line;
-                    if (md->params.empty()) code.code()->placeholders = computePlaceholders(md->body);
+                    code.code()->ciM().isMethod = true;
+                    code.code()->ciM().declFile = declFileNowI();
+                    code.code()->ciM().declLine = md->line;
+                    if (md->params.empty()) code.code()->ciM().placeholders = computePlaceholders(md->body);
                     return code;
                 };
                 auto addTo = [&](auto& tbl, SubDecl* md) {
                     Value code = buildMethod(md);
                     if (md->isMulti) {
                         auto it = tbl.find(md->name);
-                        if (it != tbl.end() && it->second.code() && it->second.code()->isMultiDispatcher) {
-                            if (code.code()) code.code()->isMultiCandidate = true;
+                        if (it != tbl.end() && it->second.code() && it->second.code()->ci().isMultiDispatcher) {
+                            if (code.code()) code.code()->ciM().isMultiCandidate = true;
                             it->second.code()->coldM().candidates.push_back(code);
                             return;
                         }
                         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
-                        disp.code()->name = md->name; disp.code()->isMultiDispatcher = true;
+                        disp.code()->ciM().name = md->name; disp.code()->ciM().isMultiDispatcher = true;
                         // the group of a METHOD is itself a Method: `^lookup` hands
                         // this back, and code that dispatches on it (a
                         // `trait_mod:<is>(Method $m, …)` handler) will not bind a Sub
-                        disp.code()->isMethod = true;
-                        disp.code()->pkg = cd->name;   // see the class path
-                        if (code.code()) code.code()->isMultiCandidate = true;
+                        disp.code()->ciM().isMethod = true;
+                        disp.code()->ciM().pkg = cd->name;   // see the class path
+                        if (code.code()) code.code()->ciM().isMultiCandidate = true;
                         disp.code()->coldM().candidates.push_back(code);
                         tbl[md->name] = disp;
                         return;
@@ -5788,7 +5788,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     global_->define(cd->name, Value::typeObj(cd->name));
                 std::string savedPrefix = tctx_.pkgPrefix;
                 tctx_.pkgPrefix += cd->name + "::";
-                auto pkgEnv = std::make_shared<Env>();
+                auto pkgEnv = makeSlabShared<Env>();
                 pkgEnv->parent = tctx_.cur;
                 pkgEnv->packageFrame = true;
                 auto saved = tctx_.cur; tctx_.cur = pkgEnv;
@@ -6189,7 +6189,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 std::string k;
                 if (ps) for (auto& p : *ps) {
                     if (p.named || p.slurpy) continue;
-                    if (owner && owner->roleConcrete && owner->closure && !p.type.empty())
+                    if (owner && owner->ci().roleConcrete && owner->closure && !p.type.empty())
                         if (Value* tv = owner->closure->local(p.type))
                             if (tv->t == VT::Type && !tv->s.empty()) {
                                 k += std::string(tv->s.c_str()) + ",";
@@ -6210,12 +6210,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             };
             auto codeIsStub = [](const Value& v) -> bool {
                 if (v.t != VT::Code || !v.code()) return false;
-                if (v.code()->isMultiDispatcher) {
+                if (v.code()->ci().isMultiDispatcher) {
                     if (v.code()->cold().candidates.empty()) return true;
-                    for (auto& c : v.code()->cold().candidates) if (!(c.code() && c.code()->isStub)) return false;
+                    for (auto& c : v.code()->cold().candidates) if (!(c.code() && c.code()->ci().isStub)) return false;
                     return true;
                 }
-                return v.code()->isStub;
+                return v.code()->ci().isStub;
             };
             // A role method that declares `state` gets its OWN copy per composing
             // class. `state` is per-closure, and each composition is a distinct
@@ -6228,9 +6228,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             auto cloneDispatcher = [](const Value& v) {
                 Value nv = v;
                 auto fresh = makePayload<Callable>();
-                fresh->pkg = v.code()->pkg; fresh->name = v.code()->name;
-                fresh->isMultiDispatcher = true; fresh->isProto = v.code()->isProto;
-                fresh->isMethod = v.code()->isMethod;
+                fresh->ciM().pkg = v.code()->ci().pkg; fresh->ciM().name = v.code()->ci().name;
+                fresh->ciM().isMultiDispatcher = true; fresh->ciM().isProto = v.code()->ci().isProto;
+                fresh->ciM().isMethod = v.code()->ci().isMethod;
                 fresh->coldM().candidates = v.code()->cold().candidates;
                 nv.setCode(fresh);
                 return nv;
@@ -6327,12 +6327,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (kv.second.t != VT::Code || !kv.second.code()) continue;
                     // since 6.e a role's SUBMETHODS are not composed into the class
                     // at all, so two roles carrying the same one do not conflict
-                    if ((langRev_ >= 2 || role->langRev >= 2) && kv.second.code()->isSubmethod) continue;
-                    if (kv.second.code()->isMultiDispatcher) {
+                    if ((langRev_ >= 2 || role->langRev >= 2) && kv.second.code()->ci().isSubmethod) continue;
+                    if (kv.second.code()->ci().isMultiDispatcher) {
                         for (auto& c : kv.second.code()->cold().candidates)
-                            if (c.code() && !c.code()->isStub) { provided[kv.first][sigKeyParams(c.code()->params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
+                            if (c.code() && !c.code()->ci().isStub) { provided[kv.first][sigKeyParams(c.code()->ci().params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
                     }
-                    else if (!kv.second.code()->isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(provider); }
+                    else if (!kv.second.code()->ci().isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(provider); }
                 }
             }
             // `state` in a role method is per-COMPOSITION: two classes doing one
@@ -6349,16 +6349,16 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             {
                 std::function<void(const Value&)> noteRoleState = [&](const Value& v) {
                     if (v.t != VT::Code || !v.code()) return;
-                    if (v.code()->isMultiDispatcher) {
+                    if (v.code()->ci().isMultiDispatcher) {
                         for (auto& cand : v.code()->cold().candidates) noteRoleState(cand);
                         return;
                     }
-                    if (!v.code()->body || ci->roleStateEnvs.count(v.code())) return;
+                    if (!v.code()->ci().body || ci->roleStateEnvs.count(v.code())) return;
                     bool anyState = false;
-                    for (auto& st : *v.code()->body)
+                    for (auto& st : *v.code()->ci().body)
                         if (mayHaveStateDecl(st.get())) { anyState = true; break; }
                     if (!anyState) return;
-                    auto e = std::make_shared<Env>();
+                    auto e = makeSlabShared<Env>();
                     e->parent = v.code()->closure ? v.code()->closure : global_;
                     e->stateFrame = true;
                     ci->roleStateEnvs[v.code()] = e;
@@ -6438,7 +6438,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 return Value::boolean(at != a[0].obj()->attrs.end() &&
                                                       at->second.enumName.c_str() == key);
                             });
-                            m.code()->isMethod = true;
+                            m.code()->ciM().isMethod = true;
                             if (!ci->methods.count(key)) ci->methods[key] = m;
                         }
                     }
@@ -6474,12 +6474,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // an earlier revision either: its BUILD/TWEAK run as the
                     // ROLE's constructors (roleCtorHooks, runBuildChain)
                     if (!cd->isRole && langRev_ < 2 && rcM->langRev >= 2 && kv.second.t == VT::Code &&
-                        kv.second.code() && kv.second.code()->isSubmethod)
+                        kv.second.code() && kv.second.code()->ci().isSubmethod)
                         continue;
-                    bool newDisp = kv.second.t == VT::Code && kv.second.code() && kv.second.code()->isMultiDispatcher;
+                    bool newDisp = kv.second.t == VT::Code && kv.second.code() && kv.second.code()->ci().isMultiDispatcher;
                     // remember which composed names are SUBMETHODS: 6.e hides them
                     // from ordinary dispatch while still running role BUILD/TWEAK
-                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->isSubmethod) {
+                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->ci().isSubmethod) {
                         ci->roleSubmethods.insert(kv.first);
                         // a 6.e role's submethods, or any role's in a 6.e class, are not composed
                         if (langRev_ >= 2 || rcM->langRev >= 2) ci->roleSubmethodsHidden.insert(kv.first);
@@ -6491,15 +6491,15 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     }
                     Value& e = ex->second;
                     if (e.code() == kv.second.code()) continue; // identical method (diamond)
-                    bool exDisp = e.t == VT::Code && e.code() && e.code()->isMultiDispatcher;
+                    bool exDisp = e.t == VT::Code && e.code() && e.code()->ci().isMultiDispatcher;
                     if (exDisp && newDisp) {
                         for (auto& c : kv.second.code()->cold().candidates) {
-                            std::string sk = sigKeyParams(c.code() ? c.code()->params : nullptr, c.code());
-                            bool cStub = c.code() && c.code()->isStub;
+                            std::string sk = sigKeyParams(c.code() ? c.code()->ci().params : nullptr, c.code());
+                            bool cStub = c.code() && c.code()->ci().isStub;
                             bool placed = false;
                             for (auto& e2 : e.code()->coldM().candidates) {
-                                if (sigKeyParams(e2.code() ? e2.code()->params : nullptr, e2.code()) != sk) continue;
-                                bool eStub = e2.code() && e2.code()->isStub;
+                                if (sigKeyParams(e2.code() ? e2.code()->ci().params : nullptr, e2.code()) != sk) continue;
+                                bool eStub = e2.code() && e2.code()->ci().isStub;
                                 if (eStub && !cStub) e2 = c; // implementation replaces stub
                                 placed = true; break;
                             }
@@ -6596,12 +6596,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // full lookup finds it either way, incl. `role B does A`.
                     Value group;
                     if (Value* g = ci->findMethod(ra.first)) group = *g;
-                    if (!(group.t == VT::Code && group.code() && group.code()->isMultiDispatcher)) {
+                    if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) {
                         auto rit = role->methods.find(ra.first);
                         if (rit != role->methods.end()) group = rit->second;
                     }
                     if (!(group.t == VT::Code && group.code() &&
-                          group.code()->isMultiDispatcher)) continue;
+                          group.code()->ci().isMultiDispatcher)) continue;
                     for (auto& alias : ra.second) {
                         if (cd->isRole) {
                             auto& v = ci->alsoRoleAliases[ra.first];
@@ -6631,7 +6631,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             if (cd->apiExpr)  { try { ci->api  = eval(cd->apiExpr.get()).toStr();  } catch (RakuError&) {} }
             // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
             // and methods/attr-defaults close over it
-            auto bodyEnv = std::make_shared<Env>();
+            auto bodyEnv = makeSlabShared<Env>();
             bodyEnv->parent = tctx_.cur;
             bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
@@ -6667,7 +6667,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     for (const char* h : {"BUILD", "TWEAK"}) {
                         auto it = r->methods.find(h);
                         if (it != r->methods.end() && it->second.t == VT::Code && it->second.code() &&
-                            it->second.code()->isSubmethod) return true;
+                            it->second.code()->ci().isSubmethod) return true;
                     }
                     return false;
                 };
@@ -6896,27 +6896,27 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 const std::string& mdName = mdDyn.empty() ? md->name : mdDyn;
                 Value code; code.t = VT::Code;
                 code.setCode(makePayload<Callable>());
-                code.code()->name = mdName;
+                code.code()->ciM().name = mdName;
                 // `.package` is the DECLARING type, not the enclosing package —
                 // Method::Protected's trait reads `$method.package.HOW` to refuse
                 // a role method, and GLOBAL made every method look class-borne
-                code.code()->pkg = clsName;
-                code.code()->params = &md->params;
+                code.code()->ciM().pkg = clsName;
+                code.code()->ciM().params = &md->params;
                 code.code()->coldM().retType = qualifyDeclType(md->retType, clsName);
-                code.code()->retRw = md->retRw;
-                code.code()->body = &md->body;
-                code.code()->langRev = langRev_;
-                code.code()->rakuAst = rakuAstPragma_;
+                code.code()->ciM().retRw = md->retRw;
+                code.code()->ciM().body = &md->body;
+                code.code()->ciM().langRev = langRev_;
+                code.code()->ciM().rakuAst = rakuAstPragma_;
                 code.code()->closure = bodyEnv;
-                code.code()->isMethod = true; // invoked via .() binds the 1st arg as self
+                code.code()->ciM().isMethod = true; // invoked via .() binds the 1st arg as self
                 // a method's own declarator pod — `#|` above it, `#=` below — is
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
                 code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
                 if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md.get());
-                code.code()->declFile = declFileNowI();
-                code.code()->declLine = md->line;
-                code.code()->isStub = stmtIsStub(md->body);
-                for (auto& st : md->traits) if (st.name == "default") code.code()->isDefaultCand = true;
+                code.code()->ciM().declFile = declFileNowI();
+                code.code()->ciM().declLine = md->line;
+                code.code()->ciM().isStub = stmtIsStub(md->body);
+                for (auto& st : md->traits) if (st.name == "default") code.code()->ciM().isDefaultCand = true;
                 // an undeclared `$!attr` reference in a method body is a compile
                 // error — in a ROLE too: its attributes are its own (or those of
                 // the roles it does), never its consumer's
@@ -6941,13 +6941,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                 (cd->isRole ? "role " : cd->isGrammar ? "grammar " : "class ") + clsName);
                     }
                 }
-                if (md->params.empty()) code.code()->placeholders = computePlaceholders(md->body);
+                if (md->params.empty()) code.code()->ciM().placeholders = computePlaceholders(md->body);
                 // a private method (`method !name`) lives under a distinct `!`-prefixed
                 // key so it coexists with a public `.name` of the same name (they are
                 // separate methods in Raku; `self!name` vs `self.name`). Only self!name
                 // dispatch and .^private_methods look here.
-                code.code()->isPrivateMethod = md->isPrivate;
-                code.code()->isSubmethod = md->isSubmethod;
+                code.code()->ciM().isPrivateMethod = md->isPrivate;
+                code.code()->ciM().isSubmethod = md->isSubmethod;
                 // `is native` on a METHOD (`method mysql_error(MYSQL:D: --> Str)
                 // is native(LIB) { * }`). NativeCall's method form passes the
                 // INVOCANT as the first C argument, so `$mysql.mysql_error` is
@@ -6981,45 +6981,45 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 // — same rule as the sub path. Without this the proto entered the
                 // candidate list with its `(|)` slurpy and WON whenever the real
                 // candidates were invocant-constrained, so `D.g` printed `*`.
-                code.code()->isProto = md->isProto && md->body.size() == 1 &&
+                code.code()->ciM().isProto = md->isProto && md->body.size() == 1 &&
                     md->body[0]->kind == NK::ExprStmt &&
                     static_cast<ExprStmt*>(md->body[0].get())->e &&
                     static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
-                code.code()->isProtoBody = md->isProto && !code.code()->isProto;
+                code.code()->ciM().isProtoBody = md->isProto && !code.code()->ci().isProto;
                 const std::string key = md->isPrivate ? "!" + mdName : mdName;
                 if (md->isExport && !md->isPrivate) ci->exportedMethods.insert(key);
                 if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code, key});
                 if (md->isMulti) {
                     auto it = ci->methods.find(key);
-                    if (it != ci->methods.end() && it->second.code() && it->second.code()->isMultiDispatcher) {
+                    if (it != ci->methods.end() && it->second.code() && it->second.code()->ci().isMultiDispatcher) {
                         // an own candidate overrides a same-signature candidate
                         // composed from a role (never another own candidate)
                         auto& cands = it->second.code()->coldM().candidates;
-                        std::string sk = sigKeyParams(code.code()->params);
+                        std::string sk = sigKeyParams(code.code()->ci().params);
                         cands.erase(std::remove_if(cands.begin(), cands.end(), [&](const Value& c){
-                            return c.code() && !ownParams.count(c.code()->params) &&
-                                   sigKeyParams(c.code()->params, c.code()) == sk; }), cands.end());
+                            return c.code() && !ownParams.count(c.code()->ci().params) &&
+                                   sigKeyParams(c.code()->ci().params, c.code()) == sk; }), cands.end());
                         cands.push_back(code);
                     } else {
                         Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
-                        disp.code()->name = md->name; disp.code()->isMultiDispatcher = true;
+                        disp.code()->ciM().name = md->name; disp.code()->ciM().isMultiDispatcher = true;
                         // the group of a METHOD is itself a Method: `^lookup` hands
                         // this back, and code that dispatches on it (a
                         // `trait_mod:<is>(Method $m, …)` handler) will not bind a Sub
-                        disp.code()->isMethod = true;
+                        disp.code()->ciM().isMethod = true;
                         // …and it belongs to the same class its candidates do. A
                         // trait on the PROTO (`proto method pick(|) is protected
                         // {*}`) reads `$method.package`, and the group carried no
                         // package at all, so it answered GLOBAL — Method::Protected
                         // then asked GLOBAL for `^add_attribute`.
-                        disp.code()->pkg = clsName;
+                        disp.code()->ciM().pkg = clsName;
                         // a PROTO declared before it stays the group's head, as
                         // a sub's does: `proto method new(|) {*}` replaces the
                         // default constructor, and with no candidate matching
                         // the call is X::Multi::NoMatch, not a Mu.new — dropped
                         // here, `Color.new(rgb => [22, 42])` built a black Color
                         if (it != ci->methods.end() && it->second.code() &&
-                            (it->second.code()->isProto || it->second.code()->isProtoBody))
+                            (it->second.code()->ci().isProto || it->second.code()->ci().isProtoBody))
                             disp.code()->coldM().candidates.push_back(it->second);
                         disp.code()->coldM().candidates.push_back(code);
                         ci->methods[key] = disp;
@@ -7051,18 +7051,18 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 for (ClassInfo* role : parentRoles)
                     for (auto& kv : role->methods) {
                         const Value& rv = kv.second;
-                        if (rv.t != VT::Code || !rv.code() || !rv.code()->isMultiDispatcher) continue;
+                        if (rv.t != VT::Code || !rv.code() || !rv.code()->ci().isMultiDispatcher) continue;
                         auto it = ci->methods.find(kv.first);
                         if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
-                            !it->second.code()->isMultiDispatcher) continue;
+                            !it->second.code()->ci().isMultiDispatcher) continue;
                         auto& cands = it->second.code()->coldM().candidates;
                         for (auto& rc : rv.code()->cold().candidates) {
-                            if (!rc.code() || rc.code()->isStub || rc.code()->isProto) continue;
-                            std::string sk = sigKeyParams(rc.code()->params, rc.code());
+                            if (!rc.code() || rc.code()->ci().isStub || rc.code()->ci().isProto) continue;
+                            std::string sk = sigKeyParams(rc.code()->ci().params, rc.code());
                             bool have = false;
                             for (auto& c : cands)
                                 if (c.code() == rc.code() ||
-                                    (c.code() && sigKeyParams(c.code()->params, c.code()) == sk)) { have = true; break; }
+                                    (c.code() && sigKeyParams(c.code()->ci().params, c.code()) == sk)) { have = true; break; }
                             if (!have) cands.push_back(rc);
                         }
                     }
@@ -7117,12 +7117,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     if (!c) return false;
                     auto mit = c->methods.find(n);
                     if (mit != c->methods.end() && mit->second.t == VT::Code && mit->second.code()) {
-                        if (mit->second.code()->isMultiDispatcher) {
+                        if (mit->second.code()->ci().isMultiDispatcher) {
                             for (auto& cand : mit->second.code()->cold().candidates)
-                                if (cand.code() && !cand.code()->isStub &&
-                                    (!sig || sigKeyParams(cand.code()->params, cand.code()) == *sig)) return true;
+                                if (cand.code() && !cand.code()->ci().isStub &&
+                                    (!sig || sigKeyParams(cand.code()->ci().params, cand.code()) == *sig)) return true;
                         }
-                        else if (!mit->second.code()->isStub) return true; // a plain method covers any signature
+                        else if (!mit->second.code()->ci().isStub) return true; // a plain method covers any signature
                     }
                     if (hasImpl(c->parent.get(), n, sig)) return true;
                     for (auto& p : c->extraParents) if (p && hasImpl(p.get(), n, sig)) return true;
@@ -7172,13 +7172,13 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                 for (auto mit = ci->methods.begin(); mit != ci->methods.end(); ) {
                     Value& mv = mit->second; bool drop = false;
                     if (mv.t == VT::Code && mv.code()) {
-                        if (mv.code()->isMultiDispatcher) {
+                        if (mv.code()->ci().isMultiDispatcher) {
                             auto& cs = mv.code()->coldM().candidates;
                             cs.erase(std::remove_if(cs.begin(), cs.end(), [&](const Value& c){
-                                return c.code() && c.code()->isStub && !ownParams.count(c.code()->params); }), cs.end());
+                                return c.code() && c.code()->ci().isStub && !ownParams.count(c.code()->ci().params); }), cs.end());
                             drop = cs.empty();
                         }
-                        else if (mv.code()->isStub && !ownParams.count(mv.code()->params)) drop = true;
+                        else if (mv.code()->ci().isStub && !ownParams.count(mv.code()->ci().params)) drop = true;
                     }
                     if (drop) mit = ci->methods.erase(mit); else ++mit;
                 }
@@ -7497,7 +7497,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             if (md->isProto) {
                                 auto mit = ci->methods.find(std::get<2>(mq));
                                 if (mit != ci->methods.end() && mit->second.code() &&
-                                    mit->second.code()->isMultiDispatcher)
+                                    mit->second.code()->ci().isMultiDispatcher)
                                     target = mit->second;
                             }
                             for (auto& st : md->traits) {
@@ -7516,7 +7516,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                                     const std::string& mkey = std::get<2>(mq);
                                     auto mit2 = ci->methods.find(mkey);
                                     if (mit2 != ci->methods.end() && mit2->second.t == VT::Code &&
-                                        mit2->second.code() && mit2->second.code()->isMultiDispatcher) {
+                                        mit2->second.code() && mit2->second.code()->ci().isMultiDispatcher) {
                                         auto rec = [&](const Value& v) {
                                             std::string a = v.toStr();
                                             if (!a.empty()) ci->alsoRoleAliases[mkey].push_back(a);
@@ -7727,14 +7727,14 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                     // the classes a candidate's second positional names
                     std::vector<ClassInfo*> narrow;
                     auto scan = [&](const Value& c) {
-                        if (c.t != VT::Code || !c.code() || !c.code()->params) return;
+                        if (c.t != VT::Code || !c.code() || !c.code()->ci().params) return;
                         std::vector<const Param*> pos;
-                        for (auto& p : *c.code()->params) if (!p.named && !p.slurpy) pos.push_back(&p);
+                        for (auto& p : *c.code()->ci().params) if (!p.named && !p.slurpy) pos.push_back(&p);
                         if (pos.size() < 2 || pos[1]->type.empty()) return;
                         auto it = classes_.find(pos[1]->type);
                         if (it != classes_.end() && it->second && !it->second->isRole) narrow.push_back(it->second.get());
                     };
-                    if (tm->code()->isMultiDispatcher) for (auto& c : tm->code()->cold().candidates) scan(c);
+                    if (tm->code()->ci().isMultiDispatcher) for (auto& c : tm->code()->cold().candidates) scan(c);
                     else scan(*tm);
                     auto isA = [](ClassInfo* c, ClassInfo* want) {
                         std::function<bool(ClassInfo*)> walk = [&](ClassInfo* k) {
@@ -8097,7 +8097,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
 [[gnu::noinline]] Value Interpreter::execBareBlock(Block* b, bool sink, std::unique_ptr<HandedError>* handOff) {
     if (b->endSlot >= 0 || !b->phaser.empty() || b->stmts.empty() || tctx_.protoDepth > 0)
         return execBareBlockRare(b, sink);
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tctx_.cur;
     scope->btBlock = true; scope->btLine = b->line;   // a frame of its own in `.backtrace.list`
     return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
@@ -8145,7 +8145,7 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
     // to the ENCLOSING scope — run without a child env
     if (b->stmtForm && !b->phaser.empty())
         return execBlock(b, tctx_.cur, sink);
-    auto scope = std::make_shared<Env>();
+    auto scope = makeSlabShared<Env>();
     scope->parent = tctx_.cur;
     // a bare block is a frame of its own in `.backtrace.list` (see btCaptureNow)
     if (b->phaser.empty() && !b->isCatch) { scope->btBlock = true; scope->btLine = b->line; }
@@ -8310,7 +8310,7 @@ int Interpreter::run(Program& prog) {
     registerEnds(prog);
     auto runPhaser = [&](Block* b) {
         if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
-        auto sc = std::make_shared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
     };
     // END phasers run in REVERSE SOURCE order, on any exit path — one order for
     // the whole compilation, so a nested END takes its place among the

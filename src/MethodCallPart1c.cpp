@@ -343,7 +343,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         if (!pos.empty())      key = pos[0];
         if (pos.size() >= 2)   val = pos[1];
         Value p = Value::pair(key.toStr(), val);
-        if (key.t != VT::Str) p.pairKeyM() = std::make_shared<Value>(key);
+        if (key.t != VT::Str) p.setPairKey(key);
         // `Pair.new` BINDS its value exactly as `=>` does (sheet HM-18): a
         // literal is read-only, a variable would carry its container. The
         // argument EXPRESSION is what says which, so ask it.
@@ -732,7 +732,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // handler feeds the user's block through `.Channel.Supply`, so the
             // block's `await $message.body` waits for fragments that the frame
             // parser — the emitter — has yet to deliver.
-            auto env = std::make_shared<Env>();
+            auto env = makeSlabShared<Env>();
             env->parent = tctx_.cur ? tctx_.cur : global_;
             env->define("$__rakupp_chan", inv);
             auto saved = tctx_.cur;
@@ -1243,7 +1243,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             for (auto& a : args)
                 if (a.t == VT::Pair && a.pairVal() && a.s == "closing") closing = *a.pairVal();
             Value blk; blk.t = VT::Code; blk.setCode(makePayload<Callable>());
-            blk.code()->builtin = [producer, closing](Interpreter& I, ValueList&) -> Value {
+            blk.code()->ciM().builtin = [producer, closing](Interpreter& I, ValueList&) -> Value {
                 auto ctx = I.tctx_.tapStack.empty() ? nullptr : I.tctx_.tapStack.back();
                 // :closing belongs to the TAP: it runs once when this activation
                 // is torn down — on done, on a quit, or when the tap is closed.
@@ -1260,7 +1260,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 // happens to have on its stack: the producer may hand the
                 // Supplier to a `start` block and emit from there.
                 Value e; e.t = VT::Code; e.setCode(makePayload<Callable>());
-                e.code()->builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
+                e.code()->ciM().builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
                     if (!ctx || ctx->done) return Value::boolean(true);
                     Value v = a.empty() ? Value::any() : a[0];
                     if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
@@ -1275,7 +1275,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 // `$p.done` ends the SUPPLY, not the producer: the block runs on
                 // to its last statement, and its later emits go nowhere.
                 Value d; d.t = VT::Code; d.setCode(makePayload<Callable>());
-                d.code()->builtin = [ctx](Interpreter& I2, ValueList&) -> Value {
+                d.code()->ciM().builtin = [ctx](Interpreter& I2, ValueList&) -> Value {
                     if (ctx && !ctx->doneFired) {
                         ctx->done = true; ctx->doneFired = true;
                         if (!ctx->collect) {
@@ -1286,7 +1286,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     return Value::boolean(true);
                 };
                 Value q; q.t = VT::Code; q.setCode(makePayload<Callable>());
-                q.code()->builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
+                q.code()->ciM().builtin = [ctx](Interpreter& I2, ValueList& a) -> Value {
                     Value ex = a.empty() ? Value::any() : a[0];
                     if (ctx && !ctx->doneFired) {
                         ctx->done = true; ctx->doneFired = true;
@@ -1610,7 +1610,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             if (inv.hash()->count("spawn-token")) {
                 Value lazyP = pr;
                 Value drive; drive.t = VT::Code; drive.setCode(makePayload<Callable>());
-                drive.code()->builtin = [lazyP](Interpreter& I2, ValueList&) mutable -> Value {
+                drive.code()->ciM().builtin = [lazyP](Interpreter& I2, ValueList&) mutable -> Value {
                     I2.runProcPromise(lazyP, 0);
                     Value procv = (*lazyP.hash())["proc"];
                     procv.hashKind = "Proc";

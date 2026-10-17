@@ -117,6 +117,7 @@ enum class KOp : uint8_t {
     SNum,     // a Num's text
     // more integer operators and pure methods
     Pow, Min, Max, Abs, Sign,
+    BAnd, BOr, BXor, Shl, Shr,   // +& +| +^ +< +>
     Ord, Uc, Lc, Substr,
     // exact numbers (KT::Exact): an Int or a Rat. A node returns the
     // numerator and leaves the denominator in the loop frame's kDenSlot, 0
@@ -169,6 +170,7 @@ constexpr int kMaxFrame = 32;   // a sub kernel's parameters and `my`s
 struct IKernel {
     Callable* owner = nullptr;
     int nparams = 0;
+    unsigned natParams = 0;                // bit i: parameter i is an `int`, which a native int binds to as well
     int nframe = 0;                        // parameters + locals: the frame a call allocates
     KNode* body = nullptr;
     std::vector<std::unique_ptr<KNode>> nodes;
@@ -310,10 +312,20 @@ struct Compiler {
 };
 
 int paramIndex(const Callable& c, const std::string& name) {
-    const auto& ps = *c.params;
+    const auto& ps = *c.ci().params;
     for (size_t i = 0; i < ps.size(); i++)
         if (ps[i].name == name) return (int)i;
     return -1;
+}
+
+// A full-width native int: what a kernel's int64 holds exactly (a sized one
+// wraps at its own width, which no bail would catch)
+bool nativeIntTypeName(const std::string& t) { return t == "int" || t == "int64"; }
+// Is `name` a parameter of `c` declared `int`? Its reads are then marked
+// nativeIntRead, and that is the one mark a plain read of it carries.
+bool nativeIntParam(const Callable& c, const std::string& name) {
+    const int i = paramIndex(c, name);
+    return i >= 0 && nativeIntTypeName((*c.ci().params)[i].type);
 }
 
 bool plainVarRead(const VarExpr* v) {
@@ -589,7 +601,12 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
         }
         case NK::VarExpr: {
             auto* v = static_cast<VarExpr*>(e);
-            if (!plainVarRead(v)) return refuse("variable " + v->name + " (a declaration or a special form)");
+            // an `int` parameter's reads are marked native: to a sub kernel,
+            // which holds every value as an int64, it is a parameter like any other
+            const bool natParam = !L && v->nativeIntRead && !v->declare && !v->viaPseudoPkg && !v->pkgSymbol &&
+                                  !v->processScoped && !v->nativeNumRead && !v->nativeStrRead && !v->synthTopic &&
+                                  nativeIntParam(*c, v->name);
+            if (!natParam && !plainVarRead(v)) return refuse("variable " + v->name + " (a declaration or a special form)");
             if (!L) {
                 const int i = paramIndex(*c, v->name);
                 if (i < 0) return nullptr;
@@ -724,6 +741,12 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // It was missing, so time-parts' loop never became a kernel.
             else if (op == "%" || op == "mod") kop = KOp::Mod;
             else if (op == "%%") { kop = KOp::DivBy; compare = true; }
+            // the bitwise ops take two Ints only: the Rat and Num arms below refuse them
+            else if (op == "+&") kop = KOp::BAnd;
+            else if (op == "+|") kop = KOp::BOr;
+            else if (op == "+^") kop = KOp::BXor;
+            else if (op == "+<") kop = KOp::Shl;
+            else if (op == "+>") kop = KOp::Shr;
             else if (op == "<") { kop = KOp::Lt; compare = true; }
             else if (op == "<=") { kop = KOp::Le; compare = true; }
             else if (op == ">") { kop = KOp::Gt; compare = true; }
@@ -781,6 +804,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 t = compare ? KT::Bool : KT::Exact;
                 return n;
             }
+            // two Ints under `/` make a Rat; without 128-bit integers there is
+            // no exact lane, and the Num lane below would answer a Num
+            else if (!kHasExact && lt == KT::Int && rt == KT::Int && kop == KOp::NDiv)
+                return refuse("a Rat without 128-bit integers");
             else if ((lt == KT::Num || lt == KT::Int) && (rt == KT::Num || rt == KT::Int) && L && !L->sub) {
                 switch (kop) {
                     case KOp::Add: kop = KOp::NAdd; break;
@@ -896,6 +923,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 return refuse("an Int variable given a Rat (compiled again)");
             }
             if (tt == KT::Int && vt == KT::Int && a->op == "/=") {
+                // the promotion makes an exact slot, which needs 128-bit
+                // integers: without them (MSVC, 32-bit targets) the loop ran
+                // exact ops that were compiled out, and crashed
+                if (!kHasExact) return refuse("a Rat without 128-bit integers");
                 if (const LSym* s = lookup(tv->name); s && s->ro) return refuse("an assignment to a loop variable");
                 if (!L->promoted(tv->name)) L->promote.push_back(tv->name);
                 L->again = true;
@@ -1053,7 +1084,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             Value* f = scope->find(key);
             if (!f || f->t != VT::Code || !f->code()) { resolveFailed = true; return refuse("a call to " + call->name); }
             Callable& callee = *f->code();
-            if ((int)call->args.size() != (callee.params ? (int)callee.params->size() : -1))
+            if ((int)call->args.size() != (callee.ci().params ? (int)callee.ci().params->size() : -1))
                 return refuse("a call with the wrong number of arguments");
             IKernel* ck = nullptr;
             {
@@ -1436,31 +1467,35 @@ KNode* Compiler::ltail(IKernel& k, const std::vector<StmtPtr>& ss) {
 // itself, which accepts no CATCH, phaser or declaration it cannot model, so
 // nothing a first call works out is needed here.
 bool kernelShape(const Callable& c) {
-    if (c.isBlock || c.isMethod || c.builtin || c.cold().isNative || c.isMultiDispatcher ||
-        c.isMultiCandidate || c.isProto || c.isWhateverCode || c.isRegexRoutine || c.cold().deprecated ||
-        c.testAssertion || !c.hadSig || !c.params || !c.body || c.body->empty() ||
-        !c.placeholders.empty() || c.usesArgs || c.implicitArgs || c.cold().hasPrimed ||
-        c.retLiteral || c.retRw || c.params->size() > (size_t)kMaxParams)
+    if (c.ci().isBlock || c.ci().isMethod || c.ci().builtin || c.cold().isNative || c.ci().isMultiDispatcher ||
+        c.ci().isMultiCandidate || c.ci().isProto || c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().deprecated ||
+        c.ci().testAssertion || !c.ci().hadSig || !c.ci().params || !c.ci().body || c.ci().body->empty() ||
+        !c.ci().placeholders.empty() || c.ci().usesArgs || c.ci().implicitArgs || c.cold().hasPrimed ||
+        c.ci().retLiteral || c.ci().retRw || c.ci().params->size() > (size_t)kMaxParams)
         return false;
-    // `--> Int` / `--> Int:D`: every value a kernel returns is a defined Int
+    // `--> Int` / `--> Int:D`: every value a kernel returns is a defined Int —
+    // and `--> int`, whose value the generic path hands back as a plain Int too
     if (!c.cold().retType.empty() &&
-        (retTypeCoerces(c.cold().retType) || retTypeName(c.cold().retType) != "Int" || retTypeSmiley(c.cold().retType) == 'U'))
+        (retTypeCoerces(c.cold().retType) || retTypeSmiley(c.cold().retType) == 'U' ||
+         !(retTypeName(c.cold().retType) == "Int" || nativeIntTypeName(retTypeName(c.cold().retType)))))
         return false;
     // …and an `Int` / `Int:D` parameter is one a plain Int binds to as it is
-    // (any other argument keeps the call path, and its type check)
-    for (auto& p : *c.params)
+    // (any other argument keeps the call path, and its type check). An `int`
+    // one is too: overflow bails, as it does everywhere in a kernel, and the
+    // generic path then does the 64-bit wrap a native int does.
+    for (auto& p : *c.ci().params)
         if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
             p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
             p.hadWhere || p.defConstraint == 2 || p.coerce || p.typeCapture || p.codeSig ||
-            !p.captureName.empty() || !(p.type.empty() || p.type == "Int") || p.name.size() < 2 ||
-            (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')))
+            !p.captureName.empty() || !(p.type.empty() || p.type == "Int" || nativeIntTypeName(p.type)) ||
+            p.name.size() < 2 || (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.')))
             return false;
     return true;
 }
 
 // The kernel slot's states: -1 undecided, 0 none, 1 compiled, 2 being compiled.
 bool Compiler::compileSub(Callable& c, IKernel*& out) {
-    auto& slot = c.intKernel;
+    auto& slot = c.ci().intKernel;
     const signed char st = slot.state.load(std::memory_order_acquire);
     if (st == 1 || st == 2) {
         out = static_cast<IKernel*>(slot.k.load(std::memory_order_acquire));
@@ -1475,10 +1510,12 @@ bool Compiler::compileSub(Callable& c, IKernel*& out) {
     if (!slot.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) return false;
     auto* k = new IKernel;
     k->owner = &c;
-    k->nparams = k->nframe = (int)c.params->size();
+    k->nparams = k->nframe = (int)c.ci().params->size();
+    for (int i = 0; i < k->nparams; i++)
+        if (nativeIntTypeName((*c.ci().params)[i].type)) k->natParams |= 1u << i;
     slot.k.store(k, std::memory_order_release);
     session.push_back(k);
-    k->body = stmts(*k, c, *c.body, true);
+    k->body = stmts(*k, c, *c.ci().body, true);
     if (!k->body && !resolveFailed) {
         // not one expression: the body as statements, on a frame of the
         // parameters and the sub's own `my`s (an `is copy` parameter is
@@ -1488,11 +1525,11 @@ bool Compiler::compileSub(Callable& c, IKernel*& out) {
         cx.sub = &c;
         cx.nint = k->nparams;
         cx.scopes.emplace_back();
-        for (size_t i = 0; i < c.params->size(); i++)
-            cx.scopes.back().push_back({(*c.params)[i].name, KT::Int, (int)i, !(*c.params)[i].isCopy});
+        for (size_t i = 0; i < c.ci().params->size(); i++)
+            cx.scopes.back().push_back({(*c.ci().params)[i].name, KT::Int, (int)i, !(*c.ci().params)[i].isCopy});
         LoopCx* saved = L;
         L = &cx;
-        k->body = ltail(*k, *c.body);
+        k->body = ltail(*k, *c.ci().body);
         L = saved;
         k->nframe = cx.nint;
         if (cx.nint > kMaxFrame) k->body = nullptr;
@@ -1630,6 +1667,19 @@ template <KOp OP>
     }
     else if constexpr (OP == KOp::Min) return x < y ? x : y;
     else if constexpr (OP == KOp::Max) return x > y ? x : y;
+    else if constexpr (OP == KOp::BAnd) return x & y;
+    else if constexpr (OP == KOp::BOr) return x | y;
+    else if constexpr (OP == KOp::BXor) return x ^ y;
+    else if constexpr (OP == KOp::Shl) {
+        // what the generic `+<` shifts in place; a negative count (the other
+        // direction) or a result that needs a BigInt is the generic path's
+        if (y < 0 || y >= 62 || x <= -(1LL << (62 - y)) || x >= (1LL << (62 - y))) { R.bail = true; return 0; }
+        return (int64_t)((uint64_t)x << y);
+    }
+    else if constexpr (OP == KOp::Shr) {
+        if (y < 0) { R.bail = true; return 0; }
+        return y >= 63 ? (x < 0 ? -1 : 0) : (x >> y);
+    }
     else if constexpr (OP == KOp::Lt) return x < y;
     else if constexpr (OP == KOp::Le) return x <= y;
     else if constexpr (OP == KOp::Gt) return x > y;
@@ -2494,6 +2544,11 @@ void link(KNode* n) {
         case KOp::Pow: n->fn = binFn<KOp::Pow, kX, kX>; break;
         case KOp::Min: n->fn = binPick<KOp::Min>(l, r); break;
         case KOp::Max: n->fn = binPick<KOp::Max>(l, r); break;
+        case KOp::BAnd: n->fn = binPick<KOp::BAnd>(l, r); break;
+        case KOp::BOr: n->fn = binPick<KOp::BOr>(l, r); break;
+        case KOp::BXor: n->fn = binPick<KOp::BXor>(l, r); break;
+        case KOp::Shl: n->fn = binFn<KOp::Shl, kX, kX>; break;
+        case KOp::Shr: n->fn = binFn<KOp::Shr, kX, kX>; break;
         case KOp::Abs: n->fn = absFn; break;
         case KOp::Sign: n->fn = signFn; break;
         case KOp::Ord: n->fn = ordFn; break;
@@ -2560,6 +2615,13 @@ bool opShadowed(const std::string& op) {
 // An argument the kernel may take as its number alone.
 inline bool plainIntArg(const Value& v) {
     return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty() && v.s.empty();
+}
+// …and one an `int` parameter takes as its number: that, or a native int's own value
+inline bool nativeIntArg(const Value& v) {
+    if (v.natBits == 0) return plainIntArg(v);
+    return v.natBits == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&
            !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
            v.hashKind.empty() && v.s.empty();
 }
@@ -2667,11 +2729,11 @@ void finishSession(Compiler& cc, bool ok, const Callable* asker) {
             link(k->body);
             k->binOps = cc.ops;
             k->usesPrefix = cc.prefix;
-            k->owner->intKernel.state.store(1, std::memory_order_release);
+            k->owner->ci().intKernel.state.store(1, std::memory_order_release);
         }
         else {
-            k->owner->intKernel.k.store(nullptr, std::memory_order_release);
-            k->owner->intKernel.state.store(k->owner == asker ? 0 : -1, std::memory_order_release);
+            k->owner->ci().intKernel.k.store(nullptr, std::memory_order_release);
+            k->owner->ci().intKernel.state.store(k->owner == asker ? 0 : -1, std::memory_order_release);
             delete k;
         }
     }
@@ -2698,66 +2760,66 @@ void intKernelFree(void* k) { delete static_cast<IKernel*>(k); }
 
 bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out) {
     if (g_noKernels || g_traceStmts) return false;
-    signed char st = c.intKernel.state.load(std::memory_order_acquire);
-    if (st == 2) st = awaitKernelVerdict(c.intKernel.state);
+    signed char st = c.ci().intKernel.state.load(std::memory_order_acquire);
+    if (st == 2) st = awaitKernelVerdict(c.ci().intKernel.state);
     if (st == 0 || st == 2) return false;
     if (st < 0) {
         // most routines fail the static test: settle those without the lock
-        if (!kernelShape(c)) { c.intKernel.state.store(0, std::memory_order_relaxed); return false; }
+        if (!kernelShape(c)) { c.ci().intKernel.state.store(0, std::memory_order_relaxed); return false; }
         // a closure made from a body that already has a kernel (or never
         // will) takes that verdict: closures are rebuilt from the AST on
         // every evaluation, and compiling each one cost more than it ran
-        auto& home = (*c.body)[0]->kernelHome;
+        auto& home = (*c.ci().body)[0]->kernelHome;
         if (void* h = home.get()) {
-            if (h == kNeverKernel) { c.intKernel.state.store(0, std::memory_order_relaxed); return false; }
+            if (h == kNeverKernel) { c.ci().intKernel.state.store(0, std::memory_order_relaxed); return false; }
             signed char expect = -1;
-            if (c.intKernel.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) {
-                c.intKernel.borrowed.store(true, std::memory_order_relaxed);
-                c.intKernel.k.store(h, std::memory_order_relaxed);
-                c.intKernel.state.store(1, std::memory_order_release);
+            if (c.ci().intKernel.state.compare_exchange_strong(expect, 2, std::memory_order_acq_rel)) {
+                c.ci().intKernel.borrowed.store(true, std::memory_order_relaxed);
+                c.ci().intKernel.k.store(h, std::memory_order_relaxed);
+                c.ci().intKernel.state.store(1, std::memory_order_release);
                 if (g_kernelTrace)
-                    std::fprintf(stderr, "kernel: %s shared\n", c.name.empty() ? "<anon>" : c.name.c_str());
+                    std::fprintf(stderr, "kernel: %s shared\n", c.ci().name.empty() ? "<anon>" : c.ci().name.c_str());
             }
-            else if (expect == 2) awaitKernelVerdict(c.intKernel.state);   // another thread is deciding
+            else if (expect == 2) awaitKernelVerdict(c.ci().intKernel.state);   // another thread is deciding
         }
         std::unique_lock<std::mutex> lk(g_compileMu, std::defer_lock);
-        st = c.intKernel.state.load(std::memory_order_acquire);
+        st = c.ci().intKernel.state.load(std::memory_order_acquire);
         if (st < 0) {
             lk.lock();
-            st = c.intKernel.state.load(std::memory_order_acquire);
+            st = c.ci().intKernel.state.load(std::memory_order_acquire);
         }
         if (st < 0) {
             CompilingHere ch;
             Compiler cc;
             cc.global = global_.get();
             IKernel* root = nullptr;
-            const bool ok = cc.compileSub(c, root) && root == static_cast<IKernel*>(c.intKernel.k.load());
+            const bool ok = cc.compileSub(c, root) && root == static_cast<IKernel*>(c.ci().intKernel.k.load());
             finishSession(cc, ok, &c);
-            if (!ok && c.intKernel.state.load() != 0) c.intKernel.state.store(0, std::memory_order_release);
+            if (!ok && c.ci().intKernel.state.load() != 0) c.ci().intKernel.state.store(0, std::memory_order_release);
             // what depends on the body alone is shared through its AST: a
             // kernel that calls nothing, or a verdict the syntax gave
-            auto& home = (*c.body)[0]->kernelHome;
+            auto& home = (*c.ci().body)[0]->kernelHome;
             if (ok && root->callees.empty()) {
-                if (home.publish(root) == root) c.intKernel.borrowed.store(true, std::memory_order_relaxed);
+                if (home.publish(root) == root) c.ci().intKernel.borrowed.store(true, std::memory_order_relaxed);
             }
             else if (!ok && !cc.resolveFailed)
                 home.publish(kNeverKernel);
             if (g_kernelTrace)
-                std::fprintf(stderr, "kernel: %s %s\n", c.name.empty() ? "<anon>" : c.name.c_str(),
+                std::fprintf(stderr, "kernel: %s %s\n", c.ci().name.empty() ? "<anon>" : c.ci().name.c_str(),
                              ok ? "compiled" : "declined");
-            st = c.intKernel.state.load(std::memory_order_acquire);
+            st = c.ci().intKernel.state.load(std::memory_order_acquire);
         }
         if (st == 2) {   // another thread's compile, under way: its verdict
             if (lk.owns_lock()) lk.unlock();
-            st = awaitKernelVerdict(c.intKernel.state);
+            st = awaitKernelVerdict(c.ci().intKernel.state);
         }
         if (st != 1) return false;
     }
-    auto* k = static_cast<IKernel*>(c.intKernel.k.load(std::memory_order_acquire));
+    auto* k = static_cast<IKernel*>(c.ci().intKernel.k.load(std::memory_order_acquire));
     if (!k || args.size() != (size_t)k->nparams) return false;
     int64_t a[kMaxFrame];
     for (size_t i = 0; i < args.size(); i++) {
-        if (!plainIntArg(args[i])) return false;
+        if (!((k->natParams >> i) & 1 ? nativeIntArg(args[i]) : plainIntArg(args[i]))) return false;
         a[i] = args[i].i;
     }
     if (!c.cold().wrappers.empty() || !callsBound(k->graph)) return false;
@@ -2779,14 +2841,14 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
     const int64_t v = krun(k->body, a, R);
     if (R.bail) {
         if (g_kernelTrace)
-            std::fprintf(stderr, "kernel: %s bailed\n", c.name.empty() ? "<anon>" : c.name.c_str());
+            std::fprintf(stderr, "kernel: %s bailed\n", c.ci().name.empty() ? "<anon>" : c.ci().name.c_str());
         // a kernel that keeps bailing (its numbers outgrow int64) stops trying
-        const unsigned char b = c.intKernel.bails.load(std::memory_order_relaxed);
-        if (b >= 8) c.intKernel.state.store(0, std::memory_order_release);
-        else c.intKernel.bails.store((unsigned char)(b + 1), std::memory_order_relaxed);
+        const unsigned char b = c.ci().intKernel.bails.load(std::memory_order_relaxed);
+        if (b >= 8) c.ci().intKernel.state.store(0, std::memory_order_release);
+        else c.ci().intKernel.bails.store((unsigned char)(b + 1), std::memory_order_relaxed);
         return false;
     }
-    if (c.intKernel.bails.load(std::memory_order_relaxed)) c.intKernel.bails.store(0, std::memory_order_relaxed);
+    if (c.ci().intKernel.bails.load(std::memory_order_relaxed)) c.ci().intKernel.bails.store(0, std::memory_order_relaxed);
     out = Value::integer(v);
     return true;
 }

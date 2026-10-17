@@ -885,6 +885,9 @@ enum : unsigned { RSC_BLOCK = 1, RSC_HADSIG = 2 };
 
 struct SubTraitSpec { std::string name; ExprPtr arg; }; // `is traced` / `is role('admin')`
 
+// Frees a BlockExpr's closure template (makeClosure's, opaque here); set by
+// the interpreter, so a tool that never makes closures has nothing to free.
+inline std::atomic<void (*)(void*)> g_closureTmplFree{nullptr};
 struct BlockExpr : Expr {
     std::vector<Param> params; // for pointy blocks / placeholder
     std::vector<StmtPtr> body;
@@ -903,7 +906,21 @@ struct BlockExpr : Expr {
     std::string podTrail;      // …its `#=` part alone
     int podLine = 0;
     std::string phaser;        // `my $x = BEGIN { … }` — an expression-position BEGIN/CHECK/INIT
+    // The code every closure of this block shares, built by the first one
+    // (makeClosure's ClosureTemplate: a CodeInfo and the context it was built
+    // in). Null until then; freed with the node.
+    mutable std::atomic<void*> closureTmpl{nullptr};
+    // `try`, `do` and `quietly` run this body where it stands, in a pooled scope
+    // carrying the body's own pad, when nothing in it needs a call of its own
+    // (Interpreter::runsInPlace): 1, or 0 and it is called as a closure;
+    // -1 = not yet decided. The layout is written before the flag publishes it.
+    mutable std::shared_ptr<const PadLayout> inPlaceLayout;
+    mutable PublishedOnce<signed char> inPlace{-1};
     BlockExpr(): Expr(NK::BlockExpr) {}
+    ~BlockExpr() override {
+        if (void* t = closureTmpl.load(std::memory_order_acquire))
+            if (auto f = g_closureTmplFree.load(std::memory_order_acquire)) f(t);
+    }
 };
 
 // ---- Statements ----
@@ -1254,8 +1271,13 @@ struct ReturnStmt : Stmt {
     ReturnStmt(): Stmt(NK::ReturnStmt) {}
 };
 
-struct LastStmt : Stmt { std::string target; LastStmt(): Stmt(NK::LastStmt) {} };
-struct NextStmt : Stmt { std::string target; NextStmt(): Stmt(NK::NextStmt) {} };
+// `coop` on a LABELLED last/next: it reaches the loop wearing its label through
+// statement-level constructs alone — `if`, `given`/`when`, bare blocks and
+// statement loops, no phaser, CATCH, closure or expression between — so the
+// interpreter may hand it there as a flag rather than an exception (set by
+// markCoopLoopControl; derived, not serialized).
+struct LastStmt : Stmt { std::string target; bool coop = false; LastStmt(): Stmt(NK::LastStmt) {} };
+struct NextStmt : Stmt { std::string target; bool coop = false; NextStmt(): Stmt(NK::NextStmt) {} };
 struct RedoStmt : Stmt { std::string target; RedoStmt(): Stmt(NK::RedoStmt) {} };
 
 struct UseStmt : Stmt {
@@ -1403,6 +1425,11 @@ struct Program {
 
 // Print a program's AST as an indented plain-text tree (for --dump-ast).
 void dumpAst(const Program& prog, std::ostream& out);
+
+// Set `coop` on the labelled last/next statements inside `loop` (a statement
+// that wears a label) that target it — see LastStmt. Run where a label is
+// attached: by the parser, and by the AST reader for a cached or embedded unit.
+void markCoopLoopControl(Stmt* loop);
 
 // Real AOT: emit a self-contained C++ program that rebuilds this exact AST at
 // startup and interprets it (no lexing/parsing at run time). Throws AstEmitError

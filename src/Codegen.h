@@ -15,7 +15,9 @@ namespace rakupp {
 // not — its meaning depends on how the routine itself was bound (a write to a
 // read-only parameter, which the delegated copy would no longer know was
 // read-only), so the whole routine stays interpreted.
-struct CodegenError { std::string msg; bool routineWide = false; };
+// `line`: the source line of the innermost statement being emitted when it was
+// refused (0 when no one statement is to blame), for the note that says so
+struct CodegenError { std::string msg; bool routineWide = false; int line = 0; };
 
 // Transpile a whole program into a self-contained C++ source string that
 // implements the program natively (calling the runtime for Value semantics).

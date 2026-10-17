@@ -100,6 +100,64 @@ inline void io_(Reader& r, std::string& s) {
 
 } // namespace
 
+// ---- cooperative labelled last/next (Ast.h LastStmt::coop) --------------
+// Here rather than in the parser because the AST reader needs it too, and a
+// --slim binary may carry the reader without the parser.
+namespace {
+// A CONTROL block sees every control exception raised in the statements beside
+// it (`A: for 1 { for 1 { last A }; CONTROL { default { die $_ } } }` dies with
+// the CX::Last — S04-statements/label.t): what runs where one stands keeps
+// the exception form.
+bool hasControlBlock(const Block* b) {
+    for (auto& x : b->stmts)
+        if (x && x->kind == NK::Block && static_cast<const Block*>(x.get())->isCatch &&
+            static_cast<const Block*>(x.get())->phaser == "CONTROL")
+            return true;
+    return false;
+}
+void markCoop(Stmt* s, const std::string& label) {
+    if (!s) return;
+    auto block = [&](Block* b) {
+        if (b && !hasControlBlock(b)) for (auto& x : b->stmts) markCoop(x.get(), label);
+    };
+    switch (s->kind) {
+        case NK::LastStmt: { auto* l = static_cast<LastStmt*>(s); if (l->target == label) l->coop = true; return; }
+        case NK::NextStmt: { auto* n = static_cast<NextStmt*>(s); if (n->target == label) n->coop = true; return; }
+        // a phaser or CATCH runs with the flags saved and cleared around it,
+        // so a control inside one keeps the exception form
+        case NK::Block: { auto* b = static_cast<Block*>(s); if (!b->isCatch && b->phaser.empty()) block(b); return; }
+        case NK::IfStmt: {
+            auto* f = static_cast<IfStmt*>(s);
+            for (auto& br : f->branches) block(br.second.get());
+            block(f->elseBlock.get());
+            return;
+        }
+        case NK::GivenStmt: { auto* g = static_cast<GivenStmt*>(s); block(g->body.get()); block(g->elseBody.get()); return; }
+        case NK::WhenStmt: block(static_cast<WhenStmt*>(s)->body.get()); return;
+        // a loop in VALUE position would hand its partial list on to the
+        // expression around it: only statement loops are passed through
+        case NK::ForStmt: { auto* f = static_cast<ForStmt*>(s); if (!f->asExpr) block(f->body.get()); return; }
+        case NK::WhileStmt: { auto* w = static_cast<WhileStmt*>(s); if (!w->asExpr) block(w->body.get()); return; }
+        case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s); if (!l->asExpr) block(l->body.get()); return; }
+        case NK::RepeatStmt: block(static_cast<RepeatStmt*>(s)->body.get()); return;
+        default: return;   // an expression, a routine, a class: none passed through
+    }
+}
+} // namespace
+
+void markCoopLoopControl(Stmt* loop) {
+    if (!loop || loop->label.empty()) return;
+    Block* body = nullptr;
+    switch (loop->kind) {
+        case NK::ForStmt: body = static_cast<ForStmt*>(loop)->body.get(); break;
+        case NK::WhileStmt: body = static_cast<WhileStmt*>(loop)->body.get(); break;
+        case NK::LoopStmt: body = static_cast<LoopStmt*>(loop)->body.get(); break;
+        case NK::RepeatStmt: body = static_cast<RepeatStmt*>(loop)->body.get(); break;
+        default: return;
+    }
+    if (body && !hasControlBlock(body)) for (auto& x : body->stmts) markCoop(x.get(), loop->label);
+}
+
 // ---- the node visitors -------------------------------------------------
 //
 // Declared before use so the mutually recursive ones (an Expr holding a Stmt
@@ -521,6 +579,7 @@ template <class IO> void ioStmt(IO& io, StmtPtr& s) {
 #undef X
             default: throw AstSerialError{"unknown statement kind in AST cache"};
         }
+        if (!label.empty()) markCoopLoopControl(s.get());   // derived, as the parser derives it
     } else {
         if (!s) { io.u8(kNull); return; }
         io.u8((uint8_t)s->kind);

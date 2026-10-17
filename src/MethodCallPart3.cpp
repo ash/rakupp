@@ -300,8 +300,8 @@ static void refuseNumericOnCode(Interpreter& I, const Value& inv, const std::str
 // A bare `{ … }` block takes its implicit `$_`: no argument or one positional
 // (`{ $_ }.cando(\("x"))` finds it).
 static bool implicitTopicBlock(const Value& c) {
-    return c.code()->isBlock && !c.code()->hadSig && !c.code()->isSigLiteral &&
-           c.code()->placeholders.empty() && (!c.code()->params || c.code()->params->empty());
+    return c.code()->ci().isBlock && !c.code()->ci().hadSig && !c.code()->ci().isSigLiteral &&
+           c.code()->ci().placeholders.empty() && (!c.code()->ci().params || c.code()->ci().params->empty());
 }
 static bool takesImplicitTopic(const ValueList& call) {
     size_t npos = 0;
@@ -335,7 +335,7 @@ Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Valu
     Value out = Value::array(); out.isList = true;
     for (size_t i : ties) {
         Value p = Value::pair(kvs[i].first.toStr(), kvs[i].second);
-        if (kvs[i].first.t == VT::Int) p.pairKeyM() = std::make_shared<Value>(kvs[i].first);
+        if (kvs[i].first.t == VT::Int) p.setPairKey(kvs[i].first);
         out.arr()->push_back(p);
     }
     return out;
@@ -1417,18 +1417,18 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // part of the parameter list — `$m.cando: \(Jar, 'GET', 'x')` asks whether
         // `method add($, $)` accepts the two that follow.
         auto forCand = [&](const Value& c) {
-            if (!(c.t == VT::Code && c.code() && c.code()->isMethod)) return call;
+            if (!(c.t == VT::Code && c.code() && c.code()->ci().isMethod)) return call;
             ValueList rest;
             for (size_t i = 1; i < call.size(); i++) rest.push_back(call[i]);
             return rest;
         };
         Value out = Value::array(); out.isList = true;
         // a WhateverCode takes exactly as many positionals as it has stars
-        if (inv.code()->isWhateverCode && inv.code()->cold().candidates.empty() &&
-            (!inv.code()->params || inv.code()->params->empty())) {
+        if (inv.code()->ci().isWhateverCode && inv.code()->cold().candidates.empty() &&
+            (!inv.code()->ci().params || inv.code()->ci().params->empty())) {
             size_t npos = 0; bool named = false;
             for (auto& x : call) { if (x.t == VT::Pair && x.namedArg) named = true; else npos++; }
-            long long ar = inv.code()->whateverArity > 0 ? inv.code()->whateverArity : 1;
+            long long ar = inv.code()->ci().whateverArity > 0 ? inv.code()->ci().whateverArity : 1;
             if (!named && (long long)npos == ar) out.arr()->push_back(inv);
             return out;
         }
@@ -1436,7 +1436,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // flagged as a dispatcher, and scoring ITS signature accepts anything.
         if (!inv.code()->cold().candidates.empty()) {
             for (auto& c : inv.code()->cold().candidates) {
-                if (c.t == VT::Code && c.code() && c.code()->isProto) continue; // the proto
+                if (c.t == VT::Code && c.code() && c.code()->ci().isProto) continue; // the proto
                                         // defines the group; its `|` accepts anything
                 if (scoreCandidate(c, forCand(c)) >= 0) out.arr()->push_back(c);
             }
@@ -1445,14 +1445,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return out;
     }
     if (m == "package" && inv.t == VT::Code && inv.code())
-        return Value::typeObj(inv.code()->pkg.empty() ? "GLOBAL" : inv.code()->pkg);
+        return Value::typeObj(inv.code()->ci().pkg.empty() ? "GLOBAL" : inv.code()->ci().pkg);
     // `.rw` — was the routine declared `is rw`/`is raw`? (Method::Protected picks
     // its wrapper by it)
-    if (m == "rw" && inv.t == VT::Code && inv.code()) return Value::boolean(inv.code()->retRw);
+    if (m == "rw" && inv.t == VT::Code && inv.code()) return Value::boolean(inv.code()->ci().retRw);
     // `.set_name($n)` — Routine's name setter (a cloned wrapper takes the
     // wrapped method's name in Method::Protected)
     if (m == "set_name" && inv.t == VT::Code && inv.code() && !args.empty()) {
-        inv.code()->name = args[0].toStr();
+        inv.code()->ciM().name = args[0].toStr();
         return inv;
     }
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
@@ -5778,8 +5778,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // the same source, compiled the same way, that `~~ &NAME` runs.
     if (rxIdx < 0)
         for (size_t i = 0; i < args.size(); i++)
-            if (args[i].t == VT::Code && args[i].code() && args[i].code()->isRegexRoutine) {
-                auto it = namedRegex_.find(args[i].code()->name);
+            if (args[i].t == VT::Code && args[i].code() && args[i].code()->ci().isRegexRoutine) {
+                auto it = namedRegex_.find(args[i].code()->ci().name);
                 if (it == namedRegex_.end()) continue;
                 args[i] = Value::regex(it->second);
                 rxIdx = (int)i;
@@ -6028,7 +6028,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
                     if (e == b || !tctx_.cur) continue;
                     Value* rv = tctx_.cur->find("&" + pat.substr(b, e - b));
-                    if (rv && rv->t == VT::Code && rv->code() && rv->code()->isRegexRoutine) bareCode = true;
+                    if (rv && rv->t == VT::Code && rv->code() && rv->code()->ci().isRegexRoutine) bareCode = true;
                 }
                 if (bareCode) {
                     Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
@@ -6112,7 +6112,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (want == 'v' || want == 'm') out.arr()->push_back(sepv);
                     if (want == 'p') {
                         Value pr = Value::pair("0", sepv);
-                        pr.pairKeyM() = std::make_shared<Value>(idx);
+                        pr.setPairKey(idx);
                         out.arr()->push_back(std::move(pr));
                     }
                 }
@@ -6180,7 +6180,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throwTypedV("X::Str::Trans::InvalidArg", {{"got", Value::typeObj("Regex")}},
                             "Only Pair objects are allowed as arguments to Str.trans, got Regex");
             if (a.t == VT::Pair) {
-                const Value* k = a.pairKey() ? a.pairKey().get() : nullptr;
+                std::shared_ptr<Value> kHold = a.pairKeyShared();   // (an inline Int key is made into one)
+                const Value* k = kHold.get();
                 // (a bare `Any.new`/`Mu.new` is no key either: nothing Cool about it)
                 auto badKey = [&](const Value& kv) {
                     if (rtIsDefined(kv) && (kv.typeName() == "Any" || kv.typeName() == "Mu")) return true;
@@ -6277,7 +6278,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
         };
         for (auto& a : args) collect(a);
-        auto isRxPair = [](const Value* pa) { return pa->pairKey() && pa->pairKey()->t == VT::Regex; };
+        auto isRxPair = [](const Value* pa) { return pa->hasPairKey() && pa->nonStrKey().t == VT::Regex; };
         auto sideList = [&](const Value* side, const std::string& strForm,
                             std::vector<Value>& out) -> bool {
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
@@ -6298,7 +6299,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (const Value* pa : mpairs) {
             if (isRxPair(pa)) {
                 Value pin = pa->pairVal() ? *pa->pairVal() : Value::str("");
-                ents.push_back({std::string(), *pa->pairKey(), pin, false});
+                ents.push_back({std::string(), pa->nonStrKey(), pin, false});
                 if (!haveComp) { compTo = pin; haveComp = true; }
             }
             else charPairs.push_back(pa);
@@ -6307,7 +6308,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool lone = !anyArray && charPairs.size() == 1;
         if (lone) {
             std::vector<Value> froms, tos;
-            sideList(charPairs[0]->pairKey().get(), charPairs[0]->s.str(), froms);
+            sideList(charPairs[0]->pairKeyShared().get(), charPairs[0]->s.str(), froms);
             sideList(charPairs[0]->pairVal(),
                      charPairs[0]->pairVal() ? charPairs[0]->pairVal()->toStr() : "", tos);
             // the direct-pair shape: replacement CYCLES — except under :delete,
@@ -6323,7 +6324,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             std::vector<Value> needles; std::vector<Value> pins; std::vector<bool> drops;
             for (const Value* pa : charPairs) {
                 std::vector<Value> froms, tos;
-                sideList(pa->pairKey().get(), pa->s.str(), froms);
+                sideList(pa->pairKeyShared().get(), pa->s.str(), froms);
                 sideList(pa->pairVal(), pa->pairVal() ? pa->pairVal()->toStr() : "", tos);
                 if (!tos.empty() && !haveComp) { compTo = tos.front(); haveComp = true; }
                 // pad a SHORT value side with its last element (or nothing at
@@ -6684,7 +6685,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (want == 'v' || want == 'm' || !want) out.arr()->push_back(sepv);
                 if (want == 'p') {
                     Value pr = Value::pair(std::to_string(seps[k].which), sepv);
-                    pr.pairKeyM() = std::make_shared<Value>(idx);
+                    pr.setPairKey(idx);
                     out.arr()->push_back(std::move(pr));
                 }
             }
@@ -6773,7 +6774,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                     "Cannot resolve caller comb(" + inv.typeName() + ": Pair); "
                     "the Pair form of comb arrived with 6.e"};
-            long long size = args[0].pairKey() ? args[0].pairKey()->toInt() : Value::str(args[0].s).toInt();
+            long long size = args[0].hasPairKey() ? args[0].nonStrKey().toInt() : Value::str(args[0].s).toInt();
             long long gap  = args[0].pairVal() ? args[0].pairVal()->toInt() : 0;
             if (size < 1) size = 1;
             long long stride = size + gap; if (stride < 1) stride = 1;

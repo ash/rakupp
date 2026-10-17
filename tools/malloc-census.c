@@ -17,6 +17,7 @@
 // Counting only: the real allocation still comes from the default zone, so
 // nothing about the program's behaviour changes except speed. `free` is left
 // alone — a default-zone pointer frees normally.
+#include <fcntl.h>
 #include <malloc/malloc.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -59,9 +60,23 @@ static void* my_realloc(void* p, size_t n) {
 
 // Written with write(2) from a stack buffer: printf at exit would allocate,
 // and the numbers are already final by then.
+//
+// With MALLOC_CENSUS_OUT set, each process appends one line to that file
+// instead — its pid and its call count — so a harness that runs many
+// processes (Roast) yields one count per process, to join on the pid with
+// another per-process record (tools/str-census.md).
 __attribute__((destructor)) static void dump(void) {
     char buf[512];
     long long calls = atomic_load(&g_calls), bytes = atomic_load(&g_bytes);
+    const char* out = getenv("MALLOC_CENSUS_OUT");
+    if (out) {
+        int fd = open(out, O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (fd < 0) return;
+        int n = snprintf(buf, sizeof buf, "%d\t%lld\n", (int)getpid(), calls);
+        write(fd, buf, n);
+        close(fd);
+        return;
+    }
     int n = snprintf(buf, sizeof buf,
                      "\n--- malloc census ---\ncalls %lld  bytes %lld\n"
                      "size  count      share\n", calls, bytes);

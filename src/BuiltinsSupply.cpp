@@ -23,20 +23,20 @@ namespace rakupp {
 // body's definition scope (the phaser may run when the body never has).
 static Value supplyPhaserCode(const Block* b, std::shared_ptr<Env> closure) {
     Value v; v.t = VT::Code; v.setCode(makePayload<Callable>());
-    v.code()->body = &b->stmts; v.code()->isBlock = true; v.code()->closure = std::move(closure);
+    v.code()->ciM().body = &b->stmts; v.code()->ciM().isBlock = true; v.code()->closure = std::move(closure);
     return v;
 }
 // Collect LAST/QUIT/CLOSE phasers from a block's top-level statements.
 void scanSupplyPhasers(const Value& blk, ValueList* lastP,
                               ValueList* quitP, ValueList* closeP,
                               std::shared_ptr<Env> phaserEnv) {
-    if (blk.t != VT::Code || !blk.code() || !blk.code()->body) return;
+    if (blk.t != VT::Code || !blk.code() || !blk.code()->ci().body) return;
     // phaserEnv (issue #18): a LAST phaser reads the block's parameters as of
     // the LAST invocation (`LAST { say "Done with $c" }`). The block's
     // DEFINITION closure never holds $c — callers that drain through a
     // param-mirroring shim pass the shim's env here instead.
     auto env = [&](const Value& b2) { return phaserEnv ? phaserEnv : b2.code()->closure; };
-    for (auto& s : *blk.code()->body) {
+    for (auto& s : *blk.code()->ci().body) {
         if (s->kind != NK::Block) continue;
         auto* b = static_cast<Block*>(s.get());
         if (lastP  && b->phaser == "LAST")  lastP->push_back(supplyPhaserCode(b, env(blk)));
@@ -96,12 +96,12 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
 int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& replacement) {
     bool consumed = false;
     for (auto& q : quitP) {
-        if (q.t != VT::Code || !q.code() || !q.code()->body) continue;
+        if (q.t != VT::Code || !q.code() || !q.code()->ci().body) continue;
         // The phaser's statements run HERE rather than through callCallable: a
         // matching `when` reports itself by unwinding, and a callable boundary
         // absorbs that signal as the block's return value. CATCH reads its own
         // clauses the same way. `$_` and `$!` are the exception, as in a CATCH.
-        auto scope = std::make_shared<Env>();
+        auto scope = makeSlabShared<Env>();
         scope->parent = q.code()->closure ? q.code()->closure : tctx_.cur;
         auto savedEnv = tctx_.cur;
         uint64_t savedGF = tctx_.curGivenFrame;
@@ -113,7 +113,7 @@ int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& 
         } r{*this, savedEnv, savedGF};
         scope->define("$_", ex);
         scope->define("$!", ex);
-        try { for (auto& st : *q.code()->body) exec(st.get()); }
+        try { for (auto& st : *q.code()->ci().body) exec(st.get()); }
         catch (BreakGivenEx&) { consumed = true; }   // a when/default matched: the quit is handled
         // …and a `done` inside the phaser has ALREADY ended the supply: the quit
         // is handled by definition, and must not also reach the tapper's quit
@@ -192,7 +192,7 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     auto lateQuit = std::make_shared<std::pair<bool, Value>>(false, Value());
     {
         Value qcb; qcb.t = VT::Code; qcb.setCode(makePayload<Callable>());
-        qcb.code()->builtin = [lateQuit](Interpreter&, ValueList& a) -> Value {
+        qcb.code()->ciM().builtin = [lateQuit](Interpreter&, ValueList& a) -> Value {
             if (!lateQuit->first) { lateQuit->first = true; lateQuit->second = a.empty() ? Value::any() : a[0]; }
             return Value::any();
         };
@@ -572,7 +572,7 @@ Value Interpreter::wrapSupplyChain(const Value& supply, Value consumer) {
     ValueList quitP;
     scanSupplyPhasers(consumer, nullptr, &quitP, nullptr);
     Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-    w.code()->builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
+    w.code()->ciM().builtin = [rec, consumer, quitP](Interpreter& I, ValueList& a) -> Value {
         Value in = a.empty() ? Value::any() : a[0];
         bool complete = false;
         ValueList outs;
@@ -1496,7 +1496,7 @@ Value watchFilter(const Value& sup, const Value& blk) {
         return changes;
     };
     Value cb; cb.t = VT::Code; cb.setCode(makePayload<Callable>());
-    cb.code()->builtin = [blk, evPath, changesSince](Interpreter& I2, ValueList&) -> Value {
+    cb.code()->ciM().builtin = [blk, evPath, changesSince](Interpreter& I2, ValueList&) -> Value {
         if (blk.t != VT::Code) return Value::any();
         Value r = Value::any();
         for (auto& [name, renamed] : changesSince()) {
@@ -1525,7 +1525,7 @@ std::unique_lock<std::recursive_mutex> lockTapRecord(const ValueMap& rec) {
     return std::unique_lock<std::recursive_mutex>(supplierMutex((const void*)(intptr_t)k->second.i));
 }
 void stampTapRecord(ValueMap& rec, const ValueMap* sup) {
-    rec[kTapSupKey] = Value::integer((long long)(intptr_t)sup);
+    rec[kTapSupKey] = Value::integer((long long)(uintptr_t)sup);
 }
 template <class H> static void closeTapRecord(H& rec) {
     auto lk = lockTapRecord(rec);
@@ -1698,7 +1698,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             else closeTapRecord(*t.hash());
         };
         Value outerEmit; outerEmit.t = VT::Code; outerEmit.setCode(makePayload<Callable>());
-        outerEmit.code()->builtin =
+        outerEmit.code()->ciM().builtin =
             [self, st, emitCb, fail, maybeFinish, closeInner, migrate](Interpreter& I, ValueList& a) -> Value {
             if (st->finished) return Value::any();
             Value v = a.empty() ? Value::any() : a[0];
@@ -1717,20 +1717,20 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (migrate && st->current.t == VT::Hash) { closeInner(st->current); st->current = Value(); if (st->pending > 0) st->pending--; }
             st->pending++;
             Value ie; ie.t = VT::Code; ie.setCode(makePayload<Callable>());
-            ie.code()->builtin = [st, emitCb](Interpreter& I2, ValueList& b) -> Value {
+            ie.code()->ciM().builtin = [st, emitCb](Interpreter& I2, ValueList& b) -> Value {
                 if (st->finished || emitCb.t != VT::Code) return Value::any();
                 ValueList one{b.empty() ? Value::any() : b[0]};
                 try { I2.callCallable(emitCb, one); } catch (...) {}
                 return Value::any();
             };
             Value id; id.t = VT::Code; id.setCode(makePayload<Callable>());
-            id.code()->builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
+            id.code()->ciM().builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
                 if (st->pending > 0) st->pending--;
                 maybeFinish();
                 return Value::any();
             };
             Value iq; iq.t = VT::Code; iq.setCode(makePayload<Callable>());
-            iq.code()->builtin = [fail](Interpreter&, ValueList& b) -> Value {
+            iq.code()->ciM().builtin = [fail](Interpreter&, ValueList& b) -> Value {
                 fail(b.empty() ? Value::any() : b[0]); return Value::any();
             };
             Value it = self->tapSupply(v, ie, id, iq);
@@ -1738,11 +1738,11 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             return Value::any();
         };
         Value outerDone; outerDone.t = VT::Code; outerDone.setCode(makePayload<Callable>());
-        outerDone.code()->builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
+        outerDone.code()->ciM().builtin = [st, maybeFinish](Interpreter&, ValueList&) -> Value {
             st->outerDone = true; maybeFinish(); return Value::any();
         };
         Value outerQuit; outerQuit.t = VT::Code; outerQuit.setCode(makePayload<Callable>());
-        outerQuit.code()->builtin = [fail](Interpreter&, ValueList& a) -> Value {
+        outerQuit.code()->ciM().builtin = [fail](Interpreter&, ValueList& a) -> Value {
             fail(a.empty() ? Value::any() : a[0]); return Value::any();
         };
         Value outerTap = tapSupply(src, outerEmit, outerDone, outerQuit);
@@ -1792,7 +1792,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
             if (start) { ValueList ca{*drain}; I2.methodCall(sched, "cue", ca); }
         };
-        drain->code()->builtin = [q, handle, sched, drain = std::weak_ptr<Value>(drain)](Interpreter& I2, ValueList&) -> Value {
+        drain->code()->ciM().builtin = [q, handle, sched, drain = std::weak_ptr<Value>(drain)](Interpreter& I2, ValueList&) -> Value {
             for (;;) {
                 std::function<void(Interpreter&)> f;
                 {
@@ -1815,7 +1815,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         };
         auto mk = [](std::function<Value(Interpreter&, ValueList&)> fn) {
             Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
-            c.code()->builtin = std::move(fn);
+            c.code()->ciM().builtin = std::move(fn);
             return c;
         };
         Value ie = mk([post, emitCb](Interpreter& I2, ValueList& b) -> Value {
@@ -1939,7 +1939,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         };
         for (size_t i = 0; i < n; i++) {
             Value e; e.t = VT::Code; e.setCode(makePayload<Callable>());
-            e.code()->builtin = [i, n, op, st, push, row, finish, mx](Interpreter&, ValueList& a) -> Value {
+            e.code()->ciM().builtin = [i, n, op, st, push, row, finish, mx](Interpreter&, ValueList& a) -> Value {
                 Value v = a.empty() ? Value::any() : a[0];
                 if (op == "merge") {
                     { std::lock_guard<std::mutex> lk(*mx); if (st->finished) return Value::any(); }
@@ -1979,7 +1979,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 return Value::any();
             };
             Value d; d.t = VT::Code; d.setCode(makePayload<Callable>());
-            d.code()->builtin = [i, op, st, finish, mx](Interpreter&, ValueList&) -> Value {
+            d.code()->ciM().builtin = [i, op, st, finish, mx](Interpreter&, ValueList&) -> Value {
                 bool fin = false;
                 {
                     std::lock_guard<std::mutex> lk(*mx);
@@ -1992,7 +1992,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 return Value::any();
             };
             Value q; q.t = VT::Code; q.setCode(makePayload<Callable>());
-            q.code()->builtin = [fail](Interpreter&, ValueList& a) -> Value {
+            q.code()->ciM().builtin = [fail](Interpreter&, ValueList& a) -> Value {
                 fail(a.empty() ? Value::any() : a[0]); return Value::any();
             };
             Value innerTap = tapSupply(srcs[i], e, d, q);
@@ -2113,7 +2113,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 }
                 Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
                 Value pv = v, pf = process;
-                body.code()->builtin = [pv, pf, st, ticket](Interpreter& I2, ValueList&) -> Value {
+                body.code()->ciM().builtin = [pv, pf, st, ticket](Interpreter& I2, ValueList&) -> Value {
                     {   // bounded: a slow or stalled predecessor holds nobody long
                         std::unique_lock<std::mutex> lk(st->m);
                         st->cv.wait_for(lk, std::chrono::milliseconds(10),
@@ -2150,7 +2150,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             Value ctl = h.at("control");
             if (ctl.t == VT::Hash && ctl.hashKind == "Supplier") { ValueList na; ctl = methodCall(ctl, "Supply", na); }
             Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(makePayload<Callable>());
-            ctlEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
+            ctlEmit.code()->ciM().builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 const std::string cmd = a[0].toStr();
                 auto colon = cmd.find(':');
@@ -2169,13 +2169,13 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             tapSupply(ctl, ctlEmit, Value::nil(), Value::nil());
         }
         Value inEmit; inEmit.t = VT::Code; inEmit.setCode(makePayload<Callable>());
-        inEmit.code()->builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
+        inEmit.code()->ciM().builtin = [st, pump](Interpreter&, ValueList& a) -> Value {
             { std::lock_guard<std::mutex> lk(st->m); st->pending.push_back(a.empty() ? Value::any() : a[0]); }
             (*pump)();
             return Value::any();
         };
         Value inDone; inDone.t = VT::Code; inDone.setCode(makePayload<Callable>());
-        inDone.code()->builtin = [st, finish](Interpreter&, ValueList&) -> Value {
+        inDone.code()->ciM().builtin = [st, finish](Interpreter&, ValueList&) -> Value {
             bool last;
             { std::lock_guard<std::mutex> lk(st->m);
               st->srcDone = true;
@@ -2185,7 +2185,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         };
         Value inQuit; inQuit.t = VT::Code; inQuit.setCode(makePayload<Callable>());
         Value qc = quitCb;
-        inQuit.code()->builtin = [self, st, qc, handle](Interpreter&, ValueList& a) -> Value {
+        inQuit.code()->ciM().builtin = [self, st, qc, handle](Interpreter&, ValueList& a) -> Value {
             { std::lock_guard<std::mutex> lk(st->m); if (st->finished) return Value::any(); st->finished = true; }
             if (qc.t == VT::Code) { ValueList one{a.empty() ? Value::any() : a[0]}; try { self->callCallable(qc, one); } catch (...) {} }
             self->closeTapHandle(handle);
@@ -2211,7 +2211,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         if (secs < 0.001) secs = 0.001;
         if (h.count("control")) {
             Value ctlEmit; ctlEmit.t = VT::Code; ctlEmit.setCode(makePayload<Callable>());
-            ctlEmit.code()->builtin = [elemsP](Interpreter&, ValueList& a) -> Value {
+            ctlEmit.code()->ciM().builtin = [elemsP](Interpreter&, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 const std::string cmd = a[0].toStr();
                 auto colon = cmd.find(':');
@@ -2239,7 +2239,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto spent = std::make_shared<std::atomic<long long>>(0);
         Value inEmit; inEmit.t = VT::Code; inEmit.setCode(makePayload<Callable>());
         Value emitOut = emitCb;
-        inEmit.code()->builtin = [buf, spent, elemsP, emitOut](Interpreter& I, ValueList& a) -> Value {
+        inEmit.code()->ciM().builtin = [buf, spent, elemsP, emitOut](Interpreter& I, ValueList& a) -> Value {
             Value v = a.empty() ? Value::any() : a[0];
             if (spent->load() < elemsP->load() && emitOut.t == VT::Code) {
                 spent->fetch_add(1);
@@ -2251,11 +2251,11 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             return Value::any();
         };
         Value inDone; inDone.t = VT::Code; inDone.setCode(makePayload<Callable>());
-        inDone.code()->builtin = [srcDone](Interpreter&, ValueList&) -> Value {
+        inDone.code()->ciM().builtin = [srcDone](Interpreter&, ValueList&) -> Value {
             srcDone->store(true); return Value::any();
         };
         Value inQuit; inQuit.t = VT::Code; inQuit.setCode(makePayload<Callable>());
-        inQuit.code()->builtin = [srcDone, quitEx, quitSet](Interpreter&, ValueList& a) -> Value {
+        inQuit.code()->ciM().builtin = [srcDone, quitEx, quitSet](Interpreter&, ValueList& a) -> Value {
             *quitEx = a.empty() ? Value::any() : a[0]; quitSet->store(true); srcDone->store(true);
             return Value::any();
         };
@@ -2330,7 +2330,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             auto tick = std::make_shared<long long>(0);
             Value cb; cb.t = VT::Code; cb.setCode(makePayload<Callable>());
             Value em = emitCb;
-            cb.code()->builtin = [tick, em](Interpreter& I2, ValueList&) -> Value {
+            cb.code()->ciM().builtin = [tick, em](Interpreter& I2, ValueList&) -> Value {
                 if (em.t != VT::Code) return Value::any();
                 ValueList one{Value::integer((*tick)++)};
                 try { I2.callCallable(em, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}

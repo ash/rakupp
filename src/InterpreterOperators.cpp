@@ -10,7 +10,7 @@ namespace rakupp {
 // this site? Currying is syntactic, so only a written star composes.
 bool Interpreter::whateverArrivedAsValue(Binary* b, const Value& l, const Value& r) {
     auto wish = [](const Value& v) {
-        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->isWhateverCode);
+        return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
     };
     if (!wish(l) && !wish(r)) return false;
     return !exprHasWhateverLit(b->lhs.get()) && !exprHasWhateverLit(b->rhs.get());
@@ -145,7 +145,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                     // the role's parameters are in scope — Red's
                     // `has Bool $.no-prefetch = $!has-one // $no-prefetch // self.type ~~ Positional`
                     auto saved = tctx_.cur;
-                    auto denv = std::make_shared<Env>();
+                    auto denv = makeSlabShared<Env>();
                     denv->parent = role->declEnv ? role->declEnv : tctx_.cur;
                     denv->define("self", base);
                     for (ClassInfo* rb : roleInfos)
@@ -234,7 +234,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             auto have = nc->methods.find(kv.first);
             if (have != nc->methods.end() && have->second.t == VT::Code && kv.second.t == VT::Code &&
                 have->second.code() && kv.second.code() &&
-                have->second.code()->isMultiDispatcher && kv.second.code()->isMultiDispatcher) {
+                have->second.code()->ci().isMultiDispatcher && kv.second.code()->ci().isMultiDispatcher) {
                 auto merged = makePayload<Callable>(*have->second.code());
                 for (auto& cand : kv.second.code()->cold().candidates) merged->coldM().candidates.push_back(cand);
                 Value mv = have->second; mv.setCode(merged);
@@ -277,7 +277,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             else if (a.def) {
                 auto saved = tctx_.cur;
                 // …with the role's PARAMETERS bound: `role R[$val] { has $.attr = $val }`
-                auto denv = std::make_shared<Env>();
+                auto denv = makeSlabShared<Env>();
                 denv->parent = role->declEnv ? role->declEnv : tctx_.cur;
                 for (auto& b : nc->roleParamBindings)
                     if (!b.first.empty() && !denv->local(b.first)) denv->define(b.first, b.second);
@@ -352,7 +352,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     // `but VALUE` — a constant method named after the value's type (Str/Bool/Int/…).
     for (auto& vm : valueMixins) {
         Value method = Value::closure([vm](ValueList&) { return vm; });
-        method.code()->isMethod = true;
+        method.code()->ciM().isMethod = true;
         nc->methods[vm.typeName()] = method;
         // …and an ENUM value mixes in its enum as a role: a method per
         // member, True for the one mixed in (`$x but Maybe(Yes)` answers
@@ -367,7 +367,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                 for (auto& kv : *en.hash()) {
                     const bool mine = kv.first == vm.enumName.c_str();
                     Value m = Value::closure([mine](ValueList&) { return Value::boolean(mine); });
-                    m.code()->isMethod = true;
+                    m.code()->ciM().isMethod = true;
                     if (!nc->methods.count(kv.first)) nc->methods[kv.first] = m;
                 }
         }
@@ -425,7 +425,7 @@ Value Interpreter::hyperQuantWeights(const Value& inv, const std::function<Value
         if (setty) { if (!boolify(w)) continue; stored = Value::boolean(true); }
         else if (mixy) { if (w.toNum() == 0) continue; stored = w; }
         else { Value n = w.t == VT::Int ? w : Value::integer((long long)w.toNum()); if (n.toInt() <= 0) continue; stored = n; }
-        stored.pairKeyM() = kv.second.elemKey();
+        stored.pairKeyRawM() = kv.second.elemKey();
         (*out.hash())[kv.first] = std::move(stored);
     }
     return out;
@@ -490,7 +490,7 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
         if (op == "++" || op == "--") {
             Value old = x;
             x = applyBinOp(op == "++" ? "+" : "-", x, Value::integer(1));
-            x.pairKeyM() = old.pairKey();
+            x.pairKeyRawM() = old.pairKeyShared();
             return old;                       // postfix yields the OLD value
         }
         if (userPost) return callCallable(*userPost, ValueList{x});
@@ -508,7 +508,7 @@ Value Interpreter::hyperPostfixApply(const std::string& op, Value v) {
                 bool gone = k == "MixHash" ? w.toNum() == 0 : w.toNum() <= 0;
                 if (gone) it = v.hash()->erase(it);
                 else {
-                    if (k == "SetHash") { Value t = Value::boolean(true); t.pairKeyM() = w.pairKey(); it->second = t; }
+                    if (k == "SetHash") { Value t = Value::boolean(true); t.pairKeyRawM() = w.pairKeyShared(); it->second = t; }
                     ++it;
                 }
             }
@@ -559,8 +559,8 @@ static Value negInt(long long i) {
 
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     if (v.t == VT::Array) v.seqTouch();   // `+$s` is its count: a Seq is cached (SeqToken)
-    if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->isWhateverCode &&
-        !v.code()->isBlock)
+    if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->ci().isWhateverCode &&
+        !v.code()->ci().isBlock)
         throwCodeNumeric(v);
     // `+Mu` / `-Mu`: Mu is below Any, and the prefix has no candidate for it
     if ((op == "+" || op == "-") && v.t == VT::Type && v.s == "Mu")
@@ -939,7 +939,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         for (auto* scope : r.chain) {
             auto it = staticEnvs_.find(scope);
             if (it == staticEnvs_.end()) {
-                auto env = std::make_shared<Env>(); env->parent = parent;
+                auto env = makeSlabShared<Env>(); env->parent = parent;
                 std::vector<const VarExpr*> decls;
                 spDeclaredIn(*scope, decls);
                 for (auto* v : decls) env->define(v->name, typedDefault(v->d().declType, v->name[0]));
@@ -980,7 +980,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
                         static_cast<const SubDecl*>(scope[j].get())->name == nm)
                         realLater = true;
                 if (!realLater) continue;
-                if (!ov) { ov = std::make_shared<Env>(); ov->parent = senv; }
+                if (!ov) { ov = makeSlabShared<Env>(); ov->parent = senv; }
                 auto savedCur = tctx_.cur;
                 tctx_.cur = ov;
                 try { exec(scope[i].get()); } catch (...) { tctx_.cur = savedCur; throw; }
@@ -995,7 +995,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             // a statement-form phaser (`BEGIN $x = 1`, `BEGIN my $y = 2`) runs in
             // the scope itself, so a declaration it makes is the scope's
             if (r.blk && r.blk->stmtForm) v = execBlock(r.blk, senv);
-            else if (r.blk) { auto sc = std::make_shared<Env>(); sc->parent = senv; v = execBlock(r.blk, sc); }
+            else if (r.blk) { auto sc = makeSlabShared<Env>(); sc->parent = senv; v = execBlock(r.blk, sc); }
             else v = callCallable(makeClosure(r.be), {});
         } catch (ReturnEx&) {
             // `sub { CHECK return }` — no routine is running at compile time, so
@@ -1180,12 +1180,13 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.topicWriteback, b.topicWriteback); swap(a.pendingRwSlots, b.pendingRwSlots);
     swap(a.pendingArgWriter, b.pendingArgWriter); swap(a.noAutothread, b.noAutothread);
     swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
+    swap(a.loopCtlLabel, b.loopCtlLabel); swap(a.labelLoops, b.labelLoops);
     swap(a.uninitName, b.uninitName); swap(a.bindingParams, b.bindingParams); swap(a.keepListOf, b.keepListOf); swap(a.lvalueListSlot, b.lvalueListSlot);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
-#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT)
-static_assert(sizeof(ExecContext) == 1448,
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
+static_assert(sizeof(ExecContext) == 1480,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1599,6 +1600,33 @@ std::string Interpreter::uninitNameOf(Expr* e) {
     }
     return "";
 }
+
+// The call uninitMethodShape (InterpreterCore.cpp) picked out: a `.Str`,
+// `.Numeric`, `.Int`, `.join` or `.sum` that warns about an undefined value.
+Value Interpreter::uninitMethodCall(const MethodCall* mc, const Value& inv) {
+    const std::string& m = mc->method;
+    if (inv.t != VT::Array) {
+        // (a type object's .Numeric/.Int is a candidate of its own, which names nothing)
+        UninitNameScope nm(*this, inv.t == VT::Any || m == "Str" ? uninitNameOf(mc->inv.get()) : std::string());
+        if (m == "Str" && (inv.t == VT::Any || !classes_.count(std::string(inv.s.c_str())))) {
+            warnUninitStr(inv);
+            return Value::str("");
+        }
+        if (inv.t == VT::Any) { warnUninitNum(inv); return Value::integer(0); }
+        return methodCall(inv, m, ValueList{});
+    }
+    std::string name;
+    if (m == "join" && mc->inv->kind == NK::VarExpr) name = uninitNameOf(mc->inv.get());
+    else if (m == "sum" && mc->inv->kind == NK::ListExpr) {
+        auto& items = static_cast<ListExpr*>(mc->inv.get())->items;
+        if (items.size() == inv.arr()->size())
+            for (size_t k = 0; k < items.size(); k++)
+                if (uninitOperand((*inv.arr())[k])) { name = uninitNameOf(items[k].get()); break; }
+    }
+    UninitNameScope nm(*this, std::move(name));
+    ValueList args = evalArgs(mc->args);
+    return methodCall(inv, m, std::move(args), &mc->args);
+}
 bool Interpreter::runControlWarn(const std::string& msg) {
     if (tctx_.controlHandlers.empty()) return false;
     return runControlException(exceptionFor(RakuError{Value::typeObj("CX::Warn"), msg}));
@@ -1618,7 +1646,7 @@ bool Interpreter::runControlException(const Value& ex) {
         ~Repush() { t.controlHandlers.push_back(std::move(h)); }
     } repush{tctx_, handler};
 
-    auto env = std::make_shared<Env>();
+    auto env = makeSlabShared<Env>();
     env->parent = handler.second;
     env->define("$_", ex);
     env->define("$!", ex);
@@ -1804,7 +1832,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
         auto ci = classes_.find(v.s);
         if (ci != classes_.end() && ci->second && !ci->second->isRole)
             if (Value* gm = ci->second->findMethod("gist"))
-                if (gm->t == VT::Code && gm->code() && !gm->code()->builtin)
+                if (gm->t == VT::Code && gm->code() && !gm->code()->ci().builtin)
                     return invokeMethodChain("gist", ci->second.get(), v, {}, nullptr).toStr();
     }
     if (v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -1971,13 +1999,13 @@ std::string Interpreter::strOf(const Value& v) {
     // `$block.join` both produced it — and never told anyone it was a mistake.
     // (.gist and .raku still show the routine; only .Str is empty.)
     if (v.t == VT::Code) {
-        bool block = v.code() && v.code()->isBlock;
+        bool block = v.code() && v.code()->ci().isBlock;
         std::string msg = std::string(block ? "Block" : "Sub") +
                           " object coerced to string (please use .gist or .raku to do that)";
         if (quietDepth_ == 0 && !runControlWarn(msg)) std::cerr << msg << "\n";
         // A NAMED routine still stringifies to its bare name (`~&infix:<+>` is
         // "infix:<+>"); only a block or an anonymous routine yields "".
-        return block || !v.code() ? "" : v.code()->name;
+        return block || !v.code() ? "" : v.code()->ci().name;
     }
     // Stringifying a container READS it, so a Proxy runs its FETCH. The subscript
     // path deliberately hands back the container (that is how a write reaches
@@ -2446,17 +2474,17 @@ const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::str
     }
     if (top->shadowsAttrs == 0) return bare;
     if (!rc) rc = tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code ? tctx_.curRoutineVal->code() : nullptr;
-    if (!rc || rc->pkg.empty()) return bare;
+    if (!rc || rc->ci().pkg.empty()) return bare;
     ClassInfo* first = nullptr; bool ownerDeclares = false;
     for (ClassInfo* c = top; c; c = c->parent.get())
         for (auto& a : c->attrs)
             if (a.name == bare) {
                 if (!first) first = c;
-                if (c->name == rc->pkg) ownerDeclares = true;
+                if (c->name == rc->ci().pkg) ownerDeclares = true;
                 break;
             }
-    if (!first || !ownerDeclares || first->name == rc->pkg) return bare;
-    buf = rc->pkg + "\x01" + bare;
+    if (!first || !ownerDeclares || first->name == rc->ci().pkg) return bare;
+    buf = rc->ci().pkg + "\x01" + bare;
     return buf;
 }
 
@@ -2476,6 +2504,43 @@ Value& Interpreter::attrParamRef(ObjectData* od, const std::string& pname, const
     return od->attrs[attrSlotFor(od, bare, buf, rc)];
 }
 
+// `my $x where Int|Num` — every assignment asks the constraint, a smartmatch
+// (a Code is called) evaluated in the declaring scope with $_ as the value
+void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
+    if (nm.empty() || nm[0] != '$') return;
+    // Walked by raw pointer: this runs for every scalar assignment, and a
+    // shared_ptr per level was two atomic refcount steps per frame. The owning
+    // pointer is needed only when a constraint is found, to parent its scope.
+    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        {
+            auto wi = en->xr().varWhere.find(nm);
+            if (wi != en->xr().varWhere.end()) {
+                if (rhs.t == VT::Nil) return;   // Nil resets to the default
+                std::shared_ptr<Env> owner = tctx_.cur;
+                while (owner.get() != en) owner = owner->parent;
+                auto wenv = makeSlabShared<Env>();
+                wenv->parent = owner;
+                wenv->define("$_", rhs);
+                auto saved = tctx_.cur; tctx_.cur = wenv;
+                bool ok;
+                try {
+                    Value cv = eval(const_cast<Expr*>(wi->second));
+                    if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{rhs}));
+                    else ok = boolify(smartmatchValue("~~", rhs, cv));
+                } catch (...) { tctx_.cur = saved; throw; }
+                tctx_.cur = saved;
+                if (!ok)
+                    throwTypedV("X::TypeCheck::Assignment",
+                        {{"got", rhs}, {"expected", Value::typeObj("<anon>")}, {"symbol", Value::str(nm)}},
+                        "Type check failed in assignment to " + nm + "; expected <anon> but got " +
+                        rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
+                return;
+            }
+        }
+        if (en->local(nm)) return;
+    }
+}
+
 // `$o!Pkg::meth` from outside Pkg: only a package Pkg `trusts` may call it.
 // (Roles are not judged: their methods run as the class that composes them.)
 void Interpreter::checkPrivatePermission(const std::string& qualified) {
@@ -2488,7 +2553,7 @@ void Interpreter::checkPrivatePermission(const std::string& qualified) {
     ClassInfo* target = ti->second.get();
     std::string caller;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code())
-        caller = tctx_.curRoutineVal->code()->pkg;
+        caller = tctx_.curRoutineVal->code()->ci().pkg;
     ClassInfo* callerCls = nullptr;
     if (!caller.empty() && caller != "GLOBAL") {
         auto ci = classes_.find(caller);
@@ -2514,7 +2579,7 @@ void Interpreter::requirePrivateCallScope(const std::string& name) {
     if (tctx_.cur->findSelf()) return;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
         tctx_.curRoutineVal->code()) {
-        const std::string& pkg = tctx_.curRoutineVal->code()->pkg;
+        const std::string& pkg = tctx_.curRoutineVal->code()->ci().pkg;
         if (!pkg.empty() && pkg != "GLOBAL") {
             auto pit = classes_.find(pkg);
             if (pit != classes_.end() && pit->second &&
@@ -2531,7 +2596,7 @@ Value* Interpreter::pkgRelativeRoutine(const std::string& name) {
     if (name.find("::") == std::string::npos || !tctx_.cur) return nullptr;
     std::string pre;
     if (tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code())
-        pre = tctx_.curRoutineVal->code()->pkg;
+        pre = tctx_.curRoutineVal->code()->ci().pkg;
     if (pre == "GLOBAL") pre.clear();
     if (pre.empty() && !tctx_.pkgPrefix.empty()) pre = tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2);
     while (!pre.empty()) {
@@ -2674,7 +2739,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     // adjacent pair must hold
     if (!scan && tctx_.cur && items.size() >= 2)
         if (Value* uf = tctx_.cur->find("&infix:<" + op + ">"))
-            if (uf->t == VT::Code && uf->code() && uf->code()->assocChain) {
+            if (uf->t == VT::Code && uf->code() && uf->code()->ci().assocChain) {
                 for (size_t i = 0; i + 1 < items.size(); i++)
                     if (!callCallable(*uf, ValueList{items[i], items[i + 1]}).truthy())
                         return Value::boolean(false);
@@ -2684,13 +2749,13 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     // items per step — the .reduce method knows how
     if (tctx_.cur)
         if (Value* uf = tctx_.cur->find("&infix:<" + op + ">"))
-            if (uf->t == VT::Code && uf->code() && !uf->code()->isMultiDispatcher) {
+            if (uf->t == VT::Code && uf->code() && !uf->code()->ci().isMultiDispatcher) {
                 size_t arity = 0;
-                if (uf->code()->params && !uf->code()->params->empty()) {
-                    for (auto& pp : *uf->code()->params)
+                if (uf->code()->ci().params && !uf->code()->ci().params->empty()) {
+                    for (auto& pp : *uf->code()->ci().params)
                         if (!pp.named && !pp.slurpy && !pp.optional && !pp.defaultVal) arity++;
                 } else
-                    for (auto& ph : uf->code()->placeholders)
+                    for (auto& ph : uf->code()->ci().placeholders)
                         if (!ph.empty() && ph.find(':') == std::string::npos) arity++;
                 if (arity > 2) {
                     Value lst = Value::array(items); lst.isList = true;
@@ -2848,7 +2913,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         for (size_t k = items.size() - 1; k-- > 0; ) {
             if (op == "=>") { // `[=>] 1,2,3` keeps the Int keys (like Z=>)
                 Value p = Value::pair(items[k].toStr(), acc);
-                if (items[k].t != VT::Str) p.pairKeyM() = std::make_shared<Value>(items[k]);
+                if (items[k].t != VT::Str) p.setPairKey(items[k]);
                 acc = p;
             }
             else acc = applyBinOp(op, items[k], acc);

@@ -1588,12 +1588,12 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         const Value* f = env ? env->find(s->callKeys[c]) : nullptr;   // (find walks the whole chain)
         if (!f || f->t != VT::Code || !f->code()) continue;   // a builtin, or not a routine
         auto rwParams = [](const Value& v) {
-            if (v.t != VT::Code || !v.code() || !v.code()->params) return false;
-            for (auto& p : *v.code()->params) if (p.isRw || p.isRaw) return true;
+            if (v.t != VT::Code || !v.code() || !v.code()->ci().params) return false;
+            for (auto& p : *v.code()->ci().params) if (p.isRw || p.isRaw) return true;
             return false;
         };
         bool bad = rwParams(*f);
-        if (f->code()->isMultiDispatcher)
+        if (f->code()->ci().isMultiDispatcher)
             for (auto& c : f->code()->cold().candidates) bad = bad || rwParams(c);
         if (bad) return refuse(s, "the loop calls " + nm + ", which binds an argument `is rw` or `is raw`");
     }

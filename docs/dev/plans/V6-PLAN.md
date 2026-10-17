@@ -292,12 +292,26 @@ In order of evidence per cost:
 2. **Inline storage for `Env::vars`.** Four stable slots with spill, and the
    86 `make_shared<Env>` sites moved onto the slab. It accounts for 99% of the
    mallocs in `for %h.kv -> $k, $v` and 30% of those in `objects`.
+   *Done 2026-10-16* (dca29704), without the inline slots. INTERP-SPEED task 7
+   had already pooled the frames, so a re-measure over 24 shapes found only
+   three that allocated per iteration. A bare block's `$_` map node now comes
+   from the slab (`VarMap` takes `SlabAlloc`), and so does every `Env` (114
+   sites). A body that cannot reach its `state` frame (a whitelist scan,
+   decided once) no longer gets one. `.map({ $_ * 2 })` 1 -> 0 mallocs and
+   −8.9% instructions per element; `try { }` 1 -> 0 and −12.5%.
 3. **Small Rats inline.** The numerator lives in `i` and the denominator in the
    `n` word, promoted to BigInt on overflow; there are 154 `ratN`/`ratD` sites.
    A first step is two inline BigInt limbs, allocated from the slab, which
    takes four mallocs per Rat operation to none.
+   *2026-10-15:* re-measured, Rat arithmetic already makes no malloc per
+   operation (the slab work since); the inline form is a memory question now,
+   not an allocation one.
 4. **Pairs with an inline Int/Bool key,** and `pairVal` allocated through
    `makePayload`. There are 83 `make_shared<Value>` sites that bypass the slab.
+   *Done 2026-10-15* (9b3ed082) for Int keys: a plain Int key sits in the
+   Pair's own word (keyInt); `pairVal` was already a payload. 100k Int-keyed
+   Pairs 303k -> 104k mallocs, `(^100_000).pairs` -45% instructions. Bool keys
+   still take the cold block.
 5. **`ObjectData::boxed` behind a pointer.** It is 128 of the 280 bytes and is
    used only for mixins over non-objects.
    *Done 2026-10-01:* a lazily allocated slot behind `ObjectData::boxed()`;
@@ -311,6 +325,9 @@ In order of evidence per cost:
    (candidates, native-call state, wrappers, pod, `is DEPRECATED`, the return
    type, `.assuming`'s signature) moved to CallableCold behind one pointer;
    Callable 704 -> 424 bytes, 100k kept closures 125.6 -> 94.4 MB peak.
+   *Step 2, done* (6d67f0cd): everything about the code in a copy-on-write
+   CodeInfo, built once per block and shared by its closures; Callable 88
+   bytes, 100k kept closures 61.6 MB, closure creation -5% instructions.
 8. **Slim `VarExpr`** (384 bytes on the heap; 23% of a large program's AST) by
    moving its declaration-only fields behind a pointer. *Done 2026-10-15*
    (28989c10): VarDeclInfo, reached through `d()`/`dm()`; 400 -> 136 bytes,
@@ -322,6 +339,10 @@ In order of evidence per cost:
 10. **The endgame** ([VALUE32-PLAN.md](VALUE32-PLAN.md)):
     - design A: *landed at 80 bytes* (22605246), −2.6% mean and a third less
       memory; the step to 72 measured +1.8% and was not kept, so A ends there
+    - B or C for the string: *measured 2026-10-15*, C (tools/str-census.md).
+      B adds 7–17% allocations across bench and Roast, and up to several
+      times that on string programs. C adds 0.5%. C's 16-byte string takes
+      `Value` from 80 to 64 bytes and is the next step
     - then the question the plan leaves open, whether values stop being
       refcounted; that is also the answer to reference cycles
 

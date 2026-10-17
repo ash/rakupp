@@ -103,6 +103,53 @@ struct PtrCensusDump {
 static PtrCensusDump g_ptrCensusDump;
 } // namespace rakupp
 #endif
+#ifdef RAKUPP_STR_CENSUS
+#include <atomic>
+#include <cstdlib>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#endif
+namespace rakupp {
+// Six length bands: empty, 1-7, 8-15, 16-22, 23-63 (shared bodies from 23 on),
+// 64 and over. Atomic and relaxed: written from every thread.
+static int strBand(size_t n) { return n == 0 ? 0 : n < 8 ? 1 : n < 16 ? 2 : n < 23 ? 3 : n < 64 ? 4 : 5; }
+static std::atomic<unsigned long long> g_strTake[6], g_strCopyInline[6], g_strCopyShared[6], g_strLife[6], g_strLit[6];
+static thread_local int t_strCenLit = 0;
+StrCenLit::StrCenLit() { t_strCenLit++; }
+StrCenLit::~StrCenLit() { t_strCenLit--; }
+void strCensusLife(size_t n) { g_strLife[strBand(n)].fetch_add(1, std::memory_order_relaxed); }
+void strCensusTake(size_t n) {
+    g_strTake[strBand(n)].fetch_add(1, std::memory_order_relaxed);
+    if (t_strCenLit) g_strLit[strBand(n)].fetch_add(1, std::memory_order_relaxed);
+}
+void strCensusCopy(size_t n, bool shared) {
+    (shared ? g_strCopyShared : g_strCopyInline)[strBand(n)].fetch_add(1, std::memory_order_relaxed);
+}
+// One line per run, appended to $RAKUPP_STR_CENSUS_OUT (stderr without it):
+// the pid (to join a per-process malloc count on), the label in
+// $RAKUPP_STR_CENSUS_LABEL or else the last argument, then made / copied-inline /
+// copied-shared / inline texts written (one per body design B would make) /
+// made by a string literal's evaluation, six bands each.
+struct StrCensusDump {
+    ~StrCensusDump() {
+        const char* out = std::getenv("RAKUPP_STR_CENSUS_OUT");
+        FILE* f = out ? std::fopen(out, "a") : stderr;
+        if (!f) return;
+        const char* lab = std::getenv("RAKUPP_STR_CENSUS_LABEL");
+#ifdef __APPLE__
+        if (!lab && *_NSGetArgc() > 1) lab = (*_NSGetArgv())[*_NSGetArgc() - 1];
+#endif
+        std::fprintf(f, "%d\t%s", (int)getpid(), lab ? lab : "-");
+        for (auto* a : {g_strTake, g_strCopyInline, g_strCopyShared, g_strLife, g_strLit})
+            for (int b = 0; b < 6; b++) std::fprintf(f, "\t%llu", a[b].load(std::memory_order_relaxed));
+        std::fprintf(f, "\n");
+        if (out) std::fclose(f);
+    }
+};
+static StrCensusDump g_strCensusDump;
+} // namespace rakupp
+#endif
 #include "Unicode.h"     // uniGeneralCategory (magic-increment window over non-ASCII)
 #include <algorithm>
 #include <cfloat>
@@ -198,7 +245,7 @@ bool g_strViewsForced = [] {
 Ref<const StrBody> CowStr::forcedView(const std::string& x) { return freshView(x.data(), x.size(), nullptr, 0); }
 
 void CowStr::appendTextSlow(const char* x, size_t n) {
-    if (!p_) { s_.append(x, n); grown(); return; }
+    if (!p_) { RAKUPP_STR_CEN(cenWrite();) s_.append(x, n); grown(); return; }
     if (p_->view) {
         const StrView& v = *p_->view;
         // a view nothing else holds grows where it is, without a new body
@@ -228,6 +275,7 @@ void CowStr::appendTextSlow(const char* x, size_t n) {
     s_ = p_->text;
     s_.append(x, n);
     p_.reset();
+    RAKUPP_STR_CEN(cenWrite();)
     grown();
 }
 
@@ -250,7 +298,8 @@ void CowStr::spliceTail(size_t keep, const std::string& mid, const char* x, size
 
 void CowStr::prependText(const char* x, size_t n) {
     if (!p_) {
-        if (s_.size() + n < kViewMin) { s_.insert(0, x, n); grown(); return; }
+        if (s_.size() + n < kViewMin) { RAKUPP_STR_CEN(cenWrite();) s_.insert(0, x, n); grown(); return; }
+        RAKUPP_STR_CEN(cenEnd();)
         p_ = freshView(x, n, s_.data(), s_.size());
         s_.clear();
         return;
@@ -280,6 +329,7 @@ bool CowStr::joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r) 
     if (!r.p_ || r.p_->size() + n < kViewMin) return false;
     const StrBody& b = *r.p_;
     Ref<const StrBody> nb = b.view ? viewPrepend(x, n, *b.view) : freshView(x, n, b.text.data(), b.text.size());
+    RAKUPP_STR_CEN(out.cenEnd();)
     out.s_.clear();
     out.p_ = std::move(nb);
     return true;
@@ -288,6 +338,7 @@ bool CowStr::joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r) 
 bool CowStr::joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n) {
     if (!l.p_ || !l.p_->view || l.p_->view->len + n < kViewMin) return false;
     Ref<const StrBody> nb = viewAppend(*l.p_->view, x, n);
+    RAKUPP_STR_CEN(out.cenEnd();)
     out.s_.clear();
     out.p_ = std::move(nb);
     return true;
@@ -310,6 +361,7 @@ bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
         if (len * 4 < b.text.size()) return false;
         nb = freshView(b.text.data() + off, len, nullptr, 0);
     }
+    RAKUPP_STR_CEN(out.cenEnd();)
     out.s_.clear();
     out.p_ = std::move(nb);
     return true;
@@ -373,6 +425,7 @@ PRef<ValueList> Value::packedUnpackS() const {
 }
 
 const CallableCold kNoCallableCold{};   // what a Callable without a cold block reads (Value.h)
+CodeInfo kNoCodeInfo;   // …and what one with no code of its own reads
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ObjMethodStrFn g_objMethodStr = nullptr; // installed by InterpreterCalls.cpp (see Value.h)
@@ -833,8 +886,8 @@ std::string Value::toStr() const {
         const Value* c = get("code");
         std::string kind = "block", name = "<unit>";
         if (c && c->t == VT::Code && c->code()) {
-            name = c->code()->name;
-            kind = c->code()->isMethod ? "method" : c->code()->isBlock || name.empty() ? "block" : "sub";
+            name = c->code()->ci().name;
+            kind = c->code()->ci().isMethod ? "method" : c->code()->ci().isBlock || name.empty() ? "block" : "sub";
         }
         const Value* f = get("file");
         const Value* l = get("line");
@@ -1045,9 +1098,9 @@ std::string Value::toStr() const {
         // the generic form (Rakudo prints an address there, which is not
         // reproducible and not worth reproducing)
         // …and a METHOD as its bare name: `C.^methods` says (foo bar)
-        case VT::Code: return code() && !code()->name.empty() &&
-                              code()->name.rfind("anon", 0) != 0
-                            ? (code()->isMethod ? std::string() : std::string("&")) + code()->name
+        case VT::Code: return code() && !code()->ci().name.empty() &&
+                              code()->ci().name.rfind("anon", 0) != 0
+                            ? (code()->ci().isMethod ? std::string() : std::string("&")) + code()->ci().name
                             : "sub { ... }";
         case VT::Whatever: return "*";
         case VT::Object:
@@ -1213,8 +1266,8 @@ std::string Value::gist() const {
             // rendering (`(1 2) => 3`), and a Pair key is parenthesised so the two
             // arrows do not run together (`(red => 2) => apples`). Only the KEY —
             // Rakudo leaves a Pair VALUE bare.
-            std::string k = pairKey() ? (pairKey()->t == VT::Nil ? std::string("Nil") : pairKey()->gist()) : s;
-            if (pairKey() && pairKey()->t == VT::Pair) k = "(" + k + ")";
+            std::string k = hasPairKey() ? (nonStrKey().t == VT::Nil ? std::string("Nil") : nonStrKey().gist()) : s;
+            if (hasPairKey() && nonStrKey().t == VT::Pair) k = "(" + k + ")";
             return k + " => " + (pairVal() ? pairVal()->gist() : "");
         }
         case VT::Str:
@@ -1437,7 +1490,7 @@ std::string Value::gist() const {
             return mg(*this, 0);
         }
         case VT::Code:
-            if (code() && code()->isWhateverCode) return "WhateverCode.new"; // say (* > 2)
+            if (code() && code()->ci().isWhateverCode) return "WhateverCode.new"; // say (* > 2)
             return toStr();
         default: return toStr();
     }
@@ -1519,10 +1572,10 @@ std::string Value::typeName() const {
                             if (it != hash()->end()) return it->second.toStr();
                         }
                         return hashKind.empty() ? std::string("Hash") : hashKind.str(); // the TYPE name (gist is via toStr)
-        case VT::Code:  return code() && code()->isWhateverCode ? "WhateverCode"
-                             : code() && code()->isRegexRoutine ? "Regex"
-                             : code() && code()->isSubmethod ? "Submethod"
-                             : code() && code()->isMethod ? "Method" : code() && code()->isBlock ? "Block" : "Sub";
+        case VT::Code:  return code() && code()->ci().isWhateverCode ? "WhateverCode"
+                             : code() && code()->ci().isRegexRoutine ? "Regex"
+                             : code() && code()->ci().isSubmethod ? "Submethod"
+                             : code() && code()->ci().isMethod ? "Method" : code() && code()->ci().isBlock ? "Block" : "Sub";
         case VT::Rat:   return fatRat() ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
@@ -2027,8 +2080,8 @@ static int valueCmpImpl(const Value& a, const Value& b) {
     // Compare the TYPED key (pairKey — an Int/Num/… preserved from `1 => 2`),
     // not the stringified `s`: otherwise `12 => …` sorts before `8 => …`.
     if (a.t == VT::Pair && b.t == VT::Pair) {
-        Value ak = a.pairKey() ? *a.pairKey() : Value::str(a.s);
-        Value bk = b.pairKey() ? *b.pairKey() : Value::str(b.s);
+        Value ak = a.pairKeyV();
+        Value bk = b.pairKeyV();
         int k = valueCmp(ak, bk);
         if (k != 0) return k;
         Value av = a.pairVal() ? *a.pairVal() : Value::any();

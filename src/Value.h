@@ -136,6 +136,21 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
 // debug mode that proves the readers, as RAKUPP_NO_KERNELS does the kernels.
 extern bool g_strViewsForced;
 
+// VALUE32-PLAN's B-or-C measurement (tools/str-census.md): what a Value's
+// string costs by length band — the strings made, the copies, and the inline
+// texts an instance wrote itself, which is what design B would give a body of
+// its own. Compiled out of every normal build; Value.cpp dumps it at exit.
+#ifdef RAKUPP_STR_CENSUS
+#define RAKUPP_STR_CEN(...) __VA_ARGS__
+void strCensusTake(size_t n);
+void strCensusCopy(size_t n, bool shared);
+void strCensusLife(size_t n);
+// held around the evaluation of a string literal: the strings take() makes
+// meanwhile are re-made literals, which B could share from the AST instead
+struct StrCenLit { StrCenLit(); ~StrCenLit(); };
+#else
+#define RAKUPP_STR_CEN(...)
+#endif
 class CowStr {
     // Exactly one of these carries the value: `p_` when set, otherwise `s_`.
     std::string s_;
@@ -144,6 +159,14 @@ class CowStr {
     // it saves (an allocation per string). Above it, copying is the thing we are
     // here to avoid.
     static constexpr size_t kPromote = 23;
+#ifdef RAKUPP_STR_CENSUS
+    // `fresh_`: this instance wrote its inline text (B would hold a body for
+    // it). `shared_`: copied since, so B's next write detaches into another.
+    bool fresh_ = false;
+    mutable bool shared_ = false;
+    void cenEnd() { if (fresh_ && !p_ && !s_.empty()) strCensusLife(s_.size()); fresh_ = shared_ = false; }
+    void cenWrite() { if (shared_ || !fresh_) { cenEnd(); fresh_ = true; } }
+#endif
 public:
     // The same string, cheaply: one shared body, or the same short text.
     bool sameRep(const CowStr& o) const {
@@ -152,11 +175,16 @@ public:
 private:
 
     void take(std::string x) {
+#ifdef RAKUPP_STR_CENSUS
+        strCensusTake(x.size());
+        cenEnd();
+#endif
         if (x.size() >= kPromote) {
             p_ = g_strViewsForced ? forcedView(x) : makeRef<const StrBody>(std::move(x));
             s_.clear();
         }
         else { s_ = std::move(x); p_.reset(); }
+        RAKUPP_STR_CEN(fresh_ = !p_;)
     }
     static Ref<const StrBody> forcedView(const std::string& x);
 
@@ -169,10 +197,27 @@ public:
     // actually want to convert.
     explicit CowStr(const char* x) { take(std::string(x)); }
     explicit CowStr(std::string x) { take(std::move(x)); }
+#ifdef RAKUPP_STR_CENSUS
+    CowStr(const CowStr& o) : s_(o.s_), p_(o.p_) { strCensusCopy(o.size(), (bool)o.p_); o.shared_ = true; }
+    CowStr& operator=(const CowStr& o) {
+        if (this == &o) return *this;
+        cenEnd(); s_ = o.s_; p_ = o.p_; strCensusCopy(o.size(), (bool)o.p_); o.shared_ = true; return *this;
+    }
+    CowStr(CowStr&& o) noexcept : s_(std::move(o.s_)), p_(std::move(o.p_)), fresh_(o.fresh_), shared_(o.shared_) {
+        o.fresh_ = o.shared_ = false;
+    }
+    CowStr& operator=(CowStr&& o) noexcept {
+        if (this == &o) return *this;
+        cenEnd(); s_ = std::move(o.s_); p_ = std::move(o.p_); fresh_ = o.fresh_; shared_ = o.shared_;
+        o.fresh_ = o.shared_ = false; return *this;
+    }
+    ~CowStr() { cenEnd(); }
+#else
     CowStr(const CowStr&) = default;
-    CowStr(CowStr&&) noexcept = default;
     CowStr& operator=(const CowStr&) = default;
+    CowStr(CowStr&&) noexcept = default;
     CowStr& operator=(CowStr&&) noexcept = default;
+#endif
     CowStr& operator=(std::string x) { take(std::move(x)); return *this; }
     CowStr& operator=(const char* x) { take(std::string(x)); return *this; }
 
@@ -189,7 +234,7 @@ public:
     // must outlive the call. Left inline, a short buffer could only give C a
     // pointer to a temporary COPY — mysql_stmt_bind_result filled memory no one
     // read, and the copy was recycled underneath the driver.
-    void promote() { if (!p_) { p_ = makeRef<const StrBody>(std::move(s_)); s_.clear(); } }
+    void promote() { if (!p_) { p_ = makeRef<const StrBody>(std::move(s_)); s_.clear(); RAKUPP_STR_CEN(fresh_ = shared_ = false;) } }
 
     // Write access that KEEPS the shared body. A Buf is a reference-semantics
     // container in Raku — `my $c = $b; $c[0] = 9` is visible through `$b` — and
@@ -199,7 +244,7 @@ public:
     // scanning flags are invalidated: the byte-offset index tables are built by
     // positional STRING ops, which no byte buffer runs.
     char* mutInPlace() {
-        if (!p_) return s_.empty() ? nullptr : &s_[0];
+        if (!p_) { RAKUPP_STR_CEN(cenWrite();) return s_.empty() ? nullptr : &s_[0]; }
         if (p_->view) p_ = makeRef<const StrBody>(std::string(p_->str()));   // (a Buf is never a view)
         StrBody* b = const_cast<StrBody*>(p_.get());
         b->allAscii.store(-1, std::memory_order_relaxed);
@@ -229,6 +274,7 @@ public:
             }
             s_ = p_->str(); p_.reset();
         }
+        RAKUPP_STR_CEN(cenWrite();)
         return s_;
     }
     // The cache lives on the shared body, so it survives only for promoted
@@ -257,7 +303,7 @@ public:
     std::string::const_iterator end()   const { return str().end(); }
 
     // Mutating forwards — each detaches.
-    void clear() { p_.reset(); s_.clear(); }
+    void clear() { RAKUPP_STR_CEN(cenEnd();) p_.reset(); s_.clear(); }
     void pop_back() { mut().pop_back(); }
     void resize(size_t n) { mut().resize(n); }
     void resize(size_t n, char c) { mut().resize(n, c); }
@@ -505,12 +551,13 @@ struct CallableCold {
     std::string retType;
     ValueList wrappers;                              // &routine.wrap({…}) stack (outermost last); .unwrap pops
     bool isNative = false;                            // `is native` — a C FFI call
-    std::string nativeLib, nativeSym;                // library ("" = default namespace) and C symbol
+    std::string nativeLib;                           // library ("" = default namespace)
+    mutable std::string nativeSym;                   // …and the C symbol (a computed one is filled at first call)
     std::string nativeLibSub;                        // `is native(&sub)` — sub called at runtime for the lib path
     const Expr* nativeLibExpr = nullptr;             // `is native(EXPR)` whose declaration-time eval failed —
                                                      // retried once at first call (AST outlives the interpreter)
-    const Expr* nativeSymExpr = nullptr;             // ditto for `is symbol(EXPR)` — a computed C symbol name
-    void* nativeSymCache = nullptr;                   // resolved fn pointer — dlopen/dlsym once, not per call
+    mutable const Expr* nativeSymExpr = nullptr;     // ditto for `is symbol(EXPR)` — a computed C symbol name
+    mutable void* nativeSymCache = nullptr;           // resolved fn pointer — dlopen/dlsym once, not per call
                                                       // (5 dlopen candidates per call cost a flat ~67 µs)
     // Prepared libffi call interface, built once per signature. ffi_prep_cif is
     // ~80 ns — 20% of a whole crossing — so it must not run per call. Opaque
@@ -522,7 +569,7 @@ struct CallableCold {
         CifSlot() = default;
         CifSlot(const CifSlot&) {}
     };
-    CifSlot nativeCifCache;
+    mutable CifSlot nativeCifCache;
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
     std::string podTrail;                             // …its `#=` part alone
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
@@ -531,29 +578,41 @@ struct CallableCold {
 };
 extern const CallableCold kNoCallableCold;   // Value.cpp: every field at its default
 
-struct Callable {
+// A routine's CODE, apart from the closure it was made in (SPEED-BACKLOG 8,
+// V6-PLAN P3.7): the signature and body it borrows from the AST, what was
+// declared about it, its builtin, the cold block, and the caches decided at
+// its first call. Callables share one copy-on-write: Callable::ci() reads it,
+// Callable::ciM() gives that Callable its own before a write, so every
+// Callable still behaves as if it owned all of this. The caches are `mutable`
+// and fill in place on the shared copy — they depend only on what is here,
+// which the sharers hold identically until one of them writes.
+struct CodeInfo : RefCounted {
     std::string pkg; // enclosing package name ("" = GLOBAL) — &?ROUTINE.package
     std::string name;
     const std::vector<Param>* params = nullptr;   // borrowed from AST
     const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
-    DecidedOnce<signed char> hoistNeed{-1};        // see Interpreter::hoistExprDecls (-1 = undecided)
+    mutable DecidedOnce<signed char> hoistNeed{-1};        // see Interpreter::hoistExprDecls (-1 = undecided)
     // The body's entry and exit work, as Block::entryWork has it for a block
     // (-1 = not yet scanned): 0 lets a call skip every phaser, CATCH and
     // hoisting step (see bodyEntryWork in InterpreterCore.cpp).
-    DecidedOnce<signed char> bodyWork{-1};
+    mutable DecidedOnce<signed char> bodyWork{-1};
     // 1 = a plain sub: every step of a call that its shape rules out can be
     // left out (Interpreter::callPlainSub); 0 = not; -1 = not yet decided.
-    DecidedOnce<signed char> plainShape{-1};
-    KernelSlot intKernel;
+    mutable DecidedOnce<signed char> plainShape{-1};
+    mutable KernelSlot intKernel;
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
     // parameters builds that array only then. -1 = not yet scanned.
-    DecidedOnce<signed char> atArgsScan{-1};
+    mutable DecidedOnce<signed char> atArgsScan{-1};
     // 1 = the body may touch the topic (bodyMayUseTopic): only then does a call
     // give the routine a `$_` of its own. -1 = not yet scanned.
     mutable DecidedOnce<signed char> topicScan{-1};
     // a BLOCK that may read `@_` (Interpreter::blockTakesAtArgs, a deep scan): 1,
     // or 0 and a call gives it none. -1 = not yet scanned.
-    DecidedOnce<signed char> blockAtArgs{-1};
+    mutable DecidedOnce<signed char> blockAtArgs{-1};
+    // a body that may reach its `state` frame (Interpreter::stateFrameOf, a deep
+    // scan): 1, or 0 and a call hangs its frame from the closure itself, with no
+    // `state` frame made at all. -1 = not yet scanned.
+    mutable DecidedOnce<signed char> stateFrameNeed{-1};
     // Three more static properties of the AST that callCallableRaw used to
     // recompute on EVERY call. Each is cheap once and worthless repeated; a
     // 73,603-call parse pays for them 73,603 times. -1/undecided as above.
@@ -565,36 +624,36 @@ struct Callable {
     // a reader could see arityShape == 1 while the bounds were still 0 and
     // reject a perfectly good call. ThreadSanitizer had been reporting it from
     // t/stress/parallel-map.raku, the case that shares nothing at all.
-    PublishedOnce<signed char> arityShape{-1};     // 1 = the arity pre-check applies to this callable
-    DecidedOnce<int> arityMaxPos{0}, arityReqPos{0}; // …and its precomputed bounds (valid when arityShape == 1)
-    DecidedOnce<bool> arityUnbounded{false};
+    mutable PublishedOnce<signed char> arityShape{-1};     // 1 = the arity pre-check applies to this callable
+    mutable DecidedOnce<int> arityMaxPos{0}, arityReqPos{0}; // …and its precomputed bounds (valid when arityShape == 1)
+    mutable DecidedOnce<bool> arityUnbounded{false};
     // Pad resolution (PADS-PLAN.md), decided at first call. padReady publishes
     // padLayout (built under the interpreter's pad mutex; the flag is the
     // acquire edge for threads that did not build it). The layout itself is
     // cached per BODY on the interpreter — two Callables sharing one body
     // (.assuming wrappers) must agree on slot numbers, because the slot
     // annotations live on the shared AST nodes.
-    PublishedOnce<signed char> padReady{-1};       // 1 = padLayout set (may be null: owner has no pads)
-    std::shared_ptr<const PadLayout> padLayout;
-    PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
-    PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
-    PublishedOnce<signed char> protoTypedScan{-1}; // 1 = a multi group whose proto types a positional
-    PublishedOnce<signed char> protoShapeScan{-1}; // 1 = a multi SUB group whose proto bounds the positionals (arity or |c(…))
+    mutable PublishedOnce<signed char> padReady{-1};       // 1 = padLayout set (may be null: owner has no pads)
+    mutable std::shared_ptr<const PadLayout> padLayout;
+    mutable PublishedOnce<signed char> catchScan{-1};      // 1 = body holds an inline CATCH block
+    mutable PublishedOnce<signed char> phaserScan{-1};     // 1 = body holds an ENTER/LEAVE/… phaser block
+    mutable PublishedOnce<signed char> protoTypedScan{-1}; // 1 = a multi group whose proto types a positional
+    mutable PublishedOnce<signed char> protoShapeScan{-1}; // 1 = a multi SUB group whose proto bounds the positionals (arity or |c(…))
     // The registered END phasers nested anywhere in this body (issue #70): every
     // call re-captures them, so they run at exit in the scope of the LAST call.
     // Decided at first call — the registry that knows them is shared, this
     // answer is not — and published the way padLayout is: the payload is
     // written under the interpreter's END mutex, the flag releases it.
-    PublishedOnce<signed char> endsScan{-1};       // 1 = endsWithin is set
-    std::shared_ptr<const std::vector<Block*>> endsWithin;
-    DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
+    mutable PublishedOnce<signed char> endsScan{-1};       // 1 = endsWithin is set
+    mutable std::shared_ptr<const std::vector<Block*>> endsWithin;
+    mutable DecidedOnce<Stmt*> catchBlkCache{nullptr};     // …which one (valid when catchScan == 1)
     // …and the body's CONTROL block, which is a DIFFERENT thing: it handles
     // control exceptions (warn, take, emit) and must not swallow an ordinary
     // throw the way a CATCH does. execBlock has always told the two apart; the
     // callable paths lumped them together, so a `CONTROL` declared in a `do {}`
     // or a sub body was registered nowhere and its warnings went to stderr.
-    PublishedOnce<signed char> controlScan{-1};    // 1 = body holds an inline CONTROL block
-    DecidedOnce<Stmt*> controlBlkCache{nullptr};   // …which one (valid when controlScan == 1)
+    mutable PublishedOnce<signed char> controlScan{-1};    // 1 = body holds an inline CONTROL block
+    mutable DecidedOnce<Stmt*> controlBlkCache{nullptr};   // …which one (valid when controlScan == 1)
     IStr declFile;                                 // source file the routine was declared in (backtrace .file); interned: a closure copies 4 bytes, not the path
     int declLine = 0;                              // …and the line, for `&foo.line`
     // Language revision this routine was DECLARED under (0=6.c, 1=6.d, 2=6.e),
@@ -618,20 +677,6 @@ struct Callable {
     // injection of the invocant class's bindings (which cannot tell R[Int]
     // from R[Str]) is skipped. Shares the padding after langRev.
     bool roleConcrete = false;
-    std::shared_ptr<Env> closure;
-    // `state` storage and the flag that publishes it, held together so that a
-    // COPY of a routine starts with neither. `&f.clone` is a new routine and
-    // Rakudo gives it fresh `state` slots rather than the origin's — and the
-    // holder is also what makes Callable copyable at all, since std::once_flag
-    // is not. Copy-ASSIGNMENT stays deleted (as it already was).
-    struct StateSlot {
-        std::shared_ptr<Env> env;                  // persistent storage for `state` vars (across calls)
-        std::once_flag init;                       // env is created exactly once (thread-safe under parallel calls)
-        std::atomic<bool> firstDone{false};        // the body's FIRST phasers have run (once per clone)
-        StateSlot() = default;
-        StateSlot(const StateSlot&) {}             // a clone starts with no state env of its own, FIRST not yet run
-    };
-    StateSlot state;
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted), then $:n nameds (source order)
     // A compiled block whose body is ONE `<=>`/`cmp`/`leg` between its two
@@ -647,21 +692,11 @@ struct Callable {
         for (auto& p : placeholders) if (p.size() > 1 && p[1] != ':') n++;
         return n;
     }
-    // A multi dispatcher's monomorphic cache: the argument shape of a dispatch
-    // it could cache and the candidate that won it (Interpreter's
-    // dispatchCacheLookup). Not copied with the Callable, freed with it.
-    struct DispatchCacheSlot {
-        std::atomic<const void*> p{nullptr};
-        DispatchCacheSlot() = default;
-        DispatchCacheSlot(const DispatchCacheSlot&) {}
-        DispatchCacheSlot& operator=(const DispatchCacheSlot&) { return *this; }
-        ~DispatchCacheSlot();
-    } dispatchCache;
     // whether the candidate set is one a cached answer can stand for (every
     // parameter nominal and positional): -1 undecided, else the decision for
     // dispatchCacheN candidates
-    DecidedOnce<signed char> dispatchCacheable{-1};
-    DecidedOnce<uint32_t> dispatchCacheN{0};
+    mutable DecidedOnce<signed char> dispatchCacheable{-1};
+    mutable DecidedOnce<uint32_t> dispatchCacheN{0};
     // checkRetType's ACCEPTING shortcut for `--> T` / `--> T:D`, resolved once
     // per symbol generation: retFastKey is (generation + 1) << 3 | kind | 'D'
     // bit — kind 0 none (the full check), 1 a user class (retFastCls), 2 Bool.
@@ -669,36 +704,12 @@ struct Callable {
     // refusal included, takes the full check.
     mutable DecidedOnce<uint64_t> retFastKey{0};
     mutable DecidedOnce<ClassInfo*> retFastCls{nullptr};
-    PRef<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
-                                                   // dispatch group is synthesized; .dispatcher reads it)
     bool isMultiDispatcher = false;
     bool isMultiCandidate = false;                  // declared `multi` — dispatch may pass it over
     bool isProto = false;                           // `proto` — a dispatch group header, not a candidate
     bool isProtoBody = false;                       // …and its body is more than a bare `{*}`: the proto
                                                     // RUNS around the dispatch, and the `{*}` inside it is
                                                     // where the candidates are chosen
-    // Roles mixed into this routine IN PLACE (`$method does R($v)`, the shape every
-    // method trait_mod uses), with the values that presets gave their attributes.
-    // The Callable is shared with the class's method table, so recording them here
-    // is what makes the mixin visible to a later `^lookup` — boxing the routine
-    // into a fresh object, as the general mixin path does, would leave the trait's
-    // work somewhere nobody can reach.
-    // Behind ONE lazily-allocated pointer: inline, the pair cost ~72 bytes in
-    // the middle of EVERY Callable and pushed the fields every call reads onto
-    // later cache lines, while only a mixin-carrying routine ever uses them
-    // (REVIEW-3.7 batch 3). Copying a Callable deep-copies the holder, exactly
-    // as the inline members copied.
-    struct MixinInfo { std::vector<std::string> roles; std::map<std::string, Value> attrs; };
-    struct MixinPtr {
-        std::unique_ptr<MixinInfo> p;
-        MixinPtr() = default;
-        MixinPtr(const MixinPtr& o) : p(o.p ? std::make_unique<MixinInfo>(*o.p) : nullptr) {}
-        MixinPtr& operator=(const MixinPtr& o) { p = o.p ? std::make_unique<MixinInfo>(*o.p) : nullptr; return *this; }
-        MixinPtr(MixinPtr&&) = default;
-        MixinPtr& operator=(MixinPtr&&) = default;
-    };
-    MixinPtr mixins;                                 // null for every routine without a mixin
-    MixinInfo& mixinsRW() { if (!mixins.p) mixins.p = std::make_unique<MixinInfo>(); return *mixins.p; }
     bool isWhateverCode = false;                    // produced by * currying (composes further)
     long long whateverArity = 0;                    // # of `*` a WhateverCode consumes (`* + *` => 2)
     bool isMethod = false;                          // when invoked via .() the 1st arg is the invocant
@@ -715,7 +726,7 @@ struct Callable {
     bool assocRight = false;                         // `is assoc<right>` — reductions fold from the right
     bool assocNon = false;                           // `is assoc<non>` — an EVAL'd chain of it is refused
     bool assocChain = false;                         // `is assoc<chain>` — a reduction tests each adjacent pair
-    ~Callable();
+    ~CodeInfo();
     // The fields most routines never set (CallableCold): read through cold(),
     // which answers shared defaults for a Callable without a block of its own,
     // written through coldM(), which gives it one. A copy deep-copies the block.
@@ -743,6 +754,88 @@ struct Callable {
     bool hadSig = false;                              // declared with explicit (…) — arity is enforceable
     bool isSigLiteral = false;                        // built by `:( … )` — a bare Signature, not a routine's
                                                       // (an unconstrained param is Mu there, Any on a routine)
+};
+extern CodeInfo kNoCodeInfo;   // Value.cpp: what a Callable with no code of its own reads
+
+// A routine as a value: its code (CodeInfo, shared copy-on-write by every
+// closure made from the same code) and what belongs to this one object — the
+// scope it closed over, its `state` storage, a dispatcher's cache, the proto
+// it belongs to, and roles mixed into it in place.
+struct Callable {
+    // The CodeInfo: never null — the shared default until something is
+    // written, then a counted block (Ref's discipline, on the slab) that
+    // copies of this Callable share until one of them writes.
+    struct CodeInfoPtr {
+        CodeInfo* p = &kNoCodeInfo;
+        bool own = false;
+        CodeInfoPtr() = default;
+        CodeInfoPtr(const CodeInfoPtr& o) noexcept : p(o.p), own(o.own) { if (own) p->refs_.fetch_add(1, std::memory_order_relaxed); }
+        CodeInfoPtr& operator=(const CodeInfoPtr& o) noexcept {
+            if (p != o.p) { if (o.own) o.p->refs_.fetch_add(1, std::memory_order_relaxed); release(); p = o.p; own = o.own; }
+            return *this;
+        }
+        CodeInfoPtr(CodeInfoPtr&& o) noexcept : p(o.p), own(o.own) { o.p = &kNoCodeInfo; o.own = false; }
+        ~CodeInfoPtr() { release(); }
+        void release() noexcept;
+        CodeInfo& mut();
+    } info;
+    const CodeInfo& ci() const { return *info.p; }
+    CodeInfo& ciM() { return info.mut(); }
+    // whether this Callable is the CodeInfo's only holder (the cycle collector
+    // can count what the code holds as this routine's own edges only then)
+    bool codeExclusive() const { return info.own && info.p->refs_.load(std::memory_order_acquire) == 1; }
+    const CallableCold& cold() const;
+    bool hasCold() const;
+    CallableCold& coldM();
+    size_t placeholderPos() const;
+    std::shared_ptr<Env> closure;
+    // `state` storage and the flag that publishes it, held together so that a
+    // COPY of a routine starts with neither. `&f.clone` is a new routine and
+    // Rakudo gives it fresh `state` slots rather than the origin's — and the
+    // holder is also what makes Callable copyable at all, since std::once_flag
+    // is not. Copy-ASSIGNMENT stays deleted (as it already was).
+    struct StateSlot {
+        std::shared_ptr<Env> env;                  // persistent storage for `state` vars (across calls)
+        std::once_flag init;                       // env is created exactly once (thread-safe under parallel calls)
+        std::atomic<bool> firstDone{false};        // the body's FIRST phasers have run (once per clone)
+        StateSlot() = default;
+        StateSlot(const StateSlot&) {}             // a clone starts with no state env of its own, FIRST not yet run
+    };
+    StateSlot state;
+    // A multi dispatcher's monomorphic cache: the argument shape of a dispatch
+    // it could cache and the candidate that won it (Interpreter's
+    // dispatchCacheLookup). Not copied with the Callable, freed with it.
+    struct DispatchCacheSlot {
+        std::atomic<const void*> p{nullptr};
+        DispatchCacheSlot() = default;
+        DispatchCacheSlot(const DispatchCacheSlot&) {}
+        DispatchCacheSlot& operator=(const DispatchCacheSlot&) { return *this; }
+        ~DispatchCacheSlot();
+    } dispatchCache;
+    PRef<Callable> dispatcherC;         // the proto a candidate belongs to (set where a
+                                                   // dispatch group is synthesized; .dispatcher reads it)
+    // Roles mixed into this routine IN PLACE (`$method does R($v)`, the shape every
+    // method trait_mod uses), with the values that presets gave their attributes.
+    // The Callable is shared with the class's method table, so recording them here
+    // is what makes the mixin visible to a later `^lookup` — boxing the routine
+    // into a fresh object, as the general mixin path does, would leave the trait's
+    // work somewhere nobody can reach.
+    // Behind ONE lazily-allocated pointer: inline, the pair cost ~72 bytes in
+    // the middle of EVERY Callable and pushed the fields every call reads onto
+    // later cache lines, while only a mixin-carrying routine ever uses them
+    // (REVIEW-3.7 batch 3). Copying a Callable deep-copies the holder, exactly
+    // as the inline members copied.
+    struct MixinInfo { std::vector<std::string> roles; std::map<std::string, Value> attrs; };
+    struct MixinPtr {
+        std::unique_ptr<MixinInfo> p;
+        MixinPtr() = default;
+        MixinPtr(const MixinPtr& o) : p(o.p ? std::make_unique<MixinInfo>(*o.p) : nullptr) {}
+        MixinPtr& operator=(const MixinPtr& o) { p = o.p ? std::make_unique<MixinInfo>(*o.p) : nullptr; return *this; }
+        MixinPtr(MixinPtr&&) = default;
+        MixinPtr& operator=(MixinPtr&&) = default;
+    };
+    MixinPtr mixins;                                 // null for every routine without a mixin
+    MixinInfo& mixinsRW() { if (!mixins.p) mixins.p = std::make_unique<MixinInfo>(); return *mixins.p; }
 };
 
 enum class VT : uint8_t { Nil, Any, Bool, Int, Num, Str, Array, Hash, Code, Range, Pair, Type, Whatever, Object, Rat, Regex, Match, Complex };
@@ -1008,6 +1101,13 @@ struct Value {
     bool namedArg : 1; // a VT::Pair passed as a NAMED arg (written syntactically as k=>v / :k(v) at the callsite). A value pair defaults positional.
     bool natSigned : 1;
     bool natFloat : 1; // native float container (num32): truncates to float32 on assignment
+    // A PAIR whose key is a plain Int holds it HERE, in `i` (a Pair has no
+    // other use for the word), instead of in the cold block's pairKey: the
+    // commonest key that is not a Str — `.pairs`, `.kv`, `$_ => …` over a
+    // range — cost a ValueExt and a make_shared<Value> each (SPEED-BACKLOG
+    // 10). Read a Pair's key through hasPairKey()/pairKeyV()/nonStrKey() and
+    // set it through setPairKey(); pairKeyRaw() does not see an inline one.
+    bool keyInt : 1;
     int natBits : 8;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
     // The tag block (VALUE32-PLAN design A, batch 3): `t` and `pk_` stay
     // whole bytes, then the ten flags and `natBits` as bit-fields — 5 bytes
@@ -1021,7 +1121,7 @@ struct Value {
     ~Value();
     unsigned ptrMask() const {
         return (arr() ? 1u : 0) | (hash() ? 2u : 0) | (code() ? 4u : 0) | (pairVal() ? 8u : 0) |
-               (pairKey() ? 16u : 0) | (obj() ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
+               (pairKeyRaw() ? 16u : 0) | (obj() ? 32u : 0) | (ext() ? 64u : 0) | (big() ? 128u : 0) |
                (ratN() ? 256u : 0) | (ratD() ? 512u : 0) | (shape() ? 1024u : 0);
     }
 #endif
@@ -1040,7 +1140,7 @@ struct Value {
                i == o.i && s.sameRep(o.s) && hashKind == o.hashKind && enumName == o.enumName &&
                enumType == o.enumType && b == o.b && isList == o.isList && itemized == o.itemized &&
                objKeyed == o.objKeyed && readonly == o.readonly && immutableBind == o.immutableBind &&
-               pairValRO == o.pairValRO && namedArg == o.namedArg && natSigned == o.natSigned &&
+               pairValRO == o.pairValRO && namedArg == o.namedArg && natSigned == o.natSigned && keyInt == o.keyInt &&
                natFloat == o.natFloat && natBits == o.natBits;
     }
 
@@ -1181,7 +1281,21 @@ struct Value {
     const std::shared_ptr<BigInt>& big() const { return xr().big; }
     const std::shared_ptr<BigInt>& ratN() const { return xr().ratN; }
     const std::shared_ptr<BigInt>& ratD() const { return xr().ratD; }
-    const std::shared_ptr<Value>& pairKey() const { return xr().pairKey; }
+    // The cold block's key slot: a Pair's key when it is neither the Str in
+    // `s` nor a plain Int held inline (keyInt), and a hash slot's element
+    // (elemKey, below).
+    const std::shared_ptr<Value>& pairKeyRaw() const { return xr().pairKey; }
+    // …and a Pair's key, whatever form it takes: whether it is something other
+    // than the Str in `s`, the key as a Value, and (when hasPairKey()) the
+    // non-Str key itself
+    bool hasPairKey() const { return (keyInt && t == VT::Pair) || xr().pairKey; }
+    Value pairKeyV() const;
+    Value nonStrKey() const;
+    // the key as an object to share (an inline Int is made into one)
+    std::shared_ptr<Value> pairKeyShared() const;
+    // set a Pair's key that is not a Str: a plain Int inline, anything else in
+    // the cold block
+    void setPairKey(Value k);
     // The ELEMENT a hash slot remembers on its stored value (a QuantHash's
     // original element, an object hash's key object). A stored PAIR's pairKey
     // is that Pair's own key, never the slot's: `%h<a> = 1 => 2` must list as
@@ -1205,7 +1319,7 @@ struct Value {
     std::shared_ptr<BigInt>& bigM() { return xw().big; }
     std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
     std::shared_ptr<BigInt>& ratDM() { return xw().ratD; }
-    std::shared_ptr<Value>& pairKeyM() { return xw().pairKey; }
+    std::shared_ptr<Value>& pairKeyRawM() { keyInt = false; return xw().pairKey; }
     std::shared_ptr<Value>& elemDefaultM() { return xw().cw().elemDefault; }
     std::shared_ptr<void>& extM() { return xw().cw().ext; }
     // A Seq's read-once token (SeqToken), when it has one
@@ -1233,7 +1347,7 @@ struct Value {
     // and MSVC refuses it under /std:c++17 (clang and gcc accept it).
     Value() : t(VT::Any), b(false), isList(false), itemized(false), objKeyed(false),
               readonly(false), immutableBind(false), pairValRO(false), namedArg(false),
-              natSigned(false), natFloat(false), natBits(0) {}
+              natSigned(false), natFloat(false), keyInt(false), natBits(0) {}
 
     static Value nil() { Value v; v.t = VT::Nil; return v; }
     static Value any() { Value v; v.t = VT::Any; return v; }
@@ -1316,7 +1430,7 @@ struct Value {
     static Value closure(std::function<Value(ValueList&)> fn) {
         Value v; v.t = VT::Code;
         auto c = makePayload<Callable>();
-        c->builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
+        c->ciM().builtin = [fn](Interpreter&, ValueList& a) -> Value { return fn(a); };
         v.setCode(std::move(c));
         return v;
     }
@@ -1418,7 +1532,7 @@ struct Value {
         return 0;
     }
 };
-#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS)
+#if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS) && !defined(RAKUPP_STR_CENSUS)
 // 80 bytes (VALUE32-PLAN design A, batches 1-4; it was 128). The size is a
 // measured decision, not a packing accident: while the batches ran, every
 // freed byte was held so that each one was judged on its own — 120 bytes cost
@@ -1486,17 +1600,66 @@ inline bool plainWordValue(const Value& v, bool asNum) {
 }
 // Callable::ColdPtr's members that copy or free a CallableCold, which holds
 // Values and so is complete only from here
-inline Callable::ColdPtr::ColdPtr(const ColdPtr& o) { if (o.own) { p = new CallableCold(*o.p); own = true; } }
-inline Callable::ColdPtr& Callable::ColdPtr::operator=(const ColdPtr& o) {
+inline CodeInfo::ColdPtr::ColdPtr(const ColdPtr& o) { if (o.own) { p = new CallableCold(*o.p); own = true; } }
+inline CodeInfo::ColdPtr& CodeInfo::ColdPtr::operator=(const ColdPtr& o) {
     if (this != &o) { reset(); if (o.own) { p = new CallableCold(*o.p); own = true; } }
     return *this;
 }
-inline Callable::ColdPtr& Callable::ColdPtr::operator=(ColdPtr&& o) noexcept {
+inline CodeInfo::ColdPtr& CodeInfo::ColdPtr::operator=(ColdPtr&& o) noexcept {
     if (this != &o) { reset(); p = o.p; own = o.own; o.own = false; o.p = const_cast<CallableCold*>(&kNoCallableCold); }
     return *this;
 }
-inline void Callable::ColdPtr::reset() { if (own) delete p; p = const_cast<CallableCold*>(&kNoCallableCold); own = false; }
-inline CallableCold& Callable::coldM() { if (!coldp.own) { coldp.p = new CallableCold(); coldp.own = true; } return *coldp.p; }
+inline void CodeInfo::ColdPtr::reset() { if (own) delete p; p = const_cast<CallableCold*>(&kNoCallableCold); own = false; }
+inline CallableCold& CodeInfo::coldM() { if (!coldp.own) { coldp.p = new CallableCold(); coldp.own = true; } return *coldp.p; }
+// The Callable members that reach through to its CodeInfo
+inline void Callable::CodeInfoPtr::release() noexcept {
+    if (own && p->refs_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        p->~CodeInfo();
+        SlabPool::dealloc(static_cast<void*>(p), sizeof(CodeInfo));
+    }
+    p = &kNoCodeInfo; own = false;
+}
+inline CodeInfo& Callable::CodeInfoPtr::mut() {
+    if (own && p->refs_.load(std::memory_order_acquire) == 1) return *p;
+    void* mem = SlabPool::alloc(sizeof(CodeInfo));
+    CodeInfo* c;
+    // A fresh one in place of the shared default (whose caches whatever read
+    // it has filled), a copy of a shared block (RefCounted: one owner)
+    try { c = own ? ::new (mem) CodeInfo(*p) : ::new (mem) CodeInfo(); }
+    catch (...) { SlabPool::dealloc(mem, sizeof(CodeInfo)); throw; }
+    release();
+    p = c; own = true;
+    return *p;
+}
+inline const CallableCold& Callable::cold() const { return ci().cold(); }
+inline bool Callable::hasCold() const { return ci().hasCold(); }
+inline CallableCold& Callable::coldM() { return ciM().coldM(); }
+inline size_t Callable::placeholderPos() const { return ci().placeholderPos(); }
+// A Pair's key (Value::keyInt): the inline Int, the cold block's key object,
+// or the Str in `s`
+inline Value Value::pairKeyV() const {
+    if (keyInt && t == VT::Pair) return Value::integer(i);
+    if (const auto& k = xr().pairKey) return *k;
+    return Value::str(s);
+}
+inline Value Value::nonStrKey() const {
+    if (keyInt && t == VT::Pair) return Value::integer(i);
+    return *xr().pairKey;
+}
+inline std::shared_ptr<Value> Value::pairKeyShared() const {
+    if (keyInt && t == VT::Pair) return std::make_shared<Value>(Value::integer(i));
+    return xr().pairKey;
+}
+inline void Value::setPairKey(Value k) {
+    if (t == VT::Pair && plainWordValue(k, false)) {
+        if (x_ && xr().pairKey) xw().pairKey.reset();
+        i = k.i;
+        keyInt = true;
+        return;
+    }
+    keyInt = false;
+    xw().pairKey = std::make_shared<Value>(std::move(k));
+}
 inline PackedArr* Value::packed() const { return pk_ == PK::Packed ? pv<PackedArr>() : nullptr; }
 inline bool Value::packedLive() const {
     return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);
@@ -2061,12 +2224,12 @@ struct ClassInfo {
             if (!c) return nullptr;
             Value* r = c->findMethodForCall(m, roleSubs, owner);
             if (r && r->code() && (!c->isRole || !roleSubs)) {
-                if (r->code()->isSubmethod) return nullptr;
+                if (r->code()->ci().isSubmethod) return nullptr;
                 // …and a `multi submethod` group is no more inheritable
-                if (r->code()->isMultiDispatcher && !r->code()->cold().candidates.empty()) {
+                if (r->code()->ci().isMultiDispatcher && !r->code()->cold().candidates.empty()) {
                     bool allSub = true;
                     for (auto& cd : r->code()->cold().candidates)
-                        if (!cd.code() || !cd.code()->isSubmethod) { allSub = false; break; }
+                        if (!cd.code() || !cd.code()->ci().isSubmethod) { allSub = false; break; }
                     if (allSub) return nullptr;
                 }
             }

@@ -139,7 +139,7 @@ RAKUPP_CONSTINIT extern thread_local const Value* g_rxRoutine;
 
 // A block used as a subscript dimension that is NOT a WhateverCode: `{0,1}`.
 static inline bool isSliceBlock(const Value& k) {
-    return k.t == VT::Code && k.code() && !k.code()->isWhateverCode;
+    return k.t == VT::Code && k.code() && !k.code()->ci().isWhateverCode;
 }
 static inline bool isDefined(const Value& v) { return rtIsDefined(v); }
 static inline bool isDefinite(const Value& v) { return rtIsDefinite(v); }
@@ -227,6 +227,7 @@ static inline std::string lexicalTypeName(Interpreter& I, const std::string& n) 
     return n;
 }
 bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& out);
+bool boundTypeFor(Interpreter& I, const std::string& n, Value& out);   // InterpreterCore.cpp
 
 // ---- generic role bodies ---------------------------------------------------
 // Every name a subtree MENTIONS — variables with their sigils, terms, routine
@@ -497,6 +498,9 @@ static inline bool nativeRefusesKind(const Value& v, bool isFloat) {
         case VT::Rat: case VT::Complex: return true;
         case VT::Num:                   return !isFloat && !(v.natBits && v.natFloat);
         case VT::Int: case VT::Bool:    return isFloat && !(v.natBits && !v.natFloat);
+        // a Failure (`my num $r = 1e0 / $zero`) is no number either: it was
+        // stored as its hash's size, 2, and the error it carried was lost
+        case VT::Hash:                  return v.hashKind == "Failure";
         default:                        return false;
     }
 }
@@ -696,7 +700,7 @@ static inline Value hashToPairs(const Value& v) {
     bool setty = v.hashKind == "Set" || v.hashKind == "SetHash";
     for (auto& kv : *v.hash()) {
         Value p = setty ? Value::pair(kv.first, Value::boolean(true)) : hashEntryPair(v, kv.first, kv.second);
-        p.pairKeyM() = kv.second.elemKey(); // Set/Bag/Mix: recover the element's original type
+        p.pairKeyRawM() = kv.second.elemKey(); // Set/Bag/Mix: recover the element's original type
         out.arr()->push_back(std::move(p));
     }
     return out;
@@ -1318,9 +1322,9 @@ static inline bool boxedIteration(const Value& v) {
 static inline void slotProxyPair(Value& proxy, std::function<Value(Interpreter&, ValueList&)> f,
                           std::function<Value(Interpreter&, ValueList&)> s) {
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
-    fetch.code()->builtin = std::move(f);
+    fetch.code()->ciM().builtin = std::move(f);
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
-    store.code()->builtin = std::move(s);
+    store.code()->ciM().builtin = std::move(s);
     (*proxy.hash())["FETCH"] = fetch;
     (*proxy.hash())["STORE"] = store;
 }
@@ -1587,8 +1591,8 @@ static inline std::string privMixinKey(const std::string& name) { return "\x01" 
 // Code has no numeric value: `+&f` and `&f + 1` find no Numeric candidate
 [[noreturn]] static inline void throwCodeNumeric(const Value& v) {
     const Callable* c = v.code();
-    std::string t = c && c->isWhateverCode ? "WhateverCode" : c && c->isMethod ? "Method"
-                  : c && c->isBlock ? "Block" : "Sub";
+    std::string t = c && c->ci().isWhateverCode ? "WhateverCode" : c && c->ci().isMethod ? "Method"
+                  : c && c->ci().isBlock ? "Block" : "Sub";
     throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                     "Cannot resolve caller Numeric(" + t + ":D: ); none of these signatures matches:\n"
                     "    (Mu:U \\v: *%_)"};
@@ -1666,7 +1670,7 @@ struct TranspCall {
     ExecContext* t = nullptr;
     TranspCall(ExecContext& tc, const Value& f) {
         // with no handler registered there is none a count could matter to
-        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->builtin && !f.code()->cold().isNative) {
+        if (!tc.catchFrames.empty() && f.t == VT::Code && f.code() && !f.code()->ci().builtin && !f.code()->cold().isNative) {
             t = &tc; ++t->transpFrames;
         }
     }

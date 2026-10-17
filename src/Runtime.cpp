@@ -1,4 +1,5 @@
 #include "Runtime.h"
+#include "AotModules.h"
 #include "CallCheck.h"
 #include "DeclCheck.h"
 #include "Interpreter.h"
@@ -306,6 +307,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 interp.seedSrcLines(fileName, src);
                 if (int rc = declCheckRc(cachedProg); rc >= 0) return rc;
                 stage.lap("check");
+                attachMainAot(cachedProg);   // a bundled --exe binary's own routines, if it carries them
                 int rc = interp.run(cachedProg);
                 stage.lap("run");
                 return rc;
@@ -368,6 +370,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
         if (int rc = declCheckRc(prog); rc >= 0) return rc;
         stage.lap("check");
+        attachMainAot(prog);   // a bundled --exe binary's own routines, if it carries them
         int rc = interp.run(prog);
         stage.lap("run");
         return rc;

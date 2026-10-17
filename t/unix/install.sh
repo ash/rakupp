@@ -21,6 +21,8 @@
 #   * --uninstall removes the prefix and restores the startup file byte for byte
 #   * an unsupported platform prints the source build and fails, rather than
 #     downloading something that cannot run
+#   * a musl Linux (Alpine) is sent the musl archive and a glibc one the glibc
+#     archive -- each build fails to start on the other libc
 #
 # Everything happens inside a temporary HOME, so unlike the Windows gate -- which
 # really does edit HKCU while it runs -- this touches nothing on the machine.
@@ -189,6 +191,40 @@ sed 's/^/# /' < "$ROOT/out4"
 if grep -q 'cmake' "$ROOT/out4"
     then ok 1 'and it prints the source build instead'
     else ok 0 'and it prints the source build instead' "$(head -3 "$ROOT/out4")"
+fi
+
+# ---- each Linux gets the archive for its libc ------------------------------
+# The glibc build does not start on Alpine, and the musl one does not start on
+# Debian, so the installer has to tell them apart before it downloads. It asks
+# ldd, which says "musl libc" on stderr on musl and "GNU libc" on glibc; a fake
+# uname and ldd make the machine, and a curl that only fails keeps it offline --
+# the installer names the archive in its "downloading" line before it fetches.
+picks() { # os arch <what ldd --version says> -> the archive it reaches for
+    _fb="$ROOT/fake-$N"
+    mkdir -p "$_fb"
+    printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; esac\n' "$1" "$2" > "$_fb/uname"
+    printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$3" > "$_fb/ldd"
+    printf '#!/bin/sh\nexit 22\n' > "$_fb/curl"
+    chmod +x "$_fb/uname" "$_fb/ldd" "$_fb/curl"
+    env -i HOME="$ROOT/home5" PATH="$_fb:/usr/bin:/bin" TMPDIR="$ROOT" sh "$INSTALLER" --yes \
+        > "$ROOT/out5" 2>&1 || true
+    sed 's/^/# /' < "$ROOT/out5" >&2      # stdout is the answer
+    sed -n 's|^==> downloading .*/||p' "$ROOT/out5"
+}
+is "$(picks Linux x86_64 'musl libc (x86_64)')" rakupp-linux-x86_64-musl.tar.gz \
+   'musl x86-64 (Alpine) gets the musl archive'
+is "$(picks Linux aarch64 'musl libc (aarch64)')" rakupp-linux-aarch64-musl.tar.gz \
+   'musl ARM64 gets the musl archive'
+is "$(picks Linux x86_64 'ldd (GNU libc) 2.39')" rakupp-linux-x86_64.tar.gz \
+   'glibc x86-64 gets the glibc archive'
+is "$(picks Linux aarch64 'ldd (Ubuntu GLIBC 2.39-0ubuntu8) 2.39')" rakupp-linux-aarch64.tar.gz \
+   'glibc ARM64 gets the glibc archive'
+# riscv64 has a glibc archive and no musl one: the musl machine must not be
+# handed the glibc build, and the message has to say which libc it was about.
+is "$(picks Linux riscv64 'musl libc (riscv64)')" '' 'musl riscv64 is offered nothing to download'
+if grep -q 'riscv64 (musl)' "$ROOT/out5" && grep -q 'cmake' "$ROOT/out5"
+    then ok 1 'and is told it is the musl build that is missing'
+    else ok 0 'and is told it is the musl build that is missing' "$(head -3 "$ROOT/out5")"
 fi
 
 echo "1..$N"

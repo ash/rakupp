@@ -425,6 +425,8 @@ Each is its own plan, in V6's order of evidence per cost:
   it. A `.map({ $_ * 2 })` element: two allocations → one, −19% in retired
   instructions. The `$_` map node per call is left: a pooled frame cannot
   keep it, since the next routine through that frame may define none.
+  *2026-10-16* (dca29704): the node comes from the slab (SPEED-BACKLOG 9), so
+  the element makes no allocation; −8.9% more.
 - [ ] Small Rats inline. *In part, without touching `Value`:* a BigInt's limbs
   are a `LimbVec` with four limbs inline (anything under 10^36), and the
   assignment lane takes a Rat accumulator. `rats` −7% and −7%, `bigint` −7%;
