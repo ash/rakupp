@@ -2064,6 +2064,10 @@ struct ClassInfo {
     ValueMap methods; // Code values (closures)
     std::set<std::string> exportedMethods; // `method m is export` — `import Class` gives a sub form
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern
+    // …and, for a rule COPIED in from a composed role, the scope it was written
+    // in (the role's declEnv): its `<?{ f() }>` sees the role file's imports,
+    // not the grammar's. Absent for the type's own rules, whose home is declEnv.
+    std::map<std::string, std::shared_ptr<Env>> ruleHome;
     std::vector<std::string> ruleOrder; // rule names in DECLARATION order (proto LTM tie-break)
     std::map<std::string, std::string> ruleKind; // name -> "token"/"rule"/"regex"
     std::map<std::string, std::tuple<std::string, std::string, int>> rulePod; // name -> (pod, trailing part, line)

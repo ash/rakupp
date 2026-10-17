@@ -4369,12 +4369,24 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             auto savedReps = st.capReps;
             long savedCapFrom = st.capFrom, savedCapTo = st.capTo, savedFirstCode = st.firstCode, savedLitPrefix = st.litPrefix;
             std::vector<std::pair<long, size_t>> order; // (greedy end, branch index)
+            // a branch that reached a skipped method ranks by where it reached
+            // it (GrammarMatcher::probeMethodHits_); the outer probe, if any,
+            // still sees the furthest such position afterwards
+            GrammarMatcher* gmP = st.grammar;
+            const long outerMethodPos = gmP ? gmP->probeMethodPos_ : -1;
+            long furthestMethodPos = outerMethodPos;
             st.probing++; // …and no user code runs while we are only measuring
             for (size_t i = 0; i < n->kids.size(); i++) {
                 long e0 = -1;
+                long hits0 = gmP ? gmP->probeMethodHits_ : 0;
+                if (gmP) gmP->probeMethodPos_ = -1;
                 matchNode(n->kids[i].get(), st, pos, [&](long e) { e0 = e; return true; });
                 if (e0 >= 0) order.push_back({e0, i});
+                else if (gmP && gmP->probeMethodHits_ != hits0 && gmP->probeMethodPos_ >= pos)
+                    order.push_back({gmP->probeMethodPos_, i});
+                if (gmP && gmP->probeMethodPos_ > furthestMethodPos) furthestMethodPos = gmP->probeMethodPos_;
             }
+            if (gmP) gmP->probeMethodPos_ = furthestMethodPos;
             st.probing--;
             st.caps = std::move(savedCaps); st.named = std::move(savedNamed);
             st.children = std::move(savedChildren);
@@ -5024,7 +5036,13 @@ std::string GrammarMatcher::evalArg(const std::string& e0) const {
           else if (c == '~') return rxArgStr(evalArg(e.substr(0, i))) + rxArgStr(evalArg(e.substr(i + 1))); } }
     if (e.empty()) return "";
     if (e[0] == '$') {
-        if (!scope_.empty()) { auto it = scope_.back().find(e); if (it != scope_.back().end()) return it->second; }
+        if (!scope_.empty()) {
+            auto it = scope_.back().find(e);
+            // …except the entry rule's parameter bound by `.parse(args => …)`:
+            // it has no text here, and the interpreter holds its real value
+            if (it != scope_.back().end() && !(scope_.size() == 1 && it->second.empty() && hooks.argVal))
+                return it->second;
+        }
         // a `:my`/runtime var or an expression — ask the interpreter, which
         // keeps the value's type
         if (hooks.argVal) return hooks.argVal(e, currentParams());
@@ -5481,7 +5499,11 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // User code ends the LTM declarative prefix, as a bare `{…}` does — and
         // an Alt RANKING probe measures without running it, exactly as for one.
         if (st.firstCode < 0) st.firstCode = pos;
-        if (st.probing || st.probeAbove) return k(pos);
+        if (st.probing || st.probeAbove) {
+            probeMethodHits_++;
+            if (pos > probeMethodPos_) probeMethodPos_ = pos;
+            return k(pos);
+        }
         if (!st.hooks || !st.hooks->callMethod) { noteFail(pos, name); return false; }
         RxCursorCall cursor{this, &st};
         long end = -1; ParseNode pn;
@@ -5668,12 +5690,14 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr;
         sub.probeAbove = st.probing + st.probeAbove;
         scope_.push_back(std::move(bound));
+        homes_.push_back(meta.rule ? static_cast<const Rule*>(meta.rule)->home : 0);
         // A `:my` rule opens a fresh dynamic scope: snapshot the interpreter's `:my` vars so
         // the rule's declarations (and shadows) are rolled back when it exits, restoring the
         // caller's bindings — this is what makes indentation-style dedent work.
         std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
                                          ? st.hooks->saveState() : nullptr;
         if (savedScope) dynScopeDepth_++;   // a `:my` scope is live for this rule's whole body
+        const long methodHits0 = probeMethodHits_;
         MemoEntry me;
         me.listNames = re->listNamesPtr();
         me.listCaps = re->listCapsPtr();
@@ -5698,6 +5722,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         if (me.matched && dynScopeDepth_ && st.hooks->captureDyn) dynAtExit = st.hooks->captureDyn();
         if (savedScope) { st.hooks->restoreState(savedScope); dynScopeDepth_--; } // rule exited: restore caller's dynamic scope
         scope_.pop_back();
+        homes_.pop_back();
         if (!me.matched) noteFail(pos, name); // the RULE failed here (not a continuation)
         // a FRESH completion fires its action method now (memo replays reuse it) —
         // Rakudo fires actions during the match, and a later failure keeps them
@@ -5711,7 +5736,9 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             fp.dynScope = dynAtExit; // captured above, before the restore
             st.hooks->onRule(std::move(fp));
         }
-        if (!memoise) {
+        // a probe that skipped a method inside the body measured a stand-in,
+        // not the rule's match: it must not answer for the real one later
+        if (!memoise || probeMethodHits_ != methodHits0) {
             if (!me.matched) return false;
             candDeclEnd_ = me.declEnd;
             candLitPrefix_ = me.litPrefix;
@@ -5735,6 +5762,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     sub.startPos = pos; sub.hooks = st.hooks; sub.curSym = symPtr; // propagate hooks + candidate sym
     sub.probeAbove = st.probing + st.probeAbove;
     scope_.push_back(std::move(bound));
+    homes_.push_back(meta.rule ? static_cast<const Rule*>(meta.rule)->home : 0);
     std::shared_ptr<void> savedScope = (meta.scoped && st.hooks && st.hooks->saveState)
                                      ? st.hooks->saveState() : nullptr;   // fresh dynamic scope for `:my`
     if (savedScope) dynScopeDepth_++;
@@ -5745,7 +5773,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // code blocks must see the caller's params — pop the callee's param frame for
         // the duration of `k` (restore it so backtracking into the callee still works).
         auto calleeScope = std::move(scope_.back()); scope_.pop_back();
-        auto finish = [&](bool r) { scope_.push_back(std::move(calleeScope)); return r; };
+        int calleeHome = homes_.back(); homes_.pop_back();
+        auto finish = [&](bool r) { scope_.push_back(std::move(calleeScope)); homes_.push_back(calleeHome); return r; };
         candDeclEnd_ = (sub.firstCode >= 0 ? sub.firstCode : end);
         candLitPrefix_ = (sub.litPrefix >= 0 ? sub.litPrefix - pos : 0);
         // non-ratchet: the callee may complete again after backtracking, so its frame
@@ -5775,6 +5804,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     });
     if (savedScope) { st.hooks->restoreState(savedScope); dynScopeDepth_--; } // rule exited: restore caller's dynamic scope
     scope_.pop_back();
+    homes_.pop_back();
     if (!calleeMatched) noteFail(pos, name); // the rule itself never completed here
     return ok;
 }
@@ -5830,11 +5860,13 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
         st.startPos = startPos; st.hooks = &hooks;
         long endPos = -1;
         scope_.push_back({});
+        homes_.push_back(0);
         bool ok = matchSubMeta(nameMeta(top), top, "", "\x01proto", st, startPos, [&](long e) {
             if (!subparse && e != (long)input.size()) return false;
             endPos = e; return true;
         });
         scope_.pop_back();
+        homes_.pop_back();
         auto it = st.children.find("\x01proto");
         if (!ok || it == st.children.end() || it->second.empty()) return false;
         out = it->second.back();
@@ -5850,11 +5882,13 @@ bool GrammarMatcher::parse(const std::string& input, const std::string& top, boo
     st.startPos = startPos; st.hooks = &hooks; // the match starts at startPos (0 for .parse; a slang seam hands in a byte offset); wire the interpreter hooks
     long endPos = -1;
     scope_.push_back(std::move(bound)); // entry rule's params (defaults included) visible to its code blocks
+    { auto ti = rules.find(top); homes_.push_back(ti != rules.end() ? ti->second.home : 0); }
     bool ok = re->matchNode(re->root(), st, startPos, [&](long e) {
         if (!subparse && e != (long)input.size()) return false; // require a full match
         endPos = e; return true;
     });
     scope_.pop_back();
+    homes_.pop_back();
     if (!ok) return false;
     // `<( … )>` in the entry rule trims the capture, as it does for every subrule
     // (`.Str` of `token TOP { "0r" <( \w+ }` is "XIV"); matching still ends at endPos.

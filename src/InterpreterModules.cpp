@@ -6559,6 +6559,9 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                             for (auto& r0 : cd->rules) if (r0.name == rk.first) { own = true; break; }
                             if (own || ci->rules.count(rk.first)) continue;
                             ci->rules[rk.first] = rk.second;
+                            auto hi = rc->ruleHome.find(rk.first);
+                            if (hi != rc->ruleHome.end()) ci->ruleHome[rk.first] = hi->second;
+                            else if (rc->declEnv) ci->ruleHome[rk.first] = rc->declEnv;
                             auto ki = rc->ruleKind.find(rk.first);
                             if (ki != rc->ruleKind.end()) ci->ruleKind[rk.first] = ki->second;
                             auto pi2 = rc->ruleParams.find(rk.first);
@@ -6617,8 +6620,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
             // A grammar with no explicit parent derives from the built-in
             // Grammar type, as Rakudo's do (G, Grammar, Match, Capture, Cool,
             // Any, Mu) — nativeParent is the existing seam for a built-in
-            // ancestor, so ~~/.isa/.does/.^mro all follow from it.
-            if (ci->isGrammar && !ci->parent && ci->nativeParent.empty())
+            // ancestor, so ~~/.isa/.does/.^mro all follow from it. A role the
+            // first `does` put in the parent slot is composed, not inherited:
+            // `grammar G does R { }` still has no parent class.
+            bool classParent = (ci->parent && !(ci->parent->isRole && cd->parentIsDoes)) ||
+                               !ci->extraParents.empty();
+            if (ci->isGrammar && !classParent && ci->nativeParent.empty())
                 ci->nativeParent = "Grammar";
             ci->isRole = cd->isRole;
             ci->repr = cd->repr;

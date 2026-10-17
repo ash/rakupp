@@ -251,6 +251,9 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
         for (auto& kv : role->rules) {
             if (nc->rules.count(kv.first)) continue;
             nc->rules[kv.first] = kv.second;
+            auto hi = role->ruleHome.find(kv.first);
+            if (hi != role->ruleHome.end()) nc->ruleHome[kv.first] = hi->second;
+            else if (role->declEnv) nc->ruleHome[kv.first] = role->declEnv;
             auto ki = role->ruleKind.find(kv.first);
             if (ki != role->ruleKind.end()) nc->ruleKind[kv.first] = ki->second;
             auto pi = role->ruleParams.find(kv.first);
@@ -308,6 +311,9 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                 for (auto& kv : sr->rules) {
                     if (nc->rules.count(kv.first)) continue;
                     nc->rules[kv.first] = kv.second;
+                    auto hi = sr->ruleHome.find(kv.first);
+                    if (hi != sr->ruleHome.end()) nc->ruleHome[kv.first] = hi->second;
+                    else if (sr->declEnv) nc->ruleHome[kv.first] = sr->declEnv;
                     auto ki = sr->ruleKind.find(kv.first);
                     if (ki != sr->ruleKind.end()) nc->ruleKind[kv.first] = ki->second;
                     auto pi = sr->ruleParams.find(kv.first);

@@ -82,10 +82,19 @@ struct RxCursorCaps;   // defined below, once ChildMap is — the mid-match curs
 // A rule parameter's value travels through the matcher as a string. A value
 // that is not a Str is tagged so it reaches the callee's code blocks with its
 // type (#150): "\x04" + tag + its Str form, tag B (Bool), I (Int), N (Num) or
-// T (a type object). A Str stays as it is. Interpolated into a pattern, or
-// read as an atom, a parameter is its Str form: rxArgStr.
+// T (a type object). Any other object is tag V: "\x04V" + an index into the
+// parse's value table + "\x1f" + its Str form, so `<entity-name($obj)>` hands
+// the callee the object itself. A Str stays as it is. Interpolated into a
+// pattern, or read as an atom, a parameter is its Str form: rxArgStr.
 inline bool rxArgTagged(const std::string& v) { return v.size() >= 2 && v[0] == '\x04'; }
-inline std::string rxArgStr(const std::string& v) { return rxArgTagged(v) ? v.substr(2) : v; }
+inline std::string rxArgStr(const std::string& v) {
+    if (!rxArgTagged(v)) return v;
+    if (v[1] == 'V') {
+        size_t sep = v.find('\x1f', 2);
+        if (sep != std::string::npos) return v.substr(sep + 1);
+    }
+    return v.substr(2);
+}
 
 struct GrammarHooks {
     using NamedMap = FlatMap<std::pair<long, long>>; // named-capture byte spans, for $/ / $<x>
@@ -699,6 +708,10 @@ public:
         struct Lit { std::vector<std::string> args; std::string pattern, kind; };
         std::vector<Lit> lits;
         bool litOnly = false;
+        // Where the rule was written, as an index the interpreter hands out
+        // (0 = the parse's own scope): a token composed in from a role runs its
+        // code in the role's scope. See currentHome().
+        int home = 0;
     };
     std::map<std::string, Rule> rules;
     std::map<std::string, std::vector<std::string>> protos; // proto name -> candidate rule names (`x:<sym>`)
@@ -720,6 +733,9 @@ public:
 
     // The parameter bindings of the rule currently being matched (for code-block access).
     const std::map<std::string, std::string>& currentParams() const;
+    // …and the home (Rule::home) of that rule: kept in step with the param
+    // frames, so a caller's continuation sees the caller's.
+    int currentHome() const { return homes_.empty() ? 0 : homes_.back(); }
 
     // Packrat memo of a ratchet (token/rule) subrule's deterministic match at a given
     // (rule, params, pos): tokens don't backtrack, so their first complete match is THE
@@ -745,6 +761,15 @@ public:
     // and does not need to: TOP is not entered through the subrule path, so its
     // scope is never rolled back and is still live when the actions replay.
     int dynScopeDepth_ = 0;
+    // An Alt RANKING probe does not run user code, so a method call (`<.ws>`
+    // in a grammar that defines `method ws`) is skipped there. Each skip is
+    // counted, with the furthest position one was reached at: a branch that
+    // got as far as user code is a candidate even when the zero-width stand-in
+    // made the rest of it fail (its declarative prefix ends at the method), and
+    // a rule whose body saw a skip is not memoised (its probe result is not
+    // its real match).
+    long probeMethodHits_ = 0;
+    long probeMethodPos_ = -1;
     // A rule the metaclass's answer is running right now (`$meth($cursor)` in a
     // find_method wrapper reaches the cursor's callRule): its NEXT entry runs
     // the body instead of asking the HOW again. One-shot — the rule's own
@@ -789,6 +814,7 @@ private:
     std::unordered_map<std::string, NameMeta> nameMeta_;    // per-name metadata cache (avoids repeated rules.find)
     std::map<std::string, std::unique_ptr<Regex>> cache_;   // name(+arg values) → compiled
     std::vector<std::map<std::string, std::string>> scope_; // parameterised-rule param bindings
+    std::vector<int> homes_; // Rule::home of each scope_ frame
     mutable std::map<std::string, std::string> mergedParams_; // currentParams() scratch: outer dynamic-var params merged in
     mutable std::map<std::string, std::string> litVal_;     // literal-candidate arg text → its evaluated value (constants: evaluated once)
     Regex* compiled(const std::string& name, const std::string& argstr, std::map<std::string, std::string>& boundOut);

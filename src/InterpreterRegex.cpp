@@ -10,8 +10,9 @@ namespace rakupp {
 
 // A rule argument's value in the matcher's tagged string form (Regex.h,
 // rxArgTagged), and back. Bool, Int and Num keep their type on the way to the
-// callee's parameter (#150); a type object comes back as itself; anything
-// else travels as its Str, as every argument did before.
+// callee's parameter (#150); a type object comes back as itself; with the
+// parse's value table at hand any other non-Str value is parked there and
+// comes back as the very object; without one it travels as its Str.
 void stampMatchGrammar(const Value& m, const std::string& g) {
     if (m.t == VT::Array && m.arr()) { for (auto& e : *m.arr()) stampMatchGrammar(e, g); return; }
     if (m.t != VT::Match || !m.md() || m.md()->grammar == g) return;
@@ -22,16 +23,36 @@ void stampMatchGrammar(const Value& m, const std::string& g) {
     if (m.md()->named) for (auto& kv : *m.md()->named) stampMatchGrammar(kv.second, g);
 }
 
-static std::string rxArgEncode(const Value& v) {
+using RxArgTable = std::vector<Value>;
+static std::string rxArgEncode(const Value& v, RxArgTable* tab = nullptr,
+                               const std::function<bool(const Value&, const Value&)>& same = nullptr) {
     const bool plain = v.enumName.empty() && v.enumType.empty() && v.hashKind.empty();
     if (v.t == VT::Bool) return std::string("\x04" "B") + (v.b ? "True" : "False");
     if (v.t == VT::Int && plain && v.s.empty()) return "\x04I" + v.toStr();
     if (v.t == VT::Num && plain) return "\x04N" + v.toStr();
     if (v.t == VT::Type && !v.s.empty()) return "\x04T" + v.s.str();
+    if (tab && !(v.t == VT::Str && plain)) {
+        // the same object again (a recursive rule handing its argument on)
+        // reuses its slot, so the packrat key it folds into stays the same
+        size_t id = tab->size();
+        if (same)
+            for (size_t i = tab->size(), seen = 0; i > 0 && seen < 16; i--, seen++)
+                if (same((*tab)[i - 1], v)) { id = i - 1; break; }
+        if (id == tab->size()) tab->push_back(v);
+        return "\x04V" + std::to_string(id) + "\x1f" + v.toStr();
+    }
     return v.toStr();
 }
-static Value rxArgDecode(const std::string& v) {
+static Value rxArgDecode(const std::string& v, const RxArgTable* tab = nullptr) {
     if (!rxArgTagged(v)) return Value::str(v);
+    if (v[1] == 'V') {
+        size_t sep = v.find('\x1f', 2);
+        if (tab && sep != std::string::npos) {
+            size_t id = std::strtoull(v.c_str() + 2, nullptr, 10);
+            if (id < tab->size()) return (*tab)[id];
+        }
+        return Value::str(sep != std::string::npos ? v.substr(sep + 1) : v.substr(2));
+    }
     const std::string body = v.substr(2);
     switch (v[1]) {
         case 'B': return Value::boolean(body == "True");
@@ -2358,6 +2379,37 @@ struct ReplayKeyHash {
 };
 using ReplayKeySet = std::unordered_set<ReplayKey, ReplayKeyHash>;
 
+// While a rule's code runs, hang the match scope off the scope the rule was
+// written in (grammarParse's RuleHomes) and put it back after. The match scope
+// becomes a routine frame for the duration, with what it hung off before on
+// the dynamic stack, so the caller's `$*` variables still reach the block.
+struct RuleHomeSwap {
+    Env* ms = nullptr;
+    std::shared_ptr<Env> oldParent;
+    DynStack* ds = nullptr;   // set when we pushed oldParent there
+    bool oldRF = false, hadSlash = false;
+    void enter(const std::vector<std::shared_ptr<Env>>& eff, int h, Env* matchScope, ExecContext& tc) {
+        if (h <= 0 || h >= (int)eff.size() || !eff[h] || !matchScope || tc.cur.get() != matchScope) return;
+        ms = matchScope;
+        oldParent = ms->parent.sp();
+        oldRF = ms->routineFrame;
+        hadSlash = ms->localRaw("$/") != nullptr;
+        ms->parent = eff[h];
+        if (!oldRF) {
+            ms->routineFrame = true;
+            tc.dynStack.push_back(oldParent.get());
+            ds = &tc.dynStack;
+        }
+    }
+    ~RuleHomeSwap() {
+        if (!ms) return;
+        if (ds && !ds->empty() && ds->back() == oldParent.get()) ds->pop_back();
+        if (!oldRF && !hadSlash) ms->undefine("$/");   // the block's `$/` lived here only while it ran
+        ms->routineFrame = oldRF;
+        ms->parent = oldParent;
+    }
+};
+
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions,
                                 const ValueList* ruleArgs, long startPos, long* consumedEnd) {
@@ -2409,6 +2461,27 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // alphabetical order and silently mis-rank ties.
     std::vector<std::string> declOrder;
     std::set<std::string> declSeen;
+    // Each rule's HOME — the scope it was written in (Rule::home indexes
+    // homes->envs; 0 = none). A token composed in from a role has the role's:
+    // `<?{ is-fuzzy-match(…) }>` names a sub the role's FILE imported, which the
+    // grammar's file may never have seen (DSL::Shared's roles). `eff` is what
+    // the match scope hangs off while such a rule's code runs, filled in once
+    // the parse's own home is known; null where nothing has to change.
+    struct RuleHomes {
+        std::vector<std::shared_ptr<Env>> envs{nullptr};
+        std::vector<std::shared_ptr<Env>> eff;
+        Env* matchScope = nullptr;
+        bool any = false; // some rule needs a swap
+    };
+    auto homes = std::make_shared<RuleHomes>();
+    std::map<Env*, int> homeIdx;
+    auto homeOf = [&](const std::shared_ptr<Env>& e) -> int {
+        if (!e) return 0;
+        auto it = homeIdx.find(e.get());
+        if (it != homeIdx.end()) return it->second;
+        homes->envs.push_back(e);
+        return homeIdx[e.get()] = (int)homes->envs.size() - 1;
+    };
     // MOST DERIVED FIRST. Within one grammar the earliest declaration wins an LTM
     // tie; ACROSS inheritance (and role composition, which puts the composed role
     // in the parent slot) the derived declaration wins, exactly as method
@@ -2423,6 +2496,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             GrammarMatcher::Rule rule;
             rule.pattern = grammarArrayAtoms(r.second);
             rule.kind = c->ruleKind.count(r.first) ? c->ruleKind.at(r.first) : "token";
+            auto hit = c->ruleHome.find(r.first);
+            rule.home = homeOf(hit != c->ruleHome.end() ? hit->second : c->declEnv);
             auto pit = c->ruleParams.find(r.first);
             if (pit != c->ruleParams.end()) rule.params = pit->second;
             // `multi rule expr(0)`: attach the literal-value candidates of this
@@ -2546,12 +2621,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // The captures a block sees are built once per parse: a block after a
     // repeated subrule (`[ <stmt> { … } ]+`) sees every earlier `<stmt>` again.
     auto blockMemo = std::make_shared<MatchMemo>();
-    auto runCode = [this, &input, parseCode, pendingMakes, subMatch, targetStr, blockMemo](const std::string& code, long from, long to,
+    // the objects rule arguments carry (rxArgEncode's V tag), for this parse
+    auto argTab = std::make_shared<RxArgTable>();
+    auto runCode = [this, &input, &gm, homes, argTab, parseCode, pendingMakes, subMatch, targetStr, blockMemo](const std::string& code, long from, long to,
                                              const NamedMap& named, const ParamMap& params,
                                              const std::vector<std::pair<long, long>>* caps = nullptr,
                                              const RxCursorCaps* cc = nullptr) -> Value {
         auto prog = parseCode(code);
         if (!prog) return Value::any();
+        // the rule running this code was written somewhere else (a role's
+        // file): its names resolve there for the block's duration
+        RuleHomeSwap homeSwap;
+        if (homes->any) homeSwap.enter(homes->eff, gm.currentHome(), homes->matchScope, tctx_);
         // build $/ over [from..to] with the named sub-captures attached
         Value m;
         std::vector<std::pair<std::string, Value>> capSlots;
@@ -2637,7 +2718,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     size_t ks = p.second.find('\x1d', q), ve = p.second.find('\x1e', q);
                     if (ks == std::string::npos || ve == std::string::npos) break;
                     const std::string k = p.second.substr(q, ks - q), v = p.second.substr(ks + 1, ve - ks - 1);
-                    (*h.hash())[k] = rxArgTagged(v) ? rxArgDecode(v)
+                    (*h.hash())[k] = rxArgTagged(v) ? rxArgDecode(v, argTab.get())
                                    : v == "True" ? Value::boolean(true) : v == "False" ? Value::boolean(false)
                                    : !v.empty() && v.find_first_not_of("-0123456789") == std::string::npos
                                        ? Value::integer(std::stoll(v)) : Value::str(v);
@@ -2646,7 +2727,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 overlay(p.first, h);
                 continue;
             }
-            overlay(p.first, rxArgDecode(p.second));
+            overlay(p.first, rxArgDecode(p.second, argTab.get()));
         }
         Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`
         Value last = Value::any();
@@ -2709,13 +2790,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             methodCall(r, "throw", {});
         return r.toStr();
     };
-    gm.hooks.argVal = [this, runCode](const std::string& expr, const ParamMap& pm) -> std::string {
+    gm.hooks.argVal = [this, runCode, argTab](const std::string& expr, const ParamMap& pm) -> std::string {
         auto it = pm.find(expr);
-        if (it != pm.end()) return it->second;
+        // (an entry rule's parameter has no text when `.parse(args => …)` bound
+        // it: the value grammarParse put in the match scope is the argument)
+        if (it != pm.end() && !(it->second.empty() && tctx_.cur->find(expr))) return it->second;
         Value r = runCode(expr, 0, 0, NamedMap{}, pm);
         if (r.t == VT::Hash && r.hashKind == "Failure" && expr.size() > 2 && expr[1] == '*')
             methodCall(r, "throw", {});
-        return rxArgEncode(r);
+        return rxArgEncode(r, argTab.get(),
+                           [this](const Value& a, const Value& b) { return applyArith("===", a, b).truthy(); });
     };
     // `<{ … }>` — the block's value is the pattern, read with the cursor's
     // captures beside it (a token may well write `(\w) <{ $0 }>`).
@@ -3114,6 +3198,17 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (mc != pendingMakeCode->end() && !mc->second.empty()) {
             std::string code = mc->second[makePick];
             mc->second.erase(mc->second.begin() + makePick);
+            // the block runs where its rule was written (RuleHomes)
+            RuleHomeSwap homeSwap;
+            if (homes->any) {
+                int mh = 0;
+                auto ri = gm.rules.find(pn.actualRule.empty() ? pn.name : pn.actualRule);
+                if (ri != gm.rules.end() && ri->second.pattern.find(code) != std::string::npos) mh = ri->second.home;
+                else
+                    for (auto& r : gm.rules)
+                        if (r.second.pattern.find(code) != std::string::npos) { mh = r.second.home; break; }
+                homeSwap.enter(homes->eff, mh, homes->matchScope, tctx_);
+            }
             if (auto prog = parseCode(code)) {
                 Value* slot = tctx_.cur->find("$/"); Value saved = slot ? *slot : Value::nil();
                 setMatchVar(mv);
@@ -3214,6 +3309,23 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 matchScope->routineFrame = true;
                 callerDyn = tctx_.cur.get();
             }
+        }
+        // …and each rule whose home is not that one (see RuleHomes): a role's
+        // tokens hang the match scope off the role's declaration while their
+        // code runs. A home already on the caller's chain needs nothing when
+        // the match scope hangs off the caller.
+        homes->matchScope = matchScope.get();
+        homes->eff.assign(homes->envs.size(), nullptr);
+        for (size_t i = 1; i < homes->envs.size(); i++) {
+            Env* e = homes->envs[i].get();
+            if (e == matchScope->parent.get()) continue;
+            if (!callerDyn) {
+                bool on = false;
+                for (Env* w = matchScope->parent.get(); w && !on; w = w->parent.get()) on = (w == e);
+                if (on) continue;
+            }
+            homes->eff[i] = homes->envs[i];
+            homes->any = true;
         }
         struct CallerDynG {
             DynStack& st; Env* e;
