@@ -134,7 +134,7 @@ Four, at most one per spec:
 | `max` | `auto`, ignoring the force-full triggers. Unsound by design. |
 
 `safe` being the default matters more than it sounds: it costs nothing
-analytically and takes `say "Hello"` from 9.9 MB to 8.1 MB, byte-identical in
+analytically and takes `say "Hello"` from 22.0 MB to 17.9 MB, byte-identical in
 behaviour. Its only real cost is that a C++-level crash reports addresses rather
 than names, which is why `+symbols` exists.
 
@@ -203,11 +203,11 @@ the cut:
 ```
 $ rakupp --exe trig.raku --slim=list
 --slim=auto for trig.raku (--exe):
-  unicode-names      keep    3.1 MB   kept: a dynamic construct keeps everything
+  unicode-names      keep    3.5 MB   kept: a dynamic construct keeps everything
   …
 dynamic constructs keeping everything (--slim=max cuts anyway):
   an indirect method call (."$name"()) (in the program, line 2)
-would cut 0 KB of 5.0 MB cuttable (archive sizes)
+would cut 0 KB of 8.0 MB cuttable (archive sizes)
 ```
 
 ## What it is worth
@@ -215,22 +215,22 @@ would cut 0 KB of 5.0 MB cuttable (archive sizes)
 ```
 $ rakupp --exe hello.raku --slim=list
 --slim=auto for hello.raku (--exe):
-  unicode-names      cut     3.1 MB   proven unused
-  unicode-collation  cut     743 KB   proven unused
-  unicode-props      cut     141 KB   proven unused
-  eval               cut     971 KB   proven unused
-would cut 5.0 MB of 5.0 MB cuttable (archive sizes)
+  unicode-names      cut     3.5 MB   proven unused
+  unicode-collation  cut     756 KB   proven unused
+  unicode-props      cut     535 KB   proven unused
+  eval               cut     3.2 MB   proven unused
+would cut 8.0 MB of 8.0 MB cuttable (archive sizes)
 ```
 
-`say "Hello"`: 9.9 MB unstripped, 8.1 MB at `safe`, **4.6 MB** under bare
-`--slim`. A program that uses one feature keeps one:
+`say "Hello"`: 22.0 MB unstripped, 17.9 MB at `safe`, **12.9 MB** under bare
+`--slim` (arm64 macOS, October 2026). A program that uses one feature keeps one:
 
 ```
 $ rakupp --exe uses-names.raku --slim=list
-  unicode-names      keep    3.1 MB   used: uniname (line 1)
-  unicode-collation  cut     743 KB   proven unused
-  unicode-props      keep    141 KB   used: <:Script<…>> in a regex (line 2)
-  eval               cut     971 KB   proven unused
+  unicode-names      keep    3.5 MB   used: uniname (line 1)
+  unicode-collation  cut     756 KB   proven unused
+  unicode-props      keep    535 KB   used: <:Script<…>> in a regex (line 2)
+  eval               cut     3.2 MB   proven unused
 ```
 
 ## The directives, and the one that proves it

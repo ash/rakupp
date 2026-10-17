@@ -170,6 +170,21 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # by only ~20 KB — this line is a stopgap. Five re-pins upward say the cut
 # list itself needs re-asking (what does --slim actually remove now?), and
 # that round is what should bring the number down, not another pin.
+#
+# Not re-pinned 2026-10-17: the cut list was re-asked instead. CI's arm64
+# hello-all went 13,092,072 on the last green run (6724350f) to 13,177,576 at
+# 5c323658, 70,376 bytes past the line, by the same steady growth (full and
+# slim rising together since 10-01, full − slim flat near 4.7 MB). A linker
+# map of the slim binary found one table file --slim had never cut:
+# unicode_props2_gen.cpp, the enumerated properties (Age, Line_Break,
+# East_Asian_Width, …), read only by uniprop naming them and <:Prop<Value>>.
+# SLIM-PLAN had filed it with the string-operation tables by its name. It
+# rides unicode-props now (its Bidi_Mirroring_Glyph map stays behind, in
+# unicode_mirror_gen.cpp, for the Lexer), and this box's arm64 hello-all went
+# 13,179,960 → 12,862,456, 244,744 bytes under the line. The rest of the map
+# is the interpreter: InterpreterCore, MethodCall*, Builtins*, Regex, nothing
+# CLI-only. The x86_64 slice, derived at the 7.8% spread, is ≈13,866,000 and
+# over this line, as it already was before the move; CI measures arm64 only.
 my $full-size;
 my $all-size;
 
@@ -382,6 +397,64 @@ my $catch = probe('catch.raku', q:to/END/);
     $info.err.slurp(:close);
     check $xc == 0 && $out eq 'M' && $line.contains('"unicode-props"'),
           '<:Lu>/<:Nd> resolve from never-cut tables, so props still cuts — and matches', "$out / $line";
+}
+# The enumerated properties (unicode_props2_gen.cpp) are cut with the rest of
+# unicode-props, and two names reach them that the regex rules read as a
+# category letter: the value in <:Hangul_Syllable_Type<L>>, and .uniprop('W'),
+# which uniprop answers as East_Asian_Width. Each alone must keep the feature.
+# (Today ANY uniprop call keeps it, because noteName marks every call like a
+# bare &uniprop, so the .uniprop('W') case guards the per-name rule underneath
+# for the day that blanket goes. The regex case is live now: before the props2
+# tables moved, the scan proved it unused.)
+for ('up-w',    q{print 'a'.uniprop('W');},                                         'Na',
+                '.uniprop(\'W\') (East_Asian_Width by a value name)'),
+    ('rx-hst',  q{print "\x[1100]" ~~ /<:Hangul_Syllable_Type<L>>/ ?? 'M' !! 'N';}, 'M',
+                'a <:Hangul_Syllable_Type<L>> regex')
+-> ($name, $code, $want, $what) {
+    my $src = probe("{$name}.raku", $code);
+    my ($rc, $log, $bin) = compile($src, "{$name}-bin", '--exe', '--slim');
+    check $rc == 0, "$what compiles under --slim", $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
+    my $line = $info.out.slurp(:close);
+    $info.err.slurp(:close);
+    check $xc == 0 && $out eq $want && !$line.contains('"unicode-props"'),
+          "the scan keeps unicode-props for $what — and it answers $want",
+          "exit $xc: $out / $err / $line";
+}
+# …and with the feature cut by hand, an enumerated property throws, while the
+# uniprop names that resolve from never-cut tables (a binary property, the
+# default General_Category, a case mapping) pass the enumerated-property
+# lookup without touching it.
+{
+    my $src = probe('cut-enum.raku', q{print 'a'.uniprop('Line_Break');});
+    my ($rc, $log, $bin) = compile($src, 'cut-enum-bin', '--exe', '--slim=-unicode-props');
+    check $rc == 0, '-unicode-props compiles a Line_Break lookup against the stub archive', $log;
+    my ($xc, $, $err) = run-bin($bin);
+    check $xc == 1 && $err.contains("needs the 'unicode-props' feature")
+                   && $err.contains('Line_Break') && $err.contains('--slim'),
+          'the cut unicode-props covers the enumerated properties, and says so',
+          "exit $xc: $err";
+}
+{
+    my $src = probe('cut-enum-safe.raku',
+        q{print 'a'.uniprop('Alphabetic'), '|', 'a'.uniprop, '|', 'a'.uniprop('Uppercase_Mapping');});
+    my ($rc, $log, $bin) = compile($src, 'cut-enum-safe-bin', '--exe', '--slim=-unicode-props');
+    check $rc == 0, '-unicode-props compiles never-cut uniprop lookups', $log;
+    my ($xc, $out, $err) = run-bin($bin);
+    check $xc == 0 && $out eq 'True|Ll|A',
+          '…and they answer without touching the cut tables', "exit $xc: $out / $err";
+}
+# nqp::getuniprop_* names its property by a NUMBER and reads it through
+# .uniprop, so the scan cannot see which: both groups behind uniprop stay.
+# Asked of --slim=list, because a native binary has no nqp property ops.
+{
+    my $src = probe('nqp-uniprop.raku',
+        q{use nqp; print nqp::getuniprop_str(0x4E2D, nqp::unipropcode('East_Asian_Width'));});
+    my $p = run $*EXECUTABLE, '--exe', $src, '--slim=list', :out, :err;
+    my $out = $p.out.slurp(:close) ~ $p.err.slurp(:close);
+    check so($out ~~ /'unicode-props' \s+ 'keep'/ && $out ~~ /'unicode-names' \s+ 'keep'/),
+          'the scan keeps unicode-props and unicode-names for an nqp property read', $out;
 }
 
 # ---- 6a2. builtin wrappers around dynamic loading are triggers --------------

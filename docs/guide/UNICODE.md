@@ -186,7 +186,7 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 | `tools/gen_unicode_coll.py` | `src/unicode_coll_gen.cpp` | allkeys.txt (DUCET) | **18.0** |
 | `tools/gen_unicode_props.py` etc. | `src/unicode_{props,scripts,blocks,bidi}_gen.cpp` | PropList, DerivedCoreProperties (+ emoji-data, DerivedNormalizationProps, UnicodeData Bidi_Mirrored), Scripts, Blocks (proper names), DerivedBidiClass | **18.0** |
 | **`tools/gen_unicode_case.raku`** (Raku) | `src/unicode_case_gen.cpp` | UnicodeData (simple), SpecialCasing (full 1:N), CaseFolding | **18.0** |
-| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, BidiMirroring | **18.0** |
+| **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp`, `src/unicode_mirror_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, BidiMirroring (the second file, which `--slim` never cuts) | **18.0** |
 
 Every table is pinned at **Unicode 18.0**, the version Roast's generated test
 files (GraphemeBreakTest, emoji-test, CollationTest) assert against. The

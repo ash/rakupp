@@ -251,19 +251,33 @@ Short list on purpose. A knob nobody can reason about is worse than no knob.
 |---|---|---|---|
 | `unicode-names` | `NAMES`, `NUMV` | 1.75 MB | `uniname`, `uninames`, `uniparse`, `unival`, `univals`, and the `.uniname`/`.uniparse`/`.unival` methods |
 | `unicode-collation` | DUCET `COLLCE`/`COLLSING`/`COLLCONTR` | 0.74 MB | `unicmp`, the `coll` operator, `.collate`, `$*COLLATION` |
-| `unicode-props` | `SCRIPTS`, `BLOCKS`, `BIDI` | 0.08 MB | `uniprop` family with a non-literal property name; regex `<:Script<…>>`, `<:Block<…>>`, bidi classes |
+| `unicode-props` | `SCRIPTS`, `BLOCKS`, `BIDI`, and `unicode_props2_gen` (since 2026-10-17) | 0.40 MB | `uniprop` family with a non-literal property name, or naming a property those tables hold (Script, Block, Bidi_Class, Age, Line_Break, East_Asian_Width, …); regex `<:Script<…>>`, `<:Block<…>>`, bidi classes, and the value form of every enumerated property (`<:Line_Break<AL>>`) |
 | `eval` | `Lexer`, `Parser` | 0.55 MB | `EVAL`, `EVALFILE`, `require`, a regex built from a runtime string |
 
-**Not cuttable, deliberately:** `unicode_props_gen`, `unicode_props2_gen`,
-`unicode_norm_gen`, `unicode_case_gen`, `unicode_gb_gen` (~651 KB together).
-General category, binary properties, normalization, case mapping and grapheme
-breaking are reached by ordinary string operations — `.uc`, `.chars`, any
-regex, any comparison. Cutting them would mean analysing every string
-expression in the program, which is the analysis this plan is built to avoid.
+**Not cuttable, deliberately:** `unicode_props_gen`, `unicode_norm_gen`,
+`unicode_case_gen`, `unicode_gb_gen`, `unicode_gen`. General category, binary
+properties, normalization, case mapping and grapheme breaking are reached by
+ordinary string operations — `.uc`, `.chars`, any regex, any comparison.
+Cutting them would mean analysing every string expression in the program,
+which is the analysis this plan is built to avoid.
 
-`unicode-props` at 80 KB barely pays for itself, but it costs nothing extra
-once the seam exists and it keeps the story uniform. It can be dropped from
-the flag surface if the scan turns out to be fiddly.
+`unicode_props2_gen` was on that list until 2026-10-17, by its name rather
+than its contents. Its tables are the enumerated properties (Age, Line_Break,
+Word_Break, Sentence_Break, Grapheme_Cluster_Break, East_Asian_Width, the
+Hangul, Joining, Indic and decomposition types, the four quick checks) plus
+Unicode_1_Name, Jamo_Short_Name and Bidi_Paired_Bracket. Nothing reads any of
+them but `uniprop` naming the property and the `<:Prop<Value>>` regex form.
+Grapheme segmentation uses `unicode_gb_gen`, not GCB; normalization uses
+`unicode_norm_gen`, not the quick checks. So they moved behind the seam into
+`unicode-props` (`enumPropTable` and three neighbours in `ucd_seam.h`): 318 KB
+off every slim hello, with the scan taught the enumerated property names. The
+one table that stayed behind is Bidi_Mirroring_Glyph, now
+`unicode_mirror_gen.cpp`: the Lexer pairs a non-ASCII opening bracket with
+its closer through it, so `EVAL` in a slim binary needs it.
+
+`unicode-props` was 80 KB at first and barely paid for itself. With the
+enumerated properties it is 399 KB of binary (hello at `-all` against
+`-all,+unicode-props`, arm64).
 
 ### One constraint from outside this plan: librakupp pins `eval`
 

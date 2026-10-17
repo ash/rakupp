@@ -40,6 +40,7 @@
 namespace rakupp {
 
 bool isPragmaName(const std::string& name); // Interpreter.cpp — `use` names with no file behind them
+bool uniUnipropNeedsCutTables(const std::string& prop); // Unicode.cpp — would .uniprop(prop) reach a cut table?
 
 namespace {
 
@@ -109,7 +110,10 @@ struct Scan {
             for (char c : p) if (ascii::isalnum((unsigned char)c)) norm += (char)ascii::tolower((unsigned char)c);
             if (norm == "name" || norm == "na" || norm == "numericvalue" || norm == "nv")
                 { use(F_NAMES, fn + "('" + p + "')"); return; } // Name/Numeric_Value live in the names tables
-            if (uniPropNeedsCutTables(p)) use(F_PROPS, fn + "('" + p + "')");
+            // unimatch hands its argument to the regex matcher; uniprop
+            // resolves the name in an order of its own
+            if (fn == "unimatch" ? uniPropNeedsCutTables(p) : uniUnipropNeedsCutTables(p))
+                use(F_PROPS, fn + "('" + p + "')");
             return;
         }
         use(F_PROPS, fn + " with a computed property name");
@@ -348,7 +352,20 @@ struct Scan {
                 walkE(t->cond.get()); walkE(t->then.get()); walkE(t->els.get());
                 break;
             }
-            case NK::NqpOp: for (auto& a : static_cast<NqpOp*>(e)->args) walkE(a.get()); break;
+            case NK::NqpOp: {
+                auto* q = static_cast<NqpOp*>(e);
+                // The nqp property reads go through .uniprop with a property
+                // picked by NUMBER at run time (BuiltinsNqp.cpp): a computed
+                // name, so both feature groups behind uniprop stay.
+                if (q->op == NqpOpc::GetUniPropStr || q->op == NqpOpc::GetUniPropBool ||
+                    q->op == NqpOpc::GetUniPropInt || q->op == NqpOpc::MatchUniProp ||
+                    q->op == NqpOpc::HasUniProp) {
+                    use(F_PROPS, "an nqp Unicode property read");
+                    use(F_NAMES, "an nqp Unicode property read");
+                }
+                for (auto& a : q->args) walkE(a.get());
+                break;
+            }
             case NK::Range: {
                 auto* r0 = static_cast<RangeExpr*>(e);
                 walkE(r0->from.get()); walkE(r0->to.get());

@@ -9,9 +9,9 @@
 // error rather than a hole in the seam.
 //
 // The never-cut tables (general category, binary properties, normalization,
-// case, grapheme break — reached by ordinary string operations) keep their
-// direct references on purpose; a seam there would be indirection with no
-// stub ever standing behind it.
+// case, grapheme break, the bidi mirror map — reached by ordinary string
+// operations, or by the Lexer) keep their direct references on purpose; a
+// seam there would be indirection with no stub ever standing behind it.
 //
 // Accessors return pointer + count ONCE; callers hoist both into locals before
 // any loop, so inner loops still index raw memory. `ucaElements()` touches
@@ -64,5 +64,16 @@ const uint32_t* collcontrTable(size_t* n); // rows of 5: cp0, cp1, cp2, off, cnt
 const ScriptEnt* scriptsTable(size_t* n);  // unicode_scripts_gen.cpp
 const BlockEnt*  blocksTable(size_t* n);   // unicode_blocks_gen.cpp
 const BidiEnt*   bidiTable(size_t* n);     // unicode_bidi_gen.cpp
+// …and the properties only uniprop and <:Prop<Value>> name, all in
+// unicode_props2_gen.cpp (tools/gen_unicode_props2.raku). The ENUMERATED ones
+// (Age, Line_Break, East_Asian_Width, …) are (lo, hi, value-index) triples
+// sorted by lo, n = uint32 count, *vals = the value names; `key` is the
+// table's own name ("AGE", "LB", …) and an unknown key answers null. Its
+// Bidi_Mirroring_Glyph neighbour is NOT here: the Lexer pairs brackets with
+// it, so it lives in unicode_mirror_gen.cpp and is never cut.
+const uint32_t* enumPropTable(const char* key, size_t* n, const char* const** vals);
+const uint32_t* unicode1NameTable(size_t* n, const char* const** strs);  // sorted cps; n = entries
+const uint32_t* jamoShortNameTable(size_t* n, const char* const** strs); // sorted cps; n = entries
+const uint32_t* bidiBracketTable(size_t* n); // (cp, paired, 1 open / 2 close) rows; n = uint32 count
 
 } }

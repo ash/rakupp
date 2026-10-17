@@ -16,8 +16,9 @@ namespace rakupp {
 namespace ucd {
 // Only the NEVER-CUT tables are named here (SLIM-PLAN: reached by ordinary
 // string operations, so no stub will ever stand behind them). The cuttable
-// groups — NAMES/NUMV, the collation triple, SCRIPTS/BLOCKS/BIDI — have no
-// extern in this file at all: they are reached through ucd_seam.h's accessors,
+// groups — NAMES/NUMV, the collation triple, SCRIPTS/BLOCKS/BIDI and the
+// uniprop-only tables of unicode_props2_gen.cpp — have no extern in this file
+// at all: they are reached through ucd_seam.h's accessors,
 // and a new direct reference is a compile error, not a hole in the seam.
 extern const uint32_t CCC[];    extern const size_t CCC_N;
 extern const uint32_t CANON[];  extern const size_t CANON_N;
@@ -38,17 +39,7 @@ extern const uint32_t FLOWER[]; extern const size_t FLOWER_N;
 extern const uint32_t FTITLE[]; extern const size_t FTITLE_N;
 extern const uint32_t FOLDF[];  extern const size_t FOLDF_N;
 extern const uint32_t SFOLD[];  extern const size_t SFOLD_N;
-// enum-property range tables (unicode_props2_gen.cpp)
-#define ENUMPROP(N) extern const char* const N##_VALUES[]; extern const size_t N##_VALUES_N; \
-                    extern const uint32_t N##_RANGES[]; extern const size_t N##_RANGES_N;
-ENUMPROP(AGE) ENUMPROP(LB) ENUMPROP(WB) ENUMPROP(SB) ENUMPROP(GCB) ENUMPROP(EAW)
-ENUMPROP(HST) ENUMPROP(DT) ENUMPROP(NT) ENUMPROP(JT) ENUMPROP(JG)
-ENUMPROP(NFCQC) ENUMPROP(NFDQC) ENUMPROP(NFKCQC) ENUMPROP(NFKDQC)
-ENUMPROP(INPC) ENUMPROP(INSC)
-#undef ENUMPROP
-extern const uint32_t U1NAME_CPS[]; extern const char* const U1NAME_STRS[]; extern const size_t U1NAME_N;
-extern const uint32_t JAMOSN_CPS[]; extern const char* const JAMOSN_STRS[]; extern const size_t JAMOSN_N;
-extern const uint32_t BIDIBRACKET[]; extern const size_t BIDIBRACKET_N;
+// the Bidi_Mirroring_Glyph map (unicode_mirror_gen.cpp): the Lexer pairs brackets with it
 extern const uint32_t BIDIMIRROR[]; extern const size_t BIDIMIRROR_N;
 }
 
@@ -60,57 +51,73 @@ static std::string enumLookup(const uint32_t* r, size_t n3, const char* const* v
         if (cp < s) hi = mid; else if (cp > e) lo = mid + 1; else return vals[r[mid * 3 + 2]]; }
     return dflt;
 }
+// An enumerated property's NAME (already normalized: lowercase, separators
+// dropped) → its table key in unicode_props2_gen.cpp, plus the value a
+// codepoint the table does not list takes. Null for any other name. Touches
+// no table, so the SLIM scan's predicates below ask it too.
+struct EnumPropKey { const char* key; const char* dflt; };
+static const EnumPropKey* enumPropKey(const std::string& p) {
+    static const struct { const char* name; EnumPropKey k; } kNames[] = {
+        {"age", {"AGE", "Unassigned"}},
+        {"linebreak", {"LB", "XX"}},             {"lb", {"LB", "XX"}},
+        {"wordbreak", {"WB", "Other"}},          {"wb", {"WB", "Other"}},
+        {"sentencebreak", {"SB", "Other"}},      {"sb", {"SB", "Other"}},
+        {"graphemeclusterbreak", {"GCB", "Other"}}, {"gcb", {"GCB", "Other"}},
+        {"eastasianwidth", {"EAW", "N"}},        {"ea", {"EAW", "N"}},
+        {"hangulsyllabletype", {"HST", "NA"}},   {"hst", {"HST", "NA"}},
+        {"decompositiontype", {"DT", "None"}},   {"dt", {"DT", "None"}},
+        {"numerictype", {"NT", "None"}},         {"nt", {"NT", "None"}},
+        // Joining_Type's default is computed, not listed (uniEnumProp below)
+        {"joiningtype", {"JT", ""}},             {"jt", {"JT", ""}},
+        {"joininggroup", {"JG", "No_Joining_Group"}}, {"jg", {"JG", "No_Joining_Group"}},
+        // the four normalization quick checks: every codepoint the UCD file
+        // does not list is "Yes", and the values are reported by full name
+        {"nfcquickcheck", {"NFCQC", "Yes"}},     {"nfcqc", {"NFCQC", "Yes"}},
+        {"nfdquickcheck", {"NFDQC", "Yes"}},     {"nfdqc", {"NFDQC", "Yes"}},
+        {"nfkcquickcheck", {"NFKCQC", "Yes"}},   {"nfkcqc", {"NFKCQC", "Yes"}},
+        {"nfkdquickcheck", {"NFKDQC", "Yes"}},   {"nfkdqc", {"NFKDQC", "Yes"}},
+        {"indicpositionalcategory", {"INPC", "NA"}}, {"inpc", {"INPC", "NA"}},
+        {"indicsyllabiccategory", {"INSC", "Other"}}, {"insc", {"INSC", "Other"}},
+    };
+    for (auto& e : kNames) if (p == e.name) return &e.k;
+    return nullptr;
+}
 std::string uniEnumProp(const std::string& prop, uint32_t cp) {
     // normalize the property name (case/underscore-insensitive)
     std::string p; for (char c : prop) if (ascii::isalnum((unsigned char)c)) p += (char)ascii::tolower((unsigned char)c);
-    #define TRY(N, dflt, ...) { static const char* ks[] = {__VA_ARGS__}; for (auto* k : ks) if (p == k) \
-        return enumLookup(ucd::N##_RANGES, ucd::N##_RANGES_N, ucd::N##_VALUES, cp, dflt); }
-    TRY(AGE, "Unassigned", "age")
-    TRY(LB, "XX", "linebreak", "lb")
-    TRY(WB, "Other", "wordbreak", "wb")
-    TRY(SB, "Other", "sentencebreak", "sb")
-    TRY(GCB, "Other", "graphemeclusterbreak", "gcb")
-    TRY(EAW, "N", "eastasianwidth", "ea")
-    TRY(HST, "NA", "hangulsyllabletype", "hst")
-    TRY(DT, "None", "decompositiontype", "dt")
-    TRY(NT, "None", "numerictype", "nt")
+    const EnumPropKey* k = enumPropKey(p);
+    if (!k) return "";        // not an enumerated property: no table is touched
+    size_t n; const char* const* vals;
+    const uint32_t* r = ucd::enumPropTable(k->key, &n, &vals); // seam: throws when cut
+    std::string v = enumLookup(r, n, vals, cp, k->dflt);
     // Joining_Type: ArabicShaping lists the joining code points; of the rest,
     // those of general category Mn, Me or Cf are Transparent and the others
     // Non_Joining (the file's header says so), so an unlisted combining mark
     // is T, not U.
-    if (p == "joiningtype" || p == "jt") {
-        std::string v = enumLookup(ucd::JT_RANGES, ucd::JT_RANGES_N, ucd::JT_VALUES, cp, "");
-        if (!v.empty()) return v;
+    if (v.empty() && std::strcmp(k->key, "JT") == 0) {
         const std::string gc = uniGeneralCategory(cp);
         return gc == "Mn" || gc == "Me" || gc == "Cf" ? "T" : "U";
     }
-    TRY(JG, "No_Joining_Group", "joininggroup", "jg")
-    // the four normalization quick checks: every codepoint the UCD file does not
-    // list is "Yes", and the values are reported by full name
-    TRY(NFCQC,  "Yes", "nfcquickcheck",  "nfcqc")
-    TRY(NFDQC,  "Yes", "nfdquickcheck",  "nfdqc")
-    TRY(NFKCQC, "Yes", "nfkcquickcheck", "nfkcqc")
-    TRY(NFKDQC, "Yes", "nfkdquickcheck", "nfkdqc")
-    TRY(INPC, "NA",    "indicpositionalcategory", "inpc")
-    TRY(INSC, "Other", "indicsyllabiccategory",   "insc")
-    #undef TRY
-    return "";
+    return v;
 }
 
 // Jamo_Short_Name — the short Hangul jamo name ("GG"); "" for everything else.
 std::string uniJamoShortName(uint32_t cp) {
-    size_t lo = 0, hi = ucd::JAMOSN_N;
-    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::JAMOSN_CPS[mid];
-        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return ucd::JAMOSN_STRS[mid]; }
+    size_t n; const char* const* strs;
+    const uint32_t* cps = ucd::jamoShortNameTable(&n, &strs); // seam: hoisted once
+    size_t lo = 0, hi = n;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = cps[mid];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return strs[mid]; }
     return "";
 }
 
 // Bidi_Paired_Bracket / _Type. A codepoint that is not a paired bracket pairs
 // with ITSELF and is type "n" — that is the UCD's own default, not an absence.
 static const uint32_t* bracketRow(uint32_t cp) {
-    size_t lo = 0, hi = ucd::BIDIBRACKET_N / 3;
-    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::BIDIBRACKET[mid * 3];
-        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return &ucd::BIDIBRACKET[mid * 3]; }
+    size_t n; const uint32_t* T = ucd::bidiBracketTable(&n); // seam: hoisted once
+    size_t lo = 0, hi = n / 3;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = T[mid * 3];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return &T[mid * 3]; }
     return nullptr;
 }
 uint32_t uniBidiPairedBracket(uint32_t cp) {
@@ -125,9 +132,11 @@ std::string uniBidiPairedBracketType(uint32_t cp) {
 // Unicode_1_Name — the Unicode 1.0 name, kept for the codepoints (mostly
 // controls) that have no Name of their own. "" when there is none.
 std::string uniUnicode1Name(uint32_t cp) {
-    size_t lo = 0, hi = ucd::U1NAME_N;
-    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = ucd::U1NAME_CPS[mid];
-        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return ucd::U1NAME_STRS[mid]; }
+    size_t n; const char* const* strs;
+    const uint32_t* cps = ucd::unicode1NameTable(&n, &strs); // seam: hoisted once
+    size_t lo = 0, hi = n;
+    while (lo < hi) { size_t mid = (lo + hi) / 2; uint32_t k = cps[mid];
+        if (cp < k) hi = mid; else if (cp > k) lo = mid + 1; else return strs[mid]; }
     return "";
 }
 
@@ -319,8 +328,10 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
         if (prop == "bc" || prop == "bidiclass")
             return normProp(uniBidiClass(cp)) == normProp(val);
         // an ENUMERATED property with its value: <:Numeric_Type<Digit>>,
-        // <:Line_Break<AL>> — compare the codepoint's own value (these tables
-        // are never cut)
+        // <:Line_Break<AL>> — compare the codepoint's own value. These tables
+        // are cuttable (unicode-props), but uniEnumProp touches one only when
+        // the name IS an enumerated property, so <:gc<Lu>> and <:sc<…>> pass
+        // through here without reaching it.
         {
             std::string ev = uniEnumProp(p.substr(0, lt), cp);
             if (!ev.empty()) return normProp(ev) == normProp(val);
@@ -419,18 +430,23 @@ bool uniMatchesProp(uint32_t cp, const std::string& p) {
     return true; // unknown property (e.g. an unmodelled script): lenient match
 }
 
-// SLIM-PLAN P4: would matching `<:p>` reach the cuttable SCRIPTS/BLOCKS/BIDI
+// SLIM-PLAN P4: would matching `<:p>` reach the cuttable unicode-props
 // tables? The scan asks this for every property assertion in a regex, so the
 // answer must mirror uniMatchesProp's dispatch order above EXACTLY — a name
 // that resolves before the "cuttable" line there is safe (false here), and
 // everything at or past it (scripts, In-blocks, bc<…>, and unknown names,
 // which fall through the script-set lookup) needs the feature (true here).
+// The value form's enumerated properties (<:Line_Break<AL>>,
+// <:Hangul_Syllable_Type<L>>) read unicode_props2_gen.cpp's tables before the
+// value is looked at, so they need it too, whatever the value: an L would
+// otherwise pass as a category letter.
 // Runs inside the rakupp CLI, where every table is present.
 bool uniPropNeedsCutTables(const std::string& p) {
     size_t lt = p.find('<');
     if (lt != std::string::npos && !p.empty() && p.back() == '>') {
         std::string prop = normProp(p.substr(0, lt));
         if (prop == "bc" || prop == "bidiclass") return true;          // bidiTable
+        if (enumPropKey(prop)) return true;                            // enumPropTable
         return uniPropNeedsCutTables(p.substr(lt + 1, p.size() - lt - 2));
     }
     static const std::set<std::string> posixish = {   // the literal names uniMatchesProp
@@ -458,6 +474,23 @@ bool uniPropNeedsCutTables(const std::string& p) {
     for (auto* k : LONGN) if (p == k) return false;
     if (uniBinProp('A', normProp(p)) >= 0) return false;   // known binary property name
     return true; // script, In-block, or unknown: all reach the cuttable tables
+}
+
+// The same question for `.uniprop('p')`, which is NOT the regex question: the
+// method resolves a name in its own order (MethodCallPart3.cpp, the `one`
+// lambda), and it answers some names a regex reads as a category from a
+// cuttable table: `.uniprop('W')` is East_Asian_Width, not a category letter.
+// So everything the regex predicate keeps, plus every name that order sends
+// to unicode_props2_gen.cpp. Change one, change both.
+bool uniUnipropNeedsCutTables(const std::string& p) {
+    if (uniPropNeedsCutTables(p)) return true;
+    if (enumPropKey(normProp(p))) return true;                        // enumPropTable
+    static const std::set<std::string> kCut = {
+        "Unicode_1_Name", "na1", "Jamo_Short_Name", "JSN",            // their own tables
+        "Bidi_Paired_Bracket", "bpb", "Bidi_Paired_Bracket_Type", "bpt",
+        "W", "Na", "F", "H",                                          // East_Asian_Width values
+    };
+    return kCut.count(p) > 0;
 }
 
 // UAX #29 grapheme-break properties

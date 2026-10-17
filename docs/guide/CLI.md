@@ -950,7 +950,7 @@ the rebuild flag:
 |---------------------|-------------------------------|-------------------------------------------|
 | `unicode-names`     | the Unicode name/numeric tables | `uniname`, `uniparse`, `unival`         |
 | `unicode-collation` | the DUCET tables              | `unicmp`, `coll`, `.collate`              |
-| `unicode-props`     | Script/Block/Bidi_Class ranges | `uniprop('Script')`, `<:Script<…>>`, …   |
+| `unicode-props`     | Script/Block/Bidi_Class ranges, and the properties only `uniprop` names (Age, Line_Break, East_Asian_Width, …) | `uniprop('Script')`, `uniprop('Line_Break')`, `<:Script<…>>`, … |
 | `eval`              | the lexer and parser          | `EVAL`, `require`, runtime-compiled regexes |
 
 ```

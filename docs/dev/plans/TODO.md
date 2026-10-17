@@ -129,9 +129,15 @@ The same items grouped by theme, with a complexity estimate for each:
   `t_poll`): one `tctx_` read each in runLoopBody, execPlainBlock, exec and
   evalAssign per iteration. Next: pass the context down
   (INTERP-SPEED-PLAN task 4).
-- [ ] **`--slim` review**: what `--slim` actually removes. The 12.5 / 12.75 MB
-  size budgets are a stopgap until this is done. [SLIM-PLAN.md](SLIM-PLAN.md)
-  P6 (make `auto` the default) and P7 (`--aot`) follow.
+- [ ] **`--slim` review**: what `--slim` actually removes. First round
+  2026-10-17: `unicode_props2_gen` (Age, Line_Break, East_Asian_Width and the
+  other enumerated properties, 318 KB) was never cut; it rides `unicode-props`
+  now, and `--slim=-all` hello is under the 12.5 MB line again by 245 KB
+  without a re-pin. A linker map of the rest finds only the interpreter
+  itself. Left: every `uniprop` call keeps both `unicode-props` and
+  `unicode-names` whatever it names, because SlimScan's noteName treats a call
+  like a bare `&uniprop`. [SLIM-PLAN.md](SLIM-PLAN.md) P6 (make `auto` the
+  default) and P7 (`--aot`) follow.
 - [ ] **Small tails**:
   - [VALUE32-PLAN.md](VALUE32-PLAN.md): one measurement decides B versus C.
   - [JUNCTION-PLAN.md](JUNCTION-PLAN.md): Ph3, list-associative `|`, `&`, `^`.
