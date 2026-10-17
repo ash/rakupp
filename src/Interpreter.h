@@ -2323,6 +2323,7 @@ public:
     // built-in `val` in compiled code exactly as it does in the interpreter.
     Value callEnvFirst(const std::string& name, ValueList args);
     Value callEnvFirstAmp(const std::string& ampName, ValueList args);   // …given `&name`, as compiled call sites keep it
+    Value envAmpOr(const std::string& ampName, const Value& fallback);   // the env's `&name` itself, else fallback
     // Resolve a builtin's function once (at compiled-program startup) so call
     // sites can go through the pointer directly, skipping callBuiltin's
     // per-call name hash + map lookup. Null when the name is not a registered

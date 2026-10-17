@@ -1600,6 +1600,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             auto mtoks = lx.tokenize();
             applyL10NSlang(src, mtoks);   // a MODULE may be written in a localized Raku too
             Parser parser(std::move(mtoks));
+            // its declarator pod (`#|` / `#=`), as the mainline's parse takes it:
+            // without these a module's routines, classes and attributes had no .WHY
+            parser.declPod_ = lx.declPod_;
+            parser.leadPod_ = lx.leadPod_;
             // The module's own `use`s resolve on the SAME search path, so its
             // imported operators and sigilless constants are known while its body
             // parses (Text::Utils reads SPACE from Text::Utils::Vars).

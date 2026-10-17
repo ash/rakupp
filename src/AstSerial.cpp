@@ -255,6 +255,7 @@ template <class IO> void ioAttr(IO& io, AttrDecl& a) {
     F(io, a.objKeyed); F(io, a.inlined); F(io, a.twigilWritten);
     ioVec(io, a.doesRoles);
     F(io, a.coerceFrom);
+    F(io, a.pod); F(io, a.podTrail); F(io, a.declLine);
     if constexpr (IO::reading) {
         size_t n = io.count();
         a.userTraits.clear(); a.userTraits.resize(n);
@@ -394,7 +395,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     F(io, n.isSubmethod); F(io, n.isPrivate);
     F(io, n.retTypeSpell);   // P1 surface fact
     ioExprVec(io, n.immediateArgs); F(io, n.immediateCall);
-    F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.isOur); F(io, n.retType); F(io, n.pod);
+    F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.isOur); F(io, n.retType); F(io, n.pod); F(io, n.podTrail);
     F(io, n.pkgOfExport);   // a package's own `sub EXPORT`, which `use` must not call
     F(io, n.isNative); F(io, n.nativeLib); F(io, n.nativeLibSub);
     ioExpr(io, n.nativeLibExpr); F(io, n.nativeSym); ioExpr(io, n.nativeSymExpr);
@@ -428,7 +429,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
         io.uvar(n.rules.size());   for (auto& r : n.rules) ioRule(io, r);
     }
     F(io, n.isRole); F(io, n.parentIsDoes); F(io, n.isGrammar); F(io, n.isAugment);
-    F(io, n.isStubDecl); F(io, n.pod); F(io, n.parameterized); F(io, n.isMy);
+    F(io, n.isStubDecl); F(io, n.pod); F(io, n.podTrail); F(io, n.parameterized); F(io, n.isMy);
     ioExpr(io, n.nameExpr);
     F(io, n.ver); F(io, n.auth); F(io, n.api);
     ioExpr(io, n.verExpr); ioExpr(io, n.authExpr); ioExpr(io, n.apiExpr);
@@ -456,7 +457,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
 }
 template <class IO> void visit(IO& io, Block& n)    { ioStmtVec(io, n.stmts); F(io, n.isCatch);
                                                       F(io, n.phaser); F(io, n.stmtForm); }
-template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, n.values); F(io, n.isExport); }
+template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, n.values); F(io, n.isExport); F(io, n.pod); F(io, n.podTrail); }
 template <class IO> void visit(IO& io, IfStmt& n)   {
     F(io, n.thenVar);
     if constexpr (IO::reading) {

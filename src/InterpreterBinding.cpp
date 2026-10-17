@@ -2165,6 +2165,15 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
 Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
     return callEnvFirstAmp("&" + name, std::move(args));
 }
+// `&name` in compiled code, for a name a `use`d module exports: the Callable
+// the environment holds, as the interpreter's `&name` gives it, else
+// `fallback` (the builtin closure the module did not shadow after all).
+Value Interpreter::envAmpOr(const std::string& ampName, const Value& fallback) {
+    Value* p = tctx_.cur ? tctx_.cur->find(ampName) : nullptr;
+    if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
+    return p ? *p : fallback;
+}
+
 Value Interpreter::callEnvFirstAmp(const std::string& ampName, ValueList args) {
     Value* p = tctx_.cur ? tctx_.cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }

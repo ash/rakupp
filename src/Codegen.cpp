@@ -17,6 +17,7 @@
 #include <utility>   // std::exchange
 
 namespace rakupp {
+bool reverseWordOp(const std::string& op); // InterpreterCalls.cpp: `Rcmp`, `RR-` — a reverse metaop?
 
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCore.cpp
 bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
@@ -494,6 +495,7 @@ struct Codegen {
     std::set<std::string> labelNames;    // statement labels (Program::labelNames): a bare `L` is the Label
     std::map<std::string, ClassDecl*> classDecls_; // name → declaration, for ancestry questions
     std::set<std::string> multiNames;    // names that are multi subs (dispatched at runtime)
+    std::map<std::string, const SubDecl*> multiProtos_;  // …and each group's proto, whose pod is the group's .WHY
 
     // A user-declared operator routine's emitted dispatcher, or "" when the
     // program declares none by that name. `name` is the Raku spelling of the
@@ -1686,10 +1688,20 @@ struct Codegen {
         if (d->params.empty() && !d->hadSig) {
             auto phs = computePlaceholders(d->body);
             if (!phs.empty())
-                return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().name = " + cesc(d->name) +
-                       "; _c.code()->ciM().placeholders = {" + placeholderList(phs) + "}; return _c; }())";
+                return withPod("([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().name = " + cesc(d->name) +
+                               "; _c.code()->ciM().placeholders = {" + placeholderList(phs) + "}; return _c; }())", d);
         }
-        return sigWrap(mk, d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u);
+        return withPod(sigWrap(mk, d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u), d);
+    }
+    // A routine's declarator pod (`#|` above it, `#=` beside it), set on its
+    // Callable as the interpreter's declaration sets it, so `.WHY` answers in a
+    // binary too. Only when there is some: most routines have none, and the
+    // wrapper is a lambda per reference.
+    std::string withPod(const std::string& mk, const SubDecl* d) {
+        if (!d || d->pod.empty()) return mk;
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->coldM().pod = " + cesc(d->pod) +
+               "; _c.code()->coldM().podTrail = " + cesc(d->podTrail) +
+               "; _c.code()->ciM().declLine = " + std::to_string(d->line) + "; return _c; }())";
     }
     // `&name` of a top-level sub
     std::string subRefSig(const std::string& mk, const std::string& nm) {
@@ -1878,8 +1890,11 @@ struct Codegen {
                     }
                     if (userSubs.count(nm))
                         return subRefSig("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(__a); })", nm);
-                    if (multiNames.count(nm))
-                        return "Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(ValueList(__a)); })";
+                    if (multiNames.count(nm)) {   // a dispatch group is documented by its proto
+                        auto pr = multiProtos_.find(nm);
+                        return withPod("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(nm) + "(ValueList(__a)); })",
+                                       pr == multiProtos_.end() ? nullptr : pr->second);
+                    }
                     if (codeVars.count(nm)) return mangleVar(v->name); // `my &f = …`
                     if (envSubs.count(nm)) return "RT.dynVar(" + cesc(v->name) + ")"; // lexical sub
                     if (moduleMode_ && callEnvNames_.count(nm)) return varRef(v->name);  // the module's own sub
@@ -1891,7 +1906,13 @@ struct Codegen {
                                ", (__a.size()>0?__a[0]:Value::any()), (__a.size()>1?__a[1]:Value::any())); })";
                     }
                     // a builtin (say, is_even, …) — dispatch by name at runtime
-                    return "Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; })";
+                    std::string fwd = "Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; })";
+                    // …but the environment first, as the interpreter's `&name`
+                    // looks: a routine a `use`d module put there is that
+                    // Callable itself — its .WHY, .name and identity — not a
+                    // closure forwarding to it by name. (Even a module this
+                    // compile could not read, whose exports it never learned.)
+                    return "RT.envAmpOr(" + cesc(v->name) + ", " + fwd + ")";
                 }
                 if (v->name == "$?LINE") return "Value::integer(" + std::to_string(v->line) + ")";
                 {
@@ -2347,10 +2368,18 @@ struct Codegen {
                     std::string R = b->rhs->kind == NK::Whatever ? "Value::whatever()" : exArg(b->rhs.get());
                     return "RT.seqOp(" + L + ", " + R + ", " + (b->op == "...^" ? "true" : "false") + ")";
                 }
-                if (b->op.size() > 1 && b->op[0] == 'R' && !ascii::isalnum((unsigned char)b->op[1])) {
-                    // reverse metaop `a R/ b` == `b / a`
+                if (b->op.size() > 1 && b->op[0] == 'R' &&
+                    (!ascii::isalnum((unsigned char)b->op[1]) || reverseWordOp(b->op))) {
+                    // reverse metaop `a R/ b` == `b / a` — over a word base too
+                    // (`Rcmp`, `Rleg`, `Rcoll`, `Rdiv`), which the run-time
+                    // dispatch does not take spelled with its R: the interpreter
+                    // strips it in applyBinOp, and this lowering has to as well.
+                    // Every R reverses again (`RRcmp` is `cmp`).
+                    size_t nr = 0;
+                    while (nr < b->op.size() && b->op[nr] == 'R') nr++;
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
-                    return std::string(starFn(b)) + "(" + cesc(b->op.substr(1)) + ", " + R + ", " + L + ")";
+                    if (nr % 2 == 0) std::swap(L, R);
+                    return std::string(starFn(b)) + "(" + cesc(b->op.substr(nr)) + ", " + R + ", " + L + ")";
                 }
                 // Smartmatch on two values: the interpreter's rule, not
                 // applyArith's. A Callable matcher has to be INVOKED with the
@@ -2762,6 +2791,47 @@ struct Codegen {
     std::vector<Block*> topLevelEnds; // top-level END phasers, run at program end
     int leaveCtr_ = 0;                // unique names for LEAVE scope guards
     std::set<std::string> topVars_;   // top-level `my` vars hoisted to C++ globals
+
+    // A grammar rule or a named regex runs in the regex ENGINE, which resolves
+    // a variable it names — `$x` as an atom, anything in a `{ … }` block — by
+    // evaluating it in the interpreter's scope. A compiled program's top-level
+    // (or class-body) `my` is a C++ global that scope does not hold, so the
+    // binary died "Variable '$x' is not declared" where the interpreter
+    // matched. Refused into the bundling fallback instead, where the variable
+    // is the interpreter's own. Textual and conservative: a `$x` the rule
+    // declares itself, or one quoted as literal text, also refuses, which
+    // costs only the native compile.
+    // The same holds for the program's own SUBS, which compile to C++
+    // functions: `<?{ check() }>` and `<&check>` died "Undefined routine".
+    void requireRuleSeesNoNativeVar(const std::string& pat, const std::string& what) {
+        auto start = [](char c) { return ascii::isalpha((unsigned char)c) || c == '_'; };
+        auto part  = [](char c) { return ascii::isalnum((unsigned char)c) || c == '_'; };
+        auto isSub = [&](const std::string& n) { return userSubs.count(n) || multiNames.count(n); };
+        int depth = 0;   // inside a `{ … }` code block (also `<?{…}>`, `**{…}`)
+        for (size_t i = 0; i < pat.size(); i++) {
+            const char c = pat[i];
+            if (c == '\\') { i++; continue; }
+            if (c == '{') { depth++; continue; }
+            if (c == '}') { if (depth) depth--; continue; }
+            if (!start(c) && !((c == '$' || c == '@' || c == '%' || c == '&') && i + 1 < pat.size() && start(pat[i + 1])))
+                continue;
+            const bool sigil = !start(c);
+            size_t k = i + 1;
+            while (k < pat.size() && (part(pat[k]) ||
+                   ((pat[k] == '-' || pat[k] == '\'') && k + 1 < pat.size() && start(pat[k + 1])))) k++;
+            const std::string word = pat.substr(sigil ? i + 1 : i, k - (sigil ? i + 1 : i));
+            const char before = i > 0 ? pat[i - 1] : ' ';
+            if (sigil && c != '&' && topVars_.count(std::string(1, c) + word))
+                unsupported(what + " that uses the program's `my " + std::string(1, c) + word +
+                            "` (the regex engine cannot see a compiled program's variables)");
+            // a bare word in code, not a method (`.word`) or part of a longer name
+            if (((sigil && c == '&') || (!sigil && depth > 0 && before != '.' && !part(before) &&
+                                         before != '$' && before != '@' && before != '%')) && isSub(word))
+                unsupported(what + " that calls the program's sub `" + word +
+                            "` (the regex engine cannot see a compiled program's routines)");
+            i = k - 1;
+        }
+    }
     std::map<std::string, std::string> topVarTypes_; // …and their declared types, if any
     // Top-level `my $x = 0.5e0` (every top-level declaration of the name has a
     // Num literal for its initializer): a loop lane at the top level types the
@@ -3414,6 +3484,7 @@ struct Codegen {
             }
             case NK::NamedRegexDecl: { // my regex NAME { … } — register with the embedded engine
                 auto* nr = static_cast<NamedRegexDecl*>(s);
+                requireRuleSeesNoNativeVar(nr->pattern, "a named regex (" + nr->name + ")");
                 line(ind, "RT.registerNamedRegex(" + cesc(nr->name) + ", " + cesc(nr->pattern) + ", " + cesc(nr->kind) + ");");
                 return;
             }
@@ -6432,6 +6503,8 @@ struct Codegen {
     void classRegister(ClassDecl* cd) {
         std::string ci = gensym("ci");
         line(1, "{ auto " + ci + " = std::make_shared<ClassInfo>(); " + ci + "->name = " + cesc(cd->name) + ";");
+        if (!cd->pod.empty())    // `#| …` on the class: `C.WHY`
+            line(1, "  " + ci + "->pod = " + cesc(cd->pod) + "; " + ci + "->podTrail = " + cesc(cd->podTrail) + ";");
         if (!cd->parent.empty())
             line(1, "  { auto __p = RT.classes_.find(" + cesc(cd->parent) + "); if (__p != RT.classes_.end()) " + ci + "->parent = __p->second; }");
         for (auto& a : cd->attrs) {
@@ -6439,6 +6512,9 @@ struct Codegen {
                           + std::string(1, a.sigil) + "'; __at.pub = " + (a.pub ? "true" : "false")
                           + "; __at.rw = " + (a.rw ? "true" : "false") + ";";
             if (!a.type.empty()) d += " __at.type = " + cesc(a.type) + ";";
+            if (!a.pod.empty())      // `has $.x; #= …`: the Attribute's .WHY
+                d += " __at.pod = " + cesc(a.pod) + "; __at.podTrail = " + cesc(a.podTrail) +
+                     "; __at.declLine = " + std::to_string(a.declLine) + ";";
             if (a.def) d += " __at.hasDefVal = true; __at.defVal = " + ex(a.def.get()) + ";";
             d += " " + ci + "->attrs.push_back(__at); }";
             line(1, d);
@@ -6448,7 +6524,8 @@ struct Codegen {
             std::map<std::string, int> seq;
             for (auto& mp : cd->methods) {
                 if (mp->isMulti) { multis[methodKey(mp.get())].push_back(mp.get()); continue; }
-                line(1, "  " + ci + "->methods[" + cesc(methodKey(mp.get())) + "] = Value::closure(" + methodFn(cd->name, methodKey(mp.get())) + ");");
+                line(1, "  " + ci + "->methods[" + cesc(methodKey(mp.get())) + "] = " +
+                        withPod("Value::closure(" + methodFn(cd->name, methodKey(mp.get())) + ")", mp.get()) + ";");
             }
             for (auto& kv : multis) {
                 if (const char* why = undecidableMulti(cd, kv.first, kv.second))
@@ -6489,6 +6566,7 @@ struct Codegen {
             if (cd->parent.empty())
                 line(1, "  if (!" + ci + "->parent && " + ci + "->nativeParent.empty()) " + ci + "->nativeParent = \"Grammar\";");
             for (auto& r : cd->rules) {
+                requireRuleSeesNoNativeVar(r.pattern, "a grammar rule (" + cd->name + "." + r.name + ")");
                 std::string reg = "  " + ci + "->rules[" + cesc(r.name) + "] = " + cesc(r.pattern) + "; "
                                 + ci + "->ruleKind[" + cesc(r.name) + "] = " + cesc(r.kind) + ";";
                 if (!r.params.empty()) {
@@ -6762,6 +6840,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     std::map<std::string, std::vector<SubDecl*>> multiCands;
     struct EnumConst { std::string key; long long ord; std::string type; }; // type: "" for an anonymous enum
     std::vector<EnumConst> enumConsts;
+    std::vector<const EnumDecl*> enumPods;   // enums with a `#|` / `#=`: their .WHY
     // Walk a statement's `my` declarations, handing each (name, declared type)
     // to `fn`. Used for BOTH the top level and class bodies (see the ClassDecl
     // branch below), so the two cannot drift.
@@ -6813,7 +6892,10 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             auto* d = static_cast<SubDecl*>(s.get());
             if (d->isMethod) throw CodegenError{"a method sub at statement level"};
             if (d->name.empty()) throw CodegenError{"an anonymous sub at statement level"};
-            if (d->isMulti) { multiCands[d->name].push_back(d); g.multiNames.insert(d->name); }
+            if (d->isMulti) {
+                multiCands[d->name].push_back(d); g.multiNames.insert(d->name);
+                if (d->isProto) g.multiProtos_[d->name] = d;
+            }
             else {
                 const auto& dps = g.sigOf(d);
                 g.userSubs[d->name] = (int)dps.size(); g.subDecls_[d->name] = d; subs.push_back(d);
@@ -6850,6 +6932,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         } else if (s->kind == NK::EnumDecl) {
             auto* ed = static_cast<EnumDecl*>(s.get());
             g.topDecls_.insert(ed);
+            if (!ed->pod.empty() && !ed->name.empty()) enumPods.push_back(ed);
             Expr* v = ed->values.get();
             std::vector<ExprPtr>* items = v && v->kind == NK::ArrayLit ? &static_cast<ArrayLit*>(v)->items
                                         : v && v->kind == NK::ListExpr ? &static_cast<ListExpr*>(v)->items : nullptr;
@@ -6994,6 +7077,11 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     g.out << "static void __rakupp_register() {\n";
     for (size_t i = 0; i < bfNames.size(); i++)
         g.out << "    __bfp" << i << " = RT.builtinPtr(" << cesc(*bfNames[i]) << ");\n";
+    // an enum's declarator pod: `Color.WHY` reads it where the interpreter's
+    // EnumDecl puts it (the members are C++ statics, the type has no Env)
+    for (const EnumDecl* ed : enumPods)
+        g.out << "    RT.pkgPod_[" << cesc(ed->name) << "] = " << cesc(ed->pod) << "; RT.pkgPodTrail_["
+              << cesc(ed->name) << "] = " << cesc(ed->podTrail) << ";\n";
     // early, so $*USAGE inside the program body already answers with the real text
     if (hasMainProg && !mainSig.empty())
         g.out << "    RT.registerCompiledMain(__rakupp_main_sig, sizeof __rakupp_main_sig, &__rakupp_main_entry);\n";

@@ -8735,6 +8735,8 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         try {
             Lexer lx(src);
             Parser parser(lx.tokenize());
+            parser.declPod_ = lx.declPod_;                // …and keeps its declarator pod, as the load does
+            parser.leadPod_ = lx.leadPod_;
             parser.libPaths_ = searchPath;                // its own `use`s resolve like the real load
             parser.srcFile_ = path;
             mp = parser.parseProgram();
