@@ -34,12 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # release.yml's linux-musl image, for i386 -- the official alpine from its
-      # ECR Public mirror, the runner's uid as a user of its own, TMPDIR on the
-      # checkout's mount (release.yml says why).
+      # release.yml's linux-musl image, for i386 -- the official alpine from
+      # whichever mirror answers (tools/ci-pull.sh), the runner's uid as a user
+      # of its own, TMPDIR on the checkout's mount (release.yml says why).
       - name: Build + gate image (Alpine 3.21, x86)
         run: |
-          docker run --name mu --platform linux/386 -e U="$(id -u)" public.ecr.aws/docker/library/alpine:3.21 sh -ec '
+          sh tools/ci-pull.sh --platform linux/386 alpine:3.21 rakupp-alpine-386
+          docker run --name mu --platform linux/386 -e U="$(id -u)" rakupp-alpine-386 sh -ec '
             apk add --no-cache -q clang g++ cmake make binutils linux-headers file git \
                                   perl python3 sqlite sqlite-libs libuuid curl procps bash
             adduser -D -u "$U" rk

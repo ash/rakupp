@@ -24,9 +24,10 @@
 # the runtime it links (lib/, include/) is in the image.
 #
 # REGISTRY prefixes the base image and is empty by default (Docker Hub). CI
-# sets it to public.ecr.aws/docker/library/, the official images' mirror on ECR
-# Public: unauthenticated Docker Hub pulls from shared runners hit the rate
-# limit (429), and BuildKit resolves FROM itself, so no daemon mirror helps.
+# sets it to whichever mirror of the official images answers that day
+# (tools/ci-pull.sh: ECR Public, Google's mirror.gcr.io, Docker Hub):
+# unauthenticated pulls from shared runners hit each one's limit now and then,
+# and BuildKit resolves FROM itself, so no daemon mirror helps.
 
 ARG REGISTRY=
 ARG DEBIAN=bookworm-slim

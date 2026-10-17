@@ -106,7 +106,8 @@ jobs:
             ARM64) image=quay.io/pypa/manylinux_2_28_aarch64; triple=aarch64-redhat-linux ;;
             *)     echo "no manylinux image for ${{ runner.arch }}"; exit 1 ;;
           esac
-          docker run --rm -v "$PWD:$PWD" -w "$PWD" "$image" bash -ec '
+          sh tools/ci-pull.sh "$image" rakupp-manylinux > /dev/null   # retried: see tools/ci-pull.sh
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" rakupp-manylinux bash -ec '
             dnf -q install -y clang gcc-toolset-11 gcc-toolset-11-libstdc++-devel
             gcc="--gcc-install-dir=/opt/rh/gcc-toolset-11/root/usr/lib/gcc/'"$triple"'/11"
             clang++ "$gcc" -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC"
@@ -959,6 +960,17 @@ jobs:
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
+      # The Dockerfile's FROM is ${REGISTRY}debian:<DEBIAN>. BuildKit pulls it
+      # itself, so a pull here cannot hand it the image -- but it can find out
+      # which mirror is answering today (tools/ci-pull.sh) and point REGISTRY
+      # there, rather than at ECR Public whatever its limits say.
+      - name: Base image registry
+        id: base
+        run: |
+          debian=$(sed -n 's/^ARG DEBIAN=//p' Dockerfile)
+          registry=$(sh tools/ci-pull.sh "debian:$debian" rakupp-debian)   # a failure here stops the job
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+
       - name: Build (amd64, for the smoke test)
         uses: docker/build-push-action@v7
         with:
@@ -966,7 +978,7 @@ jobs:
           platforms: linux/amd64
           build-args: |
             RAKUPP_VERSION=${{ steps.tags.outputs.version }}
-            REGISTRY=public.ecr.aws/docker/library/
+            REGISTRY=${{ steps.base.outputs.registry }}
           load: true
           tags: rakupp-smoke
 
@@ -1003,7 +1015,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             RAKUPP_VERSION=${{ steps.tags.outputs.version }}
-            REGISTRY=public.ecr.aws/docker/library/
+            REGISTRY=${{ steps.base.outputs.registry }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
 
@@ -1309,14 +1321,14 @@ jobs:
       # and committed as an image it is the machine the gates run on: g++ for
       # --exe, binutils for the floor gate. `symlinks -rc` turns the
       # system's absolute symlinks into relative ones, so they resolve inside
-      # the sysroot. The image is the official ubuntu from its ECR Public mirror,
-      # not riscv64/ubuntu from Docker Hub: unauthenticated Docker Hub pulls
-      # from shared runners hit the rate limit (429). With --platform it
-      # re-points the local tag at the riscv64 image (COMPILERS.md), which is
-      # harmless on a fresh runner where nothing else uses that tag.
+      # the sysroot. The image is the official ubuntu, pulled by
+      # tools/ci-pull.sh from whichever of its mirrors answers: unauthenticated
+      # Docker Hub pulls from shared runners hit the rate limit (429), and ECR
+      # Public's mirror has its own ("Data limit exceeded", 2026-10-16).
       - name: Sysroot + gate image (Ubuntu 22.04, riscv64)
         run: |
-          docker run --name rv --platform linux/riscv64 public.ecr.aws/docker/library/ubuntu:22.04 sh -ec '
+          sh tools/ci-pull.sh --platform linux/riscv64 ubuntu:22.04 rakupp-ubuntu-riscv64
+          docker run --name rv --platform linux/riscv64 rakupp-ubuntu-riscv64 sh -ec '
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends g++ symlinks
             symlinks -rc /usr/lib/riscv64-linux-gnu /usr/lib/gcc /usr/include >/dev/null
@@ -1406,8 +1418,9 @@ jobs:
   #
   # Alpine 3.21 sets the floor: musl 1.2.5, and GCC 14's libstdc++ for what
   # --exe links on the user's machine (floor-gate.raku holds it there). The
-  # image is the official alpine from its ECR Public mirror, as in the riscv64
-  # job: Docker Hub rate-limits shared runners.
+  # image is the official alpine, pulled by tools/ci-pull.sh from whichever of
+  # its mirrors answers, as in the riscv64 job: every registry rate-limits
+  # shared runners some days (ECR Public cost this job on 2026-10-17).
   #
   # Every step runs inside the container -- Ubuntu cannot start a musl binary
   # any more than Alpine can start a glibc one -- as the runner's own uid, so
@@ -1440,7 +1453,8 @@ jobs:
       # the checkout's parent is mounted, and tmp/ beside the checkout is used.
       - name: Build + gate image (Alpine 3.21)
         run: |
-          docker run --name mu -e U="$(id -u)" public.ecr.aws/docker/library/alpine:3.21 sh -ec '
+          sh tools/ci-pull.sh alpine:3.21 rakupp-alpine
+          docker run --name mu -e U="$(id -u)" rakupp-alpine sh -ec '
             apk add --no-cache -q clang g++ cmake make binutils linux-headers file git \
                                   perl python3 sqlite sqlite-libs libuuid curl procps bash
             adduser -D -u "$U" rk
