@@ -14,6 +14,8 @@ namespace rakupp {
 
 extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
 extern std::atomic<bool> g_lexTypeAlias;    // InterpreterOperators.cpp: a type was bound under another name
+extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
+void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -5226,7 +5228,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Required named parameter '" + bareName + "' not passed"};
             else { refuseUnpassedDefinite(p);
-                   env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams)); }
+                   env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
+                   // (`:$!t` with nothing passed has initialized $!t all the same: attrParamRef notes it)
+                   Value* sp = attributive && g_attrInitWatchers.load(std::memory_order_relaxed) ? env->find("self") : nullptr;
+                   if (sp && sp->t == VT::Object && sp->obj()) attrParamRef(sp->obj(), p.name, t_bindCallable); }
             continue;
         }
         if (pi < positional.size()) {
@@ -11359,16 +11364,17 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         "No such method '" + ve->attrBare + "' for invocant of type '" + selfp->obj()->cls->name + "'");
                 selfAttrTypeDone:
                 // the sigil-disambiguated twin first (see the read path)
+                Value* slot = nullptr;
                 if (!ve->attrTwin.empty()) {
                     auto st = selfp->obj()->attrs.find(ve->attrTwin);
-                    if (st != selfp->obj()->attrs.end()) return &st->second;
+                    if (st != selfp->obj()->attrs.end()) slot = &st->second;
                 }
-                if (ve->name[1] == '!') {
-                    std::string slotBuf;
-                    const std::string& slotKey = attrSlotFor(selfp->obj(), ve->attrBare, slotBuf);
-                    return &selfp->obj()->attrs[slotKey];
-                }
-                return &selfp->obj()->attrs[ve->attrBare];
+                std::string slotBuf;
+                if (!slot) slot = &selfp->obj()->attrs[ve->name[1] == '!' ? attrSlotFor(selfp->obj(), ve->attrBare, slotBuf)
+                                                                          : ve->attrBare];
+                // (an object under construction notes the write for `is required`; `@!a.push` writes no slot)
+                if (!asInvocant && g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(selfp->obj(), slot);
+                return slot;
             }
             // a TYPE OBJECT has no attributes to write: `Class.m` where `m`
             // assigns `$!a` dies (the read path answers the same)

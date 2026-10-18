@@ -71,6 +71,14 @@ Value makeSignalEnumValueFwd(int sig);
 Value arrayMissingDefaultPublic(const Value& base);   // InterpreterBinding.cpp
 extern const char* kCellKey;   // the Proxy key a shared cell rides on (InterpreterParts.h; `.clone` reads it)
 
+// InterpreterOperators.cpp: the attribute slots an object's construction
+// writes, for its `is required` check (see attrInitWatchOpen there)
+extern std::atomic<int> g_attrInitWatchers;
+void noteAttrInit(const ObjectData* od, const Value* slot);
+bool attrInitNoted(const ObjectData* od, const Value* slot);
+bool attrInitWatchOpen(const ObjectData* od, ClassInfo* ci);
+void attrInitWatchClose(const ObjectData* od);
+
 // The per-class step alone, least-derived first down the primary parent chain
 // — what the construction protocol reduces to when no class in the ancestry
 // declares a BUILD or a TWEAK. Recursive so the order costs no list.
@@ -1594,7 +1602,9 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
     if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
     // (the right-hand side ran code: the slot is looked up again, not reused,
     // and a container it was bound to meanwhile is written through)
-    Value* slot = od->attrs[tv->attrBare].deref();
+    Value& entry = od->attrs[tv->attrBare];
+    if (g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(od, &entry);
+    Value* slot = entry.deref();
     {
         ParStripe ws(*this, slot); // torn-copy contract
         *slot = std::move(v);
@@ -1614,6 +1624,9 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
     if (ci->isRole && rolePunsRun_.insert(ci.get()).second) runRoleClassStatements(ci.get(), ci->name);
     auto od = makePayload<ObjectData>();
     od->cls = ci;
+    // which slots construction WRITES, for the `is required` check (attrInitWatchOpen)
+    struct Watch { const ObjectData* od; ~Watch() { if (od) attrInitWatchClose(od); } }
+        initWatch{attrInitWatchOpen(&*od, ci.get()) ? &*od : nullptr};
     runAttrDefaults(od, ci, args);
     // A class deriving a built-in SCALAR inherits that type's storage:
     // Rakudo's Str carries a `value` attribute, so `class S is Str`
@@ -1750,6 +1763,12 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
                           (at.sigil == '%' && av.t == VT::Hash && av.hash() && av.hash()->empty())))
                         continue;
                 }
+            }
+            // …or WRITTEN during construction, defined or not (Rakudo's
+            // attrinited); a `T:D` one still wants a defined value
+            if (initWatch.od && at.defConstraint != 1) {
+                auto ait = od->attrs.find(at.name);
+                if (ait != od->attrs.end() && attrInitNoted(&*od, &ait->second)) continue;
             }
             throwTypedV("X::Attribute::Required",
                         {{"name", Value::str("$!" + at.name)},

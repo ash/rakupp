@@ -2494,6 +2494,61 @@ const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::str
     return buf;
 }
 
+// Which attribute slots an object's construction WRITES: what Rakudo's `is
+// required` check asks (nqp::attrinited), rather than whether a slot holds a
+// defined value. `submethod BUILD(:$!t)` initializes $!t with no `t` passed,
+// and so do `$!t = $t` and `$!t = Nil`; a BUILD that only reads $!t, or skips
+// the assignment, does not.
+//
+// constructDefault opens a watch on the object only where a BUILD and an `is
+// required` attribute meet. The write sites — the attribute lvalue,
+// attrAssignLane and attrParamRef — pay one relaxed load of the open-watch
+// count; only while a watch is open do they ask whether THIS thread watches
+// that object. Slots are noted by address: an object's attribute table never
+// moves an entry (ValueHash's reference-stability contract).
+std::atomic<int> g_attrInitWatchers{0};
+static thread_local std::vector<const ObjectData*> t_attrInitWatched;
+static thread_local std::vector<std::pair<const ObjectData*, const Value*>> t_attrInits;
+
+void noteAttrInit(const ObjectData* od, const Value* slot) {
+    if (std::find(t_attrInitWatched.begin(), t_attrInitWatched.end(), od) == t_attrInitWatched.end()) return;
+    // (a BUILD looping over one slot notes it once: the repeat finds the last entry first)
+    for (auto it = t_attrInits.rbegin(); it != t_attrInits.rend(); ++it)
+        if (it->first == od && it->second == slot) return;
+    t_attrInits.emplace_back(od, slot);
+}
+
+bool attrInitNoted(const ObjectData* od, const Value* slot) {
+    return std::find(t_attrInits.begin(), t_attrInits.end(), std::make_pair(od, slot)) != t_attrInits.end();
+}
+
+// an `is required` attribute in `c`, its parents or the roles it composed?
+static bool anyRequiredAttr(const ClassInfo* c, int depth = 0) {
+    if (!c || depth > 64) return false;
+    for (auto& at : c->attrs) if (at.required) return true;
+    if (anyRequiredAttr(c->parent.get(), depth + 1)) return true;
+    for (auto& p : c->extraParents) if (anyRequiredAttr(p.get(), depth + 1)) return true;
+    return false;
+}
+
+// Open the watch over `od` when its class needs one (and say so); every open
+// watch is closed by attrInitWatchClose, which drops the object's notes.
+bool attrInitWatchOpen(const ObjectData* od, ClassInfo* ci) {
+    if (!ci->findMethod("BUILD") || !anyRequiredAttr(ci)) return false;
+    t_attrInitWatched.push_back(od);
+    g_attrInitWatchers.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void attrInitWatchClose(const ObjectData* od) {
+    t_attrInits.erase(std::remove_if(t_attrInits.begin(), t_attrInits.end(),
+                                     [&](const auto& e) { return e.first == od; }),
+                      t_attrInits.end());
+    auto w = std::find(t_attrInitWatched.begin(), t_attrInitWatched.end(), od);
+    if (w != t_attrInitWatched.end()) t_attrInitWatched.erase(w);
+    g_attrInitWatchers.fetch_sub(1, std::memory_order_relaxed);
+}
+
 // The slot an attributive parameter `pname` of `rc` writes — `submethod
 // BUILD(:$!x)`, `method m($!x)`, `*@!items`: the one `$!x` reads in its body,
 // a sigil twin's own key when the object has one, else attrSlotFor's. Writing
@@ -2502,12 +2557,17 @@ const std::string& Interpreter::attrSlotFor(const ObjectData* od, const std::str
 Value& Interpreter::attrParamRef(ObjectData* od, const std::string& pname, const Callable* rc) {
     const std::string bare = pname.substr(2);
     std::string buf;
+    Value* slot = nullptr;
     if (pname[0] != '$') {
         buf = pname[0] + bare;
         auto it = od->attrs.find(buf);
-        if (it != od->attrs.end()) return it->second;
+        if (it != od->attrs.end()) slot = &it->second;
     }
-    return od->attrs[attrSlotFor(od, bare, buf, rc)];
+    if (!slot) slot = &od->attrs[attrSlotFor(od, bare, buf, rc)];
+    // (a BUILD's attributive parameter initializes the slot for the
+    // `is required` check under way — see noteAttrInit)
+    if (g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(od, slot);
+    return *slot;
 }
 
 // `my $x where Int|Num` — every assignment asks the constraint, a smartmatch
