@@ -5429,6 +5429,10 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         }
     }
     if (calls.count("\x01other")) return;
+    // …and so does a named sub term, anywhere in the walked code (the walker
+    // marks it "\x02name"): it is declared when it runs, and recursion inside it
+    // or a call after it must not be refused here
+    for (auto& n : calls) if (n.size() > 1 && n[0] == '\x02') declared.insert(n.substr(1));
     static const std::set<std::string> kSpecial = {
         "...", "!!!", "???", "defined", "let", "temp", "lazy", "eager", "hyper", "race",
         "take", "take-rw", "undefine", "cas", "so", "not", "EVAL", "EVALFILE", "return",
@@ -5436,7 +5440,7 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         "callsame", "callwith", "nextsame", "nextwith", "samewith", "nextcallee", "lastcall",
         "sink", "quietly", "do", "gather", "start", "await", "item", "list", "flat", "slip"};
     for (auto& n : calls) {
-        if (n.empty() || n.find(':') != std::string::npos || n.rfind("__", 0) == 0) continue;
+        if (n.empty() || n[0] == '\x02' || n.find(':') != std::string::npos || n.rfind("__", 0) == 0) continue;
         if (declared.count(n)) continue;
         if (ascii::isupper((unsigned char)n[0]) || kSpecial.count(n) || n.rfind("atomic-", 0) == 0) continue;
         if (builtins_.count(n) || builtinRef(n) || classes_.count(n) || isKnownTypeName(n)) continue;

@@ -6640,13 +6640,23 @@ ExprPtr Parser::pkgBraceKeyTerm(const std::string& name, std::string& pseudoPkg)
 }
 
 // `proto sub NAME(|) {*}` / `multi sub NAME(…) {…}` / `multi NAME(…) {…}` as a
-// TERM (parsePrimary): the declaration in a do-block whose value is `&NAME`, or
-// for a multi the candidate just declared. `cur()` is the proto/multi keyword.
+// TERM (parsePrimary): the declaration, valued as `&NAME`, or for a multi the
+// candidate just declared. `cur()` is the proto/multi keyword.
+//
+// It runs in the CURRENT scope — `stmtseq`, as an enum or subset term does,
+// not `do`. The name belongs to the enclosing scope, so the multis written
+// after `my &up = proto sub f(|) {*}` join THAT group and `up(…)` dispatches
+// to them (uniprop's `&int = proto sub uniprop-int(|) {*}`). Declared in a
+// do-block of its own, the proto was alone there, and the later multis
+// started a separate group outside it.
 ExprPtr Parser::routineDeclTerm(const std::string& name, bool impliedSub) {
     advance();                                   // proto / multi
     bool isM = isIdent("method");
     if (!impliedSub) advance();                  // sub / method
     auto decl = parseSub(true, name == "proto", isM);
+    // (parseSub does not set it: a `multi method` term binds `self`, and in a
+    // class body its candidate joins the class's group — methodTermJoinsClass)
+    static_cast<SubDecl*>(decl.get())->isMethod = isM;
     std::string rn = static_cast<SubDecl*>(decl.get())->name;
     auto be = std::make_unique<BlockExpr>();
     be->body.push_back(std::move(decl));
@@ -6664,7 +6674,7 @@ ExprPtr Parser::routineDeclTerm(const std::string& name, bool impliedSub) {
     }
     es->e = std::move(val);
     be->body.push_back(std::move(es));
-    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+    auto u = std::make_unique<Unary>(); u->op = "stmtseq"; u->operand = std::move(be);
     return u;
 }
 
@@ -17211,6 +17221,51 @@ StmtPtr Parser::parseStatementImpl() {
 }
 
 
+// The named SUB terms an expression declares in the scope it is written in —
+// `my &up = sub k {…}`, `f(sub k {…})`, `a => sub k {…}` — with their lines.
+// A block's body is a scope of its own and is not entered.
+static void namedSubTerms(const Expr* e, std::vector<std::pair<std::string, int>>& out) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::BlockExpr: {
+            auto* be = static_cast<const BlockExpr*>(e);
+            if (be->isSub && !be->isMethodTerm && !be->anonTerm && !be->termName.empty())
+                out.emplace_back(be->termName, be->line);
+            return;
+        }
+        case NK::Assign: {
+            auto* a = static_cast<const Assign*>(e);
+            namedSubTerms(a->target.get(), out); namedSubTerms(a->value.get(), out); return;
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            namedSubTerms(b->lhs.get(), out); namedSubTerms(b->rhs.get(), out); return;
+        }
+        case NK::Unary: namedSubTerms(static_cast<const Unary*>(e)->operand.get(), out); return;
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            namedSubTerms(t->cond.get(), out); namedSubTerms(t->then.get(), out); namedSubTerms(t->els.get(), out);
+            return;
+        }
+        case NK::Call: {
+            auto* c = static_cast<const Call*>(e);
+            namedSubTerms(c->callee.get(), out);
+            for (auto& a : c->args) namedSubTerms(a.get(), out);
+            return;
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            namedSubTerms(m->inv.get(), out);
+            for (auto& a : m->args) namedSubTerms(a.get(), out);
+            return;
+        }
+        case NK::Pair: namedSubTerms(static_cast<const PairExpr*>(e)->value.get(), out); return;
+        case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) namedSubTerms(x.get(), out); return;
+        case NK::ArrayLit: for (auto& x : static_cast<const ArrayLit*>(e)->items) namedSubTerms(x.get(), out); return;
+        default: return;
+    }
+}
+
 // Same-scope redeclarations: a second non-multi `sub a`, a non-multi/multi
 // mix, or a duplicated type name (class/role/grammar/subset in any mix) is
 // X::Redeclaration, checked per parsed statement list (parse-level, so sub
@@ -17240,9 +17295,24 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             ++catchBlocks > 1)
             throw ParseError("Only one CATCH block is allowed in a block", s->line,
                              "X::Phaser::Multiple", {{"block", "CATCH"}});
+        // A named sub term declares its name here as a plain `sub` does, so a
+        // second one, a `sub` beside it, or `my &k = sub k {…}` is a redeclaration
+        auto termSubs = [&](const Expr* x) {
+            std::vector<std::pair<std::string, int>> terms;
+            namedSubTerms(x, terms);
+            for (auto& t : terms) {
+                int& f = subs[t.first];
+                if (f & 7)
+                    throw ParseError("Redeclaration of routine '" + t.first +
+                                     "'. Did you mean to declare a multi-sub?", t.second ? t.second : s->line,
+                                     "X::Redeclaration", {{"symbol", t.first}, {"what", "routine"}});
+                f |= 1;
+            }
+        };
         // `my &a; multi a { }` — a &-sigiled lexical already owns the name
         if (s->kind == NK::ExprStmt) {
-            const Expr* e = static_cast<const ExprStmt*>(s.get())->e.get();
+            const Expr* whole = static_cast<const ExprStmt*>(s.get())->e.get();
+            const Expr* e = whole;
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
             if (e && e->kind == NK::VarExpr) {
                 auto* ve = static_cast<const VarExpr*>(e);
@@ -17252,8 +17322,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                     ve->d().declScope != "constant")
                     subs[ve->name.substr(1)] |= 1;
             }
+            termSubs(whole);
             continue;
         }
+        if (s->kind == NK::ReturnStmt) termSubs(static_cast<const ReturnStmt*>(s.get())->value.get());
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
             // two protos for one name in one scope

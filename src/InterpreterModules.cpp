@@ -4507,6 +4507,66 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
         ci->ruleOrder.push_back(r.name);
 }
 
+// A proto that finds its scope's group `disp` already started WITHOUT it: a
+// multi hoisted to the block's entry got there first and began the group from
+// the OUTER scope's candidates, which the proto is there to hide. That happens
+// when the proto is a term (`my &q = proto sub z(|) {*}`), because a term is
+// not hoisted. What the group took from outside goes again; its own
+// candidates, and anything imported into it, stay. A proto already in the
+// group (a hoisted one, running again in sequence) changes nothing. Answers
+// whether anything was removed.
+static bool protoHidesOuterCandidates(Env* scope, Callable* disp, const Value& proto, const std::string& key) {
+    if (!scope || !scope->parent || !disp || !proto.code() || disp->cold().candidates.empty()) return false;
+    const auto& have = disp->cold().candidates;
+    const CodeInfo& pi = proto.code()->ci();
+    if (std::any_of(have.begin(), have.end(), [&](const Value& h) {
+            return h.code() && h.code()->ci().body && h.code()->ci().body == pi.body && h.code()->ci().params == pi.params;
+        }))
+        return false;
+    Value* outer = scope->parent->find(key);
+    if (!outer || outer->t != VT::Code || !outer->code() || outer->code() == disp ||
+        !outer->code()->ci().isMultiDispatcher)
+        return false;
+    const auto& theirs = outer->code()->cold().candidates;
+    auto& mine = disp->coldM().candidates;
+    const size_t before = mine.size();
+    mine.erase(std::remove_if(mine.begin(), mine.end(), [&](const Value& m) {
+        return std::any_of(theirs.begin(), theirs.end(), [&](const Value& t) { return t.code() == m.code(); });
+    }), mine.end());
+    return mine.size() != before;
+}
+
+// A `multi method` TERM in a class body (`my $m = multi method foo(Int $x)
+// {…}`) is has-scoped, as a declared one is, so its candidate joins the class's
+// group of that name. The composition builds the groups from the declared
+// methods (ClassDecl::methods) and never sees a term, so this is its only way
+// in. A plain method of the name keeps it; a repeat of the same declaration is
+// a no-op.
+static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+                                 const std::string& pkgPrefix, const std::string& name, const Value& code) {
+    std::string pk = pkgPrefix;
+    if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
+    auto ci = classes.find(pk);
+    if (ci == classes.end() || !ci->second || ci->second->isRole || !code.code()) return;
+    code.code()->ciM().pkg = ci->second->name;
+    auto& tbl = ci->second->methods;
+    auto it = tbl.find(name);
+    if (it != tbl.end() && !(it->second.code() && it->second.code()->ci().isMultiDispatcher)) return;
+    if (it == tbl.end()) {
+        Value disp; disp.t = VT::Code; disp.setCode(makePayload<Callable>());
+        disp.code()->ciM().name = name; disp.code()->ciM().isMultiDispatcher = true;
+        disp.code()->ciM().isMethod = true;
+        disp.code()->ciM().pkg = ci->second->name;
+        it = tbl.emplace(name, disp).first;
+    }
+    auto& cands = it->second.code()->coldM().candidates;
+    const CodeInfo& mine = code.code()->ci();
+    for (auto& c : cands)
+        if (c.code() && c.code()->ci().body == mine.body && c.code()->ci().params == mine.params) return;
+    code.code()->ciM().isMultiCandidate = true;
+    cands.push_back(code);
+}
+
 // The declaration statements exec dispatches here, kept out of its frame.
 //
 // exec is one switch over every statement kind, and a switch's stack frame is
@@ -5263,7 +5323,12 @@ static void installRule(ClassInfo* ci, const GrammarRuleDecl& r) {
                         disp->coldM().candidates.push_back(c);
                         noteUserInfixCandidate(sname, c.code());
                     };
+                    // (a proto TERM hides the outer candidates a hoisted multi copied in;
+                    // the dispatch cache may hold an index into the old list)
+                    if (sd->isProto && protoHidesOuterCandidates(tctx_.cur.get(), disp, code, key))
+                        noteSymbolMutation("proto hides outer candidates");
                     joins(code);
+                    if (sd->isMethod && sd->isMulti) methodTermJoinsClass(classes_, tctx_.pkgPrefix, sname, code);
                     for (auto& c : altCands) joins(c);
                     // `our proto`/`our multi` in a package: the GROUP is published
                     // under the qualified name, as a plain `our sub` is below

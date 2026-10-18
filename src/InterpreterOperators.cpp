@@ -809,7 +809,15 @@ void spCallsE(const Expr* e, std::set<std::string>& out) {
         case NK::Unary: spCallsE(static_cast<const Unary*>(e)->operand.get(), out); return;
         case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); spCallsE(t->cond.get(), out); spCallsE(t->then.get(), out); spCallsE(t->els.get(), out); return; }
         case NK::ListExpr: for (auto& i : static_cast<const ListExpr*>(e)->items) spCallsE(i.get(), out); return;
-        case NK::BlockExpr: for (auto& st : static_cast<const BlockExpr*>(e)->body) spCallsS(st.get(), out); return;
+        case NK::BlockExpr: {
+            auto* be = static_cast<const BlockExpr*>(e);
+            // a NAMED sub term declares its name where it stands (`my &up = sub k($c)
+            // {…}; k(49)`), noted as "\x02k" for checkUndeclaredCalls
+            if (be->isSub && !be->isMethodTerm && !be->anonTerm && !be->termName.empty())
+                out.insert("\x02" + be->termName);
+            for (auto& st : be->body) spCallsS(st.get(), out);
+            return;
+        }
         case NK::SymbolicRef: out.insert("\x01other"); return;   // `&::("infix:<x>")` — a name decided at run time
         default: return;
     }
