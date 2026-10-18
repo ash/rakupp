@@ -331,6 +331,10 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         };
         for (auto& a : args) add(a);
         Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; // Buf is mutable
+        // …and shared, as `allocate` above and `buf8.new` are: a SHORT buffer
+        // stayed inline, so `my $c = $b; $c[0] = 9` left `$b` alone, and C
+        // wrote into a copy of it whenever no variable led back (`f(|@args)`).
+        b.s.promote();
         if (b.hashKind == "Buf") identify(b);
         return b;
     }

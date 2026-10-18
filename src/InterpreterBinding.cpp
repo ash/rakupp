@@ -6446,6 +6446,19 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     };
     struct CABack { size_t arg; size_t keep; }; // byte-backed CArray → copy bytes back
     std::vector<CABack> cabacks;
+    // A CArray or a Buf is a REFERENCE type: `new`/`allocate` promote its
+    // storage, so every copy of the value shares one body (CowStr::promote).
+    // Handing C that body means C writes where every copy reads: the caller's
+    // variable, and also the array element or capture an argument was
+    // flattened from. The copy + copy-back finds its way home only through the
+    // call's argument EXPRESSIONS, and `f(|@args)` is one expression for every
+    // argument: g_set_error_literal filled a temporary, and the GError never
+    // reached the CArray the caller held (issue #174). Null for storage of the
+    // value's own (an inline short one, a view), or none at all.
+    auto sharedBuf = [](Value& v) -> char* {
+        const StrBody* b = v.s.body();
+        return b && !b->view && !v.s.empty() ? v.s.mutInPlace() : nullptr;
+    };
 
     // ONE marshalling pass feeds both call tails. Every argument becomes a slot
     // holding the raw bytes at its DECLARED width (what libffi reads) plus the
@@ -6583,12 +6596,16 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             if (isFlt) { rwD.push_back(v.toNum()); putPtr(s, &rwD.back()); rwbacks.push_back({i, nullptr, &rwD.back(), "", nullptr}); }
             else       { rwI.push_back(v.toInt()); putPtr(s, &rwI.back()); rwbacks.push_back({i, &rwI.back(), nullptr, "", nullptr}); }
         }
-        else if (v.t == VT::Str && v.hashKind == "CArray") { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
+        else if (v.t == VT::Str && v.hashKind == "CArray") {
+            if (char* d = sharedBuf(v)) putPtr(s, d);
+            else { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
+        }
         else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob" || v.hashKind == "utf8")) {
-            // A Buf/blob8 is a mutable native buffer: pass its bytes and copy back
-            // after the call (BIO_read/SSL_read/recv fill it in place).
+            // A Buf/blob8 is a mutable native buffer that C fills in place
+            // (BIO_read/SSL_read/recv): it gets its shared storage, as a CArray
+            // does above, and only an inline one is copied and copied back.
             //
-            // An IMMUTABLE buffer instead passes the Blob's OWN storage, because
+            // An IMMUTABLE buffer passes the Blob's OWN storage too, because
             // its pointer has to outlive the CALL: some C APIs RETAIN it rather
             // than reading it while we are inside. BIO_new_mem_buf is the
             // canonical one — it deliberately does not copy — so a per-call
@@ -6602,6 +6619,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // lifetime Rakudo gives the callee — and it costs no copy at all.
             const StrBody* sb = (v.hashKind == "Buf") ? nullptr : v.s.body();
             if (sb) putPtr(s, (void*)sb->str().data());
+            else if (char* d = v.hashKind == "Buf" ? sharedBuf(v) : nullptr) putPtr(s, d);
             else {
                 // Short buffers are held inline, so there is no shared body to
                 // point at and the copy is all we have. A retained pointer to a

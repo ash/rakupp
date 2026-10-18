@@ -10608,6 +10608,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             nv.setCode(makePayload<Callable>(*inv.code()));
             return nv;
         }
+        // A BUF's storage is shared by every copy of the Value (`$c[0] = 9`
+        // writes through `$b`, and C is handed its address), so its clone is a
+        // copy of the BYTES, as a CArray's is. The value itself was a second
+        // name for the first buffer: writes to the "clone" reached the original.
+        // A second buffer is a second object too (`$b.clone === $b` is False).
+        if (inv.t == VT::Str && inv.hashKind == "Buf") {
+            Value nv = inv;
+            nv.s = std::string(inv.s.str());
+            nv.s.promote();
+            return identify(nv);
+        }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
     // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
