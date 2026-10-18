@@ -20480,6 +20480,13 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         Interpreter* I; std::shared_ptr<Env> saved; bool active;
         ~WiredGuard() { if (active) I->tctx_.cur = std::move(saved); }
     } wiredGuard{this, savedCurWired, wired};
+    // The finished match belongs to the scope that did the matching: `$/` and
+    // `$0…` are published there, not in the closed-over scope the code blocks
+    // ran in. Publishing with the match scope still current wrote them into the
+    // regex's home, so a regex written in one routine or module and matched in
+    // another left the matcher's `$/` untouched (#180). Every exit that
+    // publishes calls this first; nothing after it runs a code block.
+    auto unwire = [&] { if (wired) tctx_.cur = savedCurWired; };
     std::string pat = pattern;
     // `m:c(N)/…/` / `m:p(N)/…/` (and `:continue`/`:pos`): start the search at
     // character N — `:p` anchors the match there. With no argument the start
@@ -20508,8 +20515,10 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 // a CHARACTER (grapheme) index, as the byte offset the search takes
                 contStart = (long)graphemeToByte(subject, ch < 0 ? 0 : ch);
             }
-            else if (Value* mv = tctx_.cur ? tctx_.cur->find("$/") : nullptr) {
-                if (mv->t == VT::Match) contStart = (long)graphemeToByte(subject, mv->rTo());
+            // (the matcher's `$/`, not one in the regex's home: see unwire)
+            else if (Env* me = wired ? savedCurWired.get() : tctx_.cur.get()) {
+                Value* mv = me->find("$/");
+                if (mv && mv->t == VT::Match) contStart = (long)graphemeToByte(subject, mv->rTo());
             }
             pat.erase(i, next - i);
             continue;
@@ -20540,6 +20549,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         }
         if (xN >= 0 && xp != std::string::npos) {
             std::string rest = pat.substr(0, xp) + ":g " + pat.substr(xe < pat.size() && pat[xe] == ' ' ? xe + 1 : xe);
+            unwire();   // the inner match wires itself, from the matcher's scope
             Value all = regexMatch(subject, rest, rxVal, declKind);
             Value out = Value::array(); out.isList = true;
             if (all.t == VT::Array && all.arr() && (long long)all.arr()->size() >= xN)
@@ -21095,6 +21105,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 long long n = e.toInt();
                 out.arr()->push_back(n >= 1 && n <= total ? build(all[n - 1]) : Value::nil());
             }
+            unwire();
             setMatchVar(out);
             return out;
         }
@@ -21103,6 +21114,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         ValueList picked;
         for (long long n : nthList)
             if (n >= 1 && n <= total) picked.push_back(build(all[n - 1]));
+        unwire();
         if (picked.empty()) { setMatchVar(Value::nil()); return Value::nil(); }
         if (nthList.size() == 1 && !global) { setMatchVar(picked[0]); return picked[0]; }
         Value list = Value::array(); list.isList = true;
@@ -21114,6 +21126,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         Value list = Value::array(); list.isList = true;
         if (re.ok())
             for (auto& m : re.searchExhaustive(subject, resolver, &lexNames, useHooks)) list.arr()->push_back(build(m));
+        unwire();
         setMatchVar(list);
         return list;
     }
@@ -21132,6 +21145,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             if (overlap) pos = m.from + 1;           // :ov — overlapping matches
             else pos = (m.to > m.from) ? m.to : m.to + 1; // advance past zero-width matches
         }
+        unwire();
         setMatchVar(list);
         return list;
     }
@@ -21143,6 +21157,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         mv = build(m);
     else mv = Value::nil();
     if (mv.t == VT::Match && inlineMade) mv.setPairVal(inlineMade); // $/.ast
+    unwire();
     setMatchVar(mv);
     if (mv.t == VT::Match) {
         if (mv.arr()) for (size_t k = 0; k < mv.arr()->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*mv.arr())[k]);
