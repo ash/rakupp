@@ -271,6 +271,10 @@ language has a guide and two runnable examples in
 [bindings/examples/](bindings/examples/README.md), kept honest by two smoke
 gates that re-run everything the guides claim.
 
+The same C ABI runs inside iOS and Android apps as native code — the
+interpreter compiled for the phone, with threads and deep recursion that the
+WebAssembly build lacks: [EMBEDDING.md](docs/guide/EMBEDDING.md#mobile-apps-ios-and-android).
+
 ## Errors underlined as you type — the language server
 
 `rakupp --lsp` is a Language Server: an editor sends it your code and it sends

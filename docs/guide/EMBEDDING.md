@@ -14,6 +14,8 @@ in agreement.
   plain C99, run as a gate by `tools/embed-smoke.raku`.
 - **Real embedder:** [`rakujs/rakupp_web.cpp`](../../rakujs/rakupp_web.cpp) —
   the WebAssembly entry point behind raku.online, written against this API.
+- **On a phone:** the Learn Raku app, for iOS and Android —
+  [Mobile apps](#mobile-apps-ios-and-android) below.
 - **Another:** [`src/McpServer.cpp`](../../src/McpServer.cpp) — `rakupp --mcp`
   ([MCP.md](integrations/MCP.md)) serves the interpreter to AI agent clients through this
   same API, in-process.
@@ -168,6 +170,100 @@ created, and by more than one at once. Make those re-entrant.
   code, not your process: only the interpreter's checks apply, not the OS
   layer that `rakupp --sandbox` adds, because your process still needs its
   own files and sockets. The switch is process-wide and one-way.
+
+## Mobile apps: iOS and Android
+
+The same C ABI works inside a phone app, as native code: the interpreter is
+compiled for the device's processor, linked into the app, and called through
+this header — not Raku.js in a web view. The Learn Raku app (the Course of
+Raku for iOS and Android) is built this way: every runnable example in the
+course has a Run button, and there is a playground. What follows is what that
+took, as of 5.4.1.
+
+Native rather than WebAssembly for three reasons. Raku code gets threads
+(`start`, `await`, `hyper`), which the single-threaded WebAssembly build does
+not have. Recursion goes as deep as the stack you give it, where the
+WebAssembly build stops at about 200 nested calls ([rakujs/build.sh](../../rakujs/build.sh)).
+And there is no JavaScript bridge between the app's UI and the engine.
+
+### Building the library
+
+There is no CMake preset for phones; the runtime is compiled with the
+platform's own compiler. The sources are those of `rakupp_rt`: every
+`src/**/*.cpp` except `main.cpp`, `Repl.cpp`, `Codegen.cpp`,
+`JsRuntimeSrc.cpp`, `codegen/Js.cpp` and `src/stubs/`, plus
+`rakujs/cnp_none.cpp` — the empty stencil table, because neither platform lets
+an app map executable memory, so there is no JIT.
+
+```sh
+-std=c++17 -O2 -fPIC -fexceptions -frtti -fvisibility=hidden -fvisibility-inlines-hidden
+-DRAKUPP_BUILDING -DRAKUPP_VERSION=\"5.4.1\" -Isrc -Iinclude -Iinclude/rakupp
+```
+
+| | iOS | Android |
+|---|---|---|
+| Targets | `arm64-apple-ios13.0` for devices; `arm64-` and `x86_64-apple-ios13.0-simulator` | `aarch64-linux-android24`, `armv7a-linux-androideabi24`, `x86_64-linux-android24` (NDK r28) |
+| Library | a dynamic framework per slice, combined with `xcodebuild -create-xcframework` | `librakuengine.so` per ABI, in the app's `jniLibs/` |
+| Link | `-dynamiclib -install_name @rpath/RakuEngine.framework/RakuEngine -liconv` | `-shared -static-libstdc++ -Wl,-z,max-page-size=16384 -Wl,--no-undefined -ldl -lm` |
+| iconv | `-DRAKUPP_HAVE_ICONV`: libiconv is in the SDK | left out: Bionic has iconv only from API 28. That loses gb2312, gb18030 and windows-932 |
+| Size | about 16 MB per architecture | 17–20 MB per ABI |
+
+Google Play requires native code aligned to 16 KB pages, hence
+`max-page-size`. `--no-undefined` makes a Bionic call that is missing at the
+app's `minSdk` fail the link instead of the app. Both stores deliver only the
+architecture a device needs.
+
+5.4.1 needs four small source changes on these targets:
+
+- **iOS:** `std::system` is unavailable. Guard `run` in `src/Jit.cpp`; the
+  `--jit` path it serves cannot run on a phone anyway.
+- **iOS:** `pthread_jit_write_protect_np` is unavailable, so the `MAP_JIT`
+  fallback in `src/cnp/CnpEmit.cpp` has to go.
+- **iOS:** the SDK has no `getentropy`. `osRandom` in `src/DataRandom.cpp` can
+  use `arc4random_buf`.
+- **Android below API 30:** Bionic declares `struct statx` but not `statx()`,
+  so `fileBirthSecs` in `src/BuiltinsShared.h` has to take its fallback, and
+  `IO::Path.created` answers 0.
+
+### Calling it from the app
+
+Flutter (`dart:ffi`), Swift and Kotlin (JNI) reach the C ABI the same way, and
+the same few things shape the host side:
+
+- **Run on a thread of your own.** `rk_run` is synchronous; the UI thread must
+  never wait on it. Give the thread a big stack — 512 MB works on both
+  platforms, and recursion 5,000 calls deep then runs — rather than setting
+  `own_stack`, whose 1 GiB a 32-bit Android process may refuse. The recursion
+  guard measures whatever stack it is on.
+- **Copy output in the callback.** `rk_set_output` calls back on the run thread
+  with bytes that live only for the call. Append them to a mutex-guarded buffer
+  and let the UI collect it on a timer; 40 ms keeps output live and turns a loop
+  of `say`s into a few updates. Cap the buffer: a runaway `loop { say 1 }`
+  otherwise grows until the OS ends the app.
+- **A fresh interpreter for every run.** There is one interpreter per process
+  (above): `rk_new`, `rk_run`, `rk_free` each time, so one program's `class
+  Point` never meets the next one's.
+- **Input.** `rk_set_input` feeds a preset. For a prompt that waits, as in a
+  terminal, install your own `std::streambuf` as `std::cin`'s buffer — the
+  same swap `rk_set_input` makes — whose `underflow()` blocks until the UI
+  sends a line or ends the input.
+- **Stopping.** The ABI has no interrupt yet, and a Stop button needs one.
+  Learn Raku adds `rk_interrupt(rk)`: a flag checked at each statement, block
+  entry and Int-kernel loop iteration, which raises `X::AdHoc "Interrupted"` and
+  stays raised until the run ends, so a `try` cannot swallow it.
+
+### What a program can do there
+
+- **Files** — inside the app's sandbox. Change to a writable directory (the
+  app's temporary or cache directory) before `rk_run`, so relative paths work.
+- **Processes** — `run`, `shell` and `Proc::Async` cannot spawn anything on iOS.
+- **Network** — sockets work. HTTPS goes through the system's OpenSSL by
+  NativeCall ([HTTPS.md](HTTPS.md)), which neither platform offers an app.
+- **NativeCall** — iOS loads only libraries signed into the app bundle.
+
+Apple's App Review guideline 2.5.2 allows an educational app to run code that
+the user writes, as long as the app does not download code. Google Play
+restricts downloading native code, not running interpreted programs.
 
 ## Bindings
 
