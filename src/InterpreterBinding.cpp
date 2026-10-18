@@ -7,6 +7,9 @@
 
 namespace rakupp {
 
+extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
+void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
+
 // macOS resolves a bare unversioned libssl/libcrypto name to the /usr/lib
 // compat stubs, which warn ("loading libcrypto in an unsafe way") and can
 // abort the process on some code paths. A VERSIONED library (Homebrew's
@@ -4058,7 +4061,53 @@ Value& rtAttrRef(Value& self, const std::string& name) {
     if (self.t != VT::Object || !self.obj()) { // shouldn't happen; keep it safe
         self = Value::object(makePayload<ObjectData>());
     }
-    return self.obj()->attrs[name];
+    Value& slot = self.obj()->attrs[name];
+    // (a write while the object is constructed counts for `is required`)
+    if (g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(self.obj(), &slot);
+    return slot;
+}
+
+// An ATTRIBUTIVE parameter (`submethod BUILD(:$!type = Any)`) ASSIGNS to the
+// attribute, so Nil resets it to the attribute's default the way `$x = Nil`
+// already did for an ordinary container. The value's own class says what that
+// default is: an untyped attribute goes back to Any, a typed one to its type.
+// Any other value is assigned too, so the PARAMETER's readonly mark (every
+// plain `$` parameter has one, and `method set($!x)` is one) stays behind.
+// (The interpreter's binder and native code's rtAttrParam both use it.)
+Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an) {
+    if (v.t != VT::Nil) { Value r = v; r.readonly = r.immutableBind = false; return r; }
+    if (self.t == VT::Object && self.obj() && self.obj()->cls)
+        if (const ClassAttr* at = self.obj()->cls->findAttr(an))
+            if (!at->type.empty() && ascii::isupper((unsigned char)at->type[0]))
+                return Value::typeObj(at->type);
+    return Value::any();
+}
+
+// `$!x = Nil` in native code: Nil resets a `$` attribute as the interpreter's
+// assignment does, where storing the Nil itself made `.x` answer Nil
+Value rtAttrNil(const Value& self, const std::string& name, Value v) {
+    return v.t == VT::Nil ? nilResetForAttrSlot(v, self, name) : v;
+}
+
+// A natively compiled routine's attributive parameter (`submethod
+// BUILD(:$!t)`, `method set($!x)`, `*%!opts`), bound as the interpreter's
+// binder binds one: a passed value, or the parameter's default, is assigned
+// to the attribute (an `@`/`%` one coerced, a `$` one Nil-reset, then
+// type-checked). A named one with nothing passed leaves the slot as it is
+// but has still initialized it, for the `is required` check under way.
+void rtAttrParam(Interpreter& I, const Value& self, const std::string& pname, const Value& v, bool passed) {
+    if (self.t != VT::Object || !self.obj()) return;
+    if (!passed) {
+        if (g_attrInitWatchers.load(std::memory_order_relaxed)) I.attrParamRef(self.obj(), pname, nullptr);
+        return;
+    }
+    const std::string bare = pname.substr(2);
+    Value av = v;
+    if (pname[0] == '@') av = coerceArray(av);
+    else if (pname[0] == '%') av = coerceHash(av);
+    else av = nilResetForAttrSlot(av, self, bare);
+    I.checkAttrParamStore(av, self, bare, v.t == VT::Nil);
+    I.attrParamRef(self.obj(), pname, nullptr) = std::move(av);
 }
 
 // Nominal type check for native multi-dispatch.

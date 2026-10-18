@@ -16,6 +16,7 @@ extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every s
 extern std::atomic<bool> g_lexTypeAlias;    // InterpreterOperators.cpp: a type was bound under another name
 extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
 void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
+Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an);   // InterpreterBinding.cpp
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -4500,21 +4501,6 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
         std::string(subsets_.count(p.type) ? "Constraint type" : "Type") +
         " check failed in binding to parameter '" + paramShownName(p) + "'; expected " +
         p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
-}
-
-// An ATTRIBUTIVE parameter (`submethod BUILD(:$!type = Any)`) ASSIGNS to the
-// attribute, so Nil resets it to the attribute's default the way `$x = Nil`
-// already did for an ordinary container. The value's own class says what that
-// default is: an untyped attribute goes back to Any, a typed one to its type.
-// Any other value is assigned too, so the PARAMETER's readonly mark (every
-// plain `$` parameter has one, and `method set($!x)` is one) stays behind.
-static Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an) {
-    if (v.t != VT::Nil) { Value r = v; r.readonly = r.immutableBind = false; return r; }
-    if (self.t == VT::Object && self.obj() && self.obj()->cls)
-        if (const ClassAttr* at = self.obj()->cls->findAttr(an))
-            if (!at->type.empty() && ascii::isupper((unsigned char)at->type[0]))
-                return Value::typeObj(at->type);
-    return Value::any();
 }
 
 // `*@a` — what one argument contributes to a flattening slurpy (see the

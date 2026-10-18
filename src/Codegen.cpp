@@ -1703,6 +1703,13 @@ struct Codegen {
                "; _c.code()->coldM().podTrail = " + cesc(d->podTrail) +
                "; _c.code()->ciM().declLine = " + std::to_string(d->line) + "; return _c; }())";
     }
+    // A `submethod` is registered as one: a BUILD then takes the attributes
+    // over from the default constructor, which no longer binds them from the
+    // named arguments (runAttrDefaults), and a subclass does not inherit it
+    std::string asSubmethod(const std::string& mk, const SubDecl* d) {
+        if (!d || !d->isSubmethod) return mk;
+        return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().isSubmethod = true; return _c; }())";
+    }
     // `&name` of a top-level sub
     std::string subRefSig(const std::string& mk, const std::string& nm) {
         auto it = subDecls_.find(nm);
@@ -3783,6 +3790,14 @@ struct Codegen {
                              : "rtCatPrepend(__l, " + exArg(b->lhs.get()) + ");") +
                        " else __l = " + rhs + "; return __l; }())";
             }
+        }
+        // `$!x = Nil` resets the attribute to its default (rtAttrNil), as
+        // the interpreter's assignment does
+        if (a->op == "=" && tgt->kind == NK::VarExpr && !self_.empty()) {
+            auto* v = static_cast<VarExpr*>(tgt);
+            if (!v->declare && v->name.size() > 2 && v->name[0] == '$' && (v->name[1] == '!' || v->name[1] == '.'))
+                return lvalueExpr(tgt) + " = rtAttrNil(" + self_ + ", " + cesc(v->name.substr(2)) + ", " +
+                       coerceFor(tgt, rhs, a->value.get()) + ")";
         }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
@@ -6332,6 +6347,16 @@ struct Codegen {
                 else line(ind, declVar(p.name, init) + ";");
             };
             std::string pos = std::to_string(pi);
+            // An ATTRIBUTIVE parameter (`:$!t`, `method set($!x)`, `*%!opts`)
+            // binds its local and then assigns the attribute (rtAttrParam), as
+            // the interpreter's binder does; `passed` is false only for a
+            // named or optional one given nothing and with no default.
+            const bool attributive = p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.');
+            if (attributive && !hasSelf) unsupported("an attributive parameter outside a method");
+            auto attrParam = [&](const std::string& passed) {
+                if (attributive)
+                    line(ind, "rtAttrParam(RT, __self, " + cesc(p.name) + ", " + mangleVar(p.name) + ", " + passed + ");");
+            };
             if (p.isRw && !p.named && !p.slurpy && !p.invocant && !p.name.empty()) {
                 // `is rw`: bind a reference into the caller-visible ValueList slot;
                 // the call site copies it back into the argument's lvalue.
@@ -6343,6 +6368,7 @@ struct Codegen {
             if (p.invocant) { bind("__self"); continue; }
             if (p.slurpy) {
                 bind(p.sigil == '%' ? "rtSlurpyNamed(__a)" : "rtSlurpyPos(__a, " + pos + ")");
+                attrParam("true");
                 continue;
             }
             if (p.named) {
@@ -6353,7 +6379,7 @@ struct Codegen {
                 // rtHasNamed ternary chain, so `:r(:$string)` binds -r and
                 // --string alike — it used to look up only "string".
                 std::vector<std::string> keys;
-                std::string bare = p.name.size() > 1 ? p.name.substr(1) : "";
+                std::string bare = attributive ? p.name.substr(2) : p.name.size() > 1 ? p.name.substr(1) : "";
                 keys.push_back(p.namedKey.empty() ? bare : p.namedKey);
                 if (p.aliasBoth && !p.namedKey.empty() && !bare.empty() && bare != p.namedKey)
                     keys.push_back(bare);
@@ -6372,12 +6398,18 @@ struct Codegen {
                          " : Value::typeObj(" + cesc(p.type) + ")");
                 }
                 else bind(chain + "rtNamed(__a, " + lastKey + ")");
+                if (attributive) {
+                    std::string has;
+                    for (auto& k : keys) has += (has.empty() ? "" : " || ") + std::string("rtHasNamed(__a, ") + cesc(k) + ")";
+                    attrParam(p.defaultVal ? "true" : has);
+                }
                 continue;
             }
             if (p.defaultVal) bind(typedInit("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")"));
             else if (typed && p.optional)   // …and so does an unpassed typed optional one
                 bind("rtHasPos(__a, " + pos + ") ? " + typedInit("rtPos(__a, " + pos + ")") + " : Value::typeObj(" + cesc(p.type) + ")");
             else bind(typedInit("rtPos(__a, " + pos + ")"));
+            attrParam(p.defaultVal || !p.optional ? "true" : "rtHasPos(__a, " + pos + ")");
             if (p.name == "$/" || p.name == "$!") boundSpecials.insert(p.name);
             if (p.name.size() > 1 && p.name[0] == '&') codeVars.insert(p.name.substr(1)); // sub bin(&op) — op(...) calls the param
             pi++;
@@ -6424,8 +6456,8 @@ struct Codegen {
             std::string saved = self_;
             std::string mbody = capture([&]() {
                 line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
+                self_ = "__self";   // (before the binding: a default may read `$!a` or `self`)
                 bindParams(md->params, 1, true);
-                self_ = "__self";
                 topics.push_back(routineTopic(&md->params, 1));   // (a method's own `$_`)
                 struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
                 hoistLexicalSubs(md->body, 1);
@@ -6512,6 +6544,9 @@ struct Codegen {
                           + std::string(1, a.sigil) + "'; __at.pub = " + (a.pub ? "true" : "false")
                           + "; __at.rw = " + (a.rw ? "true" : "false") + ";";
             if (!a.type.empty()) d += " __at.type = " + cesc(a.type) + ";";
+            if (a.required)          // `is required("why")`: .new checks it, as for an interpreted class
+                d += " __at.required = true;" + (a.requiredWhy.empty() ? std::string()
+                                                 : " __at.requiredWhy = " + cesc(a.requiredWhy) + ";");
             if (!a.pod.empty())      // `has $.x; #= …`: the Attribute's .WHY
                 d += " __at.pod = " + cesc(a.pod) + "; __at.podTrail = " + cesc(a.podTrail) +
                      "; __at.declLine = " + std::to_string(a.declLine) + ";";
@@ -6525,7 +6560,8 @@ struct Codegen {
             for (auto& mp : cd->methods) {
                 if (mp->isMulti) { multis[methodKey(mp.get())].push_back(mp.get()); continue; }
                 line(1, "  " + ci + "->methods[" + cesc(methodKey(mp.get())) + "] = " +
-                        withPod("Value::closure(" + methodFn(cd->name, methodKey(mp.get())) + ")", mp.get()) + ";");
+                        withPod(asSubmethod("Value::closure(" + methodFn(cd->name, methodKey(mp.get())) + ")",
+                                            mp.get()), mp.get()) + ";");
             }
             for (auto& kv : multis) {
                 if (const char* why = undecidableMulti(cd, kv.first, kv.second))

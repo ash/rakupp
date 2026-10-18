@@ -5408,6 +5408,8 @@ bool endlessReduce(const std::string& op, const Value& v, Value& out);
 Value  rtNqpOp(NqpOpc op, ValueList& args);                 // eager `use nqp` leaf ops (interp + codegen)
 Value  rtAttrGet(const Value& self, const std::string& name);   // $!attr / $.attr read (codegen)
 Value& rtAttrRef(Value& self, const std::string& name);         // $!attr write (codegen)
+Value  rtAttrNil(const Value& self, const std::string& name, Value v);   // `$!attr = Nil` resets it (codegen)
+void   rtAttrParam(Interpreter& I, const Value& self, const std::string& pname, const Value& v, bool passed); // `:$!attr` binds (codegen)
 Value  rtPairKeyed(const Value& key, Value value);             // `EXPR => v`: a non-Str key stays itself (codegen)
 Value  rtPairCurry(const Value& key, const Value& value, bool keyIsVar, bool valueIsVar); // `* => v` curries (Any if not)
 Value  rtPairOf(const Value& key, Value value, bool keyIsVar, bool valueIsVar);          // …the curry, else rtPairKeyed

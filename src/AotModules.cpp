@@ -14,6 +14,9 @@
 
 namespace rakupp {
 
+extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
+void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
+
 // ---- the walk both sides share ---------------------------------------------
 
 static void walkAot(std::vector<StmtPtr>& stmts, const std::function<void(SubDecl*)>& fn);
@@ -523,7 +526,11 @@ Value& rtAotAttrRef(Interpreter& I, const Value& self, Expr* node, bool inClosur
         ClassInfo* cls = od->cls.get();
         if (cls && cls->shadowsAttrs == 0 && cls->repr.empty()) {
             auto it = od->attrs.find(ve->attrBare);
-            if (it != od->attrs.end()) return it->second;
+            if (it != od->attrs.end()) {
+                // (a write while the object is constructed counts for `is required`)
+                if (g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(od, &it->second);
+                return it->second;
+            }
         }
     }
     Value* p = nullptr;
