@@ -23,6 +23,27 @@ void stampMatchGrammar(const Value& m, const std::string& g) {
     if (m.md()->named) for (auto& kv : *m.md()->named) stampMatchGrammar(kv.second, g);
 }
 
+// A code block or assertion in a regex sees the cursor as `$/` even when the
+// match itself publishes nothing. A `.grep` matcher or a junction's eigenstate
+// sets matchVarSuppressed_ for the whole match, and the block's `$/` stayed
+// whatever it was: `.grep(/ \d+ <?{ $/.chars > 1 }> /)` read Any and kept every
+// element. The block is the program's own code (the flag must never wrap that,
+// see the header), so regexMatch's cursor binders lift the flag while it runs,
+// then put it back, taking away a `$/` the cursor had to create: the caller
+// still gets none.
+bool liftMatchVarQuiet() {
+    const bool quiet = Interpreter::matchVarSuppressed_;
+    Interpreter::matchVarSuppressed_ = false;
+    return quiet;
+}
+void restoreMatchVarQuiet(bool quiet, bool hadSlash) {
+    if (!quiet) return;
+    if (!hadSlash)   // (where setMatchVar made it: the first scope out that has one)
+        for (Env* e = Interpreter::tctx_.cur.get(); e; e = e->parent.get())
+            if (e->vars.erase("$/") || e->routineFrame || !e->parent) break;
+    Interpreter::matchVarSuppressed_ = true;
+}
+
 using RxArgTable = std::vector<Value>;
 static std::string rxArgEncode(const Value& v, RxArgTable* tab = nullptr,
                                const std::function<bool(const Value&, const Value&)>& same = nullptr) {

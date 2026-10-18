@@ -17,6 +17,8 @@ extern std::atomic<bool> g_lexTypeAlias;    // InterpreterOperators.cpp: a type 
 extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
 void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
 Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an);   // InterpreterBinding.cpp
+bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
+void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -20554,6 +20556,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             Value out = Value::array(); out.isList = true;
             if (all.t == VT::Array && all.arr() && (long long)all.arr()->size() >= xN)
                 for (long long k = 0; k < xN; k++) out.arr()->push_back((*all.arr())[(size_t)k]);
+            setMatchVar(out);   // the N kept (or none), not every match of the inner :g
             return out;
         }
     }
@@ -20827,6 +20830,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // whatever `$/` the outer scope happened to hold made every such assertion
     // read an unrelated (usually empty) match — `m:ov/ \d ** {2} <?{ $n %% $/ }>/`
     // found nothing at all. Same cursor the `{…}` block hook builds.
+    // …under a quiet match (`.grep`, a junction) too: see liftMatchVarQuiet.
     // Run `code` with that cursor as `$/` — `$0` and `$<name>` bound beside it —
     // and answer its value, every slot restored after. Shared by the assertion
     // and by the `<{ … }>` pattern hook, which differ only in what they do with
@@ -20863,6 +20867,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             bindCap(nm, Value::nil());
         }
         if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
+        const bool quiet = liftMatchVarQuiet();
         setMatchVar(cursor);
         Value out = Value::nil(); bool featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
         try { out = evalString(code); }
@@ -20872,6 +20877,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
         for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
             tctx_.cur->define(it->first, it->second);
         if (Value* s2 = tctx_.cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
+        restoreMatchVarQuiet(quiet, hadSlash);
         if (featThrow) throw fe;
         if (rakuErr) std::rethrow_exception(rakuErr);
         return out;
@@ -20942,6 +20948,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
                 bindCap(nm, Value::nil());
             }
             if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
+            const bool quiet = liftMatchVarQuiet();
             setMatchVar(cursor);
             tctx_.cur->define("$\xC2\xA2", cursor);
             Value tgt; tctx_.makeTargets.push_back(&tgt);
@@ -20962,6 +20969,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
                 tctx_.cur->define(it->first, it->second);
             if (Value* s2 = tctx_.cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
+            restoreMatchVarQuiet(quiet, hadSlash);
             if (featThrow) throw fe;
             if (rakuErr) std::rethrow_exception(rakuErr);
         };
