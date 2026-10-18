@@ -213,6 +213,9 @@ function mc(inv, name, ...args) {
     if (inv instanceof RScalar) return mc(inv.v, name, ...args);
     if (inv instanceof RObj && inv.ty.isa(T.Exception)) { const em = T.Exception.methods[name]; if (em) return em(inv, ...args); }
     if (inv instanceof RObj) { const fb = inv.ty.findUser('FALLBACK'); if (fb) return fb(inv, name, ...args); }
+    // A Failure answers its own methods (found above); any other call throws the
+    // exception it carries, as in the interpreter and Rakudo.
+    if (inv instanceof RFailure) throw inv.err;
     throw new RakuError(`No such ${name[0] === '!' ? 'private ' : ''}method '${name}' for invocant of type '${ty.name}'`, 'X::Method::NotFound', { method: name.replace(/^!/, ''), typename: ty.name, private: name[0] === '!' });
 }
 // .?name

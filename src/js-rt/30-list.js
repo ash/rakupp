@@ -707,7 +707,41 @@ function rotorList(v, ...specs) {
     return mkSeq(out);
 }
 function batchList(v, n) { const a = arr(v), k = Number(toInt(n)), out = []; for (let i = 0; i < a.length; i += k) out.push(mkList(a.slice(i, i + k))); return mkSeq(out); }
+// A finite Int range is picked from by arithmetic. Building its array first
+// made (^2**40).pick die with "Invalid array length", and cost time and memory
+// in proportion to the range for an answer of one element.
+// [first value, how many values] with the count a BigInt, or null for any
+// other range or list.
+function intSpan(v) {
+    if (!(v instanceof RRange) || !v.isIntRange() || v.isInfinite()) return null;
+    const lo = v.lo(), count = BigInt(v.hi()) - BigInt(lo) + 1n;
+    return [lo, count < 0n ? 0n : count];
+}
+// A uniform integer in [0, count), for a positive BigInt count. Up to 2**53 one
+// draw is enough; past that, random 32-bit words two more than the count needs,
+// reduced, which leaves a bias below 2**-64.
+function randBelow(count) {
+    if (count <= 9007199254740992n) return Math.floor(rand() * Number(count));
+    const words = Math.ceil(count.toString(2).length / 32) + 2;
+    let x = 0n;
+    for (let i = 0; i < words; i++) x = (x << 32n) | BigInt(Math.floor(rand() * 4294967296));
+    return normBig(x % count);
+}
 function pickFrom(v, n) {
+    const span = intSpan(v);
+    // Distinct values by drawing again on a repeat, which is cheap while fewer
+    // than half the range is wanted; a pick of more than that takes the array
+    // path below, whose size the count then bounds.
+    if (span && (n === undefined || (!wantAll(n) && BigInt(toInt(n)) * 2n < span[1]))) {
+        const [lo, count] = span;
+        if (n === undefined) return count ? add(lo, randBelow(count)) : Nil;
+        const k = Number(toInt(n)), seen = new Set(), out = [];
+        while (out.length < k) {
+            const off = randBelow(count), key = String(off);
+            if (!seen.has(key)) { seen.add(key); out.push(add(lo, off)); }
+        }
+        return mkSeq(out);
+    }
     const a = arr(v).slice();
     if (n === undefined) return a.length ? a[Math.floor(rand() * a.length)] : Nil;
     const k = wantAll(n) ? a.length : Math.min(a.length, Number(toInt(n)));
@@ -718,6 +752,17 @@ function pickFrom(v, n) {
 // pick(*), pick(Whatever), roll(*): the `*` term is a curry here, the type object is Whatever
 const wantAll = (n) => n instanceof RWhatever || n === T.Whatever || typeof n === 'function' || n === Infinity;
 function rollFrom(v, n) {
+    const span = intSpan(v);
+    if (span) {
+        const [lo, count] = span;
+        const one = () => add(lo, randBelow(count));
+        if (n === undefined) return count ? one() : Nil;
+        if (!count) return mkSeq([]);
+        if (wantAll(n)) return new RSeq((function* () { for (;;) yield one(); })(), true);   // roll(*): lazy and endless
+        const k = Number(toInt(n)), out = [];
+        for (let i = 0; i < k; i++) out.push(one());
+        return mkSeq(out);
+    }
     const a = arr(v);
     if (n === undefined) return a.length ? a[Math.floor(rand() * a.length)] : Nil;
     if (wantAll(n)) return new RSeq((function* () { for (;;) yield a[Math.floor(rand() * a.length)]; })(), true);   // roll(*): lazy and endless

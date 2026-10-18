@@ -810,7 +810,7 @@ function gist(v) {
             if (v instanceof RRange) return v.gist();
             if (v instanceof REnum) return v.key;
             if (v instanceof RakuError) return v.message;
-            if (v instanceof RFailure) return '(HANDLED) ' + v.err.message;
+            if (v instanceof RFailure) { if (v.handled) return '(HANDLED) ' + v.err.message; throw v.err; }   // `say` of an unchecked Failure throws it
             if (v instanceof RSlip) return listGistOf(v.a, '(', ')');
             if (v instanceof RObj) {
                 const m = v.ty.findUser('gist'); if (m) return str(m(v));

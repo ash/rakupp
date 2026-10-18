@@ -57,8 +57,11 @@ function coerce(ty, v) {
     return v;
 }
 // user dynamic variables: one process-wide table (dynamic scoping approximated)
+// A name nobody declared is a Failure, as in the interpreter and Rakudo, not a
+// death: `$*X // $default` and `with $*X` test it, and using it as a value
+// throws X::Dynamic::NotFound then.
 const dynTable = new Map();
-function dynGet(name) { if (dynTable.has(name)) return dynTable.get(name); try { return dynVar(name); } catch (e) { throw new RakuError(`Dynamic variable ${name} not found`, 'X::Dynamic::NotFound'); } }
+function dynGet(name) { if (dynTable.has(name)) return dynTable.get(name); try { return dynVar(name); } catch (e) { return failure(new RakuError(`Dynamic variable ${name} not found`, 'X::Dynamic::NotFound')); } }
 function dynSet(name, v) { dynTable.set(name, v); return v; }
 function approxEq(a, b) { const x = toFloat(a), y = toFloat(b); if (x === y) return true; const tol = 1e-15; return Math.abs(x - y) <= tol * Math.max(Math.abs(x), Math.abs(y)); }
 // `for 1..$n`: a counted iterator on the Int fast path, the generic range otherwise

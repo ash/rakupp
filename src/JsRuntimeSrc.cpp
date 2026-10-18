@@ -979,7 +979,7 @@ function gist(v) {
             if (v instanceof RRange) return v.gist();
             if (v instanceof REnum) return v.key;
             if (v instanceof RakuError) return v.message;
-            if (v instanceof RFailure) return '(HANDLED) ' + v.err.message;
+            if (v instanceof RFailure) { if (v.handled) return '(HANDLED) ' + v.err.message; throw v.err; }   // `say` of an unchecked Failure throws it
             if (v instanceof RSlip) return listGistOf(v.a, '(', ')');
             if (v instanceof RObj) {
                 const m = v.ty.findUser('gist'); if (m) return str(m(v));
@@ -1008,9 +1008,9 @@ function listGistOf(items, open, close) {
     if (n > 100) parts.push('...');
     return open + parts.join(' ') + close;
 }
-// the default object gist is its .raku: derived class's attributes first, values as .raku
 )RKJS",
-R"RKJS(function objGist(o) {
+R"RKJS(// the default object gist is its .raku: derived class's attributes first, values as .raku
+function objGist(o) {
     const parts = [];
     for (const a of o.ty.allAttrs()) if (a.pub) parts.push(a.name + ' => ' + raku(o[attrKey(a.name)]));
     return o.ty.name + '.new' + (parts.length ? '(' + parts.join(', ') + ')' : '');
@@ -1293,12 +1293,12 @@ function incbProp(cp) {
     while (lo < hi) {
         const mid = (lo + hi) >> 1;
         const s = INCB[mid * 3], e = INCB[mid * 3 + 1];
-        if (cp < s) hi = mid; else if (cp > e) lo = mid + 1; else return INCB[mid * 3 + 2];
+)RKJS",
+R"RKJS(        if (cp < s) hi = mid; else if (cp > e) lo = mid + 1; else return INCB[mid * 3 + 2];
     }
     return 0;
 }
-)RKJS",
-R"RKJS(// Split into grapheme clusters. ASCII strings are their own characters.
+// Split into grapheme clusters. ASCII strings are their own characters.
 function graphemes(s) {
     if (unitIsGrapheme(s)) return s.split('');
     const out = [];
@@ -1547,11 +1547,11 @@ function expandTrans(v) {
     // and produced text that looked escaped and was not. A nested list or a
     // Range inside the list still expands.
     if (v instanceof RList) return v.arr().flatMap(x => (x instanceof RList || x instanceof RRange) ? expandTrans(x) : [str(x)]);
-    if (v instanceof RRange) return arr(v).map(str);
+)RKJS",
+R"RKJS(    if (v instanceof RRange) return arr(v).map(str);
     const s = str(v);
     if (!s.includes('..')) return graphemes(s);
-)RKJS",
-R"RKJS(    const out = []; const g = graphemes(s);
+    const out = []; const g = graphemes(s);
     for (let i = 0; i < g.length; i++) {
         if (i + 3 < g.length && g[i + 1] === '.' && g[i + 2] === '.') {   // a..z inside the string
             const lo = g[i].codePointAt(0), hi = g[i + 3].codePointAt(0);
@@ -1802,10 +1802,10 @@ class RRange {
     raku() { if (this.from === 0 && !this.exFrom && this.exTo && (typeof this.to === 'number' && Number.isInteger(this.to) || typeof this.to === 'bigint')) return '^' + raku(this.to); return raku(this.from) + (this.exFrom ? '^' : '') + '..' + (this.exTo ? '^' : '') + raku(this.to); }
     contains(v) {
         if (!isNumeric(v) && !(typeof v === 'string' && !this.isNumeric())) return false;
-        if (this.isNumeric()) {
-            if (!isNumeric(v)) { try { v = toNumeric(v); } catch (e) { return false; } }
 )RKJS",
-R"RKJS(            const loOk = this.exFrom ? gt(v, this.from) : ge(v, this.from);
+R"RKJS(        if (this.isNumeric()) {
+            if (!isNumeric(v)) { try { v = toNumeric(v); } catch (e) { return false; } }
+            const loOk = this.exFrom ? gt(v, this.from) : ge(v, this.from);
             if (!loOk) return false;
             if (this.isInfinite()) return true;
             return this.exTo ? lt(v, this.to) : le(v, this.to);
@@ -2059,10 +2059,10 @@ function itemsOf(v) {
 }
 // `my @a = ...` / `@a = ...` : replace the container's contents
 // a typed container (`my Int @a`, `has Str @.d`) checks what enters it; Nil restores the default
-function checkOf(a, v) { if (v === Nil) return a.dflt !== undefined ? a.dflt : (a.of ? a.of : Any); if (a.of && !(v instanceof RType ? v.isa(a.of) : isa(v, a.of))) throw new RakuError(`Type check failed in assignment to ${a instanceof RHash ? '%' : '@'}container; expected ${a.of.name} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment'); return v; }
-function assignArray(a, src) {
 )RKJS",
-R"RKJS(    if (src instanceof RSeq && src.lazy) { a.a = []; a.src = src; return a; }
+R"RKJS(function checkOf(a, v) { if (v === Nil) return a.dflt !== undefined ? a.dflt : (a.of ? a.of : Any); if (a.of && !(v instanceof RType ? v.isa(a.of) : isa(v, a.of))) throw new RakuError(`Type check failed in assignment to ${a instanceof RHash ? '%' : '@'}container; expected ${a.of.name} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment'); return v; }
+function assignArray(a, src) {
+    if (src instanceof RSeq && src.lazy) { a.a = []; a.src = src; return a; }
     const items = src === Nil ? [Nil] : itemsOf(src);   // `my @a = Nil` is one (default) element
     const copy = items === a.a ? items.slice() : items.slice();
     for (let i = 0; i < copy.length; i++) { const x = copy[i]; if (x instanceof RSlip) copy[i] = mkArray(x.a.slice()); else if (a.of || x === Nil) copy[i] = checkOf(a, x); }   // an item view assigned in stays one: `my @b = $x, 3; @b.List.raku` shows the $
@@ -2267,7 +2267,8 @@ function keysOf(v) {
     if (v instanceof RHash) return mkSeq(v.keys());
     if (v instanceof RPair) return mkSeq([v.k]);
     if (v instanceof RSetty) return mkSeq(v.keysList());
-    if (v instanceof RObj) { const m = v.ty.findUser('keys'); if (m) return m(v); }
+)RKJS",
+R"RKJS(    if (v instanceof RObj) { const m = v.ty.findUser('keys'); if (m) return m(v); }
     const n = elemsOf(v); return mkSeq(Array.from({ length: n }, (_, i) => i));
 }
 function valuesOf(v) {
@@ -2275,8 +2276,7 @@ function valuesOf(v) {
     if (v instanceof RHash) return mkSeq(v.values());
     if (v instanceof RPair) return mkSeq([v.v]);
     if (v instanceof RSetty) return mkSeq(v.valuesList());
-)RKJS",
-R"RKJS(    return mkSeq(arr(v).slice());
+    return mkSeq(arr(v).slice());
 }
 function kvOf(v) {
     if (v instanceof RType) return mkSeq([]);
@@ -2369,7 +2369,41 @@ function rotorList(v, ...specs) {
     return mkSeq(out);
 }
 function batchList(v, n) { const a = arr(v), k = Number(toInt(n)), out = []; for (let i = 0; i < a.length; i += k) out.push(mkList(a.slice(i, i + k))); return mkSeq(out); }
+// A finite Int range is picked from by arithmetic. Building its array first
+// made (^2**40).pick die with "Invalid array length", and cost time and memory
+// in proportion to the range for an answer of one element.
+// [first value, how many values] with the count a BigInt, or null for any
+// other range or list.
+function intSpan(v) {
+    if (!(v instanceof RRange) || !v.isIntRange() || v.isInfinite()) return null;
+    const lo = v.lo(), count = BigInt(v.hi()) - BigInt(lo) + 1n;
+    return [lo, count < 0n ? 0n : count];
+}
+// A uniform integer in [0, count), for a positive BigInt count. Up to 2**53 one
+// draw is enough; past that, random 32-bit words two more than the count needs,
+// reduced, which leaves a bias below 2**-64.
+function randBelow(count) {
+    if (count <= 9007199254740992n) return Math.floor(rand() * Number(count));
+    const words = Math.ceil(count.toString(2).length / 32) + 2;
+    let x = 0n;
+    for (let i = 0; i < words; i++) x = (x << 32n) | BigInt(Math.floor(rand() * 4294967296));
+    return normBig(x % count);
+}
 function pickFrom(v, n) {
+    const span = intSpan(v);
+    // Distinct values by drawing again on a repeat, which is cheap while fewer
+    // than half the range is wanted; a pick of more than that takes the array
+    // path below, whose size the count then bounds.
+    if (span && (n === undefined || (!wantAll(n) && BigInt(toInt(n)) * 2n < span[1]))) {
+        const [lo, count] = span;
+        if (n === undefined) return count ? add(lo, randBelow(count)) : Nil;
+        const k = Number(toInt(n)), seen = new Set(), out = [];
+        while (out.length < k) {
+            const off = randBelow(count), key = String(off);
+            if (!seen.has(key)) { seen.add(key); out.push(add(lo, off)); }
+        }
+        return mkSeq(out);
+    }
     const a = arr(v).slice();
     if (n === undefined) return a.length ? a[Math.floor(rand() * a.length)] : Nil;
     const k = wantAll(n) ? a.length : Math.min(a.length, Number(toInt(n)));
@@ -2380,6 +2414,17 @@ function pickFrom(v, n) {
 // pick(*), pick(Whatever), roll(*): the `*` term is a curry here, the type object is Whatever
 const wantAll = (n) => n instanceof RWhatever || n === T.Whatever || typeof n === 'function' || n === Infinity;
 function rollFrom(v, n) {
+    const span = intSpan(v);
+    if (span) {
+        const [lo, count] = span;
+        const one = () => add(lo, randBelow(count));
+        if (n === undefined) return count ? one() : Nil;
+        if (!count) return mkSeq([]);
+        if (wantAll(n)) return new RSeq((function* () { for (;;) yield one(); })(), true);   // roll(*): lazy and endless
+        const k = Number(toInt(n)), out = [];
+        for (let i = 0; i < k; i++) out.push(one());
+        return mkSeq(out);
+    }
     const a = arr(v);
     if (n === undefined) return a.length ? a[Math.floor(rand() * a.length)] : Nil;
     if (wantAll(n)) return new RSeq((function* () { for (;;) yield a[Math.floor(rand() * a.length)]; })(), true);   // roll(*): lazy and endless
@@ -2462,7 +2507,8 @@ function junctionOp(fn, a, b) {
     if (a instanceof RJunction) return new RJunction(a.kind, a.items.map(x => fn(x, b)));
     return new RJunction(b.kind, b.items.map(y => fn(a, y)));
 }
-function junctionStr(j) { return j.kind + '(' + j.items.map(str).join(', ') + ')'; }
+)RKJS",
+R"RKJS(function junctionStr(j) { return j.kind + '(' + j.items.map(str).join(', ') + ')'; }
 function junctionGist(j) { return j.kind + '(' + j.items.map(gist).join(', ') + ')'; }
 function junctionRaku(j) { return j.kind + '(' + j.items.map(raku).join(', ') + ')'; }
 
@@ -2501,8 +2547,7 @@ function smartmatch(v, pat) {
         try { return numeq(v, pat); } catch (e) { return false; }
     }
     if (pat === Nil) return v === Nil;
-)RKJS",
-R"RKJS(    if (pat instanceof RSlip && pat.a.length === 0) return (v instanceof RList || v instanceof RSeq || v instanceof RRange) && arr(v).length === 0;   // X ~~ Empty
+    if (pat instanceof RSlip && pat.a.length === 0) return (v instanceof RList || v instanceof RSeq || v instanceof RRange) && arr(v).length === 0;   // X ~~ Empty
     if (pat instanceof RList) {
         if (!(v instanceof RList || v instanceof RSeq || v instanceof RRange)) return false;
         const a = arr(v), b = pat.a; if (a.length !== b.length) return false;
@@ -2676,7 +2721,8 @@ function buildObj(ty, ...args) {
         if (ty.isa(T.Exception)) { const [pos, named] = splitArgs(args); const m = named.get('message'); return new RakuError(m === undefined ? (pos.length ? str(pos[0]) : ty.name) : str(m), ty.name, named.size ? named : null); }
         if (ty === T.Version) { const [pos] = splitArgs(args); return new RVersion(str(pos[0])); }
         if (ty === T['IO::Path'] || ty === T.IO) { const [pos] = splitArgs(args); return new RIOPath(str(pos[0])); }
-        if (ty === T.FatRat || ty === T.Rat) { const [pos] = splitArgs(args); return mkRat(big(pos[0]), big(pos.length > 1 ? pos[1] : 1)); }
+)RKJS",
+R"RKJS(        if (ty === T.FatRat || ty === T.Rat) { const [pos] = splitArgs(args); return mkRat(big(pos[0]), big(pos.length > 1 ? pos[1] : 1)); }
         if (ty === T.Complex) { const [pos, named] = splitArgs(args); const re = named.get('re'), im = named.get('im');
             return new RComplex(toFloat(re === undefined ? (pos.length ? pos[0] : 0) : re), toFloat(im === undefined ? (pos.length > 1 ? pos[1] : 0) : im)); }
         if (ty === T.Int || ty === T.Num || ty === T.Str || ty === T.Bool) { const [pos] = splitArgs(args); return pos.length ? coerce(ty, pos[0]) : (ty === T.Str ? '' : ty === T.Bool ? false : 0); }
@@ -2708,8 +2754,7 @@ function buildObj(ty, ...args) {
         if (a.sigil === '@' && !(v instanceof RList && v.ty === T.Array)) v = newArray(v);
         else if (a.sigil === '%' && !(v instanceof RHash)) v = newHash(v);
         if ((a.sigil === '@' || a.sigil === '%') && a.type && T[a.type] && v && v.of === undefined) withOf(v, T[a.type]);   // has Str @.d: an Array[Str]
-)RKJS",
-R"RKJS(        if (a.coerce && a.type && T[a.type] && v !== Any && !(v instanceof RType)) v = coerce(T[a.type], v);   // `has IO::Path() $.p`
+        if (a.coerce && a.type && T[a.type] && v !== Any && !(v instanceof RType)) v = coerce(T[a.type], v);   // `has IO::Path() $.p`
         if (a.type && a.sigil === '$' && v !== Any && !(v instanceof RType) && !isa(v, a.type) && T[a.type]) {
             throw new RakuError(`Type check failed in assignment to ${a.sigil}!${a.name}; expected ${a.type} but got ${typeName(v)} (${raku(v)})`, 'X::TypeCheck::Assignment');
         }
@@ -2895,7 +2940,8 @@ class RVersion {
     constructor(s) { this.s = str(s).replace(/^v/, ''); this.plus = this.s.endsWith('+'); this.parts = this.s.replace(/\+$/, '').split('.').map(p => /^\d+$/.test(p) ? Number(p) : p); }
     Str() { return this.s; }
     cmp(o) { const c = this.cmpParts(o); return c !== 0 ? c : (this.plus ? 1 : 0) - (o.plus ? 1 : 0); }   // v1.0+ is later than v1.0
-    cmpParts(o) {   // ordering: a wildcard part sorts below any concrete part
+)RKJS",
+R"RKJS(    cmpParts(o) {   // ordering: a wildcard part sorts below any concrete part
         const n = Math.max(this.parts.length, o.parts.length);
         for (let i = 0; i < n; i++) {
             const a = this.parts[i] ?? 0, b = o.parts[i] ?? 0;
@@ -2932,8 +2978,7 @@ class RDate {
     Str() { if (typeof this.fmt !== 'function' || this.fmting) return this.iso(); this.fmting = true; try { return str(this.fmt(this)); } finally { this.fmting = false; } }
     raku() { const d = this.d; if (this.ty === T.Date) return 'Date.new(' + d.getUTCFullYear() + ',' + (d.getUTCMonth() + 1) + ',' + d.getUTCDate() + ')'; return 'DateTime.new(' + [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()].join(',') + ')'; }
     daycount() { return Math.floor(this.d.getTime() / 86400000) + 40587; }   // Modified Julian Day
-)RKJS",
-R"RKJS(    numeric() { return this.ty === T.Date ? this.daycount() : this.d.getTime() / 1000; }
+    numeric() { return this.ty === T.Date ? this.daycount() : this.d.getTime() / 1000; }
 }
 function dateNew(ty, args) {
     const [pos, named] = splitArgs(args);
@@ -3108,7 +3153,8 @@ function join(sep, ...items) { return joinList(mkList(spliceSlips(items)), sep);
 function reverse(...items) { return reverseList(items.length === 1 ? items[0] : mkList(items)); }
 function sort(...args) {
     let f; if (args.length > 1 && typeof args[0] === 'function') f = args.shift();
-    return sortList(args.length === 1 ? args[0] : mkList(args), f);
+)RKJS",
+R"RKJS(    return sortList(args.length === 1 ? args[0] : mkList(args), f);
 }
 function map(f, ...items) { return mapList(items.length === 1 ? items[0] : mkList(items), f); }
 function grep(f, ...items) { return grepList(items.length === 1 ? items[0] : mkList(items), f); }
@@ -3141,8 +3187,7 @@ function radix(base, sv) {
     for (let i = 0; i < s.length; i++) {
         const c = s[i];
         if (c === '_') { if (i === 0 || i + 1 === s.length) bad("'_' must be between digits"); continue; }
-)RKJS",
-R"RKJS(        if (c === '.') { if (den !== 0n) bad('more than one radix point'); den = 1n; continue; }
+        if (c === '.') { if (den !== 0n) bad('more than one radix point'); den = 1n; continue; }
         const code = c.charCodeAt(0);
         const d = code >= 48 && code <= 57 ? code - 48 : code >= 97 && code <= 122 ? code - 87 : code >= 65 && code <= 90 ? code - 55 : -1;
         if (d < 0 || d >= base) bad(`base-${base} number must begin with valid digits or '.'`);
@@ -3273,7 +3318,8 @@ function hyperOp(op, a, b, dwimL, dwimR) {
     if (la && lb) {
         const x = arr(a), y = arr(b);
         let n = Math.max(x.length, y.length);
-        if (!dwimL && !dwimR && x.length !== y.length) throw new RakuError(`Lists on either side of non-dwimmy hyperop of infix:<${op}> are not of the same length while recursing\nleft: ${x.length} elements, right: ${y.length} elements`, 'X::HyperOp::NonDWIM');
+)RKJS",
+R"RKJS(        if (!dwimL && !dwimR && x.length !== y.length) throw new RakuError(`Lists on either side of non-dwimmy hyperop of infix:<${op}> are not of the same length while recursing\nleft: ${x.length} elements, right: ${y.length} elements`, 'X::HyperOp::NonDWIM');
         if (dwimL && !dwimR) n = y.length; if (dwimR && !dwimL) n = x.length;
         const out = []; for (let i = 0; i < n; i++) out.push(hyperOp(op, x[i % x.length], y[i % y.length], dwimL, dwimR));
         return a.ty === T.Array || a instanceof RList ? mkList(out, a instanceof RList ? a.ty : T.List) : mkList(out);
@@ -3301,8 +3347,7 @@ function seqOp(items, endv, exclusive) {
             else throw new RakuError('Unable to deduce arithmetic or geometric sequence from: ' + starts.map(str).join(',') + '. Did you try to use a Whatever (*) without a block?');
         } else if (n === 2 && starts.every(isNumeric)) { const d = sub(starts[1], starts[0]); genFn = x => add(x, d); }
         else if (n === 1 && isNumeric(starts[0])) { genFn = !lazy && typeof endv !== 'function' && isNumeric(endv) && lt(endv, starts[0]) ? (x => sub(x, 1)) : (x => add(x, 1)); }
-)RKJS",
-R"RKJS(        else if (n >= 1 && typeof starts[n - 1] === 'string') genFn = x => strSucc(x);
+        else if (n >= 1 && typeof starts[n - 1] === 'string') genFn = x => strSucc(x);
         else throw new RakuError('Unable to deduce arithmetic or geometric sequence from: ' + starts.map(str).join(','));
     }
     const arity = genFn.arity !== undefined ? genFn.arity : genFn.length;
@@ -3401,7 +3446,8 @@ M(T.Mu, {
     exists: (s) => false, EXISTS: (s) => false, Capture: (s) => capture(s), Version: (s) => new RVersion(str(s)), Date: (s) => dateNew(T.Date, [s]), DateTime: (s) => dateNew(T.DateTime, [s]),
     'assuming': (s, ...pre) => assumingCall(s, ...pre), 'succ': (s) => inc(s), Failure: (s) => s,
     'push': (s, ...i) => pushTo(s, ...i), 'append': (s, ...i) => appendTo(s, ...i), 'pop': (s) => popFrom(s), 'shift': (s) => shiftFrom(s), 'unshift': (s, ...i) => unshiftTo(s, ...i), 'prepend': (s, ...i) => prependTo(s, ...i), 'splice': (s, ...a) => spliceArr(s, ...a),
-    'message': (s) => excMessage(s), 'throw': (s) => { throw s; }, 'rethrow': (s) => { throw s; }, 'resume': (s) => Nil, 'backtrace': (s) => mkList([]), 'payload': (s) => s instanceof RakuError ? excPayload(s) : Any,
+)RKJS",
+R"RKJS(    'message': (s) => excMessage(s), 'throw': (s) => { throw s; }, 'rethrow': (s) => { throw s; }, 'resume': (s) => Nil, 'backtrace': (s) => mkList([]), 'payload': (s) => s instanceof RakuError ? excPayload(s) : Any,
     'exception': (s) => s instanceof RFailure ? s.err : s, 'handled': (s) => s instanceof RFailure ? s.handled : false, 'Exception': (s) => s instanceof RFailure ? s.err : s,
     'key': (s) => s instanceof RPair ? s.k : Any, 'value': (s) => s instanceof RPair ? s.v : Any, 'kv': (s) => kvOf(s), 'freeze': (s) => s,
     'elem': (s, set) => elem(s, set), 'AT-POS': (s, i) => aget(s, i), 'AT-KEY': (s, k) => hget(s, k), 'EXISTS-KEY': (s, k) => hexists(s, k), 'EXISTS-POS': (s, i) => aexists(s, i), 'DELETE-KEY': (s, k) => hdelete(s, k), 'DELETE-POS': (s, i) => adelete(s, i), 'ASSIGN-POS': (s, i, v) => aset(s, i, v), 'ASSIGN-KEY': (s, k, v) => hset(s, k, v),
@@ -3414,8 +3460,7 @@ M(T.Mu, {
     'chunks': (s, n) => batchList(s, n), 'tree': (s) => s, 'antipair': (s) => s instanceof RPair ? pair(s.v, s.k) : Any, 'SET-SELF': (s) => s, 'BUILDALL': (s) => s, 'bless': (s, ...a) => buildObj(s instanceof RObj ? s.ty : s, ...a),   /* `self.bless` in a method called on an instance builds one of its type */ 'CREATE': (s) => new RObj(s),
     'perl': (s) => raku(s), 'gistseen': (s) => gist(s), 'iterator-end': () => T.IterationEnd, 'DEFINITE': (s) => defined(s), 'REPR': (s) => 'P6opaque', 'HOW': (s) => typeOf(s), 'WHY': (s) => Nil, 'set': (s, v) => s,
     'seed': (s, v) => s, 'srand': (s) => srand(s), 'exit': (s) => exit(s), 'sleep': (s) => sleep(s), 'now': () => now(), 'time': () => time(),
-)RKJS",
-R"RKJS(    'is-integer': (s) => isIntVal(toNumeric(s)),
+    'is-integer': (s) => isIntVal(toNumeric(s)),
     // A negative is measured in two's complement, where the top bit is the sign:
     // msb(-n) is the length of |n| - 1, so (-1).msb is 0 and (-256).msb is 8.
     // The length of the '-'-prefixed binary string answered 1 and 9.
@@ -3468,14 +3513,14 @@ M(T.Hash, { elems: (s) => s.m.size, Bool: (s) => s.m.size > 0, Str: (s) => str(s
     'classify-list': (s, f, ...l) => { const mf = mapperFn(f); const src = l.length === 1 ? l[0] : mkList(l); for (const x of iter(src)) { const k = hashKey(mf(x)); let b = s.m.get(k); if (!b) { b = mkArray([]); s.m.set(k, b); } b.a.push(x); } return s; },
     'categorize-list': (s, f, ...l) => { const mf = mapperFn(f); const src = l.length === 1 ? l[0] : mkList(l); for (const x of iter(src)) for (const key of itemsOf(mf(x))) { const k = hashKey(key); let b = s.m.get(k); if (!b) { b = mkArray([]); s.m.set(k, b); } b.a.push(x); } return s; },
     'Hash': (s) => s, 'hash': (s) => s, 'clone': (s) => new RHash(new Map(s.m), s.ty), 'Map': (s) => s, 'Set': (s) => toSetty(s, T.Set), 'Bag': (s) => toSetty(s, T.Bag), 'Mix': (s) => toSetty(s, T.Mix), 'SetHash': (s) => toSetty(s, T.SetHash), 'BagHash': (s) => toSetty(s, T.BagHash), 'MixHash': (s) => toSetty(s, T.MixHash), 'iterator': (s) => s.pairs()[Symbol.iterator](),
-    'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'min': (s, ...a) => nm(a).size ? minMaxHash(s, false, nm(a)) : minMaxHash(s, false, null), 'max': (s, ...a) => nm(a).size ? minMaxHash(s, true, nm(a)) : minMaxHash(s, true, null), 'grep': (s, f) => grepList(s, f), 'map': (s, f) => mapList(s, f), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), 'of': (s) => s.of || T.Mu, 'keyof': (s) => T.Str, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'sum': (s) => sumList(mkList(s.values())), 'join': (s, sep) => joinList(mkList(s.pairs()), sep) });
+)RKJS",
+R"RKJS(    'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'min': (s, ...a) => nm(a).size ? minMaxHash(s, false, nm(a)) : minMaxHash(s, false, null), 'max': (s, ...a) => nm(a).size ? minMaxHash(s, true, nm(a)) : minMaxHash(s, true, null), 'grep': (s, f) => grepList(s, f), 'map': (s, f) => mapList(s, f), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), 'of': (s) => s.of || T.Mu, 'keyof': (s) => T.Str, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'sum': (s) => sumList(mkList(s.values())), 'join': (s, sep) => joinList(mkList(s.pairs()), sep) });
 M(T.Pair, { key: (s) => s.k, value: (s) => s.v, kv: (s) => mkList([s.k, s.v]), keys: (s) => mkList([s.k]), values: (s) => mkList([s.v]), pairs: (s) => mkList([s]), antipair: (s) => pair(s.v, s.k), invert: (s) => { const v = s.v instanceof RScalar ? s.v.v : s.v; return mkSeq(v instanceof RList ? v.a.map(x => pair(x, s.k)) : [pair(v, s.k)]); }, Str: (s) => str(s), gist: (s) => pairGist(s), raku: (s) => pairRaku(s), Bool: (s) => true, 'freeze': (s) => s, 'Hash': (s) => hashFrom([[hashKey(s.k), s.v]]), 'hash': (s) => hashFrom([[hashKey(s.k), s.v]]), 'elems': (s) => 1, 'Numeric': (s) => 1, 'Int': (s) => 1, 'AT-KEY': (s, k) => hget(s, k), 'EXISTS-KEY': (s, k) => hexists(s, k), 'ACCEPTS': (s, v) => smartmatch(v, s), 'Map': (s) => hashFrom([[hashKey(s.k), s.v]]) });
 M(T.Whatever, { gist: () => '*', raku: () => '*', Str: () => '*' });
 M(T.Junction, { gist: (s) => junctionGist(s), Str: (s) => junctionStr(s), raku: (s) => junctionRaku(s), Bool: (s) => junctionBool(s), 'defined': (s) => new RJunction(s.kind, s.items.map(defined)), 'so': (s) => junctionBool(s), 'not': (s) => !junctionBool(s), 'eigenstates': (s) => mkList(s.items), 'THREAD': (s, f) => new RJunction(s.kind, s.items.map(f)) });
 M(T.Exception, { message: (s) => excMessage(s), Str: (s) => excMessage(s), gist: (s) => excMessage(s), throw: (s) => { throw s; }, rethrow: (s) => { throw s; }, resume: (s) => Nil, 'backtrace': (s) => mkList([]), 'payload': (s) => excPayload(s), 'Bool': (s) => true, 'defined': (s) => true, 'WHAT': (s) => excType(s), 'raku': (s) => raku(s), 'Failure': (s) => failure(s), 'fail': (s) => failure(s), 'name': (s) => excType(s).name });
 M(T.Failure, { Bool: (s) => { s.handled = true; return false; }, defined: (s) => { s.handled = true; return false; }, exception: (s) => s.err, message: (s) => s.err.message, handled: (s) => s.handled, Str: (s) => { throw s.err; }, gist: (s) => '(HANDLED) ' + s.err.message, throw: (s) => { throw s.err; }, 'so': (s) => { s.handled = true; return false; }, 'not': (s) => { s.handled = true; return true; }, 'sink': (s) => { throw s.err; }, 'Numeric': (s) => { throw s.err; }, 'Int': (s) => { throw s.err; }, 'self': (s) => { throw s.err; }, 'elems': (s) => { throw s.err; }, 'list': (s) => { throw s.err; }, 'Exception': (s) => s.err, 'WHAT': (s) => T.Failure, 'gistseen': (s) => gist(s), 'perl': (s) => raku(s.err), 'raku': (s) => raku(s.err), 'mess': (s) => s.err.message, 'payload': (s) => excPayload(s.err) });
-)RKJS",
-R"RKJS(M(T.Setty, { elems: (s) => s.m.size, total: (s) => s.total(), keys: (s) => mkSeq(s.keysList()), values: (s) => mkSeq(s.valuesList()), kv: (s) => kvOf(s), pairs: (s) => mkSeq(s.pairsList()), list: (s) => mkList(s.listItems()), List: (s) => mkList(s.listItems()), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.m.size > 0,
+M(T.Setty, { elems: (s) => s.m.size, total: (s) => s.total(), keys: (s) => mkSeq(s.keysList()), values: (s) => mkSeq(s.valuesList()), kv: (s) => kvOf(s), pairs: (s) => mkSeq(s.pairsList()), list: (s) => mkList(s.listItems()), List: (s) => mkList(s.listItems()), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.m.size > 0,
     'AT-KEY': (s, k) => s.get(k), 'EXISTS-KEY': (s, k) => s.has(k), 'ASSIGN-KEY': (s, k, v) => s.set(k, v), 'DELETE-KEY': (s, k) => s.delete(k), 'grab': (s, n) => { const r = pickFrom(mkList(s.keysList()), n); for (const x of (n === undefined ? [r] : arr(r))) s.delete(x); return r; }, 'grabpairs': (s, n) => { const ps = pickFrom(mkList(s.pairsList()), n); for (const p of (n === undefined ? [ps] : arr(ps))) s.delete(p.k); return ps; },
     'pick': (s, n) => pickFrom(mkList(s.keysList()), n), 'roll': (s, n) => rollFrom(mkList(s.keysList()), n), 'Set': (s) => toSetty(s, T.Set), 'Bag': (s) => toSetty(s, T.Bag), 'Mix': (s) => toSetty(s, T.Mix), 'SetHash': (s) => toSetty(s, T.SetHash), 'BagHash': (s) => toSetty(s, T.BagHash), 'MixHash': (s) => toSetty(s, T.MixHash), 'Hash': (s) => { const h = new RHash(); for (const e of s.m.values()) h.m.set(str(e.v), e.n); return h; }, 'hash': (s) => { const h = new RHash(); for (const e of s.m.values()) h.m.set(str(e.v), e.n); return h; },
     'clone': (s) => s.clone(), 'minpairs': (s) => { const ps = s.pairsList(); if (!ps.length) return mkSeq([]); const m = minOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'maxpairs': (s) => { const ps = s.pairsList(); if (!ps.length) return mkSeq([]); const m = maxOf(ps.map(p => p.v)); return mkSeq(ps.filter(p => cmpNum(p.v, m) === 0)); }, 'antipairs': (s) => mkSeq(s.pairsList().map(p => pair(p.v, p.k))), 'invert': (s) => mkSeq(s.pairsList().map(p => pair(p.v, p.k))), 'Int': (s) => s.m.size, 'Numeric': (s) => s.m.size, 'sort': (s, f) => sortList(mkList(s.listItems()), f), 'map': (s, f) => mapList(mkList(s.listItems()), f), 'grep': (s, f) => grepList(mkList(s.listItems()), f), 'iterator': (s) => s.listItems()[Symbol.iterator](), 'first': (s, ...a) => firstOf(mkList(s.listItems()), posArgs(a)[0], nm(a)), 'sum': (s) => sumList(mkList(s.listItems())), 'join': (s, sep) => joinList(mkList(s.listItems()), sep), 'elem': (s, v) => s.has(v), 'add': (s, ...v) => { for (const x of v) s.add(x); return s; } });
@@ -3490,7 +3535,8 @@ M(T['IO::Handle'], { Str: (s) => s.path || '', gist: (s) => 'IO::Handle<' + (s.p
 // type-object methods (Int.new, Str.new, Date.today, ...)
 const TYPE_METHODS = {
     today: (t) => new RDate(T.Date, new Date(new Date().setUTCHours(0, 0, 0, 0))),
-    now: (t) => new RDate(T.DateTime, new Date()),
+)RKJS",
+R"RKJS(    now: (t) => new RDate(T.DateTime, new Date()),
     enums: (t) => { const h = new RHash(); for (const e of t.enumValues || []) h.m.set(e.key, e.val); return h; },
     pick: (t, n) => pickFrom(mkList(t.enumValues || []), n), roll: (t, n) => rollFrom(mkList(t.enumValues || []), n),
     keys: (t) => mkSeq((t.enumValues || []).map(e => e.key)), values: (t) => mkSeq((t.enumValues || []).map(e => e.val)), kv: (t) => mkSeq((t.enumValues || []).flatMap(e => [e.key, e.val])), pairs: (t) => mkSeq((t.enumValues || []).map(e => pair(e.key, e.val))), elems: (t) => (t.enumValues || []).length,
@@ -3516,8 +3562,7 @@ function mc(inv, name, ...args) {
     if (inv !== null && typeof inv === 'object' && inv.item === true) { if (name === 'raku') return raku(inv); inv = inv.__t; }   // an item view: methods see the value; .raku shows the $
     // a JavaScript function read as a property (`JS.Array`, `JS.Event`): its own
     // properties and `.new` dispatch on the function itself
-)RKJS",
-R"RKJS(    if (typeof inv === 'function' && inv.__js) {
+    if (typeof inv === 'function' && inv.__js) {
         if (name === 'new') return jsNew(inv.__js, args);
         if (name in inv.__js) return jsCall(inv.__js, name, args);
     }
@@ -3571,6 +3616,9 @@ R"RKJS(    if (typeof inv === 'function' && inv.__js) {
     if (inv instanceof RScalar) return mc(inv.v, name, ...args);
     if (inv instanceof RObj && inv.ty.isa(T.Exception)) { const em = T.Exception.methods[name]; if (em) return em(inv, ...args); }
     if (inv instanceof RObj) { const fb = inv.ty.findUser('FALLBACK'); if (fb) return fb(inv, name, ...args); }
+    // A Failure answers its own methods (found above); any other call throws the
+    // exception it carries, as in the interpreter and Rakudo.
+    if (inv instanceof RFailure) throw inv.err;
     throw new RakuError(`No such ${name[0] === '!' ? 'private ' : ''}method '${name}' for invocant of type '${ty.name}'`, 'X::Method::NotFound', { method: name.replace(/^!/, ''), typename: ty.name, private: name[0] === '!' });
 }
 // .?name
@@ -3621,7 +3669,8 @@ M(T.Str, {
     'unival': (s) => unival(s), 'univals': (s) => mkList(graphemes(str(s)).map(unival)),
 });
 const collateOf = (s) => mkSeq(arr(s).slice().sort((a, b) => str(a).localeCompare(str(b), 'en')));
-M(T.List, { 'collate': collateOf }); M(T.Seq, { 'collate': collateOf, 'slice': (s, ...idx) => sliceOf(s, ...idx) });
+)RKJS",
+R"RKJS(M(T.List, { 'collate': collateOf }); M(T.Seq, { 'collate': collateOf, 'slice': (s, ...idx) => sliceOf(s, ...idx) });
 const sliceOf = (s, ...idx) => { const a = arr(s); return mkList(idx.flatMap(i => (i instanceof RList || i instanceof RSeq || i instanceof RRange) ? arr(i) : [i]).map(i => a[Number(toInt(i))] ?? Nil)); };
 M(T.List, { 'slice': sliceOf }); M(T.Range, { 'slice': sliceOf });
 M(T.Range, { 'in-range': (s, v) => { if (!s.contains(v)) throw new RakuError(`Value out of range. Is: ${gist(v)}, should be in ${s.gist()}`, 'X::OutOfRange'); return true; } });
@@ -3651,8 +3700,7 @@ M(T.Instant, { 'to-posix': (s) => mkList([toFloat(s), false]) });
 // %h.classify-list(&mapper, @items) / .categorize-list: fill the hash in place; an Array mapper looks the item up
 M(T.Hash, {
     'classify-list': (h, f, ...items) => { const key = f instanceof RList ? (x => aget(f, Number(toInt(x)))) : f; for (const x of spliceSlips(items.flatMap(i => i instanceof RList || i instanceof RSeq || i instanceof RRange ? arr(i) : [i]))) classifyInto(h, key(x), x); return h; },
-)RKJS",
-R"RKJS(    'categorize-list': (h, f, ...items) => { const key = f instanceof RList ? (x => aget(f, Number(toInt(x)))) : f; for (const x of spliceSlips(items.flatMap(i => i instanceof RList || i instanceof RSeq || i instanceof RRange ? arr(i) : [i]))) for (const kk of itemsOf(key(x))) classifyInto(h, kk, x); return h; },
+    'categorize-list': (h, f, ...items) => { const key = f instanceof RList ? (x => aget(f, Number(toInt(x)))) : f; for (const x of spliceSlips(items.flatMap(i => i instanceof RList || i instanceof RSeq || i instanceof RRange ? arr(i) : [i]))) for (const kk of itemsOf(key(x))) classifyInto(h, kk, x); return h; },
 });
 // a list key nests: %h.classify-list([['a','b']], …) → {a => {b => [...]}}
 function classifyInto(h, key, x) {
@@ -3764,7 +3812,8 @@ if (IS_NODE && nodeRequire) {
     host.isFile = p => { try { return fs.statSync(p).isFile(); } catch (e) { return false; } };
     host.isDir = p => { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } };
     host.size = p => { try { return fs.statSync(p).size; } catch (e) { return 0; } };
-    host.modified = p => { try { return numResult(fs.statSync(p).mtimeMs / 1000); } catch (e) { return 0; } };
+)RKJS",
+R"RKJS(    host.modified = p => { try { return numResult(fs.statSync(p).mtimeMs / 1000); } catch (e) { return 0; } };
     host.absolute = p => pathMod.resolve(p);
     // dir($path = '.', :test): `.` and `..` are candidates only when a test is given; every entry remembers the CWD of the call
     host.dir = (p, ...a) => {
@@ -3787,8 +3836,7 @@ if (IS_NODE && nodeRequire) {
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
     host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd)); };
-)RKJS",
-R"RKJS(    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0])); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
+    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0])); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
 } else if (IS_DENO) {
     host.name = 'deno';
     host.argv = Deno.args.slice();
@@ -3974,7 +4022,8 @@ function runMain(cands, argv, sinkResult) {
 // A string default is shown QUOTED, so `[default: '.']` cannot be read as
 // punctuation of the sentence around it — as the interpreter renders it.
 function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'string' ? "'" + d + "'" : gist(d); } catch (e) { return ''; } }
-// The IntStr-like allomorph Rakudo hands MAIN (`Int $n` accepts it, `say $n`
+)RKJS",
+R"RKJS(// The IntStr-like allomorph Rakudo hands MAIN (`Int $n` accepts it, `say $n`
 // prints the spelling), with the command line's own rule ahead of it: a word
 // that NAMES an enum value IS that value, which is what lets `--tls=True` bind
 // the `Bool :$tls` a program wrote for `--tls` (issue #95) and `prog Red` reach
@@ -4026,8 +4075,7 @@ function bindMain(c, pos, named) {
             // `--tls=…` collects — does not bind, and the usage message is printed.
             // The mirror of that is a `Str` named refusing the Bool those two
             // words became: `--a=True` does not bind a `Str :$a`.
-)RKJS",
-R"RKJS(            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v !== 'boolean') return null; if (p.type === 'Str' && typeof v === 'boolean') return null; if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
+            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v !== 'boolean') return null; if (p.type === 'Str' && typeof v === 'boolean') return null; if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
             // `*%opts` takes the leftover options ONE BY ONE: it is the slurpy
             // that collects them, so they arrive as the named arguments they
             // are, not as a single `:opts(%h)`.
@@ -4226,7 +4274,8 @@ function callCode(f, ...args) {
     if (typeof f === 'function') return f(...args);
     if (f instanceof RObj) { const m = f.ty.findUser('CALL-ME'); if (m) return m(f, ...args); }
     if (f instanceof RScalar) return callCode(f.v, ...args);
-    if (f instanceof RType && f.isUser) return construct(f, ...args);
+)RKJS",
+R"RKJS(    if (f instanceof RType && f.isUser) return construct(f, ...args);
     throw new RakuError(`Cannot call a ${typeName(f)} (it is not a Callable)`);
 }
 // `is rw` parameters: a box with a `.v` accessor. Call sites hand in a
@@ -4260,8 +4309,7 @@ function coerce(ty, v) {
     if (ty === T.Str) return str(v);
     if (ty === T.Bool) return truthy(v);
     if (ty === T.Rat) return mc(v, 'Rat');
-)RKJS",
-R"RKJS(    if (ty === T.Numeric || ty === T.Real) return toNumeric(v);
+    if (ty === T.Numeric || ty === T.Real) return toNumeric(v);
     if (ty === T.Array) return newArray(v);
     if (ty === T.List) return mkList(itemsOf(v).slice());
     if (ty === T.Hash) return newHash(v);
@@ -4275,8 +4323,11 @@ R"RKJS(    if (ty === T.Numeric || ty === T.Real) return toNumeric(v);
     return v;
 }
 // user dynamic variables: one process-wide table (dynamic scoping approximated)
+// A name nobody declared is a Failure, as in the interpreter and Rakudo, not a
+// death: `$*X // $default` and `with $*X` test it, and using it as a value
+// throws X::Dynamic::NotFound then.
 const dynTable = new Map();
-function dynGet(name) { if (dynTable.has(name)) return dynTable.get(name); try { return dynVar(name); } catch (e) { throw new RakuError(`Dynamic variable ${name} not found`, 'X::Dynamic::NotFound'); } }
+function dynGet(name) { if (dynTable.has(name)) return dynTable.get(name); try { return dynVar(name); } catch (e) { return failure(new RakuError(`Dynamic variable ${name} not found`, 'X::Dynamic::NotFound')); } }
 function dynSet(name, v) { dynTable.set(name, v); return v; }
 function approxEq(a, b) { const x = toFloat(a), y = toFloat(b); if (x === y) return true; const tol = 1e-15; return Math.abs(x - y) <= tol * Math.max(Math.abs(x), Math.abs(y)); }
 // `for 1..$n`: a counted iterator on the Int fast path, the generic range otherwise
@@ -4435,7 +4486,8 @@ class RPromise {
         this.status = Planned; this.value = undefined; this.cause = undefined;
         this.p = new Promise((res, rej) => { this._res = res; this._rej = rej; });
         this.p.catch(() => { });   // a broken promise nobody awaits is not an unhandled rejection
-    }
+)RKJS",
+R"RKJS(    }
     keep(v) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Kept; this.value = v; this._res(v); return this; }
     break_(e) { if (this.status !== Planned) throw new RakuError('Promise is already ' + this.status.key.toLowerCase(), 'X::Promise::Vowed'); this.status = Broken; this.cause = e instanceof RakuError ? e : exc(e); this._rej(this.cause); return this; }
     // .result: the value once kept; the cause thrown once broken; otherwise it would block
@@ -4473,8 +4525,7 @@ function promiseThen(p, cb) {
 }
 M(T.Promise, {
     keep: (s, v) => s.keep(v === undefined ? true : v), 'break': (s, e) => s.break_(e), result: (s) => s.result(), status: (s) => s.status, cause: (s) => s.status === Broken ? s.cause : Nil,
-)RKJS",
-R"RKJS(    then: (s, cb) => promiseThen(s, cb), Bool: (s) => s.status !== Planned, so: (s) => s.status !== Planned, gist: (s) => 'Promise.new', Str: (s) => 'Promise', raku: (s) => 'Promise.new',
+    then: (s, cb) => promiseThen(s, cb), Bool: (s) => s.status !== Planned, so: (s) => s.status !== Planned, gist: (s) => 'Promise.new', Str: (s) => 'Promise', raku: (s) => 'Promise.new',
     'is-kept': (s) => s.status === Kept, 'is-broken': (s) => s.status === Broken, 'is-planned': (s) => s.status === Planned,
     'await': (s) => s.result(), 'sink': (s) => Nil, 'WHAT': (s) => T.Promise, defined: (s) => true,
 });
@@ -4648,7 +4699,8 @@ function supplyList(s) {
     const out = []; let finished = false, err = null;
     const tap = s.tap(v => out.push(v), () => { finished = true; }, e => { err = e; finished = true; });
     if (finished) { if (err) throw err; return mkList(out); }
-    const p = new RPromise();
+)RKJS",
+R"RKJS(    const p = new RPromise();
     tap.closeFn2 = null;
     s.tap(v => { }, () => { }, () => { });   // (no-op: the first tap already collects)
     const check = () => { if (finished) { if (err) p.break_(err); else p.keep(mkList(out)); return; } setTimeout(check, 5); };
@@ -4686,8 +4738,7 @@ class RChannel {
         if (this.closedFlag) return mkList(this.q.splice(0));
         const p = new RPromise(); const out = this.q.splice(0);
         const s = this.Supply(); s.tap(v => out.push(v), () => { if (p.status === Planned) p.keep(mkList(out)); }, e => { if (p.status === Planned) p.break_(e); });
-)RKJS",
-R"RKJS(        const poll = () => { if (p.status !== Planned) return; if (!pendingWork()) { p.keep(mkList(out)); return; } setTimeout(poll, 10); };
+        const poll = () => { if (p.status !== Planned) return; if (!pendingWork()) { p.keep(mkList(out)); return; } setTimeout(poll, 10); };
         setTimeout(poll, 0);
         return p;
     }
@@ -4842,7 +4893,8 @@ function clusterEnd(s, i) {
     }
     return j;
 }
-function classMatchAt(n, s, pos) {          // → end of the consumed grapheme, or -1
+)RKJS",
+R"RKJS(function classMatchAt(n, s, pos) {          // → end of the consumed grapheme, or -1
     if (pos >= s.length) return -1;
     const end = clusterEnd(s, pos);
     const g = s.slice(pos, end);
@@ -4879,8 +4931,7 @@ function ltmReach(n, from, ctx, depth) {
     if (!n || depth > 6) return gapAt();   // enough prefix to rank on; a recursive grammar would otherwise be scanned to its leaves at every level
     switch (n.k) {
         case 'Lit': { const L = n.lit.length; const want = n.icase ? n.lit.toLowerCase() : n.lit; for (const [p, l] of from) { const a = s.slice(p, p + L); if ((n.icase ? a.toLowerCase() : a) === want && a.length === L) add(p + L, l + L); } return { pos: out, gap: false }; }
-)RKJS",
-R"RKJS(        case 'Any': for (const [p, l] of from) if (p < s.length) add(clusterEnd(s, p), l); return { pos: out, gap: false };
+        case 'Any': for (const [p, l] of from) if (p < s.length) add(clusterEnd(s, p), l); return { pos: out, gap: false };
         case 'Class': for (const [p, l] of from) { const e = classMatchAt(n, s, p); if (e >= 0) add(e, l); } return { pos: out, gap: false };
         case 'Nop': case 'CapStart': case 'CapEnd': return { pos: from, gap: false };
         case 'AnchorStart': for (const [p, l] of from) if (p === 0 || ((n.multiline || n.p5Line) && s[p - 1] === '\n')) add(p, l); return { pos: out, gap: false };
@@ -5084,7 +5135,8 @@ function rep(n, st, pos, k) {
     if (!n.frugal && !n.sep && isSingleChar(kid)) {
         const stops = [pos]; let p = pos;
         for (;;) {
-            if (mx >= 0 && stops.length - 1 >= mx) break;
+)RKJS",
+R"RKJS(            if (mx >= 0 && stops.length - 1 >= mx) break;
             const q = stepSingle(kid, s, p);
             if (q < 0 || q === p) break;
             stops.push(q); p = q;
@@ -5148,8 +5200,7 @@ const BUILTIN_RULES = {
     ws(s, pos) { let p = pos; while (p < s.length && isSpaceCp(s.codePointAt(p))) p += s.codePointAt(p) > 0xFFFF ? 2 : 1; if (p === pos && isWordAt(s, pos - 1) && isWordAt(s, pos)) return -1; return p; },
     wb(s, pos) { return isWordAt(s, pos - 1) !== isWordAt(s, pos) ? pos : -1; },
     ww(s, pos) { return isWordAt(s, pos - 1) && isWordAt(s, pos) ? pos : -1; },
-)RKJS",
-R"RKJS(    alpha: 'a', digit: 'd', alnum: 'ad', ident: null, space: 's', blank: 'b', upper: 'u', lower: 'l', punct: 'p', xdigit: 'x', cntrl: 'k', graph: 'g', print: 'r', word: 'w',
+    alpha: 'a', digit: 'd', alnum: 'ad', ident: null, space: 's', blank: 'b', upper: 'u', lower: 'l', punct: 'p', xdigit: 'x', cntrl: 'k', graph: 'g', print: 'r', word: 'w',
 };
 function builtinRule(name, s, pos) {
     const b = BUILTIN_RULES[name];
@@ -5360,7 +5411,8 @@ function rxFromString(src, ic) {
     return rx;
 }
 function parseRxString(src, ic) {
-    let i = 0, ncaps = 0, icase = !!ic;
+)RKJS",
+R"RKJS(    let i = 0, ncaps = 0, icase = !!ic;
     const bad = (what) => { throw new RakuError(`a regex built from a string at run time uses ${what}, which is outside the JavaScript core: ${src}`); };
     const ws = () => { for (;;) { while (i < src.length && /\s/.test(src[i])) i++; if (src[i] === '#') { while (i < src.length && src[i] !== '\n') i++; continue; } break; } };
     const hexEsc = () => { let h = ''; if (src[i] === '[') { i++; while (i < src.length && src[i] !== ']') h += src[i++]; i++; } else { while (/[0-9a-fA-F]/.test(src[i] || '')) h += src[i++]; } return parseInt(h, 16); };
@@ -5395,8 +5447,7 @@ function parseRxString(src, ic) {
             if (body[0] === '?' || body[0] === '!') {
                 const look = { k: 'Look' }; if (body[0] === '!') look.negate = 1; body = body.slice(1);
                 if (body.startsWith('before ')) look.kids = [parseRxString(body.slice(7)).root];
-)RKJS",
-R"RKJS(                else if (body.startsWith('after ')) { look.behind = 1; look.kids = [parseRxString(body.slice(6)).root]; }
+                else if (body.startsWith('after ')) { look.behind = 1; look.kids = [parseRxString(body.slice(6)).root]; }
                 else look.kids = [{ k: 'Subrule', name: body, noCapture: 1 }];
                 return look;
             }
@@ -5585,7 +5636,8 @@ function grammarParse(ty, subject, args, subparse) {
     let end = -1;
     const ok = m(rule.rx.root, st, 0, (q) => { if (!subparse && q !== s.length) return false; end = q; return true; });
     if (!ok) return Nil;
-    const mt = new RMatch(s, st.capFrom >= 0 ? st.capFrom : 0, st.capTo >= 0 ? st.capTo : end);
+)RKJS",
+R"RKJS(    const mt = new RMatch(s, st.capFrom >= 0 ? st.capFrom : 0, st.capTo >= 0 ? st.capTo : end);
     finishMatch(mt, st, rule.rx.tree); mt.rule = ruleName;
     if (ctx.actions) { const aty = ctx.actions instanceof RType ? ctx.actions : typeOf(ctx.actions); const meth = aty.findUser ? aty.findUser(ruleName) : null; if (meth) meth(ctx.actions, mt); }
     return mt;
@@ -5603,8 +5655,7 @@ M(T.Match, {
     chunks: (s) => { const o = []; let last = s.from; const caps = arr(mc(s, 'caps')); for (const p of caps) { if (p.v.from > last) o.push(pair('~', new RMatch(s.orig, last, p.v.from))); o.push(p); last = p.v.to; } if (last < s.to) o.push(pair('~', new RMatch(s.orig, last, s.to))); return mkSeq(o); },
     'AT-POS': (s, i) => s.pos(Number(toInt(i))), 'AT-KEY': (s, k) => s.name(str(k)), 'EXISTS-KEY': (s, k) => s.named.has(str(k)), 'EXISTS-POS': (s, i) => Number(toInt(i)) < s.caps.length,
     Int: (s) => toInt(strToNumeric(s.Str())), Numeric: (s) => strToNumeric(s.Str()), Num: (s) => mkNum(toFloat(strToNumeric(s.Str()))), chars: (s) => chars(s.Str()), 'Match': (s) => s, 'WHAT': (s) => T.Match, 'rule': (s) => s.rule || Nil, 'succeeded': (s) => true,
-)RKJS",
-R"RKJS(    'iterator': (s) => s.caps[Symbol.iterator](), 'join': (s, sep) => joinList(mkList(s.caps), sep), 'map': (s, f) => mapList(mkList(s.caps), f), 'first': (s, ...a) => firstOf(mkList(s.caps), posArgs(a)[0], nm(a)), 'sort': (s, f) => sortList(mkList(s.caps), f), 'grep': (s, f) => grepList(mkList(s.caps), f),
+    'iterator': (s) => s.caps[Symbol.iterator](), 'join': (s, sep) => joinList(mkList(s.caps), sep), 'map': (s, f) => mapList(mkList(s.caps), f), 'first': (s, ...a) => firstOf(mkList(s.caps), posArgs(a)[0], nm(a)), 'sort': (s, f) => sortList(mkList(s.caps), f), 'grep': (s, f) => grepList(mkList(s.caps), f),
 });
 const regexGist = (s) => 'rx/' + (s.src === undefined ? '…' : s.src) + '/';
 M(T.Regex, { gist: regexGist, Str: regexGist, raku: regexGist, ACCEPTS: (s, v) => { const mt = runSearch(str(v), s, null, 0); return mt ? mt : Nil; }, Bool: (s) => true, defined: (s) => true, 'WHAT': (s) => T.Regex, 'match': (s, v) => rxMatch(v, s) });
