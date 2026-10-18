@@ -139,6 +139,15 @@ Its full option list — version pins, `--dry-run`, `--list`, `uninstall`,
 all 2,547 distributions, each with its sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
+> **LibraryMake needs `RAKUPP_VM_NAME=moar` to install.** Many native modules
+> build their C code with LibraryMake, and its own test suite checks that
+> `$*VM.name` is `moar`. On Raku++ it is `cpp`, so the test fails with
+> *Unknown VM; don't know how to build* and the install stops. Install it once
+> with `RAKUPP_VM_NAME=moar rakupp install LibraryMake`; the modules that build
+> with it then install normally, because their build step already sees `moar`.
+> [The FAQ](faq/unknown-vm.md) has the details and the other modules that check
+> the name.
+
 Under the hood, Raku++ looks for installed modules in the standard locations
 these installers write to:
 

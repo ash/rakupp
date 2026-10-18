@@ -1150,6 +1150,14 @@ failure; `--dry-run` prints the plan and writes nothing). `-v` works the same
 for `rakupp test`, and cannot be combined with `-q`. Each command alone
 prints its full usage.
 
+A build step (a `Build.rakumod`, or a `builder` in `META6.json`) sees
+`$*VM.name` as `moar`, because the ecosystem's build recipes check for that
+name and have no other branch. A test suite sees the engine's own `cpp`. So
+LibraryMake, which tests its own recipe and has no build step, fails with
+*Unknown VM; don't know how to build*. Install it once with
+`RAKUPP_VM_NAME=moar rakupp install LibraryMake`;
+[faq/unknown-vm.md](faq/unknown-vm.md) has the rest.
+
 Installs are additive, and a repeat is answered from the store: every plan
 entry the store already holds is marked `(already installed)` and skipped
 before anything is fetched, built or tested, so re-running an install you

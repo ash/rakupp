@@ -99,6 +99,10 @@ only way these can drift.
 
 - **[debugging.md](debugging.md)** — what a `die` tells you, `--lint`, `--ast`
   and `--cpp`, telling your bug from ours, and what to put in a report.
+- **[unknown-vm.md](unknown-vm.md)** — "Unknown VM; don't know how to build"
+  and "Unexpected backend name: cpp": why `$*VM.name` is `cpp`, installing
+  LibraryMake with `RAKUPP_VM_NAME=moar`, what the variable changes and what it
+  does not, why it is not the default, and which modules need it.
 - **[garbage-collection.md](garbage-collection.md)** — no tracing collector:
   reference counting, what that buys (a 1.5 MB floor, no stop-the-world pause)
   and what it costs (the free is on your clock), the backup cycle collector and

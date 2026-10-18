@@ -108,6 +108,20 @@ Since then the installer is carried inside the binary and the message cannot
 appear: `rakupp install` works from a lone executable, wherever it sits. So
 does `rakupp doc`, which carries its two guides the same way.
 
+## A module's test suite fails with "Unknown VM; don't know how to build"
+
+That is LibraryMake, the helper many native modules build with. Its test
+checks that `$*VM.name` is `moar`, and on Raku++ it is `cpp`. Install it once
+with the name it expects:
+
+```sh
+RAKUPP_VM_NAME=moar rakupp install LibraryMake
+```
+
+The modules that build with it then install with a plain `rakupp install`.
+[unknown-vm.md](unknown-vm.md) explains why, what the variable changes, and
+which other modules need it.
+
 ## Where does it look?
 
 At the standard zef locations, and you never have to configure them:

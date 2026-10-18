@@ -190,6 +190,9 @@ paths), and a `use` that cannot be found or fails to compile is **fatal**.
 How much of the ecosystem runs today: all 2,547 distributions, each with its
 sweep verdict, are listed at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
+If an install stops with *Unknown VM; don't know how to build*, as LibraryMake's
+does (many native modules build with it), see
+[faq/unknown-vm.md](docs/guide/faq/unknown-vm.md).
 Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
 
 ### …and the batteries, with nothing installed

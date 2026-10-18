@@ -172,6 +172,8 @@ not the test runner — because the default is the honest answer, and reporting
 make. It is for the case where you have looked at a module and concluded its
 `moar` branch is the right one for this engine; it is not a compatibility mode,
 and a module that genuinely needs MoarVM will fail later rather than sooner.
+[unknown-vm.md](unknown-vm.md) has the practical side: installing LibraryMake,
+which modules need the variable, and for how long.
 
 Raku++ keeps `$*VM`, `$*KERNEL` and `$*DISTRO` in a Hash, so it also accepts
 `$*VM<name>`, where Rakudo dies with `Type VM does not support associative
