@@ -1702,7 +1702,11 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
     // attribute itself satisfies it (DBDish::Pg's DBError::Pg reads
     // every one of its `is required` fields off the PGresult) while a
     // TWEAK that would fill it comes too late and still throws.
-    auto checkRequiredFor = [&](ClassInfo* rc) {
+    // A class's own BUILD, or the one it composed from a role: the role's
+    // BUILD runs on the COMPOSER's turn (composedHook), so it is the
+    // composer's BUILD that decides what reached the slot
+    auto ownBuild = [](ClassInfo* rc) { return composedHook(rc, "BUILD") != nullptr; };
+    auto checkAttrsOf = [&](ClassInfo* rc, bool hasBuild) {
         for (auto& at : rc->attrs) {
             if (!at.required) continue;
             // `is required` means SUPPLIED AT CONSTRUCTION — a default
@@ -1713,8 +1717,7 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
             // …but a `T:D` attribute of a class with its own BUILD was
             // not judged before that BUILD ran (see the smiley check
             // below): judge it now, on what BUILD left in the slot
-            if (at.defConstraint == 1 && !at.def && !at.hasDefVal &&
-                rc->methods.count("BUILD")) {
+            if (at.defConstraint == 1 && !at.def && !at.hasDefVal && hasBuild) {
                 auto ait = od->attrs.find(at.name);
                 if (ait != od->attrs.end() && defined(ait->second)) continue;
                 if (argV && argV->pairVal() && !defined(*argV->pairVal())) {
@@ -1731,7 +1734,7 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
             // (a class's own BUILD decides what reaches the slot: an argument
             // its signature ignores initializes nothing — `submethod BUILD() {}`
             // with `.new(:x(5))` is still X::Attribute::Required)
-            if (argV && rc->methods.count("BUILD") && !at.def && !at.hasDefVal) argV = nullptr;
+            if (argV && hasBuild && !at.def && !at.hasDefVal) argV = nullptr;
             if (argV) continue;
             // …or filled by a custom BUILD. A default of the
             // attribute's OWN does not excuse it (Rakudo: `has $.d
@@ -1758,12 +1761,35 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
                         "but you did not provide a value for it.");
         }
     };
+    // A composed role is in the chain only for this step, and its turn comes
+    // BEFORE its composer's — before the role's BUILD, which runs on the
+    // composer's turn, has bound anything (Cro's `role Cro::Policy::Timeout
+    // { has Real() $.total is required; submethod BUILD(:$!total) }` failed
+    // every request). So a role's attributes are checked on its COMPOSER's
+    // turn, under the composer's BUILD: the roles in its parent slots, and
+    // the roles those do in turn.
+    auto checkRolesOf = [&](auto& self, ClassInfo* c, bool hasBuild, int depth) -> void {
+        if (depth > 32) return;
+        auto one = [&](ClassInfo* r) {
+            if (!r || !r->isRole) return;
+            checkAttrsOf(r, hasBuild);
+            self(self, r, hasBuild, depth + 1);
+        };
+        one(c->parent.get());
+        for (auto& p : c->extraParents) one(p.get());
+    };
+    auto checkRequiredFor = [&](ClassInfo* rc) {
+        if (rc->isRole && rc != ci.get()) return;
+        const bool hasBuild = ownBuild(rc);
+        checkAttrsOf(rc, hasBuild);
+        checkRolesOf(checkRolesOf, rc, hasBuild, 0);
+    };
     // `is required` is asked BEFORE the defaults are judged: `has Int:D $.y =
     // self.x` must not complain about y when the real fault is the
     // missing x (only a class with no BUILD of its own can be judged now)
     for (size_t ci2 = nChain; ci2-- > 0;) {
         ClassInfo* rc = chainAt(ci2);
-        if (rc->methods.count("BUILD")) continue;
+        if (ownBuild(rc)) continue;
         bool anyDefConstraint = false;
         for (auto& at : rc->attrs) if (at.defConstraint) anyDefConstraint = true;
         if (!anyDefConstraint) continue;
@@ -1779,11 +1805,11 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
         // (a class with a BUILD of its own binds its arguments THERE,
         // later: an argument alone has not filled the slot yet —
         // Graph::Grid's `has Int:D $.rows is required` + BUILD(:$!rows!))
-        const bool ownBuild = chainAt(ci2)->methods.count("BUILD") > 0;
+        const bool hasBuild = ownBuild(chainAt(ci2));
         for (auto& at : chainAt(ci2)->attrs) {
             if (!at.defConstraint) continue;
             bool gotArg = false;
-            if (!ownBuild)
+            if (!hasBuild)
                 for (auto& arg : args)
                     if (arg.t == VT::Pair && arg.s == at.name) { gotArg = true; break; }
             if (!(at.def || at.hasDefVal || gotArg)) continue;
