@@ -69,6 +69,7 @@ namespace rakupp {
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
 Value arrayMissingDefaultPublic(const Value& base);   // InterpreterBinding.cpp
+Value createBuiltinInstance(Interpreter& I, const Value& type);   // Builtins.cpp
 extern const char* kCellKey;   // the Proxy key a shared cell rides on (InterpreterParts.h; `.clone` reads it)
 
 // InterpreterOperators.cpp: the attribute slots an object's construction
@@ -6334,17 +6335,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // Dijkstra and A* walking an unordered queue. rtTypedDefault is the same
         // rule the `my` declarators use: `@` → [], `%` → {}, native → 0/"",
         // `Int` → the type object, untyped `$` → Any.
+        // …but a class that writes its OWN `method CREATE` gets it called (the
+        // user-method arm below runs it), and a BUILT-IN type, which has no
+        // ClassInfo to allocate from, is createBuiltinInstance's (#182).
         if (m == "CREATE") {
-            auto od = makePayload<ObjectData>();
             auto it = classes_.find(resolveClassAlias(inv.s));
-            if (it != classes_.end()) {
+            if (it == classes_.end()) return createBuiltinInstance(*this, inv);
+            if (m.skipOwn || !it->second->findMethod("CREATE")) {
+                auto od = makePayload<ObjectData>();
                 od->cls = it->second;
                 for (auto* c = it->second.get(); c; c = c->parent.get())
                     for (auto& at : c->attrs)
                         if (!od->attrs.count(at.name))
                             od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
+                return Value::object(od);
             }
-            return Value::object(od);
         }
         // .^attributes on the built-in Date/DateTime: the introspection
         // JSON::Unmarshal walks to rebuild a value from its parts (its tests

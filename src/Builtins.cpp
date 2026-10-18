@@ -10165,6 +10165,28 @@ std::optional<Value> Interpreter::ncStructFieldGet(const Value& inv, const std::
     return std::nullopt;
 }
 
+// `T.CREATE` for a BUILT-IN type (MethodCallPart2's CREATE arm): the ObjectData
+// that stood in for one had no class, so it was nameless — `Mu.CREATE` gisted
+// as "Object", was not `.WHAT === Mu`, and had no `.CREATE` of its own (issue
+// #182). The empty instance is what the constructor makes from no arguments
+// (`Mu.new`, `Int.new` is 0, `Hash.new` is {}) when that is one OF THE TYPE.
+// Where it is not (`Cool.new` answers a Str) or the constructor refuses
+// (`Date.new()` needs a date), it is a bare instance carrying the type's name,
+// which is what Rakudo's allocator hands back too: every attribute unset.
+Value createBuiltinInstance(Interpreter& I, const Value& type) {
+    std::string tn = type.typeName();
+    if (tn == "Bool") return Value::boolean(false);
+    auto base = [](const std::string& s) { return s.substr(0, s.find('[')); };
+    try {
+        Value v = I.methodCall(type, "new", ValueList{});
+        if (!(v.t == VT::Hash && v.hashKind == "Failure") && base(v.typeName()) == base(tn))
+            return v;
+    }
+    catch (RakuError&) {}
+    Value v = Value::makeHash(); v.hashKind = tn;
+    return v;
+}
+
 Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs) {
     // fallthrough: unknown method — but any method call on Nil returns Nil
@@ -10386,6 +10408,16 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             Value one = Value::array(); one.arr()->push_back(inv); one.isList = true;
             return methodCall(one, m, args);
         }
+    }
+    // `.CREATE` on an INSTANCE allocates another of its TYPE: Rakudo's CREATE is
+    // Mu's, and nothing in it needs a type object. `$obj.CREATE` died here for
+    // every defined invocant (issue #182), user class or built-in — so did
+    // `self.CREATE` in a method that was called on an instance. A class's own
+    // `method CREATE` was dispatched before this point. (An untyped `my $x`
+    // holds Any, which is the Any type object's CREATE: `Any.new`.)
+    if (m == "CREATE" && inv.t != VT::Type && (rtIsDefined(inv) || inv.t == VT::Any)) {
+        Value w = methodCall(inv, "WHAT", ValueList{});
+        if (w.t == VT::Type) return methodCall(w, "CREATE", args);
     }
     // `.new` on an INSTANCE of a built-in type is its type's constructor:
     // `$pair.new(:key<a>, :value<b>)`, `5.new` — and a PARAMETERIZED type
