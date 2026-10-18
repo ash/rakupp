@@ -134,7 +134,7 @@ Four, at most one per spec:
 | `max` | `auto`, ignoring the force-full triggers. Unsound by design. |
 
 `safe` being the default matters more than it sounds: it costs nothing
-analytically and takes `say "Hello"` from 22.0 MB to 17.9 MB, byte-identical in
+analytically and takes `say "Hello"` from 21.1 MB to 17.2 MB, byte-identical in
 behaviour. Its only real cost is that a C++-level crash reports addresses rather
 than names, which is why `+symbols` exists.
 
@@ -203,11 +203,11 @@ the cut:
 ```
 $ rakupp --exe trig.raku --slim=list
 --slim=auto for trig.raku (--exe):
-  unicode-names      keep    3.5 MB   kept: a dynamic construct keeps everything
+  unicode-names      keep    2.0 MB   kept: a dynamic construct keeps everything
   …
 dynamic constructs keeping everything (--slim=max cuts anyway):
   an indirect method call (."$name"()) (in the program, line 2)
-would cut 0 KB of 8.0 MB cuttable (archive sizes)
+would cut 0 KB of 5.3 MB cuttable (the code and data in the archives)
 ```
 
 ## What it is worth
@@ -215,22 +215,35 @@ would cut 0 KB of 8.0 MB cuttable (archive sizes)
 ```
 $ rakupp --exe hello.raku --slim=list
 --slim=auto for hello.raku (--exe):
-  unicode-names      cut     3.5 MB   proven unused
-  unicode-collation  cut     756 KB   proven unused
-  unicode-props      cut     535 KB   proven unused
-  eval               cut     3.2 MB   proven unused
-would cut 8.0 MB of 8.0 MB cuttable (archive sizes)
+  unicode-names      cut     2.0 MB   proven unused
+  unicode-collation  cut     755 KB   proven unused
+  unicode-props      cut     628 KB   proven unused
+  eval               cut     2.0 MB   proven unused
+would cut 5.3 MB of 5.3 MB cuttable (the code and data in the archives)
 ```
 
-`say "Hello"`: 22.0 MB unstripped, 17.9 MB at `safe`, **12.9 MB** under bare
-`--slim` (arm64 macOS, October 2026). A program that uses one feature keeps one:
+`say "Hello"`: 21.1 MB unstripped, 17.2 MB at `safe`, **12.1 MB** under bare
+`--slim` (arm64 macOS, October 2026; here, as in `--slim`'s own output, a MB is
+2^20 bytes).
+
+The sizes `list` prints are the code and data in each feature's archive: what
+can reach a binary. The archive files themselves are bigger, because their
+symbol tables and relocation records never reach a binary; the unicode-names
+archive is a 3.5 MB file around 2.0 MB of tables. Measured against real links,
+the three Unicode figures land within 1%. eval's runs about 17% high, because
+dead-strip removes some parser code that nothing reaches even when eval is
+kept. So hello's 5.3 MB estimate is a 5.1 MB cut. If an archive holds a member
+`list` cannot read (LTO bitcode, say), it falls back to the file sizes and says
+they overestimate.
+
+A program that uses one feature keeps one:
 
 ```
 $ rakupp --exe uses-names.raku --slim=list
-  unicode-names      keep    3.5 MB   used: uniname (line 1)
-  unicode-collation  cut     756 KB   proven unused
-  unicode-props      keep    535 KB   used: <:Script<…>> in a regex (line 2)
-  eval               cut     3.2 MB   proven unused
+  unicode-names      keep    2.0 MB   used: uniname (line 1)
+  unicode-collation  cut     755 KB   proven unused
+  unicode-props      keep    628 KB   used: <:Script<…>> in a regex (line 2)
+  eval               cut     2.0 MB   proven unused
 ```
 
 ## The directives, and the one that proves it
@@ -239,7 +252,7 @@ Four, one per spec:
 
 | directive | |
 |---|---|
-| `help` | the grammar and the feature table, with the real archive sizes beside *this* rakupp |
+| `help` | the grammar and the feature table, with what each feature adds to a binary, read from the archives beside *this* rakupp |
 | `list` | keep/cut per feature for this program, with the reason and the bytes. Analyses only; does not compile |
 | `why:FEAT` | every site — program or module, with the line — that forces FEAT to be kept |
 | `verify` | build the slim binary **and** a full reference, run both, and emit the slim one only if stdout, stderr and exit status agree |
@@ -253,9 +266,9 @@ It composes with an explicit cut, which is exactly when you want the proof:
 `--slim=safe,-eval,verify` is "I claim this program never compiles code at run
 time; prove it".
 
-`help` deserves a note of its own. It prints the real archive sizes measured
-from the rakupp you are running, not numbers baked into a string — so the
-documentation cannot drift from the build.
+`help` deserves a note of its own. It reads the sizes from the archives beside
+the rakupp you are running, the same way `list` does, rather than printing
+numbers baked into a string — so the documentation cannot drift from the build.
 
 ## Where it declines
 

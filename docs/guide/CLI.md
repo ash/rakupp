@@ -990,8 +990,8 @@ grep RAKUPP-EXE` finds it too.
 
 | directive | |
 |---|---|
-| `help` | the grammar, the feature table with the real archive sizes beside this rakupp, and examples. Stands alone: `rakupp --slim=help`. |
-| `list` | for *this* program: keep/cut per feature with the reason (`used: uniname (line 3)`, `proven unused`, the trigger list) and the bytes. Analyses only — does not compile. |
+| `help` | the grammar, the feature table with what each feature adds to a binary (the code and data in its archive beside this rakupp), and examples. Stands alone: `rakupp --slim=help`. |
+| `list` | for *this* program: keep/cut per feature with the reason (`used: uniname (line 3)`, `proven unused`, the trigger list) and the bytes. The bytes are the code and data in each feature's archive, not the archive file's size, which also counts symbol tables and relocation records that never reach a binary; when an archive holds a member it cannot read, `list` falls back to the file sizes and labels them an overestimate. Analyses only — does not compile. |
 | `why:FEAT` | every site — program or module, with the line — that forces FEAT to be kept; or the honest `no use anywhere`. |
 | `verify` | build the slim binary AND a full reference, run both, and emit the slim one only if stdout, stderr and exit status agree. A nondeterministic program cannot agree with anything, so `verify` refuses it too. |
 

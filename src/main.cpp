@@ -2035,24 +2035,165 @@ static std::string slimHuman(long long b) {
     else                  snprintf(buf, sizeof buf, "%lld KB", b / 1024);
     return buf;
 }
-// The four feature archives' on-disk sizes — the honest proxy for what a cut
-// saves (the tables dominate; the exact in-binary delta depends on the link).
-static void slimArchiveBytes(const std::string& selfExe, long long out[4]) {
+// What an archive holds that can reach a binary is less than its file size:
+// symbol and string tables, relocation records and the archive index never
+// do. For unicode-names they were 1.6 MB of a 3.5 MB file, so the file sizes
+// promised 8.3 MB from a cut that saved 5.0 (issue #166). What does reach a
+// binary is the members' allocated sections — code, constant tables,
+// initialised data — and that is what these sum. Against real cuts (arm64
+// macOS, 2026-10-18; SLIM-PLAN) the three Unicode features land within 1%,
+// and eval reads 17% over: dead-strip drops some parser code that nothing
+// reaches, even when eval is kept.
+static uint64_t slimLE(const unsigned char* p, int n) {
+    uint64_t v = 0;
+    for (int i = n - 1; i >= 0; i--) v = (v << 8) | p[i];
+    return v;
+}
+
+// One object file's allocated section bytes: Mach-O, ELF, or COFF (plain or
+// /bigobj, as MSVC compiles here). -1 for anything else (LTO bitcode, say).
+static long long slimObjectBytes(const unsigned char* p, size_t n) {
+    auto in = [&](size_t off, size_t len) { return off <= n && len <= n - off; };
+    if (n >= 4 && (slimLE(p, 4) == 0xfeedfacf || slimLE(p, 4) == 0xfeedface)) {
+        bool w = slimLE(p, 4) == 0xfeedfacf;
+        size_t off = w ? 32 : 28, segHdr = w ? 72 : 56, secLen = w ? 80 : 68;
+        if (!in(0, off)) return -1;
+        long long sum = 0;
+        for (uint64_t c = 0, ncmds = slimLE(p + 16, 4); c < ncmds; c++) {
+            if (!in(off, 8)) return -1;
+            uint64_t cmd = slimLE(p + off, 4), cmdsize = slimLE(p + off + 4, 4);
+            if (cmdsize < 8 || !in(off, cmdsize)) return -1;
+            if (cmd == (w ? 0x19u : 0x1u)) {                 // LC_SEGMENT(_64)
+                if (cmdsize < segHdr) return -1;
+                uint64_t nsects = slimLE(p + off + (w ? 64 : 48), 4);
+                if (nsects > (cmdsize - segHdr) / secLen) return -1;
+                for (uint64_t s = 0; s < nsects; s++) {
+                    const unsigned char* q = p + off + segHdr + s * secLen;
+                    uint64_t size  = w ? slimLE(q + 40, 8) : slimLE(q + 36, 4);
+                    uint64_t flags = slimLE(q + (w ? 64 : 56), 4);
+                    uint64_t type  = flags & 0xff;
+                    bool zerofill = type == 0x1 || type == 0xc || type == 0x12;
+                    // S_ATTR_DEBUG marks __DWARF and __LD,__compact_unwind,
+                    // which the linker folds into a far smaller __unwind_info
+                    if (!zerofill && !(flags & 0x02000000)) sum += (long long)size;
+                }
+            }
+            off += cmdsize;
+        }
+        return sum;
+    }
+    if (n >= 6 && memcmp(p, "\x7f" "ELF", 4) == 0) {
+        bool w = p[4] == 2;
+        if (p[5] != 1) return -1;                            // no big-endian target ships
+        if (!in(0, w ? 64 : 52)) return -1;
+        uint64_t shoff = w ? slimLE(p + 0x28, 8) : slimLE(p + 0x20, 4);
+        uint64_t shentsize = slimLE(p + (w ? 0x3a : 0x2e), 2);
+        uint64_t shnum = slimLE(p + (w ? 0x3c : 0x30), 2);
+        uint64_t sizeAt = w ? 0x20 : 0x14;
+        if (shoff == 0) return 0;
+        if (shentsize < sizeAt + (w ? 8 : 4) || !in(shoff, shentsize)) return -1;
+        if (shnum == 0) shnum = slimLE(p + shoff + sizeAt, w ? 8 : 4);  // the count overflowed into section 0
+        if (shnum > (n - shoff) / shentsize) return -1;
+        long long sum = 0;
+        for (uint64_t s = 0; s < shnum; s++) {
+            const unsigned char* q = p + shoff + s * shentsize;
+            uint64_t type = slimLE(q + 4, 4), flags = slimLE(q + 8, w ? 8 : 4);
+            if ((flags & 0x2) && type != 8)                  // SHF_ALLOC, not SHT_NOBITS
+                sum += (long long)slimLE(q + sizeAt, w ? 8 : 4);
+        }
+        return sum;
+    }
+    uint64_t nsec = 0, table = 0;
+    static const unsigned char kBigObj[16] = {0xc7, 0xa1, 0xba, 0xd1, 0xee, 0xba, 0xa9, 0x4b,
+                                              0xaf, 0x20, 0xfa, 0xf6, 0x6a, 0xa4, 0xdc, 0xb8};
+    if (n >= 56 && slimLE(p, 2) == 0 && slimLE(p + 2, 2) == 0xffff) {
+        if (slimLE(p + 4, 2) < 2 || memcmp(p + 12, kBigObj, 16) != 0) return -1;
+        nsec = slimLE(p + 44, 4);
+        table = 56;
+    }
+    else if (n >= 20) {
+        uint64_t machine = slimLE(p, 2);
+        if (machine != 0x8664 && machine != 0xaa64 && machine != 0x14c &&
+            machine != 0x1c4 && machine != 0xa641) return -1;
+        nsec = slimLE(p + 2, 2);
+        table = 20 + slimLE(p + 16, 2);
+    }
+    else return -1;
+    if (!in(table, 0) || nsec > (n - table) / 40) return -1;
+    long long sum = 0;
+    for (uint64_t s = 0; s < nsec; s++) {
+        const unsigned char* q = p + table + s * 40;
+        // uninitialised data, linker directives, removed and discardable
+        // (.debug$S) sections never take bytes in the image
+        if (slimLE(q + 36, 4) & (0x80 | 0x200 | 0x800 | 0x02000000)) continue;
+        sum += (long long)slimLE(q + 16, 4);
+    }
+    return sum;
+}
+
+// Sum slimObjectBytes over every member of an ar archive — BSD, GNU and the
+// MSVC .lib share the container. -1 if the file is not one, or any member is
+// unreadable: then nothing it says can be trusted.
+static long long slimArchiveCodeBytes(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return -1;
+    std::string buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    const unsigned char* p = (const unsigned char*)buf.data();
+    size_t n = buf.size(), off = 8;
+    if (n < 8 || memcmp(p, "!<arch>\n", 8) != 0) return -1;
+    long long sum = 0;
+    int objects = 0;
+    while (off + 60 <= n) {
+        const char* h = (const char*)p + off;
+        if (h[58] != '`' || h[59] != '\n') return -1;
+        std::string name(h, 16);
+        size_t size = strtoull(std::string(h + 48, 10).c_str(), nullptr, 10);
+        size_t data = off + 60;
+        if (size > n - data) return -1;
+        size_t skip = 0;                                     // BSD: a long name leads the data
+        if (name.compare(0, 3, "#1/") == 0) skip = strtoul(name.c_str() + 3, nullptr, 10);
+        if (skip > size) return -1;
+        if (skip) name.assign((const char*)p + data, skip);
+        // the indexes: BSD's __.SYMDEF, GNU's "/" "//" "/SYM64/", the .lib's
+        // linker members — a "/" with a digit after it is a long-named object
+        bool index = name.compare(0, 9, "__.SYMDEF") == 0 ||
+                     (name[0] == '/' && !(name.size() > 1 && name[1] >= '0' && name[1] <= '9'));
+        if (!index) {
+            long long b = slimObjectBytes(p + data + skip, size - skip);
+            if (b < 0) return -1;
+            sum += b;
+            objects++;
+        }
+        off = data + size + (size & 1);
+    }
+    return objects ? sum : -1;
+}
+
+// The four features' weight: their archives' code and data where every
+// archive reads (true), else the archive file sizes, an overestimate (false).
+static bool slimArchiveBytes(const std::string& selfExe, long long out[4]) {
     std::string lib, inc;
     for (int i = 0; i < 4; i++) out[i] = -1;
-    if (!findRuntime(selfExe, lib, inc)) return;
+    if (!findRuntime(selfExe, lib, inc)) return false;
     bool msvcFamily = lib.size() >= 4 && lib.compare(lib.size() - 4, 4, ".lib") == 0;
-    std::string dir = dirOf(lib);
-    for (int i = 0; i < 4; i++)
-        out[i] = slimFileBytes(dir + (msvcFamily ? "/rakupp_" + std::string(kSlimArchives[i]) + ".lib"
-                                                 : "/librakupp_" + std::string(kSlimArchives[i]) + ".a"));
+    std::string dir = dirOf(lib), path[4];
+    bool code = true;
+    for (int i = 0; i < 4; i++) {
+        path[i] = dir + (msvcFamily ? "/rakupp_" + std::string(kSlimArchives[i]) + ".lib"
+                                    : "/librakupp_" + std::string(kSlimArchives[i]) + ".a");
+        out[i] = slimArchiveCodeBytes(path[i]);
+        if (out[i] < 0) code = false;
+    }
+    if (!code)
+        for (int i = 0; i < 4; i++) out[i] = slimFileBytes(path[i]);
+    return code;
 }
 
 // --slim=help: the key documents itself — grammar, feature table with the
 // REAL archive sizes beside this rakupp, directives. Needs no source file.
 static int slimHelp(const std::string& selfExe) {
     long long b[4];
-    slimArchiveBytes(selfExe, b);
+    bool code = slimArchiveBytes(selfExe, b);
     std::cout <<
         "--slim[=SPEC] — how much of itself a compiled binary keeps (docs/guide/CLI.md)\n"
         "\n"
@@ -2067,7 +2208,9 @@ static int slimHelp(const std::string& selfExe) {
         "  max       auto, but ignoring those constructs — a wrong cut throws\n"
         "            X::Feature::NotBuilt at run time, never crashes or lies\n"
         "\n"
-        "features (+keep / -cut, overriding the level; a named feature beats a group):\n";
+        "features (+keep / -cut, overriding the level; a named feature beats a group),\n"
+        << (code ? "with the code and data each one adds to a binary:\n"
+                 : "with their archive file sizes, an overestimate of what each adds:\n");
     const char* what[4] = {"uniname/uniparse/unival",
                            "unicmp, coll, .collate (DUCET)",
                            "uniprop by name, <:Prop> regexes",
@@ -2130,7 +2273,7 @@ static int slimExplain(const std::string& src, const std::string& srcName,
 
     if (g_slim.directive == SlimDirective::List) {
         long long b[4];
-        slimArchiveBytes(selfExe, b);
+        bool code = slimArchiveBytes(selfExe, b);
         std::cout << "--slim=" << lvl << " for " << srcName << " (" << modeNote << "):\n";
         long long cutBytes = 0, cuttable = 0;
         for (int i = 0; i < 4; i++) {
@@ -2150,7 +2293,8 @@ static int slimExplain(const std::string& src, const std::string& srcName,
             for (const auto& t : sr.triggers) std::cout << "  " << t << "\n";
         }
         std::cout << "would cut " << slimHuman(cutBytes) << " of " << slimHuman(cuttable)
-                  << " cuttable (archive sizes)\n";
+                  << (code ? " cuttable (the code and data in the archives)\n"
+                           : " cuttable (archive file sizes, an overestimate)\n");
         return 0;
     }
 

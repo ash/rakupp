@@ -699,6 +699,28 @@ and the harness reaps its shell — rakupp leaves a zombie for a `run` whose
 limit near program 475, after which every build "did not compile".
 Size, arm64 on the dev box: `--slim=-all` hello 12,879,880 → 12,666,168.
 
+**2026-10-18: `list` and `help` report code and data, not file sizes.** With
+#166 fixed, its reporter's program got `would cut 8.3 MB` from `list`, while
+the binary shrank by 5,282,368 bytes (5.0 MB). The cut itself was complete. The
+8.3 MB was the four archives' file sizes. An archive file also holds a symbol
+and string table (unicode-names: 1,295,920 bytes of a 3,711,104-byte file) and
+relocation records (parse: 560,984), and none of that reaches a binary. A linker
+map of the `safe` build attributed 2,049,794 / 773,376 / 638,783 / 1,731,482
+bytes to the names / collation / props / parse archives. Building with one
+feature cut at a time saved 2,064,112 / 776,160 / 646,960 / 1,761,816. The
+reader in main.cpp (`slimArchiveCodeBytes`) sums each member's allocated
+sections, skipping zerofill and S_ATTR_DEBUG sections on Mach-O, sections
+without SHF_ALLOC and SHT_NOBITS sections on ELF, and uninitialised,
+link-info, removed and discardable sections on COFF (plain and /bigobj). It
+reads 2,051,407 / 773,400 / 643,123 / 2,059,384 bytes: the Unicode features
+within 1%, and parse 17% over the real saving, because dead-strip drops
+parser code that nothing reaches even at `safe`. In total it reads 5,527,314
+bytes against a 5,282,368-byte saving. A member the reader cannot parse (LTO
+bitcode, a thin archive) sends all four figures back to the file sizes, and
+the output labels them an overestimate. The ELF, COFF and MinGW `-mbig-obj`
+paths were checked against llvm-readelf and llvm-readobj on cross-compiled
+objects. Only the Mach-O path was checked against a real link.
+
 ### P6 — flip `auto` to the default
 
 Not part of the 3.14 tag. `auto` is sound by construction, so the end state
