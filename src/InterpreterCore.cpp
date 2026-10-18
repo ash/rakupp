@@ -8898,11 +8898,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
         }
     }
+    FlatRw::Exit flatExit{env};   // what binding a `|`-flattened argument changed is undone on the way out
     if (c.ci().params && !c.ci().params->empty()) {
         bindRoutineParams(c, args, env, c.ci().isMethod && methodTakesAnyNamed(c, args), c.ci().isBlock, whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.ci().params, env, rwArgs,
-                         !c.ci().isMultiDispatcher && !c.ci().isMultiCandidate); // rw/raw write-through
+                         !c.ci().isMultiDispatcher && !c.ci().isMultiCandidate, &args); // rw/raw write-through
             releaseCelledArgCopies(env, args);
         }
         if (rwSlots) setupRwSlots(c.ci().params, env, rwSlots); // hyper element slots
@@ -9065,7 +9066,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // Restored on every exit, throw included: whatever runs next runs in the
     // caller.
     const int callLine = curLine_;
-    tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get(), rwArgs, env.get()});
     if (codeVal.code()->cold().deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
         ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
@@ -9738,6 +9739,7 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     for (auto& p : *params) if (p.isRw || p.isRaw || p.sigil == '\\') any = true;
     if (!any && noneSynced()) return;
     size_t pi = 0;
+    FlatRw flat(*this, rwArgs, nullptr);   // past a `|` slip, a parameter's link names its expression
     for (auto& p : *params) {
         if (p.named) {
             // backstop for a named `is rw` / `is raw` linked in linkNamedRw
@@ -9797,13 +9799,13 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
         if (p.slurpy) break;
         // rwSynced-only entries are the Buf-bound params (see setupRwLinks):
         // they copy back when mutated, same unchanged-guard as `is rw`
-        if ((p.isRw || p.isRaw || p.sigil == '\\' || hasSynced(p.name)) && pi < rwArgs->size() &&
-            !env->xr().rwCelled.count(p.name)) {
+        Expr* ae = flat.at(pi) ? FlatRw::linked(env, p.name) : pi < rwArgs->size() ? (*rwArgs)[pi].get() : nullptr;
+        if ((p.isRw || p.isRaw || p.sigil == '\\' || hasSynced(p.name)) && ae && !env->xr().rwCelled.count(p.name)) {
             Value* pv = env->local(p.name);
             if (pv) {
                 Value cur = paramValue(pv);
                 if (!syncedUnchanged(p.name, cur))
-                    try { if (Value* lv = lvalue(peelIncDec((*rwArgs)[pi].get()))) storeInto(lv, cur); } catch (...) {}
+                    try { if (Value* lv = lvalue(peelIncDec(ae))) storeInto(lv, cur); } catch (...) {}
             }
         }
         pi++;
@@ -9896,8 +9898,8 @@ static bool noScalarContainer(const Expr* x) {
 // `sub f(:$x! is rw) { $x = 5 }; f(x => $v)` sets $v. Its argument is the
 // value side of the matching `k => v` / `:k(v)` / `:$k` pair (the last one, as
 // the binder takes the last), linked exactly as a positional's is. A pair
-// flattened in from a hash (`|%args`) has no expression here and stays a copy,
-// as it does in Rakudo.
+// flattened in from a hash (`|%args`) has no expression here: FlatRw::bindNamed
+// binds that one to the hash entry, as Rakudo does.
 void Interpreter::linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
                               const std::vector<ExprPtr>& rwArgs, bool soleCandidate) {
     if (p.name.size() < 2 || p.name[1] == '!' || p.name[1] == '.') return;
@@ -9927,12 +9929,13 @@ void Interpreter::linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
 // Record write-through links for rw/raw params at bind time (mirrors copyOutRw's
 // positional indexing). Called while tctx_.cur is still the CALLER's scope.
 void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
-                               const std::vector<ExprPtr>* rwArgs, bool soleCandidate) {
+                               const std::vector<ExprPtr>* rwArgs, bool soleCandidate, const ValueList* args) {
     if (!params) return;
     size_t pi = 0;
+    FlatRw flat(*this, rwArgs, args);   // past a `|` slip, argument k is not expression k
     for (auto& p : *params) {
         if (p.named) {
-            if (rwArgs && (p.isRw || p.isRaw) && p.sigil == '$' && !p.slurpy)
+            if (rwArgs && (p.isRw || p.isRaw) && p.sigil == '$' && !p.slurpy && !flat.bindNamed(p, env))
                 linkNamedRw(p, env, *rwArgs, soleCandidate);
             continue;
         }
@@ -9967,6 +9970,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         }
         if (!rwArgs) break;   // (called for the invocant alone)
         if (p.slurpy) {
+            if (flat.slurpy(p, pi, env)) break;   // a raw slurpy past a slip
             // `*@list is raw` holds the arguments' own CONTAINERS: `@list[0] =
             // "hi"` writes @test[0] and `@list[*-1] = "ho"` writes $test
             // (slurpy-is-rw.t)
@@ -9981,8 +9985,9 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
                 markSlurpyLiterals(p, env, rwArgs, pi);
             break;
         }
-        if ((p.isRw || p.isRaw || p.sigil == '\\') && pi < rwArgs->size()) {
-            Expr* ae = (*rwArgs)[pi].get();
+        if ((p.isRw || p.isRaw || p.sigil == '\\') && (flat.at(pi) || pi < rwArgs->size())) {
+            Expr* ae = flat.at(pi) ? flat.expr(pi) : (*rwArgs)[pi].get();
+            if (!ae && flat.at(pi)) { flat.bindPositional(p, pi, env); pi++; continue; }   // flattened: its container
             // `is rw` REQUIRES a writable container. Only worth saying so when
             // this routine is the only candidate: inside a multi the requirement
             // has to take part in DISPATCH — `multi f($x is rw)` beside
@@ -10085,7 +10090,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         // — so snapshot it for the post-call copy-back (copyOutRw); no immediate
         // write-through link. Cro's frame serializer appends into a `Buf $buf`
         // parameter and the caller emits the same buffer.
-        else if (p.sigil == '$' && !p.isCopy && !p.named && pi < rwArgs->size()) {
+        else if (p.sigil == '$' && !p.isCopy && !p.named && pi < rwArgs->size() && !flat.at(pi)) {
             Value* pv = env->local(p.name);
             // `hashKind` is empty on every ordinary value, and this runs for every
             // plain scalar parameter of every call — so test that before comparing
@@ -10098,7 +10103,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         // container (keepListContainers). Here and not in evalArgs: a built-in
         // reads its arguments' elements raw, and `blob32.new: (…, $bits)`
         // handed it containers.
-        if (!p.isCopy && (p.sigil == '$' || p.sigil == '@') && pi < rwArgs->size()) {
+        if (!p.isCopy && (p.sigil == '$' || p.sigil == '@') && pi < rwArgs->size() && !flat.at(pi)) {
             const Expr* ae = (*rwArgs)[pi].get();
             if (ae && ae->kind == NK::ListExpr && static_cast<const ListExpr*>(ae)->parenned)
                 if (Value* pv = env->local(p.name); pv && pv->t == VT::Array && pv->isList)
@@ -10106,6 +10111,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
         }
         pi++;
     }
+    flat.restoreAfter(env);   // the elements it gave a container are plain again on return
 }
 // The class in `lin` that DECLARES `name` — itself or through a role it does.
 static ClassInfo* localMethodOwner(ClassInfo* c, const std::string& name) {
@@ -10759,12 +10765,13 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             }
         }
     }
+    FlatRw::Exit flatExit{env};   // as for a sub
     if (c.ci().params && !c.ci().params->empty()) {
         bindRoutineParams(c, args, env, /*methodCtx=*/methodTakesAnyNamed(c, args), /*blockParams=*/false,
                           whereVerified);
         if (rwArgs || tctx_.rwInvocantExpr) {
             setupRwLinks(c.ci().params, env, rwArgs,
-                         !c.ci().isMultiDispatcher && !c.ci().isMultiCandidate); // rw/raw write-through
+                         !c.ci().isMultiDispatcher && !c.ci().isMultiCandidate, &args); // rw/raw write-through
             releaseCelledArgCopies(env, args);
         }
     }
@@ -10824,7 +10831,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // for callframe(N); and the caller's line comes back with the pop, as in
     // callCallableRaw — a method body advances curLine_ exactly like a sub's
     const int callLine = curLine_;
-    tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get(), rwArgs, env.get()});
     if (codeVal.code()->cold().deprecated) noteDeprecatedCall(*codeVal.code(), callLine);
     struct DynGuard { ExecContext& t; Interpreter* self; int line;
         ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
@@ -24588,33 +24595,13 @@ Value Interpreter::evalUnary(Unary* u) {
         Value v = Value::array();
         // `\((1, 2))` — a PARENTHESISED list inside the capture's own parens is
         // ONE positional, as `f((1, 2))` passes one list
-        if (u->operand->kind == NK::ListExpr && !static_cast<ListExpr*>(u->operand.get())->parenned)
-            *v.arr() = evalArgs(static_cast<ListExpr*>(u->operand.get())->items);
-        else {
-            BorrowedArg one(u->operand.get());
-            ValueList got = evalArgs(one.v);
-            for (auto& g : got) if (g.t != VT::Nil) v.arr()->push_back(std::move(g));
-        }
-        // A positional part that is a VARIABLE is that variable's container:
-        // `my $c = \($a); $c[0]++` steps $a (capture.t). Only where each item
-        // is one part — a slip would move the positions. (A named `:$a` part
-        // already holds $a's container: the Pair shares it.)
-        {
-            std::vector<Expr*> parts;
-            if (u->operand->kind == NK::ListExpr && !static_cast<ListExpr*>(u->operand.get())->parenned) {
-                for (auto& it : static_cast<ListExpr*>(u->operand.get())->items) parts.push_back(it.get());
-            }
-            else parts.push_back(u->operand.get());
-            bool plain = parts.size() == v.arr()->size();
-            for (Expr* p : parts)
-                if (!p || (p->kind == NK::Unary && static_cast<Unary*>(p)->op == "|")) plain = false;
-            bool holds = false;
-            if (plain)
-                for (size_t i = 0; i < parts.size(); i++)
-                    if (parts[i]->kind == NK::VarExpr && (*v.arr())[i].t != VT::Pair)
-                        if (auto c = exprVarCell(parts[i])) { (*v.arr())[i] = makeSharedCellProxy(c); holds = true; }
-            if (holds) v.markHoldsContainers();
-        }
+        const bool many = u->operand->kind == NK::ListExpr && !static_cast<ListExpr*>(u->operand.get())->parenned;
+        BorrowedArg one(many ? nullptr : u->operand.get());
+        const std::vector<ExprPtr>& items = many ? static_cast<ListExpr*>(u->operand.get())->items : one.v;
+        if (many) *v.arr() = evalArgs(items);
+        else for (auto& g : evalArgs(items)) if (g.t != VT::Nil) v.arr()->push_back(std::move(g));
+        // each part holds the container its argument had, slipped ones included
+        FlatRw(*this, &items, &*v.arr()).keepContainers(v);
         // a named part given twice keeps the LAST one: `\(:a(41), :a(42))` is \(:a(42))
         {
             auto& va = *v.arr();

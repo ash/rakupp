@@ -505,6 +505,9 @@ struct EnvExtras {
     // …and the caller's variable such a parameter IS, for the messages that
     // name a container: `sub f($x is rw) { "$x" }; f($v)` warns about `$v`
     std::map<std::string, std::string> rwOrigin;
+    // …and the caller's element slots given a container for this call, so a
+    // parameter could bind one (FlatRw: `f(|@a)`): made plain again on return
+    std::vector<std::function<void()>> rwUnflatten;
     std::vector<std::function<void()>> tempRestores; // `temp $x` value restorations, run when this scope leaves
     std::vector<std::function<void()>> letRestores;  // `let $x` restorations, run ONLY on unsuccessful (exception) exit
     // container reset values: `is default(v)` stores v; a typed `my Int $x`
@@ -1668,7 +1671,10 @@ struct ExecContext {
     // with `callframe(1)`). Pushed next to dynStack, which every call already pays.
     // …and the scope the call was MADE from, whose bare blocks are frames of
     // the caller's in `.backtrace.list` (btCaptureNow walks it outwards)
-    struct CallSite { int line; const Value* code; Env* callerEnv = nullptr; };
+    // …and the call's argument expressions and its own frame, by which a
+    // routine's `|c` capture forwarded on (`f(|c)`) finds its arguments' containers
+    struct CallSite { int line; const Value* code; Env* callerEnv = nullptr;
+                      const std::vector<ExprPtr>* args = nullptr; Env* calleeEnv = nullptr; };
     std::vector<CallSite> callFrames;
     // Lvalue-mode method invocation: `$obj[i] = v` on a class whose AT-POS is
     // `return-rw @!arr[$i]` must write the REAL element, not a returned copy.
@@ -2740,13 +2746,15 @@ public:
     // parameter given a container-less argument is an error rather than a
     // reason to try the next candidate.
     void setupRwLinks(const std::vector<Param>* params, std::shared_ptr<Env>& env,
-                      const std::vector<ExprPtr>* rwArgs, bool soleCandidate = false);
+                      const std::vector<ExprPtr>* rwArgs, bool soleCandidate = false,
+                      const ValueList* args = nullptr);
     // …a NAMED `is rw` / `is raw` parameter's link, to its pair's value side
     void linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
                      const std::vector<ExprPtr>& rwArgs, bool soleCandidate);
     // …the plain-variable case of it: bind the parameter to the caller's cell
     // (ROAST-TRACKS-PLAN track A). False = not that case; link as before.
     bool bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& env);
+    bool bindParamToCell(const Param& p, const PRef<Value>& cell, std::shared_ptr<Env>& env); // …a flattened one's (FlatRw)
     void bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env,
                               const std::vector<ExprPtr>* rwArgs, size_t from);
     void markSlurpyLiterals(const Param& p, std::shared_ptr<Env>& env,
@@ -2760,7 +2768,7 @@ public:
     bool isContainerElem(const Value& v);    // …is this element one?
     void keepListContainers(const struct ListExpr* l, Value& list); // a kept literal holds its items' containers
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
-    PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr); // the cell of the variable `e` names
+    PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr, Env* scope = nullptr); // the cell of the variable `e` names (in `scope`)
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
     const void* containerId(const Value* slot); // what `=:=` compares (see InterpreterCalls.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms

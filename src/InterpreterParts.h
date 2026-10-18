@@ -938,6 +938,76 @@ bool forTailVarsExpr(const Expr* e, std::vector<const void*>& out);
 // a Pair that arrived as a value (from a variable, list, iteration, or return) is positional.
 static inline bool isNamedArg(const Value& v) { return v.t == VT::Pair && v.namedArg; }
 
+// `f(|@a)`, `f(|$capture)`, `f(|%h)`: once a `|` slip is among a call's
+// arguments, argument k is no longer expression k, and the `rwArgs` indexing of
+// setupRwLinks, copyOutRw and callNative stops lining up there. Before it
+// (and before any named argument written ahead of it) nothing changes. From it
+// on, this finds each argument's own container instead: its expression when it
+// was written as one argument, else the element, entry or cell it was
+// flattened from, which an `is rw` / `is raw` / `\x` parameter then binds to as
+// bindArgCell binds one to a `$x`. Built per call; scanning the expressions is
+// all it costs until a parameter there asks (InterpreterCalls.cpp). A
+// routine's own `|c` forwarded on (`f(|c)`) is followed back to the call that
+// made it, through callFrames: the Capture itself keeps no containers, so a
+// wrapper that only forwards pays nothing for this.
+class FlatRw {
+public:
+    struct Src {
+        Expr* expr = nullptr;                 // written as one argument: its expression
+        PRef<ValueList> arr; size_t idx = 0;  // …else an element of the plain Array it came out of
+        PRef<ValueMap> map;                   // …or the plain Hash entry `key` names
+        PRef<Value> cell;                     // …or a container a List or Capture held
+        std::string key;                      // a named argument's name (empty: positional)
+    };
+    FlatRw(Interpreter& I, const std::vector<ExprPtr>* rwArgs, const ValueList* args, size_t argOff = 0);
+    // positional argument `pi` lies past the point where expressions stop lining up
+    bool at(size_t pi) const { return pi >= from_; }
+    Expr* expr(size_t pi);           // its expression; null when it was flattened, or is unknown
+    Value* cell(size_t pi);          // a flattened one's container, where a write to it goes
+    bool bindPositional(const Param& p, size_t pi, std::shared_ptr<Env>& env);
+    bool bindNamed(const Param& p, std::shared_ptr<Env>& env);   // false: leave it to linkNamedRw
+    bool slurpy(const Param& p, size_t pi, std::shared_ptr<Env>& env); // false: leave it to the caller (a raw one)
+    void keepContainers(Value& list);   // the list these arguments made (a Capture literal) holds their containers
+    // The slots this gave a container go back to plain values: as the call
+    // they were made for returns (restoreAfter, then unflatten in copyOutRw),
+    // or now (restore, once callNative has written back).
+    void restoreAfter(std::shared_ptr<Env>& env);
+    void restore();
+    static void unflatten(const std::shared_ptr<Env>& env);
+    // …which a call frame's exit runs, however the frame is left. Not when
+    // something KEPT the frame (a closure over the parameter, PooledFrame's
+    // own test): its writes go on reaching the caller's element, as in Rakudo.
+    struct Exit {
+        std::shared_ptr<Env>& env;
+        ~Exit() {
+            if (env && env->ex && !env->ex->rwUnflatten.empty()) {
+                if (env.use_count() > 1) env->ex->rwUnflatten.clear();
+                else unflatten(env);
+            }
+        }
+    };
+    // the expression a parameter's rw link was made from (copyOutRw's backstop)
+    static Expr* linked(const std::shared_ptr<Env>& env, const std::string& name);
+private:
+    static constexpr size_t kNone = static_cast<size_t>(-1);
+    // the arguments of an OUTER call, read in its caller's scope (forwarded)
+    FlatRw(Interpreter& I, const std::vector<ExprPtr>* rwArgs, Env* scope, size_t nPositional);
+    void expand();
+    void slip(const Expr* operand, size_t& unknownAt, bool& stop);
+    bool forwarded(const std::string& name, const Value& cap);
+    PRef<Value> cellOf(Src& s, bool make = true);
+    Interpreter& I_;
+    const std::vector<ExprPtr>* rw_;
+    const ValueList* args_;
+    size_t argOff_;
+    Env* scope_;              // where the argument expressions are read
+    size_t have_ = kNone;     // the call's positional count, when there is no ValueList to count
+    size_t from_ = kNone;
+    bool expanded_ = false;
+    std::vector<Src> pos_, named_;
+    std::vector<Src> made_;   // the sources whose slot cellOf gave a container
+};
+
 // Throw a typed exception as a real OBJECT carrying attributes, so
 // throws-like matchers (`symbol => '$!bar'`) can introspect it. The class is
 // registered on first use with exactly the attributes passed.

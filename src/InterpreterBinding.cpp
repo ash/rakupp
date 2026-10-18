@@ -6876,9 +6876,15 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         std::fputs(line.c_str(), stderr);
     }
 
-    // is-rw copy-back: write each out-param's slot to the caller's lvalue
+    // is-rw copy-back: write each out-param's slot to the caller's lvalue —
+    // past a `|` slip (`$native(|@args)`) the container it was flattened from
+    FlatRw flat(*this, rwArgs, &args, rwArgOff);
+    auto argSlot = [&](size_t k) -> Value* {
+        if (flat.at(k)) { Expr* e = flat.expr(k); return e ? lvalue(e) : flat.cell(k); }
+        return k < rwArgs->size() ? lvalue((*rwArgs)[k].get()) : nullptr;
+    };
     for (auto& rb : rwbacks) {
-        if (!rwArgs || rb.arg < rwArgOff || rb.arg - rwArgOff >= rwArgs->size()) continue;
+        if (!rwArgs || rb.arg < rwArgOff) continue;
         Value nv;
         if (rb.cls) {
             // a CPointer class out-param: box what the callee stored as an
@@ -6895,7 +6901,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                  : rb.i                ? Value::integer(*rb.i)
                                        : Value::number(*rb.d);
         try {
-            if (Value* lv = lvalue((*rwArgs)[rb.arg - rwArgOff].get())) {
+            if (Value* lv = argSlot(rb.arg - rwArgOff)) {
                 int nb = lv->natBits; bool ns = lv->natSigned;
                 *lv = nv;
                 if (nb && rb.ptrType.empty() && !rb.cls) wrapNative(*lv, nb, ns);
@@ -6905,8 +6911,8 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // CArray copy-back: a native function may mutate the array in place (qsort,
     // fill buffers), so write the possibly-changed bytes back to the caller.
     for (auto& cb : cabacks) {
-        if (!rwArgs || cb.arg < rwArgOff || cb.arg - rwArgOff >= rwArgs->size()) continue;
-        try { if (Value* lv = lvalue((*rwArgs)[cb.arg - rwArgOff].get()))
+        if (!rwArgs || cb.arg < rwArgOff) continue;
+        try { if (Value* lv = argSlot(cb.arg - rwArgOff))
                   if (lv->t == VT::Str && (lv->hashKind == "CArray" || lv->hashKind == "Buf")) {
                       // IN PLACE while the length is unchanged (which it is — C
                       // wrote into a same-sized copy). The buffer's ADDRESS is
@@ -6921,6 +6927,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                   }
         } catch (RakuError&) {}
     }
+    flat.restore();   // an element written back through a container of its own holds the value again
 
     if (rt.empty() || rt == "void" || rt == "Nil") return Value::nil();
     // A NULL char* is "no string", not the empty one: returning "" lost the
@@ -7169,6 +7176,24 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
         if (own->ex) { auto oi = own->ex->rwOrigin.find(an); if (oi != own->ex->rwOrigin.end()) origin = oi->second; }
         env->x().rwOrigin[p.name] = std::move(origin);
     }
+    return true;
+}
+
+// …and to the container an argument was FLATTENED from (`f(|@a)`: @a's
+// element), which FlatRw found. The same condition: the parameter holds
+// exactly what the container does. A native parameter wants a native
+// container, which an element is not, and keeps its copy.
+bool Interpreter::bindParamToCell(const Param& p, const PRef<Value>& cell, std::shared_ptr<Env>& env) {
+    if (!cell || p.coerce || p.isCopy || p.name.empty() || (p.name.size() < 2 && p.sigil != '\\') ||
+        p.name == "$_")
+        return false;
+    if (!p.type.empty() && ascii::islower((unsigned char)p.type[0]) && isNativeScalarName(p.type)) return false;
+    Value* praw = env->localRaw(p.name);
+    if (!praw || praw->isCell() || (cell->t == VT::Hash && cell->hashKind == "Proxy") ||
+        !sameBoundValue(*cell, *praw))
+        return false;
+    *praw = Value::cellHolder(cell);
+    env->x().rwCelled.insert(p.name);
     return true;
 }
 

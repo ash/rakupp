@@ -251,6 +251,318 @@ void Interpreter::markSlurpyLiterals(const Param& p, std::shared_ptr<Env>& env,
     for (auto& e : *sv->arr()) { e.readonly = true; e.immutableBind = true; }
 }
 
+// ---- arguments flattened with `|` (FlatRw, InterpreterParts.h) -------------
+FlatRw::FlatRw(Interpreter& I, const std::vector<ExprPtr>* rwArgs, const ValueList* args, size_t argOff)
+    : I_(I), rw_(rwArgs), args_(args), argOff_(argOff), scope_(Interpreter::tctx_.cur.get()) {
+    if (!rwArgs) return;
+    size_t lead = kNone;   // a named pair written ahead of the slip shifts the positions too
+    for (size_t i = 0; i < rwArgs->size(); i++) {
+        const Expr* a = (*rwArgs)[i].get();
+        if (!a) continue;
+        if (a->kind == NK::Unary && static_cast<const Unary*>(a)->op == "|") { from_ = std::min(lead, i); return; }
+        if (lead == kNone && syntacticNamedPair(a)) lead = i;
+    }
+}
+FlatRw::FlatRw(Interpreter& I, const std::vector<ExprPtr>* rwArgs, Env* scope, size_t nPositional)
+    : I_(I), rw_(rwArgs), args_(nullptr), argOff_(0), scope_(scope), have_(nPositional) {}
+
+// Every argument in order: positionals in pos_, named ones in named_. A slip
+// of unknown length (a call, a slice, a Range) is sized from the count
+// of positionals the call was handed, when it is the only one; past a second,
+// nothing is known.
+void FlatRw::expand() {
+    if (expanded_ || !rw_) return;
+    expanded_ = true;
+    size_t unknownAt = kNone;
+    bool stop = false;
+    for (auto& ep : *rw_) {
+        Expr* a = ep.get();
+        if (a && syntacticNamedPair(a)) {
+            Src s;
+            s.expr = static_cast<PairExpr*>(a)->value.get();
+            s.key = static_cast<PairExpr*>(a)->key;
+            named_.push_back(std::move(s));
+        }
+        else if (a && a->kind == NK::Unary && static_cast<Unary*>(a)->op == "|")
+            slip(static_cast<Unary*>(a)->operand.get(), unknownAt, stop);
+        else { Src s; s.expr = a; pos_.push_back(std::move(s)); }
+        if (stop) break;
+    }
+    const bool counted = args_ || have_ != kNone;
+    size_t have = have_ != kNone ? have_ : 0;
+    if (args_) for (size_t i = argOff_; i < args_->size(); i++) if (!isNamedArg((*args_)[i])) have++;
+    if (unknownAt == kNone) {
+        // the call's own count is the check: a list item that was a Slip, or an
+        // Empty, moved the positions, and then none past the slip is known
+        if (counted && have != pos_.size()) pos_.resize(std::min(from_, pos_.size()));
+        return;
+    }
+    if (!stop && counted && have >= pos_.size()) pos_.insert(pos_.begin() + (long)unknownAt, have - pos_.size(), Src{});
+    else pos_.resize(unknownAt);
+}
+
+// What `|x` hands the call, part by part, as spreadSlipArg spreads it — read
+// from the variable x names, so nothing is evaluated twice.
+void FlatRw::slip(const Expr* x, size_t& unknownAt, bool& stop) {
+    // `|($a, @b[0], 5)`: a List literal hands over its items, each one argument
+    // (a Pair among them stays positional); `|` inside it slips further
+    if (x && x->kind == NK::ListExpr) {
+        for (auto& it : static_cast<const ListExpr*>(x)->items) {
+            if (it && it->kind == NK::Unary && static_cast<const Unary*>(it.get())->op == "|")
+                slip(static_cast<const Unary*>(it.get())->operand.get(), unknownAt, stop);
+            else { Src s; s.expr = it.get(); pos_.push_back(std::move(s)); }
+            if (stop) return;
+        }
+        return;
+    }
+    const Value* v = nullptr;
+    const std::string* name = x && x->kind == NK::VarExpr ? &static_cast<const VarExpr*>(x)->name
+                            : x && x->kind == NK::NameTerm ? &static_cast<const NameTerm*>(x)->name : nullptr;
+    if (name && scope_) v = scope_->find(*name);
+    auto unknown = [&] { if (unknownAt != kNone) stop = true; else unknownAt = pos_.size(); };
+    if (!v) return unknown();
+    if (v->t == VT::Array && v->hashKind == "Capture" && !v->holdsContainers() && v->arr() && forwarded(*name, *v))
+        return;
+    if (v->t == VT::Whatever || v->t == VT::Code) { pos_.emplace_back(); return; }   // held: one argument
+    if (v->t == VT::Array) {
+        if (!v->arr() || v->ext()) return unknown();   // a lazy one: what it reifies is not known here
+        // an element of a plain Array may be given a container of its own; a
+        // List's, a typed or shaped array's, or one with a default may not
+        const bool plain = !v->isList && v->hashKind.empty() && v->ofType().empty() && !v->elemDefault() &&
+                           !(v->shape() && !v->shape()->empty());
+        const ValueList& els = *v->arr();
+        for (size_t j = 0; j < els.size(); j++) {
+            const Value& e = els[j];
+            Src s;
+            if (isNamedArg(e)) {   // a Capture's named part
+                s.key = e.s.str();
+                if (e.pairLive()) s.cell = e.pairValS();
+                named_.push_back(std::move(s));
+                continue;
+            }
+            if (PRef<Value> c = cellOfProxy(&e)) s.cell = std::move(c);
+            else if (e.isCell()) s.cell = e.cellS();
+            else if (plain) { s.arr = v->arrS(); s.idx = j; }
+            pos_.push_back(std::move(s));
+        }
+        return;
+    }
+    if (v->t == VT::Hash && v->hash() && (v->hashKind.empty() || v->hashKind == "Map")) {
+        const bool plain = v->hashKind.empty() && v->ofType().empty() && !v->objKeyed;
+        for (auto& kv : *v->hash()) {
+            Src s;
+            s.key = kv.first;
+            if (plain) s.map = v->hashS();
+            named_.push_back(std::move(s));
+        }
+        return;
+    }
+    if (v->t == VT::Pair) {
+        Src s;
+        s.key = v->s.str();
+        if (v->pairLive()) s.cell = v->pairValS();
+        named_.push_back(std::move(s));
+        return;
+    }
+    if (v->t == VT::Object && v->obj() && v->obj()->hasBoxed && v->obj()->boxed().t == VT::Hash &&
+        v->obj()->boxed().hash() && v->obj()->boxed().hashKind.empty()) {
+        for (auto& kv : *v->obj()->boxed().hash()) { Src s; s.key = kv.first; named_.push_back(std::move(s)); }
+        return;
+    }
+    // a Range and a Blob slip their elements: how many is the call's to say
+    if (v->t == VT::Range || (v->t == VT::Str && (v->hashKind == "Blob" || v->hashKind == "Buf"))) return unknown();
+    pos_.emplace_back();   // anything else slips as itself
+}
+
+// `|c` where c is a routine's `|c` capture: its parts are what that routine's
+// own call was handed (past the positionals its signature took first, and the
+// named ones it claimed), so their containers are where that call's arguments
+// were. Its frame on callFrames names the expressions and the scope they were
+// written in; a variable among them is found there, a flattened one as above.
+bool FlatRw::forwarded(const std::string& name, const Value& cap) {
+    Env* own = nullptr;
+    if (!scope_->findRaw(name, &own) || !own) return false;
+    const auto& frames = Interpreter::tctx_.callFrames;
+    const ExecContext::CallSite* cs = nullptr;
+    for (size_t i = frames.size(); i-- > 0;)
+        if (frames[i].calleeEnv == own) { cs = &frames[i]; break; }
+    if (!cs || !cs->args || !cs->callerEnv || !cs->code || !cs->code->code() || !cs->code->code()->ci().params)
+        return false;
+    size_t before = 0;   // the positionals the signature took ahead of the capture
+    bool found = false;
+    for (auto& p : *cs->code->code()->ci().params) {
+        if (p.invocant || p.named) continue;
+        if (p.slurpy) { found = p.sigil == '\\' && p.slurpyKind == 0 && p.name == name; break; }
+        before++;
+    }
+    if (!found) return false;
+    size_t npos = 0;
+    for (auto& e : *cap.arr()) if (!isNamedArg(e)) npos++;
+    FlatRw outer(I_, cs->args, cs->callerEnv, before + npos);
+    outer.expand();
+    if (outer.pos_.size() != before + npos) return false;
+    auto inOuter = [&](Src s) {   // an expression of the outer call is read in ITS scope, now
+        if (s.expr) { s.cell = I_.exprVarCell(s.expr, nullptr, outer.scope_); s.expr = nullptr; }
+        return s;
+    };
+    for (size_t k = before; k < outer.pos_.size(); k++) pos_.push_back(inOuter(outer.pos_[k]));
+    for (auto& e : *cap.arr()) {
+        if (!isNamedArg(e)) continue;
+        Src s;
+        s.key = e.s.str();
+        for (auto& o : outer.named_) if (o.key == s.key) s = o;   // the binder takes the last
+        named_.push_back(inOuter(std::move(s)));
+    }
+    return true;
+}
+
+// The container a source names. An element or entry that has none yet is
+// given one, as `@a[0] := $x` leaves it: its value moves into a cell the slot
+// then proxies, so the slot and whatever binds the cell are one container.
+PRef<Value> FlatRw::cellOf(Src& s, bool make) {
+    if (s.cell || s.expr) return s.cell;
+    Value* sl = nullptr;
+    if (s.arr) { if (s.idx < s.arr->size()) sl = &(*s.arr)[s.idx]; }
+    else if (s.map) { auto it = s.map->find(s.key); if (it != s.map->end()) sl = &it->second; }
+    if (!sl) return nullptr;
+    if (PRef<Value> c = cellOfProxy(sl)) return s.cell = c;
+    if (sl->isCell()) return s.cell = sl->cellS();
+    if (!make || (sl->t == VT::Hash && sl->hashKind == "Proxy")) return nullptr;   // a user's Proxy: its own container
+    s.cell = makePayload<Value>(*sl);
+    *sl = makeSharedCellProxy(s.cell);
+    made_.push_back(s);
+    return s.cell;
+}
+
+// A slot made a container for one call holds a plain value again once the call
+// is over: an element left a Proxy is something much of the engine still reads
+// raw (sort, min, a hyper operator), where Rakudo's Scalar is invisible. Only
+// a slot still proxying this cell is touched — one the call rebound, or a
+// nested call's own, is left as it is — and one a shift moved is found again.
+static void unflattenSlot(const FlatRw::Src& s) {
+    auto ours = [&](const Value& v) { PRef<Value> c = cellOfProxy(&v); return c && c.get() == s.cell.get(); };
+    Value* sl = nullptr;
+    if (s.arr) {
+        if (s.idx < s.arr->size() && ours((*s.arr)[s.idx])) sl = &(*s.arr)[s.idx];
+        else for (auto& e : *s.arr) if (ours(e)) { sl = &e; break; }
+    }
+    else if (s.map) {
+        auto it = s.map->find(s.key);
+        if (it != s.map->end() && ours(it->second)) sl = &it->second;
+    }
+    if (sl) *sl = *s.cell;
+}
+
+void FlatRw::restore() {
+    for (auto& s : made_) unflattenSlot(s);
+    made_.clear();
+}
+
+void FlatRw::restoreAfter(std::shared_ptr<Env>& env) {
+    for (auto& s : made_) env->x().rwUnflatten.push_back([s] { unflattenSlot(s); });
+    made_.clear();
+}
+
+void FlatRw::unflatten(const std::shared_ptr<Env>& env) {
+    if (!env->ex || env->ex->rwUnflatten.empty()) return;
+    auto fs = std::move(env->ex->rwUnflatten);
+    env->ex->rwUnflatten.clear();
+    for (auto& f : fs) f();
+}
+
+Expr* FlatRw::expr(size_t pi) {
+    expand();
+    return pi < pos_.size() ? pos_[pi].expr : nullptr;
+}
+
+Value* FlatRw::cell(size_t pi) {
+    expand();
+    if (pi >= pos_.size()) return nullptr;
+    PRef<Value> c = cellOf(pos_[pi]);
+    return c ? c.get() : nullptr;
+}
+
+bool FlatRw::bindPositional(const Param& p, size_t pi, std::shared_ptr<Env>& env) {
+    if (p.coerce || p.isCopy || p.name.empty()) return false;
+    expand();
+    if (pi >= pos_.size()) return false;
+    PRef<Value> c = cellOf(pos_[pi]);
+    return c && I_.bindParamToCell(p, c, env);
+}
+
+// A named `is rw` / `is raw` whose LAST source (the binder takes the last) was
+// flattened in — `|%h`, a Capture's named part, `|$pair` — binds to that
+// entry's container. One written as a pair is linkNamedRw's.
+bool FlatRw::bindNamed(const Param& p, std::shared_ptr<Env>& env) {
+    if (from_ == kNone || p.name.size() < 2) return false;
+    expand();
+    const std::string key = !p.namedKey.empty() ? p.namedKey : p.name.substr(1);
+    Src* last = nullptr;
+    for (auto& s : named_)
+        if (s.key == key || std::find(p.aliasKeys.begin(), p.aliasKeys.end(), s.key) != p.aliasKeys.end())
+            last = &s;
+    if (!last || last->expr) return false;
+    if (p.name[1] == '!' || p.name[1] == '.' || p.coerce || p.isCopy) return true;
+    if (PRef<Value> c = cellOf(*last)) I_.bindParamToCell(p, c, env);
+    return true;
+}
+
+// `*@v is raw` holds the arguments' own containers (bindSlurpyContainers),
+// flattened ones included.
+bool FlatRw::slurpy(const Param& p, size_t pi, std::shared_ptr<Env>& env) {
+    if (!at(pi) || !(p.isRaw || p.isRw) || p.sigil != '@' || p.name.empty()) return false;
+    Value* sv = env->local(p.name);
+    expand();
+    if (!sv || sv->t != VT::Array || !sv->arr() || pi > pos_.size() || sv->arr()->size() != pos_.size() - pi)
+        return true;   // flattening moved the elements: they stay values
+    ValueList els = *sv->arr();
+    bool any = false;
+    for (size_t k = 0; k < els.size(); k++) {
+        Src& s = pos_[pi + k];
+        PRef<Value> c = s.expr ? I_.exprVarCell(s.expr, nullptr, scope_) : cellOf(s);
+        if (c) { els[k] = makeSharedCellProxy(std::move(c)); any = true; }
+    }
+    if (any) { *sv->arr() = std::move(els); sv->markHoldsContainers(); }
+    return true;
+}
+
+// A Capture literal is the argument list it stands for, so each part holds the
+// container its argument had, as a call would bind it: a variable's (`my $c =
+// \($a); $c[0]++` steps $a, capture.t), and a slipped element's or entry's
+// (`\(|@a)`, `\(|%h)`), given one of its own. A named `:$a` part already holds
+// $a's container, the Pair sharing it; a Pair passed positionally stays a value.
+void FlatRw::keepContainers(Value& list) {
+    if (!rw_ || list.t != VT::Array || !list.arr()) return;
+    expand();
+    ValueList& parts = *list.arr();
+    size_t npos = 0, nnamed = 0;
+    for (auto& e : parts) (isNamedArg(e) ? nnamed : npos)++;
+    if (npos != pos_.size()) return;   // where each part came from is not known
+    bool holds = false;
+    size_t k = 0, n = 0;
+    for (auto& e : parts) {
+        if (isNamedArg(e)) {
+            Src* s = nnamed == named_.size() ? &named_[n++] : nullptr;
+            if (s && !s->expr && !e.pairLive())
+                if (PRef<Value> c = cellOf(*s)) { e.setPairVal(c); e.setPairLive(); }
+            continue;
+        }
+        Src& s = pos_[k++];
+        if (e.t == VT::Pair) continue;
+        if (PRef<Value> c = s.expr ? I_.exprVarCell(s.expr, nullptr, scope_) : cellOf(s)) {
+            e = makeSharedCellProxy(std::move(c));
+            holds = true;
+        }
+    }
+    if (holds) list.markHoldsContainers();
+}
+
+Expr* FlatRw::linked(const std::shared_ptr<Env>& env, const std::string& name) {
+    if (!env->ex) return nullptr;
+    auto li = env->ex->rwLinks.find(name);
+    return li != env->ex->rwLinks.end() ? li->second.first : nullptr;
+}
+
 // Bind hyper element slots: like setupRwLinks but the caller supplies container
 // slots DIRECTLY (positional, aligned with the params); a null slot means the
 // argument was immutable — assigning that param dies.
@@ -1526,14 +1838,15 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
 // over it holds the value, read-only, and `*boundToValue` says so. (Sharing
 // that slot handed its readonly mark to whatever copied the Pair's value —
 // `C.new(q => $v)` left the attribute unassignable.)
-PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
+PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue, Env* scope) {
+    Env* const sc = scope ? scope : tctx_.cur.get();   // (a caller's frame, for FlatRw)
     if (e && e->kind == NK::Assign) {
         auto* as = static_cast<const Assign*>(e);
         if (as->op != "=" || !as->target || as->target->kind != NK::VarExpr ||
             !static_cast<const VarExpr*>(as->target.get())->declare) return nullptr;
         e = as->target.get();
     }
-    if (!e || e->kind != NK::VarExpr || !tctx_.cur) return nullptr;
+    if (!e || e->kind != NK::VarExpr || !sc) return nullptr;
     // `SETTING::<$x>` / `PROCESS::<$x>` name ANOTHER scope's variable, by
     // that package's rules — never the lexical `$x` the name would find here
     if (!static_cast<const VarExpr*>(e)->d().pseudoPkg.empty() || static_cast<const VarExpr*>(e)->processScoped)
@@ -1544,7 +1857,7 @@ PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
     // bound to a value (`f(42)`) has none, and stays out.
     if (!n.empty() && (ascii::isalpha((unsigned char)n[0]) || n[0] == '_')) {
         Env* own = nullptr;
-        Value* raw = tctx_.cur->findRaw(n, &own);
+        Value* raw = sc->findRaw(n, &own);
         if (raw && own && raw->isCell()) return varCell(own, n);
         return nullptr;
     }
@@ -1552,7 +1865,7 @@ PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue) {
     if (n.size() < 2 || n[0] != '$' || n == "$_" ||
         !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_' || n[1] == '\x01')) return nullptr;
     Env* own = nullptr;
-    Value* raw = tctx_.cur->findRaw(n, &own);
+    Value* raw = sc->findRaw(n, &own);
     if (!raw || !own) return nullptr;
     if (own->ex && (own->ex->rwLinks.count(n) || own->ex->rwDirect.count(n))) return nullptr;
     if (const Value* v = raw->deref(); v->readonly || v->immutableBind) {
