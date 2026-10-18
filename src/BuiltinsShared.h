@@ -9,6 +9,9 @@
 #include <fcntl.h>   // AT_FDCWD, for the statx(2) birth time below
 #include <unistd.h>
 #endif
+#if defined(__linux__)
+#include <sys/syscall.h>   // SYS_statx, ditto
+#endif
 #include <sys/stat.h>
 #include <chrono>
 #include <cmath>
@@ -162,10 +165,15 @@ inline bool fileBirthSecs(const std::string& path, const StatT& st, double& out)
     if (st.__st_birthtime <= 0) return false;
     out = (double)st.__st_birthtime;
     return true;
-#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && defined(STATX_BTIME)
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__) && defined(STATX_BTIME) && defined(SYS_statx)
     (void)st;
+    // The system call, not glibc's statx() wrapper: the wrapper is glibc 2.28's,
+    // and it was the one symbol that held the Linux release at a 2.28 floor —
+    // without it the binary needs 2.18 (tools/floor-gate.raku). A kernel older
+    // than 4.11 answers ENOSYS, the same "no birth time" as a filesystem that
+    // keeps none; the wrapper's own fallback came to that answer too.
     struct statx stx;
-    if (::statx(AT_FDCWD, path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &stx) != 0) return false;
+    if (::syscall(SYS_statx, AT_FDCWD, path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME, &stx) != 0) return false;
     // ext4/xfs/btrfs keep a birth time; older filesystems and NFS do not, and say
     // so by leaving the bit out of the answered mask rather than by failing.
     if (!(stx.stx_mask & STATX_BTIME)) return false;
@@ -180,7 +188,8 @@ inline bool fileBirthSecs(const std::string& path, const StatT& st, double& out)
     return true;
 #else
   #if defined(__linux__) && !defined(__EMSCRIPTEN__)
-    // Reaching here on Linux means <sys/stat.h> offered no STATX_BTIME, so
+    // Reaching here on Linux means <sys/stat.h> offered no STATX_BTIME (or
+    // <sys/syscall.h> no SYS_statx), so
     // `.created` degrades to 0 everywhere on this build. That is a legal answer,
     // which is exactly why it needs saying out loud: the regression case for the
     // birth time accepts 0 (a filesystem may genuinely keep none), so a build

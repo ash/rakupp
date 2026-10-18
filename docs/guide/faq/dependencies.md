@@ -39,7 +39,7 @@ platform and why.
 | Platform | Linked at load time | Inside the binary |
 |---|---|---|
 | **macOS** | `libSystem` (libc, libm, pthreads, `dlopen`), `libc++`, `libiconv`, all shipped with macOS | — |
-| **Linux** (release) | glibc 2.28 or newer: `libc`, `libm`, `libpthread`, `libdl`, the loader | `libstdc++`, `libgcc` |
+| **Linux** (release) | glibc 2.18 or newer: `libc`, `libm`, `libpthread`, `libdl`, the loader | `libstdc++`, `libgcc` |
 | **Windows**, MSVC | Windows system DLLs, including `ws2_32` (Winsock) and `bcrypt` (random bytes) | the C runtime (`/MT`), so you do not need the VC++ Redistributable |
 | **Windows**, MinGW | the same system DLLs | `libstdc++`, `libgcc`, `winpthread` (`-static`) |
 | **BSDs** | the base system's libc and libc++ | — |
@@ -56,7 +56,7 @@ build/rakupp:
 
 Each release checks the Linux row. `tools/floor-gate.raku` reads the
 packaged binaries back and fails the release if they need a glibc newer than
-2.28 or a shared `libstdc++`. (Issue #82 is why: v3.26.0 shipped needing
+2.18 or a shared `libstdc++`. (Issue #82 is why: v3.26.0 shipped needing
 glibc 2.38 even though the docs said "no dependencies".) On Windows, the
 release workflow lists the MinGW binary's DLL imports and fails if a MinGW
 runtime DLL appears in them.

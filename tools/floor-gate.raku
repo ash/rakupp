@@ -11,6 +11,16 @@
 # container; this is what keeps it there when the runner image or the
 # container's toolchain rotates.
 #
+# The floor it holds is BELOW that container's glibc: what the binaries
+# actually call. A symbol binds at the version it last changed in, so a build
+# against glibc 2.28 needs 2.28 only for what 2.28 added -- and the one such
+# call was statx(2), whose glibc wrapper is 2.28's. It goes through syscall()
+# now (src/BuiltinsShared.h), and what is left is the static libstdc++'s
+# __cxa_thread_atexit_impl at GLIBC_2.18, so 2.18 is the number. v5.4.1 would
+# not start on Ubuntu 18.04 (glibc 2.27) over that one statx call. A new libc
+# call above 2.18 fails this gate; reach it the same way, or raise the floor
+# here and in the docs on purpose.
+#
 # What it reads, from the install layout (bin/ + lib/):
 #   bin/rakupp        needs glibc <= the glibc floor, carries its libstdc++
 #   lib/librakupp.so  needs glibc <= the glibc floor, libstdc++ <= its floor
@@ -36,7 +46,7 @@
 # libstdc++.so is GCC 12's whatever the headers' version, so librakupp.so
 # binds std::condition_variable::wait at GLIBCXX_3.4.30, which every 22.04 has.
 # The machine field of bin/rakupp's ELF header says which pair applies.
-constant GLIBC-FLOOR           = '2.28';    # manylinux_2_28: RHEL 8, Debian 10, Ubuntu 18.10 (2018) and newer
+constant GLIBC-FLOOR           = '2.18';    # Ubuntu 14.04, Debian 8, RHEL 8 and newer; not RHEL/CentOS 7 (2.17)
 constant GLIBCXX-FLOOR         = '3.4.29';  # GCC 11's libstdc++, the container's gcc-toolset-11
 constant GLIBC-FLOOR-RISCV64   = '2.35';    # the Ubuntu 22.04 sysroot: Ubuntu 22.04, Debian 13 and newer
 constant GLIBCXX-FLOOR-RISCV64 = '3.4.30';  # GCC 12's libstdc++, Ubuntu 22.04's libstdc++6

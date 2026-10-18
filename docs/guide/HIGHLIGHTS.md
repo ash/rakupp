@@ -83,7 +83,7 @@ no server, with an embeddable in-page playground.
 ## Platforms
 
 - **macOS** (one universal binary: Apple Silicon + Intel), **Linux** x86_64
-  and ARM64 (static libstdc++, glibc 2.28+), **Windows** x64 (static CRT — no
+  and ARM64 (static libstdc++, glibc 2.18+), **Windows** x64 (static CRT — no
   redistributable needed), **OpenBSD** x86-64. What a compiled program
   needs, per platform: [COMPILERS.md](COMPILERS.md#what-runs-where).
 - **Linux on RISC-V** (riscv64): a release archive too (static libstdc++,

@@ -124,7 +124,7 @@ Landed in the 1.0 campaign + pre-1.0 hardening (2026-07, 400 → 433 files):
   correctness (bail to bundle instead of miscompiling).
 - **Cross-platform delivery** — CI builds and smoke-tests macOS (universal
   binary, deployment target 11.0), Linux x86_64 and ARM64 (Clang, static
-  libstdc++, built in a manylinux 2.28 container so the glibc floor is 2.28
+  libstdc++, built in a manylinux 2.28 container; the glibc floor is 2.18
   and a gate keeps it there; a separate GCC gate job), and Windows x64 (native MSVC, static CRT);
   tagged releases attach all three archives. Release binaries build with
   Clang everywhere it applies (measured 1.2–2.0× faster than GCC on the

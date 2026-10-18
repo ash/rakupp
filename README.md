@@ -107,7 +107,7 @@ Windows a wizard:
 as checkboxes and an Add/Remove Programs entry.
 
 Or unpack a **prebuilt archive** — macOS universal, Linux x86_64 and ARM64
-(static libstdc++, glibc 2.28+), the same two for musl (Alpine 3.21+), Linux
+(static libstdc++, glibc 2.18+), the same two for musl (Alpine 3.21+), Linux
 RISC-V (riscv64, glibc 2.35+), OpenBSD, Windows x64 — from the
 [Releases page](https://github.com/ash/rakupp/releases/latest) and put its
 `bin/` on your `PATH`.

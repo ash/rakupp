@@ -85,8 +85,9 @@ CC=clang CXX=clang++ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --b
 
 **Portable binaries:** the Linux release links `libstdc++`/`libgcc` statically,
 and it is built in a manylinux 2.28 container, so the archive needs nothing
-beyond glibc 2.28 (2018): RHEL 8, Debian 10, Ubuntu 18.10 and everything
-newer. A `rakupp` you build yourself gets the same static libstdc++ with
+beyond glibc 2.18 (2013): Ubuntu 14.04, Debian 8, RHEL 8 and everything
+newer, but not RHEL/CentOS 7 (2.17). A `rakupp` you build yourself gets the
+same static libstdc++ with
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -288,7 +289,7 @@ does not work from a static executable).
 
 | Platform | `rakupp` (release archive) | a compiled program | compiled with `--static` |
 |---|---|---|---|
-| **Linux** x86_64, ARM64 | glibc 2.28+; libstdc++ inside | glibc 2.28+ **and** the machine's libstdc++, GCC 11's or newer (`GLIBCXX_3.4.29`) | glibc 2.28+ |
+| **Linux** x86_64, ARM64 | glibc 2.18+; libstdc++ inside | glibc 2.18+ **and** the machine's libstdc++, GCC 11's or newer (`GLIBCXX_3.4.29`) | glibc 2.18+ |
 | **macOS** | macOS 11+ | macOS 11+ | the same — libc++ is part of the OS, there is nothing to link |
 | **Windows**, MSVC build | Windows only (static CRT) | Windows only (the output is `/MT` too) | the same |
 | **Windows**, MinGW build | Windows only (`-static`) | the MinGW DLLs beside it or on `PATH`: `libstdc++-6`, `libgcc_s_seh-1`, `libwinpthread-1` | Windows only |
@@ -296,20 +297,29 @@ does not work from a static executable).
 | **Linux** riscv64 | glibc 2.35+; libstdc++ inside | glibc 2.35+ **and** the machine's libstdc++, GCC 11's or newer (`GLIBCXX_3.4.29`) | glibc 2.35+ |
 | **Linux** musl (Alpine) x86_64, ARM64 | Alpine 3.21+ (musl 1.2.5); libstdc++ inside | Alpine 3.21+ **and** its libstdc++ (`apk add libstdc++`, which `g++` brings) | Alpine 3.21+ |
 
-Two things decide the Linux numbers, and neither is the machine that runs
-`--exe`:
+Three things decide the Linux numbers:
 
-- **The floor is the build machine's.** A binary needs the glibc it was linked
-  against, so the release is built in a `quay.io/pypa/manylinux_2_28`
-  container (AlmaLinux 8, glibc 2.28, Clang, GCC 11's libstdc++), and every
-  compiled program inherits that floor from the runtime archive it links —
-  whatever built it. riscv64 has no manylinux image, so its archive is
+- **The floor is what the release calls, capped by the build machine.** A
+  binary can need no glibc newer than the one it was linked against, so the
+  release is built in a `quay.io/pypa/manylinux_2_28` container (AlmaLinux 8,
+  glibc 2.28, Clang, GCC 11's libstdc++) rather than on a current runner. Each
+  glibc function binds at the version it last changed in, and nothing the
+  release calls is newer than 2.18 (`statx`, which glibc wraps only from 2.28,
+  is reached through `syscall()`). Every compiled program needs that floor
+  from the runtime archive it links. riscv64 has no manylinux image, so its archive is
   cross-compiled against an Ubuntu 22.04 sysroot instead (glibc 2.35, GCC 11's
   libstdc++ headers). The musl archives are built on Alpine 3.21 itself
   (musl 1.2.5, Clang, GCC 14's libstdc++); a glibc binary does not start on
   musl at all, nor a musl one on glibc. `tools/floor-gate.raku` reads the
   numbers back from the packaged binaries in CI and fails the build when they
   move.
+- **A compiled program also needs the glibc of the machine that linked it.**
+  The floor above is a minimum: the program binds each function at the version
+  that machine's glibc offers. glibc 2.34 gave `__libc_start_main`, `dlopen`
+  and the threads functions new versions, so anything linked on 2.34 or newer
+  needs 2.34 at least; on Ubuntu 24.04 a `--static` program needs 2.38. To
+  build for an older machine, run `--exe` on one as old as the oldest target
+  (a container will do).
 - **Compiled programs link `libstdc++` dynamically by default**, like every
   other C++ program on the machine, so a binary built on one distribution can
   fail to start on an older one with `GLIBCXX_3.4.30 not found`. `--static`

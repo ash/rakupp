@@ -16,7 +16,7 @@
 # The build context is not read at all (.dockerignore excludes everything), so
 # a checkout full of build directories costs nothing to send.
 #
-# Debian, not Alpine: the archive is linked against glibc (2.28 and up). curl
+# Debian, not Alpine: the archive is linked against glibc (2.18 and up). curl
 # and ca-certificates are what `rakupp install` fetches with and tar is what it
 # unpacks with; libffi and libssl are what NativeCall and the OpenSSL-backed
 # modules open at run time. No C++ compiler, so `--exe` is not available out of

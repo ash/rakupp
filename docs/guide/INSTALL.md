@@ -67,7 +67,7 @@ curl -fsSL https://raku.online/install.sh | sh
 ```
 
 x86-64 and ARM64 both have a prebuilt archive, so nothing is compiled. The
-binary carries its own libstdc++ and needs nothing beyond glibc 2.28 (2018)
+binary carries its own libstdc++ and needs nothing beyond glibc 2.18 (2013)
 or newer, so there is no dependency to satisfy first. What each platform's
 binary needs at run time — and what the programs it compiles need — is one
 table in [COMPILERS.md](COMPILERS.md#what-runs-where).
@@ -396,8 +396,8 @@ targets — except RISC-V, which is cross-compiled and tested under emulation:
 | Platform | Archive |
 |---|---|
 | macOS 11+, Apple Silicon and Intel | `rakupp-macos-universal.tar.gz` — one universal binary for both |
-| Linux, x86-64 | `rakupp-linux-x86_64.tar.gz` — static libstdc++, glibc 2.28+ |
-| Linux, ARM64 | `rakupp-linux-aarch64.tar.gz` — Raspberry Pi, Graviton, Ampere; glibc 2.28+ |
+| Linux, x86-64 | `rakupp-linux-x86_64.tar.gz` — static libstdc++, glibc 2.18+ (Ubuntu 14.04, Debian 8 and newer; not CentOS 7) |
+| Linux, ARM64 | `rakupp-linux-aarch64.tar.gz` — Raspberry Pi, Graviton, Ampere; glibc 2.18+ |
 | Linux, RISC-V | `rakupp-linux-riscv64.tar.gz` — static libstdc++, glibc 2.35+ (Ubuntu 22.04, Debian 13) |
 | Linux, x86-64, musl | `rakupp-linux-x86_64-musl.tar.gz` — Alpine 3.21+ and other musl systems; static libstdc++ |
 | Linux, ARM64, musl | `rakupp-linux-aarch64-musl.tar.gz` — the same, for ARM64 |

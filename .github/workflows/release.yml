@@ -78,8 +78,9 @@ jobs:
       # glibc it was linked against, and ubuntu-latest's is whatever the image
       # rotates to (24.04: 2.39). v3.26.0 shipped needing GLIBC_2.38 and would
       # not start on Ubuntu 22.04, Debian 12 or RHEL 9 (issue #82). AlmaLinux 8
-      # pins the floor at 2.28 for rakupp, librakupp.so AND the runtime archive
-      # every --exe program links, whatever machine runs --exe. Clang is
+      # caps the floor at 2.28 for rakupp, librakupp.so AND the runtime archive
+      # every --exe program links; what they call sets it lower, at 2.18 (statx
+      # goes through syscall(): see tools/floor-gate.raku). Clang is
       # AppStream's (21); libstdc++ is gcc-toolset-11's, so compiled programs
       # need nothing newer than GCC 11's (GLIBCXX_3.4.29) -- the toolset the
       # clang package drags in on its own (15) would raise that floor for every
@@ -618,7 +619,7 @@ jobs:
           test "$out" = "42"
 
       # The Linux floor gate: what the packaged binaries NEED, read back from
-      # them -- glibc 2.28 at most for rakupp and librakupp.so, GCC 11's
+      # them -- glibc 2.18 at most for rakupp and librakupp.so, GCC 11's
       # libstdc++ at most, no __isoc23_* (the glibc 2.38 tell) in the
       # archives, and a --static program that needs no libstdc++.so at all,
       # with the default link as the control. The container step sets the

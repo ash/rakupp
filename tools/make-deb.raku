@@ -5,7 +5,7 @@
 #
 # It packs, it does not build: the binaries are the release archive's own,
 # so the .deb is the archive under /usr, byte for byte, and inherits the
-# floor the archive has (glibc 2.28, GCC 11's libstdc++ -- tools/floor-gate.raku
+# floor the archive has (glibc 2.18, GCC 11's libstdc++ -- tools/floor-gate.raku
 # holds both). That is also why Depends is written here rather than computed
 # by dpkg-shlibdeps: the floor gate is what knows it.
 #
@@ -84,7 +84,7 @@ sub MAIN(Str $layout, Str $out = '.', Str :$arch) {
         Architecture: $deb-arch
         Maintainer: Andrew Shitov <mail\@andreyshitov.com>
         Installed-Size: $kb
-        Depends: libc6 (>= 2.28), libstdc++6 (>= 11)
+        Depends: libc6 (>= 2.18), libstdc++6 (>= 11)
         Suggests: g++ | clang
         Section: interpreters
         Priority: optional

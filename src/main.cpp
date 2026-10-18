@@ -914,14 +914,13 @@ static std::string compileCmd(const std::string& cxx, const std::string& opt,
     // -ldl AFTER the archives, because the runtime dlopen()s: FFI libraries,
     // rk_* extensions, NativeCall. glibc 2.34 moved dlopen/dlsym into libc and
     // left libdl.so an empty stub, so on a current distro this changes nothing
-    // — but the release archive is built against glibc 2.28 (manylinux 2.28),
-    // and on any machine at that floor, up to 2.33, --exe linked with dlopen
-    // undefined. The stub keeps the flag valid above 2.34, so it is
-    // unconditional rather than probed.
+    // — but the release's runtime archive asks for glibc 2.18 and up, and on
+    // any machine below 2.34 --exe linked with dlopen undefined. The stub keeps the flag
+    // valid from 2.34 on, so it is unconditional rather than probed.
     c += " -ldl";
     // --static: the same two flags the Linux release links rakupp itself
-    // with. The output then needs only glibc — at the version of the machine
-    // that built the runtime archive, not of the machine that ran --exe.
+    // with. The output then needs only glibc: the runtime archive's floor, or
+    // the versions the glibc of the machine that ran --exe binds, if newer.
     if (g_static) c += " -static-libstdc++ -static-libgcc";
   #else
     if (g_static && !g_quiet)

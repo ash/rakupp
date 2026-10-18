@@ -19,6 +19,8 @@
 #   * the piped form works: under `curl ... | sh` the script IS standard input,
 #     so a question that reads stdin would eat the rest of the installer
 #   * --uninstall removes the prefix and restores the startup file byte for byte
+#   * a binary that does not start fails the install with the loader's reason,
+#     and a glibc too old for the archive is named as the cause
 #   * an unsupported platform prints the source build and fails, rather than
 #     downloading something that cannot run
 #   * a musl Linux (Alpine) is sent the musl archive and a glibc one the glibc
@@ -176,6 +178,53 @@ is "$(lines_matching "$PROFILE" '# rakupp')" 0 'uninstall removed the startup li
 if diff -q "$ROOT/profile.orig" "$PROFILE" >/dev/null 2>&1
     then ok 1 'the startup file came back byte for byte'
     else ok 0 'the startup file came back byte for byte' "$(diff "$ROOT/profile.orig" "$PROFILE" | head -5)"
+fi
+
+# ---- a binary that will not start ------------------------------------------
+# The loader says why on stderr, and the installer has to pass that on: a bare
+# "does not run" sent the user off to run the binary by hand to find out. A
+# glibc older than the archive's floor is the cause with a remedy to name. An
+# archive whose rakupp prints the loader's own line and fails is the fixture.
+mkdir -p "$ROOT/norun/rakupp/bin"
+cat > "$ROOT/norun/rakupp/bin/rakupp" <<'EOT'
+#!/bin/sh
+echo "$0: /lib/x86_64-linux-gnu/libc.so.6: version \`GLIBC_2.99' not found (required by $0)" >&2
+exit 1
+EOT
+chmod +x "$ROOT/norun/rakupp/bin/rakupp"
+(cd "$ROOT/norun" && tar -czf "$ROOT/norun.tar.gz" rakupp)
+env -i HOME="$ROOT/home6" PATH="$PATH" SHELL=/bin/sh TMPDIR="$ROOT" sh "$INSTALLER" \
+    --archive "$ROOT/norun.tar.gz" --dir "$ROOT/home6/.rakupp" --no-raku-alias --yes \
+    > "$ROOT/out6" 2>&1 && RC=0 || RC=$?
+sed 's/^/# /' < "$ROOT/out6"
+[ "$RC" != 0 ] && ok 1 'a binary that does not start fails the install' \
+               || ok 0 'a binary that does not start fails the install' "exit $RC"
+if grep -qF "GLIBC_2.99' not found" "$ROOT/out6"
+    then ok 1 "and the loader's reason is passed on"
+    else ok 0 "and the loader's reason is passed on" "$(head -3 "$ROOT/out6")"
+fi
+if grep -q 'glibc is older' "$ROOT/out6" && grep -q 'cmake' "$ROOT/out6"
+    then ok 1 'and an old glibc is named, with the source build'
+    else ok 0 'and an old glibc is named, with the source build' "$(head -3 "$ROOT/out6")"
+fi
+# The other shape, CentOS 7's: a symbol bound lazily lets --version through and
+# fails on first use, so it is the 6 * 7 check that hears about it.
+cat > "$ROOT/norun/rakupp/bin/rakupp" <<'EOT'
+#!/bin/sh
+[ "$1" = --version ] && { echo 'Raku++ 9.9.9'; exit 0; }
+echo "$0: relocation error: $0: symbol __cxa_thread_atexit_impl, version GLIBC_2.18 not defined in file libc.so.6 with link time reference" >&2
+exit 127
+EOT
+(cd "$ROOT/norun" && tar -czf "$ROOT/norun.tar.gz" rakupp)
+env -i HOME="$ROOT/home7" PATH="$PATH" SHELL=/bin/sh TMPDIR="$ROOT" sh "$INSTALLER" \
+    --archive "$ROOT/norun.tar.gz" --dir "$ROOT/home7/.rakupp" --no-raku-alias --yes \
+    > "$ROOT/out7" 2>&1 && RC=0 || RC=$?
+sed 's/^/# /' < "$ROOT/out7"
+[ "$RC" != 0 ] && ok 1 'a binary that fails on first use fails the install' \
+               || ok 0 'a binary that fails on first use fails the install' "exit $RC"
+if grep -q 'GLIBC_2.18 not defined' "$ROOT/out7" && grep -q 'glibc is older' "$ROOT/out7"
+    then ok 1 'and that old glibc is named too'
+    else ok 0 'and that old glibc is named too' "$(head -3 "$ROOT/out7")"
 fi
 
 # ---- a platform with no archive --------------------------------------------
