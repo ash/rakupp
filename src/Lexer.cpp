@@ -4359,8 +4359,10 @@ static bool angleTermContext(const std::vector<Token>& out) {
         }
         case Tok::IntLit:
             // radix colonpair `:16<2_F_A_C_E_D>` / `:2<1.1*10**10>`: the angle
-            // content is digits-as-words, not code
-            return out.size() >= 2 && out[out.size() - 2].kind == Tok::Op &&
+            // content is digits-as-words, not code. The radix is glued to its
+            // `:` — a spaced one is a colon call's first argument, so
+            // `.grep: 60 < * < 70` compares (it read `< * <` as a word list).
+            return !pv.spaceBefore && out.size() >= 2 && out[out.size() - 2].kind == Tok::Op &&
                    out[out.size() - 2].text == ":";
         default: return false;
     }
