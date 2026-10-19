@@ -1046,10 +1046,40 @@ struct LiveProc {
     std::string outBuf, errBuf;              // read from the child, not yet handed out
     bool finished = false;
     int code = -1;                           // procStatusFold'ed once finished
+    // Who has waitpid()ed it: 0 nobody, 1 someone is now, 2 done, with the
+    // status in rawStatus. The Proc's own end (liveProcFinish) and the sweep
+    // at the next spawn (liveSweepLocked) both reap, and must not both wait.
+    std::atomic<int> reap{0};
+    int rawStatus = 0;
 };
 std::mutex g_liveM;
 std::map<long long, std::shared_ptr<LiveProc>> g_live;
 long long g_liveSeq = 0;
+// The children not reaped yet, oldest first (g_liveM). A program that drains
+// and closes a child's pipes but never asks its Proc for a status — the
+// highlighter a site build spawns once per code block — would otherwise leave
+// a zombie per child, until the per-user process limit refused the next fork
+// (about 900 spawns on a desktop Mac). Rakudo's event loop reaps every child
+// as it exits.
+std::vector<std::shared_ptr<LiveProc>> g_liveUnreaped;
+// Reap, without waiting, each child that has exited, keeping its status for
+// the Proc to read later. A child its Proc is reaping right now is left to it.
+void liveSweepLocked() {
+    auto& v = g_liveUnreaped;
+    v.erase(std::remove_if(v.begin(), v.end(), [](const std::shared_ptr<LiveProc>& lp) {
+        int expect = 0;
+        if (!lp->reap.compare_exchange_strong(expect, 1)) return expect == 2;
+        int st = 0;
+        pid_t r = waitpid(lp->pid, &st, WNOHANG);
+        if (r == lp->pid || (r < 0 && errno == ECHILD)) {   // (ECHILD: as liveProcFinish reads it)
+            lp->rawStatus = r == lp->pid ? st : 0;
+            lp->reap.store(2);
+            return true;
+        }
+        lp->reap.store(0);
+        return false;
+    }), v.end());
+}
 std::shared_ptr<LiveProc> liveGet(long long tok) {
     std::lock_guard<std::mutex> lk(g_liveM);
     auto it = g_live.find(tok);
@@ -1103,8 +1133,10 @@ long long liveProcStart(const std::vector<std::string>& argv, const std::string&
     lp->pid = (pid_t)sc.pid; lp->inFd = wp[1]; lp->outFd = sc.outFd; lp->errFd = sc.errFd;
     pidOut = sc.pid;
     std::lock_guard<std::mutex> lk(g_liveM);
+    liveSweepLocked();
     long long tok = ++g_liveSeq;
     g_live[tok] = lp;
+    g_liveUnreaped.push_back(lp);
     return tok;
 }
 // The next line of a stream; false at its end with nothing left.
@@ -1190,9 +1222,19 @@ bool liveProcFinish(Interpreter* I, long long tok, int& code) {
         if (lp->inFd >= 0) { ::close(lp->inFd); lp->inFd = -1; }
         while (lp->outFd >= 0 || lp->errFd >= 0) livePump(*lp, 100, I, false);
         int status = 0;
-        bool parked = I ? I->gilPark() : false;
-        while (waitpid(lp->pid, &status, 0) == -1 && errno == EINTR) {}
-        if (parked) I->gilUnpark(true);
+        for (;;) {
+            int expect = 0;
+            if (lp->reap.compare_exchange_strong(expect, 1)) {
+                bool parked = I ? I->gilPark() : false;
+                while (waitpid(lp->pid, &status, 0) == -1 && errno == EINTR) {}
+                if (parked) I->gilUnpark(true);
+                lp->rawStatus = status;
+                lp->reap.store(2);
+                break;
+            }
+            if (expect == 2) { status = lp->rawStatus; break; }   // the sweep reaped it
+            std::this_thread::yield();                            // …or is, for one WNOHANG
+        }
         lp->code = procStatusFold(status);
         lp->finished = true;
     }
@@ -1216,8 +1258,16 @@ void procSettleLive(Interpreter* I, const Value& proc) {
     auto it = proc.hash()->find("live-tok");
     if (it == proc.hash()->end() || proc.hash()->count("live-done")) return;
     int code = -1;
-    if (liveProcFinish(I, it->second.toInt(), code)) storeProcStatus(proc, code);
+    const long long tok = it->second.toInt();
+    if (liveProcFinish(I, tok, code)) storeProcStatus(proc, code);
     (*proc.hash())["live-done"] = Value::boolean(true);
+    // The status is on the Proc now. With nothing left to read, the registry
+    // has nothing more to give its handles (a missing entry reads as drained).
+    std::lock_guard<std::mutex> lk(g_liveM);
+    auto lt = g_live.find(tok);
+    if (lt != g_live.end() && lt->second->outFd < 0 && lt->second->errFd < 0 && lt->second->inFd < 0 &&
+        lt->second->outBuf.empty() && lt->second->errBuf.empty())
+        g_live.erase(lt);
 #else
     (void)I; (void)proc;
 #endif
