@@ -1074,8 +1074,18 @@ static inline bool hashKindIsAssociative(const std::string& kind) {
         "Proc::Async", "Duration", "Instant", "Failure", "Version", "Iterator", "Encoding",
         "Encoder", "Decoder", "Label", "CallFrame", "BacktraceFrame", "Kernel", "VM", "Distro",
         "Compiler", "Format", "StrDistance", "Collation", "Variable", "HyperConfiguration",
-        "Archetypes"};
+        "Archetypes", "Raku", "Lock::Async", "DependencySpec", "WrapHandle", "CompUnit",
+        "CompUnit::Handle", "ProcIn", "IterationBuffer"};
     return !notAssoc.count(kind);
+}
+// …and an Associative one is not thereby a Map: a Set, a Bag or a Mix (and their
+// Hash forms) and an IO::Path::Parts do Associative but are no Map, so
+// `set(1) ~~ Map` is False and a `Map $m` parameter refuses one.
+static inline bool hashKindIsMap(const std::string& kind) {
+    if (kind.empty()) return true;
+    static const std::unordered_set<std::string> notMap = {
+        "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash", "IO::Path::Parts"};
+    return !notMap.count(kind) && hashKindIsAssociative(kind);
 }
 
 

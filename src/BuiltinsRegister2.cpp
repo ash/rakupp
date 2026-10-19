@@ -652,6 +652,8 @@ void Interpreter::registerBuiltinsPart3() {
         }
         Env* e = symEnv(I, a, 1);
         if (e && e->find(n)) return Value::boolean(true);
+        Value v;   // (what `use Test` imported: see importedBuiltinSym)
+        for (Env* f = e; f; f = f->parent.get()) if (I.importedBuiltinSym(f, n, v)) return Value::boolean(true);
         return Value::boolean(false);
     };
     // `UNIT::<&foo>:p` is the KEY => VALUE pair when the symbol is there, and
@@ -663,6 +665,8 @@ void Interpreter::registerBuiltinsPart3() {
         const std::string n = a[0].toStr();
         Env* e = symEnv(I, a, 1);
         if (e) if (Value* v = e->find(n)) return Value::pair(n, *v);
+        Value v;
+        for (Env* f = e; f; f = f->parent.get()) if (I.importedBuiltinSym(f, n, v)) return Value::pair(n, v);
         return Value::list({});
     };
     // A bare pseudo-package as a VALUE — `UNIT::.grep: {…}`, `MY::.keys` — is
@@ -676,9 +680,17 @@ void Interpreter::registerBuiltinsPart3() {
         const std::string pk = a.size() > 1 ? a[1].toStr() : std::string("MY");
         // a frame's names: its map, then its live pad slots (a routine's, the
         // mainline's or an inline block's own `my`s live there)
-        auto addFrame = [&h](Env* x) {
-            for (auto& kv : x->vars)
+        auto addFrame = [&h, &I](Env* x) {
+            bool imports = false;
+            for (auto& kv : x->vars) {
+                if (!kv.first.empty() && kv.first[0] == '\x01') { imports = true; continue; }   // (internal names)
                 if (!h.hash()->count(kv.first)) (*h.hash())[kv.first] = kv.second;
+            }
+            if (imports) {   // what `use Test` imported (importedBuiltinSym)
+                std::vector<std::pair<std::string, Value>> im;
+                I.importedBuiltinSyms(x, im);
+                for (auto& [k, v] : im) if (!h.hash()->count(k)) (*h.hash())[k] = v;
+            }
             if (x->layout) {
                 uint64_t live = x->padLive.load(std::memory_order_acquire);
                 for (size_t i = 0; i < x->pad.size(); i++)
@@ -763,6 +775,7 @@ void Interpreter::registerBuiltinsPart3() {
         }
         Value v;
         if (e && I.frameSymbol(e, n, v)) return v;
+        if (e && I.importedBuiltinSym(e, n, v)) return v;
         // …but every block HAS a `$_`, the outer one's unless it topicalizes:
         // `start { cas $a, -> @c { … OUTER::<$_> } }` reads the start block's,
         // which is the `map` element around it (S17-promise/allof.t)

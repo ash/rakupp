@@ -24,8 +24,38 @@ permissions:
   contents: write   # needed to create/update the Release on a tag
 
 jobs:
+  # Is this tag the NEWEST release? A patch cut from a release branch for an
+  # older minor (v5.3.1 once v5.4.0 exists; docs/dev/RELEASING.md) must not
+  # become the repository's "latest" release: install.sh and every
+  # releases/latest/download/ link follow it, and ghcr.io's :latest is the
+  # same promise. softprops/action-gh-release marks a release latest by
+  # default, so every attach step below passes this answer as make_latest, and
+  # the docker job adds :latest only when it is true. A tag with a suffix
+  # (v6.0.0-rc1) is never the newest. Off a tag the answer is unused.
+  # Every job that attaches needs this one, so it runs on every push.
+  release-meta:
+    name: release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      latest: ${{ steps.latest.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Is this the newest release tag?
+        id: latest
+        run: |
+          latest=true
+          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = true ]; then
+            newest=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' |
+                     grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+            [ "$GITHUB_REF_NAME" = "$newest" ] || latest=false
+            echo "this tag: $GITHUB_REF_NAME; the newest release tag: $newest; latest: $latest"
+          fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: release-meta
     runs-on: ${{ matrix.os }}
     # A healthy run takes ~10 minutes; the default limit is 6 HOURS, so one
     # hung gate step held a runner all day (the MCP smoke did, 2026-08-25).
@@ -909,6 +939,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
+          make_latest: ${{ needs.release-meta.outputs.latest }}
           files: |
             rakupp-${{ matrix.name }}.*
             rakupp-setup-windows-x64.*
@@ -936,7 +967,7 @@ jobs:
   # settings (RELEASING.md).
   docker:
     name: docker image (ghcr.io)
-    needs: build
+    needs: [build, release-meta]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -953,7 +984,10 @@ jobs:
           if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = true ]; then
             v="${GITHUB_REF_NAME#v}"
             echo "version=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-            echo "tags=$image:$v,$image:${v%.*},$image:latest" >> "$GITHUB_OUTPUT"
+            # (:latest only for the newest release: see release-meta)
+            tags="$image:$v,$image:${v%.*}"
+            [ "${{ needs.release-meta.outputs.latest }}" = true ] && tags="$tags,$image:latest"
+            echo "tags=$tags" >> "$GITHUB_OUTPUT"
           else
             echo "version=latest" >> "$GITHUB_OUTPUT"   # checked, never pushed
           fi
@@ -1032,6 +1066,7 @@ jobs:
   # ordinary pushes don't pay it.
   wasm:
     name: wasm (Raku.js)
+    needs: release-meta
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
@@ -1136,6 +1171,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
+          make_latest: ${{ needs.release-meta.outputs.latest }}
           files: rakujs-*.zip*
 
       # The Google Sheets add-on's project, pushed to its Apps Script project
@@ -1224,6 +1260,7 @@ jobs:
   # for upload / release attachment on tags.
   openbsd:
     name: openbsd (build + smoke + package)
+    needs: release-meta
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -1274,6 +1311,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
+          make_latest: ${{ needs.release-meta.outputs.latest }}
           files: rakupp-openbsd-x86_64.tar.gz*
 
   # Linux on RISC-V (riscv64), cross-compiled. GitHub has no RISC-V runner,
@@ -1305,6 +1343,7 @@ jobs:
   # matrix stay with riscv64.yml on real hardware.
   linux-riscv64:
     name: linux-riscv64 (cross-compiled, gated under QEMU)
+    needs: release-meta
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -1402,6 +1441,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
+          make_latest: ${{ needs.release-meta.outputs.latest }}
           files: rakupp-linux-riscv64.tar.gz*
 
   # Alpine, and every other Linux whose libc is musl. The linux-* archives the
@@ -1430,6 +1470,7 @@ jobs:
   # example suite runs here, which it cannot under the riscv64 emulator.
   linux-musl:
     name: ${{ matrix.name }}
+    needs: release-meta
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -1545,6 +1586,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
+          make_latest: ${{ needs.release-meta.outputs.latest }}
           files: rakupp-${{ matrix.name }}.tar.gz*
 
   # `curl -fsSL https://raku.online/install.sh | sh` is the headline install

@@ -198,7 +198,17 @@ function comb(s, pat, ...rest) {
     }
     const p = str(pat), out = [];
     if (p === '') return mkList(graphemes(s));
-    let i = 0; while ((i = s.indexOf(p, i)) >= 0) { out.push(p); i += p.length; if (limit !== undefined && out.length >= toInt(limit)) break; }
+    if (unitIsGrapheme(s)) {
+        let i = 0; while ((i = s.indexOf(p, i)) >= 0) { out.push(p); i += p.length; if (limit !== undefined && out.length >= toInt(limit)) break; }
+        return mkList(out);
+    }
+    // whole clusters only, as the interpreter's graphemeFind: "a\r\nb".comb("\n") finds none
+    const g = graphemes(s), ng = graphemes(p);
+    outer: for (let i = 0; i + ng.length <= g.length; ) {
+        for (let j = 0; j < ng.length; j++) if (g[i + j] !== ng[j]) { i++; continue outer; }
+        out.push(p); i += ng.length;
+        if (limit !== undefined && out.length >= toInt(limit)) break;
+    }
     return mkList(out);
 }
 function indent(s, n) {

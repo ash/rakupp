@@ -84,7 +84,8 @@ The `DIFFER` bucket is a mix of nondeterminism (random shuffles, hash ordering)
 and genuine bugs. Confirmed bugs:
 
 - **`100 doors`** — `for @array[slice] { .=not }` doesn't rw-alias slice
-  elements (works for a plain `@a`, not a subscript).
+  elements (works for a plain `@a`, not a subscript). Fixed 2026-10-19: the
+  program's `.=not for @doors[0, $_ ... 100]` now opens the right doors.
 - **`10001th prime`** — a prime-sieve pipeline yields `(Any)` instead of the number.
 - **`First-class functions`** — `0` where `0.5` expected (integer vs Rat division).
 - **`Find square difference`** — wildly wrong output (`one` vs `501`).

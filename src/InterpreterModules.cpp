@@ -2845,11 +2845,17 @@ void Interpreter::emitTest(bool ok, const std::string& desc, const std::string& 
         std::cout << "\n" << std::flush;   // see the top-level line below
         todoFailDiag(ind);
         if (realFail) {
-            // Rakudo's two-line form when there is a description
+            // Rakudo's two-line form when there is a description, indented as
+            // the subtest's own lines are
             const int ln = testAssertLine_ ? testAssertLine_ : (int)curLine_;
-            if (desc.empty()) std::cerr << "# Failed test at " << srcFile_ << " line " << ln << "\n";
-            else std::cerr << "# Failed test '" << desc << "'\n# at " << srcFile_ << " line " << ln << "\n";
-            if (!extraDiag.empty()) std::cerr << extraDiag;
+            if (desc.empty()) std::cerr << ind << "# Failed test at " << srcFile_ << " line " << ln << "\n";
+            else std::cerr << ind << "# Failed test '" << desc << "'\n" << ind << "# at " << srcFile_ << " line " << ln << "\n";
+            for (size_t b = 0; b < extraDiag.size();) {
+                size_t e = extraDiag.find('\n', b);
+                if (e == std::string::npos) e = extraDiag.size() - 1;
+                std::cerr << ind << extraDiag.substr(b, e - b + 1);
+                b = e + 1;
+            }
             maybeDieOnFail();
         }
         return;
@@ -4755,7 +4761,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 for (const char* n : nctNames)
                     global_->define(std::string("NativeCall::Types::") + n, Value::typeObj(n));
             }
-            if (u->module == "Test") usedTest_ = true;
+            if (u->module == "Test") { usedTest_ = true; if (tctx_.cur) tctx_.cur->define("\x01import:Test", Value::boolean(true)); }   // (stash marker: makePseudoStash)
             else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {
                 // language version pragma: use v6.c / v6.d / v6.e[.PREVIEW]
                 // A BARE `use v6;` asks for "some Raku 6", which means the

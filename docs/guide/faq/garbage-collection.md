@@ -361,10 +361,12 @@ its `DESTROY` does not run a second time when it is dropped again.
 
 ## Does dropping a filehandle close it?
 
-**No — and this is a difference from Rakudo.** Writes accumulate in the handle,
-and an open write handle is registered so that its contents are flushed if the
-program ends without a `close`. That registration is itself a reference, so
-letting the variable go does not flush anything:
+**Not at once, in either engine.** A write handle the program lets go of
+without a `.close` keeps its file descriptor: here until the program exits,
+because the exit-flush registry holds it so that its last bytes reach the file
+even then; in Rakudo until the garbage collector gets to it. Two hundred
+dropped handles left two hundred descriptors open in both (measured
+2026-10-19). What was printed is in the file either way:
 
 ```raku
 sub writer() {
@@ -372,15 +374,11 @@ sub writer() {
     $fh.print("hello");          # no close
 }
 writer();
-say "size right after: ", "out.txt".IO.s;
+say "size right after: ", "out.txt".IO.s;      # 5, on both
 ```
 
-| rakupp | Rakudo |
-|---|---|
-| `size right after: 0` | `size right after: 5` |
-
-The bytes do arrive — at `.close`, or at program exit — but not when the
-handle goes out of scope. Close it, and both engines agree:
+So close what you are done with, or a long-running program runs out of
+descriptors:
 
 ```raku
 sub writer() {
@@ -388,14 +386,11 @@ sub writer() {
     LEAVE { $fh.close }
     $fh.print("hello");
 }
-writer();
-say "size right after: ", "out.txt".IO.s;      # 5, on both
 ```
 
-Note also that opening write handles in a long-running loop grows memory even
-when you close them: the exit-flush registry keeps every handle it was given
-(~4 KB each, measured over 40,000 open/close pairs). For a program that opens
-tens of thousands of files, that is worth knowing about.
+A closed handle costs nothing afterwards: `.close` takes it out of the
+registry. Before 2026-10-19 the registry kept every handle it was given, and a
+loop that opened and closed 40,000 files grew to 91 MB; it now stays at 2 MB.
 
 ## Can I force a collection?
 

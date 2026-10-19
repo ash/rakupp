@@ -575,8 +575,9 @@ struct JsGen {
             if (codeVisible(bare)) return mangleVar(n);   // a `&`-variable in scope beats a sub of the name
             if (subVisible(bare)) return mangleSub(bare);
             if (kBuiltins.count(bare)) return rt(bare);
-            if (bare.rfind("infix:<", 0) == 0) return "R.opFn(" + jsStr(bare.substr(7, bare.size() - 8)) + ")";
-            if (bare.size() > 2 && bare.front() == '[' && bare.back() == ']') return "R.opFn(" + jsStr(bare.substr(1, bare.size() - 2)) + ")";
+            // (opRef: a value that may also be called with ONE argument, `&infix:<->(10)`)
+            if (bare.rfind("infix:<", 0) == 0) return "R.opRef(" + jsStr(bare.substr(7, bare.size() - 8)) + ")";
+            if (bare.size() > 2 && bare.front() == '[' && bare.back() == ']') return "R.opRef(" + jsStr(bare.substr(1, bare.size() - 2)) + ")";
             return mangleVar(n);
         }
         string js = mangleVar(n);
@@ -1065,9 +1066,10 @@ struct JsGen {
         return lvExpr(lv, lv.set(binop(bop, lv.get, exArg(a->value.get()), a->line)));
     }
     // ($a, $b) = ... / my ($a, @rest) = ...
-    // A nested target, `($a, ($b, $c)) = …`, is not handled here: Rakudo flattens
-    // the left side of an assignment (and destructures only in a `my (…)`
-    // declaration), the interpreter destructures both, and lvalue() refuses it.
+    // A nested target, `($a, ($b, $c)) = …`, is flattened one level into the
+    // containers, as Rakudo and the interpreter (assignListTarget) do. A
+    // `my (…)` declaration destructures a nested list instead, which is not
+    // handled here: lvalue() refuses it.
     string listAssign(ListExpr* l, Expr* value) {
         // One term on the right is iterated even when it is an item, as in
         // Rakudo: `my ($a, $b) = $pair` and `my ($h, $v, $d) = @bands[1]` both
@@ -1079,9 +1081,21 @@ struct JsGen {
     string listAssignFrom(ListExpr* l, const string& src) {
         string arr = tmp();
         string r = "(" + arr + " = " + src;
-        size_t i = 0;
+        bool allDecl = true, anyVar = false;
+        auto scan = [&](Expr* t) {
+            if (t && t->kind == NK::VarExpr) { anyVar = true; if (!static_cast<VarExpr*>(t)->declare) allDecl = false; }
+        };
         for (auto& it : l->items) {
-            Expr* t = it.get();
+            scan(it.get());
+            if (it->kind == NK::ListExpr) for (auto& in : static_cast<ListExpr*>(it.get())->items) scan(in.get());
+        }
+        std::vector<Expr*> targets;
+        for (auto& it : l->items)
+            if (it->kind == NK::ListExpr && !(anyVar && allDecl))
+                for (auto& in : static_cast<ListExpr*>(it.get())->items) targets.push_back(in.get());
+            else targets.push_back(it.get());
+        size_t i = 0;
+        for (Expr* t : targets) {
             if (t->kind == NK::VarExpr && static_cast<VarExpr*>(t)->name[0] == '@') {
                 r += ", " + lvalue(t).set("R.mkArray(" + arr + ".slice(" + std::to_string(i) + "))") ; i = 1000000; continue;
             }
@@ -1109,6 +1123,7 @@ struct JsGen {
     }
     string declDefault(VarExpr* v) {
         char sig = v->name[0];
+        if ((sig == '@' || sig == '%') && !v->d().declCoerce.empty()) refuse("a coercion-typed array or hash", v->line);   // (see the initialized form)
         if (v->d().declDefault && (sig == '@' || sig == '%')) return "R.withDefault(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + exArg(v->d().declDefault.get()) + ")";
         if (v->d().declDefault) return exArg(v->d().declDefault.get());
         if ((sig == '@' || sig == '%') && !v->d().declType.empty()) return "R.withOf(" + string(sig == '@' ? "R.mkArray([])" : "R.mkHash()") + ", " + typeObj(v->d().declType, v->line) + ")";
@@ -2090,6 +2105,9 @@ struct JsGen {
                 else if (sig == '%') init = "R.newHash(" + listSource(a->value.get()) + ")";
                 else if (!v->d().declCoerce.empty()) init = "R.coerce(" + typeObj(v->d().declCoerce, v->line) + ", " + exArg(a->value.get()) + ")";
                 else init = exArg(a->value.get());
+                // a COERCING container (`my Hash() %h`) converts what it stores; the
+                // runtime only type-checks it, and would refuse the very values it converts
+                if ((sig == '@' || sig == '%') && !v->d().declCoerce.empty()) refuse("a coercion-typed array or hash", v->line);
                 if ((sig == '@' || sig == '%') && !v->d().declType.empty()) init = "R.withOf(" + init + ", " + typeObj(v->d().declType, v->line) + ")";
                 if ((sig == '@' || sig == '%') && v->d().declDefault) init = "R.withDefault(" + init + ", " + exArg(v->d().declDefault.get()) + ")";   // `is default(v)`: what a missing element answers
                 line(ind, declKw(mangleVar(v->name), v->d().declScope == "constant" ? "const " : "let ") + mangleVar(v->name) + " = " + init + ";");
@@ -2755,6 +2773,15 @@ struct JsGen {
             if (simple) { for (int i = 0; i < pi; i++) fwd += (isMethod || i ? ", " : "") + string("_pos[") + std::to_string(i) + "]"; }
             fwd += ")";
             disp += "        if (" + guard + ") return " + (anyAsync ? "await " : "") + base + "__" + std::to_string(k) + fwd + ";\n";
+        }
+        // A user multi for a built-in infix EXTENDS it, as in the interpreter's
+        // dispatcher: what no candidate takes goes to the built-in, two
+        // arguments and the one-argument form alike (a user-only operator has
+        // no entry in OPS, and stays a no-match)
+        if (!isMethod && name.size() > 8 && name.rfind("infix:<", 0) == 0 && name.back() == '>') {
+            const string op = jsStr(name.substr(7, name.size() - 8));
+            disp += "        if (R.OPS[" + op + "] && _pos.length === 2) return R.OPS[" + op + "](_pos[0], _pos[1]);\n";
+            disp += "        if (R.OPS[" + op + "] && _pos.length === 1) return R.infixOneArg(" + op + ", _pos[0]);\n";
         }
         disp += "        R.noMatch(" + jsStr(name) + ", _args);\n    }";
         emitFnText(disp, ind);

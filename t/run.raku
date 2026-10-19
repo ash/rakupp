@@ -1017,6 +1017,27 @@ section('native bodies for embedded module routines (--exe)');
     }
 }
 
+# ---- atomic operations in native code (--exe) ----------------------------
+# `$n⚛++` and `cas` are special forms on a container; native codegen used to
+# emit them as calls of routines that do not exist. The program checks itself
+# (PASS); the binary must be native and print what the interpreter prints.
+section('atomic operations in native code (--exe)');
+{
+    my $prog = $ROOT.add('t/regression/exe-atomic-ops.raku');
+    my $want = run($*EXECUTABLE, $prog.Str, :out).out.slurp(:close);
+    is($want.lines.tail, 'PASS', 'interpreter: the atomic-ops program passes');
+    for (), ('-O',) -> @opt {
+        my $desc = ('--exe', |@opt).join(' ');
+        my $bin  = $*TMPDIR.add("rakupp-suite-atomic{@opt.join}-$*PID").Str;
+        my $c = run($*EXECUTABLE, '--exe', |@opt, $prog.Str, '-o', $bin, :out, :err);
+        my $cout = $c.out.slurp(:close) ~ $c.err.slurp(:close);
+        unless $c.exitcode == 0 { ok(False, "$desc builds the atomic-ops program"); diag($cout); next }
+        ok($cout.contains('Compiled (native)'), "$desc compiles the atomic-ops program natively");
+        is(run($bin, :out, :err).out.slurp(:close), $want, "$desc: atomic operations agree with the interpreter");
+        try unlink $bin;
+    }
+}
+
 # ---- module loading & the precomp cache --------------------------------
 # Smoke coverage for the module system itself, and specifically for the parsed-
 # AST cache's INVALIDATION. Every bug found in that cache so far — entries

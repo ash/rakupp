@@ -252,6 +252,26 @@ const OPS = {
     '!(elem)': (a, b) => !elem(a, b), '∉': (a, b) => !elem(a, b), '!(cont)': (a, b) => !elem(b, a), '∌': (a, b) => !elem(b, a),
     '~&': (a, b) => strBitOp(a, b, (x, y) => x & y), '~|': (a, b) => strBitOp(a, b, (x, y) => x | y), '~^': (a, b) => strBitOp(a, b, (x, y) => x ^ y),
 };
+// A ONE-argument call of an infix is its reduction form, as the interpreter's
+// Interpreter::infixOneArgForm: a chaining comparison is True, + - * / numify,
+// ~ stringifies, a set operator coerces (to a Bag for (+)), anything else is
+// the argument. opRef is `&infix:<OP>` as a value, which may be called so;
+// opFn stays the bare two-argument function the reductions call.
+const SET_ONE = { '(|)': 'Set', '∪': 'Set', '(&)': 'Set', '∩': 'Set', '(-)': 'Set', '∖': 'Set', '(^)': 'Set', '⊖': 'Set', '(+)': 'Bag', '⊎': 'Bag' };
+function infixOneArg(op, a) {
+    if (isChainOp(op)) return true;
+    if (op === '+' || op === '-') return add(0, a);
+    if (op === '*' || op === '/') return mul(1, a);
+    if (op === '~') return str(a);
+    if (SET_ONE[op]) return toSetty(a, T[SET_ONE[op]]);
+    return a;
+}
+function opRef(op) {
+    const f = opFn(op);
+    const g = (...a) => a.length === 1 && !(a[0] instanceof RNamed) ? infixOneArg(op, a[0]) : f(...a);
+    g.opName = f.opName; g.rightAssoc = f.rightAssoc;
+    return g;
+}
 function strBitOp(a, b, f) { const x = str(a), y = str(b); const n = Math.max(x.length, y.length); let o = ''; for (let i = 0; i < n; i++) o += String.fromCharCode(f(x.charCodeAt(i) || 0, y.charCodeAt(i) || 0)); return o; }
 const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
 function opFn(op) { let f = OPS[op]; if (!f && op[0] === '!' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => !truthy(g(a, b)); }   // [!after]: the negated operator
@@ -372,7 +392,7 @@ Object.assign(R, {
     floor, ceiling, truncate, round, sign, 'is-prime': isPrime, expmod, polymod, factorial, rand, randNum, srand, min, max, sum, elems, end, join, reverse, sort, map, grep, first,
     unique, keys, values, kv, pairs, push, append, pop, shift, unshift, prepend, splice, zip, roundrobin, head, tail, defined: defd, item, flat: flatten, pick, roll,
     categorize, classify, opFn, val, allo, '__radix': radix, '__radix-list': radixList, '__qqww': qqww, reduce, produce, any: anyJ, all: allJ, none: noneJ, one: oneJ, set, bag, mix, chrs: chrsOf, ords: ordsOf, ucfirst, slurp: slurpB, spurt: spurtB,
-    lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
+    lines: linesB, get, prompt, sleep, now, time, open, close, mkdir, rmdir, unlink, dir, chdir, shell, run, ioPath, EVAL, OPS, opFn, opRef, infixOneArg, reduceOp, zipOp, crossOp, hyperOp, hyperPrefix,
     assumingCall, seqOp, lazyOf, eagerOf, cacheOf, chars, ord, chr, uc, lc, tc, tclc, flip, trim, chomp, chop, substr, index: strIndex, rindex: strRindex, split: (sep, s, ...a) => strSplit(s, sep, ...a), words, comb,
     sprintf, abs, gcd, lcm, not, so, gist, raku, str, numify, truncate, 'trim-leading': trimLeading, 'trim-trailing': trimTrailing, samecase, indent, fc, wordcase, minmax: minmaxOf, 'is-prime': isPrime, warn, die, fail, take,
     unival, exists: (v) => defined(v), squish: (...items) => squishList(items.length === 1 ? items[0] : mkList(items)),

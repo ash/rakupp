@@ -682,6 +682,39 @@ So:
    **tag date** against [CHANGELOG.md](../../CHANGELOG.md). Do not read the
    number.
 
+## A patch release from a release branch
+
+Users install tags, not `main` ([INSTALL.md](../guide/INSTALL.md#which-version)),
+and a patch release holds fixes only. When the newest minor needs a fix and
+`main` has moved on, the patch is cut from a branch made from that minor's tag,
+not from `main`:
+
+```bash
+git switch -c release/5.4 v5.4.0      # once per minor; reuse it for 5.4.2, 5.4.3 …
+git cherry-pick -x <fix>…              # fixes only: no features, no refactors
+```
+
+Land each fix on `main` first and cherry-pick it from there (`-x` records the
+source commit), so `main` never lacks a fix a release has. Then bump the
+version (step 1 of [Then](#then), on the branch), add the CHANGELOG entry, run
+the gates on the branch, and tag and push both:
+
+```bash
+git tag -a v5.4.2 -m v5.4.2 && git push origin release/5.4 v5.4.2
+```
+
+The tag builds and publishes like any other. Whether it becomes the
+repository's latest release is decided by the `release-meta` job in
+[release.yml](../../.github/workflows/release.yml): only the highest `vX.Y.Z`
+tag is marked latest, and only it gets ghcr.io's `:latest`, so a `v5.3.1` cut
+after `v5.4.0` leaves `install.sh`, `rakupp upgrade` and every
+`releases/latest/download/` link on 5.4. Its `:5.3.1` and `:5.3` image tags
+are updated, and `:5.3` is what a 5.3 user pulls.
+
+On `main`, the CHANGELOG gets the same entry under its own version. The
+Homebrew formula follows the newest minor only: do not point it at an older
+minor's patch.
+
 ## Then
 
 1. Bump `project(RakuPP VERSION …)` in [CMakeLists.txt](../../CMakeLists.txt),

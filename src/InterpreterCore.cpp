@@ -2749,6 +2749,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             throwTyped("X::AdHoc", {}, "Too many positionals passed; expected 0 arguments but got 1");
         return forResult();
     }
+    // `for 1..3 <-> $x`: no container to bind (Rakudo's X::Parameter::RW)
+    if (fs->rwVars && fs->list && !fs->destructure) refuseRwOverBareValues(fs);
     // for over .values/.kv/.pairs of a SetHash/BagHash/MixHash ALIASES the
     // weights: mutations through the loop variable write back into the
     // container, and a weight of 0 (BagHash also <0) removes the element
@@ -3042,7 +3044,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         std::vector<size_t> pick;
         bool picked = false;
         if (!rw && !derefArr)
-            if (auto gv = grepArrayView(fs->list.get())) {
+            if (auto gv = grepArrayView(fs->list.get()); gv || (gv = sliceArrayView(fs->list.get()))) {
                 derefArr = gv->first; pick = std::move(gv->second); picked = true;
             }
         if (derefArr) { lv.setArr(derefArr); rw = true; }
@@ -3740,7 +3742,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 // write back the wrong ones.
                 else if (auto d = valuesArrayAlias(fs->list.get())) { arr = d; rw = true; }
                 else if (auto d = reverseArrayAlias(fs->list.get())) { arr = d; rw = true; reversed = true; }
-                else if (auto gv = grepArrayView(fs->list.get())) {
+                else if (auto gv = grepArrayView(fs->list.get()); gv || (gv = sliceArrayView(fs->list.get()))) {
                     arr = gv->first; rw = true; pick = std::move(gv->second); picked = true;
                 }
             }
@@ -6082,7 +6084,8 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             // Rakudo); a Set, a Date, a Promise … are not
             if (type == "Cool") return isCoolValue(arg);
             if (!hashKindIsAssociative(arg.hashKind)) return false;
-            return type == "Hash" || type == "Map" || type == "Associative";
+            if (type == "Associative") return true;
+            return (type == "Hash" || type == "Map") && hashKindIsMap(arg.hashKind);
         // a Pair DOES Associative in Raku: `(a => 1) ~~ Associative` is True,
         // and Crane's traversal dispatches its whole `at`/`in` family on
         // `Associative:D`, so a Pair in a path missed every candidate and came
@@ -7965,6 +7968,7 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
         ":D); the following candidates match the type but require mutable arguments"};
 }
 
+static Value setCoerceOne(const std::string& op, const Value& v);   // (below)
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx_;   // one thread-local resolution — see execBlock
     // the name the call site used (the arity check's), consumed before anything
@@ -8464,6 +8468,20 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                         // no built-in either: on to the no-candidate error below
                     }
                 }
+                // …and so does the ONE-argument form every built-in infix has
+                // (`&infix:<->(10)` is 10, `&infix:<(|)>(1)` is Set(1)). A probe
+                // on two Ints, which reach no user code, tells a built-in operator
+                // from a user-only one, for which this stays X::Multi::NoMatch.
+                if (as.size() == 1 && c.ci().name.size() > 8 && c.ci().name.back() == '>' &&
+                    c.ci().name.rfind("infix:<", 0) == 0) {
+                    const std::string bop = c.ci().name.substr(7, c.ci().name.size() - 8);
+                    bool known = true;
+                    try { applyArith(bop, Value::integer(1), Value::integer(1)); }
+                    catch (RakuError& e) { if (e.message.rfind("Unsupported operator", 0) == 0) known = false; }
+                    Value r;
+                    if (known && isSetOpStr(bop) && !isSetPredicateStr(bop)) return setCoerceOne(bop, as[0]);
+                    if (known && infixOneArgForm(bop, as[0], r)) return r;
+                }
                 // Same rule for a plain named routine: `multi sub is-prime(Complex:D)`
                 // ADDS a candidate to the built-in &is-prime, it does not hide it.
                 // Rakudo keeps CORE's candidates in the same dispatch, so a call the
@@ -8603,40 +8621,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                         "Cannot resolve caller Numeric(Whatever:D: ); none of these signatures matches:\n"
                         "    (Mu:U \\v: *%_)");
     }
-    // A ONE-ARGUMENT call to an infix operator is its REDUCTION form. Rakudo
-    // gives every infix a one-arg candidate precisely so that folding a single
-    // element has something to call, and it answers that element: `&infix:<->(10)`
-    // is 10, not -10. The two-arg builtin falls into the PREFIX reading instead —
-    // `(10,).reduce(&infix:<->)` reported it as -10, and `&infix:</>(10)` as 0.1.
-    // A CHAINING comparison is vacuously True: there is no second operand to
-    // disagree with (Nil-Any sheet NA-47). The Call-node spelling `infix:<->(10)`
-    // already had this rule; this is the same one for the Callable. Set operators
-    // keep theirs — a one-argument set op COERCES, which the builtin does — and so
-    // do the list infixes, whose one-argument form is a one-row list.
+    // A ONE-ARGUMENT call to an infix operator is its REDUCTION form (infixOneArgForm)
     if (c.ci().builtin && args.size() == 1 && c.ci().name.rfind("infix:<", 0) == 0 &&
         c.ci().name.size() > 8 && c.ci().name.back() == '>') {
-        std::string op = c.ci().name.substr(7, c.ci().name.size() - 8);
-        bool isAssign = opEq(op, "=") ||
-            (op.size() >= 2 && op.back() == '=' && !opEq(op, "==") && !opEq(op, "!=") &&
-             !opEq(op, "<=") && !opEq(op, ">=") && !opEq(op, "=:=") && !opEq(op, "!==") && !opEq(op, ".=") &&
-             // …and the identity/approximation family, which also ENDS in `=`:
-             // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
-             !opEq(op, "===") && !opEq(op, "!===") && !opEq(op, "!=:=") && !opEq(op, "=~=") && !opEq(op, "!=~="));
-        if (!isAssign && !isSetOpStr(op) && !opEq(op, ",") && op[0] != 'Z' && op[0] != 'X') {
-            static const std::set<std::string> kChaining = {
-                "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
-                "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
-                "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
-            if (kChaining.count(op)) return Value::boolean(true);
-            // the arithmetic ones NUMIFY their one argument (`&infix:<+>("2")`
-            // is 2, `&infix:<->(10)` still 10 — see applyReduce)
-            // …and `~` STRINGIFIES its one (S32-list/unique.t maps with `&[~]`)
-            if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "~")) {
-                ValueList one{args[0]};
-                return applyReduce(op, one);
-            }
-            return args[0];
-        }
+        Value r;
+        if (infixOneArgForm(c.ci().name.substr(7, c.ci().name.size() - 8), args[0], r)) return r;
     }
     if (c.ci().builtin) {
         // A WhateverCode takes exactly as many positionals as it has stars:
@@ -13534,6 +13523,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         static_cast<VarExpr*>(a->target.get())->declare &&
         static_cast<VarExpr*>(a->target.get())->d().declScope == "constant";
     Value r;
+    ParkedSubscriptsScope parkedScope{*this};   // what evalAssignInner parks is gone after it
     bool sameTypeOk = false;
     Value* ctSlot = constInit ? nullptr : compoundCheckSlot(a, sameTypeOk);
     if (ctSlot) {
@@ -17224,6 +17214,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     return sink ? Value::any() : *lv;
                 }
             }
+            // a `$` variable or one element is a scalar container and holds a
+            // List, Array or Hash as ONE item, as `=` stores it: after
+            // `%h<a> //= (1, 2, 3)`, `my @a = %h<a>` has one element
+            const auto* sci = scElem ? static_cast<Index*>(a->target.get())->index.get() : nullptr;
+            if (scalarTarget || (sci && sci->kind != NK::ArrayLit && sci->kind != NK::ListExpr &&
+                                 sci->kind != NK::Range)) itemizeScalar(rhs);
             { SlotStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
             if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : itemize(*lv);
@@ -20190,8 +20186,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 // exclusion below). BSON::Simple's `when Associative` sits ahead
                 // of its `when Dateish`, so a True here encoded a DateTime as a
                 // sub-document of its own accessors.
-                else if ((r.s == "Associative" || r.s == "Map") && l.t == VT::Hash &&
+                else if (r.s == "Associative" && l.t == VT::Hash &&
                          hashKindIsAssociative(l.hashKind)) res = true;
+                else if (r.s == "Map" && l.t == VT::Hash && hashKindIsMap(l.hashKind)) res = true;
                 else if (r.s == "Callable" && l.t == VT::Code) res = true;
                 // ...but only for actual strings: an IO::Path/Version/IO::Special
                 // or an ObjAt rides on VT::Str and is NOT Stringy (Blob/Buf
@@ -26252,50 +26249,10 @@ Value Interpreter::evalCall(Call* c) {
             Value* lv = nullptr;
             try { lv = lvalue(c->args[0].get()); } catch (RakuError&) {}
             if (lv) {
-                if (args.size() >= 3) {
-                    // IDENTITY, not `eqv`. Rakudo's cas compares the container's
-                    // object against the expected one — `===`. `eqv` is the
-                    // structural walk, which for the linked list cas.t builds
-                    // descends both `.next` chains on every FAILED swap, and
-                    // would swap on two distinct-but-equal objects, which a
-                    // compare-and-swap must never do.
-                    // the new value must suit the container's declared type
-                    // (`my Node $head` refuses `Any.new`, a subset its where)
-                    Value nv = args[2];
-                    if (c->args[0]->kind == NK::VarExpr) {
-                        const std::string& vn = static_cast<VarExpr*>(c->args[0].get())->name;
-                        if (!vn.empty() && vn[0] == '$') enforceTypedAssign(vn, nv);
-                    }
-                    std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
-                    Value seen = *lv;
-                    if (applyArith("===", seen, args[1]).truthy()) *lv = nv;
-                    return seen;
-                }
-                if (args[1].t == VT::Code) {
-                    // The code form is a real compare-and-swap RETRY LOOP: read
-                    // under the stripe, run the user code with NO lock held,
-                    // then commit only if the container still holds the value
-                    // we read — else retry with the fresh one. Running the code
-                    // UNDER the stripe (the old shape) deadlocked: with three
-                    // threads doing `cas %seen{$_}, {.succ}` each holds its
-                    // element's stripe while the closure's `$_` read takes
-                    // another pool stripe — a 64-slot collision makes that ABBA
-                    // (thread.t's parallel livelock, the P5 blocker). Rakudo
-                    // documents the block may be invoked more than once.
-                    for (;;) {
-                        Value seen;
-                        { std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv)); seen = *lv; }
-                        Value next = callCallable(args[1], ValueList{seen});
-                        if (c->args[0]->kind == NK::VarExpr) {
-                            const std::string& vn = static_cast<VarExpr*>(c->args[0].get())->name;
-                            if (!vn.empty() && vn[0] == '$') enforceTypedAssign(vn, next);
-                        }
-                        std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
-                        if (applyArith("===", *lv, seen).truthy()) { *lv = next; return next; }
-                    }
-                }
-                std::lock_guard<std::recursive_mutex> lk(atomicStripe(lv));
-                return *lv;
+                const std::string vn = c->args[0]->kind == NK::VarExpr ? static_cast<VarExpr*>(c->args[0].get())->name : std::string();
+                Value r;
+                atomicOn("cas", *lv, ValueList(args.begin() + 1, args.end()), vn, r);
+                return r;
             }
             // no container to swap in (`cas([].item, Any, 42)`)
             if (args.size() >= 3)
@@ -26341,34 +26298,12 @@ Value Interpreter::evalCall(Call* c) {
         // container by reference, so operate on its lvalue.
         if (special && c->name.rfind("atomic-", 0) == 0 && !c->args.empty() && !tctx_.cur->find(callAmpName(c))) {
             if (Value* lv = lvalue(c->args[0].get())) {
-                // REAL atomicity (the GIL used to be the only serialization —
-                // in parallel mode these lost updates: 12,540 of 20,000 in the
-                // stress suite's first run). Operands evaluate OUTSIDE the
-                // stripe — user code must never run under it from here.
-                Value arg2; bool haveArg2 = c->args.size() > 1;
-                if (haveArg2) arg2 = eval(c->args[1].get());
-                std::lock_guard<std::recursive_mutex> alock(atomicStripe(lv));
-                long long cur = lv->toInt();
-                long long n2 = haveArg2 ? arg2.toInt() : 0;
-                if (c->name == "atomic-fetch")     return *lv;
-                if (c->name == "atomic-fetch-inc") { *lv = Value::integer(cur + 1);   return Value::integer(cur); }
-                if (c->name == "atomic-fetch-dec") { *lv = Value::integer(cur - 1);   return Value::integer(cur); }
-                if (c->name == "atomic-inc-fetch") { *lv = Value::integer(cur + 1);   return *lv; }
-                if (c->name == "atomic-dec-fetch") { *lv = Value::integer(cur - 1);   return *lv; }
-                if (c->name == "atomic-fetch-add") { *lv = Value::integer(cur + n2);  return Value::integer(cur); }
-                if (c->name == "atomic-fetch-sub") { *lv = Value::integer(cur - n2);  return Value::integer(cur); }
-                if (c->name == "atomic-add-fetch") { *lv = Value::integer(cur + n2);  return *lv; }
-                if (c->name == "atomic-sub-fetch") { *lv = Value::integer(cur - n2);  return *lv; }
-                if (c->name == "atomic-assign") {
-                    // the same typed-assign contract as plain `=`: a declared
-                    // Int/Str/... rejects mismatches, atomicint coerces
-                    // numerics; an undeclared Scalar takes anything (⚛ on a
-                    // plain container is atomic REFERENCE assignment).
-                    if (c->args[0]->kind == NK::VarExpr)
-                        enforceTypedAssign(static_cast<VarExpr*>(c->args[0].get())->name, arg2);
-                    *lv = arg2;
-                    return arg2;
-                }
+                // (operands evaluate OUTSIDE the stripe: user code never runs under it)
+                ValueList more;
+                if (c->args.size() > 1) more.push_back(eval(c->args[1].get()));
+                const std::string vn = c->args[0]->kind == NK::VarExpr ? static_cast<VarExpr*>(c->args[0].get())->name : std::string();
+                Value r;
+                if (atomicOn(c->name, *lv, more, vn, r)) return r;
             }
         }
         if (Value* f = tctx_.cur->find(callAmpName(c))) {
@@ -26504,8 +26439,8 @@ Value Interpreter::evalCall(Call* c) {
         // `@a.grep(* %% 2).>>++` — grep hands back @a's own CONTAINERS, so the
         // postfix lands in @a: apply it to the kept elements and write each back
         // into its slot (S32-list/grep.t)
-        if (c->args.size() == 1)
-            if (auto kept = grepArrayView(c->args[0].get())) {
+        if (c->args.size() == 1)   // …and so does a slice (`@a[^2]».++`)
+            if (auto kept = grepArrayView(c->args[0].get()); kept || (kept = sliceArrayView(c->args[0].get()))) {
                 Value tmp = Value::array();
                 for (size_t k : kept->second) tmp.arr()->push_back((*kept->first)[k]);
                 Value r = hyperPostfixApply(c->name.substr(15, c->name.size() - 16), tmp);

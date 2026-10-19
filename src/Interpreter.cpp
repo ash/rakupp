@@ -3177,7 +3177,11 @@ size_t rtPosCount(const ValueList& a, size_t from) {
 // pragma, lib paths, real module loading into the runtime env.
 void Interpreter::rtUse(const std::string& module, const std::string& arg, bool isNo,
                         const std::vector<std::string>& importArgs) {
-    if (module == "Test") { usedTest_ = true; return; }
+    if (module == "Test") {   // (the stash marker, as the UseStmt arm leaves it)
+        usedTest_ = true;
+        if (tctx_.cur) tctx_.cur->define("\x01import:Test", Value::boolean(true));
+        return;
+    }
     // `use experimental :rakuast`, as the interpreter's UseStmt arm does it.
     // The parse-time flag on the Program governs hoisted routines; this one is
     // the running unit's own state, which an EVAL inside compiled code reads.
@@ -6773,8 +6777,40 @@ void Interpreter::drainWorkers() {
     gilHeld_ = false;
 }
 
+void Interpreter::registerWriteHandle(const PRef<ValueMap>& h) {
+    if (!h) return;
+    std::lock_guard<std::mutex> lk(writeHandlesM_);
+    if (writeHandleSlot_.count(h.get())) return;
+    writeHandleSlot_[h.get()] = openWriteHandles_.size();
+    openWriteHandles_.push_back(h);
+}
+
+void Interpreter::forgetWriteHandle(const ValueMap* h) {
+    PRef<ValueMap> dropped;   // released after the lock, should it be the last reference
+    std::lock_guard<std::mutex> lk(writeHandlesM_);
+    auto it = writeHandleSlot_.find(h);
+    if (it == writeHandleSlot_.end()) return;
+    dropped = std::move(openWriteHandles_[it->second]);
+    writeHandleSlot_.erase(it);
+    if (++writeHandleHoles_ < 64 || writeHandleHoles_ * 2 < openWriteHandles_.size()) return;
+    size_t n = 0;
+    for (auto& e : openWriteHandles_)
+        if (e) { writeHandleSlot_[e.get()] = n; openWriteHandles_[n++] = std::move(e); }
+    openWriteHandles_.resize(n);
+    writeHandleHoles_ = 0;
+}
+
 void Interpreter::flushOpenWriteHandles() {
-    for (auto& h : openWriteHandles_) {
+    // (at exit, after the workers are drained: nothing registers any more, but
+    // take the list under the lock all the same)
+    std::vector<PRef<ValueMap>> handles;
+    {
+        std::lock_guard<std::mutex> lk(writeHandlesM_);
+        handles.swap(openWriteHandles_);
+        writeHandleSlot_.clear();
+        writeHandleHoles_ = 0;
+    }
+    for (auto& h : handles) {
         if (!h) continue;
         auto cl = h->find("closed"); if (cl != h->end() && cl->second.truthy()) continue;
         auto fl = h->find("flushed"); if (fl != h->end() && fl->second.truthy()) continue;
@@ -6792,7 +6828,6 @@ void Interpreter::flushOpenWriteHandles() {
         // translations.
         fhAppendToFile(h, buf);
     }
-    openWriteHandles_.clear();
 }
 
 // ---- mainline sink-context "Useless use" warnings ------------------------

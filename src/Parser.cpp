@@ -58,6 +58,7 @@ std::string qUnescape(const std::string& s, const std::string& open, const std::
 size_t interpChainEnd(const std::string& src, size_t p, const std::string& stopA = {},
                       const std::string& stopB = {}); // Lexer.cpp
 static bool interpStaticText(const Expr* e, std::string& out);
+static void pointyIntoFor(ForStmt& fs, BlockExpr& be);   // `-> $x {…} for LIST` (below)
 static ExprPtr qqwwStaticWord(const std::string& w, bool val);
 static std::string scanInterpBlock(const std::string& raw, size_t& j, char open, char close);
 
@@ -4119,17 +4120,14 @@ ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
                 u->operand = std::move(operand);
                 return u;
             };
-            if (hyperNext) { // map the postfix over the elements
+            if (hyperNext) { // `».++` is `»++`, the dot optional: the same hyper postfix,
+                // which writes through a slice or a grep view (a `.map` over the
+                // elements took copies: `@a[^2]».++` changed nothing)
                 hyperNext = false;
-                auto mc = std::make_unique<MethodCall>();
-                mc->inv = std::move(base);
-                mc->method = "map";
-                auto blk = std::make_unique<BlockExpr>();
-                auto es = std::make_unique<ExprStmt>();
-                es->e = mkApply(std::make_unique<VarExpr>("$_"));
-                blk->body.push_back(std::move(es));
-                mc->args.push_back(std::move(blk));
-                base = std::move(mc);
+                auto call = std::make_unique<Call>();
+                call->name = "hyper-postfix:<" + op + ">";
+                call->args.push_back(std::move(base));
+                base = std::move(call);
             }
             else base = mkApply(std::move(base));
             continue;
@@ -8015,9 +8013,16 @@ ExprPtr Parser::parsePrimary() {
                 fs->line = e ? e->line : cur().line;
                 fs->list = std::move(list);
                 fs->asExpr = true;
-                fs->body = std::make_unique<Block>();
-                auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
-                fs->body->stmts.push_back(std::move(es));
+                // a POINTY block is the body: `(-> $x { $x + 1 } for 1..3)` is (2 3 4)
+                auto* pb = e && e->kind == NK::BlockExpr && !parenned_.count(e.get())
+                         ? static_cast<BlockExpr*>(e.get()) : nullptr;
+                if (pb && pb->isPointy && !pb->isSub && !pb->isMethodTerm && !pb->isSubmethodTerm)
+                    pointyIntoFor(*fs, *pb);
+                else {
+                    fs->body = std::make_unique<Block>();
+                    auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
+                    fs->body->stmts.push_back(std::move(es));
+                }
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(fs));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
@@ -9514,8 +9519,10 @@ ExprPtr Parser::parsePrimary() {
                                   peek().kind == Tok::Op && peek().text == "!" &&
                                   peek(2).kind == Tok::Ident &&
                                   (peek(2).text == "exists" || peek(2).text == "p");
+                    // (`OUTER::<&g>:exists` too: the adverb was dropped, and the
+                    // lookup's value answered for it)
                     if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL" || pseudoPkg == "UNIT" ||
-                         pseudoPkg == "SETTING" || pseudoPkg == "GLOBAL") &&
+                         pseudoPkg == "SETTING" || pseudoPkg == "GLOBAL" || pseudoPkg == "OUTER") &&
                         isOp(":") && !cur().spaceBefore &&
                         (negAdv || (peek().kind == Tok::Ident &&
                                     (peek().text == "exists" || peek().text == "p")))) {
@@ -15438,6 +15445,33 @@ static std::unique_ptr<Block> wrapStmt(StmtPtr s) {
     return b;
 }
 
+// `-> $x {…} for LIST`, and `do -> $x {…} for LIST`: the pointy block is the
+// loop's BODY and its signature the loop's, read as parseFor reads the same
+// signature after `for LIST`. Only the names used to come across, so `<->` and
+// `is rw` lost their write-through, and `-> {…}` (no parameters) bound nothing
+// where any element is one positional too many.
+static void pointyIntoFor(ForStmt& fs, BlockExpr& be) {
+    bool anySub = false, needsBinding = false;
+    for (auto& p : be.params) {
+        anySub = anySub || (bool)p.subSig;
+        needsBinding = needsBinding || pointyParamNeedsBinding(p);
+        if (p.isRw) fs.rwVars = true;   // `<->` marks every parameter rw
+    }
+    if (be.params.empty()) fs.emptyPointy = true;
+    if (anySub) { fs.destructure = true; fs.params = std::move(be.params); }
+    else if (needsBinding) fs.params = std::move(be.params);
+    else for (auto& p : be.params) {
+        fs.vars.push_back(p.name);
+        unsigned char tr = 0;
+        if (p.isRw) tr |= ForStmt::VT_RW;
+        if (p.isRaw || (p.sigil == '\\' && !p.slurpy)) tr |= ForStmt::VT_RAW;
+        fs.varTraits.push_back(tr);
+    }
+    auto blk = std::make_unique<Block>();
+    blk->stmts = std::move(be.body);
+    fs.body = std::move(blk);
+}
+
 bool Parser::atExprModifier() {
     if (!isKind(Tok::Ident) || peek().kind == Tok::FatArrow) return false;
     if (isIdent("with") || isIdent("without"))
@@ -15602,6 +15636,22 @@ ExprPtr Parser::applyExprModifiers(ExprPtr e, bool leaveRest) {
         if (isIdent("for")) { // (EXPR for LIST) → map({ EXPR }, LIST)
             advance();
             ExprPtr list = parseExpression();
+            // …but a POINTY block is the loop body, not each iteration's value:
+            // `do -> $x { $x * 2 } for 1..3` is (2 4 6), as without the `do`
+            if (e && e->kind == NK::BlockExpr && !parenned_.count(e.get())) {
+                auto* be = static_cast<BlockExpr*>(e.get());
+                if (be->isPointy && !be->isSub && !be->isMethodTerm && !be->isSubmethodTerm) {
+                    auto fs = std::make_unique<ForStmt>();
+                    fs->list = std::move(list);
+                    fs->line = be->line;
+                    pointyIntoFor(*fs, *be);
+                    fs->asExpr = true;
+                    auto blk = std::make_unique<BlockExpr>(); blk->body.push_back(std::move(fs));
+                    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(blk);
+                    e = std::move(u);
+                    continue;
+                }
+            }
             auto blk = std::make_unique<BlockExpr>();
             auto es = std::make_unique<ExprStmt>(); es->e = std::move(e);
             blk->body.push_back(std::move(es));
@@ -15746,16 +15796,8 @@ StmtPtr Parser::applyModifiers(StmtPtr s) {
                 auto* es = static_cast<ExprStmt*>(s.get());
                 if (es->e && es->e->kind == NK::BlockExpr) {
                     auto* be = static_cast<BlockExpr*>(es->e.get());
-                    if (!be->params.empty()) {
-                        bool anySub = false, needsBinding = false;
-                        for (auto& p : be->params) { anySub = anySub || (bool)p.subSig;
-                                                     needsBinding = needsBinding || pointyParamNeedsBinding(p); }
-                        if (anySub) { fs->destructure = true; fs->params = std::move(be->params); }
-                        else if (needsBinding) fs->params = std::move(be->params);
-                        else for (auto& p : be->params) fs->vars.push_back(p.name);
-                        auto blk = std::make_unique<Block>();
-                        blk->stmts = std::move(be->body);
-                        fs->body = std::move(blk);
+                    if (!be->params.empty() || (be->isPointy && !be->isSub)) {
+                        pointyIntoFor(*fs, *be);
                         return fs;
                     }
                 }

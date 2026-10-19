@@ -2714,12 +2714,19 @@ public:
     PRef<ValueList> reverseArrayAlias(Expr* listExpr); // `for @a.reverse`'s storage
     // `@a.grep(PRED)`: @a's storage and the positions grep keeps (its containers)
     std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> grepArrayView(Expr* e);
+    std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> sliceArrayView(Expr* e);   // `for @a[^2]`
     // The array behind `for @a.values` / `for @a.list` — the array twin of
     // valuesAliasSource; likewise.
     PRef<ValueList> valuesArrayAlias(Expr* listExpr);
     // True when the loop source yields bare values, so a write to the topic has
     // nowhere to land and Rakudo refuses it — see the definition.
     static bool immutableLoopSource(const Expr* listExpr);
+    void refuseRwOverBareValues(const ForStmt* fs);   // `for 1..3 <-> $x` (X::Parameter::RW)
+    bool infixOneArgForm(const std::string& op, const Value& a, Value& out);   // `&infix:<->(10)` is 10
+    bool atomicOn(const std::string& op, Value& lv, const ValueList& more,   // `cas` and `$n⚛++` and kin
+                  const std::string& varName, Value& out);
+    bool importedBuiltinSym(Env* f, const std::string& key, Value& out);   // `use Test`'s &ok in MY::
+    void importedBuiltinSyms(Env* f, std::vector<std::pair<std::string, Value>>& out);
     bool immutableQuantSource(const Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
     bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
@@ -3292,9 +3299,17 @@ public:
     // vector is thread_local now; eval() reads it on every node, so it first
     // reads this count of entries parked on ANY thread, one relaxed load, and
     // looks up its own thread's vector only when that is not zero.
+    //
+    // An entry belongs to the FRAME that parked it as well as to the node: the
+    // right-hand side runs between the park and the take, and when it calls
+    // back into the same routine (`%h{$d.Str} = $d ?? f($d - 1) !! 'x'`), the
+    // inner call evaluates the same node on the same thread and took the outer
+    // call's key. ParkedSubscriptsScope, around each assignment, drops what
+    // its assignment left unread, so an exception cannot strand an entry.
+    struct ParkedSubscript { const Expr* e; const Env* frame; Value v; };
     std::atomic<long> pendingSubscriptsAny_{0};
-    static std::vector<std::pair<const Expr*, Value>>& pendingSubscripts() {
-        thread_local std::vector<std::pair<const Expr*, Value>> v;
+    static std::vector<ParkedSubscript>& pendingSubscripts() {
+        thread_local std::vector<ParkedSubscript> v;
         return v;
     }
     bool anyPendingSubscripts() const {
@@ -3302,9 +3317,18 @@ public:
     }
     bool takeParkedSubscript(const Expr* e, Value& out);   // InterpreterCalls.cpp
     void parkSubscript(const Expr* e, Value v) {
-        pendingSubscripts().emplace_back(e, std::move(v));
+        pendingSubscripts().push_back({e, tctx_.cur.get(), std::move(v)});
         pendingSubscriptsAny_.fetch_add(1, std::memory_order_relaxed);
     }
+    struct ParkedSubscriptsScope {
+        Interpreter& I; size_t at = pendingSubscripts().size();
+        ~ParkedSubscriptsScope() {
+            auto& p = pendingSubscripts();
+            if (p.size() <= at) return;
+            I.pendingSubscriptsAny_.fetch_sub((long)(p.size() - at), std::memory_order_relaxed);
+            p.resize(at);
+        }
+    };
     void loadModule(const std::string& name, const std::vector<std::string>& importArgs = {}, bool doImport = true, bool quiet = false, const std::string& verReq = "", bool requireForm = false, bool mergeGlobals = true);
     void loadModuleImpl(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm);
     // ---- per-unit package stashes: what each compilation unit declared at
@@ -4115,9 +4139,18 @@ public:
     void runReactLoop(const std::shared_ptr<ReactCtx>& ctx); // block until live sources done
     void engageGil();                      // lazily lock the GIL on first async use
     void drainWorkers();
-    void registerWriteHandle(const PRef<ValueMap>& h) { openWriteHandles_.push_back(h); }
+    // The exit-flush registry: every open write handle, so that one the program
+    // never closes still reaches its file. `.close` takes its entry out again
+    // (forgetWriteHandle), or a loop that opens and closes files grew by a
+    // handle per iteration. A slot it empties is a null left in place, so the
+    // rest keep their order; the holes are squeezed out once they are half.
+    void registerWriteHandle(const PRef<ValueMap>& h);
+    void forgetWriteHandle(const ValueMap* h);
     void flushOpenWriteHandles();  // flush any unclosed write handle at program exit
     std::vector<PRef<ValueMap>> openWriteHandles_;
+    std::unordered_map<const ValueMap*, size_t> writeHandleSlot_;
+    size_t writeHandleHoles_ = 0;
+    std::mutex writeHandlesM_;     // threads open and close files at once
     // ---- IO::Handle output buffering (out-buffer) --------------------------
     // The one place bytes written through a file handle reach the file: append
     // `s`, honouring the handle's mode and whether earlier bytes already went

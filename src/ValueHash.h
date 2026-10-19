@@ -402,19 +402,28 @@ public:
         return E()[e].kv.second;
     }
 
+    // The entry stays (marked dead) for reference stability, but its VALUE is
+    // let go: a hash used as a cache or a work queue held every deleted
+    // payload until clear() (`%h<k> = "x" x 1e6; %h<k>:delete` 300 times kept
+    // 300 MB). Not while a Pair or a binding aliases an entry (aliasOf): it
+    // may be reading this one. `dropped` is released after the bookkeeping,
+    // so a DESTROY it runs sees a consistent hash.
     size_t erase(const std::string& key) {
+        Value dropped;
+        int32_t e;
         if (index_.empty()) {   // a small hash: the entry is only marked
-            int32_t e = findEntry(key, hashKey(key));
+            e = findEntry(key, hashKey(key));
             if (e < 0) return 0;
-            E()[e].dead = true;
-            live_--;
-            return 1;
         }
-        int32_t s = findSlot(key, hashKey(key));
-        if (s < 0) return 0;
-        E()[index_[s]].dead = true;
-        index_[s] = TOMB;   // stays `used_` — the probe path must not break
+        else {
+            int32_t s = findSlot(key, hashKey(key));
+            if (s < 0) return 0;
+            e = index_[s];
+            index_[s] = TOMB;   // stays `used_` — the probe path must not break
+        }
+        E()[e].dead = true;
         live_--;
+        if (!entriesAliased()) std::swap(dropped, E()[e].kv.second);
         return 1;
     }
     iterator erase(iterator it) {

@@ -143,6 +143,16 @@ static Value promptImpl(ValueList& a, bool hidden) {
     return Value::str(line);
 }
 
+// A Bool is no matcher: `throws-like …, message => True` would compare the
+// attribute against True. Rakudo's Test refuses it before testing anything.
+static void throwIfBoolMatcher(const ValueList& matchers) {
+    for (auto& mp : matchers)
+        if (mp.pairVal() && mp.pairVal()->t == VT::Bool)
+            throw RakuError{Value::typeObj("X::Match::Bool"),
+                "Cannot use Bool as Matcher with '." + mp.s.str() +
+                "'.  Did you mean to use $_ inside a block?"};
+}
+
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
@@ -1258,6 +1268,7 @@ void Interpreter::registerBuiltins() {
             else if (!haveType && a[i].t == VT::Type) { type = a[i]; haveType = true; }
             else if (a[i].t == VT::Str && reason.empty()) reason = a[i].s;
         }
+        throwIfBoolMatcher(matchers);
         const std::string tname = haveType ? type.s : std::string("Exception");
         if (reason.empty()) reason = "did we throws-like " + tname + "?";
         // Rakudo's skip puts the marker in the DESCRIPTION slot ("ok 2 - # SKIP …"),
@@ -1296,7 +1307,14 @@ void Interpreter::registerBuiltins() {
             if (loose) skipLine("right exception type (" + tname + ") not checked");
             else {
                 typeOk = !haveType || tname == "Exception" || applyArith("~~", thrown, type).truthy();
-                I.emitTest(typeOk, "right exception type (" + tname + ")");
+                std::string why;   // Rakudo's diagnosis of a wrong type
+                if (!typeOk) {
+                    std::string msg;
+                    try { msg = I.methodCall(thrown, "message", ValueList{}).toStr(); } catch (RakuError&) {}
+                    why = "# Expected: " + tname + "\n# Got:      " + thrown.typeName() +
+                          "\n# Exception message: " + msg + "\n";
+                }
+                I.emitTest(typeOk, "right exception type (" + tname + ")", "", why);
             }
             for (auto& mp : matchers) {
                 Value want = mp.pairVal() ? *mp.pairVal() : Value::any();
@@ -1317,75 +1335,71 @@ void Interpreter::registerBuiltins() {
         return Value::boolean(verdict);
     };
     B["fails-like"] = [](Interpreter& I, ValueList& a) -> Value {
-        // Like throws-like, but the code is expected to RETURN a Failure (a soft
-        // `fail`) rather than throw outright. Either a returned Failure or a thrown
-        // error counts as failing. (The exception-type / matcher args are accepted
-        // but, as with throws-like, not deeply checked.)
-        bool failed = false;
-        // fails-like BLOCK, TYPE, matchers…, desc? — passes only when the block
-        // RETURNS an UNHANDLED Failure whose exception matches TYPE and every
-        // named matcher. A thrown exception is NOT a pass (that's throws-like);
-        // neither is a Failure the block already handled (.so / .Bool).
-        std::string desc;
+        // fails-like BLOCK|Str, TYPE, reason?, matchers… — a SUBTEST, as in
+        // Test.rakumod: "code returned a Failure", then `throws-like { $res.sink },
+        // TYPE, 'Failure threw when sunk', |%matchers` nested inside it. It used to
+        // print one flat ok with an empty description, so the per-test Roast count
+        // saw one line where Rakudo prints four or more (S32-num/base.t: 76 leaf
+        // lines against 108). A code that THROWS is not a pass: that is
+        // throws-like's job, and the subtest says what it threw.
+        Value type = a.size() > 1 ? a[1] : Value::typeObj("Exception");
+        std::string reason;
         ValueList matchers;
         for (size_t i = 2; i < a.size(); i++) {
             if (a[i].t == VT::Pair && a[i].namedArg) matchers.push_back(a[i]);
-            else if (a[i].t == VT::Str && desc.empty()) desc = a[i].s;
+            else if (a[i].t == VT::Str && reason.empty()) reason = a[i].s;
         }
-        // Judge a returned Failure: its exception matches TYPE, and every named
-        // matcher matches the exception's attribute — or, when the exception is
-        // only a TYPE (`"msg".Failure` carries message/payload beside a bare
-        // X::AdHoc; String::Utils' shorten answers that), the Failure's own slot.
-        auto judge = [&](const Value& fh) -> bool {
-            if (!(fh.t == VT::Hash && fh.hashKind == "Failure" && fh.hash())) return false;
-            if (fh.hash()->count("handled") && (*fh.hash())["handled"].truthy()) return false;
-            Value ex = fh.hash()->count("exception") ? (*fh.hash())["exception"] : Value::any();
-            bool ok = true;
-            if (a.size() > 1 && a[1].t == VT::Type && a[1].s != "Exception")
-                ok = applyArith("~~", ex, a[1]).truthy();
-            for (auto& mp : matchers) {
-                if (!ok) break;
-                Value want = mp.pairVal() ? *mp.pairVal() : Value::boolean(true);
-                if (want.t == VT::Bool)
-                    throw RakuError{Value::typeObj("X::Match::Bool"),
-                        "Cannot use Bool as matcher for '" + mp.s + "'; did you mean to smartmatch the attribute?"};
-                Value got; bool have = false;
-                if (ex.t != VT::Object && fh.hash()->count(mp.s)) { got = (*fh.hash())[mp.s]; have = true; }
-                if (!have) {
-                    try { got = I.methodCall(ex, mp.s, ValueList{}); have = true; }
-                    catch (RakuError&) { have = false; }
-                }
-                if (!have) { ok = false; break; }
-                // a Regex matcher (`message => /…/`) needs the regex ENGINE, which
-                // the value-only applyArith cannot reach — it answered False for
-                // every one of them, so `fails-like …, message => /…/` never passed.
-                ok = want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
-                                        : I.smartmatchValue("~~", got, want).truthy();
-            }
-            return ok;
-        };
-        if (!a.empty()) {
+        throwIfBoolMatcher(matchers);
+        if (reason.empty())
+            reason = "did we fails-like " + (type.t == VT::Type ? type.s.str() : type.typeName()) + "?";
+        bool verdict = I.runSubtestFrame(reason, [&]() {
+            I.planned_ = 2;
+            std::cout << std::string(4 * I.subtestDepth_, ' ') << "1..2\n";
+            Value res;
+            auto threw = [&](const std::string& what) {
+                const std::string m = "expected code to fail but it threw " + what + " instead";
+                I.emitTest(false, m);
+                I.emitTest(true, "# SKIP " + m);
+            };
             try {
-                Value r;
-                if (a[0].t == VT::Code) r = I.callCallable(a[0], {});
-                else if (a[0].t == VT::Str) r = I.evalOwnScope(a[0].s);
-                failed = judge(r);
-            } catch (ReturnEx&) {
-                // `fail` in a bare block unwinds as the return of the enclosing
-                // routine — there is none inside the block, so it lands here.
-                // Rakudo's verdict for that is "expected code to fail but it
-                // threw": not a pass. (Left to propagate, it unwound the test
-                // file's own mainline.)
-                failed = false;
+                if (a.empty()) {}
+                else if (a[0].t == VT::Code) res = I.callCallable(a[0], {});
+                else if (a[0].t == VT::Str) res = I.evalOwnScope(a[0].s);
+            }
+            // `fail` in a bare block unwinds as the return of the enclosing
+            // routine; there is none inside the block, so it lands here, and
+            // Rakudo reports the Failure's exception as thrown. (Left to
+            // propagate, it unwound the test file's own mainline.)
+            catch (ReturnEx& r) {
+                const Value& f = r.v;
+                const bool isF = f.t == VT::Hash && f.hashKind == "Failure" && f.hash() && f.hash()->count("exception");
+                threw(isF ? (*f.hash())["exception"].typeName() : std::string("X::ControlFlow::Return"));
+                return;
             }
             catch (FeatureNotBuilt&) { throw; }   // a --slim cut: loud, as throws-like's
-            catch (RakuError& e) {
-                if (e.payload.t == VT::Type && e.payload.s == "X::Match::Bool") throw; // matcher misuse propagates
-                failed = false; // thrown exception: fails-like does not pass
-            }
-        }
-        I.emitTest(failed, desc);
-        return Value::boolean(failed);
+            catch (RakuError& e) { threw(I.exceptionFor(e).typeName()); return; }
+            const bool isFailure = res.t == VT::Hash && res.hashKind == "Failure" && res.hash();
+            I.emitTest(isFailure, "code returned a Failure", "",
+                       isFailure ? std::string() : "# Actual type: " + res.typeName() + "\n");
+            // throws-like sinks what its block answers, which detonates the
+            // Failure. One made with a bare exception TYPE keeps its attributes
+            // in its own slots (`"msg".Failure`), so the block throws an
+            // instance carrying them instead, for the matchers to read.
+            Value blk = Value::closure([res](ValueList&) { return res; });
+            if (isFailure && !(res.hash()->count("handled") && (*res.hash())["handled"].truthy()))
+                if (auto ex = res.hash()->find("exception"); ex != res.hash()->end() && ex->second.t == VT::Type) {
+                    std::vector<std::pair<std::string, Value>> slots;
+                    for (auto& kv : *res.hash())
+                        if (kv.first != "exception" && kv.first != "handled") slots.emplace_back(kv.first, kv.second);
+                    const std::string msg = res.hash()->count("message") ? (*res.hash())["message"].toStr() : "Failure";
+                    Value inst = I.makeTypedEx(ex->second.s.str(), slots, msg);
+                    blk = Value::closure([inst, msg](ValueList&) -> Value { throw RakuError{inst, msg}; });
+                }
+            ValueList ta{blk, type, Value::str("Failure threw when sunk")};
+            for (auto& mp : matchers) ta.push_back(mp);
+            if (const BuiltinFn* tl = I.builtinPtr("throws-like")) (*tl)(I, ta);
+        });
+        return Value::boolean(verdict);
     };
     registerBuiltinsPart2();
 }
@@ -2637,14 +2651,12 @@ void Interpreter::registerBuiltinsPart2() {
         std::string target = I.ioFsPath(a[0]), name = I.ioFsPath(a[1]);
         if (platform_link(target.c_str(), name.c_str()) != 0) {
             // a Failure, as Rakudo's `link` answers — carrying what it tried
-            Value f = rakuppNewFailure();
-            (*f.hash())["exception"] = Value::typeObj("X::IO::Link");
-            (*f.hash())["message"] = Value::str("Failed to create link called '" + name + "' on target '" +
-                                                target + "': " + std::strerror(errno));
-            (*f.hash())["target"] = Value::str(target);
-            (*f.hash())["name"] = Value::str(name);
-            (*f.hash())["os-error"] = Value::str(std::strerror(errno));
-            return f;
+            // on a real exception instance, as `symlink` above does (`.target`)
+            const std::string err = std::strerror(errno);
+            return I.ioFailure("X::IO::Link",
+                               {{"target", Value::str(target)}, {"name", Value::str(name)},
+                                {"os-error", Value::str(err)}},
+                               "Failed to create link called '" + name + "' on target '" + target + "': " + err);
         }
         return Value::boolean(true);
     };

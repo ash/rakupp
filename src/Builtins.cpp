@@ -389,6 +389,18 @@ static BOOL winCreateProcess(char* cmd, LPVOID env, const char* cwd, STARTUPINFO
 // be spawning (or .kill-ing) while another reaps.
 std::mutex g_spawnedM;
 std::map<long long, SpawnedChild> g_spawned;
+#if !defined(_WIN32)
+// A pipe CLOEXEC from birth, before any fork: a worker forking before we close
+// our copies would carry the write end across its execvp, deferring our EOF
+// until IT exits. dup2 onto 0/1/2 sheds the flag. (No pipe2 on macOS.)
+static bool cloexecPipe(int fd[2]) {
+    if (pipe(fd) != 0) return false;
+    fcntl(fd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fd[1], F_SETFD, FD_CLOEXEC);
+    return true;
+}
+#endif
+
 // First half: spawn the child and return at once. The fork happens with the GIL
 // held, so forks serialise (safe in a multithreaded process).
 //
@@ -543,17 +555,7 @@ SpawnedChild spawnChildStart(const std::vector<std::string>& argv, const std::st
         for (auto& kv : *envKV) cenv.push_back(const_cast<char*>(kv.c_str()));
         cenv.push_back(nullptr);
     }
-    // Every pipe end is CLOEXEC from birth, before the fork: a concurrent spawn
-    // (another worker) that forks before we close our copies would otherwise
-    // carry the write end across its execvp and defer our EOF until IT exits.
-    // The child's dup2 onto 0/1/2 sheds the flag on the copy it keeps. (No
-    // pipe2 on macOS, so the flag goes on by fcntl.)
-    auto cloexecPipe = [](int fd[2]) {
-        if (pipe(fd) != 0) return false;
-        fcntl(fd[0], F_SETFD, FD_CLOEXEC);
-        fcntl(fd[1], F_SETFD, FD_CLOEXEC);
-        return true;
-    };
+    // Every pipe end is CLOEXEC from birth, before the fork (cloexecPipe).
     int pipefd[2] = {-1, -1}, errfd[2] = {-1, -1};
     if (io.captureOut && !cloexecPipe(pipefd)) return sc;
     if (io.captureErr && !cloexecPipe(errfd)) { if (io.captureOut) { close(pipefd[0]); close(pipefd[1]); } return sc; }
@@ -943,9 +945,10 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
         cenv.push_back(nullptr);
     }
     int inPipe[2], outPipe[2] = {-1, -1}, errPipe[2] = {-1, -1};
-    if (pipe(inPipe) != 0) return;
-    if (capOut && pipe(outPipe) != 0) { close(inPipe[0]); close(inPipe[1]); return; }
-    if (capErr && pipe(errPipe) != 0) {
+    // CLOEXEC before the fork (cloexecPipe), as in spawnChildStart
+    if (!cloexecPipe(inPipe)) return;
+    if (capOut && !cloexecPipe(outPipe)) { close(inPipe[0]); close(inPipe[1]); return; }
+    if (capErr && !cloexecPipe(errPipe)) {
         close(inPipe[0]); close(inPipe[1]);
         if (capOut) { close(outPipe[0]); close(outPipe[1]); }
         return;
@@ -982,11 +985,10 @@ void spawnWithInput(const std::vector<std::string>& argv, const std::string& inp
     close(inPipe[0]);
     if (capOut) close(outPipe[1]);
     if (capErr) close(errPipe[1]);
-    fcntl(inPipe[1], F_SETFD, FD_CLOEXEC);
     int wfd = inPipe[1], rfd = capOut ? outPipe[0] : -1, efd = capErr ? errPipe[0] : -1;
     fcntl(wfd, F_SETFL, O_NONBLOCK);
-    if (rfd >= 0) { fcntl(rfd, F_SETFD, FD_CLOEXEC); fcntl(rfd, F_SETFL, O_NONBLOCK); }
-    if (efd >= 0) { fcntl(efd, F_SETFD, FD_CLOEXEC); fcntl(efd, F_SETFL, O_NONBLOCK); }
+    if (rfd >= 0) fcntl(rfd, F_SETFL, O_NONBLOCK);
+    if (efd >= 0) fcntl(efd, F_SETFL, O_NONBLOCK);
     // (SIGPIPE is ignored process-wide at startup — Runtime.cpp — so a child
     // that closes its stdin early is an EPIPE here, not our death. The child
     // got SIG_DFL back in forkForExec.)

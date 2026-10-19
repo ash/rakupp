@@ -112,6 +112,13 @@ RISC-V (riscv64, glibc 2.35+), OpenBSD, Windows x64 — from the
 [Releases page](https://github.com/ash/rakupp/releases/latest) and put its
 `bin/` on your `PATH`.
 
+**Which version.** Install a release. `main` is where development happens,
+and it can be broken between releases. The newest minor gets fixes as `x.y.z`
+patch releases, cut from a release branch when one is needed, so a patch
+release holds fixes only. Breaking changes come only in a major, with a
+deprecation warning one minor ahead where that is possible. See
+[INSTALL.md](docs/guide/INSTALL.md#which-version).
+
 ### Build from source
 
 ```sh

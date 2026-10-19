@@ -3033,6 +3033,33 @@ bool Interpreter::isPseudoChain(const std::string& chain) {
     }
 }
 
+// What `use Test` imports. Its subs are engine built-ins, visible with or
+// without the `use`, so the importing frame holds only a marker
+// (`\x01import:Test`), and the stash lists and finds them as Rakudo's does:
+// `MY::.keys`, `MY::<&ok>:exists`, `UNIT::<&plan>`. rakush lists a session's
+// commands that way.
+static const char* const kTestExports[] = {
+    "bail-out", "can-ok", "cmp-ok", "diag", "dies-ok", "does-ok", "done-testing",
+    "eval-dies-ok", "eval-lives-ok", "exit-ok", "exits-ok", "fails-like", "flunk", "is",
+    "is-approx", "is-deeply", "isa-ok", "isnt", "like", "lives-ok", "nok", "ok", "pass",
+    "plan", "skip", "skip-rest", "subtest", "throws-like", "todo", "unlike", "use-ok", nullptr};
+
+// Every name frame `f` imported from a built-in module, with its value.
+void Interpreter::importedBuiltinSyms(Env* f, std::vector<std::pair<std::string, Value>>& out) {
+    if (!f || !f->local("\x01import:Test")) return;
+    for (const char* const* n = kTestExports; *n; n++)
+        if (const Value* ref = builtinRef(*n)) out.emplace_back(std::string("&") + *n, *ref);
+}
+
+// Frame `f` imported `key` (`&ok`) from a built-in module: its value.
+bool Interpreter::importedBuiltinSym(Env* f, const std::string& key, Value& out) {
+    if (!f || key.size() < 2 || key[0] != '&' || !f->local("\x01import:Test")) return false;
+    for (const char* const* n = kTestExports; *n; n++)
+        if (key.compare(1, std::string::npos, *n) == 0)
+            if (const Value* ref = builtinRef(*n)) { out = *ref; return true; }
+    return false;
+}
+
 Value Interpreter::makePseudoStash(const std::string& chainIn) {
     std::string chain = chainIn;
     while (chain.size() >= 2 && chain.compare(chain.size() - 2, 2, "::") == 0) chain.resize(chain.size() - 2);
@@ -3126,14 +3153,26 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
         // constant or term of the same name is its own)
         return v.t == VT::Type && stashTracked_.count(k) && !(progView && progView->lexical.count(k));
     };
+    Env* importsDone = nullptr;   // (a frame's imports, listed once)
+    auto takeImports = [&](Env* f) {
+        if (f == importsDone) return;
+        importsDone = f;
+        std::vector<std::pair<std::string, Value>> im;
+        importedBuiltinSyms(f, im);
+        for (auto& [k, v] : im) if (!snap.hash()->count(k)) (*snap.hash())[k] = v;
+    };
     auto takeFrame = [&](Env* f) {
         if (!f) return;
-        for (auto& kv : f->vars)
+        for (auto& kv : f->vars) {
+            if (!kv.first.empty() && kv.first[0] == '\x01') { takeImports(f); continue; }   // (internal names)
             if (!snap.hash()->count(kv.first) && !notProgLexical(f, kv.first, *kv.second.deref())) (*snap.hash())[kv.first] = *kv.second.deref();
+        }
         if (f->layout)
             for (auto& nm : f->layout->names)
-                if (Value* p = f->padFind(nm))
+                if (Value* p = f->padFind(nm)) {
+                    if (!nm.empty() && nm[0] == '\x01') { takeImports(f); continue; }
                     if (!snap.hash()->count(nm) && !notProgLexical(f, nm, *p->deref())) (*snap.hash())[nm] = *p->deref();
+                }
     };
     if (mode == 'L') for (Env* f = e; f; f = f->parent.get()) takeFrame(f);
     else if (mode == 'F' || mode == 'C') takeFrame(e);
@@ -3217,6 +3256,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     auto findWithPending = [&](Env* from, Value& o) -> bool {
         for (Env* f = from; f; f = f->parent.get()) {
             if (Value* p = f->local(key)) { ParStripe rs(*this, p); o = *p; return true; }
+            if (importedBuiltinSym(f, key, o)) return true;
             if (f->declStmts) {
                 std::vector<const VarExpr*> decls;
                 spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
@@ -3229,6 +3269,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     switch (mode) {
         case 'F':
             if (e) if (Value* p = e->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (importedBuiltinSym(e, key, out)) return true;
             // a loop body's `state` names live in the loop's own state frame,
             // just outside the body's
             if (e && e->parent && e->parent->loopFrame)
@@ -3240,6 +3281,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
             return false;
         case 'L':
             if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            for (Env* f = e; f; f = f->parent.get()) if (importedBuiltinSym(f, key, out)) return true;
             // the root stash names the pseudo-packages too: `::.<MY>`
             if (!key.empty() && !std::strchr("$@%&", key[0]) && isPseudoChain(key)) {
                 out = makePseudoStash(key);
@@ -4228,8 +4270,8 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
             // `matches` failed its own return ("expected Slip but got Slip")
             if (type == "Slip") return v.s == "Slip";
             return type == "Array" || type == "List" || type == "Positional" || type == "Iterable";
-        case VT::Hash:    return hashKindIsAssociative(v.hashKind) &&
-                                 (type == "Hash" || type == "Associative" || type == "Map");
+        case VT::Hash:    return type == "Associative" ? hashKindIsAssociative(v.hashKind)
+                                 : (type == "Hash" || type == "Map") && hashKindIsMap(v.hashKind);
         case VT::Code:    return type == "Code" || type == "Callable" || type == "Routine" || type == "Block";
         // a Regex is a Method: `/a/ ~~ Callable` (and Code, Block, Routine, Method)
         case VT::Regex:   return type == "Regex" || type == "Method" || type == "Routine" ||

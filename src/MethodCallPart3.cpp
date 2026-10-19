@@ -312,6 +312,22 @@ static bool takesImplicitTopic(const ValueList& call) {
 // `.minpairs(&key)` / `.maxpairs(&cmp)`: a ONE-argument callable is a key,
 // called once per value; a TWO-argument one compares a value with the best so
 // far, once per value after the first. Every value tying for the end is kept.
+// std::string::rfind, but walking BACK from `from`: libc++'s rfind searches the
+// whole prefix forwards and keeps its last hit, so `$s.rindex($c)` cost time in
+// proportion to the start position on every call, even when the answer sat at
+// the very end (TODO-MISCELLANEOUS, 2026-09-02).
+static size_t backFind(const std::string& hay, const std::string& ndl, size_t from) {
+    if (ndl.size() > hay.size()) return std::string::npos;
+    size_t b = std::min(from, hay.size() - ndl.size());
+    if (ndl.empty()) return b;
+    const char first = ndl[0];
+    for (;;) {
+        if (hay[b] == first && hay.compare(b, ndl.size(), ndl) == 0) return b;
+        if (b == 0) return std::string::npos;
+        b--;
+    }
+}
+
 Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn,
                                          bool wantMax) {
     const long long ar = methodCall(fn, "arity", {}).toInt();
@@ -3615,6 +3631,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             (*inv.hash())["flushed"] = Value::boolean(true); // exit-flush skips it now
             (*inv.hash())["closed"] = Value::boolean(true);  // .opened is False from here, and reads throw
+            forgetWriteHandle(inv.hash());                   // …so it needs no registry entry either
             if (isStdinHandle(inv)) g_stdinClosed = true;    // …for every `$*IN` (see g_stdinClosed)
             // A `$proc.out`/`$proc.err` pipe answers its Proc, not True (Rakudo's
             // IO::Pipe.close). A bare `$p.err.close;` statement then SINKS that
@@ -5662,7 +5679,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (cowHay ? cowByteIsGraphemeIndex(inv.s) : byteIsGraphemeIndex(hay)) &&
             (cowNdl ? cowByteIsGraphemeIndex(args[0].s) : byteIsGraphemeIndex(ndl)) &&
             (args.size() <= 1 || !args[1].isNumeric())) {
-            size_t at = m == "index" ? hay.find(ndl) : hay.rfind(ndl);
+            size_t at = m == "index" ? hay.find(ndl) : backFind(hay, ndl, std::string::npos);
             return at == std::string::npos ? Value::nil() : Value::integer((long long)at);
         }
         // …and with a START position in range, which a scanning loop passes on
@@ -5675,7 +5692,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             long long from = args[1].toInt();
             if (from >= 0) {
                 if (from > (long long)hay.size()) return Value::nil();
-                size_t at = m == "index" ? hay.find(ndl, (size_t)from) : hay.rfind(ndl, (size_t)from);
+                size_t at = m == "index" ? hay.find(ndl, (size_t)from) : backFind(hay, ndl, (size_t)from);
                 return at == std::string::npos ? Value::nil() : Value::integer((long long)at);
             }
         }
@@ -5706,7 +5723,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 else {
                     for (;;) {
-                        b = hay.rfind(ndl, b);
+                        b = backFind(hay, ndl, b);
                         if (b == std::string::npos) break;
                         if (whole(b, g)) return Value::integer(g);
                         if (b == 0) break;
@@ -6541,6 +6558,35 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (pargs.empty()) // only adverbs given, no needle — a clean error, not an OOB read
             throw RakuError{Value::typeObj("X::AdHoc"), "Cannot call substr-eq without a needle string"};
         if (smart && sixE()) icase = strHasNoUpper(pargs[0].toStr());
+        // A plain Str read in place, through the grapheme→byte table its body
+        // caches (what `.index` reads): copying the string twice, counting its
+        // characters and taking a substr of the copy cost time in proportion to
+        // the whole string on every call
+        if (!icase && !imark && inv.t == VT::Str && inv.enumName.empty() && pargs[0].t == VT::Str &&
+            (pargs.size() < 2 || pargs[1].t == VT::Int || pargs[1].t == VT::Code)) {
+            const std::string& hay = inv.s.str();
+            const std::string& ndl = pargs[0].s.str();
+            const bool bytewise = cowByteIsGraphemeIndex(inv.s);
+            const std::vector<uint32_t>* gi = bytewise ? nullptr : cowGraphemeIndex(inv.s);
+            if (bytewise || gi) {
+                const long long len = bytewise ? (long long)hay.size() : (long long)gi->size() - 1;
+                long long pos = 0;
+                if (pargs.size() > 1)
+                    pos = pargs[1].t == VT::Code ? callCallable(pargs[1], ValueList{Value::integer(len)}).toInt()
+                                                 : pargs[1].toInt();
+                if (pos < 0 || (pargs.size() > 1 && pargs[1].big())) {   // (fails-like X::OutOfRange)
+                    Value f = rakuppNewFailure();
+                    (*f.hash())["exception"] = Value::typeObj("X::OutOfRange");
+                    return f;
+                }
+                if (pos > len) return Value::boolean(false);   // past the end: no match, as Rakudo
+                const size_t b = bytewise ? (size_t)pos : (*gi)[(size_t)pos];
+                if (hay.compare(b, ndl.size(), ndl) != 0) return Value::boolean(false);
+                // …and the match must END on a cluster boundary too
+                const size_t e = b + ndl.size();
+                return Value::boolean(bytewise || std::binary_search(gi->begin(), gi->end(), (uint32_t)e));
+            }
+        }
         std::string s = inv.toStr(), n = pargs[0].toStr();
         // `:ignoremark` compares base characters; the fold keeps one character
         // per grapheme, so the POSITION still indexes the original
@@ -6550,11 +6596,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (pargs.size() > 1) // a Code position (*-4) resolves against .chars
             pos = pargs[1].t == VT::Code ? callCallable(pargs[1], ValueList{Value::integer(len)}).toInt()
                                          : pargs[1].toInt();
-        if (pos < 0 || pos > len) { // out of range FAILS (fails-like X::OutOfRange)
+        if (pos < 0 || (pargs.size() > 1 && pargs[1].big())) { // out of range FAILS (fails-like X::OutOfRange)
             Value f = rakuppNewFailure();
             (*f.hash())["exception"] = Value::typeObj("X::OutOfRange");
             return f;
         }
+        if (pos > len) return Value::boolean(false);   // past the end: no match, as Rakudo
         // taken from `s`, which is the mark-folded text when :ignoremark is on
         Value sub = methodCall(Value::str(s), "substr", ValueList{Value::integer(pos),
                                                         methodCall(Value::str(n), "chars", ValueList{})});
@@ -6815,7 +6862,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (args.size() > 1 && args[1].t != VT::Pair)
                 limit = combLimit(*this, args[1], true, none);
             if (none) return out;
-            for (size_t p = subj.find(needle); p != std::string::npos; p = subj.find(needle, p + needle.size())) {
+            // on grapheme boundaries only: "a\r\nb".comb("\n") finds nothing
+            for (size_t p = graphemeFind(subj, needle, 0); p != std::string::npos;
+                 p = graphemeFind(subj, needle, p + needle.size())) {
                 if (limit >= 0 && (long long)out.arr()->size() >= limit) break;
                 out.arr()->push_back(Value::str(needle));
             }

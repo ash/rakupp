@@ -190,6 +190,34 @@ int main(void) {
         check(sv && rk_int_get(c, sv) >= 1, "…and answers its ABI stamp");
     }
 
+    /* --- what one evaluation imports, the next sees in MY:: ------------- *
+     * rakush treats every sub in the session's `MY::` as a command and lists
+     * them with `MY::.keys`, so a `use` in one rk_eval has to put the
+     * module's exports there for the next one, as a declared sub does. */
+    {
+        RkValue r3;
+        check(rk_eval(rk, "sub rk-own-cmd() { 1 }", 0) == RK_OK &&
+              rk_eval(rk, "+(MY::<&rk-own-cmd>:exists)", &r3) == RK_OK && rk_int_get(c, r3) == 1,
+              "a sub declared in one evaluation is in MY:: in the next");
+        check(rk_eval(rk, "use Test", 0) == RK_OK &&
+              rk_eval(rk, "+MY::.keys.grep(* eq any <&ok &is &plan>)", &r3) == RK_OK && rk_int_get(c, r3) == 3,
+              "use Test in one evaluation puts &ok, &is and &plan in MY:: for the next");
+        RkValue dir;
+        char src[1024];
+        if (rk_eval(rk, "my $d = $*TMPDIR.add('rk-embed-mod-' ~ $*PID); $d.mkdir; "
+                        "$d.add('RkEmbedMod.rakumod').spurt('unit module RkEmbedMod; "
+                        "sub rk-mod-cmd() is export { 42 }'); ~$d", &dir) == RK_OK) {
+            snprintf(src, sizeof src, "use lib '%s'; use RkEmbedMod;", rk_str_get(c, dir, 0));
+            check(rk_eval(rk, src, 0) == RK_OK &&
+                  rk_eval(rk, "+(MY::<&rk-mod-cmd>:exists)", &r3) == RK_OK && rk_int_get(c, r3) == 1 &&
+                  rk_eval(rk, "rk-mod-cmd()", &r3) == RK_OK && rk_int_get(c, r3) == 42,
+                  "a module's export is in MY:: after its use in an earlier evaluation");
+            rk_eval(rk, "my $e = $*TMPDIR.add('rk-embed-mod-' ~ $*PID); "
+                        "try { .unlink for $e.dir; $e.rmdir }", 0);
+        }
+        else check(0, "the scratch module could be written");
+    }
+
     /* --- one interpreter per process, refused rather than corrupting ---- */
     check(rk_new(0) == 0, "a second interpreter is refused while one is live");
 

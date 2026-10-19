@@ -711,9 +711,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             s = fold(s); needle = fold(needle);
         }
         Value out = Value::array(); out.isList = true;
-        // the answers are CHARACTER positions, not byte offsets
+        // the answers are CHARACTER positions, not byte offsets; matches come in order, each
+        // on a grapheme boundary, so the count goes on from the previous one, not from 0
+        size_t lastByte = 0, lastG = 0;
         auto charPos = [&](size_t byte) { // GRAPHEME positions, as .index answers (this counted codepoints)
-            return graphemeCount(s.substr(0, std::min(byte, s.size())));
+            byte = std::min(byte, s.size());
+            lastG += graphemeCount(s.substr(lastByte, byte - lastByte));
+            lastByte = byte;
+            return lastG;
         };
         // An EMPTY needle is found at EVERY position, the one past the end
         // included: `"foo".indices("")` is (0, 1, 2, 3) (roast indices.t).
@@ -723,9 +728,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     out.arr()->push_back(Value::integer((long long)g));
             return out;
         }
+        // a match must begin and end on grapheme boundaries, as for .index: the
+        // "\n" of a "\r\n" or a lone combining mark is not found inside its cluster
         if (from <= s.size())
-            for (size_t p = s.find(needle, from); p != std::string::npos;
-                 p = s.find(needle, p + (overlap ? 1 : needle.size())))
+            for (size_t p = graphemeFind(s, needle, from); p != std::string::npos;
+                 p = graphemeFind(s, needle, p + (overlap ? 1 : needle.size())))
                 out.arr()->push_back(Value::integer(charPos(p)));
         return out;
     }
@@ -3464,7 +3471,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 attachRangeEnds(rr, Value::str(lo.s.str()), Value::str(hi.s.str()));
                 return rr;
             }
-            Value out = Value::array(); out.isList = true; // non-Int endpoints (our Range is Int-only)
+            // Rat and Num extremes make a Range as well, built the way `..` builds
+            // it (`(3e0, 1e0).minmax` is 1e0..3e0, so `.bounds` works on it)
+            auto real = [](const Value& v) {
+                return (v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num) && v.hashKind.empty();
+            };
+            if (real(lo) && real(hi)) return rtRangeVal(lo, hi, exLo, exHi);
+            Value out = Value::array(); out.isList = true; // other endpoints stay a List
             out.arr()->push_back(lo); out.arr()->push_back(hi);
             return out;
         }
@@ -4799,7 +4812,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     }
                     Value& slot = (*inv.hash())[key];
                     slot = val;
-                    if (slot.t == VT::Array) slot.itemized = true;
+                    itemizeScalar(slot);   // a Hash too: `my @c = %p<b>` is one element
                     continue;
                 }
                 // An EXISTING key: an Array value takes the new one in place
@@ -4851,6 +4864,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (!wantT.empty()) {
                     coerceElemValue(*this, wantT, merged);   // `my Hash() %h`: the merged pairs are a Hash again
                     checkElemType(wantT, merged, "%h");
+                    itemizeScalar(merged);                   // …held in the entry as one item
                 }
                 // an Array entry is grown, not replaced (a bound alias sees it)
                 if (merged.t == VT::Array && merged.arr() && it->second.t == VT::Array &&
@@ -5393,6 +5407,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "sum") return inv.isNumeric() ? inv : Value::number(inv.toNum());
         if (m == "min" || m == "max") return inv;
         if (m == "minmax") {
+            if (inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str)   // 2.5.minmax is 2.5..2.5
+                return rtRangeVal(inv, inv, false, false);
             long long v = inv.toInt();
             return Value::range(v, v, false, false);
         }

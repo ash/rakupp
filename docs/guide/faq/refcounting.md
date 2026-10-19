@@ -74,25 +74,18 @@ is only one object to change.
 A count goes **down** when a slot stops pointing at it: the slot's scope ends
 (`my` variables at the end of a block, parameters when the routine returns), the
 slot is assigned something else or `Nil`, or the element is removed (`.shift`,
-`.pop`, `.splice`, `@a[$i]:delete`).
+`.pop`, `.splice`, `@a[$i]:delete`, `%h<k>:delete`, `.DELETE-KEY`).
 
-**One exception today.** Deleting a key from a hash (`%h<k>:delete`,
-`.DELETE-KEY`) takes the entry out of the hash, but the value stays alive until
-the hash itself is emptied or freed:
+A deleted hash value is let go at the delete, with one exception: while a Pair
+taken from that hash's entries (`.pairs`, iteration, `my @a = %h`) is still
+alive, deleted values are kept until it goes, because the Pair may be one of
+them. Before 2026-10-19 every deleted value stayed until the hash was emptied,
+and this loop held 294 MB where Rakudo holds 97 MB; it now holds 3 MB:
 
 ```raku
 my %h;
 for ^300 { %h<k> = 'x' x 1_000_000; %h<k>:delete }
 ```
-
-| | rakupp | Rakudo |
-|---|---:|---:|
-| `%h<k>:delete` | 294 MB | 97 MB |
-| `%h<k> = Nil; %h<k>:delete` | 3 MB | |
-| `@a[0]:delete` (an array, same loop) | 3 MB | |
-
-If a long-lived hash churns through large values, assign `Nil` before deleting,
-as in the second row. That releases the value at once.
 
 ## When exactly is memory freed?
 

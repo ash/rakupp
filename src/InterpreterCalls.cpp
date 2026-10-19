@@ -1248,6 +1248,169 @@ bool Interpreter::immutableLoopSource(const Expr* e) {
     return false;
 }
 
+// `<->` and `is rw` want a CONTAINER, and a source of bare values
+// (immutableLoopSource) has none to give: `for 1..3 <-> $x` is
+// X::Parameter::RW at its first binding, as in Rakudo, where this used to
+// bind the value and run. Over `.kv` only the keys are bare (the values
+// are the slots, and `-> $k, $v is rw` writes through them), unless the
+// invocant is itself made of bare values. Only a refusal at the FIRST
+// iteration is caught here, before the body has run once.
+void Interpreter::refuseRwOverBareValues(const ForStmt* fs) {
+    if (!immutableLoopSource(fs->list.get())) return;
+    int bare = 1;   // 1: every element is bare; 2: the even ones, a .kv's keys
+    if (fs->list->kind == NK::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(fs->list.get());
+        if (mc->method == "kv" && !immutableLoopSource(mc->inv.get())) bare = 2;
+    }
+    const size_t n = fs->params.empty() ? fs->vars.size() : fs->params.size();
+    // a parsed `for … <-> Int $x` marks no Param rw, only the loop
+    bool anyParamRw = false;
+    for (auto& p : fs->params) anyParamRw = anyParamRw || p.isRw;
+    auto rwAt = [&](size_t k) {
+        if (fs->params.empty()) return k < fs->varTraits.size() && (fs->varTraits[k] & ForStmt::VT_RW);
+        return fs->params[k].isRw || !anyParamRw;
+    };
+    size_t k = 0;
+    while (k < n && !(rwAt(k) && (bare == 1 || k % 2 == 0))) k++;
+    if (k < n) {
+        Value lv = eval(fs->list.get());
+        Value el; bool have = false;
+        if (lv.t == VT::Range && !lv.rNum() && !lv.ext() && lv.ofType() != "Str" && !rangeEnds(lv)) {
+            const long long lo = lv.rFrom() + (lv.rExFrom() ? 1 : 0);
+            const long long hi = lv.rTo() - (lv.rExTo() ? 1 : 0);
+            if (lo + (long long)k <= hi) { el = Value::integer(lo + (long long)k); have = true; }
+        }
+        else if (!(lv.t == VT::Array && lv.ext())) {   // (not a lazy one: no draining it here)
+            ValueList items = lv.flatten();
+            if (k < items.size()) { el = items[k]; have = true; }
+        }
+        if (have) {
+            const std::string& nm = fs->params.empty() ? fs->vars[k] : fs->params[k].name;
+            throw RakuError{Value::typeObj("X::Parameter::RW"),
+                            "Parameter '" + nm + "' expects a writable container (variable) as an argument,\n"
+                            "but got '" + el.gist() + "' (" + el.typeName() + ") as a value without a container."};
+        }
+    }
+}
+
+// A ONE-ARGUMENT call to an infix operator is its REDUCTION form. Rakudo gives
+// every infix a one-arg candidate precisely so that folding a single element has
+// something to call, and it answers that element: `&infix:<->(10)` is 10, not
+// -10. The two-arg builtin falls into the PREFIX reading instead —
+// `(10,).reduce(&infix:<->)` reported it as -10, and `&infix:</>(10)` as 0.1. A
+// CHAINING comparison is vacuously True: there is no second operand to disagree
+// with (Nil-Any sheet NA-47). The Call-node spelling `infix:<->(10)` already had
+// this rule; this is the same one for the Callable, and for the dispatcher of a
+// user multi that owns the name and has no one-argument candidate. Set
+// operators keep theirs — a one-argument set op COERCES, which the builtin does
+// — and so do the list infixes, whose one-argument form is a one-row list:
+// false here means "not this rule's to answer".
+bool Interpreter::infixOneArgForm(const std::string& op, const Value& a, Value& out) {
+    bool isAssign = opEq(op, "=") ||
+        (op.size() >= 2 && op.back() == '=' && !opEq(op, "==") && !opEq(op, "!=") &&
+         !opEq(op, "<=") && !opEq(op, ">=") && !opEq(op, "=:=") && !opEq(op, "!==") && !opEq(op, ".=") &&
+         // …and the identity/approximation family, which also ENDS in `=`:
+         // `&infix:<!===>(1, 2)` was read as an assignment to the literal 1
+         !opEq(op, "===") && !opEq(op, "!===") && !opEq(op, "!=:=") && !opEq(op, "=~=") && !opEq(op, "!=~="));
+    if (op.empty() || isAssign || isSetOpStr(op) || opEq(op, ",") || op[0] == 'Z' || op[0] == 'X')
+        return false;
+    static const std::set<std::string> kChaining = {
+        "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
+        "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
+        "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
+    if (kChaining.count(op)) { out = Value::boolean(true); return true; }
+    // the arithmetic ones NUMIFY their one argument (`&infix:<+>("2")`
+    // is 2, `&infix:<->(10)` still 10 — see applyReduce)
+    // …and `~` STRINGIFIES its one (S32-list/unique.t maps with `&[~]`)
+    if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "~")) {
+        ValueList one{a};
+        out = applyReduce(op, one);
+        return true;
+    }
+    out = a;
+    return true;
+}
+
+// `cas` and the atomic-* family (`$n⚛++` and kin) on ONE container, for the
+// interpreter's special forms and for the code --exe emits, which called a
+// routine named `atomic-fetch-inc` that does not exist. Both share one
+// striped-lock pool hashed by the container's address: with separate locks,
+// cas against $x⚛++ on the same variable would not be mutually atomic. The
+// pool is recursive because cas's code form may touch the same variable.
+// `more` holds the evaluated operands after the container; `varName` names a
+// `$` variable whose declared type a stored value must suit (empty: none).
+// False when `op` is not one of them.
+bool Interpreter::atomicOn(const std::string& op, Value& lv, const ValueList& more,
+                           const std::string& varName, Value& out) {
+    auto typed = [&](Value& v) { if (!varName.empty() && varName[0] == '$') enforceTypedAssign(varName, v); };
+    if (op == "cas") {
+        if (more.size() >= 2) {
+            // IDENTITY, not `eqv`. Rakudo's cas compares the container's
+            // object against the expected one — `===`. `eqv` is the
+            // structural walk, which for the linked list cas.t builds
+            // descends both `.next` chains on every FAILED swap, and
+            // would swap on two distinct-but-equal objects, which a
+            // compare-and-swap must never do. The new value must suit the
+            // container's declared type (`my Node $head` refuses `Any.new`).
+            Value nv = more[1];
+            typed(nv);
+            std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv));
+            Value seen = lv;
+            if (applyArith("===", seen, more[0]).truthy()) lv = nv;
+            out = seen;
+            return true;
+        }
+        if (!more.empty() && more[0].t == VT::Code) {
+            // The code form is a real compare-and-swap RETRY LOOP: read
+            // under the stripe, run the user code with NO lock held, then
+            // commit only if the container still holds the value we read —
+            // else retry with the fresh one. Running the code UNDER the
+            // stripe (the old shape) deadlocked: with three threads doing
+            // `cas %seen{$_}, {.succ}` each holds its element's stripe while
+            // the closure's `$_` read takes another pool stripe — a 64-slot
+            // collision makes that ABBA (thread.t's parallel livelock, the
+            // P5 blocker). Rakudo documents the block may be invoked more
+            // than once.
+            for (;;) {
+                Value seen;
+                { std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv)); seen = lv; }
+                Value next = callCallable(more[0], ValueList{seen});
+                typed(next);
+                std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv));
+                if (applyArith("===", lv, seen).truthy()) { lv = next; out = next; return true; }
+            }
+        }
+        std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv));
+        out = lv;
+        return true;
+    }
+    // REAL atomicity (the GIL used to be the only serialization — in parallel
+    // mode these lost updates: 12,540 of 20,000 in the stress suite's first run)
+    std::lock_guard<std::recursive_mutex> alock(atomicStripe(&lv));
+    const long long cur = lv.toInt();
+    const long long n2 = more.empty() ? 0 : more[0].toInt();
+    if (op == "atomic-fetch")          out = lv;
+    else if (op == "atomic-fetch-inc") { lv = Value::integer(cur + 1);  out = Value::integer(cur); }
+    else if (op == "atomic-fetch-dec") { lv = Value::integer(cur - 1);  out = Value::integer(cur); }
+    else if (op == "atomic-inc-fetch") { lv = Value::integer(cur + 1);  out = lv; }
+    else if (op == "atomic-dec-fetch") { lv = Value::integer(cur - 1);  out = lv; }
+    else if (op == "atomic-fetch-add") { lv = Value::integer(cur + n2); out = Value::integer(cur); }
+    else if (op == "atomic-fetch-sub") { lv = Value::integer(cur - n2); out = Value::integer(cur); }
+    else if (op == "atomic-add-fetch") { lv = Value::integer(cur + n2); out = lv; }
+    else if (op == "atomic-sub-fetch") { lv = Value::integer(cur - n2); out = lv; }
+    else if (op == "atomic-assign") {
+        // the same typed-assign contract as plain `=`: a declared Int/Str/...
+        // rejects mismatches, atomicint coerces numerics; an undeclared Scalar
+        // takes anything (⚛ on a plain container is atomic REFERENCE assignment)
+        Value nv = more.empty() ? Value::any() : more[0];
+        if (!varName.empty()) enforceTypedAssign(varName, nv);
+        lv = nv;
+        out = nv;
+    }
+    else return false;
+    return true;
+}
+
 // `$bag.values` / `.kv` / `.pairs` over an IMMUTABLE QuantHash (Bag, Mix,
 // Set): the weights are bare values, so a write through the loop variable
 // — or through a Pair's `.value` — is refused, where the same walk over a
@@ -1372,6 +1535,76 @@ PRef<ValueList> Interpreter::reverseArrayAlias(Expr* listExpr) {
 // `@a.grep(PRED)` over a real Array: the array's storage and the positions of
 // the elements the predicate keeps, in order — the containers grep hands back.
 // The predicate is evaluated ONCE and called per element, as grep does.
+// A subscript that is safe to evaluate a second time — the loop has already
+// evaluated the slice once for its values: literals, plain variables, and
+// ranges and lists of them. A call, an operator or anything else may have a
+// side effect, and is left to the copying path.
+static bool pureSubscript(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::StrLit: return true;
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            return !v->declare && v->name.size() > 1 && (v->name[0] == '$' || v->name[0] == '@') &&
+                   v->name[1] != '*' && v->name[1] != '!' && v->name[1] != '.';
+        }
+        case NK::Range: {   // (`1..*` too: the end is the array's)
+            auto* r = static_cast<const RangeExpr*>(e);
+            return pureSubscript(r->from.get()) &&
+                   (pureSubscript(r->to.get()) || (r->to && r->to->kind == NK::Whatever));
+        }
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            return u->op == "^" && !u->postfix && pureSubscript(u->operand.get());
+        }
+        case NK::Binary: {   // `@doors[0, $_ ... 100]` (Rosetta's "100 doors"), `@a[$i + 1]`
+            auto* b = static_cast<const Binary*>(e);
+            static const std::set<std::string> kPure = {"...", "...^", "+", "-", "*"};
+            return kPure.count(b->op) && pureSubscript(b->lhs.get()) && pureSubscript(b->rhs.get());
+        }
+        case NK::ListExpr:
+            for (auto& it : static_cast<const ListExpr*>(e)->items) if (!pureSubscript(it.get())) return false;
+            return true;
+        case NK::ArrayLit:
+            for (auto& it : static_cast<const ArrayLit*>(e)->items) if (!pureSubscript(it.get())) return false;
+            return true;
+        default: return false;
+    }
+}
+
+// `$_ *= 10 for @a[^2]`, `for @a[1, 3] -> $x is rw { … }`: a SLICE hands out
+// the elements' containers, so the loop walks those positions in the array's
+// own storage, as for `@a.grep(…)` (the same view shape). Only a plain array
+// and a subscript of plain Ints inside it: a negative, a WhateverCode or a
+// position past the end takes the copying path, as before.
+std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>>
+Interpreter::sliceArrayView(Expr* e) {
+    if (!e || e->kind != NK::Index) return nullptr;
+    auto* ix = static_cast<Index*>(e);
+    if (ix->isHash || ix->multiDim || !ix->adverb.empty() || !ix->base || ix->base->kind != NK::VarExpr ||
+        !pureSubscript(ix->index.get()) || ix->index->kind == NK::IntLit ||
+        (ix->index->kind == NK::VarExpr && static_cast<VarExpr*>(ix->index.get())->name[0] == '$'))
+        return nullptr;   // (one element is one item, not a slice)
+    auto* sv = static_cast<VarExpr*>(ix->base.get());
+    if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
+    Value* av = tctx_.cur->find(sv->name);
+    if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext() || av->shape()) return nullptr;
+    Value keys = eval(ix->index.get());
+    if (keys.t == VT::Range && (keys.rNum() || keys.ext() || keys.big() || keys.ofType() == "Str")) return nullptr;
+    auto view = std::make_shared<std::pair<PRef<ValueList>, std::vector<size_t>>>();
+    view->first = av->arrS();
+    if (keys.t == VT::Range && keys.rTo() >= 9223372036854775807LL) {   // `@a[1..*]`: to the end
+        for (long long k = keys.rFrom() + (keys.rExFrom() ? 1 : 0); k >= 0 && (size_t)k < view->first->size(); k++)
+            view->second.push_back((size_t)k);
+        return keys.rFrom() < 0 ? nullptr : view;
+    }
+    for (auto& k : keys.flatten()) {
+        if (k.t != VT::Int || k.big() || k.i < 0 || (size_t)k.i >= view->first->size()) return nullptr;
+        view->second.push_back((size_t)k.i);
+    }
+    return view;
+}
+
 std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>>
 Interpreter::grepArrayView(Expr* e) {
     Expr* pred = nullptr;
@@ -1478,6 +1711,32 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
             }
         }
         return false;
+    }
+    // `$_++ for %h<a b>`: a hash SLICE hands out the entries' containers, so
+    // the topic writes each one. Only when every key is there already: a
+    // missing one must not be vivified by being read, and Rakudo's write to
+    // it would create it, which a slot cannot do. (Entries never move.)
+    if (listExpr && listExpr->kind == NK::Index) {
+        auto* ix = static_cast<Index*>(listExpr);
+        if (!ix->isHash || ix->multiDim || !ix->adverb.empty() || !ix->base ||
+            ix->base->kind != NK::VarExpr || !pureSubscript(ix->index.get()) ||
+            !(ix->index->kind == NK::ArrayLit || ix->index->kind == NK::ListExpr ||
+              (ix->index->kind == NK::VarExpr && static_cast<VarExpr*>(ix->index.get())->name[0] == '@')))
+            return false;
+        auto* bv = static_cast<VarExpr*>(ix->base.get());
+        if (bv->name.size() < 2 || bv->name[0] != '%' || bv->declare) return false;
+        Value* hv = tctx_.cur->find(bv->name);
+        if (!hv || hv->t != VT::Hash || !hv->hash() || !hv->hashKind.empty() || hv->objKeyed) return false;
+        ValueList keys = eval(ix->index.get()).flatten();
+        std::vector<Value*> got;
+        for (auto& k : keys) {
+            auto it = hv->hash()->find(k.toStr());
+            if (it == hv->hash()->end()) return false;
+            got.push_back(&it->second);
+        }
+        if (got.empty()) return false;
+        slots.insert(slots.end(), got.begin(), got.end());
+        return true;
     }
     if (!listExpr || listExpr->kind != NK::ListExpr) return false;
     auto* le = static_cast<ListExpr*>(listExpr);
@@ -2779,13 +3038,40 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
         return vals;
     };
     // Bind positionally; a nested list target (`my (\a, (\b, \c))`) recursively
-    // destructures the corresponding element.
+    // destructures the corresponding element — under a DECLARATION or a binding.
+    // A plain `=` flattens its left side into one list of containers, as
+    // Rakudo's List.STORE does: `($a, ($b, $c), $d) = 1, 2, 3, 4` fills all
+    // four, and `= 1, (2, 3), 4` puts the List in $b. A `my (…)` is the list
+    // whose every variable is declared; `(my $a, ($b, $c))` flattens.
+    bool allDeclared = true, anyVar = false;
+    std::function<void(const ListExpr*)> scanDecl = [&](const ListExpr* L) {
+        for (auto& it : L->items) {
+            const Expr* t = it.get();
+            if (t && t->kind == NK::Assign) t = static_cast<const Assign*>(t)->target.get();
+            if (!t) continue;
+            if (t->kind == NK::ListExpr) scanDecl(static_cast<const ListExpr*>(t));
+            else if (t->kind == NK::VarExpr) { anyVar = true; if (!static_cast<const VarExpr*>(t)->declare) allDeclared = false; }
+        }
+    };
+    scanDecl(lst);
+    const bool flattenTargets = !isBinding && !(anyVar && allDeclared);
+    // (ONE level: in `($a, ($b, ($c, $d))) = 5, 6, 7, 8` the innermost list is one
+    // target, and takes the 7 as a list of one — Rakudo leaves $d Any)
+    auto targetsOf = [&](ListExpr* L, std::vector<Expr*>& out) {
+        for (auto& it : L->items) {
+            if (flattenTargets && it && it->kind == NK::ListExpr)
+                for (auto& in : static_cast<ListExpr*>(it.get())->items) out.push_back(in.get());
+            else out.push_back(it.get());
+        }
+    };
     std::function<void(ListExpr*, const Value&)> bind = [&](ListExpr* L, const Value& r) {
         ValueList vals = spread(r);
         if (!isBinding) decontCopiedElems(vals);   // assignment stores values
+        std::vector<Expr*> items;
+        targetsOf(L, items);
         size_t vi = 0; // value cursor (a slurpy @/% target consumes the rest)
-        for (size_t i = 0; i < L->items.size(); i++) {
-            Expr* tgt = L->items[i].get();
+        for (size_t i = 0; i < items.size(); i++) {
+            Expr* tgt = items[i];
             // `my :($a, $b, $c = EXPR) := …` — a signature-literal target's
             // per-slot DEFAULT, which the parser leaves as the item `$c = EXPR`.
             // A value from the right-hand list wins; the default fills the slot
@@ -4778,8 +5064,8 @@ bool Interpreter::flatLoopBody(Block* b) {
 bool Interpreter::takeParkedSubscript(const Expr* e, Value& out) {
     auto& parked = pendingSubscripts();
     for (size_t i = 0; i < parked.size(); i++)
-        if (parked[i].first == e) {
-            out = std::move(parked[i].second);
+        if (parked[i].e == e && parked[i].frame == tctx_.cur.get()) {   // this frame's, not a recursion's
+            out = std::move(parked[i].v);
             parked.erase(parked.begin() + i);
             pendingSubscriptsAny_.fetch_sub(1, std::memory_order_relaxed);
             return true;

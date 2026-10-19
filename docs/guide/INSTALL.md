@@ -199,6 +199,32 @@ checks that they stay so:
 curl -fsSL https://raw.githubusercontent.com/ash/rakupp/main/tools/install.sh | sh
 ```
 
+## Which version
+
+Install a **release**: what the installers, Homebrew, the `.deb`, Docker's
+`:latest` and the Releases page hand out. `main` is development: between
+releases it carries work in progress, and nothing is promised about it until
+it is tagged.
+
+What the version numbers promise:
+
+- **A patch release (`x.y.z`) holds fixes only.** The newest minor gets them,
+  cut from a release branch (`release/x.y`) when one is needed, so taking a
+  patch release does not bring new features or changed behaviour with it.
+  (Before this was written down, a patch release was simply the next tag,
+  carrying every commit since the last one: v5.2.1 had 17, features included.)
+- **A minor release (`x.y.0`)** adds features and fixes. It does not break
+  working programs on purpose; where it changes behaviour, the change is in
+  [CHANGELOG.md](../../CHANGELOG.md).
+- **Breaking changes come only in a major (`x.0.0`)**, with a deprecation
+  warning one minor ahead where that is possible.
+
+"Latest" is the newest release by version: a patch release for an older minor
+(a `5.3.1` after `5.4.0`) does not become the latest, so the one-liner,
+`rakupp upgrade` and `releases/latest/download/` links keep pointing at the
+newest minor. Take an older minor's patch by name: `--version v5.3.1`, or
+`ghcr.io/ash/rakupp:5.3`.
+
 ## Updating
 
 ```sh

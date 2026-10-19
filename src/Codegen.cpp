@@ -2472,6 +2472,26 @@ struct Codegen {
                     for (auto& a : c->args)
                         if (hasStarLit(a.get())) unsupported("a Whatever-curry over " + c->name);
                 if (!c->callee) refuseRwCall(rwSubNames_, c->name, c->args);
+                // `$n⚛++` lowers to a call named `atomic-fetch-inc`, and `cas`,
+                // which the interpreter takes as special forms on the CONTAINER:
+                // emitted as routine calls they died at run time ("Undefined
+                // routine 'atomic-fetch-inc'"), and inside a DESTROY silently
+                // counted nothing. The container's reference goes to the same
+                // striped-lock helper the interpreter uses (Interpreter::atomicOn).
+                if (!c->callee && !c->args.empty() && !userSubs.count(c->name) && !multiNames.count(c->name) &&
+                    !codeVars.count(c->name) && !envSubs.count(c->name) && !callEnvNames_.count(c->name) &&
+                    (c->name == "cas" ? c->args.size() >= 2
+                                      : c->name.rfind("atomic-", 0) == 0 && c->args.size() <= 2)) {
+                    checkWritable(c->args[0].get());
+                    std::string more = "ValueList{";
+                    for (size_t k = 1; k < c->args.size(); k++) more += (k > 1 ? ", " : "") + exArg(c->args[k].get());
+                    more += "}";
+                    const std::string vn = c->args[0]->kind == NK::VarExpr ? static_cast<VarExpr*>(c->args[0].get())->name : "";
+                    return viewSyncWrap(c->args[0].get(), "([&]()->Value{ ValueList _m = " + more + "; Value& _r = " +
+                           lvalueExpr(c->args[0].get()) + "; Value _o; if (!RT.atomicOn(" + cesc(c->name) +
+                           ", _r, _m, " + cesc(vn) + ", _o)) throw RakuError{Value::typeObj(\"X::AdHoc\"), " +
+                           cesc("Undefined routine '" + c->name + "'") + "}; return _o; }())");
+                }
                 // `Int($x)`, `Str($x)`, `MyClass($x)` — a TYPE called as a routine is
                 // the coercion protocol (the argument's own method, COERCE, CALL-ME,
                 // .new), which the interpreter's call evaluation carries and the

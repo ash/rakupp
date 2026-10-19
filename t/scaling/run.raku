@@ -286,6 +286,12 @@ work 'str-index-walk',   Q｢my $s = 'ab' x @N@; my $p = 0; my $c = 0; while ($p
 work 'str-ord-scan',     Q｢my $s = 'abcdefghij' x (@N@ div 10); my $c = 0; for ^$s.chars { $c += $s.substr($_, 1).ord }｣;
 work 'str-contains-pos-walk', Q｢my $s = 'ab' x @N@; my $c = 0; for ^@N@ -> $i { $c++ if $s.contains('b', 2 * $i) }｣, :n(2000);
 work 'str-contains-pos-walk-unicode', Q｢my $s = 'é' ~ ('ab' x @N@); my $c = 0; for ^@N@ -> $i { $c++ if $s.contains('b', 2 * $i) }｣, :n(2000);
+# substr-eq copied the string twice and counted its characters per call, and
+# rindex searched the whole prefix forwards (libc++'s rfind) for a hit at the end
+work 'str-substr-eq-walk', Q｢my $s = 'ab' x @N@; my $c = 0; for ^@N@ -> $i { $c++ if $s.substr-eq('b', 2 * $i + 1) }｣, :n(2000);
+work 'str-substr-eq-walk-unicode', Q｢my $s = 'aé' x @N@; my $c = 0; for ^@N@ -> $i { $c++ if $s.substr-eq('é', 2 * $i + 1) }｣, :n(2000);
+work 'str-rindex-walk', Q｢my $s = 'ab' x @N@; my $p = $s.chars; my $c = 0; while $p > 0 && ($p = $s.rindex('b', $p - 1)).defined { $c++ }｣, :n(2000);
+work 'str-rindex-walk-unicode', Q｢my $s = 'aé' x @N@; my $p = $s.chars; my $c = 0; while $p > 0 && ($p = $s.rindex('é', $p - 1)).defined { $c++ }｣, :n(2000);
 work 'str-starts-ends-with', Q｢my $s = 'ab' x @N@; my $c = 0; for ^@N@ { $c++ if $s.starts-with('ab') && $s.ends-with('ab') }｣, :n(2000);
 work 'dyn-read-deep',    Q｢sub d($k) { $k == 0 ?? 0 !! $*X + d($k - 1) }; my $*X = 1; d(@N@);｣, :n(500);
 work 'str-match-global', Q｢my $c = +(('ab' x @N@) ~~ m:g/b/);｣;
