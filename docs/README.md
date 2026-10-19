@@ -131,6 +131,7 @@ Mirrored at [raku.online/cookbook/](https://raku.online/cookbook/).
 - **[status/ROAST.md](status/ROAST.md)** — Roast suite overview and per-section statistics.
 - **[status/COUNTING.md](status/COUNTING.md)** — how the pass-rate numbers are defined and computed (the authoritative methodology).
 - **[status/BENCHMARKS.md](status/BENCHMARKS.md)** — a fair speed comparison with Rakudo on the shared subset.
+- **[status/ENGINES.md](status/ENGINES.md)** — Raku++, Rakudo and mutsu side by side: tools, platforms and integrations, one dot per engine.
 - **[status/ROADMAP.md](status/ROADMAP.md)** — done / in-progress / next.
 - **[status/MILESTONES.md](status/MILESTONES.md)** — a running timeline of the headline moments: the dates, the numbers, and what landed.
 - **[status/ECOSYSTEM.md](status/ECOSYSTEM.md)** — the map of the constellation around the interpreter: what each satellite project is, where it lives, and how they relate.
