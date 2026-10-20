@@ -33,13 +33,13 @@
 # verdicts and a shrunk reproducer, use FastRoast's own `fastroast run`.
 #
 # Usage:
-#   build/rakupp tools/fatroast.raku [OPTION ...] [PATTERN ...]
-#   build/rakupp tools/fatroast.raku --help
+#   build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
+#   build/rakupp tools/run-fatroast.raku --help
 #
 # Examples:
-#   nice build/rakupp tools/fatroast.raku -j2
-#   nice build/rakupp tools/fatroast.raku -j2 --engine=build/rakupp,rakudo
-#   build/rakupp tools/fatroast.raku --parts=ops-v1 S03-operators
+#   nice build/rakupp tools/run-fatroast.raku -j2
+#   nice build/rakupp tools/run-fatroast.raku -j2 --engine=build/rakupp,rakudo
+#   build/rakupp tools/run-fatroast.raku --parts=ops-v1 S03-operators
 
 my $RUN-ROAST = $?FILE.IO.parent.add('run-roast.raku').absolute;
 my $HOME      = %*ENV<HOME> // '.';
@@ -70,7 +70,7 @@ for @*ARGS -> $a {
     elsif $a.starts-with('--list=') || $a eq '--all' || $a.starts-with('--suite=') {
         # --list is this script's own (one per part and engine); --all would run
         # all of Roast in the overlay; --suite would run something else entirely
-        note "fatroast: $a does not apply to a part's overlay (--help lists the options)";
+        note "run-fatroast: $a does not apply to a part's overlay (--help lists the options)";
         exit 2;
     }
     else {
@@ -84,7 +84,7 @@ my $FAT    = $FASTROAST.IO.add('fat');
 
 if $HELP {
     print qq:to/END/;
-    Usage: build/rakupp tools/fatroast.raku [OPTION ...] [PATTERN ...]
+    Usage: build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
 
     Runs every part of FastRoast's fattened Roast (fat/seed and one tree per
     transform) through tools/run-roast.raku, each from an overlay of the Roast
@@ -125,11 +125,11 @@ if $HELP {
 }
 
 unless $FAT.d {
-    note "fatroast: no $FAT — point --fastroast (or \$FASTROAST) at a FastRoast checkout";
+    note "run-fatroast: no $FAT — point --fastroast (or \$FASTROAST) at a FastRoast checkout";
     exit 2;
 }
 unless $ROAST.IO.add('spectest.data').e {
-    note "fatroast: $ROAST is not a Roast checkout — set ROAST";
+    note "run-fatroast: $ROAST is not a Roast checkout — set ROAST";
     exit 2;
 }
 
@@ -139,7 +139,7 @@ my @known = dir($FAT).grep(*.d).map(*.basename).sort;
 @known = |@known.grep('seed'), |@known.grep(* ne 'seed');
 my @parts = @want-parts || @known;
 with @parts.first(* ∉ @known) {
-    note "fatroast: no part '$_' in $FAT (there are: {@known.join(', ')})";
+    note "run-fatroast: no part '$_' in $FAT (there are: {@known.join(', ')})";
     exit 2;
 }
 
@@ -155,7 +155,7 @@ my $README    = $FAT.add('README.md');
 my $MADE-FROM = $README.e && $README.slurp ~~ / 'Roast `' (<xdigit>+) '`' / ?? ~$0 !! '';
 my $ROAST-REV = roast-revision();
 if $MADE-FROM && $ROAST-REV && !$ROAST-REV.starts-with($MADE-FROM) {
-    note "fatroast: fat/ was made from Roast $MADE-FROM, but $ROAST is at {$ROAST-REV.substr(0, 9)}: "
+    note "run-fatroast: fat/ was made from Roast $MADE-FROM, but $ROAST is at {$ROAST-REV.substr(0, 9)}: "
        ~ "the overlays pair those tests with this checkout's helpers and fixtures";
 }
 
@@ -195,7 +195,7 @@ sub rsync(*@args) {
     my $p = run('rsync', '-a', |@args, :err);
     my $err = $p.err.slurp(:close);
     unless $p.exitcode == 0 {
-        note "fatroast: rsync {@args.join(' ')} failed:\n$err";
+        note "run-fatroast: rsync {@args.join(' ')} failed:\n$err";
         exit 1;
     }
 }
@@ -225,20 +225,20 @@ for @parts -> $part {
         !! @files;
     %files{$part} = @run.elems;
     say "";
-    say "fatroast: $part — {@run.elems} of {@files.elems} files";
+    say "run-fatroast: $part — {@run.elems} of {@files.elems} files";
     next unless @run;
     my $o = build-overlay($part, @files);
     %env<ROAST> = $o.absolute;
     for @engines -> %e {
         my $list = $LISTS.add("{$part}.{%e<name>}.list");
         unlink $list if $list.e;    # a list left from an earlier run would read as this one's
-        say "fatroast: $part under %e<path>";
+        say "run-fatroast: $part under %e<path>";
         run(%e<path>, $RUN-ROAST, |@pass, "--list=$list", :env(%env));
         if $list.e {
             %passed{$part}{%e<name>} = $list.lines.grep(*.chars).Set;
         }
         else {
-            note "fatroast: run-roast wrote no list for $part under %e<path>";
+            note "run-fatroast: run-roast wrote no list for $part under %e<path>";
             $BROKEN = True;
         }
     }
@@ -246,7 +246,7 @@ for @parts -> $part {
 
 # ---- summary: fully-passing files per part and engine, then the disagreements
 say "";
-say "fatroast: fully-passing files, by part (Roast {$MADE-FROM || $ROAST-REV.substr(0, 9) || '?'}, overlays in $OVERLAY)";
+say "run-fatroast: fully-passing files, by part (Roast {$MADE-FROM || $ROAST-REV.substr(0, 9) || '?'}, overlays in $OVERLAY)";
 my $w = (@parts.map(*.chars).max, 4).max;
 say sprintf("  %-{$w}s  %6s", 'part', 'files') ~ @engines.map({ sprintf('  %10s', .<name>) }).join;
 for @parts -> $part {
@@ -261,7 +261,7 @@ if @engines > 1 {
     for @engines[1..*] -> %e {
         my $other = %e<name>;
         say "";
-        say "fatroast: files only one engine fully passes, $base vs $other";
+        say "run-fatroast: files only one engine fully passes, $base vs $other";
         for @parts -> $part {
             my $a = %passed{$part}{$base};
             my $b = %passed{$part}{$other};
