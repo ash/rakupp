@@ -737,7 +737,7 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
     if (v.t != VT::Nil) { Value r = v; r.readonly = r.immutableBind = false; return r; }
     if (a.sigil == '@') return Value::array();
     if (a.sigil == '%') return Value::makeHash();
-    if (!a.type.empty() && ascii::isupper((unsigned char)a.type[0]))
+    if (!a.type.empty() && typeNameLead(a.type[0]))
         return Value::typeObj(a.type);
     return Value::any();
 }
@@ -782,7 +782,7 @@ static void checkAttrStore(Interpreter& I, Value& v, const ClassAttr& at,
     // a NATIVE attribute takes only what unboxes to it. The lowercase names that
     // are not storage types (buf8, blob8, NativeCall's long/size_t aliases) are
     // not asked here.
-    if (!ascii::isupper((unsigned char)ty[0])) {
+    if (!typeNameLead(ty[0])) {
         const char* kind = nullptr;
         const char* boxT = nullptr;
         if (ty == "num" || ty == "num32" || ty == "num64") { kind = "number"; boxT = "Num"; }
@@ -1306,7 +1306,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                     seed = Value::integer(0);
                 else if (at.type.rfind("num", 0) == 0) seed = Value::number(0);
                 else if (at.type == "str") seed = Value::str("");
-                else if (ascii::isupper((unsigned char)at.type[0])) seed = Value::typeObj(at.type);
+                else if (typeNameLead(at.type[0])) seed = Value::typeObj(at.type);
             }
             bool userContainer = false;
             if (!at.containerIs.empty() && at.sigil == '%') {
@@ -1356,7 +1356,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             // attribute, so the declared type is checked at run time
             // (S12-attributes/defaults.t)
             if (at.sigil == '$' && !at.hasDefVal && !at.def && at.buildFn.t == VT::Code && !at.coerce &&
-                !at.type.empty() && ascii::isupper((unsigned char)at.type[0]) &&
+                !at.type.empty() && typeNameLead(at.type[0]) &&
                 at.type.find('[') == std::string::npos && dv.t != VT::Nil &&
                 !typeOrSubsetMatches(dv, resolveRoleType(at.type)))
                 throwTypedV("X::TypeCheck::Assignment", {{"got", dv}, {"expected", Value::typeObj(at.type)}},
@@ -1569,7 +1569,7 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
     const ClassAttr* at = ci->findAttr(tv->attrBare);
     if (!at || at->sigil != '$' || at->where || at->shape || at->coerce) return nullptr;
     const std::string& ty = at->type;
-    if (!ty.empty() && (!ascii::isupper((unsigned char)ty[0]) || ty.find_first_of("[(") != std::string::npos))
+    if (!ty.empty() && (!typeNameLead(ty[0]) || ty.find_first_of("[(") != std::string::npos))
         return nullptr;
     auto it = od->attrs.find(tv->attrBare);
     if (it == od->attrs.end()) return nullptr;

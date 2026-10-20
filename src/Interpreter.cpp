@@ -1056,11 +1056,11 @@ Value typedDefault(const std::string& type, char sigil) {
             return Value::typeObj(type);
         // `my Nil $x` holds Nil itself (`$x === Nil`), not a (Nil) type object
         if (type == "Nil") return Value::nil();
-        if (ascii::isupper((unsigned char)type[0])) return Value::typeObj(type); // my Int $x -> (Int)
+        if (typeNameLead(type[0])) return Value::typeObj(type); // my Int $x -> (Int)
     }
     // typed containers: `my Int @a` -> Array[Int], `my int @a` (native) too
     if ((sigil == '@' || sigil == '%') && !type.empty() &&
-        (ascii::isupper((unsigned char)type[0]) ||
+        (typeNameLead(type[0]) ||
          type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
          type.rfind("num", 0) == 0 || type == "str" || type == "byte" ||
          type == "atomicint")) {
@@ -1086,7 +1086,7 @@ Value rtTypedDefault(const char* type, char sigil) {
 
 bool isKnownTypeName(const std::string& n);   // below
 bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& out) {
-    if (!scope || name.empty() || !ascii::isupper((unsigned char)name[0])) return false;
+    if (!scope || name.empty() || !typeNameLead(name[0])) return false;
     if (I.classes_.count(name) || I.subsets_.count(name) || isKnownTypeName(name)) return false;
     Value* tv = scope->find(name);
     if (!tv || tv->t != VT::Type || tv->s.empty() || tv->s == name) return false;
@@ -4547,7 +4547,7 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
 namespace {
 bool shareSlottable(const std::string& n) {   // resolvePads' `slottable`
     return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
-           (ascii::isalpha((unsigned char)n[1]) || (n[1] == '_' && n.size() > 2));
+           (nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2));
 }
 bool shareIsDynScopePkg(const std::string& p) {
     return p == "CALLER" || p == "CALLERS" || p == "DYNAMIC" || p == "CLIENT";
@@ -5055,7 +5055,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
     // loop's topic inside `for 16, 8 ... 0 { … $_ … }`. `$_x` is an ordinary name.)
     auto slottable = [](const std::string& n) {
         return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
-               (ascii::isalpha((unsigned char)n[1]) || (n[1] == '_' && n.size() > 2));
+               (nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2));
     };
     // A declaration this pass may own: a plain lexical `my` with none of the
     // machinery that keys per-scope side tables by name in OTHER structures
@@ -5127,7 +5127,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
             declaredVars(s.get(), ds);
             for (auto* v : ds)
                 L.add(v->name, /*simple=*/v->d().declType.empty() ||
-                    (!ascii::isupper((unsigned char)v->d().declType[0]) && v->d().declType != "atomicint"));
+                    (!typeNameLead(v->d().declType[0]) && v->d().declType != "atomicint"));
             if (s->kind == NK::VarDecl) {
                 auto* vd = static_cast<const VarDecl*>(s.get());
                 if (vd->scope == "my")

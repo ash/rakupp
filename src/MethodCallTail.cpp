@@ -5168,7 +5168,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (!inv.ofType().empty()) { bool sg; int b = Value::natWidthOfType(inv.ofType(), sg);
                     if (b > 0) return Value::integer(0);
                     std::string f = inv.ofType().substr(0, inv.ofType().find(','));
-                    if (!f.empty() && ascii::isupper((unsigned char)f[0])) return Value::typeObj(f); }
+                    if (!f.empty() && typeNameLead(f[0])) return Value::typeObj(f); }
                 return Value::any();
             };
             // push/unshift add each argument as one element; append/prepend flatten

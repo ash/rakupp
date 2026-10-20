@@ -211,7 +211,7 @@ static void shapedBoundsCheck(const std::shared_ptr<std::vector<long long>>& sha
 // R[Int], which is R::G::A[Int]) is that type. False when the name answers
 // for itself; a real type of that name always does.
 bool boundTypeFor(Interpreter& I, const std::string& n, Value& out) {
-    if (n.empty() || !Interpreter::tctx_.cur || !ascii::isupper((unsigned char)n[0])) return false;
+    if (n.empty() || !Interpreter::tctx_.cur || !typeNameLead(n[0])) return false;
     if (I.classes_.count(n) || isKnownTypeName(n)) return false;
     if (capturedType(I, Interpreter::tctx_.cur.get(), n, out)) return true;
     std::string r = lexicalTypeName(I, n);
@@ -1490,7 +1490,7 @@ static const Expr* forBodyTailVar(const Block* body) {
     auto* ve = static_cast<const VarExpr*>(e);
     const std::string& n = ve->name;
     if (ve->declare || n.size() < 2 || n[0] != '$' || n == "$_" ||
-        !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return nullptr;
+        !(nameLetterAt(n, 1) || n[1] == '_')) return nullptr;
     for (auto& st : body->stmts) {   // a `my $s` in the body itself: per-iteration
         if (st && st->kind == NK::ExprStmt) {
             const Expr* x = static_cast<const ExprStmt*>(st.get())->e.get();
@@ -3382,7 +3382,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         fs->params.empty() && fs->list->kind == NK::VarExpr) {
         const std::string& sn = static_cast<VarExpr*>(fs->list.get())->name;
         Env* own = nullptr;
-        Value* raw = sn.size() > 1 && (ascii::isalpha((unsigned char)sn[1]) || sn[1] == '_')
+        Value* raw = sn.size() > 1 && (nameLetterAt(sn, 1) || sn[1] == '_')
                    ? tctx_.cur->findRaw(sn, &own) : nullptr;
         if (raw && !(own->ex && own->ex->rwLinks.count(sn)) &&
             (raw->isCell() || (!(raw->t == VT::Hash && raw->hashKind == "Proxy") && promotionSafe(own, raw)))) {
@@ -3843,7 +3843,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // (…and a TYPED array's hole reads as its element type)
             Value typedHole;
             if (arr == listv.arrS() && !listv.elemDefault() && !listv.ofType().empty() &&
-                ascii::isupper((unsigned char)listv.ofType()[0]))
+                typeNameLead(listv.ofType()[0]))
                 typedHole = typedElemDefault(listv);
             const Value* holeDflt = arr == listv.arrS() && listv.elemDefault() ? listv.elemDefault().get()
                                   : typedHole.t == VT::Type ? &typedHole : nullptr;
@@ -4170,7 +4170,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             unsigned kind = 0;
             const std::string& t = p.type;
             if (!p.litVal && !p.codeSig && !p.typeCapture && !p.typeFromCapture && !p.coerce &&
-                p.defConstraint != 2 && ascii::isupper((unsigned char)t[0]) &&
+                p.defConstraint != 2 && typeNameLead(t[0]) &&
                 t.find_first_of("[(") == std::string::npos && !subsets_.count(t)) {
                 if (t == "Mu") kind = p.defConstraint ? 0 : 2;
                 else if (auto it = classes_.find(t); it != classes_.end() && it->second) {
@@ -4311,7 +4311,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
     // `role R[::C] { method m(C:U $c) }` composed as R[Game], `m(Int)` is a
     // type object of the wrong type, not an undefined Game
     if (v.t == VT::Type && !p.typeKnown && !p.typeCapture && sigEnv && !p.type.empty() &&
-        ascii::isupper((unsigned char)p.type[0]) && !classes_.count(p.type) && !isKnownTypeName(p.type))
+        typeNameLead(p.type[0]) && !classes_.count(p.type) && !isKnownTypeName(p.type))
         if (Value* tv = sigEnv->find(p.type))
             if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type &&
                 tv->s.str().find('(') == std::string::npos &&
@@ -5472,7 +5472,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             Value dv = evalDefault(p.defaultVal.get(), &p);
             // the default binds like an argument would: `Int $x = $str` fails
             if (p.sigil == '$' && !p.type.empty() && !p.coerce && !p.typeCapture && p.captureName.empty() &&
-                !p.named && ascii::isupper((unsigned char)p.type[0]) &&
+                !p.named && typeNameLead(p.type[0]) &&
                 (isKnownTypeName(p.type) || classes_.count(p.type) || subsets_.count(p.type)) &&
                 (dv.t == VT::Str || dv.t == VT::Int || dv.t == VT::Num || dv.t == VT::Rat) &&
                 !(dv.t == VT::Hash && dv.hashKind == "Failure") && !typeOrSubsetMatches(dv, p.type))
@@ -5588,7 +5588,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // (Before the return below: a multi candidate binds with whereVerified.)
     for (auto& p : params)
         if (p.isCopy && p.sigil == '$' && p.name.size() > 1 && !p.type.empty() && !p.typeCapture &&
-            !p.coerce && ascii::isupper((unsigned char)p.type[0]))
+            !p.coerce && typeNameLead(p.type[0]))
             env->x().varDefault[p.name] = Value::typeObj(p.type);
     if (whereVerified) return;
     for (size_t i = 0; i < params.size(); i++) {
@@ -11283,11 +11283,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 else {
                     init = dv; de->x().varDefault[ve->name] = dv;
                     if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
-                    else if (sigil == '$' && !vd.declType.empty() && ascii::isupper((unsigned char)vd.declType[0]))
+                    else if (sigil == '$' && !vd.declType.empty() && typeNameLead(vd.declType[0]))
                         de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
                 }
             }
-            else if (sigil == '$' && !vd.declType.empty() && (ascii::isupper((unsigned char)vd.declType[0]) || vd.declType == "atomicint")) {
+            else if (sigil == '$' && !vd.declType.empty() && (typeNameLead(vd.declType[0]) || vd.declType == "atomicint")) {
                 // `$x = Nil` resets to (Type) — the CAPTURED type for `my T $x`
                 // in a routine with `::T` in its signature (see capturedType)
                 Value cap;
@@ -11333,7 +11333,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             if (at.name == ve->attrBare) {
                                 if (at.sigil == '$') tcx.lastLvalueAttr = &at;
                                 if (at.sigil == '$' && !at.type.empty() &&
-                                    (ascii::isupper((unsigned char)at.type[0]) || isNativeTypeName(at.type)))
+                                    (typeNameLead(at.type[0]) || isNativeTypeName(at.type)))
                                     tcx.lastLvalueAttrType = at.type;
                                 if (at.sigil == '$') tcx.lastLvalueAttrWhere = at.where;
                                 goto selfAttrTypeDone;
@@ -12536,7 +12536,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         tcx.lastLvalueAttrWhere = nullptr;
                         tcx.lastLvalueAttr = nullptr;
                         if (target->sigil == '$') {
-                            if (!target->type.empty() && ascii::isupper((unsigned char)target->type[0]))
+                            if (!target->type.empty() && typeNameLead(target->type[0]))
                                 tcx.lastLvalueAttrType = target->type;
                             tcx.lastLvalueAttrWhere = target->where;
                             tcx.lastLvalueAttr = target;
@@ -12598,7 +12598,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         g_lvAttrSigil = at.sigil;
                         if (at.sigil == '$') tcx.lastLvalueAttr = &at;
                         if (at.sigil == '$' && !at.type.empty() &&
-                            (ascii::isupper((unsigned char)at.type[0]) || isNativeTypeName(at.type)))
+                            (typeNameLead(at.type[0]) || isNativeTypeName(at.type)))
                             tcx.lastLvalueAttrType = at.type;
                         if (at.sigil == '$') tcx.lastLvalueAttrWhere = at.where;
                         if (at.sigil == '$') { tcx.lastLvalueAttrDefault = at.defaultTrait; tcx.lastLvalueAttrCls = base->obj()->cls.get(); }
@@ -13343,7 +13343,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         a->value->kind == NK::VarExpr) {
         auto* sv = static_cast<VarExpr*>(a->value.get());
         if (sv->name.size() > 1 && sv->name[0] == '$' &&
-            (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) {
+            (nameLetterAt(sv->name, 1) || sv->name[1] == '_')) {
             std::shared_ptr<Env> owner;
             for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                 if (en->local(sv->name)) { owner = en; break; }
@@ -13415,7 +13415,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             }
                         }
                     }
-                    if (key.size() > 1 && key[0] == '$' && ascii::isalpha((unsigned char)key[1])) {
+                    if (key.size() > 1 && key[0] == '$' && nameLetterAt(key, 1)) {
                         Assign alias;
                         alias.op = ":=";
                         auto tv = std::make_unique<VarExpr>(key);
@@ -13597,7 +13597,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         const std::string& n = ve->name;
         const bool sigilless = !n.empty() && (ascii::isalpha((unsigned char)n[0]) || n[0] == '_');
         if ((sigilless || (n.size() > 1 && n[0] == '$' &&
-                           (ascii::isalpha((unsigned char)n[1]) || n[1] == '_'))) && tctx_.cur)
+                           (nameLetterAt(n, 1) || n[1] == '_'))) && tctx_.cur)
             if (Value* cur = tctx_.cur->find(n))
                 if (bareBind || cur->t == VT::Type || cur->t == VT::Any || cur->t == VT::Nil)
                     cur->readonly = cur->immutableBind = true;
@@ -15072,7 +15072,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         if (!e || e->kind != NK::VarExpr) return false;
                         auto* sv = static_cast<const VarExpr*>(e);
                         if (sv->name.size() < 2 || sv->name[0] != '$' ||
-                            !(ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) return false;
+                            !(nameLetterAt(sv->name, 1) || sv->name[1] == '_')) return false;
                         std::shared_ptr<Env> owner;
                         for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                             if (en->local(sv->name)) { owner = en; break; }
@@ -15153,7 +15153,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* sv = static_cast<VarExpr*>(a->value.get());
             if (ix->index && !ix->multiDim && ix->adverb.empty() &&
                 sv->name.size() > 1 && sv->name[0] == '$' &&
-                (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) {
+                (nameLetterAt(sv->name, 1) || sv->name[1] == '_')) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
@@ -15171,7 +15171,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // a TYPED container takes only a container of its element type:
                     // `my Int @a; my Str $x = "foo"; @a[0] := $x` dies (arrays.t)
                     if ((base.t == VT::Array || base.t == VT::Hash) && !base.ofType().empty() &&
-                        ascii::isupper((unsigned char)base.ofType()[0]) &&
+                        typeNameLead(base.ofType()[0]) &&
                         base.ofType().find(',') == std::string::npos && base.ofType() != "Mu" &&
                         base.ofType() != "Any" && !typeOrSubsetMatches(*cell, base.ofType()))
                         throwTypedV("X::TypeCheck::Binding",
@@ -15677,12 +15677,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // (a DYNAMIC target too: `$*X := $y` / `my $*X := $y` alias $y, and a
             // callee reading $*X sees what is written to $y afterwards)
             if (((tv->name.size() > 1 && tv->name[0] == '$' &&
-                  (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_' ||
+                  (nameLetterAt(tv->name, 1) || tv->name[1] == '_' ||
                    tv->name[1] == '!' ||
                    (tv->name[1] == '*' && tv->name.size() > 2 && !tv->processScoped && !tv->viaPseudoPkg))) ||
                  sigilDeclBind) &&
                 ((sv->name.size() > 1 && sv->name[0] == '$' &&
-                  (ascii::isalpha((unsigned char)sv->name[1]) || sv->name[1] == '_')) || sigillessCell)) {
+                  (nameLetterAt(sv->name, 1) || sv->name[1] == '_')) || sigillessCell)) {
                 std::shared_ptr<Env> owner;
                 for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
                     if (en->local(sv->name)) { owner = en; break; }
@@ -21474,7 +21474,7 @@ static inline bool plainLexVar(const Expr* e) {
     if (!e || e->kind != NK::VarExpr) return false;
     auto* ve = static_cast<const VarExpr*>(e);
     return !ve->declare && ve->name.size() > 1 &&
-           (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_');
+           (nameLetterAt(ve->name, 1) || ve->name[1] == '_');
 }
 // A literal with no shared payload, so the Value built from it can be reused by
 // reference for the life of the program: no bigint, no Rat, no imaginary part.
@@ -22368,7 +22368,7 @@ static bool rhsMayName(const Expr* e, const std::string& name, int depth = 0) {
 bool Interpreter::nativeDeclShape(const VarExpr* v, const Expr* rhs) {
     int bits; bool sign, isFloat;
     if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->synthTopic || v->heredocOuter ||
+        !(nameLetterAt(v->name, 1) || v->name[1] == '_') || v->synthTopic || v->heredocOuter ||
         v->d().stateInParens || !v->d().declStubType.empty() || !nativeDeclSpec(v->d().declType, bits, sign, isFloat) ||
         !v->d().declCoerce.empty() || v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley ||
         v->d().declWhereExpr || v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
@@ -23200,7 +23200,7 @@ Value Interpreter::evalBinary(Binary* b) {
             auto* ve = static_cast<VarExpr*>(b->lhs->kind == NK::VarExpr ? b->lhs.get() : b->rhs.get());
             bool decided = false;
             if (!ix->isHash && !ix->multiDim && ix->index && ve->name.size() > 1 && ve->name[0] == '$' &&
-                (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+                (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
                 if (ix->base && ix->base->kind == NK::ArrayLit) { same = false; decided = true; }
                 else if (ix->base && ix->base->kind == NK::VarExpr) {
                     Value* bp = nullptr; Value* vp = nullptr;
@@ -27250,7 +27250,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // evaluating it here as an ordinary prefix is what made the array form
         // die with "Unsupported prefix 'dimslip'" while the hash form worked.
         if (!ve->declare && ve->name.size() > 1 && ve->name[0] == '@' &&
-            (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_') &&
+            (nameLetterAt(ve->name, 1) || ve->name[1] == '_') &&
             !(idx->index && idx->index->kind == NK::Unary &&
               static_cast<const Unary*>(idx->index.get())->op == "dimslip")) {
             if (Value* bp = tctx_.cur->find(ve->name)) {
@@ -29998,7 +29998,7 @@ Value Interpreter::eval(Expr* e) {
                     }
                 }
                 else if (ve->name.size() > 1 &&
-                         (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+                         (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
                     if (Value* p = tc.cur->find(ve->name)) {
                         if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                             ParStripe rs(*this, p);
@@ -30576,7 +30576,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // a 6.c/6.d EVAL (evalSettingSymbol); anywhere else the setting is
     // CORE, whose own variables are the only ones there
     if (ve->viaPseudoPkg && vd.pseudoPkg == "SETTING" && sigil != '&' && !ve->declare &&
-        ve->name.size() > 1 && (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+        ve->name.size() > 1 && (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
         Value sv;
         if (evalSettingSymbol(ve->name, sv)) return sv;
         auto cv = coreVars_.find(ve->name);
@@ -30618,7 +30618,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // FOUND in scope returns immediately, skipping the special-name
     // string compares below. Misses and Proxies take the full path.
     if (!ve->declare && ve->name.size() > 1 &&
-        (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_')) {
+        (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
         if (Value* p = tctx_.cur->find(ve->name)) {
             if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                 // P3 torn-copy contract: in parallel mode the copy-out
@@ -31071,7 +31071,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             }
             de->x().varDefault[ve->name] = dv;
             if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
-            else if (sigil == '$' && !vd.declType.empty() && ascii::isupper((unsigned char)vd.declType[0]))
+            else if (sigil == '$' && !vd.declType.empty() && typeNameLead(vd.declType[0]))
                 de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
             return de->define(ve->name, dv);
         }
@@ -31113,7 +31113,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         }
         if (!vd.declType.empty()) checkDeclTypeSane(ve);
         if (!vd.declType.empty() || !de->local(ve->name)) {
-            if (sigil == '$' && !vd.declType.empty() && ascii::isupper((unsigned char)vd.declType[0])) {
+            if (sigil == '$' && !vd.declType.empty() && typeNameLead(vd.declType[0])) {
                 // `$x = Nil` resets to (Type) — a captured `my T $x`, to
                 // the type T bound for this call, which is also what the
                 // assignments are then checked against
@@ -31507,7 +31507,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     if (sigil == '&' && global_ && ve->name.size() > 1)
         if (Value* ou = global_->local("\x01OUR" + ve->name)) return *ou;
     if (sigil == '&' && ve->name.size() > 1 && !ve->declare && !ve->viaPseudoPkg &&
-        (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_') &&
+        (nameLetterAt(ve->name, 1) || ve->name[1] == '_') &&
         ve->name.find(':') == std::string::npos && !noStrictHere() &&
         !kCoreSpecial.count(ve->name.substr(1)) && !builtinRef(ve->name.substr(1)))
         throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
@@ -32340,7 +32340,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             return sc;
         }
         if (ivar->name.size() > 1 && ivar->name[0] == '$' &&
-            (ascii::isalpha((unsigned char)ivar->name[1]) || ivar->name[1] == '_' ||
+            (nameLetterAt(ivar->name, 1) || ivar->name[1] == '_' ||
              ivar->name[1] == '*' || ivar->name == "$/" || ivar->name == "$!")) { // $*dynamic vars answer .VAR.dynamic
             // …a variable BOUND to a Proxy: its container IS the Proxy, and
             // a Proxy subclass's methods answer through it (proxy.t)
