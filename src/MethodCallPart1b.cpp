@@ -52,7 +52,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         // and its test suite. A scalar element type keeps reading a scalar.
         if (m == "deref") {
             if (g_sandboxChecks) sandboxRefuse(*this, "Pointer.deref", SandboxCap::Ffi);
-            if (!of.empty() && ascii::isupper((unsigned char)of[0])) {
+            if (!of.empty() && typeNameLead(of[0])) {
                 auto cit = classes_.find(of);
                 if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(of));
                 auto ci = cit != classes_.end() ? cit->second : nullptr;

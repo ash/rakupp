@@ -1644,7 +1644,7 @@ const Expr* inlineBody(const Callable& c, Env* env) {
         return nullptr;
     std::set<std::string> params;
     for (const Param& p : *c.ci().params) {
-        if (p.name.size() < 2 || p.sigil != '$' || !(std::isalpha((unsigned char)p.name[1]) || p.name[1] == '_'))
+        if (p.name.size() < 2 || p.sigil != '$' || !(nameLetterAt(p.name, 1) || p.name[1] == '_'))
             return nullptr;
         if (!p.type.empty() || p.typeCapture || p.whereExpr || p.litVal || p.defaultVal || p.subSig ||
             p.codeSig || p.named || p.slurpy || p.optional || p.isRw || p.isRaw || p.isCopy || p.coerce ||

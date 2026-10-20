@@ -254,6 +254,26 @@ struct VarDeclInfo {
 // What a VarExpr with no VarDeclInfo reads: every field at its default.
 inline const VarDeclInfo kNoDeclInfo{};
 
+// Does a LETTER start the identifier at byte i of a variable's name — at i = 1,
+// the byte after the sigil? Then it is a plain name (`$x`, `$ч`, `$é`, `$𝐚`)
+// and not a twigil or a special (`$*x`, `$!x`, `$/`). Twigils and specials are
+// ASCII punctuation, and the lexer lets only a letter start a name at a byte
+// >= 0x80, so such a byte always starts one; the exception is the match cursor
+// `$¢` (U+00A2, C2 A2), a special like `$/`. `_` is the caller's to decide,
+// with or without `$_` itself. `ascii::isalpha` here took `$ч := …` for a
+// special: it copied where it should have bound.
+inline bool nameLetterAt(const std::string& n, size_t i) {
+    const unsigned char c = (unsigned char)n[i];
+    if (c < 0x80) return ascii::isalpha(c);
+    return !(c == 0xC2 && (unsigned char)n[i + 1] == 0xA2);
+}
+// Does this first byte start a TYPE name rather than a native one? The engine
+// reads an upper-case ASCII letter as a type (`Int`, `Foo`) and a lower-case
+// one as a native (`int`, `str`, `num64`, `buf8`). Every native is ASCII, so a
+// letter beyond ASCII (`Еоо`, `Éa`, `甲`, `𝐀`) always names a type; under
+// `ascii::isupper` alone, `my Еоо $x` declared an untyped `$x`.
+inline bool typeNameLead(unsigned char c) { return ascii::isupper(c) || c >= 0x80; }
+
 struct VarExpr : Expr {
     std::string name; // includes sigil
     bool declare = false;        // `my $x` style declaration

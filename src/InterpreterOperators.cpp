@@ -937,7 +937,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         for (auto& n : ment) {
             if (n.size() > 1 && n[0] == '&') return true;   // a routine variable: not modelled statically
             if (n.size() < 2 || !std::strchr("$@%", n[0])) continue;
-            if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) continue;   // $*x, $!x, $/, $_ …
+            if (!(nameLetterAt(n, 1) || n[1] == '_')) continue;   // $*x, $!x, $/, $_ …
             if (n == "$_") continue;
             if (initialized.count(n) && r.kind != "INIT") return true;   // an INIT's value is then wiped, as in Rakudo
             if (declared.count(n)) continue;

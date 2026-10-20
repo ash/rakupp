@@ -2122,7 +2122,7 @@ PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue, Env* sco
     }
     // (an anonymous `my $` is named `$` + "\x01anonN" by the parser)
     if (n.size() < 2 || n[0] != '$' || n == "$_" ||
-        !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_' || n[1] == '\x01')) return nullptr;
+        !(nameLetterAt(n, 1) || n[1] == '_' || n[1] == '\x01')) return nullptr;
     Env* own = nullptr;
     Value* raw = sc->findRaw(n, &own);
     if (!raw || !own) return nullptr;
@@ -2147,7 +2147,7 @@ bool Interpreter::bindAttrAlias(Assign* a, bool sigilDeclBind) {
     auto* sv = static_cast<VarExpr*>(a->value.get());
     const std::string& sn = sv->name;
     const bool lexTarget = tv->name.size() > 1 && tv->name[0] == '$' &&
-        (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_');
+        (nameLetterAt(tv->name, 1) || tv->name[1] == '_');
     if (!(sn.size() > 2 && sn[0] == '$' && sn[1] == '!' && (lexTarget || sigilDeclBind) && !sv->declare))
         return false;
     Value* srcSlot = nullptr;
@@ -3205,7 +3205,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     if (nm[0] == '@') {
                         const std::string et = lv->ofType().empty() ? std::string() : elemTypeOfSpec(lv->ofType());
                         const Value dflt = lv->elemDefault() ? *lv->elemDefault()
-                                         : !et.empty() && ascii::isupper((unsigned char)et[0]) ? Value::typeObj(et)
+                                         : !et.empty() && typeNameLead(et[0]) ? Value::typeObj(et)
                                                                                                : Value::any();
                         for (auto& e : *rest.arr()) if (e.t == VT::Nil) e = dflt;
                         // …and the container keeps its type: `my ($x, Int @a)` is an Array[Int]
@@ -3228,7 +3228,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             // `my Str ($a) = ()` leaves $a as (Str)
             if (noValue && !isBinding && tgt->kind == NK::VarExpr) {
                 const std::string& dt = static_cast<VarExpr*>(tgt)->d().declType;
-                if (!dt.empty() && ascii::isupper((unsigned char)dt[0])) v = Value::typeObj(dt);
+                if (!dt.empty() && typeNameLead(dt[0])) v = Value::typeObj(dt);
             }
             if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
             else {
@@ -4459,7 +4459,7 @@ bool Interpreter::runsInPlace(BlockExpr* be) {
 bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
     // (`$` and a letter or underscore: no twigil, no special variable)
     if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(ascii::isalpha((unsigned char)v->name[1]) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
+        !(nameLetterAt(v->name, 1) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
         !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
         v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
         v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
@@ -4474,7 +4474,7 @@ bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
         case NK::StrLit: return true;
         case NK::VarExpr: { auto* ve = static_cast<const VarExpr*>(rhs);   // a plain `$` lexical
                             return !ve->declare && ve->name.size() > 1 && ve->name[0] == '$' &&
-                                   (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_') &&
+                                   (nameLetterAt(ve->name, 1) || ve->name[1] == '_') &&
                                    !ve->nativeStrRead && !ve->nativeIntRead && !ve->nativeNumRead; }
         case NK::Binary: {   // an operator declLaneRhs computes: `+ - * / %` or a comparison
             const std::string& op = static_cast<const Binary*>(rhs)->op;
@@ -4497,7 +4497,7 @@ static bool packedRhsPure(const Expr* e, int depth = 0) {
         if (x->kind != NK::VarExpr) return false;
         auto* ve = static_cast<const VarExpr*>(x);
         return !ve->declare && ve->name.size() > 1 && ve->name[0] == sigil &&
-               (ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_');
+               (nameLetterAt(ve->name, 1) || ve->name[1] == '_');
     };
     switch (e->kind) {
         case NK::IntLit: case NK::NumLit: return true;
@@ -4534,7 +4534,7 @@ bool Interpreter::packedIndexShape(const Index* ix) {
         return false;
     auto* bv = static_cast<const VarExpr*>(ix->base.get());
     if (bv->declare || bv->name.size() < 2 || bv->name[0] != '@' ||
-        !(ascii::isalpha((unsigned char)bv->name[1]) || bv->name[1] == '_'))
+        !(nameLetterAt(bv->name, 1) || bv->name[1] == '_'))
         return false;
     const Expr* ie = ix->index.get();
     return ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
@@ -4704,7 +4704,7 @@ bool Interpreter::shapedLaneShape(const Index* ix) {
         return false;
     auto* bv = static_cast<const VarExpr*>(ix->base.get());
     if (bv->declare || bv->name.size() < 2 || bv->name[0] != '@' ||
-        !(ascii::isalpha((unsigned char)bv->name[1]) || bv->name[1] == '_'))
+        !(nameLetterAt(bv->name, 1) || bv->name[1] == '_'))
         return false;
     const auto& dims = static_cast<const ListExpr*>(ix->index.get())->items;
     if (dims.size() < 2) return false;
@@ -4716,7 +4716,7 @@ bool Interpreter::shapedLaneShape(const Index* ix) {
         if (de->kind != NK::VarExpr) return false;
         auto* ve = static_cast<const VarExpr*>(de.get());
         if (ve->declare || ve->name.size() < 2 || ve->name[0] != '$' ||
-            !(ascii::isalpha((unsigned char)ve->name[1]) || ve->name[1] == '_'))
+            !(nameLetterAt(ve->name, 1) || ve->name[1] == '_'))
             return false;
     }
     return true;
