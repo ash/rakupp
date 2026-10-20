@@ -23,6 +23,7 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); 
 bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
 bool isNativeTypeName(const std::string& n); // the native type names (int, num32, str, …)
 std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
+const std::set<std::string>& testExports(); // CallCheck.cpp: the names `use Test` puts in scope
 
 namespace {
 
@@ -425,6 +426,12 @@ struct Codegen {
     bool listWriteVia_ = false;
     int keptListLine_ = 0, listWriteLine_ = 0;   // where each was first seen, for the note
     int curStmtLine_ = 0;   // the statement being emitted (an expression often carries no line)
+    // curStmtLine_ set for one statement, and put back however it is left
+    struct StmtLine {
+        int& l; const int saved;
+        StmtLine(int& line, const Stmt* s) : l(line), saved(line) { if (s && s->line) l = s->line; }
+        ~StmtLine() { l = saved; }
+    };
     std::set<std::string> keptNames_, writtenNames_;
     const std::vector<Param>* curParams_ = nullptr;   // the routine bodyDef is emitting
     // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}`
@@ -815,11 +822,18 @@ struct Codegen {
         if (moduleExports_.count(name) || callEnvNames_.count(name))
             return "RT.callEnvFirstAmp(([]() -> const std::string& { static const std::string __k = " +
                    cesc("&" + name) + "; return __k; }()), " + vl + ")";
+        // A Test call reports its line ("# Failed test at FILE line N") from the
+        // interpreter's current line, which native code never writes otherwise:
+        // every compiled failure said line 0. So a Test call sets it first.
+        auto atLine = [&](std::string call) {
+            if (curStmtLine_ <= 0 || !testExports().count(name)) return call;
+            return "(RT.restoreTestLine(" + std::to_string(curStmtLine_) + "), " + call + ")";
+        };
         if (moduleMode_)   // no startup hook to resolve a shared pointer table from: resolve in place, once
-            return "rtCallB(RT, ([&]() -> const BuiltinFn* { static const BuiltinFn* const __p = RT.builtinPtr(" +
-                   cesc(name) + "); return __p; }()), " + cesc(name) + ", " + vl + ")";
+            return atLine("rtCallB(RT, ([&]() -> const BuiltinFn* { static const BuiltinFn* const __p = RT.builtinPtr(" +
+                          cesc(name) + "); return __p; }()), " + cesc(name) + ", " + vl + ")");
         auto it = usedBuiltins_.emplace(name, (int)usedBuiltins_.size()).first;
-        return "rtCallB(RT, __bfp" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")";
+        return atLine("rtCallB(RT, __bfp" + std::to_string(it->second) + ", " + cesc(name) + ", " + vl + ")");
     }
 
     // Emit statements produced by `emit` into a fresh buffer and return them.
@@ -3106,6 +3120,7 @@ struct Codegen {
             curStmtLine_ = savedLine;
             return;
         }
+        StmtLine lineScope{curStmtLine_, s}; // for a Test call's line (builtinCall)
         auto savedHoisted = hoisted; auto savedRefs = aotRefs_; auto savedCells = cellsLive_;
         auto savedCodeVars = codeVars; auto savedEnvSubs = envSubs; auto savedSpecials = boundSpecials;
         const size_t savedPre = aotPreamble_.size();
@@ -3124,6 +3139,7 @@ struct Codegen {
     }
     // …and the same for a routine's final statement, whose value is the result.
     std::string tailExpr(ExprStmt* es) {
+        StmtLine lineScope{curStmtLine_, es}; // for a Test call's line (builtinCall)
         if (!moduleMode_ || inClosure()) return exArg(es->e.get());
         auto savedHoisted = hoisted; auto savedRefs = aotRefs_; auto savedCells = cellsLive_;
         auto savedCodeVars = codeVars; auto savedEnvSubs = envSubs; auto savedSpecials = boundSpecials;
@@ -7089,12 +7105,13 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         for (auto& s : prog.stmts)
             if (s->kind == NK::SubDecl && static_cast<SubDecl*>(s.get())->name == "MAIN")
                 hasMain = true;
+        // A usage exit (>= 0) is an `exit`: Test's END leaves its status alone.
         if (hasMain)
-            g.line(2, "__rakupp_exit = RT.runCompiledMain(&__rakupp_main_entry);");
+            g.line(2, "{ int __rc = RT.runCompiledMain(&__rakupp_main_entry); if (__rc >= 0) { __rakupp_exit = __rc; __rakupp_exited = true; } }");
         // no MAIN of its own: run one a module exported into it (#112) —
         // unconditionally, as a module found on disk at run time exports too
         else
-            g.line(2, "{ int __rc = RT.runImportedMain(); if (__rc > 0) __rakupp_exit = __rc; }");
+            g.line(2, "{ int __rc = RT.runImportedMain(); if (__rc >= 0) { __rakupp_exit = __rc; __rakupp_exited = true; } }");
         for (auto it = g.topLevelEnds.rbegin(); it != g.topLevelEnds.rend(); ++it) g.emitPhaserBody(*it, 2);
     });
 
@@ -7176,16 +7193,22 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
              "    { std::string __e = RT.progName_; char __rp[4096];\n"
              "      if (RAKUPP_REALPATH(__e.c_str(), __rp)) __e = __rp; RT.execPath_ = __e; }\n"
              "    __rakupp_register();\n"
-             "    int __rakupp_exit = 0; (void)__rakupp_exit;\n" // set by the MAIN protocol (usage exits 2, --help 0)
+             "    int __rakupp_exit = 0;\n"         // an `exit`'s status, a usage exit's (2, --help 0), a die's 1
+             "    bool __rakupp_exited = false;\n"  // …when it was an `exit`
              "    try {\n";
     g.out << body;
-    g.out << "    } catch (const ExitEx& e) { std::cout.flush(); return e.code; }\n"
-             "    catch (const LastEx&) { std::cerr << \"last without loop construct\\n\"; return 1; }\n"
-             "    catch (const NextEx&) { std::cerr << \"next without loop construct\\n\"; return 1; }\n"
-             "    catch (const RedoEx&) { std::cerr << \"redo without loop construct\\n\"; return 1; }\n"
-             "    catch (const RakuError& e) { std::cerr << e.message << \"\\n\"; return 1; }\n"
+    // Every way out of the mainline ends where the interpreter's run() does, in
+    // testRunEnd: Test's summary, and the status it leaves — an `exit` keeps
+    // its own, anything else gets Test's (a die's 1 included). The END bodies
+    // are still inside the try, so a die or an exit skips them.
+    g.out << "    } catch (const ExitEx& e) { __rakupp_exit = e.code; __rakupp_exited = true; }\n"
+             "    catch (const LastEx&) { std::cerr << \"last without loop construct\\n\"; __rakupp_exit = 1; }\n"
+             "    catch (const NextEx&) { std::cerr << \"next without loop construct\\n\"; __rakupp_exit = 1; }\n"
+             "    catch (const RedoEx&) { std::cerr << \"redo without loop construct\\n\"; __rakupp_exit = 1; }\n"
+             "    catch (const RakuError& e) { std::cerr << e.message << \"\\n\"; __rakupp_exit = 1; }\n"
              "    catch (const std::exception& e) { std::cerr << \"Internal error: \" << e.what() << \"\\n\"; return 3; }\n"
-             "    return __rakupp_exit;\n}\n"
+             "    std::cout.flush();\n"
+             "    return RT.testRunEnd(__rakupp_exit, __rakupp_exited);\n}\n"
              "// The whole program runs on the interpreter's 1 GiB big-stack thread:\n"
              "// the OS default main stack (8 MiB, 1 MB on Windows) would give native\n"
              "// recursion a far smaller budget than the interpreter, on every platform.\n"

@@ -8358,7 +8358,7 @@ bool Interpreter::bindConstantEarly(Stmt* s, std::set<std::string>& bound) {
 // not with the evaluator's hot paths in InterpreterCore.cpp.
 int Interpreter::run(Program& prog) {
     int code = 0;
-    bool crashed = false;
+    bool exited = false; // the status is an `exit`'s, which Test's END does not override
     // The unit's revision is known from its text, so adopt it before a single
     // statement runs. Waiting for the `use v6.e.PREVIEW` statement to execute
     // was too late for anything hoisted — every sub in the unit is created
@@ -8477,6 +8477,7 @@ int Interpreter::run(Program& prog) {
             try { runEndBody(e); }
             catch (ExitEx& ex) {
                 code = ex.code;      // `exit` in an END block sets the exit status
+                exited = true;
                 // …and DISCARDS what the ENDs before it threw. Measured, not
                 // assumed: `END exit 3; END die "C"` runs C first and Rakudo
                 // reports nothing, while `END die "A"; END exit 3` runs the exit
@@ -8829,21 +8830,22 @@ int Interpreter::run(Program& prog) {
             // and a Proc that exited unsuccessfully throws, which is how a
             // program whose last act is `run @cmd` still exits non-zero (#73).
             if (rc < 0) sinkReturnedValue(callCallable(*mainSub, margs));
-            else code = rc;
+            else { code = rc; exited = true; } // the usage path's exit status
         }
         if (docMode_) std::cout << docModeText(); // --doc: print the rendered POD after the program runs
     } catch (ExitEx& e) {
         code = e.code;
+        exited = true;
     } catch (RakuError& e) {
         const CatchSeen seen = topCatch ? catchSeen(topCatchSerial, e) : CatchSeen::Passed;
         if (seen == CatchSeen::Taken) {   // it ran ahead of the unwinding
             try { replayCatchOutcome(e); }
-            catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+            catch (ExitEx& ex) { code = ex.code; exited = true; } catch (...) {}
         } else if (seen == CatchSeen::Fresh) { // mainline CATCH: bind $_/$! to the exception and run its when/default
             tctx_.cur->define("$_", exceptionFor(e));
             tctx_.cur->define("$!", exceptionFor(e));
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
-            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; exited = true; } catch (...) {}
         } else {
             // RAKU_EXCEPTIONS_HANDLER=JSON serializes an uncaught exception as JSON
             // — whatever the payload was thrown as: an undeclared routine is
@@ -8870,7 +8872,6 @@ int Interpreter::run(Program& prog) {
                 else std::cerr << renderError(e, btStyleForStderr());
             }
             code = 1;
-            crashed = true;
         }
     } catch (ReturnEx&) { // `return` outside any routine: the spec'd error (evalString already says so)
         if (topCatch) { // …which a mainline CATCH sees as X::ControlFlow::Return
@@ -8878,19 +8879,19 @@ int Interpreter::run(Program& prog) {
             tctx_.cur->define("$_", exceptionFor(e));
             tctx_.cur->define("$!", exceptionFor(e));
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
-            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; } catch (...) {}
+            catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; exited = true; } catch (...) {}
         }
-        else { std::cerr << "Attempt to return outside of any Routine\n"; code = 1; crashed = true; }
+        else { std::cerr << "Attempt to return outside of any Routine\n"; code = 1; }
     } catch (LastEx&) { // `last` outside any loop is a compile/run error, like Rakudo's
-        std::cerr << "last without loop construct\n"; code = 1; crashed = true;
+        std::cerr << "last without loop construct\n"; code = 1;
     } catch (NextEx&) {
-        std::cerr << "next without loop construct\n"; code = 1; crashed = true;
+        std::cerr << "next without loop construct\n"; code = 1;
     } catch (RedoEx&) {
-        std::cerr << "redo without loop construct\n"; code = 1; crashed = true;
+        std::cerr << "redo without loop construct\n"; code = 1;
     } catch (BreakGivenEx&) { // `succeed` with no `given`/`when` around it (it used to abort the process)
-        std::cerr << "succeed without when clause\n"; code = 1; crashed = true;
+        std::cerr << "succeed without when clause\n"; code = 1;
     } catch (ProceedEx&) {
-        std::cerr << "proceed without when clause\n"; code = 1; crashed = true;
+        std::cerr << "proceed without when clause\n"; code = 1;
     } catch (ControlHandledEx&) {
         // the mainline's own CONTROL handled a warning without .resume: the
         // mainline is left, and the program ends normally
@@ -8903,7 +8904,7 @@ int Interpreter::run(Program& prog) {
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
     // way out — after the mainline, before END.
     for (auto it = leaveP.rbegin(); it != leaveP.rend(); ++it) {
-        try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; } catch (...) {}
+        try { runPhaser(*it); } catch (ExitEx& e) { code = e.code; exited = true; } catch (...) {}
     }
     // END phasers run with the WORKERS STILL ALIVE, as Rakudo's do (its thread
     // pool outlives the mainline and dies with the process). Log::Async's END
@@ -8912,30 +8913,39 @@ int Interpreter::run(Program& prog) {
     // never returned, so every program that used the logger hung at exit.
     runEnds(); // END phasers (reverse source order), after the mainline
     drainWorkers(); // join any outstanding async workers before we tear down
-    // Rakudo's Test module never fabricates a trailing plan (and does not warn):
-    // a file that ran tests without `plan`/`done-testing` just ends its TAP.
-    // A plan that was not met says so — on STDOUT when nothing ran at all, on
-    // stderr otherwise, as Rakudo's Test does
-    if (usedTest_ && planned_ >= 0 && testNum_ != planned_ && !crashed && !bailedOut_)
-        (testNum_ == 0 ? std::cout : std::cerr)
-            << "# You planned " << planned_ << " test" << (planned_ == 1 ? "" : "s")
-            << ", but ran " << testNum_ << "\n" << std::flush;
-    // Rakudo's end-of-run summary when some tests failed.
-    if (usedTest_ && failCount_ > 0 && !crashed && !bailedOut_) {
-        std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
-                  << " of " << testNum_ << "\n";
-    }
-    // Rakudo test exit status: 255 ("dubious") if the ran count != the plan,
-    // else the number of failed tests (capped at 254).
-    if (usedTest_ && code == 0 && !crashed && !bailedOut_) {
-        if (planned_ >= 0 && testNum_ != planned_) code = 255;
-        else if (failCount_ > 0) code = failCount_ > 254 ? 254 : (int)failCount_;
-    }
-    else if (failCount_ > 0 && code == 0) code = 1;
+    code = testRunEnd(code, exited);
     // A daemon `start {…}` (e.g. a server accept loop) was left running. We've
     // emitted all output; flush and hard-exit so the detached thread can't wedge
     // teardown (and isn't waited on), matching Rakudo abandoning thread-pool work.
     if (abandonedWorkers_) { std::cout.flush(); std::cerr.flush(); std::_Exit(code); }
+    return code;
+}
+
+int Interpreter::testRunEnd(int code, bool exited) {
+    // Rakudo's Test module never fabricates a trailing plan (and does not warn):
+    // a file that ran tests without `plan`/`done-testing` just ends its TAP.
+    // A plan that was not met says so — on STDOUT when nothing ran at all, on
+    // stderr otherwise, as Rakudo's Test does. Test reports from an END, and a
+    // `die` does not stop an END: the summary follows the error message.
+    if (usedTest_ && planned_ >= 0 && testNum_ != planned_ && !bailedOut_)
+        (testNum_ == 0 ? std::cout : std::cerr)
+            << "# You planned " << planned_ << " test" << (planned_ == 1 ? "" : "s")
+            << ", but ran " << testNum_ << "\n" << std::flush;
+    // Rakudo's end-of-run summary when some tests failed.
+    if (usedTest_ && failCount_ > 0 && !bailedOut_) {
+        std::cerr << "# Looks like you failed " << failCount_ << " test" << (failCount_ == 1 ? "" : "s")
+                  << " of " << testNum_ << "\n";
+    }
+    // Rakudo test exit status, as its Test's END sets it: the number of failed
+    // tests (capped at 254), else 255 ("dubious") if the ran count misses the
+    // plan, else what the mainline left — a die's 1 included, so Test's status
+    // overrides a die's. An `exit` anywhere (a sub, MAIN, a phaser, bail-out)
+    // ran first, and Test's own exit inside it is ignored: that status stands.
+    if (usedTest_ && !exited) {
+        if (failCount_ > 0) code = failCount_ > 254 ? 254 : (int)failCount_;
+        else if (planned_ >= 0 && testNum_ != planned_) code = 255;
+    }
+    else if (failCount_ > 0 && code == 0 && !exited) code = 1;
     return code;
 }
 

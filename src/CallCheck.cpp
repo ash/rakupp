@@ -351,8 +351,12 @@ struct Scope {
     std::set<std::string> terms;        // names that are not routines here: `my &f`, `my \f`, a constant
 };
 
+} // namespace
+
 // The names `use Test` puts in scope: a sub of the same name may be meeting
-// Test's own candidates, which this pass does not see.
+// Test's own candidates, which this pass does not see. Outside the anonymous
+// namespace because the --exe backend (Codegen.cpp) asks it too: a compiled
+// Test call names its line.
 const std::set<std::string>& testExports() {
     static const std::set<std::string> names = {
         "plan", "done-testing", "ok", "nok", "is", "isnt", "is-approx", "is-approx-rel", "cmp-ok",
@@ -364,6 +368,8 @@ const std::set<std::string>& testExports() {
         "is-run", "is_run", "warns-like", "doesn't-warn", "doesn't-hang"};
     return names;
 }
+
+namespace {
 
 // ---- a walk over every node, for the facts gathered before the real walk ---
 

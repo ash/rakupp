@@ -2422,7 +2422,7 @@ public:
     void registerEnumMember(const std::string& name, const Value& v) { compiledEnums_[name] = v; }
     int runCompiledMain(Value (*fn)(ValueList&));
     // --exe: a program with no MAIN of its own still runs one a module
-    // exported into it (#112). -1 when there is none.
+    // exported into it (#112). A usage exit's status; -1 when there is none or it ran.
     int runImportedMain();
     Value& accessorRef(Value& base, const std::string& name); // $obj.accessor lvalue (used by codegen)
     Value postfixIPub(Value v) { return postfixI(std::move(v)); } // postfix:<i> (used by codegen)
@@ -4333,6 +4333,10 @@ public:
     // before emitTest.
     int testLine() const { return curLine_; }
     void restoreTestLine(int l) { curLine_ = l; }
+    // What Test's END does as a program ends: the closing summary, then the exit
+    // status — `code` is the program's own, `exited` when an `exit` set it.
+    // run() and the native `--exe` main both end with it.
+    int testRunEnd(int code, bool exited);
     // Parameter lists for signatures built at RUNTIME — Signature.new, and the
     // Callable `nativecast($signature, …)` makes from one. A Callable BORROWS its
     // params from the AST (Callable::params is a pointer into it), and a signature

@@ -2739,7 +2739,14 @@ void Interpreter::registerBuiltinsPart2() {
         }));
     };
     B["done-testing"] = [](Interpreter& I, ValueList&) -> Value {
-        if (I.planned_ < 0) { std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n"; I.planned_ = I.testNum_; }
+        if (I.planned_ < 0) {
+            std::cout << std::string(4 * I.subtestDepth_, ' ') << "1.." << I.testNum_ << "\n";
+            // A subtest's count closes its block. At the top the run stays
+            // planless, as Rakudo's $no_plan does: a test after it is no missed
+            // plan (exit 0, no "You planned"), and a second call prints again.
+            if (I.subtestDepth_ == 0) return Value::boolean(I.failCount_ == 0);
+            I.planned_ = I.testNum_;
+        }
         // True only if every test passed and the ran count matched the plan.
         return Value::boolean(I.failCount_ == 0 && I.planned_ == I.testNum_);
     };

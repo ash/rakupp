@@ -3860,8 +3860,10 @@ void Interpreter::registerCompiledMain(const unsigned char* blob, size_t len,
 }
 
 // The compiled binary's MAIN invoke: run the protocol against the registered
-// metadata and call the compiled entry on a match. Returns the process exit
-// code (0 when MAIN ran; its own `exit` still unwinds as ExitEx past this).
+// metadata and call the compiled entry on a match. Returns a usage exit's
+// status, or -1 when MAIN ran (its own `exit` still unwinds as ExitEx past
+// this) — the caller tells them apart, as run() does: a usage exit is an
+// `exit`, and Test's END does not override it.
 // Without registered metadata this is the legacy direct call — the program
 // runs, it just cannot refuse a bad command line.
 int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
@@ -3871,13 +3873,13 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
         refreshArgvFromLiveArgs();
         ValueList margs = rtMainArgs(argv_, mainNamedAnywhere(), this);
         sinkReturnedValue(fn(margs));
-        return 0;
+        return -1;
     }
     ValueList margs;
     int rc = mainProtocol(*mainSub, margs);
     if (rc >= 0) return rc;
     sinkReturnedValue(fn(margs));   // as in the interpreter: MAIN's value is sunk (#73)
-    return 0;
+    return -1;
 }
 
 // The compiled binary's invoke when the script declares no MAIN: `use M;` may
@@ -3892,7 +3894,7 @@ int Interpreter::runImportedMain() {
     int rc = mainProtocol(*mainSub, margs);
     if (rc >= 0) return rc;
     sinkReturnedValue(callCallable(*mainSub, margs));
-    return 0;
+    return -1;
 }
 // Value-level indexing for native codegen (no AST). Read returns Nil when absent.
 // The default value for a missing element of a (possibly typed) container:
