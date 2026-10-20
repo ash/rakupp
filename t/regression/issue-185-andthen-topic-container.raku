@@ -5,18 +5,19 @@
 # side's container, as `with` does: a variable, an array or hash element, and
 # down a chain the container each step hands on.
 #
-# Not part of this: in Rakudo, `@a[0] andthen $_ = 2, 3, 4` assigns (2, 3, 4),
-# because its grammar picks item or list assignment from the sigil of the
-# statement's FIRST variable (`@a`), not of the `=`'s own left side. The same
-# rule makes Rakudo's `$y and @b = 1, 2` give [1]. Parenthesized, Rakudo also
-# says [2]; rakupp follows the `=`'s left side in both spellings.
+# And `@a[0] andthen $_ = 2, 3, 4` assigns the whole (2, 3, 4), as in Rakudo:
+# its grammar picks item or list assignment by $*LEFTSIGIL, the sigil of the
+# expression's FIRST variable (`@a`), '@' once a postfix applied — not by the
+# `=`'s own left side. The same rule makes `$y and @b = 1, 2` assign only the
+# 1; parentheses, a ternary's middle, a call's arguments and a declaration's
+# initializer each start an expression of their own.
 #
 # Also here: `with @a[$i++] { $_ = 5 }` took the element's slot by evaluating
 # the subscript a second time, stepping $i twice and writing @a[1]; and
 # `with $p { $_ = 5 }` on a readonly parameter wrote into it instead of dying.
 #
-# Contract: exit 0 + last line PASS. The checks outside the Raku++ block are
-# oracle-checked against Rakudo 2026.09 — run this file under `rakudo` too.
+# Contract: exit 0 + last line PASS. Every check is oracle-checked against
+# Rakudo 2026.09 — run this file under `rakudo` too.
 my @fail;
 sub check($got, $want, $desc) {
     @fail.push("$desc: got «{$got.raku}», wanted «{$want.raku}»") unless $got eqv $want;
@@ -35,10 +36,24 @@ sub check($got, $want, $desc) {
     my @a; @a[0] = 1, 2, 3; @a[0] andthen $_ = (2, 3, 4);
     check @a, [(2, 3, 4),], 'a parenthesized list goes in whole';
 }
-if $*RAKU.compiler.name eq 'Raku++' {
+{
     my @a; @a[0] = 1, 2, 3; @a[0] andthen $_ = 2, 3, 4;
-    check @a, [2], '`$_ = 2, 3, 4` is item assignment (Rakudo: first-sigil rule)';
+    check @a, [(2, 3, 4),], '`$_ = 2, 3, 4` after `@a[0]` is list assignment';
 }
+
+# $*LEFTSIGIL: the expression's first variable decides `=`, a postfix makes it '@'
+# (each `do { }` value is kept, so Rakudo has no sunk constant to warn about)
+{ my $y = 1; my @b; my $ = do { $y and @b = 1, 2 }; check @b, [1], 'after a `$` variable: item assignment' }
+{ my @a = 1; my $y; my $ = do { @a and $y = 1, 2 }; check $y, (1, 2), 'after an `@` variable: list assignment' }
+{ my $x = 1; my $y; my $ = do { $x.so and $y = 1, 2 }; check $y, (1, 2), 'after a postfix: list assignment' }
+{ my $x = 1; my $y; my $ = do { $x and $y = 1, 2 }; check $y, 1, '`$` then `$`: item assignment' }
+{ sub f { 1 }; my $y; my $ = do { f() and $y = 1, 2 }; check $y, 1, 'a call is no variable' }
+{ my $x = 1; my @b; ($x) and @b = 1, 2; check @b, [1, 2], 'parentheses are an expression of their own' }
+{ my @a = 1; my $y; my $r = (@a and $y = 1, 2); check $y, (1, 2), '…and so is what they enclose' }
+{ my @a = 1; my @l = (@a and my $z = 1, 2); check $z, 1, 'a declaration decides by its own sigil' }
+{ my @a = 1; my $y; my $ = do { @a ?? ($y = 1, 2) !! 0 }; check $y, 1, "a ternary's middle is its own" }
+{ my @a = 1; my $y; my $ = do { 0 ?? 0 !! @a and $y = 1, 2 }; check $y, (1, 2), "…its last part is not" }
+{ my @a = 1; my ($y, $z); my $ = do { @a and $y = 1, $z = 2, 3 }; check ($y, $z), ((1, 2, 3), 2), '`=` starts it afresh' }
 
 # variables and elements, each operator
 { my $x = 1; $x andthen $_ = 5; check $x, 5, 'andthen assigns a variable' }

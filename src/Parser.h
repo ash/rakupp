@@ -440,6 +440,13 @@ private:
     // postfix chain (`1 || %h<k>:exists.so`)?
     bool adverbEnds(const Expr* e, const Expr* ix) const;
     int exprMinbp_ = 0;   // the innermost parseExpr's minbp: above BP_ASSIGN = a tight operand
+    // Rakudo's $*LEFTSIGIL, which picks item or list assignment for `=` (see
+    // parseExpr): the sigil of the expression's first variable, '@' once a
+    // postfix applied, 0 for none yet. exprCtx_ says whether the innermost
+    // parse is an operator loop ('E', whose operands continue its expression)
+    // or a term ('T', whose inner expressions start their own).
+    char leftSigil_ = 0;
+    std::vector<char> exprCtx_;
     void giveAdverbToOperator(ExprPtr& lhs, std::vector<ExprPtr> named, const std::string& advText);
     void regInfix(const std::string& n, int bp) {
         auto it = userInfix_.find(n);
@@ -652,6 +659,7 @@ private:
     ExprPtr keyBeforeValue(std::unique_ptr<Assign> a);      // `%h{~$i} = $i++` reads the key first
     ExprPtr parsePrefix(bool tight = false);
     ExprPtr parsePostfix(ExprPtr base, bool stopAtSpaceDot = false);
+    ExprPtr parsePostfixOps(ExprPtr base, bool stopAtSpaceDot);   // parsePostfix's loop
     ExprPtr parsePrimary();
     ExprPtr routineDeclTerm(const std::string& name, bool impliedSub); // `multi sub f(…) {…}` as a term
     ExprPtr subsetTerm();
