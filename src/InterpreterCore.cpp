@@ -503,87 +503,6 @@ static Value gatherDeepCopy(const Value& v, int depth = 0) {
 // default: `now` became the type object `(now)` whose .Num is 0, and every
 // benchmark, timeout and timestamp in a compiled program silently read zero
 // (found benchmarking a grammar under --exe, 2026-08-13).
-// CORE's enum MEMBERS by name — bare (`Less`) or qualified (`Order::Less`).
-// ONE definition, for the same reason nameTermConstant below is one: it is read
-// by the interpreter's NameTerm eval, by rtNameTerm (the native-codegen entry
-// point, which carried a THREE-enum subset of this list and so resolved
-// `BigEndian` to a type object in a compiled binary), and by the MAIN
-// command-line reader, which turns an argument naming an enum value into that
-// value. Members only — `Nil`, `Inf`, `NaN` and the type objects are terms of
-// other kinds and stay with their own callers.
-bool coreEnumValue(const std::string& n, Value& out) {
-    // Bool's two, which are an enum in Raku however natively they are stored here
-    if (n == "True"  || n == "Bool::True")  { out = Value::boolean(true);  return true; }
-    if (n == "False" || n == "Bool::False") { out = Value::boolean(false); return true; }
-    if (n == "Order::Same" || n == "Same") { out = Value::orderVal(0);  return true; }
-    if (n == "Order::Less" || n == "Less") { out = Value::orderVal(-1); return true; }
-    if (n == "Order::More" || n == "More") { out = Value::orderVal(1);  return true; }
-    // PromiseStatus <Planned Kept Broken> — real enum values so `$p.status`
-    // both compares (=== Kept) and stringifies (~$s eq 'Kept') correctly.
-    // The ORDINALS are Rakudo's (Planned 0, Kept 1, Broken 2); this list used
-    // to carry Kept and Broken the other way round, which nothing inside the
-    // engine noticed because a promise's status is held as the plain string
-    // and only becomes the enum value here — it showed in `.Int` and in `cmp`.
-    auto promise = [&](const char* key, long long ord) {
-        out = Value::enumVal(key, ord); out.enumType = "PromiseStatus"; return true;
-    };
-    if (n == "PromiseStatus::Planned" || n == "Planned") return promise("Planned", 0);
-    if (n == "PromiseStatus::Kept"    || n == "Kept")    return promise("Kept", 1);
-    if (n == "PromiseStatus::Broken"  || n == "Broken")  return promise("Broken", 2);
-    // Signal enum members (SIGINT, SIGTERM, …) — value is the OS signal number
-    if (n.rfind("SIG", 0) == 0 || n.rfind("Signal::SIG", 0) == 0) {
-        std::string bare = n.rfind("Signal::", 0) == 0 ? n.substr(8) : n;
-        int num = signalNumberOfName(bare);
-        if (num > 0) { out = Value::enumVal(bare, num); out.enumType = "Signal"; return true; }
-    }
-    // enum Endian <NativeEndian LittleEndian BigEndian> (byte order of Blob reads/writes)
-    if (n == "Endian::NativeEndian" || n == "NativeEndian" ||
-        n == "Endian::LittleEndian" || n == "LittleEndian" ||
-        n == "Endian::BigEndian"    || n == "BigEndian") {
-        std::string key = n.rfind("Endian::", 0) == 0 ? n.substr(8) : n;
-        out = Value::enumVal(key, key == "NativeEndian" ? 0 : key == "LittleEndian" ? 1 : 2);
-        out.enumType = "Endian"; return true;
-    }
-    // enum SeekType <SeekFromBeginning SeekFromCurrent SeekFromEnd> —
-    // what IO::Handle.seek's second argument is written with, and what a
-    // pure-Raku handle (IO::Blob, which 14 dists name) dispatches on.
-    if (n == "SeekType::SeekFromBeginning" || n == "SeekFromBeginning" ||
-        n == "SeekType::SeekFromCurrent"   || n == "SeekFromCurrent" ||
-        n == "SeekType::SeekFromEnd"       || n == "SeekFromEnd") {
-        std::string key = n.rfind("SeekType::", 0) == 0 ? n.substr(10) : n;
-        out = Value::enumVal(key, key == "SeekFromBeginning" ? 0
-                                : key == "SeekFromCurrent"   ? 1 : 2);
-        out.enumType = "SeekType"; return true;
-    }
-    // enum FileChangeEvent <FileChanged FileRenamed> — the kind of an
-    // IO::Notification::Change, which `IO::Path.watch` emits
-    if (n == "FileChangeEvent::FileChanged" || n == "FileChanged" ||
-        n == "FileChangeEvent::FileRenamed" || n == "FileRenamed") {
-        std::string key = n.rfind("FileChangeEvent::", 0) == 0 ? n.substr(17) : n;
-        out = Value::enumVal(key, key == "FileChanged" ? 0 : 1);
-        out.enumType = "FileChangeEvent"; return true;
-    }
-    // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
-    // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
-    // passes PROTO_TCP straight into setsockopt(2); without the enum the
-    // name only resolved while the unit's declarations were opaque, and a
-    // fresh parse refused it — killing Cro's accept handler mid-request.
-    if (n == "ProtocolType::PROTO_TCP" || n == "PROTO_TCP" ||
-        n == "ProtocolType::PROTO_UDP" || n == "PROTO_UDP") {
-        std::string key = n.rfind("ProtocolType::", 0) == 0 ? n.substr(14) : n;
-        out = Value::enumVal(key, key == "PROTO_TCP" ? 6 : 17);
-        out.enumType = "ProtocolType"; return true;
-    }
-    // enum ProtocolFamily — IO::Socket's :family selector, with Rakudo's ordinals
-    {
-        static const std::pair<const char*, long long> kPF[] = {
-            {"PF_UNSPEC", 0}, {"PF_INET", 1}, {"PF_INET6", 2}, {"PF_LOCAL", 3}, {"PF_UNIX", 3}, {"PF_MAX", 4}};
-        std::string key = n.rfind("ProtocolFamily::", 0) == 0 ? n.substr(16) : n;
-        for (auto& pf : kPF)
-            if (key == pf.first) { out = Value::enumVal(key, pf.second); out.enumType = "ProtocolFamily"; return true; }
-    }
-    return false;
-}
 
 // One hash entry as iteration yields it: the Pair's key is the entry's REAL key
 // (hashEntryKey — a Set element's pairKey, an object hash's objKey), so `for
@@ -15807,7 +15726,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             auto scope = tctx().cur;
                             Index* path = ix;
                             escapeRefs(path, scope.get());   // P2: the Proxy re-reads the path from anywhere
-                            Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                            Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
                             Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                             fetch.code()->ciM().builtin = [scope, path](Interpreter& I, ValueList&) -> Value {
                                 auto saved = I.tctx().cur; I.tctx().cur = scope;
@@ -15887,7 +15806,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value stored = kv; stored.itemized = false;
                         h->setObjKey(key, stored);
                     }                                        // the slot exists from now on
-                    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
                     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                     fetch.code()->ciM().builtin = [h, key](Interpreter&, ValueList&) -> Value {
                         auto it = h->find(key);
@@ -17838,9 +17757,17 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // with no tag (no allomorph, Instant or Duration kind) and no enum name is
     // exactly this, at two to_strings and two allocations per test. Anything
     // tagged, big or of another type still goes there.
+    // …and `cmp` / `<=>` on the same two, which is what a sort comparator or a
+    // heap's sift asks: the exact tower's small-Int compare, as an Order, without
+    // the hundred-odd operator tests in front of it (an allomorph, which `cmp`
+    // also orders by its string, has a hashKind and does not come here).
     if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() &&
         l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
-        if (op.size() == 3 && op[0] == '=' && op[1] == '=' && op[2] == '=') return Value::boolean(l.i == r.i);
+        if (op.size() == 3) {
+            if (op[0] == '=' && op[1] == '=' && op[2] == '=') return Value::boolean(l.i == r.i);
+            if ((op[0] == 'c' && op[1] == 'm' && op[2] == 'p') || (op[0] == '<' && op[1] == '=' && op[2] == '>'))
+                return Value::orderVal(l.i < r.i ? -1 : l.i > r.i ? 1 : 0);
+        }
         if (op.size() == 4 && op[0] == '!' && op[1] == '=' && op[2] == '=' && op[3] == '=') return Value::boolean(l.i != r.i);
     }
     // A Num with a Num or machine Int: the general path's double arm, without
@@ -22743,6 +22670,24 @@ Value Interpreter::evalBinary(Binary* b) {
             Value uv;
             if (userInfixOverCore(op, l, r, uv)) return uv;
         }
+        // Two PLAIN scalars — what the fast shape takes, here when they are not
+        // both plain lexicals: `($a cmp $b) == Less`, `@a[$i] < $x`. Every test
+        // below asks about a Proxy, a Whatever, an undefined, tagged or native
+        // value, an object, a metaop or composition, so for these the answer is the
+        // applyArith at the end, without the walk to it — unless an enum operand
+        // (an Order) has a user `&infix:<op>` to look for first.
+        {
+            auto plain = [](const Value& v) {
+                return v.hashKind.empty() && !v.natBits &&
+                       (v.t == VT::Int || v.t == VT::Num || v.t == VT::Str || v.t == VT::Bool);
+            };
+            if (plain(l) && plain(r) &&
+                ((l.enumType.empty() && r.enumType.empty()) || !boundInfixPossible(op)) &&
+                !(op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) &&                          // Zop Xop
+                !(op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0)) &&   // hyper
+                !opEq(op, "o") && !opEq(op, "\xE2\x88\x98"))                                    // ∘
+                return applyArith(op, l, r);
+        }
         // An operand that is a Proxy is being READ: run its FETCH, or the operator
         // sees the container instead of the value it stands for.
         if (l.hashKind == "Proxy") l = deproxy(l);
@@ -22908,7 +22853,10 @@ Value Interpreter::evalBinary(Binary* b) {
             }
             return composeCode(l, r);
         }
-        if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty())
+        // (an Order operand — `($a cmp $b) == Less` — asked on every evaluation,
+        // so the walk waits until some scope has bound this spelling at all)
+        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
+            boundInfixPossible(op))
             if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
                 try { return callCallable(*f, ValueList{l, r}); }
                 catch (RakuError& e) { // only "no candidate took these operands" falls back
@@ -29436,8 +29384,15 @@ struct RatLitParts {
             // the MAIN command-line reader also read.
             // (a lexical of the same name — `constant True = 42` — wins)
             if (nt->coreEnum != 0) {   // (decided once per node: a question of the name alone)
-                Value c;
-                if (coreEnumValue(n, c)) { nt->coreEnum = 1; if (Value* p = tctx().cur->find(n)) return *p; return c; }
+                const Value* c = static_cast<const Value*>(nt->coreVal.get());
+                if (!c && (c = coreEnumValueRef(n))) nt->coreVal.publish(c);
+                if (c) {
+                    nt->coreEnum = 1;
+                    // (eval answers *c without coming here until something binds such a name)
+                    if (g_coreEnumNameBound.load(std::memory_order_relaxed))
+                        if (Value* p = tctx().cur->find(n)) return *p;
+                    return *c;
+                }
                 nt->coreEnum = 0;
             }
             static const std::set<std::string> types = {
@@ -29960,11 +29915,17 @@ Value Interpreter::eval(Expr* e) {
         // parsing, a symbolic lookup, a bare name, list/array/hash construction,
         // a Range, a Pair — and none of them is the arithmetic and variable
         // reading a hot loop is made of. Whole, and not inlinable back.
+        case NK::NameTerm:
+            // …except a CORE enum member (`Less`) that no scope can shadow
+            // yet: every test evalRareExpr makes first is a question of the
+            // name, which this node already answered (see NameTerm::coreVal)
+            if (const void* c = static_cast<NameTerm*>(e)->coreVal.get())
+                if (!g_coreEnumNameBound.load(std::memory_order_relaxed)) return *static_cast<const Value*>(c);
+            return evalRareExpr(e);
         case NK::AllomorphLit:
         case NK::RegexLit:
         case NK::SubstLit:
         case NK::SymbolicRef:
-        case NK::NameTerm:
         case NK::Range:
         case NK::Pair:
             return evalRareExpr(e);
@@ -29994,6 +29955,7 @@ Value Interpreter::eval(Expr* e) {
                         out.readonly = out.immutableBind = false;
                         return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                     }
+                    if (Value r; engineProxySlotRead(*this, p, r)) return r;
                 }
                 else if (ve->name.size() > 1 &&
                          (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
@@ -30004,6 +29966,7 @@ Value Interpreter::eval(Expr* e) {
                             out.readonly = out.immutableBind = false;
                             return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                         }
+                        if (Value r; engineProxySlotRead(*this, p, r)) return r;
                     }
                 }
             }
@@ -30609,6 +30572,10 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 out.readonly = out.immutableBind = false;
                 return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
+            // an element alias or a shared cell reads here, as the full path
+            // below would (it has nothing to say about a plain name), but
+            // without walking it
+            if (Value r; engineProxySlotRead(*this, p, r)) return r;
         }
     }
     // Fast path: a plain lexical ($x/@a/%h/&f — second char is a letter
@@ -30635,6 +30602,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 out.readonly = out.immutableBind = false;
                 return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
+            if (Value r; engineProxySlotRead(*this, p, r)) return r;
         }
     }
     // a placeholder's caret/colon spelling reads its BARE slot ($^b and a
@@ -31137,7 +31105,8 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // dist's suite is the witness for both).
     if (ve->name.size() > 1 && ve->name[1] == '*') {
         if (Value* dp = dynLooked ? dynFound : findDynamicLenient(ve->name)) {
-            if (dp->t == VT::Hash && dp->hashKind == "Proxy" && dp->hash()) {
+            if (dp->t == VT::Hash && dp->hashKind == proxyKind() && dp->hash()) {
+                if (Value r; engineProxyRead(*this, *dp, r)) return r;
                 auto itF = dp->hash()->find("FETCH");
                 if (itF != dp->hash()->end()) return callCallable(itF->second, { *dp });
             }
@@ -31154,7 +31123,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
     }
     Value* p = tctx().cur->find(ve->name);
     if (p) {
-        if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) {
+        if (p->t == VT::Hash && p->hashKind == proxyKind() && p->hash()) {
+            // an element alias or a shared cell reads directly; FETCH is a call
+            if (Value r; engineProxyRead(*this, *p, r)) return r;
             auto it = p->hash()->find("FETCH");
             if (it != p->hash()->end()) return callCallable(it->second, { *p });
         }

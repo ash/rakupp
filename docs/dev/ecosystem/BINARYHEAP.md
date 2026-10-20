@@ -267,29 +267,74 @@ That is worth 2–8% here. The remaining ~10x is somewhere else.
 
 ### What the remaining ~10x is
 
-200,000 iterations, ms, same binaries:
+200,000 iterations, ms, median of five, measured before and after the
+2026-10-20 binding fix below:
 
-| operation | rakupp | Rakudo |
-|---|---|---|
-| `$x = @a[3]` (element read) | 21.7 | 66.3 |
-| `my \l = @a[3]` | 124.9 | 10.0 |
-| `my $n := @a[3]` | 130.1 | 9.6 |
-| `@p.BIND-POS(3, @a[5])` | 126.1 | 18.8 |
-| `my \c = @a[3]; $node = c; $node := c` | 265.2 | 12.7 |
-| `$x++ if (@a[3] cmp @a[5]) == More` | 96.9 | 30.1 |
-| `tops(@a[3], @a[5])`, `&tops = * cmp * == More` | 114.1 | 33.6 |
+| operation | before | after | Rakudo |
+|---|---|---|---|
+| `$x = @a[3]` (element read) | 17.4 | 17.1 | 14.6 |
+| `my \l = @a[3]` | 125.4 | 83.0 | 11.6 |
+| `my $n := @a[3]` | 136.7 | 89.1 | 11.2 |
+| `my $n := @a[3]; $x = $n` | 276.5 | 143.7 | 22.0 |
+| `@p.BIND-POS(3, @a[5])` | 127.8 | 81.0 | 20.8 |
+| `my \c = @a[3]; $node = c; $node := c` | 275.5 | 209.3 | 18.2 |
+| `$x++ if (@a[3] cmp @a[5]) == More` | 96.9 | — | 30.1 |
+| `tops(@a[3], @a[5])`, `&tops = * cmp * == More` | 114.1 | — | 33.6 |
 
-Reading an element is fast. Binding one is 10–20x Rakudo's cost, and
-`!sift-down` and `!insert` bind three or four times per heap level. That is
-fault 2 above, unchanged: every bind builds a `Proxy` hash (an array slot
-proxy has six string-keyed entries, so its ChunkList grows past the first
-chunk and rehashes), the cycle collector walks it when it drops, and each
-read through it does four hash lookups. Sampling `my \l = @a[3]` puts ~40%
-of the bind in that hash's construction, lookups and free. A cut to three
-entries is possible inside InterpreterCalls.cpp, but it would hide the
-array edge from the cycle collector the way the shared-cell proxy already
-hides its cell. A real fix is an array element that holds a cell (as an
-Env slot already can, `Value::cellHolder`) instead of a hash.
+(The last two rows are from the first measurement and were not touched.)
+
+Reading an element is fast. Binding one was 10–20x Rakudo's cost, and
+`!sift-down` and `!insert` bind three or four times per heap level. Sampling
+`my \l = @a[3]` put ~40% of the bind in building, searching and freeing the
+`Proxy` hash that the alias is. Three faults, all fixed in this round:
+
+- **The slot proxy had six entries**: array, index, length at bind time, last
+  value, FETCH, STORE. A ValueHash keeps four in its first chunk with no
+  index, so every bind grew the chunk list and built the probe index. That is
+  five allocations and a rehash. The proxy is four entries now. The index and
+  the length are packed into the array entry's `i` word, so the array is
+  still an edge the cycle collector sees.
+- **`hashKind = "Proxy"` interned the string on every proxy**, under the
+  intern table's lock. That was 5% of a bind. It is interned once now
+  (`proxyKind()`).
+- **Reading a variable bound to an alias** (`$x = $n`) left the pad fast
+  path, walked all of evalVarExpr, and called FETCH as a routine. It now
+  reads the engine's own proxies directly at every plain-read fast path
+  (`engineProxyRead`). The sigilless form already went through `deproxy`,
+  which is why `my \l` cost less than `my $n :=`.
+
+The shared-cell proxy (`$a := $b`, `@a[i] := $x`) now holds its cell as a
+`Value::cellHolder` instead of a boxed `ext` handle. That saves three
+allocations per proxy, and it ends a leak. A cycle through such a cell
+(`method link(\x) { $!o := x }; $v.link($v)`) used to be invisible to the
+collector and is collected now: 0 of 2,000 such objects were freed before,
+2,000 of 2,000 after ([t/leak/bound-cell.raku](../../../t/leak/bound-cell.raku)).
+[t/regression/element-bind-compact-proxy.raku](../../../t/regression/element-bind-compact-proxy.raku)
+covers the alias semantics this touches.
+
+The module's benchmarks, instructions retired (`/usr/bin/time -l`). These
+are steadier than wall time on this shared box:
+
+| benchmark | before | after | |
+|---|---|---|---|
+| binaryheap-extract | 73.6G | 58.9G | −20% |
+| binaryheap-pop | 73.4G | 59.0G | −20% |
+| binaryheap-push | 65.8G | 54.9G | −17% |
+| heapsort | 74.5G | 59.3G | −20% |
+| heapify | 53.4G | 42.7G | −20% |
+
+Peak RSS did not change. A bind still costs 7–11x Rakudo's. What is left of
+it is general: evalAssignInner's chain of arms and `_tlv_get_addr` (12–20% of
+the profiles). In a BinaryHeap pop profile, proxy construction, freeing and
+reads are now ~9% of the samples.
+
+Giving an array element a real container, as Rakudo's `Scalar` is, would fix
+three cases where the positional alias still differs from Rakudo. An
+experiment did exactly that: the element was promoted in place to a shared
+cell. It saved another 3–8% of instructions here but cost 3.6–4.7x the peak
+RSS, about 700 bytes for every element ever bound, so it was not landed. The
+survey, the numbers and the two possible designs are in
+[ELEMENT-CELL-PLAN.md](../plans/ELEMENT-CELL-PLAN.md).
 
 The `Order` path is the second cost, smaller here. `cmp` builds an `Order`,
 `== Less` takes applyArithGeneral's string-compared operator chain, and the
@@ -304,9 +349,10 @@ general, not BinaryHeap's. *Since 2026-10-20* the per-thread context is
 reached through a constant-initialized pointer, and the cost was mostly the
 init guard each mention of the old `tctx_` paid beside the variable, and the
 wrapper call around both from other files
-([INTERP-SPEED-PLAN.md](../plans/INTERP-SPEED-PLAN.md), task 4). On a heap
-pop the share is 10.1% → 4.8% of busy samples, and the five benchmarks
-retire 3.1–4.3% fewer instructions (5.1% fewer cycles, geomean).
+([INTERP-SPEED-PLAN.md](../plans/INTERP-SPEED-PLAN.md), task 4). Measured on e9841fec, before
+the binding work above: on a heap pop the share is 10.1% → 4.8% of busy
+samples, and the five benchmarks retire 3.1–4.3% fewer instructions (5.1%
+fewer cycles, geomean).
 
 For scale, the same heap written with plain element assignment (no binds,
 `(@!a[$c] cmp $v) == Less`, 2^16 pops) is 2232.8 ms here and 684.9 ms on

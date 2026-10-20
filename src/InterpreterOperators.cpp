@@ -3251,7 +3251,7 @@ bool pureSubscriptBase(const Expr* b) {
 // refuses an operator nobody declared as an undeclared routine, by either
 // spelling (`infix:<nosuch>(42)`, `&infix:<nosuch>`); the call form here gave
 // back its one argument, and the `&` form a working Callable, so a typo in an
-// operator's name passed in silence (found by FastRoast, 2026-10-19).
+// operator's name passed in silence (found by FatRoast, 2026-10-19).
 //
 // Declared means: CORE has it (Rakudo's own list, `CORE::.keys` on
 // 2026-10-19), the scope does, or it is a metaoperator over one that is —

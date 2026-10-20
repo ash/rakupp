@@ -1,5 +1,5 @@
 # BROKE: a scalar or a type whose name starts with a letter beyond ASCII lost
-# what its name stood for (found 2026-10-19 by FastRoast, which renames Roast's
+# what its name stood for (found 2026-10-19 by FatRoast, which renames Roast's
 # identifiers into other scripts; S03-binding and S12 diverged only by name).
 #
 #   my $ч = 1; my $y := $ч; $ч = 2; say $y;      # 1 — a copy, not an alias

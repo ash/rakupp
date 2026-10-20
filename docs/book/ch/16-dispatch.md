@@ -193,7 +193,7 @@ struct RedispatchCtx {
     ValueList sameArgs;
     bool lastcall = false; bool fromChain = false;
 };
-static thread_local std::vector<RedispatchCtx> redispatchStack_;
+static std::vector<RedispatchCtx>& redispatchStack();   // this thread's chain
 ```
 
 Each dispatch site that can be re-entered pushes a context knowing how to invoke

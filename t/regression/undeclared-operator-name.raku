@@ -5,7 +5,7 @@
 # names an operator we have not written rather than one nobody declared.
 # Rakudo refuses all of them at compile time: "Undeclared routine:
 # infix:<nosuch>". So a typo in an operator's name was a silent pass here —
-# FastRoast found it on 2026-10-19 by fattening `infix:<before>` into Cyrillic.
+# FatRoast found it on 2026-10-19 by fattening `infix:<before>` into Cyrillic.
 # `&prefix:<nosuch>` and `&postfix:<nosuch>` read as (Any) the same way.
 # FIXED: 2026-10-19. operatorNameDeclared (InterpreterOperators.cpp) asks
 # whether CORE, the scope, or a metaoperator over either declares the name;

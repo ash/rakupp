@@ -372,6 +372,11 @@ struct NameTerm : Expr {
     // mention of a class otherwise: 1 yes, 0 no, -1 not yet asked.
     mutable DecidedOnce<signed char> coreEnum{-1};
     mutable DecidedOnce<signed char> coreType{-1};
+    // …and, once coreEnum is 1, the member itself (a `const Value*` into
+    // coreEnumValueRef's table, which is never freed). eval answers it from here
+    // while no scope has bound a core enum member's name
+    // (g_coreEnumNameBound); otherwise the scope is asked first, as before.
+    mutable PublishedOnce<const void*> coreVal{nullptr};
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 

@@ -8282,8 +8282,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value& sv = kv.second;
                 if (sv.t != VT::Hash || sv.hashKind != "Proxy" || !sv.hash()) continue;
                 auto c = sv.hash()->find(kCellKey);
-                if (c != sv.hash()->end() && c->second.ext())
-                    sv = Value(**std::static_pointer_cast<PRef<Value>>(c->second.ext()));
+                if (c != sv.hash()->end() && c->second.isCell())
+                    sv = Value(*c->second.cellS());
             }
             // A twiddle names a PUBLIC attribute — one with an accessor. Rakudo
             // walks `self.^attributes` and twiddles only those, so `$!private`

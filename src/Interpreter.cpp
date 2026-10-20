@@ -3128,6 +3128,114 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
     return false;
 }
 
+// CORE's enum MEMBERS by name — bare (`Less`) or qualified (`Order::Less`).
+// ONE definition, for the same reason nameTermConstant above is one: it is read
+// by the interpreter's NameTerm eval, by rtNameTerm (the native-codegen entry
+// point, which carried a THREE-enum subset of this list and so resolved
+// `BigEndian` to a type object in a compiled binary), and by the MAIN
+// command-line reader, which turns an argument naming an enum value into that
+// value. Members only — `Nil`, `Inf`, `NaN` and the type objects are terms of
+// other kinds and stay with their own callers.
+//
+// A TABLE, every spelling to its member, built once: noteNameBound asks it
+// about every uppercase name a scope binds (see g_coreEnumNameBound), and a
+// chain of ~40 string compares cost a routine with two sigilless parameters a
+// quarter of its call. The map is never freed — not even at exit, where a
+// worker still evaluating would read a destroyed member — so a pointer into it
+// (coreEnumValueRef, NameTerm::coreVal) stays good for the program's life.
+static const std::unordered_map<std::string, Value, VarNameHash, VarNameEq>& coreEnumMembers() {
+    static const auto* members = [] {
+        auto* m = new std::unordered_map<std::string, Value, VarNameHash, VarNameEq>;
+        // a member under its bare name and qualified by its enum's
+        auto both = [&](const std::string& type, const std::string& key, const Value& v) {
+            (*m)[key] = v;
+            (*m)[type + "::" + key] = v;
+        };
+        auto member = [&](const char* type, const char* key, long long ord) {
+            Value v = Value::enumVal(key, ord);
+            v.enumType = type;
+            both(type, key, v);
+        };
+        // Bool's two, which are an enum in Raku however natively they are stored here
+        both("Bool", "True", Value::boolean(true));
+        both("Bool", "False", Value::boolean(false));
+        both("Order", "Less", Value::orderVal(-1));
+        both("Order", "Same", Value::orderVal(0));
+        both("Order", "More", Value::orderVal(1));
+        // PromiseStatus <Planned Kept Broken> — real enum values so `$p.status`
+        // both compares (=== Kept) and stringifies (~$s eq 'Kept') correctly.
+        // The ORDINALS are Rakudo's (Planned 0, Kept 1, Broken 2); this list used
+        // to carry Kept and Broken the other way round, which nothing inside the
+        // engine noticed because a promise's status is held as the plain string
+        // and only becomes the enum value here — it showed in `.Int` and in `cmp`.
+        member("PromiseStatus", "Planned", 0);
+        member("PromiseStatus", "Kept", 1);
+        member("PromiseStatus", "Broken", 2);
+        // Signal enum members (SIGINT, SIGTERM, …) — value is the OS signal number
+        for (auto& [name, num] : signalNamesAndNumbers())
+            if (num > 0 && name.rfind("SIG", 0) == 0) member("Signal", name.c_str(), num);
+        // enum Endian <NativeEndian LittleEndian BigEndian> (byte order of Blob reads/writes)
+        member("Endian", "NativeEndian", 0);
+        member("Endian", "LittleEndian", 1);
+        member("Endian", "BigEndian", 2);
+        // enum SeekType <SeekFromBeginning SeekFromCurrent SeekFromEnd> —
+        // what IO::Handle.seek's second argument is written with, and what a
+        // pure-Raku handle (IO::Blob, which 14 dists name) dispatches on.
+        member("SeekType", "SeekFromBeginning", 0);
+        member("SeekType", "SeekFromCurrent", 1);
+        member("SeekType", "SeekFromEnd", 2);
+        // enum FileChangeEvent <FileChanged FileRenamed> — the kind of an
+        // IO::Notification::Change, which `IO::Path.watch` emits
+        member("FileChangeEvent", "FileChanged", 0);
+        member("FileChangeEvent", "FileRenamed", 1);
+        // enum ProtocolType <PROTO_TCP PROTO_UDP> — CORE's IO::Socket
+        // protocol selector, carrying the IPPROTO numbers. Cro::TCP::NoDelay
+        // passes PROTO_TCP straight into setsockopt(2); without the enum the
+        // name only resolved while the unit's declarations were opaque, and a
+        // fresh parse refused it — killing Cro's accept handler mid-request.
+        member("ProtocolType", "PROTO_TCP", 6);
+        member("ProtocolType", "PROTO_UDP", 17);
+        // enum ProtocolFamily — IO::Socket's :family selector, with Rakudo's ordinals
+        member("ProtocolFamily", "PF_UNSPEC", 0);
+        member("ProtocolFamily", "PF_INET", 1);
+        member("ProtocolFamily", "PF_INET6", 2);
+        member("ProtocolFamily", "PF_LOCAL", 3);
+        member("ProtocolFamily", "PF_UNIX", 3);
+        member("ProtocolFamily", "PF_MAX", 4);
+        return m;
+    }();
+    return *members;
+}
+bool coreEnumValue(const std::string& n, Value& out) {
+    const auto& m = coreEnumMembers();
+    auto it = m.find(n);
+    if (it == m.end()) return false;
+    out = it->second;
+    return true;
+}
+const Value* coreEnumValueRef(const std::string& n) {
+    const auto& m = coreEnumMembers();
+    auto it = m.find(n);
+    return it == m.end() ? nullptr : &it->second;
+}
+bool isCoreEnumMemberName(const std::string& n) {
+    // The (first letter, length) pairs the table's spellings have — bit `len`
+    // of shapes[letter], or bit 31 for any length past 30 — which turns away a
+    // sigilless `Thing` or `Other` before hashing it. Only A–Z first letters
+    // are asked about (noteNameBound), and every spelling has one.
+    static const uint32_t* shapes = [] {
+        auto* s = new uint32_t[26]();
+        for (auto& kv : coreEnumMembers()) {
+            const unsigned c = (unsigned char)kv.first[0] - 'A';
+            if (c < 26) s[c] |= 1u << std::min<size_t>(kv.first.size(), 31);
+        }
+        return s;
+    }();
+    const unsigned c = n.empty() ? 26u : (unsigned char)n[0] - 'A';
+    if (c >= 26 || !((shapes[c] >> std::min<size_t>(n.size(), 31)) & 1)) return false;
+    return coreEnumValueRef(n) != nullptr;
+}
+
 Value Interpreter::rtNameTerm(const std::string& n) {
     // the Empty term, ahead of every lookup as the NameTerm eval has it: the
     // empty-Slip SINGLETON unless a class of that name exists. Resolved as a
@@ -4184,6 +4292,21 @@ bool lexShadowArmed(const char* p, size_t n) {
 }
 std::atomic<uint64_t> g_dynEpoch{1};
 std::atomic<bool> g_userPrefixShadow{false};
+std::atomic<bool> g_coreEnumNameBound{false};
+std::atomic<uint64_t> g_boundInfixMask{0};
+// noteNameBound's out-of-line half: a name starting A–Z or `&i`.
+void noteNameBoundSlow(const std::string& k) {
+    if (k[0] == '&') {
+        if (k.size() > 9 && k.compare(0, 8, "&infix:<") == 0 && k.back() == '>') {
+            const uint64_t bit = 1ull << lexShadowSlot(k.data() + 8, k.size() - 9);
+            if (!(g_boundInfixMask.load(std::memory_order_relaxed) & bit))
+                g_boundInfixMask.fetch_or(bit, std::memory_order_relaxed);
+        }
+        return;
+    }
+    if (!g_coreEnumNameBound.load(std::memory_order_relaxed) && isCoreEnumMemberName(k))
+        g_coreEnumNameBound.store(true, std::memory_order_relaxed);
+}
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as
 // g_deproxy, and set from the same place.

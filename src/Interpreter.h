@@ -88,6 +88,10 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE = false); // s
 // the MAIN command-line reader, which turns an argument that names an enum
 // value into that value.
 bool coreEnumValue(const std::string& n, Value& out);
+// …the same member as one Value per name that lives as long as the program
+// (null for a name that is none), for a NameTerm to keep (see coreVal)
+const Value* coreEnumValueRef(const std::string& n);
+bool isCoreEnumMemberName(const std::string& n);   // …is there one by this name (cheaply)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you mean" ranking
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
@@ -608,6 +612,34 @@ extern std::atomic<uint64_t> g_dynEpoch;
 inline void bumpDynEpoch() { g_dynEpoch.fetch_add(1, std::memory_order_acq_rel); }
 inline bool isDynName(const std::string& n) { return n.size() > 1 && n[1] == '*'; }
 
+// Two lookups that can be skipped while NOTHING has bound a certain name, and
+// the flags that say whether something has. Every way a name enters a scope
+// goes through EnvVars' inserts or PadLayout::add, and both call
+// noteNameBound — so while a flag is clear, Env::find cannot answer that name
+// in any scope, and walking the chain to ask is wasted.
+//
+// g_coreEnumNameBound: some scope bound a name a CORE enum member answers to
+// (coreEnumValue) — `constant Less = 42`, `my \Same`, a user `enum <More>`, an
+// import. Until one has, a bare `Less` is Order::Less, and its NameTerm
+// answers without the scope walk it otherwise made on every mention.
+//
+// g_boundInfixMask: which `&infix:<op>` spellings some scope bound, as a
+// 64-bit filter over lexShadowSlot (a false positive only costs the lookup).
+// An enum or object operand asks its scope for a user `&infix:<op>` before the
+// built-in operator gets it; with the spelling's bit clear there is none.
+//
+// Never cleared: a program that binds such a name once keeps the walk.
+extern std::atomic<bool> g_coreEnumNameBound;
+extern std::atomic<uint64_t> g_boundInfixMask;
+void noteNameBoundSlow(const std::string& k);
+// A name of 4+ characters starting A–Z (every core enum member's spelling,
+// qualified or not, is one) or `&i` (`&infix:<…>`) goes out of line; a
+// sigilled variable stops at one compare, a type capture's `T` at two.
+inline void noteNameBound(const std::string& k) {
+    const unsigned c = k.empty() ? 0u : (unsigned char)k[0];
+    if ((c - 'A' < 26u && k.size() >= 4) || (c == '&' && k.size() > 9 && k[1] == 'i')) noteNameBoundSlow(k);
+}
+
 // Env::vars: a VarMap whose every way to ADD a name is seen, so a `$*x`
 // appearing in a scope a memoized walk passed invalidates the memos. Removal
 // needs nothing — a memo is re-probed where it found the name, and a name
@@ -616,6 +648,7 @@ class EnvVars : private VarMap {
     std::atomic<bool> walked_{false};
     void added(const std::string& k) const {
         if (isDynName(k) && walked_.load(std::memory_order_relaxed)) bumpDynEpoch();
+        noteNameBound(k);
     }
     void addedAll() const {
         if (!walked_.load(std::memory_order_relaxed)) return;
@@ -641,6 +674,8 @@ public:
     EnvVars() = default;
     // (walked-ness belongs to the scope, not to its contents: never copied)
     EnvVars(const EnvVars& o) : VarMap(o) {}
+    // (no noteNameBound pass here: these names were added to an EnvVars first —
+    // the one VarMap source is a grammar's snapshot of a scope's own vars)
     EnvVars& operator=(const EnvVars& o) { VarMap::operator=(o); addedAll(); return *this; }
     EnvVars& operator=(const VarMap& o) { VarMap::operator=(o); addedAll(); return *this; }
     const VarMap& map() const { return *this; }
@@ -748,6 +783,7 @@ struct PadLayout {
         names.push_back(n);
         simple.push_back(simpleSlot ? 1 : 0);
         byName.emplace(n, s);
+        noteNameBound(n);   // (before the slot can ever be live: see g_coreEnumNameBound)
         if (n.size() > 1 && n[1] == '*') holdsDynamic = true;
         return s;
     }
@@ -799,6 +835,12 @@ inline bool lexShadowPossible(const char* p, size_t n) {
     return m && ((m >> lexShadowSlot(p, n)) & 1) && lexShadowArmed(p, n);
 }
 inline bool lexShadowPossible(const std::string& op) { return lexShadowPossible(op.data(), op.size()); }
+// Whether some scope may hold a `&infix:<op>` for exactly this spelling (see
+// g_boundInfixMask): false means Env::find("&infix:<op>") answers null.
+inline bool boundInfixPossible(const std::string& op) {
+    const uint64_t m = g_boundInfixMask.load(std::memory_order_relaxed);
+    return m && !op.empty() && ((m >> lexShadowSlot(op.data(), op.size())) & 1);
+}
 // The ASCII spelling the lexer gives `×` `÷` `−` `≥` `≤` `≠`, so a `sub
 // infix:<×>` shadows what reaches the evaluator as `*`: the Unicode twin of an
 // operator, or null.

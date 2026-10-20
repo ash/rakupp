@@ -4,7 +4,7 @@
 # the die's 1, where Rakudo's Test overrides it (255 for `plan 2; ok 1; die`,
 # 3 for three failures and a die), and the "# You planned …" summary was not
 # printed. An explicit `exit 0` after a failure exited 255, and `ok` after a
-# no-plan `done-testing` counted as a plan mismatch. FastRoast found about
+# no-plan `done-testing` counted as a plan mismatch. FatRoast found about
 # 40 files per sample whose only difference was this status.
 # FIXED: the run ends the way Rakudo's Test END does. An `exit` from anywhere
 # (mainline, a sub, MAIN, LEAVE, END, CATCH) keeps its status. Otherwise, any
