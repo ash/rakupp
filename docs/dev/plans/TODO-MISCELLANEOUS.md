@@ -9,35 +9,6 @@ plan, move it to [TODO.md](TODO.md).
 
 ---
 
-- [ ] **A non-ASCII scalar name breaks binding** (found 2026-10-19 by
-  FastRoast's `names-v1`). Binding to or through a scalar whose name does
-  not start with an ASCII letter copies instead of aliasing:
-
-  ```raku
-  my $ч = 1; my $y := $ч; $ч = 2; say $y;           # 1, Rakudo 2
-  my @a = <a b c>; my $é = "d"; @a[1] := $é; $é = "e"; say @a[1];   # d, Rakudo e
-  ```
-
-  `@` and `%` names and `is rw` are fine, and so is `$x̲` (ASCII base and a
-  mark). About twenty sites decide "a plain lexical, no twigil" with
-  `ascii::isalpha(name[1]) || name[1] == '_'` (src/InterpreterCalls.cpp,
-  src/InterpreterCore.cpp, src/Codegen.cpp, src/Cnp.cpp); for `$ч`, name[1]
-  is a UTF-8 lead byte. Twigils are ASCII punctuation, so a byte >= 0x80
-  there always starts a letter. Who needs it: every program with names in
-  another script; Roast's S03-binding files under any palette.
-
-- [ ] **A non-ASCII type name drops a typed declaration's constraint**
-  (found 2026-10-19 by FastRoast's `names-v1`):
-
-  ```raku
-  class Еоо { }; my Еоо $foo; say $foo;   # (Any), Rakudo (Еоо)
-  class Éa { };  my Éa $x .= new;         # dies: no method 'new' on Any
-  ```
-
-  `my Еоо $x = Еоо.new` and coercion types (`Еоо()`) work. Likely the same
-  family as the item above, a first-letter test on the type name. Who needs
-  it: S12 files (`.= new` on a typed variable) under any palette.
-
 - [ ] **A regex does not interpolate a variable with a non-ASCII name**
   (found 2026-10-19 by FastRoast's `names-v1` in the `mixed` palette):
 
@@ -46,9 +17,10 @@ plan, move it to [TODO.md](TODO.md).
   my @𝐯 = rx/a/, rx/b/;   say "a" ~~ /@𝐯/;   # Nil, Rakudo ｢a｣
   ```
 
-  ASCII names interpolate. The regex compiler's variable test is likely
-  ASCII-only, as in the binding item above. Who needs it:
-  S05-interpolation under any palette.
+  ASCII names interpolate, and since edf09560 such a name binds and types
+  correctly outside a regex. The regex compiler's variable test is likely
+  an ASCII-only first-letter check of the kind that commit replaced. Who
+  needs it: S05-interpolation under any palette.
 
 - [ ] **`.trans` with a regex key miscounts after a combining mark** (found
   2026-10-19 by FastRoast's `strings-v1` in the `mixed` palette):
