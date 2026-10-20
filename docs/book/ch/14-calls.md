@@ -92,7 +92,7 @@ PooledFrame frame;                                     // a per-call frame, reus
 auto& env = frame.env;
 c.state.env->parent = c.closure ? c.closure : global_; // once
 env->parent = c.state.env;        // frame → state env → closure → … → global
-tctx_.dynStack.push_back(caller_scope);                // the OTHER chain
+tctx().dynStack.push_back(caller_scope);                // the OTHER chain
 ```
 
 The frame is *pooled*, not freshly allocated, and the reason is one of the

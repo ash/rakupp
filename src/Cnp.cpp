@@ -298,7 +298,7 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
 
 int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
     Interpreter& I = interpOf(f);
-    auto saved = Interpreter::tctx_.cur;
+    auto saved = Interpreter::tctx().cur;
     Value** slots = static_cast<Value**>(f->slots);
     const auto& written = *static_cast<const std::vector<bool>*>(f->written);
     const size_t n = (size_t)f->nslots;
@@ -369,23 +369,23 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         auto env = makeSlabShared<Env>();
         env->parent = saved;
         for (size_t k = 0; k < cs.argRegs.size(); k++) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
-        Interpreter::tctx_.cur = env;
+        Interpreter::tctx().cur = env;
         Value res;
         try { res = cs.isynth ? I.eval(cs.isynth.get()) : cs.msynth ? I.eval(cs.msynth.get()) : I.eval(cs.synth.get()); }
         catch (LastEx& e) {
             if (!e.label.empty()) throw;
-            Interpreter::tctx_.cur = saved; reload(); f->ctl = 1; return 0;
+            Interpreter::tctx().cur = saved; reload(); f->ctl = 1; return 0;
         }
         catch (NextEx& e) {
             if (!e.label.empty()) throw;
-            Interpreter::tctx_.cur = saved; reload(); f->ctl = 2; return 0;
+            Interpreter::tctx().cur = saved; reload(); f->ctl = 2; return 0;
         }
-        Interpreter::tctx_.cur = saved;
+        Interpreter::tctx().cur = saved;
         reload();
         setReg(f, dst, res);
         return 0;
     } catch (...) {
-        Interpreter::tctx_.cur = saved;
+        Interpreter::tctx().cur = saved;
         stash(f);
         return 1;
     }

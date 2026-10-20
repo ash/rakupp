@@ -263,7 +263,7 @@ current cap unwinds the block with an empty marker exception:
 
 ```cpp
 // src/InterpreterCalls.cpp — take
-auto& coll = *tctx_.gatherStack.back();
+auto& coll = *tctx().gatherStack.back();
 for (auto& x : a) coll.push_back(x);
 if (lim && coll.size() >= lim) throw StopGatherEx{};
 ```

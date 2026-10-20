@@ -299,12 +299,12 @@ name up and **returns a copy of the `Value`**; a write goes through
 
 ```cpp
 // read  $x   — eval(VarExpr), the plain-lexical fast path
-if (Value* p = tctx_.cur->find(ve->name))
+if (Value* p = tctx().cur->find(ve->name))
     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) return *p;   // a COPY of the slot
 
 // my $x      — lvalue(): make the slot in the current scope, return a pointer to it
-tctx_.cur->define(ve->name, std::move(init));
-return &tctx_.cur->vars[ve->name];
+tctx().cur->define(ve->name, std::move(init));
+return &tctx().cur->vars[ve->name];
 
 // $x = 5     — evalAssign(): write through the lvalue pointer
 *lv = rhs;
@@ -318,16 +318,16 @@ across calls:
 
 ```cpp
 // state $n — lvalue(): the slot lives in the once-created state.env
-if (!tctx_.curStateEnv->vars.count(ve->name))
-    tctx_.curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
-return &tctx_.curStateEnv->vars[ve->name];
+if (!tctx().curStateEnv->vars.count(ve->name))
+    tctx().curStateEnv->define(ve->name, typedDefault(ve->declType, sigil));
+return &tctx().curStateEnv->vars[ve->name];
 ```
 
 The three declarators differ only in *which* `Env` holds the slot:
 
 | Declarator | Storage | Notes |
 |---|---|---|
-| `my` | the current lexical `Env` (`tctx_.cur`) | ordinary lexical |
+| `my` | the current lexical `Env` (`tctx().cur`) | ordinary lexical |
 | `our` | the package env (`curPkgEnv_`, ultimately `global_`) | on package-block exit, `our`-vars are also republished under a package-qualified name (`src/InterpreterModules.cpp`) |
 | `state` | a per-`Callable` `state.env`, created **once** | a `StateSlot` holding the env and its `std::once_flag` (`src/Value.h:303`), whose copy constructor is empty so a cloned `Callable` starts with no state of its own; persists across calls, initialized on first call only |
 
@@ -337,7 +337,7 @@ name when the package block closes (a `my` package var is skipped):
 ```cpp
 // src/InterpreterModules.cpp — on package-block exit, publish `our` symbols globally
 if (sigilVar && !ourVars.count(sym)) continue;            // a `my` package var — not published
-qual = std::string(1, sym[0]) + tctx_.pkgPrefix + sym.substr(1);   // e.g. "$Foo::Bar::x"
+qual = std::string(1, sym[0]) + tctx().pkgPrefix + sym.substr(1);   // e.g. "$Foo::Bar::x"
 global_->define(qual, kv.second);
 ```
 
@@ -436,7 +436,7 @@ hash; a write routes through `STORE`:
 
 ```cpp
 // src/InterpreterCore.cpp — reading a variable: a Proxy fetches rather than returning itself
-Value* p = tctx_.cur->find(ve->name);
+Value* p = tctx().cur->find(ve->name);
 if (p) {
     if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
         auto it = p->hash->find("FETCH");
@@ -492,7 +492,7 @@ Value sc = Value::makeHash(); sc.hashKind = "Scalar";
 (*sc.hash)["value"]   = inv;
 
 // $x = Nil  — restore the container's default (walk varDefault up the chain)
-for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
     auto di = en->varDefault.find(nm);
     if (di != en->varDefault.end()) { dv = di->second; break; }
     if (en->vars.count(nm)) break;       // owner scope reached, no declared default
@@ -572,7 +572,7 @@ variadics, callbacks, and what happens on a machine with no libffi — is
 PooledFrame frame; auto& env = frame.env;           // a per-call frame, REUSED
 c.state.env->parent = c.closure ? c.closure : global_;  // (once) state env -> closure
 env->parent = c.state.env;                          // frame -> state env -> closure -> ... -> global
-tctx_.dynStack.push_back(caller_scope);             // dynamic ($*var) chain, kept SEPARATE
+tctx().dynStack.push_back(caller_scope);             // dynamic ($*var) chain, kept SEPARATE
 ```
 
 Frames come off a thread-local pool of up to thirty-two rather than being
@@ -666,21 +666,21 @@ matter of *stopping* the statement loop:
 
 ```cpp
 // return  —  src/InterpreterCore.cpp
-if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
-    tctx_.returning = true; tctx_.returnV = std::move(v);   // set a flag, don't throw
+if (tctx().curRoutineFrame != 0 && tctx().frameTop == tctx().curRoutineFrame) {
+    tctx().returning = true; tctx().returnV = std::move(v);   // set a flag, don't throw
     return Value::any();
 }
 throw ReturnEx{v};                                          // boundary crossed: must unwind
 ```
 
-Native statement loops and `runLoopBody` check `tctx_.returning` after each
+Native statement loops and `runLoopBody` check `tctx().returning` after each
 statement and bail out; `callCallableRaw` consumes the flag at the routine
 boundary, adopting `returnV` as the call's result:
 
 ```cpp
 // src/InterpreterCore.cpp — callCallableRaw statement loop, after each statement
-if (tctx_.returning) {                       // cooperative return reached this frame
-    if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
+if (tctx().returning) {                       // cooperative return reached this frame
+    if (isRoutine) { tctx().returning = false; last = std::move(tctx().returnV); }
     break;                                   // a bare block just propagates it to its routine
 }
 ```
@@ -690,8 +690,8 @@ if (tctx_.returning) {                       // cooperative return reached this 
 
 ```cpp
 // src/InterpreterCore.cpp — LastStmt (Next/Redo mirror it)
-if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {   // curLoopFrame defaults to kNoFrame
-    tctx_.loopCtl = 2; return Value::any();  // cooperative last (runLoopBody consumes it)
+if (t.empty() && tctx().frameTop == tctx().curLoopFrame) {   // curLoopFrame defaults to kNoFrame
+    tctx().loopCtl = 2; return Value::any();  // cooperative last (runLoopBody consumes it)
 }
 throw LastEx{t};                             // labelled or cross-frame: unwind
 ```
@@ -908,7 +908,7 @@ into a `Code` value by capturing the **defining** environment:
 ```cpp
 code.code->params  = &be->params;   // borrowed from the AST
 code.code->body    = &be->body;     // borrowed from the AST
-code.code->closure = tctx_.cur;     // captured: the scope where the block was written
+code.code->closure = tctx().cur;     // captured: the scope where the block was written
 ```
 
 Only the environment is *owned* (a `shared_ptr<Env>` copy); the parameter list
@@ -1144,7 +1144,7 @@ A `take` that pushes past the current cap throws `StopGatherEx`
 (possibly infinite) block:
 
 ```cpp
-auto& coll = *tctx_.gatherStack.back();
+auto& coll = *tctx().gatherStack.back();
 for (auto& x : a) coll.push_back(x);
 if (lim && coll.size() >= lim) throw StopGatherEx{};   // src/InterpreterCalls.cpp
 ```

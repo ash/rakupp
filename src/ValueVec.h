@@ -41,6 +41,8 @@
 // invalidating all iterators, and `push_back(v[0])` staying legal.
 #pragma once
 
+#include "ConstInit.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
@@ -150,23 +152,40 @@ class RVec {
     static constexpr std::size_t kPoolMax = 64;  // …up to this many blocks each
 
     struct FreeBlock { FreeBlock* next; };
-    // Trivial members, but a real destructor so a thread that exits gives its
-    // blocks back rather than leaking — the same discipline the interpreter's
-    // call-frame pool already keeps.
+    // A thread that exits gives its blocks back rather than leaking — the same
+    // discipline the interpreter's call-frame pool already keeps. The lists are
+    // a trivial, constant-initialized thread_local and the destructor lives on
+    // a separate guarded object armed on the thread's first pooled block, as
+    // in SlabPool.h: a thread_local WITH a destructor pays an init guard on
+    // every access, which on Darwin is a second _tlv_get_addr call per
+    // allocation and per free.
     struct BlockPool {
-        FreeBlock* head[kPooled] = {};
-        std::size_t n[kPooled] = {};
-        ~BlockPool() {
-            for (std::size_t i = 0; i < kPooled; i++)
-                while (head[i]) {
-                    FreeBlock* b = head[i];
-                    head[i] = b->next;
-                    ::operator delete(static_cast<void*>(b));
-                }
-        }
+        FreeBlock* head[kPooled];
+        std::size_t n[kPooled];
+        bool armed;
     };
+    RAKUPP_CONSTINIT inline static thread_local BlockPool tlPool = {};
+    static void drainPool() noexcept {
+        BlockPool& p = tlPool;
+        for (std::size_t i = 0; i < kPooled; i++) {
+            while (p.head[i]) {
+                FreeBlock* b = p.head[i];
+                p.head[i] = b->next;
+                ::operator delete(static_cast<void*>(b));
+            }
+            p.n[i] = 0;
+        }
+        p.armed = false;   // a later block (another destructor's) re-arms
+    }
+    RAKUPP_NOINLINE static void armPool() {
+        struct Reaper { ~Reaper() { drainPool(); } };
+        static thread_local Reaper r;
+        (void)r;
+        tlPool.armed = true;
+    }
     static BlockPool& pool() {
-        static thread_local BlockPool p;
+        BlockPool& p = tlPool;
+        if (!p.armed) armPool();
         return p;
     }
 

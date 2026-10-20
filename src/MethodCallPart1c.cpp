@@ -29,11 +29,11 @@ class IO::Notification::Change {
 void Interpreter::loadIoNotification() {
     if (notificationLoading_ || classes_.count("IO::Notification::Change")) return;
     notificationLoading_ = true;
-    auto saved = tctx_.cur;
-    tctx_.cur = global_;
+    auto saved = tctx().cur;
+    tctx().cur = global_;
     try { evalString(kIoNotificationSrc); }
-    catch (...) { tctx_.cur = saved; notificationLoading_ = false; throw; }
-    tctx_.cur = saved;
+    catch (...) { tctx().cur = saved; notificationLoading_ = false; throw; }
+    tctx().cur = saved;
     notificationLoading_ = false;
 }
 
@@ -79,11 +79,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
     if (inv.t == VT::Type && inv.s == "IO::CatHandle" && !classes_.count("IO::CatHandle") &&
         !catHandleLoading_) {
         catHandleLoading_ = true;
-        auto saved = tctx_.cur;
-        tctx_.cur = global_;
+        auto saved = tctx().cur;
+        tctx().cur = global_;
         try { evalString(kCatHandleSrc); }
-        catch (...) { tctx_.cur = saved; catHandleLoading_ = false; throw; }
-        tctx_.cur = saved;
+        catch (...) { tctx().cur = saved; catHandleLoading_ = false; throw; }
+        tctx().cur = saved;
         catHandleLoading_ = false;
         if (classes_.count("IO::CatHandle")) return methodCall(inv, m, args, rwArgs);
     }
@@ -574,7 +574,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // under the cooperative GIL that means handing off to the workers that
             // could send. With no async engaged nothing ever could, so answer Nil
             // rather than deadlock; likewise once every worker has finished.
-            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_ || t_poll.isWorker)) {
+            if (q.empty() && !isClosed() && (gilHeld_ || parallelMode_ || t_hot.poll.isWorker)) {
                 // No wall-clock deadline. A 300 ms cap used to stand in for "blocks
                 // until an item arrives", which made the wait a RACE against the
                 // producer: `start { sleep 0.2; $c.send(...) }` lost it whenever
@@ -597,7 +597,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                       if (!q.empty() || isClosed()) break; }
                     // (a WORKER waits regardless: the main thread may still send —
                     // `start { await $c }` then `$c.send(…)` from the mainline)
-                    if (!t_poll.isWorker && liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
+                    if (!t_hot.poll.isWorker && liveWorkers_.load() <= 0 && cuedLoads_.load() <= 0) break; // nobody left to send
                     // gilHeld_ alone does not mean "cooperative": engageGil sets it
                     // in parallel mode too, where yieldToWorkerFor returns at once.
                     // Gating on it alone made this a hot spin on the stripe, and
@@ -616,7 +616,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 }
                 // another receiver took the item this one woke for: a WORKER
                 // waits again (the mainline keeps its deadlock guard)
-                if (t_poll.isWorker) continue;
+                if (t_hot.poll.isWorker) continue;
                 return Value::nil(); // nothing running that could ever send
             }
             Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
@@ -633,7 +633,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 auto it = inv.hash()->find("supplyReaders");
                 return it != inv.hash()->end() ? it->second.toInt() : 0;
             };
-            if (!t_poll.isWorker && readers() > 0) {
+            if (!t_hot.poll.isWorker && readers() > 0) {
                 auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
                 while (readers() > 0 && std::chrono::steady_clock::now() < until) {
                     if (gilHeld_ && !parallelMode_) yieldToWorkerFor(0.02);
@@ -699,7 +699,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                         // nobody left to send: the last sender may have sent and
                         // closed between the look above and this check, so this
                         // decision is taken under the lock, after one more look
-                        nobody = !t_poll.isWorker && self->liveWorkers_.load() <= 0 && self->cuedLoads_.load() <= 0;
+                        nobody = !t_hot.poll.isWorker && self->liveWorkers_.load() <= 0 && self->cuedLoads_.load() <= 0;
                     }
                     if (nobody) {
                         std::lock_guard<std::recursive_mutex> lk(cm);
@@ -739,11 +739,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // block's `await $message.body` waits for fragments that the frame
             // parser — the emitter — has yet to deliver.
             auto env = makeSlabShared<Env>();
-            env->parent = tctx_.cur ? tctx_.cur : global_;
+            env->parent = tctx().cur ? tctx().cur : global_;
             env->define("$__rakupp_chan", inv);
-            auto saved = tctx_.cur;
-            tctx_.cur = env;
-            struct Restore { ExecContext& t; std::shared_ptr<Env> e; ~Restore() { t.cur = e; } } restore{tctx_, saved};
+            auto saved = tctx().cur;
+            tctx().cur = env;
+            struct Restore { ExecContext& t; std::shared_ptr<Env> e; ~Restore() { t.cur = e; } } restore{tctx(), saved};
             return evalString(kChannelSupplySrc);   // BuiltinRakuSrc.cpp
         }
         if (m == "elems") { std::lock_guard<std::recursive_mutex> lk(chm); return Value::integer((long long)q.size()); }
@@ -751,7 +751,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
     // Thread — under the GIL a Thread.start runs its block eagerly, but we bump
     // threadDepth_ so `is-initial-thread` correctly reads False inside the block.
     if (inv.t == VT::Type && inv.s == "Thread") {
-        if (m == "is-initial-thread") return Value::boolean(threadDepth_ == 0 && !t_poll.isWorker);
+        if (m == "is-initial-thread") return Value::boolean(threadDepth_ == 0 && !t_hot.poll.isWorker);
         if (m == "start" || m == "run") { // a REAL thread, via the promise machinery
             Value code; for (auto& x : args) if (x.t == VT::Code) code = x;
             Value t = Value::makeHash(); t.hashKind = "Thread";
@@ -1250,7 +1250,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 if (a.t == VT::Pair && a.pairVal() && a.s == "closing") closing = *a.pairVal();
             Value blk; blk.t = VT::Code; blk.setCode(makePayload<Callable>());
             blk.code()->ciM().builtin = [producer, closing](Interpreter& I, ValueList&) -> Value {
-                auto ctx = I.tctx_.tapStack.empty() ? nullptr : I.tctx_.tapStack.back();
+                auto ctx = I.tctx().tapStack.empty() ? nullptr : I.tctx().tapStack.back();
                 // :closing belongs to the TAP: it runs once when this activation
                 // is torn down — on done, on a quit, or when the tap is closed.
                 if (closing.t == VT::Code && ctx) {

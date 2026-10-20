@@ -1633,7 +1633,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (idx >= 0) {
                 long long j = m == "succ" ? std::min<long long>(idx + 1, (long long)ps.size() - 1)
                                           : std::max<long long>(idx - 1, 0);
-                if (Value* mv = tctx_.cur->find(inv.enumType.str() + "::" + ps[(size_t)j].s.str())) return *mv;
+                if (Value* mv = tctx().cur->find(inv.enumType.str() + "::" + ps[(size_t)j].s.str())) return *mv;
             }
         }
     }
@@ -3172,7 +3172,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             q.l_whence = SEEK_SET; q.l_start = 0; q.l_len = 0;
                             if (::fcntl(pfd, F_GETLK, &q) != 0 || q.l_type == F_UNLCK) break;
                             // a worker whose program has ended stops waiting (see below)
-                            if (t_poll.isWorker && workerAbort_.load(std::memory_order_relaxed)) { aborted = true; break; }
+                            if (t_hot.poll.isWorker && workerAbort_.load(std::memory_order_relaxed)) { aborted = true; break; }
                             ::usleep(50000);
                         }
                         gilUnpark(parked);
@@ -3192,7 +3192,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             fl.l_whence = SEEK_SET; fl.l_start = 0; fl.l_len = 0;
             int rc;
             if (nonBlocking) rc = ::fcntl(fd, F_SETLK, &fl);
-            else if (!t_poll.isWorker) {
+            else if (!t_hot.poll.isWorker) {
                 bool parked = gilPark();
                 do { rc = ::fcntl(fd, F_SETLKW, &fl); } while (rc != 0 && errno == EINTR);
                 gilUnpark(parked);
@@ -5895,11 +5895,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         };
         if (args[rxIdx].t == VT::Regex && args[rxIdx].ext() && args[rxIdx].hashKind.empty() &&
             (rxNeedsScalarPass(pat) || pat.find('@') != std::string::npos)) {
-            auto savedOuter = tctx_.cur;
-            tctx_.cur = std::static_pointer_cast<Env>(args[rxIdx].ext());
+            auto savedOuter = tctx().cur;
+            tctx().cur = std::static_pointer_cast<Env>(args[rxIdx].ext());
             try { pat = interp(pat); }
-            catch (...) { tctx_.cur = savedOuter; throw; }
-            tctx_.cur = savedOuter;
+            catch (...) { tctx().cur = savedOuter; throw; }
+            tctx().cur = savedOuter;
         }
         pat = interp(pat);
         // the replacement is the first positional (non-Pair) arg that isn't the regex
@@ -5933,7 +5933,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else if (k == "c" || k == "continue") {
                     exFrom = 0;
                     if (pv.t != VT::Bool) exFrom = pv.toInt();
-                    else if (Value* mv = tctx_.cur ? tctx_.cur->find("$/") : nullptr)
+                    else if (Value* mv = tctx().cur ? tctx().cur->find("$/") : nullptr)
                         if (mv->t == VT::Match) exFrom = methodCall(*mv, "to", {}).toInt();
                 }
             }
@@ -6043,15 +6043,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (b < pat.size() && (pat[b] == '&' || pat[b] == '.')) b++;
                     size_t e = b;
                     while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
-                    if (e == b || !tctx_.cur) continue;
-                    Value* rv = tctx_.cur->find("&" + pat.substr(b, e - b));
+                    if (e == b || !tctx().cur) continue;
+                    Value* rv = tctx().cur->find("&" + pat.substr(b, e - b));
                     if (rv && rv->t == VT::Code && rv->code() && rv->code()->ci().isRegexRoutine) bareCode = true;
                 }
                 if (bareCode) {
-                    Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
+                    Value* slash = tctx().cur ? tctx().cur->find("$/") : nullptr;
                     Value savedSlash = slash ? *slash : Value::nil();
                     Value ms = regexMatch(subj, ":g " + pat);
-                    if (Value* s2 = tctx_.cur ? tctx_.cur->find("$/") : nullptr) *s2 = savedSlash;
+                    if (Value* s2 = tctx().cur ? tctx().cur->find("$/") : nullptr) *s2 = savedSlash;
                     auto addOne = [&](const Value& m) {
                         if (limit >= 0 && (long long)out.arr()->size() >= limit) return;
                         if (m.t == VT::Match && m.truthy()) out.arr()->push_back(Value::str(m.s.str()));
@@ -6362,16 +6362,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // one replacement's text: a Code pin is called with $_ (and $/, $0…)
         auto pinText = [&](const Value& pin, const Value& topicV) -> std::string {
             if (pin.t != VT::Code) return pin.toStr();
-            bool hadLocalTopic = tctx_.cur->vars.count("$_") > 0;
-            Value saved = hadLocalTopic ? tctx_.cur->vars["$_"] : Value::any();
+            bool hadLocalTopic = tctx().cur->vars.count("$_") > 0;
+            Value saved = hadLocalTopic ? tctx().cur->vars["$_"] : Value::any();
             if (topicV.t == VT::Match) {
                 setMatchVar(topicV);
-                if (topicV.arr()) for (size_t k = 0; k < topicV.arr()->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*topicV.arr())[k]);
+                if (topicV.arr()) for (size_t k = 0; k < topicV.arr()->size(); k++) tctx().cur->define("$" + std::to_string(k), (*topicV.arr())[k]);
             }
-            tctx_.cur->define("$_", topicV);
+            tctx().cur->define("$_", topicV);
             auto restoreTopic = [&] {
-                if (hadLocalTopic) tctx_.cur->vars["$_"] = saved;
-                else tctx_.cur->vars.erase("$_");
+                if (hadLocalTopic) tctx().cur->vars["$_"] = saved;
+                else tctx().cur->vars.erase("$_");
             };
             std::string r;
             try { r = callCallable(pin, ValueList{}).toStr(); }
@@ -7191,12 +7191,12 @@ bool slangHostProduction(const std::string& rule) {
 struct SlangTctxGuard {
     ExecContext saved;
     Interpreter* prevLive;
-    explicit SlangTctxGuard(Interpreter* host = nullptr) : saved(Interpreter::tctx_), prevLive(Interpreter::liveTarget()) {
+    explicit SlangTctxGuard(Interpreter* host = nullptr) : saved(Interpreter::tctx()), prevLive(Interpreter::liveTarget()) {
         if (host) host->adoptProcessStatics();   // the host's own classes answer its type matches while it runs
     }
     ~SlangTctxGuard() {
         if (prevLive) prevLive->adoptProcessStatics();
-        Interpreter::tctx_ = std::move(saved);
+        Interpreter::tctx() = std::move(saved);
     }
 };
 
@@ -7307,7 +7307,7 @@ std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
     seams->tryMatch = [H, gcls, actions, cands, module](const std::string& which, const std::string& src,
                                                        size_t pos, size_t& endOut, std::string& replOut) -> bool {
         SlangTctxGuard tctx(H);
-        Interpreter::tctx_.cur = H->global_;   // the slang's code resolves in the host's world, not the program's
+        Interpreter::tctx().cur = H->global_;   // the slang's code resolves in the host's world, not the program's
         auto it = cands.find(which);
         if (it == cands.end()) return false;
         // Slang::Nogil's `sigilless-variable` gates on `$*IN-DECL`, the dynamic

@@ -61,8 +61,8 @@ void Interpreter::registerBuiltinsPart5() {
     B["done"] = [](Interpreter& I, ValueList&) -> Value {
         // `done` inside an on-demand supply activation ends its stream: fire the
         // downstream done callback and close the activation's inner taps.
-        if (!I.tctx_.tapStack.empty()) {
-            auto ctx = I.tctx_.tapStack.back();
+        if (!I.tctx().tapStack.empty()) {
+            auto ctx = I.tctx().tapStack.back();
             // S-63: a `done` reached from the TAPPER's callback while the supply
             // BODY is running has no supply of its own to end — the tap block is
             // not lexically inside one. Rakudo makes that a run-time error, and
@@ -115,12 +115,12 @@ void Interpreter::registerBuiltinsPart5() {
         Value v = a.empty() ? Value::any() : a[0];
         static const bool kTapTrace = std::getenv("RAKUPP_TAP_TRACE") != nullptr; // hot path: probe once
         if (kTapTrace)
-            fprintf(stderr, "[emit] depth=%zu kind=%s collect=%d cb=%d\n", I.tctx_.tapStack.size(),
+            fprintf(stderr, "[emit] depth=%zu kind=%s collect=%d cb=%d\n", I.tctx().tapStack.size(),
                     v.typeName().c_str(),
-                    I.tctx_.tapStack.empty() ? -1 : (int)!!I.tctx_.tapStack.back()->collect,
-                    I.tctx_.tapStack.empty() ? -1 : (int)(I.tctx_.tapStack.back()->emitCb.t == VT::Code));
-        if (!I.tctx_.tapStack.empty()) {
-            auto ctx = I.tctx_.tapStack.back();
+                    I.tctx().tapStack.empty() ? -1 : (int)!!I.tctx().tapStack.back()->collect,
+                    I.tctx().tapStack.empty() ? -1 : (int)(I.tctx().tapStack.back()->emitCb.t == VT::Code));
+        if (!I.tctx().tapStack.empty()) {
+            auto ctx = I.tctx().tapStack.back();
             // Nothing follows done (S-66) — and a body that goes on emitting is a
             // body that has not noticed: `supply { loop { emit … } }` ends when
             // its consumer says done, so the emit that comes next is where the
@@ -131,11 +131,11 @@ void Interpreter::registerBuiltinsPart5() {
             // and writes THEM (`until my $done { emit … }; CLOSE { $done = True }`
             // ends the loop when the consumer says done; S17-supply/syntax.t), not
             // the definition scope it was collected against
-            if (ctx->inBody && !ctx->closeRebound && ctx->tap && I.tctx_.cur) {
+            if (ctx->inBody && !ctx->closeRebound && ctx->tap && I.tctx().cur) {
                 ctx->closeRebound = true;
                 for (auto& cp : ctx->tap->closePhasers)
                     if (cp.t == VT::Code && cp.code() && !cp.code()->ci().builtin && cp.code()->ci().body)
-                        cp.code()->closure = I.tctx_.cur;
+                        cp.code()->closure = I.tctx().cur;
             }
             if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
             if (ctx->emitCb.t == VT::Code) {
@@ -146,7 +146,7 @@ void Interpreter::registerBuiltinsPart5() {
             }
             return Value::boolean(true);
         }
-        if (!I.tctx_.supplyStack.empty()) { I.tctx_.supplyStack.back()->push_back(v); return Value::boolean(true); }
+        if (!I.tctx().supplyStack.empty()) { I.tctx().supplyStack.back()->push_back(v); return Value::boolean(true); }
         // S-62: inside a react there IS a block, but nothing downstream to emit
         // into — Rakudo warns and carries on rather than dying.
         if (!I.reactStack_.empty()) {

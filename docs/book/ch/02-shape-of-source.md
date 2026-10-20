@@ -41,10 +41,12 @@ loading, the FFI marshaller, the concurrency runtime — and the pieces share th
 interpreter's private state rather than a clean interface, so the files are cut
 for compile time, not by concept. `InterpreterCore.cpp` holds every function
 the `perf-guard` kernels spend their time in, whatever it does, and the
-definition of `tctx_`, the per-thread execution state. The hot functions have to
-share a file: in separate files they no longer inline into each other, and a
-`thread_local` read from a file that does not define it goes through a call on
-every access — measured, that cost 14–35% on the kernels. The other six files
+per-thread execution state behind `tctx()`. The hot functions have to share a
+file: in separate files they no longer inline into each other, and the state
+was then a `thread_local` with a destructor, which a file that does not define
+it reaches through a call on every access — measured, that cost 14–35% on the
+kernels. (The state is reached through a constant-initialized pointer now,
+which costs the same from any file.) The other six files
 (`Interpreter`, `…Modules`, `…Binding`, `…Calls`, `…Regex`, `…Operators`) hold
 the rest in source order, and `InterpreterParts.h` declares what they share.
 `tools/source-helpers/` holds the scripts that made the cut, and the plan they

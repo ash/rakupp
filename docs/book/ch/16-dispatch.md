@@ -14,7 +14,7 @@ and knowing which one is in play explains most of the surprises.
 
 ```cpp
 // src/InterpreterCore.cpp — evalCall, abridged
-if (Value* f = tctx_.cur->find("&" + c->name))
+if (Value* f = tctx().cur->find("&" + c->name))
     return callCallable(*f, std::move(args), &c->args, false, …);
 …
 auto it = builtins_.find(c->name);        // built-in fallback

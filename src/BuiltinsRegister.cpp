@@ -369,7 +369,7 @@ void Interpreter::registerBuiltins() {
         std::vector<std::pair<std::string, Value>> subs;
         Value ok = extLoadModule(a[0].toStr(), err, subs);
         if (!err.empty()) throw RakuError{Value::typeObj("X::AdHoc"), err};
-        for (auto& s : subs) I.tctx_.cur->define("&" + s.first, s.second);
+        for (auto& s : subs) I.tctx().cur->define("&" + s.first, s.second);
         return ok;
     };
 
@@ -443,7 +443,7 @@ void Interpreter::registerBuiltins() {
     // (Only when a CATCH could be the one: under a bare `try` — or no handler
     // at all — the error is thrown straight away, as it always was.)
     B["die"] = [](Interpreter& I, ValueList& a) -> Value {
-        const auto& cf = I.tctx_.catchFrames;
+        const auto& cf = I.tctx().catchFrames;
         if (cf.empty() || (!cf.back().catchBlk && !cf.back().fence)) throw I.dieError(a);
         return I.dieDispatching(a);
     };
@@ -456,8 +456,8 @@ void Interpreter::registerBuiltins() {
     // means "nothing further" — soft Nil (Rakudo: a bottom method's nextsame
     // does not die); a truly empty stack is the hard no-dispatcher error.
     auto dispTop = [](Interpreter& I) -> Interpreter::RedispatchCtx* {
-        if (I.redispatchStack_.size() <= I.tctx_.redispatchFloor) return nullptr;
-        return &I.redispatchStack_.back();
+        if (I.redispatchStack().size() <= I.tctx().redispatchFloor) return nullptr;
+        return &I.redispatchStack().back();
     };
     // …and with no frame at all there may still be a BUILT-IN under the running
     // method: `method clone { … callsame … }` overrides Mu.clone, and a user
@@ -469,12 +469,12 @@ void Interpreter::registerBuiltins() {
     // cannot loop on it. Returns nullopt when this activation has no built-in
     // behind it — then the no-dispatcher error stands, as before.
     auto builtinNext = [](Interpreter& I, const ValueList* with) -> std::optional<Value> {
-        ExecContext::BuiltinFallback fb = I.tctx_.builtinFallback;
-        if (!fb.name || !fb.self || !fb.args || fb.frame != I.tctx_.curRoutineFrame)
+        ExecContext::BuiltinFallback fb = I.tctx().builtinFallback;
+        if (!fb.name || !fb.self || !fb.args || fb.frame != I.tctx().curRoutineFrame)
             return std::nullopt;
         struct Restore { ExecContext& t; ExecContext::BuiltinFallback s;
-                         ~Restore() { t.builtinFallback = s; } } r{I.tctx_, fb};
-        I.tctx_.builtinFallback = ExecContext::BuiltinFallback{};
+                         ~Restore() { t.builtinFallback = s; } } r{I.tctx(), fb};
+        I.tctx().builtinFallback = ExecContext::BuiltinFallback{};
         // nothing further up the MRO to defer to: the redispatch yields Nil
         // (`method nw($a) { nextwith(42) }` on a class with no parent method)
         try {
@@ -498,7 +498,7 @@ void Interpreter::registerBuiltins() {
         auto* d = dispTop(I);
         if (!d) {
             if (auto b = builtinNext(I, nullptr)) return *b;
-            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callsame")}},
+            if (I.redispatchStack().empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callsame")}},
                               "callsame is not in the dynamic scope of a dispatcher");
             return Value::nil(); // exhausted chain bottom
         }
@@ -510,7 +510,7 @@ void Interpreter::registerBuiltins() {
         auto* d = dispTop(I);
         if (!d) {
             if (auto b = builtinNext(I, &a)) return *b;
-            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callwith")}},
+            if (I.redispatchStack().empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("callwith")}},
                               "callwith is not in the dynamic scope of a dispatcher");
             return Value::nil();
         }
@@ -522,7 +522,7 @@ void Interpreter::registerBuiltins() {
         auto* d = dispTop(I);
         if (!d) {
             if (auto b = builtinNext(I, nullptr)) throw ReturnEx{*b};
-            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextsame")}},
+            if (I.redispatchStack().empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextsame")}},
                               "nextsame is not in the dynamic scope of a dispatcher");
             throw ReturnEx{Value::nil()};
         }
@@ -541,7 +541,7 @@ void Interpreter::registerBuiltins() {
         if (d && !d->lastcall && !exhausted) nextFn = d->next;
         else if (auto b = builtinNext(I, nullptr)) { Value bv = *b; nextFn = [bv](ValueList) { return bv; }; }
         else {
-            if (I.redispatchStack_.empty())
+            if (I.redispatchStack().empty())
                 I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextcallee")}},
                               "nextcallee is not in the dynamic scope of a dispatcher");
             return Value::nil();
@@ -551,9 +551,9 @@ void Interpreter::registerBuiltins() {
         // inside a METHOD it is that next method, called with the invocant
         // first — `n(self, $x)` — while the frame's own continuation binds the
         // invocant itself and wants the rest only.
-        const bool inMethod = d && !d->wrapperFrame && I.tctx_.curRoutineVal &&
-                              I.tctx_.curRoutineVal->t == VT::Code && I.tctx_.curRoutineVal->code() &&
-                              I.tctx_.curRoutineVal->code()->ci().isMethod;
+        const bool inMethod = d && !d->wrapperFrame && I.tctx().curRoutineVal &&
+                              I.tctx().curRoutineVal->t == VT::Code && I.tctx().curRoutineVal->code() &&
+                              I.tctx().curRoutineVal->code()->ci().isMethod;
         return Value::closure([nextFn, inMethod](ValueList& a) -> Value {
             ValueList copy = a;
             if (inMethod && !copy.empty()) copy.erase(copy.begin());
@@ -572,7 +572,7 @@ void Interpreter::registerBuiltins() {
         auto* d = dispTop(I);
         if (!d) {
             if (auto b = builtinNext(I, &a)) throw ReturnEx{*b};
-            if (I.redispatchStack_.empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextwith")}},
+            if (I.redispatchStack().empty()) I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("nextwith")}},
                               "nextwith is not in the dynamic scope of a dispatcher");
             throw ReturnEx{Value::nil()};
         }
@@ -605,7 +605,7 @@ void Interpreter::registerBuiltins() {
             // caught is not this routine's to fail with — a bare `fail` in a
             // sub called after a `try` says "Failed" (Rakudo)
             Value* be = nullptr;
-            for (Env* en = I.tctx_.cur.get(); en; en = en->parent.get()) {
+            for (Env* en = I.tctx().cur.get(); en; en = en->parent.get()) {
                 if ((be = en->local("$!"))) break;
                 if (en->routineFrame) break;
             }
@@ -622,7 +622,7 @@ void Interpreter::registerBuiltins() {
         // with no ROUTINE to return from, `fail` behaves like `die` (Rakudo):
         // the exception itself is thrown where the fail was written — and so
         // it does under `use fatal`, which a `try` block's scope is
-        if (I.tctx_.curRoutineFrame == 0 || I.fatalHere()) {
+        if (I.tctx().curRoutineFrame == 0 || I.fatalHere()) {
             std::string msg = (*f.hash())["message"].toStr();
             throw RakuError{ex, msg};
         }
@@ -671,7 +671,7 @@ void Interpreter::registerBuiltins() {
         // $file.open`) is where prompt talks: it prints to $*OUT and reads
         // one line from $*IN with THAT handle's chomp and nl-in
         auto dyn = [&](const char* n) -> Value {
-            Value* p = I.tctx_.cur ? I.tctx_.cur->find(n) : nullptr;
+            Value* p = I.tctx().cur ? I.tctx().cur->find(n) : nullptr;
             return p ? *p : Value::any();
         };
         auto isStd = [](const Value& h, const char* which) {
@@ -944,7 +944,7 @@ void Interpreter::registerBuiltins() {
             const Value& x = a[0]; const Value& y = a[2];
             // an operator the CALLER declared (`sub infix:<◀>`) is found where it is
             // written — the name is looked up in the caller's scope
-            Value* user = I.tctx_.cur ? I.tctx_.cur->find("&infix:<" + op + ">") : nullptr;
+            Value* user = I.tctx().cur ? I.tctx().cur->find("&infix:<" + op + ">") : nullptr;
             if (user && user->t == VT::Code) {
                 c = I.callCallable(*user, ValueList{x, y}).truthy();
                 I.emitTest(c, a.size() > 3 ? a[3].toStr() : "");
@@ -1033,9 +1033,9 @@ void Interpreter::registerBuiltins() {
             catch (RakuError&) { died = true; }
             // a loop-control exception with no enclosing loop is a death (X::ControlFlow);
             // inside one it ESCAPES to it, recording no test (Rakudo)
-            catch (NextEx&) { if (t_poll.loopNest > 0) throw; died = true; }
-            catch (LastEx&) { if (t_poll.loopNest > 0) throw; died = true; }
-            catch (RedoEx&) { if (t_poll.loopNest > 0) throw; died = true; }
+            catch (NextEx&) { if (t_hot.poll.loopNest > 0) throw; died = true; }
+            catch (LastEx&) { if (t_hot.poll.loopNest > 0) throw; died = true; }
+            catch (RedoEx&) { if (t_hot.poll.loopNest > 0) throw; died = true; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(died, a.size() > 1 ? a[1].toStr() : "");
@@ -1049,9 +1049,9 @@ void Interpreter::registerBuiltins() {
             catch (RakuError&) { lived = false; }
             // loop control with no loop is a death, as dies-ok counts it; inside
             // one it escapes to it (see dies-ok)
-            catch (NextEx&) { if (t_poll.loopNest > 0) throw; lived = false; }
-            catch (LastEx&) { if (t_poll.loopNest > 0) throw; lived = false; }
-            catch (RedoEx&) { if (t_poll.loopNest > 0) throw; lived = false; }
+            catch (NextEx&) { if (t_hot.poll.loopNest > 0) throw; lived = false; }
+            catch (LastEx&) { if (t_hot.poll.loopNest > 0) throw; lived = false; }
+            catch (RedoEx&) { if (t_hot.poll.loopNest > 0) throw; lived = false; }
         }
         I.restoreTestLine(callLine);
         I.emitTest(lived, a.size() > 1 ? a[1].toStr() : "");
@@ -1089,9 +1089,9 @@ void Interpreter::registerBuiltins() {
         bool ok = true;
         {
             auto scope = makeSlabShared<Env>();
-            scope->parent = I.tctx_.cur;
-            struct CurG { ExecContext& t; std::shared_ptr<Env> s; ~CurG() { t.cur = s; } } cg{I.tctx_, I.tctx_.cur};
-            I.tctx_.cur = scope;
+            scope->parent = I.tctx().cur;
+            struct CurG { ExecContext& t; std::shared_ptr<Env> s; ~CurG() { t.cur = s; } } cg{I.tctx(), I.tctx().cur};
+            I.tctx().cur = scope;
             try { I.loadModule(bare, {}, /*doImport=*/true, /*quiet=*/false, verReq); } catch (...) { ok = false; }
         }
         I.restoreTestLine(callLine);
@@ -1592,7 +1592,7 @@ void Interpreter::registerBuiltinsPart2() {
     // ... }, 1..6'` lives there because a stub FAILS (advent2009-day20.t).
     // True when the code returned something (into `returned`).
     static const auto evalAsRoutine = [](Interpreter& I, const std::string& code, Value& returned) {
-        ExecContext& t = I.tctx_;
+        ExecContext& t = I.tctx();
         ++t.frameTop;
         struct Frame {
             ExecContext& t; uint64_t top, rf;
@@ -1716,7 +1716,7 @@ void Interpreter::registerBuiltinsPart2() {
         struct DFGuard { std::string& f; std::string s; size_t& d; size_t sd; ~DFGuard() { f = s; d = sd; } }
             dfG{I.curDeclFile_, I.curDeclFile_, I.curDeclDepth_, I.curDeclDepth_};
         I.curDeclFile_ = path;
-        I.curDeclDepth_ = I.tctx_.callFrames.size();
+        I.curDeclDepth_ = I.tctx().callFrames.size();
         return I.callBuiltin("EVAL", args);
     };
     // Default @*ARGS -> argument-list conversion (the built-in ARGS-TO-CAPTURE).
@@ -1731,8 +1731,8 @@ void Interpreter::registerBuiltinsPart2() {
         // rest positional, --/name negates, the named-anywhere opt).
         (void)a;
         auto dynFind = [&](const char* n) -> Value* {
-            if (Value* p = I.tctx_.cur->find(n)) return p;
-            for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend(); ++it)
+            if (Value* p = I.tctx().cur->find(n)) return p;
+            for (auto it = I.tctx().dynStack.rbegin(); it != I.tctx().dynStack.rend(); ++it)
                 if (*it) if (Value* p = (*it)->find(n)) return p;
             return nullptr;
         };
@@ -1779,15 +1779,15 @@ void Interpreter::registerBuiltinsPart2() {
         if (a.empty() || a[0].t != VT::Code) return Value::any();
         Value mainSub = a[0];
         auto lookup = [&](const char* n) -> Value* {
-            if (Value* p = I.tctx_.cur->find(n)) return p;
-            for (auto it = I.tctx_.dynStack.rbegin(); it != I.tctx_.dynStack.rend(); ++it)
+            if (Value* p = I.tctx().cur->find(n)) return p;
+            for (auto it = I.tctx().dynStack.rbegin(); it != I.tctx().dynStack.rend(); ++it)
                 if (*it) if (Value* p = (*it)->find(n)) return p;
             return nullptr;
         };
         // A 6.c unit may carry its own pre-2018.06 MAIN_HELPER: RUN-MAIN hands
         // the whole job to it — `MAIN_HELPER($retval)`, or from 2018.06 on
         // `MAIN_HELPER($in-as-argsfiles, $retval)` — and MAIN is not called.
-        if (Value* mh = I.tctx_.cur ? I.tctx_.cur->find("&MAIN_HELPER") : nullptr)
+        if (Value* mh = I.tctx().cur ? I.tctx().cur->find("&MAIN_HELPER") : nullptr)
             if (mh->t == VT::Code && mh->code() &&
                 I.methodCall(*mh, "count", ValueList{}).toInt() >= 1) {   // a helper TAKES the retval
                 Value helper = *mh;
@@ -1809,11 +1809,11 @@ void Interpreter::registerBuiltinsPart2() {
         {   // &*ARGS-TO-CAPTURE is the sub actually in force while it runs
             if (userA2C.t == VT::Code) {
                 // &*ARGS-TO-CAPTURE names the sub actually in force while it runs
-                auto scope = makeSlabShared<Env>(); scope->parent = I.tctx_.cur;
+                auto scope = makeSlabShared<Env>(); scope->parent = I.tctx().cur;
                 scope->define("&*ARGS-TO-CAPTURE", userA2C);
-                auto saved = I.tctx_.cur; I.tctx_.cur = scope;
-                I.tctx_.dynStack.push_back(scope.get());
-                struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx_.cur = s; I.tctx_.dynStack.pop_back(); } } r{I, saved};
+                auto saved = I.tctx().cur; I.tctx().cur = scope;
+                I.tctx().dynStack.push_back(scope.get());
+                struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx().cur = s; I.tctx().dynStack.pop_back(); } } r{I, saved};
                 Value cap = I.callCallable(userA2C, ValueList{mainSub, argsArr});
                 if (cap.t == VT::Array && cap.arr()) {
                     margs = *cap.arr();                       // a Capture IS the arg list…
@@ -1848,11 +1848,11 @@ void Interpreter::registerBuiltinsPart2() {
         Value usageText;
         if (userGU.t == VT::Code) {
             Value inForce = userGU;
-            auto scope = makeSlabShared<Env>(); scope->parent = I.tctx_.cur;
+            auto scope = makeSlabShared<Env>(); scope->parent = I.tctx().cur;
             scope->define("&*GENERATE-USAGE", inForce);
-            auto saved = I.tctx_.cur; I.tctx_.cur = scope;
-            I.tctx_.dynStack.push_back(scope.get());
-            struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx_.cur = s; I.tctx_.dynStack.pop_back(); } } r{I, saved};
+            auto saved = I.tctx().cur; I.tctx().cur = scope;
+            I.tctx().dynStack.push_back(scope.get());
+            struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx().cur = s; I.tctx().dynStack.pop_back(); } } r{I, saved};
             ValueList ga{mainSub};
             for (auto& m : margs) ga.push_back(m);
             usageText = I.callCallable(userGU, ga);
@@ -2193,11 +2193,11 @@ void Interpreter::registerBuiltinsPart2() {
     };
     B["make"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : (a.size() == 1 ? a[0] : Value::array(a));
-        if (!I.tctx_.makeTargets.empty()) I.tctx_.makeTargets.back()->setPairVal(makePayload<Value>(v));
+        if (!I.tctx().makeTargets.empty()) I.tctx().makeTargets.back()->setPairVal(makePayload<Value>(v));
         else {
             // outside an action: the `$/` in scope takes it, and with no
             // Match there `make` has nothing to attach to
-            Value* m = I.tctx_.cur ? I.tctx_.cur->find("$/") : nullptr;
+            Value* m = I.tctx().cur ? I.tctx().cur->find("$/") : nullptr;
             if (m && m->t == VT::Match) m->setPairVal(makePayload<Value>(v));
             else I.throwTypedV("X::Make::MatchRequired", {{"got", m ? *m : Value::nil()}},
                      "The make function expects $/ to contain a Match, but it contains " +
@@ -2418,7 +2418,7 @@ void Interpreter::registerBuiltinsPart2() {
         // words() is $*ARGFILES.words — a $*ARGFILES the program set, else
         // the files in @*ARGS, else standard input
         {
-            Value* set = I.tctx_.cur ? I.tctx_.cur->find("$*ARGFILES") : nullptr;
+            Value* set = I.tctx().cur ? I.tctx().cur->find("$*ARGFILES") : nullptr;
             Value argv = I.liveArgs();
             if ((set && set->t == VT::Hash) || (argv.arr() && !argv.arr()->empty())) {
                 VarExpr af("$*ARGFILES");

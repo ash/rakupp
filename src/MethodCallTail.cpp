@@ -444,7 +444,7 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
                 cfg.second > 0 ? (size_t)cfg.second : 0, [&]() -> ParIter {
         return [&, this](size_t k, ValueList* o) -> bool {
             // the call registers are one-shot; clear them however the call ends
-            struct Regs { ~Regs() { tctx_.topicWriteback = nullptr; tctx_.forceRoutineFrame = false; } } regs;
+            struct Regs { ~Regs() { tctx().topicWriteback = nullptr; tctx().forceRoutineFrame = false; } } regs;
             const size_t i = k * ar;
             if (isMap) {
                 ValueList ca;
@@ -453,8 +453,8 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
                     throw RakuError{Value::typeObj("X::AdHoc"),
                         "Too few positionals passed; expected " + std::to_string(required) +
                             " arguments but got " + std::to_string(ca.size())};
-                if (src) tctx_.topicWriteback = &(*src)[i];
-                tctx_.forceRoutineFrame = asRoutine;
+                if (src) tctx().topicWriteback = &(*src)[i];
+                tctx().forceRoutineFrame = asRoutine;
                 Value r;
                 try { r = callCallable(fn, std::move(ca)); }
                 catch (LastEx& le) { if (le.hasVal) pushLoopPayload(*o, le.val); return false; }
@@ -466,8 +466,8 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
             }
             for (;;) {   // (again from the top on a `redo`)
                 const Value v = items[i];
-                if (src) tctx_.topicWriteback = &(*src)[i];
-                tctx_.forceRoutineFrame = asRoutine;
+                if (src) tctx().topicWriteback = &(*src)[i];
+                tctx().forceRoutineFrame = asRoutine;
                 bool match;
                 try { match = predAnswerTruthy(*this, callCallable(fn, ValueList{v}), v); }
                 catch (LastEx&) { return false; }
@@ -1389,7 +1389,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     (*spos)++;
                     ValueList one{ (*src.arr())[si] };
                     if (itemSrc) itemizeScalar(one[0]);
-                    if (alias) self->tctx_.topicWriteback = &(*src.arr())[si];
+                    if (alias) self->tctx().topicWriteback = &(*src.arr())[si];
                     // `last` ends the map and `next` skips the element, as in the
                     // eager loop: `(^Inf).map({ last if $_ > 2; $_ })` is (0 1 2)
                     // a Slip the block answers joins as its elements, as in the
@@ -1450,11 +1450,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (itemSrc) itemizeScalar(v);
                     bool match;
                     if (pred.t == VT::Code) {
-                        self->tctx_.topicWriteback = &(*src.arr())[*spos - 1]; // $_ mutations alias the element
+                        self->tctx().topicWriteback = &(*src.arr())[*spos - 1]; // $_ mutations alias the element
                         try { match = predAnswerTruthy(*self, self->callCallable(pred, {v}), v); }
-                        catch (LastEx&) { self->tctx_.topicWriteback = nullptr; return false; } // `last` ends the grep
-                        catch (NextEx&) { self->tctx_.topicWriteback = nullptr; continue; }     // `next` skips
-                        catch (RedoEx&) { self->tctx_.topicWriteback = nullptr; (*spos)--; continue; } // `redo` retries
+                        catch (LastEx&) { self->tctx().topicWriteback = nullptr; return false; } // `last` ends the grep
+                        catch (NextEx&) { self->tctx().topicWriteback = nullptr; continue; }     // `next` skips
+                        catch (RedoEx&) { self->tctx().topicWriteback = nullptr; (*spos)--; continue; } // `redo` retries
                         v = (*src.arr())[*spos - 1]; // keep the (possibly mutated) value
                         if (itemSrc) itemizeScalar(v);
                     } else match = self->boolify(self->smartmatchValue("~~", v, pred));   // a Regex, a type, a value
@@ -2858,8 +2858,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (auto& v : items) {
                 if (v.t != VT::Pair) continue;
                 Value mv;
-                if (Value* f = tctx_.cur->find(std::string(inv.enumType.c_str()) + "::" + v.s.str())) mv = *f;
-                else if (Value* f2 = tctx_.cur->find(v.s.str())) mv = *f2;
+                if (Value* f = tctx().cur->find(std::string(inv.enumType.c_str()) + "::" + v.s.str())) mv = *f;
+                else if (Value* f2 = tctx().cur->find(v.s.str())) mv = *f2;
                 else continue;
                 o.arr()->push_back(mv);
             }
@@ -3014,8 +3014,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 for (size_t k = 1; k < items.size(); k++) {
                     if (!rawAcc) { acc = callCallable(args[0], {acc, items[k]}); continue; }
                     struct WantG { ExecContext& t; int w; ~WantG() { t.wantTailContainer = w; } }
-                        wg{tctx_, tctx_.wantTailContainer};
-                    tctx_.wantTailContainer = (int)tctx_.callFrames.size() + 1;
+                        wg{tctx(), tctx().wantTailContainer};
+                    tctx().wantTailContainer = (int)tctx().callFrames.size() + 1;
                     acc = callCallable(args[0], {acc, items[k]});
                 }
             } catch (LastEx&) {}
@@ -4340,11 +4340,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 o.arr()->push_back(std::move(r));
             };
             auto leaf = [&](Value& slot) -> Value {
-                tctx_.topicWriteback = &slot; // $_/placeholder mutations alias the node
+                tctx().topicWriteback = &slot; // $_/placeholder mutations alias the node
                 Value r;
                 try { r = callCallable(fn, ValueList{slot}); }
-                catch (...) { tctx_.topicWriteback = nullptr; throw; }
-                tctx_.topicWriteback = nullptr;
+                catch (...) { tctx().topicWriteback = nullptr; throw; }
+                tctx().topicWriteback = nullptr;
                 return r;
             };
             // `next` in the block drops the element and `last` ends the walk, as
@@ -4573,17 +4573,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             "Too few positionals passed; expected " + std::to_string(required) +
                                 " arguments but got " + std::to_string(ca.size())};
                     if (aliasable && !(inv.elemDefault() && (*inv.arr())[i].t == VT::Any))
-                        tctx_.topicWriteback = &(*inv.arr())[i]; // $_ mutations alias the element (a hole stays one)
+                        tctx().topicWriteback = &(*inv.arr())[i]; // $_ mutations alias the element (a hole stays one)
                     if (loopPh)
-                        tctx_.loopPhaserCtl = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
+                        tctx().loopPhaserCtl = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
                     try { r = callCallable(args[0], ca); }
                     // 6.e: `next $v` / `last $v` supply the value for the
                     // iteration they end; a bare next/last still skips or stops.
-                    catch (LastEx& le) { tctx_.topicWriteback = nullptr;
+                    catch (LastEx& le) { tctx().topicWriteback = nullptr;
                                          if (le.hasVal) pushLoopPayload(*out.arr(), le.val);
                                          break; }
-                    catch (NextEx& ne) { tctx_.topicWriteback = nullptr;
+                    catch (NextEx& ne) { tctx().topicWriteback = nullptr;
                                          if (ne.hasVal) pushLoopPayload(*out.arr(), ne.val);
                                          continue; }
                     // post-GLR: map keeps each block result as ONE element; only a
@@ -4661,11 +4661,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList ca;
                     for (size_t k = 0; k < ar && gi + k < items.size(); k++) ca.push_back(items[gi + k]);
                     if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any))
-                        tctx_.topicWriteback = &(*inv.arr())[gi]; // $_ mutations alias the element (a hole stays one)
+                        tctx().topicWriteback = &(*inv.arr())[gi]; // $_ mutations alias the element (a hole stays one)
                     try { match = predAnswerTruthy(*this, callCallable(mt, ca), v); }
-                    catch (LastEx&) { tctx_.topicWriteback = nullptr; break; }   // `last` in the block ends the grep
-                    catch (NextEx&) { tctx_.topicWriteback = nullptr; continue; } // `next` skips the element
-                    catch (RedoEx&) { tctx_.topicWriteback = nullptr; gi -= ar; continue; } // `redo` retries it
+                    catch (LastEx&) { tctx().topicWriteback = nullptr; break; }   // `last` in the block ends the grep
+                    catch (NextEx&) { tctx().topicWriteback = nullptr; continue; } // `next` skips the element
+                    catch (RedoEx&) { tctx().topicWriteback = nullptr; gi -= ar; continue; } // `redo` retries it
                     // (a hole of an `is default` array still reads as its default)
                     if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any)) {
                         v = (*inv.arr())[gi];
@@ -5460,12 +5460,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     // $x.take — the method form of take
     if (m == "take") {
-        if (tctx_.gatherStack.empty())
+        if (tctx().gatherStack.empty())
             throw RakuError{Value::typeObj("X::ControlFlow"), "take without gather"};
-        auto& coll = *tctx_.gatherStack.back();
+        auto& coll = *tctx().gatherStack.back();
         coll.push_back(inv);
-        if (tctx_.curGather && tctx_.gatherStack.size() == 1) { gatherTakeYield(coll); return inv; }   // see gatherTake
-        size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
+        if (tctx().curGather && tctx().gatherStack.size() == 1) { gatherTakeYield(coll); return inv; }   // see gatherTake
+        size_t lim = tctx().gatherLimits.empty() ? 0 : tctx().gatherLimits.back();
         if (lim && coll.size() >= lim) throw StopGatherEx{};
         return inv;
     }
@@ -5539,7 +5539,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // `.emit; done;`. Only a fallback — `.done` is NOT routed (it is a real method
     // on Supplier/Channel/Promise, and Cro uses the `done` statement, not `.done`).
     if ((m == "emit" || m == "take") &&
-        (!tctx_.tapStack.empty() || !reactStack_.empty() || !tctx_.gatherStack.empty())) {
+        (!tctx().tapStack.empty() || !reactStack_.empty() || !tctx().gatherStack.empty())) {
         auto it = builtins_.find(m);
         if (it != builtins_.end()) { ValueList a2{inv}; return it->second(*this, a2); }
     }

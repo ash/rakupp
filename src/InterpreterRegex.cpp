@@ -39,7 +39,7 @@ bool liftMatchVarQuiet() {
 void restoreMatchVarQuiet(bool quiet, bool hadSlash) {
     if (!quiet) return;
     if (!hadSlash)   // (where setMatchVar made it: the first scope out that has one)
-        for (Env* e = Interpreter::tctx_.cur.get(); e; e = e->parent.get())
+        for (Env* e = Interpreter::tctx().cur.get(); e; e = e->parent.get())
             if (e->vars.erase("$/") || e->routineFrame || !e->parent) break;
     Interpreter::matchVarSuppressed_ = true;
 }
@@ -294,14 +294,14 @@ std::string Interpreter::closedRegexSource(const Value& v) {
     const bool arr = src.find('@') != std::string::npos,
                sc = v.hashKind.empty() && rxNeedsScalarPass(src);
     if (!arr && !sc) return src;
-    auto savedOuter = tctx_.cur;
-    tctx_.cur = std::static_pointer_cast<Env>(v.ext());
+    auto savedOuter = tctx().cur;
+    tctx().cur = std::static_pointer_cast<Env>(v.ext());
     try {
         if (sc) src = interpRegexPattern(src);
         if (arr) src = rxInterpArrays(src);
     }
-    catch (...) { tctx_.cur = savedOuter; throw; }
-    tctx_.cur = savedOuter;
+    catch (...) { tctx().cur = savedOuter; throw; }
+    tctx().cur = savedOuter;
     return src;
 }
 
@@ -312,14 +312,14 @@ std::string Interpreter::closedRegexSource(const Value& v) {
 // captures, escaped `\@`, '…' literal spans, and unknown/empty arrays.
 std::string Interpreter::rxInterpArrays(const std::string& pat) {
     // `<%h>` — a hash as a regex assertion is reserved
-    for (size_t p = pat.find("<%"); p != std::string::npos && tctx_.cur; p = pat.find("<%", p + 2)) {
+    for (size_t p = pat.find("<%"); p != std::string::npos && tctx().cur; p = pat.find("<%", p + 2)) {
         if (p > 0 && pat[p - 1] == '\\') continue;
         size_t j = p + 2;
         while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
-        if (j > p + 2 && j < pat.size() && pat[j] == '>' && tctx_.cur->find("%" + pat.substr(p + 2, j - p - 2)))
+        if (j > p + 2 && j < pat.size() && pat[j] == '>' && tctx().cur->find("%" + pat.substr(p + 2, j - p - 2)))
             throw RakuError{Value::typeObj("X::Syntax::Reserved"), "The use of a hash as a regex assertion is reserved"};
     }
-    if (pat.find('@') == std::string::npos || !tctx_.cur) return pat;
+    if (pat.find('@') == std::string::npos || !tctx().cur) return pat;
     std::string out;
     bool inSq = false; // inside '…': a literal span — no interpolation
     for (size_t i = 0; i < pat.size(); i++) {
@@ -406,7 +406,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
             size_t j = i + 2;
             while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
                    (pat[j] == '-' && j + 1 < pat.size() && ascii::isalpha((unsigned char)pat[j + 1])))) j++;
-            Value* v = tctx_.cur->find("$" + pat.substr(i + 2, j - i - 2));
+            Value* v = tctx().cur->find("$" + pat.substr(i + 2, j - i - 2));
             if (v && v->t == VT::Array && v->arr() && !v->arr()->empty()) {
                 std::vector<std::string> els;
                 for (auto& e : *v->arr()) els.push_back(e.toStr());
@@ -426,7 +426,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
             size_t j = i + 1;
             while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
                    (pat[j] == '-' && j + 1 < pat.size() && ascii::isalpha((unsigned char)pat[j + 1])))) j++;
-            Value* v = tctx_.cur->find("@" + pat.substr(i + 1, j - i - 1));
+            Value* v = tctx().cur->find("@" + pat.substr(i + 1, j - i - 1));
             if (v && v->t == VT::Array && v->arr() && !v->arr()->empty()) {
                 // `<@arr>` compiles each element AS A REGEX; a bare `@arr` is an
                 // alternation of LITERALS (issue #15). Same positional rule as
@@ -612,7 +612,7 @@ static std::string rxSourceOf(const Value& v, bool& p5) {
 // refused with X::SecurityPolicy::Eval rather than executed. A Regex value is
 // code its author wrote and is never checked.
 bool Interpreter::rxRestricted() {
-    Value* p = tctx_.cur ? tctx_.cur->find("$?NO-MONKEY-SEE-NO-EVAL") : nullptr;
+    Value* p = tctx().cur ? tctx().cur->find("$?NO-MONKEY-SEE-NO-EVAL") : nullptr;
     return p && p->truthy();
 }
 static void rxRestrictedCheck(const std::string& src) {
@@ -704,7 +704,7 @@ const Regex* Interpreter::dynRegexFor(const Value& v, const std::string& flags) 
     // a `$var` in the answered SOURCE names a variable of the match — a `:my`
     // declared earlier in it (`:my $a = 2; <{ '$a' }>`) — so it is read now,
     // as the pattern it stands in (a Regex value splices as one)
-    if (v.t == VT::Str && !p5 && src.find('$') != std::string::npos && tctx_.cur) src = interpRegexPattern(src);
+    if (v.t == VT::Str && !p5 && src.find('$') != std::string::npos && tctx().cur) src = interpRegexPattern(src);
     if (src.find_first_not_of(" \t\r\n") == std::string::npos)
         throw RakuError{Value::typeObj("X::Syntax::Regex::NullRegex"), "Null regex not allowed"};
     std::string f = flags;
@@ -721,7 +721,7 @@ const Regex* Interpreter::dynRegexFor(const Value& v, const std::string& flags) 
 // SOURCE (`my $r = '\d+'; m:P5/$r/` compiles the \d+). No quotemeta, no code
 // braces, no single-quote spans; `\$`, `$` anchors and `$1` digits pass through.
 std::string Interpreter::interpP5Pattern(const std::string& in) {
-    if (in.find('$') == std::string::npos || !tctx_.cur) return in;
+    if (in.find('$') == std::string::npos || !tctx().cur) return in;
     std::string out;
     for (size_t i = 0; i < in.size(); i++) {
         if (size_t sp = Regex::spliceSpan(in, i)) { out += in.substr(i, sp); i += sp - 1; continue; }
@@ -729,7 +729,7 @@ std::string Interpreter::interpP5Pattern(const std::string& in) {
         if (in[i] == '$' && i + 1 < in.size() && (ascii::isalpha((unsigned char)in[i + 1]) || in[i + 1] == '_')) {
             size_t j = i + 1;
             while (j < in.size() && (ascii::isalnum((unsigned char)in[j]) || in[j] == '_')) j++;
-            if (Value* v = tctx_.cur->find("$" + in.substr(i + 1, j - i - 1))) {
+            if (Value* v = tctx().cur->find("$" + in.substr(i + 1, j - i - 1))) {
                 out += v->t == VT::Regex ? spliceRegexValueP5(v->s) : v->toStr();
                 i = j - 1;
                 continue;
@@ -748,7 +748,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
     // the later `$y` atoms read, so each one runs NOW in a scope of its own
     // (state ones in a scope kept per pattern) and leaves the pattern text.
     std::shared_ptr<Env> declSaved;
-    if (tctx_.cur && pat.find(':') != std::string::npos) {
+    if (tctx().cur && pat.find(':') != std::string::npos) {
         std::string out; bool inSq = false; int braces = 0;
         for (size_t i = 0; i < pat.size(); i++) {
             char c = pat[i];
@@ -787,9 +787,9 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                                 namedRegex_[name] = pat.substr(ob + 1, e - ob - 2);
                                 namedRegexKind_[name] = kind;
                                 if (!declSaved) {
-                                    declSaved = tctx_.cur;
-                                    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
-                                    tctx_.cur = env;
+                                    declSaved = tctx().cur;
+                                    auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
+                                    tctx().cur = env;
                                 }
                                 i = e - 1;
                                 continue;
@@ -806,14 +806,14 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                             size_t ne = 1;
                             while (ne < body.size() && (ascii::isalnum((unsigned char)body[ne]) || body[ne] == '_' || body[ne] == '-')) ne++;
                             std::string var = body.substr(0, ne);
-                            if (Value* slot = tctx_.cur->find(var)) {
-                                g_rxTemps.push_back({tctx_.cur, var, *slot, word == "let"});
+                            if (Value* slot = tctx().cur->find(var)) {
+                                g_rxTemps.push_back({tctx().cur, var, *slot, word == "let"});
                                 try { evalString(body); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
                             }
                             if (!declSaved) {   // (the rewritten text is kept only with a decl scope)
-                                declSaved = tctx_.cur;
-                                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
-                                tctx_.cur = env;
+                                declSaved = tctx().cur;
+                                auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
+                                tctx().cur = env;
                             }
                             i = e - 1;
                             continue;
@@ -827,20 +827,20 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                         while (ne < body.size() && (ascii::isalnum((unsigned char)body[ne]) || body[ne] == '_' || body[ne] == '-')) ne++;
                         std::string var = body.substr(0, ne);
                         if (!declSaved) {
-                            declSaved = tctx_.cur;
-                            auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
-                            tctx_.cur = env;
+                            declSaved = tctx().cur;
+                            auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
+                            tctx().cur = env;
                         }
                         try {
                             if (word == "state") {
                                 static thread_local std::map<std::string, std::shared_ptr<Env>> stateEnvs;
                                 auto& se = stateEnvs[in + '\x01' + var];
                                 if (!se) { se = makeSlabShared<Env>(); se->define(var, Value::any()); }
-                                se->parent = tctx_.cur;
-                                auto sv = tctx_.cur; tctx_.cur = se;
-                                try { evalString(body); } catch (...) { tctx_.cur = sv; throw; }
-                                tctx_.cur = sv;
-                                tctx_.cur->define(var, *se->find(var));
+                                se->parent = tctx().cur;
+                                auto sv = tctx().cur; tctx().cur = se;
+                                try { evalString(body); } catch (...) { tctx().cur = sv; throw; }
+                                tctx().cur = sv;
+                                tctx().cur->define(var, *se->find(var));
                             }
                             else {
                                 Value v = evalString(body.size() > ne ? "my " + body : "my " + body + " = Any");
@@ -860,7 +860,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
         if (declSaved) pat = out;
     }
     struct DeclRestore { std::shared_ptr<Env>& cur; std::shared_ptr<Env> saved;
-        ~DeclRestore() { if (saved) cur = saved; } } declRestore{tctx_.cur, declSaved};
+        ~DeclRestore() { if (saved) cur = saved; } } declRestore{tctx().cur, declSaved};
     // The source a `<$r>` / `<alias=$r>` calls. A regex VALUE reads its own
     // variables where it was written, as it does spliced bare (`/ $r /`): the
     // raw source left `sub g { my $x = 'abc'; rx/$x/ }` to look for $x here,
@@ -872,7 +872,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
         if (p5) s = s.substr(s.find(' ') + 1);
         return s;
     };
-    for (int pass = 0; pass < 8 && rxNeedsScalarPass(pat) && tctx_.cur; pass++) {
+    for (int pass = 0; pass < 8 && rxNeedsScalarPass(pat) && tctx().cur; pass++) {
         std::string out;
         bool inSq = false; // inside '…': a literal span — $vars do NOT interpolate there
         bool inDq = false; // inside "…": a qq span — $vars AND {…} interpolate
@@ -968,7 +968,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                        ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
                         ascii::isalpha((unsigned char)pat[j + 1])))) j++;
                 Value* v = dynTw ? findDynamicLenient("$*" + pat.substr(i + 2, j - i - 2))
-                                 : tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
+                                 : tctx().cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
                 // a `$*name` nothing declares — and the pattern does not declare
                 // either (`:my $*name`) — is X::Dynamic::NotFound when the regex
                 // runs, as reading it anywhere else would be
@@ -1008,7 +1008,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                             while (e < vsrc.size() && (ascii::isalnum((unsigned char)vsrc[e]) || vsrc[e] == '_' ||
                                    (vsrc[e] == '-' && e + 1 < vsrc.size() && ascii::isalpha((unsigned char)vsrc[e + 1])))) e++;
                             std::string vn = "$" + vsrc.substr(a + 1, e - a - 1);
-                            if (!tctx_.cur->find(vn)) throwUndeclaredVar(vn);
+                            if (!tctx().cur->find(vn)) throwUndeclaredVar(vn);
                             a = e - 1;
                         }
                     }
@@ -1090,7 +1090,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
 }
 
 std::string Interpreter::spliceRegexVars(const std::string& pat) {
-    if (pat.find('$') == std::string::npos || !tctx_.cur) return pat;
+    if (pat.find('$') == std::string::npos || !tctx().cur) return pat;
     std::string out;
     bool inSq = false, sawRegex = false;
     int braces = 0;
@@ -1113,7 +1113,7 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
             // `<$p>` is the assertion form: it already compiles the value as a
             // regex at match time, so leave it alone.
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
-            Value* v = tctx_.cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw)); // `$^x` binds as `$x`
+            Value* v = tctx().cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw)); // `$^x` binds as `$x`
             if (v && !inAngle) {
                 if (v->t == VT::Regex) {
                     // An `@array` atom inside the spliced value belongs to the
@@ -1174,7 +1174,7 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
                 if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(gname));
                 // …and a package nothing declares is an error, not an empty match
                 // (Rakudo refuses it while compiling)
-                if (cit == classes_.end() && !(tctx_.cur && tctx_.cur->find(gname)))
+                if (cit == classes_.end() && !(tctx().cur && tctx().cur->find(gname)))
                     throw RakuError{Value::typeObj("X::AdHoc"),
                                     "Could not locate compile-time value for symbol " + gname};
                 if (cit != classes_.end() && cit->second && cit->second->findRule(rname)) {
@@ -1221,11 +1221,11 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
                     Value l = evalString("(" + name.substr(us + 1) + ",)");
                     if (l.arr()) av = *l.arr(); else av.push_back(l);
                 }
-                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
+                auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
                 for (size_t k = 0; k < params.size(); k++) env->define(params[k], k < av.size() ? av[k] : Value::any());
                 struct CurRestore { std::shared_ptr<Env>& cur; std::shared_ptr<Env> saved;
-                    ~CurRestore() { cur = saved; } } curRestore{tctx_.cur, tctx_.cur};
-                tctx_.cur = env;
+                    ~CurRestore() { cur = saved; } } curRestore{tctx().cur, tctx().cur};
+                tctx().cur = env;
                 const std::string& kind = namedRegexKind_[sig];
                 std::string flags = kind == "rule" ? "sr" : kind == "token" ? "r" : "";
                 auto sub = compileRegexCached(rxInterpArrays(interpRegexPattern(sit->second)), flags);
@@ -1240,8 +1240,8 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
         // `$line ~~ / ^ "1.2.3.4 - foo " <timefmt> … /` in Apache::LogFormat's
         // own test said True while matching sixteen characters and none of the
         // rest, which is a silent wrong answer rather than a refusal.
-        if (it == namedRegex_.end() && tctx_.cur) {
-            if (Value* cv = tctx_.cur->find("&" + name)) {
+        if (it == namedRegex_.end() && tctx().cur) {
+            if (Value* cv = tctx().cur->find("&" + name)) {
                 std::string pat, kind;
                 if (cv->t == VT::Regex) { pat = cv->s.str(); kind = cv->hashKind.str(); }
                 else if (cv->t == VT::Code && cv->code()) {
@@ -1270,7 +1270,7 @@ void Interpreter::lexSubResolver(SubResolver& resolver, std::set<std::string>& l
                 "WHAT", "WHO", "HOW", "WHICH", "Str", "Bool", "gist", "orig", "from", "to", "pos", "chars", "new"};
             bool plain = !name.empty() && ascii::isalpha((unsigned char)name[0]);
             for (char ch : name) if (!(ascii::isalnum((unsigned char)ch) || ch == '_' || ch == '-' || ch == '.')) plain = false;
-            if (!kLenient.count(name) && plain && !tctx_.cur->find("&" + name))
+            if (!kLenient.count(name) && plain && !tctx().cur->find("&" + name))
                 throw RakuError{Value::typeObj("X::Method::NotFound"),
                                 "No such method '" + name + "' for invocant of type 'Match'"};
             out.from = pos; out.to = pos; out.matched = true; return true;
@@ -1669,7 +1669,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             // a bare `:p` / `:c` starts where the `$/` in scope ended
             if (pv.t == VT::Bool) {
                 startPos = 0;
-                if (Value* mv = tctx_.cur ? tctx_.cur->find("$/") : nullptr)
+                if (Value* mv = tctx().cur ? tctx().cur->find("$/") : nullptr)
                     if (mv->t == VT::Match) startPos = mv->rTo();
             }
             else startPos = pv.toInt();
@@ -1810,7 +1810,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                     while (j < realPat.size() && (ascii::isalnum((unsigned char)realPat[j]) || realPat[j] == '_' ||
                            ((realPat[j] == '-' || realPat[j] == '\'') && j + 1 < realPat.size() &&
                             ascii::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
-                    if (Value* v = tctx_.cur->find("$" + nm)) {
+                    if (Value* v = tctx().cur->find("$" + nm)) {
                         // A variable holding a REGEX is a sub-pattern, not text to
                         // quote: `s/^($token) \: //` (HTTP::Tinyish) matched the
                         // LITERAL "regex Regex" and so found no header name at all.
@@ -2171,7 +2171,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                         int d = 0; size_t e = k;
                         for (; e < s.size(); e++) { if (s[e] == '(') d++; else if (s[e] == ')' && --d == 0) break; }
                         if (e < s.size()) {
-                            Value* slot = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
+                            Value* slot = tctx().cur ? tctx().cur->find("$/") : nullptr;
                             Value saved; if (slot) { saved = *slot; *slot = mv; }
                             try { r += evalString(s.substr(i, e - i + 1)).toStr(); }
                             catch (...) { if (slot) *slot = saved; throw; }
@@ -2184,7 +2184,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             }
             if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && (ascii::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
                 size_t j = i + 2; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
-                if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
+                if (Value* v = tctx().cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
                 i = j - 1; continue;
             }
             // `$.attr` / `$!attr` — an attribute, as in any interpolating string:
@@ -2223,7 +2223,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                     catch (FeatureNotBuilt&) { throw; }
                     catch (...) { }   // fall back to the bare variable
                 }
-                if (Value* v = tctx_.cur->find("$" + nm)) r += v->toStr();
+                if (Value* v = tctx().cur->find("$" + nm)) r += v->toStr();
                 i = j - 1; continue; // interpolate a scalar variable in the replacement
             }
             // `%h<key>` / `%h{$k}` — a hash interpolates only when subscripted
@@ -2259,7 +2259,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                     size_t ws = subx.find_first_not_of(" \t");
                     if (k < s.size() && ws != std::string::npos) { // non-empty subscript
                         long idx = 0; try { idx = evalString(subx).toInt(); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
-                        if (Value* v = tctx_.cur->find("@" + nm)) {
+                        if (Value* v = tctx().cur->find("@" + nm)) {
                             ValueList fl = v->flatten();
                             if (idx < 0) negIndexThrow(idx); // an interpolated Failure would die anyway
                             if (idx < (long)fl.size()) r += fl[idx].toStr();
@@ -2268,7 +2268,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                     }
                     if (k + 1 <= s.size()) j = k + 1; // empty `[]` zen slice → whole array
                 }
-                if (Value* v = tctx_.cur->find("@" + nm)) { // interpolate an array (space-joined)
+                if (Value* v = tctx().cur->find("@" + nm)) { // interpolate an array (space-joined)
                     ValueList fl = v->flatten();
                     for (size_t k = 0; k < fl.size(); k++) { if (k) r += ' '; r += fl[k].toStr(); }
                 }
@@ -2284,19 +2284,19 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         Value matchV = build(mm);
         auto bindCaps = [&]() {
             setMatchVar(matchV);
-            if (matchV.arr()) for (size_t k = 0; k < matchV.arr()->size(); k++) tctx_.cur->define("$" + std::to_string(k), (*matchV.arr())[k]);
-            for (auto& kv : *matchV.hash()) tctx_.cur->define("$<" + kv.first + ">", kv.second);
+            if (matchV.arr()) for (size_t k = 0; k < matchV.arr()->size(); k++) tctx().cur->define("$" + std::to_string(k), (*matchV.arr())[k]);
+            for (auto& kv : *matchV.hash()) tctx().cur->define("$<" + kv.first + ">", kv.second);
         };
         if (replArg && replArg->t == VT::Code) {
             bindCaps();
             // $_ may live in an OUTER scope: restore must ERASE our local shadow
             // rather than leave a stray `$_ = Any` (same rule as the `~~` path)
-            bool hadLocalTopic = tctx_.cur->vars.count("$_") > 0;
-            Value saved = hadLocalTopic ? tctx_.cur->vars["$_"] : Value::any();
-            tctx_.cur->define("$_", matchV);
+            bool hadLocalTopic = tctx().cur->vars.count("$_") > 0;
+            Value saved = hadLocalTopic ? tctx().cur->vars["$_"] : Value::any();
+            tctx().cur->define("$_", matchV);
             auto restoreTopic = [&] {
-                if (hadLocalTopic) tctx_.cur->vars["$_"] = saved;
-                else tctx_.cur->vars.erase("$_");
+                if (hadLocalTopic) tctx().cur->vars["$_"] = saved;
+                else tctx().cur->vars.erase("$_");
             };
             try { r = callCallable(*replArg, ValueList{matchV}).toStr(); }
             catch (...) { restoreTopic(); throw; }
@@ -2466,11 +2466,11 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         Value* method = resolveAction(name);
         if (!method) return;
         if (g) stampMatchGrammar(mv, g->name);   // an action's $/ is a G too
-        tctx_.makeTargets.push_back(&mv);
+        tctx().makeTargets.push_back(&mv);
         try { invokeMethod(*method, actions, {mv}); }
-        catch (RakuError& e) { if (std::getenv("RAKUPP_ACTTRACE")) std::cerr << "[ACT] " << name << " threw: " << e.message << "\n"; tctx_.makeTargets.pop_back(); throw; }
-        catch (...) { tctx_.makeTargets.pop_back(); throw; }
-        tctx_.makeTargets.pop_back();
+        catch (RakuError& e) { if (std::getenv("RAKUPP_ACTTRACE")) std::cerr << "[ACT] " << name << " threw: " << e.message << "\n"; tctx().makeTargets.pop_back(); throw; }
+        catch (...) { tctx().makeTargets.pop_back(); throw; }
+        tctx().makeTargets.pop_back();
     };
 
     // Gather every rule (walking the inheritance chain; child overrides parent)
@@ -2637,7 +2637,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // disambiguates a parent and child that happen to share the same span (innermost-first).
     auto pendingMakeCode = std::make_shared<std::map<std::pair<long, long>, std::vector<std::string>>>();
     // Execute `code` with an overlay of the current rule params (as Str) and $/ (carrying
-    // the named captures so far) temporarily bound; `:my`/assignments persist in tctx_.cur.
+    // the named captures so far) temporarily bound; `:my`/assignments persist in tctx().cur.
     using NamedMap = GrammarHooks::NamedMap; using ParamMap = GrammarHooks::ParamMap;
     // The captures a block sees are built once per parse: a block after a
     // repeated subrule (`[ <stmt> { … } ]+`) sees every earlier `<stmt>` again.
@@ -2653,7 +2653,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // the rule running this code was written somewhere else (a role's
         // file): its names resolve there for the block's duration
         RuleHomeSwap homeSwap;
-        if (homes->any) homeSwap.enter(homes->eff, gm.currentHome(), homes->matchScope, tctx_);
+        if (homes->any) homeSwap.enter(homes->eff, gm.currentHome(), homes->matchScope, tctx());
         // build $/ over [from..to] with the named sub-captures attached
         Value m;
         std::vector<std::pair<std::string, Value>> capSlots;
@@ -2707,11 +2707,11 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // empty-param skip below then kept (`<t('')>` read Nil from its second block).
         std::vector<std::pair<std::string, std::optional<Value>>> restore;
         auto overlay = [&](const std::string& name, const Value& v) {
-            Value* own = tctx_.cur->localRaw(name);
+            Value* own = tctx().cur->localRaw(name);
             restore.push_back({name, own ? std::optional<Value>(*own) : std::nullopt});
-            tctx_.cur->define(name, v);
+            tctx().cur->define(name, v);
         };
-        bool hadSlash = tctx_.cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx_.cur->find("$/") : Value::nil();
+        bool hadSlash = tctx().cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx().cur->find("$/") : Value::nil();
         setMatchVar(m);
         // `self` in a rule's code is the cursor the rule was called with — it
         // answers `.orig`, and `.pos`/`.from` where the rule began (`:my $o =
@@ -2721,9 +2721,9 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             Env* e = nullptr;
             ~SelfGuard() { if (e) { e->undefine("self"); e->selfSlot = nullptr; } }
         } selfGuard;
-        if (!tctx_.cur->findSelf()) {
-            tctx_.cur->define("self", subMatch(from, from));
-            selfGuard.e = tctx_.cur.get();
+        if (!tctx().cur->findSelf()) {
+            tctx().cur->define("self", subMatch(from, from));
+            selfGuard.e = tctx().cur.get();
         }
         for (auto& cs : capSlots) overlay(cs.first, cs.second);
         for (auto& p : params) {
@@ -2732,7 +2732,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             // string) must not shadow the real value grammarParse bound into the
             // match scope — overlaying "" there made `<?{ $*extended }>` read an
             // empty string for a Bool the caller had supplied.
-            if (p.second.empty() && tctx_.cur->find(p.first)) continue;
+            if (p.second.empty() && tctx().cur->find(p.first)) continue;
             if (p.first == "%_" && !p.second.empty() && p.second[0] == '\x03') {   // (GrammarMatcher::compiledFor)
                 Value h = Value::makeHash();
                 for (size_t q = 1; q < p.second.size();) {
@@ -2750,19 +2750,19 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             }
             overlay(p.first, rxArgDecode(p.second, argTab.get()));
         }
-        Value makeTarget; tctx_.makeTargets.push_back(&makeTarget); // capture an inline `make`
+        Value makeTarget; tctx().makeTargets.push_back(&makeTarget); // capture an inline `make`
         Value last = Value::any();
         try { for (auto& s : prog->stmts) last = exec(s.get()); }
-        catch (FeatureNotBuilt&) { tctx_.makeTargets.pop_back(); throw; } // a stub fired INSIDE the block: loud
-        catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) { tctx_.makeTargets.pop_back(); throw; } } // a `die` in a grammar block LEAVES the parse (Rakudo); a quiet one falls to the pop below
+        catch (FeatureNotBuilt&) { tctx().makeTargets.pop_back(); throw; } // a stub fired INSIDE the block: loud
+        catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) { tctx().makeTargets.pop_back(); throw; } } // a `die` in a grammar block LEAVES the parse (Rakudo); a quiet one falls to the pop below
         catch (...) {}
-        tctx_.makeTargets.pop_back();
+        tctx().makeTargets.pop_back();
         if (makeTarget.pairVal()) (*pendingMakes)[{from, to}] = *makeTarget.pairVal(); // record the inline make
         for (auto it = restore.rbegin(); it != restore.rend(); ++it) {
-            if (it->second) tctx_.cur->define(it->first, *it->second);
-            else tctx_.cur->undefine(it->first);
+            if (it->second) tctx().cur->define(it->first, *it->second);
+            else tctx().cur->undefine(it->first);
         }
-        if (Value* s2 = tctx_.cur->find("$/")) *s2 = savedSlash;
+        if (Value* s2 = tctx().cur->find("$/")) *s2 = savedSlash;
         return last;
     };
     gm.hooks.assertPass = [runCode, parseCode](const std::string& code, long from, long to, const NamedMap& nm, const ParamMap& pm) -> bool {
@@ -2815,7 +2815,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         auto it = pm.find(expr);
         // (an entry rule's parameter has no text when `.parse(args => …)` bound
         // it: the value grammarParse put in the match scope is the argument)
-        if (it != pm.end() && !(it->second.empty() && tctx_.cur->find(expr))) return it->second;
+        if (it != pm.end() && !(it->second.empty() && tctx().cur->find(expr))) return it->second;
         Value r = runCode(expr, 0, 0, NamedMap{}, pm);
         if (r.t == VT::Hash && r.hashKind == "Failure" && expr.size() > 2 && expr[1] == '*')
             methodCall(r, "throw", {});
@@ -2850,15 +2850,15 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // LTM `|` probes happen before any `:my` var exists, so this is the common path.
     auto emptySentinel = std::make_shared<int>(0);
     gm.hooks.saveState = [this, emptySentinel]() -> std::shared_ptr<void> {
-        if (tctx_.cur->vars.empty()) return emptySentinel;
+        if (tctx().cur->vars.empty()) return emptySentinel;
         auto s = std::make_shared<GState>();
-        s->vars = tctx_.cur->vars.map();
+        s->vars = tctx().cur->vars.map();
         return s;
     };
     gm.hooks.restoreState = [this, emptySentinel](std::shared_ptr<void> v) {
-        if (v == emptySentinel) { tctx_.cur->vars.clear(); return; }
+        if (v == emptySentinel) { tctx().cur->vars.clear(); return; }
         auto s = std::static_pointer_cast<GState>(v);
-        tctx_.cur->vars = s->vars;
+        tctx().cur->vars = s->vars;
     };
     // …and the reason a rule's `:my %*FOO` has to be carried on the NODE rather
     // than simply left in the scope: the restore above wipes it when the rule
@@ -2878,9 +2878,9 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // scan is over matchScope, the small isolated map the comment below
     // describes, which holds a handful of entries.
     gm.hooks.captureDyn = [this]() -> std::shared_ptr<const void> {
-        if (!tctx_.cur) return nullptr;
+        if (!tctx().cur) return nullptr;
         std::shared_ptr<GrammarDynSnap> snap;
-        for (auto& kv : tctx_.cur->vars) {
+        for (auto& kv : tctx().cur->vars) {
             if (kv.first.size() < 2 || kv.first[1] != '*') continue;
             if (!snap) snap = std::make_shared<GrammarDynSnap>();
             snap->push_back({kv.first, kv.second});
@@ -2939,10 +2939,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             RedispatchCtx rc;
             rc.sameArgs = ValueList{tobj, Value::str(name)};
             rc.next = [own](ValueList) { return own; };
-            redispatchStack_.push_back(std::move(rc));
+            redispatchStack().push_back(std::move(rc));
             try { howCode = methodCall(g->howObj, "find_method", ValueList{tobj, Value::str(name)}); }
-            catch (...) { redispatchStack_.pop_back(); throw; }
-            redispatchStack_.pop_back();
+            catch (...) { redispatchStack().pop_back(); throw; }
+            redispatchStack().pop_back();
             if (howCode.t != VT::Code || !howCode.code()) return 0;
         }
         if (!method && howCode.t != VT::Code) {
@@ -3043,14 +3043,14 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 for (auto& n  : added) env->vars.erase(n);
             }
         } dynOverlay;
-        if (pn.dynScope && tctx_.cur) {
+        if (pn.dynScope && tctx().cur) {
             auto snap = std::static_pointer_cast<const GrammarDynSnap>(pn.dynScope);
-            dynOverlay.env = tctx_.cur;
+            dynOverlay.env = tctx().cur;
             for (auto& kv : *snap) {
-                auto it = tctx_.cur->vars.find(kv.first);
-                if (it != tctx_.cur->vars.end()) dynOverlay.prev.push_back({kv.first, it->second});
+                auto it = tctx().cur->vars.find(kv.first);
+                if (it != tctx().cur->vars.end()) dynOverlay.prev.push_back({kv.first, it->second});
                 else                             dynOverlay.added.push_back(kv.first);
-                tctx_.cur->vars[kv.first] = kv.second;
+                tctx().cur->vars[kv.first] = kv.second;
             }
         }
         Value mv = subMatch(pn.from, pn.to);
@@ -3228,12 +3228,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 else
                     for (auto& r : gm.rules)
                         if (r.second.pattern.find(code) != std::string::npos) { mh = r.second.home; break; }
-                homeSwap.enter(homes->eff, mh, homes->matchScope, tctx_);
+                homeSwap.enter(homes->eff, mh, homes->matchScope, tctx());
             }
             if (auto prog = parseCode(code)) {
-                Value* slot = tctx_.cur->find("$/"); Value saved = slot ? *slot : Value::nil();
+                Value* slot = tctx().cur->find("$/"); Value saved = slot ? *slot : Value::nil();
                 setMatchVar(mv);
-                tctx_.makeTargets.push_back(&mv);
+                tctx().makeTargets.push_back(&mv);
                 try { for (auto& s : prog->stmts) exec(s.get()); }
                 catch (const RakuError& e) {
                     if (std::getenv("RAKUPP_DEBUG_MAKE"))
@@ -3242,8 +3242,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 catch (...) {
                     if (std::getenv("RAKUPP_DEBUG_MAKE")) fprintf(stderr, "[make] threw (non-Raku)\n");
                 }
-                tctx_.makeTargets.pop_back();
-                if (Value* s2 = tctx_.cur->find("$/")) *s2 = saved;
+                tctx().makeTargets.pop_back();
+                if (Value* s2 = tctx().cur->find("$/")) *s2 = saved;
             }
         }
         auto pm = pendingMakes->find({pn.from, pn.to});
@@ -3296,7 +3296,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     bool matched;
     {
         auto matchScope = makeSlabShared<Env>();
-        matchScope->parent = tctx_.cur;
+        matchScope->parent = tctx().cur;
         // A rule's code is LEXICAL to the grammar: `<?{ h($/) }>` calls the
         // `my sub h` beside the grammar's declaration. When that scope is not
         // on the caller's chain — a grammar from a module, or a slang's role
@@ -3307,9 +3307,9 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // roles it composed — a `^mixin` class made at run time has its home
         // in the caller's world, and the tokens' home is the role's.)
         Env* callerDyn = nullptr;
-        if (g && tctx_.cur) {
+        if (g && tctx().cur) {
             auto onChain = [&](const Env* d) {
-                for (Env* w = tctx_.cur.get(); w; w = w->parent.get()) if (w == d) return true;
+                for (Env* w = tctx().cur.get(); w; w = w->parent.get()) if (w == d) return true;
                 return false;
             };
             std::shared_ptr<Env> home;
@@ -3328,7 +3328,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 // lookup stops here and goes on to the caller, instead of walking
                 // the declaration's chain out to the unit's own top level
                 matchScope->routineFrame = true;
-                callerDyn = tctx_.cur.get();
+                callerDyn = tctx().cur.get();
             }
         }
         // …and each rule whose home is not that one (see RuleHomes): a role's
@@ -3351,8 +3351,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         struct CallerDynG {
             DynStack& st; Env* e;
             ~CallerDynG() { if (e && !st.empty() && st.back() == e) st.pop_back(); }
-        } callerDynG{tctx_.dynStack, callerDyn};
-        if (callerDyn) tctx_.dynStack.push_back(callerDyn);
+        } callerDynG{tctx().dynStack, callerDyn};
+        if (callerDyn) tctx().dynStack.push_back(callerDyn);
         // `.parse($s, :rule<TOP>, args => (…))` binds the START RULE's parameters.
         // They land in the match scope as real VALUES rather than as the textual
         // params a `<rule($x)>` call passes, so a `$*`-sigil one is a genuine
@@ -3381,12 +3381,12 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     if (pi < pn->size()) matchScope->define((*pn)[pi++], ra);
                 }
             }
-        auto savedScope = tctx_.cur;
-        tctx_.cur = matchScope;
+        auto savedScope = tctx().cur;
+        tctx().cur = matchScope;
         // a grammar method may `die` mid-parse (issue #64): the exception is the
         // caller's, the match scope is not
         try { matched = gm.parse(input, startRule, subparse, tree, endPos, startPos); }
-        catch (...) { tctx_.cur = savedScope; throw; }
+        catch (...) { tctx().cur = savedScope; throw; }
         if (consumedEnd) *consumedEnd = matched ? endPos : -1;
         // G1: publish the highwater for rakupp-parse-diagnosis — byte offset
         // to CHARACTER position here, where the input is at hand. A success
@@ -3429,7 +3429,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 }
                 replayBuild = false; replayRoot = nullptr;
             }
-            tctx_.cur = savedScope;
+            tctx().cur = savedScope;
             setMatchVar(Value::nil()); return Value::nil();
         }
         // Success: the bottom-up build below fires an action for every node
@@ -3481,8 +3481,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         // may read the rule's `:my` vars (Cro's route matcher makes `$cap`)
         Value mv;
         try { mv = build(tree); }
-        catch (...) { tctx_.cur = savedScope; throw; }
-        tctx_.cur = savedScope;
+        catch (...) { tctx().cur = savedScope; throw; }
+        tctx().cur = savedScope;
         setMatchVar(mv);
         return mv;
     }
@@ -3537,7 +3537,7 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         const std::string opn = g_hyperOpName ? *g_hyperOpName : std::string();
         Value opv = Value::any();
         if (!opn.empty()) {
-            if (Value* f = tctx_.cur->find("&infix:<" + opn + ">")) opv = *f;
+            if (Value* f = tctx().cur->find("&infix:<" + opn + ">")) opv = *f;
             else {   // a built-in infix: a routine value that answers its name
                 opv = Value::closure([](ValueList&) { return Value::nil(); });
                 opv.code()->ciM().name = "infix:<" + opn + ">";
@@ -4145,11 +4145,11 @@ Value Interpreter::containerOfExpr(Expr* e) {
     if (e->kind == NK::NameTerm || e->kind == NK::VarExpr) {
         const std::string& n = e->kind == NK::NameTerm
             ? static_cast<NameTerm*>(e)->name : static_cast<VarExpr*>(e)->name;
-        if (tctx_.cur)
-            if (Value* p = tctx_.cur->find(n)) {
+        if (tctx().cur)
+            if (Value* p = tctx().cur->find(n)) {
                 if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) return *p;
                 if (e->kind == NK::VarExpr) {
-                    for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+                    for (std::shared_ptr<Env> en = tctx().cur; en; en = en->parent)
                         if (en->local(n)) return makeEnvSlotProxy(en, n);
                 }
             }
@@ -4187,7 +4187,7 @@ Value Interpreter::containerOfExpr(Expr* e) {
 // The name half of the lookup, with no operands to judge — what the WhateverCode
 // curry needs, because it must resolve the shadow where `* cmp *` was WRITTEN.
 Value* Interpreter::lexInfixLookup(const std::string& op) {
-    if (!tctx_.cur) return nullptr;
+    if (!tctx().cur) return nullptr;
     // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
     // carries its own name and belongs to the multi-dispatch path (see the
     // g_lexShadowMask note in Interpreter.h).
@@ -4198,7 +4198,7 @@ Value* Interpreter::lexInfixLookup(const std::string& op) {
     if (lexShadowPossible(op)) {
         static thread_local std::string key;
         key.assign("&infix:<").append(op).append(">");
-        Value* f = tctx_.cur->find(key);
+        Value* f = tctx().cur->find(key);
         if (f && !dispatched(f)) return f;
     }
     // the lexer spells `×` `÷` `−` `≥` `≤` `≠` as their ASCII twins, so a
@@ -4207,19 +4207,19 @@ Value* Interpreter::lexInfixLookup(const std::string& op) {
     // some OTHER scope does not change
     const char* tw = lexShadowTwin(op);
     if (!tw || !lexShadowPossible(tw, std::char_traits<char>::length(tw))) return nullptr;
-    Value* f = tctx_.cur->find(std::string("&infix:<") + tw + ">");
+    Value* f = tctx().cur->find(std::string("&infix:<") + tw + ">");
     if (dispatched(f)) return nullptr;
     // …but not from inside that operator's own body: `sub infix:<×>($a, $b)
     // { $a * $b }` means the built-in `*` there, not itself again (the lexer
     // spells both `*`, so this is the one place the two can be told apart)
-    if (f && f->t == VT::Code && tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
-        tctx_.curRoutineVal->code() == f->code())
+    if (f && f->t == VT::Code && tctx().curRoutineVal && tctx().curRoutineVal->t == VT::Code &&
+        tctx().curRoutineVal->code() == f->code())
         return nullptr;
     return f;
 }
 
 Value* Interpreter::lexShadowedInfix(const std::string& op, const Value& l, const Value& r) {
-    if (!tctx_.cur || !g_lexShadowMask.load(std::memory_order_relaxed)) return nullptr;
+    if (!tctx().cur || !g_lexShadowMask.load(std::memory_order_relaxed)) return nullptr;
     // `* cmp *` still CURRIES into a WhateverCode (applyArith builds it) — the
     // shadowing lexical applies when that closure RUNS, and the run comes back
     // through here with real operands. Intercepting the curry itself would call
@@ -4445,11 +4445,11 @@ Value Interpreter::shortCircuitOp(const std::string& op, Expr* lhs, Expr* rhs) {
         if (op == "andthen" || op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; }
         return l;
     }
-    auto scope = makeSlabShared<Env>(); scope->parent = tctx_.cur;
+    auto scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
     scope->define("$_", l);
-    auto saved = tctx_.cur; tctx_.cur = scope;
-    Value r; try { r = eval(rhs); } catch (...) { tctx_.cur = saved; throw; }
-    tctx_.cur = saved;
+    auto saved = tctx().cur; tctx().cur = scope;
+    Value r; try { r = eval(rhs); } catch (...) { tctx().cur = saved; throw; }
+    tctx().cur = saved;
     // `$x notandthen .=new` — the topic IS the left side's container, so a
     // `.=` on it writes the variable at the head of the chain
     if (rhs && rhs->kind == NK::MethodCall && static_cast<MethodCall*>(rhs)->mutate) {
@@ -4530,14 +4530,14 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
         auto st = std::make_shared<LazySeqState>(); st->infinite = true;
         st->hasCount = true; st->countVal = Value::number(INFINITY); // `.count-only` is Inf
         Expr* le = item;
-        auto env = tctx_.cur;   // the thunk keeps the scope it was written in
+        auto env = tctx().cur;   // the thunk keeps the scope it was written in
         st->appendNext = [this, le, env](ValueList& cache) -> bool {
-            auto saved = tctx_.cur;
-            tctx_.cur = env;
+            auto saved = tctx().cur;
+            tctx().cur = env;
             size_t before = cache.size();
             try { rtXxAppend(cache, eval(le)); } // a Slip replicates its ELEMENTS
-            catch (...) { tctx_.cur = saved; throw; }
-            tctx_.cur = saved;
+            catch (...) { tctx().cur = saved; throw; }
+            tctx().cur = saved;
             // An EMPTY slip contributes nothing, so a generator that only ever
             // splices would never advance and a demand for five elements would
             // spin for ever. Rakudo's iterator yields one value per repetition
@@ -4563,17 +4563,17 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
         st->infinite = true;        // never materialise the whole of it
         st->hasCount = true; st->countVal = rv.big() ? rv : Value::integer(n);
         Expr* le = item;
-        auto env = tctx_.cur;
+        auto env = tctx().cur;
         auto left = std::make_shared<long long>(rv.big() ? -1 : n); // -1: effectively unbounded
         st->appendNext = [this, le, env, left](ValueList& cache) -> bool {
             if (*left == 0) return false;
             if (*left > 0) --*left;
-            auto saved = tctx_.cur;
-            tctx_.cur = env;
+            auto saved = tctx().cur;
+            tctx().cur = env;
             size_t before = cache.size();
             try { rtXxAppend(cache, eval(le)); }
-            catch (...) { tctx_.cur = saved; throw; }
-            tctx_.cur = saved;
+            catch (...) { tctx().cur = saved; throw; }
+            tctx().cur = saved;
             if (cache.size() == before) cache.push_back(Value::nil());
             return true;
         };

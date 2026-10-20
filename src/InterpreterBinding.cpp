@@ -190,7 +190,7 @@ struct ClosureTmplFreeInit {
 Value Interpreter::makeClosure(BlockExpr* be) {
     Value code; code.t = VT::Code;
     code.setCode(makePayload<Callable>());
-    code.code()->closure = tctx_.cur;
+    code.code()->closure = tctx().cur;
     // The code is the block's, not this closure's: the first closure builds it
     // and publishes it as the block's template, and every later one made in
     // the same context shares it (SPEED-BACKLOG 8: a closure no longer copies
@@ -201,7 +201,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     const IStr file = declFileNowI();
     auto* tmpl = cacheable ? static_cast<ClosureTemplate*>(be->closureTmpl.load(std::memory_order_acquire)) : nullptr;
     if (tmpl && tmpl->langRev == langRev_ && tmpl->rakuAst == rakuAstPragma_ && tmpl->declFile == file &&
-        tmpl->pkgPrefix == tctx_.pkgPrefix)
+        tmpl->pkgPrefix == tctx().pkgPrefix)
         code.code()->info = tmpl->code;
     else {
         code.code()->ciM().params = &be->params;
@@ -225,7 +225,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
         // (`our &m1 = method m1($a) {…}` — Rakudo adds it, has-scoped)
         if (be->isMethodTerm && !be->termName.empty()) {
             code.code()->ciM().name = be->termName;
-            std::string pk = tctx_.pkgPrefix;
+            std::string pk = tctx().pkgPrefix;
             if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
             auto ci = classes_.find(pk);
             if (ci != classes_.end() && ci->second) {
@@ -270,7 +270,7 @@ Value Interpreter::makeClosure(BlockExpr* be) {
             code.code()->ciM().hadSig = true;
         }
         if (cacheable && !tmpl) {
-            auto* nt = new ClosureTemplate{code.code()->info, langRev_, rakuAstPragma_, file, tctx_.pkgPrefix};
+            auto* nt = new ClosureTemplate{code.code()->info, langRev_, rakuAstPragma_, file, tctx().pkgPrefix};
             void* expect = nullptr;
             if (!be->closureTmpl.compare_exchange_strong(expect, nt, std::memory_order_acq_rel)) delete nt;
         }
@@ -285,10 +285,10 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // recursing inside the term. `anon` installs nothing, and a method term
     // belongs to its class (above).
     if (!be->termName.empty() && !be->isMethodTerm && !be->anonTerm)
-        tctx_.cur->define("&" + be->termName, code);
+        tctx().cur->define("&" + be->termName, code);
     // a USER trait on the anonymous routine (`sub (…) is memoized(%c) {…}`)
     if (!be->userTraits.empty())
-        if (Value* tm = tctx_.cur->find("&trait_mod:<is>"))
+        if (Value* tm = tctx().cur->find("&trait_mod:<is>"))
             if (tm->t == VT::Code) for (auto& st : be->userTraits) callRoutineTrait(*tm, code, st);
     return code;
 }
@@ -423,7 +423,7 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
     // In a class BODY, outside any method, a twigil-less attribute's alias
     // (`has int $a; say $a`) has no self to be read through (native.t)
     if (!g_classBodies.empty() && name.size() > 1 && (name[0] == '$' || name[0] == '@' || name[0] == '%') &&
-        !(tctx_.cur && tctx_.cur->findSelf())) {
+        !(tctx().cur && tctx().cur->findSelf())) {
         auto it = classes_.find(g_classBodies.back());
         if (it != classes_.end() && it->second)
             for (auto& a : it->second->attrs)
@@ -441,14 +441,14 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
         cands.push_back(n);
     };
     if (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) {
-        for (Env* e = tctx_.cur.get(); e && cands.size() < 4096; e = e->parent.get()) {
+        for (Env* e = tctx().cur.get(); e && cands.size() < 4096; e = e->parent.get()) {
             for (auto& kv : e->vars) consider(kv.first);
             if (e->layout)
                 for (size_t i = 0; i < e->layout->names.size() && i < 64; i++)
                     if ((e->padLive.load(std::memory_order_acquire) >> i) & 1) consider(e->layout->names[i]);
         }
         // inside a method, the class's attributes: `$name` where `has $.name` meant `$!name`
-        if (Value* sp = tctx_.cur ? tctx_.cur->findSelf() : nullptr) {
+        if (Value* sp = tctx().cur ? tctx().cur->findSelf() : nullptr) {
             ClassInfo* ci = nullptr;
             if (sp->t == VT::Object && sp->obj()) ci = sp->obj()->cls.get();
             else if (sp->t == VT::Type) { auto it = classes_.find(sp->s); if (it != classes_.end()) ci = it->second.get(); }
@@ -517,8 +517,8 @@ void Interpreter::checkDeclTypeSane(const VarExpr* ve) {
             i = j;
             if (tn.find("::") != std::string::npos) continue;
             if (classes_.count(tn) || isKnownTypeName(tn) || subsets_.count(tn) || isNativeTypeName(tn) ||
-                classes_.count(resolveClassAlias(tn)) || tctx_.cur->find(tn) ||
-                (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + tn))) continue;
+                classes_.count(resolveClassAlias(tn)) || tctx().cur->find(tn) ||
+                (!tctx().pkgPrefix.empty() && classes_.count(tctx().pkgPrefix + tn))) continue;
             const Program* unit = unitCurrent();
             if (!unit || unit->typeNamesOpaque || unit->declaredTypeNames.count(tn)) continue;
             throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undeclared name '" + tn + "'"};
@@ -587,7 +587,7 @@ std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead, std::stri
         // once the head is off, the sigil is exposed — set it aside and go on
         if (sig.empty() && !nm.empty() && std::strchr("$@%&", nm[0])) { sig = nm.substr(0, 1); nm = nm.substr(1); }
         if      (nm.rfind("GLOBAL::",  0) == 0) nm = nm.substr(8);
-        else if (nm.rfind("OUR::",     0) == 0) nm = tctx_.pkgPrefix + nm.substr(5);
+        else if (nm.rfind("OUR::",     0) == 0) nm = tctx().pkgPrefix + nm.substr(5);
         else if (nm.rfind("MY::",      0) == 0) nm = nm.substr(4);
         else if (nm.rfind("UNIT::",    0) == 0) nm = nm.substr(6);
         else if (nm.rfind("OUTER::",   0) == 0) nm = nm.substr(7);
@@ -1144,9 +1144,9 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         return false;
     }
     if (si.where) {
-        auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx_.cur;
+        auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx().cur;
         env->define("$_", sv);
-        auto saved = tctx_.cur; tctx_.cur = env;
+        auto saved = tctx().cur; tctx().cur = env;
         bool ok = false;
         try {
             Value cv;
@@ -1171,7 +1171,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             else if (cv.t == VT::Regex) ok = boolify(regexMatch(rxSubject(sv), cv.s, &cv));
             else ok = boolify(smartmatchValue("~~", sv, cv));
         } catch (RakuError& e) {
-            tctx_.cur = saved;
+            tctx().cur = saved;
             // a `fail`/`die` in the constraint is ITS verdict, message and all
             // (`where { $^n %% 2 or fail "$n is not even" }`); a TYPED error from
             // asking the value something it cannot answer is just "no"
@@ -1180,13 +1180,13 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
             return false;
         } catch (ReturnEx& r) {
             // …which, from a bare block, arrives as a return carrying the Failure
-            tctx_.cur = saved;
-            tctx_.returning = false;
+            tctx().cur = saved;
+            tctx().returning = false;
             if (r.v.t == VT::Hash && r.v.hashKind == "Failure") failureDetonate(r.v);
             if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
             return false;
-        } catch (...) { tctx_.cur = saved; if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
-        tctx_.cur = saved;
+        } catch (...) { tctx().cur = saved; if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false; return false; }
+        tctx().cur = saved;
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = ok;
         return ok;
     }
@@ -1348,7 +1348,7 @@ void Interpreter::checkDeclDefault(const std::string& declType, char sigil, cons
 char Interpreter::elemSmileyOf(const std::string& symbol) {
     if (!elemSmileyDeclared_.load(std::memory_order_relaxed)) return 0;
     if (symbol.size() < 2 || (symbol[0] != '@' && symbol[0] != '%')) return 0;
-    for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+    for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
         auto si = en->xr().varSmiley.find(symbol);
         if (si != en->xr().varSmiley.end()) return si->second;
         if (en->local(symbol)) return 0;
@@ -1425,7 +1425,7 @@ const std::string& Interpreter::typeAliasTarget(const std::string& name) {
     // every dispatch for no answer.
     if (!name.empty() && !classes_.count(name) && !subsets_.count(name) &&
         name.find("+{") == std::string::npos)
-        if (Value* v = tctx_.cur ? tctx_.cur->find(name) : nullptr)
+        if (Value* v = tctx().cur ? tctx().cur->find(name) : nullptr)
             if (v->t == VT::Type && !v->s.empty()) target = v->s;
     return typeAliasCache_.emplace(name, std::move(target)).first->second;
 }
@@ -1477,7 +1477,7 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     if (!v.enumName.empty() && !v.enumType.empty() && type.size() > v.enumType.size() + 2 &&
         type.compare(type.size() - v.enumType.size() - 2, std::string::npos, "::" + v.enumType) == 0 &&
         !typeMatchesArg(v, type)) {
-        const Value* tv = tctx_.cur ? tctx_.cur->find(type) : nullptr;
+        const Value* tv = tctx().cur ? tctx().cur->find(type) : nullptr;
         if (!tv && global_) tv = global_->find(type);
         if (tv && tv->t == VT::Array && tv->enumName.empty() && tv->enumType == v.enumType) return true;
     }
@@ -1674,7 +1674,7 @@ void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable
 
 bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out) {
     bool stringOp;
-    if (!tctx_.cur || !userInfixModelledOp(op, stringOp)) return false;
+    if (!tctx().cur || !userInfixModelledOp(op, stringOp)) return false;
     // (…and the built-in Dateish values, whose operators are core multis a
     // user candidate can be narrower than: `multi infix:«-»(Date:D, Str:D)`)
     auto plain = [](const Value& v) {
@@ -1686,7 +1686,7 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     if (!plain(l) || !plain(r)) return false;
     static thread_local std::string key;
     key.assign("&infix:<").append(op).append(">");
-    Value* f = tctx_.cur->find(key);
+    Value* f = tctx().cur->find(key);
     if (!f || f->t != VT::Code || !f->code() || !f->code()->ci().isMultiDispatcher) return false;
     // the built-in candidate these operands meet
     const std::string tl = l.typeName(), tr = r.typeName();
@@ -2145,7 +2145,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
     if (it != builtins_.end() && !builtinVisible(name)) it = builtins_.end(); // 6.e-only, and this is not 6.e
     if (it == builtins_.end()) {
         // not a builtin: a module-loaded (or otherwise env-bound) routine?
-        Value* p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
+        Value* p = tctx().cur ? tctx().cur->find("&" + name) : nullptr;
         if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
         if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
         if (Value* f = pkgRelativeRoutine(name)) return callCallable(*f, std::move(args));
@@ -2157,7 +2157,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
         // (a MODULE never enters classes_, so the answer is not the test: look again)
         if (dc != std::string::npos && dc > 0 && pendingTypes_.count(name.substr(0, dc))) {
             materializePendingType(name.substr(0, dc));
-            p = tctx_.cur ? tctx_.cur->find("&" + name) : nullptr;
+            p = tctx().cur ? tctx().cur->find("&" + name) : nullptr;
             if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
             if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
         }
@@ -2173,13 +2173,13 @@ Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
 // the environment holds, as the interpreter's `&name` gives it, else
 // `fallback` (the builtin closure the module did not shadow after all).
 Value Interpreter::envAmpOr(const std::string& ampName, const Value& fallback) {
-    Value* p = tctx_.cur ? tctx_.cur->find(ampName) : nullptr;
+    Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
     return p ? *p : fallback;
 }
 
 Value Interpreter::callEnvFirstAmp(const std::string& ampName, ValueList args) {
-    Value* p = tctx_.cur ? tctx_.cur->find(ampName) : nullptr;
+    Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
     if (p) return callCallable(*p, std::move(args));
     return callBuiltin(ampName.substr(1), std::move(args));
@@ -2194,7 +2194,7 @@ Value Interpreter::getArgs() {
 // @*ARGS as the program has it NOW — `@*ARGS = 'f' xx 2` before the first
 // read of $*ARGFILES decides which files it reads
 Value Interpreter::liveArgs() {
-    Value* av = tctx_.cur ? tctx_.cur->find("@*ARGS") : nullptr;
+    Value* av = tctx().cur ? tctx().cur->find("@*ARGS") : nullptr;
     if (!av && global_) av = global_->find("@*ARGS");
     if (!av || av->t != VT::Array || !av->arr()) return getArgs();
     Value a = Value::array(); a.isList = true;
@@ -2316,8 +2316,8 @@ long long nowMicros() {
 // first take has to be allowed to land however long it takes — so a gather that
 // has taken nothing yet keeps running.
 void Interpreter::gatherProbeCheck() {
-    if (nowMicros() <= t_poll.gatherDeadline) return;
-    if (tctx_.gatherStack.empty() || tctx_.gatherStack.back()->empty()) return;
+    if (nowMicros() <= t_hot.poll.gatherDeadline) return;
+    if (tctx().gatherStack.empty() || tctx().gatherStack.back()->empty()) return;
     throw StopGatherEx{};
 }
 // Is this sequence LAZY in Rakudo's sense — endless, or lazy by declaration —
@@ -2526,9 +2526,9 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         }
         // `with @a { .=uc }` — the topic IS @a: list-assign into that Array
         if (target && target->kind == NK::VarExpr && static_cast<VarExpr*>(target)->name == "$_" &&
-            lv->t == VT::Array && lv->arr() && !lv->isList && !lv->itemized && tctx_.cur) {
+            lv->t == VT::Array && lv->arr() && !lv->isList && !lv->itemized && tctx().cur) {
             Env* own = nullptr;
-            tctx_.cur->findRaw("$_", &own);
+            tctx().cur->findRaw("$_", &own);
             if (own && own->ex && own->ex->topicBindsArray) {
                 Value arr = coerceArray(v);
                 ValueList elems = arr.t == VT::Array && arr.arr() ? *arr.arr() : ValueList{v};
@@ -2705,7 +2705,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*INIT-INSTANT") return initInstantVal();
     if (name == "$*THREAD") return currentThread();
     if (name == "$*SCHEDULER") {
-        if (tctx_.cur) if (Value* p = tctx_.cur->find("$*SCHEDULER")) return *p; // user-assigned wins
+        if (tctx().cur) if (Value* p = tctx().cur->find("$*SCHEDULER")) return *p; // user-assigned wins
         return defaultScheduler_; // shared .hash(): attr writes (uncaught_handler) persist
     }
     if (name == "$*TMPDIR") { Value p = Value::str(tmpDirPath()); p.hashKind = "IO"; return p; }
@@ -2715,7 +2715,7 @@ Value Interpreter::dynVar(const std::string& name) {
         // …read from %*ENV, which the program may have changed (a BEGIN that
         // deletes HOME leaves $*HOME Nil, as Rakudo has it on non-Windows)
         std::string hs;
-        Value* envp = tctx_.cur ? tctx_.cur->find("%*ENV") : nullptr;
+        Value* envp = tctx().cur ? tctx().cur->find("%*ENV") : nullptr;
         if (!envp && global_) { auto it = global_->vars.find("%*ENV"); if (it != global_->vars.end()) envp = &it->second; }
         if (envp && envp->t == VT::Hash && envp->hash()) {
             auto envStr = [&](const char* k, std::string& out) {
@@ -2753,7 +2753,7 @@ Value Interpreter::dynVar(const std::string& name) {
     // their lexical scope holds.
     if (name.size() > 1 && name[1] == '*')
         if (Value* p = findDynamicLenient(name)) return *p;
-    if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return *p;
+    if (tctx().cur) if (Value* p = tctx().cur->find(name)) return *p;
     if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
 }
@@ -3065,10 +3065,10 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
     std::string chain = chainIn;
     while (chain.size() >= 2 && chain.compare(chain.size() - 2, 2, "::") == 0) chain.resize(chain.size() - 2);
     if (chain.compare(0, 2, "::") == 0) chain = chain.substr(2);
-    std::shared_ptr<Env> env = tctx_.cur;
+    std::shared_ptr<Env> env = tctx().cur;
     escapeChain(env.get());   // PARALLEL-SCALING-PLAN P2: a stash can travel, and it reads by name
     Env* raw = nullptr;                       // set once a CALLER step is taken
-    long dynIdx = (long)tctx_.dynStack.size();
+    long dynIdx = (long)tctx().dynStack.size();
     char mode = 'F';
     auto outer = [&]() {
         if (raw) raw = raw->parent.get();
@@ -3099,7 +3099,7 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
         else if (c == "OUTER" || c == "OUTERS") { outer(); mode = 'C'; }
         else if (c == "LEXICAL") mode = 'L';
         else if (c == "CALLER") {
-            if (dynIdx > 0) { raw = tctx_.dynStack[--dynIdx]; env.reset(); }
+            if (dynIdx > 0) { raw = tctx().dynStack[--dynIdx]; env.reset(); }
             mode = 'C';
         }
         else if (c == "CALLERS") { if (dynIdx > 0) --dynIdx; mode = 'S'; }
@@ -3191,8 +3191,8 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
                             if (Value* p = f->padFind(nm)) (*snap.hash())[nm] = *p->deref();
             }
         };
-        takeDyn(tctx_.cur.get());
-        for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it) takeDyn(*it);
+        takeDyn(tctx().cur.get());
+        for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it) takeDyn(*it);
         if (global_)
             for (auto& kv : global_->vars)
                 if (kv.first.size() > 9 && kv.first.compare(1, 8, "GLOBAL::") == 0 &&
@@ -3225,7 +3225,7 @@ bool Interpreter::evalSettingSymbol(const std::string& key, Value& out) {
     if (sixE() || g_evalUnits.empty() || !g_evalUnits.back()) return false;
     Env* unit = g_evalUnits.back().get();
     bool inEval = false;
-    for (Env* w = tctx_.cur.get(); w && !inEval; w = w->parent.get()) inEval = w == unit;
+    for (Env* w = tctx().cur.get(); w && !inEval; w = w->parent.get()) inEval = w == unit;
     if (!inEval) return false;
     // (the EVAL's own scope is its mainline, not its setting)
     for (Env* f = unit->evalFrame ? unit->parent.get() : unit; f; f = f->parent.get())
@@ -3241,7 +3241,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     if (at.count("raw")) {
         Env* r = (Env*)(uintptr_t)at["raw"].toInt();
         // …only while that frame is still on the call stack (or an outer of one)
-        for (Env* d : tctx_.dynStack) {
+        for (Env* d : tctx().dynStack) {
             for (Env* w = d; w && !e; w = w->parent.get()) if (w == r) e = r;
             if (e) break;
         }
@@ -3301,9 +3301,9 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
                     }
                     if (w->routineFrame) break;
                 }
-            long d = at.count("dyn") ? (long)at["dyn"].toInt() : (long)tctx_.dynStack.size();
-            for (long k = std::min(d, (long)tctx_.dynStack.size() - 1); k >= 0; k--)
-                if (Env* f = tctx_.dynStack[k]) if (Value* p = dynInFrame(f, key)) { ParStripe rs(*this, p); out = *p; return true; }
+            long d = at.count("dyn") ? (long)at["dyn"].toInt() : (long)tctx().dynStack.size();
+            for (long k = std::min(d, (long)tctx().dynStack.size() - 1); k >= 0; k--)
+                if (Env* f = tctx().dynStack[k]) if (Value* p = dynInFrame(f, key)) { ParStripe rs(*this, p); out = *p; return true; }
             return false;
         }
         case 'P':
@@ -3371,7 +3371,7 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
         else if ((mode == 'C' || mode == 'L') && e) slot = e->find(key);
         if (!slot && mode == 'D' && key.size() > 1 && key[1] == '*') slot = findDynamicViaGlobal(key);
         if (!slot && mode == 'L' && key.size() > 1 && key[1] == '*') slot = findDynamicLenient(key);
-        if (!slot && mode == 'K' && key == "$_") slot = tctx_.cur ? tctx_.cur->find("$_") : nullptr;
+        if (!slot && mode == 'K' && key == "$_") slot = tctx().cur ? tctx().cur->find("$_") : nullptr;
         if (!slot && (mode == 'F' || mode == 'C' || mode == 'L') && e) slot = &e->define(key, Value::any());
         if (!slot && (mode == 'G' || mode == 'O') && global_) slot = &global_->define(key, Value::any());
         if (!slot) throw RakuError{Value::typeObj("X::Bind"), "Cannot bind to '" + key + "' through this pseudo-package"};
@@ -3464,7 +3464,7 @@ Value* Interpreter::dynRawSlot(const std::string& name, const Value* held) {
         }
         return nullptr;
     };
-    ExecContext& t = tctx_;
+    ExecContext& t = tctx();
     if (t.cur) if (Value* r = in(t.cur.get())) return r;
     for (size_t i = t.dynStack.size(); i-- > 0;)
         if (Env* e = t.dynStack[i]) if (Value* r = in(e)) return r;
@@ -3476,7 +3476,7 @@ Value* Interpreter::dynRawSlot(const std::string& name, const Value* held) {
 // `my $*X` beats its caller's — then each CALLER frame innermost-out; a
 // caller's declaration beats anything the callee merely closes over.
 Value* Interpreter::findDynamicSlot(const std::string& name) {
-    ExecContext& t = tctx_;   // one thread-local resolution (see execBlock)
+    ExecContext& t = tctx();   // one thread-local resolution (see execBlock)
     // inside a gather's block, its own frames stop at the scope that wrote the
     // gather (see dynInFrame); the consumer's frames below them do not
     const Env* stop = nullptr;
@@ -3579,8 +3579,8 @@ Value* Interpreter::findDynamicLenient(const std::string& name) {
     // dynamics (a start-block's spawn scope, a module's `my $*DEBUG` read by
     // its subs) resolved through full chains before the ordering fix, and
     // still should — Rakudo would refuse these, rakupp stays lenient.
-    if (tctx_.cur) if (Value* p = tctx_.cur->find(name)) return p;
-    for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
+    if (tctx().cur) if (Value* p = tctx().cur->find(name)) return p;
+    for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it)
         if (*it) if (Value* p = (*it)->find(name)) return p;
     return nullptr;
 }
@@ -3589,16 +3589,16 @@ Value* Interpreter::findDynamicLenient(const std::string& name) {
 // a Code is called with the value (and $_ bound), anything else smartmatches.
 bool Interpreter::attrWhereOk(const void* whereExpr, const Value& v) {
     if (!whereExpr) return true;
-    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
     env->define("$_", v);
-    auto saved = tctx_.cur; tctx_.cur = env;
+    auto saved = tctx().cur; tctx().cur = env;
     bool ok = true;
     try {
         Value cv = eval(const_cast<Expr*>(static_cast<const Expr*>(whereExpr)));
         if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
         else ok = boolify(smartmatchValue("~~", v, cv));
-    } catch (...) { tctx_.cur = saved; throw; }
-    tctx_.cur = saved;
+    } catch (...) { tctx().cur = saved; throw; }
+    tctx().cur = saved;
     return ok;
 }
 
@@ -3617,14 +3617,14 @@ Value& Interpreter::laxVarRef(const std::string& name) {
     // $sum += $k }; say $sum`, where a per-block slot answered (Any) because
     // every iteration made its own.
     Value dflt = defaultFor(name.empty() ? '$' : name[0]);
-    for (auto e = tctx_.cur; e; e = e->parent)
+    for (auto e = tctx().cur; e; e = e->parent)
         if (e->packageFrame || !e->parent) {
             Value& slot = e->define(name, dflt);
             // …and a PACKAGE's lax variable is an `our` of that package: publish
             // the same view an `our` declaration gets, so `$Foo::foo` reads the
             // slot `class Foo { $foo = 42 }` wrote (S02-names/strict.t).
-            if (e->packageFrame && global_ && e.get() != global_.get() && !tctx_.pkgPrefix.empty() && name.size() > 1)
-                global_->define(ourPublishedName(name, tctx_.pkgPrefix), makeEnvSlotProxy(e, name));
+            if (e->packageFrame && global_ && e.get() != global_.get() && !tctx().pkgPrefix.empty() && name.size() > 1)
+                global_->define(ourPublishedName(name, tctx().pkgPrefix), makeEnvSlotProxy(e, name));
             return slot;
         }
     return (curPkgEnv_ ? curPkgEnv_ : global_)->define(name, dflt);
@@ -3635,7 +3635,7 @@ Value& Interpreter::laxVarRef(const std::string& name) {
 // (compiled programs route dynamics through dynVarRef), so both faces of the
 // dispatcher consult the same two scopes.
 bool Interpreter::mainNamedAnywhere() {
-    Value* smo = tctx_.cur ? tctx_.cur->find("%*SUB-MAIN-OPTS") : nullptr;
+    Value* smo = tctx().cur ? tctx().cur->find("%*SUB-MAIN-OPTS") : nullptr;
     if (!smo && global_) smo = global_->find("%*SUB-MAIN-OPTS");
     if (!smo || smo->t != VT::Hash || !smo->hash()) return false;
     auto it = smo->hash()->find("named-anywhere");
@@ -3644,7 +3644,7 @@ bool Interpreter::mainNamedAnywhere() {
 
 // Any other %*SUB-MAIN-OPTS entry (Nil when the program set none)
 Value Interpreter::mainOption(const std::string& key) {
-    Value* smo = tctx_.cur ? tctx_.cur->find("%*SUB-MAIN-OPTS") : nullptr;
+    Value* smo = tctx().cur ? tctx().cur->find("%*SUB-MAIN-OPTS") : nullptr;
     if (!smo && global_) smo = global_->find("%*SUB-MAIN-OPTS");
     if (!smo || smo->t != VT::Hash || !smo->hash()) return Value::nil();
     auto it = smo->hash()->find(key);
@@ -3656,7 +3656,7 @@ Value Interpreter::mainOption(const std::string& key) {
 // changes what MAIN sees; an untouched @*ARGS is identical to the argv it
 // was defined from, so this is a no-op for ordinary programs.
 void Interpreter::refreshArgvFromLiveArgs() {
-    Value* av = tctx_.cur ? tctx_.cur->find("@*ARGS") : nullptr;
+    Value* av = tctx().cur ? tctx().cur->find("@*ARGS") : nullptr;
     if (!av && global_) av = global_->find("@*ARGS");
     if (!av || av->t != VT::Array || !av->arr()) return;
     argv_.clear();
@@ -3801,10 +3801,10 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     ValueList baseArgs = rtMainArgs(argv_, namedAnywhere, this);
     bool wantHelp = rtNamed(baseArgs, "help").truthy();
     // a user-defined USAGE takes over (it prints to stdout, like Rakudo)
-    Value* usage = tctx_.cur ? tctx_.cur->find("&USAGE") : nullptr;
+    Value* usage = tctx().cur ? tctx().cur->find("&USAGE") : nullptr;
     if (!usage && global_) usage = global_->find("&USAGE");
     // …and GENERATE-USAGE(&MAIN, |args) builds the text the failure prints
-    Value* genUsage = tctx_.cur ? tctx_.cur->find("&GENERATE-USAGE") : nullptr;
+    Value* genUsage = tctx().cur ? tctx().cur->find("&GENERATE-USAGE") : nullptr;
     if (!genUsage && global_) genUsage = global_->find("&GENERATE-USAGE");
     if (usage) {
         try { callCallable(*usage, {}); } catch (ExitEx& e) { return e.code; }
@@ -3888,7 +3888,7 @@ int Interpreter::runCompiledMain(Value (*fn)(ValueList&)) {
 // dispatches whatever &MAIN the mainline ends with (#112). That &MAIN is an
 // ordinary interpreted closure with its full Params, so the protocol runs as is.
 int Interpreter::runImportedMain() {
-    Value* mainSub = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+    Value* mainSub = tctx().cur ? tctx().cur->find("&MAIN") : nullptr;
     if (!mainSub && global_) mainSub = global_->find("&MAIN");
     if (!mainSub || mainSub->t != VT::Code || mainSub == inheritedMainBarrier_) return -1;
     ValueList margs;
@@ -4331,7 +4331,7 @@ static const PRef<Callable>& btInPlaceBlockCode() {
 }
 
 static std::shared_ptr<BtRecord> btCaptureNow() {
-    auto& fr = Interpreter::tctx_.callFrames;
+    auto& fr = Interpreter::tctx().callFrames;
     auto out = std::make_shared<BtRecord>();
     out->frames.reserve(fr.size() + 1);
     // `die` and `.throw` are frames of the setting's in Rakudo's list, above
@@ -4342,7 +4342,7 @@ static std::shared_ptr<BtRecord> btCaptureNow() {
         if (k > 1) out->frames.push_back(BtFrame{nullptr, 0, 3});      // die
     }
     int line = currentStmtLine();
-    Env* scope = Interpreter::tctx_.cur.get();
+    Env* scope = Interpreter::tctx().cur.get();
     for (size_t idx = fr.size(); ; idx--) {
         const Value* cv = idx > 0 ? fr[idx - 1].code : nullptr;
         // the bare blocks this activation is running inside, innermost first:
@@ -4686,7 +4686,7 @@ Value Interpreter::backtraceOf(const Value& exObj) {
 // activation (the innermost's current line; an outer one's call-site line).
 Value Interpreter::captureBacktrace() {
     Value bt = Value::array(); bt.isList = true; bt.s = "Backtrace";
-    auto& fr = tctx_.callFrames;
+    auto& fr = tctx().callFrames;
     long long line = curLine_;
     for (size_t idx = fr.size(); ; idx--) {
         const Value* code = idx > 0 ? fr[idx - 1].code : nullptr;
@@ -4964,7 +4964,7 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
         if (ix->index && !ix->multiDim && ix->adverb.empty() &&
             (ix->index->kind == NK::Range || ix->index->kind == NK::ListExpr ||
              ix->index->kind == NK::ArrayLit)) {
-            auto tmpEnv = makeSlabShared<Env>(); tmpEnv->parent = tctx_.cur;
+            auto tmpEnv = makeSlabShared<Env>(); tmpEnv->parent = tctx().cur;
             Value vals = l; vals.isList = true; vals.itemized = false;
             tmpEnv->define("@__hyper_assign", vals);
             Assign tmpA;
@@ -4972,8 +4972,8 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
             tmpA.target.reset(lhsExpr);               // borrowed: released below
             tmpA.value = std::make_unique<VarExpr>("@__hyper_assign");
             struct Back { Assign& a; ExecContext& t; std::shared_ptr<Env> s;
-                ~Back() { (void)a.target.release(); t.cur = s; } } back{tmpA, tctx_, tctx_.cur};
-            tctx_.cur = tmpEnv;
+                ~Back() { (void)a.target.release(); t.cur = s; } } back{tmpA, tctx(), tctx().cur};
+            tctx().cur = tmpEnv;
             evalAssign(&tmpA, true);
         }
     }
@@ -5159,7 +5159,7 @@ void Interpreter::throwNativeUnbox(const Value& v, NatKind k) {
         " (for type " + name + ")"};
 }
 RtRoutineFrame::RtRoutineFrame(Interpreter& I)
-    : t(I.tctx_), id(++I.tctx_.frameTop), rf(I.tctx_.curRoutineFrame), live(std::make_shared<bool>(true)) {
+    : t(I.tctx()), id(++I.tctx().frameTop), rf(I.tctx().curRoutineFrame), live(std::make_shared<bool>(true)) {
     t.curRoutineFrame = id;
 }
 RtRoutineFrame::~RtRoutineFrame() {
@@ -5494,13 +5494,13 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         }
         if (ascii::isupper((unsigned char)n[0]) || kSpecial.count(n) || n.rfind("atomic-", 0) == 0) continue;
         if (builtins_.count(n) || builtinRef(n) || classes_.count(n) || isKnownTypeName(n)) continue;
-        if (tctx_.cur && tctx_.cur->find("&" + n)) continue;
+        if (tctx().cur && tctx().cur->find("&" + n)) continue;
         if (global_ && global_->find("&" + n)) continue;
         undeclaredRoutine(n);
     }
 }
 bool Interpreter::fatalHere() const {
-    for (const Env* e = tctx_.cur.get(); e; e = e->parent.get())
+    for (const Env* e = tctx().cur.get(); e; e = e->parent.get())
         if (e->fatalPragma) return e->fatalPragma > 0;
     return false;
 }
@@ -5859,7 +5859,7 @@ std::string Interpreter::resolveAttrTypeAlias(const std::string& t, const std::s
     if (!pkg.empty() && t.find("::") == std::string::npos &&
         (classes_.count(pkg + "::" + t) || subsets_.count(pkg + "::" + t))) return pkg + "::" + t;
     if (classes_.count(t) || subsets_.count(t)) return t;
-    Value* v = tctx_.cur ? tctx_.cur->find(t) : nullptr;
+    Value* v = tctx().cur ? tctx().cur->find(t) : nullptr;
     if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s;
     return t;
 }
@@ -6369,7 +6369,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // the sub's own closure first; the caller's env only as a fallback
             Value* f = nullptr;
             if (c.closure) f = c.closure->find("&" + c.cold().nativeLibSub);
-            if (!f) f = tctx_.cur->find("&" + c.cold().nativeLibSub);
+            if (!f) f = tctx().cur->find("&" + c.cold().nativeLibSub);
             if (f) {
                 ValueList none; Value r = callCallable(*f, none);
                 lib = r.toStr();
@@ -6383,14 +6383,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // were up). An expr that evaluates to an UNDEFINED value is not a
             // failure: `constant LIB = … !! Str` on non-Windows MEANS "no
             // library — bind from what the process already loaded".
-            auto savedEnv = tctx_.cur;
-            if (c.closure) tctx_.cur = c.closure;
+            auto savedEnv = tctx().cur;
+            if (c.closure) tctx().cur = c.closure;
             try {
                 Value r = eval(const_cast<Expr*>(c.cold().nativeLibExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
                 if (isDefined(r)) lib = ncLibNameOf(r);
             } catch (RakuError&) {}
-            tctx_.cur = savedEnv;
+            tctx().cur = savedEnv;
         }
         if (!lib.empty()) handle = dlopenLib(lib); // name as-is, then platform-decorated forms
         if (c.cold().nativeSymExpr) {
@@ -6401,14 +6401,14 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             // (OpenSSL::Stack's real_symbol, which spells `sk_num` as
             // `OPENSSL_sk_num` from OpenSSL 1.1 on) and is invisible from
             // wherever the call happens to be.
-            auto savedEnv = tctx_.cur;
-            if (c.closure) tctx_.cur = c.closure;
+            auto savedEnv = tctx().cur;
+            if (c.closure) tctx().cur = c.closure;
             try {
                 Value r = eval(const_cast<Expr*>(c.cold().nativeSymExpr));
                 if (r.t == VT::Code) { ValueList none; r = callCallable(r, none); }
                 if (isDefined(r) && !r.toStr().empty()) c.cold().nativeSym = r.toStr();   // (call-time caches: mutable)
             } catch (RakuError&) {}
-            tctx_.cur = savedEnv;
+            tctx().cur = savedEnv;
             c.cold().nativeSymExpr = nullptr; // once, not per call
         }
         sym = dlsym(handle, c.cold().nativeSym.c_str());
@@ -6482,7 +6482,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         // It also resolves `--> PwStruct` where PwStruct is a CONSTANT aliasing
         // the real class (P5getpwnam picks its per-kernel struct at load time).
         Value* alias = c.closure ? c.closure->find(tn) : nullptr;
-        if (!alias && tctx_.cur) alias = tctx_.cur->find(tn);
+        if (!alias && tctx().cur) alias = tctx().cur->find(tn);
         if (alias && alias->t == VT::Type) {
             auto it2 = classes_.find(alias->s);
             if (it2 != classes_.end()) return it2->second;
@@ -7100,7 +7100,7 @@ bool Interpreter::literalAccepts(Value lv, const Value& v) {
 // bindParams is binding (it renders the whole list and takes p's place in it).
 // Undefined when p is not in it.
 Value Interpreter::paramObjectFor(const Param& p) {
-    const std::vector<Param>* ps = tctx_.bindingParams;
+    const std::vector<Param>* ps = tctx().bindingParams;
     if (!ps || ps->empty() || &p < ps->data() || &p >= ps->data() + ps->size()) return Value::any();
     Callable tmp;
     tmp.ciM().params = ps;
@@ -7158,14 +7158,14 @@ bool Interpreter::omittedWherePasses(const Value& cand, const Param& p, size_t i
     Value v = p.sigil == '@' ? Value::array() : p.sigil == '%' ? Value::makeHash()
             : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
     if (p.defaultVal) {
-        auto denv = makeSlabShared<Env>(); denv->parent = tctx_.cur;
+        auto denv = makeSlabShared<Env>(); denv->parent = tctx().cur;
         for (size_t j = 0; j < pos.size() && j < npositional; j++)
             if (!positional[j]->name.empty() && !positional[j]->subSig)
                 denv->define(positional[j]->name, pos[j]);
-        auto dsaved = tctx_.cur; tctx_.cur = denv;
+        auto dsaved = tctx().cur; tctx().cur = denv;
         try { v = eval(p.defaultVal.get()); }
-        catch (...) { tctx_.cur = dsaved; return false; }
-        tctx_.cur = dsaved;
+        catch (...) { tctx().cur = dsaved; return false; }
+        tctx().cur = dsaved;
     }
     return paramWherePasses(cand, p, v, i, pos, selfForWhere);
 }
@@ -7189,7 +7189,7 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     // (a SIGILLESS `\t` has a one-character name: it binds the caller's
     // container as surely as `$t is rw` does — `$!t := t` then aliases it)
     if (!ae || p.coerce || p.isCopy || p.name.empty() ||
-        (p.name.size() < 2 && p.sigil != '\\') || p.name == "$_" || !tctx_.cur)
+        (p.name.size() < 2 && p.sigil != '\\') || p.name == "$_" || !tctx().cur)
         return false;
     // a SIGILLESS argument that holds a container hands THAT container on:
     // `method new(\times) { self.bless!SET-SELF: times }` passes $times's cell
@@ -7197,7 +7197,7 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     if (ae->kind == NK::NameTerm) {
         const std::string& an = static_cast<NameTerm*>(ae)->name;
         if (an.empty() || !(ascii::isalpha((unsigned char)an[0]) || an[0] == '_')) return false;
-        Value* craw = tctx_.cur->findRaw(an);
+        Value* craw = tctx().cur->findRaw(an);
         Value* praw = env->localRaw(p.name);
         if (!craw || !praw || !craw->isCell() || praw->isCell()) return false;
         if (!sameBoundValue(*craw->deref(), *praw)) return false;
@@ -7211,7 +7211,7 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
         !(nameLetterAt(an, 1) || an[1] == '_'))
         return false;
     Env* own = nullptr;
-    Value* craw = tctx_.cur->findRaw(an, &own);
+    Value* craw = tctx().cur->findRaw(an, &own);
     Value* praw = env->localRaw(p.name);
     if (!craw || !praw || !own || praw->isCell()) return false;
     if (own->ex && (own->ex->rwLinks.count(an) || own->ex->rwDirect.count(an))) return false;
@@ -7548,7 +7548,7 @@ Value Interpreter::minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs
 // `GLOBAL::<Probe> = 43` — a SIGILLESS package symbol springs into being
 // (nullptr: the name has a sigil, or is already something).
 Value* Interpreter::newGlobalSymbolSlot(const std::string& nm) {
-    if (nm.empty() || std::strchr("$@%&", nm[0]) || !global_ || tctx_.cur->find(nm) || classes_.count(nm))
+    if (nm.empty() || std::strchr("$@%&", nm[0]) || !global_ || tctx().cur->find(nm) || classes_.count(nm))
         return nullptr;
     global_->define(nm, Value::any());
     return &global_->vars[nm];
@@ -7600,9 +7600,9 @@ Value attrTypeValue(const ClassAttr& a) {
 // (`M::EXPORT::DEFAULT::{'&infix:<qq>'}`). Only a `&` one: an exported `our $x`
 // is imported as the module's own container, which a copy here would shadow.
 void Interpreter::publishOurExport(const std::string& name, const Value& v) {
-    if (!global_ || tctx_.pkgPrefix.empty() || name.size() < 2 || name[0] != '&') return;
+    if (!global_ || tctx().pkgPrefix.empty() || name.size() < 2 || name[0] != '&') return;
     for (const char* tg : {"DEFAULT", "ALL"})
-        global_->define(name.substr(0, 1) + tctx_.pkgPrefix + "EXPORT::" + tg + "::" + name.substr(1), v);
+        global_->define(name.substr(0, 1) + tctx().pkgPrefix + "EXPORT::" + tg + "::" + name.substr(1), v);
 }
 
 // `(HB.new, HB.new)>>.HA::m` — the qualified call, per element.
@@ -7617,7 +7617,7 @@ Value Interpreter::hyperQualifiedCall(const std::string& method, ClassInfo* qual
 // package-relative one, no built-in type, no package) is refused when the
 // call runs, as Rakudo does.
 void Interpreter::refuseUnknownQualifier(const std::string& qual, const std::string& method, const Value& inv) {
-    if (isKnownTypeName(qual) || classes_.count(tctx_.pkgPrefix + qual) || pkgKind_.count(qual)) return;
+    if (isKnownTypeName(qual) || classes_.count(tctx().pkgPrefix + qual) || pkgKind_.count(qual)) return;
     throwTypedV("X::Method::InvalidQualifier",
         {{"method", Value::str(method)}, {"invocant", inv}, {"qualifier-type", Value::typeObj(qual)}},
         "Cannot dispatch to method " + method + " on " + qual +
@@ -7653,7 +7653,7 @@ bool Interpreter::userShadowsCoreRole(const std::string& type) {
 // than in the current scope chain? Its closure is not one of our scopes.
 bool Interpreter::routineFromElsewhere(const Value& code) {
     if (code.t != VT::Code || !code.code() || !code.code()->closure) return false;
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         if (e == code.code()->closure.get()) return false;
     return true;
 }
@@ -7665,13 +7665,13 @@ Value Interpreter::evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls) {
     bool any = false;
     for (ClassInfo* c = cls; c && !any; c = c->parent.get()) any = !c->roleParamBindings.empty();
     if (!any) return eval(const_cast<Expr*>(dflt));
-    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
     for (ClassInfo* c = cls; c; c = c->parent.get())
         for (auto& b : c->roleParamBindings)
             if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);
-    auto saved = tctx_.cur; tctx_.cur = env;
-    try { Value v = eval(const_cast<Expr*>(dflt)); tctx_.cur = saved; return v; }
-    catch (...) { tctx_.cur = saved; throw; }
+    auto saved = tctx().cur; tctx().cur = env;
+    try { Value v = eval(const_cast<Expr*>(dflt)); tctx().cur = saved; return v; }
+    catch (...) { tctx().cur = saved; throw; }
 }
 
 // `[+]` / `[min]` / `[max]` over a plain Int Range, from its endpoints (an
@@ -7679,7 +7679,7 @@ Value Interpreter::evalAttrDefaultIn(const Expr* dflt, ClassInfo* cls) {
 bool Interpreter::intRangeReduce(const std::string& op, const Value& v, Value& out) {
     if (v.t != VT::Range || v.itemized || v.rNum() || v.ofType() == "Str" || rangeEnds(v) || v.big()) return false;
     // (an operator DECLARED in scope folds with itself)
-    if (tctx_.cur && tctx_.cur->find("&infix:<" + op + ">")) return false;
+    if (tctx().cur && tctx().cur->find("&infix:<" + op + ">")) return false;
     const long long lo = v.rFrom() + (v.rExFrom() ? 1 : 0), hi = v.rTo() - (v.rExTo() ? 1 : 0);
     if (v.rTo() == 9223372036854775807LL) return false;   // endless: endlessReduce's
     if (op == "+") { out = methodCall(v, "sum", ValueList{}); return true; }

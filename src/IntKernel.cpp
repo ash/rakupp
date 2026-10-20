@@ -2874,7 +2874,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     void* h = slot->get();
     if (h == kNeverKernel) return false;
     if (!h && threads && (*tries & kThreadsDeclined)) return false;
-    Env* env = tctx_.cur.get();
+    Env* env = tctx().cur.get();
     if (!h) {
         // Decided on the first entry, from the syntax and from the types the
         // loop's variables hold now. Body checks that do not depend on the
@@ -3138,7 +3138,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         size_t reserve = size_t(2) << 20;
         if (t_stack.limit < reserve * 4) reserve = t_stack.limit / 4;
         R.stackFloor = t_stack.top - (t_stack.limit - reserve) + 4096;
-        R.depthLeft = 100000 - tctx_.callDepth - 1;
+        R.depthLeft = 100000 - tctx().callDepth - 1;
         if (R.depthLeft <= 0) return false;
     }
     R.sfr = strs;

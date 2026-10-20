@@ -444,10 +444,10 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
                 RedispatchCtx rc;
                 rc.sameArgs = args;
                 rc.next = [&](ValueList) { runBuildChain(ci, self, args, afterBuild); return Value::nil(); };
-                redispatchStack_.push_back(std::move(rc));
+                redispatchStack().push_back(std::move(rc));
                 try { invokeMethod(*pop, self, args, nullptr, /*ownFrame=*/true); }
-                catch (...) { redispatchStack_.pop_back(); inPopulate = saved; throw; }
-                redispatchStack_.pop_back();
+                catch (...) { redispatchStack().pop_back(); inPopulate = saved; throw; }
+                redispatchStack().pop_back();
                 inPopulate = saved;
                 return;
             }
@@ -491,10 +491,10 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
         RedispatchCtx rc;
         rc.sameArgs = args;
         rc.next = [](ValueList) { return Value::nil(); };
-        redispatchStack_.push_back(std::move(rc));
-        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true), tctx_.ctorCatchDepth > 0); }
-        catch (...) { redispatchStack_.pop_back(); throw; }
-        redispatchStack_.pop_back();
+        redispatchStack().push_back(std::move(rc));
+        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true), tctx().ctorCatchDepth > 0); }
+        catch (...) { redispatchStack().pop_back(); throw; }
+        redispatchStack().pop_back();
     };
     // 6.e: a role's BUILD/TWEAK SUBMETHOD is not composed; it runs on its own,
     // before the composing class's — a role's own roles first, then the role,
@@ -560,10 +560,10 @@ void Interpreter::runBuildChain(ClassInfo* ci, const Value& self, const ValueLis
         RedispatchCtx rc;
         rc.sameArgs = args;
         rc.next = [](ValueList) { return Value::nil(); };
-        redispatchStack_.push_back(std::move(rc));
-        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true), tctx_.ctorCatchDepth > 0); }
-        catch (...) { redispatchStack_.pop_back(); throw; }
-        redispatchStack_.pop_back();
+        redispatchStack().push_back(std::move(rc));
+        try { sinkBuildResult(invokeMethod(*hook, self, args, nullptr, /*ownFrame=*/true), tctx().ctorCatchDepth > 0); }
+        catch (...) { redispatchStack().pop_back(); throw; }
+        redispatchStack().pop_back();
     };
     for (size_t i = nLin; i-- > 0;) {
         ClassInfo* c = at(i);
@@ -1072,10 +1072,10 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     // constructions never open a scope to put it in.
     Value selfEarly;
     bool selfEarlyMade = false;
-    auto savedDenv = tctx_.cur;
+    auto savedDenv = tctx().cur;
     struct EnvRestore {
         Interpreter& I; std::shared_ptr<Env> e;
-        ~EnvRestore() { I.tctx_.cur = e; }
+        ~EnvRestore() { I.tctx().cur = e; }
     } envRestore{*this, savedDenv};
     // The ancestor chain is rebuilt on EVERY construction, and allocated a
     // vector to hold what is almost always one or two pointers. A stack buffer
@@ -1221,7 +1221,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         // and a class whose attributes all take a seed or a passed value
         // evaluates nothing at all. Reset to the caller's scope first, so a
         // level that builds none does not inherit the previous level's.
-        tctx_.cur = savedDenv;
+        tctx().cur = savedDenv;
         std::shared_ptr<Env> denv;
         auto ensureEnv = [&] {
             if (denv) return;
@@ -1240,7 +1240,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                 for (auto& b : c->roleParamBindings)
                     if (!b.first.empty() && !denv->local(b.first))
                         denv->define(b.first, b.second);
-            tctx_.cur = denv;
+            tctx().cur = denv;
         };
         for (auto& at : lvl->attrs) {
             // storage slot: bare name, unless a same-named twin of
@@ -1400,7 +1400,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             od->attrs[slot] = dv;
         }
     }
-    tctx_.cur = savedDenv;
+    tctx().cur = savedDenv;
     // the default constructor binds nameds to declared PUBLIC attributes
     // only; anything else is silently ignored (Rakudo semantics — an
     // unknown name must NOT enter the attr store, or `$.name` inside a
@@ -1556,7 +1556,7 @@ static Value containerPlaceholder(ValueMap& h) {
 // attribute with `where`, a shape, a coercion, a native or parameterized type,
 // or a slot that is bound, readonly, a Proxy or carries a cold block.
 Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
-    Value* selfp = tctx_.cur->findSelf();
+    Value* selfp = tctx().cur->findSelf();
     if (!selfp || selfp->t != VT::Object || !selfp->obj() || !selfp->obj()->cls) return nullptr;
     ObjectData* od = selfp->obj();
     ClassInfo* ci = od->cls.get();
@@ -2041,13 +2041,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (!args[0].truthy()) return inv;   // a time of 0 is the Supply itself
             Value& code = m == "stable" ? supplyStableCode_ : supplyDelayedCode_;
             if (code.t != VT::Code) {
-                auto saved = tctx_.cur;
-                tctx_.cur = global_;
+                auto saved = tctx().cur;
+                tctx().cur = global_;
                 try {
                     code = evalString(m == "stable" ? kSupplyStableSrc : kSupplyDelayedSrc); // BuiltinRakuSrc.cpp
                 }
-                catch (...) { tctx_.cur = saved; throw; }
-                tctx_.cur = saved;
+                catch (...) { tctx().cur = saved; throw; }
+                tctx().cur = saved;
             }
             ValueList ca{inv, args[0]};
             return callCallable(code, ca);
@@ -2093,19 +2093,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if ((m == "map" || m == "grep" || m == "do") && args.size() == 1 && args[0].t != VT::Pair) {
                 Value& code = m == "map" ? supplyMapCode_ : m == "grep" ? supplyGrepCode_ : supplyDoCode_;
                 if (code.t != VT::Code) {
-                    auto saved = tctx_.cur;
-                    tctx_.cur = global_;
+                    auto saved = tctx().cur;
+                    tctx().cur = global_;
                     try {
                         code = evalString(m == "map" ? kSupplyMapSrc
                                           : m == "grep" ? kSupplyGrepSrc : kSupplyDoSrc); // BuiltinRakuSrc.cpp
                     }
-                    catch (...) { tctx_.cur = saved; throw; }
-                    tctx_.cur = saved;
+                    catch (...) { tctx().cur = saved; throw; }
+                    tctx().cur = saved;
                 }
                 ValueList ca{inv, args[0]};
                 return callCallable(code, ca);
             }
-            if ((m == "tap" || m == "act") && (reactStack_.empty() || !tctx_.tapStack.empty())) {
+            if ((m == "tap" || m == "act") && (reactStack_.empty() || !tctx().tapStack.empty())) {
                 Value emit = (!args.empty() && args[0].t == VT::Code) ? args[0] : Value::nil();
                 Value done, quit;
                 for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) {
@@ -2291,14 +2291,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "on-close") { // callback fires when the tapping supply/react block ends
             // inside a REAL supply activation the callback belongs to that
             // activation's tap: it runs when the tap closes (e.g. via `done`)
-            if (!args.empty() && !tctx_.tapStack.empty() && tctx_.tapStack.back()->tap) {
-                auto& th = tctx_.tapStack.back()->tap;
+            if (!args.empty() && !tctx().tapStack.empty() && tctx().tapStack.back()->tap) {
+                auto& th = tctx().tapStack.back()->tap;
                 std::lock_guard<std::mutex> lk(th->m);
                 if (!th->closed) { th->closePhasers.push_back(args[0]); return inv; }
             }
             // no real tap: the callback belongs to the INNERMOST enclosing
             // context — an eager supply drain (tapStack) or a react block
-            if (!args.empty() && !tctx_.tapStack.empty()) { tctx_.tapStack.back()->closers.push_back(args[0]); return inv; }
+            if (!args.empty() && !tctx().tapStack.empty()) { tctx().tapStack.back()->closers.push_back(args[0]); return inv; }
             if (!args.empty() && !reactStack_.empty()) {
                 auto ctx = reactStack_.back();
                 std::lock_guard<std::mutex> lk(ctx->m);
@@ -3522,21 +3522,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (mcd && mcd->inv && mcd->inv->kind == NK::VarExpr &&
                     static_cast<const VarExpr*>(mcd->inv.get())->name.compare(0, 2, "$!") == 0) {
                     auto* mc = mcd;
-                    auto saved = I.tctx_.cur;
+                    auto saved = I.tctx().cur;
                     auto env = makeSlabShared<Env>();
-                    env->parent = declEnv ? declEnv : I.tctx_.cur;
+                    env->parent = declEnv ? declEnv : I.tctx().cur;
                     env->define("self", a.empty() ? Value::any() : a[0]);
-                    I.tctx_.cur = env;
-                    struct R { Interpreter& i; std::shared_ptr<Env> s; ~R() { i.tctx_.cur = s; } } r{I, saved};
+                    I.tctx().cur = env;
+                    struct R { Interpreter& i; std::shared_ptr<Env> s; ~R() { i.tctx().cur = s; } } r{I, saved};
                     ValueList margs;
                     for (auto& ae : mc->args) margs.push_back(I.eval(ae.get()));
                     return I.methodCall(Value::typeObj(seedType), mc->method, std::move(margs));
                 }
                 auto env = makeSlabShared<Env>();
-                env->parent = declEnv ? declEnv : I.tctx_.cur;
+                env->parent = declEnv ? declEnv : I.tctx().cur;
                 env->define("self", a.empty() ? Value::any() : a[0]);
-                auto saved = I.tctx_.cur; I.tctx_.cur = env;
-                struct R { Interpreter& i; std::shared_ptr<Env> s; ~R() { i.tctx_.cur = s; } } r{I, saved};
+                auto saved = I.tctx().cur; I.tctx().cur = env;
+                struct R { Interpreter& i; std::shared_ptr<Env> s; ~R() { i.tctx().cur = s; } } r{I, saved};
                 return I.eval(const_cast<Expr*>(def));
             };
             return thunk;
@@ -3578,7 +3578,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         const Expr* ve = (*rwArgs)[1].get();
                         std::string vn = ve->kind == NK::VarExpr ? static_cast<const VarExpr*>(ve)->name
                                                                  : static_cast<const NameTerm*>(ve)->name;
-                        if (Value* raw = tctx_.cur ? tctx_.cur->find(vn) : nullptr)
+                        if (Value* raw = tctx().cur ? tctx().cur->find(vn) : nullptr)
                             if (raw->t == VT::Hash && raw->hashKind == "Proxy") v = *raw;
                     }
                     if (sigil == '@' && v.t == VT::Range) { Value a = Value::array(); *a.arr() = v.flatten(); a.isList = true; v = a; }
@@ -5804,7 +5804,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             for (auto& a : args)
                 if (a.t == VT::Str && !a.namedArg) { msg = a.toStr(); haveEx = true;
                     ex = makeTypedEx("X::AdHoc", {{"message", Value::str(msg)}}, msg); break; }
-        if (!haveEx) { Value* be = tctx_.cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type && be->t != VT::Any) { ex = *be; haveEx = true; } }
+        if (!haveEx) { Value* be = tctx().cur->find("$!"); if (be && be->t != VT::Nil && be->t != VT::Type && be->t != VT::Any) { ex = *be; haveEx = true; } }
         // …and with no `$!` either it still carries an exception: "Failed"
         if (!haveEx) { msg = "Failed"; ex = makeTypedEx("X::AdHoc", {{"message", Value::str(msg)}}, msg); }
         Value f = rakuppNewFailure();
@@ -6693,14 +6693,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // qualified past it, `G.Grammar::parse(…)`, runs the built-in (#152).
                 if (Value* um = m.skipOwn ? nullptr : ci->findMethod(m)) {
                     RedispatchCtx prc; prc.next = builtinParse; prc.sameArgs = args;
-                    redispatchStack_.push_back(std::move(prc));
+                    redispatchStack().push_back(std::move(prc));
                     Value r;
                     // ownFrame: the frame just pushed belongs to the invoked
                     // method — its redispatch floor must sit BELOW it, or
                     // nextwith/callsame can't reach the built-in parse
                     try { r = invokeMethod(*um, inv, args, rwArgs, /*ownFrame=*/true); }
-                    catch (...) { redispatchStack_.pop_back(); throw; }
-                    redispatchStack_.pop_back();
+                    catch (...) { redispatchStack().pop_back(); throw; }
+                    redispatchStack().pop_back();
                     return r;
                 }
                 return builtinParse(args);
@@ -6992,7 +6992,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // A type whose METACLASS writes its own `compose` (a runtime type from
             // `MyHOW.new_type`) composes through it — Red builds a model's
             // columns there — unless this IS that compose deferring to the base.
-            if (m == "compose" && ci && !ci->findMethod(m) && !tctx_.metaForwarding.count("compose") &&
+            if (m == "compose" && ci && !ci->findMethod(m) && !tctx().metaForwarding.count("compose") &&
                 ci->howObj.t == VT::Object && ci->howObj.obj() && ci->howObj.obj()->cls) {
                 bool userCompose = false;
                 for (ClassInfo* c = ci->howObj.obj()->cls.get(); c && !userCompose; c = c->parent.get())
@@ -8384,10 +8384,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // …and a regex in it delegates every method whose name it matches
             if (h.size() > 4 && h.compare(0, 4, "\x01rx:") == 0)
             {   // the caller's `$/` is left as it was
-                Value* sl = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
+                Value* sl = tctx().cur ? tctx().cur->find("$/") : nullptr;
                 Value saved = sl ? *sl : Value::nil(); bool had = sl != nullptr;
                 bool hit = regexMatch(m, h.substr(4)).t == VT::Match;
-                if (had) if (Value* sl2 = tctx_.cur->find("$/")) *sl2 = saved;
+                if (had) if (Value* sl2 = tctx().cur->find("$/")) *sl2 = saved;
                 return hit;
             }
             if (h.empty() || !ascii::isupper((unsigned char)h[0])) return false;
@@ -8943,8 +8943,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (mit != kv.second->methods.end() && holds(mit->second)) return mit->second;
                     }
                 }
-                else if (tctx_.cur) {
-                    if (Value* d = tctx_.cur->find("&" + nm)) if (holds(*d)) return *d;
+                else if (tctx().cur) {
+                    if (Value* d = tctx().cur->find("&" + nm)) if (holds(*d)) return *d;
                     if (inv.code()->closure)
                         if (Value* d = inv.code()->closure->find("&" + nm)) if (holds(*d)) return *d;
                 }
@@ -9652,7 +9652,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "Bool" || m == "so") {
         // `/joo/.Bool` is a match against `$_`, as `so /joo/` is — and sets `$/`
         if (inv.t == VT::Regex && args.empty()) {
-            Value* topic = tctx_.cur ? tctx_.cur->find("$_") : nullptr;
+            Value* topic = tctx().cur ? tctx().cur->find("$_") : nullptr;
             if (!topic || topic->t == VT::Nil || topic->t == VT::Any || topic->t == VT::Type) return Value::boolean(false);
             return Value::boolean(regexMatch(rxSubject(*topic), inv.s, &inv).truthy());
         }
@@ -10173,7 +10173,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
         // the type object carries enumType too, and forwarding from it recurses.
         if ((m == "enums" || m == "elems" || m == "pick" || m == "roll") && !inv.enumType.empty()) {
-            if (Value* et = tctx_.cur->find(inv.enumType))
+            if (Value* et = tctx().cur->find(inv.enumType))
                 if (et->t == VT::Array) return methodCall(*et, m, args, rwArgs);
             // …and when the declaration is not in scope here at all. A role's
             // `::EnumBits` capture hands the type object to the role BODY, whose
@@ -10753,7 +10753,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::set<std::string>& s; std::string n; bool mine;
                 Mark(std::set<std::string>& S, const std::string& N) : s(S), n(N), mine(s.insert(N).second) {}
                 ~Mark() { if (mine) s.erase(n); }
-            } mark{tctx_.metaForwarding, m};
+            } mark{tctx().metaForwarding, m};
             return methodCall(args[0], "^" + m, rest, rwArgs);
         }
     }
@@ -10770,7 +10770,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value resolved;
         if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty()) elist = &inv;
         else if (inv.t == VT::Type) {
-            Value* ev = tctx_.cur ? tctx_.cur->find(inv.s) : nullptr;
+            Value* ev = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
             if (!ev && global_) ev = global_->find(inv.s);
             if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
                 { resolved = *ev; elist = &resolved; }
@@ -10810,7 +10810,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Type) {
             if (inv.s == "Order" || inv.s == "Endian" || inv.s == "Bool")
                 return Value::typeObj("Metamodel::EnumHOW");
-            Value* ev = tctx_.cur ? tctx_.cur->find(inv.s) : nullptr;
+            Value* ev = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
             if (!ev && global_) ev = global_->find(inv.s);
             if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
                 return Value::typeObj("Metamodel::EnumHOW");
@@ -10967,11 +10967,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*stash)[nm] = e;
             }
         }
-        else if (Value* et = tctx_.cur->find(pkg)) {
+        else if (Value* et = tctx().cur->find(pkg)) {
             if (et->t == VT::Array && et->arr() && !et->enumType.empty() && et->enumName.empty())
                 for (auto& pr : *et->arr())
                     if (pr.t == VT::Pair)
-                        if (Value* ev = tctx_.cur->find(pr.s)) (*stash)[pr.s] = *ev;
+                        if (Value* ev = tctx().cur->find(pr.s)) (*stash)[pr.s] = *ev;
         }
         Value st; st.t = VT::Hash; st.setHash(stash); st.hashKind = "Stash"; st.s = pkg;
         return st;

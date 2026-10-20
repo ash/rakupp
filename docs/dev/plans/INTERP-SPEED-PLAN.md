@@ -140,8 +140,10 @@ Three lessons from splitting `Interpreter.cpp` and `Builtins.cpp`
   compare cost the same wherever it lands.
 - **A `thread_local` read from another file costs a call** unless its
   declaration says it is constant-initialized (`RAKUPP_CONSTINIT`). `tctx_`
-  cannot say that (it has a destructor), which is why the hot functions share
-  `InterpreterCore.cpp` with its definition.
+  could not say that (it has a destructor), which is why the hot functions
+  share `InterpreterCore.cpp` with its definition. Since 2026-10-20 the
+  context is reached through a constant-initialized pointer (`tctx()`, task
+  4), which costs the same from any file.
 
 Result so far, against the build before the split: every `perf-guard` kernel
 faster or level, mean −5.2%.
@@ -248,9 +250,9 @@ times, `exec` 96.
   assignment lane and evalBinary's fast shape (`padPtrIn` takes the scope
   the caller already read). The recursion guard's two thread_locals are one
   `StackBounds t_stack`; exec reads the subscript-refusal counter only for
-  a subscript statement. `redispatchStack_` is still a guarded
-  thread_local read on every call: it has 65 uses and an element type
-  nested in `Interpreter`, so it did not move with the call registers.
+  a subscript statement. `redispatchStack_` was a guarded thread_local read
+  on every call (65 uses, an element type nested in `Interpreter`); since
+  2026-10-20 it is `redispatchStack()`, pointer-backed (below).
 - [x] Prove that a function never outlives a thread switch with `tc`: a
   coroutine resumes only on the thread that started it (`Coro::ownerThread`,
   checked before every resume in InterpreterOperators.cpp), so the address
@@ -273,6 +275,65 @@ own beside it. Both now live in `t_poll`, which the iteration reads anyway:
 the share is 20%. What is left is one `tctx_` read in each of `runLoopBody`,
 `execPlainBlock`, `exec` and `evalAssign` per iteration, which needs the
 context passed down rather than re-read.
+
+*2026-10-20: the context is a pointer now.* Found from BinaryHeap 2.0.3's
+profiles ([BINARYHEAP.md](../ecosystem/BINARYHEAP.md)), where `_tlv_get_addr`
+was the top leaf (10.1% of busy samples on a heap pop, 17.7% on `loopsum`
+with the kernels off). Attributing each sampled call site to the TLV
+descriptor it loads showed the cost was not the thunk alone: `tctx_` has a
+destructor, so every mention paid an init guard (`___tls_guard`, its own
+`_tlv_get_addr`) and then the variable (a second one), and from any file but
+InterpreterCore.cpp it did so inside a wrapper call
+(`__ZTWN6rakupp11Interpreter5tctx_E`). The guard alone was as many samples as
+the variable. Clang cannot merge any of it across a function, since the
+wrapper is an opaque call. Priced in a probe (instructions over a bare
+call, for a function that names the context twice): +68 from another file,
++32 from its own, +21 through a constant-initialized pointer, whose TLV
+address Clang computes once per function (`llvm.threadlocal.address` is
+`memory(none)`), so each further mention is a load and a test.
+
+What changed (all in the headers' terms):
+
+- `tctx()` reads `t_hot.ctx`, a pointer in a constant-initialized
+  `ThreadHot`, bound on a thread's first use to that thread's own
+  `ExecContext` (a `thread_local` in InterpreterCore.cpp, so its lifetime
+  is the old variable's). `LoopPoll` is `t_hot.poll`, in the same
+  thread_local, because `runLoopBody` names both every iteration.
+- `redispatchStack()` and `pendingSubscripts()` (every call; every
+  assignment's `ParkedSubscriptsScope`) are pointer-backed the same way. The
+  second was a function-local `thread_local` in an inline function, reached
+  through the GOT, guard and vector, in both the scope's constructor and its
+  destructor.
+- SlabPool's `tlHead`/`tlCount`/`tlArmed` are one struct (three TLV
+  addresses per allocation were one), and RVec's block pool is a
+  constant-initialized struct with the destructor on a separate reaper,
+  SlabPool's discipline (a guarded function-local before).
+
+Measured, `/usr/bin/time -l`, median of 5 interleaved runs against
+e9841fec (instructions retired, cycles beside them). With the kernels off and
+on BinaryHeap every program retired fewer instructions in 5 of 5 rounds;
+with the kernels on, 12 of 21 did; the others spend their time in the
+native loop kernels or the runtime library, where the walk is a small part.
+
+| lane | Δ instructions (geomean) | Δ cycles (geomean) | range |
+|---|---:|---:|---|
+| `tools/bench`, kernels on (21; precomp-table is a driver, left out) | −1.9% | −1.9% | −6.7% (parmap) … +0.5% (rats, 2/5: noise) |
+| `tools/bench`, `RAKUPP_NO_KERNELS=1` (21) | −4.3% | −8.2% | −8.1% (arraypush) … −0.5% (startup) |
+| BinaryHeap 2.0.3 `benchmark/*.raku` (5) | −3.9% | −5.1% | −4.3% (heapify) … −3.1% (push) |
+
+The kernels-off lane is the tree walk itself: `streq` −7.2% instructions
+(−19% cycles), `mainwhen` −7.2%, `loopsum` −5.8% (−14% cycles), `fib`
+−4.9%. `_tlv_get_addr`'s share of busy samples: heap pop 10.1% → 4.8%,
+`loopsum` (30M, kernels off) 17.7% → 10.1%. The tctx pointer alone (the
+first step) was −2.2% to −3.2% on the heap benchmarks and −4.1% on
+`objects`; the rest is the other changes above. Wall time in the same
+runs, on a box other sessions were loading: BinaryHeap −1.2% (pop) to
+−4.5% (heapify), medians of 5.
+
+*Done when* is still not met on `loopsum`: what is left there is exactly one
+TLV address in each of `runLoopBody`, `execPlainBlock`, `exec`, `evalAssign`
+and `eval` per iteration, the floor for reaching the context through a
+thread_local at all. Below it the context has to be passed down.
 
 ### 5. Shrink the hot frames
 

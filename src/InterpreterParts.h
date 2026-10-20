@@ -8,7 +8,7 @@
 //   InterpreterCalls.cpp       calls, method invocation, lvalues and the assignment helpers
 //   InterpreterRegex.cpp       regexes, substitution, grammars and hyperoperators
 //   InterpreterOperators.cpp   operators, mixins, phasers, gather, reductions and subscripts
-//   InterpreterCore.cpp        the hot paths: every function the perf-guard kernels spend time in, kept together so they inline into each other and reach tctx_ directly
+//   InterpreterCore.cpp        the hot paths: every function the perf-guard kernels spend time in, kept together so they inline into each other and reach tctx() directly
 #pragma once
 #include "CNumeric.h"
 #include "AsciiCtype.h"
@@ -220,8 +220,8 @@ Value typedDefault(const std::string& type, char sigil);
 // naming a type — is that type, before the global registry's own `Bar`:
 // Raku looks a name up lexically first (S11-modules/export.t).
 static inline std::string lexicalTypeName(Interpreter& I, const std::string& n) {
-    if (n.empty() || !Interpreter::tctx_.cur) return n;
-    Value* tv = Interpreter::tctx_.cur->find(n);
+    if (n.empty() || !Interpreter::tctx().cur) return n;
+    Value* tv = Interpreter::tctx().cur->find(n);
     if (tv && tv->t == VT::Type && !tv->s.empty() && tv->s != n && I.classes_.count(tv->s))
         return tv->s;
     return n;

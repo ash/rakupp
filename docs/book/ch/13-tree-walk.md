@@ -59,10 +59,12 @@ struct ExecContext {
     int wantLvalue = 0;  Value* lvalueOut = nullptr;
 };
 
-static thread_local ExecContext tctx_;
+static ExecContext& tctx();   // this thread's context
 ```
 
-It is `static thread_local`, so each real worker thread owns its own set. That
+It is per thread — a `thread_local` context, reached through a
+constant-initialized `thread_local` pointer — so each real worker thread owns
+its own set. That
 is the foundation of the concurrency model in Chapter 38 — with per-thread
 registers, running Raku on a second thread does not need a register swap at
 every handover.
@@ -83,7 +85,7 @@ and a copy:
 
 ```cpp
 // src/InterpreterCore.cpp — eval(VarExpr), the plain-lexical fast path
-if (Value* p = tctx_.cur->find(ve->name))
+if (Value* p = tctx().cur->find(ve->name))
     if (!(p->t == VT::Hash && p->hashKind == "Proxy"))
         return *p;
 ```

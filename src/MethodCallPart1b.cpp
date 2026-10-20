@@ -336,15 +336,15 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 // still on the dynamic stack: `my` lands in the session (that
                 // is the persistence), while $*OUT/$*ERR and every other
                 // dynamic resolve exactly where they would have at the call.
-                auto saved = tctx_.cur;
-                Env* savedState = tctx_.curStateEnv;
-                tctx_.dynStack.push_back(saved.get());
+                auto saved = tctx().cur;
+                Env* savedState = tctx().curStateEnv;
+                tctx().dynStack.push_back(saved.get());
                 struct Guard {
                     ExecContext& t; std::shared_ptr<Env> cur; Env* st;
                     ~Guard() { t.cur = std::move(cur); t.curStateEnv = st; t.dynStack.pop_back(); }
-                } g{tctx_, saved, savedState};
-                tctx_.cur = sess;
-                tctx_.curStateEnv = sess.get(); // mainline `state` belongs to the session
+                } g{tctx(), saved, savedState};
+                tctx().cur = sess;
+                tctx().curStateEnv = sess.get(); // mainline `state` belongs to the session
                 try { out = evalString(code, /*mainlinePH=*/true); }
                 catch (FeatureNotBuilt&) { throw; } // a SLIM stub: loud, never a reported "line failed"
                 catch (RakuError& e) { failed = true; err = e; }

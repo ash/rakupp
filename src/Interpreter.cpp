@@ -1213,10 +1213,10 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
         std::string pfx;
         const std::set<std::string>* inst;
         int line;
-        ~Restore() { I.tctx_.cur = cur; I.tctx_.pkgPrefix = pfx; I.roleInstNames_ = inst; I.curLine_ = line; }
-    } restore{*this, tctx_.cur, tctx_.pkgPrefix, roleInstNames_, curLine_};
-    tctx_.cur = env;
-    tctx_.pkgPrefix = role->name + "::";
+        ~Restore() { I.tctx().cur = cur; I.tctx().pkgPrefix = pfx; I.roleInstNames_ = inst; I.curLine_ = line; }
+    } restore{*this, tctx().cur, tctx().pkgPrefix, roleInstNames_, curLine_};
+    tctx().cur = env;
+    tctx().pkgPrefix = role->name + "::";
     roleInstNames_ = &g->names;
     const auto& body = role->decl->body;
     auto isSub = [](const Stmt* st) { return st && st->kind == NK::SubDecl; };
@@ -1264,7 +1264,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
 void Interpreter::applyContainerElemType(ClassAttr& a) {
     if (a.containerIs.empty() || (a.sigil != '@' && a.sigil != '%')) return;
     auto it = classes_.find(lexicalTypeName(*this, a.containerIs));
-    if (it == classes_.end() && !tctx_.pkgPrefix.empty()) it = classes_.find(tctx_.pkgPrefix + a.containerIs);
+    if (it == classes_.end() && !tctx().pkgPrefix.empty()) it = classes_.find(tctx().pkgPrefix + a.containerIs);
     if (it == classes_.end()) it = classes_.find(resolveClassAlias(a.containerIs));
     if (it == classes_.end() || !it->second || it->second->isRole) return;
     a.containerIs = it->first;
@@ -1282,7 +1282,7 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     // `my ::foo $x` with no `foo` anywhere: $x holds a BARE type of that name
     if (ve && !ve->d().declStubType.empty() && sigil == '$' && ve->d().declType.empty()) {
         const std::string& sn = ve->d().declStubType;
-        if (!classes_.count(sn) && !isKnownTypeName(sn) && !(tctx_.cur && tctx_.cur->find(sn))) {
+        if (!classes_.count(sn) && !isKnownTypeName(sn) && !(tctx().cur && tctx().cur->find(sn))) {
             bareStubTypes_.insert(sn);
             return Value::typeObj(sn);
         }
@@ -1315,7 +1315,7 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
     }
     if (ve && sigil == '$' && !ve->d().declType.empty()) {
         Value cap;
-        if (capturedType(*this, tctx_.cur.get(), ve->d().declType, cap)) { cap.i = 0; return cap; }
+        if (capturedType(*this, tctx().cur.get(), ve->d().declType, cap)) { cap.i = 0; return cap; }
     }
     // A coercion type on an `@`/`%` is its ELEMENTS' type, and the container
     // keeps it whole: `my Hash() %h` is Rakudo's Hash[Hash(Any)], so every
@@ -1880,7 +1880,7 @@ Value listToArray(const ValueList& items) {
 // header, one line per candidate, then an option list built from `#=` trailing
 // declarator pod, aligned, with [default: X] for defaulted params.
 std::string Interpreter::mainUsage() {
-    Value* mainSub = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+    Value* mainSub = tctx().cur ? tctx().cur->find("&MAIN") : nullptr;
     if (!mainSub && global_) mainSub = global_->find("&MAIN");
     if (!mainSub || mainSub->t != VT::Code || !mainSub->code()) return "";
     ValueList cands;
@@ -2012,7 +2012,7 @@ Value valAllomorph(const Value& v) {
 // is why `Int`, `Klass` and an enum's own name `Color` stay strings.
 bool Interpreter::mainArgEnum(const std::string& n, Value& out) {
     if (n.empty()) return false;
-    Value* p = tctx_.cur ? tctx_.cur->find(n) : nullptr;
+    Value* p = tctx().cur ? tctx().cur->find(n) : nullptr;
     if (!p && global_) p = global_->find(n);
     if (p) {
         // An enum VALUE is an Int carrying its member key, and its enum's type
@@ -3133,10 +3133,10 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // empty-Slip SINGLETON unless a class of that name exists. Resolved as a
     // builtin it was a fresh empty list, which `(1, Empty, 2)` kept as an element.
     if (n == "Empty" && !classes_.count(n)) return emptySlipSingleton();
-    if (tctx_.cur) {
-        if (Value* p = tctx_.cur->find(n)) // bound slot: fetch, as the eval path does
+    if (tctx().cur) {
+        if (Value* p = tctx().cur->find(n)) // bound slot: fetch, as the eval path does
             return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
-        if (Value* f = tctx_.cur->find("&" + n)) return callCallable(*f, {});
+        if (Value* f = tctx().cur->find("&" + n)) return callCallable(*f, {});
     }
     // after the env/&routine lookups, so a user's own `sub now {…}` still wins
     { Value c; if (nameTermConstant(n, c, sixE())) return c; }
@@ -3179,7 +3179,7 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
                         const std::vector<std::string>& importArgs) {
     if (module == "Test") {   // (the stash marker, as the UseStmt arm leaves it)
         usedTest_ = true;
-        if (tctx_.cur) tctx_.cur->define("\x01import:Test", Value::boolean(true));
+        if (tctx().cur) tctx().cur->define("\x01import:Test", Value::boolean(true));
         return;
     }
     // `use experimental :rakuast`, as the interpreter's UseStmt arm does it.
@@ -3198,11 +3198,11 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
     // laxVarRef for it), so this flag is here for what compiled code hands back
     // to the interpreter — and to keep `strict` from being looked for on disk.
     if (module == "strict") {
-        if (tctx_.cur) tctx_.cur->strictPragma = isNo ? 1 : -1;
+        if (tctx().cur) tctx().cur->strictPragma = isNo ? 1 : -1;
         return;
     }
     if (module == "fatal") {
-        if (tctx_.cur) tctx_.cur->fatalPragma = isNo ? -1 : 1;
+        if (tctx().cur) tctx().cur->fatalPragma = isNo ? -1 : 1;
         return;
     }
     if (module.size() >= 2 && module[0] == 'v' && ascii::isdigit((unsigned char)module[1])) {
@@ -4088,7 +4088,9 @@ thread_local bool Interpreter::matchVarSuppressed_ = false;
 thread_local std::string Interpreter::declaringType_;
 thread_local bool Interpreter::hoistingSubs_ = false;
 // Per-thread call-stack state (step 3a — see header).
-thread_local std::vector<Interpreter::RedispatchCtx> Interpreter::redispatchStack_;
+thread_local std::vector<Interpreter::RedispatchCtx>* Interpreter::redispatchPtr_ = nullptr;
+static thread_local std::vector<Interpreter::RedispatchCtx> t_redispatch;   // what redispatchPtr_ points at
+std::vector<Interpreter::RedispatchCtx>& Interpreter::redispatchBind() { return *(redispatchPtr_ = &t_redispatch); }
 thread_local std::vector<Interpreter::ProtoCtx> Interpreter::protoStack_;
 
 // A `proto` whose body is more than a bare `{*}` runs AROUND the dispatch: it does its
@@ -4105,22 +4107,22 @@ const Value* Interpreter::protoBodyOf(const Callable& c) {
 // The frame is popped for the duration so the candidate cannot re-enter it.
 Value Interpreter::protoRedispatch() {
     ProtoCtx ctx = protoStack_.back();
-    protoStack_.pop_back(); tctx_.protoDepth--;
+    protoStack_.pop_back(); tctx().protoDepth--;
     struct Push { std::vector<ProtoCtx>& s; ProtoCtx c;
-                  ~Push() { s.push_back(std::move(c)); tctx_.protoDepth++; } } push{protoStack_, ctx};
+                  ~Push() { s.push_back(std::move(c)); tctx().protoDepth++; } } push{protoStack_, ctx};
     return ctx.dispatch(ctx.args);
 }
 Value Interpreter::callProtoBody(const Value& proto, const std::function<Value(ValueList)>& dispatch,
                                  ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    protoStack_.push_back(ProtoCtx{dispatch, args}); tctx_.protoDepth++;
-    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); tctx_.protoDepth--; } } pop{protoStack_};
+    protoStack_.push_back(ProtoCtx{dispatch, args}); tctx().protoDepth++;
+    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); tctx().protoDepth--; } } pop{protoStack_};
     return callCallable(proto, std::move(args), rwArgs, /*ownFrame=*/true);
 }
 Value Interpreter::callProtoBodyMethod(const Value& proto, const Value& self,
                                        const std::function<Value(ValueList)>& dispatch,
                                        ValueList args, const std::vector<ExprPtr>* rwArgs) {
-    protoStack_.push_back(ProtoCtx{dispatch, args}); tctx_.protoDepth++;
-    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); tctx_.protoDepth--; } } pop{protoStack_};
+    protoStack_.push_back(ProtoCtx{dispatch, args}); tctx().protoDepth++;
+    struct Pop { std::vector<ProtoCtx>& s; ~Pop() { s.pop_back(); tctx().protoDepth--; } } pop{protoStack_};
     return invokeMethod(proto, self, std::move(args), rwArgs, /*ownFrame=*/true);
 }
 
@@ -4287,7 +4289,7 @@ Interpreter::Interpreter() {
     }
     global_ = makeSlabShared<Env>();
     curPkgEnv_ = global_;
-    // tctx_ is thread_local, so it outlives an interpreter: an embedder that
+    // tctx() is thread_local, so it outlives an interpreter: an embedder that
     // runs rk_new/rk_run/rk_free over and over on one thread (Raku.js runs
     // every program that way) had the previous program's dynamic frames on
     // dynStack, raw Env pointers into a freed interpreter, and a later `$*CWD`
@@ -4295,7 +4297,7 @@ Interpreter::Interpreter() {
     // Raku Koans). Start from empty Raku-context registers, as a parked thread
     // does; a scratch host (SlangTctxGuard) restores its caller's on exit.
     { ExecContext fresh; loadCtx(fresh); }
-    tctx_.cur = global_;
+    tctx().cur = global_;
     rtInstallStdoutCounter();   // `$*OUT.tell` on a pipe counts bytes from here on
     // Module search paths. "lib"/"."/"rakulib" are relative to the CWD; the rest
     // come from the environment so a checkout works anywhere:
@@ -4553,7 +4555,7 @@ void Interpreter::keepMatchOrig(Value& m, const Value& topic) {
           topic.t == VT::Object))
         return;
     auto orig = std::make_shared<Value>(topic);
-    Value* slash = tctx_.cur ? tctx_.cur->find("$/") : nullptr;
+    Value* slash = tctx().cur ? tctx().cur->find("$/") : nullptr;
     if (slash && slash->t == VT::Match && slash->rFrom() == m.rFrom() && slash->rTo() == m.rTo() &&
         slash->s == m.s)
         slash->pairKeyRawM() = orig;
@@ -4989,7 +4991,7 @@ void Interpreter::unitSharingScan(const std::vector<StmtPtr>& stmts, bool module
     if (module) sw.collect = &named;   // every name the module mentions
     sw.stmts(stmts);
     if (sw.off) { privateSlotsOff(sw.offWhy.c_str(), sw.offLine); return; }
-    if (!module) { escapeChain(tctx_.cur.get()); return; }
+    if (!module) { escapeChain(tctx().cur.get()); return; }
     // A `use` can run while the main program is still being parsed, before
     // its layout exists: kept, and applied when the layout is made too.
     {
@@ -5489,7 +5491,7 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
 // ---- per-unit package stashes (see Interpreter.h) ----
 std::string Interpreter::stashUnitHere() {
     if (stashUnitOverride_) return *stashUnitOverride_;
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         if (e->unitFrame) {
             auto it = unitOfEnv_.find(e);
             if (it != unitOfEnv_.end()) return it->second;
@@ -5826,10 +5828,10 @@ void Interpreter::preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts) {
             }
         if (!has) { preinstallNestedOurSubs(b->stmts); continue; }
         if (!curPkgEnv_) continue;
-        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur;
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
         predeclareSubClosures(b, sc.get());
-        auto saved = tctx_.cur;
-        tctx_.cur = sc;
+        auto saved = tctx().cur;
+        tctx().cur = sc;
         try {
             for (auto& st : b->stmts)
                 if (st->kind == NK::SubDecl) {
@@ -5838,8 +5840,8 @@ void Interpreter::preinstallNestedOurSubs(const std::vector<StmtPtr>& stmts) {
                         !curPkgEnv_->local("&" + sd->name))
                         exec(st.get());
                 }
-        } catch (...) { tctx_.cur = saved; throw; }
-        tctx_.cur = saved;
+        } catch (...) { tctx().cur = saved; throw; }
+        tctx().cur = saved;
         preinstallNestedOurSubs(b->stmts);
     }
 }
@@ -5855,7 +5857,7 @@ void Interpreter::applyParamTraits(const std::vector<Param>& params, const Value
     bool any = false;
     for (auto& pp : params) if (!pp.userTraits.empty()) { any = true; break; }
     if (!any || fn.t != VT::Code || !fn.code()) return;
-    Value* tm = tctx_.cur->find("&trait_mod:<is>");
+    Value* tm = tctx().cur->find("&trait_mod:<is>");
     if (!tm || tm->t != VT::Code) {
         // with no trait_mod:<is> in scope at all, a trait no built-in knows is
         // a compile error: `sub f($x is nonesuch)`
@@ -5942,10 +5944,10 @@ void Interpreter::callRoutineTrait(const Value& tm, const Value& code, const Sub
 // the declaration still ends in its value (`EVAL 'my @a is buf = ^10'`).
 Value Interpreter::applyVarTrait(const std::string& var, const std::string& trait, const Value* arg) {
     auto valueNow = [&]() -> Value {
-        Value* v = tctx_.cur && !var.empty() ? tctx_.cur->find(var) : nullptr;
+        Value* v = tctx().cur && !var.empty() ? tctx().cur->find(var) : nullptr;
         return v ? *v : Value::nil();
     };
-    Value* tm = tctx_.cur ? tctx_.cur->find("&trait_mod:<is>") : nullptr;
+    Value* tm = tctx().cur ? tctx().cur->find("&trait_mod:<is>") : nullptr;
     if (!tm || tm->t != VT::Code || var.empty()) return valueNow();
     Value vm = Value::makeHash();
     vm.hashKind = "Variable";
@@ -5961,7 +5963,7 @@ Value Interpreter::applyVarTrait(const std::string& var, const std::string& trai
     if (ci == vm.hash()->end() || ci->second.t != VT::Object || !ci->second.obj() || !ci->second.obj()->cls ||
         ci->second.obj()->cls->name.find("+{") == std::string::npos)
         return valueNow();
-    Value* slot = tctx_.cur->find(var);
+    Value* slot = tctx().cur->find(var);
     if (!slot) return Value::nil();
     if (var[0] == '$') { *slot = ci->second; return *slot; }
     if (slot->t != VT::Array && slot->t != VT::Hash) return *slot;
@@ -6002,11 +6004,11 @@ void Interpreter::unknownRoutineTrait(const std::string& name, const Value& code
 }
 
 void Interpreter::applySubTraits(SubDecl* sd) {
-    Value* fn = tctx_.cur->find("&" + sd->name);
+    Value* fn = tctx().cur->find("&" + sd->name);
     if (!fn) return;
     applyParamTraits(sd->params, *fn);
     if (sd->traits.empty()) return;
-    Value* tm = tctx_.cur->find("&trait_mod:<is>");
+    Value* tm = tctx().cur->find("&trait_mod:<is>");
     if (!tm || tm->t != VT::Code) {
         // no `trait_mod:<is>` at all: a trait that names no type is unknown
         if (routineTraitsCertain())
@@ -6061,19 +6063,19 @@ void Interpreter::breakSelfClosures(const std::shared_ptr<Env>& envp) {
 
 // Move the live execution registers into `c` (used when a thread parks) …
 void Interpreter::saveCtx(ExecContext& c) {
-    c.cur         = std::move(tctx_.cur);
-    c.dynStack    = std::move(tctx_.dynStack);
-    c.callDepth   = tctx_.callDepth;
-    c.curStateEnv = tctx_.curStateEnv;
-    c.gatherStack = std::move(tctx_.gatherStack);
-    c.gatherLimits = std::move(tctx_.gatherLimits);
-    c.gatherDeadlines = std::move(tctx_.gatherDeadlines);
-    t_poll.gatherDeadline = 0;   // nothing of this thread's is probing while it is parked
-    c.topicAliases = std::move(tctx_.topicAliases);
-    c.supplyStack = std::move(tctx_.supplyStack);
-    c.tapStack    = std::move(tctx_.tapStack);
-    c.makeTargets = std::move(tctx_.makeTargets);
-    c.pkgPrefix   = std::move(tctx_.pkgPrefix);
+    c.cur         = std::move(tctx().cur);
+    c.dynStack    = std::move(tctx().dynStack);
+    c.callDepth   = tctx().callDepth;
+    c.curStateEnv = tctx().curStateEnv;
+    c.gatherStack = std::move(tctx().gatherStack);
+    c.gatherLimits = std::move(tctx().gatherLimits);
+    c.gatherDeadlines = std::move(tctx().gatherDeadlines);
+    t_hot.poll.gatherDeadline = 0;   // nothing of this thread's is probing while it is parked
+    c.topicAliases = std::move(tctx().topicAliases);
+    c.supplyStack = std::move(tctx().supplyStack);
+    c.tapStack    = std::move(tctx().tapStack);
+    c.makeTargets = std::move(tctx().makeTargets);
+    c.pkgPrefix   = std::move(tctx().pkgPrefix);
     // NOT nqpArgs/nqpDepth, deliberately. They are scratch buffers belonging to
     // the OS THREAD, not to the Raku context being parked: a suspended nqp op
     // further up this thread's C++ stack still holds a live reference into the
@@ -6082,19 +6084,19 @@ void Interpreter::saveCtx(ExecContext& c) {
 }
 // … and back out when it resumes (or when another thread is scheduled in).
 void Interpreter::loadCtx(ExecContext& c) {
-    tctx_.cur          = std::move(c.cur);
-    tctx_.dynStack     = std::move(c.dynStack);
-    tctx_.callDepth    = c.callDepth;
-    tctx_.curStateEnv  = c.curStateEnv;
-    tctx_.gatherStack  = std::move(c.gatherStack);
-    tctx_.gatherLimits = std::move(c.gatherLimits);
-    tctx_.gatherDeadlines = std::move(c.gatherDeadlines);
-    t_poll.gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
-    tctx_.topicAliases = std::move(c.topicAliases);
-    tctx_.supplyStack  = std::move(c.supplyStack);
-    tctx_.tapStack     = std::move(c.tapStack);
-    tctx_.makeTargets  = std::move(c.makeTargets);
-    tctx_.pkgPrefix    = std::move(c.pkgPrefix);
+    tctx().cur          = std::move(c.cur);
+    tctx().dynStack     = std::move(c.dynStack);
+    tctx().callDepth    = c.callDepth;
+    tctx().curStateEnv  = c.curStateEnv;
+    tctx().gatherStack  = std::move(c.gatherStack);
+    tctx().gatherLimits = std::move(c.gatherLimits);
+    tctx().gatherDeadlines = std::move(c.gatherDeadlines);
+    t_hot.poll.gatherDeadline = tctx().gatherDeadlines.empty() ? 0 : tctx().gatherDeadlines.back();
+    tctx().topicAliases = std::move(c.topicAliases);
+    tctx().supplyStack  = std::move(c.supplyStack);
+    tctx().tapStack     = std::move(c.tapStack);
+    tctx().makeTargets  = std::move(c.makeTargets);
+    tctx().pkgPrefix    = std::move(c.pkgPrefix);
 }
 
 // Engage the GIL the first time any asynchronous work appears. Before this the
@@ -6213,10 +6215,10 @@ void Interpreter::sleepYield(double secs) {
     // returns at once). The deadline arithmetic stays in double-rep time for
     // the same reason; it also keeps a sliced sleep's total duration exact.
     auto sliceUntilAbort = [&](double s) -> bool {       // true: abort observed
-        const double slice = t_poll.isWorker ? 0.05 : 3600.0;
+        const double slice = t_hot.poll.isWorker ? 0.05 : 3600.0;
         auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(s);
         for (;;) {
-            if (t_poll.isWorker && workerAbort_.load(std::memory_order_relaxed)) return true;
+            if (t_hot.poll.isWorker && workerAbort_.load(std::memory_order_relaxed)) return true;
             auto now = std::chrono::steady_clock::now();
             if (now >= end) return false;
             double left = std::chrono::duration<double>(end - now).count();
@@ -6310,7 +6312,7 @@ long long Interpreter::newThreadId() {
 Value Interpreter::currentThread() {
     if (t_threadSelf.t == VT::Hash) return t_threadSelf;
     Value h = Value::makeHash(); h.hashKind = "Thread";
-    if (t_poll.isWorker) {
+    if (t_hot.poll.isWorker) {
         (*h.hash())["initial"] = Value::boolean(false);
         (*h.hash())["id"] = Value::integer(newThreadId());
         t_threadSelf = h;
@@ -6320,9 +6322,10 @@ Value Interpreter::currentThread() {
     (*h.hash())["id"] = Value::integer(1);
     return h;
 }
-// Its isWorker is true only on `start`/async worker threads — it gates the
-// safe-point abort (inline in the header) so the main thread is never unwound.
-thread_local LoopPoll t_poll;
+// t_hot.poll.isWorker is true only on `start`/async worker threads — it gates
+// the safe-point abort (inline in the header) so the main thread is never
+// unwound.
+thread_local ThreadHot t_hot;
 
 // Called from a worker's safe point every few thousand loop iterations: release the
 // GIL (waking a main thread parked in yieldToWorker), give the scheduler a chance to
@@ -6358,13 +6361,13 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         // recursive).
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        auto spawnScope = tctx().cur ? tctx().cur : global_;
         throttleSpawn();
         addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
-            t_poll.isWorker = true;
+            t_hot.poll.isWorker = true;
             if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
-            tctx_.cur = spawnScope;        // anchor: dynamics visible at the spawn point
-            tctx_.dynStack.push_back(spawnScope.get());
+            tctx().cur = spawnScope;        // anchor: dynamics visible at the spawn point
+            tctx().dynStack.push_back(spawnScope.get());
             Value r; bool broke = false; Value cause;
             try {
                 ValueList noargs;
@@ -6383,7 +6386,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
                 // It is also what the semantics want: a thread's match is its
                 // own. Sharing one `$/` would let one worker read another's
                 // match, which no program could rely on — and Rakudo does not.
-                tctx_.forceRoutineFrame = true;
+                tctx().forceRoutineFrame = true;
                 r = code.t == VT::Code ? self->callCallable(code, noargs) : code;
             }
             catch (const RakuError& e) {
@@ -6408,16 +6411,16 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
     }
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_; // dynamics visible at the spawn point
+    auto spawnScope = tctx().cur ? tctx().cur : global_; // dynamics visible at the spawn point
     throttleSpawn();
     addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
         self->loadCtx(wctx);
-        tctx_.cur = spawnScope;            // anchor: `start {…}` sees the spawner's dynamics
-        tctx_.dynStack.push_back(spawnScope.get());
+        tctx().cur = spawnScope;            // anchor: `start {…}` sees the spawner's dynamics
+        tctx().dynStack.push_back(spawnScope.get());
         Value r; bool broke = false; Value cause;
         try {
             ValueList noargs;
@@ -6452,11 +6455,11 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     cuedLoads_++;
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     throttleSpawn();
     addWorker(BigStackThread([self, code, cs, fin, spawnScope, delaySecs, everySecs, times, stopF, catchF]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         auto clock0 = std::chrono::steady_clock::now();
         // Drift-free deadline from the cue's start, slept in slices so shutdown
         // (workerAbort_) and .cancel wake it within ~50 ms instead of holding the
@@ -6477,8 +6480,8 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
         self->gilLock();
         ExecContext wctx;
         self->loadCtx(wctx);
-        tctx_.cur = spawnScope;
-        tctx_.dynStack.push_back(spawnScope.get());
+        tctx().cur = spawnScope;
+        tctx().dynStack.push_back(spawnScope.get());
         long long ran = 0;
         for (;;) {
             if (interrupted) break; // shutdown or .cancel during a nap: never run
@@ -6651,11 +6654,11 @@ void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
     engageGil();
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     throttleSpawn();
     addWorker(BigStackThread([self, w, refold, moments, fin, spawnScope]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         for (double at : moments) {
             bool stop = false;                                        // GIL not held
             {
@@ -6670,8 +6673,8 @@ void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
             if (stop) break;
             self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
-            tctx_.cur = spawnScope;
-            tctx_.dynStack.push_back(spawnScope.get());
+            tctx().cur = spawnScope;
+            tctx().dynStack.push_back(spawnScope.get());
             try { refold(); } catch (...) {}
             self->gilYieldNotify();
         }
@@ -6700,7 +6703,7 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         parkedReacts_.push_back(ctx);
     }
     auto pred = [&] { return ctx->liveSources <= 0 || ctx->closed || !ctx->deferred.empty() ||
-                             (t_poll.isWorker && ctx->aborted); };
+                             (t_hot.poll.isWorker && ctx->aborted); };
     auto sourcesDone = [&] { return ctx->liveSources <= 0 || ctx->closed; };
     std::unique_lock<std::mutex> lk(ctx->m);
     // A whenever registered from INSIDE a whenever block defers its first
@@ -6723,14 +6726,14 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         if (!gilHeld_) break; // no async emitter can exist → don't hang the loop
         if (parallelMode_) {  // no GIL: wait for an emitter thread to close/drain
             ctx->cv.wait(lk, pred);
-            if (t_poll.isWorker && ctx->aborted && !sourcesDone()) throw WorkerAbortEx{};
+            if (t_hot.poll.isWorker && ctx->aborted && !sourcesDone()) throw WorkerAbortEx{};
             break;
         }
         static thread_local ExecContext parked;
         saveCtx(parked);
         gilYieldNotify();
         ctx->cv.wait(lk, pred);
-        bool aborted = t_poll.isWorker && ctx->aborted && !sourcesDone();
+        bool aborted = t_hot.poll.isWorker && ctx->aborted && !sourcesDone();
         lk.unlock();       // drop ctx->m before reacquiring the GIL (avoids ABBA with emitters)
         gil_.lock();       // restore invariants before unwinding
         loadCtx(parked);

@@ -1182,7 +1182,7 @@ void startCompile(Site* s) {
         // The subs this loop calls that can be compiled in place, resolved in
         // the scope the loop is running in (this is the interpreter's thread)
         s->inlined.clear();
-        if (Env* env = Interpreter::tctx_.cur.get())
+        if (Env* env = Interpreter::tctx().cur.get())
             for (const std::string& nm : s->callNames)
                 if (Value* f = env->find("&" + nm))
                     if (f->t == VT::Code && f->code() && cnp::inlineBody(*f->code(), env))

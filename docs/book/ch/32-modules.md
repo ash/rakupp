@@ -197,7 +197,7 @@ name.
 
 ### `our` and `unit module`?
 
-`tctx_.pkgPrefix` is the mechanism. `unit module Foo;` sets the prefix for the
+`tctx().pkgPrefix` is the mechanism. `unit module Foo;` sets the prefix for the
 rest of the compilation unit; a braced `module Foo { … }` sets it for the body
 and restores it after. Then an `our sub bar` is also published as `&Foo::bar`, an
 `our` variable as `$Foo::x`, a `my` one not at all, and a class or grammar

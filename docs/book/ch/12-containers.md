@@ -39,11 +39,11 @@ Reading a variable returns a **copy** of the slot. Writing goes through
 
 ```cpp
 // read  $x
-if (Value* p = tctx_.cur->find(ve->name)) return *p;      // a COPY
+if (Value* p = tctx().cur->find(ve->name)) return *p;      // a COPY
 
 // my $x — make the slot here, hand back its address
-tctx_.cur->define(ve->name, std::move(init));
-return &tctx_.cur->vars[ve->name];
+tctx().cur->define(ve->name, std::move(init));
+return &tctx().cur->vars[ve->name];
 
 // $x = 5
 *lv = rhs;
@@ -152,7 +152,7 @@ and calls `FETCH` instead of returning the hash:
 
 ```cpp
 // src/InterpreterCore.cpp — reading a variable
-Value* p = tctx_.cur->find(ve->name);
+Value* p = tctx().cur->find(ve->name);
 if (p) {
     if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
         auto it = p->hash->find("FETCH");
@@ -210,7 +210,7 @@ reset default. Assigning `Nil` walks the chain to find it:
 
 ```cpp
 // src/InterpreterCore.cpp — $x = Nil restores the container's default
-for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
     auto di = en->varDefault.find(nm);
     if (di != en->varDefault.end()) { dv = di->second; break; }
     if (en->vars.count(nm)) break;   // owner scope, no declared default

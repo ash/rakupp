@@ -315,7 +315,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 // boundary) sets a flag rather than throwing — stop evaluating
                 // the rest and let it propagate (JSON::Fast's parse loops `return`
                 // out of nqp::while(1, nqp::stmts(…)))
-                if (tctx_.returning || tctx_.loopCtl) return last;
+                if (tctx().returning || tctx().loopCtl) return last;
             }
             return last;
         }
@@ -324,12 +324,12 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.size() < 2) return Value::nil();
             long long guard = 0;
             while (boolify(eval(a[0].get())) == (n->op == O::While)) {
-                if (tctx_.returning) return Value::nil();
+                if (tctx().returning) return Value::nil();
                 for (size_t i = 1; i < a.size(); i++) {
                     eval(a[i].get());
-                    if (tctx_.returning) return Value::nil(); // cooperative return escapes
-                    if (tctx_.loopCtl == 2) { tctx_.loopCtl = 0; return Value::nil(); } // last
-                    if (tctx_.loopCtl == 1) { tctx_.loopCtl = 0; break; }               // next
+                    if (tctx().returning) return Value::nil(); // cooperative return escapes
+                    if (tctx().loopCtl == 2) { tctx().loopCtl = 0; return Value::nil(); } // last
+                    if (tctx().loopCtl == 1) { tctx().loopCtl = 0; break; }               // next
                 }
                 if (++guard > 1000000000LL) break; // runaway backstop
             }
@@ -343,12 +343,12 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (a.size() < 2) return Value::nil();
             long long guard = 0;
             do {
-                if (tctx_.returning) return Value::nil();
+                if (tctx().returning) return Value::nil();
                 for (size_t i = 1; i < a.size(); i++) {
                     eval(a[i].get());
-                    if (tctx_.returning) return Value::nil();
-                    if (tctx_.loopCtl == 2) { tctx_.loopCtl = 0; return Value::nil(); } // last
-                    if (tctx_.loopCtl == 1) { tctx_.loopCtl = 0; break; }               // next
+                    if (tctx().returning) return Value::nil();
+                    if (tctx().loopCtl == 2) { tctx().loopCtl = 0; return Value::nil(); } // last
+                    if (tctx().loopCtl == 1) { tctx().loopCtl = 0; break; }               // next
                 }
                 if (++guard > 1000000000LL) break; // runaway backstop, as While has
             } while (boolify(eval(a[0].get())) == (n->op == O::RepeatWhile));
@@ -638,13 +638,13 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     // and clears the buffer on every exit path, including a throw — clearing is
     // what keeps argument lifetimes identical to the old local-vector version,
     // and it is why the capacity (not the contents) is what gets reused.
-    if (tctx_.nqpDepth >= tctx_.nqpArgs.size()) tctx_.nqpArgs.emplace_back();
-    ValueList& v = tctx_.nqpArgs[tctx_.nqpDepth];
+    if (tctx().nqpDepth >= tctx().nqpArgs.size()) tctx().nqpArgs.emplace_back();
+    ValueList& v = tctx().nqpArgs[tctx().nqpDepth];
     struct ArgGuard {
         ExecContext& t; ValueList& buf;
         ArgGuard(ExecContext& tc, ValueList& b) : t(tc), buf(b) { ++t.nqpDepth; }
         ~ArgGuard() { --t.nqpDepth; buf.clear(); }
-    } argGuard{tctx_, v};
+    } argGuard{tctx(), v};
     v.clear();
     v.reserve(a.size());
     // nqp ops operate on CONTAINERS: a variable holding a Proxy passes the proxy
@@ -654,7 +654,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     for (auto& e : a) {
         if (e->kind == NK::VarExpr) {
             auto* ve = static_cast<VarExpr*>(e.get());
-            if (Value* p = tctx_.cur->find(ve->name)) { v.push_back(*p); continue; }
+            if (Value* p = tctx().cur->find(ve->name)) { v.push_back(*p); continue; }
         }
         v.push_back(eval(e.get()));
     }

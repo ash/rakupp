@@ -182,7 +182,7 @@ void Interpreter::bindSlurpyContainers(const Param& p, std::shared_ptr<Env>& env
         if (ae->kind == NK::VarExpr) {
             const std::string& n = static_cast<const VarExpr*>(ae)->name;
             if (n.size() > 1 && n[0] == '@') {
-                Value* av = tctx_.cur->find(n);
+                Value* av = tctx().cur->find(n);
                 if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return;
                 auto arr = av->arrS();
                 for (size_t j = 0; j < arr->size(); j++, k++) {
@@ -253,7 +253,7 @@ void Interpreter::markSlurpyLiterals(const Param& p, std::shared_ptr<Env>& env,
 
 // ---- arguments flattened with `|` (FlatRw, InterpreterParts.h) -------------
 FlatRw::FlatRw(Interpreter& I, const std::vector<ExprPtr>* rwArgs, const ValueList* args, size_t argOff)
-    : I_(I), rw_(rwArgs), args_(args), argOff_(argOff), scope_(Interpreter::tctx_.cur.get()) {
+    : I_(I), rw_(rwArgs), args_(args), argOff_(argOff), scope_(Interpreter::tctx().cur.get()) {
     if (!rwArgs) return;
     size_t lead = kNone;   // a named pair written ahead of the slip shifts the positions too
     for (size_t i = 0; i < rwArgs->size(); i++) {
@@ -382,7 +382,7 @@ void FlatRw::slip(const Expr* x, size_t& unknownAt, bool& stop) {
 bool FlatRw::forwarded(const std::string& name, const Value& cap) {
     Env* own = nullptr;
     if (!scope_->findRaw(name, &own) || !own) return false;
-    const auto& frames = Interpreter::tctx_.callFrames;
+    const auto& frames = Interpreter::tctx().callFrames;
     const ExecContext::CallSite* cs = nullptr;
     for (size_t i = frames.size(); i-- > 0;)
         if (frames[i].calleeEnv == own) { cs = &frames[i]; break; }
@@ -637,7 +637,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     if (target->kind == NK::VarExpr) name = static_cast<VarExpr*>(target)->name;
     else if (target->kind == NK::NameTerm) name = static_cast<NameTerm*>(target)->name;
     else return;
-    Env* e = tctx_.cur.get();
+    Env* e = tctx().cur.get();
     while (e && !e->local(name)) e = e->parent.get();
     if (!e) return;
     if (e->ex && e->ex->rwDead.count(name))
@@ -658,8 +658,8 @@ void Interpreter::rwWriteThrough(Expr* target) {
     if (it == e->ex->rwLinks.end()) return;
     Value v;
     { Value* src = e->local(name); ParStripe rs(*this, src); v = *src; }   // as above
-    auto savedCur = tctx_.cur;
-    tctx_.cur = it->second.second; // the caller's scope, where the arg expr lives
+    auto savedCur = tctx().cur;
+    tctx().cur = it->second.second; // the caller's scope, where the arg expr lives
     // ONE hop only: write through to the caller's slot. Chaining further up on
     // every write is quadratic where an `is rw` cursor is threaded through a
     // recursion — JSON::Fast's `int $pos is rw` down parse-obj/array/value made
@@ -673,7 +673,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
         if (!assignMultiDimSlice(tgt, v))
             if (Value* lv = lvalue(tgt)) { ParStripe ws(*this, lv); *lv = v; }
     } catch (...) {}
-    tctx_.cur = savedCur;
+    tctx().cur = savedCur;
     // …and the ORIGINAL container behind the chain, when the hop above is not
     // it. While the frames are live the hop suffices — the intermediate frame
     // reads a fresh value, and its return-time copyOutRw carries the write on —
@@ -683,9 +683,9 @@ void Interpreter::rwWriteThrough(Expr* target) {
     // a chain walk: setupRwLinks resolved the root once, at bind time.
     auto rt = e->ex->rwRoots.find(name);
     if (rt != e->ex->rwRoots.end()) {
-        tctx_.cur = rt->second.second;
+        tctx().cur = rt->second.second;
         try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) { ParStripe ws(*this, lv); *lv = v; } } catch (...) {}
-        tctx_.cur = savedCur;
+        tctx().cur = savedCur;
     }
     // under the frame's stripe: a worker the callee started writes through
     // here while the caller's copyOutRw reads the map on return
@@ -828,13 +828,13 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
     // outer call had already recorded.
     struct DepthG { int& d; ~DepthG() { --d; } };
     if (rwThroughDepth_ == 0) {
-        tctx_.rwMirror.clear(); tctx_.rwMirrorSigil = 0; tctx_.lvalueOutLocal = false;
-        tctx_.lvalueOutCell.reset();
+        tctx().rwMirror.clear(); tctx().rwMirrorSigil = 0; tctx().lvalueOutLocal = false;
+        tctx().lvalueOutCell.reset();
     }
     ++rwThroughDepth_;
     DepthG dg{rwThroughDepth_};
     // Only the outermost call is looking at the frame that is about to be
-    // popped. The walk below re-enters with tctx_.cur set to a CALLER's scope,
+    // popped. The walk below re-enters with tctx().cur set to a CALLER's scope,
     // and those frames stay live — a variable of theirs is the destination of
     // the write, not a dangling local.
     const bool ownFrame = rwThroughDepth_ == 1;
@@ -842,13 +842,13 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
         const std::string& nm = e->kind == NK::NameTerm
                               ? static_cast<NameTerm*>(e)->name
                               : static_cast<VarExpr*>(e)->name;
-        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
             if (!en->local(nm)) continue;          // not this scope's variable
             if (!en->ex) break;
             auto it = en->ex->rwLinks.find(nm);
             if (it == en->ex->rwLinks.end()) break; // declared here, not rw-linked
-            auto saved = tctx_.cur;
-            tctx_.cur = it->second.second;          // the caller's scope
+            auto saved = tctx().cur;
+            tctx().cur = it->second.second;          // the caller's scope
             Value* out = nullptr;
             // …and TRANSITIVELY: `h(\c) { return-rw g(c) }` links h's `c` to the
             // caller's argument, which may itself be a linked parameter one
@@ -857,7 +857,7 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
             // purpose, because chaining there is quadratic under a recursion
             // threading an `is rw` cursor — this runs once per `return-rw`.
             try { out = lvalueThroughRw(it->second.first); } catch (...) {}
-            tctx_.cur = saved;
+            tctx().cur = saved;
             if (out) {
                 // the sigil of the CALLER's argument decides whether the slot is
                 // a container: `Crane.set(%i, …)` must leave %i a Hash
@@ -865,7 +865,7 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
                 if (ce && ce->kind == NK::VarExpr) {
                     const std::string& cn = static_cast<VarExpr*>(ce)->name;
                     if (!cn.empty() && (cn[0] == '%' || cn[0] == '@'))
-                        tctx_.rwMirrorSigil = cn[0];
+                        tctx().rwMirrorSigil = cn[0];
                 }
                 // The write now goes straight to the caller's container, which
                 // leaves THIS frame's copy of the parameter behind: Crane's
@@ -874,7 +874,7 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
                 // the copies it travelled past — they are still live, and their
                 // own return-time write-back would otherwise carry the stale
                 // value back down over it.
-                tctx_.rwMirror.push_back(en->local(nm));
+                tctx().rwMirror.push_back(en->local(nm));
                 return out;
             }
             break;                                  // the caller's arg is no lvalue
@@ -902,7 +902,7 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
         // arrives here with the caller's scope current. Copying THAT out sent
         // `f($a) = 1` to a temporary and left $a alone.
         bool ownScope = ownFrame;
-        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
             Value* slot = en->local(nm);
             if (!slot) {
                 if (en->routineFrame) ownScope = false;   // past this call's scopes
@@ -914,11 +914,11 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
             // address may leave; the hold covers a cell only this frame had
             if (!linked) {
                 Value* raw = en->localRaw(nm);
-                if (raw && raw->isCell()) { tctx_.lvalueOutCell = raw->cellS(); break; }
+                if (raw && raw->isCell()) { tctx().lvalueOutCell = raw->cellS(); break; }
             }
             if (!linked &&
                 (ownScope || (slot->t == VT::Hash && slot->hashKind == "Proxy")))
-                tctx_.lvalueOutLocal = true;
+                tctx().lvalueOutLocal = true;
             break;
         }
     }
@@ -934,7 +934,7 @@ Value* Interpreter::proxyAttrSlot(MethodCall* mc, char* sigilOut) {
         mc->inv->kind != NK::MethodCall) return nullptr;
     auto* vm = static_cast<MethodCall*>(mc->inv.get());
     if (vm->method != "VAR" || !vm->args.empty() || !vm->inv || vm->inv->kind != NK::VarExpr) return nullptr;
-    Value* raw = tctx_.cur ? tctx_.cur->find(static_cast<VarExpr*>(vm->inv.get())->name) : nullptr;
+    Value* raw = tctx().cur ? tctx().cur->find(static_cast<VarExpr*>(vm->inv.get())->name) : nullptr;
     if (!raw || raw->t != VT::Hash || raw->hashKind != "Proxy" || !raw->hash()) return nullptr;
     auto ki = raw->hash()->find("\x01cls");
     if (ki == raw->hash()->end()) return nullptr;
@@ -1024,7 +1024,7 @@ static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
 Value Interpreter::regexLitValue(RegexLit* rl) {
     if (const void* p = rl->closedPat.get())
         return Value::regex(*static_cast<const std::string*>(p));
-    Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx_.cur);
+    Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx().cur);
     if (!v.ext() && !rxNeedsScalarPass(rl->pattern) &&
         rl->pattern.find('@') == std::string::npos && !rxHasCodeBlock(rl->pattern)) {
         auto* mine = new std::string(v.s.str());
@@ -1112,12 +1112,12 @@ Expr* Interpreter::peelGrepFilter(Expr* listExpr, Expr*& pred) {
 
 bool Interpreter::grepFilterKeeps(Expr* pred, const Value& v) {
     if (!pred) return true;
-    auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
+    auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
     env->define("$_", v);
-    auto saved = tctx_.cur; tctx_.cur = env;
+    auto saved = tctx().cur; tctx().cur = env;
     Value pv;
-    try { pv = eval(pred); } catch (...) { tctx_.cur = saved; throw; }
-    tctx_.cur = saved;
+    try { pv = eval(pred); } catch (...) { tctx().cur = saved; throw; }
+    tctx().cur = saved;
     return matcherAccepts(*this, v, pv);
 }
 
@@ -1134,7 +1134,7 @@ Value* Interpreter::pairsAliasSource(Expr* listExpr) {
     auto* ve = static_cast<VarExpr*>(mc->inv.get());
     if (ve->name.empty() || (ve->name[0] != '%' && ve->name[0] != '$' && ve->name[0] != '@') || ve->declare)
         return nullptr;
-    Value* hv = tctx_.cur->find(ve->name);
+    Value* hv = tctx().cur->find(ve->name);
     if (!hv) return nullptr;
     // …and `@a.pairs` over a real Array, whose elements are containers too
     if (ve->name[0] != '%' && hv->t == VT::Array && hv->arr() && !hv->isList && !hv->ext() &&
@@ -1162,7 +1162,7 @@ PRef<ValueMap> Interpreter::valuesAliasSource(Expr* listExpr) {
     // HOLDS a hash: `with %p<a><b> { for .values { $_ = … } }` writes into the
     // very same storage, because a Hash Value shares its map.
     if (ve->name.empty() || (ve->name[0] != '%' && ve->name[0] != '$')) return nullptr;
-    Value* hv = tctx_.cur->find(ve->name);
+    Value* hv = tctx().cur->find(ve->name);
     if (!hv || hv->t != VT::Hash || !hv->hash() || !hv->hashKind.empty()) return nullptr;
     return hv->hashS();
 }
@@ -1424,8 +1424,8 @@ bool Interpreter::immutableQuantSource(const Expr* e) {
         return false;
     if (!mc->inv || mc->inv->kind != NK::VarExpr) return false;
     auto* ve = static_cast<const VarExpr*>(mc->inv.get());
-    if (ve->declare || ve->name.empty() || ve->name[0] != '$' || !tctx_.cur) return false;
-    const Value* v = tctx_.cur->find(ve->name);
+    if (ve->declare || ve->name.empty() || ve->name[0] != '$' || !tctx().cur) return false;
+    const Value* v = tctx().cur->find(ve->name);
     if (!v || v->t != VT::Hash || !v->hash()) return false;
     const std::string k = v->hashKind.str();
     return k == "Bag" || k == "Mix" || k == "Set";
@@ -1489,7 +1489,7 @@ PRef<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
             ix->base && ix->base->kind == NK::VarExpr) {
             auto* sv = static_cast<VarExpr*>(ix->base.get());
             if (sv->name.size() > 1 && sv->name[0] == '@' && !sv->declare)
-                if (Value* av = tctx_.cur->find(sv->name))
+                if (Value* av = tctx().cur->find(sv->name))
                     if (av->t == VT::Array && av->arr() && !av->isList && !av->ext()) return av->arrS();
         }
         return nullptr;
@@ -1501,7 +1501,7 @@ PRef<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
     if (u->op == "|" && u->operand && u->operand->kind == NK::VarExpr) {
         auto* sv = static_cast<VarExpr*>(u->operand.get());
         if (sv->name.size() > 1 && sv->name[0] == '@' && !sv->declare)
-            if (Value* av = tctx_.cur->find(sv->name))
+            if (Value* av = tctx().cur->find(sv->name))
                 if (av->t == VT::Array && av->arr() && !av->isList) return av->arrS();
         return nullptr;
     }
@@ -1511,7 +1511,7 @@ PRef<ValueList> Interpreter::derefArrayAlias(Expr* listExpr) {
     if (!u->operand || u->operand->kind != NK::VarExpr) return nullptr;
     auto* ve = static_cast<VarExpr*>(u->operand.get());
     if (ve->name.empty() || ve->name[0] != '$') return nullptr;
-    Value* v = tctx_.cur->find(ve->name);
+    Value* v = tctx().cur->find(ve->name);
     if (!v || v->t != VT::Array || !v->arr() || v->isList) return nullptr; // a List is immutable
     return v->arrS();
 }
@@ -1527,7 +1527,7 @@ PRef<ValueList> Interpreter::reverseArrayAlias(Expr* listExpr) {
         !mc->inv || mc->inv->kind != NK::VarExpr) return nullptr;
     auto* sv = static_cast<VarExpr*>(mc->inv.get());
     if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
-    Value* av = tctx_.cur->find(sv->name);
+    Value* av = tctx().cur->find(sv->name);
     if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return nullptr;
     return av->arrS();
 }
@@ -1587,7 +1587,7 @@ Interpreter::sliceArrayView(Expr* e) {
         return nullptr;   // (one element is one item, not a slice)
     auto* sv = static_cast<VarExpr*>(ix->base.get());
     if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
-    Value* av = tctx_.cur->find(sv->name);
+    Value* av = tctx().cur->find(sv->name);
     if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext() || av->shape()) return nullptr;
     Value keys = eval(ix->index.get());
     if (keys.t == VT::Range && (keys.rNum() || keys.ext() || keys.big() || keys.ofType() == "Str")) return nullptr;
@@ -1612,7 +1612,7 @@ Interpreter::grepArrayView(Expr* e) {
     if (!pred || !src || src->kind != NK::VarExpr) return nullptr;
     auto* sv = static_cast<VarExpr*>(src);
     if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
-    Value* av = tctx_.cur->find(sv->name);
+    Value* av = tctx().cur->find(sv->name);
     if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext()) return nullptr;
     auto view = std::make_shared<std::pair<PRef<ValueList>, std::vector<size_t>>>();
     view->first = av->arrS();
@@ -1725,7 +1725,7 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
             return false;
         auto* bv = static_cast<VarExpr*>(ix->base.get());
         if (bv->name.size() < 2 || bv->name[0] != '%' || bv->declare) return false;
-        Value* hv = tctx_.cur->find(bv->name);
+        Value* hv = tctx().cur->find(bv->name);
         if (!hv || hv->t != VT::Hash || !hv->hash() || !hv->hashKind.empty() || hv->objKeyed) return false;
         ValueList keys = eval(ix->index.get()).flatten();
         std::vector<Value*> got;
@@ -1752,7 +1752,7 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
         if (!inner || inner->kind != NK::VarExpr) return nullptr;
         auto* ve = static_cast<VarExpr*>(inner);
         if (ve->name.size() < 2 || ve->name[0] != '@' || ve->declare) return nullptr;
-        Value* v = tctx_.cur->find(ve->name);
+        Value* v = tctx().cur->find(ve->name);
         return (v && v->t == VT::Array && v->arr()) ? v : nullptr;
     };
     for (auto& it : le->items) {
@@ -1760,7 +1760,7 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
         if (!it || it->kind != NK::VarExpr) return false;
         auto* ve = static_cast<VarExpr*>(it.get());
         if (ve->name.size() < 2 || ve->name[0] != '$' || ve->declare) return false;
-        if (!tctx_.cur->find(ve->name)) return false;
+        if (!tctx().cur->find(ve->name)) return false;
     }
     for (auto& it : le->items) {
         if (Value* av = arrayOf(it.get())) {
@@ -1872,13 +1872,13 @@ Value Interpreter::coerceThroughType(const Value& v, const std::string& target, 
         if (nw.empty()) impossible("no acceptable coercion method found");
         via = "new";
         auto frame = makeSlabShared<Env>();
-        frame->parent = tctx_.cur;
+        frame->parent = tctx().cur;
         frame->define("$*COERCION-TYPE", Value::typeObj(coercion.empty() ? target + "(Any)" : coercion));
-        auto saved = tctx_.cur;
-        tctx_.cur = frame;
+        auto saved = tctx().cur;
+        tctx().cur = frame;
         try { r = dispatch("new", std::move(nw)); }
-        catch (...) { tctx_.cur = saved; throw; }
-        tctx_.cur = saved;
+        catch (...) { tctx().cur = saved; throw; }
+        tctx().cur = saved;
     }
     if (r.t == VT::Hash && r.hashKind == "Failure") return r;
     if (!typeOrSubsetMatches(r, target))
@@ -1972,8 +1972,8 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
                 bool hit = (v.t == VT::Str && !v.isAllomorph()) ? p.s.str() == v.s.str()
                                                                   : (pv && valueEq(*pv, v));
                 if (!hit) continue;
-                if (Value* ev = tctx_.cur->find(type + "::" + p.s.str())) return *ev;
-                if (Value* ev = tctx_.cur->find(p.s.str())) return *ev;
+                if (Value* ev = tctx().cur->find(type + "::" + p.s.str())) return *ev;
+                if (Value* ev = tctx().cur->find(p.s.str())) return *ev;
             }
     }
     throw RakuError{Value::typeObj("X::Coerce::Impossible"),
@@ -2016,18 +2016,18 @@ Value Interpreter::makePathProxy(std::shared_ptr<Env> scope, Expr* path) {
     Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
     slotProxyPair(proxy,
         [scope, path](Interpreter& I, ValueList&) -> Value {
-            auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+            auto saved = I.tctx().cur; I.tctx().cur = scope;
             Value r;
-            try { r = I.eval(path); } catch (...) { I.tctx_.cur = saved; throw; }
-            I.tctx_.cur = saved;
+            try { r = I.eval(path); } catch (...) { I.tctx().cur = saved; throw; }
+            I.tctx().cur = saved;
             return r;
         },
         [scope, path](Interpreter& I, ValueList& sa) -> Value {
             Value nv = sa.empty() ? Value::any() : sa[0];
-            auto saved = I.tctx_.cur; I.tctx_.cur = scope;
+            auto saved = I.tctx().cur; I.tctx().cur = scope;
             try { if (Value* slot = I.lvalue(path)) *slot = nv; }
-            catch (...) { I.tctx_.cur = saved; throw; }
-            I.tctx_.cur = saved;
+            catch (...) { I.tctx().cur = saved; throw; }
+            I.tctx().cur = saved;
             return nv;
         });
     return proxy;
@@ -2098,7 +2098,7 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
 // that slot handed its readonly mark to whatever copied the Pair's value —
 // `C.new(q => $v)` left the attribute unassignable.)
 PRef<Value> Interpreter::exprVarCell(const Expr* e, bool* boundToValue, Env* scope) {
-    Env* const sc = scope ? scope : tctx_.cur.get();   // (a caller's frame, for FlatRw)
+    Env* const sc = scope ? scope : tctx().cur.get();   // (a caller's frame, for FlatRw)
     if (e && e->kind == NK::Assign) {
         auto* as = static_cast<const Assign*>(e);
         if (as->op != "=" || !as->target || as->target->kind != NK::VarExpr ||
@@ -2152,12 +2152,12 @@ bool Interpreter::bindAttrAlias(Assign* a, bool sigilDeclBind) {
         return false;
     Value* srcSlot = nullptr;
     try { srcSlot = lvalue(sv); } catch (RakuError&) { srcSlot = nullptr; }
-    tctx_.rwMirror.clear();
-    tctx_.rwMirrorSigil = 0;
-    const std::string attrType = tctx_.lastLvalueAttrType;   // `has Int $.a`: the alias checks it too
-    tctx_.lastLvalueAttr = nullptr;
-    tctx_.lastLvalueAttrType.clear();
-    tctx_.lastLvalueAttrDefault = nullptr;
+    tctx().rwMirror.clear();
+    tctx().rwMirrorSigil = 0;
+    const std::string attrType = tctx().lastLvalueAttrType;   // `has Int $.a`: the alias checks it too
+    tctx().lastLvalueAttr = nullptr;
+    tctx().lastLvalueAttrType.clear();
+    tctx().lastLvalueAttrDefault = nullptr;
     PRef<Value> cell = srcSlot ? cellOfProxy(srcSlot) : nullptr;
     if (!cell && srcSlot && !srcSlot->isCell() && !(srcSlot->t == VT::Hash && srcSlot->hashKind == "Proxy")) {
         cell = makePayload<Value>(*srcSlot);
@@ -2165,12 +2165,12 @@ bool Interpreter::bindAttrAlias(Assign* a, bool sigilDeclBind) {
     }
     if (!cell) return false;
     Value* blv = lvalue(tv);
-    Value* traw = tctx_.cur->findRaw(tv->name);
+    Value* traw = tctx().cur->findRaw(tv->name);
     if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
     else *blv = makeSharedCellProxy(cell);
     if (!attrType.empty() && attrType != "Mu" && attrType != "Any") {
         Env* own = nullptr;
-        if (tctx_.cur->findRaw(tv->name, &own) && own)
+        if (tctx().cur->findRaw(tv->name, &own) && own)
             own->x().varDefault[tv->name] = Value::typeObj(attrType);
     }
     return true;
@@ -2229,7 +2229,7 @@ bool Interpreter::containerElemFor(const Expr* e, Value& out) {
 // literal, a variable — is taken; a typed or native container, whose stores
 // check what they take, keeps the value.
 void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
-    if (!list.arr() || list.arr()->size() != l->items.size() || !tctx_.cur) return; // a slip moved positions
+    if (!list.arr() || list.arr()->size() != l->items.size() || !tctx().cur) return; // a slip moved positions
     bool holds = false;
     for (size_t i = 0; i < l->items.size(); i++) {
         const Expr* it = l->items[i].get();
@@ -2244,7 +2244,7 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
         if (!ix->index || !ix->base || ix->base->kind != NK::VarExpr ||
             (ix->index->kind != NK::IntLit && ix->index->kind != NK::StrLit && ix->index->kind != NK::VarExpr))
             continue;
-        if (Value* bv = tctx_.cur->find(static_cast<const VarExpr*>(ix->base.get())->name);
+        if (Value* bv = tctx().cur->find(static_cast<const VarExpr*>(ix->base.get())->name);
             !bv || !bv->ofType().empty() || bv->objKeyed || (bv->t == VT::Array && bv->isList))
             continue;
         Value* slot = peekElemSlot(ix);
@@ -2403,7 +2403,7 @@ bool Interpreter::substrRwProxyOf(Expr* e, Value& out) {
     else if (invE->kind == NK::NameTerm) vname = static_cast<NameTerm*>(invE)->name;
     if (vname.empty() || (invE->kind == NK::VarExpr && vname[0] != '$')) return false;
     std::shared_ptr<Env> owner;
-    for (auto en = tctx_.cur; en; en = en->parent) if (en->local(vname)) { owner = en; break; }
+    for (auto en = tctx().cur; en; en = en->parent) if (en->local(vname)) { owner = en; break; }
     if (!owner) return false;
     ValueList pos;
     for (size_t k = argOfs; k < srArgs->size(); k++) pos.push_back(eval((*srArgs)[k].get()));
@@ -2651,21 +2651,21 @@ Value Interpreter::makeCellProxy(const Value& init) {
 // own tests stopped emitting at exactly that line.
 void Interpreter::runHoistedInit(Block* b) {
     auto escaped = [this]() -> void {
-        tctx_.returning = false; tctx_.loopCtl = 0;
+        tctx().returning = false; tctx().loopCtl = 0;
         throw RakuError{Value::typeObj("X::ControlFlow::Return"),
                         "Attempt to return outside of any Routine"};
     };
     try {
-        if (b->stmtForm) execBlock(b, tctx_.cur); // `INIT my $x = …` declares in the enclosing scope
-        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+        if (b->stmtForm) execBlock(b, tctx().cur); // `INIT my $x = …` declares in the enclosing scope
+        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); }
     }
     catch (ReturnEx&) { escaped(); }
-    if (tctx_.returning) escaped();
-    tctx_.loopCtl = 0; // a `next`/`last` here belongs to no loop; don't let it steer the mainline
+    if (tctx().returning) escaped();
+    tctx().loopCtl = 0; // a `next`/`last` here belongs to no loop; don't let it steer the mainline
 }
 
 Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
-    if (tctx_.gatherStack.empty())
+    if (tctx().gatherStack.empty())
         // outside a gather there is nowhere for the value to go, and silently
         // handing it back would make take look like a no-op instead of an
         // error. Roast asserts the exception's parts: illegal => "take",
@@ -2673,7 +2673,7 @@ Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
         throwTypedV("X::ControlFlow",
                     {{"illegal", Value::str("take")}, {"enclosing", Value::str("gather")}},
                     "take without gather");
-    auto& coll = *tctx_.gatherStack.back();
+    auto& coll = *tctx().gatherStack.back();
     // "at least one element first" is a statement about what was ALREADY
     // collected, so it has to be read before this take pushes: testing coll
     // after the push made it true on the very first take, and a gather whose
@@ -2695,14 +2695,14 @@ Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
         else coll.push_back(x);
     }
     // a gather running as a coroutine hands control back to its consumer here
-    if (tctx_.curGather && tctx_.gatherStack.size() == 1) { gatherTakeYield(coll); return ret; }
+    if (tctx().curGather && tctx().gatherStack.size() == 1) { gatherTakeYield(coll); return ret; }
     // a lazy gather stops the block once it has produced enough elements
-    size_t lim = tctx_.gatherLimits.empty() ? 0 : tctx_.gatherLimits.back();
+    size_t lim = tctx().gatherLimits.empty() ? 0 : tctx().gatherLimits.back();
     if (lim && coll.size() >= lim) throw StopGatherEx{};
     // …and stops when the probe's TIME budget is spent, so a generator
     // whose takes get steadily more expensive cannot make declaring it
     // slow. A prefix of none is not a probe.
-    long long dl = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
+    long long dl = tctx().gatherDeadlines.empty() ? 0 : tctx().gatherDeadlines.back();
     if (dl && hadSome && nowMicros() > dl) throw StopGatherEx{};
     return ret;
 }
@@ -2715,7 +2715,7 @@ Value Interpreter::gatherTake(const ValueList& items, const Value& ret) {
 // Which storage that is:
 //   · a variable the topic of a running rw for-loop aliases → the ELEMENT slot
 //     (the loop's own aliasing is copy-in/copy-out and ends with the iteration,
-//     so binding the loop var's Env slot would go dead — tctx_.topicAliases
+//     so binding the loop var's Env slot would go dead — tctx().topicAliases
 //     carries the live (array, index) instead);
 //   · any other visible variable → its Env slot, exactly as `:=` binds it;
 //   · an array/hash subscript → that element/entry's slot;
@@ -2730,10 +2730,10 @@ Value Interpreter::takeRwSlotProxy(Expr* arg) {
     if (arg->kind == NK::VarExpr && !static_cast<VarExpr*>(arg)->declare) {
         const std::string& name = static_cast<VarExpr*>(arg)->name;
         std::shared_ptr<Env> owner;
-        for (std::shared_ptr<Env> en = tctx_.cur; en; en = en->parent)
+        for (std::shared_ptr<Env> en = tctx().cur; en; en = en->parent)
             if (en->local(name)) { owner = en; break; }
         if (owner) {
-            for (auto it = tctx_.topicAliases.rbegin(); it != tctx_.topicAliases.rend(); ++it)
+            for (auto it = tctx().topicAliases.rbegin(); it != tctx().topicAliases.rend(); ++it)
                 if (it->scope == owner.get() && *it->var == name)
                     return makeArraySlotProxy(it->arr ? it->arr : it->packedSrc->arrS(), it->idx);
             return makeEnvSlotProxy(owner, name);
@@ -2784,7 +2784,7 @@ Value Interpreter::evalTakeRw(Call* c) {
         // the argument's evaluation may have fired cooperative control flow
         // (that bare `next`): the loop runner acts on the flag only after this
         // statement, so pushing now would take a value the block asked to skip
-        if (tctx_.loopCtl || tctx_.returning) return v;
+        if (tctx().loopCtl || tctx().returning) return v;
         proxy = makeCellProxy(v);
     }
     ValueList one{proxy};
@@ -2856,7 +2856,7 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
     // way out — so the assignment is then refused.
     if (a->target->kind == NK::Call && a->op.size() == 1 && a->op[0] == '=') {
         auto* c = static_cast<Call*>(a->target.get());
-        Value* fp = c->name.empty() || c->callee ? nullptr : tctx_.cur->find(callAmpName(c));
+        Value* fp = c->name.empty() || c->callee ? nullptr : tctx().cur->find(callAmpName(c));
         if (fp && fp->t == VT::Code && fp->code() && !fp->code()->ci().builtin && !fp->code()->ci().retRw) {
             bool anyRw = false;
             for (auto& cand : fp->code()->cold().candidates)
@@ -2875,7 +2875,7 @@ bool Interpreter::objListItems(const Value& v, ValueList& out) {
     // the bind lands in the name's own slot and not in the shared Value
     // (`my $x = 1; my $y := $x; $x := 3` leaves $y at 1).
     if (isBind && a->target->kind == NK::VarExpr && !static_cast<VarExpr*>(a->target.get())->declare) {
-        Value* traw = tctx_.cur->findRaw(static_cast<VarExpr*>(a->target.get())->name);
+        Value* traw = tctx().cur->findRaw(static_cast<VarExpr*>(a->target.get())->name);
         if (traw && traw->isCell()) {
             Value fresh = *traw->deref();
             fresh.readonly = fresh.immutableBind = false;
@@ -3095,15 +3095,15 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 if ((lit || w) && vi < vals.size()) {
                     const Value& v = vals[vi];
                     bool ok;
-                    auto wenv = makeSlabShared<Env>(); wenv->parent = tctx_.cur;
+                    auto wenv = makeSlabShared<Env>(); wenv->parent = tctx().cur;
                     wenv->define("$_", v);
-                    auto saved = tctx_.cur; tctx_.cur = wenv;
+                    auto saved = tctx().cur; tctx().cur = wenv;
                     try {
                         Value cv = eval(const_cast<Expr*>(lit ? tgt : w));
                         if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{v}));
                         else ok = boolify(smartmatchValue("~~", v, cv));
-                    } catch (...) { tctx_.cur = saved; throw; }
-                    tctx_.cur = saved;
+                    } catch (...) { tctx().cur = saved; throw; }
+                    tctx().cur = saved;
                     if (!ok) {
                         std::string nm = tgt->kind == NK::VarExpr ? static_cast<VarExpr*>(tgt)->name : std::string("<anon>");
                         throwTypedV("X::TypeCheck::Assignment",
@@ -3171,7 +3171,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     // does: `(@slice, *) = <A B C D>` fills those two and leaves
                     // the rest to the targets after it (S32-hash/slice.t)
                     if (!isBinding && nm[0] == '@' && !static_cast<VarExpr*>(tgt)->declare) {
-                        Value* held = tctx_.cur->find(nm);
+                        Value* held = tctx().cur->find(nm);
                         bool allCont = held && held->t == VT::Array && held->isList && !held->itemized &&
                                        held->arr() && !held->arr()->empty() && held->enumName.empty();
                         if (allCont)
@@ -3247,7 +3247,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     const std::string& nm = static_cast<VarExpr*>(tgt)->name;
                     if (nm.size() > 1 && nm[0] == '$' && nm[1] != '!' && nm[1] != '.') {
                         v = Value::any();
-                        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+                        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
                             auto di = en->xr().varDefault.find(nm);
                             if (di != en->xr().varDefault.end()) { v = di->second; break; }
                             if (en->local(nm)) break;   // owner scope reached, no declared default
@@ -3313,7 +3313,7 @@ Value Interpreter::withDimslipAsMultiDim(Index* ix, const std::function<Value()>
     le->semicolon = true;
     for (size_t k = 0; k < path.size(); k++) {
         std::string nm = "$\x01dimslip" + std::to_string(k);
-        tctx_.cur->define(nm, path[k]);
+        tctx().cur->define(nm, path[k]);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->line = ix->line;
         le->items.push_back(std::move(ve));
@@ -3957,10 +3957,10 @@ const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Para
         return c->scope == scope.get() ? &c->code : nullptr;
     auto env = makeSlabShared<Env>();
     env->parent = scope;
-    auto saved = tctx_.cur; tctx_.cur = env;
+    auto saved = tctx().cur; tctx().cur = env;
     Value cv;
-    try { cv = eval(p.whereExpr.get()); } catch (...) { tctx_.cur = saved; p.whereStatic = 0; return nullptr; }
-    tctx_.cur = saved;
+    try { cv = eval(p.whereExpr.get()); } catch (...) { tctx().cur = saved; p.whereStatic = 0; return nullptr; }
+    tctx().cur = saved;
     if (!(cv.t == VT::Code && cv.code() && (cv.code()->ci().isWhateverCode || cv.code()->ci().isBlock))) {
         p.whereStatic = 0;
         return nullptr;
@@ -4553,7 +4553,7 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
     }
     auto* bve = static_cast<VarExpr*>(ix->base.get());
     Value* bp = padPtr(bve);
-    if (!bp) bp = tctx_.cur->find(bve->name);
+    if (!bp) bp = tctx().cur->find(bve->name);
     if (!bp || bp->t != VT::Array || !bp->packedLive() || bp->readonly || !bp->hashKind.empty() ||
         bp->elemDefault())
         return nullptr;
@@ -4562,7 +4562,7 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
     else {
         auto* ive = static_cast<VarExpr*>(ix->index.get());
         Value* ip = padPtr(ive);
-        if (!ip) ip = tctx_.cur->find(ive->name);
+        if (!ip) ip = tctx().cur->find(ive->name);
         if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return nullptr;
         i = ip->i;
     }
@@ -4647,7 +4647,7 @@ bool Interpreter::packedStep(Unary* u, Value& out) {
 const Value* Interpreter::shapedLeafRow(Index* ix, size_t& at, bool forWrite) {
     auto* bve = static_cast<VarExpr*>(ix->base.get());
     Value* bp = padPtr(bve);
-    if (!bp) bp = tctx_.cur->find(bve->name);
+    if (!bp) bp = tctx().cur->find(bve->name);
     if (!bp || bp->t != VT::Array || !bp->hashKind.empty() || bp->elemDefault() || bp->ext() ||
         (forWrite && bp->readonly))
         return nullptr;
@@ -4662,7 +4662,7 @@ const Value* Interpreter::shapedLeafRow(Index* ix, size_t& at, bool forWrite) {
         else {
             auto* ive = static_cast<VarExpr*>(de);
             Value* ip = padPtr(ive);
-            if (!ip) ip = tctx_.cur->find(ive->name);
+            if (!ip) ip = tctx().cur->find(ive->name);
             if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return nullptr;
             i = ip->i;
         }
@@ -4947,7 +4947,7 @@ std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
 //
 // The scan only needs the SCOPE-SHARING positions: the body's direct
 // statements, statements wrapped by modifier forms (`X if C` shares the
-// scope), and their expressions (which evaluate with tctx_.cur = scope).
+// scope), and their expressions (which evaluate with tctx().cur = scope).
 // Nested non-modifier statement bodies (if branches, inner loops, bare
 // blocks, given/when) all build child envs of their own — a declare there
 // never touches the iteration scope. Closures and gather capture the scope,
@@ -5059,12 +5059,16 @@ bool Interpreter::flatLoopBody(Block* b) {
     return flat;
 }
 
+thread_local std::vector<Interpreter::ParkedSubscript>* Interpreter::parkedPtr_ = nullptr;
+static thread_local std::vector<Interpreter::ParkedSubscript> t_parked;   // what parkedPtr_ points at
+std::vector<Interpreter::ParkedSubscript>& Interpreter::parkedBind() { return *(parkedPtr_ = &t_parked); }
+
 // eval()'s side of the parked subscripts (Interpreter.h): this thread's answer
 // for `e`, collected once. Only called when some thread has one parked.
 bool Interpreter::takeParkedSubscript(const Expr* e, Value& out) {
     auto& parked = pendingSubscripts();
     for (size_t i = 0; i < parked.size(); i++)
-        if (parked[i].e == e && parked[i].frame == tctx_.cur.get()) {   // this frame's, not a recursion's
+        if (parked[i].e == e && parked[i].frame == tctx().cur.get()) {   // this frame's, not a recursion's
             out = std::move(parked[i].v);
             parked.erase(parked.begin() + i);
             pendingSubscriptsAny_.fetch_sub(1, std::memory_order_relaxed);
@@ -5111,7 +5115,7 @@ void Interpreter::LazyChainMark::arm(const MethodCall* mc) {
     on = true;
     // the link below, if this call reads one lazily; nothing for any other call,
     // so the mark never reaches past the node it names
-    tctx_.lazyChainNode = mc->lazyChain == 1 || (wanted && lazyChainLink(mc->inv.get()))
+    tctx().lazyChainNode = mc->lazyChain == 1 || (wanted && lazyChainLink(mc->inv.get()))
         ? mc->inv.get() : nullptr;
 }
 
@@ -5177,7 +5181,7 @@ bool Interpreter::typeCallCore(const std::string& name, ValueList& args, bool pa
             if ((args.empty() || typeArg) && boundTypeFor(*this, name, bt))
                 { out = Value::typeObj(bt.s.str() + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
             if (args.size() == 1 && !args[0].namedArg && !classes_.count(name) &&
-                capturedType(*this, tctx_.cur.get(), name, bt))
+                capturedType(*this, tctx().cur.get(), name, bt))
                 { out = coerceToType(args[0], bt.s.str()); return true; }
         }
         // A MODULE or PACKAGE is a type here too. It is registered in

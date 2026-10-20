@@ -349,7 +349,7 @@ Stmt* rtAotStmt(const unsigned char* blob, size_t n) {
 // lands in the local.
 Value rtAotExec(Interpreter& I, Stmt* st, const char* const* names, Value** slots, size_t n,
                 const Value* self, bool sink) {
-    ExecContext& tcx = I.tctx_;
+    ExecContext& tcx = I.tctx();
     auto scope = makeSlabShared<Env>();
     scope->parent = tcx.cur;
     if (self) scope->define("self", *self);
@@ -384,7 +384,7 @@ static Value evalWithSelf(Interpreter& I, const Value& self, Expr* node, bool lv
     Value selfCopy = self;
     scope.selfSlot = &selfCopy;
     scope.vars.emplace("self", self);
-    ExecContext& tcx = I.tctx_;
+    ExecContext& tcx = I.tctx();
     scope.parent = tcx.cur;
     std::shared_ptr<Env> view(std::shared_ptr<Env>(), &scope);
     auto saved = tcx.cur;
@@ -463,7 +463,7 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
         }
         as = slot.get();
     }
-    ExecContext& tcx = I.tctx_;
+    ExecContext& tcx = I.tctx();
     auto scope = makeSlabShared<Env>();
     (void)inClosure;   // self comes from the scope either way
     scope->parent = tcx.cur;
@@ -503,7 +503,7 @@ Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args) 
     }
     Value a = Value::array();
     for (auto& v : args) a.arr()->push_back(std::move(v));
-    ExecContext& tcx = I.tctx_;
+    ExecContext& tcx = I.tctx();
     auto scope = makeSlabShared<Env>();
     scope->parent = tcx.cur;
     scope->define("$\x01aot-inv", *tgt);

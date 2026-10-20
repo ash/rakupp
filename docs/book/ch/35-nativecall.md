@@ -251,7 +251,7 @@ A `Callable` handed to C becomes a real C function pointer built with an
 long runCallback(int slot, long a0, long a1, long a2,
                  long a3, long a4, long a5);
 void runFfiClosure(void* closure, void* ret, void** args);
-bool onRakuThread() const { return (bool)tctx_.cur; }
+bool onRakuThread() const { return (bool)tctx().cur; }
 ```
 
 The last one is the guard that matters. A callback must fire **during** the

@@ -1303,11 +1303,11 @@ struct LoopPoll {
     // probe's budget is checked once per N of them (see gatherProbePoint);
     // approximate is fine, so one counter for all loops on the thread.
     unsigned gatherTickCtr = 0;
-    // …and the deadline itself, mirrored out of tctx_.gatherDeadlines.back() (0
+    // …and the deadline itself, mirrored out of tctx().gatherDeadlines.back() (0
     // when no gather on this thread is probing). The mirror is what the
-    // per-iteration check reads: tctx_ is a thread_local of NON-TRIVIAL type, so
-    // every access to it carries an initialization check, and putting one at the
-    // top of runLoopBody cost ~3% on loopsum. pushGatherFrame / popGatherFrame
+    // per-iteration check reads: when the context was a thread_local of
+    // NON-TRIVIAL type, every access to it carried an initialization check, and
+    // putting one at the top of runLoopBody cost ~3% on loopsum. pushGatherFrame / popGatherFrame
     // (and saveCtx/loadCtx, which move the stack between threads' parked
     // contexts) are the only writers, so it cannot drift from the stack.
     long long gatherDeadline = 0;
@@ -1323,7 +1323,16 @@ struct LoopPoll {
     // restored by runLoopBody each iteration, so it rides in the same struct.
     const std::vector<StmtPtr>* firstBody = nullptr;
 };
-RAKUPP_CONSTINIT extern thread_local LoopPoll t_poll;
+struct ExecContext;
+// …and LoopPoll shares its thread_local with the pointer through which
+// Interpreter::tctx() reaches the thread's ExecContext: runLoopBody names
+// both every iteration, and on Darwin each thread_local a function names is
+// its own _tlv_get_addr call.
+struct ThreadHot {
+    LoopPoll poll;
+    ExecContext* ctx = nullptr;   // see Interpreter::tctx()
+};
+RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
 // The line of the statement now executing (test diagnostics, callframe, the line
 // a call frame records for its caller). One process-wide value while only the
 // mainline runs Raku code — a plain relaxed store per statement, which is what
@@ -1362,7 +1371,7 @@ struct TapHandle {
     std::vector<std::function<void()>> closers;
     ValueList closePhasers;
 };
-// One activation of an on-demand supply block (pushed on tctx_.tapStack while
+// One activation of an on-demand supply block (pushed on tctx().tapStack while
 // the block or one of its whenever-blocks runs). `emit` routes to emitCb — or
 // appends to `collect` in eager-drain mode (the legacy synchronous semantics).
 struct SupplyTapCtx {
@@ -1578,7 +1587,7 @@ struct ExecContext {
     // A DEQUE, not a vector: an argument's own evaluation can re-enter
     // evalNqpOp, and growing a vector would reallocate under the outer frame's
     // live reference. deque never moves the elements it already holds.
-    // Per-thread because ExecContext is (`static thread_local tctx_`).
+    // Per-thread because ExecContext is (tctx() is the thread's own).
     std::deque<ValueList> nqpArgs;
     size_t nqpDepth = 0;
     // The thread's pool of reusable call frames (PooledFrame in
@@ -1788,7 +1797,7 @@ struct ExecContext {
     const void* collectTailBody = nullptr;
     const struct Expr* collectTail = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
-    // "inside a proto body?" probe reads the ALREADY-LOADED tctx_ instead of
+    // "inside a proto body?" probe reads the ALREADY-LOADED tctx() instead of
     // paying a second TLS wrapper call + init guard for the stack itself
     // (REVIEW-3.7 batch 3 — every {…} statement ran that probe)
     int protoDepth = 0;
@@ -2082,12 +2091,12 @@ public:
     // executing right now and then outward — what rk_call needs so an extension
     // reaches the module that loaded it (ExtApi.cpp). Null when there is none.
     Value* extFindRoutine(const std::string& sigilName) {
-        if (Value* v = tctx_.cur ? tctx_.cur->find(sigilName) : nullptr) return v;
+        if (Value* v = tctx().cur ? tctx().cur->find(sigilName) : nullptr) return v;
         return global_ ? global_->find(sigilName) : nullptr;
     }
     // The one-shot CALL REGISTERS: set by a caller immediately before a call,
-    // consumed at callCallableRaw's entry. `static thread_local`, like
-    // redispatchStack_ — as plain members they were written by EVERY call on
+    // consumed at callCallableRaw's entry. `static thread_local`, like the
+    // redispatch chain — as plain members they were written by EVERY call on
     // EVERY thread, which was ThreadSanitizer's top report (2,761 lines on a
     // zero-sharing program) when the t/stress/ suite first ran under TSan.
     // The set→consume window is contiguous within one thread, so thread-local
@@ -2240,13 +2249,13 @@ public:
     void runFfiClosure(void* closure, void* ret, void** args); // NativeCall ffi_closure dispatch
     // False on a thread the interpreter never entered — i.e. one the C library
     // made for itself. Such a thread has no lexical scope to run Raku in.
-    bool onRakuThread() const { return (bool)tctx_.cur; }
+    bool onRakuThread() const { return (bool)tctx().cur; }
     // Is `no strict` in force where we stand? The pragma is lexical, so the
     // answer is "some scope on the way out declared it" — and since this is
     // only ever asked about a name that has ALREADY failed to resolve, the walk
     // costs nothing on any path that works.
     bool noStrictHere() const {
-        for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        for (Env* e = tctx().cur.get(); e; e = e->parent.get())
             if (e->strictPragma) return e->strictPragma > 0;
         return false;
     }
@@ -2414,7 +2423,7 @@ public:
     // $*var resolution in PROPER dynamic order: the current frame's own
     // declaration first (its env chain up to the enclosing routine activation,
     // inclusive), then each caller frame innermost-out with the same bound.
-    // Static like tctx_ itself — everything they consult is thread-local.
+    // Static like tctx() itself — everything they consult is thread-local.
     static Value* findDynamicSlot(const std::string& name);
     static Value* dynStackFind(DynStack& ds, const std::string& name);
     static Value* dynCallerFrame(Env* e, const std::string& name, const Env* stop, bool mark);
@@ -2507,10 +2516,10 @@ public:
     // call opens one of these: it says whether a `.first`/`.head` above asked
     // this map/grep to stay lazy, and passes the request on to the link below.
     struct LazyChainMark {
-        explicit LazyChainMark(const MethodCall* mc) : was(tctx_.lazyChainNode) {
+        explicit LazyChainMark(const MethodCall* mc) : was(tctx().lazyChainNode) {
             if (RAKUPP_UNLIKELY(was != nullptr || mc->lazyChain != 0)) arm(mc);
         }
-        ~LazyChainMark() { if (on) tctx_.lazyChainNode = was; }
+        ~LazyChainMark() { if (on) tctx().lazyChainNode = was; }
         void arm(const MethodCall* mc);
         const Expr* was;
         bool wanted = false, on = false;
@@ -2584,7 +2593,7 @@ public:
     // outside strOf: run the CONTROL handler, else print, unless `quietly`.
     void warnUninit(const std::string& msg);
     // "Use of uninitialized value[ NAME] of type T in string/numeric context" —
-    // the name is the one the converting site set (tctx_.uninitName)
+    // the name is the one the converting site set (tctx().uninitName)
     void warnUninitStr(const Value& v);
     void warnUninitNum(const Value& v);
     std::string uninitNameOf(Expr* e);   // the container an expression reads, as Rakudo names it
@@ -2606,10 +2615,10 @@ public:
     [[gnu::noinline]] Value uninitMethodCall(const struct MethodCall* mc, const Value& inv);
     struct UninitNameScope {
         Interpreter& I; std::string saved;
-        UninitNameScope(Interpreter& in, std::string name) : I(in), saved(std::move(in.tctx_.uninitName)) {
-            I.tctx_.uninitName = std::move(name);
+        UninitNameScope(Interpreter& in, std::string name) : I(in), saved(std::move(in.tctx().uninitName)) {
+            I.tctx().uninitName = std::move(name);
         }
-        ~UninitNameScope() { I.tctx_.uninitName = std::move(saved); }
+        ~UninitNameScope() { I.tctx().uninitName = std::move(saved); }
     };
     // .gist, honouring a user-defined `method gist` (for say/note). skipUser
     // bypasses that method — the built-in behind it, which is where `self.Mu::gist`
@@ -2911,7 +2920,7 @@ public:
     // live, or running under a frame chain the annotation does not belong to
     // — the derive-and-compare rule from PADS-PLAN.md, shared by every fast
     // path that wants a slot).
-    Value* padPtr(const VarExpr* ve) { return padPtrIn(ve, tctx_.cur.get()); }
+    Value* padPtr(const VarExpr* ve) { return padPtrIn(ve, tctx().cur.get()); }
     // …from a scope the caller already holds (one thread_local read for
     // several lookups)
     bool selfCatAssign(Binary* b, Value* slot, Env* cur);   // `$s = $s ~ X` in place
@@ -3257,7 +3266,7 @@ public:
     // reuses the caller's) must unwind only the temps IT pushed.
     void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true, size_t tempMark = 0, int postOk = -1);
     void runNextPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& scope); // NEXT at each loop iteration's end
-    // (the body a loop drives FIRST for is t_poll.firstBody)
+    // (the body a loop drives FIRST for is t_hot.poll.firstBody)
     // EVAL. `incompleteOut` (REPL only) turns a parse that died on end-of-input
     // into a soft "give me more" answer instead of a thrown syntax error.
     // `checkOnly` is `EVAL $code, :check`: compile it — parse, then BEGIN and
@@ -3309,10 +3318,10 @@ public:
     // so its lines still share one scope.
     Value evalOwnScope(const std::string& src, bool checkOnly = false) {
         auto sc = makeSlabShared<Env>();
-        sc->parent = tctx_.cur;
+        sc->parent = tctx().cur;
         sc->evalFrame = true;
-        struct R { ExecContext& t; std::shared_ptr<Env> s; ~R() { t.cur = s; } } restore{tctx_, tctx_.cur};
-        tctx_.cur = sc;
+        struct R { ExecContext& t; std::shared_ptr<Env> s; ~R() { t.cur = s; } } restore{tctx(), tctx().cur};
+        tctx().cur = sc;
         return evalString(src, /*mainlinePH=*/true, /*incompleteOut=*/nullptr, checkOnly);
     }
     // ---- REPL support (src/Repl.cpp) ----------------------------------------
@@ -3351,16 +3360,22 @@ public:
     // its assignment left unread, so an exception cannot strand an entry.
     struct ParkedSubscript { const Expr* e; const Env* frame; Value v; };
     std::atomic<long> pendingSubscriptsAny_{0};
+    // Reached as tctx() is (see there): a function-local thread_local cost
+    // every assignment four _tlv_get_addr calls on Darwin, a guard and the
+    // vector each in ParkedSubscriptsScope's constructor and destructor.
+    RAKUPP_CONSTINIT static thread_local std::vector<ParkedSubscript>* parkedPtr_;
+    [[gnu::noinline, gnu::cold]] static std::vector<ParkedSubscript>& parkedBind();
     static std::vector<ParkedSubscript>& pendingSubscripts() {
-        thread_local std::vector<ParkedSubscript> v;
-        return v;
+        std::vector<ParkedSubscript>* p = parkedPtr_;
+        if (RAKUPP_UNLIKELY(!p)) return parkedBind();
+        return *p;
     }
     bool anyPendingSubscripts() const {
         return pendingSubscriptsAny_.load(std::memory_order_relaxed) != 0 && !pendingSubscripts().empty();
     }
     bool takeParkedSubscript(const Expr* e, Value& out);   // InterpreterCalls.cpp
     void parkSubscript(const Expr* e, Value v) {
-        pendingSubscripts().push_back({e, tctx_.cur.get(), std::move(v)});
+        pendingSubscripts().push_back({e, tctx().cur.get(), std::move(v)});
         pendingSubscriptsAny_.fetch_add(1, std::memory_order_relaxed);
     }
     struct ParkedSubscriptsScope {
@@ -3572,7 +3587,7 @@ public:
     bool requireHidden(const std::string& n) {
         if (!needHidden_.empty() && needHidden_.count(n)) {
             bool inUnit = false;
-            for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) if (e->unitFrame) { inUnit = true; break; }
+            for (Env* e = tctx().cur.get(); e; e = e->parent.get()) if (e->unitFrame) { inUnit = true; break; }
             if (!inUnit) return true;
         }
         if (requireScoped_.empty()) return false;
@@ -3582,7 +3597,7 @@ public:
         // …and code a MODULE declared sees every package: JSON::Tiny loaded in
         // a test's block still reaches JSON::Tiny::Actions from its from-json
         if (sp)
-            for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+            for (Env* e = tctx().cur.get(); e; e = e->parent.get())
                 if (e == sp.get() || loadedModuleEnvSet_.count(e)) return false;
         // What stays lexical is the top-level NAME; the package's contents merge
         // into GLOBAL. `A::B` from a nested load is reached through an `A` this
@@ -3627,7 +3642,7 @@ public:
             c->typeRegProbe.store((gen << 1) | (known ? 1 : 0), std::memory_order_relaxed);
         }
         if (!known) return false;
-        Value* v = tctx_.cur->find(n);
+        Value* v = tctx().cur->find(n);
         return v && (v->t == VT::Type || (v->t == VT::Array && !v->enumType.empty()));
     }
     const std::string& resolveClassAlias(const std::string& n) {
@@ -3699,8 +3714,8 @@ public:
         // the DECLARING type first (a method of `unit class RetUse` sees
         // RetUse::Line), then the enclosing package prefix
         if (!inPkg.empty() && classes_.count(inPkg + "::" + t)) return inPkg + "::" + t;
-        if (tctx_.pkgPrefix.empty()) return t;
-        std::string q = tctx_.pkgPrefix + t;
+        if (tctx().pkgPrefix.empty()) return t;
+        std::string q = tctx().pkgPrefix + t;
         return classes_.count(q) ? q : t;
     }
     // Is `t`, written as the type of a declaration, a name this unit knows?
@@ -3752,7 +3767,7 @@ public:
             if (!(isalnum((unsigned char)c) || c == '_')) return true;
         if (isKnownTypeName(t) || isNativeTypeName(t)) return true;
         if (classes_.count(t) || subsets_.count(t)) return true;
-        if (tctx_.pkgPrefix.empty() ? false : classes_.count(tctx_.pkgPrefix + t)) return true;
+        if (tctx().pkgPrefix.empty() ? false : classes_.count(tctx().pkgPrefix + t)) return true;
         // …and a name the UNIT declares anywhere, gathered from its AST before
         // it runs. The registry alone is not enough: a top-level `my Bar $b` is
         // hoisted, so it is created before `class Bar {}` has executed. Rakudo
@@ -3770,7 +3785,7 @@ public:
         } else return true;
         // a name the current package or any enclosing one declares
         if (global_ && global_->find(t)) return true;
-        if (tctx_.cur && tctx_.cur->find(t)) return true;
+        if (tctx().cur && tctx().cur->find(t)) return true;
         return false;
     }
 
@@ -3889,10 +3904,10 @@ public:
         // rest of the program. The caller's registers come back afterwards.
         static void runInline_(Fn* fn) {
             std::unique_ptr<Fn> g(fn);
-            ExecContext saved(tctx_);
+            ExecContext saved(tctx());
             try { g->f(); }
-            catch (...) { tctx_ = std::move(saved); throw; }
-            tctx_ = std::move(saved);
+            catch (...) { tctx() = std::move(saved); throw; }
+            tctx() = std::move(saved);
         }
     public:
         BigStackThread() = default;
@@ -4060,14 +4075,14 @@ public:
     // The same question for code that waits outside the interpreter (a worker
     // draining a child's pipes): is this a worker the program is ending under?
     bool workerShouldUnwind() const {
-        return t_poll.isWorker && workerAbort_.load(std::memory_order_relaxed);
+        return t_hot.poll.isWorker && workerAbort_.load(std::memory_order_relaxed);
     }
     inline void safePoint() {
-        if (!t_poll.isWorker) return; // main-thread loops never park or abort here
+        if (!t_hot.poll.isWorker) return; // main-thread loops never park or abort here
         if (workerAbort_.load(std::memory_order_relaxed)) throw WorkerAbortEx{};
         // Periodically hand the GIL back so a compute-bound worker can't starve the
         // main thread (which may be parked in yieldToWorker waiting for exactly this).
-        if (++t_poll.safePtCtr >= 4096) { t_poll.safePtCtr = 0; workerYield(); }
+        if (++t_hot.poll.safePtCtr >= 4096) { t_hot.poll.safePtCtr = 0; workerYield(); }
     }
     // The gather probe's TIME budget, checked once per loop iteration — because a
     // probe spends it on WORK, not only on takes. `gather for 1..* { take $_ if
@@ -4078,25 +4093,25 @@ public:
     // asks for more gets an unbudgeted re-run. A prefix of NONE is not a probe
     // (gatherTake says why), so a gather that has taken nothing yet runs on.
     inline void gatherProbePoint() {
-        if (!t_poll.gatherDeadline) return;         // nothing probing here (growing runs unbudgeted)
-        if (++t_poll.gatherTickCtr < 256) return;   // reading the clock is the cost, not the check
-        t_poll.gatherTickCtr = 0;
+        if (!t_hot.poll.gatherDeadline) return;         // nothing probing here (growing runs unbudgeted)
+        if (++t_hot.poll.gatherTickCtr < 256) return;   // reading the clock is the cost, not the check
+        t_hot.poll.gatherTickCtr = 0;
         gatherProbeCheck();
     }
     void gatherProbeCheck();  // out-of-line: read the clock, and stop the probe if it is spent
     // One gather activation — collector, take cap, probe deadline — pushed and
-    // popped as a unit so t_poll.gatherDeadline stays in step with the stack.
+    // popped as a unit so t_hot.poll.gatherDeadline stays in step with the stack.
     inline void pushGatherFrame(PRef<ValueList> coll, size_t limit, long long deadline) {
-        tctx_.gatherStack.push_back(std::move(coll));
-        tctx_.gatherLimits.push_back(limit);
-        tctx_.gatherDeadlines.push_back(deadline);
-        t_poll.gatherDeadline = deadline;
+        tctx().gatherStack.push_back(std::move(coll));
+        tctx().gatherLimits.push_back(limit);
+        tctx().gatherDeadlines.push_back(deadline);
+        t_hot.poll.gatherDeadline = deadline;
     }
     inline void popGatherFrame() {
-        tctx_.gatherStack.pop_back();
-        tctx_.gatherLimits.pop_back();
-        tctx_.gatherDeadlines.pop_back();
-        t_poll.gatherDeadline = tctx_.gatherDeadlines.empty() ? 0 : tctx_.gatherDeadlines.back();
+        tctx().gatherStack.pop_back();
+        tctx().gatherLimits.pop_back();
+        tctx().gatherDeadlines.pop_back();
+        t_hot.poll.gatherDeadline = tctx().gatherDeadlines.empty() ? 0 : tctx().gatherDeadlines.back();
     }
     void workerYield(); // out-of-line: brief GIL release so siblings/main make progress
     // Cooperative handoff. gilYieldNotify() releases the GIL AND wakes a thread
@@ -4218,8 +4233,25 @@ public:
     // per-handoff register swap (the GIL still serialises WHO runs; saveCtx/loadCtx
     // now merely shuffle within a thread's own copy — a harmless round-trip). The
     // moved fields live in ExecContext. NB one Interpreter is live per thread, so a
-    // static thread_local is safe. Access via the tctx_.<field> members below.
-    static thread_local ExecContext tctx_;
+    // static thread_local is safe. Access via tctx().<field>.
+    //
+    // The thread_local itself is a constant-initialized POINTER to the thread's
+    // context (t_hot.ctx, beside the loop poll), not the context. A
+    // thread_local with a destructor is reached through an init guard on every
+    // mention, and on Darwin each mention cost two _tlv_get_addr calls (the
+    // guard, then the variable; from another file, through a wrapper call
+    // besides), which Clang cannot merge — 10-14% of an interpreted program's
+    // samples. A trivial pointer's address is one _tlv_get_addr that Clang
+    // computes once per function, and a mention is a load and a test. The context it points at is a thread's own (a
+    // thread_local in InterpreterCore.cpp, bound by tctxBind on the thread's
+    // first mention), so it lives and dies exactly as the ExecContext
+    // thread_local itself did.
+    [[gnu::noinline, gnu::cold]] static ExecContext& tctxBind();
+    static ExecContext& tctx() {
+        ExecContext* p = t_hot.ctx;
+        if (RAKUPP_UNLIKELY(!p)) return tctxBind();
+        return *p;
+    }
     // the process-wide "live" Interpreter the NativeCall trampolines and the
     // language-revision probe dispatch through (set by the constructor)
     static Interpreter* liveTarget();
@@ -4314,10 +4346,18 @@ public:
     // These three are per-thread call-stack state (a worker builds its own redispatch
     // chain / react stack / thread-depth). Left as plain members in step 1 because they
     // weren't in the swapped ExecContext set; made `static thread_local` here (step 3a)
-    // so true parallel execution can't corrupt them. Same access syntax (`X_`), so no
-    // call-site changes. Cross-thread emit uses the mutex-guarded ReactCtx, not reactStack_.
-    static thread_local std::vector<RedispatchCtx> redispatchStack_;
-    // (how many loop bodies run on this thread is t_poll.loopNest)
+    // so true parallel execution can't corrupt them. Cross-thread emit uses the
+    // mutex-guarded ReactCtx, not reactStack_. The redispatch chain is read on
+    // every call, so it is reached as tctx() is: a constant-initialized pointer
+    // to the thread's own vector, bound on first use (see tctx() for why).
+    RAKUPP_CONSTINIT static thread_local std::vector<RedispatchCtx>* redispatchPtr_;
+    [[gnu::noinline, gnu::cold]] static std::vector<RedispatchCtx>& redispatchBind();
+    static std::vector<RedispatchCtx>& redispatchStack() {
+        std::vector<RedispatchCtx>* p = redispatchPtr_;
+        if (RAKUPP_UNLIKELY(!p)) return redispatchBind();
+        return *p;
+    }
+    // (how many loop bodies run on this thread is t_hot.poll.loopNest)
     // A `proto` with a real body runs AROUND the dispatch; the `{*}` inside it is
     // where the candidates are finally chosen. One frame per active proto body.
     struct ProtoCtx { std::function<Value(ValueList)> dispatch; ValueList args; };
@@ -4364,7 +4404,7 @@ public:
     static long long newThreadId();   // the next Thread id (1 is the initial thread's)
 private:
     // (cur_/dynStack_/curStateEnv_/gatherStack_/supplyStack_/makeTargets_/pkgPrefix_/
-    //  callDepth_ moved into the thread_local tctx_ above.)
+    //  callDepth_ moved into the per-thread tctx() above.)
 public:
     std::string finishData_;          // $=finish data block of the module being run
     std::string podData_;             // rendered =pod content (printed at end in --doc mode)

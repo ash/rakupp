@@ -68,8 +68,8 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
             auto saved = makePayload<ValueList>(args);
             return {sub, [ip, ctx, fn, saved] {
                 if (ctx->done) return;
-                ip->tctx_.tapStack.push_back(ctx);
-                struct G { Interpreter* i; ~G() { i->tctx_.tapStack.pop_back(); } } g{ip};
+                ip->tctx().tapStack.push_back(ctx);
+                struct G { Interpreter* i; ~G() { i->tctx().tapStack.pop_back(); } } g{ip};
                 fn(*ip, *saved);
             }};
         };
@@ -102,14 +102,14 @@ int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& 
         // absorbs that signal as the block's return value. CATCH reads its own
         // clauses the same way. `$_` and `$!` are the exception, as in a CATCH.
         auto scope = makeSlabShared<Env>();
-        scope->parent = q.code()->closure ? q.code()->closure : tctx_.cur;
-        auto savedEnv = tctx_.cur;
-        uint64_t savedGF = tctx_.curGivenFrame;
-        tctx_.cur = scope;
-        tctx_.curGivenFrame = ExecContext::kNoFrame;
+        scope->parent = q.code()->closure ? q.code()->closure : tctx().cur;
+        auto savedEnv = tctx().cur;
+        uint64_t savedGF = tctx().curGivenFrame;
+        tctx().cur = scope;
+        tctx().curGivenFrame = ExecContext::kNoFrame;
         struct R {
             Interpreter& I; std::shared_ptr<Env> e; uint64_t f;
-            ~R() { I.tctx_.cur = e; I.tctx_.curGivenFrame = f; }
+            ~R() { I.tctx().cur = e; I.tctx().curGivenFrame = f; }
         } r{*this, savedEnv, savedGF};
         scope->define("$_", ex);
         scope->define("$!", ex);
@@ -198,7 +198,7 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
         };
         ctx->quitCb = qcb;
     }
-    tctx_.tapStack.push_back(ctx);
+    tctx().tapStack.push_back(ctx);
     try {
         // S-53 holds here too: the body runs first, then what its whenevers'
         // sources delivered while it ran (the drain releases the activation).
@@ -214,8 +214,8 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     }
     catch (RakuError& e) { quit = true; quitReason = exceptionFor(e); quitMsg = e.message; }
     catch (DoneEx&) { ctx->clearQueue(); } // `done` in the body: normal end of the stream
-    catch (...) { tctx_.tapStack.pop_back(); throw; }
-    tctx_.tapStack.pop_back();
+    catch (...) { tctx().tapStack.pop_back(); throw; }
+    tctx().tapStack.pop_back();
     // A whenever on a still-pending Promise holds the supply open (Cro's connector
     // `establish` awaits connect() inside the supply block). The eager drain must
     // wait for those one-shots to fire before treating the supply as finished —
@@ -474,7 +474,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     ctx->pending++;
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     if (secs < 0) secs = 0;
     // one body at a time (S-53): the timer's body waits its turn behind a
@@ -514,7 +514,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
     }
     throttleSpawn();
     addWorker(BigStackThread([self, end, slot, fireW, fin, spawnScope, ctx]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         auto stopped = [&] { return ctx->done || ctx->doneFired || self->workerAbort_.load(std::memory_order_relaxed); };
         // GIL not held; slices against a fixed deadline (drift-free, huge/Inf-safe)
         // and wakes early on `done`/`.close` or shutdown.
@@ -532,8 +532,8 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         }
         self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
-        self->tctx_.cur = spawnScope;
-        self->tctx_.dynStack.push_back(spawnScope.get());
+        self->tctx().cur = spawnScope;
+        self->tctx().dynStack.push_back(spawnScope.get());
         ValueList none; try { self->callCallable(fireW, none); } catch (...) {}
         { std::lock_guard<std::mutex> lk(ctx->timerM); ctx->timerOrder.erase(slot); }   // the next one's turn
         self->gilYieldNotify();
@@ -646,7 +646,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
     ctx->pending++;
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     ValueList lastP, quitP;
     scanSupplyPhasers(blk, &lastP, &quitP, nullptr);
@@ -670,14 +670,14 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
     });
     throttleSpawn();
     addWorker(BigStackThread([self, chan, fireW, lastP, ctx, fin, spawnScope, readerDelta]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         // Parallel mode has no GIL discipline; under the GIL this holds the lock
         // and yieldToWorkerFor cycles it (see spawnChannelWhenever — taking it
         // and never releasing made the first channel worker the accidental owner).
         if (!self->parallelMode_) self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
-        tctx_.cur = spawnScope;
-        tctx_.dynStack.push_back(spawnScope.get());
+        tctx().cur = spawnScope;
+        tctx().dynStack.push_back(spawnScope.get());
         auto stop = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
             if (ctx->done || ctx->doneFired) return true;
@@ -726,7 +726,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     ctx->pending++;
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
     if (delay < 0) delay = 0;
@@ -756,7 +756,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     });
     throttleSpawn();
     addWorker(BigStackThread([self, interval, delay, fireW, ctx, fin, spawnScope]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         auto stop = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
             if (ctx->done || ctx->doneFired) return true;
@@ -775,8 +775,8 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         while (!stop()) {
             self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
-            self->tctx_.cur = spawnScope;
-            self->tctx_.dynStack.push_back(spawnScope.get());
+            self->tctx().cur = spawnScope;
+            self->tctx().dynStack.push_back(spawnScope.get());
             if (!stop()) { ValueList none; try { self->callCallable(fireW, none); } catch (...) {} }
             self->gilYieldNotify();
             if (stop()) break;
@@ -784,8 +784,8 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         }
         self->gilLock(); // release the activation hold and let the supply finish
         ExecContext wctx2; self->loadCtx(wctx2);
-        self->tctx_.cur = spawnScope;
-        self->tctx_.dynStack.push_back(spawnScope.get());
+        self->tctx().cur = spawnScope;
+        self->tctx().dynStack.push_back(spawnScope.get());
         ctx->pending--;
         try { self->maybeFinishSupply(ctx); } catch (...) {}
         self->gilYieldNotify();
@@ -803,12 +803,12 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
     engageGil();
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     if (secs < 0) secs = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, secs, fn, fin, spawnScope]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         bool stopped = false;                                          // GIL not held
         auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(secs);
         for (;;) {
@@ -820,8 +820,8 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
         }
         self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
-        tctx_.cur = spawnScope;
-        tctx_.dynStack.push_back(spawnScope.get());
+        tctx().cur = spawnScope;
+        tctx().dynStack.push_back(spawnScope.get());
         if (!stopped) { try { fn(); } catch (...) {} }
         self->gilYieldNotify();
         self->liveWorkers_--;
@@ -834,12 +834,12 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     if (secs < 0) secs = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, secs, blk, ctx, fin, spawnScope]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         // The full delay is honored (issue #41 capped it at 35 s) — slept in
         // slices against a fixed deadline so shutdown or `done` wakes the worker
         // within ~50 ms, and in double-rep time so a huge/Inf timer can't
@@ -855,8 +855,8 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
         }
         self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
-        tctx_.cur = spawnScope;
-        tctx_.dynStack.push_back(spawnScope.get());
+        tctx().cur = spawnScope;
+        tctx().dynStack.push_back(spawnScope.get());
         if (ctx) self->reactStack_.push_back(ctx);
         if (!stopped && !(ctx && ctx->closed)) {
             // S-60: a timer Promise is kept with True, and the whenever body
@@ -899,13 +899,13 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     if (interval < 0.001) interval = 0.001; // Rakudo clamps a zero/negative interval
     if (delay < 0) delay = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, interval, delay, blk, ctx, handle, fin, spawnScope, doneCb]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         auto closedNow = [&] {
             if (self->workerAbort_.load(std::memory_order_relaxed)) return true; // mainline done: stop ticking
             if (ctx && ctx->closed) return true;
@@ -926,8 +926,8 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         while (!closedNow() && !lastEx) {
             self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
-            tctx_.cur = spawnScope;
-            tctx_.dynStack.push_back(spawnScope.get());
+            tctx().cur = spawnScope;
+            tctx().dynStack.push_back(spawnScope.get());
             if (ctx) self->reactStack_.push_back(ctx);
             if (!closedNow()) {
                 ValueList one{Value::integer(tick++)};
@@ -973,8 +973,8 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
         if (lastEx && doneCb.t == VT::Code) {
             self->gilLock();
             ExecContext dctx; self->loadCtx(dctx);
-            tctx_.cur = spawnScope;
-            tctx_.dynStack.push_back(spawnScope.get());
+            tctx().cur = spawnScope;
+            tctx().dynStack.push_back(spawnScope.get());
             { ValueList na; try { self->callCallable(doneCb, na); } catch (...) {} }
             self->gilYieldNotify();
         }
@@ -996,11 +996,11 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
     throttleSpawn();
     addWorker(BigStackThread([self, chan, blk, ctx, fin, spawnScope]() mutable {
-        t_poll.isWorker = true;
+        t_hot.poll.isWorker = true;
         // Parallel mode has no GIL discipline: taking (and never releasing)
         // the lock here made the FIRST channel worker the accidental GIL
         // owner for its whole lifetime — every later channel whenever's
@@ -1009,8 +1009,8 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         // Under the GIL the lock is real and yieldToWorkerFor cycles it.
         if (!self->parallelMode_) self->gilLock();
         ExecContext wctx; self->loadCtx(wctx);
-        tctx_.cur = spawnScope;
-        tctx_.dynStack.push_back(spawnScope.get());
+        tctx().cur = spawnScope;
+        tctx().dynStack.push_back(spawnScope.get());
         if (ctx) self->reactStack_.push_back(ctx);
         for (;;) {
             if (ctx && ctx->closed) break;
@@ -1106,14 +1106,14 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     // Lazily create the self-pipe + dispatcher worker exactly once.
     static std::once_flag pipeOnce;
     Interpreter* self = this;
-    auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
     std::call_once(pipeOnce, [&] {
         if (::pipe(g_sigPipe) != 0) { g_sigPipe[0] = g_sigPipe[1] = -1; return; }
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
         throttleSpawn();
         addWorker(BigStackThread([self, spawnScope, fin]() mutable {
-            t_poll.isWorker = true;
+            t_hot.poll.isWorker = true;
             for (;;) {
                 unsigned char c;
                 ssize_t n = ::read(g_sigPipe[0], &c, 1);        // GIL not held
@@ -1129,8 +1129,8 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                 if (taps.empty()) continue;
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
-                tctx_.cur = spawnScope;
-                tctx_.dynStack.push_back(spawnScope.get());
+                tctx().cur = spawnScope;
+                tctx().dynStack.push_back(spawnScope.get());
                 for (auto& t : taps) {
                     if (t->handle && t->handle->closed) continue;
                     // push the react ctx so a `done` inside the block closes it
@@ -1551,7 +1551,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         ctx->emitCb = emitCb; ctx->doneCb = doneCb; ctx->quitCb = quitCb; ctx->tap = handle;
         ValueList quitP;
         scanSupplyPhasers(blk, nullptr, &quitP, &handle->closePhasers);
-        tctx_.tapStack.push_back(ctx);
+        tctx().tapStack.push_back(ctx);
         noCycleBreak_++;
         struct CBGuard { int& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
         try {
@@ -1563,18 +1563,18 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 catch (...) { { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; } ctx->inBody = false; throw; }
             }
             ctx->inBody = false;
-            tctx_.tapStack.pop_back();
+            tctx().tapStack.pop_back();
             // S-53: the body has returned — now hand over what its whenevers'
             // sources delivered while it ran, and release the activation.
-            tctx_.tapStack.push_back(ctx);
-            try { drainSupplyQueue(ctx); } catch (...) { tctx_.tapStack.pop_back(); throw; }
-            tctx_.tapStack.pop_back();
+            tctx().tapStack.push_back(ctx);
+            try { drainSupplyQueue(ctx); } catch (...) { tctx().tapStack.pop_back(); throw; }
+            tctx().tapStack.pop_back();
             // the block returned: with no live inner taps the supply is done
             ctx->blockDone = true;
             maybeFinishSupply(ctx);
         }
         catch (RakuError& e) {
-            tctx_.tapStack.pop_back();
+            tctx().tapStack.pop_back();
             Value ex = exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList one{ex}; try { callCallable(q, one); handled = true; } catch (...) {} }
@@ -1590,11 +1590,11 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (!handled) throw;
         }
         catch (DoneEx&) { // `done` in the supply body: normal end (its bookkeeping already ran)
-            tctx_.tapStack.pop_back();
+            tctx().tapStack.pop_back();
             ctx->blockDone = true;
             ctx->clearQueue();    // nothing follows an explicit done (S-54)
         }
-        catch (...) { tctx_.tapStack.pop_back(); closeTapHandle(handle); throw; }
+        catch (...) { tctx().tapStack.pop_back(); closeTapHandle(handle); throw; }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash())["wired"] = Value::boolean(true);
         return t;
@@ -2263,12 +2263,12 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         engageGil();
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        auto spawnScope = tctx().cur ? tctx().cur : global_;
         Interpreter* self = this;
         throttleSpawn();
         addWorker(BigStackThread([self, buf, srcDone, quitEx, quitSet, elemsP, secs, delay, spent,
                                   emitCb, doneCb, quitCb, handle, fin, spawnScope]() mutable {
-            t_poll.isWorker = true;
+            t_hot.poll.isWorker = true;
             auto stopped = [&] {
                 if (self->workerAbort_.load(std::memory_order_relaxed)) return true;
                 std::lock_guard<std::mutex> lk(handle->m); return handle->closed;
@@ -2287,8 +2287,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 if (stopped()) break;
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
-                tctx_.cur = spawnScope;
-                tctx_.dynStack.push_back(spawnScope.get());
+                tctx().cur = spawnScope;
+                tctx().dynStack.push_back(spawnScope.get());
                 if (!firstPass) spent->store(0);    // a new tick refills the bucket
                 while (!firstPass && spent->load() < elemsP->load() && !buf->empty()) {
                     Value v = buf->front(); buf->erase(buf->begin());
@@ -2402,17 +2402,17 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         });
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        auto spawnScope = tctx().cur ? tctx().cur : global_;
         Interpreter* self = this;
         const std::string listenEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
         throttleSpawn();
         addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc, pending]() mutable {
-            t_poll.isWorker = true;
+            t_hot.poll.isWorker = true;
             auto deliver = [&](int cfd) {
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);           // fresh registers
-                tctx_.cur = spawnScope;
-                tctx_.dynStack.push_back(spawnScope.get());
+                tctx().cur = spawnScope;
+                tctx().dynStack.push_back(spawnScope.get());
                 Value sock = makeAsyncSocket(cfd);
                 if (!listenEnc.empty()) (*sock.hash())["enc"] = Value::str(listenEnc);   // `listen(…, :enc)`
                 if (emitCb.t == VT::Code) {
@@ -2472,7 +2472,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // Log::Timeline's socket test is exactly this shape.
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        auto spawnScope = tctx().cur ? tctx().cur : global_;
         bool bin = h.count("bin") && h.at("bin").truthy();
         Interpreter* self = this;
         // a single-byte encoding decodes chunk by chunk; UTF-8 keeps the carry below
@@ -2488,7 +2488,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
         addWorker(BigStackThread([self, fd, sock, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, rctx0, readEnc]() mutable {
-            t_poll.isWorker = true;
+            t_hot.poll.isWorker = true;
             std::vector<char> buf(65536);
             bool malformed = false;   // bytes that are no UTF-8 at all: the supply QUITs
             // A CHARACTER supply must not split a character. The bytes arrive
@@ -2525,8 +2525,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 if (n <= 0) break;
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
-                tctx_.cur = spawnScope;
-                tctx_.dynStack.push_back(spawnScope.get());
+                tctx().cur = spawnScope;
+                tctx().dynStack.push_back(spawnScope.get());
                 Value chunk;
                 if (bin) { chunk = Value::str(std::string(buf.data(), (size_t)n)); chunk.hashKind = "Blob"; }
                 else if (!readEnc.empty()) chunk = Value::str(self->decodeTextEnc(std::string(buf.data(), (size_t)n), readEnc));
@@ -2573,8 +2573,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
             self->gilLock();
             ExecContext wctx; self->loadCtx(wctx);
-            tctx_.cur = spawnScope;
-            tctx_.dynStack.push_back(spawnScope.get());
+            tctx().cur = spawnScope;
+            tctx().dynStack.push_back(spawnScope.get());
             // A tap that was merely CLOSED leaves the socket alone — it is still
             // open, may still be written to, and may be tapped again. Only a
             // real EOF or read error ends the connection, and then the worker
@@ -2672,7 +2672,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         engageGil();
         liveWorkers_++;
         auto fin = std::make_shared<std::atomic<bool>>(false);
-        auto spawnScope = tctx_.cur ? tctx_.cur : global_;
+        auto spawnScope = tctx().cur ? tctx().cur : global_;
         const bool bin = h.count("bin") && h.at("bin").truthy();
         const bool datagram = h.count("datagram") && h.at("datagram").truthy();
         std::string readEnc = h.count("enc") ? h.at("enc").toStr() : std::string("utf-8");
@@ -2680,7 +2680,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto rctx0 = reactStack_.empty() ? std::shared_ptr<ReactCtx>() : reactStack_.back();
         throttleSpawn();
         addWorker(BigStackThread([self, st, fd, emitCb, doneCb, quitCb, handle, fin, spawnScope, bin, datagram, readEnc, rctx0]() mutable {
-            t_poll.isWorker = true;
+            t_hot.poll.isWorker = true;
             { std::lock_guard<std::mutex> lk(st->m); st->readerTids.push_back(std::this_thread::get_id()); }
             std::vector<char> buf(65536);
             bool sockClosed = false, tapClosed = false;
@@ -2711,8 +2711,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 }
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
-                tctx_.cur = spawnScope;
-                tctx_.dynStack.push_back(spawnScope.get());
+                tctx().cur = spawnScope;
+                tctx().dynStack.push_back(spawnScope.get());
                 const std::string bytes(buf.data(), (size_t)n);
                 bool quit = false;
                 Value payload;
@@ -2769,8 +2769,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             if (sockClosed && !tapClosed && doneCb.t == VT::Code) {
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
-                tctx_.cur = spawnScope;
-                tctx_.dynStack.push_back(spawnScope.get());
+                tctx().cur = spawnScope;
+                tctx().dynStack.push_back(spawnScope.get());
                 ValueList na;
                 try { self->callCallable(doneCb, na); } catch (...) {}
                 self->gilYieldNotify();
@@ -3060,7 +3060,7 @@ RakuError Interpreter::dieError(ValueList& a) {
     // (…the ROUTINE's own $!: a sub's `die()` does not see its caller's error)
     if (a.empty()) {
         Value* be = nullptr;
-        for (Env* en = tctx_.cur.get(); en; en = en->parent.get()) {
+        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
             if ((be = en->local("$!"))) break;
             if (en->routineFrame) break;
         }

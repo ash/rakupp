@@ -17,12 +17,12 @@ collectors — was originally interpreter members. It is now a struct:
 ```cpp
 // src/Interpreter.h
 struct ExecContext { /* Chapter 13 */ };
-static thread_local ExecContext tctx_;
+static ExecContext& tctx();   // this thread's context, through t_hot.ctx
 void saveCtx(ExecContext& c);
 void loadCtx(ExecContext& c);
 ```
 
-Being `static thread_local`, each real worker thread owns its own set, so
+Being per thread, each real worker thread owns its own set, so
 interpreter execution needs no per-handover register swap. The save and load
 functions remain because the design allows a parked thread's registers to be
 stashed and restored; today they merely shuffle within a thread's own copy.
@@ -76,10 +76,10 @@ the release, and a bisect narrowed it to one line added to the `ExprStmt` arm
 of `exec`:
 
 ```cpp
-tctx_.curStmtExpr = e;   // which expression this statement is evaluating
+tctx().curStmtExpr = e;   // which expression this statement is evaluating
 ```
 
-`tctx_` is thread-local, so on macOS that store is a real call to
+`tctx()` is thread-local, so on macOS that store is a real call to
 `_tlv_get_addr` — the second-heaviest symbol in an interpreter profile — and
 placing it at the top of the arm forces a resolution the rest of the arm would
 otherwise have folded into one. It costs about 34 instructions **per statement

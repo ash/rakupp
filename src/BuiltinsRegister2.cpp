@@ -237,23 +237,23 @@ void Interpreter::registerBuiltinsPart3() {
             // block's closure: a called block finds a dynamic through its
             // callers, not where it was written.)
             auto own = makeSlabShared<Env>();
-            own->parent = Interpreter::tctx_.cur;
+            own->parent = Interpreter::tctx().cur;
             own->define("$*CWD", cwdv);
-            auto savedCur = Interpreter::tctx_.cur;
-            Interpreter::tctx_.cur = own;
-            struct Back { std::shared_ptr<Env> s; ~Back() { Interpreter::tctx_.cur = std::move(s); } } back{savedCur};
+            auto savedCur = Interpreter::tctx().cur;
+            Interpreter::tctx().cur = own;
+            struct Back { std::shared_ptr<Env> s; ~Back() { Interpreter::tctx().cur = std::move(s); } } back{savedCur};
             ValueList none;
             return I.callCallable(code, none);
         }
         auto denv = makeSlabShared<Env>();
-        denv->parent = Interpreter::tctx_.cur;
+        denv->parent = Interpreter::tctx().cur;
         Value* slot = I.findDynamicLenient("$*CWD");
         Value slotWas = slot ? *slot : Value();
         if (slot) *slot = cwdv; else denv->define("$*CWD", cwdv);
-        auto savedCur = Interpreter::tctx_.cur;
-        Interpreter::tctx_.cur = denv;
+        auto savedCur = Interpreter::tctx().cur;
+        Interpreter::tctx().cur = denv;
         auto restore = [&] {
-            Interpreter::tctx_.cur = savedCur;
+            Interpreter::tctx().cur = savedCur;
             if (slot) *slot = slotWas;
             if (!worker) { ::chdir(from.c_str()); I.logicalCwd_ = oldLogical; }
         };
@@ -453,7 +453,7 @@ void Interpreter::registerBuiltinsPart3() {
     // to the built-in, as Rakudo's wider core candidate would take it.
     auto userWordPrefix = [](Interpreter& I, const char* op, ValueList& a, Value& out) -> bool {
         if (a.size() != 1 || a[0].t != VT::Object || !a[0].obj() || !a[0].obj()->cls) return false;
-        Value* f = I.tctx_.cur ? I.tctx_.cur->find(std::string("&prefix:<") + op + ">") : nullptr;
+        Value* f = I.tctx().cur ? I.tctx().cur->find(std::string("&prefix:<") + op + ">") : nullptr;
         if (!f) return false;
         try { out = I.callCallable(*f, ValueList{a[0]}); return true; }
         catch (RakuError& e) {
@@ -464,7 +464,7 @@ void Interpreter::registerBuiltinsPart3() {
     B["so"] = [boolCurry, userWordPrefix](Interpreter& I, ValueList& a) -> Value {
         if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->ci().isWhateverCode)))
             return boolCurry(false, a[0], [&]() {
-                Value* f = I.tctx_.cur ? I.tctx_.cur->find("&prefix:<so>") : nullptr;
+                Value* f = I.tctx().cur ? I.tctx().cur->find("&prefix:<so>") : nullptr;
                 return f ? *f : Value::any(); }());
         if (Value r; userWordPrefix(I, "so", a, r)) return r;
         return Value::boolean(!a.empty() && I.boolify(a[0]));
@@ -472,7 +472,7 @@ void Interpreter::registerBuiltinsPart3() {
     B["not"] = [boolCurry, userWordPrefix](Interpreter& I, ValueList& a) -> Value {
         if (a.size() == 1 && (a[0].t == VT::Whatever || (a[0].t == VT::Code && a[0].code() && a[0].code()->ci().isWhateverCode)))
             return boolCurry(true, a[0], [&]() {
-                Value* f = I.tctx_.cur ? I.tctx_.cur->find("&prefix:<not>") : nullptr;
+                Value* f = I.tctx().cur ? I.tctx().cur->find("&prefix:<not>") : nullptr;
                 return f ? *f : Value::any(); }());
         if (Value r; userWordPrefix(I, "not", a, r)) return r;
         return Value::boolean(a.empty() || !I.boolify(a[0]));
@@ -575,7 +575,7 @@ void Interpreter::registerBuiltinsPart3() {
     B["callframe"] = [](Interpreter& I, ValueList& a) -> Value {
         long long lvl = a.empty() ? 0 : a[0].toInt();
         if (lvl < 0) lvl = 0;
-        auto& fr = I.tctx_.callFrames;
+        auto& fr = I.tctx().callFrames;
         // past the outermost frame there is no frame at all: Nil, so a walk
         // `callframe($_) or last` ends (MoarVM#562)
         if (lvl > (long long)fr.size() + 1) return Value::nil();
@@ -618,7 +618,7 @@ void Interpreter::registerBuiltinsPart3() {
     // way (`UNIT::{"&$_"}:exists`), and rakupp answered "Undefined routine
     // 'exists'" because only MY:: and LEXICAL:: ever reached here.
     auto symEnv = [](Interpreter& I, ValueList& a, size_t hopIdx) -> Env* {
-        Env* e = I.tctx_.cur.get();
+        Env* e = I.tctx().cur.get();
         if (a.size() > hopIdx + 1 && a[hopIdx + 1].toStr() == "UNIT") {
             // The compilation unit's scope is the OUTERMOST frame below the
             // process-wide global one: a module's file scope hangs off the
@@ -731,7 +731,7 @@ void Interpreter::registerBuiltinsPart3() {
     };
     B["__client-lookup"] = [](Interpreter& I, ValueList& a) -> Value {
         const std::string sym = a.empty() ? std::string() : a[0].toStr();
-        auto& fr = Interpreter::tctx_.callFrames;
+        auto& fr = Interpreter::tctx().callFrames;
         int rev = I.mainLangRev_;
         std::string pkg = "GLOBAL";
         if (!fr.empty() && fr.back().code && fr.back().code->t == VT::Code && fr.back().code->code()) {
@@ -768,7 +768,7 @@ void Interpreter::registerBuiltinsPart3() {
     B["__sym-lookup"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty()) return Value::nil();
         const std::string n = a[0].toStr();
-        Env* e = I.tctx_.cur.get();
+        Env* e = I.tctx().cur.get();
         for (long long hops = a.size() > 1 ? a[1].toInt() : 0; hops > 0 && e; hops--) {
             e = e->parent.get();
             while (e && (e->loopFrame || e->stateFrame) && e->parent) e = e->parent.get();
@@ -1214,8 +1214,8 @@ void Interpreter::registerBuiltinsPart4() {
         // Inside an on-demand supply activation (real tap or eager drain): wire a
         // real inner tap. The body runs (now or later, from an I/O worker) with
         // this activation re-established, so its emits reach the downstream tap.
-        if (!I.tctx_.tapStack.empty() && a.size() >= 2 && a.back().t == VT::Code) {
-            auto ctx = I.tctx_.tapStack.back();
+        if (!I.tctx().tapStack.empty() && a.size() >= 2 && a.back().t == VT::Code) {
+            auto ctx = I.tctx().tapStack.back();
             Value src = a[0], blk = a.back();
             // whenever Promise.in(N)/at(T) in a supply block: a real timer (was
             // firing immediately — Cro's connection/headers timeouts rely on it).
@@ -1814,12 +1814,12 @@ void Interpreter::registerBuiltinsPart4() {
                         // inside the supply's emit (on whatever thread fed it): its
                         // `done` ends the react, not the supply delivering to it.
                         auto c = bodyCtx.lock();
-                        decltype(I2.tctx_.tapStack) delivering;
-                        delivering.swap(I2.tctx_.tapStack);
+                        decltype(I2.tctx().tapStack) delivering;
+                        delivering.swap(I2.tctx().tapStack);
                         if (c) I2.reactStack_.push_back(c);
                         struct Restore {
-                            Interpreter& I; decltype(I2.tctx_.tapStack)& d; bool pushed;
-                            ~Restore() { if (pushed) I.reactStack_.pop_back(); I.tctx_.tapStack.swap(d); }
+                            Interpreter& I; decltype(I2.tctx().tapStack)& d; bool pushed;
+                            ~Restore() { if (pushed) I.reactStack_.pop_back(); I.tctx().tapStack.swap(d); }
                         } restore{I2, delivering, (bool)c};
                         // …and a react that closes ends the activation delivering
                         // to it: its CLOSE phasers run and its next emit unwinds

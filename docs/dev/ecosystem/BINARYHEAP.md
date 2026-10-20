@@ -298,9 +298,15 @@ evaluation. Swapping BinaryHeap's comparator for `* < *` moved its time by
 only ~2%, so for this module it is secondary, but any `sort { $^a cmp $^b
 == … }`-shaped code pays it.
 
-Under both, `_tlv_get_addr` is ~13% of every profile taken: `tctx_` and the
+Under both, `_tlv_get_addr` was ~13% of every profile taken: `tctx_` and the
 other `thread_local`s go through Darwin's TLV thunk on each access. That is
-general, not BinaryHeap's.
+general, not BinaryHeap's. *Since 2026-10-20* the per-thread context is
+reached through a constant-initialized pointer, and the cost was mostly the
+init guard each mention of the old `tctx_` paid beside the variable, and the
+wrapper call around both from other files
+([INTERP-SPEED-PLAN.md](../plans/INTERP-SPEED-PLAN.md), task 4). On a heap
+pop the share is 10.1% → 4.8% of busy samples, and the five benchmarks
+retire 3.1–4.3% fewer instructions (5.1% fewer cycles, geomean).
 
 For scale, the same heap written with plain element assignment (no binds,
 `(@!a[$c] cmp $v) == Less`, 2^16 pops) is 2232.8 ms here and 684.9 ms on

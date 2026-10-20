@@ -459,7 +459,7 @@ bool Interpreter::dataNativeUse(const std::string& name,
             if (jsonNative && !jsonNames.empty() && !jsonNames.count(nm)) continue;
             std::string prim = std::string("rakupp-") + *n;
             auto bit = builtins_.find(prim);
-            if (bit == builtins_.end() || !tctx_.cur) continue;
+            if (bit == builtins_.end() || !tctx().cur) continue;
             // the json tag's two codecs: exact routines with the Raku
             // fallback, not the bare primitives, which raise where they stop
             if (std::string(d->tag) == "json" && (nm == "from-json" || nm == "to-json")) {
@@ -468,7 +468,7 @@ bool Interpreter::dataNativeUse(const std::string& name,
                 std::map<std::string, bool> mine;
                 for (auto& dflt : jsonDefaults)
                     if ((dflt.first == "immutable") == (nm == "from-json")) mine.insert(dflt);
-                tctx_.cur->define("&" + nm, jsonExactRoutine(nm == "to-json", mine));
+                tctx().cur->define("&" + nm, jsonExactRoutine(nm == "to-json", mine));
                 continue;
             }
             // JSON::Native names its paths: the engine's is 'engine', for
@@ -477,12 +477,12 @@ bool Interpreter::dataNativeUse(const std::string& name,
                 Value jb; jb.t = VT::Code; jb.setCode(makePayload<Callable>());
                 jb.code()->ciM().name = "json-backend";
                 jb.code()->ciM().builtin = [](Interpreter&, ValueList&) -> Value { return Value::str("engine"); };
-                tctx_.cur->define("&json-backend", jb);
+                tctx().cur->define("&json-backend", jb);
                 continue;
             }
             const Value* ref = builtinRef(prim);
             if (!ref) continue;
-            tctx_.cur->define(std::string("&") + *n, *ref);
+            tctx().cur->define(std::string("&") + *n, *ref);
         }
     }
     return true;
@@ -519,8 +519,8 @@ const Value* Interpreter::builtinRef(const std::string& name) {
 // same tail is rewritten; anything else is the package it says.
 std::string Interpreter::pkgSymbolName(const std::string& name) const {
     std::string pkg, key;
-    if (!tctx_.cur || !splitPkgSymbol(name, pkg, key)) return name;
-    const Value* t = tctx_.cur->find(pkg);
+    if (!tctx().cur || !splitPkgSymbol(name, pkg, key)) return name;
+    const Value* t = tctx().cur->find(pkg);
     if (!t || t->t != VT::Type) return name;
     const std::string full(t->s.c_str());
     if (full.size() <= pkg.size() + 2 ||
@@ -544,7 +544,7 @@ std::string Interpreter::pkgSymbolName(const std::string& name) const {
 bool Interpreter::importWouldShadowRoutine(const std::string& key, const Value& val) {
     if (key.empty() || key[0] != '&' || val.t == VT::Code) return false;
     if (!rtIsDefined(val) || val.t == VT::Type) {
-        Value* cur = tctx_.cur ? tctx_.cur->find(key) : nullptr;
+        Value* cur = tctx().cur ? tctx().cur->find(key) : nullptr;
         if (cur && cur->t == VT::Code) return true;
     }
     return false;
@@ -616,10 +616,10 @@ void Interpreter::runRoleClassStatements(ClassInfo* cls, const std::string& clsN
         env->parent = r->declEnv ? r->declEnv : global_;
         roleClassSelf_.push_back(Value::typeObj(clsName));
         env->selfSlot = &roleClassSelf_.back();
-        auto saved = tctx_.cur;
-        tctx_.cur = env;
+        auto saved = tctx().cur;
+        tctx().cur = env;
         struct Restore { ExecContext& t; std::shared_ptr<Env> s; std::shared_ptr<Env> e;
-            ~Restore() { t.cur = s; e->selfSlot = nullptr; } } restore{tctx_, saved, env};
+            ~Restore() { t.cur = s; e->selfSlot = nullptr; } } restore{tctx(), saved, env};
         for (size_t i = 0; i < mask.size() && i < r->decl->body.size(); i++)
             if (mask[i] && !(g && i < g->generic.size() && g->generic[i]))
                 exec(r->decl->body[i].get());
@@ -927,7 +927,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // already declared (`use Foo; multi waz($x) {…}` sees both)
                     if (want && se.value.t == VT::Code && se.value.code() &&
                         se.value.code()->ci().isMultiDispatcher) {
-                        Value* have = tctx_.cur->local(se.key);
+                        Value* have = tctx().cur->local(se.key);
                         if (have && have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
                             have->code() != se.value.code()) {
                             auto& cands = have->code()->coldM().candidates;
@@ -945,10 +945,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // when it lands in the mainline; inside a block or routine
                     // the import is lexical and shadows it there, as a first
                     // load's does — unless that scope declares the name itself
-                    const bool lexicalRoutine = !se.key.empty() && se.key[0] == '&' && tctx_.cur.get() != global_.get();
-                    if (want && (lexicalRoutine ? !tctx_.cur->local(se.key) : !mainlineSubNames_.count(se.key)) &&
+                    const bool lexicalRoutine = !se.key.empty() && se.key[0] == '&' && tctx().cur.get() != global_.get();
+                    if (want && (lexicalRoutine ? !tctx().cur->local(se.key) : !mainlineSubNames_.count(se.key)) &&
                         !importWouldShadowRoutine(se.key, se.value))
-                        tctx_.cur->define(se.key, se.value);
+                        tctx().cur->define(se.key, se.value);
                 }
             }
         }
@@ -962,7 +962,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (res.t == VT::Hash && res.hash())
                     for (auto& kv : *res.hash())
                         if (!importWouldShadowRoutine(kv.first, kv.second)) {
-                            tctx_.cur->define(kv.first, kv.second);
+                            tctx().cur->define(kv.first, kv.second);
                             if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
                                 g_lexTypeAlias.store(true, std::memory_order_relaxed);   // (see the first-load site)
                         }
@@ -1051,7 +1051,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // resolve against ITS declarations while its top level runs)
         unitPush(prog.get());
         struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
-        auto saved = tctx_.cur;
+        auto saved = tctx().cur;
         std::string savedFinish = finishData_;
         finishData_ = finish; // this module's $=finish data block
         // Load the module into its OWN scope (chained to global). Its subs see one
@@ -1155,7 +1155,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             }
             return true; // every tag is selective and none was requested
         };
-        tctx_.cur = moduleEnv;
+        tctx().cur = moduleEnv;
         // A module loaded at RUN time (`require`, `$repo.need`) runs its
         // mainline inside the caller's dynamic scope: a `my $*x` around the
         // require is visible there, and in whatever that module loads in
@@ -1163,13 +1163,13 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         struct DynFrameG {
             DynStack& st; Env* e;
             ~DynFrameG() { if (e && !st.empty() && st.back() == e) st.pop_back(); }
-        } dynFrameG{tctx_.dynStack, (requireForm || runtimeLoadDepth_ > 0) && saved ? saved.get() : nullptr};
-        if (dynFrameG.e) tctx_.dynStack.push_back(dynFrameG.e);
+        } dynFrameG{tctx().dynStack, (requireForm || runtimeLoadDepth_ > 0) && saved ? saved.get() : nullptr};
+        if (dynFrameG.e) tctx().dynStack.push_back(dynFrameG.e);
         auto savedPkg = curPkgEnv_; curPkgEnv_ = moduleEnv; // `our sub` in the module installs here, not main's global
         // A `unit module Foo;` sets pkgPrefix for the rest of the file so its
         // `our sub`s publish qualified (Foo::name); save/restore so it can't leak
         // into the importing program.
-        auto savedModPrefix = tctx_.pkgPrefix; tctx_.pkgPrefix.clear();
+        auto savedModPrefix = tctx().pkgPrefix; tctx().pkgPrefix.clear();
         // The language revision is per COMPILATION UNIT. A module opening with
         // `use v6.e.PREVIEW;` (or any other pragma) must not leave the importer
         // running at that revision — Test::Util's own `use v6;` was silently
@@ -1452,7 +1452,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             struct TopPop { std::vector<Env*>& v; ~TopPop() { v.pop_back(); } } topPop{moduleTopEnvs_};
             for (size_t si = 0; si < prog->stmts.size(); si++) {
                 auto& st = prog->stmts[si];
-                tctx_.endCurTopStmt = st.get();           // for a nested `use` in it
+                tctx().endCurTopStmt = st.get();           // for a nested `use` in it
                 if (prog->mayHaveRoutineUse) preloadRoutineUses(st.get());
                 if (!isPrologue(st.get())) runInitsOnce(si); // every `use` above us has run
                 if (st->kind == NK::Block && static_cast<Block*>(st.get())->initHoisted)
@@ -1465,9 +1465,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // A leading `unit module Foo;` has now set pkgPrefix, but this
                     // `our sub` was already defined by hoistSubs (bare) — publish it
                     // under its qualified name so external `Foo::name()` calls resolve.
-                    if (sd->isOur && !tctx_.pkgPrefix.empty())
-                        if (Value* c = tctx_.cur->find("&" + sd->name))
-                            global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
+                    if (sd->isOur && !tctx().pkgPrefix.empty())
+                        if (Value* c = tctx().cur->find("&" + sd->name))
+                            global_->define("&" + tctx().pkgPrefix + sd->name, *c);
                     continue; // hoisted
                 }
                 exec(st.get());
@@ -1477,7 +1477,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
             publish();
-            tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
+            tctx().cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx().pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
             // A module that THROWS while loading is fatal, for the same reason a
             // missing or unparseable one is: its remaining BEGIN blocks and exports
             // never happen, so what the importer gets is a half-built module that
@@ -1488,7 +1488,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             // that nothing exploded.
             throw;
         }
-        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst; throw; }
+        catch (...) { loadingModuleDepth_--; moduleDoImport_ = savedDoImport; tctx().cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx().pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst; throw; }
         loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
         // JSON::Fast's to-json/from-json get a native fast path (Builtins.cpp:
         // wrapJsonFastExports) — wrapped in the MODULE env before publishing,
@@ -1497,7 +1497,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // publishes whatever it managed, and wrapping half a module helps nobody.
         if (name == "JSON::Fast") wrapJsonFastExports(*moduleEnv);
         publish();
-        tctx_.cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx_.pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
+        tctx().cur = saved; curPkgEnv_ = savedPkg; finishData_ = savedFinish; tctx().pkgPrefix = savedModPrefix; langRev_ = savedLangRev; rakuAstPragma_ = savedRakuAst;
         // What the module declares is the IMPORTING scope's when that is a block
         // or a routine: `{ use EmptyClass; my EmptyClass $foo }` leaves no
         // EmptyClass after the block (S11-modules/lexical.t). A `use` at the
@@ -1549,7 +1549,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                             if (kv.second.t == VT::Any && !kv.first.empty() && kv.first[0] == '&')
                                 continue;
                             if (importWouldShadowRoutine(kv.first, kv.second)) continue;
-                            tctx_.cur->define(kv.first, kv.second);
+                            tctx().cur->define(kv.first, kv.second);
                             // …under another name it is a lexical alias (see lexicalAliasAccepts)
                             if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
                                 g_lexTypeAlias.store(true, std::memory_order_relaxed);
@@ -1639,7 +1639,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         struct DFGuard { std::string& f; std::string s; size_t& d; size_t sd; ~DFGuard() { f = s; d = sd; } }
             dfG{curDeclFile_, curDeclFile_, curDeclDepth_, curDeclDepth_};
         curDeclFile_ = srcPath;
-        curDeclDepth_ = tctx_.callFrames.size();
+        curDeclDepth_ = tctx().callFrames.size();
         srcExportTags = scanExportTags(src);
         { // $?FILE inside the module answers as Rakudo spells it: "path (Name)"
             std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock();
@@ -2055,8 +2055,8 @@ bool Interpreter::bareNameResolves(const std::string& n, const Program& unit) {
     if (classes_.count(n) || classes_.count(rn) || subsets_.count(n) || pkgMeta_.count(n) ||
         pkgMeta_.count(rn) || isNativeTypeName(n) || enumPairs_.count(n))
         return true;
-    if (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + n)) return true;
-    if (tctx_.cur && (tctx_.cur->find(n) || tctx_.cur->find("&" + n) || tctx_.cur->find("::" + n)))
+    if (!tctx().pkgPrefix.empty() && classes_.count(tctx().pkgPrefix + n)) return true;
+    if (tctx().cur && (tctx().cur->find(n) || tctx().cur->find("&" + n) || tctx().cur->find("::" + n)))
         return true;
     return global_ && (global_->find(n) || global_->find("&" + n));
 }
@@ -2086,7 +2086,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             if (e) e->fatalPragma = -1;
         }
         ~EvalUnit() { g_evalUnits.pop_back(); if (env) env->fatalPragma = fatal; }
-    } evalUnit(tctx_.cur);
+    } evalUnit(tctx().cur);
     // a `unit module Foo;` inside the EVAL scopes the rest of THAT source, not
     // the program that ran it (roast S10-packages/basic.t: every class after
     // `EVAL 'unit module RT64688_m1; …'` was named RT64688_m1::…)
@@ -2094,7 +2094,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         ExecContext& c; std::string saved;
         PkgPrefixRestore(ExecContext& cx) : c(cx), saved(cx.pkgPrefix) {}
         ~PkgPrefixRestore() { c.pkgPrefix = saved; }
-    } pkgPrefixRestore(tctx_);
+    } pkgPrefixRestore(tctx());
     // the EVAL'd source counts its own lines from 1; the caller's statement
     // line comes back when it returns (a regex's `{ … }` and `** { … }` run
     // through here, and a failing `is` after one reported "line 1")
@@ -2131,7 +2131,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     else {
         Lexer lexer(src);
         // the caller's operator spellings, so `EVAL '"a" (C) "b"'` lexes `(C)` whole
-        for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+        for (Env* e = tctx().cur.get(); e; e = e->parent.get())
             for (auto& kv : e->vars) {
                 const std::string& n = kv.first;
                 size_t lt = n.find(":<");
@@ -2157,11 +2157,11 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             parser.src_ = &src;         // `EVAL 'use Slang::Date; 2023-01-99'` reads the slang too
             parser.libPaths_ = libPaths_;  // …and resolves it (and any operator scan) on the interpreter's own search path
             parser.strictSep_ = true; // EVAL snippets get "two terms in a row" strictness
-            parser.evalSelfInScope_ = tctx_.cur && tctx_.cur->findSelf();   // the code runs inside a method
+            parser.evalSelfInScope_ = tctx().cur && tctx().cur->findSelf();   // the code runs inside a method
             // seed user-defined operators (sub infix:<…>) so EVAL'd custom operators parse
             // — and the plain routines in scope, which parse as LISTOPS (so a `?? f !!`
             // in the snippet is the same gobbled `!!` it would be in the file)
-            for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+            for (Env* e = tctx().cur.get(); e; e = e->parent.get())
                 for (auto& kv : e->vars) {
                     const std::string& n = kv.first; // e.g. "&infix:<fromplus>"
                     if (n.size() > 1 && n[0] == '&' && n.find(':') == std::string::npos &&
@@ -2198,8 +2198,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             // `EVAL 'return 1; self!typo()'` in a method: a private method the class
             // does not have is a COMPILE-time error, raised before anything runs
             // (integration/advent2011-day11.t)
-            if (!parser.evalPrivCalls_.empty() && tctx_.cur)
-                if (Value* sp = tctx_.cur->findSelf())
+            if (!parser.evalPrivCalls_.empty() && tctx().cur)
+                if (Value* sp = tctx().cur->findSelf())
                     if (sp->t == VT::Object && sp->obj() && sp->obj()->cls)
                         for (auto& pc : parser.evalPrivCalls_)
                             if (!sp->obj()->cls->findMethod("!" + pc.first))
@@ -2238,8 +2238,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                             if (!st || st->kind != NK::Block) continue;
                             auto* b = static_cast<Block*>(st.get());
                             if (b->phaser != "BEGIN") continue;
-                            if (b->stmtForm) execBlock(b, tctx_.cur);
-                            else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                            if (b->stmtForm) execBlock(b, tctx().cur);
+                            else { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); }
                         }
                     } catch (...) {}
                 }
@@ -2363,7 +2363,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             // ee('!$y.defined'); my $y = 4`). A typed one cannot be stood in
             // for, so that is as good as undeclared (`EVAL '$x = "abc"'; my Int $x`).
             int verdict = 0;   // 1 = exists, 2 = stand-in, 3 = typed-later
-            for (Env* e = tctx_.cur.get(); e && !verdict; e = e->parent.get()) {
+            for (Env* e = tctx().cur.get(); e && !verdict; e = e->parent.get()) {
                 if (e->local(u.name)) { verdict = 1; break; }
                 if (e->declStmts) {
                     std::vector<const VarExpr*> decls;
@@ -2372,8 +2372,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                         if (v->name == u.name) { verdict = v->d().declType.empty() ? 2 : 3; break; }
                 }
             }
-            if (verdict == 1 || (verdict == 0 && tctx_.cur && tctx_.cur->find(u.name))) continue;
-            if (verdict == 2) { tctx_.cur->define(u.name, typedDefault("", u.name[0])); continue; }
+            if (verdict == 1 || (verdict == 0 && tctx().cur && tctx().cur->find(u.name))) continue;
+            if (verdict == 2) { tctx().cur->define(u.name, typedDefault("", u.name[0])); continue; }
             throwUndeclaredVar(u.name, &u.inScope);
         }
     }
@@ -2412,8 +2412,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 if (st->kind != NK::Block) continue;
                 auto* b = static_cast<Block*>(st.get());
                 if (b->phaser != want) continue;
-                if (b->stmtForm) execBlock(b, tctx_.cur);   // `BEGIN my $x = …` declares out here
-                else { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); }
+                if (b->stmtForm) execBlock(b, tctx().cur);   // `BEGIN my $x = …` declares out here
+                else { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); }
             }
         return Value::any();
     }
@@ -2444,11 +2444,11 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 auto* ve = static_cast<VarExpr*>(e);
                 if (!ve->declare || ve->d().declScope != "my" || ve->name.empty()) continue;
                 if (!ve->d().containerIs.empty() || ve->d().declTypeExpr || ve->d().declShape) continue;
-                if (!tctx_.cur->local(ve->name)) tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
+                if (!tctx().cur->local(ve->name)) tctx().cur->define(ve->name, declInitial(ve, ve->name[0]));
             }
         }
         // …and its nested BEGIN/CHECK/INIT run before its code, as the program's do
-        if (!checkOnly) runStaticPhasers(prog->stmts, tctx_.cur, /*unitIsLive=*/true);
+        if (!checkOnly) runStaticPhasers(prog->stmts, tctx().cur, /*unitIsLive=*/true);
         for (auto* b : inits) runHoistedInit(b);
     }
     // An END in EVAL'd code runs at the END of the whole program (not here),
@@ -2486,8 +2486,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         // own machinery that the declaration itself has to run
         if (!ve->declare || ve->d().declScope != "my" || ve->name.empty()) return;
         if (!ve->d().containerIs.empty() || ve->d().declTypeExpr || ve->d().declShape) return;
-        if (tctx_.cur->local(ve->name)) return;
-        tctx_.cur->define(ve->name, declInitial(ve, ve->name[0]));
+        if (tctx().cur->local(ve->name)) return;
+        tctx().cur->define(ve->name, declInitial(ve, ve->name[0]));
     };
     // An EVAL'd unit is compiled whole, so its named subs are visible from
     // its first statement on: `EVAL '&x; 1; sub x {}'`, `EVAL 'f(); sub f {…}'`
@@ -2528,8 +2528,8 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             for (size_t i = tr.size(); i-- > mark; ) { try { tr[i](); } catch (...) {} }
             tr.resize(mark);
         }
-    } evalTemps{mainlinePH ? tctx_.cur : nullptr,
-                tctx_.cur && tctx_.cur->ex ? tctx_.cur->ex->tempRestores.size() : 0};
+    } evalTemps{mainlinePH ? tctx().cur : nullptr,
+                tctx().cur && tctx().cur->ex ? tctx().cur->ex->tempRestores.size() : 0};
     // a CATCH at the unit's own top level handles what its statements throw,
     // as a block's does — the mainline of a file gets that from execBlock,
     // and an EVAL'd unit runs its statements one by one, so it is done here
@@ -2541,9 +2541,9 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 unitCatch = static_cast<Block*>(s.get());
     // registered like a block's, so an error from deeper down that runs the
     // handlers ahead of its unwinding finds this one before any outside the EVAL
-    CatchReg unitCatchReg{tctx_, unitCatch, &prog->stmts, tctx_.cur};
+    CatchReg unitCatchReg{tctx(), unitCatch, &prog->stmts, tctx().cur};
     for (auto& s : prog->stmts) {
-        tctx_.endCurTopStmt = s.get();   // for a `use` in it
+        tctx().endCurTopStmt = s.get();   // for a `use` in it
         if (prog->mayHaveRoutineUse) preloadRoutineUses(s.get());
         if (s.get() == unitCatch) continue;
         // a top-level INIT just ran above; running it again here would double it
@@ -2558,7 +2558,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         // enclosing loop cannot see through the regex engine yet (the ledger
         // entry in dev/findings/SPEC-DIVERGENCES.md, and regexBlockErrorStaysQuiet
         // reads this very message to keep such a block quiet).
-        const bool ownedOutside = mainlinePH && tctx_.curLoopFrame != ExecContext::kNoFrame;
+        const bool ownedOutside = mainlinePH && tctx().curLoopFrame != ExecContext::kNoFrame;
         predeclareStmt(s.get());   // the declaration is in scope for its own initialiser
         try {
             if (!unitCatch) last = exec(s.get());
@@ -2569,7 +2569,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 case CatchSeen::Taken:  r = replayCatchOutcome(e); break;   // it ran ahead
                 case CatchSeen::Passed: break;
                 case CatchSeen::Fresh: {
-                    CatchFence fence(tctx_, unitCatchReg.serial);
+                    CatchFence fence(tctx(), unitCatchReg.serial);
                     try { r = runBlockCatch(prog->stmts, unitCatch, e); }
                     catch (RakuError& e2) { markHandlerError(e2, unitCatchReg.serial); throw; }
                     if (r == 2) markHandlerError(e, unitCatchReg.serial);
@@ -2587,19 +2587,19 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         catch (ReturnEx&) {
             // with an enclosing routine, `return` in the EVAL returns from IT;
             // top-level it is the spec'd control-flow error
-            if (tctx_.curRoutineFrame != 0) throw;
+            if (tctx().curRoutineFrame != 0) throw;
             throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
         }
         // the cooperative flags must not leak out of a TOP-LEVEL EVAL — a phaser's
         // `return` inside an EVAL'd loop would silently unwind the whole program
-        if (tctx_.returning && tctx_.curRoutineFrame == 0) {
-            tctx_.returning = false;
+        if (tctx().returning && tctx().curRoutineFrame == 0) {
+            tctx().returning = false;
             throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
         }
-        if (tctx_.returning) return last; // enclosing routine consumes the flag
-        if (tctx_.givenCtl) return last;  // enclosing given/loop consumes the flag
-        if (tctx_.loopCtl) {
-            int c = tctx_.loopCtl; tctx_.loopCtl = 0;
+        if (tctx().returning) return last; // enclosing routine consumes the flag
+        if (tctx().givenCtl) return last;  // enclosing given/loop consumes the flag
+        if (tctx().loopCtl) {
+            int c = tctx().loopCtl; tctx().loopCtl = 0;
             // An outside loop gets the EXCEPTION form, never the flag. The flag is
             // only safe where the control word IS the statement; an EVAL is an
             // expression, so `my $x = EVAL q[last] + 1` would finish the statement
@@ -2627,7 +2627,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
 // not auto-invoke MAIN; this is the dispatch run() would have done, so a
 // program that lives in its MAIN runs the same way before the prompt opens.
 int Interpreter::replRunMain() {
-    Value* mainSub = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+    Value* mainSub = tctx().cur ? tctx().cur->find("&MAIN") : nullptr;
     if (!mainSub && global_) mainSub = global_->find("&MAIN");
     if (!mainSub || mainSub == inheritedMainBarrier_) return -1;
     ValueList margs;
@@ -2668,7 +2668,7 @@ void Interpreter::traceStmt(Stmt* s) {
         if (u->isNo || loadedModules_.count(u->module)) return;
     }
     std::string file;
-    auto& fr = tctx_.callFrames;
+    auto& fr = tctx().callFrames;
     if (!fr.empty() && fr.back().code) {
         auto c = fr.back().code->codeS();
         if (c) file = c->ci().declFile;
@@ -2706,7 +2706,7 @@ void Interpreter::traceStmt(Stmt* s) {
 // spelling: that is for $?FILE, while this path gets OPENED to print the
 // excerpt under the frame.
 std::string Interpreter::declFileNow() {
-    auto& fr = tctx_.callFrames;
+    auto& fr = tctx().callFrames;
     if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
         if (const Value* cv = fr.back().code)
             if (auto c = cv->codeS())
@@ -2718,7 +2718,7 @@ std::string Interpreter::declFileNow() {
 // (already interned) file, or the top level's, interned once per change of it
 // — so a closure made in a loop copies four bytes, where it copied the path.
 IStr Interpreter::declFileNowI() {
-    auto& fr = tctx_.callFrames;
+    auto& fr = tctx().callFrames;
     if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
         if (const Value* cv = fr.back().code)
             if (auto c = cv->codeS())
@@ -2732,7 +2732,7 @@ IStr Interpreter::declFileNowI() {
 
 std::string Interpreter::fileConstNow() {
     std::string f;
-    auto& fr = tctx_.callFrames;
+    auto& fr = tctx().callFrames;
     if (!fr.empty() && (curDeclFile_.empty() || fr.size() > curDeclDepth_))
         if (const Value* cv = fr.back().code)
             if (auto c = cv->codeS()) f = c->ci().declFile;
@@ -2754,10 +2754,10 @@ std::string Interpreter::fileConstNow() {
 
 void Interpreter::replStart(std::vector<std::string> args) {
     argv_ = std::move(args);
-    tctx_.curStateEnv = global_.get(); // mainline `state` vars live in the session scope
+    tctx().curStateEnv = global_.get(); // mainline `state` vars live in the session scope
     Value a = Value::array();
     for (auto& s : argv_) a.arr()->push_back(Value::str(s));
-    tctx_.cur->define("@*ARGS", a);
+    tctx().cur->define("@*ARGS", a);
 }
 
 void Interpreter::replFinish() {
@@ -2775,7 +2775,7 @@ void Interpreter::replFinish() {
 
 std::vector<std::string> Interpreter::replNames() const {
     std::vector<std::string> out;
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         e->forEachVar([&](const std::string& n, Value&) { out.push_back(n); });
     for (auto& kv : classes_)  out.push_back(kv.first);
     for (auto& kv : subsets_)  out.push_back(kv.first);
@@ -2903,12 +2903,12 @@ void Interpreter::captureEndScope(Block* b) {
         std::vector<std::string> declared;
         blockDeclNames(b->stmts, declared);
         for (auto& n : declared)
-            if (!tctx_.cur->find(n))
-                tctx_.cur->define(n, n[0] == '@' ? Value::array() : n[0] == '%' ? Value::makeHash() : Value::any());
+            if (!tctx().cur->find(n))
+                tctx().cur->define(n, n[0] == '@' ? Value::array() : n[0] == '%' ? Value::makeHash() : Value::any());
     }
     std::lock_guard<std::mutex> g(endPhaserMut_); // any thread may enter the block
     if (b->endSlot >= 0 && (size_t)b->endSlot < endPhasers_.size()) {
-        endPhasers_[b->endSlot].env = tctx_.cur;
+        endPhasers_[b->endSlot].env = tctx().cur;
         endPhasers_[b->endSlot].entered = true;
     }
 }
@@ -2961,27 +2961,27 @@ void Interpreter::runEndBody(const EndPhaser& e) {
 // loaded at the SAME position (`use A; use B;` with no END between them), in
 // load order — which is compile order, so B's ENDs still run before A's.
 Interpreter::EndUnitScope::EndUnitScope(Interpreter& i, bool atSourcePosition)
-    : I(i), key(i.tctx_.endUnitKey), before(i.tctx_.endsBeforeStmt), cur(i.tctx_.endCurTopStmt) {
-    auto& K = I.tctx_.endUnitKey;
+    : I(i), key(i.tctx().endUnitKey), before(i.tctx().endsBeforeStmt), cur(i.tctx().endCurTopStmt) {
+    auto& K = I.tctx().endUnitKey;
     if (!atSourcePosition) {   // an EVAL: registered when it runs, after everything compiled
         K.clear();
         K.push_back(std::numeric_limits<int>::max());
     }
     else {
         int c = 0;   // how many of the loader's own ENDs are written above the statement loading us
-        if (I.tctx_.endCurTopStmt) {
-            auto it = I.tctx_.endsBeforeStmt.find(I.tctx_.endCurTopStmt);
-            if (it != I.tctx_.endsBeforeStmt.end()) c = it->second;
+        if (I.tctx().endCurTopStmt) {
+            auto it = I.tctx().endsBeforeStmt.find(I.tctx().endCurTopStmt);
+            if (it != I.tctx().endsBeforeStmt.end()) c = it->second;
         }
         K.push_back(c - 1);      // -1: loaded above the loader's first END
     }
     K.push_back(I.endUnitSeq_.fetch_add(1, std::memory_order_relaxed));
-    I.tctx_.endsBeforeStmt.clear();
-    I.tctx_.endCurTopStmt = nullptr;
+    I.tctx().endsBeforeStmt.clear();
+    I.tctx().endCurTopStmt = nullptr;
 }
 Interpreter::EndUnitScope::~EndUnitScope() {
-    I.tctx_.endUnitKey = std::move(key); I.tctx_.endsBeforeStmt = std::move(before);
-    I.tctx_.endCurTopStmt = cur;
+    I.tctx().endUnitKey = std::move(key); I.tctx().endsBeforeStmt = std::move(before);
+    I.tctx().endCurTopStmt = cur;
 }
 
 // Every END of a unit, at any depth, in source order. Registration is what
@@ -2995,17 +2995,17 @@ void Interpreter::registerEnds(const Program& prog) {
     // …and, per top-level statement, how many of this unit's ENDs are written
     // ABOVE it — what a `use` in that statement needs to place its module.
     for (auto& s : prog.stmts) {
-        tctx_.endsBeforeStmt[s.get()] = (int)ends.size();
+        tctx().endsBeforeStmt[s.get()] = (int)ends.size();
         collectPhasersStmt(s.get(), "END", ends);
     }
     std::lock_guard<std::mutex> g(endPhaserMut_);
     for (size_t i = 0; i < ends.size(); i++) {
         Block* b = ends[i];
         if (b->endSlot >= 0) continue;   // already registered (this unit is being re-entered)
-        std::vector<int> key = tctx_.endUnitKey;
+        std::vector<int> key = tctx().endUnitKey;
         key.push_back((int)i);
         b->endSlot = (int)endPhasers_.size();
-        endPhasers_.push_back({b, tctx_.cur, std::move(key), /*entered=*/false});
+        endPhasers_.push_back({b, tctx().cur, std::move(key), /*entered=*/false});
     }
     for (auto& e : g_endEdges) {
         if (e.second->endSlot < 0) continue;
@@ -3018,11 +3018,11 @@ void Interpreter::registerEnds(const Program& prog) {
 }
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "FIRST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        if (b->phaser == "FIRST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); } }
 }
 void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "LAST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc); } }
+        if (b->phaser == "LAST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); } }
 }
 // The `my` names a statement list declares at ITS OWN level (an inner block's
 // declarations belong to that block). Used to give a LEAVE/KEEP/UNDO body the
@@ -3067,7 +3067,7 @@ void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>&
 }
 
 [[gnu::noinline]] int Interpreter::runBlockCatch(const std::vector<StmtPtr>& stmts, Block* catchBlk, RakuError& e) {
-    ExecContext& tcx = tctx_;
+    ExecContext& tcx = tctx();
     declareSkippedLexicals(stmts, tcx.cur.get());
     tcx.cur->define("$_", exceptionFor(e));
     tcx.cur->define("$!", exceptionFor(e));
@@ -3133,7 +3133,7 @@ std::atomic<uint64_t> g_catchSerial{0};
 // block: one it has not seen, one it handled ahead of the unwinding (its
 // block now finishes the job), or one it has run for and passed on.
 Interpreter::CatchSeen Interpreter::catchSeen(uint64_t serial, RakuError& e) {
-    if (!e.dispCtx || e.dispCtx != ctxIdOf(tctx_)) return CatchSeen::Fresh;
+    if (!e.dispCtx || e.dispCtx != ctxIdOf(tctx())) return CatchSeen::Fresh;
     if (e.takenBy == serial) return CatchSeen::Taken;
     if (serial >= e.seenTo) return CatchSeen::Passed;
     return CatchSeen::Fresh;
@@ -3142,7 +3142,7 @@ Interpreter::CatchSeen Interpreter::catchSeen(uint64_t serial, RakuError& e) {
 // The handler `serial` has run for `e` and not taken it — or raised `e`
 // itself, which no handler from it inward may take.
 void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
-    const uint64_t id = ctxIdOf(tctx_);
+    const uint64_t id = ctxIdOf(tctx());
     if (e.dispCtx != id) { e.dispCtx = id; e.seenTo = serial; e.takenBy = 0; e.outcome.reset(); }
     else if (e.seenTo > serial) e.seenTo = serial;
 }
@@ -3162,7 +3162,7 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
 // carries on after the statement); 2: a handler died, and `e` is now that
 // error, already offered to the handlers further out.
 [[gnu::noinline]] int Interpreter::dispatchBeforeUnwind(RakuError& e, bool canResume) {
-    ExecContext& tcx = tctx_;
+    ExecContext& tcx = tctx();
     if (tcx.catchFrames.empty()) return 0;
     const uint64_t id = ctxIdOf(tcx);
     if (e.dispCtx != id) { e.dispCtx = id; e.seenTo = ~uint64_t(0); e.takenBy = 0; e.outcome.reset(); }
@@ -3234,7 +3234,7 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
     if (!o) return 0;
     if (o->ctl) std::rethrow_exception(o->ctl);
     if (o->resume) return 1;
-    ExecContext& tcx = tctx_;
+    ExecContext& tcx = tctx();
     if (o->loopCtl) { tcx.loopCtl = o->loopCtl; tcx.loopCtlLabel = nullptr; }
     if (o->returning) { tcx.returning = true; tcx.returnV = std::move(o->returnV); }
     return 0;
@@ -3268,12 +3268,12 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
         Expr* e = static_cast<ExprStmt*>(s)->e.get();
         if (e && e->kind == NK::Call) {
             auto* c = static_cast<Call*>(e);
-            if (!c->callee && c->name == "die" && !tctx_.cur->find(callAmpName(c))) {
+            if (!c->callee && c->name == "die" && !tctx().cur->find(callAmpName(c))) {
                 auto rit = builtinRefs_.find(c->name);
                 if (rit == builtinRefs_.end() || !rit->second.code() || rit->second.code()->cold().wrappers.empty()) {
                     if (s->line > 0) curLine_ = s->line;
                     if (g_traceStmts) traceStmt(s);
-                    tctx_.curStmtExpr = e;
+                    tctx().curStmtExpr = e;
                     if (e->line > 0) curLine_ = e->line;
                     ValueList args = evalArgs(c->args);
                     for (auto& a : args) if (a.t == VT::Array) a.seqTouch();
@@ -3296,18 +3296,18 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
 // is X::ControlFlow::Return — the same contract as the in-loop phaser runners.
 void Interpreter::runLoopLast(Block* body, const std::shared_ptr<Env>& scope) {
     if (!body) return;
-    auto saved = tctx_.cur; tctx_.cur = scope;
+    auto saved = tctx().cur; tctx().cur = scope;
     try { runLastPhasers(body->stmts); }
     catch (ReturnEx&) {
-        tctx_.cur = saved;
-        if (tctx_.curRoutineFrame != 0) throw; // the enclosing routine consumes it
+        tctx().cur = saved;
+        if (tctx().curRoutineFrame != 0) throw; // the enclosing routine consumes it
         throw RakuError{Value::typeObj("X::ControlFlow::Return"),
                         "Attempt to return outside of any Routine"};
     }
-    catch (...) { tctx_.cur = saved; throw; }
-    tctx_.cur = saved;
-    if (tctx_.returning && tctx_.curRoutineFrame == 0) {
-        tctx_.returning = false;
+    catch (...) { tctx().cur = saved; throw; }
+    tctx().cur = saved;
+    if (tctx().returning && tctx().curRoutineFrame == 0) {
+        tctx().returning = false;
         throw RakuError{Value::typeObj("X::ControlFlow::Return"),
                         "Attempt to return outside of any Routine"};
     }
@@ -3343,7 +3343,7 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
         size_t cur = a.load();
         while (v < cur && !a.compare_exchange_weak(cur, v)) {}
     };
-    auto loopScope = tctx_.cur;
+    auto loopScope = tctx().cur;
     const bool keep = collect != nullptr;
     Value work; work.t = VT::Code; work.setCode(makePayload<Callable>());
     // (`worker` is the caller's, alive until every worker has finished)
@@ -3354,8 +3354,8 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
         // the current scope — one more shared count per iteration
         auto own = makeSlabShared<Env>();
         own->parent = loopScope;
-        struct CurG { std::shared_ptr<Env> s; ~CurG() { tctx_.cur = std::move(s); } } curG{tctx_.cur};
-        tctx_.cur = own;
+        struct CurG { std::shared_ptr<Env> s; ~CurG() { tctx().cur = std::move(s); } } curG{tctx().cur};
+        tctx().cur = own;
         ParIter iter = worker();
         for (;;) {
             const size_t b = run->next.fetch_add(1);
@@ -3427,7 +3427,7 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
 // routine's from several threads at once.
 void Interpreter::runHyperLoop(ForStmt* fs, size_t n, const HyperBind& bind,
                                const HyperBind& writeBack, ValueList* collect) {
-    auto loopScope = tctx_.cur;
+    auto loopScope = tctx().cur;
     Block* body = fs->body.get();
     const std::string label = fs->label;
     // a worker's own `$/` starts as the one the loop sees: a match made before
@@ -3710,7 +3710,7 @@ std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
         for (auto& tn : unit->declaredTermNames)
             if (!tn.empty() && ascii::isupper((unsigned char)tn[0])) cands.push_back(tn);
     // …and the enum values in scope (an EVAL's own unit is not the one above)
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         for (auto& kv : e->vars)
             if (!kv.first.empty() && ascii::isupper((unsigned char)kv.first[0]) &&
                 kv.first.find("::") == std::string::npos &&   // (not its `E::` twin)
@@ -3728,7 +3728,7 @@ std::vector<std::string> Interpreter::routineSuggestions(const std::string& name
         if (!kv.first.empty() && kv.first[0] != '_' && kv.first.find(':') == std::string::npos &&
             builtinVisible(kv.first))
             cands.push_back(kv.first);
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get()) {
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
         for (auto& kv : e->vars)
             if (kv.first.size() > 1 && kv.first[0] == '&') cands.push_back(kv.first.substr(1));
         if (e->layout)
@@ -3843,17 +3843,17 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
                 if (!ok) return false;
             }
             if (p->whereExpr) {
-                auto env = makeSlabShared<Env>(); env->parent = tctx_.cur;
+                auto env = makeSlabShared<Env>(); env->parent = tctx().cur;
                 env->define("$_", av[i]);
                 if (!p->name.empty()) env->define(p->name, av[i]);
-                auto saved = tctx_.cur; tctx_.cur = env;
+                auto saved = tctx().cur; tctx().cur = env;
                 bool ok = true;
                 try {
                     Value cv = eval(p->whereExpr.get());
                     if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{av[i]}));
                     else ok = boolify(smartmatchValue("~~", av[i], cv));
                 } catch (RakuError&) { ok = false; }
-                tctx_.cur = saved;
+                tctx().cur = saved;
                 if (!ok) return false;
             }
         }
@@ -4006,10 +4006,10 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
         }
         for (auto& ra : role->decl->roleArgs) {
             ValueList rv;
-            auto saved = tctx_.cur; tctx_.cur = penv;
+            auto saved = tctx().cur; tctx().cur = penv;
             bool ok = true;
             try { for (auto& e : ra.second) rv.push_back(eval(e.get())); } catch (...) { ok = false; }
-            tctx_.cur = saved;
+            tctx().cur = saved;
             if (!ok || rv.empty()) continue;
             std::string disp = roleArgsDisplay(ra.first, rv);
             if (disp != ra.first) pun->doneRoles.insert(disp);
@@ -4218,15 +4218,15 @@ void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, C
         }
         if (!rargs || rargs->empty()) return;
         ValueList argv;
-        auto saved = tctx_.cur; tctx_.cur = penv;
+        auto saved = tctx().cur; tctx().cur = penv;
         try {
             for (auto& e : *rargs) {
                 Value v = eval(e.get());
                 if (syntacticNamedPair(&*e)) v.namedArg = true;
                 argv.push_back(std::move(v));
             }
-        } catch (RakuError&) { tctx_.cur = saved; return; }
-        tctx_.cur = saved;
+        } catch (RakuError&) { tctx().cur = saved; return; }
+        tctx().cur = saved;
         auto inner = concretizeRole(slot, argv, penv);
         if (inner == slot) return;
         const std::string disp = roleArgsDisplay(slot->name, argv);
@@ -4254,7 +4254,7 @@ ClassInfo* Interpreter::qualifiedConcretization(const Value& inv, const std::str
 }
 
 bool Interpreter::valueBoundVar(const std::string& name) {
-    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         if (e->local(name)) return e->xr().varValueBound.count(name) > 0;
     return false;
 }
@@ -4613,15 +4613,15 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 return I.regexMatch(I.rxSubject(a[0]), pat, selfV.t == VT::Code ? &selfV : nullptr, kind);
             };
             regexRoutineSrc_[code.code()] = {pat, kind};  // recoverable from `&name`
-            tctx_.cur->define("&" + nr->name, code);
+            tctx().cur->define("&" + nr->name, code);
             return Value::any();
         }
         case NK::SubsetDecl: {
             auto* sd = static_cast<SubsetDecl*>(s);
             if (!sd->pod.empty() && !sd->name.empty()) { // `#| …` — EvenNum.WHY
-                pkgPod_[tctx_.pkgPrefix + sd->name] = sd->pod;
-                pkgPodTrail_[tctx_.pkgPrefix + sd->name] = sd->podTrail;
-                if (!tctx_.pkgPrefix.empty()) { pkgPod_[sd->name] = sd->pod; pkgPodTrail_[sd->name] = sd->podTrail; }
+                pkgPod_[tctx().pkgPrefix + sd->name] = sd->pod;
+                pkgPodTrail_[tctx().pkgPrefix + sd->name] = sd->podTrail;
+                if (!tctx().pkgPrefix.empty()) { pkgPod_[sd->name] = sd->pod; pkgPodTrail_[sd->name] = sd->podTrail; }
             }
             if (!sd->name.empty()) {
                 SubsetInfo info{sd->baseType, sd->where.get()};
@@ -4629,7 +4629,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 info.defConstraint = sd->defConstraint;   // `of Str:D`
                 info.coerce = sd->coerceBase;             // `of Str()`
                 info.coerceFrom = sd->coerceFrom;         // `of Num(Str)`
-                info.declEnv = tctx_.cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
+                info.declEnv = tctx().cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
                 // A subset declared inside a package is that package's: it must
                 // not take a CORE type's name over for everyone else. Cro::HTTP::
                 // Request's `subset Method of Str where /^<[A..Z]>+$/` turned
@@ -4637,7 +4637,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // uppercase-string check (Cromponent's `is controller` traits
                 // stopped matching any method). Its own body still finds it by
                 // the short name (resolveAttrTypeAlias).
-                const bool shadowsCore = !tctx_.pkgPrefix.empty() && !sd->isMy &&
+                const bool shadowsCore = !tctx().pkgPrefix.empty() && !sd->isMy &&
                                          isKnownTypeName(sd->name) && !subsets_.count(sd->name);
                 if (!shadowsCore) subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
@@ -4646,7 +4646,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // False for every value — including ones the subset accepts.
                 // (not a `my subset`, which stays inside its package: `module M
                 // { my subset F … }; my M::F $f` is "Type 'M::F' is not declared")
-                if (!tctx_.pkgPrefix.empty() && !sd->isMy) subsets_[tctx_.pkgPrefix + sd->name] = info;
+                if (!tctx().pkgPrefix.empty() && !sd->isMy) subsets_[tctx().pkgPrefix + sd->name] = info;
             }
             return Value::any();
         }
@@ -4665,18 +4665,18 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // file around it). `use strict` is the same switch the other way —
             // it turns the check back on inside a lax file.
             if (u->module == "strict") {
-                if (tctx_.cur) tctx_.cur->strictPragma = u->isNo ? 1 : -1;
+                if (tctx().cur) tctx().cur->strictPragma = u->isNo ? 1 : -1;
                 return Value::any();
             }
             // `use fatal`: from here on in this scope, a returned Failure throws
             if (u->module == "fatal") {
-                if (tctx_.cur) tctx_.cur->fatalPragma = u->isNo ? -1 : 1;
+                if (tctx().cur) tctx().cur->fatalPragma = u->isNo ? -1 : 1;
                 return Value::any();
             }
             // `no MONKEY-SEE-NO-EVAL` — a string interpolated into a regex
             // (`<$x>`) is compiled RESTRICTED in this scope: no code in it
-            if ((u->module == "MONKEY-SEE-NO-EVAL" || u->module == "MONKEY") && tctx_.cur) {
-                tctx_.cur->define("$?NO-MONKEY-SEE-NO-EVAL", Value::boolean(u->isNo));
+            if ((u->module == "MONKEY-SEE-NO-EVAL" || u->module == "MONKEY") && tctx().cur) {
+                tctx().cur->define("$?NO-MONKEY-SEE-NO-EVAL", Value::boolean(u->isNo));
                 return Value::any();
             }
             // `use experimental :rakuast` — the one experimental feature rakupp
@@ -4763,7 +4763,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 for (const char* n : nctNames)
                     global_->define(std::string("NativeCall::Types::") + n, Value::typeObj(n));
             }
-            if (u->module == "Test") { usedTest_ = true; if (tctx_.cur) tctx_.cur->define("\x01import:Test", Value::boolean(true)); }   // (stash marker: makePseudoStash)
+            if (u->module == "Test") { usedTest_ = true; if (tctx().cur) tctx().cur->define("\x01import:Test", Value::boolean(true)); }   // (stash marker: makePseudoStash)
             else if (u->module.size() >= 2 && u->module[0] == 'v' && ascii::isdigit((unsigned char)u->module[1])) {
                 // language version pragma: use v6.c / v6.d / v6.e[.PREVIEW]
                 // A BARE `use v6;` asks for "some Raku 6", which means the
@@ -4874,8 +4874,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         bool exported = ci->decl && ci->decl->isExport;
                         for (auto& v : ci->roleVariants)
                             if (v && v->decl && v->decl->isExport) exported = true;
-                        if (exported && !tctx_.cur->local(shortName))
-                            tctx_.cur->define(shortName, Value::typeObj(kv.first));
+                        if (exported && !tctx().cur->local(shortName))
+                            tctx().cur->define(shortName, Value::typeObj(kv.first));
                     }
                     // The routines come from the package's EXPORT stash — the tags
                     // asked for (DEFAULT and MANDATORY when none is named, every
@@ -4895,7 +4895,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         if (!wantNames.empty()) tags.insert("ALL");
                         for (auto& tg : tags) exportPfx.push_back("&" + pfx + "EXPORT::" + tg + "::");
                     }
-                    for (Env* e = tctx_.cur.get(); e; e = e->parent.get())
+                    for (Env* e = tctx().cur.get(); e; e = e->parent.get())
                         for (auto& kv : e->vars) {
                             if (kv.first.size() <= pfx.size() + 1 || kv.first[0] != '&') continue;
                             std::string bare;
@@ -4910,21 +4910,21 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                                 kv.first.find("::EXPORT::ALL::") != std::string::npos &&
                                 !std::count(u->importArgs.begin(), u->importArgs.end(), std::string("ALL")))
                                 continue;
-                            Value* have = tctx_.cur->find(bare);
-                            if (!have) { tctx_.cur->define(bare, kv.second); continue; }
+                            Value* have = tctx().cur->find(bare);
+                            if (!have) { tctx().cur->define(bare, kv.second); continue; }
                             // an imported MULTI joins the multi already in scope:
                             // this scope's own group, or a new one here that starts
                             // from the outer group's candidates
                             if (have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
                                 kv.second.t == VT::Code && kv.second.code() &&
                                 kv.second.code()->ci().isMultiDispatcher && have->code() != kv.second.code()) {
-                                if (tctx_.cur->local(bare) != have) {
+                                if (tctx().cur->local(bare) != have) {
                                     Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                                     fresh.code()->ciM().name = have->code()->ci().name;
                                     fresh.code()->ciM().isMultiDispatcher = true;
                                     fresh.code()->coldM().candidates = have->code()->cold().candidates;
-                                    tctx_.cur->define(bare, fresh);
-                                    have = tctx_.cur->local(bare);
+                                    tctx().cur->define(bare, fresh);
+                                    have = tctx().cur->local(bare);
                                 }
                                 auto& cands = have->code()->coldM().candidates;
                                 for (auto& c : kv.second.code()->cold().candidates) {
@@ -4954,7 +4954,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     std::string joined;
                     for (auto& sym : u->importArgs) {
                         if (sym.empty()) continue;
-                        if ((tctx_.cur && tctx_.cur->find(sym)) || (global_ && global_->vars.count(sym))) continue;
+                        if ((tctx().cur && tctx().cur->find(sym)) || (global_ && global_->vars.count(sym))) continue;
                         missing.arr()->push_back(Value::str(sym));
                         joined += (joined.empty() ? "" : ", ") + sym;
                     }
@@ -4996,7 +4996,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // (Cro::Uri) — and `use Mod :decode-percents` imports what that
                 // package holds. Only a tag the `use` names, and never over a name
                 // already in scope.
-                if (!u->isNeed && !u->emptyImport && !u->isRequire && global_ && tctx_.cur)
+                if (!u->isNeed && !u->emptyImport && !u->isRequire && global_ && tctx().cur)
                     for (auto& tag : u->importArgs) {
                         if (tag.empty() || std::strchr("&$@%", tag[0]) || tag.find(':') != std::string::npos ||
                             tag == "DEFAULT" || tag == "ALL" || tag == "MANDATORY") continue;
@@ -5004,8 +5004,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         for (auto& kv : global_->vars) {
                             if (kv.first.size() <= pfx.size() || kv.first.compare(0, pfx.size(), pfx) != 0) continue;
                             std::string bare = "&" + kv.first.substr(pfx.size());
-                            if (bare.find("::") != std::string::npos || tctx_.cur->local(bare)) continue;
-                            tctx_.cur->define(bare, kv.second);
+                            if (bare.find("::") != std::string::npos || tctx().cur->local(bare)) continue;
+                            tctx().cur->define(bare, kv.second);
                         }
                     }
                 // `use Mod <name:alias>` — import that routine under a second name.
@@ -5015,10 +5015,10 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     size_t c = ia.find(':');
                     if (c == std::string::npos || c == 0 || c + 1 >= ia.size()) continue;
                     std::string orig = "&" + ia.substr(0, c), alias = "&" + ia.substr(c + 1);
-                    Value* src = tctx_.cur ? tctx_.cur->find(orig) : nullptr;
+                    Value* src = tctx().cur ? tctx().cur->find(orig) : nullptr;
                     if (!src && global_) { auto it = global_->vars.find(orig); if (it != global_->vars.end()) src = &it->second; }
                     if (!src) continue;
-                    if (tctx_.cur) tctx_.cur->define(alias, *src);
+                    if (tctx().cur) tctx().cur->define(alias, *src);
                     if (global_) global_->define(alias, *src);
                 }
             }
@@ -5039,13 +5039,13 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
                 c.code()->ciM().name = sname;
                 c.code()->ciM().pkg = !sd->pkgOfExport.empty() ? sd->pkgOfExport
-                            : tctx_.pkgPrefix.empty() ? "GLOBAL"
-                            : tctx_.pkgPrefix.substr(0, tctx_.pkgPrefix.size() - 2); // strip trailing ::
+                            : tctx().pkgPrefix.empty() ? "GLOBAL"
+                            : tctx().pkgPrefix.substr(0, tctx().pkgPrefix.size() - 2); // strip trailing ::
                 c.code()->ciM().params = prms;
                 c.code()->ciM().body = &sd->body;
                 c.code()->ciM().langRev = langRev_;
                 c.code()->ciM().rakuAst = rakuAstPragma_;
-                c.code()->closure = tctx_.cur;
+                c.code()->closure = tctx().cur;
                 if (sd->retLiteralPresent && !sd->body.empty() && sd->body.back()->kind == NK::ExprStmt)
                     c.code()->ciM().retLiteral = static_cast<const ExprStmt*>(sd->body.back().get())->e.get();
                 // `sub foo(A $a)` where A is a package or module: no type
@@ -5076,8 +5076,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         rn.find('[') == std::string::npos && rn.find(':') == std::string::npos &&
                         !classes_.count(rn) && !isKnownTypeName(rn) && !subsets_.count(rn) &&
                         !isNativeTypeName(rn) && !classes_.count(resolveClassAlias(rn)) &&
-                        !(!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + rn)) &&
-                        !tctx_.cur->find(rn))
+                        !(!tctx().pkgPrefix.empty() && classes_.count(tctx().pkgPrefix + rn)) &&
+                        !tctx().cur->find(rn))
                         throwTypedV("X::InvalidType", {{"typename", Value::str(rn)}},
                                     "Invalid typename '" + rn + "'");
                 }
@@ -5259,7 +5259,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // Skipped while hoisting — traits run at the declaration's textual
             // position (see the hoist-skip sites), after earlier `my`s initialized.
             if (!sd->traits.empty() && !hoistingSubs_) {
-                if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
+                if (Value* tm = tctx().cur->find("&trait_mod:<is>")) {
                     if (tm->t == VT::Code) for (auto& st : sd->traits) callRoutineTrait(*tm, code, st);
                 }
                 // no `trait_mod:<is>` anywhere: `sub yulia is krassivaya {}` is an
@@ -5276,7 +5276,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // `(sig1) | (sig2)` is ONE routine with alternative signatures — its
             // candidates share a single `state`-variable store.
             if (!sd->altParams.empty()) {
-                auto shared = makeSlabShared<Env>(); shared->parent = tctx_.cur;
+                auto shared = makeSlabShared<Env>(); shared->parent = tctx().cur;
                 auto share = [&](Value& c) { std::call_once(c.code()->state.init, [&] { c.code()->state.env = shared; }); };
                 share(code);
                 for (auto& c : altCands) share(c);
@@ -5284,7 +5284,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             if (!sname.empty()) {
                 if (sd->isMulti || !sd->altParams.empty()) {
                     std::string key = "&" + sname;
-                    Value* existing = tctx_.cur->find(key);
+                    Value* existing = tctx().cur->find(key);
                     Callable* disp;
                     Value dispVal;
                     // A group from an OUTER scope is not this scope's to grow:
@@ -5294,13 +5294,13 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     // Joining the outer group leaked inner candidates out of the
                     // block, and a proto could not isolate them at all.
                     if (existing && existing->t == VT::Code && existing->code() &&
-                        existing->code()->ci().isMultiDispatcher && tctx_.cur->local(key) != existing) {
+                        existing->code()->ci().isMultiDispatcher && tctx().cur->local(key) != existing) {
                         Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                         fresh.code()->ciM().name = sname;
                         fresh.code()->ciM().isMultiDispatcher = true;
                         if (!sd->isProto) fresh.code()->coldM().candidates = existing->code()->cold().candidates;
-                        tctx_.cur->define(key, fresh);
-                        existing = tctx_.cur->local(key);
+                        tctx().cur->define(key, fresh);
+                        existing = tctx().cur->local(key);
                     }
                     if (existing && existing->t == VT::Code && existing->code() && existing->code()->ci().isMultiDispatcher) {
                         disp = existing->code(); dispVal = *existing;
@@ -5309,7 +5309,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         dispVal.code()->ciM().name = sname;
                         dispVal.code()->ciM().isMultiDispatcher = true;
                         disp = dispVal.code();
-                        tctx_.cur->define(key, dispVal);
+                        tctx().cur->define(key, dispVal);
                     }
                     // the group is where its PROTO was written: `&zp.file` / `.line`
                     if (sd->isProto && code.code() && disp) {
@@ -5333,23 +5333,23 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     };
                     // (a proto TERM hides the outer candidates a hoisted multi copied in;
                     // the dispatch cache may hold an index into the old list)
-                    if (sd->isProto && protoHidesOuterCandidates(tctx_.cur.get(), disp, code, key))
+                    if (sd->isProto && protoHidesOuterCandidates(tctx().cur.get(), disp, code, key))
                         noteSymbolMutation("proto hides outer candidates");
                     joins(code);
-                    if (sd->isMethod && sd->isMulti) methodTermJoinsClass(classes_, tctx_.pkgPrefix, sname, code);
+                    if (sd->isMethod && sd->isMulti) methodTermJoinsClass(classes_, tctx().pkgPrefix, sname, code);
                     for (auto& c : altCands) joins(c);
                     // `our proto`/`our multi` in a package: the GROUP is published
                     // under the qualified name, as a plain `our sub` is below
-                    if (sd->isOur && !tctx_.pkgPrefix.empty() && global_)
-                        global_->define("&" + tctx_.pkgPrefix + sname, dispVal);
+                    if (sd->isOur && !tctx().pkgPrefix.empty() && global_)
+                        global_->define("&" + tctx().pkgPrefix + sname, dispVal);
                     // …and an exported one is in its package's EXPORT tags, as a
                     // plain exported sub is below (what `import` consults)
-                    if (sd->isExport && !sd->isMethod && global_ && !tctx_.pkgPrefix.empty()) {
+                    if (sd->isExport && !sd->isMethod && global_ && !tctx().pkgPrefix.empty()) {
                         std::set<std::string> tags(sd->exportTags.begin(), sd->exportTags.end());
                         if (tags.empty()) tags.insert("DEFAULT");
                         tags.insert("ALL");
                         for (auto& tg : tags)
-                            global_->define("&" + tctx_.pkgPrefix + "EXPORT::" + tg + "::" + sname, dispVal);
+                            global_->define("&" + tctx().pkgPrefix + "EXPORT::" + tg + "::" + sname, dispVal);
                     }
                     return dispVal;
                 }
@@ -5357,10 +5357,10 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // to the class all the same (Rakudo installs it in $?PACKAGE),
                 // closing over the frame that declared it: `method foo { my $a
                 // = 42; method bar { $a } }` — `.bar` after `.foo` answers 42
-                if (sd->isMethod && !sd->isPrivate && !hoistingSubs_ && tctx_.curRoutineVal &&
-                    tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code() &&
-                    tctx_.curRoutineVal->code()->ci().isMethod) {
-                    auto ci = classes_.find(tctx_.curRoutineVal->code()->ci().pkg);
+                if (sd->isMethod && !sd->isPrivate && !hoistingSubs_ && tctx().curRoutineVal &&
+                    tctx().curRoutineVal->t == VT::Code && tctx().curRoutineVal->code() &&
+                    tctx().curRoutineVal->code()->ci().isMethod) {
+                    auto ci = classes_.find(tctx().curRoutineVal->code()->ci().pkg);
                     if (ci != classes_.end() && ci->second && !ci->second->isRole) {
                         code.code()->ciM().pkg = ci->second->name;
                         ci->second->methods[sname] = code;
@@ -5370,14 +5370,14 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // a stub (`sub f { ... }` exported by the module): overriding a real
                 // one is X::Redeclaration, as it is for a local one
                 if (!sd->isMulti && !sd->isProto && !sd->isMethod && !hoistingSubs_)
-                    if (Value* prev = tctx_.cur->local("&" + sname))
+                    if (Value* prev = tctx().cur->local("&" + sname))
                         if (prev->t == VT::Code && prev->code() && code.code() && routineFromElsewhere(*prev) &&
                             !prev->code()->ci().isStub && !prev->code()->ci().isMultiDispatcher &&
                             prev->code()->ci().body && prev->code()->ci().body != code.code()->ci().body)
                             throwTypedV("X::Redeclaration",
                                 {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
                                 "Redeclaration of routine '" + sname + "'");
-                tctx_.cur->define("&" + sname, code);
+                tctx().cur->define("&" + sname, code);
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
                 // …but in a CLASS or ROLE body the package is that type: the sub
@@ -5386,9 +5386,9 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // (HTTP::UserAgent beside its own `method get`)
                 bool inTypeBody = false;
                 if (sd->isOur && curPkgEnv_)
-                    for (Env* e = tctx_.cur.get(); e && e != curPkgEnv_.get(); e = e->parent.get())
+                    for (Env* e = tctx().cur.get(); e && e != curPkgEnv_.get(); e = e->parent.get())
                         if (e->packageFrame) { inTypeBody = !e->xr().pkgType.expired(); break; }
-                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx_.cur && !inTypeBody) {
+                if (sd->isOur && curPkgEnv_ && curPkgEnv_ != tctx().cur && !inTypeBody) {
                     // a DIFFERENT `our sub` of the same name already owns the
                     // package slot: `{ our sub foo {…} }; { our sub foo {…} }`
                     if (!sd->isMulti && !sd->isProto && !sd->isMethod) {   // methods live in their class
@@ -5405,7 +5405,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     // …but one an EVAL declared at the top level is in the PACKAGE,
                     // not in any later unit's lexical scope: `EVAL 'our sub f {…}';
                     // EVAL 'f()'` is X::Undeclared::Symbols (S02-names/our.t)
-                    if (!g_evalUnits.empty() && curPkgEnv_ == global_ && tctx_.pkgPrefix.empty() &&
+                    if (!g_evalUnits.empty() && curPkgEnv_ == global_ && tctx().pkgPrefix.empty() &&
                         !sd->isMulti && !sd->isProto && !sd->isMethod)
                         curPkgEnv_->define("\x01OUR&" + sname, code);
                     else
@@ -5414,8 +5414,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // and publish the fully-qualified name (Foo::Bar::name) so callers
                 // outside the module can reach an unexported `our sub` — the only
                 // way OpenSSL::Version::version_num etc. are invoked.
-                if (sd->isOur && !tctx_.pkgPrefix.empty())
-                    global_->define("&" + tctx_.pkgPrefix + sname, code);
+                if (sd->isOur && !tctx().pkgPrefix.empty())
+                    global_->define("&" + tctx().pkgPrefix + sname, code);
                 // an exported routine is also in its package's EXPORT::TAG
                 // packages — every tag it names (DEFAULT when it names none)
                 // and always ALL: `&EXPORT::ALL::f`, `Foo::EXPORT::DEFAULT::f()`
@@ -5424,7 +5424,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     if (tags.empty()) tags.insert("DEFAULT");
                     tags.insert("ALL");
                     for (auto& tg : tags)
-                        global_->define("&" + tctx_.pkgPrefix + "EXPORT::" + tg + "::" + sname, code);
+                        global_->define("&" + tctx().pkgPrefix + "EXPORT::" + tg + "::" + sname, code);
                 }
             }
             // (not while HOISTING: the call happens where the statement stands,
@@ -5442,9 +5442,9 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
         case NK::EnumDecl: {
             auto* ed = static_cast<EnumDecl*>(s);
             if (!ed->pod.empty() && !ed->name.empty()) { // `#| …` — Colors.WHY
-                pkgPod_[tctx_.pkgPrefix + ed->name] = ed->pod;
-                pkgPodTrail_[tctx_.pkgPrefix + ed->name] = ed->podTrail;
-                if (!tctx_.pkgPrefix.empty()) { pkgPod_[ed->name] = ed->pod; pkgPodTrail_[ed->name] = ed->podTrail; }
+                pkgPod_[tctx().pkgPrefix + ed->name] = ed->pod;
+                pkgPodTrail_[tctx().pkgPrefix + ed->name] = ed->podTrail;
+                if (!tctx().pkgPrefix.empty()) { pkgPod_[ed->name] = ed->pod; pkgPodTrail_[ed->name] = ed->podTrail; }
             }
             ValueList items;
             if (ed->values) {
@@ -5513,27 +5513,27 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // a short name ANOTHER enum of this scope already claimed is
                 // poisoned: neither can have it (`S1::b` / `S2::b` still work)
                 {
-                    Value* prior = tctx_.cur->local(key);
+                    Value* prior = tctx().cur->local(key);
                     if (prior && !ed->name.empty() &&
                         ((!prior->enumType.empty() && prior->enumType.str() != ed->name) ||
                          (prior->t == VT::Hash && prior->hashKind == "PoisonedAlias"))) {
                         Value pz = Value::makeHash(); pz.hashKind = "PoisonedAlias";
                         (*pz.hash())["alias"] = Value::str(key);
                         (*pz.hash())["package-name"] = Value::str(ed->name);
-                        tctx_.cur->define(key, pz);
+                        tctx().cur->define(key, pz);
                     }
-                    else tctx_.cur->define(key, ev);
+                    else tctx().cur->define(key, ev);
                 }
-                tctx_.cur->define(enumTypeName + "::" + key, ev);   // (`.succ` finds a member by it)
+                tctx().cur->define(enumTypeName + "::" + key, ev);   // (`.succ` finds a member by it)
                 // …and under the PACKAGE-QUALIFIED names, so another compilation
                 // unit can write `URI::Query::Mixed`. Without them the qualified
                 // form fell through to a bare type object carrying that name, and
                 // `when Mixed` inside the module never matched it — split-query
                 // ignored its :hash-format and always returned the raw pair list.
-                if (!tctx_.pkgPrefix.empty()) {
-                    global_->define(tctx_.pkgPrefix + key, ev);
+                if (!tctx().pkgPrefix.empty()) {
+                    global_->define(tctx().pkgPrefix + key, ev);
                     if (!ed->name.empty())
-                        global_->define(tctx_.pkgPrefix + ed->name + "::" + key, ev);
+                        global_->define(tctx().pkgPrefix + ed->name + "::" + key, ev);
                 }
                 // `enum EType is export (…)` INSIDE a `unit class`: the body
                 // scope dies with the load, so exported members must land in
@@ -5548,8 +5548,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             pairs.enumType = enumTypeName; // the type object itself is the tagged pair-list
             enumPairs_[enumTypeName] = pairs; enumLangRev_[enumTypeName] = langRev_;  // reachable from any scope
             if (!ed->name.empty()) {
-                tctx_.cur->define(ed->name, pairs);
-                if (!tctx_.pkgPrefix.empty()) global_->define(tctx_.pkgPrefix + ed->name, pairs);
+                tctx().cur->define(ed->name, pairs);
+                if (!tctx().pkgPrefix.empty()) global_->define(tctx().pkgPrefix + ed->name, pairs);
                 if (ed->isExport && global_) global_->define(ed->name, pairs);
             }
             // an enum declaration is valued as the Map of its members, named or
@@ -5571,13 +5571,13 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 std::string& p; std::string saved; bool on = false;
                 explicit RoutinePkgPrefix(std::string& x) : p(x) {}
                 ~RoutinePkgPrefix() { if (on) p = std::move(saved); }
-            } routinePkg(tctx_.pkgPrefix);
+            } routinePkg(tctx().pkgPrefix);
             if (cd->isMy && !cd->isAugment && !cd->name.empty() && cd->name.find("::") == std::string::npos &&
-                tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code && tctx_.curRoutineVal->code()) {
-                const std::string& pk = tctx_.curRoutineVal->code()->ci().pkg;
-                if (!pk.empty() && pk != "GLOBAL" && tctx_.pkgPrefix != pk + "::") {
-                    routinePkg.saved = tctx_.pkgPrefix; routinePkg.on = true;
-                    tctx_.pkgPrefix = pk + "::";
+                tctx().curRoutineVal && tctx().curRoutineVal->t == VT::Code && tctx().curRoutineVal->code()) {
+                const std::string& pk = tctx().curRoutineVal->code()->ci().pkg;
+                if (!pk.empty() && pk != "GLOBAL" && tctx().pkgPrefix != pk + "::") {
+                    routinePkg.saved = tctx().pkgPrefix; routinePkg.on = true;
+                    tctx().pkgPrefix = pk + "::";
                 }
             }
             // one name, two ONLY methods (or two tokens) in one package is a
@@ -5626,9 +5626,9 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 auto unknownRole = [&](const std::string& rn) {
                     if (rn.empty() || rn.find("::") != std::string::npos || rn.find('[') != std::string::npos) return false;
                     if (classes_.count(rn) || isKnownTypeName(rn) || subsets_.count(rn)) return false;
-                    if (!tctx_.pkgPrefix.empty() && classes_.count(tctx_.pkgPrefix + rn)) return false;
+                    if (!tctx().pkgPrefix.empty() && classes_.count(tctx().pkgPrefix + rn)) return false;
                     if (classes_.count(resolveClassAlias(rn))) return false;
-                    if (tctx_.cur->find(rn)) return false;   // an enum / constant / imported symbol
+                    if (tctx().cur->find(rn)) return false;   // an enum / constant / imported symbol
                     return true;
                 };
                 std::vector<std::string> doesNames = cd->roles;
@@ -5695,7 +5695,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     code.code()->ciM().body = &md->body;
                     code.code()->ciM().langRev = langRev_;
                     code.code()->ciM().rakuAst = rakuAstPragma_;
-                    code.code()->closure = tctx_.cur;
+                    code.code()->closure = tctx().cur;
                     code.code()->ciM().isMethod = true;
                     code.code()->ciM().declFile = declFileNowI();
                     code.code()->ciM().declLine = md->line;
@@ -5738,8 +5738,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 for (auto& rn : cd->roles) augRoles.push_back(rn);
                 auto roleInfo = [&](const std::string& rn) -> ClassInfo* {
                     auto it = classes_.find(rn);
-                    if (it == classes_.end() && !tctx_.pkgPrefix.empty())
-                        it = classes_.find(tctx_.pkgPrefix + rn);
+                    if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                        it = classes_.find(tctx().pkgPrefix + rn);
                     if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
                     return it == classes_.end() ? nullptr : it->second.get();
                 };
@@ -5754,8 +5754,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // resolve package-relative short names: `augment class B` inside
                 // `augment class A { … }` finds the nested A::B via prefix/alias
                 auto existing = classes_.find(cd->name);
-                if (existing == classes_.end() && !tctx_.pkgPrefix.empty())
-                    existing = classes_.find(tctx_.pkgPrefix + cd->name);
+                if (existing == classes_.end() && !tctx().pkgPrefix.empty())
+                    existing = classes_.find(tctx().pkgPrefix + cd->name);
                 if (existing == classes_.end())
                     existing = classes_.find(resolveClassAlias(cd->name));
                 if (existing != classes_.end()) {
@@ -5806,11 +5806,11 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                                 throwTyped("X::Redeclaration", {{"symbol", nd->name}},
                                            "Redeclaration of symbol '" + nd->name + "'");
                         }
-                    std::string savedPrefix = tctx_.pkgPrefix;
-                    tctx_.pkgPrefix = cd->name + "::";
+                    std::string savedPrefix = tctx().pkgPrefix;
+                    tctx().pkgPrefix = cd->name + "::";
                     try { for (auto& st : cd->body) exec(st.get()); }
-                    catch (...) { tctx_.pkgPrefix = savedPrefix; throw; }
-                    tctx_.pkgPrefix = savedPrefix;
+                    catch (...) { tctx().pkgPrefix = savedPrefix; throw; }
+                    tctx().pkgPrefix = savedPrefix;
                 }
                 return Value::typeObj(cd->name);
             }
@@ -5821,12 +5821,12 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // named under the module, as they are inside `unit module M`, which
             // is where the import looks (M::EXPORT::TAG) and keeps one module's
             // exports apart from another's.
-            if (cd->isPackage && tctx_.pkgPrefix.empty() && loadingModuleDepth_ > 0 &&
+            if (cd->isPackage && tctx().pkgPrefix.empty() && loadingModuleDepth_ > 0 &&
                 !loadingModuleName_.empty() &&
                 (cd->name == "EXPORT" || cd->name.compare(0, 8, "EXPORT::") == 0) &&
                 !routinePkg.on) {
-                routinePkg.saved = tctx_.pkgPrefix; routinePkg.on = true;
-                tctx_.pkgPrefix = loadingModuleName_ + "::";
+                routinePkg.saved = tctx().pkgPrefix; routinePkg.on = true;
+                tctx().pkgPrefix = loadingModuleName_ + "::";
             }
             if (cd->isPackage) {
                 // Normal flow reached the declaration: retire its forward-reference
@@ -5846,7 +5846,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // X::Inheritance::UnknownParent, as for a class)
                 if (!cd->name.empty() && !cd->parent.empty() && !classes_.count(cd->parent) &&
                     !isKnownTypeName(cd->parent) && !pkgKind_.count(cd->parent) &&
-                    !subsets_.count(cd->parent) && !(tctx_.cur && tctx_.cur->find(cd->parent))) {
+                    !subsets_.count(cd->parent) && !(tctx().cur && tctx().cur->find(cd->parent))) {
                     auto sug = typeSuggestions(cd->parent);
                     Value sl = Value::array(); sl.isList = true;
                     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
@@ -5857,19 +5857,19 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 }
                 if (!cd->name.empty()) {
                     signed char k = cd->isModuleDecl ? 1 : 2;
-                    if (!cd->isMy && lexicalPkgDepth_ == 0) stashDeclare(tctx_.pkgPrefix + cd->name, !cd->isModuleDecl);
+                    if (!cd->isMy && lexicalPkgDepth_ == 0) stashDeclare(tctx().pkgPrefix + cd->name, !cd->isModuleDecl);
                     else if (stashUnitHere().empty()) {
                         auto& slot = unitStash_[""].lexical[cd->name];
                         if (!slot) { stashNodes_.emplace_back(); slot = &stashNodes_.back(); slot->fq = cd->name; }
                     }
                     lastDecl_[cd->name] = {cd, true, cd->isStubDecl};
-                    pkgKind_[tctx_.pkgPrefix + cd->name] = k;
-                    if (!tctx_.pkgPrefix.empty()) pkgKind_[cd->name] = k;
+                    pkgKind_[tctx().pkgPrefix + cd->name] = k;
+                    if (!tctx().pkgPrefix.empty()) pkgKind_[cd->name] = k;
                     if (!cd->pod.empty()) {
-                        pkgPod_[tctx_.pkgPrefix + cd->name] = cd->pod;
-                        if (!tctx_.pkgPrefix.empty()) pkgPod_[cd->name] = cd->pod;
-                        pkgPodTrail_[tctx_.pkgPrefix + cd->name] = cd->podTrail;
-                        if (!tctx_.pkgPrefix.empty()) pkgPodTrail_[cd->name] = cd->podTrail;
+                        pkgPod_[tctx().pkgPrefix + cd->name] = cd->pod;
+                        if (!tctx().pkgPrefix.empty()) pkgPod_[cd->name] = cd->pod;
+                        pkgPodTrail_[tctx().pkgPrefix + cd->name] = cd->podTrail;
+                        if (!tctx().pkgPrefix.empty()) pkgPodTrail_[cd->name] = cd->podTrail;
                     }
                 }
                 // name adverbs, literal or computed: `module Zef:ver($?DISTRIBUTION…)`
@@ -5880,8 +5880,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     pm.ver  = cd->verExpr  ? eval(cd->verExpr.get()).toStr()  : cd->ver;
                     pm.auth = cd->authExpr ? eval(cd->authExpr.get()).toStr() : cd->auth;
                     pm.api  = cd->apiExpr  ? eval(cd->apiExpr.get()).toStr()  : cd->api;
-                    pkgMeta_[tctx_.pkgPrefix + cd->name] = pm;
-                    if (!tctx_.pkgPrefix.empty()) pkgMeta_[cd->name] = pm;
+                    pkgMeta_[tctx().pkgPrefix + cd->name] = pm;
+                    if (!tctx().pkgPrefix.empty()) pkgMeta_[cd->name] = pm;
                 }
                 // file-scoped `unit module Foo;` (no body of its own): register the
                 // name and set the package prefix so the rest of the file's `our
@@ -5893,33 +5893,33 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // named everything after it `foo::…`.
                 // `module StubC { ... }` — a forward declaration: nothing runs
                 if (cd->isStubDecl) {
-                    if (!cd->name.empty() && !tctx_.cur->local(cd->name))
-                        tctx_.cur->define(cd->name, Value::typeObj(cd->name));
+                    if (!cd->name.empty() && !tctx().cur->local(cd->name))
+                        tctx().cur->define(cd->name, Value::typeObj(cd->name));
                     return Value::typeObj(cd->name);
                 }
                 if (cd->body.empty() && !cd->bracedBody) {
                     if (!cd->name.empty()) {
-                        unitPkgByFile_[declFileNow()] = tctx_.pkgPrefix + cd->name;   // CLIENT:: asks
-                        tctx_.cur->define(cd->name, Value::typeObj(cd->name));
-                        tctx_.pkgPrefix += cd->name + "::";
-                        if (curPkgEnv_ == global_) curPkgEnv_ = tctx_.cur; // `our` installs here
+                        unitPkgByFile_[declFileNow()] = tctx().pkgPrefix + cd->name;   // CLIENT:: asks
+                        tctx().cur->define(cd->name, Value::typeObj(cd->name));
+                        tctx().pkgPrefix += cd->name + "::";
+                        if (curPkgEnv_ == global_) curPkgEnv_ = tctx().cur; // `our` installs here
                     }
                     return Value::any();
                 }
                 // braced `module Foo { ... }`: run body in a child scope, then publish
                 // its symbols globally under qualified names ($Foo::bar, &Foo::sub).
-                if (!cd->name.empty()) tctx_.cur->define(cd->name, Value::typeObj(tctx_.pkgPrefix + cd->name));
+                if (!cd->name.empty()) tctx().cur->define(cd->name, Value::typeObj(tctx().pkgPrefix + cd->name));
                 // a package is OUR-scoped unless declared `my`: declared in a block,
                 // `::Test1` still finds it from anywhere
-                if (!cd->name.empty() && !cd->isMy && global_ && tctx_.cur != global_ &&
-                    tctx_.pkgPrefix.empty() && !global_->local(cd->name))
+                if (!cd->name.empty() && !cd->isMy && global_ && tctx().cur != global_ &&
+                    tctx().pkgPrefix.empty() && !global_->local(cd->name))
                     global_->define(cd->name, Value::typeObj(cd->name));
-                std::string savedPrefix = tctx_.pkgPrefix;
-                tctx_.pkgPrefix += cd->name + "::";
+                std::string savedPrefix = tctx().pkgPrefix;
+                tctx().pkgPrefix += cd->name + "::";
                 auto pkgEnv = makeSlabShared<Env>();
-                pkgEnv->parent = tctx_.cur;
+                pkgEnv->parent = tctx().cur;
                 pkgEnv->packageFrame = true;
-                auto saved = tctx_.cur; tctx_.cur = pkgEnv;
+                auto saved = tctx().cur; tctx().cur = pkgEnv;
                 auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
                 // (inside a `my package`, the types it declares are not package-scoped)
                 struct LexPkg { int& d; bool on; LexPkg(int& x, bool o) : d(x), on(o) { if (on) d++; }
@@ -5934,7 +5934,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 for (auto& st : cd->body)
                     if (!(st->kind == NK::ClassDecl && !static_cast<ClassDecl*>(st.get())->isAugment))
                         exec(st.get());
-                tctx_.cur = saved; curPkgEnv_ = savedPkg;
+                tctx().cur = saved; curPkgEnv_ = savedPkg;
                 // …and in a role parameterization's generic statements the
                 // package's types are reachable by their package-qualified
                 // names FROM HERE, lexically: `my package G { class A is
@@ -5944,7 +5944,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     for (auto& kv : pkgEnv->vars)
                         if (kv.second.t == VT::Type && !kv.first.empty() &&
                             (ascii::isalpha((unsigned char)kv.first[0]) || kv.first[0] == '_'))
-                            tctx_.cur->define(cd->name + "::" + kv.first, kv.second);
+                            tctx().cur->define(cd->name + "::" + kv.first, kv.second);
                 // Only `our`-declared sigil vars are visible by qualified name; `my` stays lexical.
                 // …and so does a routine declared without `our` — `package P { sub f {} }`
                 // leaves `P::f` unfound, an `is export` one included (it is in
@@ -5971,8 +5971,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     if (lexicalOnly.count(sym)) continue;
                     std::string qual;
                     if (!sym.empty() && (sym[0]=='$'||sym[0]=='@'||sym[0]=='%'||sym[0]=='&'))
-                        qual = std::string(1, sym[0]) + tctx_.pkgPrefix + sym.substr(1);
-                    else qual = tctx_.pkgPrefix + sym;
+                        qual = std::string(1, sym[0]) + tctx().pkgPrefix + sym.substr(1);
+                    else qual = tctx().pkgPrefix + sym;
                     noteSymbolMutation("package-qualified global (our)");
                     // A COPY here gives `module M { our $v }` two containers —
                     // the one M's own subs read, and the one `$M::v = 4` writes.
@@ -6001,7 +6001,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 if (loadingModuleDepth_ > 0) {
                     const std::string unit = stashUnitHere();
                     auto give = [&](const std::string& key, const Value& v) {
-                        if (moduleDoImport_) tctx_.cur->define(key, v);
+                        if (moduleDoImport_) tctx().cur->define(key, v);
                         if (!unit.empty()) moduleSelectiveExports_[unit].push_back({key, v, {"DEFAULT"}});
                     };
                     std::function<void(const std::vector<StmtPtr>&)> surface =
@@ -6037,7 +6037,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     };
                     surface(cd->body);
                 }
-                tctx_.pkgPrefix = savedPrefix;
+                tctx().pkgPrefix = savedPrefix;
                 // the declaration's VALUE is the package: `my $p = my package P {}`
                 if (!cd->name.empty()) return Value::typeObj(savedPrefix + cd->name);
                 return Value::any();
@@ -6081,8 +6081,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             const std::string& declName = dynName.empty() ? cd->name : dynName;
             std::string clsName = declName.empty()
                 ? "<anon|" + std::to_string(++anonTypeCounter_) + ">"
-                : (!tctx_.pkgPrefix.empty() && declName.rfind(tctx_.pkgPrefix, 0) != 0
-                    ? tctx_.pkgPrefix + declName : declName);
+                : (!tctx().pkgPrefix.empty() && declName.rfind(tctx().pkgPrefix, 0) != 0
+                    ? tctx().pkgPrefix + declName : declName);
             // A class a parametric role's generic statements declare, whose
             // PARENT is parameterized by a role parameter, is a class of this
             // parameterization's own, named for the parent's arguments:
@@ -6186,8 +6186,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         cd->isRole ? "Role '" + cd->name + "' cannot inherit from / compose itself"
                                    : "'" + cd->name + "' cannot inherit from itself.");   // Rakudo's wording
                 auto it = classes_.find(lexicalTypeName(*this, parentName));
-                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
-                    it = classes_.find(tctx_.pkgPrefix + parentName); // sibling nested type
+                if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                    it = classes_.find(tctx().pkgPrefix + parentName); // sibling nested type
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(parentName));
                 // `does X` where X is a class or a concrete core type: only
                 // roles compose (built-in role names like Positional stay fine)
@@ -6281,8 +6281,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     throw RakuError{Value::typeObj("X::Inheritance::SelfInherit"),
                         "Class '" + cd->name + "' cannot inherit from itself"};
                 auto it = classes_.find(lexicalTypeName(*this, pn));
-                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
-                    it = classes_.find(tctx_.pkgPrefix + pn);
+                if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                    it = classes_.find(tctx().pkgPrefix + pn);
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
                 const std::shared_ptr<ClassInfo>* rakuAstExtra =
                     (it == classes_.end() && rakuAstVisible() && isRakuAstName(pn))
@@ -6374,8 +6374,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             for (size_t j = 0; j < cd->roles.size(); j++) {
                 const std::string& rn = cd->roles[j];
                 auto it = classes_.find(lexicalTypeName(*this, rn));
-                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
-                    it = classes_.find(tctx_.pkgPrefix + rn); // `does Handler` where the role is a sibling nested type
+                if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                    it = classes_.find(tctx().pkgPrefix + rn); // `does Handler` where the role is a sibling nested type
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
                 if (it != classes_.end() && it->second->isRole) {
                     size_t k = cd->parentIsDoes && cd->parent == rn ? 1 : 0;
@@ -6519,8 +6519,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // imported short name (`does Pluggable` where the role is really
                 // `Mod::Pluggable`) needs the pkg-prefix / alias fallback, else its
                 // methods are silently never composed.
-                if (it == classes_.end() && !tctx_.pkgPrefix.empty())
-                    it = classes_.find(tctx_.pkgPrefix + rn);
+                if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                    it = classes_.find(tctx().pkgPrefix + rn);
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(rn));
                 {   // only a role (or an unknown/built-in role name) composes;
                     // a class or concrete core type is X::Composition::NotComposable
@@ -6767,7 +6767,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // the class/role BODY scope: body lexicals (`my $lex = ...`) live here,
             // and methods/attr-defaults close over it
             auto bodyEnv = makeSlabShared<Env>();
-            bodyEnv->parent = tctx_.cur;
+            bodyEnv->parent = tctx().cur;
             bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
             bodyEnv->x().pkgType = ci;
@@ -7368,7 +7368,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     // package-scoped, so its site is the scope around the EVAL)
                     while (prevSite && prevSite->evalFrame && prevSite->parent) prevSite = prevSite->parent.get();
                     bool visible = false;
-                    for (Env* e = tctx_.cur.get(); e && prevSite; e = e->parent.get())
+                    for (Env* e = tctx().cur.get(); e && prevSite; e = e->parent.get())
                         if (e == prevSite) { visible = true; break; }
                     if (visible)
                         throwTyped("X::Redeclaration", {{"symbol", clsName}},
@@ -7416,7 +7416,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // `enum Error (Metadata => -20); class Metadata { }` — the name is an
             // enum member already
             if (!hoistingSubs_ && !cd->isAugment && clsName.find("::") == std::string::npos) {
-                if (Value* ev = tctx_.cur->find(clsName))
+                if (Value* ev = tctx().cur->find(clsName))
                     if (!ev->enumName.empty() && ev->enumName == clsName && !ev->enumType.empty())
                         throwTyped("X::Redeclaration", {{"symbol", clsName}},
                                    "Redeclaration of symbol '" + clsName + "'");
@@ -7512,7 +7512,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // X's stash and `X::Encode::Unknown` names it from anywhere — while
             // `.^name` keeps the long `Encode::X::Encode::Unknown`. Encode's own
             // suite throws-likes it by the short name.
-            if (!cd->isAugment && !cd->isAnonDecl && !tctx_.pkgPrefix.empty() &&
+            if (!cd->isAugment && !cd->isAnonDecl && !tctx().pkgPrefix.empty() &&
                 cd->name.rfind("X::", 0) == 0 && clsName != cd->name && global_ && !global_->local(cd->name))
                 global_->define(cd->name, Value::typeObj(clsName));
             if (!cd->isAugment && !cd->name.empty() && !cd->isAnonDecl) {
@@ -7537,14 +7537,14 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // here too.
                 if (tn == "implementation-detail") continue;
                 bool handled = false;
-                if (Value* tm = tctx_.cur->find("&trait_mod:<is>")) {
+                if (Value* tm = tctx().cur->find("&trait_mod:<is>")) {
                     if (tm->t == VT::Code) {
                         Value pr = Value::pair(tn, Value::boolean(true));
                         pr.namedArg = true;
                         ValueList ta; ta.push_back(Value::typeObj(clsName)); ta.push_back(pr);
                         // the trait sees the package it is applied to as `$*PACKAGE`
                         // (`$*PACKAGE.HOW does R` reaches THIS type, not its outer one)
-                        Env* pe = tctx_.cur.get();
+                        Env* pe = tctx().cur.get();
                         Value* prevPkg = pe->local("$*PACKAGE");
                         const bool hadPkg = prevPkg != nullptr;
                         Value savedPkg = hadPkg ? *prevPkg : Value::nil();
@@ -7588,10 +7588,10 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // and the module refused its own keys. Hoisted exactly once — running
             // it twice would append each `multi` candidate a second time.
             {
-                auto savedCur = tctx_.cur;
-                std::string savedPfx = tctx_.pkgPrefix;
-                tctx_.pkgPrefix = clsName + "::";
-                tctx_.cur = bodyEnv;
+                auto savedCur = tctx().cur;
+                std::string savedPfx = tctx().pkgPrefix;
+                tctx().pkgPrefix = clsName + "::";
+                tctx().cur = bodyEnv;
                 hoistSubs(cd->body);
                 // …and the body's ENUMs, which hoistSubs does not record: a trait
                 // handler declared beside them is typed by them
@@ -7601,17 +7601,17 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // Re-running the declaration when the body executes is harmless.
                 for (auto& st : cd->body)
                     if (st->kind == NK::EnumDecl) try { exec(st.get()); } catch (...) {}
-                tctx_.cur = savedCur;
-                tctx_.pkgPrefix = savedPfx;
+                tctx().cur = savedCur;
+                tctx().pkgPrefix = savedPfx;
             }
             // METHOD-level user `is` traits: `method m() is also<mag> {…}` calls
             // trait_mod:<is>($m, :also<mag>) with $*PACKAGE bound to the class under
             // declaration (Method::Also registers aliases keyed by $*PACKAGE.^name).
             if (!methodTraitQueue.empty()) {
-                auto savedCur = tctx_.cur;
-                std::string savedPfx = tctx_.pkgPrefix;
-                tctx_.cur = bodyEnv;                 // the handler may live in the body
-                tctx_.pkgPrefix = clsName + "::";    // …and so may the types it names,
+                auto savedCur = tctx().cur;
+                std::string savedPfx = tctx().pkgPrefix;
+                tctx().cur = bodyEnv;                 // the handler may live in the body
+                tctx().pkgPrefix = clsName + "::";    // …and so may the types it names,
                                                      // which must register under the
                                                      // class's package, not bare
                 if (Value* tm = bodyEnv->find("&trait_mod:<is>")) {
@@ -7682,8 +7682,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         else bodyEnv->vars.erase("$*PACKAGE");
                     }
                 }
-                tctx_.cur = savedCur;
-                tctx_.pkgPrefix = savedPfx;
+                tctx().cur = savedCur;
+                tctx().pkgPrefix = savedPfx;
             }
             // a qualified name also answers to its TAIL where no real class claims
             // it: `use URI::Path` inside `unit class URI` lets bare `Path` resolve
@@ -7706,16 +7706,16 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 }
             }
             // (`anon class C {…}` installs its name nowhere — S12-class/anonymous.t)
-            if (!cd->name.empty() && !cd->isAnonDecl) tctx_.cur->define(cd->name, Value::typeObj(clsName));
+            if (!cd->name.empty() && !cd->isAnonDecl) tctx().cur->define(cd->name, Value::typeObj(clsName));
             // run the body statements in the body scope: nested classes/enums and
             // static subs register; `my` lexicals land where the methods see them.
             // The package prefix covers the body so a nested `class GenericActions`
             // registers as Cro::Uri::GenericActions (Rakudo nesting semantics).
             {
-                auto saved = tctx_.cur;
-                std::string savedPrefix = tctx_.pkgPrefix;
-                tctx_.pkgPrefix = clsName + "::";
-                tctx_.cur = bodyEnv;
+                auto saved = tctx().cur;
+                std::string savedPrefix = tctx().pkgPrefix;
+                tctx().pkgPrefix = clsName + "::";
+                tctx().cur = bodyEnv;
                 // (the body's subs were hoisted above, before the method traits)
                 // An EVAL in the body adds to THIS class (`EVAL 'method x {…}'`)
                 g_classBodies.push_back(clsName);
@@ -7760,7 +7760,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                             (cd->body[bi] && cd->body[bi]->kind == NK::SubDecl)) exec(cd->body[bi].get());
                     }
                 }
-                catch (...) { tctx_.cur = saved; tctx_.pkgPrefix = savedPrefix; throw; }
+                catch (...) { tctx().cur = saved; tctx().pkgPrefix = savedPrefix; throw; }
                 // `sub … is export` in a CLASS body still exports: in a `unit class`
                 // the whole file IS the body, which is where several dists keep
                 // their helper subs (XML::Entity's decode-xml-entities). Lift them
@@ -7773,8 +7773,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                             auto it = bodyEnv->vars.find("&" + sd->name);
                             if (it != bodyEnv->vars.end()) curPkgEnv_->define(it->first, it->second);
                         }
-                tctx_.cur = saved;
-                tctx_.pkgPrefix = savedPrefix;
+                tctx().cur = saved;
+                tctx().pkgPrefix = savedPrefix;
                 // Inside a parameterization's run, `my class Box { class In … }`:
                 // `Box::In` names THIS parameterization's In (as a `my package`'s
                 // members are bound, above), whatever its registry name
@@ -7783,7 +7783,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         if (kv.second.t == VT::Type && !kv.first.empty() &&
                             (ascii::isupper((unsigned char)kv.first[0]) || kv.first[0] == '_') &&
                             kv.second.s != clsName)
-                            tctx_.cur->define(cd->name + "::" + kv.first, kv.second);
+                            tctx().cur->define(cd->name + "::" + kv.first, kv.second);
             }
             // A NESTED class shadows an outer one of the same name for the types
             // written in its parent's body — and it only exists NOW, because the
@@ -7803,13 +7803,13 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 bool anyIs = false;
                 for (auto& ca2 : ci->attrs) if (!ca2.containerIs.empty()) { anyIs = true; break; }
                 if (anyIs) {
-                    auto savedCur = tctx_.cur;
-                    std::string savedPfx = tctx_.pkgPrefix;
-                    tctx_.cur = bodyEnv;
-                    tctx_.pkgPrefix = clsName + "::";
+                    auto savedCur = tctx().cur;
+                    std::string savedPfx = tctx().pkgPrefix;
+                    tctx().cur = bodyEnv;
+                    tctx().pkgPrefix = clsName + "::";
                     for (auto& ca2 : ci->attrs) applyContainerElemType(ca2);
-                    tctx_.cur = savedCur;
-                    tctx_.pkgPrefix = savedPfx;
+                    tctx().cur = savedCur;
+                    tctx().pkgPrefix = savedPfx;
                 }
             }
             // The metaobject a MODULE-SUPPLIED DECLARATOR names (`model Foo`),
@@ -7857,7 +7857,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // it is taken back out while that candidate runs — which may add it
             // again, through `.HOW.add_parent` — and restored if none answers.
             if (!cd->isRole && (!cd->parent.empty() || !cd->extraParents.empty()))
-                if (Value* tm = tctx_.cur ? tctx_.cur->find("&trait_mod:<is>") : nullptr;
+                if (Value* tm = tctx().cur ? tctx().cur->find("&trait_mod:<is>") : nullptr;
                     tm && tm->t == VT::Code && tm->code()) {
                     // the classes a candidate's second positional names
                     std::vector<ClassInfo*> narrow;
@@ -7924,8 +7924,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             {
                 std::set<const void*> ownDecls;
                 for (auto& a : cd->attrs) ownDecls.insert(&a);
-                auto saved = tctx_.cur;
-                tctx_.cur = bodyEnv;
+                auto saved = tctx().cur;
+                tctx().cur = bodyEnv;
                 for (auto& ca2 : ci->attrs) {
                     if (!ca2.declId || !ownDecls.count(ca2.declId) || !ca2.userTraits.empty()) continue;
                     auto* ad = static_cast<const AttrDecl*>(ca2.declId);
@@ -8003,7 +8003,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                             }
                             if (noCandidate && !typeName && traitsCertain && ca2.declId && ownDecls.count(ca2.declId)) {
                                 if (prevPkg) bodyEnv->define("$*PACKAGE", savedPkg);
-                                tctx_.cur = saved;
+                                tctx().cur = saved;
                                 unknownTrait(ut.first);
                             }
                         }
@@ -8022,7 +8022,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     for (auto& ca2 : ci->attrs)
                         if (!ca2.userTraits.empty() && ca2.declId && ownDecls.count(ca2.declId) &&
                             !classes_.count(ca2.userTraits.front().first)) {
-                            tctx_.cur = saved;
+                            tctx().cur = saved;
                             unknownTrait(ca2.userTraits.front().first);
                         }
                 // …and then COMPOSE each attribute whose meta-object has a
@@ -8053,7 +8053,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     catch (RakuError&) {}   // a composer that refuses (a name already
                                             // taken) leaves the attribute as it was
                 }
-                tctx_.cur = saved;
+                tctx().cur = saved;
             }
             // CLASS-LEVEL user traits: `unit model Foo is table<sqlite_master>`
             // calls `trait_mod:<is>(Foo, :table('sqlite_master'))`, the same
@@ -8061,7 +8061,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             // hook below, because that is where a metaclass reads what the
             // traits set (Red's compose builds the table from :table).
             if (!cd->userTraits.empty()) {
-                if (Value* tm = tctx_.cur ? tctx_.cur->find("&trait_mod:<is>") : nullptr) {
+                if (Value* tm = tctx().cur ? tctx().cur->find("&trait_mod:<is>") : nullptr) {
                     if (tm->t == VT::Code) {
                         Value tobj = Value::typeObj(clsName);
                         for (auto& ut : cd->userTraits) {
@@ -8125,10 +8125,10 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     RedispatchCtx rc;
                     rc.sameArgs = hargs;
                     rc.next = [sameAnswer](ValueList) { return sameAnswer; };
-                    redispatchStack_.push_back(std::move(rc));
+                    redispatchStack().push_back(std::move(rc));
                     try { methodCall(self, nm, std::move(hargs)); }
-                    catch (...) { redispatchStack_.pop_back(); throw; }
-                    redispatchStack_.pop_back();
+                    catch (...) { redispatchStack().pop_back(); throw; }
+                    redispatchStack().pop_back();
                 };
                 // `new_type` is called on the HOW TYPE OBJECT — Rakudo has no
                 // instance yet, which is why OO::Monitors reaches its own
@@ -8230,10 +8230,10 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
 // phaser, not an END, not `{}` — is all this frame does; the others go to
 // execBareBlockRare, whose temporaries are no charge on this one.
 [[gnu::noinline]] Value Interpreter::execBareBlock(Block* b, bool sink, std::unique_ptr<HandedError>* handOff) {
-    if (b->endSlot >= 0 || !b->phaser.empty() || b->stmts.empty() || tctx_.protoDepth > 0)
+    if (b->endSlot >= 0 || !b->phaser.empty() || b->stmts.empty() || tctx().protoDepth > 0)
         return execBareBlockRare(b, sink);
     auto scope = makeSlabShared<Env>();
-    scope->parent = tctx_.cur;
+    scope->parent = tctx().cur;
     scope->btBlock = true; scope->btLine = b->line;   // a frame of its own in `.backtrace.list`
     return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
 }
@@ -8267,7 +8267,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
     // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
     // own arguments to the best candidate (S06). Outside a proto it is just a
     // block evaluating to `*`, which is what it stays.
-    if (tctx_.protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
+    if (tctx().protoDepth > 0 && b->phaser.empty() && !b->isCatch &&
         b->stmts.size() == 1 && b->stmts[0]->kind == NK::ExprStmt &&
         static_cast<ExprStmt*>(b->stmts[0].get())->e &&
         static_cast<ExprStmt*>(b->stmts[0].get())->e->kind == NK::Whatever)
@@ -8279,9 +8279,9 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
     // statement-form phaser (`INIT my $x = …`): the declaration belongs
     // to the ENCLOSING scope — run without a child env
     if (b->stmtForm && !b->phaser.empty())
-        return execBlock(b, tctx_.cur, sink);
+        return execBlock(b, tctx().cur, sink);
     auto scope = makeSlabShared<Env>();
-    scope->parent = tctx_.cur;
+    scope->parent = tctx().cur;
     // a bare block is a frame of its own in `.backtrace.list` (see btCaptureNow)
     if (b->phaser.empty() && !b->isCatch) { scope->btBlock = true; scope->btLine = b->line; }
     return execBlock(b, scope, sink); // a sunk bare block sinks its final value too
@@ -8332,7 +8332,7 @@ bool Interpreter::constantInitIsStatic(const Expr* e, const std::set<std::string
         // a sub hoisted by now (or a builtin), with arguments that are static too
         case NK::Call: { auto* c = static_cast<const Call*>(e);
             if (c->callee || c->name.empty()) return false;
-            if (!tctx_.cur->find("&" + c->name) && !builtinRef(c->name)) return false;
+            if (!tctx().cur->find("&" + c->name) && !builtinRef(c->name)) return false;
             return all(c->args); }
         case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
             if (m->methodExpr) return false;
@@ -8394,14 +8394,14 @@ int Interpreter::run(Program& prog) {
             for (auto& w : ws) std::cerr << w << "\n";
         }
     }
-    tctx_.curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
+    tctx().curStateEnv = global_.get(); // mainline `state` vars persist here (e.g. across a top-level loop)
     {
         // @*ARGS is the PROCESS's: bound at the top level even for a program
         // run-script starts from inside an installed wrapper, so a module's
         // mainline that rewrites it and the MAIN dispatch read the same one
         Value args = Value::array();
         for (auto& s : argv_) args.arr()->push_back(Value::str(s));
-        (global_ ? global_ : tctx_.cur)->define("@*ARGS", args);
+        (global_ ? global_ : tctx().cur)->define("@*ARGS", args);
     }
     // Partition top-level phasers (BEGIN/CHECK/INIT run before the mainline).
     // LEAVE/KEEP/UNDO of the compilation unit run when the mainline exits, so they
@@ -8444,8 +8444,8 @@ int Interpreter::run(Program& prog) {
     EndUnitScope endUnit{*this};   // a nested run() (an installed `bin/` script) is a unit of its own
     registerEnds(prog);
     auto runPhaser = [&](Block* b) {
-        if (b->stmtForm) { execBlock(b, tctx_.cur); return; } // `INIT my $x = …` declares in the mainline scope
-        auto sc = makeSlabShared<Env>(); sc->parent = tctx_.cur; execBlock(b, sc);
+        if (b->stmtForm) { execBlock(b, tctx().cur); return; } // `INIT my $x = …` declares in the mainline scope
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc);
     };
     // END phasers run in REVERSE SOURCE order, on any exit path — one order for
     // the whole compilation, so a nested END takes its place among the
@@ -8670,7 +8670,7 @@ int Interpreter::run(Program& prog) {
             }
         }
         // nested BEGIN/CHECK/INIT (in blocks and closures) — see runStaticPhasers
-        runStaticPhasers(prog.stmts, tctx_.cur, /*unitIsLive=*/false);
+        runStaticPhasers(prog.stmts, tctx().cur, /*unitIsLive=*/false);
         // BEGIN: source order. What dies in one is a compile-time failure,
         // X::Comp::BeginTime wrapping the original as `.exception`
         auto runBegin = [&](Block* b) {
@@ -8709,12 +8709,12 @@ int Interpreter::run(Program& prog) {
         for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
         for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
         // a mainline CONTROL {} is the outermost warn handler for the run
-        if (topControl) tctx_.controlHandlers.push_back({topControl, tctx_.cur});
+        if (topControl) tctx().controlHandlers.push_back({topControl, tctx().cur});
         // …and its CATCH the outermost handler (see dispatchBeforeUnwind)
-        CatchReg topCatchReg{tctx_, topCatch, &prog.stmts, tctx_.cur};
+        CatchReg topCatchReg{tctx(), topCatch, &prog.stmts, tctx().cur};
         topCatchSerial = topCatchReg.serial;
         for (auto* s : mainline) {
-            tctx_.endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
+            tctx().endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
             if (prog.mayHaveRoutineUse) preloadRoutineUses(s);
             if (!constEarly.empty() && constEarly.count(s)) continue;   // bound ahead of the phasers
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
@@ -8727,9 +8727,9 @@ int Interpreter::run(Program& prog) {
                 // module-LOADING loop has always done this; the mainline did
                 // not, so a program headed `unit module Quux;` could reach its
                 // own `$Quux::v` but not its own `Quux::deep()`.
-                if (sd->isOur && !tctx_.pkgPrefix.empty())
-                    if (Value* c = tctx_.cur->find("&" + sd->name))
-                        global_->define("&" + tctx_.pkgPrefix + sd->name, *c);
+                if (sd->isOur && !tctx().pkgPrefix.empty())
+                    if (Value* c = tctx().cur->find("&" + sd->name))
+                        global_->define("&" + tctx().pkgPrefix + sd->name, *c);
                 continue; // hoisted
             }
             // a bare `my $x;` (no init) must not clobber a value a phaser already set
@@ -8815,7 +8815,7 @@ int Interpreter::run(Program& prog) {
         }
         // auto-invoke MAIN with command-line arguments, if defined
         // (a mainline CONTROL, registered below, is already live here)
-        Value* mainSub = tctx_.cur->find("&MAIN");
+        Value* mainSub = tctx().cur->find("&MAIN");
         // never the run-script CALLER's MAIN — a wrapper's own dispatch would
         // recurse into run-script forever (see inheritedMainBarrier_)
         if (mainSub && mainSub != inheritedMainBarrier_) {
@@ -8826,7 +8826,7 @@ int Interpreter::run(Program& prog) {
             // the files the arguments name (MISC/misc.t)
             if (rc < 0 && langRev_ >= 1) {
                 VarExpr in("$*IN");
-                tctx_.cur->define("$*ARGFILES", eval(&in));
+                tctx().cur->define("$*ARGFILES", eval(&in));
             }
             // MAIN's own value is sunk (Rakudo): a Failure it returns detonates
             // and a Proc that exited unsuccessfully throws, which is how a
@@ -8844,8 +8844,8 @@ int Interpreter::run(Program& prog) {
             try { replayCatchOutcome(e); }
             catch (ExitEx& ex) { code = ex.code; exited = true; } catch (...) {}
         } else if (seen == CatchSeen::Fresh) { // mainline CATCH: bind $_/$! to the exception and run its when/default
-            tctx_.cur->define("$_", exceptionFor(e));
-            tctx_.cur->define("$!", exceptionFor(e));
+            tctx().cur->define("$_", exceptionFor(e));
+            tctx().cur->define("$!", exceptionFor(e));
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
             catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; exited = true; } catch (...) {}
         } else {
@@ -8878,8 +8878,8 @@ int Interpreter::run(Program& prog) {
     } catch (ReturnEx&) { // `return` outside any routine: the spec'd error (evalString already says so)
         if (topCatch) { // …which a mainline CATCH sees as X::ControlFlow::Return
             RakuError e{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
-            tctx_.cur->define("$_", exceptionFor(e));
-            tctx_.cur->define("$!", exceptionFor(e));
+            tctx().cur->define("$_", exceptionFor(e));
+            tctx().cur->define("$!", exceptionFor(e));
             try { for (auto& s : topCatch->stmts) exec(s.get()); }
             catch (BreakGivenEx&) {} catch (ExitEx& ex) { code = ex.code; exited = true; } catch (...) {}
         }
@@ -8901,7 +8901,7 @@ int Interpreter::run(Program& prog) {
     // the mainline CONTROL's registration ends with the mainline — an rk_run
     // session may run several programs in one process, and a stale handler
     // would point into a dead scope
-    if (topControl && !tctx_.controlHandlers.empty()) tctx_.controlHandlers.pop_back();
+    if (topControl && !tctx().controlHandlers.empty()) tctx().controlHandlers.pop_back();
     flushOpenWriteHandles(); // write out any file handle the program forgot to .close
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
     // way out — after the mainline, before END.

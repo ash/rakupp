@@ -890,14 +890,14 @@ Value rakuAstEval(Interpreter& I, const Value& node) {
     // name the caller had reachable, and the synthetic ones are gone the moment
     // this returns rather than leaking into the scope that asked.
     auto sc = makeSlabShared<Env>();
-    sc->parent = Interpreter::tctx_.cur;
+    sc->parent = Interpreter::tctx().cur;
     for (size_t i = 0; i < side.size(); i++)
         sc->define("$RAKUAST-LIT" + std::to_string(i), side[i]);
     struct ScopeSwap {
         std::shared_ptr<Env>& slot; std::shared_ptr<Env> saved;
         ~ScopeSwap() { slot = std::move(saved); }
-    } swap{Interpreter::tctx_.cur, Interpreter::tctx_.cur};
-    Interpreter::tctx_.cur = sc;
+    } swap{Interpreter::tctx().cur, Interpreter::tctx().cur};
+    Interpreter::tctx().cur = sc;
     return I.evalString(src, /*mainlinePH=*/true);
 }
 

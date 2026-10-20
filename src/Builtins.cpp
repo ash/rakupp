@@ -767,7 +767,7 @@ static void spawnChildFinish(SpawnedChild& sc, double timeoutSec,
     // The slices start short and grow: a child whose pipes just closed has
     // usually exited within a millisecond, and a fixed 10 ms nap cost every
     // short-lived Proc::Async that much (roast starts a thousand in a loop).
-    else if (t_poll.isWorker) {
+    else if (t_hot.poll.isWorker) {
         long napUs = 50;
         for (;;) {
             pid_t r = waitpid(pid, &status, WNOHANG);
@@ -5462,10 +5462,10 @@ Value Interpreter::fhSetOutBuffer(const Value& h, const Value& n) {
 Value Interpreter::ioEmit(const std::string& s, const char* dynVar, bool toErr) {
     // Dynamic ($*) lookup: the current lexical scope, then the caller chain.
     Value* h = nullptr;
-    if (tctx_.cur) {
-        h = tctx_.cur->find(dynVar);
+    if (tctx().cur) {
+        h = tctx().cur->find(dynVar);
         if (!h)
-            for (auto it = tctx_.dynStack.rbegin(); it != tctx_.dynStack.rend(); ++it)
+            for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it)
                 if (*it && (h = (*it)->find(dynVar))) break;
     }
     // Route to the handle both for a user OBJECT (a custom IO class) and for a
@@ -6263,7 +6263,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             // path refuses it, as Rakudo's default constructor does)
             for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) { named = false; break; }
             if (named) {
-                ExecContext& t = tctx_;
+                ExecContext& t = tctx();
                 const bool armed = t.ctorCatchSkip;   // an outer `.new` of this same call armed it
                 t.ctorCatchSkip = false;
                 auto build = [&]() -> Value {
@@ -6294,7 +6294,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         auto cit = classes_.find(inv.s);
         // …only where that declaration is IN SCOPE: the class table is global,
         // and a `my class Pair` inside a block must not outlive it
-        const Value* lex = tctx_.cur ? tctx_.cur->find(inv.s) : nullptr;
+        const Value* lex = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
         if (cit != classes_.end() && cit->second && cit->second->decl && !cit->second->isRole &&
             lex && lex->t == VT::Type) {
             ClassInfo* ci = cit->second.get();
@@ -6485,7 +6485,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // `.new`/`.bless` — a nested construction inside a BUILD arms its own —
     // and every other method pays one short string compare, no TLS access.
     if (m.size() >= 3 && m.size() <= 5 && (opEq(m, "new") || opEq(m, "bless"))) {
-        ExecContext& t = tctx_;
+        ExecContext& t = tctx();
         if (!t.ctorCatchSkip) {
             t.ctorCatchSkip = true;
             t.ctorCatchDepth++;
@@ -6523,7 +6523,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // `@o.push(($w, 0))` STORES the List whole, and it keeps $w's container as
     // a kept literal does (keepListContainers): a later `$w = 3` shows in
     // `@o[0]`. Only push/unshift — they add the argument as ONE element; every
-    // other built-in reads its arguments' elements raw. (tctx_.cur is still
+    // other built-in reads its arguments' elements raw. (tctx().cur is still
     // the caller's scope here, where the variables are found.)
     if (rwArgs && inv.t == VT::Array && !inv.isList && args.size() == rwArgs->size() &&
         (opEq(m, "push") || opEq(m, "unshift")))
@@ -7159,7 +7159,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     struct DG { ValueList& s; ~DG() { s.pop_back(); } } dg{distStack_};
                     // the caller (an installed bin wrapper) has a &MAIN of its
                     // own in scope; the nested run() must not auto-invoke it
-                    inheritedMainBarrier_ = tctx_.cur ? tctx_.cur->find("&MAIN") : nullptr;
+                    inheritedMainBarrier_ = tctx().cur ? tctx().cur->find("&MAIN") : nullptr;
                     // …and the script is the PROGRAM: it runs in a scope of its own
                     // under the top level, not inside the wrapper's MAIN frame. Its
                     // @*ARGS is then the one a module's mainline rewrites and MAIN
@@ -7167,8 +7167,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     // positionals, and from the wrapper's frame `zef list
                     // --installed` lost the option.
                     struct CurG { std::shared_ptr<Env>& c; std::shared_ptr<Env> saved; ~CurG() { c = saved; } }
-                        curG{tctx_.cur, tctx_.cur};
-                    if (global_) { auto top = makeSlabShared<Env>(); top->parent = global_; tctx_.cur = top; }
+                        curG{tctx().cur, tctx().cur};
+                    if (global_) { auto top = makeSlabShared<Env>(); top->parent = global_; tctx().cur = top; }
                     int code = 0;
                     try {
                         Lexer lx(content);
@@ -8281,7 +8281,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) {
                 ValueList one{el};
-                tctx_.noAutothread = true;
+                tctx().noAutothread = true;
                 out.arr()->push_back(callCallable(args[0], one));
             }
             return out;
@@ -9050,7 +9050,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // AliasableClassHOW) or a class declared under a module-supplied HOW put
         // their methods there and nowhere else. Last, so every built-in
         // meta-method above keeps its answer.
-        if (tobj.t == VT::Type && !tctx_.metaForwarding.count(mm)) {
+        if (tobj.t == VT::Type && !tctx().metaForwarding.count(mm)) {
             auto hit = classes_.find(tobj.s);
             if (hit != classes_.end() && hit->second &&
                 hit->second->howObj.t == VT::Object && hit->second->howObj.obj() &&
@@ -9255,7 +9255,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 auto tmp = makePayload<Callable>();
                 tmp->ciM().params = S;
                 tmp->ciM().isMethod = isMeth;   // (and its implicit *%_)
-                tmp->closure = tctx_.cur;
+                tmp->closure = tctx().cur;
                 Value tv; tv.t = VT::Code; tv.setCode(tmp);
                 try { return Value::boolean(scoreCandidate(tv, callArgs) >= 0); }
                 catch (RakuError&) { return Value::boolean(false); }

@@ -82,11 +82,12 @@ class SlabPool {
 public:
     static void* alloc(std::size_t n) {
         if (n == 0 || n > kMaxSize) return ::operator new(n ? n : 1);
-        if (!tlArmed) { tlArmed = true; ensureReaper(); }
+        Lists& l = tl;
+        if (!l.armed) { l.armed = true; ensureReaper(); }
         std::size_t c = cls(n);
-        if (FreeBlock* b = tlHead[c]) {
-            tlHead[c] = b->next;
-            tlCount[c]--;
+        if (FreeBlock* b = l.head[c]) {
+            l.head[c] = b->next;
+            l.count[c]--;
             return static_cast<void*>(b);
         }
         // Allocate the CLASS size, not the request: a block freed as class c
@@ -97,11 +98,12 @@ public:
         if (!v) return;
         if (n == 0 || n > kMaxSize) { ::operator delete(v); return; }
         std::size_t c = cls(n);
-        if (tlCount[c] < kPoolMax) {
+        Lists& l = tl;
+        if (l.count[c] < kPoolMax) {
             FreeBlock* b = static_cast<FreeBlock*>(v);
-            b->next = tlHead[c];
-            tlHead[c] = b;
-            tlCount[c]++;
+            b->next = l.head[c];
+            l.head[c] = b;
+            l.count[c]++;
             return;
         }
         ::operator delete(v);
@@ -109,24 +111,30 @@ public:
 
 private:
     // Inline definitions, so every file already sees the constant initialisers
-    // and needs no per-access guard; RAKUPP_CONSTINIT only checks them.
-    RAKUPP_CONSTINIT inline static thread_local FreeBlock* tlHead[kClasses]  = {};
-    RAKUPP_CONSTINIT inline static thread_local std::size_t tlCount[kClasses] = {};
-    RAKUPP_CONSTINIT inline static thread_local bool        tlArmed           = false;
+    // and needs no per-access guard; RAKUPP_CONSTINIT only checks them. ONE
+    // thread_local, not three: on Darwin each thread_local's address is its
+    // own _tlv_get_addr call, and alloc read all three.
+    struct Lists {
+        FreeBlock* head[kClasses];
+        std::size_t count[kClasses];
+        bool armed;
+    };
+    RAKUPP_CONSTINIT inline static thread_local Lists tl = {};
 };
 
 inline void SlabPool::drain() noexcept {
+    Lists& l = tl;
     for (std::size_t i = 0; i < kClasses; i++) {
-        while (tlHead[i]) {
-            FreeBlock* b = tlHead[i];
-            tlHead[i] = b->next;
+        while (l.head[i]) {
+            FreeBlock* b = l.head[i];
+            l.head[i] = b->next;
             ::operator delete(static_cast<void*>(b));
         }
-        tlCount[i] = 0;
+        l.count[i] = 0;
     }
     // A later allocation on this thread (from another thread_local destructor
     // running after ours) must re-register, or its blocks are never drained.
-    tlArmed = false;
+    l.armed = false;
 }
 
 // The Allocator surface `std::allocate_shared` wants.

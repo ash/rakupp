@@ -33,8 +33,8 @@ entry. So the test is an equality:
 
 ```cpp
 // src/InterpreterCore.cpp — return
-if (tctx_.curRoutineFrame != 0 && tctx_.frameTop == tctx_.curRoutineFrame) {
-    tctx_.returning = true; tctx_.returnV = std::move(v);
+if (tctx().curRoutineFrame != 0 && tctx().frameTop == tctx().curRoutineFrame) {
+    tctx().returning = true; tctx().returnV = std::move(v);
     return Value::any();                       // set a flag, do not throw
 }
 throw ReturnEx{v};                             // a boundary was crossed
@@ -45,8 +45,8 @@ The statement loops check the flag after each statement and bail out, and
 
 ```cpp
 // src/InterpreterCore.cpp — after each statement in the activation loop
-if (tctx_.returning) {
-    if (isRoutine) { tctx_.returning = false; last = std::move(tctx_.returnV); }
+if (tctx().returning) {
+    if (isRoutine) { tctx().returning = false; last = std::move(tctx().returnV); }
     break;               // a bare block just propagates it to its routine
 }
 ```
@@ -69,8 +69,8 @@ uint64_t curLoopFrame = kNoFrame;    // frameTop of the innermost native loop
 
 ```cpp
 // src/InterpreterCore.cpp — LastStmt
-if (t.empty() && tctx_.frameTop == tctx_.curLoopFrame) {
-    tctx_.loopCtl = 2; return Value::any();
+if (t.empty() && tctx().frameTop == tctx().curLoopFrame) {
+    tctx().loopCtl = 2; return Value::any();
 }
 throw LastEx{t};              // labelled, or across a frame: unwind
 ```
