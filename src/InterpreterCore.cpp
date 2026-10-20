@@ -21590,9 +21590,7 @@ static signed char binaryArm(const std::string& op) {
 // own test (its `shadowMaybe`), for the paths that answer its fast shape
 // without it.
 static inline bool binaryShadowMaybe(const std::string& op) {
-    return lexShadowPossible(op) ||
-           (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
-            (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!=")));
+    return lexShadowPossibleOrTwin(op);
 }
 
 // A slot whose Value an Int written into `.i` stays exactly what the full
@@ -22663,15 +22661,12 @@ Value Interpreter::evalBinary(Binary* b) {
     // `special` set above (`&&`, `//`, `~~`, `xx`, ranges, Z/X) keeps its own
     // thunking and picks the override up in applyBinOp instead. Metaops
     // (`Rcmp`, `[cmp]`) carry a different `op` string, so they are untouched.
-    // The filter is a Bloom filter: `NAN+` and `+` share a slot. So a hit only
-    // means "look": the operands are evaluated by the general path below, and
-    // on a miss that path dispatches a user `multi infix:<+>` over objects,
-    // which applyBinOp alone never consults.
+    // A hit means the spelling (or its Unicode twin) was armed SOMEWHERE, not
+    // that this scope sees it. So it only means "look": the operands are
+    // evaluated by the general path below, and on a miss that path dispatches a
+    // user `multi infix:<+>` over objects, which applyBinOp alone never consults.
     if (b->simpleOp == 1) {
-        bool shadowMaybe =
-            (lexShadowPossible(op) ||
-             (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
-              (opEq(op, "*") || opEq(op, "/") || opEq(op, "-") || opEq(op, ">=") || opEq(op, "<=") || opEq(op, "!="))));
+        bool shadowMaybe = lexShadowPossibleOrTwin(op);
         // Specialised shapes: `$n < 2`, `2 * $n`, `$a + $b` — what hot loops are
         // made of. Each operand that is a plain lexical is read BY POINTER
         // instead of copying a 376-byte Value out of it, each literal comes from

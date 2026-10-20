@@ -2607,9 +2607,7 @@ void link(KNode* n) {
 // The binary-operator shadow test the typed fast paths use (binaryShadowMaybe
 // in InterpreterCore.cpp).
 bool opShadowed(const std::string& op) {
-    return lexShadowPossible(op) ||
-           (g_lexShadowMask.load(std::memory_order_relaxed) && op.size() <= 2 &&
-            (op == "*" || op == "/" || op == "-" || op == ">=" || op == "<=" || op == "!="));
+    return lexShadowPossibleOrTwin(op);
 }
 
 // An argument the kernel may take as its number alone.

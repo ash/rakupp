@@ -1669,7 +1669,7 @@ void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable
         return !t.empty() && !kBroad.count(t) && !classes_.count(t);
     };
     if (concrete(a) && concrete(b))
-        g_lexShadowMask.fetch_or(1ull << lexShadowSlot(op.data(), op.size()), std::memory_order_relaxed);
+        lexShadowArm(op.data(), op.size());
 }
 
 bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out) {

@@ -105,6 +105,8 @@ Two real engine faults surfaced through this module. Both are worth fixing
 on their own merits; neither is "BinaryHeap support".
 
 **1. A Bloom-filter collision taxes an unrelated built-in operator.**
+(Fixed 2026-10-20; see [BinaryHeap 2.0](#binaryheap-20-october-2026) below.
+The section is kept as the August record.)
 `Env::define` arms `g_lexShadowMask` when an anonymous `&infix:<op>` binding
 enters a scope, hashed as `(p[0]*31 + p[n-1]*7 + n) & 63`
 ([Interpreter.h](../../../src/Interpreter.h), added ece4e87). That hash puts
@@ -213,6 +215,100 @@ The practical consequence: a fresh `rakupp install Graph` today gets 0.1.3.
 Issue #47's Graph figure measures a code path its own author has retired,
 so the number to re-measure and quote is the 0.1.3 one.
 
+## BinaryHeap 2.0 (October 2026)
+
+The module came back. Between 2026-10-07 and 2026-10-19 its author rewrote
+it (0.0.8 → 2.0.3): `Parameterizable` is gone, the heap is a role
+`GenHeap[&infix:<tops>]` with `MaxHeap`/`MinHeap` composing it over
+`* cmp * == More` / `* cmp * == Less`, and 2.0.3's changelog says "Make
+non-author tests pass on Raku++". On 2026-10-20 the author wrote in the
+closed PR ([dumarchie/raku-binaryheap#1](https://github.com/dumarchie/raku-binaryheap/pull/1#issuecomment-6285157354))
+that 2.0.3 runs on Raku++ 5.4.1 and that its benchmarks are 30–40 times
+slower there than on Rakudo Star 2026.09.
+
+Measured here at HEAD (5.4.1-147) against Rakudo 2026.09, the module's own
+`benchmark/` scripts, median of five interleaved runs, ms:
+
+| benchmark | rakupp before | rakupp after | Rakudo | after / Rakudo |
+|---|---|---|---|---|
+| binaryheap-extract | 5449.8 | 5337.4 | 516.3 | 10.3x |
+| binaryheap-pop | 5595.9 | 5136.7 | 442.2 | 11.6x |
+| binaryheap-push | 6042.5 | 5529.1 | 490.4 | 11.3x |
+| heapsort | 5995.2 | 5663.9 | 494.6 | 11.5x |
+| heapify | 4701.1 | 4404.7 | 471.9 | 9.3x |
+
+"After" is faster in 23 of the 25 pairs. The 30–40x was measured on the
+5.4.1 release on the author's machine; this box has no 5.4.1 binary, so that
+figure is not reproduced or refuted here, only the ~10x at HEAD.
+
+### Fault 1, fixed: the filter, again
+
+`tops` lands in `>`'s slot (53) the way `precedes` landed in `*`'s, and a
+second fault sat beside it: evalBinary's Unicode-twin test (`×` reaches the
+evaluator as `*`) admitted `*` `-` `/` `>=` `<=` `!=` whenever **any** bit
+was armed, not the twin's own. So one `&infix:<tops>` binding anywhere sent
+every `>`, `*` and `-` in the program around the fast shape. A plain integer
+loop ran 23.8 ms alone and 93–96 ms with `role R[&infix:<tops>] { }`
+declared next to it.
+
+Fix: `lexShadowArm` records each armed spelling (64 of them, then every hit
+counts as real again), a filter hit is confirmed against that list, and the
+twin is tested under its own spelling (`lexShadowPossibleOrTwin`). Armed and
+unarmed loops now time the same. The collision also produced a wrong
+answer: with `*`'s slot armed, `lexInfixLookup` looked for `&infix:<*>`,
+found nothing, and never tried the twin, so a `my sub infix:<×>` in scope
+answered the built-in product. The twin is now tried whenever the ASCII
+spelling finds nothing in scope.
+[t/regression/lex-shadow-filter-exact.raku](../../../t/regression/lex-shadow-filter-exact.raku)
+holds both, and it fails on the old binary in exactly those two checks (cost
+ratio 4.14, `2 × 3` answering 6).
+
+That is worth 2–8% here. The remaining ~10x is somewhere else.
+
+### What the remaining ~10x is
+
+200,000 iterations, ms, same binaries:
+
+| operation | rakupp | Rakudo |
+|---|---|---|
+| `$x = @a[3]` (element read) | 21.7 | 66.3 |
+| `my \l = @a[3]` | 124.9 | 10.0 |
+| `my $n := @a[3]` | 130.1 | 9.6 |
+| `@p.BIND-POS(3, @a[5])` | 126.1 | 18.8 |
+| `my \c = @a[3]; $node = c; $node := c` | 265.2 | 12.7 |
+| `$x++ if (@a[3] cmp @a[5]) == More` | 96.9 | 30.1 |
+| `tops(@a[3], @a[5])`, `&tops = * cmp * == More` | 114.1 | 33.6 |
+
+Reading an element is fast. Binding one is 10–20x Rakudo's cost, and
+`!sift-down` and `!insert` bind three or four times per heap level. That is
+fault 2 above, unchanged: every bind builds a `Proxy` hash (an array slot
+proxy has six string-keyed entries, so its ChunkList grows past the first
+chunk and rehashes), the cycle collector walks it when it drops, and each
+read through it does four hash lookups. Sampling `my \l = @a[3]` puts ~40%
+of the bind in that hash's construction, lookups and free. A cut to three
+entries is possible inside InterpreterCalls.cpp, but it would hide the
+array edge from the cycle collector the way the shared-cell proxy already
+hides its cell. A real fix is an array element that holds a cell (as an
+Env slot already can, `Value::cellHolder`) instead of a hash.
+
+The `Order` path is the second cost, smaller here. `cmp` builds an `Order`,
+`== Less` takes applyArithGeneral's string-compared operator chain, and the
+bare term `Less` re-runs `coreEnumValue` and a scope walk on every
+evaluation. Swapping BinaryHeap's comparator for `* < *` moved its time by
+only ~2%, so for this module it is secondary, but any `sort { $^a cmp $^b
+== … }`-shaped code pays it.
+
+Under both, `_tlv_get_addr` is ~13% of every profile taken: `tctx_` and the
+other `thread_local`s go through Darwin's TLV thunk on each access. That is
+general, not BinaryHeap's.
+
+For scale, the same heap written with plain element assignment (no binds,
+`(@!a[$c] cmp $v) == Less`, 2^16 pops) is 2232.8 ms here and 684.9 ms on
+Rakudo: still 3.3x. With `<` in place of `cmp … == Less` it is 1678 ms
+against 650, so the `Order` path is about a quarter of rakupp's time there,
+and the 2.6x left is ordinary method-call and attribute-array cost on a
+shape Rakudo's specializer handles well.
+
 ## Policy
 
 - **Keep the meta-method support.** It is generic, it is correct, it costs
@@ -230,7 +326,9 @@ so the number to re-measure and quote is the 0.1.3 one.
 - **Do not report any of this upstream** — the same rule as
   MODULE-FINDINGS.md. Anton reached his own conclusion independently and
   acted on it; we do not need to relitigate a closed PR in someone else's
-  repository.
+  repository. (2026-10-20: the module's author raised rakupp's speed in that
+  PR directly, so a factual reply there is no longer unprompted. Whether to
+  write one is the maintainer's call, not this page's.)
 
 ## See also
 

@@ -4142,6 +4142,44 @@ std::function<Value(const Value&)> g_deproxy;
 std::function<bool(const Value&, std::string&)> g_userStr;
 std::function<bool(const Value&, std::string&, bool&)> g_userWhich;
 std::atomic<uint64_t> g_lexShadowMask{0};
+// The spellings behind g_lexShadowMask's bits, which confirm a hit. Append-only
+// and never freed, so a reader scans without a lock: it reads the count, then
+// that many published names. Past kLexShadowCap distinct spellings every hit
+// is taken as real, which is what the bare filter answered.
+static constexpr int kLexShadowCap = 64;
+static std::atomic<const std::string*> g_lexShadowNames[kLexShadowCap];
+static std::atomic<int> g_lexShadowCount{0};
+static std::atomic<bool> g_lexShadowOverflow{false};
+static std::mutex g_lexShadowArmMu;
+
+void lexShadowArm(const char* p, size_t n) {
+    if (!n) return;
+    const uint64_t bit = 1ull << lexShadowSlot(p, n);
+    if (!lexShadowArmed(p, n)) {
+        std::lock_guard<std::mutex> lk(g_lexShadowArmMu);
+        if (!lexShadowArmed(p, n)) {
+            const int k = g_lexShadowCount.load(std::memory_order_relaxed);
+            if (k < kLexShadowCap) {
+                g_lexShadowNames[k].store(new std::string(p, n), std::memory_order_relaxed);
+                g_lexShadowCount.store(k + 1, std::memory_order_release);
+            }
+            else g_lexShadowOverflow.store(true, std::memory_order_release);
+        }
+    }
+    // the name is published before the bit, so a reader that sees the bit
+    // finds the name
+    if (!(g_lexShadowMask.load(std::memory_order_relaxed) & bit))
+        g_lexShadowMask.fetch_or(bit, std::memory_order_release);
+}
+
+bool lexShadowArmed(const char* p, size_t n) {
+    const int k = g_lexShadowCount.load(std::memory_order_acquire);
+    for (int i = 0; i < k; i++) {
+        const std::string* s = g_lexShadowNames[i].load(std::memory_order_relaxed);
+        if (s->compare(0, std::string::npos, p, n) == 0) return true;
+    }
+    return g_lexShadowOverflow.load(std::memory_order_acquire);
+}
 std::atomic<uint64_t> g_dynEpoch{1};
 std::atomic<bool> g_userPrefixShadow{false};
 // applyArith is a free function, but the Whatever-curry it builds has to resolve

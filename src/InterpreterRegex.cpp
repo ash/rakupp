@@ -4187,35 +4187,33 @@ Value Interpreter::containerOfExpr(Expr* e) {
 // The name half of the lookup, with no operands to judge — what the WhateverCode
 // curry needs, because it must resolve the shadow where `* cmp *` was WRITTEN.
 Value* Interpreter::lexInfixLookup(const std::string& op) {
-    // the lexer spells `×` `÷` `−` `≥` `≤` `≠` as their ASCII twins, so a
-    // `sub infix:<×>` shadows what arrives here as `*`
-    static const std::map<std::string, std::string> kUniTwin = {
-        {"*", "\xC3\x97"}, {"/", "\xC3\xB7"}, {"-", "\xE2\x88\x92"},
-        {">=", "\xE2\x89\xA5"}, {"<=", "\xE2\x89\xA4"}, {"!=", "\xE2\x89\xA0"}};
     if (!tctx_.cur) return nullptr;
-    if (!lexShadowPossible(op)) {
-        auto tw = kUniTwin.find(op);
-        if (tw == kUniTwin.end() || !lexShadowPossible(tw->second)) return nullptr;
-        Value* f = tctx_.cur->find("&infix:<" + tw->second + ">");
-        if (f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
-            (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto))
-            return nullptr;
-        // …but not from inside that operator's own body: `sub infix:<×>($a, $b)
-        // { $a * $b }` means the built-in `*` there, not itself again (the lexer
-        // spells both `*`, so this is the one place the two can be told apart)
-        if (f && f->t == VT::Code && tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
-            tctx_.curRoutineVal->code() == f->code())
-            return nullptr;
-        return f;
-    }
-    static thread_local std::string key;
-    key.assign("&infix:<").append(op).append(">");
-    Value* f = tctx_.cur->find(key);
     // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
     // carries its own name and belongs to the multi-dispatch path (see the
     // g_lexShadowMask note in Interpreter.h).
-    if (f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
-        (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto))
+    auto dispatched = [](const Value* f) {
+        return f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
+               (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto);
+    };
+    if (lexShadowPossible(op)) {
+        static thread_local std::string key;
+        key.assign("&infix:<").append(op).append(">");
+        Value* f = tctx_.cur->find(key);
+        if (f && !dispatched(f)) return f;
+    }
+    // the lexer spells `×` `÷` `−` `≥` `≤` `≠` as their ASCII twins, so a
+    // `sub infix:<×>` shadows what arrives here as `*` — looked for whenever
+    // the ASCII spelling finds nothing here, which a `my &infix:<*>` armed in
+    // some OTHER scope does not change
+    const char* tw = lexShadowTwin(op);
+    if (!tw || !lexShadowPossible(tw, std::char_traits<char>::length(tw))) return nullptr;
+    Value* f = tctx_.cur->find(std::string("&infix:<") + tw + ">");
+    if (dispatched(f)) return nullptr;
+    // …but not from inside that operator's own body: `sub infix:<×>($a, $b)
+    // { $a * $b }` means the built-in `*` there, not itself again (the lexer
+    // spells both `*`, so this is the one place the two can be told apart)
+    if (f && f->t == VT::Code && tctx_.curRoutineVal && tctx_.curRoutineVal->t == VT::Code &&
+        tctx_.curRoutineVal->code() == f->code())
         return nullptr;
     return f;
 }

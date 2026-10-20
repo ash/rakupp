@@ -771,8 +771,15 @@ struct PadLayout {
 // thread can arm it without a race. It was a plain bool, which meant that once
 // ANY program armed it every `+` in that program built a lookup key and walked
 // the scope chain — 2.4x on a plain arithmetic loop, and Graph arms it, so Graph
-// paid it everywhere. A false positive only costs the full lookup, which is what
-// used to happen unconditionally.
+// paid it everywhere.
+//
+// A false positive was NOT cheap, though: it sends the operator around
+// evalBinary's fast shape and walks the scope chain. The hash puts `tops` with
+// `>` and `precedes` with `*`, and BinaryHeap 2's role parameter is
+// `&infix:<tops>`, so every `>` in such a program paid it. A filter hit is
+// therefore confirmed against the exact spellings armed (lexShadowArm records
+// them; arming is rare, a hit costs a short scan), and only a confirmed one
+// takes the slow path.
 extern std::atomic<uint64_t> g_lexShadowMask;
 // A plain (non-multi) `sub prefix:<op>` was declared somewhere: it replaces the
 // built-in prefix for EVERY operand in its scope (`my sub prefix:<->($x)` then
@@ -782,10 +789,47 @@ extern std::atomic<bool> g_userPrefixShadow;
 inline unsigned lexShadowSlot(const char* p, size_t n) {
     return (unsigned)((p[0] * 31u + p[n - 1] * 7u + n) & 63u);
 }
-inline bool lexShadowPossible(const std::string& op) {
-    if (op.empty()) return false;
-    uint64_t m = g_lexShadowMask.load(std::memory_order_relaxed);
-    return m && ((m >> lexShadowSlot(op.data(), op.size())) & 1);
+// The one way to arm the filter: sets the spelling's bit and records it.
+void lexShadowArm(const char* p, size_t n);
+// Whether exactly this spelling was armed (Interpreter.cpp).
+bool lexShadowArmed(const char* p, size_t n);
+inline bool lexShadowPossible(const char* p, size_t n) {
+    if (!n) return false;
+    uint64_t m = g_lexShadowMask.load(std::memory_order_acquire);
+    return m && ((m >> lexShadowSlot(p, n)) & 1) && lexShadowArmed(p, n);
+}
+inline bool lexShadowPossible(const std::string& op) { return lexShadowPossible(op.data(), op.size()); }
+// The ASCII spelling the lexer gives `×` `÷` `−` `≥` `≤` `≠`, so a `sub
+// infix:<×>` shadows what reaches the evaluator as `*`: the Unicode twin of an
+// operator, or null.
+inline const char* lexShadowTwin(const std::string& op) {
+    if (op.size() == 1) {
+        switch (op[0]) {
+            case '*': return "\xC3\x97";
+            case '/': return "\xC3\xB7";
+            case '-': return "\xE2\x88\x92";
+            default: return nullptr;
+        }
+    }
+    if (op.size() == 2 && op[1] == '=') {
+        switch (op[0]) {
+            case '>': return "\xE2\x89\xA5";
+            case '<': return "\xE2\x89\xA4";
+            case '!': return "\xE2\x89\xA0";
+            default: return nullptr;
+        }
+    }
+    return nullptr;
+}
+// Whether a lexical `&infix:<…>` might shadow the built-in `op`, under its own
+// spelling or its Unicode twin's. The twin used to be admitted whenever ANY
+// bit was armed, which sent every `*`, `-` and `/` of such a program the slow
+// way.
+inline bool lexShadowPossibleOrTwin(const std::string& op) {
+    if (!g_lexShadowMask.load(std::memory_order_relaxed)) return false;
+    if (lexShadowPossible(op)) return true;
+    const char* tw = lexShadowTwin(op);
+    return tw && lexShadowPossible(tw, std::char_traits<char>::length(tw));
 }
 
 struct Env {
@@ -1009,8 +1053,7 @@ struct Env {
             // (a plain, non-multi `sub infix:<×>` shadows the built-in too)
             !(v.t == VT::Code && v.code() && !v.code()->ci().name.empty() &&
               (v.code()->ci().isMultiDispatcher || v.code()->ci().isMultiCandidate || v.code()->ci().isProto)))
-            g_lexShadowMask.fetch_or(1ull << lexShadowSlot(name.data() + 8, name.size() - 9),
-                                     std::memory_order_relaxed);
+            lexShadowArm(name.data() + 8, name.size() - 9);
         if (name.size() > 10 && name[0] == '&' && name[1] == 'p' &&
             name.compare(0, 9, "&prefix:<") == 0 &&
             v.t == VT::Code && v.code() && !v.code()->ci().isMultiDispatcher && !v.code()->ci().isMultiCandidate &&
