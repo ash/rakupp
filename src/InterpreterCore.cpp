@@ -15807,7 +15807,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             auto scope = tctx_.cur;
                             Index* path = ix;
                             escapeRefs(path, scope.get());   // P2: the Proxy re-reads the path from anywhere
-                            Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                            Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
                             Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                             fetch.code()->ciM().builtin = [scope, path](Interpreter& I, ValueList&) -> Value {
                                 auto saved = I.tctx_.cur; I.tctx_.cur = scope;
@@ -15887,7 +15887,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value stored = kv; stored.itemized = false;
                         h->setObjKey(key, stored);
                     }                                        // the slot exists from now on
-                    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+                    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
                     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
                     fetch.code()->ciM().builtin = [h, key](Interpreter&, ValueList&) -> Value {
                         auto it = h->find(key);
@@ -29994,6 +29994,7 @@ Value Interpreter::eval(Expr* e) {
                         out.readonly = out.immutableBind = false;
                         return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                     }
+                    if (Value r; engineProxySlotRead(*this, p, r)) return r;
                 }
                 else if (ve->name.size() > 1 &&
                          (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
@@ -30004,6 +30005,7 @@ Value Interpreter::eval(Expr* e) {
                             out.readonly = out.immutableBind = false;
                             return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                         }
+                        if (Value r; engineProxySlotRead(*this, p, r)) return r;
                     }
                 }
             }
@@ -30609,6 +30611,10 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 out.readonly = out.immutableBind = false;
                 return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
+            // an element alias or a shared cell reads here, as the full path
+            // below would (it has nothing to say about a plain name), but
+            // without walking it
+            if (Value r; engineProxySlotRead(*this, p, r)) return r;
         }
     }
     // Fast path: a plain lexical ($x/@a/%h/&f — second char is a letter
@@ -30635,6 +30641,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 out.readonly = out.immutableBind = false;
                 return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
+            if (Value r; engineProxySlotRead(*this, p, r)) return r;
         }
     }
     // a placeholder's caret/colon spelling reads its BARE slot ($^b and a
@@ -31137,7 +31144,8 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // dist's suite is the witness for both).
     if (ve->name.size() > 1 && ve->name[1] == '*') {
         if (Value* dp = dynLooked ? dynFound : findDynamicLenient(ve->name)) {
-            if (dp->t == VT::Hash && dp->hashKind == "Proxy" && dp->hash()) {
+            if (dp->t == VT::Hash && dp->hashKind == proxyKind() && dp->hash()) {
+                if (Value r; engineProxyRead(*this, *dp, r)) return r;
                 auto itF = dp->hash()->find("FETCH");
                 if (itF != dp->hash()->end()) return callCallable(itF->second, { *dp });
             }
@@ -31154,7 +31162,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
     }
     Value* p = tctx_.cur->find(ve->name);
     if (p) {
-        if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) {
+        if (p->t == VT::Hash && p->hashKind == proxyKind() && p->hash()) {
+            // an element alias or a shared cell reads directly; FETCH is a call
+            if (Value r; engineProxyRead(*this, *p, r)) return r;
             auto it = p->hash()->find("FETCH");
             if (it != p->hash()->end()) return callCallable(it->second, { *p });
         }

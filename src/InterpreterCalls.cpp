@@ -1980,9 +1980,14 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
         "Impossible coercion from '" + v.typeName() + "' into '" + type + "'"};
 }
 
+// the compact array-slot proxy (makeArraySlotProxy, below)
+static const Value* slotProxyRef(const Value& proxy);
+static Value slotProxyReadRef(Interpreter& I, const Value& proxy, const Value& ref);
+static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& ref, const Value& nv);
+
 Value Interpreter::deproxy(Value v) {
-    if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) {
-        { size_t idx = 0; if (slotProxyTarget(v, idx)) return slotProxyRead(v); }   // compact slot: no call
+    if (v.t == VT::Hash && v.hashKind == proxyKind() && v.hash()) {
+        if (const Value* r = slotProxyRef(v)) return slotProxyReadRef(*this, v, *r);   // compact slot: no call
         if (PRef<Value> c = cellOfProxy(&v)) return *c;   // a shared cell (makeSharedCellProxy): no call
         auto it = v.hash()->find("FETCH");
         if (it == v.hash()->end()) return v;
@@ -1999,7 +2004,7 @@ Value Interpreter::deproxy(Value v) {
 // `sub ($, $v)` STORE — the spelling every module uses — takes the value in its
 // SECOND parameter; a one-parameter STORE still gets just the value.
 Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
-    { size_t idx = 0; if (slotProxyTarget(proxy, idx)) return slotProxyWrite(proxy, v); }   // compact slot: no call
+    if (const Value* r = slotProxyRef(proxy)) return slotProxyWriteRef(*this, proxy, *r, v);   // compact slot: no call
     if (PRef<Value> c = cellOfProxy(&proxy)) { *c = v; return *c; }   // a shared cell: no call
     auto it = proxy.hash()->find("STORE");
     if (it == proxy.hash()->end()) return v;
@@ -2013,7 +2018,7 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
 
 Value Interpreter::makePathProxy(std::shared_ptr<Env> scope, Expr* path) {
     escapeRefs(path, scope.get());   // PARALLEL-SCALING-PLAN P2: it re-reads the path from anywhere
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
     slotProxyPair(proxy,
         [scope, path](Interpreter& I, ValueList&) -> Value {
             auto saved = I.tctx_.cur; I.tctx_.cur = scope;
@@ -2300,7 +2305,7 @@ Value* Interpreter::peekElemSlot(Index* ix) {
 
 Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src) {
     escapeName(owner.get(), src);   // PARALLEL-SCALING-PLAN P2: read and written by name from anywhere
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
     slotProxyPair(proxy,
         [owner, src](Interpreter& I, ValueList&) -> Value {
             Value* op = owner->local(src);
@@ -2362,7 +2367,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
         { ParStripe rs(I, p); v = *p; }   // torn-copy contract, as makeEnvSlotProxy
         return I.deproxy(v);
     };
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
     fetch.code()->ciM().builtin = [cur, from, len](Interpreter& I, ValueList&) -> Value {
         Value s = cur(I);
@@ -2422,18 +2427,34 @@ bool Interpreter::substrRwProxyOf(Expr* e, Value& out) {
 // sift-down builds roughly thirty of them per call, 38k calls for one
 // `Graph.diameter`. deproxy/proxyStore read the keys directly and never call at
 // all; the entries stay present, and callable, for the generic FETCH/STORE sites.
-static const char* kSlotArr = "\x01arr";
-static const char* kSlotIdx = "\x01idx";
+//
+// Four entries, no more: a ValueHash keeps up to four in its first chunk with no
+// index, and a fifth grew the chunk list and built the index on every bind (six
+// entries cost five allocations and a rehash per `my \l = @a[i]`). So kSlotArr
+// is an Array Value sharing the storage, which keeps the array an edge the cycle
+// collector sees, with the index and the length at bind time packed into its
+// otherwise unused `i` word (see slotPack).
+static const ProxyKey& kSlotArr() { static const ProxyKey k("\x01arr"); return k; }
 // An array slot alias names a POSITION, where Rakudo's names the element's own
 // Scalar. The two agree while the array only grows at the end (`my $x := @a[1];
 // @a.push(9); $x = 5` still writes element 1) — but once the array SHRINKS, the
 // position no longer means the element that was bound. Rakudo's alias keeps the
-// value its container held; ours does too, from here: kSlotSize is the length at
-// bind time and kSlotLast the value last read through the alias. Hash::Ordered's
-// DELETE-KEY names an element, splices it away and returns the name, which
-// otherwise answered the NEXT element's value.
-static const char* kSlotSize = "\x01siz";
-static const char* kSlotLast = "\x01lst";
+// value its container held; ours does too, from here: the length at bind time
+// rides in kSlotArr and kSlotLast is the value last read through the alias.
+// Hash::Ordered's DELETE-KEY names an element, splices it away and returns the
+// name, which otherwise answered the NEXT element's value.
+static const ProxyKey& kSlotLast() { static const ProxyKey k("\x01lst"); return k; }
+
+// kSlotArr's `i`: the index in the low 32 bits, the length at bind time in the
+// high 32. An array of 2**32 elements is 320 GB of Values, so neither overflows;
+// a length that somehow did is clamped, which only makes the alias read as
+// detached a little early.
+static long long slotPack(size_t idx, size_t size) {
+    const uint64_t sz = size > 0xFFFFFFFFull ? 0xFFFFFFFFull : (uint64_t)size;
+    return (long long)((sz << 32) | (uint64_t)(uint32_t)idx);
+}
+static size_t slotIdx(const Value& ref) { return (size_t)(uint32_t)(uint64_t)ref.i; }
+static size_t slotSize(const Value& ref) { return (size_t)((uint64_t)ref.i >> 32); }
 
 // The `$` variables a `for` modifier's one-item list can END on:
 // `.++ for do given 1 { when True { $a } }` iterates $a's container, not a copy
@@ -2491,7 +2512,7 @@ static bool forTailVarsStmt(const Stmt* s, std::vector<const void*>& out) {
 // every copy of the pair, so a write through this reaches the pair wherever it
 // is held — which is what `$p.value = v` and `my $v := $p.value` both mean.
 Value Interpreter::makePairCellProxy(PRef<Value> cell) {
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
     Value fetch; fetch.t = VT::Code; fetch.setCode(makePayload<Callable>());
     fetch.code()->ciM().builtin = [cell](Interpreter&, ValueList&) -> Value { return *cell; };
     Value store; store.t = VT::Code; store.setCode(makePayload<Callable>());
@@ -2528,14 +2549,16 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
         };
         return st;
     }();
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    Value av; av.t = VT::Array; av.setArr(arr);          // shares the storage
-    (*proxy.hash())[kSlotArr] = std::move(av);
-    (*proxy.hash())[kSlotIdx] = Value::integer((long long)idx);
-    (*proxy.hash())[kSlotSize] = Value::integer((long long)arr->size());
-    (*proxy.hash())[kSlotLast] = idx < arr->size() ? (*arr)[idx] : Value::any();
-    (*proxy.hash())["FETCH"] = kFetch;
-    (*proxy.hash())["STORE"] = kStore;
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
+    ValueHash& h = *proxy.hash();
+    const size_t n = arr->size();
+    Value last = idx < n ? (*arr)[idx] : Value::any();
+    Value av; av.t = VT::Array; av.setArr(std::move(arr));   // shares the storage
+    av.i = slotPack(idx, n);
+    h.addFresh(kSlotArr().s, kSlotArr().h, std::move(av));
+    h.addFresh(kSlotLast().s, kSlotLast().h, std::move(last));
+    h.addFresh(proxyKeyFetch().s, proxyKeyFetch().h, kFetch);
+    h.addFresh(proxyKeyStore().s, proxyKeyStore().h, kStore);
     return proxy;
 }
 
@@ -2570,52 +2593,66 @@ const Value& cellProxyStore() {
     return k;
 }
 
+// The compact slot's kSlotArr entry, or null when this proxy is not one.
+static const Value* slotProxyRef(const Value& proxy) {
+    if (!proxy.hash()) return nullptr;
+    const Value* r = proxy.hash()->findPre(kSlotArr().s, kSlotArr().h);
+    return r && r->arr() ? r : nullptr;
+}
+
 // The compact slot's target, or null when this proxy is not one.
 ValueList* Interpreter::slotProxyTarget(const Value& proxy, size_t& idxOut) {
-    if (!proxy.hash()) return nullptr;
-    auto ai = proxy.hash()->find(kSlotArr);
-    if (ai == proxy.hash()->end() || !ai->second.arr()) return nullptr;
-    auto ii = proxy.hash()->find(kSlotIdx);
-    idxOut = ii == proxy.hash()->end() ? 0 : (size_t)ii->second.toInt();
-    return ai->second.arr();
+    const Value* r = slotProxyRef(proxy);
+    if (!r) return nullptr;
+    idxOut = slotIdx(*r);
+    return r->arr();
 }
 
-// True once the array has SHRUNK since the alias was made: the position it holds
-// no longer names the element it was bound to (see kSlotSize).
-static bool slotProxyDetached(const Value& proxy, const ValueList* arr) {
-    auto it = proxy.hash()->find(kSlotSize);
-    return it != proxy.hash()->end() && arr->size() < (size_t)it->second.toInt();
+// The value the alias keeps: kSlotLast, written on every read and write through
+// it. True once the array has SHRUNK since the alias was made — the position it
+// holds no longer names the element it was bound to (see kSlotLast) — and
+// reads and writes then stay with that value.
+static bool slotProxyDetached(const Value& ref, const ValueList* arr) {
+    return arr->size() < slotSize(ref);
 }
 
-Value Interpreter::slotProxyRead(const Value& proxy) {
-    size_t idx = 0;
-    ValueList* arr = slotProxyTarget(proxy, idx);
-    if (!arr) return Value::any();
-    ParStripe ps(*this, arr);
-    auto& ph = *proxy.hash();
-    if (slotProxyDetached(proxy, arr)) {
-        auto it = ph.find(kSlotLast);
-        return it != ph.end() ? it->second : Value::any();
-    }
+static Value slotProxyReadRef(Interpreter& I, const Value& proxy, const Value& ref) {
+    ValueList* arr = ref.arr();
+    const size_t idx = slotIdx(ref);
+    Interpreter::ParStripe ps(I, arr);
+    Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h);
+    if (slotProxyDetached(ref, arr)) return last ? *last : Value::any();
     Value v = idx < arr->size() ? (*arr)[idx] : Value::any();
-    ph[kSlotLast] = v;   // what the alias keeps if the array shrinks later
+    if (last) *last = v;   // what the alias keeps if the array shrinks later
     return v;
 }
+bool engineProxyRead(Interpreter& I, const Value& proxy, Value& out) {
+    if (const Value* r = slotProxyRef(proxy)) { out = slotProxyReadRef(I, proxy, *r); return true; }
+    if (PRef<Value> c = cellOfProxy(&proxy)) { out = *c; return true; }
+    return false;
+}
+Value Interpreter::slotProxyRead(const Value& proxy) {
+    const Value* ref = slotProxyRef(proxy);
+    return ref ? slotProxyReadRef(*this, proxy, *ref) : Value::any();
+}
 
-Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
-    size_t idx = 0;
-    ValueList* arr = slotProxyTarget(proxy, idx);
-    if (!arr) return nv;
-    ParStripe ps(*this, arr);
-    (*proxy.hash())[kSlotLast] = nv;
-    if (slotProxyDetached(proxy, arr)) return nv;  // written to the detached element
+static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& ref, const Value& nv) {
+    ValueList* arr = ref.arr();
+    const size_t idx = slotIdx(ref);
+    Interpreter::ParStripe ps(I, arr);
+    if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
+    if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
     while (arr->size() <= idx) arr->push_back(Value::any());
     (*arr)[idx] = nv;
     return nv;
 }
+Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
+    const Value* ref = slotProxyRef(proxy);
+    return ref ? slotProxyWriteRef(*this, proxy, *ref, nv) : nv;
+}
 
 Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key) {
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
     slotProxyPair(proxy,
         [h, key](Interpreter& I, ValueList&) -> Value {
             ParStripe ps(I, h.get());
@@ -2633,7 +2670,7 @@ Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key) {
 
 Value Interpreter::makeCellProxy(const Value& init) {
     auto cell = makePayload<Value>(init);
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
     slotProxyPair(proxy,
         [cell](Interpreter&, ValueList&) -> Value { return *cell; },
         [cell](Interpreter&, ValueList& sa) -> Value {

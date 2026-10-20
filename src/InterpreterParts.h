@@ -1427,25 +1427,51 @@ static inline void slotProxyPair(Value& proxy, std::function<Value(Interpreter&,
 extern const char* kCellKey;
 const Value& cellProxyFetch();   // InterpreterCalls.cpp: the FETCH and STORE every
 const Value& cellProxyStore();   // cell proxy shares, finding its cell through the proxy
+
+// The "Proxy" kind, interned once: assigning the literal interns it again on
+// every proxy built, under the intern table's lock (5% of an element bind).
+inline const IStr& proxyKind() { static const IStr k("Proxy"); return k; }
+// A Proxy's constant keys, each hashed once: the engine's own proxies are
+// looked up on every read and write through a binding.
+struct ProxyKey {
+    std::string s;
+    uint64_t h;
+    explicit ProxyKey(const char* k) : s(k), h(ValueHash::keyHash(s)) {}
+};
+inline const ProxyKey& proxyKeyFetch() { static const ProxyKey k("FETCH"); return k; }
+inline const ProxyKey& proxyKeyStore() { static const ProxyKey k("STORE"); return k; }
+inline const ProxyKey& proxyKeyCell() { static const ProxyKey k(kCellKey); return k; }
+
 static inline Value makeSharedCellProxy(PRef<Value> cell) {
-    Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-    // the opaque `ext` handle is a shared_ptr<void>: the cell rides in it boxed
-    Value handle = Value::any(); handle.extM() = std::make_shared<PRef<Value>>(cell);
-    (*proxy.hash())[kCellKey] = handle;
-    (*proxy.hash())["FETCH"] = cellProxyFetch();
-    (*proxy.hash())["STORE"] = cellProxyStore();
+    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
+    ValueHash& h = *proxy.hash();
+    // the cell rides as a cell HOLDER, the form an Env slot keeps one in: no
+    // boxing, and the cycle collector sees the edge (an `ext` handle hid it)
+    h.addFresh(proxyKeyCell().s, proxyKeyCell().h, Value::cellHolder(cell));
+    h.addFresh(proxyKeyFetch().s, proxyKeyFetch().h, cellProxyFetch());
+    h.addFresh(proxyKeyStore().s, proxyKeyStore().h, cellProxyStore());
     return proxy;
+}
+
+// A read through one of the engine's own proxies — an array-slot alias or a
+// shared cell — with no FETCH call; false for any other Proxy, which the caller
+// FETCHes (InterpreterCalls.cpp).
+bool engineProxyRead(Interpreter& I, const Value& proxy, Value& out);
+// …and through a variable's SLOT holding one: the proxy is copied out under the
+// slot's stripe (the torn-copy contract every variable read keeps), then read.
+static inline bool engineProxySlotRead(Interpreter& I, const Value* slot, Value& out) {
+    Value pv;
+    { Interpreter::SlotStripe rs(I, slot); pv = *slot; }
+    return engineProxyRead(I, pv, out);
 }
 
 // The cell a slot ALREADY shares, or nothing when it holds an ordinary value.
 // `my $a := $b; my $c := $b` must reach one container, not two, so the cell is
-// parked on the proxy itself under a hidden key — in the opaque `ext` handle,
-// which is what that field is for.
+// parked on the proxy itself under a hidden key.
 static inline PRef<Value> cellOfProxy(const Value* slot) {
-    if (!slot || slot->t != VT::Hash || slot->hashKind != "Proxy" || !slot->hash()) return nullptr;
-    auto c = slot->hash()->find(kCellKey);
-    if (c == slot->hash()->end() || !c->second.ext()) return nullptr;
-    return *std::static_pointer_cast<PRef<Value>>(c->second.ext());
+    if (!slot || slot->t != VT::Hash || slot->hashKind != proxyKind() || !slot->hash()) return nullptr;
+    const Value* c = slot->hash()->findPre(proxyKeyCell().s, proxyKeyCell().h);
+    return c ? c->cellS() : nullptr;
 }
 bool forTailVarsExpr(const Expr* e, std::vector<const void*>& out);
 

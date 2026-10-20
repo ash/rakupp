@@ -383,6 +383,25 @@ public:
     }
     size_t count(const std::string& key) const { return findEntry(key, hashKey(key)) >= 0 ? 1 : 0; }
 
+    // For the engine's fixed-shape hashes (a Proxy's hidden keys, read on every
+    // access through a binding): the caller hashes its constant key ONCE
+    // (keyHash) and looks it up by that, and builds the hash by appending keys
+    // it knows are absent.
+    static uint64_t keyHash(const std::string& k) { return hashKey(k); }
+    Value* findPre(const std::string& key, uint64_t h) {
+        int32_t e = findEntry(key, h);
+        return e < 0 ? nullptr : &E()[e].kv.second;
+    }
+    const Value* findPre(const std::string& key, uint64_t h) const {
+        int32_t e = findEntry(key, h);
+        return e < 0 ? nullptr : &E()[e].kv.second;
+    }
+    Value& addFresh(const std::string& key, uint64_t h, Value v) {
+        size_t slot = SIZE_MAX;
+        if (!index_.empty()) findSlot(key, h, &slot);
+        return insertNew(key, h, std::move(v), slot);
+    }
+
     Value& operator[](const std::string& key) {
         uint64_t h = hashKey(key);
         size_t slot;
