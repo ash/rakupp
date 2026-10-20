@@ -1,7 +1,7 @@
 #!/usr/bin/env rakupp
-# FastRoast's fattened Roast, part by part, through tools/run-roast.raku.
+# FatRoast's fattened Roast, part by part, through tools/run-roast.raku.
 #
-# FastRoast (github.com/ash/fastroast) runs the very same test suite with
+# FatRoast (github.com/ash/fatroast) runs the very same test suite with
 # mangled characters. Its fat/ directory holds one tree per transform —
 # strings-v1.mixed/, names-v1.mixed/, ops-v1/ — and each tree holds the files
 # of Roast's spectest.data that transform changed, at their Roast paths: the
@@ -28,7 +28,8 @@
 # what one run's tests wrote beside themselves is gone before the next.
 #
 # Each run's own output goes to OVERLAY/lists/PART.ENGINE.log, with --failed
-# on, and each file's outcome is read from the run: PASS from the --list file,
+# on; its summary (the totals and the by-synopsis table) is printed after the
+# run, and each file's outcome is read from the run: PASS from the --list file,
 # and from the --failed block `part 13/19`, `TIME 3/10`, `noTAP` or `LOST`. A
 # fattened test can fail on every engine — a sort over `mixed`-palette strings
 # is no longer sorted — so a part's pass count says little alone. What this
@@ -41,8 +42,8 @@
 #     on the plain Roast file and `base` when they disagree there too (the
 #     ordinary conformance gap, which the fat did not cause).
 #
-# For test-by-test verdicts and a shrunk reproducer, use FastRoast's own
-# `fastroast run`.
+# For test-by-test verdicts and a shrunk reproducer, use FatRoast's own
+# `fatroast run`.
 #
 # Usage:
 #   build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
@@ -56,7 +57,7 @@
 
 my $RUN-ROAST = $?FILE.IO.parent.add('run-roast.raku').absolute;
 my $HOME      = %*ENV<HOME> // '.';
-my $FASTROAST = %*ENV<FASTROAST> // "$HOME/fastroast";
+my $FATROAST = %*ENV<FATROAST> // "$HOME/fatroast";
 my $OVERLAY   = %*ENV<FATROAST_OVERLAY> // "$HOME/roast-fat";
 my $ROAST     = (%*ENV<ROAST> // "$HOME/roast").IO.absolute;
 my $BASE      = 'roast';     # the baseline part: Roast as it is
@@ -74,8 +75,8 @@ for @*ARGS -> $a {
     elsif $a ~~ /^ '--engine=' (.+) $/ {
         @want-engines.append: (~$0).split(',').map(*.trim).grep(*.chars);
     }
-    elsif $a ~~ /^ '--fastroast=' (.+) $/ {
-        $FASTROAST = ~$0;
+    elsif $a ~~ /^ '--fatroast=' (.+) $/ {
+        $FATROAST = ~$0;
     }
     elsif $a ~~ /^ '--overlay=' (.+) $/ {
         $OVERLAY = ~$0;
@@ -111,15 +112,15 @@ for @*ARGS -> $a {
         @patterns.push($a) unless $a.starts-with('-');
     }
 }
-$FASTROAST = $FASTROAST.IO.absolute;
+$FATROAST = $FATROAST.IO.absolute;
 $OVERLAY   = $OVERLAY.IO.absolute;
-my $FAT    = $FASTROAST.IO.add('fat');
+my $FAT    = $FATROAST.IO.add('fat');
 
 # fat/'s trees, one directory per transform and palette (`strings-v1.mixed`,
 # `ops-v1`), in the order fat/README.md's table lists them. A fat case is the
 # transform, everything before the first dot: `strings-v1` is every palette's
 # tree of it. What each tree rewrites is its row of that table (`| [`ops-v1/`]
-# (ops-v1/) | … |`), so a tree FastRoast adds shows up in --help in its own words.
+# (ops-v1/) | … |`), so a tree FatRoast adds shows up in --help in its own words.
 sub fat-about(--> List) {
     my $readme = $FAT.add('README.md');
     return () unless $readme.e;
@@ -138,7 +139,7 @@ sub case-of(Str $tree --> Str) { $tree.split('.')[0] }
 # its file count and what it rewrites; a case with several palettes lists each
 # palette's tree under it.
 sub parts-help(--> Str) {
-    return "Fat cases\n  (no $FAT: point --fastroast or \$FASTROAST at a FastRoast checkout)\n"
+    return "Fat cases\n  (no $FAT: point --fatroast or \$FATROAST at a FatRoast checkout)\n"
         unless $FAT.d;
     my %about = fat-about();
     my @trees = fat-trees();
@@ -178,14 +179,14 @@ if $HELP {
     print qq:to/END/;
     Usage: build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
 
-    Runs every tree of FastRoast's fattened Roast through tools/run-roast.raku,
+    Runs every tree of FatRoast's fattened Roast through tools/run-roast.raku,
     each from an overlay of the Roast checkout, with Roast itself as the
     baseline part `roast`, and compares the outcomes file by file: per engine,
     the files that pass in Roast and not fattened; given two engines, the files
     whose outcome differs, marked fat or base. The trees keep Roast's #?
     directives, and run-roast applies them by its usual rules.
 
-      fastroast  $FASTROAST
+      fatroast   $FATROAST
       roast      $ROAST
       overlays   $OVERLAY
 
@@ -195,11 +196,12 @@ if $HELP {
       --engine=E[,E]     run each part under each engine, a path or a name on
                          PATH; the first is the one the others are compared
                          with (default: the engine running this file)
-      --fastroast=DIR    the FastRoast checkout (\$FASTROAST,
-                         default \$HOME/fastroast)
+      --fatroast=DIR     the FatRoast checkout (\$FATROAST,
+                         default \$HOME/fatroast)
       --overlay=DIR      where the overlays, logs and lists go
                          (\$FATROAST_OVERLAY, default \$HOME/roast-fat)
-      -v, --verbose      show each run-roast's output as well as logging it
+      -v, --verbose      show each run-roast's whole output as well as logging
+                         it (without -v, its summary is shown after the run)
       -h, --help         print this and exit
 
     END
@@ -227,7 +229,7 @@ if $HELP {
 }
 
 unless $FAT.d {
-    note "run-fatroast: no $FAT — point --fastroast (or \$FASTROAST) at a FastRoast checkout";
+    note "run-fatroast: no $FAT — point --fatroast (or \$FATROAST) at a FatRoast checkout";
     exit 2;
 }
 unless $ROAST.IO.add('spectest.data').e {
@@ -362,6 +364,16 @@ sub outcomes(IO::Path $list, IO::Path $log --> Hash) {
     %o
 }
 
+# run-roast's own summary from a run's log: the totals, the skip/todo table and
+# the by-synopsis table, from its `Files:` line up to the --failed block (whose
+# per-file lines are in the lists already).
+sub summary(IO::Path $log --> Str) {
+    my @l    = $log.slurp(:enc<utf8-c8>).lines;
+    my $from = @l.first(*.starts-with('Files: '), :k) // return '';
+    my $to   = @l.first({ .starts-with('Files not fully passing (') }, :k) // @l.elems;
+    @l[$from ..^ max($from, $to)].join("\n").trim-trailing ~ "\n"
+}
+
 # run-roast asks git for the checkout's revision. The overlay has no .git, and
 # a git that walked up out of it would report whatever repository holds the
 # overlay directory instead, so it is told not to.
@@ -388,6 +400,8 @@ sub run-part(Str $part, %e, @files --> Hash) {
     say sprintf('run-fatroast:   %d files: %s (%.0f s)', %o.elems,
                 <PASS part TIME noTAP LOST>.grep({ %n{$_} }).map({ "{%n{$_}} {.lc}" }).join(', ') || 'none ran',
                 now - $started);
+    # -v has shown the whole output already
+    print "\n", summary($log) unless $VERBOSE;
     %o
 }
 

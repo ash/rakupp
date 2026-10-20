@@ -4,7 +4,7 @@
 # Raku reads `$n - 1`; and in `1&'a'` the `&'a` was a variable, so the string
 # that followed ran on to the next quote mark, lines later. `qq:!c/…/` took
 # the `!` of the negated adverb for the opening delimiter, with the same
-# result. FastRoast, which edits Roast files through these spans, renamed code
+# result. FatRoast, which edits Roast files through these spans, renamed code
 # it took for a string.
 # FIXED: a name starts with a letter the UCD calls one (L*, Nl) and continues
 # with letters, digits and combining marks; a `-` or `'` joins it only inside

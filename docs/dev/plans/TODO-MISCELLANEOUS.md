@@ -10,7 +10,7 @@ plan, move it to [TODO.md](TODO.md).
 ---
 
 - [ ] **A regex does not interpolate a variable with a non-ASCII name**
-  (found 2026-10-19 by FastRoast's `names-v1` in the `mixed` palette):
+  (found 2026-10-19 by FatRoast's `names-v1` in the `mixed` palette):
 
   ```raku
   my $é = rx/a/;          say "a" ~~ /$é/;   # Nil, Rakudo ｢a｣
@@ -23,7 +23,7 @@ plan, move it to [TODO.md](TODO.md).
   needs it: S05-interpolation under any palette.
 
 - [ ] **`.trans` with a regex key miscounts after a combining mark** (found
-  2026-10-19 by FastRoast's `strings-v1` in the `mixed` palette):
+  2026-10-19 by FatRoast's `strings-v1` in the `mixed` palette):
 
   ```raku
   say "a̲b c".trans(/ \s+ / => "_");   # a̲_ c, Rakudo a̲b_c
@@ -35,7 +35,7 @@ plan, move it to [TODO.md](TODO.md).
   Who needs it: any `.trans` with regex keys over text with combining marks.
 
 - [ ] **An undeclared operator called by name does not fail** (found
-  2026-10-19 by FastRoast's `strings-v1`):
+  2026-10-19 by FatRoast's `strings-v1`):
 
   ```raku
   say infix:<nosuch>(42);     # 42; Rakudo: Undeclared routine infix:<nosuch>
@@ -48,7 +48,7 @@ plan, move it to [TODO.md](TODO.md).
   operator name, which rakupp turns into a silent pass.
 
 - [ ] **Test's exit status differs from Rakudo's when a file dies or runs
-  short** (found 2026-10-19; about 40 exit-status-only FastRoast findings per
+  short** (found 2026-10-19; about 40 exit-status-only FatRoast findings per
   sample):
 
   ```raku
