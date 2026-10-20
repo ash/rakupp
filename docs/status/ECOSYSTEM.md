@@ -31,11 +31,11 @@ are where a fix session gets its worklist:
   construct as its author wrote it, reduced to run with no module installed.
   Run like Roast, by the interpreter under test, after any engine change
   (**[G](#g-run-rakuglaze)**).
-- **FastRoast** — Roast with the fat added: Roast's own files, every
+- **FatRoast** — Roast with the fat added: Roast's own files, every
   expectation unchanged, with string literals in other scripts, declared names
   renamed and Texas operators spelled in Unicode. Run beside plain Roast by
   `tools/run-fatroast.raku`, or as a campaign that shrinks each divergence
-  (**[H](#h-run-fastroast)**).
+  (**[H](#h-run-fatroast)**).
 - **raku-eye** — the weekly unattended run that measures `main` against fresh
   Weekly Challenge solutions, new ecosystem releases and the corpus, and
   publishes a ranked list of what to fix. It does not run Rakugrid. Its design
@@ -62,7 +62,7 @@ are where a fix session gets its worklist:
 | **Rakugrid** | An engine-neutral behavioural suite for the *language*, organised as a grid: atoms (one construct, one behaviour) and molecules (constructs in combination) over eight orthogonal facet axes, mostly machine-generated. Rakudo is the **oracle, not the arbiter** — every test stores what Rakudo did next to what we assert, and a divergence without a signed ruling fails the build. Runs under any implementation and tests any implementation; its generators run on rakupp. The whole grid — every recorded test, matrix by matrix, plus the divergence clusters and the signed rulings — is browsable at raku.online/grid, rendered by `sites/grid` in the raku.online repo. | [ash/rakugrid](https://github.com/ash/rakugrid) | [raku.online/grid](https://raku.online/grid/) |
 | **Rakumap** | An autonomous differential explorer for behaviour not yet represented in the known grid. Its deterministic, domain-specific generators run under rakupp; Rakudo and Raku++ are bounded child engines. Stable differences become replayable evidence dossiers, not automatic language rulings, and may later graduate into Rakugrid or an implementation regression suite. | [ash/rakumap](https://github.com/ash/rakumap) | — (development tool) |
 | **Rakuglaze** | Short snippets taken from real ecosystem modules — a `new` over `bless`, a `subset … where any(…)`, a grammar rule with `*%%` — each reduced until it runs alone, with no module installed and nothing fetched, and tagged with the dist, version, file and line it came from (permissively licensed dists only). Expected output is recorded from Rakudo; the suite is run by the engine under test, the way `tools/run-roast.raku` is, and over a thousand snippets finish in seconds, so it is a check to run after every change rather than once a release. Its mining tool ranks constructs by how many dists use them, from `rakupp --ast` over the sources of the last ecosystem sweep. Runs under Raku++, Rakudo and mutsu. | [ash/rakuglaze](https://github.com/ash/rakuglaze) | — (test suite) |
-| **FastRoast** | Roast with the fat added. Named, versioned transforms rewrite each file Roast's `spectest.data` lists — `strings-v1` maps the letters in string literals through a palette (Latin-1, Cyrillic, CJK, Hangul, astral, combining marks, or all of them in turn), `names-v1` renames declared variables, subs and types the same way, `ops-v1` spells Texas operators in Unicode — and both engines run the result: the same test suite with mangled characters, every expectation one Roast's authors wrote. Its edits are placed by the tokens of `rakupp --highlight`, and it runs under rakupp. The fattened trees for one Roast revision are committed in its `fat/`, `#?` directives kept, and this repo's `tools/run-fatroast.raku` runs them through `tools/run-roast.raku` beside plain Roast; its own `run` is a campaign against Rakudo that delta-debugs a divergence down to the edits it needs. | [ash/fastroast](https://github.com/ash/fastroast) | — (test suite) |
+| **FatRoast** | Roast with the fat added. Named, versioned transforms rewrite each file Roast's `spectest.data` lists — `strings-v1` maps the letters in string literals through a palette (Latin-1, Cyrillic, CJK, Hangul, astral, combining marks, or all of them in turn), `names-v1` renames declared variables, subs and types the same way, `ops-v1` spells Texas operators in Unicode — and both engines run the result: the same test suite with mangled characters, every expectation one Roast's authors wrote. Its edits are placed by the tokens of `rakupp --highlight`, and it runs under rakupp. The fattened trees for one Roast revision are committed in its `fat/`, `#?` directives kept, and this repo's `tools/run-fatroast.raku` runs them through `tools/run-roast.raku` beside plain Roast; its own `run` is a campaign against Rakudo that delta-debugs a divergence down to the edits it needs. | [ash/fatroast](https://github.com/ash/fatroast) | — (test suite) |
 | **raku-eye** | The standing watch: a weekly, unattended GitHub Actions run that measures `main` against fresh Weekly Challenge solutions, new ecosystem releases and the corpus, benchmarks it against the latest Rakudo release, and publishes the result. Measures only — it never edits the compiler, and there is no AI in it. | [ash/raku-eye](https://github.com/ash/raku-eye) | [eye.raku.online](https://eye.raku.online/) |
 | **Homebrew tap** | The `ash/rakupp` tap — `brew install rakupp`. Apple Silicon gets the prebuilt release binary; Linux/Intel build from the source tarball; `--HEAD` builds from `main`. | [ash/homebrew-rakupp](https://github.com/ash/homebrew-rakupp) | `brew install rakupp` |
 
@@ -84,7 +84,7 @@ graph TD
     GRID["Rakugrid<br/>atoms + molecules<br/>oracle vs expect"]
     MAP["Rakumap<br/>generated programs<br/>stable differential findings"]
     GLAZE["Rakuglaze<br/>snippets from real modules<br/>run by the engine under test"]
-    FAT["FastRoast<br/>Roast with mangled characters<br/>fat/ trees, both engines"]
+    FAT["FatRoast<br/>Roast with mangled characters<br/>fat/ trees, both engines"]
     EYE["raku-eye<br/>weekly measurement<br/>eye.raku.online"]
     PWC(["Weekly Challenge<br/>+ REA releases"])
     BREW["Homebrew tap<br/>ash/rakupp"]
@@ -112,7 +112,7 @@ graph TD
     MAP -.->|confirmed behaviour graduates| GRID
     NATIVE -->|rakupp bin/rakuglaze:<br/>the running engine is tested| GLAZE
     GLAZE -.->|failing snippets,<br/>each with its dist and line| SRC
-    NATIVE -->|rakupp bin/fastroast;<br/>edits placed by --highlight| FAT
+    NATIVE -->|rakupp bin/fatroast;<br/>edits placed by --highlight| FAT
     FAT -->|tools/run-fatroast.raku<br/>overlays on Roast| NATIVE
     FAT -.->|fat findings,<br/>shrunk to min.t| SRC
     SRC -->|tag → release.yml CI| REL
@@ -513,11 +513,11 @@ snippet whose expectation was ruled against Rakudo carries `ruled:` with the
 reason. New snippets come from `tools/mine.raku`, which ranks constructs by how
 many dists use them and finds real uses of each.
 
-### H. Run FastRoast
+### H. Run FatRoast
 
-[FastRoast](https://github.com/ash/fastroast) asks whether a feature Roast
+[FatRoast](https://github.com/ash/fatroast) asks whether a feature Roast
 checks in ASCII still works when it meets other input. Roast's tests are
-mostly ASCII, with Latin names and Texas operators; FastRoast rewrites the
+mostly ASCII, with Latin names and Texas operators; FatRoast rewrites the
 same files — the letters in string literals through a palette (`latin1`,
 `cyrillic`, `cjk`, `hangul`, `astral`, `marks`, or `mixed`, each letter from
 the next), declared names through the same palettes, `<=` as `≤` — and leaves
@@ -527,11 +527,11 @@ non-ASCII names, and regex interpolation of a non-ASCII variable.
 
 Two facts about it drive how to read it:
 
-- **Its edits are placed by this repo's highlighter.** FastRoast runs under
+- **Its edits are placed by this repo's highlighter.** FatRoast runs under
   rakupp and edits each file through the spans of `rakupp --highlight
   --html`; a file whose tokens do not reassemble it exactly is skipped (one
   of Roast's 1,425 is: `S15-unicode-information/uniprop.t`). A change to
-  `src/Highlight.cpp` is therefore a change to what FastRoast writes: run its
+  `src/Highlight.cpp` is therefore a change to what FatRoast writes: run its
   tests under the new binary, and when the change moves token boundaries,
   regenerate `fat/` with `fatten` and read the diff.
 - **A fattened test may fail on every engine.** A sort over `mixed`-palette
@@ -539,11 +539,11 @@ Two facts about it drive how to read it:
   passing, so a part's pass count says little alone; the question is what
   was lost against plain Roast, and whether two engines agree.
 
-The fattened trees for one Roast revision are committed in FastRoast's
-[`fat/`](https://github.com/ash/fastroast/tree/main/fat) — Roast's raw files,
+The fattened trees for one Roast revision are committed in FatRoast's
+[`fat/`](https://github.com/ash/fatroast/tree/main/fat) — Roast's raw files,
 `#?` directives kept, so Raku++ applies them itself and a foreign engine gets
-run-roast's `fudge`. From this repo, with FastRoast checked out at
-`$FASTROAST` (default `~/fastroast`) and Roast at `$ROAST` (default
+run-roast's `fudge`. From this repo, with FatRoast checked out at
+`$FATROAST` (default `~/fatroast`) and Roast at `$ROAST` (default
 `~/roast`):
 
 ```sh
@@ -561,18 +561,18 @@ fully pass in Roast and not fattened, and with two engines
 `PART.A-vs-B.diff`: `fat` where the engines agree on the plain Roast file,
 `base` where they disagree there too.
 
-For test-by-test verdicts and a reproducer, run the campaign from a FastRoast
+For test-by-test verdicts and a reproducer, run the campaign from a FatRoast
 checkout; Rakudo is the oracle, and each divergence the fat caused is
 delta-debugged to the edits it needs and kept as a dossier with its `min.t`:
 
 ```sh
-rakupp bin/fastroast run --roast=/path/to/roast --transform=all --per=5 \
+rakupp bin/fatroast run --roast=/path/to/roast --transform=all --per=5 \
     --oracle=rakudo --candidate=/path/to/new/rakupp --jobs=2
 ```
 
-As with Rakumap, a finding is a lead: reproduce it outside FastRoast against
+As with Rakumap, a finding is a lead: reproduce it outside FatRoast against
 Rakudo before it becomes a Raku++ regression test. Results so far are in its
-[docs/RESULTS.md](https://github.com/ash/fastroast/blob/main/docs/RESULTS.md).
+[docs/RESULTS.md](https://github.com/ash/fatroast/blob/main/docs/RESULTS.md).
 
 ---
 
@@ -596,8 +596,8 @@ Rakudo before it becomes a Raku++ regression test. Results so far are in its
 | the interpreter, and you want to search beyond known tests | run a bounded Rakumap `--generator=all` campaign with the new binary as host and candidate; inspect stable dossiers before promoting any result (**F**) |
 | a Rakumap generator or comparator | run its fixed-seed tests under rakupp, then regenerate only its committed fixture corpus in the Rakumap checkout (**F**) |
 | the interpreter, and you want to know whether real modules' constructs still work | `rakupp bin/rakuglaze` in the rakuglaze checkout, with the new binary running it — seconds, so after every change (**G**) |
-| the interpreter, and you want to know whether Roast's features survive other scripts and Unicode operators | `nice build/rakupp tools/run-fatroast.raku -j2` with FastRoast checked out at `~/fastroast`; read the `.lost` lists, and with `--engine=build/rakupp,rakudo` the `.diff` lists (**H**) |
-| the highlighter (`src/Highlight.cpp`) | run FastRoast's tests under the new binary — its edits are placed by the highlighter's tokens; if token boundaries moved, regenerate its `fat/` with `fatten` and read the diff (**H**) |
+| the interpreter, and you want to know whether Roast's features survive other scripts and Unicode operators | `nice build/rakupp tools/run-fatroast.raku -j2` with FatRoast checked out at `~/fatroast`; read the `.lost` lists, and with `--engine=build/rakupp,rakudo` the `.diff` lists (**H**) |
+| the highlighter (`src/Highlight.cpp`) | run FatRoast's tests under the new binary — its edits are placed by the highlighter's tokens; if token boundaries moved, regenerate its `fat/` with `fatten` and read the diff (**H**) |
 | anything, and you want to know what it broke in the wild | read [eye.raku.online](https://eye.raku.online/) — the week's regressions and the ranked mismatch clusters are the fix-session worklist (**D**) |
 | the interpreter, at release time | re-run both benchmark harnesses and update BENCHMARKS.md — every release, not just when a kernel looks moved (**A.5**) |
 | cut a new version tag | bump the three pins in the Homebrew formula once CI has published the assets (**A.7**); rebuild the tour so its lessons re-verify on the new binary (**C**); republish the site data (**[RELEASING.md](../dev/RELEASING.md) step 6**) |
