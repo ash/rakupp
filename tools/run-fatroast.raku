@@ -28,7 +28,8 @@
 # what one run's tests wrote beside themselves is gone before the next.
 #
 # Each run's own output goes to OVERLAY/lists/PART.ENGINE.log, with --failed
-# on, and each file's outcome is read from the run: PASS from the --list file,
+# on; its summary (the totals and the by-synopsis table) is printed after the
+# run, and each file's outcome is read from the run: PASS from the --list file,
 # and from the --failed block `part 13/19`, `TIME 3/10`, `noTAP` or `LOST`. A
 # fattened test can fail on every engine — a sort over `mixed`-palette strings
 # is no longer sorted — so a part's pass count says little alone. What this
@@ -199,7 +200,8 @@ if $HELP {
                          default \$HOME/fastroast)
       --overlay=DIR      where the overlays, logs and lists go
                          (\$FATROAST_OVERLAY, default \$HOME/roast-fat)
-      -v, --verbose      show each run-roast's output as well as logging it
+      -v, --verbose      show each run-roast's whole output as well as logging
+                         it (without -v, its summary is shown after the run)
       -h, --help         print this and exit
 
     END
@@ -362,6 +364,16 @@ sub outcomes(IO::Path $list, IO::Path $log --> Hash) {
     %o
 }
 
+# run-roast's own summary from a run's log: the totals, the skip/todo table and
+# the by-synopsis table, from its `Files:` line up to the --failed block (whose
+# per-file lines are in the lists already).
+sub summary(IO::Path $log --> Str) {
+    my @l    = $log.slurp(:enc<utf8-c8>).lines;
+    my $from = @l.first(*.starts-with('Files: '), :k) // return '';
+    my $to   = @l.first({ .starts-with('Files not fully passing (') }, :k) // @l.elems;
+    @l[$from ..^ max($from, $to)].join("\n").trim-trailing ~ "\n"
+}
+
 # run-roast asks git for the checkout's revision. The overlay has no .git, and
 # a git that walked up out of it would report whatever repository holds the
 # overlay directory instead, so it is told not to.
@@ -388,6 +400,8 @@ sub run-part(Str $part, %e, @files --> Hash) {
     say sprintf('run-fatroast:   %d files: %s (%.0f s)', %o.elems,
                 <PASS part TIME noTAP LOST>.grep({ %n{$_} }).map({ "{%n{$_}} {.lc}" }).join(', ') || 'none ran',
                 now - $started);
+    # -v has shown the whole output already
+    print "\n", summary($log) unless $VERBOSE;
     %o
 }
 
