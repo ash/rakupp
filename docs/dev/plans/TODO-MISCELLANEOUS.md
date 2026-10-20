@@ -9,6 +9,86 @@ plan, move it to [TODO.md](TODO.md).
 
 ---
 
+- [ ] **A non-ASCII scalar name breaks binding** (found 2026-10-19 by
+  FastRoast's `names-v1`). Binding to or through a scalar whose name does
+  not start with an ASCII letter copies instead of aliasing:
+
+  ```raku
+  my $ч = 1; my $y := $ч; $ч = 2; say $y;           # 1, Rakudo 2
+  my @a = <a b c>; my $é = "d"; @a[1] := $é; $é = "e"; say @a[1];   # d, Rakudo e
+  ```
+
+  `@` and `%` names and `is rw` are fine, and so is `$x̲` (ASCII base and a
+  mark). About twenty sites decide "a plain lexical, no twigil" with
+  `ascii::isalpha(name[1]) || name[1] == '_'` (src/InterpreterCalls.cpp,
+  src/InterpreterCore.cpp, src/Codegen.cpp, src/Cnp.cpp); for `$ч`, name[1]
+  is a UTF-8 lead byte. Twigils are ASCII punctuation, so a byte >= 0x80
+  there always starts a letter. Who needs it: every program with names in
+  another script; Roast's S03-binding files under any palette.
+
+- [ ] **A non-ASCII type name drops a typed declaration's constraint**
+  (found 2026-10-19 by FastRoast's `names-v1`):
+
+  ```raku
+  class Еоо { }; my Еоо $foo; say $foo;   # (Any), Rakudo (Еоо)
+  class Éa { };  my Éa $x .= new;         # dies: no method 'new' on Any
+  ```
+
+  `my Еоо $x = Еоо.new` and coercion types (`Еоо()`) work. Likely the same
+  family as the item above, a first-letter test on the type name. Who needs
+  it: S12 files (`.= new` on a typed variable) under any palette.
+
+- [ ] **A regex does not interpolate a variable with a non-ASCII name**
+  (found 2026-10-19 by FastRoast's `names-v1` in the `mixed` palette):
+
+  ```raku
+  my $é = rx/a/;          say "a" ~~ /$é/;   # Nil, Rakudo ｢a｣
+  my @𝐯 = rx/a/, rx/b/;   say "a" ~~ /@𝐯/;   # Nil, Rakudo ｢a｣
+  ```
+
+  ASCII names interpolate. The regex compiler's variable test is likely
+  ASCII-only, as in the binding item above. Who needs it:
+  S05-interpolation under any palette.
+
+- [ ] **`.trans` with a regex key miscounts after a combining mark** (found
+  2026-10-19 by FastRoast's `strings-v1` in the `mixed` palette):
+
+  ```raku
+  say "a̲b c".trans(/ \s+ / => "_");   # a̲_ c, Rakudo a̲b_c
+  say "e̲ x".trans(/ \s+ / => "_");    # e̲ x, Rakudo e̲_x
+  ```
+
+  The match lands one position early per multi-codepoint grapheme before it,
+  a codepoint offset used as a grapheme index. Without marks it is right.
+  Who needs it: any `.trans` with regex keys over text with combining marks.
+
+- [ ] **An undeclared operator called by name does not fail** (found
+  2026-10-19 by FastRoast's `strings-v1`):
+
+  ```raku
+  say infix:<nosuch>(42);     # 42; Rakudo: Undeclared routine infix:<nosuch>
+  say &infix:<nosuch>;        # &infix:<nosuch>; Rakudo: the same error
+  ```
+
+  The one-argument form returns its argument and the code reference is
+  made up; with two arguments rakupp says "Unsupported operator" at run
+  time. Rakudo refuses all three when compiling. Who needs it: any typo in an
+  operator name, which rakupp turns into a silent pass.
+
+- [ ] **Test's exit status differs from Rakudo's when a file dies or runs
+  short** (found 2026-10-19; about 40 exit-status-only FastRoast findings per
+  sample):
+
+  ```raku
+  use Test; plan 2; ok 1; die "x";   # rakupp exits 1, Rakudo 255
+  use Test; plan 3; ok 0; ok 0;      # rakupp exits 255, Rakudo 2
+  ```
+
+  Rakudo's Test END exits with the failure count (at most 254) when any test
+  failed, else 255 when the count run differs from the plan, and that exit
+  overrides a `die`'s 1. Who needs it: harnesses that read the status, and
+  differential runs that compare it.
+
 - [ ] **A subscript that calls something runs twice on a read** (found
   2026-10-19). Every read path through a slice whose subscript is a call
   evaluates the call twice:
