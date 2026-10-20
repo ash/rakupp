@@ -52,6 +52,7 @@
 #   nice build/rakupp tools/run-fatroast.raku -j2
 #   nice build/rakupp tools/run-fatroast.raku -j2 --engine=build/rakupp,rakudo
 #   build/rakupp tools/run-fatroast.raku --parts=roast,ops-v1 S03-operators
+#   build/rakupp tools/run-fatroast.raku --parts=strings-v1 S32-str
 
 my $RUN-ROAST = $?FILE.IO.parent.add('run-roast.raku').absolute;
 my $HOME      = %*ENV<HOME> // '.';
@@ -114,6 +115,65 @@ $FASTROAST = $FASTROAST.IO.absolute;
 $OVERLAY   = $OVERLAY.IO.absolute;
 my $FAT    = $FASTROAST.IO.add('fat');
 
+# fat/'s trees, one directory per transform and palette (`strings-v1.mixed`,
+# `ops-v1`), in the order fat/README.md's table lists them. A fat case is the
+# transform, everything before the first dot: `strings-v1` is every palette's
+# tree of it. What each tree rewrites is its row of that table (`| [`ops-v1/`]
+# (ops-v1/) | … |`), so a tree FastRoast adds shows up in --help in its own words.
+sub fat-about(--> List) {
+    my $readme = $FAT.add('README.md');
+    return () unless $readme.e;
+    $readme.lines.map(-> $l {
+        $l ~~ /^ '| [`' (<-[`]>+?) '/`]' <-[|]>* '|' \s* (<-[|]>+?) \s* '|' /
+            ?? (~$0 => (~$1).subst('`', '', :g)) !! Empty
+    }).List
+}
+sub fat-trees(--> List) {
+    my @order = fat-about().map(*.key);
+    dir($FAT).grep(*.d).map(*.basename).sort({ (@order.first($_, :k) // Inf), $_ }).List
+}
+sub case-of(Str $tree --> Str) { $tree.split('.')[0] }
+
+# --help's list of what --parts takes: the baseline, then each fat case with
+# its file count and what it rewrites; a case with several palettes lists each
+# palette's tree under it.
+sub parts-help(--> Str) {
+    return "Fat cases\n  (no $FAT: point --fastroast or \$FASTROAST at a FastRoast checkout)\n"
+        unless $FAT.d;
+    my %about = fat-about();
+    my @trees = fat-trees();
+    my %n = @trees.map({ $_ => t-files($FAT.add($_)) });
+    my @rows = ($BASE, %n.values.map(*.Slip).unique.elems,
+                'Roast as it is, the baseline: every file the cases change'),;
+    for @trees.map(&case-of).unique -> $case {
+        my @t = @trees.grep({ case-of($_) eq $case });
+        if @t == 1 {
+            @rows.push: ($case, %n{@t[0]}.elems, %about{@t[0]} // '');
+        }
+        else {
+            @rows.push: ($case, @t.map({ %n{$_}.Slip }).unique.elems, 'one tree per palette:');
+            @rows.push: ("  $_", %n{$_}.elems, %about{$_} // '') for @t;
+        }
+    }
+    my $w = (|@rows.map(*[0].chars), 4).max;
+    my $out = "Fat cases, for --parts=CASE[,CASE] (default: all of them, roast first)\n";
+    for @rows -> ($name, $files, $about) {
+        my $lead = sprintf("  %-{$w}s  %5d  ", $name, $files);
+        my $line = $lead;
+        for $about.words -> $word {
+            if $line.chars > $lead.chars && $line.chars + 1 + $word.chars > 78 {
+                $out ~= $line ~ "\n";
+                $line = ' ' x $lead.chars;
+            }
+            $line ~= ($line.chars > $lead.chars ?? ' ' !! '') ~ $word;
+        }
+        $out ~= $line.trim-trailing ~ "\n";
+    }
+    $out ~ "A tree's own name (strings-v1.mixed) picks one palette of a case. Narrow\n"
+         ~ "further with PATTERNs, substrings of a file's Roast path: S32-str,\n"
+         ~ "S03-operators/set.\n"
+}
+
 if $HELP {
     print qq:to/END/;
     Usage: build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
@@ -130,8 +190,8 @@ if $HELP {
       overlays   $OVERLAY
 
     Options
-      --parts=P[,P]      only these parts: `roast` (the baseline) and the
-                         directories in fat/ (default: all of them, roast first)
+      --parts=C[,C]      only these fat cases (below) and `roast`, the
+                         baseline (default: all of them, roast first)
       --engine=E[,E]     run each part under each engine, a path or a name on
                          PATH; the first is the one the others are compared
                          with (default: the engine running this file)
@@ -141,6 +201,10 @@ if $HELP {
                          (\$FATROAST_OVERLAY, default \$HOME/roast-fat)
       -v, --verbose      show each run-roast's output as well as logging it
       -h, --help         print this and exit
+
+    END
+    print parts-help();
+    print qq:to/END/;
 
     Anything else goes to run-roast as it is: -j=N, --skip-marker=WORD,
     --fudge=IMPL, `--times=` (no file), PATTERNs. Only files Roast's
@@ -186,15 +250,24 @@ for $ROAST.IO.add('spectest.data').lines -> $line {
     %MARKERS{$path} = $hash.defined ?? $l.substr($hash + 1).words.List !! ();
 }
 
-# The parts: the baseline, then fat/'s directories.
-my @trees = dir($FAT).grep(*.d).map(*.basename).sort;
-my @known = $BASE, |@trees;
-my @parts = @want-parts || @known;
-with @parts.first(* ∉ @known) {
-    note "run-fatroast: no part '$_' (there are: {@known.join(', ')})";
-    exit 2;
+# The parts: the baseline, then fat/'s trees. --parts names fat cases
+# (strings-v1: every palette's tree of it) or single trees (strings-v1.mixed);
+# whatever order it gives, the baseline runs first.
+my @trees = fat-trees();
+my @parts = $BASE, |@trees;
+if @want-parts {
+    my %want;
+    for @want-parts -> $w {
+        my @hit = $w eq $BASE ?? ($BASE,) !! @trees.grep({ $_ eq $w || case-of($_) eq $w });
+        unless @hit {
+            note "run-fatroast: no fat case '$w' (there are: "
+               ~ "{($BASE, |@trees.map(&case-of).unique).join(', ')}; --help lists them)";
+            exit 2;
+        }
+        %want{$_} = True for @hit;
+    }
+    @parts = @parts.grep({ %want{$_} });
 }
-@parts = @known.grep(-> $p { @want-parts.first($p).defined }) if @want-parts;    # the baseline first, whatever order --parts gave
 
 # The overlay takes packages/ and the fixtures from $ROAST and the tests from
 # fat/, so the two had better be the same revision of Roast.
