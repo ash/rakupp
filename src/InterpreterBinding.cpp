@@ -9,6 +9,7 @@ namespace rakupp {
 
 extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
 void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
+bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
 
 // macOS resolves a bare unversioned libssl/libcrypto name to the /usr/lib
 // compat stubs, which warn ("loading libcrypto in an unsafe way") and can
@@ -5482,8 +5483,13 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         "callsame", "callwith", "nextsame", "nextwith", "samewith", "nextcallee", "lastcall",
         "sink", "quietly", "do", "gather", "start", "await", "item", "list", "flat", "slip"};
     for (auto& n : calls) {
-        if (n.empty() || n[0] == '\x02' || n.find(':') != std::string::npos || n.rfind("__", 0) == 0) continue;
-        if (declared.count(n)) continue;
+        if (n.empty() || n[0] == '\x02' || n.rfind("__", 0) == 0 || declared.count(n)) continue;
+        // an operator's name (`infix:<nosuch>(42)`) is asked of the operators;
+        // any other qualified name is not this check's
+        if (n.find(':') != std::string::npos) {
+            if (!operatorNameDeclared(*this, n)) undeclaredRoutine(n);
+            continue;
+        }
         if (ascii::isupper((unsigned char)n[0]) || kSpecial.count(n) || n.rfind("atomic-", 0) == 0) continue;
         if (builtins_.count(n) || builtinRef(n) || classes_.count(n) || isKnownTypeName(n)) continue;
         if (tctx_.cur && tctx_.cur->find("&" + n)) continue;

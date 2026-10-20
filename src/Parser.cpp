@@ -12990,7 +12990,22 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                  cur().text.compare(cur().text.size() - 2, 2, ">>") == 0) {
             // the lexer folded `<<M>>` into a single hyper-metaop token — unwrap it
             std::string tok = advance().text;
-            w.push_back(tok.substr(2, tok.size() - 4));
+            std::string in = tok.substr(2, tok.size() - 4);
+            // The quotes are qq-style, so a backslash escapes what follows,
+            // the closing quote too: `«\$>»` is `$>`, and `«~~>\»»` is `~~>»`,
+            // which the lexer folded up to the ESCAPED close — the name runs
+            // on to the real one (Rakudo: `infix:<~~\>»>`)
+            size_t bs = 0;
+            while (bs < in.size() && in[in.size() - 1 - bs] == '\\') bs++;
+            if (bs % 2 == 1 && !cur().spaceBefore && !isKind(Tok::End)) {
+                in += "\xC2\xBB";
+                while (!isKind(Tok::End) && !isOp("\xC2\xBB") && !cur().spaceBefore) in += advance().text;
+                if (isOp("\xC2\xBB")) advance();
+            }
+            std::string un;
+            for (size_t i = 0; i < in.size(); i++)
+                un += in[i] == '\\' && i + 1 < in.size() ? in[++i] : in[i];
+            w.push_back(un);
             resolveConstWords(w);
         }
         else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }

@@ -19,6 +19,7 @@ void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribut
 Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an);   // InterpreterBinding.cpp
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
+bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -26508,7 +26509,9 @@ Value Interpreter::evalCall(Call* c) {
         return result;
     }
     // operator-call form: infix:<+>(1,2) / postfix:<i>($x) / prefix:<[**]>(2,3,4)
+    // — of an operator something declares (`infix:<nosuch>(42)` is undeclared)
     if (c->name.rfind("infix:<", 0) == 0 && c->name.back() == '>') {
+        if (!operatorNameDeclared(*this, c->name)) undeclaredRoutine(c->name);
         std::string op = c->name.substr(7, c->name.size() - 8);
         if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
             op = op.substr(1, op.size() - 2); // infix:<<∈>> — double-angle form
@@ -31257,6 +31260,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             return proto;
         }
         if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
+            if (!operatorNameDeclared(*this, bare)) undeclaredRoutine(bare);   // `&infix:<nosuch>`
             std::string op = bare.substr(7, bare.size() - 8);
             if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
                 op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
@@ -31512,6 +31516,10 @@ Value Interpreter::evalVarExpr(Expr* e) {
         !kCoreSpecial.count(ve->name.substr(1)) && !builtinRef(ve->name.substr(1)))
         throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
                         "Undefined routine '" + ve->name.substr(1) + "'"};
+    // …and so does an operator's: `&prefix:<nosuch>`
+    if (sigil == '&' && !ve->declare && !ve->viaPseudoPkg && !noStrictHere() &&
+        !operatorNameDeclared(*this, ve->name.substr(1)))
+        undeclaredRoutine(ve->name.substr(1));
     return defaultFor(sigil);
 }
 

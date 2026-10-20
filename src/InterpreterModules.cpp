@@ -10,6 +10,7 @@
 
 namespace rakupp {
 extern std::atomic<bool> g_lexTypeAlias;   // InterpreterOperators.cpp: a type was bound under another name
+void operatorNameCandidates(const std::string& name, std::vector<std::string>& out);   // InterpreterOperators.cpp
 static thread_local int t_stageDepth = 0;
 namespace {
 struct StageLoadTimer {
@@ -3734,6 +3735,7 @@ std::vector<std::string> Interpreter::routineSuggestions(const std::string& name
             for (auto& nm : e->layout->names)
                 if (nm.size() > 1 && nm[0] == '&') cands.push_back(nm.substr(1));
     }
+    operatorNameCandidates(name, cands);   // `infix:<befor>`: did you mean 'infix:<before>'?
     return suggestNames(name, cands);
 }
 
