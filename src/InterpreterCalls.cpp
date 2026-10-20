@@ -1626,6 +1626,38 @@ Interpreter::grepArrayView(Expr* e) {
 // and a writing body updates all four (Color clamps a CMYK tuple with
 // `clip-to 0, $_, 1 for $c, $m, $y, $k`). Only a list made ENTIRELY of scalar
 // variables qualifies; anything else is a plain list of values.
+
+// pureSubscript's question — safe to evaluate a second time? — for the
+// subscript of a `with`/`andthen` topic, whose slot topicAliasSlot takes by
+// evaluating the topic AGAIN: `with @a[$i++] { $_ = 5 }` stepped $i twice and
+// wrote @a[1]. On top of pureSubscript's: `*-1`, `"k$i"`, `$!attr`, `$i % 10`
+// and the like, over the same leaves. Anything else leaves the topic unaliased.
+static bool repeatableSubscript(const Expr* e) {
+    if (!e || pureSubscript(e)) return e != nullptr;
+    switch (e->kind) {
+        case NK::NumLit: case NK::BoolLit: case NK::Whatever: return true;
+        case NK::VarExpr: {   // (not `$.x`: that is a method call)
+            auto* v = static_cast<const VarExpr*>(e);
+            return !v->declare && v->name.size() > 1 && v->name[1] != '.';
+        }
+        case NK::InterpStr:
+            for (auto& p : static_cast<const InterpStr*>(e)->parts) if (!repeatableSubscript(p.get())) return false;
+            return true;
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            return u->op != "++" && u->op != "--" && repeatableSubscript(u->operand.get());
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            return repeatableSubscript(b->lhs.get()) && repeatableSubscript(b->rhs.get());
+        }
+        case NK::ListExpr:
+            for (auto& it : static_cast<const ListExpr*>(e)->items) if (!repeatableSubscript(it.get())) return false;
+            return true;
+        default: return false;
+    }
+}
+
 // The writable slot a `given`/`with` topic aliases, or null when there is none.
 // A plain scalar variable qualifies, and so does a hash/array ELEMENT — HTTP::Tiny's
 // own test suite rewrites its expected bodies with
@@ -1650,6 +1682,9 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip, bool allowObject) {
         // `with %h<k>:delete { }` must not take the slot back — asking for it
         // re-created the key the :delete had just removed
         if (!ix->adverb.empty()) return nullptr;
+        // (every subscript on the way down is evaluated again: `@a[$i++][0]` too)
+        for (const Expr* b = ix; b && b->kind == NK::Index; b = static_cast<const Index*>(b)->base.get())
+            if (!repeatableSubscript(static_cast<const Index*>(b)->index.get())) return nullptr;
         Value* base = nullptr;
         try { base = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (...) { return nullptr; }
         if (!base) return nullptr;
@@ -1664,7 +1699,13 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip, bool allowObject) {
         if (!plain) return nullptr;
     }
     else return nullptr;
-    try { return lvalue(topic); } catch (...) { return nullptr; }
+    Value* s = nullptr;
+    try { s = lvalue(topic); } catch (...) { return nullptr; }
+    // a name bound to a VALUE — a readonly parameter, `my $x := 42` — has no
+    // container: `with $p { $_ = 5 }` wrote into the parameter (an `is rw`
+    // one is linked, and its lvalue is the caller's variable)
+    if (s && topic->kind == NK::VarExpr && (s->readonly || s->immutableBind)) return nullptr;
+    return s;
 }
 
 // A `with`/`given` topic that is an ELEMENT of an object writes back the way
