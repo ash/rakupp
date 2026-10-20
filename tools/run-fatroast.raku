@@ -1,36 +1,48 @@
 #!/usr/bin/env rakupp
 # FastRoast's fattened Roast, part by part, through tools/run-roast.raku.
 #
-# FastRoast (github.com/ash/fastroast) rewrites Roast's tests and keeps what it
-# writes in its fat/ directory: seed/ (each file as `fudge rakudo` leaves it,
-# the `#?` lines dropped) and one tree per transform — strings-v1.mixed/,
-# names-v1.mixed/, ops-v1/ — each holding only the files that transform
-# changed, at their Roast paths. This runs every part on run-roast's machinery,
-# one after the other, under one engine or several, and tallies them.
+# FastRoast (github.com/ash/fastroast) runs the very same test suite with
+# mangled characters. Its fat/ directory holds one tree per transform —
+# strings-v1.mixed/, names-v1.mixed/, ops-v1/ — and each tree holds the files
+# of Roast's spectest.data that transform changed, at their Roast paths: the
+# Roast file as it is, `#?` directives included, with only the transform's
+# edits applied. This runs every tree as run-roast runs Roast, with Roast
+# itself beside them as the baseline (the part `roast`), under one engine or
+# several, and compares the outcomes file by file.
+#
+# Nothing here touches the fudge directives. A tree's file reaches run-roast
+# the way Roast's own file does, so run-roast's rules apply to it unchanged:
+# rakupp's lexer applies the #?rakudo directives itself, and a foreign engine
+# gets Roast's `fudge` first (run-roast's --fudge, default rakudo.moar).
 #
 # A part cannot be ROAST by itself. Its tree has the .t files and nothing else:
 # about 300 of them find their helpers through their own location —
-# `use lib $*PROGRAM.parent(2).add("packages/Test-Helpers")` — others read
-# fixtures that sit beside them, and with no spectest.data run-roast would fall
-# back to --all. So each part gets an overlay: the Roast checkout copied without
-# .git, the part laid over it, and a spectest.data that lists exactly the
-# part's files. Roast's own tests stay in the overlay as fixtures and are not
-# run. Every run refreshes the overlays with rsync (an unchanged one costs a
-# second or two), which also sweeps away what the last run's tests wrote beside
-# themselves.
+# `use lib $*PROGRAM.parent(2).add("packages/Test-Helpers")` — and others read
+# fixtures that sit beside them. So each part runs from an overlay: the Roast
+# checkout copied without .git, the part's tree laid over it, and a
+# spectest.data that is Roast's own cut down to the part's files — the same
+# lines, markers included. Only files Roast's spectest.data lists ever run, and
+# --skip-marker keeps out of a part what it keeps out of a Roast run. Roast's
+# other tests stay in the overlay as fixtures. The overlay is restored with
+# rsync before every engine's run (an unchanged one costs a second or two), so
+# what one run's tests wrote beside themselves is gone before the next.
 #
-# Nothing is fudged on the way: the seeds are Rakudo's fudge output with the
-# directives removed, so every engine runs the same text, Rakudo's skips and
-# todos already applied, and run-roast finds no directive line to fudge.
+# Each run's own output goes to OVERLAY/lists/PART.ENGINE.log, with --failed
+# on, and each file's outcome is read from the run: PASS from the --list file,
+# and from the --failed block `part 13/19`, `TIME 3/10`, `noTAP` or `LOST`. A
+# fattened test can fail on every engine — a sort over `mixed`-palette strings
+# is no longer sorted — so a part's pass count says little alone. What this
+# prints after the tally:
 #
-# A fattened test can fail on every engine — a sort over `mixed`-palette
-# strings is no longer sorted — so a part's pass count says little alone. The
-# signal is where engines differ: given two --engine values, each part's lists
-# of fully-passing files are diffed, and the files only one engine passes are
-# printed. The lists are --list's, run-roast's reliable output (its comments say
-# why the decorated per-file lines are not). A file that passes partly under
-# both engines, with different counts, does not show up here; for test-by-test
-# verdicts and a shrunk reproducer, use FastRoast's own `fastroast run`.
+#   - per engine, the files that fully pass in Roast but not fattened, given
+#     the baseline: what the fat cost that engine;
+#   - given two or more engines, the files whose outcome differs between the
+#     first engine and each other one, each marked `fat` when the engines agree
+#     on the plain Roast file and `base` when they disagree there too (the
+#     ordinary conformance gap, which the fat did not cause).
+#
+# For test-by-test verdicts and a shrunk reproducer, use FastRoast's own
+# `fastroast run`.
 #
 # Usage:
 #   build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
@@ -39,17 +51,20 @@
 # Examples:
 #   nice build/rakupp tools/run-fatroast.raku -j2
 #   nice build/rakupp tools/run-fatroast.raku -j2 --engine=build/rakupp,rakudo
-#   build/rakupp tools/run-fatroast.raku --parts=ops-v1 S03-operators
+#   build/rakupp tools/run-fatroast.raku --parts=roast,ops-v1 S03-operators
 
 my $RUN-ROAST = $?FILE.IO.parent.add('run-roast.raku').absolute;
 my $HOME      = %*ENV<HOME> // '.';
 my $FASTROAST = %*ENV<FASTROAST> // "$HOME/fastroast";
 my $OVERLAY   = %*ENV<FATROAST_OVERLAY> // "$HOME/roast-fat";
 my $ROAST     = (%*ENV<ROAST> // "$HOME/roast").IO.absolute;
+my $BASE      = 'roast';     # the baseline part: Roast as it is
 my @want-parts;
 my @want-engines;
+my %skip-marker;
 my @pass;        # handed to run-roast as they came: options and PATTERNs
-my @patterns;    # the PATTERNs alone, to count what a part will run
+my @patterns;    # the PATTERNs alone, to select what a part will run
+my $VERBOSE = False;
 my $HELP = False;
 for @*ARGS -> $a {
     if $a ~~ /^ '--parts=' (.+) $/ {
@@ -64,13 +79,30 @@ for @*ARGS -> $a {
     elsif $a ~~ /^ '--overlay=' (.+) $/ {
         $OVERLAY = ~$0;
     }
+    elsif $a eq '-v' || $a eq '--verbose' {
+        $VERBOSE = True;
+    }
     elsif $a eq '-h' || $a eq '--help' {
         $HELP = True;
     }
-    elsif $a.starts-with('--list=') || $a eq '--all' || $a.starts-with('--suite=') {
-        # --list is this script's own (one per part and engine); --all would run
-        # all of Roast in the overlay; --suite would run something else entirely
-        note "run-fatroast: $a does not apply to a part's overlay (--help lists the options)";
+    elsif $a ~~ /^ '--skip-marker=' (.+) $/ {
+        %skip-marker{$_} = True for (~$0).split(',').map(*.trim).grep(*.chars);
+        @pass.push($a);
+    }
+    elsif $a eq '--failed' {
+        # always on: the outcomes of the files that do not fully pass are read
+        # from its block
+    }
+    elsif $a.starts-with('--list=') || $a.starts-with('--failed=') {
+        note "run-fatroast: $a — the lists are this script's, one per part and engine under OVERLAY/lists";
+        exit 2;
+    }
+    elsif $a.starts-with('--times=') && $a ne '--times=' {
+        note "run-fatroast: $a — one file would be read and rewritten by every part and engine in turn";
+        exit 2;
+    }
+    elsif $a eq '--all' || $a.starts-with('--suite=') {
+        note "run-fatroast: $a — it would not run the part (--all runs the whole overlay, --suite another suite)";
         exit 2;
     }
     else {
@@ -86,40 +118,46 @@ if $HELP {
     print qq:to/END/;
     Usage: build/rakupp tools/run-fatroast.raku [OPTION ...] [PATTERN ...]
 
-    Runs every part of FastRoast's fattened Roast (fat/seed and one tree per
-    transform) through tools/run-roast.raku, each from an overlay of the Roast
-    checkout, and tallies the fully-passing files per part and engine. Given
-    two engines, it lists the files only one of them passes.
+    Runs every tree of FastRoast's fattened Roast through tools/run-roast.raku,
+    each from an overlay of the Roast checkout, with Roast itself as the
+    baseline part `roast`, and compares the outcomes file by file: per engine,
+    the files that pass in Roast and not fattened; given two engines, the files
+    whose outcome differs, marked fat or base. The trees keep Roast's #?
+    directives, and run-roast applies them by its usual rules.
 
       fastroast  $FASTROAST
       roast      $ROAST
       overlays   $OVERLAY
 
     Options
-      --parts=P[,P]      only these parts (default: every directory in fat/,
-                         seed first)
+      --parts=P[,P]      only these parts: `roast` (the baseline) and the
+                         directories in fat/ (default: all of them, roast first)
       --engine=E[,E]     run each part under each engine, a path or a name on
-                         PATH; the first is the one the others are diffed
-                         against (default: the engine running this file)
+                         PATH; the first is the one the others are compared
+                         with (default: the engine running this file)
       --fastroast=DIR    the FastRoast checkout (\$FASTROAST,
                          default \$HOME/fastroast)
-      --overlay=DIR      where the overlays and lists go (\$FATROAST_OVERLAY,
-                         default \$HOME/roast-fat)
+      --overlay=DIR      where the overlays, logs and lists go
+                         (\$FATROAST_OVERLAY, default \$HOME/roast-fat)
+      -v, --verbose      show each run-roast's output as well as logging it
       -h, --help         print this and exit
 
-    Anything else goes to run-roast as it is: -j=N, --failed, --times=FILE,
-    PATTERNs. --list, --all and --suite are refused: the lists are this
-    script's, and the other two would not run the part.
+    Anything else goes to run-roast as it is: -j=N, --skip-marker=WORD,
+    --fudge=IMPL, `--times=` (no file), PATTERNs. Only files Roast's
+    spectest.data lists run. --list, --failed=FILE, --times=FILE, --all and
+    --suite are refused: the lists are this script's, one times file cannot
+    serve every part and engine, and the other two would not run the part.
 
     Environment
       ROAST              the Roast checkout the overlays copy (default
                          \$HOME/roast); fat/README.md names the revision the
                          trees were made from
 
-    Output
-      OVERLAY/PART/                      the overlay a part ran from
-      OVERLAY/lists/PART.ENGINE.list     its fully-passing files (+ .meta)
-      OVERLAY/lists/PART.A-vs-B.diff     files only one engine passes
+    Output, in OVERLAY/lists/
+      PART.ENGINE.log            run-roast's output for that run
+      PART.ENGINE.list           its fully-passing files (+ .meta)
+      PART.ENGINE.lost           files fully passing in Roast, not in PART
+      PART.A-vs-B.diff           files whose outcome differs, fat or base
     END
     exit 0;
 }
@@ -133,15 +171,30 @@ unless $ROAST.IO.add('spectest.data').e {
     exit 2;
 }
 
-# The parts are fat/'s directories. Seed goes first: it is the baseline the
-# transforms are read against.
-my @known = dir($FAT).grep(*.d).map(*.basename).sort;
-@known = |@known.grep('seed'), |@known.grep(* ne 'seed');
+# Roast's spectest.data, read the way run-roast reads it: a path, then
+# optionally `#` and marker words. Each path keeps its whole line, so an
+# overlay's list carries the same markers.
+my %LINE;       # path -> its line in Roast's spectest.data
+my %MARKERS;    # path -> its marker words
+for $ROAST.IO.add('spectest.data').lines -> $line {
+    my $l = $line.trim;
+    next if $l eq '' || $l.starts-with('#');
+    my $hash = $l.index('#');
+    my $path = ($hash.defined ?? $l.substr(0, $hash) !! $l).trim;
+    next if $path eq '';
+    %LINE{$path}    = $line;
+    %MARKERS{$path} = $hash.defined ?? $l.substr($hash + 1).words.List !! ();
+}
+
+# The parts: the baseline, then fat/'s directories.
+my @trees = dir($FAT).grep(*.d).map(*.basename).sort;
+my @known = $BASE, |@trees;
 my @parts = @want-parts || @known;
 with @parts.first(* ∉ @known) {
-    note "run-fatroast: no part '$_' in $FAT (there are: {@known.join(', ')})";
+    note "run-fatroast: no part '$_' (there are: {@known.join(', ')})";
     exit 2;
 }
+@parts = @known.grep(-> $p { @want-parts.first($p).defined }) if @want-parts;    # the baseline first, whatever order --parts gave
 
 # The overlay takes packages/ and the fixtures from $ROAST and the tests from
 # fat/, so the two had better be the same revision of Roast.
@@ -191,6 +244,15 @@ sub t-files(IO::Path $root --> List) {
     @out.sort.List
 }
 
+# What run-roast will run of a part's files: the ones its list keeps after
+# --skip-marker, matched by a PATTERN if any is given.
+sub selected(@files --> List) {
+    @files.grep(-> $f {
+        !%MARKERS{$f}.first({ %skip-marker{$_} }).defined
+        && (!@patterns || @patterns.first({ $f.contains($_) }).defined)
+    }).List
+}
+
 sub rsync(*@args) {
     my $p = run('rsync', '-a', |@args, :err);
     my $err = $p.err.slurp(:close);
@@ -204,9 +266,27 @@ sub build-overlay(Str $part, @files --> IO::Path) {
     my $o = $OVERLAY.IO.add($part);
     $o.mkdir;
     rsync('--delete', '--exclude=.git', "$ROAST/", "$o/");
-    rsync($FAT.add($part).absolute ~ '/', "$o/");
-    $o.add('spectest.data').spurt(@files.join("\n") ~ "\n");
+    rsync($FAT.add($part).absolute ~ '/', "$o/") unless $part eq $BASE;
+    $o.add('spectest.data').spurt(@files.map({ %LINE{$_} }).join("\n") ~ "\n");
     $o
+}
+
+# A run's outcome per file: PASS from its --list file, the rest from the
+# --failed block at the end of its log (`  [part]  13/19  S32-str/uc.t`). The
+# per-file lines before the summary look the same but leave out the no-TAP
+# files, so only the block is read.
+sub outcomes(IO::Path $list, IO::Path $log --> Hash) {
+    my %o;
+    %o{$_} = 'PASS' for $list.lines.grep(*.chars);
+    my $in = False;
+    for $log.slurp(:enc<utf8-c8>).lines -> $l {
+        if $l.starts-with('Files not fully passing (') { $in = True; next }
+        next unless $in;
+        if $l ~~ /^ \s+ '[' (part || TIME || noTAP || LOST) ']' \s+ (\S+) \s+ (\S+) \s* $/ {
+            %o{~$2} = (~$0 eq 'noTAP' || ~$0 eq 'LOST') ?? ~$0 !! "$0 $1";
+        }
+    }
+    %o
 }
 
 # run-roast asks git for the checkout's revision. The overlay has no .git, and
@@ -215,68 +295,126 @@ sub build-overlay(Str $part, @files --> IO::Path) {
 my %env = %*ENV;
 %env<GIT_CEILING_DIRECTORIES> = $OVERLAY;
 
-my %files;      # part -> how many of its files this run selects
-my %passed;     # part -> engine name -> Set of fully-passing paths (absent: no list)
+sub run-part(Str $part, %e, @files --> Hash) {
+    my $o    = build-overlay($part, @files);
+    my $list = $LISTS.add("{$part}.{%e<name>}.list");
+    my $log  = $LISTS.add("{$part}.{%e<name>}.log");
+    unlink $list if $list.e;    # a list left from an earlier run would read as this one's
+    %env<ROAST> = $o.absolute;
+    say "run-fatroast: $part under %e<path> (log: $log)";
+    my $started = now;
+    my $sh = $VERBOSE ?? 'log=$1; shift; "$@" 2>&1 | tee "$log"'
+                      !! 'log=$1; shift; exec "$@" > "$log" 2>&1';
+    run('/bin/sh', '-c', $sh, 'sh', ~$log, %e<path>, $RUN-ROAST, |@pass, "--list=$list", '--failed', :env(%env));
+    unless $list.e {
+        note "run-fatroast: run-roast wrote no list for $part under %e<path> — see $log";
+        return Hash;
+    }
+    my %o = outcomes($list, $log);
+    my %n = %o.values.map(*.words[0]).Bag;
+    say sprintf('run-fatroast:   %d files: %s (%.0f s)', %o.elems,
+                <PASS part TIME noTAP LOST>.grep({ %n{$_} }).map({ "{%n{$_}} {.lc}" }).join(', ') || 'none ran',
+                now - $started);
+    %o
+}
+
+my %files;      # part -> the files this run selects of it
+my %out;        # part -> engine name -> path -> outcome (absent: the run broke)
 my $BROKEN = False;
 for @parts -> $part {
-    my @files = t-files($FAT.add($part));
-    my @run = @patterns
-        ?? @files.grep(-> $f { @patterns.first({ $f.contains($_) }).defined })
-        !! @files;
-    %files{$part} = @run.elems;
+    my @all = $part eq $BASE
+        ?? (@trees.grep(* ∈ @parts) || @trees).map({ |t-files($FAT.add($_)) }).unique.sort
+        !! t-files($FAT.add($part));
+    my @listed = @all.grep({ %LINE{$_}:exists });
+    my @run    = selected(@listed);
+    %files{$part} = @run;
     say "";
-    say "run-fatroast: $part — {@run.elems} of {@files.elems} files";
+    say "run-fatroast: $part — {@run.elems} of {@all.elems} files"
+      ~ (@all > @listed ?? " ({@all - @listed} not in Roast's spectest.data, not run)" !! '');
     next unless @run;
-    my $o = build-overlay($part, @files);
-    %env<ROAST> = $o.absolute;
     for @engines -> %e {
-        my $list = $LISTS.add("{$part}.{%e<name>}.list");
-        unlink $list if $list.e;    # a list left from an earlier run would read as this one's
-        say "run-fatroast: $part under %e<path>";
-        run(%e<path>, $RUN-ROAST, |@pass, "--list=$list", :env(%env));
-        if $list.e {
-            %passed{$part}{%e<name>} = $list.lines.grep(*.chars).Set;
+        with run-part($part, %e, @listed) -> %o {
+            %out{$part}{%e<name>} = %(@run.map(-> $f { $f => (%o{$f} // '?') }));
         }
         else {
-            note "run-fatroast: run-roast wrote no list for $part under %e<path>";
             $BROKEN = True;
         }
     }
 }
 
-# ---- summary: fully-passing files per part and engine, then the disagreements
-say "";
-say "run-fatroast: fully-passing files, by part (Roast {$MADE-FROM || $ROAST-REV.substr(0, 9) || '?'}, overlays in $OVERLAY)";
-my $w = (@parts.map(*.chars).max, 4).max;
-say sprintf("  %-{$w}s  %6s", 'part', 'files') ~ @engines.map({ sprintf('  %10s', .<name>) }).join;
-for @parts -> $part {
-    say sprintf("  %-{$w}s  %6d", $part, %files{$part})
-      ~ @engines.map(-> %e {
-            my $s = %passed{$part}{%e<name>};
-            sprintf('  %10s', $s.defined ?? $s.elems !! '—')
-        }).join;
+# ---- summary
+sub pass-count($part, $name) {
+    my $o = %out{$part}{$name};
+    $o.defined ?? $o.values.grep('PASS').elems !! '—'
 }
+my $w  = (|@parts.map(*.chars), 4).max;
+my $cw = (|@engines.map(*<name>.chars), 6).max;
+say "";
+say "run-fatroast: fully-passing files, by part (Roast {$MADE-FROM || $ROAST-REV.substr(0, 9) || '?'}; logs and lists in $LISTS)";
+say sprintf("  %-{$w}s  %6s", 'part', 'files') ~ @engines.map({ sprintf("  %{$cw}s", .<name>) }).join;
+for @parts -> $part {
+    say sprintf("  %-{$w}s  %6d", $part, %files{$part}.elems)
+      ~ @engines.map(-> %e { sprintf("  %{$cw}s", pass-count($part, %e<name>)) }).join;
+}
+
+# What the fat cost each engine: fully passing in Roast, not fattened.
+my @fattened = @parts.grep(* ne $BASE);
+if %out{$BASE} && @fattened {
+    say "";
+    say "run-fatroast: files that fully pass in Roast but not fattened";
+    say sprintf("  %-{$w}s", 'part') ~ @engines.map({ sprintf("  %{$cw}s", .<name>) }).join;
+    for @fattened -> $part {
+        my @cells;
+        for @engines -> %e {
+            my $b = %out{$BASE}{%e<name>};
+            my $f = %out{$part}{%e<name>};
+            my $lost = $LISTS.add("{$part}.{%e<name>}.lost");
+            unlink $lost if $lost.e;
+            unless $b.defined && $f.defined {
+                @cells.push: '—';
+                next;
+            }
+            my @l = $f.keys.grep({ $f{$_} ne 'PASS' && ($b{$_} // '') eq 'PASS' }).sort;
+            $lost.spurt(@l.map({ "$_\t{$f{$_}}" }).join("\n") ~ (@l ?? "\n" !! ''));
+            @cells.push: @l.elems;
+        }
+        say sprintf("  %-{$w}s", $part) ~ @cells.map({ sprintf("  %{$cw}s", $_) }).join;
+    }
+}
+
+# Where the engines differ, file by file, and whether the plain file does too.
 if @engines > 1 {
-    my $base = @engines[0]<name>;
+    my $a = @engines[0]<name>;
     for @engines[1..*] -> %e {
-        my $other = %e<name>;
+        my $b = %e<name>;
         say "";
-        say "run-fatroast: files only one engine fully passes, $base vs $other";
+        say "run-fatroast: files whose outcome differs, $a vs $b";
         for @parts -> $part {
-            my $a = %passed{$part}{$base};
-            my $b = %passed{$part}{$other};
-            my $diff = $LISTS.add("{$part}.{$base}-vs-{$other}.diff");
+            my $diff = $LISTS.add("{$part}.{$a}-vs-{$b}.diff");
             unlink $diff if $diff.e;
-            next unless $a.defined && $b.defined;
-            my @only = |($a (-) $b).keys.map({ ($base, $_) }),
-                       |($b (-) $a).keys.map({ ($other, $_) });
-            @only = @only.sort({ .[1] });
-            $diff.spurt(@only.map({ "{.[0]}\t{.[1]}" }).join("\n") ~ (@only ?? "\n" !! ''));
-            say sprintf("  %-{$w}s  %s only %d, %s only %d", $part,
-                        $base, ($a (-) $b).elems, $other, ($b (-) $a).elems)
-              ~ (@only ?? "  -> $diff" !! '');
-            say sprintf("      %-10s %s", .[0], .[1]) for @only.head(20);
-            say "      …and {@only.elems - 20} more" if @only > 20;
+            my $oa = %out{$part}{$a};
+            my $ob = %out{$part}{$b};
+            next unless $oa.defined && $ob.defined;
+            my $ba = %out{$BASE}{$a};
+            my $bb = %out{$BASE}{$b};
+            my @rows;
+            for %files{$part}.grep({ $oa{$_} ne $ob{$_} }) -> $f {
+                my $class = $part eq $BASE                         ?? 'base'
+                         !! !($ba.defined && $bb.defined)           ?? '?'
+                         !! ($ba{$f} // '?') eq ($bb{$f} // '?')    ?? 'fat'
+                         !!                                            'base';
+                @rows.push: [$class, $f, $oa{$f}, $ob{$f}];
+            }
+            $diff.spurt(("class\tfile\t$a\t$b", |@rows.map(*.join("\t"))).join("\n") ~ "\n") if @rows;
+            my %c = @rows.map(*[0]).Bag;
+            say sprintf("  %-{$w}s  %d differ", $part, @rows.elems)
+              ~ ($part ne $BASE && @rows ?? ': ' ~ <fat base ?>.grep({ %c{$_} }).map({ "{%c{$_}} $_" }).join(', ') !! '')
+              ~ (@rows ?? "  -> $diff" !! '');
+            my @show = @rows.sort({ .[0] ne 'fat', .[1] });
+            for @show.head(20) -> $r {
+                say sprintf("      %-4s  %s  (%s %s, %s %s)", $r[0], $r[1], $a, $r[2], $b, $r[3]);
+            }
+            say "      …and {@show.elems - 20} more" if @show > 20;
         }
     }
 }
