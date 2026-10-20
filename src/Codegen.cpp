@@ -399,7 +399,7 @@ struct Codegen {
     bool rwMovable(const VarExpr* v) const {
         if (rwReachUnknown_ || v->declare || v->nativeIntRead || v->nativeNumRead || v->nativeStrRead) return false;
         const std::string& n = v->name;
-        if (n.size() < 2 || n[0] != '$' || !(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false;
+        if (n.size() < 2 || n[0] != '$' || !(nameLetterAt(n, 1) || n[1] == '_')) return false;
         if (rwReach_.count(n) || rwAmbiguous_.count(n)) return false;
         auto it = rwUseDecl_.find(v);
         if (it == rwUseDecl_.end() || rwReachDecl_.count(it->second)) return false;
@@ -451,7 +451,7 @@ struct Codegen {
             if (!x || x->kind != NK::VarExpr) continue;
             const std::string& n = static_cast<const VarExpr*>(x)->name;
             if (n.size() > 1 && std::strchr("$@%", n[0]) && n != "$_" &&
-                (ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) {
+                (nameLetterAt(n, 1) || n[1] == '_')) {
                 keptNames_.insert(n);
                 any = true;
             }
@@ -1202,7 +1202,7 @@ struct Codegen {
             if (v->declare) return false;
             const std::string& n = v->name;
             if (n.size() < 2 || !(n[0] == '$' || n[0] == '@' || n[0] == '%')) return false;
-            if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false; // skip $*/$!//etc.
+            if (!(nameLetterAt(n, 1) || n[1] == '_')) return false; // skip $*/$!//etc.
             return !local.count(n) && !topVars_.count(n); // captured enclosing local
         };
         switch (e->kind) {
@@ -1316,7 +1316,7 @@ struct Codegen {
             const std::string& n = v->name;
             if (n == "$_") return; // topics rebind per closure; keep the old error path
             if (n.size() < 2 || !(n[0] == '$' || n[0] == '@' || n[0] == '%')) return;
-            if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return;
+            if (!(nameLetterAt(n, 1) || n[1] == '_')) return;
             if (!local.count(n) && !topVars_.count(n)) out.insert(n);
         };
         std::function<void(Expr*)> we = [&](Expr* e) {
@@ -3818,7 +3818,7 @@ struct Codegen {
             const bool front = !back && self(b->rhs) && plainX(b->lhs);
             if (b->op == "~" && (back || front) &&
                 tv->name.size() > 1 && tv->name[0] == '$' &&
-                (ascii::isalpha((unsigned char)tv->name[1]) || tv->name[1] == '_') &&
+                (nameLetterAt(tv->name, 1) || tv->name[1] == '_') &&
                 userOpFn("infix:<~>").empty() && coerceFor(tgt, rhs, a->value.get()) == rhs) {
                 return "([&]()->Value&{ Value& __l = " + lvalueExpr(tgt) + ";"
                        " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName.empty()) " +
@@ -5113,7 +5113,7 @@ struct Codegen {
         auto* v = static_cast<VarExpr*>(e);
         const std::string& n = v->name;
         if (n.size() < 2 || n[0] != '$') return false;
-        if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) return false;
+        if (!(nameLetterAt(n, 1) || n[1] == '_')) return false;
         if (n.find("::") != std::string::npos) return false;
         name = n;
         return true;

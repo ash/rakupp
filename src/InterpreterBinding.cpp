@@ -9,6 +9,7 @@ namespace rakupp {
 
 extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
 void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
+bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
 
 // macOS resolves a bare unversioned libssl/libcrypto name to the /usr/lib
 // compat stubs, which warn ("loading libcrypto in an unsafe way") and can
@@ -489,7 +490,7 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
 void Interpreter::checkNativeArrayParam(const std::string& t) {
     if (t.size() < 8 || t.compare(0, 6, "array[") != 0 || t.back() != ']') return;
     std::string inner = t.substr(6, t.size() - 7);
-    if (inner.empty() || isNativeTypeName(inner) || !ascii::isupper((unsigned char)inner[0])) return;
+    if (inner.empty() || isNativeTypeName(inner) || !typeNameLead(inner[0])) return;
     Value e = makeTypedEx("X::AdHoc", {{"payload", Value::str("Can only parameterize array with a native type, not " + inner)}},
                           "Can only parameterize array with a native type, not " + inner);
     throwTypedV("X::Comp::BeginTime", {{"exception", e}, {"use-case", Value::str("parameterizing array")}},
@@ -616,7 +617,7 @@ std::string Interpreter::symRefName(SymbolicRef* sr, bool* callerHead, std::stri
 // True when it did; the value is then bound as converted.
 bool Interpreter::coerceViaTypeVar(const Param& p, Value& v, Env* env) {
     if (p.coerce || p.typeCapture || p.sigil != '$' || p.type.empty() || !env ||
-        !ascii::isupper((unsigned char)p.type[0]) || p.type.find('(') != std::string::npos ||
+        !typeNameLead(p.type[0]) || p.type.find('(') != std::string::npos ||
         classes_.count(p.type) || isKnownTypeName(p.type))
         return false;
     Value* tv = env->find(p.type);
@@ -862,7 +863,7 @@ bool roleArgsCovariant(const std::string& have, const std::string& want) {
     if (ha.size() != wa.size()) return false;
     for (size_t i = 0; i < ha.size(); i++) {
         if (ha[i] == wa[i] || wa[i] == "Mu" || (wa[i] == "Any" && ha[i] != "Mu")) continue;
-        if (!ascii::isupper((unsigned char)ha[i][0]) || !ascii::isupper((unsigned char)wa[i][0])) return false;
+        if (!typeNameLead(ha[i][0]) || !typeNameLead(wa[i][0])) return false;
         if (ha[i].find('[') != std::string::npos && roleArgsCovariant(ha[i], wa[i])) continue;
         if (!typeNameConforms(ha[i], wa[i], std::string(), std::string())) return false;
     }
@@ -1246,7 +1247,7 @@ std::string elemTypeOfSpec(const std::string& ofType) {
     if (ofType.empty()) return "";
     std::string first = ofType.substr(0, topLevelComma(ofType));
     if (first.empty() || first == "Any" || first == "Mu" || first == "Cool") return "";
-    if (!ascii::isupper((unsigned char)first[0])) return ""; // native: see natCheck
+    if (!typeNameLead(first[0])) return ""; // native: see natCheck
     return first;
 }
 // A COERCION type's target, `Int(Any)` → "Int", with its source (`Any`, or a
@@ -3328,7 +3329,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     // a user variable under CORE::/SETTING:: is the calling code's (the 6.c/6.d
     // EVAL rule above), declarations further down its blocks included
     if (mode == 'K' && e && key.size() > 1 && std::strchr("$@%", key[0]) &&
-        (ascii::isalpha((unsigned char)key[1]) || key[1] == '_') && findWithPending(e, out))
+        (nameLetterAt(key, 1) || key[1] == '_') && findWithPending(e, out))
         return true;
     const std::string pk = mode == 'K' ? "CORE" : mode == 'G' ? "GLOBAL" : "OUR";
     if (std::strchr("$@%&", key[0])) {
@@ -3905,7 +3906,7 @@ Value typedElemDefault(const Value& base) {
     if (first.empty()) return Value::nil();
     // a coercion type's element defaults to its target: `my Int() %h; %h<x>` is (Int)
     if (std::string target = coercionTarget(first); !target.empty()) first = target;
-    if (ascii::isupper((unsigned char)first[0])) return Value::typeObj(first);
+    if (typeNameLead(first[0])) return Value::typeObj(first);
     // native element types are zero-initialized (my int @a — gaps read as 0)
     if (first == "num" || first == "num32" || first == "num64") return Value::number(0.0);
     if (first == "str") return Value::str("");
@@ -4122,7 +4123,7 @@ Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& 
     if (v.t != VT::Nil) { Value r = v; r.readonly = r.immutableBind = false; return r; }
     if (self.t == VT::Object && self.obj() && self.obj()->cls)
         if (const ClassAttr* at = self.obj()->cls->findAttr(an))
-            if (!at->type.empty() && ascii::isupper((unsigned char)at->type[0]))
+            if (!at->type.empty() && typeNameLead(at->type[0]))
                 return Value::typeObj(at->type);
     return Value::any();
 }
@@ -5484,8 +5485,13 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         "callsame", "callwith", "nextsame", "nextwith", "samewith", "nextcallee", "lastcall",
         "sink", "quietly", "do", "gather", "start", "await", "item", "list", "flat", "slip"};
     for (auto& n : calls) {
-        if (n.empty() || n[0] == '\x02' || n.find(':') != std::string::npos || n.rfind("__", 0) == 0) continue;
-        if (declared.count(n)) continue;
+        if (n.empty() || n[0] == '\x02' || n.rfind("__", 0) == 0 || declared.count(n)) continue;
+        // an operator's name (`infix:<nosuch>(42)`) is asked of the operators;
+        // any other qualified name is not this check's
+        if (n.find(':') != std::string::npos) {
+            if (!operatorNameDeclared(*this, n)) undeclaredRoutine(n);
+            continue;
+        }
         if (ascii::isupper((unsigned char)n[0]) || kSpecial.count(n) || n.rfind("atomic-", 0) == 0) continue;
         if (builtins_.count(n) || builtinRef(n) || classes_.count(n) || isKnownTypeName(n)) continue;
         if (tctx_.cur && tctx_.cur->find("&" + n)) continue;
@@ -5722,7 +5728,7 @@ long long Interpreter::ncOwnStrElem(Value& arr, const Value& v) {
 // never be read through (#136). A class name only — native type names are
 // lowercase, as ncClass in callNative also assumes.
 std::shared_ptr<ClassInfo> Interpreter::ncElemClass(const std::string& t) {
-    if (t.empty() || (!ascii::isupper((unsigned char)t[0]) && t.find("::") == std::string::npos)) return nullptr;
+    if (t.empty() || (!typeNameLead(t[0]) && t.find("::") == std::string::npos)) return nullptr;
     if (ncIsPointerElem(t)) return nullptr;
     auto it = classes_.find(t);
     if (it == classes_.end()) it = classes_.find(resolveClassAlias(t));
@@ -6465,7 +6471,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     // disagree, which is why it is one lambda.
     auto ncClass = [&](const std::string& tn) -> std::shared_ptr<ClassInfo> {
         if (tn.empty()) return nullptr;
-        if (!ascii::isupper((unsigned char)tn[0]) && tn.find("::") == std::string::npos) return nullptr;
+        if (!typeNameLead(tn[0]) && tn.find("::") == std::string::npos) return nullptr;
         auto it = classes_.find(tn);
         if (it != classes_.end()) return it->second;
         // The DECLARING module's own scope decides what a short name means —
@@ -6989,7 +6995,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         return ncMakeLiveCArray(rt, (void*)(intptr_t)ri);
     // CStruct/CPointer return: box the pointer as an object of the return class so
     // it satisfies the type check and round-trips into later native calls.
-    if (!rt.empty() && (ascii::isupper((unsigned char)rt[0]) || rt.find("::") != std::string::npos)) {
+    if (!rt.empty() && (typeNameLead(rt[0]) || rt.find("::") != std::string::npos)) {
         // ncClass also resolves `--> PwStruct` where PwStruct is a CONSTANT
         // aliasing the real class (P5getpwnam picks its per-kernel struct at
         // load time: `my constant PwStruct = $*KERNEL.name eq 'darwin' ?? … !! …`).
@@ -7202,7 +7208,7 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     if (ae->kind != NK::VarExpr) return false;
     const std::string& an = static_cast<VarExpr*>(ae)->name;
     if (an.size() < 2 || an[0] != '$' || an == "$_" ||
-        !(ascii::isalpha((unsigned char)an[1]) || an[1] == '_'))
+        !(nameLetterAt(an, 1) || an[1] == '_'))
         return false;
     Env* own = nullptr;
     Value* craw = tctx_.cur->findRaw(an, &own);
@@ -7459,7 +7465,7 @@ bool Interpreter::tryBodySaysNoFatal(const Expr* operand) {
 // default: the `is default` value, else the declared type, else Any.
 Value Interpreter::nilAttrDefault(const ClassAttr& at, const std::string& resolvedType) {
     if (at.defaultTrait) return eval(const_cast<Expr*>(at.defaultTrait));
-    if (!at.type.empty() && ascii::isupper((unsigned char)at.type[0]) &&
+    if (!at.type.empty() && typeNameLead(at.type[0]) &&
         at.type.find('[') == std::string::npos && at.type.find('(') == std::string::npos)
         return Value::typeObj(resolvedType);
     return Value::any();

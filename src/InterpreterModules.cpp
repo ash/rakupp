@@ -10,6 +10,7 @@
 
 namespace rakupp {
 extern std::atomic<bool> g_lexTypeAlias;   // InterpreterOperators.cpp: a type was bound under another name
+void operatorNameCandidates(const std::string& name, std::vector<std::string>& out);   // InterpreterOperators.cpp
 static thread_local int t_stageDepth = 0;
 namespace {
 struct StageLoadTimer {
@@ -2164,7 +2165,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 for (auto& kv : e->vars) {
                     const std::string& n = kv.first; // e.g. "&infix:<fromplus>"
                     if (n.size() > 1 && n[0] == '&' && n.find(':') == std::string::npos &&
-                        (ascii::isalpha((unsigned char)n[1]) || n[1] == '_') &&
+                        (nameLetterAt(n, 1) || n[1] == '_') &&
                         kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->ci().builtin)
                         parser.declareKnownSub(n.substr(1));
                     size_t lt = n.find(":<");
@@ -3644,7 +3645,7 @@ std::vector<std::string> suggestNames(const std::string& name, const std::vector
 // (`sub f(True)`, `(\buf, LittleEndian)`), or a unit's own constant, is a
 // VALUE constraint.
 bool Interpreter::paramTypeUndeclared(const std::string& t) {
-    if (t.empty() || !ascii::isupper((unsigned char)t[0]) || declTypeIsKnown(t)) return false;
+    if (t.empty() || !typeNameLead(t[0]) || declTypeIsKnown(t)) return false;
     Value ev;
     if (coreEnumValue(t, ev)) return false;
     static const std::set<std::string> kTerms = {"Inf", "NaN", "Nil", "Empty"};
@@ -3734,6 +3735,7 @@ std::vector<std::string> Interpreter::routineSuggestions(const std::string& name
             for (auto& nm : e->layout->names)
                 if (nm.size() > 1 && nm[0] == '&') cands.push_back(nm.substr(1));
     }
+    operatorNameCandidates(name, cands);   // `infix:<befor>`: did you mean 'infix:<before>'?
     return suggestNames(name, cands);
 }
 
@@ -6921,7 +6923,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 // that no value of the type (nor of a coercion's source type) can
                 // hold is refused where the class is declared, as Rakudo does at
                 // compile time (APPENDICES/A02-some-day-maybe/misc.t)
-                if (a.sigil == '$' && a.def && !a.type.empty() && ascii::isupper((unsigned char)a.type[0]) &&
+                if (a.sigil == '$' && a.def && !a.type.empty() && typeNameLead(a.type[0]) &&
                     a.type.find('[') == std::string::npos &&
                     (a.def->kind == NK::StrLit || a.def->kind == NK::IntLit || a.def->kind == NK::NumLit ||
                      (a.def->kind == NK::InterpStr && [&] {   // "42" with nothing interpolated
@@ -8786,13 +8788,13 @@ int Interpreter::run(Program& prog) {
                                                          ve0->d().declType == "Any"))
                                     global_->x().varDefaultUntyped.insert(ve0->name);
                                 // …and a typed one keeps its type beside the reset value
-                                else if (!ve0->d().declType.empty() && ascii::isupper((unsigned char)ve0->d().declType[0]))
+                                else if (!ve0->d().declType.empty() && typeNameLead(ve0->d().declType[0]))
                                     global_->x().varDefaultType[ve0->name] = Value::typeObj(ve0->d().declType);
                                 global_->vars[ve0->name] = dv;
                             }
                         }
                         else if (ve0->name[0] == '$' && !ve0->d().declType.empty() &&
-                                 ascii::isupper((unsigned char)ve0->d().declType[0]))
+                                 typeNameLead(ve0->d().declType[0]))
                             global_->x().varDefault[ve0->name] = Value::typeObj(ve0->d().declType);
                         // …its coercion type, for the same reason: a hoisted
                         // `my Int() $x;` never reaches the declaration path that

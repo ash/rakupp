@@ -937,7 +937,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         for (auto& n : ment) {
             if (n.size() > 1 && n[0] == '&') return true;   // a routine variable: not modelled statically
             if (n.size() < 2 || !std::strchr("$@%", n[0])) continue;
-            if (!(ascii::isalpha((unsigned char)n[1]) || n[1] == '_')) continue;   // $*x, $!x, $/, $_ …
+            if (!(nameLetterAt(n, 1) || n[1] == '_')) continue;   // $*x, $!x, $/, $_ …
             if (n == "$_") continue;
             if (initialized.count(n) && r.kind != "INIT") return true;   // an INIT's value is then wiped, as in Rakudo
             if (declared.count(n)) continue;
@@ -3243,6 +3243,129 @@ bool pureSubscriptBase(const Expr* b) {
             return true;
         default: return false;
     }
+}
+
+// Does anything declare the operator `name` spells — `infix:<op>`,
+// `prefix:<op>`, `postfix:<op>`, `circumfix:<…>`, `postcircumfix:<…>`? A
+// name of any other shape is not this question's, and answers true. Rakudo
+// refuses an operator nobody declared as an undeclared routine, by either
+// spelling (`infix:<nosuch>(42)`, `&infix:<nosuch>`); the call form here gave
+// back its one argument, and the `&` form a working Callable, so a typo in an
+// operator's name passed in silence (found by FastRoast, 2026-10-19).
+//
+// Declared means: CORE has it (Rakudo's own list, `CORE::.keys` on
+// 2026-10-19), the scope does, or it is a metaoperator over one that is —
+// R S Z X !, hyper, `op=` on an infix, `[op]` and `[\op]` as a prefix. Last,
+// whatever infix the engine can apply counts too, so nothing the call form
+// already evaluated is refused now; an operator CORE has and the engine lacks
+// keeps its X::NYI.
+static bool opDeclaredHere(Interpreter& I, const std::string& full) {
+    if (I.tctx_.cur && I.tctx_.cur->find("&" + full)) return true;
+    return I.global_ && I.global_->find("&" + full);
+}
+static bool startsWithHyper(const std::string& s, size_t& n) {
+    if (s.compare(0, 2, ">>") == 0 || s.compare(0, 2, "<<") == 0 ||
+        s.compare(0, 2, "\xC2\xBB") == 0 || s.compare(0, 2, "\xC2\xAB") == 0) { n = 2; return true; }
+    return false;
+}
+static bool endsWithHyper(const std::string& s, size_t& n) {
+    if (s.size() < 2) return false;
+    const std::string t = s.substr(s.size() - 2);
+    if (t == ">>" || t == "<<" || t == "\xC2\xBB" || t == "\xC2\xAB") { n = 2; return true; }
+    return false;
+}
+static const std::set<std::string> kCoreInfixOps = {
+    "!=", "!~~", "%%", "%", "&&", "&", "(&)", "(+)", "(-)", "(.)", "(==)", "(^)", "(cont)",
+    "(elem)", "(|)", "**", "*", "+&", "+", "+^", "+|", ",", "-", "...", "...^", "..", "..^",
+    "//", "/", "=:=", "===", "==", "=", "=~=", "=~", "?&", "?^", "?|", "X", "Z", "^...",
+    "^...^", "^..", "^..^", "^", "^^", "^\xE2\x80\xA6", "^\xE2\x80\xA6^", "after", "and",
+    "andthen", "before", "but", "cmp", "coll", "div", "does", "eq", "eqv", "gcd", "ge", "gt",
+    "lcm", "le", "leg", "lt", "max", "min", "minmax", "mod", "ne", "notandthen", "o", "or",
+    "orelse", "unicmp", "x", "xor", "xx", "|", "||", "~&", "~", "~^", "~|", "~~",
+    "\xC3\x97", "\xC3\xB7", "\xE2\x80\xA6", "\xE2\x80\xA6^", "\xE2\x87\x92", "\xE2\x88\x88",
+    "\xE2\x88\x89", "\xE2\x88\x8A", "\xE2\x88\x8B", "\xE2\x88\x8C", "\xE2\x88\x8D",
+    "\xE2\x88\x92", "\xE2\x88\x96", "\xE2\x88\x98", "\xE2\x88\xA9", "\xE2\x88\xAA",
+    "\xE2\x89\x85", "\xE2\x89\xA0", "\xE2\x89\xA1", "\xE2\x89\xA2", "\xE2\x89\xA4",
+    "\xE2\x89\xA5", "\xE2\x89\xBC", "\xE2\x89\xBD", "\xE2\x8A\x82", "\xE2\x8A\x83",
+    "\xE2\x8A\x84", "\xE2\x8A\x85", "\xE2\x8A\x86", "\xE2\x8A\x87", "\xE2\x8A\x88",
+    "\xE2\x8A\x89", "\xE2\x8A\x8D", "\xE2\x8A\x8E", "\xE2\x8A\x96", "\xE2\x9A\x9B+=",
+    "\xE2\x9A\x9B-=", "\xE2\x9A\x9B=", "\xE2\x9A\x9B\xE2\x88\x92=", "\xE2\xA9\xB5",
+    "\xE2\xA9\xB6", "(<)", "(<+)", "(<=)", "(>)", "(>+)", "(>=)", "+<", "+>", "<=>", "<=",
+    "<", "=>", ">=", ">", "~<", "~>"};
+static const std::set<std::string> kCorePrefixOps = {
+    "!", "++", "++\xE2\x9A\x9B", "+", "+^", "--", "--\xE2\x9A\x9B", "-", "?", "?^", "^",
+    "let", "not", "so", "temp", "|", "~", "~^", "\xE2\x88\x92", "\xE2\x9A\x9B"};
+static const std::set<std::string> kCorePostfixOps = {
+    "++", "--", "i", "\xE2\x81\xBF", "\xE2\x9A\x9B++", "\xE2\x9A\x9B--"};
+static const std::set<std::string> kCoreCircumfixOps = {":{ }", "[ ]", "{ }"};
+static const std::set<std::string> kCorePostcircumfixOps = {"[ ]", "[; ]", "{ }", "{; }"};
+static const std::set<std::string>* coreOpsOf(const std::string& cat) {
+    return cat == "infix" ? &kCoreInfixOps : cat == "prefix" ? &kCorePrefixOps
+         : cat == "postfix" ? &kCorePostfixOps : cat == "circumfix" ? &kCoreCircumfixOps
+         : cat == "postcircumfix" ? &kCorePostcircumfixOps : nullptr;
+}
+static bool infixDeclared(Interpreter& I, const std::string& op, int depth) {
+    if (op.empty() || depth > 8) return false;
+    if (kCoreInfixOps.count(op) || opDeclaredHere(I, "infix:<" + op + ">")) return true;
+    size_t n = 0;
+    if (op.size() > 4 && startsWithHyper(op, n)) {   // »+« and >>+<<, either way round
+        size_t m = 0;
+        if (endsWithHyper(op, m) && op.size() > n + m)
+            return infixDeclared(I, op.substr(n, op.size() - n - m), depth + 1);
+    }
+    if (op.size() > 1 && std::strchr("RSZX!", op[0]) && infixDeclared(I, op.substr(1), depth + 1)) return true;
+    if (op.size() > 1 && op.back() == '=' && infixDeclared(I, op.substr(0, op.size() - 1), depth + 1)) return true;
+    if (depth > 0 || op[0] == '&') return false;
+    // the operators the engine applies that CORE spells through a metaop or
+    // not at all: whatever the fold the call form makes does not refuse
+    try { I.applyBinOpPublic(op, Value::integer(1), Value::integer(1)); }
+    catch (RakuError& e) { return e.message.rfind("Unsupported operator", 0) != 0; }
+    catch (...) {}
+    return true;
+}
+// `infix:<op>` → "infix" and "op" (the `«op»` and `<<op>>` spellings too);
+// false for a name of no operator's shape
+static bool splitOperatorName(const std::string& name, std::string& cat, std::string& op) {
+    const size_t c = name.find(':');
+    if (c == std::string::npos || c + 2 >= name.size() || name.back() == ':') return false;
+    cat = name.substr(0, c);
+    if (name[c + 1] == '<' && name.back() == '>') op = name.substr(c + 2, name.size() - c - 3);
+    else if (name.compare(c + 1, 2, "\xC2\xAB") == 0 && name.size() >= c + 5 &&
+             name.compare(name.size() - 2, 2, "\xC2\xBB") == 0)
+        op = name.substr(c + 3, name.size() - c - 5);
+    else return false;
+    // `infix:<<∈>>` — the operator inside a second pair of angles, except the
+    // ones that are themselves `<…>`-shaped (`infix:<<=>>` is `<=>`)
+    if (op.size() > 2 && op.front() == '<' && op.back() == '>' && op != "<=>" && op != "<==>" &&
+        op != "<->" && op != "<<>>")
+        op = op.substr(1, op.size() - 2);
+    return coreOpsOf(cat) != nullptr;
+}
+bool operatorNameDeclared(Interpreter& I, const std::string& name) {
+    std::string cat, op;
+    if (!splitOperatorName(name, cat, op)) return true;
+    // (CORE first: `&infix:<+>` may sit in a hot loop, and the table is cheap)
+    if (coreOpsOf(cat)->count(op) || opDeclaredHere(I, name) || opDeclaredHere(I, cat + ":<" + op + ">") ||
+        I.builtinPtr(name))
+        return true;
+    size_t n = 0;
+    if (cat == "infix") return infixDeclared(I, op, 0);
+    if (cat == "prefix" && op.size() > 2 && endsWithHyper(op, n))   // -« : the hyper prefix
+        return operatorNameDeclared(I, "prefix:<" + op.substr(0, op.size() - n) + ">");
+    if (cat == "prefix" && op.size() > 2 && op.front() == '[' && op.back() == ']') {   // [+], [\+]
+        std::string in = op.substr(1, op.size() - 2);
+        if (!in.empty() && in[0] == '\\') in = in.substr(1);
+        return infixDeclared(I, in, 0);
+    }
+    if (cat == "postfix" && op.size() > 2 && startsWithHyper(op, n))   // »++ : the hyper postfix
+        return operatorNameDeclared(I, "postfix:<" + op.substr(n) + ">");
+    return false;
+}
+// The operators of `name`'s category, spelled as names, for its "Did you mean"
+void operatorNameCandidates(const std::string& name, std::vector<std::string>& out) {
+    std::string cat, op;
+    if (!splitOperatorName(name, cat, op)) return;
+    for (auto& o : *coreOpsOf(cat)) out.push_back(cat + ":<" + o + ">");
 }
 
 #ifdef RAKUPP_NODE_COUNT

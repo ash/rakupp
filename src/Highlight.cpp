@@ -125,6 +125,37 @@ struct Scanner {
     static bool identStart(char c) { return ascii::isalpha((unsigned char)c) || c == '_'; }
     static bool identCont(char c) { return ascii::isalnum((unsigned char)c) || c == '_'; }
 
+    // The byte length of the name character at s[k] (0 when there is none):
+    // ASCII letters and `_`, or a codepoint the UCD calls a letter (L*, Nl),
+    // start a name; digits and combining marks (M*) also continue one. An
+    // ASCII-only scan cut `$соу` down to a lone `$` and `née` into three spans.
+    size_t nameCharAt(size_t k, bool start) const {
+        if (k >= s.size()) return 0;
+        unsigned char b = (unsigned char)s[k];
+        if (b < 0x80) return (start ? identStart((char)b) : identCont((char)b)) ? 1 : 0;
+        int n = b >= 0xF0 ? 4 : b >= 0xE0 ? 3 : b >= 0xC0 ? 2 : 1;
+        if (n == 1 || k + n > s.size()) return 0;
+        uint32_t cp = b & (0xFF >> (n + 1));
+        for (int t = 1; t < n; t++) cp = (cp << 6) | ((unsigned char)s[k + t] & 0x3F);
+        const std::string gc = uniGeneralCategory(cp);
+        if (gc.size() != 2) return 0;
+        bool ok = gc[0] == 'L' || gc == "Nl" || (!start && (gc[0] == 'M' || gc == "Nd"));
+        return ok ? (size_t)n : 0;
+    }
+    // The end of the name that starts at j: name characters, `::` segments,
+    // and a `-` or `'` only between a name character and a LETTER (`from-json`,
+    // `isn't`), as the lexer joins them: `$n-1` is `$n - 1`, and `&'a'` is
+    // `&` before a string, not a variable named `'a`.
+    size_t nameEnd(size_t j) const {
+        const size_t from = j;
+        for (;;) {
+            if (size_t n = nameCharAt(j, false)) { j += n; continue; }
+            if ((at(j) == '-' || at(j) == '\'') && j > from && nameCharAt(j + 1, true)) { j++; continue; }
+            if (at(j) == ':' && at(j + 1) == ':') { j += 2; continue; }
+            return j;
+        }
+    }
+
     // matching close for a bracket delimiter (else the same char). ASCII only:
     // this used to carry `case '\xAB': return '\xBB'`, which is the SECOND byte
     // of « and » — so `q:to«END»` scanned for a lone 0xC2, stopped on the first
@@ -182,7 +213,7 @@ struct Scanner {
             if (ascii::isdigit((unsigned char)c) ||
                 (c == '.' && ascii::isdigit((unsigned char)at(i + 1)) && !lastWasValue)) { scanNumber(); continue; }
             if (c == '$' || c == '@' || c == '%' || c == '&') { scanVariable(); continue; }
-            if (identStart(c)) { scanIdent(); continue; }
+            if (nameCharAt(i, true)) { scanIdent(); continue; }
             scanOperator();
         }
     }
@@ -333,6 +364,7 @@ struct Scanner {
         bool heredoc = false;
         while (j < s.size() && s[j] == ':') {
             size_t advStart = ++j;
+            if (j < s.size() && s[j] == '!') j++;   // a negated adverb: `qq:!c/…/`
             while (j < s.size() && (identCont(s[j]) || s[j] == '(')) { if (s[j]=='('){int d=1;j++;while(j<s.size()&&d){if(s[j]=='(')d++;else if(s[j]==')')d--;j++;}break;} j++; }
             std::string adv = s.substr(advStart, j - advStart);
             if (adv == "to" || adv == "heredoc") heredoc = true;
@@ -449,11 +481,7 @@ struct Scanner {
             emit(s.substr(i, j - i), "nv", true); i = j; return;
         }
         // name (allowing internal - and ' and ::)
-        while (j < s.size() && (identCont(s[j]) ||
-               ((s[j] == '-' || s[j] == '\'') && identCont(at(j + 1))) ||
-               (s[j] == ':' && at(j + 1) == ':'))) {
-            if (s[j] == ':') j += 2; else j++;
-        }
+        j = nameEnd(j);
         if (j == i + 1) { // lone sigil (e.g. `&` as code ref sigil, or `%` operator misread)
             // only treat $ @ % & as variable sigils if a name/twigil followed; else operator
             emitText(s.substr(i, 1)); i = j; return;
@@ -463,12 +491,7 @@ struct Scanner {
     }
 
     void scanIdent() {
-        size_t j = i;
-        while (j < s.size() && (identCont(s[j]) ||
-               ((s[j] == '-' || s[j] == '\'') && identCont(at(j + 1))) ||
-               (s[j] == ':' && at(j + 1) == ':'))) {
-            if (s[j] == ':') j += 2; else j++;
-        }
+        size_t j = nameEnd(i);
         std::string w = s.substr(i, j - i);
 
         // quote-like / regex-like word forms: q qq Q qw qqw (strings); m rx ms (regex);

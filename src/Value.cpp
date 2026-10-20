@@ -1258,7 +1258,7 @@ std::string Value::gist() const {
             std::string holeGist;
             if (!isList && arr()) {
                 if (elemDefault()) holeGist = elemDefault()->gist();
-                else if (!ofType().empty() && ofType()[0] >= 'A' && ofType()[0] <= 'Z')
+                else if (!ofType().empty() && typeNameLead(ofType()[0]))
                     holeGist = "(" + ofType().substr(0, ofType().find(',')) + ")";
             }
             if (arr()) for (size_t k = 0; k < arr()->size(); k++) {

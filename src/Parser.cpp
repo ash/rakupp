@@ -9351,7 +9351,7 @@ ExprPtr Parser::parsePrimary() {
                         if (as->target->kind == NK::VarExpr) {
                             auto* dv = static_cast<VarExpr*>(as->target.get());
                             const std::string& nm = dv->name;
-                            if (nm.size() > 1 && std::strchr("$@%", nm[0]) && (std::isalpha((unsigned char)nm[1]) || (nm[1] == '_' && nm.size() > 2)) &&
+                            if (nm.size() > 1 && std::strchr("$@%", nm[0]) && (nameLetterAt(nm, 1) || (nm[1] == '_' && nm.size() > 2)) &&
                                 dv->d().declScope != "constant" &&
                                 dv->d().declScope != "state")
                             {
@@ -10297,7 +10297,7 @@ ExprPtr Parser::qqwwList(const std::vector<std::string>& words) {
 // block before the block declared it: remembered with the token it was read at.
 void Parser::noteLexRead(const std::string& n, size_t at) {
     if (lexUsed_.empty() || n.size() < 2 || !std::strchr("$@%", n[0])) return;
-    if (!(ascii::isalpha((unsigned char)n[1]) || (n[1] == '_' && n.size() > 2))) return;
+    if (!(nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2))) return;
     if (lexDecl_.back().count(n)) return;
     lexUsed_.back().emplace(n, at);   // keeps the FIRST read
 }
@@ -11151,7 +11151,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // variable in scope (#109). `"$h::x"` and `"$h: x"` are other things.
             if (sig == '$' && !hadPostfix && j + 1 < n && raw[j] == ':' &&
                 (ascii::isalpha((unsigned char)raw[j + 1]) || raw[j + 1] == '_') &&
-                var.size() > 1 && (ascii::isalpha((unsigned char)var[1]) || var[1] == '_')) {
+                var.size() > 1 && (nameLetterAt(var, 1) || var[1] == '_')) {
                 size_t k = j + 1;
                 std::string adv;
                 for (size_t l; k < n && identContAt(k, l); ) { adv.append(raw, k, l); k += l; }
@@ -12990,7 +12990,22 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                  cur().text.compare(cur().text.size() - 2, 2, ">>") == 0) {
             // the lexer folded `<<M>>` into a single hyper-metaop token — unwrap it
             std::string tok = advance().text;
-            w.push_back(tok.substr(2, tok.size() - 4));
+            std::string in = tok.substr(2, tok.size() - 4);
+            // The quotes are qq-style, so a backslash escapes what follows,
+            // the closing quote too: `«\$>»` is `$>`, and `«~~>\»»` is `~~>»`,
+            // which the lexer folded up to the ESCAPED close — the name runs
+            // on to the real one (Rakudo: `infix:<~~\>»>`)
+            size_t bs = 0;
+            while (bs < in.size() && in[in.size() - 1 - bs] == '\\') bs++;
+            if (bs % 2 == 1 && !cur().spaceBefore && !isKind(Tok::End)) {
+                in += "\xC2\xBB";
+                while (!isKind(Tok::End) && !isOp("\xC2\xBB") && !cur().spaceBefore) in += advance().text;
+                if (isOp("\xC2\xBB")) advance();
+            }
+            std::string un;
+            for (size_t i = 0; i < in.size(); i++)
+                un += in[i] == '\\' && i + 1 < in.size() ? in[++i] : in[i];
+            w.push_back(un);
             resolveConstWords(w);
         }
         else if (isOp("\xC2\xAB")) { advance(); w = readAngleWords("\xC2\xBB"); }
@@ -13843,7 +13858,7 @@ ExprPtr Parser::computedOpName(const std::string& t) {
     if (b == std::string::npos) return nullptr;
     inner = inner.substr(b, e - b + 1);
     // only a VARIABLE (or, in brackets, any expression) is computed; `&infix:<+>` is a name
-    if (!isExpr && !(inner.size() > 1 && inner[0] == '$' && (ascii::isalpha((unsigned char)inner[1]) || inner[1] == '_')))
+    if (!isExpr && !(inner.size() > 1 && inner[0] == '$' && (nameLetterAt(inner, 1) || inner[1] == '_')))
         return nullptr;
     ExprPtr val = isExpr ? parseEmbeddedExpr(inner) : parseEmbeddedExpr(inner);
     if (!val) return nullptr;
