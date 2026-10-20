@@ -4424,6 +4424,224 @@ Value bridgeReal(Interpreter& I, const Value& v) {
     return v;
 }
 
+bool topicChanged(const Value& now, const Value& orig);   // InterpreterCore.cpp
+
+// The expression whose CONTAINER the value of `e` is, for an andthen-family
+// topic to alias: `e` itself, the target of an assignment (`$x += 1 andthen
+// …`, `my $x = 1 andthen …`) or of a `.=`, and down a chain the container its
+// last step handed on — a step's `$_` is the one ITS left side handed on, and
+// `$x andthen $y andthen $_ = 6` assigns $y. `++$x` and `$x++` hand on a
+// value (Rakudo: "Cannot assign to an immutable value"). Null: none known.
+static Expr* topicContainerExpr(Expr* e) {
+    while (e) {
+        if (e->kind == NK::Assign) {
+            auto* a = static_cast<Assign*>(e);
+            if (a->op == ":=" || a->op == "::=") return nullptr;
+            e = a->target.get();
+            continue;
+        }
+        if (e->kind == NK::MethodCall && static_cast<MethodCall*>(e)->mutate) {
+            e = static_cast<MethodCall*>(e)->inv.get();
+            continue;
+        }
+        if (e->kind == NK::Binary) {
+            auto* b = static_cast<Binary*>(e);
+            const bool orelse = b->op == "orelse";
+            if (!orelse && b->op != "andthen" && b->op != "notandthen") return e;
+            Expr* r = topicContainerExpr(b->rhs.get());
+            if (!r || r->kind != NK::VarExpr || static_cast<VarExpr*>(r)->declare) return nullptr;
+            if (static_cast<VarExpr*>(r)->name == "$_") { e = b->lhs.get(); continue; }
+            // (an `orelse` may equally have handed on its LEFT side)
+            return orelse ? nullptr : r;
+        }
+        return e;
+    }
+    return nullptr;
+}
+
+// Can evaluating `e` NOT write the topic's container? Most right sides only
+// read it — `$fh andthen .close`, `$x andthen $s += $_` — and they keep the
+// plain copy, which costs nothing to set up; the alias (topicAliasedRhs) costs
+// a variable lookup or a write-back check on every evaluation. Conservative: an
+// assignment to anything but a plain variable, `.=`, `++`/`--`, s///, a
+// block, and `$_` handed to a routine (whose parameter may be `is rw`) or put
+// in a list all count as writes, as does any node kind not listed.
+// (Run on every evaluation, so it compares characters, not std::strings.)
+static bool isTopicVar(const Expr* e) {
+    if (!e || e->kind != NK::VarExpr) return false;
+    const std::string& n = static_cast<const VarExpr*>(e)->name;
+    return n.size() == 2 && n[0] == '$' && n[1] == '_';
+}
+static bool mutatorMethod(const std::string& m) {
+    switch (m.size()) {
+        case 3:  return m == "pop";
+        case 4:  return m == "push";
+        case 5:  return m == "shift" || m == "STORE";
+        case 6:  return m == "append" || m == "splice" || m == "delete";
+        case 7:  return m == "unshift" || m == "prepend";
+        case 8:  return m == "BIND-KEY" || m == "BIND-POS";
+        case 10: return m == "ASSIGN-KEY" || m == "ASSIGN-POS";
+        default: return false;
+    }
+}
+static bool topicWriteFree(const Expr* e) {
+    if (!e) return true;
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::AllomorphLit:
+        case NK::Whatever: case NK::SelfTerm: case NK::NameTerm: case NK::VarExpr: case NK::RegexLit:
+            return true;
+        case NK::InterpStr:
+            for (auto& p : static_cast<const InterpStr*>(e)->parts) if (!topicWriteFree(p.get())) return false;
+            return true;
+        case NK::ListExpr:
+            for (auto& it : static_cast<const ListExpr*>(e)->items)
+                if (isTopicVar(it.get()) || !topicWriteFree(it.get())) return false;
+            return true;
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            const std::string& o = u->op;   // not ++, --, nor a `\` capture
+            if ((o.size() == 2 && o[0] == o[1] && (o[0] == '+' || o[0] == '-')) || (o.size() == 1 && o[0] == '\\'))
+                return false;
+            return topicWriteFree(u->operand.get());
+        }
+        case NK::Binary: {
+            auto* b = static_cast<const Binary*>(e);
+            if (b->rhs && b->rhs->kind == NK::SubstLit) return false;   // `$_ ~~ s/a/b/`
+            return topicWriteFree(b->lhs.get()) && topicWriteFree(b->rhs.get());
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return topicWriteFree(t->cond.get()) && topicWriteFree(t->then.get()) && topicWriteFree(t->els.get());
+        }
+        case NK::Index: {
+            auto* ix = static_cast<const Index*>(e);
+            return topicWriteFree(ix->base.get()) && topicWriteFree(ix->index.get());
+        }
+        case NK::Assign: {   // (not a bind: `$y := $_` makes $y the topic's container)
+            auto* a = static_cast<const Assign*>(e);
+            const std::string& o = a->op;   // `:=` and `::=` both end in `:=`
+            if (o.size() >= 2 && o[o.size() - 2] == ':' && o.back() == '=') return false;
+            return a->target && a->target->kind == NK::VarExpr && !isTopicVar(a->target.get()) &&
+                   topicWriteFree(a->value.get());
+        }
+        case NK::MethodCall: {
+            // …and a method that vivifies an undefined invocant writes it:
+            // `$x orelse .push(1)` makes $x an Array (as gatherWritesExpr counts them)
+            auto* mc = static_cast<const MethodCall*>(e);
+            if (mc->mutate || mutatorMethod(mc->method) || !topicWriteFree(mc->methodExpr.get())) return false;
+            for (auto& a : mc->args) if (isTopicVar(a.get()) || !topicWriteFree(a.get())) return false;
+            return topicWriteFree(mc->inv.get());
+        }
+        case NK::Call: {
+            auto* c = static_cast<const Call*>(e);
+            if (c->callee && !topicWriteFree(c->callee.get())) return false;
+            for (auto& a : c->args) if (isTopicVar(a.get()) || !topicWriteFree(a.get())) return false;
+            return true;
+        }
+        default: return false;
+    }
+}
+
+// The right side of andthen/orelse/notandthen when it may WRITE its topic.
+// `$_` is then the left side's CONTAINER, as `with` makes it (issue #185):
+// `$x andthen $_ = 5` assigns $x, `@a[0] andthen $_ = 2` the element, and
+// `$x notandthen .=new` initialises $x. A scalar variable shares its cell, so
+// a write lands at once; an element (or a `$` holding an Array) is written
+// back as the right side leaves, and only if `$_` changed, so `%h<k> orelse …`
+// does not vivify the key just by testing it. A skipped step's Empty is no
+// container at all: `$x andthen … orelse $_ = 6`.
+//
+// Both right-side runners are functions of their own, each making its scope in
+// its ENTRY block, and so is definednessOp below. Written inside
+// shortCircuitOp, past its run of early returns for the other operators,
+// clang's static estimate put those call sites under its cold threshold (45
+// against 325, -Rpass-missed=inline): makeSlabShared<Env> and the `op ==`
+// tests stayed out of line, and 8M of `$x andthen $s += $_` took 2.00 s
+// against 1.70 s before. Split like this it is 1.78 s; the rest is the
+// topicWriteFree walk.
+[[gnu::noinline]] static Value topicCopyRhs(Interpreter& I, Expr* rhs, const Value& l) {
+    auto scope = makeSlabShared<Env>(); scope->parent = Interpreter::tctx().cur;
+    scope->define("$_", l);
+    auto saved = Interpreter::tctx().cur; Interpreter::tctx().cur = scope;
+    Value r; try { r = I.eval(rhs); } catch (...) { Interpreter::tctx().cur = saved; throw; }
+    Interpreter::tctx().cur = saved;
+    return r;
+}
+[[gnu::noinline]] static Value topicAliasedRhs(Interpreter& I, Expr* lhs, Expr* rhs, const Value& l) {
+    auto scope = makeSlabShared<Env>(); scope->parent = Interpreter::tctx().cur;
+    Expr* head = topicContainerExpr(lhs);
+    if (head && lhs->kind == NK::Binary && l.t == VT::Array && l.s == "Slip" && l.arr() && l.arr()->empty())
+        head = nullptr;
+    bool shared = false, boundToValue = false;
+    if (head && head->kind == NK::VarExpr && l.t != VT::Array && l.t != VT::Hash) {
+        PRef<Value> cell;
+        if (static_cast<VarExpr*>(head)->name != "$_") cell = I.exprVarCell(head, &boundToValue);
+        // …and down a chain, the topic before it: `$x orelse .=new andthen
+        // .=new: 43` — only when that `$_` already IS a shared cell, since
+        // promoting a loop's own `$_` slot would break its copy-back
+        else if (Value* raw = Interpreter::tctx().cur->findRaw("$_"); raw && raw->isCell()) cell = raw->cellS();
+        if (cell) { scope->define("$_", Value::cellHolder(cell)); shared = true; }
+    }
+    // a LITERAL has none to give: `1 andthen $_ = 5` dies, as `with 1 { … }`
+    // does, and so does a readonly parameter or `my $x := 42` (exprVarCell's boundToValue)
+    if (!shared && head && (boundToValue || head->kind == NK::IntLit || head->kind == NK::NumLit ||
+                            head->kind == NK::StrLit || head->kind == NK::InterpStr || head->kind == NK::BoolLit)) {
+        Value t = l;
+        t.readonly = true;
+        scope->define("$_", std::move(t));
+        head = nullptr;
+    }
+    else if (!shared) scope->define("$_", l);
+    struct TopicWriteBack {   // however the right side exits
+        Interpreter& I; Expr* head; Env* sc; const Value& orig;
+        ~TopicWriteBack() {
+            if (!head) return;
+            // a destructor: a Raku error comparing or storing is swallowed (see TopicAlias)
+            try {
+                auto it = sc->vars.find("$_");
+                if (it == sc->vars.end() || !topicChanged(it->second, orig)) return;
+                Value v = it->second;
+                if (!I.topicWriteThroughObject(head, v))
+                    if (Value* s = I.topicAliasSlot(head, /*skip=*/false, /*allowObject=*/true)) *s = v;
+            } catch (...) {}
+        }
+    } writeBack{I, shared ? nullptr : head, scope.get(), l};
+    auto saved = Interpreter::tctx().cur; Interpreter::tctx().cur = scope;
+    Value r; try { r = I.eval(rhs); } catch (...) { Interpreter::tctx().cur = saved; throw; }
+    Interpreter::tctx().cur = saved;
+    // A BLOCK on the right is CALLED with the left value: `'x' andthen -> $a {…}`
+    // passes 'x', and `Failure.new(…) orelse -> $f {…}` passes the Failure. Only
+    // a block written there — a Code that merely came out of an expression is
+    // the answer, not something to invoke. (topicWriteFree sends every block here.)
+    if (r.t == VT::Code && r.code() && rhs->kind == NK::BlockExpr) {
+        Value arg = l;
+        // The left side of an `orelse` may be a FAILURE — that is the usual
+        // reason the right side runs — and asking about it is what handles it.
+        // Passed on unhandled, it detonated inside the block instead.
+        if (arg.t == VT::Hash && arg.hashKind == "Failure" && arg.hash())
+            (*arg.hash())["handled"] = Value::boolean(true);
+        // a BARE block's `$_` is the topic itself: `$x andthen { $_ = 9 }` assigns $x
+        auto* be = static_cast<BlockExpr*>(rhs);
+        if (shared && be->params.empty() && !be->isPointy && !be->isSub)
+            if (Value* raw = scope->localRaw("$_"); raw && raw->isCell()) arg = *raw;
+        return I.callCallable(r, ValueList{arg});
+    }
+    return r;
+}
+
+// andthen, orelse and notandthen (a function of its own: see topicCopyRhs).
+[[gnu::noinline]] static Value definednessOp(Interpreter& I, const std::string& op, Expr* lhs, Expr* rhs) {
+    Value l = I.eval(lhs);
+    const bool andthen = op == "andthen";
+    bool run = andthen ? I.topicDefined(l) : !I.topicDefined(l); // orelse/notandthen fire on undefined
+    if (!run) { // skip the RHS: orelse yields the LHS, andthen/notandthen yield Empty
+        if (andthen || op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; }
+        return l;
+    }
+    // a right side that only READS its topic gets a copy (see topicWriteFree)
+    return topicWriteFree(rhs) ? topicCopyRhs(I, rhs, l) : topicAliasedRhs(I, lhs, rhs, l);
+}
+
 // The operators that do NOT evaluate both sides: which one is skipped depends on
 // the other's value, so they take AST nodes rather than values. `R&&` and friends
 // reuse this with the operands swapped, which is the whole point — `$n++ R&& 0`
@@ -4438,76 +4656,7 @@ Value Interpreter::shortCircuitOp(const std::string& op, Expr* lhs, Expr* rhs) {
         if (ta && tc) return Value::nil();
         return ta ? a : c;           // …and with neither true, the LAST operand
     }
-    Value l = eval(lhs);
-    bool def = topicDefined(l);
-    bool run = op == "andthen" ? def : !def; // orelse/notandthen fire on undefined
-    if (!run) { // skip the RHS: orelse yields the LHS, andthen/notandthen yield Empty
-        if (op == "andthen" || op == "notandthen") { Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; }
-        return l;
-    }
-    auto scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
-    scope->define("$_", l);
-    auto saved = tctx().cur; tctx().cur = scope;
-    Value r; try { r = eval(rhs); } catch (...) { tctx().cur = saved; throw; }
-    tctx().cur = saved;
-    // `$x notandthen .=new` — the topic IS the left side's container, so a
-    // `.=` on it writes the variable at the head of the chain
-    if (rhs && rhs->kind == NK::MethodCall && static_cast<MethodCall*>(rhs)->mutate) {
-        auto* mc = static_cast<MethodCall*>(rhs);
-        if (mc->inv && mc->inv->kind == NK::VarExpr && static_cast<VarExpr*>(mc->inv.get())->name == "$_") {
-            Expr* tgt = lhs;
-            while (tgt && tgt->kind == NK::Binary &&
-                   (static_cast<Binary*>(tgt)->op == "andthen" || static_cast<Binary*>(tgt)->op == "orelse" ||
-                    static_cast<Binary*>(tgt)->op == "notandthen"))
-                tgt = static_cast<Binary*>(tgt)->lhs.get();
-            if (tgt && tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->declare)
-                if (Value* nv = scope->local("$_"))
-                    if (Value* lv = lvalue(tgt)) { *lv = *nv; r = *nv; }
-        }
-    }
-    // `$x orelse .=new andthen .=new: 43` — `andthen` binds tighter, so the
-    // `.=` steps sit in a chain of their own on the right; the topic they
-    // leave behind is still the head variable's
-    else if (rhs && rhs->kind == NK::Binary) {
-        auto isChainOp = [](const std::string& o) { return o == "andthen" || o == "orelse" || o == "notandthen"; };
-        std::function<bool(Expr*)> hasTopicMutate = [&](Expr* e) -> bool {
-            if (!e) return false;
-            if (e->kind == NK::MethodCall) {
-                auto* mc = static_cast<MethodCall*>(e);
-                return mc->mutate && mc->inv && mc->inv->kind == NK::VarExpr &&
-                       static_cast<VarExpr*>(mc->inv.get())->name == "$_";
-            }
-            if (e->kind == NK::Binary && isChainOp(static_cast<Binary*>(e)->op))
-                return hasTopicMutate(static_cast<Binary*>(e)->lhs.get()) ||
-                       hasTopicMutate(static_cast<Binary*>(e)->rhs.get());
-            return false;
-        };
-        if (isChainOp(static_cast<Binary*>(rhs)->op) && hasTopicMutate(rhs)) {
-            Expr* tgt = lhs;
-            while (tgt && tgt->kind == NK::Binary && isChainOp(static_cast<Binary*>(tgt)->op))
-                tgt = static_cast<Binary*>(tgt)->lhs.get();
-            if (tgt && tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->declare) {
-                const bool skipped = r.t == VT::Array && r.s == "Slip" && r.arr() && r.arr()->empty();
-                Value nv = r;
-                if (skipped) { if (Value* sv = scope->local("$_")) nv = *sv; }
-                if (Value* lv = lvalue(tgt)) *lv = nv;
-            }
-        }
-    }
-    // A BLOCK on the right is CALLED with the left value: `'x' andthen -> $a {…}`
-    // passes 'x', and `Failure.new(…) orelse -> $f {…}` passes the Failure. Only
-    // a block written there — a Code that merely came out of an expression is
-    // the answer, not something to invoke.
-    if (r.t == VT::Code && r.code() && rhs->kind == NK::BlockExpr) {
-        Value arg = l;
-        // The left side of an `orelse` may be a FAILURE — that is the usual
-        // reason the right side runs — and asking about it is what handles it.
-        // Passed on unhandled, it detonated inside the block instead.
-        if (arg.t == VT::Hash && arg.hashKind == "Failure" && arg.hash())
-            (*arg.hash())["handled"] = Value::boolean(true);
-        return callCallable(r, ValueList{arg});
-    }
-    return r;
+    return definednessOp(*this, op, lhs, rhs);
 }
 
 Value Interpreter::xxRepeat(Expr* item, Expr* count) {

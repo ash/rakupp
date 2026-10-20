@@ -2155,9 +2155,23 @@ ExprPtr Parser::keyBeforeValue(std::unique_ptr<Assign> a) {
     return u;
 }
 
+struct ExprCtxScope {   // see Parser::exprCtx_
+    std::vector<char>& v;
+    ExprCtxScope(std::vector<char>& s, char c) : v(s) { v.push_back(c); }
+    ~ExprCtxScope() { v.pop_back(); }
+};
+
 ExprPtr Parser::parseExpr(int minbp) {
     struct MinbpScope { int& r; int s; ~MinbpScope() { r = s; } } minbpScope{exprMinbp_, exprMinbp_};
     exprMinbp_ = minbp;
+    // An expression starts with no $*LEFTSIGIL and gives the outer one back;
+    // an operand parsed from an operator loop continues the expression it is in
+    const bool leftCont = !exprCtx_.empty() && exprCtx_.back() == 'E';
+    struct LeftScope { char& r; char s; bool keep; ~LeftScope() { if (!keep) r = s; } } leftScope{
+        leftSigil_, leftSigil_, leftCont};
+    if (!leftCont) leftSigil_ = 0;
+    const char entrySigil = leftSigil_;
+    ExprCtxScope loopCtx{exprCtx_, 'E'};   // (a prefix's operand is part of the expression too)
     ExprPtr lhs = parsePrefix();
     for (;;) {
         exprMinbp_ = minbp;   // (a nested parse in the operand reset it on its way out)
@@ -2851,7 +2865,8 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (in.isTernary) {
             advance(); // ??
             const size_t thenAt = pos_;
-            ExprPtr then = parseExpr(BP_ASSIGN);
+            ExprPtr then;
+            { ExprCtxScope own{exprCtx_, 'T'}; then = parseExpr(BP_ASSIGN); }   // its own expression
             // `$a ?? $a = 42 !! …` — an assignment is looser than ?? !!: Rakudo
             // refuses it in the middle part rather than guess (`:=` binds fine)
             if (then && then->kind == NK::Assign && !parenned_.count(then.get()) &&
@@ -3248,6 +3263,21 @@ ExprPtr Parser::parseExpr(int minbp) {
             // …and so does a CALL: `f() = 7, 8`, `$obj('k') = 7, 8` (CALL-ME)
             else if (lhs->kind == NK::Call && in.op == "=") listAssign = true;
         }
+        // …but Rakudo decides `=` by $*LEFTSIGIL, the sigil of the expression's
+        // FIRST variable ('@' once a postfix applied), not by this left side:
+        // `@a[0] andthen $_ = 2, 3, 4` assigns the List, `$y and @b = 1, 2` only
+        // the 1 (issue #185). With nothing before the left side the two agree.
+        // A declaration's initializer is its own: decided by its own sigil, and
+        // its value an expression of its own (`my $r = @a and $y = 1, 2`).
+        bool declInit = false;
+        if (in.isAssign && in.op == "=") {
+            const Expr* t = lhs.get();
+            if (t->kind == NK::ListExpr && !static_cast<const ListExpr*>(t)->items.empty())
+                t = static_cast<const ListExpr*>(t)->items[0].get();   // `my ($a, $b) = …`
+            declInit = t->kind == NK::VarExpr && static_cast<const VarExpr*>(t)->declare;
+            if (entrySigil && !declInit) listAssign = leftSigil_ != '$';
+            if (!declInit) leftSigil_ = 0;
+        }
 
         int nextMin = listAssign ? BP_ZIP : (in.rightAssoc ? in.lbp : in.lbp + 1); // list assign includes Z/X (looser than comma)
         infixRhsPos_ = pos_;   // a term is REQUIRED here (see parsePrimary's default)
@@ -3261,7 +3291,8 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (feedOp) stmtCond_ = false;
         struct FeedRestore { bool* f; bool v; bool on; ~FeedRestore() { if (on) *f = v; } }
             fr{&stmtCond_, svFeedCond, feedOp};
-        ExprPtr rhs = parseExpr(nextMin);
+        ExprPtr rhs;
+        { ExprCtxScope rhsCtx{exprCtx_, declInit ? 'T' : 'E'}; rhs = parseExpr(nextMin); }
 
         if (in.isAssign) {
             if (in.op.rfind("\xE2\x9A\x9B", 0) == 0) { // \u269b= / +=/-= forms -> atomic calls
@@ -3848,7 +3879,25 @@ bool Parser::prefixOpCallAt(size_t i) const {
     return n.kind == Tok::Op && !n.text.empty() && (n.text[0] == '<' || n.text == "\xC2\xAB");
 }
 
+// $*LEFTSIGIL (parseExpr): the expression's first variable gives its sigil, a
+// sigilless one anything but `$`, and a postfix after any term makes it '@'.
+// A declaration leaves it alone: Rakudo's declarator has a $*LEFTSIGIL of its own.
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
+    const Expr* b0 = base.get();
+    const bool decl = b0 && b0->kind == NK::VarExpr && static_cast<const VarExpr*>(b0)->declare;
+    if (b0 && !decl && !leftSigil_ && !parenned_.count(b0)) {   // (`($x)` was an expression of its own)
+        if (b0->kind == NK::VarExpr && !static_cast<const VarExpr*>(b0)->name.empty())
+            leftSigil_ = static_cast<const VarExpr*>(b0)->name[0];
+        else if (b0->kind == NK::NameTerm && sigilless_.count(static_cast<const NameTerm*>(b0)->name))
+            leftSigil_ = '\\';
+    }
+    ExprPtr r;
+    { ExprCtxScope termCtx{exprCtx_, 'T'}; r = parsePostfixOps(std::move(base), stopAtSpaceDot); }
+    if (!decl && r.get() != b0) leftSigil_ = '@';
+    return r;
+}
+
+ExprPtr Parser::parsePostfixOps(ExprPtr base, bool stopAtSpaceDot) {
     bool hyperNext = false;
     // A postfix written after a subscript adverb (`%h<k>:exists.so`) does not
     // move the adverb: whichever operator it belongs to, it still ends there.
@@ -6700,6 +6749,7 @@ static bool subDeclaredLater(const std::vector<Token>& toks, size_t from, const 
 }
 
 ExprPtr Parser::parsePrimary() {
+    ExprCtxScope termCtx{exprCtx_, 'T'};   // (an expression inside a term is its own)
     // `&[+]` / `&[~=]` — the infix operator as a Callable term (same value as
     // `&infix:<+>`); the op may span several tokens (`**`, `~^`, `max`)
     if (isOp("&") && peek().kind == Tok::LBracket && !peek().spaceBefore) {

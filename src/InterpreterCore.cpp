@@ -164,7 +164,7 @@ static long long dateDays(const Value& v) {
 // "did the body change the topic" — deliberately STRICTER than eqv: a Buf and a
 // Str holding the same bytes are eqv, and `$_ = Buf.new(.encode) with %h<k>` is
 // exactly the rewrite that has to land.
-static bool topicChanged(const Value& now, const Value& orig) {
+bool topicChanged(const Value& now, const Value& orig) {
     if (now.t != orig.t || now.hashKind != orig.hashKind || now.isList != orig.isList) return true;
     // The SAME object or container is unchanged by definition — writing it
     // back would store what the slot already holds. Asking valueEqv walked
@@ -2478,6 +2478,15 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         // here — an array/hash topic already writes through its elements,
         // and a literal or call result has nowhere to write back to.
         Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
+        // …which a plain `$name` lacks only when it is bound to a VALUE: then
+        // `$_ = 5 with $p` dies, as the block form does
+        if (!topicSlot && !skip && g->topic && g->topic->kind == NK::VarExpr && topic.t != VT::Array &&
+            topic.t != VT::Hash) {
+            auto* tv = static_cast<VarExpr*>(g->topic.get());
+            if (!tv->declare && tv->name.size() > 1 && tv->name[0] == '$' &&
+                (nameLetterAt(tv->name, 1) || (tv->name[1] == '_' && tv->name.size() > 2)))
+                topic.readonly = true;
+        }
         env->vars["$_"] = topic;
         // `{ $^x } without X` — a placeholder block receives the topic as its argument
         if (g->body) {
@@ -2538,9 +2547,17 @@ Value Interpreter::execGivenStmt(Stmt* s) {
     if (!skip && !mainPointy && g->topic && g->topic->kind == NK::VarExpr) {
         const std::string& tn = static_cast<const VarExpr*>(g->topic.get())->name;
         if (tn.size() > 1 && tn[0] == '$' && tn != "$_" && topic.t != VT::Array && topic.t != VT::Hash) {
-            if (auto cell = exprVarCell(g->topic.get())) {
+            bool boundToValue = false;
+            if (auto cell = exprVarCell(g->topic.get(), &boundToValue)) {
                 scope->define("$_", Value::cellHolder(cell));
                 tback.slot = nullptr;   // one container: nothing to write back
+            }
+            // …and a readonly parameter (`my $x := 42` too) has none to share:
+            // `with $p { $_ = 5 }` dies as `$p = 5` would
+            else if (boundToValue) {
+                Value ro = topic;
+                ro.readonly = true;
+                scope->define("$_", std::move(ro));
             }
         }
         else if (tn.size() > 1 && tn[0] == '@' && topic.t == VT::Array && topic.arr())
