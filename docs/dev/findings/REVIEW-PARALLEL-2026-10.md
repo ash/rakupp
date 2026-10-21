@@ -96,8 +96,9 @@ Headline numbers, the final binary against the base tree:
 
 O2–O4 of the ledger below, the same day, against the same base (cce315ef),
 O24 against the O2–O4 commit (1918e400), O26, found fixing O24, against
-O24's (dc76aa01), and O28, found fixing O26, against O26's (432a3398); each
-regression file runs clean under Rakudo and fails on its base.
+O24's (dc76aa01), O28, found fixing O26, against O26's (432a3398), and O27
+against O28's (8174a3c3); each regression file runs clean under Rakudo and
+fails on its base.
 
 | # | What | Where | Evidence |
 |---|---|---|---|
@@ -107,6 +108,7 @@ regression file runs clean under Rakudo and fails on its base.
 | O24 | Standard input is read a block at a time. std::cin keeps no buffer of its own (it is synced with C stdio, and libc++ ignores `sync_with_stdio(false)`), so every `std::getline(std::cin, …)` and `ss << std::cin.rdbuf()` was a virtual call down to `getc` per character — over a thousand instructions a byte; a bare C++ getline loop over the file was 37.3G of the 40G. `stdinGetLine` and `stdinReadAll` read the same `stdin` FILE with getline(3) and fread, so `.read`, `.getc` and stdinReadAhead still see one stream, a line still arrives while the writer holds the pipe open, and std::cin's eof/fail bits come out as std::getline leaves them. std::getline's sentry flushed `$*OUT` before every line; the flush now comes before a read that may wait (stdio holds no whole line), so a raised `out-buffer` still shows its answer before blocking. An embedder's fed text (`rk_set_input`) is std::cin's own string buffer and keeps the old reader | MethodCallPart3.cpp (`$*IN.get`, `.lines` streamed and eager, `.slurp`, `nl-in`), BuiltinsRegister.cpp (`lines()` under `-n`/`-p`, `prompt`, `words()`), InterpreterBinding.cpp (`$*ARGFILES` `-`) | t/regression/stdin-reads-a-block-at-a-time.raku: 15 checks, the base fails its speed check (6× `.IO.lines`; now 0.6×). Instructions, 32 MB / 400k ASCII lines, base → now: `$*IN.lines` 40.0G → 2.90G, `lines()` 40.0G → 2.90G, `-n` 44.1G → 7.0G, a `$*IN.get` loop 45.5G → 8.5G, `$*IN.slurp` 57.4G → 0.19G; `.IO.lines` 4.6G. 27 MB / 300k lines of Latin, Greek, Cyrillic and CJK: `$*IN.lines` 43.4G → 11.9G, `-n` 46.5G → 15.0G, `.get` loop 47.6G → 16.1G, `.slurp` 56.4G → 7.9G; `.IO.lines` 13.4G. Rakudo reads the ASCII file from stdin in 3.5G. Like for like, stdin is now cheaper than a file: `-n` against `for $f.IO.lines -> $_ is copy { our $n += .chars }` 7.0G vs 8.2G, `$*IN.get` against `$fh.get` 8.4G vs 9.3G; what `-n` still pays over `lines()` is O26 and `is copy` (~1.9k a line) |
 | O26 | A plain `our $x` (no type, default, trait, shape or export) names the package's one container: a cell under the published name in GLOBAL, with the declaring scope's `$x` bound to it, as Rakudo binds an `our` lexical to its stash entry, so re-running the declaration only binds the name again. Each run used to make the variable a fresh closure Proxy onto the scope that ran it and publish that view again (`noteSymbolMutation`, which also flushed the multi-dispatch cache), and every later read was a FETCH call. The views also lost the variable: in a file, `for ^3 { our $n += 1 }` and a bare `our $n; $n++` counted to 1, a value set before the loop or through `$GLOBAL::` was dropped, `$P::q` missed a package loop's writes, a `.map` block and routines made in a loop each saw their own, `temp` restored to Any, and `$x := 5` rebound the package's variable where Rakudo rebinds the name only. The assignment publish (`evalAssign`) and the module-load republish leave a cell-bound name alone | InterpreterCalls.cpp (`ourCell`, `ourBoundToCell`), InterpreterCore.cpp (the `our` declare arms of `evalVarExpr` and `lvalue`, the `evalAssign` publish), InterpreterModules.cpp (republish), Interpreter.h | t/regression/our-is-one-container.raku: 31 checks, 20 failing on the base. Instructions, dc76aa01 → now: `for ^400_000 { our $n += 1 }` 3.35G → 1.69G, `{ our $n; $n += 1 }` 4.01G → 1.86G, a bare `{ our $n }` 1.70G → 0.98G (a bare `{ my $n }` is 0.99G), `{ our $n = 1 }` 3.47G → 2.07G, `sub f { our $n += 1 }` × 400k 4.92G → 2.95G; `-ne 'our $n += .chars; END say $n'` over 400k lines 7.09G → 5.54G. The rest is O27. Roast list and totals identical; perf-guard −0.5%…+0.2% in instructions |
 | O28 | An `our`'s package is the one around it LEXICALLY: a package body's scope records its prefix (`EnvExtras::pkgPrefix`, set where class, package/module and generic-role bodies are made), and `ourPkgPrefix` finds the nearest one the routine closed over, so a method's or a package sub's `our $k` is its package's `$k` wherever the call comes from. A typed, defaulted or trait-carrying `our` runs the declaration's own path, which keeps the type, default and traits in the declaring scope as for `my`, and then binds the name to the package's cell (ourCell with the initial value) instead of defining a fresh slot; a name that cannot share a cell keeps the old view (`ourViewFallback`). And an `our` variable anywhere a role is the nearest type, its methods included, is X::Declaration::OurScopeInRole at parse time, as the role body's own statements already were | InterpreterCalls.cpp (`ourShareable`, `ourPlain`, `ourPkgPrefix`, `ourViewFallback`), InterpreterCore.cpp (the declaration exits of `evalVarExpr` and `lvalue`), InterpreterModules.cpp and Interpreter.cpp (the recorded prefixes), Parser.cpp (the role check), Interpreter.h | t/regression/our-belongs-to-its-package.raku: 22 checks, 14 failing on the base — `class C { our $k = 5; method k { our $k } }` (Any) → 5, `our sub f { our $x }` in a package, a class counting instances in `new`, a nested class, `for ^3 { our Str $t ~= "x" }` `x` → `xxx`, `our $d is default(5)` re-run 2 → 7, a re-run `our Int $x` accepting a Str. Instructions: `for ^400_000 { our Int $n += 1 }` 4.79G → 2.75G; a method's `our $n += 1` × 400k 5.18G → 5.39G, now building `$C::n`'s name where it read GLOBAL's `$n`; the plain loops of O26 unchanged. Roast list and totals identical; perf-guard −0.6%…+0.2% in instructions |
+| O27 | `=`, `+=`, `-=`, `*=` and `~=` on a plain `$` name with no pad slot take the simple-assign lane when the name is bound to a shared cell — an `our`, its declaration included (the `-n` idiom's `our $n += .chars`), or a `:=` alias — and the scope that owns it records nothing about it (no type, default, constraint, coercion, constant, bound value or rw link): `cellLaneSlot` gives the proof a pad slot's layout gives, and the lane's own checks on the value (cold block, native width, readonly, Proxy, an Object operand, a user infix) are unchanged. Classes 11–15 of the lane verdict; a name that turns out not to be cell-bound takes the full path as before. An `our` never became a pad slot instead: the IntKernel's declarations and the module republish (which reads the name map) would both have to learn about it | InterpreterCore.cpp (evalAssign's lane), InterpreterCalls.cpp (`cellLaneSlot`), Interpreter.h | t/regression/assign-lane-cell-bound-names.raku: 35 checks of what the long path does that the lane must still do, and a kernels-off speed check (our `+=` within 1.8× of my) the base fails at 3.1×. Instructions, kernels off, 8174a3c3 → now: `our $n = 0; for ^400_000 { $n += 1 }` 1.15G → 0.52G (`my` 0.42G), the same through `my $a := $b` 1.13G → 0.50G; kernels on: `for ^400_000 { our $n += 1 }` 1.69G → 0.93G, `sub f { our $n += 1 }` × 400k 2.94G → 2.18G; `-ne 'our $n += .chars; END say $n'` over 400k lines 5.53G → 4.74G (the same loop over a `my` 3.86G). Roast list and totals identical; perf-guard −0.1%…+0.7% in instructions, within one binary's run-to-run spread |
 
 ## Open: the ledger
 
@@ -163,18 +165,27 @@ coordinator.
   - `"abc".indices("", 5)` is `(3)` (Rakudo `()`), `"abc".contains(/$/, 3)`
     True (Rakudo False), `"abc".split('', 1)` a Seq (Rakudo a List).
 
+### Crashes
+
+- **O29. An `our` declaration with an assignment, run on worker threads,
+  crashes** (found fixing O27): `await (^8).map: { start { for ^200 { our
+  $x //= 0 } } }` dies with SIGBUS/SIGSEGV in about half the runs, and
+  10/10 on 1918e400; `our Int $x = 3`, `our @a = 1, 2` and `our %h = a => 1`
+  the same (the hash and array forms also share one container between
+  threads, which is the user's race, as in Rakudo; the scalar ones are not).
+  The first run of an `our` on a worker inserts the package's cell into
+  GLOBAL's name map while other workers read it, and a top-level `our` is
+  predeclared there as a PLAIN slot that varCell rightly will not promote
+  while workers are live, so every worker falls back to publishing a view
+  (evalAssign → makeEnvSlotProxy) and they race on the map. The forms the
+  O27 lane takes (`our $x += 1`, `our $x = $k`) stopped crashing in 25 runs
+  each, but only because they reach that publish less. Rakudo installs the
+  stash entry at compile time; creating every `our`'s cell under its
+  published name before the program runs (and before an EVAL's or a
+  module's code does) would leave the workers nothing to insert.
+
 ### Speed
 
-- **O27. A variable outside the pad pays the full assignment path**: an
-  `our` name is never a pad slot (resolvePads' `slottableDecl` takes `my`
-  only), so `$n += 1` on one goes through `evalAssignInner` rather than the
-  simple-assign lane: with the kernels off, `our $n = 0; for ^400_000 {
-  $n += 1 }` is 1.13G instructions against 0.42G for `my $n` (~1.8k a
-  turn), and the `-n` total of O26 still pays it on every line (5.54G,
-  against 3.84G for the same loop over a `my`). A slot would hold the
-  cell ourCell binds (padPtrIn already derefs one), but the IntKernel's
-  declaration handling and the module republish, which reads only the
-  name map, have to learn about it first. Found fixing O26.
 - **O25. Fix 3's own `$_` is defined for any sub with an nqp op in it**:
   mayUseTopic's `default: return true` covers NqpOp, so since cce315ef a
   plain sub whose body holds `nqp::…` defines `$_` (Env::define, a hash

@@ -2883,6 +2883,10 @@ public:
     bool ourBoundToCell(const struct VarExpr* ve);   // …and is `ve`'s name bound so now?
     const std::string& ourPkgPrefix(Env* de);        // …the package it belongs to, lexically
     static bool ourShareable(const struct VarExpr* ve); // …may it share the cell at all?
+    static bool ourPlain(const struct VarExpr* ve);     // …with nothing for its scope to record?
+    // the simple-assign lane's container for a name bound to a shared cell, or
+    // null when the name is not that, or its scope records something about it
+    Value* cellLaneSlot(struct VarExpr* tv, Env* cur);
     // …and where it may not: a view published onto the declaring scope's slot
     Value ourViewFallback(const struct VarExpr* ve, const std::shared_ptr<Env>& deh, Value init);
     Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified

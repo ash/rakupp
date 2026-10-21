@@ -2159,7 +2159,7 @@ bool Interpreter::ourShareable(const VarExpr* ve) {
 // default, trait or shape. Those run the declaration's own path, which keeps
 // that record in the scope and hands its initial value to ourCell (ledger O28:
 // a re-run `our Int $x` lost its type check, `our $d is default(5)` its value).
-static bool ourPlain(const VarExpr* ve) {
+bool Interpreter::ourPlain(const VarExpr* ve) {
     const VarDeclInfo& vd = ve->d();
     return vd.declType.empty() && !vd.declTypeExpr && vd.declCoerce.empty() && !vd.declDefault &&
            !vd.declDynamic && !vd.declSmiley && !vd.declWhereExpr && vd.containerIs.empty() && !vd.declShape;
@@ -2210,6 +2210,34 @@ bool Interpreter::ourBoundToCell(const VarExpr* ve) {
     const std::string& pfx = ourPkgPrefix(tctx().cur.get());
     Value* graw = pfx.empty() ? global_->localRaw(ve->name) : global_->localRaw(ourPublishedName(ve->name, pfx));
     return graw && graw->isCell() && graw->cellS().get() == lraw->cellS().get();
+}
+
+// The simple-assign lane (evalAssign) for a name that is not a pad slot but is
+// bound to a shared cell: an `our` — its declaration binds the name here and
+// now, the -n idiom's `our $n += .chars` — or a `:=` alias. The proof the
+// layout's verdict gives a pad slot (declared untyped), this gives by asking
+// the scope that owns the name: it records no type, default, constraint,
+// coercion, constant, bound value or rw link for it. The lane checks the
+// VALUE itself as it does for a pad slot. (ledger O27: `$n += 1` on an `our`
+// took evalAssignInner's full path, ~1.8k instructions a turn over a `my`.)
+Value* Interpreter::cellLaneSlot(VarExpr* tv, Env* cur) {
+    if (tv->declare) {
+        Env* de = cur;
+        while (de->loopFrame && de->parent) de = de->parent.get();
+        return ourCell(tv, de);   // (the classifier took only a plain `our`)
+    }
+    Env* owner = nullptr;
+    Value* raw = cur->findRaw(tv->name, &owner);
+    if (!raw || !raw->isCell() || !owner) return nullptr;
+    if (const EnvExtras* x = owner->ex.get()) {
+        const std::string& n = tv->name;
+        if (x->varDefault.count(n) || x->varDefaultType.count(n) || x->varCoerce.count(n) ||
+            x->varSmiley.count(n) || x->varWhere.count(n) || x->varConstant.count(n) ||
+            x->varValueBound.count(n) || x->rwLinks.count(n) || x->rwRoots.count(n) ||
+            x->rwDirect.count(n) || x->rwDead.count(n) || x->rwCelled.count(n))
+            return nullptr;
+    }
+    return raw->deref();
 }
 
 // The `our` a cell cannot serve — varCell declined (another view answers for

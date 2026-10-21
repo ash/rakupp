@@ -12912,7 +12912,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // one of them out, so a lane node has nothing to ask of them.
     {
         // Verdict values: 0 none, 1 plain `=`, 2 `+=`, 3 `-=`, 4 `*=`, 5 `~=`
-        // (6 `my $x = EXPR`, 7 a packed store, 8 `$!attr = EXPR`, 9 `my int $x = EXPR`)
+        // (6 `my $x = EXPR`, 7 a packed store, 8 `$!attr = EXPR`, 9 `my int $x = EXPR`,
+        // 11–15 the ops of 1–5 on a name bound to a shared cell: cellLaneSlot)
         // (TARG-PLAN.md, the op= extension — whitelisted compounds whose full
         // path ends in the same applyArith this lane calls).
         signed char sv = a->simpleSlot;
@@ -12941,6 +12942,20 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     else if (!tv->declare && opEq(a->op, "=") && tv->name.size() > 2 && tv->name[0] == '$' &&
                              tv->name[1] == '!' && tv->attrTwin.empty() && tv->d().declCoerce.empty())
                         cls = 8;
+                    // a plain name with no pad slot, which may be bound to a shared
+                    // cell — an `our`, its declaration included, or a `:=` alias —
+                    // proved per activation by cellLaneSlot (ledger O27)
+                    else if (tv->padSlot < 0 && tv->name.size() > 1 && tv->name[0] == '$' &&
+                             (nameLetterAt(tv->name, 1) || (tv->name[1] == '_' && tv->name.size() > 2)) &&
+                             tv->name.find("::") == std::string::npos && !tv->viaPseudoPkg && !tv->pkgSymbol &&
+                             !tv->processScoped && tv->d().declCoerce.empty() &&
+                             (!tv->declare || (tv->d().declScope == "our" && ourShareable(tv) && ourPlain(tv)))) {
+                        if (opEq(a->op, "=")) cls = 11;
+                        else if (opEq(a->op, "+=")) cls = 12;
+                        else if (opEq(a->op, "-=")) cls = 13;
+                        else if (opEq(a->op, "*=")) cls = 14;
+                        else if (opEq(a->op, "~=")) cls = 15;
+                    }
                 }
                 a->simpleSlot = cls;
                 sv = cls;
@@ -12965,7 +12980,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             else if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 Env* const cur = tctx().cur.get();   // one thread_local read for the slot and its frame
-                Value* slot = padPtrIn(tv, cur);
+                const bool viaCell = sv > 10;        // (11–15: the same op on a cell-bound name)
+                if (viaCell) sv = (signed char)(sv - 10);
+                Value* slot = viaCell ? cellLaneSlot(tv, cur) : padPtrIn(tv, cur);
                 if (slot) {
                     // per-activation checks: a lane-eligible slot (layout
                     // verdict: untyped or native-typed — only uppercase types
@@ -12974,7 +12991,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // is applied below exactly as the full path does.
                     // (the slot's own layout — the frame padPtrIn matched,
                     // which an inline block's pad may stand in front of)
-                    const PadLayout* pl = padOwnerLayout(tv);
+                    // (a cell-bound name's scope proved it untyped: cellLaneSlot)
+                    const bool simple = viaCell || padOwnerLayout(tv)->simple[tv->padSlot];
                     // An Int past a machine word keeps its magnitude in the cold
                     // block, so `!slot->x_` sent EVERY bignum accumulator down the
                     // long path — and `$f *= $_` is the shape that wants the short
@@ -13006,7 +13024,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     static const char* const kLaneOp[] = {"", "", "+", "-", "*", "~"};
                     const bool userOpMaybe = sv >= 2 && g_lexShadowMask.load(std::memory_order_relaxed) &&
                                              lexShadowPossible(std::string(kLaneOp[sv]));
-                    if (pl->simple[tv->padSlot] && !userOpMaybe &&
+                    if (simple && !userOpMaybe &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
