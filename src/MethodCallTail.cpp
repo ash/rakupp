@@ -6,6 +6,7 @@
 namespace rakupp {
 
 void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // InterpreterOperators.cpp
 
 // How many positionals a `sort` / `min` / `max` callable takes: two or more is
 // a comparator, fewer a key mapper. An operator (`&infix:<cmp>`, `&[<=>]`) is
@@ -2878,6 +2879,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value acc = Value::integer(0);
             for (auto& v : items) {
                 if (v.t == VT::Any || v.t == VT::Nil) warnUninitNum(v);   // 0, with Rakudo's warning
+                // an object adds its .Bridge / .Numeric (CORE's `+`, never a user multi)
+                if (v.t == VT::Object)
+                    if (Value b; bridgedNumericInfix(*this, "+", acc, v, b)) { acc = b; continue; }
                 acc = applyArith("+", acc, v);
             }
             return acc;

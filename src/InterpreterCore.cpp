@@ -17750,6 +17750,17 @@ static inline bool nativeMixedSignNe(const Value& l, const Value& r) {
 // applyArithGeneral, out of line. The general path's frame is over a page, so
 // every call paid a stack probe for it, the Int case included.
 [[gnu::noinline]] static Value applyArithGeneral(const std::string& op, const Value& l, const Value& r);
+// A junction's operator over an OBJECT operand (an eigenstate, or the side
+// that is not the junction): an object numifies through its .Numeric, as
+// `V == 9` does. Out of line, so the plain eigenstate loop stays as it was.
+[[gnu::noinline]] static void threadObjectEigenstates(const std::string& op, const Value& l, const Value& r,
+                                                      const Value& j, bool jleft, Value& out) {
+    for (auto& e : *j.arr()) {
+        const Value& a = jleft ? e : l; const Value& b = jleft ? r : e;
+        if (Value bv; bridgedNumericInfix(*g_cbInterp, op, a, b, bv)) out.arr()->push_back(std::move(bv));
+        else out.arr()->push_back(applyArith(op, a, b));
+    }
+}
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -18256,7 +18267,11 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (out.enumName == "any") out.enumName = "all";
             else if (out.enumName == "all") out.enumName = "any";
         }
-        for (auto& e : *j.arr()) out.arr()->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
+        // an object eigenstate (or other side) numifies through its .Numeric
+        bool objStep = (jleft ? r : l).t == VT::Object;
+        if (!objStep) for (auto& e : *j.arr()) if (e.t == VT::Object) { objStep = true; break; }
+        if (RAKUPP_UNLIKELY(objStep) && g_cbInterp) threadObjectEigenstates(op, l, r, j, jleft, out);
+        else for (auto& e : *j.arr()) out.arr()->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
         return out;
     }
     // Signature-, object- and Numeric-matcher smartmatch, shared by every caller
