@@ -11163,6 +11163,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // in a while COND stays visible after the loop
             Env* de = tcx.cur.get();
             while (de->loopFrame && de->parent) de = de->parent.get();
+            // `our $x = …`: the assignment goes into the package's cell (ourCell)
+            if (vd.declScope == "our")
+                if (Value* c = ourCell(ve, de)) return c;
             // Redeclaring a name in the SAME scope is the same variable, not a
             // second one — Rakudo warns and reuses the lexical. That is invisible
             // while the slot holds a plain value, since every reader finds it by
@@ -11241,6 +11244,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 de->x().varCoerce[ve->name] = vd.declCoerce;
                 if (!vd.declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = vd.declCoerceFrom;
             if (vd.declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+            // …and an `our` with any of that recorded binds to the package's cell
+            if (vd.declScope == "our" && ourShareable(ve))
+                if (Value* c = ourCell(ve, de, &init)) return c;
             return &de->define(ve->name, std::move(init));
         }
         // attribute lvalue: $.x / $!x
@@ -11395,6 +11401,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         std::string nm = symRefName(sr, &callerHead, &rawNm);
         if (nm.empty())
             throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+        // `GLOBAL::{'$x'} = …` writes GLOBAL's table, making the slot as a
+        // Stash's key assignment does (ledger O32: an undeclared `$x` died
+        // X::Undeclared), under the bare name a qualified write uses too
+        if (sr->globalStash && global_ && sr->segs.empty() && nm.size() > 1 && std::strchr("$@%&", nm[0])) {
+            if (Value* p = globalTableSlot(nm)) return p;
+            return &global_->define(nm, nm[0] == '@' ? Value::array() : nm[0] == '%' ? Value::makeHash() : Value::any());
+        }
         // `OUR::{'&f'} := …` while a package body runs is the package's
         // symbol, from a block INSIDE the body too: Air::Base fills its `my
         // package EXPORT::DEFAULT` from a `for` loop. The slot is the package
@@ -12907,7 +12920,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // one of them out, so a lane node has nothing to ask of them.
     {
         // Verdict values: 0 none, 1 plain `=`, 2 `+=`, 3 `-=`, 4 `*=`, 5 `~=`
-        // (6 `my $x = EXPR`, 7 a packed store, 8 `$!attr = EXPR`, 9 `my int $x = EXPR`)
+        // (6 `my $x = EXPR`, 7 a packed store, 8 `$!attr = EXPR`, 9 `my int $x = EXPR`,
+        // 11–15 the ops of 1–5 on a name bound to a shared cell: cellLaneSlot)
         // (TARG-PLAN.md, the op= extension — whitelisted compounds whose full
         // path ends in the same applyArith this lane calls).
         signed char sv = a->simpleSlot;
@@ -12936,6 +12950,20 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     else if (!tv->declare && opEq(a->op, "=") && tv->name.size() > 2 && tv->name[0] == '$' &&
                              tv->name[1] == '!' && tv->attrTwin.empty() && tv->d().declCoerce.empty())
                         cls = 8;
+                    // a plain name with no pad slot, which may be bound to a shared
+                    // cell — an `our`, its declaration included, or a `:=` alias —
+                    // proved per activation by cellLaneSlot (ledger O27)
+                    else if (tv->padSlot < 0 && tv->name.size() > 1 && tv->name[0] == '$' &&
+                             (nameLetterAt(tv->name, 1) || (tv->name[1] == '_' && tv->name.size() > 2)) &&
+                             tv->name.find("::") == std::string::npos && !tv->viaPseudoPkg && !tv->pkgSymbol &&
+                             !tv->processScoped && tv->d().declCoerce.empty() &&
+                             (!tv->declare || (tv->d().declScope == "our" && ourShareable(tv) && ourPlain(tv)))) {
+                        if (opEq(a->op, "=")) cls = 11;
+                        else if (opEq(a->op, "+=")) cls = 12;
+                        else if (opEq(a->op, "-=")) cls = 13;
+                        else if (opEq(a->op, "*=")) cls = 14;
+                        else if (opEq(a->op, "~=")) cls = 15;
+                    }
                 }
                 a->simpleSlot = cls;
                 sv = cls;
@@ -12960,7 +12988,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             else if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 Env* const cur = tctx().cur.get();   // one thread_local read for the slot and its frame
-                Value* slot = padPtrIn(tv, cur);
+                const bool viaCell = sv > 10;        // (11–15: the same op on a cell-bound name)
+                if (viaCell) sv = (signed char)(sv - 10);
+                Value* slot = viaCell ? cellLaneSlot(tv, cur) : padPtrIn(tv, cur);
                 if (slot) {
                     // per-activation checks: a lane-eligible slot (layout
                     // verdict: untyped or native-typed — only uppercase types
@@ -12969,7 +12999,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // is applied below exactly as the full path does.
                     // (the slot's own layout — the frame padPtrIn matched,
                     // which an inline block's pad may stand in front of)
-                    const PadLayout* pl = padOwnerLayout(tv);
+                    // (a cell-bound name's scope proved it untyped: cellLaneSlot)
+                    const bool simple = viaCell || padOwnerLayout(tv)->simple[tv->padSlot];
                     // An Int past a machine word keeps its magnitude in the cold
                     // block, so `!slot->x_` sent EVERY bignum accumulator down the
                     // long path — and `$f *= $_` is the shape that wants the short
@@ -13003,7 +13034,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     auto laneName = [&] { return a->written().substr(0, a->written().size() - 1); };
                     const bool userOpMaybe = sv >= 2 && g_lexShadowMask.load(std::memory_order_relaxed) &&
                                              lexShadowPossible(a->uniSpelled ? laneName() : std::string(kLaneOp[sv]));
-                    if (pl->simple[tv->padSlot] && !userOpMaybe &&
+                    if (simple && !userOpMaybe &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
                         int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
@@ -13614,7 +13645,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 global_->define(sigil + tctx().pkgPrefix + bare, *p);
             }
         }
-        if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1) {
+        // (a name ourCell bound to the package's own cell is one container
+        // already: nothing to publish)
+        if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1 && !ourBoundToCell(ve)) {
             if (Value* p = tctx().cur->find(ve->name)) {
                 std::string qual = ourPublishedName(ve->name, tctx().pkgPrefix);
                 noteSymbolMutation("our-declaration publish");
@@ -28976,6 +29009,23 @@ struct RatLitParts {
         }
         case NK::SymbolicRef: {
             auto* sr = static_cast<SymbolicRef*>(e);
+            // `GLOBAL::{EXPR}` reads GLOBAL's table as a Stash's key: a sigilled
+            // symbol that is not there is Any, not the lexical or the
+            // X::NoSuchSymbol `::(…)` answers with (ledger O32). A sigilless one
+            // (a type, a package) resolves as `::(…)` does, the key evaluated once.
+            if (sr->globalStash && sr->nameExpr && sr->segs.empty()) {
+                const std::string k = eval(sr->nameExpr.get()).toStr();
+                if (!k.empty() && std::strchr("$@%&", k[0])) {
+                    Value* p = globalTableSlot(k);
+                    if (!p) return Value::any();
+                    if (p->t == VT::Hash && p->hashKind == proxyKind()) return deproxy(*p);
+                    return *p;
+                }
+                SymbolicRef byName;
+                byName.nameExpr = std::make_unique<StrLit>(k);
+                byName.line = e->line;
+                return eval(&byName);
+            }
             bool callerHead = false, settingTail = false;
             std::string rawNm;
             std::string nm = symRefName(sr, &callerHead, &rawNm, &settingTail);
@@ -30956,6 +31006,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
         std::shared_ptr<Env> deh = tctx().cur;
         while (deh->loopFrame && deh->parent) deh = deh->parent;
         Env* de = deh.get();
+        // a plain `our $x` binds the name to the package's one cell (ourCell)
+        if (vd.declScope == "our")
+            if (Value* c = ourCell(ve, de)) return *c;
         // the first run of a scope a BEGIN-time phaser already filled:
         // `my $x;` declares what is there, it does not reset it
         if (de->staticSeeded && vd.declScope == "my")
@@ -30989,30 +31042,24 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // evalAssign, so a declaration with nothing to assign published
         // nothing at all, and the qualified name was whatever the first
         // writer autovivified — `%C::h<k> = 1` outside made its own hash
-        // and the class went on reading the empty one it declared.
-        // Same VIEW onto the same slot as the initialised form gets, and
-        // the same rule about the owning scope: not the global one, or
-        // the view would fetch through itself forever.
-        if (vd.declScope == "our" && sigil != '&' && !vd.declExport &&
-            global_ && deh.get() != global_.get() && ve->name.size() > 1) {
-            // …and a package variable an earlier `our` already published is
-            // the SAME variable: `sub foo { our $foo = 3 }; foo(); our $foo`
-            // reads 3 (our.t). Alias the published view rather than
-            // replacing it with a fresh, empty one.
-            if (!de->local(ve->name))
-                if (Value* g = global_->local(ourPublishedName(ve->name, tctx().pkgPrefix));
-                    g && g->t == VT::Hash && g->hashKind == "Proxy") {
-                    Value view = *g;
-                    de->define(ve->name, view);
-                    return deproxy(view);
-                }
-            if (!de->local(ve->name)) de->define(ve->name, declInitial(ve, sigil));
-            noteSymbolMutation("our-declaration publish (no initialiser)");
-            global_->define(ourPublishedName(ve->name, tctx().pkgPrefix),
-                            makeEnvSlotProxy(deh, ve->name));
-            Value* dp = de->local(ve->name);
-            return dp ? *dp : Value::any();
-        }
+        // and the class went on reading the empty one it declared. A name
+        // that can share the package's cell does (ourCell, and declDef
+        // below for the forms the scope keeps a record of); any other gets
+        // the view its declaring scope publishes (ourViewFallback).
+        const bool ourTail = vd.declScope == "our" && ourShareable(ve);
+        if (vd.declScope == "our" && sigil != '&' && !vd.declExport && !ourTail &&
+            global_ && deh.get() != global_.get() && ve->name.size() > 1)
+            return ourViewFallback(ve, deh, declInitial(ve, sigil));
+        // every exit below DEFINES the variable: an `our` binds its name to the
+        // package's cell instead, after the scope has recorded its type,
+        // default and traits (ledger O28)
+        auto declDef = [&](Value v) -> Value {
+            if (ourTail) {
+                if (Value* c = ourCell(ve, de, &v)) return *c;
+                return ourViewFallback(ve, deh, std::move(v));
+            }
+            return de->define(ve->name, std::move(v));
+        };
         // A bare untyped `my @a` re-evaluated in the SAME scope keeps its
         // container — declarations initialize per scope entry, not per
         // evaluation. So in `until $i.push-exactly(my @a, 3) =:= IterationEnd`,
@@ -31058,17 +31105,17 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 if (c.t != VT::Array && c.t != VT::Hash)
                     c = sigil == '@' ? Value::array() : Value::makeHash();
                 c.elemDefaultM() = std::make_shared<Value>(dv);
-                return de->define(ve->name, c); // define() routes a pad name into
-                                                // its slot; vars[] would split it
+                return declDef(c);   // (define() routes a pad name into its slot;
+                                     // vars[] would split it)
             }
             de->x().varDefault[ve->name] = dv;
             if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
             else if (sigil == '$' && !vd.declType.empty() && typeNameLead(vd.declType[0]))
                 de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
-            return de->define(ve->name, dv);
+            return declDef(dv);
         }
         if (vd.declShape && sigil == '@') { // shaped array `my @a[2;3]`
-            return de->define(ve->name, makeShapedContainer(evalShapeDims(vd.declShape.get()), vd.declType));
+            return declDef(makeShapedContainer(evalShapeDims(vd.declShape.get()), vd.declType));
         }
         if (vd.declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
         // `my %h is Set;` / `my %h is MyHash;` with NO initialiser — the
@@ -31083,12 +31130,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (sigil == '%' && quant.count(vd.containerIs)) {
                 Value c = makeBaggy({}, vd.containerIs);
                 c.ofTypeM() = vd.containerOf;
-                return de->define(ve->name, std::move(c));
+                return declDef(std::move(c));
             }
             if (classes_.count(vd.containerIs)) {
                 ValueList none;
-                return de->define(ve->name,
-                                  methodCall(Value::typeObj(vd.containerIs), "new", none));
+                return declDef(methodCall(Value::typeObj(vd.containerIs), "new", none));
             }
             // `my @a is buf16;` — an empty Buf of that type
             if (sigil == '@') {
@@ -31099,7 +31145,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                     if (Value* tp = tctx().cur->find(ct)) if (tp->t == VT::Type) ct = tp->s;
                 if (blobTypes.count(ct)) {
                     ValueList none;
-                    return de->define(ve->name, methodCall(Value::typeObj(ct), "new", none));
+                    return declDef(methodCall(Value::typeObj(ct), "new", none));
                 }
             }
         }
@@ -31117,8 +31163,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (!vd.declCoerce.empty())
                 de->x().varCoerce[ve->name] = vd.declCoerce;
         if (!vd.declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = vd.declCoerceFrom;
-            return de->define(ve->name, declInitial(ve, sigil));
+            return declDef(declInitial(ve, sigil));
         }
+        if (ourTail) return declDef(declInitial(ve, sigil));   // (the same scope, again)
         Value* dp = de->local(ve->name);
         return dp ? *dp : Value::any();
     }

@@ -544,6 +544,10 @@ struct EnvExtras {
     // methods were re-closed in for one parameterization (weak: the type's
     // methods close over this scope)
     std::weak_ptr<ClassInfo> pkgType;
+    // a package body's own prefix (`C::`, `Outer::Inner::`): the package an
+    // `our` in a routine closed over this scope belongs to, wherever it is
+    // called from (Interpreter::ourPkgPrefix)
+    std::string pkgPrefix;
     // `$x := <value>`: these `$` names hold a VALUE bound straight in, not a
     // container of their own — `=:=` between two of them compares the values
     std::set<std::string> varValueBound;
@@ -2846,6 +2850,19 @@ public:
     // The shared cell behind a variable owned by `owner`, promoting it on first
     // use; null for a slot that holds some other Proxy.
     PRef<Value> varCell(Env* owner, const std::string& name);
+    // `our $x`: the package's cell, with `$x` in `de` bound to it; null when
+    // the declaration is not the plain form (InterpreterCalls.cpp)
+    Value* ourCell(const struct VarExpr* ve, Env* de, Value* init = nullptr);
+    bool ourBoundToCell(const struct VarExpr* ve);   // …and is `ve`'s name bound so now?
+    const std::string& ourPkgPrefix(Env* de);        // …the package it belongs to, lexically
+    Value* globalTableSlot(const std::string& key);   // a sigilled symbol in GLOBAL's own table (O31/O32)
+    static bool ourShareable(const struct VarExpr* ve); // …may it share the cell at all?
+    static bool ourPlain(const struct VarExpr* ve);     // …with nothing for its scope to record?
+    // the simple-assign lane's container for a name bound to a shared cell, or
+    // null when the name is not that, or its scope records something about it
+    Value* cellLaneSlot(struct VarExpr* tv, Env* cur);
+    // …and where it may not: a view published onto the declaring scope's slot
+    Value ourViewFallback(const struct VarExpr* ve, const std::shared_ptr<Env>& deh, Value init);
     Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified
     Value decontList(const Value& v);        // a container-holding list's values, fresh
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
@@ -3008,6 +3025,7 @@ public:
     std::atomic<bool> privateSlotsOff_{false};   // set once, never cleared
     void privateSlotsOff(const char* why, int line);
     void unitSharingScan(const std::vector<StmtPtr>& stmts, bool module);   // an EVAL's or a module's unit
+    void preinstallOurCells(const Program& prog);   // …and its `our`s' cells, before it runs (O29)
     void applyModuleEscapes();                     // …a module's names, once the mainline has its layout
     std::unordered_set<std::string> moduleNamed_;  // (both under padMu_)
     bool moduleNamedAll_ = false;

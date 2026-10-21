@@ -2134,6 +2134,135 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
     return raw->promoteToCell();
 }
 
+// `our $x` declares a NAME for the package's variable, which is one container:
+// a cell held in GLOBAL under the published name, with `$x` in the declaring
+// scope bound to it, as Rakudo binds an `our` lexical to its stash entry. Each
+// run of the declaration binds the name again and nothing else. Before, a run
+// installed a fresh Proxy view as the variable and re-published it, flushing
+// the dispatch cache: `for ^400_000 { our $n += 1 }` cost ~8k instructions a
+// turn (ledger O26), every later read of `$n` was a FETCH call, `for ^3 { our
+// $n; $n++ }` counted to 1, `our $n = 100; for ^3 { our $n; $n++ }` lost the
+// 100, and `{ our $x = 1; $x := 5 }` rebound the package's variable where
+// Rakudo rebinds only the name.
+//
+// May this declaration share the package's cell at all? Not an `&` name, a
+// qualified one, an exported one (one container under the BARE name, its own
+// arm), a pseudo-package's or a `::T` stub.
+bool Interpreter::ourShareable(const VarExpr* ve) {
+    const VarDeclInfo& vd = ve->d();
+    const std::string& n = ve->name;
+    return n.size() >= 2 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
+           (nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2)) && n.find("::") == std::string::npos &&
+           !ve->viaPseudoPkg && !vd.declExport && !vd.namedBind && vd.declStubType.empty();
+}
+// …and with nothing for the declaring scope to record about the name: no type,
+// default, trait or shape. Those run the declaration's own path, which keeps
+// that record in the scope and hands its initial value to ourCell (ledger O28:
+// a re-run `our Int $x` lost its type check, `our $d is default(5)` its value).
+bool Interpreter::ourPlain(const VarExpr* ve) {
+    const VarDeclInfo& vd = ve->d();
+    return vd.declType.empty() && !vd.declTypeExpr && vd.declCoerce.empty() && !vd.declDefault &&
+           !vd.declDynamic && !vd.declSmiley && !vd.declWhereExpr && vd.containerIs.empty() && !vd.declShape;
+}
+// The package an `our` belongs to is the one around it LEXICALLY: a method's or
+// a package sub's `our $k` is its package's `$k` wherever the call comes from
+// (ledger O28: `class C { our $k = 5; method k { our $k } }` read GLOBAL's).
+// The routine closed over its package's body scope, which records the prefix;
+// with none in the chain it is the running code's.
+const std::string& Interpreter::ourPkgPrefix(Env* de) {
+    for (Env* e = de; e; e = e->parent.get())
+        if (e->ex && !e->ex->pkgPrefix.empty()) return e->ex->pkgPrefix;   // (a package body, or a unit package's file)
+    return tctx().pkgPrefix;
+}
+// The package's cell, with the name bound to it in `de`; null when the
+// declaration cannot share one, or — with no `init`, the plain form's call —
+// is not plain. `init` is the value a new cell starts with.
+Value* Interpreter::ourCell(const VarExpr* ve, Env* de, Value* init) {
+    if (!global_ || !de || !ourShareable(ve) || (!init && !ourPlain(ve))) return nullptr;
+    const std::string& n = ve->name;
+    Env* g = global_.get();
+    const std::string& pfx = ourPkgPrefix(de);
+    // (outside a package the published name is the name: no string to build)
+    std::string qual;
+    const std::string& pub = pfx.empty() ? n : (qual = ourPublishedName(n, pfx));
+    PRef<Value> cell;
+    if (g->localRaw(pub)) {
+        cell = varCell(g, pub);   // a plain slot becomes the cell
+        if (!cell) return nullptr;
+    } else {
+        noteSymbolMutation("our-declaration publish");
+        cell = makePayload<Value>(init ? std::move(*init) : declInitial(ve, n[0]));
+        g->define(pub, Value::cellHolder(cell));
+    }
+    if (de != g || pub != n) {
+        Value* have = de->localRaw(n);
+        if (!have || !have->isCell() || have->cellS().get() != cell.get()) de->define(n, Value::cellHolder(cell));
+    }
+    return cell.get();
+}
+
+// Does `ve`'s name, as this scope sees it, share the cell its published name
+// holds? Then an `our` assignment has nothing left to publish.
+bool Interpreter::ourBoundToCell(const VarExpr* ve) {
+    if (!global_ || !tctx().cur) return false;
+    Value* lraw = tctx().cur->findRaw(ve->name);
+    if (!lraw || !lraw->isCell()) return false;
+    const std::string& pfx = ourPkgPrefix(tctx().cur.get());
+    Value* graw = pfx.empty() ? global_->localRaw(ve->name) : global_->localRaw(ourPublishedName(ve->name, pfx));
+    return graw && graw->isCell() && graw->cellS().get() == lraw->cellS().get();
+}
+
+// The simple-assign lane (evalAssign) for a name that is not a pad slot but is
+// bound to a shared cell: an `our` — its declaration binds the name here and
+// now, the -n idiom's `our $n += .chars` — or a `:=` alias. The proof the
+// layout's verdict gives a pad slot (declared untyped), this gives by asking
+// the scope that owns the name: it records no type, default, constraint,
+// coercion, constant, bound value or rw link for it. The lane checks the
+// VALUE itself as it does for a pad slot. (ledger O27: `$n += 1` on an `our`
+// took evalAssignInner's full path, ~1.8k instructions a turn over a `my`.)
+Value* Interpreter::cellLaneSlot(VarExpr* tv, Env* cur) {
+    if (tv->declare) {
+        Env* de = cur;
+        while (de->loopFrame && de->parent) de = de->parent.get();
+        return ourCell(tv, de);   // (the classifier took only a plain `our`)
+    }
+    Env* owner = nullptr;
+    Value* raw = cur->findRaw(tv->name, &owner);
+    if (!raw || !raw->isCell() || !owner) return nullptr;
+    if (const EnvExtras* x = owner->ex.get()) {
+        const std::string& n = tv->name;
+        if (x->varDefault.count(n) || x->varDefaultType.count(n) || x->varCoerce.count(n) ||
+            x->varSmiley.count(n) || x->varWhere.count(n) || x->varConstant.count(n) ||
+            x->varValueBound.count(n) || x->rwLinks.count(n) || x->rwRoots.count(n) ||
+            x->rwDirect.count(n) || x->rwDead.count(n) || x->rwCelled.count(n))
+            return nullptr;
+    }
+    return raw->deref();
+}
+
+// The `our` a cell cannot serve — varCell declined (another view answers for
+// the published name, or workers are live and the slot not private) or the
+// name cannot share one: the declaring scope keeps the variable and the
+// published name becomes a view onto it, or the scope aliases a view an
+// earlier `our` published (`sub foo { our $foo = 3 }; foo(); our $foo` reads
+// 3, our.t). The global scope's own `our` is simply its variable.
+Value Interpreter::ourViewFallback(const VarExpr* ve, const std::shared_ptr<Env>& deh, Value init) {
+    Env* de = deh.get();
+    if (!global_ || de == global_.get() || ve->name.size() < 2) return de->define(ve->name, std::move(init));
+    const std::string pub = ourPublishedName(ve->name, ourPkgPrefix(de));
+    if (!de->local(ve->name))
+        if (Value* g = global_->local(pub); g && g->t == VT::Hash && g->hashKind == "Proxy") {
+            Value view = *g;
+            de->define(ve->name, view);
+            return deproxy(view);
+        }
+    if (!de->local(ve->name)) de->define(ve->name, std::move(init));
+    noteSymbolMutation("our-declaration publish (no initialiser)");
+    global_->define(pub, makeEnvSlotProxy(deh, ve->name));
+    Value* dp = de->local(ve->name);
+    return dp ? *dp : Value::any();
+}
+
 // The shared cell behind the VARIABLE an already-evaluated expression names —
 // `$v`, or the one `my $v = 42` / `my $ = 42` just declared — promoted on first
 // use, so a Pair built from it (`a => $v`) holds that very container, as

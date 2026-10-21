@@ -403,6 +403,7 @@ private:
     // it governs already exist. The interpreter reads this off the Program
     // before it hoists anything.
     bool usesRakuAst_ = false;
+    bool sawOur_ = false;   // an `our` declarator anywhere in the unit (Program::mayHaveOur)
     // `<|w>` (word) and `<|c>` (codepoint) are the only regex boundaries. Any
     // other name is a typo that 6.c/6.d compile to a silent no-op and 6.e
     // refuses; checked on the pattern source because the regex engine is
@@ -671,6 +672,7 @@ private:
     ExprPtr termAdverbCall(const std::string& name, int line);  // `FOO:of(5)` on a declared term
     // adverbs written after a call's `)`: `f($x):12size` passes `size => 12`
     void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
+    ExprPtr pkgExistsAdverb(const std::string& qual);                          // `Foo::<$x>:exists` (null: no adverb)
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
     size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)

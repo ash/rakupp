@@ -1047,6 +1047,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         } tg{traceLoad, name, howMs, tRun, nowMs, howLabel};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         unitSharingScan(prog->stmts, /*module=*/true);   // PARALLEL-SCALING-PLAN P1, before any of it runs
+        preinstallOurCells(*prog);                        // (ledger O29)
         // this module is now the executing unit (bare-name forward references
         // resolve against ITS declarations while its top level runs)
         unitPush(prog.get());
@@ -1079,14 +1080,22 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         collectExportedSubNames(prog->stmts, exported);
         // (an exported CODE VARIABLE is exported like a sub: `our &my-counter is
         // export`, set in a BEGIN — S10-packages/precompilation.t)
+        // …and the `$`/`@`/`%` variables the module exports, the only ones its
+        // importer may see by their bare names (the publish below)
+        std::set<std::string> exportedVars;
         for (auto& st : prog->stmts) {
             if (!st || st->kind != NK::ExprStmt) continue;
             const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
-            if (e && e->kind == NK::VarExpr) {
-                const auto* ve = static_cast<const VarExpr*>(e);
-                if (ve->d().declExport && ve->name.size() > 1 && ve->name[0] == '&') exported.insert(ve->name.substr(1));
-            }
+            auto one = [&](const Expr* x) {
+                if (!x || x->kind != NK::VarExpr) return;
+                const auto* ve = static_cast<const VarExpr*>(x);
+                if (!ve->d().declExport || ve->name.size() < 2) return;
+                if (ve->name[0] == '&') exported.insert(ve->name.substr(1));
+                else exportedVars.insert(ve->name);
+            };
+            if (e && e->kind == NK::ListExpr) for (auto& it : static_cast<const ListExpr*>(e)->items) one(it.get());
+            else one(e);
         }
         // …and the `our sub`s a module declares with no package of its own in
         // force: those live in GLOBAL, where an unqualified call finds them
@@ -1191,6 +1200,15 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 // LEXICAL to the module (its routines close over them), and the
                 // program's own `$?DISTRIBUTION` stays undefined (cur-current-distribution.t)
                 if (k.size() > 2 && k[1] == '?' && std::strchr("$@%&", k[0])) continue;
+                // …nor a VARIABLE the module does not export. Its `my`s are its own,
+                // and its `our`s go by their package's name (`$UM::v`) or, with no
+                // package in force, already live in GLOBAL as the package's cell
+                // (ourCell). Published under the bare name, they became the
+                // PROGRAM's: `use UM; our $v` read the module's `$v`, and
+                // `::('$secret')` found a module's `my` (ledger O30).
+                if (k.size() > 1 && std::strchr("$@%", k[0]) && (nameLetterAt(k, 1) || (k[1] == '_' && k.size() > 2)) &&
+                    !exportedVars.count(k))
+                    continue;
                 // …nor a type the module declares and does NOT export: `role Node`
                 // inside `unit module YAMLish` is YAMLish::Node, reachable by that
                 // name alone. Published under its short name, it replaced the
@@ -2397,6 +2415,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     if (!checkOnly) unitSharingScan(prog->stmts, /*module=*/false);   // PARALLEL-SCALING-PLAN P1
+    if (!checkOnly) preinstallOurCells(*prog);                        // (ledger O29)
     // this EVAL/REPL line is its own unit for the bare-name fallback
     unitPush(prog.get());
     struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
@@ -5044,7 +5063,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 c.code()->ciM().params = prms;
                 c.code()->ciM().body = &sd->body;
                 c.code()->ciM().langRev = langRev_;
-                c.code()->ciM().rakuAst = rakuAstPragma_;
+                c.code()->ciM().rakuAst = rakuAstPragma_; c.code()->ciM().lexicalSub = !sd->isOur && !sname.empty();
                 c.code()->closure = tctx().cur;
                 if (sd->retLiteralPresent && !sd->body.empty() && sd->body.back()->kind == NK::ExprStmt)
                     c.code()->ciM().retLiteral = static_cast<const ExprStmt*>(sd->body.back().get())->e.get();
@@ -5297,17 +5316,17 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         existing->code()->ci().isMultiDispatcher && tctx().cur->local(key) != existing) {
                         Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                         fresh.code()->ciM().name = sname;
-                        fresh.code()->ciM().isMultiDispatcher = true;
+                        fresh.code()->ciM().isMultiDispatcher = true; fresh.code()->ciM().lexicalSub = !sd->isOur;
                         if (!sd->isProto) fresh.code()->coldM().candidates = existing->code()->cold().candidates;
                         tctx().cur->define(key, fresh);
                         existing = tctx().cur->local(key);
                     }
                     if (existing && existing->t == VT::Code && existing->code() && existing->code()->ci().isMultiDispatcher) {
-                        disp = existing->code(); dispVal = *existing;
+                        disp = existing->code(); dispVal = *existing; if (sd->isOur) disp->ciM().lexicalSub = false;   // (an `our multi`: the package's)
                     } else {
                         dispVal.t = VT::Code; dispVal.setCode(makePayload<Callable>());
                         dispVal.code()->ciM().name = sname;
-                        dispVal.code()->ciM().isMultiDispatcher = true;
+                        dispVal.code()->ciM().isMultiDispatcher = true; dispVal.code()->ciM().lexicalSub = !sd->isOur;
                         disp = dispVal.code();
                         tctx().cur->define(key, dispVal);
                     }
@@ -5901,7 +5920,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     if (!cd->name.empty()) {
                         unitPkgByFile_[declFileNow()] = tctx().pkgPrefix + cd->name;   // CLIENT:: asks
                         tctx().cur->define(cd->name, Value::typeObj(cd->name));
-                        tctx().pkgPrefix += cd->name + "::";
+                        tctx().pkgPrefix += cd->name + "::"; if (tctx().cur != global_) tctx().cur->x().pkgPrefix = tctx().pkgPrefix;   // (ourPkgPrefix)
                         if (curPkgEnv_ == global_) curPkgEnv_ = tctx().cur; // `our` installs here
                     }
                     return Value::any();
@@ -5918,7 +5937,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 tctx().pkgPrefix += cd->name + "::";
                 auto pkgEnv = makeSlabShared<Env>();
                 pkgEnv->parent = tctx().cur;
-                pkgEnv->packageFrame = true;
+                pkgEnv->packageFrame = true; pkgEnv->x().pkgPrefix = tctx().pkgPrefix;   // (ourPkgPrefix)
                 auto saved = tctx().cur; tctx().cur = pkgEnv;
                 auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
                 // (inside a `my package`, the types it declares are not package-scoped)
@@ -5987,8 +6006,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     // so a BARE `our $v;` — which never reaches the publish in
                     // evalAssign, having no initialiser to assign — is one
                     // container too.
-                    if (sigilVar) global_->define(qual, makeEnvSlotProxy(pkgEnv, sym));
-                    else global_->define(qual, kv.second);
+                    if (sigilVar && !kv.second.isCell()) global_->define(qual, makeEnvSlotProxy(pkgEnv, sym));
+                    else global_->define(qual, kv.second);   // (…or the cell ourCell bound it to: one container)
                 }
                 // During a `use` load, `is export` subs of a braced module also
                 // surface BARE to the importer (same-file code still sees only
@@ -6770,7 +6789,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             bodyEnv->parent = tctx().cur;
             bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
-            bodyEnv->x().pkgType = ci;
+            bodyEnv->x().pkgType = ci; bodyEnv->x().pkgPrefix = clsName + "::";   // (ourPkgPrefix)
             ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
             // `role ABCD[EFGH] { }` — a role parameter typed with nothing declared
             if (cd->isRole)
@@ -8574,6 +8593,8 @@ int Interpreter::run(Program& prog) {
                 applyModuleEscapes();   // PARALLEL-SCALING-PLAN P1: modules `use`d while parsing
             }
         }
+        // every `our` of the program has its cell before anything runs (O29)
+        preinstallOurCells(prog);
         // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.
         bool hasInit;
         auto predeclare = [this](Expr* e) { // a declare-VarExpr, or a list declaration `my ($a, $b)`

@@ -1205,6 +1205,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
     env->parent = role->declEnv ? role->declEnv : global_;
     env->packageFrame = true;
     env->x().pkgType = conc;
+    env->x().pkgPrefix = role->name + "::";
     for (auto& b : conc->roleParamBindings)
         if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);
     struct Restore {
@@ -4756,6 +4757,13 @@ struct ShareSweep {
     int line = 0;
 
     std::unordered_set<std::string>* collect = nullptr;   // every name marked, for a unit with no pads
+    // Ledger O29 (preinstallOurCells): every `our` declaration the walk passes,
+    // with the package prefix the code around it runs under, as the run will
+    // compute it (null: not asked). Inside a type whose name only the run
+    // knows — anonymous, indirect, a role's generic body — nothing is taken.
+    std::vector<std::pair<const VarExpr*, std::string>>* ours = nullptr;
+    std::string pkg;
+    int pkgUnknown = 0;
     std::string where() const { return line > 0 ? " (line " + std::to_string(line) + ")" : std::string(); }
     void markName(const std::string& n, const char* what) {
         if (collect) collect->insert(n);
@@ -4911,6 +4919,7 @@ struct ShareSweep {
                     (v->name.find("EVAL") != std::string::npos || v->name.find("callframe") != std::string::npos))
                     programOff("&EVAL or &callframe as a value");
                 if (!v->declare) mention(v);
+                else if (ours && !pkgUnknown && v->d().declScope == "our") ours->emplace_back(v, pkg);
                 expr(v->d().declDefault.get()); expr(v->d().declShape.get()); expr(v->d().declTypeExpr.get());
                 expr(v->d().declWhereExpr);
                 break;
@@ -5069,6 +5078,21 @@ struct ShareSweep {
             case NK::ClassDecl: {
                 auto* cd = static_cast<const ClassDecl*>(s);
                 Ctx c(*this, "class " + cd->name);
+                // (the prefix its body runs under: execDeclStmt's, for a package
+                // `pkgPrefix += name::`, for a class its qualified name. A
+                // body-less `unit package` keeps the prefix for what follows.)
+                const std::string savedPkg = pkg;
+                const int savedUnknown = pkgUnknown;
+                const bool unitPkg = cd->isPackage && cd->body.empty() && !cd->bracedBody;
+                if (ours) {
+                    if (cd->name.empty() || cd->nameExpr || cd->isAnonDecl || cd->isRole) pkgUnknown++;
+                    else if (cd->isPackage) pkg += cd->name + "::";
+                    else pkg = (!pkg.empty() && cd->name.rfind(pkg, 0) != 0 ? pkg + cd->name : cd->name) + "::";
+                }
+                struct PkgRestore {
+                    ShareSweep& S; const std::string& p; int u; bool keep;
+                    ~PkgRestore() { if (!keep) S.pkg = p; S.pkgUnknown = u; }
+                } pkgRestore{*this, savedPkg, savedUnknown, unitPkg};
                 expr(cd->nameExpr.get()); expr(cd->verExpr.get()); expr(cd->authExpr.get()); expr(cd->apiExpr.get());
                 params(cd->roleParams);
                 for (auto& ra : cd->roleArgs) each(ra.second);
@@ -5137,6 +5161,41 @@ void Interpreter::unitSharingScan(const std::vector<StmtPtr>& stmts, bool module
         if (sw.sawAll) moduleNamedAll_ = true;
     }
     applyModuleEscapes();
+}
+
+// Every `our` a unit declares gets its package's cell under the published
+// name BEFORE any of the unit runs, as Rakudo installs the stash entry at
+// compile time (ledger O29). The first run of a nested `our` on a worker
+// thread otherwise INSERTED into GLOBAL's name map while the other workers
+// read it, and a top-level one, predeclared as a plain slot, could not be
+// promoted while workers were live (varCell), so each worker fell back to
+// publishing a view and they raced on the map: `await (^8).map: { start {
+// for ^200 { our $x //= 0 } } }` crashed about half the time, and always
+// before 432a3398. Now a worker's `our` only reads GLOBAL. The FIRST
+// declaration of a name in the unit decides, as the first one makes the
+// container in Rakudo: where it is one whose starting value only its own run
+// can make (`is default`, a container trait, a shape, a parameterized type, a
+// coercion), the name is left to that run — `for ^2 { our $d is default(5);
+// $d++ }; say our $d` is 7 — and so is a name some other view answers for.
+void Interpreter::preinstallOurCells(const Program& prog) {
+    if (!global_ || !prog.mayHaveOur) return;   // (most units declare none: no walk)
+    ShareSweep sw;
+    std::vector<std::pair<const VarExpr*, std::string>> ours;
+    sw.ours = &ours;
+    sw.pkg = tctx().pkgPrefix;
+    sw.stmts(prog.stmts);
+    std::unordered_set<std::string> decided;
+    for (auto& [ve, pfx] : ours) {
+        if (!ourShareable(ve)) continue;
+        const VarDeclInfo& vd = ve->d();
+        const std::string pub = ourPublishedName(ve->name, pfx);
+        if (!decided.insert(pub).second) continue;
+        if (vd.declDefault || !vd.containerIs.empty() || vd.declShape || vd.declTypeExpr || !vd.declCoerce.empty())
+            continue;
+        if (global_->localRaw(pub)) { (void)varCell(global_.get(), pub); continue; }   // (a plain slot becomes the cell)
+        noteSymbolMutation("our-declaration install");
+        global_->define(pub, Value::cellHolder(makePayload<Value>(declInitial(ve, ve->name[0]))));
+    }
 }
 
 void Interpreter::applyModuleEscapes() {

@@ -329,7 +329,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
 template <class IO> void visit(IO& io, NameTerm& n) { F(io, n.name); F(io, n.ofType); F(io, n.defConstraint); F(io, n.noAutoQuote); F(io, n.pkgSelf); }
 template <class IO> void visit(IO& io, ListExpr& n) { ioExprVec(io, n.items); F(io, n.parenned); F(io, n.semicolon); }
 template <class IO> void visit(IO& io, SymbolicRef& n) { ioExpr(io, n.nameExpr); ioExprVec(io, n.segs);
-                                                         F(io, n.pkg); F(io, n.sigil); }
+                                                         F(io, n.pkg); F(io, n.sigil); F(io, n.globalStash); }
 template <class IO> void visit(IO& io, ArrayLit& n) { ioExprVec(io, n.items); F(io, n.isList); F(io, n.fromCommaList); }
 template <class IO> void visit(IO& io, HashLit& n)  { ioExprVec(io, n.items); }
 template <class IO> void visit(IO& io, Assign& n)   { ioExpr(io, n.target); F(io, n.op); ioExpr(io, n.value); F(io, n.containerSigil);

@@ -251,6 +251,80 @@ static bool fdReadableNow(int fd) {
 }
 #endif
 
+// The process's stdin, read the way `std::getline(std::cin, …)` and
+// `ss << std::cin.rdbuf()` read it, but a block at a time. std::cin keeps no
+// buffer of its own: it is synced with C stdio, and libc++ ignores
+// sync_with_stdio(false), so every character was a virtual call down to
+// getc — over a thousand instructions a byte. 400k lines (32 MB) took 40G
+// instructions through `$*IN.lines`, `lines()` or `-n`, against 4.6G for
+// `.IO.lines` of the same file (ledger O24). getline(3) and fread on that
+// same `stdin` FILE take the bytes std::cin would have, so `.read`, `.getc`
+// and stdinReadAhead still see one stream, and a line still comes back as
+// soon as its newline is in the pipe. An embedder's text (rk_set_input) is
+// std::cin's own string buffer, read the old way.
+static std::streambuf* const s_cinOwnBuf = std::cin.rdbuf();
+
+// Does stdio already hold a whole line, so reading it cannot wait? Where the
+// FILE is opaque the answer is no, which only costs a flush.
+static bool stdinHasBufferedLine() {
+#if defined(__GLIBC__)
+    const char* p = stdin->_IO_read_ptr;
+    const long n = (long)(stdin->_IO_read_end - p);
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    const unsigned char* p = stdin->_p;
+    const long n = (long)stdin->_r;
+#else
+    const char* p = nullptr;
+    const long n = 0;
+#endif
+    return n > 0 && std::memchr(p, '\n', (size_t)n) != nullptr;
+}
+
+// One line, without its newline, and the same eof/fail bits on std::cin as
+// std::getline leaves (`std::cin.eof()` says the last line had no newline).
+bool stdinGetLine(std::string& line) {
+    if (std::cin.rdbuf() != s_cinOwnBuf) return (bool)std::getline(std::cin, line);
+    if (!std::cin.good()) { std::cin.setstate(std::ios::failbit); return false; }
+    // getline's sentry flushes the tied std::cout, so nothing printed sits
+    // unwritten while the program waits for its input; a line stdio already
+    // has cannot wait
+    if (std::cin.tie() && !stdinHasBufferedLine()) std::cin.tie()->flush();
+#ifndef _WIN32
+    struct Buf { char* p = nullptr; size_t cap = 0; ~Buf() { std::free(p); } };
+    thread_local Buf b;
+    const ssize_t n = ::getline(&b.p, &b.cap, stdin);
+    if (n < 0) { line.clear(); std::cin.setstate(std::ios::eofbit | std::ios::failbit); return false; }
+    const bool nl = n > 0 && b.p[n - 1] == '\n';
+    line.assign(b.p, (size_t)n - (nl ? 1 : 0));
+    if (!nl) std::cin.setstate(std::ios::eofbit);
+    return true;
+#else
+    // no getline(3): getc, which MSVC's CRT and MinGW's msvcrt both have
+    line.clear();
+    int c = EOF;
+    bool any = false;
+    while ((c = std::getc(stdin)) != EOF) {
+        any = true;
+        if (c == '\n') break;
+        line += (char)c;
+    }
+    if (c == EOF) std::cin.setstate(any ? std::ios::eofbit : std::ios::eofbit | std::ios::failbit);
+    return any;
+#endif
+}
+
+// Everything left on stdin.
+std::string stdinReadAll() {
+    if (std::cin.rdbuf() != s_cinOwnBuf) { std::ostringstream ss; ss << std::cin.rdbuf(); return ss.str(); }
+    std::string all;
+    char buf[65536];
+    size_t n;
+    // a short read is the end (or an error): asking again would wait on a
+    // terminal whose EOF does not stick
+    do { n = std::fread(buf, 1, sizeof buf, stdin); all.append(buf, n); } while (n == sizeof buf);
+    return all;
+}
+
 // A TEXT read folds CRLF to LF: a handle's default :nl-in is ["\n", "\r\n"] and
 // Rakudo's text decoders translate the separator on the way in — a file, $*IN,
 // $*ARGFILES and a Proc's captured pipes alike (`run(:out).out.slurp` of
@@ -334,7 +408,16 @@ static std::string stdinGrapheme(bool c8) {
         }
         stdinCodepoint(g);
         if (uniClusterEndUtf8(g, 0, g.size()) > had) continue;
-        for (size_t k = g.size(); k > had; k--) std::cin.putback(g[k - 1]);
+        // put back through stdio's own pushback on the process's stdin: the
+        // block readers above read that FILE directly, and a byte libc++ kept
+        // in std::cin's buffer was lost to them (`$*IN.getc` then `.get` cut
+        // an `é` in two). For a byte just read, ungetc only steps the FILE's
+        // buffer back. An embedder's text is std::cin's own buffer.
+        const bool ownStdin = std::cin.rdbuf() == s_cinOwnBuf;
+        for (size_t k = g.size(); k > had; k--) {
+            if (ownStdin) std::ungetc((unsigned char)g[k - 1], stdin);
+            else std::cin.putback(g[k - 1]);
+        }
         g.resize(had);
         break;
     }
@@ -4034,17 +4117,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             rest += (*eit->second.arr())[i].toStr();
                     }
                     (*inv.hash())["pos"] = Value::integer((long long)ls.size());
-                    std::ostringstream more; more << std::cin.rdbuf();
+                    std::string more = stdinReadAll();
                     g_stdinHitEof = true;
-                    std::string tail = decodeTextEnc(more.str(), handleEnc(inv));
+                    std::string tail = decodeTextEnc(more, handleEnc(inv));
                     foldCrLf(tail);
                     if (sClose) methodCall(inv, "close", ValueList{});
                     return Value::str(rest + tail);
                 }
-                std::ostringstream ss; ss << std::cin.rdbuf();                          // $*IN.slurp
+                std::string all = stdinReadAll();                                      // $*IN.slurp
                 g_stdinHitEof = true;   // `.eof` is True after it, as in Rakudo
-                if (sBin) return binBuf(ss.str());   // `$*IN.encoding("bin")` / `:bin`: the bytes
-                std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
+                if (sBin) return binBuf(all);   // `$*IN.encoding("bin")` / `:bin`: the bytes
+                std::string text = decodeTextEnc(all, handleEnc(inv));
                 foldCrLf(text);
                 return Value::str(text);
             }
@@ -4142,7 +4225,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             !inv.hash()->count("nl-in") && !inv.hash()->count("captured") &&
             !inv.hash()->count("enc")) {
             std::string line;
-            if (!std::getline(std::cin, line)) { g_stdinHitEof = true; return Value::nil(); }
+            if (!stdinGetLine(line)) { g_stdinHitEof = true; return Value::nil(); }
             const bool keep = inv.hash()->count("chomp") && !(*inv.hash())["chomp"].truthy();
             if (keep) line += std::cin.eof() ? "" : "\n";
             else if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -4180,7 +4263,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             Interpreter* self = this;
             st->appendNext = [left, hv, stdinClose, self](ValueList& cache) -> bool {
                 std::string l;
-                const bool more = *left != 0 && std::getline(std::cin, l);
+                const bool more = *left != 0 && stdinGetLine(l);
                 if (!more) {
                     if (*left != 0) g_stdinHitEof = true;
                     if (stdinClose) { Value h = hv; self->methodCall(h, "close", ValueList{}); }
@@ -4236,7 +4319,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // `eol` option and diagnoses stray carriage returns (error 2031).
                 if (!sep.empty()) {
                     std::string content;
-                    if (isStdin) { std::ostringstream ss; ss << std::cin.rdbuf(); content = ss.str(); }
+                    if (isStdin) content = stdinReadAll();
                     else { std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
                     content = decodeTextEnc(content, handleEnc(inv));
                     size_t start = 0, p;
@@ -4280,7 +4363,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         }
                     }
                     else if (isStdin) { // $*IN — read standard input
-                        while (std::getline(std::cin, line)) {
+                        while (stdinGetLine(line)) {
                             bool crlf = !line.empty() && line.back() == '\r';
                             if (crlf) line.pop_back();
                             handleNfc(inv, line);
