@@ -412,6 +412,11 @@ void noteStdinAtEnd();
 // …and has the program closed it (`$*IN.close`)? Then `lines()` and `words()`
 // refuse, as `$*IN` does.
 bool stdinClosed();
+// Read the process's stdin a block at a time, not a character per call as
+// std::cin does (MethodCallPart3.cpp): one line, as std::getline(std::cin, …)
+// takes it, and everything left, as `ss << std::cin.rdbuf()` does.
+bool stdinGetLine(std::string& line);
+std::string stdinReadAll();
 bool liveProcReadLine(Interpreter* I, long long tok, bool err, std::string& line, bool chomp);
 std::string liveProcRead(Interpreter* I, long long tok, bool err, size_t n);
 std::string liveProcReadAll(Interpreter* I, long long tok, bool err);

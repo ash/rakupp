@@ -2664,7 +2664,7 @@ Value Interpreter::dynVar(const std::string& name) {
                 // `lines` over THE / FILES / CONTENT is three lines, not one
                 if (!all.empty() && all.back() != '\n') all += '\n';
                 // `-` is standard input, in its place among the files
-                if (fn.toStr() == "-") { std::ostringstream ss; ss << std::cin.rdbuf(); all += ss.str(); raw += ss.str(); noteStdinAtEnd(); continue; }
+                if (fn.toStr() == "-") { std::string in = stdinReadAll(); all += in; raw += in; noteStdinAtEnd(); continue; }
                 // --sandbox: standard input, yes (`-` above, or no @*ARGS); a
                 // file the program names in @*ARGS, no
                 if (g_sandboxChecks) sandboxRefuse(*this, "$*ARGFILES", SandboxCap::Read);

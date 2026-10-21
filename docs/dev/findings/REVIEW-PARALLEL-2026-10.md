@@ -94,14 +94,16 @@ Headline numbers, the final binary against the base tree:
 
 ## Fixed after the review
 
-O2–O4 of the ledger below, the same day, against the same base (cce315ef);
-each regression file runs clean under Rakudo and fails on the base.
+O2–O4 of the ledger below, the same day, against the same base (cce315ef),
+and O24 against the O2–O4 commit (1918e400); each regression file runs clean
+under Rakudo and fails on its base.
 
 | # | What | Where | Evidence |
 |---|---|---|---|
 | O2 | Text decoded from a file, `$*IN`, `-n`/`-p`, `$*ARGFILES`, a pipe or Proc::Async is NFC, as Rakudo's decoders and our own `Buf.decode` make it; utf8-c8 keeps its bytes. One helper, `nfcDecodeInPlace`: a vectorized pass for the highest byte answers ASCII and Latin text (nothing below 0xCC composes), and the rest takes the quick check, where a BMP bitmap now answers a codepoint the NFC table does not hold instead of a binary search (every non-ASCII `~` join asks the same check) | NfcJoin.cpp, Unicode.cpp; decodeTextEnc and the stdin and pipe readers (MethodCallPart3.cpp, BuiltinsRegister.cpp); Proc::Async (Builtins.cpp, MethodCallPart2.cpp) | t/regression/decoded-text-is-nfc.raku, 31 checks failing on the base. 35 MB of ASCII through `.IO.lines`, `.slurp`, `$fh.lines`, `$*IN.lines` and `-n`: instructions within noise of the base (−1.4% to +0.1%). 28 MB of Cyrillic and CJK: `.IO.lines` 2.19G → 2.56G instructions, `.slurp` 7.93G → 8.31G, `$*IN.lines` +1.2% (the quick check without the bitmap had made `.IO.lines` 3.90G) |
 | O3 | `.split('')` splits graphemes; `<space>` and `<cntrl>` (every built-in rule's ASCII lane) take a CR LF whole, as `\s` does; sprintf's `%s` width and precision count graphemes; `Match.raku` prints character offsets; `.indices` and `.contains(/rx/)` take a character position, found in the folded text under `:i`/`:m`. `charToByte` had no caller left and is gone (O21) | MethodCallPart3.cpp, Regex.cpp, Builtins.cpp, MethodCallTail.cpp | t/regression/grapheme-units-split-rules-sprintf.raku, 36 checks failing on the base |
 | O4 | `uc`, `lc`, `tc`, `chars` and `ord` as subs: a plain Str or Int keeps the short path and anything else is the method, so a Junction autothreads, an object answers with its own, and `chars($buf)` refuses as `.chars` does. `--exe -O`'s fastB table calls the same functions | BuiltinsSupply.cpp, BuiltinsRegister2.cpp | t/regression/case-subs-dispatch-as-methods.raku, 13 checks failing on the base; the same file under `--exe -O`, `--jit` and `--cnp` |
+| O24 | Standard input is read a block at a time. std::cin keeps no buffer of its own (it is synced with C stdio, and libc++ ignores `sync_with_stdio(false)`), so every `std::getline(std::cin, …)` and `ss << std::cin.rdbuf()` was a virtual call down to `getc` per character — over a thousand instructions a byte; a bare C++ getline loop over the file was 37.3G of the 40G. `stdinGetLine` and `stdinReadAll` read the same `stdin` FILE with getline(3) and fread, so `.read`, `.getc` and stdinReadAhead still see one stream, a line still arrives while the writer holds the pipe open, and std::cin's eof/fail bits come out as std::getline leaves them. std::getline's sentry flushed `$*OUT` before every line; the flush now comes before a read that may wait (stdio holds no whole line), so a raised `out-buffer` still shows its answer before blocking. An embedder's fed text (`rk_set_input`) is std::cin's own string buffer and keeps the old reader | MethodCallPart3.cpp (`$*IN.get`, `.lines` streamed and eager, `.slurp`, `nl-in`), BuiltinsRegister.cpp (`lines()` under `-n`/`-p`, `prompt`, `words()`), InterpreterBinding.cpp (`$*ARGFILES` `-`) | t/regression/stdin-reads-a-block-at-a-time.raku: 15 checks, the base fails its speed check (6× `.IO.lines`; now 0.6×). Instructions, 32 MB / 400k ASCII lines, base → now: `$*IN.lines` 40.0G → 2.90G, `lines()` 40.0G → 2.90G, `-n` 44.1G → 7.0G, a `$*IN.get` loop 45.5G → 8.5G, `$*IN.slurp` 57.4G → 0.19G; `.IO.lines` 4.6G. 27 MB / 300k lines of Latin, Greek, Cyrillic and CJK: `$*IN.lines` 43.4G → 11.9G, `-n` 46.5G → 15.0G, `.get` loop 47.6G → 16.1G, `.slurp` 56.4G → 7.9G; `.IO.lines` 13.4G. Rakudo reads the ASCII file from stdin in 3.5G. Like for like, stdin is now cheaper than a file: `-n` against `for $f.IO.lines -> $_ is copy { our $n += .chars }` 7.0G vs 8.2G, `$*IN.get` against `$fh.get` 8.4G vs 9.3G; what `-n` still pays over `lines()` is O26 and `is copy` (~1.9k a line) |
 
 ## Open: the ledger
 
@@ -160,12 +162,13 @@ coordinator.
 
 ### Speed
 
-- **O24. `$*IN.lines` and `-n` cost ~100k instructions a line**: 400k ASCII
-  lines on stdin take 41G instructions and 4.5 s, where `.IO.lines` of the
-  same file takes 3.0G and 0.34 s, and Rakudo reads them from stdin in 3.6G
-  and 0.32 s. Same on the base; the line reader is `std::getline` on
-  `std::cin` (MethodCallPart3.cpp's stdin `.lines`, `lines()` in
-  BuiltinsRegister.cpp).
+- **O26. `our $x` declared inside a loop body costs ~8k instructions an
+  iteration**: `for ^400_000 { our $n += 1 }` takes 3.31G instructions,
+  `my $n` or an `our $n` declared before the loop 0.047G (~35 an
+  iteration). It is how a `-n` one-liner keeps a total for its `END`
+  (`-ne 'our $n += .chars; END say $n'`), and it is 2.7G of that
+  program's 7.0G over 400k lines now that O24 is fixed. Found measuring
+  O24.
 - **O25. Fix 3's own `$_` is defined for any sub with an nqp op in it**:
   mayUseTopic's `default: return true` covers NqpOp, so since cce315ef a
   plain sub whose body holds `nqp::…` defines `$_` (Env::define, a hash
