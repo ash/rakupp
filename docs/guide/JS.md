@@ -180,7 +180,9 @@ otherwise), `do`/`try`, `die`/`CATCH`/`LEAVE`, `END`, `state`, string
 interpolation, chained comparisons, reduce/zip/cross/hyper metaoperators,
 the `...` sequence operator, `xx`, `MAIN` with the usage protocol, `@*ARGS`,
 `%*ENV`, `$*IN`/`$*OUT`/`$*ERR`, files through `IO::Path` (under Node, Bun
-and Deno).
+and Deno). The program's own operators — a `sub infix:<->`, a lexical
+`my &infix:<*>` or `sub prefix:<√>`, a `multi infix:<+>` over its classes, a
+module's exported one — are called where the interpreter calls them.
 
 Regexes and grammars: the pattern is parsed at transpile time with the
 engine's own regex parser and emitted as a tree the runtime's matcher
@@ -213,7 +215,11 @@ variable interpolated into the pattern (the interpreter splices its text).
 Outside (refused, or run through `--fallback=wasm`):
 `EVAL` and `require` of computed names, `use` of a module,
 NativeCall, threads and `signal`, `temp`/`let`,
-`Proc::Async`, the `Test` module.
+`Proc::Async`, the `Test` module; and of the program's own operators, a
+reduction, `R`/`Z`/`X` metaoperator or chained comparison over one in scope
+(the runtime's metaops apply the built-in), a hyper over one, an override of
+an operator with an arm of its own (`&&`, `..`, `~~`, `++`…), and a `multi`
+with a candidate over core types used in operator form.
 
 The corpus gate, `rakupp t/js/run.raku`, transpiles every program in
 `t/regression/` and `examples/` and compares each in-core one with the

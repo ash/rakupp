@@ -2535,6 +2535,7 @@ public:
     // A user `multi infix:<op>` over core operands, judged against the
     // built-in candidate it competes with (see InterpreterBinding.cpp).
     bool userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out);
+    bool userInfixOverCoreOf(const Value& f, const std::string& op, const Value& l, const Value& r, Value& out);
     void noteUserInfixCandidate(const std::string& name, const Callable* cand);
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
     char elemSmileyOf(const std::string& symbol);
@@ -4929,6 +4930,13 @@ Value attrTypeValue(const ClassAttr& a);              // an Attribute's .type (P
 Value rtUserInfix(Value (*fn)(ValueList), const char* op, const Value& l, const Value& r);
 bool  rtUserInfixInto(Value (*fn)(ValueList), Value& lhs, const Value& r);
 bool  rtUserPrefix(Value (*fn)(ValueList), const Value& v, Value& out);
+// …and every other binding the emitter can name (Interpreter.cpp): a plain
+// top-level sub's function, or the Value of a lexical one or a module's export
+Value rtUserInfixPlain(Value (*fn)(ValueList), const char* op, const Value& l, const Value& r);
+void  rtUserInfixPlainInto(Value (*fn)(ValueList), const char* op, Value& lhs, const Value& r);
+Value rtValueInfix(Interpreter& I, const Value& f, const char* op, const Value& l, const Value& r);
+void  rtValueInfixInto(Interpreter& I, const Value& f, const char* op, Value& lhs, const Value& r);
+bool  rtValuePrefix(Interpreter& I, const Value& f, const Value& v, Value& out);
 
 // -O fast-path binary ops for native codegen: inline the small-int (non-bignum)
 // case as native int64, else fall back to the general applyArith. Semantics are

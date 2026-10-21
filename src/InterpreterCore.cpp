@@ -17796,6 +17796,12 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     return applyArithGeneral(op, l, r);
 }
 
+// isNumOp without the three orderings (see the bridge below)
+static bool isBridgedNumOp(const std::string& op) {
+    static const std::unordered_set<std::string> ops = {
+        "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%", "<", "<=", ">", ">=", "==", "!=", "<=>"};
+    return ops.count(op) > 0;
+}
 static Value applyArithGeneral(const std::string& op, const Value& l, const Value& r) {
     // `~` with an OBJECT operand coerces it the way the interpreter's own `~`
     // does (armCat): a user `method Str` answers, and an operand that IS-A Str
@@ -17804,6 +17810,21 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     if (op.size() == 1 && op[0] == '~' && (l.t == VT::Object || r.t == VT::Object) && g_cbInterp) {
         const std::string lt = g_cbInterp->strInStrContext(l);   // (composing across the join)
         return Value::str(nfcConcat(lt, g_cbInterp->strInStrContext(r), nfcKnown(l), nfcKnown(r)));
+    }
+    // …and a NUMERIC operator over one with a `.Bridge` or `.Numeric` works
+    // through it, as evalBinary's own arm does — compiled `$v * $w` and
+    // `[*]`, `Z*` and `$v += 1` came here and multiplied two zeroes. `cmp`,
+    // `before` and `after` only for a Real (one with a `.Bridge`): Rakudo orders
+    // any other object by its Str.
+    if ((l.t == VT::Object || r.t == VT::Object) && g_cbInterp) {
+        auto real = [](const Value& v) {
+            return v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("Bridge");
+        };
+        const bool ordering = opEq(op, "cmp") || opEq(op, "before") || opEq(op, "after");
+        if (ordering ? real(l) || real(r) : isBridgedNumOp(op)) {
+            Value l2 = bridgeReal(*g_cbInterp, l), r2 = bridgeReal(*g_cbInterp, r);
+            if (l2.t != VT::Object && r2.t != VT::Object) return applyArith(op, l2, r2);
+        }
     }
     // Distribution::Path / ::Hash / a repository's dist: each reports its own
     // type name, and each does Distribution
