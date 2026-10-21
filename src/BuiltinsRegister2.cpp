@@ -644,6 +644,20 @@ void Interpreter::registerBuiltinsPart3() {
             if (n.size() > 1 && n[0] == '&') return Value::boolean(I.builtins_.count(n.substr(1)) > 0);
             return Value::boolean(!n.empty() && std::isupper((unsigned char)n[0]) && isKnownTypeName(n));
         }
+        // `OUR::<$x>:exists` is the package the code is IN, and `Foo::<$x>:exists`
+        // a named one: the qualified name in GLOBAL's table, where `our`
+        // publishes it (ledger O31: the adverb was left for the enclosing call,
+        // `say OUR::<$z>:exists` printed `(Any)exists => True`)
+        if (a.size() > 2 && (a[2].toStr() == "OUR" || a[2].toStr() == "PKG")) {
+            if (!I.global_) return Value::boolean(false);
+            std::string q = n;
+            if (a[2].toStr() == "OUR") {
+                const std::string& pfx = I.ourPkgPrefix(I.tctx().cur.get());
+                if (!pfx.empty() && n.size() > 1 && std::strchr("$@%&", n[0])) q = n.substr(0, 1) + pfx + n.substr(1);
+                else if (!pfx.empty()) q = pfx + n;
+            }
+            return Value::boolean(I.global_->vars.count(q) > 0);
+        }
         // `GLOBAL::<$x>:exists` — a GLOBAL (`our`) symbol, not a lexical
         if (a.size() > 2 && a[2].toStr() == "GLOBAL") {
             Value st = I.makePseudoStash("GLOBAL");

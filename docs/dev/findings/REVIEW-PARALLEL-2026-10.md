@@ -98,8 +98,9 @@ O2–O4 of the ledger below, the same day, against the same base (cce315ef),
 O24 against the O2–O4 commit (1918e400), O26, found fixing O24, against
 O24's (dc76aa01), O28, found fixing O26, against O26's (432a3398), O27
 against O28's (8174a3c3), O29, found fixing O27, against O27's
-(62b8949f), and O30, found fixing O29, against O29's (6ba94541); each
-regression file runs clean under Rakudo and fails on its base.
+(62b8949f), O30, found fixing O29, against O29's (6ba94541), and O31,
+found fixing O30, against O30's (cff43a59); each regression file runs clean
+under Rakudo and fails on its base.
 
 | # | What | Where | Evidence |
 |---|---|---|---|
@@ -112,6 +113,7 @@ regression file runs clean under Rakudo and fails on its base.
 | O27 | `=`, `+=`, `-=`, `*=` and `~=` on a plain `$` name with no pad slot take the simple-assign lane when the name is bound to a shared cell — an `our`, its declaration included (the `-n` idiom's `our $n += .chars`), or a `:=` alias — and the scope that owns it records nothing about it (no type, default, constraint, coercion, constant, bound value or rw link): `cellLaneSlot` gives the proof a pad slot's layout gives, and the lane's own checks on the value (cold block, native width, readonly, Proxy, an Object operand, a user infix) are unchanged. Classes 11–15 of the lane verdict; a name that turns out not to be cell-bound takes the full path as before. An `our` never became a pad slot instead: the IntKernel's declarations and the module republish (which reads the name map) would both have to learn about it | InterpreterCore.cpp (evalAssign's lane), InterpreterCalls.cpp (`cellLaneSlot`), Interpreter.h | t/regression/assign-lane-cell-bound-names.raku: 35 checks of what the long path does that the lane must still do, and a kernels-off speed check (our `+=` within 1.8× of my) the base fails at 3.1×. Instructions, kernels off, 8174a3c3 → now: `our $n = 0; for ^400_000 { $n += 1 }` 1.15G → 0.52G (`my` 0.42G), the same through `my $a := $b` 1.13G → 0.50G; kernels on: `for ^400_000 { our $n += 1 }` 1.69G → 0.93G, `sub f { our $n += 1 }` × 400k 2.94G → 2.18G; `-ne 'our $n += .chars; END say $n'` over 400k lines 5.53G → 4.74G (the same loop over a `my` 3.86G). Roast list and totals identical; perf-guard −0.1%…+0.7% in instructions, within one binary's run-to-run spread |
 | O29 | Every `our` a unit declares gets its package's cell under the published name BEFORE any of the unit runs — the main program, a loaded module and an EVAL'd string alike — as Rakudo installs the stash entry at compile time (so `GLOBAL::<$x>:exists` is now True before a nested `our $x` has run, as in Rakudo). ShareSweep, which already walks every node of a unit before it runs, collects the declarations with the package prefix each body runs under (`ours`, `pkg`), and `preinstallOurCells` makes the cells; the FIRST declaration of a name decides, so one whose value only its own run can make (`is default`, a container trait, a shape, a parameterized type, a coercion) leaves the name to that run. A unit package's file scope now records its prefix as package bodies do, so the install and `ourPkgPrefix` agree in a `unit module`. The parser flags a unit with an `our` in it (`Program::mayHaveOur`), and any other skips the walk | Interpreter.cpp (ShareSweep, `preinstallOurCells`), InterpreterModules.cpp (the three call sites; a `unit package`'s prefix), InterpreterCalls.cpp (`ourPkgPrefix`), Parser.cpp/.h and Ast.h (`mayHaveOur`), Interpreter.h | t/regression/our-on-worker-threads.raku: five crashing programs run six times each — the base dies in 50–100% of their runs — plus the installation checks and a unit module's `our`. The nine threaded programs of the investigation: 0 crashes in 50 runs each, against 2–50 of 50 on 62b8949f. Instructions: `say 1`, `use Test` and a Roast file unchanged; 2000 EVALs of a string with an `our` +4.5% (the walk); perf-guard −0.04%…+0.3% (`loadtime`, a big unit with no `our`, +0.16%). Roast list and totals identical to 62b8949f's (S17-procasync/stress.t times out at 23/24 or passes with the box's load, on both binaries; two single-assertion flakes in two of five runs, S07-hyperrace/basics.t and S02-types/sethash.t, did not recur in 31 reruns each) |
 | O30 | Loading a module no longer publishes the variables of its top-level scope into GLOBAL under their bare names unless the module exports them: its `my`s are its own, and its `our`s go by their package's name (`$UM::v`) or, in a module file with no package of its own, already live in GLOBAL as the package's cell. Before, after `use UM` (`unit module UM; our $v = 1; sub bump is export { our $v; $v++ }`), the program's own `our $v` was UM's — 1, then 2 after `bump()` (Rakudo: Any both times) — and `::('$secret')` found a module's private `my`. The exported-variable names are collected beside the exported subs' (`exportedVars`), and `$_`, `$/` and twigil names are published as before | InterpreterModules.cpp (loadModuleImpl's publish) | t/regression/module-variables-stay-the-modules.raku: 3 checks over two modules, failing on 6ba94541 and on 1918e400. Roast list and totals identical to 6ba94541's; perf-guard −0.7%…+0.4% in instructions; `use Test` startup unchanged |
+| O31 | `GLOBAL::<$x>:exists` (and `GLOBAL::{$k}:exists`) answers from GLOBAL's own table — an `our` variable or routine, a lax variable, a qualified write — instead of evaluating the name, which called an undeclared `@x`/`%x` (an empty container), an undeclared `&x`, the built-in `&say` and a top-level `my @lex` all present. `OUR::<$x>:exists` (the package the code is in, lexically) and `Foo::<$x>:exists` (a named package's table) take the adverb at all: it went to the enclosing call, so `say OUR::<$z>:exists` printed `(Any)exists => True`. Reads keep their own path. The second half of the item, a package-less module's `our` shared with the program, is KEPT as it is, on the evidence: under Rakudo the module disagrees with ITSELF — with `our $config = 3` and `sub self-view is export { $GLOBAL::config }`, `self-view()` is (Any) while the module's `$config` is 3, and after the module writes `$GLOBAL::config = 8` its own `$config` is still 3 — so the program-side (Any) is the two-container split of its per-unit GLOBAL merge, which nothing can usefully rely on, where rakupp's one container is what `our $x` (an alias of `$?PACKAGE::x`) says. Left over: O32 | InterpreterBinding.cpp (`pseudoStashCall` EXISTS-KEY), BuiltinsRegister2.cpp (`__sym-exists` OUR/PKG), Parser.cpp/.h (`OUR::` in the adverb list, `pkgExistsAdverb`) | t/regression/stash-exists-answers.raku: 16 checks (cff43a59 cannot parse it). Roast list and totals identical to cff43a59's (S07-hyperrace/basics.t, a concurrency stress test with no `our` or stash in it, lost one assertion in one of two runs; 0 failures in 20 runs alone and 30 runs six at a time, on this binary and on 62b8949f); perf-guard −0.6%…+0.3% in instructions |
 
 ## Open: the ledger
 
@@ -168,15 +170,13 @@ coordinator.
   - `"abc".indices("", 5)` is `(3)` (Rakudo `()`), `"abc".contains(/$/, 3)`
     True (Rakudo False), `"abc".split('', 1)` a Seq (Rakudo a List).
 
-- **O31. GLOBAL's stash answers that Rakudo does not** (found fixing O30;
-  the same on 1918e400): `GLOBAL::<@x>:exists` and `GLOBAL::<%x>:exists` are
-  True for any name, declared or not (`$x` is right); and a module FILE with
-  no package of its own shares its `our $config` with the program — after
-  `use NoPkg` the program reads `$GLOBAL::config` as the module set it and
-  writes reach the module — where Rakudo installs the symbol (a program's
-  own `our $config` is a redeclaration) but reads (Any) through it and
-  leaves the module's variable alone. `GLOBAL::<&gsub>:exists` for that
-  module's `our sub gsub` is True here, False in Rakudo.
+- **O32. Left over from O31** (Rakudo 2026.09 in brackets; both the same
+  on 1918e400):
+  - `sub bar { }; say GLOBAL::<&bar>:exists` is True [False]: a plain sub is
+    lexical, an `our sub` is the package's, and a routine value does not
+    record which it was declared as (`SubDecl::isOur` stays in the AST);
+  - `GLOBAL::{"@zzz"}` reads a Failure (X::NoSuchSymbol) [Any]: the brace
+    form with a string key goes the way `::("@zzz")` does.
 
 ### Speed
 

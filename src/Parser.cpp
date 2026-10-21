@@ -6219,6 +6219,26 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
 
 static ExprPtr angleWordNumeric(const std::string& w); // defined below
 
+// `Foo::<$x>:exists` / `:!exists` asks the package's table for `qual`, not the
+// autovivifying read (O31: the adverb went to the enclosing call). Null: none.
+ExprPtr Parser::pkgExistsAdverb(const std::string& qual) {
+    const bool neg = isOp(":") && !cur().spaceBefore && peek().kind == Tok::Op && peek().text == "!" &&
+                     peek(2).kind == Tok::Ident && peek(2).text == "exists";
+    if (!(isOp(":") && !cur().spaceBefore && (neg || (peek().kind == Tok::Ident && peek().text == "exists"))))
+        return nullptr;
+    advance(); if (neg) advance(); advance();   // ':' '!' exists
+    auto c = std::make_unique<Call>();
+    c->name = "__sym-exists";
+    c->args.push_back(std::make_unique<StrLit>(qual));
+    c->args.push_back(std::make_unique<IntLit>(0));
+    c->args.push_back(std::make_unique<StrLit>("PKG"));
+    if (!neg) return c;
+    auto no = std::make_unique<Unary>();
+    no->op = "!";
+    no->operand = std::move(c);
+    return no;
+}
+
 // A colon-pair written directly after a call's closing paren is one of that
 // call's ARGUMENTS: `blob-from-carray($au):12size` passes `size => 12`
 // (NativeHelpers::Blob). It has to be tight — a spaced `:foo` starts something
@@ -9581,7 +9601,8 @@ ExprPtr Parser::parsePrimary() {
                     // (`OUTER::<&g>:exists` too: the adverb was dropped, and the
                     // lookup's value answered for it)
                     if ((pseudoPkg == "MY" || pseudoPkg == "LEXICAL" || pseudoPkg == "UNIT" ||
-                         pseudoPkg == "SETTING" || pseudoPkg == "GLOBAL" || pseudoPkg == "OUTER") &&
+                         pseudoPkg == "SETTING" || pseudoPkg == "GLOBAL" || pseudoPkg == "OUTER" ||
+                         (pseudoPkg == "OUR" && name == "OUR::")) &&
                         isOp(":") && !cur().spaceBefore &&
                         (negAdv || (peek().kind == Tok::Ident &&
                                     (peek().text == "exists" || peek().text == "p")))) {
@@ -9682,9 +9703,9 @@ ExprPtr Parser::parsePrimary() {
                 // `A::<$bar> = 99` left the module's own `$bar` at 42.
                 bool sigilled = !key.empty() &&
                     (key[0] == '$' || key[0] == '@' || key[0] == '%' || key[0] == '&');
-                auto ve = std::make_unique<VarExpr>(
-                    sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1)
-                             : pkg + "::" + key);
+                std::string qual = sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1) : pkg + "::" + key;
+                if (ExprPtr ex = pkgExistsAdverb(qual)) return ex;   // `Foo::<$x>:exists`
+                auto ve = std::make_unique<VarExpr>(qual);
                 ve->pkgSymbol = true; // assignment autovivifies the slot
                 return ve;
             }

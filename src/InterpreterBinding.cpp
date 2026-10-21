@@ -3358,7 +3358,27 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
         (*f.hash())["message"] = Value::str("No such symbol '" + key + "'");
         return f;
     }
-    if (m == "EXISTS-KEY") { Value out; return Value::boolean(pseudoStashGet(self, key, out)); }
+    if (m == "EXISTS-KEY") {
+        // GLOBAL:: is the package's own table: an `our` variable or routine, a
+        // lax variable, a qualified write — not a `my` the mainline keeps in its
+        // pad, a built-in, or a name nobody declared. Evaluating the name
+        // answered for those with whatever an undeclared read gives back (an
+        // empty container, a routine), so `GLOBAL::<@zzz>:exists` was True
+        // (ledger O31). Only the existence question: a read keeps its path.
+        if (self.t == VT::Object && self.obj() && global_ && !key.empty() && std::strchr("$@%&", key[0])) {
+            auto& at = self.obj()->attrs;
+            // (the parser spells `GLOBAL::<$x>` as `$GLOBAL::x`; the table keeps
+            // it as `$x`, and some writes under the long spelling)
+            if (at.count("mode") && at["mode"].toStr() == "G") {
+                std::string bare = key;
+                if (key.size() > 9 && key.compare(1, 8, "GLOBAL::") == 0) bare = key.substr(0, 1) + key.substr(9);
+                return Value::boolean(global_->vars.count(bare) > 0 ||
+                                      (bare.size() > 1 && global_->vars.count(bare.substr(0, 1) + "GLOBAL::" + bare.substr(1)) > 0));
+            }
+        }
+        Value out;
+        return Value::boolean(pseudoStashGet(self, key, out));
+    }
     if (m == "BIND-KEY" || m == "ASSIGN-KEY") {
         Value v = args.size() > 1 ? args[1] : Value::any();
         auto& at = self.obj()->attrs;
