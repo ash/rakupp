@@ -5,7 +5,7 @@
 # (double)d`: two conversions and a division, three roundings, and one spill
 # in four came out an ulp off, `1/4611686018427387903 + 3/999999999999999989`
 # 3.2168404344971007e-18 where Rakudo, and our own BigInt arms, give
-# 3.216840434497101e-18 (ledger O26 of the 2026-10 parallel review). It now
+# 3.216840434497101e-18 (ledger O33 of the 2026-10 parallel review). It now
 # rounds once, as Rat.Num does. The want is the same sum taken in FatRat,
 # which does not spill, converted at the end.
 #

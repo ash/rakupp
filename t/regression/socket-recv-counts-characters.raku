@@ -8,7 +8,7 @@
 # else all it has. And `.get` reads ahead into that same buffer, which the
 # old `.recv` and `.read` never looked at, so the rest of what `.get` had
 # taken was lost to them. Found while fixing the 2026-10-21 review's O23
-# (ledger O26).
+# (ledger O35).
 #
 # Runs clean under Rakudo too.
 

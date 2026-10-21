@@ -8,7 +8,7 @@
 # a bare X::OutOfRange type with no message at all. Rakudo's Str!fail-oor
 # makes `what` "Position in calling 'index'", the range a Str, and the
 # message "… out of range. Is: -1, should be in 0..3". Found while fixing the
-# 2026-10-21 review's O23 (ledger O26).
+# 2026-10-21 review's O23 (ledger O35).
 #
 # Runs clean under Rakudo too.
 

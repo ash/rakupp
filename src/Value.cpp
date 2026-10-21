@@ -2008,7 +2008,7 @@ bool objectStructEqv(const Value& a, const Value& b,
 // Past the uint64 denominator cap: n/d as the nearest double, ties to even —
 // rounded ONCE, as toNum rounds the BigInt arms' answer (ratioToDouble).
 // `(double)n / (double)d` rounded three times and put one spill in four an
-// ulp off (ledger O26). Binary long division to 55 bits, then the remainder
+// ulp off (ledger O33). Binary long division to 55 bits, then the remainder
 // decides: |n| < 2^126 and 2^64 < d < 2^124 here, so every shift stays inside
 // 128 bits and the result is a normal double. Checked against Python's
 // float(Fraction(n, d)) on a million pairs, ~33,000 of them exact ties. Out of

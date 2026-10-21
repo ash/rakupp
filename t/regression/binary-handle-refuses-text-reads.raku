@@ -7,7 +7,7 @@
 # mode"); `.slurp` and `.read` answer bytes, and `.encoding("utf8")` makes it
 # a text handle again. `$*IN` keeps the setting, so `lines()` and `words()`
 # refuse too. `.readchars(-1)` answered "" where Rakudo dies. Found while
-# fixing the 2026-10-21 review's O23 (ledger O26).
+# fixing the 2026-10-21 review's O23 (ledger O35).
 #
 # Runs clean under Rakudo too.
 

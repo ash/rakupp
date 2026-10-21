@@ -198,7 +198,7 @@ logs and the reviews. This page is the complete list.
   five places counting codepoints for characters, `uc`/`chars` as subs
   skipping dispatch) were fixed the same day, and so was O23, what fixing
   them turned up (a handle's `.getc` counting codepoints, socket text not
-  NFC, `Buf.uc` answering, three position edges), and O26, what fixing that
+  NFC, `Buf.uc` answering, three position edges), and O35, what fixing that
   turned up (a `:bin` handle reading text, INET `.recv($n)` counting bytes,
   the out-of-range Failure of `.index` and its kin).
 - **[TOOLS-3.23.md](TOOLS-3.23.md)** *(2026-08-29, opening v3.23.0)* — every

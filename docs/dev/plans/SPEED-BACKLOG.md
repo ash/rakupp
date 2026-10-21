@@ -118,8 +118,8 @@ theme the rows are sorted by complexity, largest first.
   the general path, and `1/3` is built once: `$r += 1/3` 7,836 → 3,562 with
   no kernels. Then the same day: the loop and sub kernels take `gcd` and
   `lcm` (2,382 → 81 instructions with the kernels on), and the small-Rat
-  lane's spill to Num rounds once (O26, a silent ulp error in one spill in
-  four). And a loop kernel's variable may hold a Bool (O29): the flag loop
+  lane's spill to Num rounds once (O33, a silent ulp error in one spill in
+  four). And a loop kernel's variable may hold a Bool (O34): the flag loop
   `$found = True if …` 1,010 → 47 instructions an iteration, `my $ok = $i
   %% 3` 6,351 → 145. An Int that becomes a Bool stays the interpreter's.
 - **`do { }` and `quietly { }`, after 38** (205f5e97): the same in-place

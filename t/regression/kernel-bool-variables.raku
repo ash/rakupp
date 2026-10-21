@@ -2,7 +2,7 @@
 #
 # The loop kernel used a Bool only as a condition, so the flag loop
 # `my $found = False; for … { $found = True if … }` declined it, as did
-# `my $ok = $i %% 3`, `$n + ($i %% 3)` and `$b = !$b` (ledger O29 of the
+# `my $ok = $i %% 3`, `$n + ($i %% 3)` and `$b = !$b` (ledger O34 of the
 # 2026-10 parallel review). A Bool variable now has a slot of its own: 0 or 1,
 # checked as a plain Bool when the loop is entered and written back as a Bool.
 # `True`, `False` and `!` are values there; a Bool is the Int it numifies to
