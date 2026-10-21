@@ -64,7 +64,6 @@ theme the rows are sorted by complexity, largest first.
 | 45 | `--exe`: a module routine called from the program costs ~6× a local one (68 vs 10.6 ns) | L | The call goes through callEnvFirstAmp and the interpreter's binding, and the native body runs inside that — float report, item 10; near #13 |
 | 46 | `--exe`: a native-typed value is still a boxed Value; a `num`-typed sub is ~2.4× its untyped twin (62 vs 26 ns) | L | Typed locals as C++ doubles/int64s; the stores, ops and `int` kernels are done — float report, item 16; near #29 |
 | 47 | `--exe`: a `my sub` is called through `RT.dynVar("&name")` and callCallable, ~170 ns against ~25 for a top-level sub | M | A direct call needs the arity proved at the call site and a handle to the closure that cannot outlive it — float report, item 9 |
-| 48 | The loop kernel cannot hold a Bool in a variable: `my $found = False; … $found = True if …` declines, as do `my $ok = $i %% 3` and `$n + ($i %% 3)` | M | A Bool slot (0/1, written back as a Bool, numifying in arithmetic); an Int variable that becomes a Bool stays the interpreter's — [REVIEW-PARALLEL-2026-10](../findings/REVIEW-PARALLEL-2026-10.md) O29 |
 
 ## 4. Lists, strings and laziness
 
@@ -120,7 +119,9 @@ theme the rows are sorted by complexity, largest first.
   no kernels. Then the same day: the loop and sub kernels take `gcd` and
   `lcm` (2,382 → 81 instructions with the kernels on), and the small-Rat
   lane's spill to Num rounds once (O26, a silent ulp error in one spill in
-  four). Left open from it: 48.
+  four). And a loop kernel's variable may hold a Bool (O29): the flag loop
+  `$found = True if …` 1,010 → 47 instructions an iteration, `my $ok = $i
+  %% 3` 6,351 → 145. An Int that becomes a Bool stays the interpreter's.
 - **`do { }` and `quietly { }`, after 38** (205f5e97): the same in-place
   path as `try`. `do { … }` −32.5% and `quietly { … }` −33.4% in
   instructions; a `when` in a `do`, `state`, `temp` or a phaser keep the call.
