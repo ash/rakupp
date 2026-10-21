@@ -27,6 +27,9 @@ The user-facing documentation is one level up, in [../](../README.md).
 - **[RELEASING.md](RELEASING.md)** — the release checklist: the Roast,
   local-suite, **performance** and compiler-agreement gates that must pass before
   a version is bumped, and why each one exists.
+- **[CHANGELOG-NEXT.md](CHANGELOG-NEXT.md)** — the next release's CHANGELOG
+  entry, collected as work lands, with the numbers each change measured;
+  RELEASING.md step 2 starts from it.
 
 ## plans/ — what we intend to build (and what we decided not to)
 

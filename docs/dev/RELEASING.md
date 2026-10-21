@@ -748,7 +748,9 @@ minor's patch.
    ./build-arm64/rakupp --version | grep -q -- -modified && echo 'REBUILD: uncommitted changes are in this binary'
    ```
 2. Write the CHANGELOG entry — measured numbers, not projected, with the
-   methodology link. Note anything deliberately left open.
+   methodology link. Note anything deliberately left open. Start from
+   [CHANGELOG-NEXT.md](CHANGELOG-NEXT.md), where work is collected as it
+   lands, and empty it once its items are in.
 3. Refresh the figures in README, `docs/status/ROAST.md`, `docs/status/COUNTING.md`,
    `docs/guide/FEATURES.md`, `docs/guide/GUIDE.md`, `docs/guide/HIGHLIGHTS.md`, `docs/guide/OVERVIEW.md`
    and `docs/status/ROADMAP.md` — all from **one** run, so they agree with each other.
