@@ -3051,6 +3051,7 @@ public:
     std::atomic<bool> privateSlotsOff_{false};   // set once, never cleared
     void privateSlotsOff(const char* why, int line);
     void unitSharingScan(const std::vector<StmtPtr>& stmts, bool module);   // an EVAL's or a module's unit
+    void preinstallOurCells(const Program& prog);   // …and its `our`s' cells, before it runs (O29)
     void applyModuleEscapes();                     // …a module's names, once the mainline has its layout
     std::unordered_set<std::string> moduleNamed_;  // (both under padMu_)
     bool moduleNamedAll_ = false;

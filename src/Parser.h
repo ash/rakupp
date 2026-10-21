@@ -403,6 +403,7 @@ private:
     // it governs already exist. The interpreter reads this off the Program
     // before it hoists anything.
     bool usesRakuAst_ = false;
+    bool sawOur_ = false;   // an `our` declarator anywhere in the unit (Program::mayHaveOur)
     // `<|w>` (word) and `<|c>` (codepoint) are the only regex boundaries. Any
     // other name is a typo that 6.c/6.d compile to a silent no-op and 6.e
     // refuses; checked on the pattern source because the regex engine is

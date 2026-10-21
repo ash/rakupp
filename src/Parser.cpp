@@ -5291,6 +5291,7 @@ std::string Parser::sigillessTermName(const std::string& nm) {
 }
 
 ExprPtr Parser::parseDeclarator(const std::string& scope) {
+    if (scope == "our") sawOur_ = true;   // (Program::mayHaveOur)
     // `my Int:D constant \a .= new: 42` — a TYPED constant in expression
     // position: the type (and its smiley) belong to the constant
     if (scope != "constant" && isKind(Tok::Ident) && !cur().text.empty() &&
@@ -10398,6 +10399,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     p.routineDepth_ = routineDepth_;     // `"{&?ROUTINE.name}"` inside a sub names that sub
     Program prog = p.parseProgram();
     if (p.sawEndPhaser_) sawEndPhaser_ = true;   // `"{ END { … } }"` needs the END walk too
+    if (p.sawOur_) sawOur_ = true;
     // a single bare expression interpolates directly — unless it is a `{…}`
     // block that declares something: `"{my $n = 2}"` must not leak `$n` out
     if (prog.stmts.size() == 1 && prog.stmts[0]->kind == NK::ExprStmt && !ownScope)
@@ -17648,6 +17650,7 @@ Program Parser::parseProgram() {
     prog.typeNamesOpaque = declTypesOpaque_;
     prog.importsModules = importsModules_;
     prog.mayHaveEnd = sawEndPhaser_;
+    prog.mayHaveOur = sawOur_;
     prog.mayHaveRoutineUse = sawRoutineUse_;
     prog.langRev = langRev_;
     prog.usesRakuAst = usesRakuAst_;

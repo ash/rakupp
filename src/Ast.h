@@ -1429,6 +1429,10 @@ struct Program {
     // A DESERIALIZED (cached/embedded) Program keeps the conservative default
     // and is walked — one traversal per unit, and never a lost phaser.
     bool mayHaveEnd = true;
+    // …and an `our` declaration? False lets the interpreter skip the walk that
+    // installs every `our`'s cell before the unit runs (preinstallOurCells);
+    // a deserialized Program keeps the conservative default, as above.
+    bool mayHaveOur = true;
     // …and a `use`/`need` inside a routine body, which the interpreter loads
     // when the routine's declaration is reached rather than at its first call
     // (Interpreter::preloadRoutineUses). Same conservative default.

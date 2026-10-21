@@ -2171,7 +2171,7 @@ bool Interpreter::ourPlain(const VarExpr* ve) {
 // with none in the chain it is the running code's.
 const std::string& Interpreter::ourPkgPrefix(Env* de) {
     for (Env* e = de; e; e = e->parent.get())
-        if (e->packageFrame && e->ex && !e->ex->pkgPrefix.empty()) return e->ex->pkgPrefix;
+        if (e->ex && !e->ex->pkgPrefix.empty()) return e->ex->pkgPrefix;   // (a package body, or a unit package's file)
     return tctx().pkgPrefix;
 }
 // The package's cell, with the name bound to it in `de`; null when the

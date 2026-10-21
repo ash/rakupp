@@ -1047,6 +1047,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         } tg{traceLoad, name, howMs, tRun, nowMs, howLabel};
         { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); }
         unitSharingScan(prog->stmts, /*module=*/true);   // PARALLEL-SCALING-PLAN P1, before any of it runs
+        preinstallOurCells(*prog);                        // (ledger O29)
         // this module is now the executing unit (bare-name forward references
         // resolve against ITS declarations while its top level runs)
         unitPush(prog.get());
@@ -2397,6 +2398,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     }
     { std::unique_lock<std::mutex> kl(sharedMut_, std::defer_lock); if (parallelMode_) kl.lock(); keptPrograms_.push_back(prog); } // keep AST alive for closures defined within
     if (!checkOnly) unitSharingScan(prog->stmts, /*module=*/false);   // PARALLEL-SCALING-PLAN P1
+    if (!checkOnly) preinstallOurCells(*prog);                        // (ledger O29)
     // this EVAL/REPL line is its own unit for the bare-name fallback
     unitPush(prog.get());
     struct UnitGuard { Interpreter& I; ~UnitGuard() { I.unitPop(); } } unitG{*this};
@@ -5901,7 +5903,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     if (!cd->name.empty()) {
                         unitPkgByFile_[declFileNow()] = tctx().pkgPrefix + cd->name;   // CLIENT:: asks
                         tctx().cur->define(cd->name, Value::typeObj(cd->name));
-                        tctx().pkgPrefix += cd->name + "::";
+                        tctx().pkgPrefix += cd->name + "::"; if (tctx().cur != global_) tctx().cur->x().pkgPrefix = tctx().pkgPrefix;   // (ourPkgPrefix)
                         if (curPkgEnv_ == global_) curPkgEnv_ = tctx().cur; // `our` installs here
                     }
                     return Value::any();
@@ -8574,6 +8576,8 @@ int Interpreter::run(Program& prog) {
                 applyModuleEscapes();   // PARALLEL-SCALING-PLAN P1: modules `use`d while parsing
             }
         }
+        // every `our` of the program has its cell before anything runs (O29)
+        preinstallOurCells(prog);
         // Pre-declare top-level lexicals so compile-time phasers (BEGIN/CHECK) can see them.
         bool hasInit;
         auto predeclare = [this](Expr* e) { // a declare-VarExpr, or a list declaration `my ($a, $b)`
