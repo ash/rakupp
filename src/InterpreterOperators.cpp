@@ -2836,6 +2836,39 @@ bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, c
     return bridgedNumericInfix(I, op, l, r, out);
 }
 
+// valueCmp's `cmp` over an object operand (g_objCmp, Value.h) — what `sort`,
+// `min`, `max`, `before` and `$a cmp $b` order objects by. Rakudo's `cmp` is
+// `a.Stringy cmp b.Stringy` unless both sides are Reals; an object's default
+// Str is `Name<address>`, which made the order change from run to run.
+static bool objectCmpHook(const Value& a, const Value& b, int& out) {
+    Interpreter* I = g_revInterp;
+    if (!I) return false;
+    if (a.t == VT::Object && b.t == VT::Object && a.obj() == b.obj()) { out = 0; return true; }
+    // a Real's number: a built-in one, or an object that does Real or boxes one
+    // (`is Int`), through its .Bridge / .Numeric when it has them
+    auto realOf = [I](const Value& v, Value& n) {
+        if (v.t != VT::Object) { n = v; return v.isNumeric(); }
+        if (!v.obj() || !v.obj()->cls) return false;
+        const bool boxed = v.obj()->hasBoxed && v.obj()->boxed().isNumeric();
+        if (!boxed && !I->typeOrSubsetMatches(v, "Real")) return false;
+        n = bridgeReal(*I, v);
+        if (n.t == VT::Object && boxed) n = v.obj()->boxed();
+        return n.isNumeric();
+    };
+    if (Value x, y; realOf(a, x) && realOf(b, y)) { out = valueCmp(x, y); return true; }
+    auto stringy = [I](const Value& v) {
+        if (v.t == VT::Object && v.obj() && v.obj()->cls)
+            if (Value* m = v.obj()->cls->findMethod("Stringy")) {
+                ValueList none;
+                return Value::str(I->strOf(I->invokeMethod(*m, v, none)));
+            }
+        return Value::str(I->strOf(v));
+    };
+    out = valueCmp(stringy(a), stringy(b));
+    return true;
+}
+static const bool g_objCmpInstalled = ((g_objCmp = &objectCmpHook), true);
+
 // [op] reduce over an item list — shared by the [op] unary, prefix:<[op]>(…)
 // calls, and &prefix:<[op]> references. `op` may carry a leading '\' (scan form).
 Value Interpreter::applyReduce(std::string op, ValueList& items) {

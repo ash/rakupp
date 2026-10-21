@@ -21413,12 +21413,6 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         throw;
     }
 }
-static bool isNumOp(const std::string& op) {
-    static const std::set<std::string> ops = {
-        "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
-        "<", "<=", ">", ">=", "==", "!=", "<=>", "cmp", "before", "after"};
-    return ops.count(op) > 0;
-}
 
 // --- fast-path shape tests for evalBinary/evalIndex ------------------------
 // A plain lexical: `$x`, `@a`, `%h` — the second character is a letter or an
@@ -21710,12 +21704,12 @@ static bool numFastArith(const std::string& op, const Value& l, const Value& r, 
 // Str`; everything else is applyArith.
 bool Interpreter::chainLink(const std::string& op, const Value& prev, const Value& next) {
     Value pc = prev, nc = next;
-    if ((pc.t == VT::Object || nc.t == VT::Object) && isNumOp(op)) {
-        pc = bridgeReal(*this, pc); nc = bridgeReal(*this, nc);
-    }
-    else if ((pc.t == VT::Object || nc.t == VT::Object) && isStringCmpOp(op)) {
-        if (pc.t == VT::Object) pc = Value::str(strOf(pc));
-        if (nc.t == VT::Object) nc = Value::str(strOf(nc));
+    if (pc.t == VT::Object || nc.t == VT::Object) {
+        if (Value res; bridgedNumericInfix(*this, op, pc, nc, res)) return res.truthy();
+        if (isStringCmpOp(op)) {
+            if (pc.t == VT::Object) pc = Value::str(strOf(pc));
+            if (nc.t == VT::Object) nc = Value::str(strOf(nc));
+        }
     }
     return applyArith(op, pc, nc).truthy();
 }
@@ -22891,14 +22885,9 @@ Value Interpreter::evalBinary(Binary* b) {
                     if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
                 }
         // numeric operators on a .Bridge/.Numeric object work through the bridge
-        if ((l.t == VT::Object || r.t == VT::Object) && isNumOp(op)) {
-            Value l2 = bridgeReal(*this, l), r2 = bridgeReal(*this, r);
-            if (l2.t != VT::Object && r2.t != VT::Object) {
-                Value res = applyArith(op, l2, r2);
-                tagTemporal(op, l2, r2, res);
-                return res;
-            }
-        }
+        // (`cmp` is not one: valueCmp orders an object as Rakudo does)
+        if (l.t == VT::Object || r.t == VT::Object)
+            if (Value res; bridgedNumericInfix(*this, op, l, r, res)) return res;
         // hyper metaop `>>op<<` — element-wise, resolving a user inner operator
         if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
             (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {
