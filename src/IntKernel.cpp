@@ -13,7 +13,7 @@
 //    `loop` once its init has run) whose body reads and writes
 //    only `$` variables holding a plain Int, Num or Str, its own `my`
 //    locals and loop variables, through the integer operators above, `**`,
-//    `min`, `max`, Num `+ - * / **` and comparisons, the six string
+//    `min`, `max`, `gcd`, `lcm`, Num `+ - * / **` and comparisons, the six string
 //    comparisons, `~` and `=`, `+=`, `-=`, `*=`, `/=` (Nums), `~=`, `++`,
 //    `--`, the methods `.chars .abs .sign .Str .Num .Int .ord .uc .lc
 //    .substr`, with `if`/`unless`, nested `for` over integer ranges,
@@ -116,7 +116,7 @@ enum class KOp : uint8_t {
     NTruth,   // a Num as a condition: true when not zero
     SNum,     // a Num's text
     // more integer operators and pure methods
-    Pow, Min, Max, Abs, Sign,
+    Pow, Min, Max, Abs, Sign, Gcd, Lcm,
     BAnd, BOr, BXor, Shl, Shr,   // +& +| +^ +< +>
     Ord, Uc, Lc, Substr,
     // exact numbers (KT::Exact): an Int or a Rat. A node returns the
@@ -747,6 +747,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             else if (op == "**") kop = KOp::Pow;
             else if (op == "min") kop = KOp::Min;
             else if (op == "max") kop = KOp::Max;
+            else if (op == "gcd") kop = KOp::Gcd;
+            else if (op == "lcm") kop = KOp::Lcm;
             else if (op == "div") kop = KOp::Div;
             // `mod` is `%` over Ints (floored, the divisor's sign) — Rakudo-checked
             // with negatives and past int64; a zero divisor bails either way, and
@@ -1681,6 +1683,12 @@ template <KOp OP>
     }
     else if constexpr (OP == KOp::Min) return x < y ? x : y;
     else if constexpr (OP == KOp::Max) return x > y ? x : y;
+    else if constexpr (OP == KOp::Gcd || OP == KOp::Lcm) {
+        // applyArith's Int arm (rtIntWordOp, on the magnitudes); an answer past
+        // int64 (-2**63 gcd 0, a wide lcm) is a BigInt, the generic path's
+        if (!rtIntWordOp(OP == KOp::Gcd ? 'g' : 'l', 'c', x, y, z)) R.bail = true;
+        return z;
+    }
     else if constexpr (OP == KOp::BAnd) return x & y;
     else if constexpr (OP == KOp::BOr) return x | y;
     else if constexpr (OP == KOp::BXor) return x ^ y;
@@ -2558,6 +2566,8 @@ void link(KNode* n) {
         case KOp::Pow: n->fn = binFn<KOp::Pow, kX, kX>; break;
         case KOp::Min: n->fn = binPick<KOp::Min>(l, r); break;
         case KOp::Max: n->fn = binPick<KOp::Max>(l, r); break;
+        case KOp::Gcd: n->fn = binFn<KOp::Gcd, kX, kX>; break;
+        case KOp::Lcm: n->fn = binFn<KOp::Lcm, kX, kX>; break;
         case KOp::BAnd: n->fn = binPick<KOp::BAnd>(l, r); break;
         case KOp::BOr: n->fn = binPick<KOp::BOr>(l, r); break;
         case KOp::BXor: n->fn = binPick<KOp::BXor>(l, r); break;
