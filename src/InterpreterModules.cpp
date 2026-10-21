@@ -1080,14 +1080,22 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         collectExportedSubNames(prog->stmts, exported);
         // (an exported CODE VARIABLE is exported like a sub: `our &my-counter is
         // export`, set in a BEGIN — S10-packages/precompilation.t)
+        // …and the `$`/`@`/`%` variables the module exports, the only ones its
+        // importer may see by their bare names (the publish below)
+        std::set<std::string> exportedVars;
         for (auto& st : prog->stmts) {
             if (!st || st->kind != NK::ExprStmt) continue;
             const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
-            if (e && e->kind == NK::VarExpr) {
-                const auto* ve = static_cast<const VarExpr*>(e);
-                if (ve->d().declExport && ve->name.size() > 1 && ve->name[0] == '&') exported.insert(ve->name.substr(1));
-            }
+            auto one = [&](const Expr* x) {
+                if (!x || x->kind != NK::VarExpr) return;
+                const auto* ve = static_cast<const VarExpr*>(x);
+                if (!ve->d().declExport || ve->name.size() < 2) return;
+                if (ve->name[0] == '&') exported.insert(ve->name.substr(1));
+                else exportedVars.insert(ve->name);
+            };
+            if (e && e->kind == NK::ListExpr) for (auto& it : static_cast<const ListExpr*>(e)->items) one(it.get());
+            else one(e);
         }
         // …and the `our sub`s a module declares with no package of its own in
         // force: those live in GLOBAL, where an unqualified call finds them
@@ -1192,6 +1200,15 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 // LEXICAL to the module (its routines close over them), and the
                 // program's own `$?DISTRIBUTION` stays undefined (cur-current-distribution.t)
                 if (k.size() > 2 && k[1] == '?' && std::strchr("$@%&", k[0])) continue;
+                // …nor a VARIABLE the module does not export. Its `my`s are its own,
+                // and its `our`s go by their package's name (`$UM::v`) or, with no
+                // package in force, already live in GLOBAL as the package's cell
+                // (ourCell). Published under the bare name, they became the
+                // PROGRAM's: `use UM; our $v` read the module's `$v`, and
+                // `::('$secret')` found a module's `my` (ledger O30).
+                if (k.size() > 1 && std::strchr("$@%", k[0]) && (nameLetterAt(k, 1) || (k[1] == '_' && k.size() > 2)) &&
+                    !exportedVars.count(k))
+                    continue;
                 // …nor a type the module declares and does NOT export: `role Node`
                 // inside `unit module YAMLish` is YAMLish::Node, reachable by that
                 // name alone. Published under its short name, it replaced the
