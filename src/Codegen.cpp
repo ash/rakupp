@@ -1046,7 +1046,7 @@ struct Codegen {
             // user candidate. Missing this was worse than missing the value
             // position: `while $obj < 10` kept its built-in comparison while the
             // body's `+` had become the user's, so the loop stopped terminating.
-            if (it != cmp.end() && userOpFn("infix:<" + b->op + ">").empty())
+            if (it != cmp.end() && userOpFn("infix:<" + b->written() + ">").empty())
                 return it->second + "(" + ex(b->lhs.get()) + ", " + ex(b->rhs.get()) + ")";
         }
         return "RT.boolify(" + ex(e) + ")";
@@ -2400,7 +2400,8 @@ struct Codegen {
                     while (nr < b->op.size() && b->op[nr] == 'R') nr++;
                     std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
                     if (nr % 2 == 0) std::swap(L, R);
-                    return std::string(starFn(b)) + "(" + cesc(b->op.substr(nr)) + ", " + R + ", " + L + ")";
+                    // (`R×`: the built-in `*` — uniOpWritten)
+                    return std::string(starFn(b)) + "(" + cesc(uniOpFold(b->op.substr(nr))) + ", " + R + ", " + L + ")";
                 }
                 // Smartmatch on two values: the interpreter's rule, not
                 // applyArith's. A Callable matcher has to be INVOKED with the
@@ -2437,7 +2438,8 @@ struct Codegen {
                 // makes. Without this the emitted code called the built-in
                 // straight through and a compiled program quietly answered
                 // differently from an interpreted one.
-                if (std::string uf = userOpFn("infix:<" + b->op + ">"); !uf.empty())
+                // (by the name WRITTEN: `×` is `infix:<×>`, whose built-in is `*`)
+                if (std::string uf = userOpFn("infix:<" + b->written() + ">"); !uf.empty())
                     return "rtUserInfix(" + userOpPtr(uf) + ", " + cesc(b->op) + ", " + L + ", " + R + ")";
                 // a NATIVE operation (Ast.h nativeNumericStatic): wraps at 64 bits,
                 // and its value carries the native tags, as the interpreter's does
@@ -3837,6 +3839,7 @@ struct Codegen {
         }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
+        const std::string ubinop = a->written().substr(0, a->written().size() - 1);   // `×=`: `infix:<×>`
         // `@a[$y; $x] += 1` — a multi-dim slot is not a reference into a buffer, so
         // the read and the write are AT-POS and ASSIGN-POS around the operator.
         // The indices are evaluated ONCE, into a list both calls use.
@@ -3848,8 +3851,8 @@ struct Codegen {
                            : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
                            : binop == "~"  ? "applyArith(\"~\", __r, " + rhs + ")"
                            : binop == ","  ? "([&]{ Value __c = __r; rtCommaAssign(__c, " + rhs + "); return __c; }())"
-                           : !userOpFn("infix:<" + binop + ">").empty()
-                                           ? "rtUserInfix(" + userOpPtr(userOpFn("infix:<" + binop + ">")) +
+                           : !userOpFn("infix:<" + ubinop + ">").empty()
+                                           ? "rtUserInfix(" + userOpPtr(userOpFn("infix:<" + ubinop + ">")) +
                                              ", " + cesc(binop) + ", __r, " + rhs + ")"
                            : !fb.empty()   ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
@@ -3915,7 +3918,7 @@ struct Codegen {
         // the fallback. Both operands are bound once: the built-in lanes name
         // `lhs` twice already, and adding a third use would have turned a
         // side-effecting target into two evaluations.
-        if (std::string uf = userOpFn("infix:<" + binop + ">"); !uf.empty())
+        if (std::string uf = userOpFn("infix:<" + ubinop + ">"); !uf.empty())
             return "([&]()->Value&{ Value& __ua = " + lhs + "; Value __ub = " + rhs +
                    "; if (!rtUserInfixInto(" + userOpPtr(uf) + ", __ua, __ub)) applyArithInto(" +
                    cesc(binop) + ", __ua, __ub); return __ua; }())";
@@ -4632,7 +4635,7 @@ struct Codegen {
                 const bool logical = cond && (op == "&&" || op == "and" || op == "||" || op == "or");
                 const auto ai = arith.find(op);
                 if (ai == arith.end() && !cmp.count(op) && !logical) return "";
-                if (!kernelOpFree("infix:<" + op + ">")) return "";
+                if (!kernelOpFree("infix:<" + b->written() + ">")) return "";   // (`×`: `infix:<×>`)
                 bool li = false, ri = false;
                 std::string l = kExpr(b->lhs.get(), ps, logical, li, ok);
                 std::string r = l.empty() ? "" : kExpr(b->rhs.get(), ps, logical, ri, ok);

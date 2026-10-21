@@ -845,38 +845,8 @@ inline bool boundInfixPossible(const std::string& op) {
     return m && !op.empty() && ((m >> lexShadowSlot(op.data(), op.size())) & 1) &&
            boundInfixArmed(op.data(), op.size());
 }
-// The ASCII spelling the lexer gives `×` `÷` `−` `≥` `≤` `≠`, so a `sub
-// infix:<×>` shadows what reaches the evaluator as `*`: the Unicode twin of an
-// operator, or null.
-inline const char* lexShadowTwin(const std::string& op) {
-    if (op.size() == 1) {
-        switch (op[0]) {
-            case '*': return "\xC3\x97";
-            case '/': return "\xC3\xB7";
-            case '-': return "\xE2\x88\x92";
-            default: return nullptr;
-        }
-    }
-    if (op.size() == 2 && op[1] == '=') {
-        switch (op[0]) {
-            case '>': return "\xE2\x89\xA5";
-            case '<': return "\xE2\x89\xA4";
-            case '!': return "\xE2\x89\xA0";
-            default: return nullptr;
-        }
-    }
-    return nullptr;
-}
-// Whether a lexical `&infix:<…>` might shadow the built-in `op`, under its own
-// spelling or its Unicode twin's. The twin used to be admitted whenever ANY
-// bit was armed, which sent every `*`, `-` and `/` of such a program the slow
-// way.
-inline bool lexShadowPossibleOrTwin(const std::string& op) {
-    if (!g_lexShadowMask.load(std::memory_order_relaxed)) return false;
-    if (lexShadowPossible(op)) return true;
-    const char* tw = lexShadowTwin(op);
-    return tw && lexShadowPossible(tw, std::char_traits<char>::length(tw));
-}
+// (`×` and `*` are told apart by the name a node was written with, never by
+// asking for one when the other finds nothing: see uniOpWritten in Ast.h.)
 
 struct Env {
     EnvVars vars;
@@ -2536,6 +2506,9 @@ public:
                          const std::string& nm);   // `my Str(Int(Cool)) $x = …`
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
     Value* lexShadowedInfix(const std::string& op, const Value& l, const Value& r); // lexical &infix:<op> shadowing a built-in
+    // An operator NAMED `×` `÷` `−` `≤` `≥` `≠` (uniOpWritten) on two values:
+    // a user operator of that name, else the ASCII built-in (InterpreterOperators.cpp)
+    Value applyUniOp(const std::string& name, const char* builtin, const Value& l, const Value& r);
     // A user `multi infix:<op>` over core operands, judged against the
     // built-in candidate it competes with (see InterpreterBinding.cpp).
     bool userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out);

@@ -1614,7 +1614,10 @@ static bool userInfixModelledOp(const std::string& op, bool& stringOp) {
         {"+", false}, {"-", false}, {"*", false}, {"/", false}, {"%", false}, {"**", false},
         {"==", false}, {"!=", false}, {"<", false}, {">", false}, {"<=", false}, {">=", false},
         {"<=>", false}, {"div", false}, {"mod", false},
-        {"~", true}, {"eq", true}, {"ne", true}, {"lt", true}, {"gt", true}, {"le", true}, {"ge", true}, {"leg", true}};
+        {"~", true}, {"eq", true}, {"ne", true}, {"lt", true}, {"gt", true}, {"le", true}, {"ge", true}, {"leg", true},
+        // …and the names `*` `/` `-` `<=` `>=` `!=` also go by (uniOpWritten)
+        {"\xC3\x97", false}, {"\xC3\xB7", false}, {"\xE2\x88\x92", false},
+        {"\xE2\x89\xA4", false}, {"\xE2\x89\xA5", false}, {"\xE2\x89\xA0", false}};
     auto it = kOps.find(op);
     if (it == kOps.end()) return false;
     stringOp = it->second;
@@ -1733,8 +1736,10 @@ bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const
     }
     if (verdict == Win) { out = callCallable(*f, ValueList{l, r}); return true; }
     if (verdict == Lose) return false;
-    const bool angled = op.find_first_of("<>") != std::string::npos;
-    const std::string name = angled ? "infix:\u00AB" + op + "\u00BB" : "infix:<" + op + ">";
+    // (Rakudo names the candidates' proto: `infix:<×>`'s is `infix:<*>`)
+    const std::string pop = uniOpFold(op);
+    const bool angled = pop.find_first_of("<>") != std::string::npos;
+    const std::string name = angled ? "infix:\u00AB" + pop + "\u00BB" : "infix:<" + pop + ">";
     std::string sigs = "\n    (" + core + ":D, " + core + ":D)";
     if (core == "Any" || core == "Real") sigs = "\n    (" + core + " \\a, " + core + " \\b)";
     try { sigs += "\n    " + methodCall(methodCall(*tied, "signature", {}), "gist", {}).toStr(); }

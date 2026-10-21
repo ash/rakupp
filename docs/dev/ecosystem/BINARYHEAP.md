@@ -258,7 +258,10 @@ unarmed loops now time the same. The collision also produced a wrong
 answer: with `*`'s slot armed, `lexInfixLookup` looked for `&infix:<*>`,
 found nothing, and never tried the twin, so a `my sub infix:<×>` in scope
 answered the built-in product. The twin is now tried whenever the ASCII
-spelling finds nothing in scope.
+spelling finds nothing in scope. (2026-10-21: that made every `*` look for a
+`×` shadow too. The twin is gone: the parser marks a node written `×`, and a
+user operator is looked up under the name written —
+[unicode-operator-names-apart.raku](../../../t/regression/unicode-operator-names-apart.raku).)
 [t/regression/lex-shadow-filter-exact.raku](../../../t/regression/lex-shadow-filter-exact.raku)
 holds both, and it fails on the old binary in exactly those two checks (cost
 ratio 4.14, `2 × 3` answering 6).

@@ -392,7 +392,8 @@ void Scan::expr(Expr* e) {
             if (!asgOps().count(a->op)) { fail("assignment operator '" + a->op + "'"); return; }
             if (a->containerSigil) { fail("a container-sigil assignment"); return; }
             // `$x += $y` is `$x = $x + $y` and consults `infix:<+>`.
-            if (a->op.size() > 1) useOp("infix", a->op.substr(0, a->op.size() - 1));
+            // (by the name written: `×=` consults `infix:<×>`, not `infix:<*>`)
+            if (a->op.size() > 1) useOp("infix", a->written().substr(0, a->written().size() - 1));
             if (a->target->kind == NK::VarExpr) {
                 const std::string& tn = static_cast<VarExpr*>(a->target.get())->name;
                 if (tn.size() && (tn[0] == '@' || tn[0] == '%')) { fail("an assignment to a whole array or hash"); return; }
@@ -410,7 +411,7 @@ void Scan::expr(Expr* e) {
         case NK::Binary: {
             auto* b = static_cast<Binary*>(e);
             if (!binOps().count(b->op)) { fail("operator '" + b->op + "'"); return; }
-            useOp("infix", b->op);
+            useOp("infix", b->written());
             expr(b->lhs.get()); expr(b->rhs.get());
             return;
         }

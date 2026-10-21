@@ -433,8 +433,55 @@ struct Assign : Expr {
     // (`multi sub infix:<+=>(… is rw, …)`): evalAssign calls it (parse-time
     // flag, so the common `$x += 1` pays nothing)
     bool userOp = false;
+    // written `×=` `÷=` `−=`: see uniOpWritten (in the padding after userOp)
+    bool uniSpelled = false;
     Assign(): Expr(NK::Assign) {}
+    // The name `op` was written with (`×=` for an `*=` written so).
+    inline const std::string& written() const;
 };
+
+// `×` `÷` `−` `≤` `≥` `≠` (and `×=` `÷=` `−=`) name operators of their own —
+// `&infix:<×>` is bound, shadowed and given candidates apart from `&infix:<*>`
+// — over the same BUILT-IN as `*` `/` `-` `<=` `>=` `!=`. The lexer reads them
+// as the ASCII spelling and the parser marks the node (Binary::uniSpelled,
+// Assign::uniSpelled), so the built-in runs under the ASCII name while a user
+// operator is looked up under the written one. A metaop carries the written
+// name in its op string instead (`[×]`, `Z×`, `>>×>>`), folded by uniOpAscii
+// where the built-in runs.
+//
+// The written name for ASCII `op` (`*` → `×`, `*=` → `×=`), or null.
+inline const std::string* uniOpWritten(const std::string& op) {
+    static const std::string kW[] = {"\xC3\x97", "\xC3\xB7", "\xE2\x88\x92",          // × ÷ −
+                                     "\xE2\x89\xA4", "\xE2\x89\xA5", "\xE2\x89\xA0",  // ≤ ≥ ≠
+                                     "\xC3\x97=", "\xC3\xB7=", "\xE2\x88\x92="};      // ×= ÷= −=
+    if (op.size() == 1) switch (op[0]) {
+        case '*': return &kW[0]; case '/': return &kW[1]; case '-': return &kW[2];
+        default: return nullptr;
+    }
+    if (op.size() == 2 && op[1] == '=') switch (op[0]) {
+        case '<': return &kW[3]; case '>': return &kW[4]; case '!': return &kW[5];
+        case '*': return &kW[6]; case '/': return &kW[7]; case '-': return &kW[8];
+        default: return nullptr;
+    }
+    return nullptr;
+}
+// …and back: the ASCII built-in a name spelled so stands for, or null. One
+// byte rejects every ASCII operator.
+inline const char* uniOpAscii(const std::string& op) {
+    if (op.size() < 2 || op.size() > 4 || (unsigned char)op[0] < 0xC3) return nullptr;
+    static const char* const kPairs[][2] = {
+        {"\xC3\x97", "*"}, {"\xC3\xB7", "/"}, {"\xE2\x88\x92", "-"},
+        {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA0", "!="},
+        {"\xC3\x97=", "*="}, {"\xC3\xB7=", "/="}, {"\xE2\x88\x92=", "-="}};
+    for (auto& p : kPairs) if (op == p[0]) return p[1];
+    return nullptr;
+}
+// The name with any such spelling folded: what a built-in kernel is asked for.
+inline std::string uniOpFold(const std::string& op) { const char* a = uniOpAscii(op); return a ? a : op; }
+inline const std::string& Assign::written() const {
+    const std::string* w = uniSpelled ? uniOpWritten(op) : nullptr;
+    return w ? *w : op;
+}
 
 struct Binary : Expr {
     std::string op;
@@ -476,8 +523,16 @@ struct Binary : Expr {
     // padding before litVal: sizeof(Binary) is unchanged.)
     mutable DecidedOnce<signed char> typedTree{-1};
     mutable DecidedOnce<unsigned char> typedMiss{0};
+    // written `×` `÷` `−` `≤` `≥` `≠`: see uniOpWritten (the last padding byte
+    // before litVal, so sizeof(Binary) is still unchanged)
+    bool uniSpelled = false;
     mutable PublishedOnce<const void*> litVal{nullptr};
     Binary(): Expr(NK::Binary) {}
+    // The name `op` was written with: what a user operator is looked up by.
+    const std::string& written() const {
+        const std::string* w = uniSpelled ? uniOpWritten(op) : nullptr;
+        return w ? *w : op;
+    }
 };
 
 struct Unary : Expr {

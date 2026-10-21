@@ -336,6 +336,18 @@ void Parser::error(const std::string& msg) {
     throw e;
 }
 
+// Whether an operator token was written `×` `÷` `−` `≤` `≥` `≠` (or `×=` `÷=`
+// `−=`): the lexer hands those over as the ASCII spelling and keeps the one
+// written in text2. See uniOpWritten.
+static bool uniSpelledTok(const Token& t) {
+    if (t.kind != Tok::Op || t.text2.empty()) return false;
+    const std::string* w = uniOpWritten(t.text);
+    return w && *w == t.text2;
+}
+// The operator as written — what a metaop names its inner operator by, so
+// `[×]` and `Z×` look up `&infix:<×>`, not `&infix:<*>`.
+static std::string writtenOp(const Token& t) { return uniSpelledTok(t) ? t.text2 : t.text; }
+
 // ---------------- infix table ----------------
 static InfixInfo classifyInfix(const Token& t);
 static InfixInfo classifyInfixUncached(const Token& t) {
@@ -417,6 +429,8 @@ static InfixInfo classifyInfixUncached(const Token& t) {
             // kind, and would otherwise fall back to additive precedence and
             // outrank the `..` on its left
             if (inner.text == "=>") inner.kind = Tok::FatArrow;
+            // (`>>×>>` binds as `>>*>>` does)
+            if (const char* a = uniOpAscii(inner.text)) inner.text = a;
             InfixInfo base = classifyInfix(inner);
             in.valid = true;
             in.lbp = base.valid ? base.lbp : BP_ADD;
@@ -2234,11 +2248,11 @@ ExprPtr Parser::parseExpr(int minbp) {
         bool metaPlusOp = false;
         if (cur().kind == Tok::Ident && !userInfix_.count(cur().text) &&
             cur().text.find_first_not_of("ZXR") == std::string::npos &&
-            peek().kind == Tok::Op && !peek().spaceBefore && userInfix_.count(peek().text))
-            metaPlusOp = true;
+            peek().kind == Tok::Op && !peek().spaceBefore && userInfix_.count(writtenOp(peek())))
+            metaPlusOp = true;   // (`Z×` over a declared `infix:<×>`, never over `infix:<*>`)
         if (cur().kind == Tok::Ident && (cur().text.size() > 1 || metaPlusOp) &&
             !userInfix_.count(cur().text)) {
-            const std::string w = metaPlusOp ? cur().text + peek().text : cur().text;
+            const std::string w = metaPlusOp ? cur().text + writtenOp(peek()) : cur().text;
             size_t i = 0;
             while (i < w.size() && (w[i] == 'Z' || w[i] == 'X' || w[i] == 'R')) i++;
             if (i > 0 && i < w.size() && userInfix_.count(w.substr(i))) {
@@ -2373,7 +2387,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             if (base.valid && base.isAssign && BP_ASSIGN >= minbp) {
                 // `$x R~= $y` — reversed-role assignment (assigns to the RIGHT operand)
                 advance(); // R
-                std::string baseOp = advance().text;
+                std::string baseOp = writtenOp(advance());
                 auto as = std::make_unique<Assign>();
                 as->op = "R" + baseOp;
                 as->target = std::move(lhs);
@@ -2383,7 +2397,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
             if (base.valid && base.lbp >= minbp) {
                 advance(); // R
-                std::string baseOp = advance().text;
+                std::string baseOp = writtenOp(advance());
                 auto bin = std::make_unique<Binary>();
                 bin->op = "R" + baseOp;
                 bin->lhs = std::move(lhs);
@@ -2400,9 +2414,11 @@ ExprPtr Parser::parseExpr(int minbp) {
             InfixInfo sBase = classifyInfix(peek());
             if (sBase.valid && !sBase.isAssign && sBase.lbp >= minbp) {
                 advance();                                   // S
+                const bool sUni = uniSpelledTok(cur());
                 std::string baseOp = advance().text;
                 auto bin = std::make_unique<Binary>();
                 bin->op = baseOp;
+                bin->uniSpelled = sUni;
                 bin->lhs = std::move(lhs);
                 bin->rhs = parseExpr(sBase.lbp + 1);
                 lhs = std::move(bin);
@@ -2496,7 +2512,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             // infix classifier what they spell, exactly as the hyper metaop does.
             // The metaops NEST — `[Z[cmp]]`, `R[R[R-]]` — so the spelling is read
             // with a bracket depth rather than as a flat run of tokens.
-            std::string spell;
+            std::string spell, wspell;   // …and as written: `[×]` (see writtenOp)
             size_t k = pos_;
             {
                 int depth = 0; bool ok = true;
@@ -2505,13 +2521,13 @@ ExprPtr Parser::parseExpr(int minbp) {
                     if (t.kind == Tok::End) { ok = false; break; }
                     if (t.kind == Tok::RBracket) {
                         if (depth == 0) break;              // the closing bracket of the whole form
-                        spell += "]"; depth--; k++; continue;
+                        spell += "]"; wspell += "]"; depth--; k++; continue;
                     }
                     if (n && t.spaceBefore) { ok = false; break; }
-                    if (t.kind == Tok::LBracket) { spell += "["; depth++; k++; continue; }
-                    if (t.kind == Tok::FatArrow) spell += "=>";      // `[Z=>]`
-                    else if (t.kind == Tok::Comma) spell += ",";     // `[R,]`
-                    else if (t.kind == Tok::Op || t.kind == Tok::Ident) spell += t.text;
+                    if (t.kind == Tok::LBracket) { spell += "["; wspell += "["; depth++; k++; continue; }
+                    if (t.kind == Tok::FatArrow) { spell += "=>"; wspell += "=>"; }     // `[Z=>]`
+                    else if (t.kind == Tok::Comma) { spell += ","; wspell += ","; }    // `[R,]`
+                    else if (t.kind == Tok::Op || t.kind == Tok::Ident) { spell += t.text; wspell += writtenOp(t); }
                     else { ok = false; break; }
                     k++;
                 }
@@ -2547,15 +2563,16 @@ ExprPtr Parser::parseExpr(int minbp) {
                     // The brackets are punctuation once the spelling is known:
                     // `R[R-]` is `RR-` and `Z[cmp]` is `Zcmp`, which is what every
                     // metaop reader downstream already understands.
-                    std::string baseOp;
+                    std::string baseOp, wbaseOp;
                     for (char c : spell) if (c != '[' && c != ']') baseOp += c;
+                    for (char c : wspell) if (c != '[' && c != ']') wbaseOp += c;
                     while (pos_ < k) advance();
                     advance(); // ]
                     bool assignForm = isOp("=") && !cur().spaceBefore;
                     if (assignForm && BP_ASSIGN >= minbp) {
                         advance(); // =
                         auto as = std::make_unique<Assign>();
-                        as->op = "[" + outerMeta + rPfx + baseOp + "]=";
+                        as->op = "[" + outerMeta + rPfx + wbaseOp + "]=";
                         as->target = std::move(lhs);
                         as->value = parseExpr(BP_ASSIGN);
                         lhs = std::move(as);
@@ -2566,15 +2583,19 @@ ExprPtr Parser::parseExpr(int minbp) {
                         // a zip or cross binds as loosely as `Z`/`X` themselves,
                         // whatever the operator inside the brackets
                         if (outerMeta == "Z" || outerMeta == "X") base.lbp = BP_ZIP;
-                        if (outerMeta.empty() && rPfx.empty() && userInfix_.count(baseOp)) {
+                        if (outerMeta.empty() && rPfx.empty() && userInfix_.count(wbaseOp)) {
                             auto call = std::make_unique<Call>();
-                            call->name = "infix:<" + baseOp + ">";
+                            call->name = "infix:<" + wbaseOp + ">";
                             call->args.push_back(std::move(lhs));
                             call->args.push_back(parseExpr(base.lbp + 1));
                             lhs = std::move(call);
                         } else {
                             auto bin = std::make_unique<Binary>();
-                            bin->op = outerMeta + rPfx + baseOp;
+                            // (a metaop names its operator as written; a bare
+                            // `[×]` is the plain operator, marked)
+                            const bool bare = outerMeta.empty() && rPfx.empty();
+                            bin->op = outerMeta + rPfx + (bare ? baseOp : wbaseOp);
+                            bin->uniSpelled = bare && wbaseOp != baseOp;
                             bin->lhs = std::move(lhs);
                             bin->rhs = parseExpr(base.lbp + 1);
                             lhs = std::move(bin);
@@ -2777,11 +2798,13 @@ ExprPtr Parser::parseExpr(int minbp) {
             BP_ASSIGN >= minbp) {
             bool nested = peek().kind == Tok::LBracket; // [[+]]= — same as [+]=
             advance(); if (nested) advance(); // [ ([)
+            const bool uni = uniSpelledTok(cur());
             std::string op = advance().text;
             advance(); if (nested) advance(); // ] (])
             advance(); // =
             auto as = std::make_unique<Assign>();
             as->op = op + "=";
+            as->uniSpelled = uni;
             as->target = std::move(lhs);
             as->value = parseExpr(BP_ASSIGN);
             lhs = std::move(as);
@@ -2949,6 +2972,7 @@ ExprPtr Parser::parseExpr(int minbp) {
         if (in.lbp == BP_COMPARE && chainOps.count(in.op)) {
             auto chain = std::make_unique<ChainExpr>();
             chain->operands.push_back(std::move(lhs));
+            bool firstUni = false;   // the first operator written `≤` `≥` `≠`
             while (true) {
                 InfixInfo ci = classifyInfix(cur());
                 if (!ci.valid || ci.lbp != BP_COMPARE || !chainOps.count(ci.op)) break;
@@ -2958,6 +2982,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 if (!chain->ops.empty() && subAdverbIx_ && subAdverbEnd_ == pos_ &&
                     adverbEnds(chain->operands.back().get(), subAdverbIx_))
                     break;
+                if (chain->ops.empty()) firstUni = uniSpelledTok(cur());
                 advance();
                 chain->ops.push_back(ci.op);
                 infixRhsPos_ = pos_;   // a term is REQUIRED here too: `1 >;`
@@ -2966,6 +2991,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             if (chain->ops.size() == 1) {
                 auto bin = std::make_unique<Binary>();
                 bin->op = chain->ops[0];
+                bin->uniSpelled = firstUni;
                 bin->lhs = std::move(chain->operands[0]);
                 bin->rhs = std::move(chain->operands[1]);
                 lhs = std::move(bin);
@@ -3061,7 +3087,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             int metaToks = 2; // Z/X + the trailing op
             if (peek().kind == Tok::FatArrow) meta = "=>";
             else if (peek().kind == Tok::Comma) meta = ","; // Z, / X, — zip/cross into tuples
-            else if (peek().kind == Tok::Op) meta = peek().text;
+            else if (peek().kind == Tok::Op) meta = writtenOp(peek());   // `Z×` names `&infix:<×>`
             // `Z[+]` / `X[*]` — the metaop's operator written in BRACKETS. Without
             // this the `[+]` was parsed as a REDUCTION of the right operand, so
             // `@a Z[+] @b` answered a single pair whose second element was the sum of
@@ -3069,7 +3095,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             // which is why every HMAC came out wrong.
             else if (peek().kind == Tok::LBracket && peek(2).kind == Tok::Op &&
                      peek(3).kind == Tok::RBracket) {
-                meta = peek(2).text;
+                meta = writtenOp(peek(2));
                 metaToks = 4; // Z/X + [ + op + ]
             }
             // `X[&sprintf]` / `Z[&f]` — a bracketed CALLABLE as the inner operator.
@@ -3097,7 +3123,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             else if (peek().kind == Tok::LBracket && peek(2).kind == Tok::Ident &&
                      peek(2).text == "R" && peek(3).kind == Tok::Op &&
                      !peek(3).spaceBefore && peek(4).kind == Tok::RBracket) {
-                meta = "R" + peek(3).text;
+                meta = "R" + writtenOp(peek(3));
                 metaToks = 5; // Z/X + [ + R + op + ]
             }
             // `1, 2 Z 3, 4 X 5, 6` — two DIFFERENT list infixes do not chain
@@ -3189,6 +3215,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 }
             }
         }
+        const bool opUni = uniSpelledTok(cur());   // `×`, read as `*` (uniOpWritten)
         advance(); // consume infix op
 
         // list assignment: `@a = 1,2,3` / `my ($a,$b) = ...` grabs the whole comma
@@ -3316,8 +3343,9 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
             auto a = std::make_unique<Assign>();
             a->target = std::move(lhs); a->op = in.op; a->value = std::move(rhs);
+            a->uniSpelled = opUni;
             unmarkSigillessContainer(a.get());
-            if (in.op.size() >= 2 && in.op.back() == '=' && userInfix_.count(in.op)) a->userOp = true;
+            if (in.op.size() >= 2 && in.op.back() == '=' && userInfix_.count(a->written())) a->userOp = true;
             // `=@=` and friends ARE plain assignment; only the container semantics
             // differ, so record the sigil and let the op read as "=" from here on.
             if (in.op.size() == 3 && in.op[0] == '=' && in.op[2] == '=' &&
@@ -3399,6 +3427,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
             auto b = std::make_unique<Binary>();
             b->op = in.op; b->lhs = std::move(lhs); b->rhs = std::move(rhs);
+            b->uniSpelled = opUni;
             if (b->op == "//" || b->op == "||" || b->op == "&&" || b->op == "or" || b->op == "and" ||
                 b->op == "orelse" || b->op == "andthen" || b->op == "notandthen" ||
                 b->op == "^^" || b->op == "xor")
@@ -8207,8 +8236,8 @@ ExprPtr Parser::parsePrimary() {
                          j == 2 && peek(1).kind == Tok::Op && peek(1).text == "!"))) j++;
                 if (peek(j).kind == Tok::RBracket) {
                     advance(); // [
-                    std::string innerOp;
-                    for (int k = 1; k < j; k++) innerOp += advance().text;
+                    std::string innerOp;   // as written: `[×]` reduces with `&infix:<×>`
+                    for (int k = 1; k < j; k++) innerOp += writtenOp(advance());
                     advance(); // ]
                     // a STRUCTURAL (non-associative, non-chaining) infix has no reduction
                     {
@@ -8257,18 +8286,20 @@ ExprPtr Parser::parsePrimary() {
             // metaops nest freely and the brackets are punctuation, so the
             // reduction is over `+` itself.
             {
-                int j = 1; std::string pre;    // an optional metaop run: `[R[+]]`, `[Z[cmp]]`
+                int j = 1; std::string pre, wpre;    // an optional metaop run: `[R[+]]`, `[Z[cmp]]`
                 while (j < 4 && (peek(j).kind == Tok::Ident || peek(j).kind == Tok::Op) &&
-                       (j == 1 || !peek(j).spaceBefore)) pre += peek(j++).text;
-                int m = j + 1; std::string inner;
+                       (j == 1 || !peek(j).spaceBefore)) { wpre += writtenOp(peek(j)); pre += peek(j++).text; }
+                int m = j + 1; std::string inner, winner;   // (w…: as written, see writtenOp)
                 if (peek(j).kind == Tok::LBracket && (j == 1 || !peek(j).spaceBefore)) {
                     // `[[&foo]]` — a reduction over a bracketed CALLABLE. The
                     // name rides in the operator string and applyBinOp resolves
                     // it, exactly as the binary `A [&foo] B` form does.
                     if (peek(m).kind == Tok::Var && peek(m).text.size() > 1 && peek(m).text[0] == '&')
-                        inner = peek(m++).text;
+                        winner = inner = peek(m++).text;
                     else
-                        while (peek(m).kind == Tok::Op || peek(m).kind == Tok::Ident) inner += peek(m++).text;
+                        while (peek(m).kind == Tok::Op || peek(m).kind == Tok::Ident) {
+                            winner += writtenOp(peek(m)); inner += peek(m++).text;
+                        }
                 }
                 // …but only when the brackets really hold an OPERATOR: `[[-x]]` is
                 // an array of an array, not a reduction over an infix `-x`.
@@ -8283,7 +8314,7 @@ ExprPtr Parser::parsePrimary() {
                     peek(m + 1).kind == Tok::RBracket) {
                     for (int k2 = 0; k2 <= m + 1; k2++) advance();
                     auto u = std::make_unique<Unary>();
-                    u->op = "[" + pre + inner + "]";
+                    u->op = "[" + wpre + winner + "]";
                     if (isKind(Tok::Comma) || isKind(Tok::RParen) || isKind(Tok::Semicolon) || isKind(Tok::End))
                         u->operand = std::make_unique<ListExpr>();
                     else if (isKind(Tok::LParen) && !cur().spaceBefore) {
@@ -8337,7 +8368,7 @@ ExprPtr Parser::parsePrimary() {
                     advance(); // [
                     advance(); // '\'
                     std::string innerOp;
-                    for (int k = 2; k < j; k++) innerOp += advance().text;
+                    for (int k = 2; k < j; k++) innerOp += writtenOp(advance());
                     advance(); // ]
                     auto u = std::make_unique<Unary>();
                     u->op = "[\\" + innerOp + "]";
@@ -8368,7 +8399,7 @@ ExprPtr Parser::parsePrimary() {
                 (peek(2).kind == Tok::Op || peek(2).kind == Tok::Ident) &&
                 !peek(2).spaceBefore && peek(3).kind == Tok::RBracket) {
                 advance(); // [
-                std::string innerOp = advance().text; innerOp += advance().text; // R + base op
+                std::string innerOp = advance().text; innerOp += writtenOp(advance()); // R + base op
                 advance(); // ]
                 auto u = std::make_unique<Unary>();
                 u->op = "[" + innerOp + "]";

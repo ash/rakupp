@@ -69,35 +69,6 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
-- [ ] **A user `infix:<×>` (or `÷` `−` `≤` `≥` `≠`) and the built-in `*` are
-  one operator to the evaluator** (found 2026-10-21 by the parallel-sessions
-  review, docs/dev/findings/REVIEW-PARALLEL-2026-10.md; a silent wrong answer):
-
-  ```raku
-  class V { has $.x; method Numeric { $!x } }
-  multi sub infix:<×>(V $a, V $b) { "cross" }
-  say V.new(x => 2) × V.new(x => 3);          # 6, Rakudo cross
-  my $v = V.new(x => 2); $v ×= V.new(x => 5); say $v;    # 0, Rakudo cross
-  { my &infix:<×> = -> $a, $b { "t" }; say 6 * 7 }     # t, Rakudo 42
-  { my &infix:<×> = -> $a, $b { $a * $b }; say 2 × 3 } # recurses until the stack is gone, Rakudo 6
-  { my &infix:<×> = -> $a, $b { "t" }; my $x = 2; $x ×= 3; say $x }   # 6, Rakudo t
-  ```
-
-  The lexer rewrites `×` to `*` and `×=` to `*=` (src/Lexer.cpp ~4727,
-  `uniOpAlias`), keeping the written spelling only in `Token::text2`, so
-  Binary/Assign nodes cannot tell them apart. e9841fec's "twin" lookup
-  (`lexShadowTwin`, `lexShadowPossibleOrTwin`, the twin fallback in
-  `lexInfixLookup`, the own-body guard) makes every `*` look for a `×` shadow,
-  which fixes `×` and breaks `*`; the op= lane (InterpreterCore.cpp ~12997),
-  the general op= path (~17360) and the packed store (InterpreterCalls.cpp
-  ~4667) never ask about the twin; and a declared `multi infix:<×>` is not
-  consulted at all. Carry the spelling on the node (a bit in Binary's and
-  Assign's padding, set in the parser from `text2`), resolve shadows and user
-  candidates under the written spelling only, and run the built-in under the
-  ASCII one; then the twin fallback and the own-body guard can go. Keep
-  `[×]`, `Z×` and `»×»` (they already answer as Rakudo does) and the
-  t/regression/lex-shadow-filter-exact.raku cases.
-
 - [ ] **Built-in prefix and postfix operators fail when called by name**
   (found 2026-10-19 while fixing undeclared operator names, 145cddbf):
 

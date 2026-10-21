@@ -799,7 +799,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     default: return refuse("operator " + op + " on a Rat");
                 }
                 l = asExact(k, l, lt); r = asExact(k, r, rt);
-                noteOp(op);
+                noteOp(b->written());
                 KNode* n = k.node(kop); n->a = l; n->b = r;
                 t = compare ? KT::Bool : KT::Exact;
                 return n;
@@ -827,7 +827,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 num = true;
             }
             else return refuse("operator " + op + " on a non-Int");
-            noteOp(op);
+            noteOp(b->written());
             KNode* n = k.node(kop); n->a = l; n->b = r;
             if (kop == KOp::SCat) { n->slot = L->nstr++; t = KT::Str; }   // the result's temporary
             else t = (compare || logical) ? KT::Bool : num ? KT::Num : KT::Int;
@@ -866,7 +866,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 else if ((a->op == "+=" || a->op == "-=" || a->op == "*=") && vt == KT::Int && ct.elem != KT::Str) {
                     ct.elem = KT::Int;
                     op = a->op[0] == '+' ? KOp::CAddTo : a->op[0] == '-' ? KOp::CSubTo : KOp::CMulTo;
-                    noteOp(a->op.substr(0, 1));
+                    noteOp(a->written().substr(0, a->written().size() - 1));   // `×=` notes `×`
                 }
                 else if (a->op == "~=" && (vt == KT::Str || vt == KT::Int) && ct.elem != KT::Int) {
                     ct.elem = KT::Str;
@@ -959,7 +959,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             }
             else if ((a->op == "+=" || a->op == "-=" || a->op == "*=") && tt == KT::Int && vt == KT::Int) {
                 kop = a->op[0] == '+' ? KOp::AddTo : a->op[0] == '-' ? KOp::SubTo : KOp::MulTo;
-                noteOp(a->op.substr(0, 1));
+                noteOp(a->written().substr(0, a->written().size() - 1));   // `×=` notes `×`
             }
             // a Num variable takes a Num or an Int (converted); an Int
             // variable never takes a Num (it would change type)
@@ -968,14 +968,14 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 kop = a->op[0] == '+' ? KOp::XAddTo : a->op[0] == '-' ? KOp::XSubTo
                     : a->op[0] == '*' ? KOp::XMulTo : KOp::XDivTo;
                 v = asExact(k, v, vt);
-                noteOp(a->op.substr(0, 1));
+                noteOp(a->written().substr(0, a->written().size() - 1));   // `×=` notes `×`
             }
             else if ((a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=") && tt == KT::Num &&
                      (vt == KT::Num || vt == KT::Int)) {
                 kop = a->op[0] == '+' ? KOp::NAddTo : a->op[0] == '-' ? KOp::NSubTo
                     : a->op[0] == '*' ? KOp::NMulTo : KOp::NDivTo;
                 v = asNum(k, v, vt);
-                noteOp(a->op.substr(0, 1));
+                noteOp(a->written().substr(0, a->written().size() - 1));   // `×=` notes `×`
             }
             else return refuse("assignment operator " + a->op + " on these types");
             if (const LSym* s = lookup(tv->name)) { if (s->ro) return refuse("an assignment to a loop variable"); }
@@ -2606,8 +2606,9 @@ void link(KNode* n) {
 
 // The binary-operator shadow test the typed fast paths use (binaryShadowMaybe
 // in InterpreterCore.cpp).
+// `op` is the name the node was written with (noteOp records Binary::written()).
 bool opShadowed(const std::string& op) {
-    return lexShadowPossibleOrTwin(op);
+    return g_lexShadowMask.load(std::memory_order_relaxed) && lexShadowPossible(op);
 }
 
 // An argument the kernel may take as its number alone.

@@ -3968,14 +3968,6 @@ bool Lexer::trySetOp(Token& out) {
 // Unicode operator spellings the top-level tokenizer maps to ASCII. A hyper's
 // inner is gathered as raw bytes by BOTH marker forms, so both must apply this
 // or `»÷»` / `>>÷>>` reaches the runtime as an operator nothing implements.
-static void aliasUniOp(std::string& op) {
-    static const std::pair<const char*, const char*> uniAlias[] = {
-        {"\xC3\xB7", "/"}, {"\xC3\x97", "*"}, {"\xE2\x88\x92", "-"},
-        {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA0", "!="}};
-    for (auto& [u, a] : uniAlias)
-        if (op == u) { op = a; return; }
-}
-
 Token Lexer::lexOperator(bool termBefore) {
     // hyper metaop with guillemet brackets: »op« / «op» / »op» / «op«  (2-byte UTF-8
     // « = C2 AB, » = C2 BB). Normalise to the ASCII >>op<< form the parser already
@@ -4058,11 +4050,9 @@ Token Lexer::lexOperator(bool termBefore) {
         if (!inner.empty() && guill(0, rc)) {
             std::string close = rc ? ">>" : "<<";
             advance(); advance(); // closing guillemet
-            // the top-level tokenizer maps the Unicode aliases to ASCII (÷ → /,
-            // × → *, − → -, ≥ ≤ ≠); the inner was gathered as raw bytes, so give
-            // it the same treatment or `»÷»` reaches the runtime as an operator
-            // nothing implements
-            aliasUniOp(inner);
+            // (an inner `÷` `×` `−` `≥` `≤` `≠` stays as written: `»×»` applies
+            // `&infix:<×>`, which runs the built-in `*` unless the program
+            // binds one — see uniOpWritten in Ast.h)
             return make(Tok::Op, open + inner + close);
         }
         rewind(save); // not a hyper — fall through to the generic multibyte op
@@ -4100,7 +4090,7 @@ Token Lexer::lexOperator(bool termBefore) {
             for (int k = 0; k < len && !eof(); k++) inner += advance();
             innerCps++;
         }
-        aliasUniOp(inner); // ÷ → /, × → *, − → -, ≥ ≤ ≠ (same as the guillemet form)
+        // (an inner `×` `÷` … stays as written, as in the guillemet form)
         // fat-arrow inner: the inner scan cannot cross '>', so a lone `=` followed
         // by `>` and then a closing marker spells `=>` — `<<=>>>` and `>>=><<`
         if (inner == "=" && peek() == '>' &&

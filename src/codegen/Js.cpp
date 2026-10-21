@@ -143,6 +143,16 @@ const std::set<string> kTableOps = {
     "before", "after", "minmax", "!===", "unicmp", "coll", "~&", "~|", "~^", "!eqv", "!=:=", "!(elem)", "∉", "!(cont)", "∌",
 };
 const std::map<string, string> kUnicodeOps = { {"≤", "<="}, {"≥", ">="}, {"≠", "!="} };
+// A metaop names its inner operator as WRITTEN (`[×]`, `Z×`, `»×»`, `R×=`:
+// uniOpWritten in Ast.h), for a lexical `&infix:<×>` to be found by. This
+// backend compiles no lexical operators, so the name is the built-in's.
+static string asciiOps(string op) {
+    static const char* const kUni[][2] = {{"×", "*"}, {"÷", "/"}, {"−", "-"}, {"≤", "<="}, {"≥", ">="}, {"≠", "!="}};
+    if (op.size() < 2) return op;
+    for (auto& u : kUni)
+        for (size_t i; (i = op.find(u[0])) != string::npos; ) op.replace(i, std::strlen(u[0]), u[1]);
+    return op;
+}
 
 // ------------------------------------------------------------ AST walking ----
 // One child visitor for the whole polymorphic AST, so the analyses below stay short.
@@ -1011,7 +1021,7 @@ struct JsGen {
     }
     string assign(Assign* a) {
         Expr* t = a->target.get();
-        const string& op = a->op;
+        const string op = asciiOps(a->op);
         if (op == "=" || op == ":=" || op == "::=") {
             // a declaring target inside an expression was hoisted; treat as plain assignment
             if (t->kind == NK::VarExpr && static_cast<VarExpr*>(t)->declare) return declAssign(static_cast<VarExpr*>(t), a->value.get(), true);
@@ -1142,7 +1152,7 @@ struct JsGen {
 
     // ---------------------------------------------------------------- unary --
     string unary(Unary* u) {
-        const string& op = u->op;
+        const string op = asciiOps(u->op);
         Expr* x = u->operand.get();
         if (op.size() >= 3 && op.front() == '[' && op.back() == ']') {
             string inner = op.substr(1, op.size() - 2);
@@ -1235,7 +1245,7 @@ struct JsGen {
 
     // --------------------------------------------------------------- binary --
     string binary(Binary* b) {
-        const string& op = b->op;
+        const string op = asciiOps(b->op);
         if (op == "=:=") {   // container identity: a scalar is only ever =:= itself
             Expr* l = b->lhs.get(); Expr* r = b->rhs.get();
             bool lv = l->kind == NK::VarExpr, rv = r->kind == NK::VarExpr;
@@ -2779,7 +2789,7 @@ struct JsGen {
         // arguments and the one-argument form alike (a user-only operator has
         // no entry in OPS, and stays a no-match)
         if (!isMethod && name.size() > 8 && name.rfind("infix:<", 0) == 0 && name.back() == '>') {
-            const string op = jsStr(name.substr(7, name.size() - 8));
+            const string op = jsStr(asciiOps(name.substr(7, name.size() - 8)));   // `infix:<×>` extends `*`
             disp += "        if (R.OPS[" + op + "] && _pos.length === 2) return R.OPS[" + op + "](_pos[0], _pos[1]);\n";
             disp += "        if (R.OPS[" + op + "] && _pos.length === 1) return R.infixOneArg(" + op + ", _pos[0]);\n";
         }

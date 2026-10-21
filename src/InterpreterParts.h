@@ -159,6 +159,15 @@ static inline bool plainListLiteral(const ListExpr* le) {
 }
 std::string hashSubKey(const Value& k, const Value* base = nullptr);
 extern std::function<Value*(const std::string&)> g_lexInfixLookup;
+// A `*` or a WhateverCode: an operand that curries the operator it meets.
+inline bool whateverish(const Value& v) {
+    return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
+}
+// `* OP x` as a WhateverCode running the built-in `op`, unless a user operator
+// named `name` — looked up where the curry is written, then where it runs —
+// takes the call. The two differ for `* × 2`: named `×`, built-in `*`
+// (uniOpWritten). InterpreterOperators.cpp.
+Value whateverInfixCurry(const std::string& name, const std::string& op, const Value& l, const Value& r);
 
 // `Any` has two spellings inside the interpreter: an untyped slot with nothing
 // in it holds VT::Any (the default-constructed Value), while the TERM `Any`

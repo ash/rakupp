@@ -8402,7 +8402,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // this dispatcher, round and round — it is X::Multi::NoMatch.
                 if (as.size() == 2 && c.ci().name.size() > 8 && c.ci().name.back() == '>' &&
                     c.ci().name.rfind("infix:<", 0) == 0) {
-                    const std::string bop = c.ci().name.substr(7, c.ci().name.size() - 8);
+                    // (`infix:<×>`'s built-in is `*`: uniOpWritten)
+                    const std::string bop = uniOpFold(c.ci().name.substr(7, c.ci().name.size() - 8));
                     try { return applyArith(bop, as[0], as[1]); }
                     catch (RakuError& e) {
                         if (e.message.rfind("Unsupported operator", 0) != 0) throw;
@@ -8415,7 +8416,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // from a user-only one, for which this stays X::Multi::NoMatch.
                 if (as.size() == 1 && c.ci().name.size() > 8 && c.ci().name.back() == '>' &&
                     c.ci().name.rfind("infix:<", 0) == 0) {
-                    const std::string bop = c.ci().name.substr(7, c.ci().name.size() - 8);
+                    const std::string bop = uniOpFold(c.ci().name.substr(7, c.ci().name.size() - 8));
                     bool known = true;
                     try { applyArith(bop, Value::integer(1), Value::integer(1)); }
                     catch (RakuError& e) { if (e.message.rfind("Unsupported operator", 0) == 0) known = false; }
@@ -8566,7 +8567,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.ci().builtin && args.size() == 1 && c.ci().name.rfind("infix:<", 0) == 0 &&
         c.ci().name.size() > 8 && c.ci().name.back() == '>') {
         Value r;
-        if (infixOneArgForm(c.ci().name.substr(7, c.ci().name.size() - 8), args[0], r)) return r;
+        if (infixOneArgForm(uniOpFold(c.ci().name.substr(7, c.ci().name.size() - 8)), args[0], r)) return r;
     }
     if (c.ci().builtin) {
         // A WhateverCode takes exactly as many positionals as it has stars:
@@ -11469,7 +11470,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             g_lvAttrSigil = 0;
             Value* slot = lvalue(rOp ? a->value.get() : a->target.get());
             const char slotAttrSigil = g_lvAttrSigil;
-            std::string bop = rOp ? aop.substr(1, aop.size() - 2) : aop.substr(0, aop.size() - 1);
+            std::string bop = rOp ? aop.substr(1, aop.size() - 2) : a->written().substr(0, a->written().size() - 1);
             if (bop.size() > 2 && bop[0] == '[' && bop.back() == ']') bop = bop.substr(1, bop.size() - 2);
             const bool scOr = bop == "||" || bop == "or", scAnd = bop == "&&" || bop == "and",
                        scDef = bop == "//" || bop == "orelse";
@@ -12997,9 +12998,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // …and an op= whose operator a user multi may take over core
                     // operands (`multi infix:<+>(Int, Int $b where * > 100)`)
                     // leaves the lane: the long path asks userInfixOverCore
+                    // (asked under the name written: `×=` is `&infix:<×>`'s)
                     static const char* const kLaneOp[] = {"", "", "+", "-", "*", "~"};
+                    auto laneName = [&] { return a->written().substr(0, a->written().size() - 1); };
                     const bool userOpMaybe = sv >= 2 && g_lexShadowMask.load(std::memory_order_relaxed) &&
-                                             lexShadowPossible(std::string(kLaneOp[sv]));
+                                             lexShadowPossible(a->uniSpelled ? laneName() : std::string(kLaneOp[sv]));
                     if (pl->simple[tv->padSlot] && !userOpMaybe &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
@@ -13105,7 +13108,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         std::string bop2(1, "  +-*~"[(int)sv]);
                         bool overloaded = false;
                         Value nv;
-                        if (Value* f = tctx().cur->find("&infix:<" + bop2 + ">"))
+                        if (Value* f = tctx().cur->find("&infix:<" + laneName() + ">"))
                             try { nv = callCallable(*f, ValueList{*slot, rhs}); overloaded = true; }
                             catch (RakuError&) {}
                         if (!overloaded) {
@@ -13397,7 +13400,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // a USER compound assignment — `multi sub infix:<+=>(Int $a is rw, Int $b)`
     // — is called with the target as its (rw) left operand
     if (a->userOp && a->target && a->value && tctx().cur) {
-        if (Value* f = tctx().cur->find("&infix:<" + a->op + ">")) {
+        if (Value* f = tctx().cur->find("&infix:<" + a->written() + ">")) {
             if (f->t == VT::Code) {
                 struct Borrow {
                     std::vector<ExprPtr> v;
@@ -17071,7 +17074,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         std::string base = a->op.substr(1, a->op.size() - 2);
         Value l = eval(a->target.get());
         Value* rv = lvalue(a->value.get());
-        *rv = applyArith(base, *rv, l);
+        *rv = uniOpAscii(base) ? applyBinOp(base, *rv, l) : applyArith(base, *rv, l);   // `R×=`
         return sink ? Value::any() : *rv;
     }
     {   // short-circuit family: the RHS is thunked, and the target only needs to
@@ -17177,7 +17180,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
                 long long i = eval(ix->index.get()).toInt();
                 Value rhsB = eval(a->value.get());
-                std::string binop = a->op.substr(0, a->op.size() - 1);
+                std::string binop = a->written().substr(0, a->written().size() - 1);   // `×=` applies `×`
                 int esz = bp->blobElemSize();
                 if (i >= 0) {
                     size_t need = (size_t)(i + 1) * (size_t)esz;
@@ -17252,7 +17255,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash()) {
         auto fit = lv->hash()->find("FETCH"), sit = lv->hash()->find("STORE");
         if (fit != lv->hash()->end() && sit != lv->hash()->end()) {
-            std::string bop = a->op.substr(0, a->op.size() - 1);
+            std::string bop = a->written().substr(0, a->written().size() - 1);   // `×=` applies `×`
             Value cur = deproxy(*lv);   // FETCH as an ordinary read does it (a compact slot needs the proxy)
             Value nv;
             bool overloaded = false;
@@ -17274,6 +17277,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     Value before; // what a refused native result puts back
     if (nb) before = *lv;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
+    // …named as written: `$x ×= 2` looks up `&infix:<×>` (uniOpWritten)
+    const std::string* lookW = a->uniSpelled ? uniOpWritten(binop) : nullptr;
+    const std::string& look = lookW ? *lookW : binop;
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
         *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
         if (sink) return Value::any();
@@ -17355,16 +17361,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // auto-generates OP= from OP), falling back to the built-in operator.
     bool overloaded = false;
     if (lv->t == VT::Object || rhs.t == VT::Object) {
-        if (Value* f = tctx().cur->find("&infix:<" + binop + ">"))
+        if (Value* f = tctx().cur->find("&infix:<" + look + ">"))
             try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
             catch (RakuError&) {}
     }
     // …and over CORE operands it meets the built-in exactly as `$t + x` does:
     // `multi infix:<+>(Int, Int $b where * > 100)` takes `$t += 200` too
-    else if (RAKUPP_UNLIKELY(lexShadowPossible(binop))) {
+    else if (RAKUPP_UNLIKELY(lexShadowPossible(look))) {
         Value uv;
-        if (Value* f = lexShadowedInfix(binop, *lv, rhs)) { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
-        else if (userInfixOverCore(binop, *lv, rhs, uv)) { *lv = std::move(uv); overloaded = true; }
+        if (Value* f = lexShadowedInfix(look, *lv, rhs)) { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
+        else if (userInfixOverCore(look, *lv, rhs, uv)) { *lv = std::move(uv); overloaded = true; }
     }
     // an undefined value appended (`$s ~= $u`) warns as the operand of `~` it is
     if (!overloaded && binop == "~" && uninitOperand(rhs)) {
@@ -17426,7 +17432,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     }
     if (!overloaded && !subsets_.empty() && a->target->kind == NK::VarExpr &&
         !subsetTypeOfVar(static_cast<VarExpr*>(a->target.get())->name).empty()) {
-        Value nv = applyBinOp(binop, *lv, rhs);  // checked BEFORE the store
+        Value nv = applyBinOp(look, *lv, rhs);  // checked BEFORE the store
         subsetMutationCheck(a->target.get(), nv);
         *lv = nv;
         return opDone();
@@ -17452,7 +17458,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // (so `$m mx= 9` works for any operands, not just objects)
         else try { applyArithInto(binop, *lv, rhs); }
         catch (RakuError&) {
-            if (Value* f = tctx().cur->find("&infix:<" + binop + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
+            if (Value* f = tctx().cur->find("&infix:<" + look + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
             else throw;
         }
         if (arrayTarget && lv->t != VT::Array) {
@@ -18144,8 +18150,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         size_t n = a.size() > b.size() ? a.size() : b.size();
         if (a.empty() || b.empty()) return out;
         // (a CALLABLE operator, `>>[&k]<<`, is looked up in scope: only the
-        // interpreter can do that)
-        const bool callable = inner.size() > 1 && inner[0] == '&' && g_cbInterp;
+        // interpreter can do that — and so is a `×`, by its own name)
+        const bool callable = ((inner.size() > 1 && inner[0] == '&') || uniOpAscii(inner)) && g_cbInterp;
         for (size_t i = 0; i < n; i++)
             out.arr()->push_back(callable ? g_cbInterp->applyBinOpPublic(inner, a[i % a.size()], b[i % b.size()])
                                           : applyArith(inner, a[i % a.size()], b[i % b.size()]));
@@ -18405,58 +18411,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // `given * { when Pair {…} }` asks Pair.ACCEPTS(*), which is False, where the
     // curried WhateverCode was truthy and took the arm (Mathematica::Serializer's
     // encoder dispatches a bare `*` through exactly such a chain).
-    if (!skipCurry && !valueMatch && (isWhateverish(l) || isWhateverish(r))) {
-        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-        code.code()->ciM().isWhateverCode = true;
-        // each `*` consumes one argument left-to-right, so `* + *` has arity 2
-        auto arityOf = [](const Value& v) -> long long {
-            if (v.t == VT::Whatever) return 1;
-            if (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode) return v.code()->ci().whateverArity > 0 ? v.code()->ci().whateverArity : 1;
-            return 0;
-        };
-        code.code()->ciM().whateverArity = arityOf(l) + arityOf(r);
-        std::string opc = op; Value lc = l, rc = r;
-        // `my &precedes = * cmp * == Less` inside a routine that took
-        // `&infix:<cmp>` as a parameter: the closure ESCAPES that routine (this
-        // is how BinaryHeap's MIXIN hands a comparator to its role), so the
-        // shadowing lexical has to be captured here, where `* cmp *` was
-        // written, not looked up in whatever scope happens to run it later.
-        Value shadow;
-        if (g_lexInfixLookup) if (Value* sf = g_lexInfixLookup(opc)) shadow = *sf;
-        code.code()->ciM().builtin = [opc, lc, rc, shadow](Interpreter& I, ValueList& a) -> Value {
-            size_t idx = 0;
-            const Interpreter::ArgWriter* outerW = I.builtinArgWriter_;
-            auto resolve = [&](const Value& v) -> Value {
-                if (v.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
-                if (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode) {
-                    long long ar = v.code()->ci().whateverArity > 0 ? v.code()->ci().whateverArity : 1;
-                    size_t base = idx;
-                    ValueList sub;
-                    for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
-                    // `*++ + *--`: each side writes ITS arguments back
-                    // through the composed call's writer, re-indexed
-                    if (!outerW) return I.callCallable(v, sub);
-                    Interpreter::ArgWriter shifted = [outerW, base](size_t i, const Value& nv) {
-                        (*outerW)(base + i, nv);
-                    };
-                    Interpreter::tctx().pendingArgWriter = &shifted;
-                    try { Value r = I.callCallable(v, sub); Interpreter::tctx().pendingArgWriter = nullptr; return r; }
-                    catch (...) { Interpreter::tctx().pendingArgWriter = nullptr; throw; }
-                }
-                return v;
-            };
-            Value lv = resolve(lc); // resolve left before right — argument order matters
-            Value rv = resolve(rc);
-            // the shadow captured where the curry was WRITTEN wins; failing that,
-            // one visible from here (a `* cmp *` written and run in one scope)
-            if (shadow.t == VT::Code && shadow.code())
-                return I.callCallable(shadow, ValueList{lv, rv});
-            if (Value* f = I.lexShadowedInfix(opc, lv, rv))
-                return I.callCallable(*f, ValueList{lv, rv});
-            return applyArith(opc, lv, rv);
-        };
-        return code;
-    }
+    if (!skipCurry && !valueMatch && (isWhateverish(l) || isWhateverish(r))) return whateverInfixCurry(op, op, l, r);
 
     // ---- Date arithmetic ----
     if (isDateVal(l) && isDateVal(r) && opEq(op, "-")) return Value::integer(dateDays(l) - dateDays(r));
@@ -20355,6 +20310,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         };
         auto it = kUniAlias.find(op);
         if (it != kUniAlias.end()) return applyArith(it->second, l, r);
+        if (const char* a = uniOpAscii(op)) return applyArith(a, l, r);   // `×` (uniOpWritten)
     }
     // `&infix:<![!%%]>` — the BRACKETED spelling of an infix, which the metaops
     // nest freely (`R[+]`, `[!eq]`, `![!%%]`). The brackets are punctuation: the
@@ -21237,6 +21193,8 @@ bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
+    // `×` names an operator of its own over the built-in `*` (uniOpWritten)
+    if (const char* asc = uniOpAscii(op)) return applyUniOp(op, asc, l, r);
     // a type made by a user metaobject is checked through it (CustomHow.cpp)
     if (haveCustomHows_.load(std::memory_order_relaxed) && (opEq(op, "~~") || opEq(op, "!~~"))) {
         int cm = customHowMatch(l, r);
@@ -21415,7 +21373,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         bool strictL = op.compare(0, 2, ">>") == 0;
         bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
         // lists of plain machine numbers: the native kernel (InterpreterRegex.cpp)
-        if (Value nk; hyperNumericInfix(inner, l, r, strictL, strictR, nk))
+        if (Value nk; hyperNumericInfix(uniOpFold(inner), l, r, strictL, strictR, nk))
             return typedHyperResult(*this, l, r, std::move(nk));
         Value ll = l, rr = r;
         HyperOpName hon{inner};
@@ -21465,7 +21423,7 @@ static inline bool plainScalarLit(const Expr* e) {
 // shapes over plain machine Ints the comparison answers directly. -1 = not
 // taken; the caller falls back to eval+boolify, and nothing here has side
 // effects, so the fallback never double-evaluates.
-static inline bool binaryShadowMaybe(const std::string& op);
+static inline bool binaryShadowMaybe(const Binary* b);
 static int typedLeavesBool(Binary* b, Env* cur);
 int Interpreter::tryCondBool(Expr* e) {
     if (!e || e->kind != NK::Binary) return -1;
@@ -21474,7 +21432,7 @@ int Interpreter::tryCondBool(Expr* e) {
     if (op.size() > 2 || op.empty()) return -1;
     // a lexical `infix:<…>` declared after this node's shape was decided
     // would otherwise be passed over (evalBinary makes the same test)
-    if (binaryShadowMaybe(op)) return -1;
+    if (binaryShadowMaybe(b)) return -1;
     // the six Int comparisons, and the six string ones over two plain Strs —
     // everything else keeps the full path
     bool isCmp = opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
@@ -21556,11 +21514,11 @@ static signed char binaryArm(const std::string& op) {
     return it == ARM.end() ? 0 : it->second;
 }
 
-// Whether a lexical `&infix:<op>` might shadow the built-in `op` — evalBinary's
-// own test (its `shadowMaybe`), for the paths that answer its fast shape
-// without it.
-static inline bool binaryShadowMaybe(const std::string& op) {
-    return lexShadowPossibleOrTwin(op);
+// Whether a lexical `&infix:<op>` might shadow the node's built-in, under the
+// name it was written with — evalBinary's own test (its `shadowMaybe`), for
+// the paths that answer its fast shape without it.
+static inline bool binaryShadowMaybe(const Binary* b) {
+    return g_lexShadowMask.load(std::memory_order_relaxed) && lexShadowPossible(b->written());
 }
 
 // A slot whose Value an Int written into `.i` stays exactly what the full
@@ -21665,7 +21623,7 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
     if (anyPendingSubscripts() || (Expr::EvalFn)b->handler != &Interpreter::binaryFastHandler)
         return false;
     const std::string& op = b->op;
-    if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
+    if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(b))
         return false;
     if (!plainIntSlotValue(*slot)) return false;
     Env* const cur = tctx().cur.get();
@@ -21722,7 +21680,7 @@ bool Interpreter::chainLink(const std::string& op, const Value& prev, const Valu
 Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
     auto* b = static_cast<Binary*>(e);
     const std::string& op = b->op;
-    if (!binaryShadowMaybe(op)) {
+    if (!binaryShadowMaybe(b)) {
         Env* const cur = tctx().cur.get();
         auto scal = [&](Expr* x) -> const Value* {
             auto* ve = static_cast<VarExpr*>(x);
@@ -22086,7 +22044,7 @@ static bool typedOperand(Expr* e, Env* cur, TNum& o) {
         }
         case NK::Binary: {
             auto* b = static_cast<Binary*>(e);
-            if (binaryShadowMaybe(b->op)) return false;
+            if (binaryShadowMaybe(b)) return false;
             TNum l, r;
             return typedOperand(b->lhs.get(), cur, l) && typedOperand(b->rhs.get(), cur, r) &&
                    typedArith(b->op[0], l, r, b->lhs.get(), b->rhs.get(), o);
@@ -22118,7 +22076,7 @@ static bool typedTreeRoot(const Binary* b) {
 
 bool Interpreter::typedTreeValue(Binary* b, Value& out) {
     const std::string& op = b->op;
-    if (binaryShadowMaybe(op)) return false;
+    if (binaryShadowMaybe(b)) return false;
     Env* const cur = tctx().cur.get();
     TNum l, r;
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return false;
@@ -22196,7 +22154,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     const Expr::EvalFn h = b->handler;
     if (h != &Interpreter::typedTreeHandler && h != &Interpreter::binaryFastHandler) return false;
     const std::string& op = b->op;
-    if (!typedOpArith(op) || binaryShadowMaybe(op)) return false;
+    if (!typedOpArith(op) || binaryShadowMaybe(b)) return false;
     const bool native = slot->natBits != 0;
     if (native ? !nativeNumberSlotValue(*slot) : !plainNumberSlotValue(*slot) && !bareRatValue(*slot))
         return false;
@@ -22375,7 +22333,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
                 if (out.natBits) dropNativeTags(out);   // a boxed $ takes the value, not the native
                 return true;
             }
-            if (h != &Interpreter::binaryFastHandler || binaryShadowMaybe(b->op)) return false;
+            if (h != &Interpreter::binaryFastHandler || binaryShadowMaybe(b)) return false;
             Env* const cur = tctx().cur.get();
             auto leaf = [&](Expr* x, bool isLit, TNum& o) -> bool {
                 const Value* p;
@@ -22418,7 +22376,7 @@ static int typedLeavesBool(Binary* b, Env* cur) {
 }
 
 int Interpreter::typedTreeBool(Binary* b) {
-    if (b->typedTree <= 0 || !typedOpCmp(b->op) || binaryShadowMaybe(b->op)) return -1;
+    if (b->typedTree <= 0 || !typedOpCmp(b->op) || binaryShadowMaybe(b)) return -1;
     Env* const cur = tctx().cur.get();
     TNum l, r;
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return -1;
@@ -22611,7 +22569,9 @@ Value Interpreter::evalBinary(Binary* b) {
     // evaluated by the general path below, and on a miss that path dispatches a
     // user `multi infix:<+>` over objects, which applyBinOp alone never consults.
     if (b->simpleOp == 1) {
-        bool shadowMaybe = lexShadowPossibleOrTwin(op);
+        // (asked under the name WRITTEN: `×` finds `&infix:<×>`, `*` never does)
+        const std::string& name = b->written();
+        bool shadowMaybe = g_lexShadowMask.load(std::memory_order_relaxed) && lexShadowPossible(name);
         // Specialised shapes: `$n < 2`, `2 * $n`, `$a + $b` — what hot loops are
         // made of. Each operand that is a plain lexical is read BY POINTER
         // instead of copying a 376-byte Value out of it, each literal comes from
@@ -22683,10 +22643,10 @@ Value Interpreter::evalBinary(Binary* b) {
         Value l = eval(b->lhs.get());
         Value r = eval(b->rhs.get());
         if (shadowMaybe) {
-            if (Value* f = lexShadowedInfix(op, l, r)) return callCallable(*f, ValueList{l, r});
+            if (Value* f = lexShadowedInfix(name, l, r)) return callCallable(*f, ValueList{l, r});
             // a user multi over core operands, against the built-in it meets
             Value uv;
-            if (userInfixOverCore(op, l, r, uv)) return uv;
+            if (userInfixOverCore(name, l, r, uv)) return uv;
         }
         // Two PLAIN scalars — what the fast shape takes, here when they are not
         // both plain lexicals: `($a cmp $b) == Less`, `@a[$i] < $x`. Every test
@@ -22700,7 +22660,7 @@ Value Interpreter::evalBinary(Binary* b) {
                        (v.t == VT::Int || v.t == VT::Num || v.t == VT::Str || v.t == VT::Bool);
             };
             if (plain(l) && plain(r) &&
-                ((l.enumType.empty() && r.enumType.empty()) || !boundInfixPossible(op)) &&
+                ((l.enumType.empty() && r.enumType.empty()) || !boundInfixPossible(name)) &&
                 !(op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) &&                          // Zop Xop
                 !(op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0)) &&   // hyper
                 !opEq(op, "o") && !opEq(op, "\xE2\x88\x98"))                                    // ∘
@@ -22830,7 +22790,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if ((opEq(op, "+") || opEq(op, "-")) &&
             ((l.t == VT::Hash && (l.hashKind == "Pointer" || l.hashKind == "CArray")) ||
              (r.t == VT::Hash && (r.hashKind == "Pointer" || r.hashKind == "CArray"))))
-            if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
+            if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
                 // Only "no candidate took these operands" falls back to the
                 // built-in — an error the user's operator RAISED is its answer
                 // (arithmetic on a void pointer dies, and must keep dying).
@@ -22874,8 +22834,8 @@ Value Interpreter::evalBinary(Binary* b) {
         // (an Order operand — `($a cmp $b) == Less` — asked on every evaluation,
         // so the walk waits until some scope has bound this spelling at all)
         if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
-            boundInfixPossible(op))
-            if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
+            boundInfixPossible(name))
+            if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
                 try { return callCallable(*f, ValueList{l, r}); }
                 catch (RakuError& e) { // only "no candidate took these operands" falls back
                     std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
@@ -22976,7 +22936,7 @@ Value Interpreter::evalBinary(Binary* b) {
             bool strictL = op.compare(0, 2, ">>") == 0;
             bool strictR = op.compare(op.size() - 2, 2, "<<") == 0;
             // lists of plain machine numbers: the native kernel (InterpreterRegex.cpp)
-            if (Value nk; hyperNumericInfix(inner, l, r, strictL, strictR, nk))
+            if (Value nk; hyperNumericInfix(uniOpFold(inner), l, r, strictL, strictR, nk))
                 return typedHyperResult(*this, l, r, std::move(nk));
             Value ll = l, rr = r;
             HyperOpName hon{inner};
@@ -23056,6 +23016,8 @@ Value Interpreter::evalBinary(Binary* b) {
             Value nv;
             if (nativeIntArith(op, l, r, b->lhs.get(), b->rhs.get(), nv)) return nv;
         }
+        // `* × 2` curries under the name written, as `* * 2` does under its own
+        if (b->uniSpelled && (whateverish(l) || whateverish(r))) return whateverInfixCurry(name, op, l, r);
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
         if (l.natBits || r.natBits) tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
@@ -24094,7 +24056,7 @@ Value Interpreter::evalBinary(Binary* b) {
     // user `sub infix:<op>` if one is in scope (falling back to the built-in when
     // no candidate matches the operands).
     if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty())
-        if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
+        if (Value* f = tctx().cur->find("&infix:<" + b->written() + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError& e) { // only "no candidate took these operands" falls back
                 std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
@@ -25810,16 +25772,13 @@ static bool angleShapedOp(const std::string& op) {
 }
 // hyper markers in operator NAMES (&infix:<»+«>, prefix:<-«>) arrive as raw
 // UTF-8 — the lexer only normalizes op tokens — so map them to ASCII >>/<<.
-static std::string normHyperMarkers(std::string s) {
+// An INFIX name keeps `×` `−` … as written (uniOpWritten): applyBinOp and
+// applyReduce look a user operator up by it and fold it for the built-in, so
+// `&infix:<×>` is `*` but never a `&infix:<*>` the program bound.
+static std::string normHyperMarkers(std::string s, bool infix = false) {
     for (size_t p; (p = s.find("\xC2\xBB")) != std::string::npos; ) s.replace(p, 2, ">>");
     for (size_t p; (p = s.find("\xC2\xAB")) != std::string::npos; ) s.replace(p, 2, "<<");
-    // …and the Unicode spellings the LEXER folds (aliasUniOp), which an
-    // `infix:<−>` NAME carries through as literal characters: `infix:<−>()` is
-    // the zero-argument minus and must answer 0, not Any.
-    static const std::pair<const char*, const char*> kUni[] = {
-        {"\xC3\xB7", "/"}, {"\xC3\x97", "*"}, {"\xE2\x88\x92", "-"},
-        {"\xE2\x89\xA5", ">="}, {"\xE2\x89\xA4", "<="}, {"\xE2\x89\xA0", "!="}};
-    for (auto& [u, a] : kUni) if (s == u) return a;
+    if (const char* a = infix ? nullptr : uniOpAscii(s)) return a;   // `prefix:<−>` is `-`
     return s;
 }
 
@@ -26477,7 +26436,7 @@ Value Interpreter::evalCall(Call* c) {
         std::string op = c->name.substr(7, c->name.size() - 8);
         if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
             op = op.substr(1, op.size() - 2); // infix:<<∈>> — double-angle form
-        op = normHyperMarkers(op); // infix:<»+«>(…) — the hyper spelling as ASCII
+        op = normHyperMarkers(op, true); // infix:<»+«>(…) — the hyper spelling as ASCII
         // `infix:<=>($x, v)` / `infix:<+=>($x, v)` / … — an assignment operator in
         // call form assigns (or metaop-assigns) through its l-value first operand.
         bool isAssign = opEq(op, "=") ||
@@ -26603,8 +26562,9 @@ Value Interpreter::evalCall(Call* c) {
                 "<", ">", "<=", ">=", "==", "!=", "===", "!===", "!==",
                 "eq", "ne", "lt", "gt", "le", "ge", "eqv", "!eqv",
                 "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
-            if (kChaining.count(op)) return Value::boolean(true);
-            if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/")) {
+            const std::string bop = uniOpFold(op);   // (`infix:<≤>`'s rules are `<=`'s)
+            if (kChaining.count(bop)) return Value::boolean(true);
+            if (opEq(bop, "+") || opEq(bop, "-") || opEq(bop, "*") || opEq(bop, "/")) {
                 ValueList one{args[0]};
                 return applyReduce(op, one);
             }
@@ -31251,7 +31211,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             std::string op = bare.substr(7, bare.size() - 8);
             if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
                 op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
-            op = normHyperMarkers(op); // &infix:<»+«> — hyper spelling
+            op = normHyperMarkers(op, true); // &infix:<»+«> — hyper spelling
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->ciM().name = bare;
             code.code()->ciM().whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
             code.code()->ciM().builtin = [op](Interpreter& I, ValueList& a) -> Value {
@@ -31268,8 +31228,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
                     return acc;
                 }
                 if (a.size() == 1) { // single arg combines with the op's identity
-                    if (opEq(op, "+") || opEq(op, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
-                    if (opEq(op, "*") || opEq(op, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
+                    const std::string bop = uniOpFold(op);
+                    if (opEq(bop, "+") || opEq(bop, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
+                    if (opEq(bop, "*") || opEq(bop, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
                     if (opEq(op, "~")) return I.applyBinOp(op, Value::str(""), a[0]);
                     return a[0];
                 }

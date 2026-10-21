@@ -4658,7 +4658,10 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
     auto* ix = static_cast<Index*>(a->target.get());
     if (parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0) return false;
     const char op = opEq(a->op, "=") ? '=' : a->op[0];   // packedStoreShape allowed = += -= *=
-    if (op != '=' && lexShadowPossible(std::string(1, op))) return false;
+    // (a user operator is asked for by the name written: `×=` is `&infix:<×>`'s)
+    if (op != '=' && g_lexShadowMask.load(std::memory_order_relaxed) &&
+        lexShadowPossible(a->uniSpelled ? a->written().substr(0, a->written().size() - 1) : std::string(1, op)))
+        return false;
     size_t i;
     PackedArr* pa = packedWordAt(ix, i);
     if (!pa) return false;

@@ -161,7 +161,7 @@ struct Builder {
             case NK::Whatever:   return node("Term::Whatever");
             case NK::Binary: {
                 auto* b = static_cast<Binary*>(e);
-                return applyInfix(b->op, buildExpr(b->lhs.get()), buildExpr(b->rhs.get()));
+                return applyInfix(b->written(), buildExpr(b->lhs.get()), buildExpr(b->rhs.get()));   // `×` stays `×`
             }
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
@@ -181,7 +181,7 @@ struct Builder {
                              {{"expression", buildExpr(a->value.get())}});
                     return decl;
                 }
-                return applyInfix(assignInfix(a->op),
+                return applyInfix(assignInfix(a->written()),
                                   buildExpr(a->target.get()), buildExpr(a->value.get()));
             }
             case NK::Unary: {

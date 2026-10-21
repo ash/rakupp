@@ -4225,34 +4225,19 @@ Value Interpreter::containerOfExpr(Expr* e) {
 // The name half of the lookup, with no operands to judge — what the WhateverCode
 // curry needs, because it must resolve the shadow where `* cmp *` was WRITTEN.
 Value* Interpreter::lexInfixLookup(const std::string& op) {
-    if (!tctx().cur) return nullptr;
+    if (!tctx().cur || !lexShadowPossible(op)) return nullptr;
+    static thread_local std::string key;
+    key.assign("&infix:<").append(op).append(">");
+    Value* f = tctx().cur->find(key);
     // Only an anonymous binding is a lexical shadow; a declared `sub infix:<op>`
     // carries its own name and belongs to the multi-dispatch path (see the
     // g_lexShadowMask note in Interpreter.h).
-    auto dispatched = [](const Value* f) {
-        return f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
-               (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto);
-    };
-    if (lexShadowPossible(op)) {
-        static thread_local std::string key;
-        key.assign("&infix:<").append(op).append(">");
-        Value* f = tctx().cur->find(key);
-        if (f && !dispatched(f)) return f;
-    }
-    // the lexer spells `×` `÷` `−` `≥` `≤` `≠` as their ASCII twins, so a
-    // `sub infix:<×>` shadows what arrives here as `*` — looked for whenever
-    // the ASCII spelling finds nothing here, which a `my &infix:<*>` armed in
-    // some OTHER scope does not change
-    const char* tw = lexShadowTwin(op);
-    if (!tw || !lexShadowPossible(tw, std::char_traits<char>::length(tw))) return nullptr;
-    Value* f = tctx().cur->find(std::string("&infix:<") + tw + ">");
-    if (dispatched(f)) return nullptr;
-    // …but not from inside that operator's own body: `sub infix:<×>($a, $b)
-    // { $a * $b }` means the built-in `*` there, not itself again (the lexer
-    // spells both `*`, so this is the one place the two can be told apart)
-    if (f && f->t == VT::Code && tctx().curRoutineVal && tctx().curRoutineVal->t == VT::Code &&
-        tctx().curRoutineVal->code() == f->code())
+    if (f && f->t == VT::Code && f->code() && !f->code()->ci().name.empty() &&
+        (f->code()->ci().isMultiDispatcher || f->code()->ci().isMultiCandidate || f->code()->ci().isProto))
         return nullptr;
+    // (`op` is the name the operator was WRITTEN with — Binary::written() — so
+    // a `sub infix:<×>` is found for `×` and never for `*`, and its own body's
+    // `$a * $b` is the built-in without asking where it is running.)
     return f;
 }
 

@@ -106,8 +106,9 @@ coordinator.
   `multi sub infix:<×>(V, V)` is never consulted (`V.new × V.new` answers the
   built-in product; `$v ×= …` answers 0), a lexical `my &infix:<×>` captures
   every `*` in its scope (`6 * 7` calls it, and `$a * $b` inside it recurses
-  until the stack is gone), and `×=` ignores it. Full entry, with the plan:
-  [TODO-FOLLOW-UPS.md](../plans/TODO-FOLLOW-UPS.md), "Operators and types".
+  until the stack is gone), and `×=` ignores it. Fixed 2026-10-21: the node
+  carries the name it was written with
+  ([unicode-operator-names-apart.raku](../../../t/regression/unicode-operator-names-apart.raku)).
 - **O2. Text read from a file or `$*IN` is not NFC** (lane D): a line `e\x[301]x`
   has 3 codes, is not `eq "\x[e9]x"`, and misses as a hash key; Rakudo
   normalizes at decode, and so does our own `Buf.decode`

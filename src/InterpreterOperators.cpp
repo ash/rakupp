@@ -2796,6 +2796,89 @@ bool endlessReduce(const std::string& op, const Value& v, Value& out) {
     throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot reduce a lazy list"};
 }
 
+// `* OP x` as a WhateverCode (whateverInfixCurry in InterpreterParts.h):
+// applyArith's curry, and evalBinary's for a node written `×` (named `×`,
+// built-in `*`).
+Value whateverInfixCurry(const std::string& name, const std::string& op, const Value& l, const Value& r) {
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+    code.code()->ciM().isWhateverCode = true;
+    // each `*` consumes one argument left-to-right, so `* + *` has arity 2
+    auto arityOf = [](const Value& v) -> long long {
+        if (v.t == VT::Whatever) return 1;
+        if (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode) return v.code()->ci().whateverArity > 0 ? v.code()->ci().whateverArity : 1;
+        return 0;
+    };
+    code.code()->ciM().whateverArity = arityOf(l) + arityOf(r);
+    std::string opc = op, nm = name; Value lc = l, rc = r;
+    // `my &precedes = * cmp * == Less` inside a routine that took
+    // `&infix:<cmp>` as a parameter: the closure ESCAPES that routine (this
+    // is how BinaryHeap's MIXIN hands a comparator to its role), so the
+    // shadowing lexical has to be captured here, where `* cmp *` was
+    // written, not looked up in whatever scope happens to run it later.
+    Value shadow;
+    if (g_lexInfixLookup) if (Value* sf = g_lexInfixLookup(nm)) shadow = *sf;
+    code.code()->ciM().builtin = [opc, nm, lc, rc, shadow](Interpreter& I, ValueList& a) -> Value {
+        size_t idx = 0;
+        const Interpreter::ArgWriter* outerW = I.builtinArgWriter_;
+        auto resolve = [&](const Value& v) -> Value {
+            if (v.t == VT::Whatever) return idx < a.size() ? a[idx++] : Value::any();
+            if (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode) {
+                long long ar = v.code()->ci().whateverArity > 0 ? v.code()->ci().whateverArity : 1;
+                size_t base = idx;
+                ValueList sub;
+                for (long long k = 0; k < ar && idx < a.size(); k++) sub.push_back(a[idx++]);
+                // `*++ + *--`: each side writes ITS arguments back
+                // through the composed call's writer, re-indexed
+                if (!outerW) return I.callCallable(v, sub);
+                Interpreter::ArgWriter shifted = [outerW, base](size_t i, const Value& nv) {
+                    (*outerW)(base + i, nv);
+                };
+                Interpreter::tctx().pendingArgWriter = &shifted;
+                try { Value r = I.callCallable(v, sub); Interpreter::tctx().pendingArgWriter = nullptr; return r; }
+                catch (...) { Interpreter::tctx().pendingArgWriter = nullptr; throw; }
+            }
+            return v;
+        };
+        Value lv = resolve(lc); // resolve left before right — argument order matters
+        Value rv = resolve(rc);
+        // the shadow captured where the curry was WRITTEN wins; failing that,
+        // one visible from here (a `* cmp *` written and run in one scope)
+        if (shadow.t == VT::Code && shadow.code())
+            return I.callCallable(shadow, ValueList{lv, rv});
+        if (Value* f = I.lexShadowedInfix(nm, lv, rv))
+            return I.callCallable(*f, ValueList{lv, rv});
+        return applyArith(opc, lv, rv);
+    };
+    return code;
+}
+
+// An operator NAMED `×` `÷` `−` `≤` `≥` `≠` on two values — how a metaop's
+// inner operator (`[×]`, `Z×`, `»×»`, `R×`), a compound `»×=»` and a call of
+// `&infix:<×>` reach applyBinOp. Raku's `&infix:<×>` is an operator of its own
+// over the built-in `*` (uniOpWritten): a user operator is looked up by
+// `name` — a shadowing binding, then a multi over objects, as evalBinary
+// dispatches one — and the built-in runs as `builtin`, never meeting a
+// `&infix:<*>` the program bound.
+Value Interpreter::applyUniOp(const std::string& name, const char* builtin, const Value& l, const Value& r) {
+    if (whateverish(l) || whateverish(r)) return whateverInfixCurry(name, builtin, l, r);
+    if (Value* f = lexShadowedInfix(name, l, r)) return callCallable(*f, ValueList{l, r});
+    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
+        boundInfixPossible(name) && tctx().cur)
+        if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
+            try { return callCallable(*f, ValueList{l, r}); }
+            catch (RakuError& e) { // only "no candidate took these operands" falls back
+                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
+            }
+    // …and, as applyBinOp's own last resort, a user operator of that name
+    // where the built-in has no answer
+    try { return applyArith(builtin, l, r); }
+    catch (RakuError&) {
+        if (tctx().cur) if (Value* f = tctx().cur->find("&infix:<" + name + ">")) return callCallable(*f, ValueList{l, r});
+        throw;
+    }
+}
+
 // [op] reduce over an item list — shared by the [op] unary, prefix:<[op]>(…)
 // calls, and &prefix:<[op]> references. `op` may carry a leading '\' (scan form).
 Value Interpreter::applyReduce(std::string op, ValueList& items) {
@@ -2809,6 +2892,17 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     bool revMeta = op.size() > 1 && op[0] == 'R' &&
                    (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op));
     if (revMeta) { op = op.substr(1); std::reverse(items.begin(), items.end()); }
+    // `[×]` reduces with `&infix:<×>` (uniOpWritten): a shadow of that name
+    // folds as any user operator does. Without one it is the built-in `*`, run
+    // as `[*]` itself unless some `&infix:<*>` (or a multi of either name)
+    // could tell the two apart; then each step goes by the written name.
+    std::string chainRule;   // the built-in whose chaining rule applies, when not `op`'s
+    if (const char* asc = uniOpAscii(op))
+        if (!lexInfixLookup(op)) {
+            if (items.size() < 2 || (!lexShadowPossible(asc) && !boundInfixPossible(asc) && !boundInfixPossible(op)))
+                return applyReduce((scan ? "\\" : "") + std::string(asc), items);
+            chainRule = asc;
+        }
     // a CHAINING user infix (`is assoc<chain>`) reduces like `<`: every
     // adjacent pair must hold
     if (!scan && tctx().cur && items.size() >= 2)
@@ -2844,6 +2938,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         "=:=", "===", "eqv", "before", "after", "~~"};
     bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
     std::string base = neg ? op.substr(1) : op;
+    const bool chains = chainOps.count(chainRule.empty() ? base : chainRule) != 0;
     if (scan) { // yield (a, a op b, a op b op c, …)
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // `[\+]` is lazy (Rakudo)
         if (items.empty()) return out;
@@ -2886,7 +2981,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             }
             return out;
         }
-        if (chainOps.count(base)) { // sticky chain: [\<] 1,3,2,4 → (True True False False)
+        if (chains) { // sticky chain: [\<] 1,3,2,4 → (True True False False)
             bool ok = true;
             out.arr()->push_back(Value::boolean(true)); // a single element chains truthfully
             for (size_t k = 1; k < items.size(); k++) {
@@ -2947,7 +3042,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (op == "Z" || op == "X" ||
             (op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')))
             return Value::seq();
-        if (chainOps.count(base)) return Value::boolean(true); // [<] () is vacuously True
+        if (chains) return Value::boolean(true); // [<] () is vacuously True
         return Value::any();
     }
     // the one-argument arithmetic candidates NUMIFY: `[+] "2"` is 2, `[*] $obj`
@@ -2960,7 +3055,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     // (S32-list/unique.t maps with `&[~]`)
     if (items.size() == 1 && op == "~" && items[0].t != VT::Str && !isJunction(items[0]))
         return Value::str(strOf(items[0]));
-    if (chainOps.count(base)) {
+    if (chains) {
         for (size_t k = 1; k < items.size(); k++) {
             bool ok = applyBinOp(base, items[k - 1], items[k]).truthy();
             if (neg) ok = !ok;

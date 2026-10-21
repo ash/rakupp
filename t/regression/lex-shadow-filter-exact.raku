@@ -18,8 +18,9 @@
 #
 # The same collision also broke a real shadow: with `*`'s slot armed by
 # `precedes`, the lookup tried `&infix:<*>`, found nothing, and never tried the
-# twin, so a `my sub infix:<×>` in scope answered the built-in product. The
-# twin is now looked for whenever the ASCII spelling finds nothing in scope.
+# twin, so a `my sub infix:<×>` in scope answered the built-in product. (A `×`
+# node now asks for `&infix:<×>` by the name it was written with, and a `*`
+# node never does: unicode-operator-names-apart.raku.)
 #
 # Runs clean under Rakudo too.
 
@@ -76,7 +77,7 @@ ck 2 ≥ 3, False, '…and only there';
     ck (1 + 200, 1 + 2), ('big(1,200)', 3), 'a narrower user multi infix:<+> still meets the built-in';
 }
 
-# ---- the twin is found when its ASCII spelling is armed elsewhere -------
+# ---- `×` finds its shadow with `*` armed in another scope ---------------
 { my &infix:<*> = -> $a, $b { "star($a,$b)" }; ck 6 * 7, 'star(6,7)', 'my &infix:<*> shadows `*`' }
 {
     my sub infix:<×>($a, $b) { "times($a,$b)" };
