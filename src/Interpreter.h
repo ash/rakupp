@@ -4896,6 +4896,9 @@ private:
 // helpers
 Value listToArray(const ValueList& items);
 Value applyArith(const std::string& op, const Value& l, const Value& r); // binary op dispatch (also used by codegen)
+#if RAKUPP_HAS_INT128
+bool smallRatLane(char c, const Value& l, const Value& r, Value& out);   // Value.cpp: `+ - * /` over small Rats and Ints
+#endif
 void pushLoopValue(ValueList& out, const Value& v);   // a 6.e `next`/`last` payload into a loop's values
 Value attrTypeValue(const ClassAttr& a);              // an Attribute's .type (Positional[T], Array[T], …)
 
@@ -5037,6 +5040,37 @@ inline bool rtIntBitOp(char c1, long long a, long long b, long long& z) {
             return true;
         default: return false;
     }
+}
+// `div` `mod` `gcd` `lcm` (by their first two characters) over two machine
+// Ints: what the general path's Int arms answer — `div` floors, `mod` takes
+// the divisor's sign — and false for what they hand on: a zero divisor (a
+// Failure), and an answer past int64 (`-2**63 div -1`, `-2**63 gcd 0`).
+inline bool rtIntWordOp(char c0, char c1, long long a, long long b, long long& z) {
+    if (c0 == 'd' || (c0 == 'm' && c1 == 'o')) {
+        if (b == 0) return false;
+        if (b == -1) {   // (-2**63 % -1 is undefined in C++)
+            if (c0 == 'm') { z = 0; return true; }
+            if (a == LLONG_MIN) return false;
+            z = -a; return true;
+        }
+        const long long q = a / b, m = a % b;
+        if (c0 == 'd') z = m && ((a < 0) != (b < 0)) ? q - 1 : q;
+        else z = m && ((m < 0) != (b < 0)) ? m + b : m;
+        return true;
+    }
+    if (c0 != 'g' && c0 != 'l') return false;
+    const unsigned long long x = rakupp::magU(a), y = rakupp::magU(b);
+    unsigned long long g = x, h = y;
+    while (h) { const unsigned long long t = g % h; g = h; h = t; }
+    if (c0 == 'g') {
+        if (g > (unsigned long long)LLONG_MAX) return false;
+        z = (long long)g; return true;
+    }
+    if (!x || !y) { z = 0; return true; }
+    const unsigned long long q = x / g;
+    if (q > (unsigned long long)LLONG_MAX / y) return false;
+    z = (long long)(q * y);
+    return true;
 }
 inline Value applyArith(const char* op, const Value& l, const Value& r) {
     if (rtBothInt(l, r) && op[0] != '\0') {

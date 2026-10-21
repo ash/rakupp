@@ -11,9 +11,9 @@
 //
 //  * A LOOP KERNEL. A `for` over an integer Range (or a `while`, or a C-style
 //    `loop` once its init has run) whose body reads and writes
-//    only `$` variables holding a plain Int, Num or Str, its own `my`
+//    only `$` variables holding a plain Int, Num, Str or Bool, its own `my`
 //    locals and loop variables, through the integer operators above, `**`,
-//    `min`, `max`, Num `+ - * / **` and comparisons, the six string
+//    `min`, `max`, `gcd`, `lcm`, Num `+ - * / **` and comparisons, the six string
 //    comparisons, `~` and `=`, `+=`, `-=`, `*=`, `/=` (Nums), `~=`, `++`,
 //    `--`, the methods `.chars .abs .sign .Str .Num .Int .ord .uc .lc
 //    .substr`, with `if`/`unless`, nested `for` over integer ranges,
@@ -116,7 +116,7 @@ enum class KOp : uint8_t {
     NTruth,   // a Num as a condition: true when not zero
     SNum,     // a Num's text
     // more integer operators and pure methods
-    Pow, Min, Max, Abs, Sign,
+    Pow, Min, Max, Abs, Sign, Gcd, Lcm,
     BAnd, BOr, BXor, Shl, Shr,   // +& +| +^ +< +>
     Ord, Uc, Lc, Substr,
     // exact numbers (KT::Exact): an Int or a Rat. A node returns the
@@ -266,6 +266,12 @@ struct Compiler {
     KNode* asStr(IKernel& k, KNode* n, KT t) {
         if (!n) return nullptr;
         if (t == KT::Str) return n;
+        if (t == KT::Bool && L && !L->sub) {   // "True" or "False", as Bool.Str
+            KNode* s = k.node(KOp::SCond); s->a = n;
+            s->b = k.node(KOp::SLit); s->b->str = k.text("True");
+            s->c = k.node(KOp::SLit); s->c->str = k.text("False");
+            return s;
+        }
         if ((t != KT::Int && t != KT::Num && t != KT::Exact) || !L || L->sub) return nullptr;
         KNode* s = k.node(t == KT::Num ? KOp::SNum : t == KT::Exact ? KOp::SExact : KOp::SInt);
         s->a = n; s->slot = L->nstr++;
@@ -284,13 +290,26 @@ struct Compiler {
     int exactSlot() { const int s = L->nint; L->nint += 2; return s; }
     // An Int or a Num as a Num: an Int literal is converted here, as the
     // generic path would convert it at run time; null for anything else.
+    // A Rat literal is taken only beside a Num (ratLitBesideNum), where the
+    // generic path reads it as its .Num: that Num is computed here, once.
     KNode* asNum(IKernel& k, KNode* n, KT t) {
         if (!n) return nullptr;
         if (t == KT::Num) return n;
+        if (t == KT::Exact && n->op == KOp::XLit) {
+            KNode* l = k.node(KOp::Lit);
+            l->lit = dbits(n->den ? Value::rat(BigInt((long long)n->lit), BigInt((long long)n->den)).toNum()
+                                  : (double)n->lit);
+            return l;
+        }
         if (t != KT::Int) return nullptr;
         if (n->op == KOp::Lit) { KNode* l = k.node(KOp::Lit); l->lit = dbits((double)n->lit); return l; }
         KNode* c = k.node(KOp::NOfInt); c->a = n;
         return c;
+    }
+    // `$x * 1.0000001`: a Rat literal (an exact constant) beside a Num, which
+    // the generic path reads as the literal's .Num. A computed Rat is refused.
+    static bool ratLitBesideNum(const KNode* n, KT t, KT other) {
+        return t == KT::Exact && other == KT::Num && n && n->op == KOp::XLit;
     }
     // An expression read as a condition: a Num is true when it is not zero
     // (its bits are not: -0e0).
@@ -367,6 +386,11 @@ inline bool plainRatValue(const Value& v) {
     if (x.fatRat || x.big || x.pairKey || x.cont || x.holdsCells || x.rNum || !x.ratN || !x.ratD) return false;
     if (!x.ratN->fitsLL() || !x.ratD->fitsLL()) return false;
     return x.ratD->toLL() > 0;
+}
+inline bool plainBoolValue(const Value& v) {
+    return v.t == VT::Bool && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
+           !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty() && v.s.empty();
 }
 inline bool plainStrValue(const Value& v) {
     return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
@@ -558,8 +582,9 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             return n;
         }
         case NK::BoolLit: {
-            // a truth value only: a Bool is not an Int a kernel may store
-            if (!cond) return refuse("a Bool outside a condition");
+            // a truth value, or a loop kernel's Bool value (a sub kernel's
+            // values are Ints)
+            if (!cond && (!L || L->sub)) return refuse("a Bool outside a condition");
             KNode* n = k.node(KOp::Lit); n->lit = static_cast<BoolLit*>(e)->v ? 1 : 0; t = KT::Bool;
             return n;
         }
@@ -643,7 +668,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     else if (plainRatValue(cv) && kHasExact) { vt = KT::Exact; slot = exactSlot(); }
                     else if (plainNumValue(cv)) { vt = KT::Num; slot = L->nint++; }
                     else if (plainStrValue(cv)) { vt = KT::Str; slot = L->nstr++; }
-                    else return refuse("variable " + v->name + " holds neither a plain Int, Rat, Num nor Str");
+                    else if (plainBoolValue(cv)) { vt = KT::Bool; slot = L->nint++; }   // 0 or 1
+                    else return refuse("variable " + v->name + " holds neither a plain Int, Rat, Num, Str nor Bool");
                     L->outer.push_back({v->name, vt, slot, false});
                     o = &L->outer.back();
                 }
@@ -691,7 +717,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 if (u->operand->kind != NK::VarExpr) return refuse("++/-- on something not a variable");
                 KNode* tn = expr(k, c, u->operand.get(), false, ot);
                 if (!tn) return nullptr;
-                if (ot != KT::Int && ot != KT::Num && ot != KT::Exact) return refuse("++/-- on a Str");
+                if (ot != KT::Int && ot != KT::Num && ot != KT::Exact) return refuse("++/-- on a Str or a Bool");
                 const std::string& nm = static_cast<VarExpr*>(u->operand.get())->name;
                 if (const LSym* s = lookup(nm)) { if (s->ro) return refuse("++/-- on a loop variable"); }
                 else for (auto& o : L->outer) if (o.name == nm) o.written = true;
@@ -713,7 +739,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 KNode* n = k.node(ot == KT::Num ? KOp::NNeg : ot == KT::Exact ? KOp::XNeg : KOp::Neg); n->a = a; t = ot;
                 return n;
             }
-            if ((u->op == "!" || u->op == "not") && cond) {
+            if ((u->op == "!" || u->op == "not") && (cond || (L && !L->sub))) {
                 KNode* a = cexpr(k, c, u->operand.get(), ot);
                 if (!a || ot == KT::Str || ot == KT::Void) return nullptr;
                 prefix = true;
@@ -734,6 +760,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             else if (op == "**") kop = KOp::Pow;
             else if (op == "min") kop = KOp::Min;
             else if (op == "max") kop = KOp::Max;
+            else if (op == "gcd") kop = KOp::Gcd;
+            else if (op == "lcm") kop = KOp::Lcm;
             else if (op == "div") kop = KOp::Div;
             // `mod` is `%` over Ints (floored, the divisor's sign) — Rakudo-checked
             // with negatives and past int64; a zero divisor bails either way, and
@@ -768,6 +796,14 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             KNode* r = l ? (logical ? cexpr(k, c, b->rhs.get(), rt) : expr(k, c, b->rhs.get(), false, rt)) : nullptr;
             if (!r) return nullptr;
             bool num = false;
+            // a Bool is the Int it numifies to for arithmetic and the numeric
+            // comparisons, as on the generic path; `min`/`max` hand an operand
+            // back whole, so a Bool there stays the generic path's
+            if (!strop && !logical && (lt == KT::Bool || rt == KT::Bool)) {
+                if (kop == KOp::Min || kop == KOp::Max) return refuse("min/max of a Bool");
+                if (lt == KT::Bool) lt = KT::Int;
+                if (rt == KT::Bool) rt = KT::Int;
+            }
             if (strop) {
                 // two Strs; an Int or Num operand takes its text, as the generic path's does
                 l = asStr(k, l, lt); r = asStr(k, r, rt);
@@ -782,7 +818,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // Num is converted, as the generic path converts it
             else if (lt == KT::Int && rt == KT::Int && kop != KOp::NDiv) {}
             // exact: an Int or a Rat on either side (two Ints under `/` make a
-            // Rat), computed exactly; a Num meeting a Rat is left alone
+            // Rat), computed exactly; a Num meeting a Rat literal is the Num lane's below
             else if ((lt == KT::Exact || lt == KT::Int) && (rt == KT::Exact || rt == KT::Int) && L && !L->sub &&
                      kHasExact) {
                 switch (kop) {
@@ -808,7 +844,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // no exact lane, and the Num lane below would answer a Num
             else if (!kHasExact && lt == KT::Int && rt == KT::Int && kop == KOp::NDiv)
                 return refuse("a Rat without 128-bit integers");
-            else if ((lt == KT::Num || lt == KT::Int) && (rt == KT::Num || rt == KT::Int) && L && !L->sub) {
+            else if ((lt == KT::Num || lt == KT::Int || ratLitBesideNum(l, lt, rt)) &&
+                     (rt == KT::Num || rt == KT::Int || ratLitBesideNum(r, rt, lt)) && L && !L->sub) {
                 switch (kop) {
                     case KOp::Add: kop = KOp::NAdd; break;
                     case KOp::Sub: kop = KOp::NSub; break;
@@ -897,7 +934,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     return refuse("a declaration with a type, a trait or its own name");
                 KNode* v = expr(k, c, a->value.get(), false, vt);
                 if (!v) return nullptr;
-                if (vt != KT::Int && vt != KT::Str && vt != KT::Num && vt != KT::Exact) return refuse("a declaration of a Bool");
+                if (vt == KT::Void) return refuse("a declaration of an expression with no value");
                 for (auto& s : L->scopes.back()) if (s.name == tv->name) return refuse("a redeclaration");
                 if (vt == KT::Int && L->promoted(tv->name)) { v = asExact(k, v, vt); vt = KT::Exact; }
                 const int slot = vt == KT::Str ? L->nstr++ : vt == KT::Exact ? exactSlot() : L->nint++;
@@ -912,6 +949,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             if (!tn) return nullptr;
             KNode* v = expr(k, c, a->value.get(), false, vt);
             if (!v) return nullptr;
+            // `$n += $i %% 3`: the Bool is the Int it numifies to, as for `+`
+            if (vt == KT::Bool && a->op != "=" && a->op != "~=" && tt != KT::Str && tt != KT::Bool) vt = KT::Int;
             KOp kop;
             // an Int variable that is given a Rat (`$t += 0.5`) is an exact
             // slot: compiled again with it promoted
@@ -953,7 +992,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                          v->a->slot == tn->slot)
                     return refuse("a string cut down to its own substr (runs boxed, as a view)");
             }
-            else if (a->op == "~=" && tt == KT::Str && (vt == KT::Str || vt == KT::Int)) {
+            else if (a->op == "~=" && tt == KT::Str && (vt == KT::Str || vt == KT::Int || vt == KT::Bool)) {
                 v = asStr(k, v, vt);
                 kop = KOp::SApp; noteOp("~");
             }
@@ -971,7 +1010,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 noteOp(a->written().substr(0, a->written().size() - 1));   // `×=` notes `×`
             }
             else if ((a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=") && tt == KT::Num &&
-                     (vt == KT::Num || vt == KT::Int)) {
+                     (vt == KT::Num || vt == KT::Int || ratLitBesideNum(v, vt, tt))) {
                 kop = a->op[0] == '+' ? KOp::NAddTo : a->op[0] == '-' ? KOp::NSubTo
                     : a->op[0] == '*' ? KOp::NMulTo : KOp::NDivTo;
                 v = asNum(k, v, vt);
@@ -1039,7 +1078,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             else if ((mn == "abs" || mn == "sign") && !na && it == KT::Int) {
                 n = k.node(mn == "abs" ? KOp::Abs : KOp::Sign); n->a = inv; t = KT::Int;
             }
-            else if (mn == "Str" && !na && (it == KT::Int || it == KT::Num || it == KT::Str || it == KT::Exact)) {
+            else if (mn == "Str" && !na && (it == KT::Int || it == KT::Num || it == KT::Str || it == KT::Exact ||
+                                             it == KT::Bool)) {
                 n = asStr(k, inv, it); t = KT::Str;
             }
             else if (mn == "Num" && !na && (it == KT::Int || it == KT::Num)) {
@@ -1667,6 +1707,12 @@ template <KOp OP>
     }
     else if constexpr (OP == KOp::Min) return x < y ? x : y;
     else if constexpr (OP == KOp::Max) return x > y ? x : y;
+    else if constexpr (OP == KOp::Gcd || OP == KOp::Lcm) {
+        // applyArith's Int arm (rtIntWordOp, on the magnitudes); an answer past
+        // int64 (-2**63 gcd 0, a wide lcm) is a BigInt, the generic path's
+        if (!rtIntWordOp(OP == KOp::Gcd ? 'g' : 'l', 'c', x, y, z)) R.bail = true;
+        return z;
+    }
     else if constexpr (OP == KOp::BAnd) return x & y;
     else if constexpr (OP == KOp::BOr) return x | y;
     else if constexpr (OP == KOp::BXor) return x ^ y;
@@ -2544,6 +2590,8 @@ void link(KNode* n) {
         case KOp::Pow: n->fn = binFn<KOp::Pow, kX, kX>; break;
         case KOp::Min: n->fn = binPick<KOp::Min>(l, r); break;
         case KOp::Max: n->fn = binPick<KOp::Max>(l, r); break;
+        case KOp::Gcd: n->fn = binFn<KOp::Gcd, kX, kX>; break;
+        case KOp::Lcm: n->fn = binFn<KOp::Lcm, kX, kX>; break;
         case KOp::BAnd: n->fn = binPick<KOp::BAnd>(l, r); break;
         case KOp::BOr: n->fn = binPick<KOp::BOr>(l, r); break;
         case KOp::BXor: n->fn = binPick<KOp::BXor>(l, r); break;
@@ -3083,7 +3131,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                 return notEntered("while other threads are live:", o.name + " may be shared (" + why + ")");
         }
         if (o.t == KT::Int ? !plainIntValue(*cell) : o.t == KT::Num ? !plainNumValue(*cell)
-            : o.t == KT::Exact ? !(plainIntValue(*cell) || plainRatValue(*cell)) : !plainStrValue(*cell))
+            : o.t == KT::Exact ? !(plainIntValue(*cell) || plainRatValue(*cell))
+            : o.t == KT::Bool ? !plainBoolValue(*cell) : !plainStrValue(*cell))
             return notEntered("a value of another type in", o.name);
         if (o.written && !writableCell(*cell, owner, o.name))
             return notEntered("a container a plain store would not honour:", o.name);
@@ -3127,6 +3176,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         const LOuter& o = L->outer[i];
         if (o.t == KT::Int) fr[o.slot] = cells[i]->i;
         else if (o.t == KT::Num) fr[o.slot] = dbits(cells[i]->n);
+        else if (o.t == KT::Bool) fr[o.slot] = cells[i]->b ? 1 : 0;
         else if (o.t == KT::Exact) {
             if (cells[i]->t == VT::Int) { fr[o.slot] = cells[i]->i; fr[o.slot + 1] = 0; }
             else { fr[o.slot] = cells[i]->ratN()->toLL(); fr[o.slot + 1] = cells[i]->ratD()->toLL(); }
@@ -3173,6 +3223,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         if (!o.written) continue;
         if (o.t == KT::Int) cells[i]->i = fr[o.slot];
         else if (o.t == KT::Num) cells[i]->n = bitsd(fr[o.slot]);
+        else if (o.t == KT::Bool) cells[i]->b = fr[o.slot] != 0;
 #if RAKUPP_HAS_INT128
         else if (o.t == KT::Exact) {
             // an Int stays in place; anything else is a new value in the plain
