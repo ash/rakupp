@@ -2609,7 +2609,7 @@ struct JsGen {
         for (auto& p : ps) if (p.name == "$/") fn().slashParam = true;
         line(ind, "const [_pos, _named] = R.splitArgs(_args);");
         int req = 0, opt = 0; bool slurpy = false;
-        for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy || p.sigil == '|' || p.sigil == '\\') slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
+        for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy || p.sigil == '|') slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
         if (req) line(ind, "if (_pos.length < " + std::to_string(req) + ") R.tooFew(" + jsStr(who) + ", " + std::to_string(req) + ", _pos.length);");
         bool laxTail = false; for (auto it = ps.rbegin(); it != ps.rend(); ++it) { if (it->named || it->invocant) continue; laxTail = (it->sigil == '@' || it->sigil == '%') && !it->slurpy; break; }   // extras after a trailing @/% parameter are ignored, as the interpreter does
         if (!slurpy && !laxTail) line(ind, "if (_pos.length > " + std::to_string(req + opt) + ") R.tooMany(" + jsStr(who) + ", " + std::to_string(req + opt) + ", _pos.length);");
@@ -2630,7 +2630,10 @@ struct JsGen {
             if (p.typeCapture) refuse("a type capture (::T)", 0);
             string name = p.name.empty() ? "" : mangleVar(p.name);
             char sig = p.sigil;
-            if (sig == '|' || sig == '\\') {   // |c: the rest of the arguments as a Capture, named ones included
+            // |c: the rest of the arguments as a Capture, named ones included. The
+            // parser spells it `\` and slurpy; a plain `\x` is ONE argument, bound
+            // raw below, and `+x` is a sigilless slurpy (its slurpyKind says which)
+            if (sig == '|' || (sig == '\\' && p.slurpy && !p.slurpyKind)) {
                 if (!name.empty()) line(ind, "let " + name + " = new R.RCapture(_pos.slice(" + std::to_string(pi) + "), _named);");
                 if (p.subSig) { string tmpn = name.empty() ? "_cap" + std::to_string(pi) : name; if (name.empty()) line(ind, "let " + tmpn + " = new R.RCapture(_pos.slice(" + std::to_string(pi) + "), _named);"); bindSubSig(*p.subSig, "R.mkList(" + tmpn + ".pos)", ind); }   // |c ($first, *@rest)
                 continue;
