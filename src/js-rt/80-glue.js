@@ -100,4 +100,29 @@ T.Signature.methods.params = s => mkList([]);
 T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
 T.Signature.methods.returns = s => T.Mu;
+// The program's own operator where an emitted one reaches it (Js.cpp
+// userInfix, userUnary): the interpreter's decisions. A plain routine answers
+// for every operand but a Whatever, which still curries the built-in; a multi
+// only for an object or an enum it may have a candidate for, and what none of
+// its candidates takes is the built-in's — as are core operands, directly.
+function userOperand(v) { return v instanceof RObj || v instanceof REnum; }
+function whateverish(v) { return v instanceof RWhatever || (typeof v === 'function' && v.rtype === T.WhateverCode); }
+function noCandidate(e) { return e instanceof RakuError && (e.type === 'X::Multi::NoMatch' || e.type === 'X::Multi::Ambiguous'); }
+function userInfix(f, multi, builtin, a, b) {
+    if (!multi) return whateverish(a) || whateverish(b) ? builtin(a, b) : f(a, b);
+    if (!userOperand(a) && !userOperand(b)) return builtin(a, b);
+    try { return f(a, b); } catch (e) { if (noCandidate(e)) return builtin(a, b); throw e; }
+}
+// `$x op= y` decides differently (evalAssign): an object operand takes the
+// routine, and whatever it raises leaves the answer to the built-in
+function userInfixAssign(f, multi, builtin, a, b) {
+    if (a instanceof RObj || b instanceof RObj) { try { return f(a, b); } catch (e) { if (!(e instanceof RakuError)) throw e; return builtin(a, b); } }
+    return multi || whateverish(a) || whateverish(b) ? builtin(a, b) : f(a, b);
+}
+// a multi prefix (evalUnary): an object it has no candidate for is the built-in's
+function userPrefix(f, builtin, a) {
+    if (!(a instanceof RObj)) return builtin(a);
+    try { return f(a); } catch (e) { if (e instanceof RakuError && e.type === 'X::Multi::NoMatch') return builtin(a); throw e; }
+}
+Object.assign(R, { userInfix, userInfixAssign, userPrefix });
 Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });

@@ -1,5 +1,6 @@
 #pragma once
 #include "Ast.h"
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -18,6 +19,35 @@ namespace rakupp {
 // `line`: the source line of the innermost statement being emitted when it was
 // refused (0 when no one statement is to blame), for the note that says so
 struct CodegenError { std::string msg; bool routineWide = false; int line = 0; };
+
+// The one child visitor over the whole polymorphic AST: `f` on each direct
+// child of `n`. Defined in codegen/Js.cpp and, like both transpilers, CLI-only
+// (CMakeLists.txt keeps them out of rakupp_rt).
+void forEachAstChild(Node* n, const std::function<void(Node*)>& f);
+
+// The operator routines a unit declares or binds ANYWHERE (`infix:<+>`,
+// `prefix:<->`): a `sub`/`multi` at any depth, a `my &infix:<+>`, an
+// `&infix:<+>` parameter. A compiled body that meets one of these spellings
+// cannot assume the built-in operator. (Codegen.cpp, for both transpilers.)
+struct OperatorDecl {
+    std::string name;
+    const SubDecl* sub = nullptr;   // the routine; null for a `&`-variable or parameter
+    bool topLevel = false;          // a routine among the unit's own statements
+    bool classBody = false;         // anything inside a class body (not its methods)
+    int line = 0;
+};
+std::vector<OperatorDecl> declaredOperators(Program& prog);
+std::set<std::string> declaredOperatorNames(Program& prog);
+// Why a transpiler cannot call the user's routine where the operator is
+// written, or "" when it can: an operator it evaluates itself (a thunk, a list
+// infix, `++`), a name the lexer meets only as its ASCII twin (`×`), one
+// declared in a class body. `name` that is no operator's is "" too.
+std::string operatorDeclRefusal(const std::string& name, bool classBody);
+// …and why a top-level multi group cannot be (a candidate over core types,
+// which in the interpreter meets the built-in's own candidates), with that
+// candidate's line; "" when it can. `units` are where its types are declared.
+std::string coreTypedMultiRefusal(const std::vector<Program*>& units, const std::string& name,
+                                  const std::vector<SubDecl*>& cands, int& line);
 
 // Transpile a whole program into a self-contained C++ source string that
 // implements the program natively (calling the runtime for Value semantics).
@@ -55,8 +85,12 @@ std::string transpileToCpp(Program& prog, bool optimize = false, const std::stri
 // handed to the interpreter, which copies the local in and back out.
 // `types`: the class/role/grammar names the graph declares, full and short —
 // a call to one of them is a coercion, not a sub call.
+// `ops`: the operator routines and `&infix:<…>` bindings the graph declares
+// anywhere, and the operators its modules export (declaredOperatorNames). A
+// statement that meets one of those spellings is handed to the interpreter,
+// which resolves the binding in reach; the body cannot.
 struct AotNames {
-    std::set<std::string> callEnv, rwSubs, rwMethods, types;
+    std::set<std::string> callEnv, rwSubs, rwMethods, types, ops;
 };
 // `delegatedLines`, when given, receives the source line of every statement
 // the body hands to the interpreter (RAKUPP_AOT_REPORT). `optimize` is the

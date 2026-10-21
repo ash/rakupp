@@ -1219,6 +1219,7 @@ static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
                 }
         };
         types(p->stmts);
+        for (const std::string& n : declaredOperatorNames(*p)) rw.ops.insert(n);
         forEachAotRoutine(*p, [&](SubDecl* sd) {
             for (auto& pa : sd->params) {
                 if (pa.named) continue;
@@ -1231,6 +1232,8 @@ static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
         });
         progs[mi] = std::move(p);
     }
+    for (const std::string& n : exports)
+        if (n.rfind("infix:<", 0) == 0 || n.rfind("prefix:<", 0) == 0 || n.rfind("postfix:<", 0) == 0) rw.ops.insert(n);
     for (size_t mi = 0; mi < mods.size(); mi++) {
         if (!progs[mi] || mods[mi].interpretOnly) continue;   // a builtin's fallback stays interpreted
         Program& prog = *progs[mi];

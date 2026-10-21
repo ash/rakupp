@@ -205,6 +205,78 @@ bool rtUserPrefix(Value (*fn)(ValueList), const Value& v, Value& out) {
     return false;
 }
 
+// The rest of what evalBinary and evalAssign decide, for the bindings that are
+// not a top-level multi. A PLAIN routine or an anonymous block shadows the
+// built-in for every operand (lexShadowedInfix) — except a Whatever, which
+// still curries — and a MULTI found by value meets the built-in as
+// userInfixOverCore models it before the object/enum arm above. `f` is what the
+// emitter could name: a top-level plain sub's function, or the Value of a
+// lexical `&infix:<op>`, a lexical sub or a module's export.
+static bool rtWhateverish(const Value& v) {
+    return v.t == VT::Whatever || (v.t == VT::Code && v.code() && v.code()->ci().isWhateverCode);
+}
+static bool rtDispatchedOp(const Value& f) {   // lexInfixLookup's test
+    const CodeInfo& ci = f.code()->ci();
+    return !ci.name.empty() && (ci.isMultiDispatcher || ci.isMultiCandidate || ci.isProto);
+}
+Value rtUserInfixPlain(Value (*fn)(ValueList), const char* op, const Value& l, const Value& r) {
+    if (rtWhateverish(l) || rtWhateverish(r)) return applyArith(std::string(op), l, r);
+    return fn(ValueList{l, r});
+}
+// (evalAssign's own order: an object operand takes the routine and swallows
+// what it raises; otherwise it shadows as it does for the binary form)
+void rtUserInfixPlainInto(Value (*fn)(ValueList), const char* op, Value& lhs, const Value& r) {
+    if (lhs.t == VT::Object || r.t == VT::Object) {
+        try { lhs = fn(ValueList{lhs, r}); return; } catch (RakuError&) {}
+    }
+    else if (!rtWhateverish(lhs) && !rtWhateverish(r)) { lhs = fn(ValueList{lhs, r}); return; }
+    applyArithInto(op, lhs, r);
+}
+Value rtValueInfix(Interpreter& I, const Value& f, const char* op, const Value& l, const Value& r) {
+    if (f.t == VT::Code && f.code()) {
+        if (!rtDispatchedOp(f)) {
+            if (!rtWhateverish(l) && !rtWhateverish(r)) return I.callCallable(f, ValueList{l, r});
+        }
+        else {
+            Value out;
+            if (I.userInfixOverCoreOf(f, op, l, r, out)) return out;
+            if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) {
+                try { return I.callCallable(f, ValueList{l, r}); }
+                catch (RakuError& e) {
+                    std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                    if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
+                }
+            }
+        }
+    }
+    return applyArith(std::string(op), l, r);
+}
+void rtValueInfixInto(Interpreter& I, const Value& f, const char* op, Value& lhs, const Value& r) {
+    if (f.t == VT::Code && f.code()) {
+        Value out;
+        if (lhs.t == VT::Object || r.t == VT::Object) {
+            try { lhs = I.callCallable(f, ValueList{lhs, r}); return; } catch (RakuError&) {}
+        }
+        else if (!rtDispatchedOp(f)) {
+            if (!rtWhateverish(lhs) && !rtWhateverish(r)) { lhs = I.callCallable(f, ValueList{lhs, r}); return; }
+        }
+        else if (I.userInfixOverCoreOf(f, op, lhs, r, out)) { lhs = std::move(out); return; }
+    }
+    applyArithInto(op, lhs, r);
+}
+// …and the prefix: a plain routine answers for every operand (evalUnary's
+// first arm), a multi only for an object it has a candidate for
+bool rtValuePrefix(Interpreter& I, const Value& f, const Value& v, Value& out) {
+    if (f.t != VT::Code || !f.code()) return false;
+    if (!rtDispatchedOp(f)) { out = I.callCallable(f, ValueList{v}); return true; }
+    if (!(v.t == VT::Object && v.obj() && v.obj()->cls)) return false;
+    try { out = I.callCallable(f, ValueList{v}); return true; }
+    catch (RakuError& e) {
+        if (!isMultiNoMatch(e)) throw;
+    }
+    return false;
+}
+
 // A Pair BINDS its value: `a => $x` carries $x's container, so `$p.value = 5`
 // writes $x, while `a => 1` carries a value and refuses the write with
 // X::Assignment::RO (sheet HM-18). rakupp has no scalar containers yet, so the

@@ -1675,22 +1675,33 @@ void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable
         lexShadowArm(op.data(), op.size());
 }
 
+// A core operand (…and the built-in Dateish values, whose operators are core
+// multis a user candidate can be narrower than: `multi infix:«-»(Date:D, Str:D)`)
+static bool userInfixCoreOperand(const Value& v) {
+    if (v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime")) return true;
+    return isDefined(v) && v.hashKind.empty() && !v.isAllomorph() && v.enumType.empty() &&
+           (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Str ||
+            v.t == VT::Bool || v.t == VT::Complex);
+}
+
 bool Interpreter::userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out) {
     bool stringOp;
     if (!tctx().cur || !userInfixModelledOp(op, stringOp)) return false;
-    // (…and the built-in Dateish values, whose operators are core multis a
-    // user candidate can be narrower than: `multi infix:«-»(Date:D, Str:D)`)
-    auto plain = [](const Value& v) {
-        if (v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime")) return true;
-        return isDefined(v) && v.hashKind.empty() && !v.isAllomorph() && v.enumType.empty() &&
-               (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Str ||
-                v.t == VT::Bool || v.t == VT::Complex);
-    };
-    if (!plain(l) || !plain(r)) return false;
+    if (!userInfixCoreOperand(l) || !userInfixCoreOperand(r)) return false;
     static thread_local std::string key;
     key.assign("&infix:<").append(op).append(">");
     Value* f = tctx().cur->find(key);
-    if (!f || f->t != VT::Code || !f->code() || !f->code()->ci().isMultiDispatcher) return false;
+    return f && userInfixOverCoreOf(*f, op, l, r, out);
+}
+
+// …over the group a caller already holds: compiled code's lexical binding or
+// module export (rtValueInfix), which it found by value rather than by name
+bool Interpreter::userInfixOverCoreOf(const Value& fv, const std::string& op, const Value& l, const Value& r,
+                                      Value& out) {
+    bool stringOp;
+    if (!userInfixModelledOp(op, stringOp) || !userInfixCoreOperand(l) || !userInfixCoreOperand(r)) return false;
+    const Value* f = &fv;
+    if (f->t != VT::Code || !f->code() || !f->code()->ci().isMultiDispatcher) return false;
     // the built-in candidate these operands meet
     const std::string tl = l.typeName(), tr = r.typeName();
     auto intish = [](const std::string& t) { return t == "Int" || t == "Bool"; };

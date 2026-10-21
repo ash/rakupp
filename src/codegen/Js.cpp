@@ -155,8 +155,11 @@ static string asciiOps(string op) {
 }
 
 // ------------------------------------------------------------ AST walking ----
-// One child visitor for the whole polymorphic AST, so the analyses below stay short.
-void forEachChild(Node* n, const std::function<void(Node*)>& f) {
+} // namespace
+
+// One child visitor for the whole polymorphic AST, so the analyses below stay
+// short — and Codegen.cpp's whole-program scans use it too (Codegen.h).
+void forEachAstChild(Node* n, const std::function<void(Node*)>& f) {
     if (!n) return;
     auto E = [&](const ExprPtr& p) { if (p) f(p.get()); };
     auto S = [&](const StmtPtr& p) { if (p) f(p.get()); };
@@ -201,6 +204,9 @@ void forEachChild(Node* n, const std::function<void(Node*)>& f) {
         default: break;
     }
 }
+
+namespace {
+void forEachChild(Node* n, const std::function<void(Node*)>& f) { forEachAstChild(n, f); }
 bool isClosureNode(Node* n) { return n->kind == NK::BlockExpr || n->kind == NK::SubDecl || n->kind == NK::ClassDecl; }
 // Does the subtree contain a node satisfying pred? `intoClosures` = descend into blocks/subs.
 bool containsRec(Node* n, const std::function<bool(Node*)>& pred, bool intoClosures, bool root) {
@@ -759,6 +765,81 @@ struct JsGen {
         return exArg(e);
     }
 
+    // ---------------------------------------------- the program's own operators --
+    // Every operator routine or `&infix:<…>` binding the units declare (scanned
+    // in program()); an operator whose spelling is not here is the built-in.
+    std::set<string> jsOps;
+    // Whether a routine or binding of `name` answers for the operator here (the
+    // resolution userOpRoutine makes)
+    bool opHere(const string& name) {
+        return jsOps.count(name) && (codeVisible(name) || (subs.count(name) && subVisible(name)));
+    }
+    // Whether `op` is a metaoperator (R Z X ! hyper, stacked) over one of them:
+    // the runtime's metaops apply the built-in, so that is refused, never
+    // answered — a multi's included, as Codegen.cpp's says why.
+    bool metaOverDeclared(const string& op) {
+        static const char* const kHyper[] = {">>", "<<", "\xC2\xBB", "\xC2\xAB"};
+        string s = op;
+        for (int guard = 0; guard < 8 && s.size() > 1; guard++) {
+            size_t n = 0;
+            for (const char* h : kHyper) if (s.size() > 2 && s.compare(0, 2, h) == 0) { n = 2; break; }
+            if (!n && (s[0] == 'R' || s[0] == 'Z' || s[0] == 'X' || s[0] == '!')) n = 1;
+            if (!n) return false;
+            s.erase(0, n);
+            for (const char* h : kHyper) if (s.size() > 2 && s.compare(s.size() - 2, 2, h) == 0) { s.erase(s.size() - 2); break; }
+            if (opHere("infix:<" + s + ">")) return true;
+        }
+        return false;
+    }
+    // The routine an operator written here reaches, as a JS function, and
+    // whether it is a multi — the same resolution a call by name makes (a
+    // `&`-variable in scope, then a visible sub). False: none in reach.
+    bool userOpRoutine(const string& name, string& f, bool& multi, int lineNo) {
+        if (!jsOps.count(name)) return false;
+        if (codeVisible(name)) { f = "((...a) => R.callCode(" + mangleVar("&" + name) + ", ...a))"; multi = false; return true; }
+        auto si = subs.find(name);
+        if (si == subs.end() || !subVisible(name)) return false;
+        if (auto ct = coreTypedOps.find(name); ct != coreTypedOps.end()) refuse(ct->second.first, ct->second.second);
+        if (asyncSubs.count(name)) refuse("the program's own " + name + ", which awaits", lineNo);
+        if (!si->second.isMulti && !si->second.rwIdx.empty()) refuse("an `is rw` parameter of the program's own " + name, lineNo);
+        f = mangleSub(name);
+        multi = si->second.isMulti;
+        return true;
+    }
+    // The built-in infix as a function of two values, for the cases the user's
+    // routine leaves to it (R.userInfix)
+    string builtinInfixFn(const string& op, int lineNo) {
+        string body;
+        try { body = binop(op, "_a", "_b", lineNo); }
+        catch (const CodegenError&) { body = "R.opFn(" + jsStr(op) + ")(_a, _b)"; }   // min, max, a set operator…
+        return "((_a, _b) => " + body + ")";
+    }
+    // `L op R` through the user's routine where this site reaches one, with the
+    // interpreter's decisions about when it answers (R.userInfix) — or "".
+    // (the routine by the name WRITTEN, `×` for `infix:<×>`; the built-in by the
+    // ASCII one; a metaop's op already names its inner operator as written)
+    string userInfix(Binary* b) {
+        if (metaOverDeclared(b->op)) refuse("the metaoperator `" + b->op + "` over the program's own infix", b->line);
+        string f; bool multi;
+        if (!userOpRoutine("infix:<" + b->written() + ">", f, multi, b->line)) return "";
+        return "R.userInfix(" + f + ", " + (multi ? "true" : "false") + ", " + builtinInfixFn(asciiOps(b->op), b->line) + ", " +
+               exArg(b->lhs.get()) + ", " + exArg(b->rhs.get()) + ")";
+    }
+    // …and a prefix or postfix one
+    string userUnary(Unary* u) {
+        const string name = string(u->postfix ? "postfix:<" : "prefix:<") + u->op + ">";
+        string f; bool multi;
+        if (!userOpRoutine(name, f, multi, u->line)) return "";
+        string v = exArg(u->operand.get());
+        if (!multi || u->postfix) return f + "(" + v + ")";   // (no built-in postfix is left to fall back to)
+        static const std::map<string, string> kPrefix = {
+            {"-", "R.neg(_a)"}, {"+", "R.numify(_a)"}, {"~", "R.str(_a)"}, {"!", "!R.truthy(_a)"}, {"?", "R.truthy(_a)"},
+            {"+^", "R.bitneg(_a)"}, {"?^", "!R.truthy(_a)"}, {"^", "R.upto(_a)"}, {"not", "R.not(_a)"}, {"so", "R.so(_a)"}};
+        auto it = kPrefix.find(u->op);
+        if (it == kPrefix.end()) refuse("a multi " + name + " over a prefix the JS core has no function for", u->line);
+        return "R.userPrefix(" + f + ", ((_a) => " + it->second + "), " + v + ")";
+    }
+
     string binop(const string& op, const string& L, const string& R_, int lineNo) {
         auto it = kBinOps.find(op);
         if (it != kBinOps.end()) return "R." + it->second + "(" + L + ", " + R_ + ")";
@@ -847,6 +928,9 @@ struct JsGen {
             case NK::Assign: return assign(static_cast<Assign*>(e));
             case NK::ChainExpr: {
                 auto* c = static_cast<ChainExpr*>(e);
+                for (auto& o : c->ops)   // (every link below is the built-in)
+                    if (opHere("infix:<" + o + ">") || metaOverDeclared(o))
+                        refuse("a chained comparison over the program's own infix:<" + o + ">", c->line);
                 // (_t1 = a, _t2 = b, R.truthy(a<b) && (_t3 = c, R.truthy(b<c)) && …): each
                 // operand evaluated once, later ones only while the chain still holds
                 std::vector<string> ts;
@@ -1047,6 +1131,15 @@ struct JsGen {
         // compound: op=
         string bop = op.substr(0, op.size() - 1);
         LV lv = lvalue(t);
+        // the program's own infix: evalAssign's decisions (R.userInfixAssign)
+        if (!jsOps.empty()) {
+            const string wbop = a->written().substr(0, a->written().size() - 1);   // `×=`: `infix:<×>`
+            if (metaOverDeclared(wbop)) refuse("the metaoperator assignment `" + a->written() + "` over the program's own infix", a->line);
+            string f; bool multi;
+            if (userOpRoutine("infix:<" + wbop + ">", f, multi, a->line))
+                return lvExpr(lv, lv.set("R.userInfixAssign(" + f + ", " + (multi ? "true" : "false") + ", " +
+                                         builtinInfixFn(bop, a->line) + ", " + lv.get + ", " + exArg(a->value.get()) + ")"));
+        }
         if (bop == "//") { string x = tmp(); return lvExpr(lv, "R.defined(" + x + " = " + lv.get + ") ? " + x + " : " + lv.set(exArg(a->value.get()))); }
         if (bop == "||") { string x = tmp(); return lvExpr(lv, "R.truthy(" + x + " = " + lv.get + ") ? " + x + " : " + lv.set(exArg(a->value.get()))); }
         if (bop == "&&") { string x = tmp(); return lvExpr(lv, "R.truthy(" + x + " = " + lv.get + ") ? " + lv.set(exArg(a->value.get())) + " : " + x); }
@@ -1158,8 +1251,11 @@ struct JsGen {
             string inner = op.substr(1, op.size() - 2);
             bool tri = !inner.empty() && inner[0] == '\\';
             if (tri) inner = inner.substr(1);
+            if (opHere("infix:<" + inner + ">") || metaOverDeclared(inner))
+                refuse("a reduction over the program's own infix:<" + inner + ">", u->line);
             return "R.reduceOp(" + jsStr(inner) + ", " + exArg(x) + (tri ? ", true" : "") + ")";
         }
+        if (!jsOps.empty() && x) if (string uc = userUnary(u); !uc.empty()) return uc;
         if (op == "do") return doBlock(x, false);
         if (op == "try") return doBlock(x, true);
         if (op == "gather") return gatherExpr(x, u->line);
@@ -1246,6 +1342,7 @@ struct JsGen {
     // --------------------------------------------------------------- binary --
     string binary(Binary* b) {
         const string op = asciiOps(b->op);
+        if (!jsOps.empty()) if (string u = userInfix(b); !u.empty()) return u;
         if (op == "=:=") {   // container identity: a scalar is only ever =:= itself
             Expr* l = b->lhs.get(); Expr* r = b->rhs.get();
             bool lv = l->kind == NK::VarExpr, rv = r->kind == NK::VarExpr;
@@ -2515,7 +2612,7 @@ struct JsGen {
         for (auto& p : ps) if (p.name == "$/") fn().slashParam = true;
         line(ind, "const [_pos, _named] = R.splitArgs(_args);");
         int req = 0, opt = 0; bool slurpy = false;
-        for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy || p.sigil == '|' || p.sigil == '\\') slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
+        for (auto& p : ps) { if (p.named || p.invocant) continue; if (p.slurpy || p.sigil == '|') slurpy = true; else if (p.optional || p.defaultVal) opt++; else req++; }
         if (req) line(ind, "if (_pos.length < " + std::to_string(req) + ") R.tooFew(" + jsStr(who) + ", " + std::to_string(req) + ", _pos.length);");
         bool laxTail = false; for (auto it = ps.rbegin(); it != ps.rend(); ++it) { if (it->named || it->invocant) continue; laxTail = (it->sigil == '@' || it->sigil == '%') && !it->slurpy; break; }   // extras after a trailing @/% parameter are ignored, as the interpreter does
         if (!slurpy && !laxTail) line(ind, "if (_pos.length > " + std::to_string(req + opt) + ") R.tooMany(" + jsStr(who) + ", " + std::to_string(req + opt) + ", _pos.length);");
@@ -2536,7 +2633,10 @@ struct JsGen {
             if (p.typeCapture) refuse("a type capture (::T)", 0);
             string name = p.name.empty() ? "" : mangleVar(p.name);
             char sig = p.sigil;
-            if (sig == '|' || sig == '\\') {   // |c: the rest of the arguments as a Capture, named ones included
+            // |c: the rest of the arguments as a Capture, named ones included. The
+            // parser spells it `\` and slurpy; a plain `\x` is ONE argument, bound
+            // raw below, and `+x` is a sigilless slurpy (its slurpyKind says which)
+            if (sig == '|' || (sig == '\\' && p.slurpy && !p.slurpyKind)) {
                 if (!name.empty()) line(ind, "let " + name + " = new R.RCapture(_pos.slice(" + std::to_string(pi) + "), _named);");
                 if (p.subSig) { string tmpn = name.empty() ? "_cap" + std::to_string(pi) : name; if (name.empty()) line(ind, "let " + tmpn + " = new R.RCapture(_pos.slice(" + std::to_string(pi) + "), _named);"); bindSubSig(*p.subSig, "R.mkList(" + tmpn + ".pos)", ind); }   // |c ($first, *@rest)
                 continue;
@@ -3050,10 +3150,50 @@ struct JsGen {
         }
     }
     bool mainAsync = false;
+    // What the units declare of their own operators (jsOps), with the
+    // declarations no emitted operator could reach refused up front — the same
+    // decisions as the native backend's (Codegen.cpp). A module's are read
+    // before prepareModules renames its private subs out of every name a
+    // program could write, an operator's among them.
+    void scanModuleOps() {
+        if (!mods) return;
+        for (auto& mu : *mods)
+            for (auto& d : declaredOperators(mu.prog)) {
+                if (string why = operatorDeclRefusal(d.name, d.classBody); !why.empty()) refuse(why + " in module " + mu.name, d.line);
+                if (d.sub && !d.sub->isExport) refuse("the operator " + d.name + " that module " + mu.name + " keeps to itself", d.line);
+                jsOps.insert(d.name);
+            }
+    }
+    void scanProgramOps() {
+        // (subs is keyed by NAME, not by scope: a plain sub in a block and a
+        // multi elsewhere would share one entry, and so one answer to "multi?")
+        std::map<string, std::pair<bool, bool>> kinds;   // name → (a plain routine, a multi)
+        for (auto& d : declaredOperators(prog)) {
+            if (string why = operatorDeclRefusal(d.name, d.classBody); !why.empty()) refuse(why, d.line);
+            jsOps.insert(d.name);
+            if (!d.sub) continue;
+            auto& k = kinds[d.name];
+            (d.sub->isMulti ? k.second : k.first) = true;
+            if (k.first && k.second) refuse("the program's own " + d.name + " as both a plain sub and a multi", d.line);
+        }
+        // (a word infix is parsed as a CALL of its dispatcher, which takes such a
+        // candidate where the interpreter's does, so only the operator form is refused)
+        std::vector<Program*> units{&prog};
+        if (mods) for (auto& mu : *mods) units.push_back(&mu.prog);
+        for (auto& kv : subs)
+            if (kv.second.isMulti && jsOps.count(kv.first)) {
+                int at = 0;
+                if (string why = coreTypedMultiRefusal(units, kv.first, kv.second.cands, at); !why.empty())
+                    coreTypedOps[kv.first] = {why, at};
+            }
+    }
+    std::map<string, std::pair<string, int>> coreTypedOps;   // name → (why, line)
     string program() {
         usesChannel = opt.srcText.find("Channel") != string::npos;
+        scanModuleOps();
         prepareModules();
         prepass();
+        scanProgramOps();
         mainAsync = stmtsAwait(prog.stmts);
         if (mods) for (auto& mu : *mods) if (stmtsAwait(mu.prog.stmts)) mainAsync = true;
         // the modules' subs are visible everywhere after them, as their

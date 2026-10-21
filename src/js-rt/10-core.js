@@ -324,7 +324,8 @@ function toNumeric(v, op) {
             if (v instanceof RPair) return toNumeric(v.v);
             if (v instanceof RMatch) return strToNumeric(v.Str());
             if (v instanceof RObj) {
-                const m = v.ty.findUser('Numeric') || v.ty.findUser('Int') || v.ty.findUser('Num');
+                // a Real answers through its .Bridge first, as the interpreter's bridgeReal has it
+                const m = v.ty.findUser('Bridge') || v.ty.findUser('Numeric') || v.ty.findUser('Int') || v.ty.findUser('Num');
                 if (m) return toNumeric(m(v));
                 throw new RakuError(`Cannot convert ${v.ty.name} to a number`);
             }
@@ -649,8 +650,11 @@ function spaceship(a, b) { const c = numCmp(a, b); return Number.isNaN(c) ? Nil 
 function leg(a, b) { return order(strCmp(str(a), str(b))); }
 function strCmp(x, y) { return x < y ? -1 : x > y ? 1 : 0; }
 // infix:<cmp>: numeric when both numeric, else string
+// (a Real — an object with a .Bridge — orders by its value; any other object by its Str)
+function realObj(v) { return v instanceof RObj && !!v.ty.findUser('Bridge'); }
 function cmp(a, b) {
     if (isNumeric(a) && isNumeric(b)) return spaceship(a, b);
+    if ((realObj(a) || realObj(b)) && (isNumeric(a) || realObj(a)) && (isNumeric(b) || realObj(b))) return spaceship(toNumeric(a), toNumeric(b));
     if (a instanceof RType && b instanceof RType) return order(strCmp(a.name, b.name));
     if (a instanceof RList && b instanceof RList) {
         const x = a.arr(), y = b.arr(), n = Math.min(x.length, y.length);

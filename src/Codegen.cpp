@@ -505,18 +505,127 @@ struct Codegen {
     std::map<std::string, const SubDecl*> multiProtos_;  // …and each group's proto, whose pod is the group's .WHY
 
     // A user-declared operator routine's emitted dispatcher, or "" when the
-    // program declares none by that name. `name` is the Raku spelling of the
-    // routine — `infix:<+>`, `prefix:<->`.
+    // program declares none by that name AT THE TOP LEVEL. `name` is the Raku
+    // spelling of the routine — `infix:<+>`, `prefix:<->`.
     //
-    // The whole cost of operator overloading in compiled code is gated on this
-    // returning non-empty: a program that overloads nothing emits exactly what
-    // it emitted before, byte for byte. Only TOP-LEVEL declarations are here,
-    // which is the same set the sub emission itself covers — a `sub infix:<+>`
-    // nested inside a block is not compiled as an operator today and is not
-    // claimed to be.
+    // The whole cost of operator overloading in compiled code is gated on
+    // opDeclared below: a program that overloads nothing emits exactly what it
+    // emitted before, byte for byte.
     std::string userOpFn(const std::string& name) const {
         if (!multiNames.count(name) && !userSubs.count(name)) return "";
         return mangleSub(name);
+    }
+    // The operator names the program binds OTHER than as a top-level routine: a
+    // nested `sub infix:<+>`, a `my &infix:<+>`, an `&infix:<+>` parameter, a
+    // `use`d module's export (scanUserOps). For a module routine, every one its
+    // module graph declares (AotNames::ops), none of them resolved here.
+    std::set<std::string> lexOps_;
+    void scanUserOps(Program& prog, const std::map<std::string, std::vector<SubDecl*>>& multiCands);
+    // Whether something in reach of SOME site replaces the built-in `name` over
+    // core operands too: one of the above, or a plain top-level sub. Every lane
+    // that computes an operator itself asks this. A top-level MULTI is not such
+    // a thing: scanUserOps refuses one with a candidate over core types, so what
+    // is left is over the program's own classes, and an Int-guarded lane never
+    // meets one of those.
+    bool opShadows(const std::string& name) const {
+        return lexOps_.count(name) || (userSubs.count(name) && !multiNames.count(name));
+    }
+    // …and whether the built-in can be emitted at all without asking
+    bool opDeclared(const std::string& name) const { return opShadows(name) || multiNames.count(name); }
+    // Whether `op` is a metaoperator over an infix the program declares: `R-`,
+    // `Z+`, `X~`, `!==`, `>>+<<`, `«*»`, and stacks of them. The metaops are the
+    // runtime's (applyArith, rtReduce), which know nothing of compiled routines,
+    // so one over a routine in scope is refused rather than answered with the
+    // built-in — a multi's included: the interpreter's metaops take its
+    // candidates for an object operand, which no compile-time test can rule
+    // out. A false positive (a word op that merely starts with R, Z or X) costs
+    // a refusal, never an answer.
+    bool metaOverDeclared(const std::string& op) {
+        static const char* const kHyper[] = {">>", "<<", "\xC2\xBB", "\xC2\xAB"};
+        std::string s = op;
+        for (int guard = 0; guard < 8 && s.size() > 1; guard++) {
+            size_t n = 0;
+            for (const char* h : kHyper)
+                if (s.size() > 2 && s.compare(0, 2, h) == 0) { n = 2; break; }
+            if (!n && (s[0] == 'R' || s[0] == 'Z' || s[0] == 'X' || s[0] == '!')) n = 1;
+            if (!n) return false;
+            s.erase(0, n);
+            for (const char* h : kHyper)
+                if (s.size() > 2 && s.compare(s.size() - 2, 2, h) == 0) { s.erase(s.size() - 2); break; }
+            if (opHere("infix:<" + s + ">")) return true;
+        }
+        return false;
+    }
+    // Whether a routine or binding of `name` answers for the operator at THIS
+    // site: one in scope (lexOpValue), a top-level routine, or — in a module
+    // routine, which cannot tell — any its module graph declares
+    bool opHere(const std::string& name) {
+        return (moduleMode_ && lexOps_.count(name)) || !lexOpValue(name).empty() || !userOpFn(name).empty();
+    }
+    // The Value of the innermost operator binding this site can see, or "" for
+    // none: an `&infix:<op>` variable or parameter in scope, a lexical sub, a
+    // top-level `my &infix:<op>`, a module's export (in the runtime env, where
+    // the import put it). A top-level ROUTINE is not one of these — it is a C++
+    // function, and userOpFn names it.
+    std::string lexOpValue(const std::string& name) {
+        if (!lexOps_.count(name)) return "";
+        if (codeVars.count(name) || topVars_.count("&" + name)) return mangleVar("&" + name);
+        if (envSubs.count(name) || moduleExports_.count(name)) return "RT.dynVar(" + cesc("&" + name) + ")";
+        return "";
+    }
+    // `target op= rhs` through the user's routine where this site can reach
+    // one, with evalAssign's decisions (which are not evalBinary's: an object
+    // operand takes whatever binding has the name and swallows what it raises)
+    // — or "" for the built-in lanes. Both operands are bound once: the built-in
+    // lanes name the target twice already, and a third use would have turned a
+    // side-effecting target into two evaluations.
+    // (`written` names the routine: `×=` is `infix:<×>`'s, whose built-in is `*`)
+    std::string userOpAssign(Expr* tgt, const std::string& written, const std::string& binop, const std::string& rhs) {
+        const std::string nm = "infix:<" + written + ">";
+        if (!opDeclared(nm)) return "";
+        refuseModuleOp(nm);
+        const bool multiDim = tgt->kind == NK::Index && static_cast<Index*>(tgt)->multiDim;
+        const bool native = tgt->kind == NK::VarExpr &&
+                            (static_cast<VarExpr*>(tgt)->nativeIntRead || static_cast<VarExpr*>(tgt)->nativeNumRead);
+        std::string upd;
+        if (std::string f = lexOpValue(nm); !f.empty())
+            upd = "rtValueInfixInto(RT, " + f + ", " + cesc(binop) + ", __ua, __ub)";
+        else if (multiNames.count(nm)) {
+            // over the program's own classes only (scanUserOps), which a native
+            // never holds; the AT-POS/ASSIGN-POS form asks rtUserInfix itself
+            if (multiDim || native) return "";
+            upd = "if (!rtUserInfixInto(" + userOpPtr(userOpFn(nm)) + ", __ua, __ub)) applyArithInto(" +
+                  cesc(binop) + ", __ua, __ub)";
+        }
+        else if (!userOpFn(nm).empty())
+            upd = "rtUserInfixPlainInto(" + userOpPtr(userOpFn(nm)) + ", " + cesc(binop) + ", __ua, __ub)";
+        else return "";
+        if (multiDim || native)
+            unsupported("`" + binop + "=` into a " + std::string(multiDim ? "multi-dimensional element" : "native scalar") +
+                        " through the program's own " + nm);
+        return "([&]()->Value&{ Value& __ua = " + lvalueExpr(tgt) + "; Value __ub = " + rhs + "; " + upd +
+               "; return __ua; }())";
+    }
+    // A module routine meets every declared spelling without knowing which
+    // binding is in reach, so the statement goes to the interpreter instead
+    void refuseModuleOp(const std::string& name) {
+        if (moduleMode_) unsupported("the operator " + name + ", which this program or a module it uses declares");
+    }
+    // Binary `op` over the emitted operands, through the user's routine where
+    // this site can reach one and with evalBinary's decisions about when it
+    // answers — or "" when none is in reach and the built-in stands.
+    // (`written` names the routine, as above; `op` is the built-in's spelling)
+    std::string userInfixCall(const std::string& written, const std::string& op, const std::string& L,
+                              const std::string& R) {
+        const std::string nm = "infix:<" + written + ">";
+        if (!opDeclared(nm)) return "";
+        refuseModuleOp(nm);
+        if (std::string f = lexOpValue(nm); !f.empty())
+            return "rtValueInfix(RT, " + f + ", " + cesc(op) + ", " + L + ", " + R + ")";
+        if (!userOpFn(nm).empty())
+            return std::string(multiNames.count(nm) ? "rtUserInfix(" : "rtUserInfixPlain(") +
+                   userOpPtr(userOpFn(nm)) + ", " + cesc(op) + ", " + L + ", " + R + ")";
+        return "";
     }
     // The call expression for it, as a plain function pointer. A lambda rather
     // than `&u_…` because the emitted routine may take `ValueList` or
@@ -1046,7 +1155,7 @@ struct Codegen {
             // user candidate. Missing this was worse than missing the value
             // position: `while $obj < 10` kept its built-in comparison while the
             // body's `+` had become the user's, so the loop stopped terminating.
-            if (it != cmp.end() && userOpFn("infix:<" + b->written() + ">").empty())
+            if (it != cmp.end() && !opDeclared("infix:<" + b->written() + ">"))
                 return it->second + "(" + ex(b->lhs.get()) + ", " + ex(b->rhs.get()) + ")";
         }
         return "RT.boolify(" + ex(e) + ")";
@@ -1694,7 +1803,10 @@ struct Codegen {
         if (l == pb && r == pa) return -op;
         return 0;
     }
-    static std::string cmpShapeSet(int shape) {
+    // (the shape asks the BUILT-IN operator, so not when the program has its own)
+    std::string cmpShapeSet(int shape) const {
+        static const char* const kOp[] = {"", "<=>", "cmp", "leg"};
+        if (shape && opDeclared(std::string("infix:<") + kOp[shape < 0 ? -shape : shape] + ">")) shape = 0;
         return shape ? " _c.code()->ciM().cmpShape = " + std::to_string(shape) + ";" : std::string();
     }
     // A named sub's closure, carrying the declared signature
@@ -1919,6 +2031,10 @@ struct Codegen {
                     if (codeVars.count(nm)) return mangleVar(v->name); // `my &f = …`
                     if (envSubs.count(nm)) return "RT.dynVar(" + cesc(v->name) + ")"; // lexical sub
                     if (moduleMode_ && callEnvNames_.count(nm)) return varRef(v->name);  // the module's own sub
+                    if (lexOps_.count(nm)) {   // a module's export, or a binding in no scope compiled here
+                        refuseModuleOp(nm);
+                        if (std::string f = lexOpValue(nm); !f.empty()) return f;
+                    }
                     if (nm.rfind("infix:", 0) == 0 || nm.rfind("prefix:", 0) == 0 || nm.rfind("postfix:", 0) == 0) {
                         // &infix:<op> — an operator as a callable
                         std::string op = nm.substr(nm.find('<') + 1);
@@ -2158,12 +2274,18 @@ struct Codegen {
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
-                if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') // reduce metaop [+] [*] …
+                if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') { // reduce metaop [+] [*] …
+                    // (the runtime's reduce applies the built-in: see metaOverDeclared)
+                    std::string inner = u->op.substr(1, u->op.size() - 2);
+                    if (inner.size() > 1 && inner[0] == '\\') inner.erase(0, 1);   // [\+], the triangle form
+                    if (opHere("infix:<" + inner + ">") || metaOverDeclared(inner))
+                        unsupported("a reduction over the program's own infix:<" + inner + ">");
                     return "rtReduce(RT, " + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) +
                            // (each comma item ONE operand, as the interpreter takes them: see rtReduce)
                            (u->operand->kind == NK::ListExpr &&
                                     static_cast<ListExpr*>(u->operand.get())->items.size() != 1
                                 ? ", true)" : ")");
+                }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
@@ -2257,15 +2379,23 @@ struct Codegen {
                            "; RT.quietDepth_--; return __q; } catch (...) { RT.quietDepth_--; throw; } }())";
                 }
                 std::string x = ex(u->operand.get());
-                // A user `prefix:<op>` that overloads this spelling wins over the
-                // built-in for an object operand, which is evalUnary's own gate.
-                // The built-in below is untouched — it is emitted against the
-                // temp instead of against the operand expression, so the operand
-                // is still evaluated exactly once.
-                if (std::string uf = userOpFn("prefix:<" + u->op + ">"); !uf.empty())
-                    return "([&]()->Value{ Value _uo = " + x + "; Value _ur; if (rtUserPrefix(" +
-                           userOpPtr(uf) + ", _uo, _ur)) return _ur; return " +
-                           prefixBuiltin(u, "_uo") + "; }())";
+                // A user `prefix:<op>` that overloads this spelling: a multi wins
+                // over the built-in for an object operand, which is evalUnary's
+                // own gate, and a plain sub for every operand (its first arm), so
+                // that one is a call and nothing else; a lexical binding decides
+                // at run time which of the two it is (rtValuePrefix). The built-in
+                // is untouched — it is emitted against the temp instead of against
+                // the operand expression, so the operand is still evaluated once.
+                if (const std::string pn = "prefix:<" + u->op + ">"; opDeclared(pn)) {
+                    refuseModuleOp(pn);
+                    std::string test;
+                    if (std::string f = lexOpValue(pn); !f.empty()) test = "rtValuePrefix(RT, " + f + ", _uo, _ur)";
+                    else if (multiNames.count(pn)) test = "rtUserPrefix(" + userOpPtr(userOpFn(pn)) + ", _uo, _ur)";
+                    else if (!userOpFn(pn).empty()) return "(" + userOpPtr(userOpFn(pn)) + ")(ValueList{" + x + "})";
+                    if (!test.empty())
+                        return "([&]()->Value{ Value _uo = " + x + "; Value _ur; if (" + test + ") return _ur; return " +
+                               prefixBuiltin(u, "_uo") + "; }())";
+                }
                 return prefixBuiltin(u, x);
             }
             case NK::Binary: {
@@ -2274,6 +2404,8 @@ struct Codegen {
                 // own arm performs (the runtime operator table has no entry — compiled,
                 // it died "Unsupported operator 'does'")
                 if (b->op == "does" || b->op == "but") unsupported("a `" + b->op + "` mixin");
+                if (metaOverDeclared(b->op))
+                    unsupported("the metaoperator `" + b->op + "` over the program's own infix");
                 // …and the topicalizing short-circuits, which bind `$_` to the left
                 // side for the right (the operator table has none of the three)
                 if (b->op == "andthen" || b->op == "orelse" || b->op == "notandthen")
@@ -2437,10 +2569,18 @@ struct Codegen {
                 // what rtUserInfix decides — the same two decisions evalBinary
                 // makes. Without this the emitted code called the built-in
                 // straight through and a compiled program quietly answered
-                // differently from an interpreted one.
-                // (by the name WRITTEN: `×` is `infix:<×>`, whose built-in is `*`)
-                if (std::string uf = userOpFn("infix:<" + b->written() + ">"); !uf.empty())
-                    return "rtUserInfix(" + userOpPtr(uf) + ", " + cesc(b->op) + ", " + L + ", " + R + ")";
+                // differently from an interpreted one. A plain sub, a lexical
+                // binding and a module's export are reached the same way
+                // (userInfixCall). A `*` left for the runtime to curry would build
+                // the BUILT-IN's closure, so that one form is refused; exArg has
+                // already turned every other written `*` into a parameter. The
+                // routine is asked for by the name WRITTEN: `×` is `infix:<×>`,
+                // whose built-in is `*`.
+                if (std::string uc = userInfixCall(b->written(), b->op, L, R); !uc.empty()) {
+                    if (wcDepth == 0 && (hasStarLit(b->lhs.get()) || hasStarLit(b->rhs.get())))
+                        unsupported("a `*` curried over the program's own infix:<" + b->op + ">");
+                    return uc;
+                }
                 // a NATIVE operation (Ast.h nativeNumericStatic): wraps at 64 bits,
                 // and its value carries the native tags, as the interpreter's does
                 if (nativeNumericStatic(b)) return "rtNativeArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
@@ -2740,6 +2880,12 @@ struct Codegen {
             }
             case NK::ChainExpr: {
                 auto* ch = static_cast<ChainExpr*>(e);
+                // each link below is the built-in, which is not what a chain over
+                // the program's own `infix:«<»` is (the interpreter's chain does not
+                // call a user one either yet; Rakudo's does)
+                for (auto& o : ch->ops)
+                    if (opHere("infix:<" + o + ">") || metaOverDeclared(o))
+                        unsupported("a chained comparison over the program's own infix:<" + o + ">");
                 std::string binds, cond;
                 for (size_t k = 0; k < ch->operands.size(); k++)
                     binds += "Value _c" + std::to_string(k) + "=(" + ex(ch->operands[k].get()) + "); ";
@@ -3029,15 +3175,24 @@ struct Codegen {
     //
     // Clearing it at a block boundary is the same rule: `topVars_` answers
     // "declare or assign" only where the top-level scope actually is.
+    // …and what the block BINDS ends with it: a `my &f` or a lexical sub named
+    // after it outlived the braces, which mattered nowhere until an operator
+    // could be one — `{ my &infix:<*> = …; … }; 2 * 3` is the built-in again
+    // after the block, and named a C++ local that was out of scope.
     struct DeclScope {
         Codegen* g;
-        std::set<std::string> savedHoist;
+        std::set<std::string> savedHoist, savedCodeVars, savedEnvSubs;
         bool savedTop;
-        explicit DeclScope(Codegen* c) : g(c), savedHoist(c->hoisted), savedTop(c->atTopLevel_) {
+        explicit DeclScope(Codegen* c)
+            : g(c), savedHoist(c->hoisted), savedCodeVars(c->codeVars), savedEnvSubs(c->envSubs),
+              savedTop(c->atTopLevel_) {
             c->hoisted.clear();
             c->atTopLevel_ = false;
         }
-        ~DeclScope() { g->hoisted = std::move(savedHoist); g->atTopLevel_ = savedTop; }
+        ~DeclScope() {
+            g->hoisted = std::move(savedHoist); g->atTopLevel_ = savedTop;
+            g->codeVars = std::move(savedCodeVars); g->envSubs = std::move(savedEnvSubs);
+        }
         DeclScope(const DeclScope&) = delete;
         DeclScope& operator=(const DeclScope&) = delete;
     };
@@ -3821,7 +3976,7 @@ struct Codegen {
             if (b->op == "~" && (back || front) &&
                 tv->name.size() > 1 && tv->name[0] == '$' &&
                 (nameLetterAt(tv->name, 1) || tv->name[1] == '_') &&
-                userOpFn("infix:<~>").empty() && coerceFor(tgt, rhs, a->value.get()) == rhs) {
+                !opDeclared("infix:<~>") && coerceFor(tgt, rhs, a->value.get()) == rhs) {
                 return "([&]()->Value&{ Value& __l = " + lvalueExpr(tgt) + ";"
                        " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName.empty()) " +
                        (back ? "rtCatAssign(__l, " + exArg(b->rhs.get()) + ");"
@@ -3840,6 +3995,11 @@ struct Codegen {
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
         const std::string ubinop = a->written().substr(0, a->written().size() - 1);   // `×=`: `infix:<×>`
+        // A user `infix:<op>` in reach goes ahead of every lane below, each of
+        // which computes the built-in itself
+        if (metaOverDeclared(binop))
+            unsupported("the metaoperator assignment `" + a->op + "` over the program's own infix");
+        if (std::string ua = userOpAssign(tgt, ubinop, binop, rhs); !ua.empty()) return ua;
         // `@a[$y; $x] += 1` — a multi-dim slot is not a reference into a buffer, so
         // the read and the write are AT-POS and ASSIGN-POS around the operator.
         // The indices are evaluated ONCE, into a list both calls use.
@@ -3914,14 +4074,6 @@ struct Codegen {
         // destination twice and so can never multiply over it, and rtMul's inline
         // small-Int case is the first thing applyArith tests anyway, so
         // applyArithInto gives up nothing and gains the BigInt in-place path.
-        // `$obj OP= x` through a user `infix:<OP>`, with the built-in below as
-        // the fallback. Both operands are bound once: the built-in lanes name
-        // `lhs` twice already, and adding a third use would have turned a
-        // side-effecting target into two evaluations.
-        if (std::string uf = userOpFn("infix:<" + ubinop + ">"); !uf.empty())
-            return "([&]()->Value&{ Value& __ua = " + lhs + "; Value __ub = " + rhs +
-                   "; if (!rtUserInfixInto(" + userOpPtr(uf) + ", __ua, __ub)) applyArithInto(" +
-                   cesc(binop) + ", __ua, __ub); return __ua; }())";
         if (std::string f = fastBin(binop); !f.empty() && binop != "*")
             return lhs + " = " + f + "(" + lhs + ", " + rhs + ")"; // -O
         // applyArithInto, not `lhs = applyArith(...)`: same result, but the
@@ -4331,7 +4483,7 @@ struct Codegen {
         Unary* upto = nullptr;
         if (f->list->kind == NK::Unary) {
             auto* u = static_cast<Unary*>(f->list.get());
-            if (u->op == "^" && !u->postfix && userOpFn("prefix:<^>").empty()) upto = u;
+            if (u->op == "^" && !u->postfix && !opDeclared("prefix:<^>")) upto = u;
         }
         if (f->list->kind == NK::Range || upto) {
             // `for A..B` counts with a raw long long — but ONLY when the range is
@@ -4565,7 +4717,7 @@ struct Codegen {
                 return false;
         return true;
     }
-    bool kernelOpFree(const std::string& routine) const { return userOpFn(routine).empty(); }
+    bool kernelOpFree(const std::string& routine) const { return !opDeclared(routine); }
     static bool loopLanesByDefault() {
         static const bool on = [] {
             const char* nk = std::getenv("RAKUPP_NO_KERNELS");
@@ -4937,7 +5089,7 @@ struct Codegen {
             }
             case NK::Unary: {
                 auto* u = static_cast<Unary*>(e);
-                if (u->postfix || u->op != "-") return "";
+                if (u->postfix || u->op != "-" || opShadows("prefix:<->")) return "";
                 std::string a = laneInt(u->operand.get(), L);
                 if (a.empty()) return "";
                 std::string t = gensym("__ln");
@@ -4948,7 +5100,7 @@ struct Codegen {
                 auto* b = static_cast<Binary*>(e);
                 const std::string& op = b->op;
                 std::string ovf = op == "+" ? "add_ovf" : op == "-" ? "sub_ovf" : op == "*" ? "mul_ovf" : "";
-                if (ovf.empty() && op != "%") return "";
+                if ((ovf.empty() && op != "%") || opShadows("infix:<" + op + ">")) return "";
                 std::string a = laneInt(b->lhs.get(), L); if (a.empty()) return "";
                 std::string c = laneInt(b->rhs.get(), L); if (c.empty()) return "";
                 std::string t = gensym("__ln");
@@ -4968,6 +5120,7 @@ struct Codegen {
     std::string laneBool(Expr* e, Lane& L) {
         if (e->kind != NK::Binary || hasWhatever(e)) return "";
         auto* b = static_cast<Binary*>(e);
+        if (opShadows("infix:<" + b->op + ">")) return "";   // (a lane computes the built-in)
         static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
         if (cmp.count(b->op)) {
             std::string a = laneInt(b->lhs.get(), L); if (a.empty()) return "";
@@ -5002,6 +5155,7 @@ struct Codegen {
         const std::string& op = a->op;
         bool plain = op == "=";
         if (!plain && op != "+=" && op != "-=" && op != "*=" && op != "%=") return false;
+        if (!plain && opShadows("infix:<" + op.substr(0, op.size() - 1) + ">")) return false;
         Lane L;
         std::string r = laneInt(a->value.get(), L);
         if (r.empty()) return false;
@@ -5202,6 +5356,7 @@ struct Codegen {
                 auto* a = static_cast<Assign*>(e);
                 static const std::set<std::string> ops = {"=", "+=", "-=", "*=", "/=", "%=", "~="};
                 if (!ops.count(a->op) || a->containerSigil || a->userOp) { U.fail(); return; }
+                if (a->op != "=" && opShadows("infix:<" + a->op.substr(0, a->op.size() - 1) + ">")) { U.fail(); return; }
                 std::string nm;
                 if (!uScalar(a->target.get(), nm)) { U.fail(); return; }
                 if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
@@ -5247,7 +5402,7 @@ struct Codegen {
                 static const std::set<std::string> ops = {
                     "+", "-", "*", "/", "%", "<", "<=", ">", ">=", "==", "!=", "&&", "||",
                     "~", "eq", "ne", "lt", "gt", "le", "ge", "**", "min", "max" };
-                if (!ops.count(b->op)) { U.fail(); return; }
+                if (!ops.count(b->op) || opShadows("infix:<" + b->op + ">")) { U.fail(); return; }
                 if ((b->op == "**" || b->op == "min" || b->op == "max") && !kernelOpFree("infix:<" + b->op + ">")) {
                     U.fail();
                     return;
@@ -5269,7 +5424,7 @@ struct Codegen {
                     U.written.insert(nm);
                     return;
                 }
-                if (u->op != "-" && u->op != "+" && u->op != "!") { U.fail(); return; }
+                if ((u->op != "-" && u->op != "+" && u->op != "!") || opShadows("prefix:<" + u->op + ">")) { U.fail(); return; }
                 uCollectExpr(u->operand.get(), U);
                 return;
             }
@@ -6893,6 +7048,178 @@ static std::string mainSigBlob(Program& prog) {
     return blob;
 }
 
+// ---- the program's own operators (Codegen::lexOps_, and the JS backend's) ----
+
+// `infix:<+>` → the category and the spelling; false for any other name
+static bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op) {
+    const size_t c = n.find(":<");
+    if (c == std::string::npos || n.size() < c + 4 || n.back() != '>') return false;
+    cat = n.substr(0, c);
+    if (cat != "infix" && cat != "prefix" && cat != "postfix") return false;
+    op = n.substr(c + 2, n.size() - c - 3);
+    return true;
+}
+
+std::vector<OperatorDecl> declaredOperators(Program& prog) {
+    std::vector<OperatorDecl> out;
+    std::string cat, op;
+    // where: 1 the unit's statements, 2 a class body's, 3 inside one of those, 0 anywhere else
+    std::function<void(Node*, int)> walk = [&](Node* n, int where) {
+        if (!n) return;
+        const bool inBody = where >= 2;
+        auto binding = [&](const std::string& nm) {
+            if (nm.size() > 1 && nm[0] == '&' && operatorRoutineName(nm.substr(1), cat, op))
+                out.push_back({nm.substr(1), nullptr, false, inBody, n->line});
+        };
+        auto params = [&](const std::vector<Param>& ps) { for (auto& p : ps) binding(p.name); };
+        switch (n->kind) {
+            case NK::SubDecl: {
+                auto* d = static_cast<SubDecl*>(n);
+                if (!d->isMethod && operatorRoutineName(d->name, cat, op))
+                    out.push_back({d->name, d, where == 1, inBody, d->line});
+                params(d->params);
+                for (auto& a : d->altParams) params(a);
+                break;
+            }
+            case NK::BlockExpr: params(static_cast<BlockExpr*>(n)->params); break;
+            case NK::ForStmt: params(static_cast<ForStmt*>(n)->params); break;
+            case NK::WhileStmt: params(static_cast<WhileStmt*>(n)->params); break;
+            case NK::GivenStmt: params(static_cast<GivenStmt*>(n)->params); break;
+            case NK::IfStmt: {
+                auto* i = static_cast<IfStmt*>(n);
+                for (auto& ps : i->branchParams) params(ps);
+                params(i->elseParams);
+                break;
+            }
+            case NK::VarDecl: for (auto& nm : static_cast<VarDecl*>(n)->names) binding(nm); break;
+            case NK::VarExpr: if (static_cast<VarExpr*>(n)->declare) binding(static_cast<VarExpr*>(n)->name); break;
+            case NK::ClassDecl: {   // (an attribute's default cannot declare an operator)
+                auto* c = static_cast<ClassDecl*>(n);
+                for (auto& m : c->methods) walk(m.get(), 0);
+                for (auto& st : c->body) walk(st.get(), 2);
+                return;
+            }
+            default: break;
+        }
+        forEachAstChild(n, [&](Node* ch) { walk(ch, inBody ? 3 : 0); });
+    };
+    for (auto& st : prog.stmts) walk(st.get(), 1);
+    return out;
+}
+
+std::set<std::string> declaredOperatorNames(Program& prog) {
+    std::set<std::string> out;
+    for (auto& d : declaredOperators(prog)) out.insert(d.name);
+    return out;
+}
+
+std::string operatorDeclRefusal(const std::string& name, bool classBody) {
+    // Spellings with an arm of their own — a thunk, a list infix, a container
+    // test, a sequence or range, a junction, a mixin — in the emitters or in
+    // evalBinary: the call to the user's routine is never reached for them.
+    static const std::set<std::string> kOwnInfix = {
+        "&&", "and", "||", "or", "//", "andthen", "orelse", "notandthen", "^^", "xor", "&", "|", "^",
+        "~~", "!~~", "xx", "...", "...^", "^...", "^...^", "..", "..^", "^..", "^..^", "Z", "X",
+        "does", "but", "=:=", "!=:=", "==>", "<==", "ff", "fff", "ff^", "fff^", "^ff", "^fff", "^ff^",
+        "^fff^", ",", "=>", "o", "\xE2\x88\x98"};
+    // The lexer spells `×` `÷` `−` `≤` `≥` `≠` as their ASCII twins, so a
+    // routine under one of these names never meets the operator it overloads.
+    static const std::set<std::string> kTwins = {
+        "\xC3\x97", "\xC3\xB7", "\xE2\x88\x92", "\xE2\x89\xA4", "\xE2\x89\xA5", "\xE2\x89\xA0"};
+    std::string cat, op;
+    if (!operatorRoutineName(name, cat, op)) return "";
+    if ((cat == "infix" && kOwnInfix.count(op)) || (cat == "prefix" && (op == "++" || op == "--")) ||
+        (cat == "postfix" && (op == "++" || op == "--" || op == "i")))
+        return "the program's own " + name + ", an operator compiled code evaluates itself";
+    if (cat == "infix" && kTwins.count(op))
+        return "the program's own " + name + ", which compiled code meets under its ASCII twin";
+    if (classBody) return "the operator " + name + " declared inside a class body";
+    return "";
+}
+
+// A candidate over CORE types joins the built-in's own dispatch in the
+// interpreter (userInfixOverCore: narrower wins, a tie is ambiguous), which no
+// compiled dispatcher models — and a lane that reads only Ints would never ask
+// it. The test is noteUserInfixCandidate's, which arms that dispatch.
+std::string coreTypedMultiRefusal(const std::vector<Program*>& units, const std::string& name,
+                                  const std::vector<SubDecl*>& cands, int& line) {
+    static const std::set<std::string> kModelled = {
+        "+", "-", "*", "/", "%", "**", "==", "!=", "<", ">", "<=", ">=", "<=>", "div", "mod",
+        "~", "eq", "ne", "lt", "gt", "le", "ge", "leg"};
+    static const std::set<std::string> kCore = {"Int", "UInt", "Num", "Rat", "FatRat", "Str", "Bool", "Complex"};
+    static const std::set<std::string> kBroad = {
+        "Any", "Mu", "Cool", "Numeric", "Real", "Rational", "Stringy", "Positional", "Associative",
+        "Callable", "Code", "Iterable", "Junction", "List", "Array", "Hash", "Seq", "Range"};
+    std::string cat, op;
+    if (!operatorRoutineName(name, cat, op) || cat != "infix" || !kModelled.count(op)) return "";
+    std::map<std::string, std::string> subsetOf;
+    std::set<std::string> ownTypes;
+    auto own = [&](const std::string& n) {   // full and short, as a parameter may spell it
+        ownTypes.insert(n);
+        if (size_t c = n.rfind("::"); c != std::string::npos) ownTypes.insert(n.substr(c + 2));
+    };
+    std::function<void(std::vector<StmtPtr>&)> types = [&](std::vector<StmtPtr>& ss) {
+        for (auto& st : ss) {
+            if (st->kind == NK::SubsetDecl)
+                subsetOf[static_cast<SubsetDecl*>(st.get())->name] = static_cast<SubsetDecl*>(st.get())->baseType;
+            else if (st->kind == NK::ClassDecl) {
+                own(static_cast<ClassDecl*>(st.get())->name);
+                types(static_cast<ClassDecl*>(st.get())->body);
+            }
+            else if (st->kind == NK::EnumDecl) own(static_cast<EnumDecl*>(st.get())->name);
+        }
+    };
+    for (Program* u : units) types(u->stmts);
+    auto concrete = [&](const Param& p) {
+        if (p.litVal) return true;
+        std::string t = p.type;
+        for (int guard = 0; guard < 16; guard++) {
+            auto it = subsetOf.find(t);
+            if (it == subsetOf.end() || it->second.empty()) break;
+            t = it->second;
+        }
+        if (kCore.count(t)) return true;
+        return !t.empty() && !kBroad.count(t) && !ownTypes.count(t);   // a type nothing here declares: maybe a core one
+    };
+    for (const SubDecl* d : cands) {
+        std::vector<const Param*> pos;
+        bool shaped = true;
+        for (auto& p : d->params) {
+            if (p.invocant) continue;
+            if (p.named) { if (p.required) shaped = false; continue; }
+            if (p.pastDoubleSemi || p.slurpy || p.optional || p.defaultVal || p.subSig || p.coerce ||
+                p.typeCapture || p.sigil != '$')
+                shaped = false;
+            pos.push_back(&p);
+        }
+        if (shaped && pos.size() == 2 && concrete(*pos[0]) && concrete(*pos[1])) {
+            line = d->line;
+            return "a multi " + name + " with a candidate over core types, which meets the built-in operator's "
+                   "own candidates";
+        }
+    }
+    return "";
+}
+
+void Codegen::scanUserOps(Program& prog, const std::map<std::string, std::vector<SubDecl*>>& multiCands) {
+    for (auto& d : declaredOperators(prog)) {
+        if (std::string why = operatorDeclRefusal(d.name, d.classBody); !why.empty())
+            throw CodegenError{why, false, d.line};
+        if (!d.topLevel) lexOps_.insert(d.name);
+    }
+    std::string cat, op;
+    for (auto& n : moduleExports_)
+        if (operatorRoutineName(n, cat, op)) {
+            if (std::string why = operatorDeclRefusal(n, false); !why.empty()) throw CodegenError{why};
+            lexOps_.insert(n);
+        }
+    for (auto& [name, cands] : multiCands) {
+        int line = 0;
+        if (std::string why = coreTypedMultiRefusal({&prog}, name, cands, line); !why.empty())
+            throw CodegenError{why, false, line};
+    }
+}
+
 std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath,
                            const std::set<std::string>& moduleExports,
                            const std::string& srcText) {
@@ -7036,6 +7363,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             throw CodegenError{"a class-body `my " + kv.first + "` shadowing a top-level variable"};
         asTopVar(kv.first, kv.second.second);
     }
+    g.scanUserOps(prog, multiCands);
 
     g.out << "// Generated by `rakupp --exe` — native transpilation of a Raku program.\n"
              "#include \"Interpreter.h\"\n#include \"Value.h\"\n#include <cmath>\n#include <vector>\n#include <string>\n#include <iostream>\n#include <utility>\n#include <cstdlib>\n"
@@ -7333,6 +7661,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     g.rwSubNames_ = names.rwSubs;
     g.rwMethodNames_ = names.rwMethods;
     g.aotTypeNames_ = names.types;
+    g.lexOps_ = names.ops;
     g.aotFree_ = freeNames;
     g.aotLocals_ = locals;
     g.aotTag_ = fn;
