@@ -1995,8 +1995,8 @@ int64_t scmpFn(const KNode* n, int64_t* fr, KRun& R) {
     }
 }
 
-// Nums. Each operation is the one numFastArith (InterpreterCore.cpp) and
-// applyArith's double arm perform; where those decline or fail — a zero
+// Nums. Each operation is the one rtNumArith (Interpreter.h), applyArith's
+// double lane, performs; where those decline or fail — a zero
 // divisor, a power that underflows — the kernel bails.
 template <KOp OP>
 [[gnu::always_inline]] inline int64_t napply(double x, double y, KRun& R) {
@@ -2740,12 +2740,18 @@ void finishSession(Compiler& cc, bool ok, const Callable* asker) {
 // Are the routines a kernel graph calls still the ones it was compiled
 // against, and none of them wrapped? (Checked at each entry: a `my &g` can be
 // re-assigned and a sub re-bound, which a compiled call would not see.)
-bool callsBound(const std::vector<IKernel*>& graph) {
+// `root`'s own calls are resolved from `rootScope`, the scope of the closure
+// ENTERING it: every closure of one body shares its kernel (CodeInfo), so the
+// one that compiled it, whose scope root->scope is, may be another closure, or
+// gone. (Its self-call entry is that closure too: the caller asks about the
+// entering one's wrappers.)
+bool callsBound(const std::vector<IKernel*>& graph, const IKernel* root = nullptr, Env* rootScope = nullptr) {
     for (auto* g : graph) {
         for (auto* o : g->calleeOwners)
-            if (!o->cold().wrappers.empty()) return false;
+            if ((!root || o != root->owner) && !o->cold().wrappers.empty()) return false;
+        Env* const scope = g == root ? rootScope : g->scope;
         for (auto& kc : g->calls) {
-            const Value* f = g->scope ? g->scope->find(kc.first) : nullptr;
+            const Value* f = scope ? scope->find(kc.first) : nullptr;
             if (!f || f->t != VT::Code || f->code() != kc.second) return false;
         }
     }
@@ -2820,7 +2826,8 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
         if (!((k->natParams >> i) & 1 ? nativeIntArg(args[i]) : plainIntArg(args[i]))) return false;
         a[i] = args[i].i;
     }
-    if (!c.cold().wrappers.empty() || !callsBound(k->graph)) return false;
+    if (!c.cold().wrappers.empty() ||
+        !callsBound(k->graph, k, c.closure ? c.closure.get() : global_.get())) return false;
     for (auto& op : k->binOps)
         if (opShadowed(op)) return false;
     if (k->usesPrefix && g_userPrefixShadow.load(std::memory_order_relaxed)) return false;

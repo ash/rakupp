@@ -624,9 +624,11 @@ inline bool isDynName(const std::string& n) { return n.size() > 1 && n[1] == '*'
 // answers without the scope walk it otherwise made on every mention.
 //
 // g_boundInfixMask: which `&infix:<op>` spellings some scope bound, as a
-// 64-bit filter over lexShadowSlot (a false positive only costs the lookup).
-// An enum or object operand asks its scope for a user `&infix:<op>` before the
-// built-in operator gets it; with the spelling's bit clear there is none.
+// 64-bit filter over lexShadowSlot, its hits confirmed against the spellings
+// recorded, as g_lexShadowMask's are (`tops` shares `>`'s bit). An enum or
+// object operand asks its scope for a user `&infix:<op>` before the built-in
+// operator gets it; with the spelling unrecorded there is none. (It is the
+// wider of the two filters: g_lexShadowMask records only ANONYMOUS bindings.)
 //
 // Never cleared: a program that binds such a name once keeps the walk.
 extern std::atomic<bool> g_coreEnumNameBound;
@@ -837,9 +839,11 @@ inline bool lexShadowPossible(const char* p, size_t n) {
 inline bool lexShadowPossible(const std::string& op) { return lexShadowPossible(op.data(), op.size()); }
 // Whether some scope may hold a `&infix:<op>` for exactly this spelling (see
 // g_boundInfixMask): false means Env::find("&infix:<op>") answers null.
+bool boundInfixArmed(const char* p, size_t n);
 inline bool boundInfixPossible(const std::string& op) {
-    const uint64_t m = g_boundInfixMask.load(std::memory_order_relaxed);
-    return m && !op.empty() && ((m >> lexShadowSlot(op.data(), op.size())) & 1);
+    const uint64_t m = g_boundInfixMask.load(std::memory_order_acquire);
+    return m && !op.empty() && ((m >> lexShadowSlot(op.data(), op.size())) & 1) &&
+           boundInfixArmed(op.data(), op.size());
 }
 // The ASCII spelling the lexer gives `×` `÷` `−` `≥` `≤` `≠`, so a `sub
 // infix:<×>` shadows what reaches the evaluator as `*`: the Unicode twin of an
@@ -2526,8 +2530,8 @@ public:
                // tags (`use experimental :rakuast`) is otherwise indistinguishable
                // from the bare pragma once codegen has emitted the call
                const std::vector<std::string>& importArgs = {}); // `use`/`no MODULE` (used by codegen)
-    bool bodyUsesAtUnderscore(const Callable* c);
-    bool bodyMayUseTopic(const Callable& c);         // may its body touch `$_`? (Interpreter.cpp)   // does a block's body read @_ (its implicit `*@_`)?
+    bool bodyUsesAtUnderscore(const Callable* c);   // does a block's body read @_ (its implicit `*@_`)?
+    bool bodyMayUseTopic(const Callable& c);         // may its body, or a parameter's default, touch `$_`? (Interpreter.cpp)
     Value coerceVarValue(const Value& rhs, const std::string& target, const std::string& from,
                          const std::string& nm);   // `my Str(Int(Cool)) $x = …`
     Value* lexInfixLookup(const std::string& op);    // the lexical &infix:<op>, name lookup only
@@ -5188,7 +5192,8 @@ inline Value rtShl(const Value& l, const Value& r) { long long z; if (rtBothInt(
 inline Value rtShr(const Value& l, const Value& r) { long long z; if (rtBothInt(l, r) && rtIntBitOp('>', l.i, r.i, z)) return Value::integer(z); return applyArith("+>", l, r); }
 // Floor integer division (`div`) — Raku rounds toward -∞, unlike C++ `/`.
 inline Value rtDiv(const Value& l, const Value& r) {
-    if (rtBothInt(l, r) && r.i != 0) { long long q = l.i / r.i; if ((l.i % r.i) && ((l.i < 0) != (r.i < 0))) q--; return Value::integer(q); }
+    // (not -2**63 div -1, which overflows: applyArith answers 2**63)
+    if (rtBothInt(l, r) && r.i != 0 && r.i != -1) { long long q = l.i / r.i; if ((l.i % r.i) && ((l.i < 0) != (r.i < 0))) q--; return Value::integer(q); }
     return applyArith("div", l, r);
 }
 inline Value rtConcat(const Value& l, const Value& r) { if (l.t == VT::Str && r.t == VT::Str) return Value::str(l.s + r.s); return applyArith("~", l, r); }
@@ -5471,10 +5476,11 @@ inline Value rtItemized(Value v) {
 // comment on it in Interpreter.cpp. (Not inline: it needs the coerceArray/
 // coerceHash statics that live there.)
 void rtCommaAssign(Value& l, const Value& r);
-inline Value rtMod(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("%", l, r); }
+// (a divisor of -1 goes the long way, as in rtDiv: -2**63 % -1 is undefined in C++)
+inline Value rtMod(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0 && r.i != -1) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("%", l, r); }
 // `mod`: the same over two Ints; anything else (a zero divisor throws, where `%` fails softly) is `mod`'s own
-inline Value rtModOp(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("mod", l, r); }
-inline Value rtDivides(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0) return Value::boolean(l.i % r.i == 0); return applyArith("%%", l, r); }
+inline Value rtModOp(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0 && r.i != -1) { long long m = l.i % r.i; if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i; return Value::integer(m); } return applyArith("mod", l, r); }
+inline Value rtDivides(const Value& l, const Value& r) { if (rtBothInt(l, r) && r.i != 0 && r.i != -1) return Value::boolean(l.i % r.i == 0); return applyArith("%%", l, r); }
 // Fast integer power by squaring, with overflow → bignum fallback (matches applyArith).
 inline Value rtPow(const Value& l, const Value& r) {
     if (rtBothInt(l, r) && r.i >= 0) {

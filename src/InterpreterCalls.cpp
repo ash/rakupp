@@ -2709,16 +2709,10 @@ Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key) {
     return proxy;
 }
 
+// a fresh cell, as the shared-cell proxy holds one: read and written without a
+// FETCH or STORE call
 Value Interpreter::makeCellProxy(const Value& init) {
-    auto cell = makePayload<Value>(init);
-    Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
-    slotProxyPair(proxy,
-        [cell](Interpreter&, ValueList&) -> Value { return *cell; },
-        [cell](Interpreter&, ValueList& sa) -> Value {
-            *cell = sa.empty() ? Value::any() : sa[0];
-            return *cell;
-        });
-    return proxy;
+    return makeSharedCellProxy(makePayload<Value>(init));
 }
 
 // A hoisted INIT runs before the mainline, which means outside every routine

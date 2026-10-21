@@ -361,6 +361,46 @@ against 650, so the `Order` path is about a quarter of rakupp's time there,
 and the 2.6x left is ordinary method-call and attribute-array cost on a
 shape Rakudo's specializer handles well.
 
+### The parameter binds (2026-10-21)
+
+The binding work above made the ELEMENT alias cheap, and the shared cell
+behind `$a := $b`. It left a third alias where it was: `@!array.BIND-POS($pos,
+$node)` with `$node` a variable, the call every `!insert` and `!sift-down` ends
+on. `containerOfExpr` answered it with an env-slot alias: a Proxy holding the
+method's whole frame alive and finding `$node` again by name, through a FETCH
+call, on every later read of that heap node. So a heap of N elements kept N
+method frames, and every comparison of a node paid a scope lookup plus a
+routine call that `engineProxyRead` does not recognise. Sampled on a heap in
+BinaryHeap 2.0's shape, ~20% of the busy time was those name lookups, and
+argument reads fell off the fast path into evalVarExpr's long chain of name
+compares.
+
+BIND-POS and BIND-KEY now bind the variable's own cell, the one `:=` shares
+(`exprVarCell`); a readonly parameter, which has no container, binds its value
+in a fresh cell. The env-slot alias is kept for what has no cell (`$_`, an `is
+rw` link, a slot workers may be reading). The alias also followed the name
+before: after `$v := $w`, an element bound from `$v` read `$w`. Rakudo's
+element keeps `$v`'s old container, and so does ours now
+([t/regression/bind-pos-variable-cell.raku](../../../t/regression/bind-pos-variable-cell.raku)).
+
+The same heap (role over `&infix:<tops>`, `* cmp * == Less`, element binds,
+BIND-POS, `:delete`), 2^16 pushes then 2^16 pops, against Rakudo 2026.09:
+
+| | before | after | Rakudo |
+|---|---|---|---|
+| instructions | 47.7G | 36.5G | — |
+| wall time | 3.7 s | 2.7 s | 0.79 s |
+| peak RSS | 200 MB | 100 MB | 199 MB |
+
+(Instructions retired and RSS are steady; the wall times are one interleaved
+pair on a loaded box, and Rakudo's was taken earlier, on a quieter one.)
+
+The rest of the gap is general: evalAssignInner; a `my $c = @a[$i]` that
+leaves the declaration lane (about 3,500 instructions more than `my $c = 5`,
+in varWhereCheck, Env::define and the sigilless-bind probe); sigilless reads
+walking evalRareExpr's name tests; and the `* cmp * == Less` curry calling its
+inner curry as a full call (TODO-FOLLOW-UPS).
+
 ## Policy
 
 - **Keep the meta-method support.** It is generic, it is correct, it costs

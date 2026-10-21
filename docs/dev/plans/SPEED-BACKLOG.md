@@ -71,7 +71,7 @@ theme the rows are sorted by complexity, largest first.
 |---|---|---|---|
 | 7 | `map` and `grep` over a finite list become lazy, as in Rakudo | L | The eager loop is the fast path, so this needs a map-heavy perf-guard kernel beside it — TODO.md |
 | 18 | Append plan: `eq` and printing read views directly; a grapheme table for non-ASCII views | M | [APPEND-PLAN.md](APPEND-PLAN.md) |
-| 25 | `$s ~~ m:c/…/` in a loop is quadratic (×58 for 8× the size) | M | `run/str-match-continue` in t/scaling — TODO.md |
+| 25 | `$s ~~ m:c/…/` in a loop is quadratic (×58 for 8× the size; ×50 since 2026-10-21, which cut the constant: a 5,000-token ASCII tokenizer 29.9G → 0.46G instructions) | M | graphemeToByte still scans from the front: read the string's own `gIndex` — `run/str-match-continue` in t/scaling, [REVIEW-PARALLEL-2026-10](../findings/REVIEW-PARALLEL-2026-10.md) O7 |
 | 31 | `@a.unshift` / `.prepend` are quadratic (×60) | S–M | Headroom at the front of the ValueList storage — TODO.md |
 | 36 | `.join` reads the array in place, as `.sum`/`.min`/`.max` do since 02fb7c6a | S | Elements that can run no user code only — V6 P1 |
 

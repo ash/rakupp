@@ -67,5 +67,36 @@ for 1, 2 -> $x {
     last;
 }
 
+# ---- from the second call on, and the forms a body scan can miss ----------
+# A sub with plain parameters runs from its second call on in callPlainSub's
+# lane, which defined no `$_`: the first call was right and every later one
+# wrote the caller's (found by the 2026-10-21 review).
+$_ = 'outer';
+sub p3($v) { $_ = $v; 1 }
+p3(5); p3(7);
+ck $_, 'outer', 'a plain sub called twice leaves the caller\'s $_ alone';
+sub p4($v) { $_ // 'U' }
+p4(1);
+ck p4(2), 'U', '…and reads its own on the second call';
+sub t2($v) { try { $_ = 5 }; 1 }
+t2(1); t2(2);
+ck $_, 'outer', '…through a try block';
+$_ = 'aaa';
+sub r2($v) { s/a/b/ }
+quietly { r2(1); r2(2) };
+ck $_, 'aaa', '…and through s///';
+$_ = 'outer';
+sub e2($v) { EVAL q[$_ = 10]; 1 }
+e2(1); e2(2);
+ck $_, 'outer', 'an EVAL in a sub writes the sub\'s own $_';
+class KE { method m($x) { EVAL '$_ = 7'; 1 } }
+KE.m(1); KE.m(2);
+ck $_, 'outer', '…and in a method';
+$_ = 5;
+sub dflt($v = $_) { $v.raku }
+ck dflt(), 'Any', 'a parameter default reads the routine\'s own $_';
+ck dflt(), 'Any', '…on the second call too';
+$_ = 'outer';
+
 say $fails == 0 ?? 'PASS' !! 'FAIL';
 exit $fails == 0 ?? 0 !! 1;

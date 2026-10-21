@@ -43,6 +43,22 @@ static bool hashTypeParam(const Value& inv, bool key, Value& out) {
     return true;
 }
 bool isP5Pattern(const std::string& pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
+std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const std::string& flags);   // InterpreterCore.cpp
+// A pattern for one `.contains` / `.comb` / `.split` call: the per-thread
+// cache's compiled form (these compiled it afresh on every call, half of a
+// `.split(/\s+/)` loop's time), or, when a `<?{…}>` needs this call's hooks on
+// the object itself, a fresh one carrying them.
+namespace {
+struct CallRegex {
+    std::shared_ptr<const Regex> shared;
+    std::unique_ptr<Regex> own;
+    CallRegex(const std::string& pat, const GrammarHooks* hooks) {
+        if (hooks) { own.reset(new Regex(pat)); own->runHooks = hooks; }
+        else shared = compileRegexCached(pat, "");
+    }
+    const Regex& operator*() const { return own ? *own : *shared; }
+};
+}
 bool rxNeedsScalarPass(const std::string& pat);   // InterpreterRegex.cpp: a `$` or a qq `{ … }` to interpolate
 
 namespace {
@@ -5975,7 +5991,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     from = (long)charToByte(subj, args[i].toInt());
                     break;
                 }
-            Regex re(pat); RxMatch mm;
+            CallRegex rx(pat, nullptr); const Regex& re = *rx; RxMatch mm;
             return Value::boolean(re.ok() && from <= (long)subj.size() && re.search(subj, from, mm));
         }
         if (m == "subst") {
@@ -6010,10 +6026,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     mres.arr()->resize(limit);
                 return mres;
             }
-            Regex re(pat);
             // a `<?{…}>` in the pattern must run, here as much as in `~~`
             GrammarHooks ch = codeAssertHooks();
-            if (patHasCodeAssert(pat)) re.runHooks = &ch; Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            CallRegex rx(pat, patHasCodeAssert(pat) ? &ch : nullptr); const Regex& re = *rx;
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             // the optional positional LIMIT caps how many matches are yielded;
             // it was read only on the `:match` path (Str sheet ST-38)
             long long limit = -1; bool none = false;
@@ -6069,10 +6085,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return out;
         }
         if (m == "split") {
-            Regex re(pat);
             // a `<?{…}>` in the pattern must run, here as much as in `~~`
             GrammarHooks ch = codeAssertHooks();
-            if (patHasCodeAssert(pat)) re.runHooks = &ch; Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
+            CallRegex rx(pat, patHasCodeAssert(pat) ? &ch : nullptr); const Regex& re = *rx;
+            Value out = Value::array(); out.isList = true; out.s = "Seq"; long pos = 0; RxMatch mm;
             bool skipEmpty = false;
             // `:v`/`:k`/`:kv`/`:p` — the separator comes back between the pieces as
             // a Match, as its delimiter index (always 0 here: one delimiter), or both
@@ -6388,12 +6404,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (rn.from < (long)pos) {
                 // search the WHOLE string from pos, so `^` and lookbehind see
                 // the real context
-                long long cpos = (long long)utf8cp(s.substr(0, pos)).size();
-                Value cv = Value::pair("c", Value::integer(cpos)); cv.namedArg = true;
+                // (`:c` and .from/.to count CHARACTERS; pos is on a boundary)
+                long long gpos = 0;
+                for (size_t b = 0; b < pos; b = uniClusterEndUtf8(s, b, s.size())) gpos++;
+                Value cv = Value::pair("c", Value::integer(gpos)); cv.namedArg = true;
                 Value mv = methodCall(Value::str(s), "match", ValueList{ents[ei].rx, cv});
                 if (!mv.truthy()) { rn.none = true; return -1; }
-                long f = (long)charToByte(s, methodCall(mv, "from", {}).toInt());
-                long t = (long)charToByte(s, methodCall(mv, "to", {}).toInt());
+                long f = (long)graphemeToByte(s, methodCall(mv, "from", {}).toInt());
+                long t = (long)graphemeToByte(s, methodCall(mv, "to", {}).toInt());
                 rn.from = f; rn.to = t; rn.m = mv;
                 if (t <= f) { rn.from = -1; return -1; } // zero-width: look again one character on
             }
@@ -6701,7 +6719,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (size_t di = 0; di < delims.size(); di++) {
                 const Delim& d = delims[di];
                 if (d.isRx) {
-                    Regex re(d.str); RxMatch mm;
+                    CallRegex rx(d.str, nullptr); const Regex& re = *rx; RxMatch mm;
                     if (re.ok() && re.search(s, (long)pos, mm) && mm.to > mm.from) {
                         size_t st = mm.from, ln = mm.to - mm.from;
                         if (st < bestStart || (st == bestStart && ln > bestLen)) { bestStart = st; bestLen = ln; bestWhich = di; }

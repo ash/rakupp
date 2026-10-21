@@ -1624,6 +1624,28 @@ Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
     return cv;
 }
 
+// The byte offset of GRAPHEME `chars` (BuiltinsShared.h; a Str position counts
+// graphemes: `"q\x[301]ab".contains("a", 2)` starts at the `b`).
+// Every `m:c($pos)` and `:pos` asks this, so a tokenizer stepping through a
+// string asked it once per token: walking every cluster from the front made the
+// loop quadratic with a large constant (476G instructions for 20k tokens). An
+// ASCII prefix with no CR is answered by its length; elsewhere an ASCII byte
+// that an ASCII byte follows is one grapheme, and only the rest is walked.
+size_t graphemeToByte(const std::string& s, long long chars) {
+    const size_t n = s.size();
+    if (chars <= 0 || !n) return 0;
+    const size_t want = (size_t)chars;
+    const size_t lim = want < n ? want + 1 : n;   // (the byte after: no mark joins it)
+    if (asciiRun(s, lim) == lim && !std::memchr(s.data(), '\r', want < n ? want : n)) return want < n ? want : n;
+    size_t b = 0;
+    for (long long k = 0; k < chars && b < n; k++) {
+        const unsigned char c = (unsigned char)s[b];
+        if (c < 0x80 && c != '\r' && (b + 1 == n || (unsigned char)s[b + 1] < 0x80)) { b++; continue; }
+        b = uniClusterEndUtf8(s, b, n);
+    }
+    return b;
+}
+
 std::string Interpreter::substSelect(const std::string& subj, const std::string& pat,
                                      Value* replArg, ValueList& args, long& nsub, bool literal,
                                      const std::string* tmplRepl, Value* matchResult) {
@@ -4149,6 +4171,22 @@ Value Interpreter::containerOfExpr(Expr* e) {
             if (Value* p = tctx().cur->find(n)) {
                 if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) return *p;
                 if (e->kind == NK::VarExpr) {
+                    // the variable's own container, shared as `:=` shares it: a
+                    // cell both names reach. A readonly parameter has none, so
+                    // its value gets a cell of its own: the slot still needs a
+                    // container, because an element alias taken from it later
+                    // (`my \p = @a[i]`) hands the container on rather than
+                    // following the position. The env-slot alias is left for
+                    // what has no cell (`$_`, an `is rw` link, a slot workers
+                    // may be reading): it keeps the frame alive and finds the
+                    // name again on every read, through a FETCH call.
+                    bool toValue = false;
+                    if (PRef<Value> cell = exprVarCell(e, &toValue)) return makeSharedCellProxy(cell);
+                    if (toValue) {
+                        Value v = *p;
+                        v.readonly = v.immutableBind = false;
+                        return makeSharedCellProxy(makePayload<Value>(std::move(v)));
+                    }
                     for (std::shared_ptr<Env> en = tctx().cur; en; en = en->parent)
                         if (en->local(n)) return makeEnvSlotProxy(en, n);
                 }

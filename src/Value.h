@@ -516,9 +516,10 @@ using ValueList = RVec<Value>;
 using BuiltinFn = std::function<Value(Interpreter&, ValueList&)>;
 
 // A routine's integer kernel (IntKernel.cpp): the compiled form, and whether there
-// is one (-1 undecided, 0 none, 1 compiled, 2 being compiled). A COPY of a
-// Callable decides afresh: a closure clone resolves the routines it calls from
-// its own scope, so the original's kernel is not its kernel.
+// is one (-1 undecided, 0 none, 1 compiled, 2 being compiled). It lives in the
+// CodeInfo, so every closure of one body shares it; each entry checks that the
+// routines it calls are the ones THAT closure's scope finds (callsBound), and a
+// closure whose own callees differ runs the body the ordinary way.
 void intKernelFree(void* k);
 struct KernelSlot {
     std::atomic<void*> k{nullptr};

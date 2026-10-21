@@ -5471,11 +5471,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     }
     if (m == "pick" || m == "roll") {
         if (inv.t == VT::Type && inv.s == "Order") { // built-in enum: its three values
-            ValueList vs;
-            for (auto& nv : {std::pair<const char*, int>{"Less", -1}, {"Same", 0}, {"More", 1}}) {
-                Value e = Value::enumVal(nv.first, nv.second); e.enumType = "Order"; vs.push_back(e);
-            }
-            Value l = Value::array(vs); l.isList = true;
+            Value l = Value::array({Value::orderVal(-1), Value::orderVal(0), Value::orderVal(1)}); l.isList = true;
             return methodCall(l, m, args);
         }
         if (inv.t != VT::Type) { // any scalar picks from a one-element pool: 42.pick == 42

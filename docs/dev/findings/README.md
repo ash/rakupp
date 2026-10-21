@@ -188,6 +188,13 @@ logs and the reviews. This page is the complete list.
   perf-guard turned out to be a stale baseline rather than a regression; the
   clone sweep found fifteen drifted clusters, worst of them compiled `[op]`
   reduce disagreeing with the interpreter, fixed in three same-day batches.
+- **[REVIEW-PARALLEL-2026-10.md](REVIEW-PARALLEL-2026-10.md)** *(2026-10-21, at
+  5.4.1-160)* — the week of parallel speed sessions read against each other:
+  two filters built for one job on one afternoon, two copies of the Num lane,
+  a closure-shared kernel calling the wrong closure's routine, the plain-sub
+  lane missing the routine's own `$_`, and the BIND-POS alias behind most of
+  BinaryHeap's gap; fifteen fixes, and a ledger of 22 open items ranked by
+  what a user sees.
 - **[TOOLS-3.23.md](TOOLS-3.23.md)** *(2026-08-29, opening v3.23.0)* — every
   gate, benchmark and measuring tool this project runs, reviewed before the
   re-baseline: twenty-five defects fixed, including binaries picked by bare PATH

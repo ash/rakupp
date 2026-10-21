@@ -4062,10 +4062,11 @@ struct BindRoutineName {
 void Interpreter::bindRoutineParams(const Callable& c, ValueList& args, std::shared_ptr<Env>& env,
                                     bool methodCtx, bool blockParams, bool whereVerified) {
     BindRoutineName brn(c);
+    // (defined before the binding, so a parameter's default sees this `$_`)
+    bool ownTopic = !blockParams && bodyMayUseTopic(c);
+    if (ownTopic) for (auto& p : *c.ci().params) if (p.name == "$_") { ownTopic = false; break; }
+    if (ownTopic) env->define("$_", Value::any());
     bindParams(*c.ci().params, args, env, methodCtx, blockParams, whereVerified);
-    if (blockParams || !bodyMayUseTopic(c)) return;
-    for (auto& p : *c.ci().params) if (p.name == "$_") return;
-    env->define("$_", Value::any());
 }
 void Interpreter::refuseUnpassedDefinite(const Param& p) {
     if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
@@ -7715,6 +7716,9 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         live |= (uint64_t)1 << ps;
     }
     env->padLive.fetch_or(live, std::memory_order_release);
+    // its own `$_`, as bindRoutineParams gives the slow lane (a plain sub has
+    // no `$_` parameter): this lane takes over from the second call on
+    if (bodyMayUseTopic(c)) env->define("$_", Value::any());
     if (env->vars.walked() && c.ci().padLayout->holdsDynamic) bumpDynEpoch();
     auto saved = std::move(tcx.cur);
     Env* savedState = tcx.curStateEnv;
@@ -17615,6 +17619,17 @@ static ValueList listCtx(const Value& v) {
 // repetition count, where Inf is entirely legitimate: `^Inf` and `.head(Inf)`
 // build infinite lists, and putting this check in strictInt itself broke them
 // (t/regression/endless-range-reduce.raku, S32-list/head.t and skip.t).
+// A finite Num at or past 2**63 as the Int it exactly is (a double that large
+// has no fraction): toInt() saturates there and a cast is undefined, so
+// `1e20 div 7`, `1e20 +& 255` and `1e20 gcd 10` answered from 2**63-1.
+static bool bigNumAsInt(const Value& v, Value& out) {
+    if (v.t != VT::Num || !std::isfinite(v.n) || std::fabs(v.n) < 9223372036854775808.0) return false;
+    int e = 0;
+    const long long mant = (long long)std::ldexp(std::frexp(std::fabs(v.n), &e), 53);
+    BigInt b = BigInt(mant) * BigInt(2).pow(e - 53);   // (e > 63 here)
+    out = Value::bigint(std::signbit(v.n) ? -b : b);
+    return true;
+}
 static long long bitwiseInt(const Value& v) {
     Value n = strictNum(v);
     if (n.t == VT::Num && !std::isfinite(n.n))
@@ -18781,6 +18796,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 BigInt q, rem; BigInt::divmod(*v.ratN(), *v.ratD(), q, rem);
                 return q.fitsLL() ? Value::integer(q.toLL()) : Value::bigint(q);
             }
+            if (Value bi; bigNumAsInt(v, bi)) return bi;
             return Value::integer((long long)v.toNum());
         };
         li = trunc(l); ri = trunc(r);
@@ -19365,6 +19381,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // numeric bitwise / shift
     if (opEq(op, "+&") || opEq(op, "+|") || opEq(op, "+^")) {
         if (l.t == VT::Str || r.t == VT::Str) { strictNum(l); strictNum(r); } // reject a non-numeric string
+        if (Value bi; bigNumAsInt(l, bi)) return applyArith(op, bi, r);
+        if (Value bi; bigNumAsInt(r, bi)) return applyArith(op, l, bi);
         if (l.big() || r.big()) {
 #if RAKUPP_HAS_INT128
             __int128 sa, sb;
@@ -19380,6 +19398,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     }
     if (opEq(op, "+<")) { // escalate to BigInt when the result would overflow long long
         bitwiseInt(l); long long sh = shiftCount(r);
+        if (sh == LLONG_MIN) return l;   // (-sh is itself: the arms called each other for good; Rakudo answers l)
         if (sh < 0) return applyArith("+>", l, Value::integer(-sh)); // a negative count shifts the other way (Rakudo)
         if (!l.big() && sh < 62 && std::llabs(l.toInt()) < (1LL << (62 - sh)))
             return Value::integer(l.toInt() << sh);
@@ -19398,6 +19417,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     }
     if (opEq(op, "+>")) {
         bitwiseInt(l); long long sh = shiftCount(r);
+        if (sh == LLONG_MIN) return l;   // (as `+<`)
         if (sh < 0) return applyArith("+<", l, Value::integer(-sh)); // a negative count shifts the other way (Rakudo)
         if (!l.big()) return Value::integer(sh >= 63 ? (l.toInt() < 0 ? -1 : 0) : (l.toInt() >> sh));
 #if RAKUPP_HAS_INT128
@@ -19470,6 +19490,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (v->t == VT::Num && !std::isfinite(v->n))
                 throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                                 "Cannot convert " + v->toStr() + " to Int"};
+        if (Value bi; bigNumAsInt(l, bi)) return applyArith(op, bi, r);
+        if (Value bi; bigNumAsInt(r, bi)) return applyArith(op, l, bi);
     }
     if (opEq(op, "gcd")) {
         // gcd() takes its arguments by value and takes their absolute value
@@ -20462,7 +20484,11 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
             // (the matcher's `$/`, not one in the regex's home: see unwire)
             else if (Env* me = wired ? savedCurWired.get() : tctx().cur.get()) {
                 Value* mv = me->find("$/");
-                if (mv && mv->t == VT::Match) contStart = (long)graphemeToByte(subject, mv->rTo());
+                // (rTo is a BYTE offset in that match's own subject: as a
+                // character, as `.to` answers it)
+                if (mv && mv->t == VT::Match)
+                    contStart = (long)graphemeToByte(subject, mv->rTo() <= 0 ? 0
+                        : mv->ext() ? subjectGraphemeOffset(mv->ext(), (size_t)mv->rTo()) : (long long)mv->rTo());
             }
             pat.erase(i, next - i);
             continue;
@@ -21668,32 +21694,6 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
     return true;
 }
 
-// `+ - * /` and the six comparisons on a Num and a Num or machine Int (no
-// native width, no tag): what applyArithGeneral's double arm answers, without
-// the page of tests in front of it. False for anything else.
-static bool numFastArith(const std::string& op, const Value& l, const Value& r, Value& out) {
-    if (op.empty() || op.size() > 2 || l.natBits || r.natBits) return false;
-    auto num = [](const Value& v, double& d) {
-        if (v.t == VT::Num) { d = v.n; return true; }
-        if (v.t == VT::Int && !v.big()) { d = (double)v.i; return true; }
-        return false;
-    };
-    double a, b;
-    if (!num(l, a) || !num(r, b)) return false;
-    const char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
-    switch (c0) {
-        case '+': if (c1) return false; out = Value::number(a + b); return true;
-        case '-': if (c1) return false; out = Value::number(a - b); return true;
-        case '*': if (c1) return false; out = Value::number(a * b); return true;
-        case '/': if (c1 || b == 0.0) return false; out = Value::number(a / b); return true;
-        case '<': if (c1 && c1 != '=') return false; out = Value::boolean(c1 ? a <= b : a < b); return true;
-        case '>': if (c1 && c1 != '=') return false; out = Value::boolean(c1 ? a >= b : a > b); return true;
-        case '=': if (c1 != '=') return false; out = Value::boolean(a == b); return true;
-        case '!': if (c1 != '=') return false; out = Value::boolean(a != b); return true;
-        default: return false;
-    }
-}
-
 // One link of a chained comparison (`a < b < c`): the chain's own rule, and a
 // --cnp kernel's (rk_cnp_chain). A .Bridge/.Numeric object compares through
 // its bridged value, and a STRING op compares an object by its own `method
@@ -21746,11 +21746,12 @@ Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
                     tagNativeNum(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv);
                     return nv;
                 }
-                // a Num on either side: applyArith's Int arm cannot answer, and
-                // its general path walks a page of tests before its double arm
-                if (lp->t == VT::Num || rp->t == VT::Num) {
+                // a Num on either side: applyArith's Int arm cannot answer; this
+                // is its double lane (rtNumArith), without the call to reach it
+                double na, nb;
+                if (rtNumPair(*lp, *rp, na, nb)) {
                     Value nv;
-                    if (numFastArith(op, *lp, *rp, nv)) return nv;
+                    if (rtNumArith(op.c_str(), na, nb, nv)) return nv;
                 }
                 return applyArith(op, *lp, *rp);
             }
@@ -24720,8 +24721,9 @@ Value Interpreter::evalUnary(Unary* u) {
                 if (sv != staticPhaserVal_.end()) return sv->second;
             }
             // a `do { }` block takes no arguments, so a placeholder inside it is
-            // a compile error (X::Placeholder::Block), like Rakudo
-            if (be->params.empty()) {
+            // a compile error (X::Placeholder::Block), like Rakudo (asked until
+            // runsInPlace has decided, which a block that has one never reaches)
+            if (be->params.empty() && (signed char)be->inPlace < 0) {
                 std::string ph = firstBlockPlaceholder(be->body);
                 if (!ph.empty())
                     throwTyped("X::Placeholder::Block", {{"placeholder", ph}},
@@ -29430,7 +29432,9 @@ struct RatLitParts {
             // the `$`-variable paths do: handing the Proxy itself back let it be
             // copied into the assignment target, and a later write to that copy
             // reached back into the array it aliased.
-            if (Value* p = tctx().cur->find(n); p && !(p == global_->local(n) && requireHidden(n))) {
+            // (requireHidden first: it is two empty-set tests for a program
+            // that hides nothing, where the global lookup is a hash probe)
+            if (Value* p = tctx().cur->find(n); p && !(requireHidden(n) && p == global_->local(n))) {
                 if (p->t == VT::Hash && p->hashKind == "PoisonedAlias" && p->hash()) {
                     const std::string pk = (*p->hash())["package-name"].toStr();
                     throwTypedV("X::PoisonedAlias",

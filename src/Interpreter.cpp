@@ -1779,11 +1779,14 @@ static bool mayUseTopic(const Expr* e) {
         case NK::Binary: { auto* b = static_cast<const Binary*>(e); return mayUseTopic(b->lhs.get()) || mayUseTopic(b->rhs.get()); }
         case NK::Unary: return mayUseTopic(static_cast<const Unary*>(e)->operand.get());
         case NK::Call: { auto* c = static_cast<const Call*>(e);
+            // (an EVAL'd string sees the routine's `$_`, as the state walk knows)
+            if (c->name == "EVAL" || c->name == "EVALFALLBACK" || c->name == "evalbytes" ||
+                c->name == "EVALFILE") return true;
             if (mayUseTopic(c->callee.get())) return true;
             for (auto& a : c->args) if (mayUseTopic(a.get())) return true;
             return false; }
         case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e);
-            if (mayUseTopic(m->inv.get())) return true;
+            if (m->method == "EVAL" || mayUseTopic(m->inv.get())) return true;
             for (auto& a : m->args) if (mayUseTopic(a.get())) return true;
             return false; }
         case NK::Index: { auto* i = static_cast<const Index*>(e); return mayUseTopic(i->base.get()) || mayUseTopic(i->index.get()); }
@@ -1830,7 +1833,13 @@ static bool mayUseTopicStmt(const Stmt* s) {
 bool Interpreter::bodyMayUseTopic(const Callable& c) {
     const CodeInfo& ci = c.ci();
     signed char t = ci.topicScan;
-    if (t < 0) ci.topicScan = t = (ci.body && mayUseTopicBody(*ci.body)) ? 1 : 0;
+    if (t < 0) {
+        bool uses = ci.body && mayUseTopicBody(*ci.body);
+        // …or a parameter's default: `sub f($v = $_)` reads the routine's own
+        if (!uses && ci.params)
+            for (auto& p : *ci.params) if (p.defaultVal && mayUseTopic(p.defaultVal.get())) { uses = true; break; }
+        ci.topicScan = t = uses ? 1 : 0;
+    }
     return t != 0;
 }
 
@@ -4252,56 +4261,61 @@ std::function<Value(const Value&)> g_deproxy;
 std::function<bool(const Value&, std::string&)> g_userStr;
 std::function<bool(const Value&, std::string&, bool&)> g_userWhich;
 std::atomic<uint64_t> g_lexShadowMask{0};
-// The spellings behind g_lexShadowMask's bits, which confirm a hit. Append-only
-// and never freed, so a reader scans without a lock: it reads the count, then
-// that many published names. Past kLexShadowCap distinct spellings every hit
-// is taken as real, which is what the bare filter answered.
-static constexpr int kLexShadowCap = 64;
-static std::atomic<const std::string*> g_lexShadowNames[kLexShadowCap];
-static std::atomic<int> g_lexShadowCount{0};
-static std::atomic<bool> g_lexShadowOverflow{false};
-static std::mutex g_lexShadowArmMu;
-
-void lexShadowArm(const char* p, size_t n) {
-    if (!n) return;
-    const uint64_t bit = 1ull << lexShadowSlot(p, n);
-    if (!lexShadowArmed(p, n)) {
-        std::lock_guard<std::mutex> lk(g_lexShadowArmMu);
-        if (!lexShadowArmed(p, n)) {
-            const int k = g_lexShadowCount.load(std::memory_order_relaxed);
-            if (k < kLexShadowCap) {
-                g_lexShadowNames[k].store(new std::string(p, n), std::memory_order_relaxed);
-                g_lexShadowCount.store(k + 1, std::memory_order_release);
-            }
-            else g_lexShadowOverflow.store(true, std::memory_order_release);
+std::atomic<uint64_t> g_boundInfixMask{0};
+// The spellings behind one of the two operator filters' bits (g_lexShadowMask,
+// g_boundInfixMask), which confirm a hit. Append-only and never freed, so a
+// reader scans without a lock: it reads the count, then that many published
+// names. Past kCap distinct spellings every hit is taken as real, which is what
+// the bare filter answered.
+namespace {
+struct ArmedSpellings {
+    static constexpr int kCap = 64;
+    std::atomic<const std::string*> names[kCap] = {};
+    std::atomic<int> count{0};
+    std::atomic<bool> overflow{false};
+    std::mutex mu;
+    bool has(const char* p, size_t n) const {
+        const int k = count.load(std::memory_order_acquire);
+        for (int i = 0; i < k; i++) {
+            const std::string* s = names[i].load(std::memory_order_relaxed);
+            if (s->compare(0, std::string::npos, p, n) == 0) return true;
         }
+        return overflow.load(std::memory_order_acquire);
     }
-    // the name is published before the bit, so a reader that sees the bit
-    // finds the name
-    if (!(g_lexShadowMask.load(std::memory_order_relaxed) & bit))
-        g_lexShadowMask.fetch_or(bit, std::memory_order_release);
+    void arm(std::atomic<uint64_t>& mask, const char* p, size_t n) {
+        if (!n) return;
+        const uint64_t bit = 1ull << lexShadowSlot(p, n);
+        if ((mask.load(std::memory_order_relaxed) & bit) && has(p, n)) return;
+        if (!has(p, n)) {
+            std::lock_guard<std::mutex> lk(mu);
+            if (!has(p, n)) {
+                const int k = count.load(std::memory_order_relaxed);
+                if (k < kCap) {
+                    names[k].store(new std::string(p, n), std::memory_order_relaxed);
+                    count.store(k + 1, std::memory_order_release);
+                }
+                else overflow.store(true, std::memory_order_release);
+            }
+        }
+        // the name is published before the bit, so a reader that sees the bit
+        // finds the name
+        if (!(mask.load(std::memory_order_relaxed) & bit)) mask.fetch_or(bit, std::memory_order_release);
+    }
+};
+ArmedSpellings g_lexShadowNames, g_boundInfixNames;
 }
 
-bool lexShadowArmed(const char* p, size_t n) {
-    const int k = g_lexShadowCount.load(std::memory_order_acquire);
-    for (int i = 0; i < k; i++) {
-        const std::string* s = g_lexShadowNames[i].load(std::memory_order_relaxed);
-        if (s->compare(0, std::string::npos, p, n) == 0) return true;
-    }
-    return g_lexShadowOverflow.load(std::memory_order_acquire);
-}
+void lexShadowArm(const char* p, size_t n) { g_lexShadowNames.arm(g_lexShadowMask, p, n); }
+bool lexShadowArmed(const char* p, size_t n) { return g_lexShadowNames.has(p, n); }
+bool boundInfixArmed(const char* p, size_t n) { return g_boundInfixNames.has(p, n); }
 std::atomic<uint64_t> g_dynEpoch{1};
 std::atomic<bool> g_userPrefixShadow{false};
 std::atomic<bool> g_coreEnumNameBound{false};
-std::atomic<uint64_t> g_boundInfixMask{0};
 // noteNameBound's out-of-line half: a name starting A–Z or `&i`.
 void noteNameBoundSlow(const std::string& k) {
     if (k[0] == '&') {
-        if (k.size() > 9 && k.compare(0, 8, "&infix:<") == 0 && k.back() == '>') {
-            const uint64_t bit = 1ull << lexShadowSlot(k.data() + 8, k.size() - 9);
-            if (!(g_boundInfixMask.load(std::memory_order_relaxed) & bit))
-                g_boundInfixMask.fetch_or(bit, std::memory_order_relaxed);
-        }
+        if (k.size() > 9 && k.compare(0, 8, "&infix:<") == 0 && k.back() == '>')
+            g_boundInfixNames.arm(g_boundInfixMask, k.data() + 8, k.size() - 9);
         return;
     }
     if (!g_coreEnumNameBound.load(std::memory_order_relaxed) && isCoreEnumMemberName(k))
