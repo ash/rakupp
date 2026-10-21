@@ -3708,7 +3708,9 @@ std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
     // next to `enum E <RT123926Foo Bar>` means the enum value
     if (const Program* unit = unitCurrent())
         for (auto& tn : unit->declaredTermNames)
-            if (!tn.empty() && ascii::isupper((unsigned char)tn[0])) cands.push_back(tn);
+            if (!tn.empty() && ascii::isupper((unsigned char)tn[0]) &&
+                tn.find("::") == std::string::npos)   // (not an enum member's `E::` twin)
+                cands.push_back(tn);
     // …and the enum values in scope (an EVAL's own unit is not the one above)
     for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         for (auto& kv : e->vars)
