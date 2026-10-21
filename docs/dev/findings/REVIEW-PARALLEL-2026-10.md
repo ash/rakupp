@@ -94,6 +94,8 @@ Headline numbers, the final binary against the base tree:
 
 ## Fixed after the review
 
+### Numeric (claude/gallant-ellis-ffe145)
+
 O15–O17, O26 and O29 of the ledger below, the same day, against the same base (cce315ef).
 Each lane answers what the general path answers: the three regression files
 run clean under Rakudo and on the base, and across ~2,300 Int, Rat and Num
@@ -109,6 +111,17 @@ interleaved runs, base → after; "no kernels" is `RAKUPP_NO_KERNELS=1`.
 | O17 | The small-Rat lane takes Int / Int (its gate was a Rat operand, so `1/3` went through BigInt divmod and gcd), and applyArith calls it before the general path for `+ - * /` over Rats and Ints (`smallRatLane`, Value.cpp, shared with the exact tower; its arithmetic is IntOps.h `ratOp128`, which typedRatArith uses too). A typed root of two literals (`1/3`) builds its Value once and shares it while no operator shadows it (`Binary::typedTree` 2), so `my $q = 1/3` stays on the declaration lane. Folding `1/3` at parse time was not done: a later `sub infix:</>` in the same scope, `.DEPARSE` and the sink warnings would all see the fold | InterpreterCore.cpp applyArith, the exact tower, `typedTreeValue`; Value.cpp; IntOps.h | With no kernels: `$r += 1/3` 7,836 → 3,562, `my $q = 1/3` in a loop 9,599 → 2,549, `$r += $q` 4,232 → 3,607. The kernels already ran these (759, 302, 577: unchanged). t/regression/int-over-int-small-rat.raku, 1,600 rows |
 | O26 | The small-Rat lane's spill to Num (a denominator past 2**64) is the nearest double, ties to even, as Rat.Num and the BigInt arms make it: binary long division of the reduced __int128 parts to 55 bits, the remainder deciding the rounding. `(double)n / (double)d` rounded three times and put 1,436 of 6,174 probed spills an ulp off. Checked against Python's `float(Fraction(n, d))` on a million pairs, ~33,000 of them exact ties | Value.cpp `smallRatSpill` | `1/4611686018427387903 + 3/999999999999999989` 3.2168404344971007e-18 → 3.216840434497101e-18 (Rakudo's). A spill 7,680 → 8,327 instructions (through BigInt::ratioToDouble it was 22,258); the in-range lane unchanged. t/regression/small-rat-spill-rounds-once.raku, failing 4 checks on the base |
 | O29 | A loop kernel's variable may hold a Bool: a slot of its own, 0 or 1, checked as a plain Bool at entry and written back as one; `True`, `False` and `!` are values in a loop kernel (a sub kernel's values stay Ints). A Bool is the Int it numifies to for arithmetic, the numeric comparisons and `+= -= *= /=`, "True"/"False" as text (`~`, `~=`, `.Str`, interpolation, `eq`), and the answer itself under `when`. `min`/`max` (which hand an operand back), `++`, `given` of a Bool, and a variable whose type would change (an Int that becomes a Bool needs a slot tagged at every read) keep the generic path | IntKernel.cpp (`plainBoolValue`, asStr, the operator gates, bindOuter) | With the kernels: the flag loop `$found = True if $i == 500_000` 1,010 → 47, `my $ok = $i %% 3; $n++ if $ok` 6,351 → 145, `$n = $n + ($i %% 3)` 2,494 → 81, `$b = !$b` 1,346 → 47, `$h = $i > 999; $n++ if $h` 2,656 → 126. t/regression/kernel-bool-variables.raku; 36 probe shapes print what Rakudo and the base print, under the default tiers, no kernels, `--cnp` and `--jit` |
+
+### Text (claude/hopeful-lamport-607e9e)
+
+O2–O4 of the ledger below, the same day, against the same base (cce315ef);
+each regression file runs clean under Rakudo and fails on the base.
+
+| # | What | Where | Evidence |
+|---|---|---|---|
+| O2 | Text decoded from a file, `$*IN`, `-n`/`-p`, `$*ARGFILES`, a pipe or Proc::Async is NFC, as Rakudo's decoders and our own `Buf.decode` make it; utf8-c8 keeps its bytes. One helper, `nfcDecodeInPlace`: a vectorized pass for the highest byte answers ASCII and Latin text (nothing below 0xCC composes), and the rest takes the quick check, where a BMP bitmap now answers a codepoint the NFC table does not hold instead of a binary search (every non-ASCII `~` join asks the same check) | NfcJoin.cpp, Unicode.cpp; decodeTextEnc and the stdin and pipe readers (MethodCallPart3.cpp, BuiltinsRegister.cpp); Proc::Async (Builtins.cpp, MethodCallPart2.cpp) | t/regression/decoded-text-is-nfc.raku, 31 checks failing on the base. 35 MB of ASCII through `.IO.lines`, `.slurp`, `$fh.lines`, `$*IN.lines` and `-n`: instructions within noise of the base (−1.4% to +0.1%). 28 MB of Cyrillic and CJK: `.IO.lines` 2.19G → 2.56G instructions, `.slurp` 7.93G → 8.31G, `$*IN.lines` +1.2% (the quick check without the bitmap had made `.IO.lines` 3.90G) |
+| O3 | `.split('')` splits graphemes; `<space>` and `<cntrl>` (every built-in rule's ASCII lane) take a CR LF whole, as `\s` does; sprintf's `%s` width and precision count graphemes; `Match.raku` prints character offsets; `.indices` and `.contains(/rx/)` take a character position, found in the folded text under `:i`/`:m`. `charToByte` had no caller left and is gone (O21) | MethodCallPart3.cpp, Regex.cpp, Builtins.cpp, MethodCallTail.cpp | t/regression/grapheme-units-split-rules-sprintf.raku, 36 checks failing on the base |
+| O4 | `uc`, `lc`, `tc`, `chars` and `ord` as subs: a plain Str or Int keeps the short path and anything else is the method, so a Junction autothreads, an object answers with its own, and `chars($buf)` refuses as `.chars` does. `--exe -O`'s fastB table calls the same functions | BuiltinsSupply.cpp, BuiltinsRegister2.cpp | t/regression/case-subs-dispatch-as-methods.raku, 13 checks failing on the base; the same file under `--exe -O`, `--jit` and `--cnp` |
 
 ## Open: the ledger
 
@@ -127,22 +140,6 @@ coordinator.
   until the stack is gone), and `×=` ignores it. Fixed 2026-10-21: the node
   carries the name it was written with
   ([unicode-operator-names-apart.raku](../../../t/regression/unicode-operator-names-apart.raku)).
-- **O2. Text read from a file or `$*IN` is not NFC** (lane D): a line `e\x[301]x`
-  has 3 codes, is not `eq "\x[e9]x"`, and misses as a hash key; Rakudo
-  normalizes at decode, and so does our own `Buf.decode`
-  (MethodCallPart1b.cpp:626), against the choice recorded at Value.h:94.
-  NFC-check each decoded block holding a byte ≥ 0xCC; ASCII blocks stay free.
-- **O3. Grapheme units still wrong in five places** (lane D): `.split('')`
-  splits codepoints (`"a\r\nb"`, `"q\x[301]"`); `<space>`/`<cntrl>` split CR
-  LF where `\s` does not (Regex.cpp builtinRuleMatch's ASCII lane);
-  `sprintf("%.1s")` and `%5s` count codepoints (Builtins.cpp ~3804);
-  `Match.raku` prints byte offsets (Builtins.cpp ~2306); `.indices($n, $pos)`
-  and `.contains(/rx/, $pos)` take codepoint positions (`charToByte`, which
-  counts the wrong unit and has a correct twin in `graphemeToByte`). Each S.
-- **O4. `uc`/`lc`/`chars`/`ord` as subs skip method dispatch** (lane D):
-  `uc("a"|"b")` is `"ANY"`, `chars("ab"|"c")` is 3, `uc($obj)` ignores the
-  object's `.uc` (BuiltinsRegister2.cpp → rtBUc and friends; also `--exe -O`'s
-  fastB table). `flip`/`ords` already delegate.
 - **O5. `.trans` tie-breaking** (lane D): Rakudo lets the LATER of two string
   keys of one length win (`'a..z'=>'A..Z','l'=>'X'` is HEXXO), the first inside
   one pair, and the earlier of a string and a regex; ours is first-wins
@@ -169,8 +166,35 @@ coordinator.
     `my num @z = -0e0, -0e0; @z.sum` is 0 (Rakudo -0); a Duration becomes a
     Rat through `[+]` and `.sum`; `(do { $x }).VAR` is not the Scalar.
 
+- **O23. Left over from O2–O4** (found while fixing them; each checked
+  against Rakudo 2026.09 unless it says otherwise):
+  - a file handle's `.getc` and `.readchars` hand out codepoints: over
+    `"q\x[301]xy"`, `.getc` is `"q"` and `.readchars(2)` starts with the
+    stray mark (Rakudo `"q\x[301]"`, then `"xy"`);
+  - socket text is not NFC: IO::Socket::Async's Supply emits the bytes it
+    holds as they are for UTF-8 (BuiltinsSupply.cpp ~2554, read from the code,
+    not probed), and so, likely, does IO::Socket::INET's text `.recv`/`.get`;
+  - `Buf.new(1).uc` answers `"\x[1]"` where Rakudo dies, so `uc($buf)` now
+    does too (the sub is the method);
+  - `"abc".indices("", 5)` is `(3)` (Rakudo `()`), `"abc".contains(/$/, 3)`
+    True (Rakudo False), `"abc".split('', 1)` a Seq (Rakudo a List).
+
 ### Speed
 
+- **O24. `$*IN.lines` and `-n` cost ~100k instructions a line**: 400k ASCII
+  lines on stdin take 41G instructions and 4.5 s, where `.IO.lines` of the
+  same file takes 3.0G and 0.34 s, and Rakudo reads them from stdin in 3.6G
+  and 0.32 s. Same on the base; the line reader is `std::getline` on
+  `std::cin` (MethodCallPart3.cpp's stdin `.lines`, `lines()` in
+  BuiltinsRegister.cpp).
+- **O25. Fix 3's own `$_` is defined for any sub with an nqp op in it**:
+  mayUseTopic's `default: return true` covers NqpOp, so since cce315ef a
+  plain sub whose body holds `nqp::…` defines `$_` (Env::define, a hash
+  emplace) on every call: `sub f($t) { nqp::chars($t) }`, 200k calls, 996M →
+  1,100M instructions (+520 a call). perf-guard's `strpass` and `subcall`,
+  both such subs, are +1.3% and +0.9% in instructions against 1ac4abdb,
+  which the timings above could not see. Look into the op's arguments, as
+  the Call arm does (the default is Interpreter.cpp ~1801).
 - **O7. `m:c`/`:pos` over non-ASCII text is still quadratic** (fix 8 made the
   ASCII case linear in practice). graphemeToByte gets a `std::string`; the
   string's own body has the grapheme index (`StrBody::gIndex`). Pass the CowStr
@@ -226,11 +250,11 @@ coordinator.
   `collectPHStmt`, each with its own default for a node it does not know
   (fix 3 was one of them answering "no topic" where another said "yes"). One
   template with several questions, about −150 lines.
-- **O21. Three character-offset conversions and two grapheme tables for the
-  same strings** (lane D): `charToByte` (codepoints), `graphemeToByte`,
-  `prefixGraphemes`, `subjectGraphemeOffset`'s per-thread table and
-  `StrBody::gIndex`; and four "is it ASCII" checks the regex engine reads none
-  of.
+- **O21. Two character-offset conversions and two grapheme tables for the
+  same strings** (lane D): `graphemeToByte`, `prefixGraphemes`,
+  `subjectGraphemeOffset`'s per-thread table and `StrBody::gIndex`; and four
+  "is it ASCII" checks the regex engine reads none of. (The third conversion,
+  `charToByte`, counted codepoints; it went with O3.)
 - **O22. Minor duplicates** (lanes B and C): `callable_for_phaser` repeats
   `stateFrameOf`'s once-only setup (safe while every phaser block forces a
   state frame); `kCoreEnums` (Builtins.cpp) repeats `coreEnumMembers`' list;

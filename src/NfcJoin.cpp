@@ -7,8 +7,9 @@
 // Normalizing the whole result instead made each non-ASCII `$s ~= "é"` cost
 // the length of `$s`: 20k appends took 5.25 s.
 //
-// Most Strs are NFC, but not every one: a file's or a socket's bytes, `.subst`
-// and `sprintf` results, `%*ENV` are kept as they came. So a side that is not
+// Most Strs are NFC, but not every one: a socket's bytes, `.subst` and
+// `sprintf` results, `%*ENV` are kept as they came (what is read from a file,
+// $*IN or a pipe is normalized as it is decoded). So a side that is not
 // NFC is normalized whole first — NFC(x ~ y) is NFC(NFC(x) ~ y), and that is
 // exactly the old answer and the old cost, once. Whether a Str is NFC is
 // cached on its body (StrBody::nfc), and a join's result is NFC, so `~=` in a
@@ -54,6 +55,15 @@ static void nfcCheckJoin(const std::string& a, const std::string& b, const std::
                    nfcCheckShow(a.size() > 96 ? a.substr(a.size() - 96) : a) + ", right " + nfcCheckShow(b.substr(0, 96)));
 }
 
+void nfcDecodeInPlace(std::string& text) {
+    // the highest byte, in a pass the compiler vectorizes: below 0xCC there is
+    // no codepoint from U+0300 up, so ASCII and Latin text go back untouched
+    const unsigned char* p = reinterpret_cast<const unsigned char*>(text.data());
+    unsigned char hi = 0;
+    for (size_t i = 0, n = text.size(); i < n; i++) hi = p[i] > hi ? p[i] : hi;
+    if (hi < 0xCC) return;
+    if (uniNfcQuickCheckUtf8(text.data(), text.size()) != 1) text = nfcNormalize(std::move(text));
+}
 bool isNfcText(const char* s, size_t n) {
     const int q = uniNfcQuickCheckUtf8(s, n);
     if (q >= 0) return q == 1;

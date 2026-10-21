@@ -2851,7 +2851,16 @@ Value rtBChr(Interpreter& I, const Value& vIn) {
     }
     return Value::str(cpToUtf8((uint32_t)cp));
 }
-Value rtBOrd(Interpreter&, const Value& v) {
+// `uc`, `lc`, `tc`, `chars` and `ord` as subs are the method on their argument: a
+// Junction autothreads (`uc("a"|"b")` is any("A", "B"), not "ANY"), an object
+// answers with its own `.uc`, a Buf refuses as `.chars` does. A plain Str or
+// Int needs no dispatch to say so.
+static bool rtBPlainText(const Value& v) {
+    return (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) || (v.t == VT::Int && v.enumName.empty());
+}
+static Value rtBMeth(Interpreter& I, const Value& v, const char* m);
+Value rtBOrd(Interpreter& I, const Value& v) {
+    if (!rtBPlainText(v)) return rtBMeth(I, v, "ord");
     auto c = utf8cp(v.toStr());
     return c.empty() ? Value::nil() : Value::integer(c[0]);
 }
@@ -2859,12 +2868,20 @@ Value rtBSay(Interpreter& I, const Value& v)   { std::string out = I.gistOf(v); 
 Value rtBPrint(Interpreter& I, const Value& v) { return I.ioEmit(I.strInStrContext(v), "$*OUT", false); }
 Value rtBPut(Interpreter& I, const Value& v)   { std::string out = I.strOf(v); out += "\n"; return I.ioEmit(out, "$*OUT", false); }
 Value rtBNote(Interpreter& I, const Value& v)  { std::string out = I.gistOf(v); out += "\n"; return I.ioEmit(out, "$*ERR", true); }
-Value rtBUc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 1, 0)); }
-Value rtBLc(Interpreter&, const Value& v)    { return Value::str(mapCase(v.toStr(), 0, 0)); }
-Value rtBChars(Interpreter&, const Value& v) {
+Value rtBUc(Interpreter& I, const Value& v) {
+    return rtBPlainText(v) ? Value::str(mapCase(v.toStr(), 1, 0)) : rtBMeth(I, v, "uc");
+}
+Value rtBLc(Interpreter& I, const Value& v) {
+    return rtBPlainText(v) ? Value::str(mapCase(v.toStr(), 0, 0)) : rtBMeth(I, v, "lc");
+}
+Value rtBTc(Interpreter& I, const Value& v) {
+    return rtBPlainText(v) ? Value::str(mapCase(v.toStr(), 0, 1)) : rtBMeth(I, v, "tc");
+}
+Value rtBChars(Interpreter& I, const Value& v) {
     // Straight off the cache for a plain Str: `.chars` in a scanning loop was
     // the other per-character O(n).
-    if (v.t == VT::Str) return Value::integer(cowGraphemeCount(v.s));
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return Value::integer(cowGraphemeCount(v.s));
+    if (!rtBPlainText(v)) return rtBMeth(I, v, "chars");
     return Value::integer(graphemeCount(v.toStr()));
 }
 Value rtBSqrt(Interpreter& I, const Value& v) {

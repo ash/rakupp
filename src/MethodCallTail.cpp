@@ -693,14 +693,14 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // A NEGATIVE one, or one past what an Int can hold, is out of range and
         // answers a Failure rather than searching from the start
         // (Str sheet ST-27).
-        size_t from = 0;
+        long long fromChar = 0;
         for (size_t i = 1; i < args.size(); i++)
             if (args[i].t != VT::Pair) {
                 if (args[i].isNumeric()) {
                     double fd = args[i].toNum();
                     if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "indices", args[i], s);
                 }
-                from = charToByte(s, args[i].toInt());
+                fromChar = args[i].toInt();
                 break;
             }
         if (imark) { s = markFold(s); needle = markFold(needle); }
@@ -710,6 +710,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             };
             s = fold(s); needle = fold(needle);
         }
+        // …in the text searched: a fold changes its bytes but keeps its characters,
+        // and a CR LF or a mark-carrying cluster is one character of several bytes
+        const size_t from = graphemeToByte(s, fromChar);
         Value out = Value::array(); out.isList = true;
         // the answers are CHARACTER positions, not byte offsets; matches come in order, each
         // on a grapheme boundary, so the count goes on from the previous one, not from 0

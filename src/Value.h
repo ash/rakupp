@@ -91,7 +91,8 @@ struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
                                                      // (CR LF is the one ASCII sequence that clusters, GB3)
     // NFC, as nfcNormalize sees it: what a join may assume of each side, so it
     // renormalizes only where they meet (nfcAppendCow). Most text is, but not
-    // all of it — a file's bytes or a `.subst` result are kept as they came.
+    // all of it — a socket's bytes or a `.subst` result are kept as they came
+    // (a file's, $*IN's and a pipe's are normalized as read: nfcDecodeInPlace).
     // (Beside the other flags, in what was padding: a body is no bigger.)
     mutable std::atomic<signed char> nfc{-1};
     mutable std::atomic<long long>   nGraphemes{-1}; // .chars

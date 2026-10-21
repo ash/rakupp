@@ -213,7 +213,6 @@ std::pair<size_t, size_t> nextLogicalNewline(const std::string& s, size_t from);
 size_t danglingNewlinePrefix(const std::string& s);
 
 std::shared_ptr<Value> baggyKey(const Value& v);
-size_t charToByte(const std::string& s, long long chars);
 size_t graphemeToByte(const std::string& s, long long chars);   // byte offset of grapheme `chars`
 size_t codeArity(const Value& code);
 std::string cpToUtf8(uint32_t cp);
