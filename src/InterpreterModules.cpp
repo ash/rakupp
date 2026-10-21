@@ -5918,7 +5918,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 tctx().pkgPrefix += cd->name + "::";
                 auto pkgEnv = makeSlabShared<Env>();
                 pkgEnv->parent = tctx().cur;
-                pkgEnv->packageFrame = true;
+                pkgEnv->packageFrame = true; pkgEnv->x().pkgPrefix = tctx().pkgPrefix;   // (ourPkgPrefix)
                 auto saved = tctx().cur; tctx().cur = pkgEnv;
                 auto savedPkg = curPkgEnv_; curPkgEnv_ = pkgEnv; // `our` inside the package installs here (published qualified)
                 // (inside a `my package`, the types it declares are not package-scoped)
@@ -6770,7 +6770,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             bodyEnv->parent = tctx().cur;
             bodyEnv->packageFrame = true;
             ci->declEnv = bodyEnv; // capture the declaration scope (attr-default closures)
-            bodyEnv->x().pkgType = ci;
+            bodyEnv->x().pkgType = ci; bodyEnv->x().pkgPrefix = clsName + "::";   // (ourPkgPrefix)
             ci->decl = cd;         // program-lifetime AST view (roleParams for parameterized roles)
             // `role ABCD[EFGH] { }` — a role parameter typed with nothing declared
             if (cd->isRole)

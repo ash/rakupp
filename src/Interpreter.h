@@ -544,6 +544,10 @@ struct EnvExtras {
     // methods were re-closed in for one parameterization (weak: the type's
     // methods close over this scope)
     std::weak_ptr<ClassInfo> pkgType;
+    // a package body's own prefix (`C::`, `Outer::Inner::`): the package an
+    // `our` in a routine closed over this scope belongs to, wherever it is
+    // called from (Interpreter::ourPkgPrefix)
+    std::string pkgPrefix;
     // `$x := <value>`: these `$` names hold a VALUE bound straight in, not a
     // container of their own — `=:=` between two of them compares the values
     std::set<std::string> varValueBound;
@@ -2875,8 +2879,12 @@ public:
     PRef<Value> varCell(Env* owner, const std::string& name);
     // `our $x`: the package's cell, with `$x` in `de` bound to it; null when
     // the declaration is not the plain form (InterpreterCalls.cpp)
-    Value* ourCell(const struct VarExpr* ve, Env* de);
+    Value* ourCell(const struct VarExpr* ve, Env* de, Value* init = nullptr);
     bool ourBoundToCell(const struct VarExpr* ve);   // …and is `ve`'s name bound so now?
+    const std::string& ourPkgPrefix(Env* de);        // …the package it belongs to, lexically
+    static bool ourShareable(const struct VarExpr* ve); // …may it share the cell at all?
+    // …and where it may not: a view published onto the declaring scope's slot
+    Value ourViewFallback(const struct VarExpr* ve, const std::shared_ptr<Env>& deh, Value init);
     Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified
     Value decontList(const Value& v);        // a container-holding list's values, fresh
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names

@@ -5815,6 +5815,14 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                                  "' on a '" + scope + "'-scoped variable", cur().line,
                                  "X::Syntax::Variable::Twigil",
                                  {{"twigil", std::string(1, vn[1])}, {"scope", scope}});
+            // `our $x` anywhere a ROLE is the nearest type, its methods included:
+            // there is no package to put it in (parseClass refuses the role
+            // body's own statements; a method's `our` reached the role's name)
+            if (scope == "our" && !typeIsRole_.empty() && typeIsRole_.back())
+                throw ParseError("Cannot declare our-scoped variable inside of a role\n"
+                                 "(the scope inside of a role is generic, so there is no unambiguous\n"
+                                 "package to install the symbol in)", cur().line,
+                                 "X::Declaration::OurScopeInRole", {{"declaration", "variable"}});
             // `our $.a` in the mainline: an accessor with no class to put it on
             if (vn.size() > 2 && vn[1] == '.' && (scope == "my" || scope == "our") &&
                 classDepth_ == 0 && !strictSep_)

@@ -11243,6 +11243,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 de->x().varCoerce[ve->name] = vd.declCoerce;
                 if (!vd.declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = vd.declCoerceFrom;
             if (vd.declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
+            // …and an `our` with any of that recorded binds to the package's cell
+            if (vd.declScope == "our" && ourShareable(ve))
+                if (Value* c = ourCell(ve, de, &init)) return c;
             return &de->define(ve->name, std::move(init));
         }
         // attribute lvalue: $.x / $!x
@@ -30992,30 +30995,24 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // evalAssign, so a declaration with nothing to assign published
         // nothing at all, and the qualified name was whatever the first
         // writer autovivified — `%C::h<k> = 1` outside made its own hash
-        // and the class went on reading the empty one it declared.
-        // Same VIEW onto the same slot as the initialised form gets, and
-        // the same rule about the owning scope: not the global one, or
-        // the view would fetch through itself forever.
-        if (vd.declScope == "our" && sigil != '&' && !vd.declExport &&
-            global_ && deh.get() != global_.get() && ve->name.size() > 1) {
-            // …and a package variable an earlier `our` already published is
-            // the SAME variable: `sub foo { our $foo = 3 }; foo(); our $foo`
-            // reads 3 (our.t). Alias the published view rather than
-            // replacing it with a fresh, empty one.
-            if (!de->local(ve->name))
-                if (Value* g = global_->local(ourPublishedName(ve->name, tctx().pkgPrefix));
-                    g && g->t == VT::Hash && g->hashKind == "Proxy") {
-                    Value view = *g;
-                    de->define(ve->name, view);
-                    return deproxy(view);
-                }
-            if (!de->local(ve->name)) de->define(ve->name, declInitial(ve, sigil));
-            noteSymbolMutation("our-declaration publish (no initialiser)");
-            global_->define(ourPublishedName(ve->name, tctx().pkgPrefix),
-                            makeEnvSlotProxy(deh, ve->name));
-            Value* dp = de->local(ve->name);
-            return dp ? *dp : Value::any();
-        }
+        // and the class went on reading the empty one it declared. A name
+        // that can share the package's cell does (ourCell, and declDef
+        // below for the forms the scope keeps a record of); any other gets
+        // the view its declaring scope publishes (ourViewFallback).
+        const bool ourTail = vd.declScope == "our" && ourShareable(ve);
+        if (vd.declScope == "our" && sigil != '&' && !vd.declExport && !ourTail &&
+            global_ && deh.get() != global_.get() && ve->name.size() > 1)
+            return ourViewFallback(ve, deh, declInitial(ve, sigil));
+        // every exit below DEFINES the variable: an `our` binds its name to the
+        // package's cell instead, after the scope has recorded its type,
+        // default and traits (ledger O28)
+        auto declDef = [&](Value v) -> Value {
+            if (ourTail) {
+                if (Value* c = ourCell(ve, de, &v)) return *c;
+                return ourViewFallback(ve, deh, std::move(v));
+            }
+            return de->define(ve->name, std::move(v));
+        };
         // A bare untyped `my @a` re-evaluated in the SAME scope keeps its
         // container — declarations initialize per scope entry, not per
         // evaluation. So in `until $i.push-exactly(my @a, 3) =:= IterationEnd`,
@@ -31061,17 +31058,17 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 if (c.t != VT::Array && c.t != VT::Hash)
                     c = sigil == '@' ? Value::array() : Value::makeHash();
                 c.elemDefaultM() = std::make_shared<Value>(dv);
-                return de->define(ve->name, c); // define() routes a pad name into
-                                                // its slot; vars[] would split it
+                return declDef(c);   // (define() routes a pad name into its slot;
+                                     // vars[] would split it)
             }
             de->x().varDefault[ve->name] = dv;
             if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
             else if (sigil == '$' && !vd.declType.empty() && typeNameLead(vd.declType[0]))
                 de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
-            return de->define(ve->name, dv);
+            return declDef(dv);
         }
         if (vd.declShape && sigil == '@') { // shaped array `my @a[2;3]`
-            return de->define(ve->name, makeShapedContainer(evalShapeDims(vd.declShape.get()), vd.declType));
+            return declDef(makeShapedContainer(evalShapeDims(vd.declShape.get()), vd.declType));
         }
         if (vd.declDynamic) de->x().varDynamic.insert(ve->name); // `is dynamic`
         // `my %h is Set;` / `my %h is MyHash;` with NO initialiser — the
@@ -31086,12 +31083,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (sigil == '%' && quant.count(vd.containerIs)) {
                 Value c = makeBaggy({}, vd.containerIs);
                 c.ofTypeM() = vd.containerOf;
-                return de->define(ve->name, std::move(c));
+                return declDef(std::move(c));
             }
             if (classes_.count(vd.containerIs)) {
                 ValueList none;
-                return de->define(ve->name,
-                                  methodCall(Value::typeObj(vd.containerIs), "new", none));
+                return declDef(methodCall(Value::typeObj(vd.containerIs), "new", none));
             }
             // `my @a is buf16;` — an empty Buf of that type
             if (sigil == '@') {
@@ -31102,7 +31098,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                     if (Value* tp = tctx().cur->find(ct)) if (tp->t == VT::Type) ct = tp->s;
                 if (blobTypes.count(ct)) {
                     ValueList none;
-                    return de->define(ve->name, methodCall(Value::typeObj(ct), "new", none));
+                    return declDef(methodCall(Value::typeObj(ct), "new", none));
                 }
             }
         }
@@ -31120,8 +31116,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (!vd.declCoerce.empty())
                 de->x().varCoerce[ve->name] = vd.declCoerce;
         if (!vd.declCoerceFrom.empty()) de->x().varCoerce[ve->name + "\x01from"] = vd.declCoerceFrom;
-            return de->define(ve->name, declInitial(ve, sigil));
+            return declDef(declInitial(ve, sigil));
         }
+        if (ourTail) return declDef(declInitial(ve, sigil));   // (the same scope, again)
         Value* dp = de->local(ve->name);
         return dp ? *dp : Value::any();
     }

@@ -1205,6 +1205,7 @@ bool Interpreter::runGenericRoleBody(const std::shared_ptr<ClassInfo>& conc, Cla
     env->parent = role->declEnv ? role->declEnv : global_;
     env->packageFrame = true;
     env->x().pkgType = conc;
+    env->x().pkgPrefix = role->name + "::";
     for (auto& b : conc->roleParamBindings)
         if (!b.first.empty() && !env->local(b.first)) env->define(b.first, b.second);
     struct Restore {

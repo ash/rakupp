@@ -2143,29 +2143,55 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
 // turn (ledger O26), every later read of `$n` was a FETCH call, `for ^3 { our
 // $n; $n++ }` counted to 1, `our $n = 100; for ^3 { our $n; $n++ }` lost the
 // 100, and `{ our $x = 1; $x := 5 }` rebound the package's variable where
-// Rakudo rebinds only the name. Only the plain declaration: a type, default,
-// trait, shape or export keeps the declaration's own path, and so does a
-// published name some other view already answers for (varCell gives null).
-Value* Interpreter::ourCell(const VarExpr* ve, Env* de) {
+// Rakudo rebinds only the name.
+//
+// May this declaration share the package's cell at all? Not an `&` name, a
+// qualified one, an exported one (one container under the BARE name, its own
+// arm), a pseudo-package's or a `::T` stub.
+bool Interpreter::ourShareable(const VarExpr* ve) {
     const VarDeclInfo& vd = ve->d();
     const std::string& n = ve->name;
-    if (!global_ || !de || n.size() < 2 || (n[0] != '$' && n[0] != '@' && n[0] != '%') ||
-        !(nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2)) || n.find("::") != std::string::npos ||
-        ve->viaPseudoPkg || !vd.declType.empty() || !vd.declStubType.empty() || vd.declTypeExpr ||
-        !vd.declCoerce.empty() || vd.declDefault || vd.declDynamic || vd.declExport || vd.declSmiley ||
-        vd.declWhereExpr || !vd.containerIs.empty() || vd.declShape || vd.namedBind)
-        return nullptr;
+    return n.size() >= 2 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
+           (nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2)) && n.find("::") == std::string::npos &&
+           !ve->viaPseudoPkg && !vd.declExport && !vd.namedBind && vd.declStubType.empty();
+}
+// …and with nothing for the declaring scope to record about the name: no type,
+// default, trait or shape. Those run the declaration's own path, which keeps
+// that record in the scope and hands its initial value to ourCell (ledger O28:
+// a re-run `our Int $x` lost its type check, `our $d is default(5)` its value).
+static bool ourPlain(const VarExpr* ve) {
+    const VarDeclInfo& vd = ve->d();
+    return vd.declType.empty() && !vd.declTypeExpr && vd.declCoerce.empty() && !vd.declDefault &&
+           !vd.declDynamic && !vd.declSmiley && !vd.declWhereExpr && vd.containerIs.empty() && !vd.declShape;
+}
+// The package an `our` belongs to is the one around it LEXICALLY: a method's or
+// a package sub's `our $k` is its package's `$k` wherever the call comes from
+// (ledger O28: `class C { our $k = 5; method k { our $k } }` read GLOBAL's).
+// The routine closed over its package's body scope, which records the prefix;
+// with none in the chain it is the running code's.
+const std::string& Interpreter::ourPkgPrefix(Env* de) {
+    for (Env* e = de; e; e = e->parent.get())
+        if (e->packageFrame && e->ex && !e->ex->pkgPrefix.empty()) return e->ex->pkgPrefix;
+    return tctx().pkgPrefix;
+}
+// The package's cell, with the name bound to it in `de`; null when the
+// declaration cannot share one, or — with no `init`, the plain form's call —
+// is not plain. `init` is the value a new cell starts with.
+Value* Interpreter::ourCell(const VarExpr* ve, Env* de, Value* init) {
+    if (!global_ || !de || !ourShareable(ve) || (!init && !ourPlain(ve))) return nullptr;
+    const std::string& n = ve->name;
     Env* g = global_.get();
+    const std::string& pfx = ourPkgPrefix(de);
     // (outside a package the published name is the name: no string to build)
     std::string qual;
-    const std::string& pub = tctx().pkgPrefix.empty() ? n : (qual = ourPublishedName(n, tctx().pkgPrefix));
+    const std::string& pub = pfx.empty() ? n : (qual = ourPublishedName(n, pfx));
     PRef<Value> cell;
     if (g->localRaw(pub)) {
         cell = varCell(g, pub);   // a plain slot becomes the cell
         if (!cell) return nullptr;
     } else {
         noteSymbolMutation("our-declaration publish");
-        cell = makePayload<Value>(declInitial(ve, n[0]));
+        cell = makePayload<Value>(init ? std::move(*init) : declInitial(ve, n[0]));
         g->define(pub, Value::cellHolder(cell));
     }
     if (de != g || pub != n) {
@@ -2181,9 +2207,32 @@ bool Interpreter::ourBoundToCell(const VarExpr* ve) {
     if (!global_ || !tctx().cur) return false;
     Value* lraw = tctx().cur->findRaw(ve->name);
     if (!lraw || !lraw->isCell()) return false;
-    Value* graw = tctx().pkgPrefix.empty() ? global_->localRaw(ve->name)
-                                           : global_->localRaw(ourPublishedName(ve->name, tctx().pkgPrefix));
+    const std::string& pfx = ourPkgPrefix(tctx().cur.get());
+    Value* graw = pfx.empty() ? global_->localRaw(ve->name) : global_->localRaw(ourPublishedName(ve->name, pfx));
     return graw && graw->isCell() && graw->cellS().get() == lraw->cellS().get();
+}
+
+// The `our` a cell cannot serve — varCell declined (another view answers for
+// the published name, or workers are live and the slot not private) or the
+// name cannot share one: the declaring scope keeps the variable and the
+// published name becomes a view onto it, or the scope aliases a view an
+// earlier `our` published (`sub foo { our $foo = 3 }; foo(); our $foo` reads
+// 3, our.t). The global scope's own `our` is simply its variable.
+Value Interpreter::ourViewFallback(const VarExpr* ve, const std::shared_ptr<Env>& deh, Value init) {
+    Env* de = deh.get();
+    if (!global_ || de == global_.get() || ve->name.size() < 2) return de->define(ve->name, std::move(init));
+    const std::string pub = ourPublishedName(ve->name, ourPkgPrefix(de));
+    if (!de->local(ve->name))
+        if (Value* g = global_->local(pub); g && g->t == VT::Hash && g->hashKind == "Proxy") {
+            Value view = *g;
+            de->define(ve->name, view);
+            return deproxy(view);
+        }
+    if (!de->local(ve->name)) de->define(ve->name, std::move(init));
+    noteSymbolMutation("our-declaration publish (no initialiser)");
+    global_->define(pub, makeEnvSlotProxy(deh, ve->name));
+    Value* dp = de->local(ve->name);
+    return dp ? *dp : Value::any();
 }
 
 // The shared cell behind the VARIABLE an already-evaluated expression names —
