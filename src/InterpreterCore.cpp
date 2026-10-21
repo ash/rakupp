@@ -20,6 +20,8 @@ Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& 
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
+bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
+bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);    // …too
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -8369,6 +8371,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (!visited.empty()) {
                     if (as.size() == 2 && !c.ci().isMethod && c.ci().name.size() > 8 && c.ci().name.back() == '>' &&
                         c.ci().name.rfind("infix:<", 0) == 0) {
+                        if (Value bv; bridgedNumericInfix(*this, c.ci().name.substr(7, c.ci().name.size() - 8), as[0], as[1], bv))
+                            return bv;
                         try { return applyArith(c.ci().name.substr(7, c.ci().name.size() - 8), as[0], as[1]); }
                         catch (RakuError& e) {
                             if (e.message.rfind("Unsupported operator", 0) != 0) throw;
@@ -8399,6 +8403,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (as.size() == 2 && c.ci().name.size() > 8 && c.ci().name.back() == '>' &&
                     c.ci().name.rfind("infix:<", 0) == 0) {
                     const std::string bop = c.ci().name.substr(7, c.ci().name.size() - 8);
+                    if (Value bv; bridgedNumericInfix(*this, bop, as[0], as[1], bv)) return bv;   // `V + 3`: V.Numeric
                     try { return applyArith(bop, as[0], as[1]); }
                     catch (RakuError& e) {
                         if (e.message.rfind("Unsupported operator", 0) != 0) throw;
@@ -21300,6 +21305,11 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         if (i < op.size() && tctx().cur->find("&infix:<" + op.substr(i) + ">"))
             return (i % 2) ? applyBinOp(op.substr(i), r, l) : applyBinOp(op.substr(i), l, r);
     }
+    // an object or enum operand: a user `multi infix:<op>`, then a .Numeric
+    // bridge, as evalBinary gives them (`[+]`, `Z+`, `X+`, `R+` reach here)
+    if (l.t == VT::Object || r.t == VT::Object ||
+        (boundInfixPossible(op) && (!l.enumType.empty() || !r.enumType.empty())))
+        if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
     // see isStringCmpOp: an object compares by its own `method Str`
     if ((l.t == VT::Object || r.t == VT::Object || isPlatformHash(l) || isPlatformHash(r)) && isStringCmpOp(op))
         return applyBinOp(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
