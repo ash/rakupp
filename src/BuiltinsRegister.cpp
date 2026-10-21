@@ -131,6 +131,7 @@ static Value promptImpl(ValueList& a, bool hidden) {
     if (!hidden) {
         if (!std::getline(std::cin, line)) return Value::nil(); // EOF -> Nil
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        nfcDecodeInPlace(line);   // decoded text is NFC (Interpreter.h)
         // Raku returns Str-with-val: numeric input is an allomorph
         return rakupp::valAllomorph(Value::str(line));
     }
@@ -140,6 +141,7 @@ static Value promptImpl(ValueList& a, bool hidden) {
     // still sitting after the prompt. Without this the next line of output is
     // written onto it.
     if (!echoed) { std::cout << "\n"; std::cout.flush(); }
+    nfcDecodeInPlace(line);
     return Value::str(line);
 }
 
@@ -2379,6 +2381,7 @@ void Interpreter::registerBuiltinsPart2() {
                 std::string l;
                 if (!std::getline(std::cin, l)) return false;
                 if (!l.empty() && l.back() == '\r') l.pop_back();
+                nfcDecodeInPlace(l);   // decoded text is NFC (Interpreter.h)
                 cache.push_back(Value::str(l));
                 return true;
             };
@@ -2427,7 +2430,7 @@ void Interpreter::registerBuiltinsPart2() {
             }
         }
         if (stdinClosed()) return I.methodCall(stdinNow(I), "words", ValueList(a.begin(), a.end()));   // refuses
-        { std::ostringstream ss; ss << std::cin.rdbuf(); all = ss.str(); noteStdinAtEnd(); } // words() = $*IN.words
+        { std::ostringstream ss; ss << std::cin.rdbuf(); all = nfcDecoded(ss.str()); noteStdinAtEnd(); } // words() = $*IN.words
         std::istringstream ws(all);
         while (ws >> w) out.arr()->push_back(Value::str(w));
         return out;

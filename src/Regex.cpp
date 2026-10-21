@@ -3189,8 +3189,10 @@ static long builtinRuleMatch(const std::string& nm, const std::string& s, long p
     // One codepoint of `s` at `p`, and where it ends. ASCII stays one byte.
     auto cpAt = [&](long p, long* end) -> uint32_t {
         unsigned char c0 = (unsigned char)s[p];
-        if (c0 < 0x80) {   // (an ASCII base with marks after it is one grapheme: consume it all)
-            *end = (p + 1 < len && (unsigned char)s[p + 1] >= 0x80) ? (long)uniClusterEndUtf8(s, p, len) : p + 1;
+        if (c0 < 0x80) {   // (an ASCII base with marks after it is one grapheme: consume it all;
+                           //  so is CR LF, which `<space>` and `<cntrl>` take whole, as `\s` does)
+            *end = (p + 1 < len && ((unsigned char)s[p + 1] >= 0x80 || (c0 == '\r' && s[p + 1] == '\n')))
+                       ? (long)uniClusterEndUtf8(s, p, len) : p + 1;
             return c0;
         }
         if (c0 < 0xC0) { *end = p + 1; return c0; } // stray continuation byte: never a class member

@@ -1387,8 +1387,22 @@ static const std::vector<NfcQc>& nfcQcTable() {
     }();
     return v;
 }
+// One bit per BMP codepoint: is it in the table at all? Most are not (every
+// letter of a script without marks, every CJK ideograph), and a bit test
+// answers them where a binary search of the table cost ~100 instructions a
+// codepoint — which a decoded file or line pays for each of its characters.
+static const uint64_t* nfcQcBmp() {
+    static const std::vector<uint64_t> bits = [] {
+        std::vector<uint64_t> b(0x10000 / 64, 0);
+        for (const NfcQc& e : nfcQcTable())
+            if (e.cp < 0x10000) b[e.cp >> 6] |= uint64_t(1) << (e.cp & 63);
+        return b;
+    }();
+    return bits.data();
+}
 int uniNfcQuickCheckUtf8(const char* s, size_t n) {
     const std::vector<NfcQc>* tab = nullptr;   // built on first need: ASCII text never asks
+    const uint64_t* bmp = nullptr;
     int lastCcc = 0, answer = 1;
     for (size_t p = 0; p < n;) {
         // below 0xCC every byte is ASCII, a continuation byte, or the lead of a
@@ -1401,7 +1415,16 @@ int uniNfcQuickCheckUtf8(const char* s, size_t n) {
             continue;
         }
         uint32_t cp;
-        p += decUtf8(s, p, n, cp);
+        const unsigned char c0 = (unsigned char)s[p];
+        if (c0 < 0xE0 && p + 1 < n && ((unsigned char)s[p + 1] & 0xC0) == 0x80) {   // two bytes, decUtf8's answer
+            cp = (uint32_t)(c0 & 0x1F) << 6 | ((unsigned char)s[p + 1] & 0x3F);
+            p += 2;
+        }
+        else p += decUtf8(s, p, n, cp);
+        if (cp < 0x10000) {
+            if (!bmp) bmp = nfcQcBmp();
+            if (!(bmp[cp >> 6] >> (cp & 63) & 1)) { lastCcc = 0; continue; }   // a plain starter
+        }
         if (!tab) tab = &nfcQcTable();
         auto it = cp == GB_SYNTHETIC ? tab->end()
                                      : std::lower_bound(tab->begin(), tab->end(), cp,

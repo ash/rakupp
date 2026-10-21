@@ -422,7 +422,7 @@ void Interpreter::registerBuiltinsPart3() {
     };
     B["uc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBUc(I, a[0]); };
     B["lc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBLc(I, a[0]); };
-    B["tc"] = [](Interpreter&, ValueList& a) -> Value { return Value::str(a.empty() ? "" : mapCase(a[0].toStr(), 0, 1)); };
+    B["tc"] = [](Interpreter& I, ValueList& a) -> Value { return a.empty() ? Value::str("") : rtBTc(I, a[0]); };
     // `so *` / `not *` curry like operators do (Rakudo: (so *).^name is WhateverCode)
     // (`userOp`: the program's own `prefix:<so>`/`prefix:<not>` candidates, as
     // seen where the `not *…` was WRITTEN — the curried closure runs somewhere

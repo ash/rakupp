@@ -230,6 +230,12 @@ bool depsAsk(const std::string& name, const std::string& verReq, const std::stri
              const std::string& label, std::string& reason);
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
+// Text decoded from outside — a file, $*IN, a pipe — is NFC, as Rakudo's
+// decoders and our own Buf.decode make it. Whatever composes or reorders is
+// U+0300 or above, whose UTF-8 leads with a byte >= 0xCC, so text without one
+// (ASCII above all) costs one scan and is left as it is. (NfcJoin.cpp)
+void nfcDecodeInPlace(std::string& text);
+inline std::string nfcDecoded(std::string text) { nfcDecodeInPlace(text); return text; }
 // Is this text NFC — would nfcNormalize leave it as it is? A Str caches the
 // answer on its body; nfcKnown(v) is 1/0 for a plain Str, -1 for anything
 // else, whose string form has to be checked. (Builtins.cpp)
@@ -5251,8 +5257,9 @@ Value rtBSay(Interpreter& I, const Value& v);      // say/print/put/note, 1-arg 
 Value rtBPrint(Interpreter& I, const Value& v);
 Value rtBPut(Interpreter& I, const Value& v);
 Value rtBNote(Interpreter& I, const Value& v);
-Value rtBUc(Interpreter& I, const Value& v);       // Str case-mapping (BuiltinsSupply.cpp statics)
+Value rtBUc(Interpreter& I, const Value& v);       // Str case-mapping; anything else is its own method
 Value rtBLc(Interpreter& I, const Value& v);
+Value rtBTc(Interpreter& I, const Value& v);
 Value rtBChars(Interpreter& I, const Value& v);    // grapheme count
 Value rtBSqrt(Interpreter& I, const Value& v);     // Complex/Object escapes + langRev negatives
 Value rtBSignSlow(Interpreter& I, const Value& v); // full sign via methodCall

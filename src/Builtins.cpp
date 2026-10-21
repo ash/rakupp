@@ -1754,6 +1754,7 @@ void Interpreter::runProcPromise(Value& promise, double timeoutSec) {
                         }
                         continue;
                     }
+                    nfcDecodeInPlace(data);   // decoded text is NFC (Interpreter.h)
                 }
                 else data = decodeTextEnc(data, enc);
             }
@@ -2303,9 +2304,12 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         case VT::Match: {
             // Rakudo's Match.raku is a constructor call, not the ｢…｣ gist: the
             // positional captures come back as :list and the named ones as :hash.
+            // (:from and :pos are CHARACTER offsets, as .from and .to say: the
+            // engine's are bytes, so "éab" ~~ /ab/ is :from(1), not 2)
+            auto at = [&](long long b) { return std::to_string(v.ext() && b > 0 ? subjectGraphemeOffset(v.ext(), (size_t)b) : b); };
             std::string o = "Match.new(:orig(" +
                 (v.ext() ? rakuStrLit(*std::static_pointer_cast<std::string>(v.ext())) : rakuStrLit(v.s)) +
-                "), :from(" + std::to_string(v.rFrom()) + "), :pos(" + std::to_string(v.rTo()) + ")";
+                "), :from(" + at(v.rFrom()) + "), :pos(" + at(v.rTo()) + ")";
             if (v.arr() && !v.arr()->empty()) {
                 o += ", :list((";
                 for (size_t k = 0; k < v.arr()->size(); k++) {
@@ -3086,17 +3090,6 @@ std::string markFold(const std::string& in) {
     }
     return out;
 }
-// A CHARACTER offset as a byte offset (Raku positions count characters).
-size_t charToByte(const std::string& s, long long chars) {
-    if (chars <= 0) return 0;
-    size_t b = 0; long long n = 0;
-    while (b < s.size() && n < chars) {
-        b++;
-        while (b < s.size() && (static_cast<unsigned char>(s[b]) & 0xC0) == 0x80) b++;
-        n++;
-    }
-    return b;
-}
 std::string cpToUtf8(uint32_t cp) {
     std::string r;
     if (cp < 0x80) r += (char)cp;
@@ -3792,15 +3785,14 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     sv = "";
                 }
                 else if (!(g_userStr && g_userStr(sa, sv))) sv = sa.toStr();
-                // Width/precision count characters (codepoints), not bytes, so multibyte
-                // text pads correctly: sprintf("%8s","🦋🦋🦋") → "     🦋🦋🦋".
-                auto cpCount = [](const std::string& s) { int n = 0; for (unsigned char c : s) if ((c & 0xC0) != 0x80) n++; return n; };
-                if (prec >= 0 && cpCount(sv) > prec) { // keep the first `prec` codepoints
-                    int n = 0; size_t bi = 0;
-                    while (bi < sv.size() && n < prec) { bi++; while (bi < sv.size() && (((unsigned char)sv[bi]) & 0xC0) == 0x80) bi++; n++; }
-                    sv = sv.substr(0, bi);
+                // Width/precision count characters — graphemes, not bytes or codepoints:
+                // sprintf("%8s","🦋🦋🦋") → "     🦋🦋🦋", and "q\x[301]" or CR LF is one.
+                if (prec >= 0 && (size_t)prec < sv.size()) { // keep the first `prec` characters
+                    size_t bi = 0;
+                    for (int n = 0; bi < sv.size() && n < prec; n++) bi = uniClusterEndUtf8(sv, bi, sv.size());
+                    sv.resize(bi);
                 }
-                int chars = cpCount(sv);
+                int chars = width > 0 ? (int)graphemeCount(sv) : 0;
                 if (chars < width) { int pad = width - chars;
                     // `-` always wins over `0` for %s (left-justify with spaces). The
                     // `0` fill itself is version-split: 6.e zero-fills even with a

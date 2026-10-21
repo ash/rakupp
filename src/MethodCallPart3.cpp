@@ -65,15 +65,24 @@ namespace {
 
 // UTF-8 (and utf8-c8) is what a rakupp Str already holds, so naming it changes
 // nothing — and must not, or `:enc<utf8>` would be stricter than no `:enc`.
-bool encIsUtf8(const std::string& enc) {
+static std::string encKey(const std::string& enc) {
     std::string n;
     for (char c : enc) if (ascii::isalnum((unsigned char)c)) n += (char)ascii::tolower((unsigned char)c);
+    return n;
+}
+bool encIsUtf8(const std::string& enc) {
+    const std::string n = encKey(enc);
     return n.empty() || n == "utf8" || n == "utf8c8";
 }
 // the encoding an open handle carries (`open $p, :enc<latin1>`), "" for none
 std::string handleEnc(const Value& h) {
     auto it = h.hash()->find("encoding");
     return it != h.hash()->end() ? it->second.toStr() : std::string();
+}
+// Text off a handle that did not come through decodeTextEnc (a line of $*IN,
+// a pipe's captured or live output) is NFC as well, under the same exception.
+static void handleNfc(const Value& h, std::string& text) {
+    if (encKey(handleEnc(h)) != "utf8c8") nfcDecodeInPlace(text);
 }
 // Standard input is one stream, but every mention of `$*IN` makes a fresh
 // handle onto it, so whether it is CLOSED is kept here, with the stream:
@@ -174,12 +183,16 @@ std::string Interpreter::encAdverb(const ValueList& args) {
     return "";
 }
 std::string Interpreter::decodeTextEnc(const std::string& bytes, const std::string& enc) {
-    if (encIsUtf8(enc)) {
+    const std::string key = encKey(enc);
+    if (key.empty() || key == "utf8" || key == "utf8c8") {   // encIsUtf8, keeping the key for c8 below
         // a UTF-8 BOM at the start of a file is not text (Rakudo strips it)
-        if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB &&
-            (unsigned char)bytes[2] == 0xBF)
-            return bytes.substr(3);
-        return bytes;
+        std::string text = bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF &&
+                           (unsigned char)bytes[1] == 0xBB && (unsigned char)bytes[2] == 0xBF
+                               ? bytes.substr(3) : bytes;
+        // …and it is NFC, as every decoder makes it (the other encodings go
+        // through .decode), except utf8-c8, whose point is the bytes as they were
+        if (key != "utf8c8") nfcDecodeInPlace(text);
+        return text;
     }
     Value b = Value::str(bytes); b.hashKind = "Blob";
     return methodCall(b, "decode", ValueList{Value::str(enc)}).toStr();
@@ -2993,6 +3006,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (plain && (m == "get" || m == "getline") && args.empty()) {
             std::string line;
             if (!liveProcReadLine(this, tok, isErr, line, chompIt)) return Value::nil();
+            nfcDecodeInPlace(line);
             return Value::str(line);
         }
         if (plain && m == "lines" && args.empty()) {
@@ -3004,6 +3018,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             st->appendNext = [self, tok, isErr, chompIt](ValueList& cache) -> bool {
                 std::string l;
                 if (!liveProcReadLine(self, tok, isErr, l, chompIt)) return false;
+                nfcDecodeInPlace(l);
                 cache.push_back(Value::str(l));
                 return true;
             };
@@ -3745,6 +3760,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 std::string t = text.toStr();
                 foldCrLf(t);
+                handleNfc(inv, t);
                 // …and the handle is at its end: `.eof` is True and another
                 // read finds nothing (an empty line cache, as for a file)
                 (*inv.hash())["lines"] = Value::array();
@@ -3887,6 +3903,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     }
                     out += ch;
                 }
+                handleNfc(inv, out);
                 if (m == "getc") return out.empty() ? Value::nil() : Value::str(out);
                 return Value::str(out);
             }
@@ -4020,6 +4037,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             const bool keep = inv.hash()->count("chomp") && !(*inv.hash())["chomp"].truthy();
             if (keep) line += std::cin.eof() ? "" : "\n";
             else if (!line.empty() && line.back() == '\r') line.pop_back();
+            nfcDecodeInPlace(line);
             return Value::str(line);
         }
         // …and `$*IN.lines` is STREAMED the same way, one line per pull, as
@@ -4061,6 +4079,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 if (*left > 0) --*left;
                 if (!l.empty() && l.back() == '\r') l.pop_back();
+                nfcDecodeInPlace(l);
                 cache.push_back(Value::str(l));
                 return true;
             };
@@ -4133,7 +4152,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             size_t nl = content.find('\n', start);
                             if (nl == std::string::npos) {
                                 if (start < content.size()) {
-                                    lines.arr()->push_back(Value::str(content.substr(start)));
+                                    std::string l = content.substr(start);
+                                    handleNfc(inv, l);
+                                    lines.arr()->push_back(Value::str(l));
                                     eols.arr()->push_back(Value::str(""));
                                 }
                                 break;
@@ -4141,6 +4162,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             std::string l = content.substr(start, nl - start);
                             bool crlf = !l.empty() && l.back() == '\r';
                             if (crlf) l.pop_back();
+                            handleNfc(inv, l);
                             lines.arr()->push_back(Value::str(l));
                             // Rakudo normalises: a CRLF line read back with
                             // `chomp = False` ends "\n", not "\r\n".
@@ -4152,6 +4174,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         while (std::getline(std::cin, line)) {
                             bool crlf = !line.empty() && line.back() == '\r';
                             if (crlf) line.pop_back();
+                            handleNfc(inv, line);
                             lines.arr()->push_back(Value::str(line));
                             (void)crlf; eols.arr()->push_back(Value::str(std::cin.eof() ? "" : "\n"));
                         }
@@ -5988,7 +6011,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         double fd = args[i].toNum();
                         if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "contains", args[i], subj);
                     }
-                    from = (long)charToByte(subj, args[i].toInt());
+                    from = (long)graphemeToByte(subj, args[i].toInt());   // a CHARACTER position
                     break;
                 }
             CallRegex rx(pat, nullptr); const Regex& re = *rx; RxMatch mm;
@@ -6690,22 +6713,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         auto emit = [&](const std::string& piece) { pieces++; if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
         // empty single delimiter => split into characters, with the empty-string
         // edges Rakudo yields ('abc'.split('') is ("", "a", "b", "c", ""));
-        // a limit keeps the first limit-1 pieces and the rest as the final piece
+        // a limit keeps the first limit-1 pieces and the rest as the final piece.
+        // A character is a grapheme: "a\r\nb" is a, CR LF, b, and "q\x[301]" is
+        // one piece, not a q and a stray mark.
         if (delims.size() == 1 && !delims[0].isRx && delims[0].str.empty()) {
             if (s.empty()) return out; // ''.split('') is ()
-            auto cps = utf8cp(s);
             if (haveLimit && limit == 1) { emit(s); return out; }
             emit("");
-            size_t taken = 0;
-            for (size_t ci = 0; ci < cps.size(); ci++) {
-                if (haveLimit && pieces == limit - 1) {
-                    std::string rest; for (size_t cj = ci; cj < cps.size(); cj++) rest += cpToUtf8(cps[cj]);
-                    emit(rest); return out;
-                }
-                emit(cpToUtf8(cps[ci]));
-                taken = ci;
+            for (size_t b = 0; b < s.size();) {
+                if (haveLimit && pieces == limit - 1) { emit(s.substr(b)); return out; }
+                const size_t e = uniClusterEndUtf8(s, b, s.size());
+                emit(s.substr(b, e - b));
+                b = e;
             }
-            (void)taken;
             if (!haveLimit || pieces < limit) emit("");
             return out;
         }

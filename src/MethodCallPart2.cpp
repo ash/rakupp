@@ -1034,6 +1034,7 @@ void Interpreter::registerProcStreamTap(const Value& inv, Value cb, Value done, 
             if (rp.bin) chunk.hashKind = "Blob";
             else {
                 if (!(rp.enc.empty() || rp.enc == "utf-8" || rp.enc == "utf8")) now = decodeTextEnc(now, rp.enc);
+                else nfcDecodeInPlace(now);   // decoded text is NFC (Interpreter.h)
                 std::string t; t.reserve(now.size());
                 for (size_t i = 0; i < now.size(); i++)
                     if (!(now[i] == '\r' && i + 1 < now.size() && now[i + 1] == '\n')) t += now[i];

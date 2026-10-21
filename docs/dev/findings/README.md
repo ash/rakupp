@@ -193,8 +193,10 @@ logs and the reviews. This page is the complete list.
   two filters built for one job on one afternoon, two copies of the Num lane,
   a closure-shared kernel calling the wrong closure's routine, the plain-sub
   lane missing the routine's own `$_`, and the BIND-POS alias behind most of
-  BinaryHeap's gap; fifteen fixes, and a ledger of 22 open items ranked by
-  what a user sees.
+  BinaryHeap's gap; fifteen fixes, and a ledger of open items ranked by
+  what a user sees. Three of them (O2–O4: text read from outside not NFC,
+  five places counting codepoints for characters, `uc`/`chars` as subs
+  skipping dispatch) were fixed the same day.
 - **[TOOLS-3.23.md](TOOLS-3.23.md)** *(2026-08-29, opening v3.23.0)* — every
   gate, benchmark and measuring tool this project runs, reviewed before the
   re-baseline: twenty-five defects fixed, including binaries picked by bare PATH
