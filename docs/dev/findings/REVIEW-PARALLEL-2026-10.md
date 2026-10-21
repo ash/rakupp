@@ -95,8 +95,9 @@ Headline numbers, the final binary against the base tree:
 ## Fixed after the review
 
 O2–O4 of the ledger below, the same day, against the same base (cce315ef),
-and O23, which fixing them turned up, against theirs (1918e400); each
-regression file runs clean under Rakudo and fails on the base.
+O23, which fixing them turned up, against theirs (1918e400), and O26, which
+fixing O23 turned up, against that (5e474d7d); each regression file runs
+clean under Rakudo and fails on the base.
 
 | # | What | Where | Evidence |
 |---|---|---|---|
@@ -104,6 +105,7 @@ regression file runs clean under Rakudo and fails on the base.
 | O3 | `.split('')` splits graphemes; `<space>` and `<cntrl>` (every built-in rule's ASCII lane) take a CR LF whole, as `\s` does; sprintf's `%s` width and precision count graphemes; `Match.raku` prints character offsets; `.indices` and `.contains(/rx/)` take a character position, found in the folded text under `:i`/`:m`. `charToByte` had no caller left and is gone (O21) | MethodCallPart3.cpp, Regex.cpp, Builtins.cpp, MethodCallTail.cpp | t/regression/grapheme-units-split-rules-sprintf.raku, 36 checks failing on the base |
 | O4 | `uc`, `lc`, `tc`, `chars` and `ord` as subs: a plain Str or Int keeps the short path and anything else is the method, so a Junction autothreads, an object answers with its own, and `chars($buf)` refuses as `.chars` does. `--exe -O`'s fastB table calls the same functions | BuiltinsSupply.cpp, BuiltinsRegister2.cpp | t/regression/case-subs-dispatch-as-methods.raku, 13 checks failing on the base; the same file under `--exe -O`, `--jit` and `--cnp` |
 | O23 | A handle's `.getc` and `.readchars` hand out graphemes, and a CR LF reads as `"\n"` (utf8-c8 keeps its codepoints apart, as Rakudo's does): the cursor holds a cluster to an element, a CR LF as it came, so an `.encoding` switched midway still counts the bytes behind it. `$*IN.getc` waits for the character after the one it hands out, as Rakudo's does (it may be a mark that belongs to it), and puts back what it read ahead for the next reader; after a control character it does not wait, so a line typed at a terminal is answered at its newline. Socket text is NFC: IO::Socket::Async's text chunks (each ends on a cluster boundary, so each normalizes alone) and IO::Socket::INET's `.get`, `.lines` and `.recv`. A Blob refuses the methods Rakudo's Str has and its Blob does not, `Buf.new(1).uc`, `.lc`, `.flip`, `.ord`, `.substr`, `.trim`, `.contains`, `.lines` and the rest (X::Method::NotFound), so `uc($buf)` does too. `.indices("", $pos)` past the end is `()`; `.contains(/rx/, $pos)` at or past the end is False; `.split(Str, $limit)` is a List where there is nothing to split (a limit of 1, an empty string) | MethodCallPart3.cpp (handleReadChars, charCursor, stdinGrapheme; refuseStrOnlyOnBlob, called from methodCall in Builtins.cpp), BuiltinsSupply.cpp, MethodCallPart2.cpp, MethodCallTail.cpp | t/regression/handle-getc-readchars-graphemes.raku, socket-text-is-nfc.raku and blob-not-str-and-position-edges.raku: 20, 5 and 42 checks failing on the base; the three under `--jit` and `--cnp` too. perf-guard's 24 kernels by instructions retired within −0.09%..+0.18% of the base, but for strscan's mode (O27) |
+| O26 | A binary handle refuses text reads, as Rakudo's does: `.get`, `.getc`, `.readchars`, `.lines`, `.words`, `.comb` and `.split` on `open(:bin)`, or after `.encoding(Nil)` / `.encoding("bin")`, die with X::IO::BinaryMode (`.trying` names the method); `.slurp` and `.read` answer bytes, and `.encoding("utf8")` makes the handle text again. `$*IN` keeps the setting, so `lines()` and `words()` refuse too. `.readchars(-1)` dies. IO::Socket::INET's text `.recv($n)` takes $n whole characters from the buffer `.get` reads into, else after one more read, else all it has (Rakudo's consume-exactly-chars, then consume-all-chars); `.read` and `.recv(:bin)` take what that buffer holds first, then the socket. The one place this parts from Rakudo: there a byte read asking for more than the buffer holds reads the socket past it, so `.get` then `.recv(:bin)` loses or reorders what `.get` read ahead; here it comes first. `.index`, `.rindex`, `.indices`, `.contains` and `.substr-eq` fail with Rakudo's X::OutOfRange: `what` "Position in calling 'index'", `comment` Any, "… Is: -1, should be in 0..3" (`.substr-eq`'s held a bare type with no message) | MethodCallPart3.cpp (the FileHandle arm, handleReadChars, index/rindex, substr-eq), BuiltinsRegister.cpp (unreadableStdin), BuiltinsSupply.cpp (inetSocketRead, out of MethodCallPart2.cpp's Socket arm), MethodCallTail.cpp (outOfRangePos) | t/regression/binary-handle-refuses-text-reads.raku, socket-recv-counts-characters.raku and string-position-out-of-range-failure.raku: 13, 5 and 12 checks failing on the base; the three under `--jit` and `--cnp` too. perf-guard's 24 kernels by instructions within −0.29%..+0.10% of the base (strscan −0.74%: its lower mode, O27) |
 
 ## Open: the ledger
 
@@ -147,20 +149,6 @@ coordinator.
     `my num @z = -0e0, -0e0; @z.sum` is 0 (Rakudo -0); a Duration becomes a
     Rat through `[+]` and `.sum`; `(do { $x }).VAR` is not the Scalar.
 
-- **O26. Reading leftovers past O23** (found while fixing it; each checked
-  against Rakudo 2026.09):
-  - a `:bin` handle answers text reads: `.get`, `.lines`, `.words`, `.getc`
-    and `.readchars` on `open(:bin)` return text where Rakudo dies with
-    X::IO::BinaryMode ("Cannot do 'get' on a handle in binary mode");
-    `.readchars(-1)` is `""` where Rakudo dies;
-  - IO::Socket::INET's text `.recv($n)` counts bytes, where Rakudo counts
-    characters (`.recv(3)` of "Å\r\nö" is all three), and does not see what
-    `.get` has buffered (MethodCallPart2.cpp ~9045);
-  - `.index`, `.indices` and `.contains` with a negative position fail with
-    "start argument to indices out of range. Is: -1; should be in 0..3";
-    Rakudo's X::OutOfRange has `what` "Position in calling 'indices'" and
-    the message "… Is: -1, should be in 0..3".
-
 ### Speed
 
 - **O24. `$*IN.lines` and `-n` cost ~100k instructions a line**: 400k ASCII
@@ -185,8 +173,10 @@ coordinator.
   rather than of the code a run executes: on the base 1 run in 40 lands
   high; with a function nothing calls added to MethodCallPart3.cpp, 5 in
   40; with O23's change to methodCallPart3, 19 in 25, and with the rest of
-  O23 but the base's MethodCallPart3.cpp, 1 in 12. Cycles and wall time
-  show no difference. Something on the `.substr`/`.ord` dispatch path costs
+  O23 but the base's MethodCallPart3.cpp, 1 in 12; and O26, which changes
+  methodCallPart3 again and nothing on strscan's path either, took it back
+  to 2 in 20 (O23's build: 18 in 20 in the same sample). Cycles and wall
+  time show no difference. Something on the `.substr`/`.ord` dispatch path costs
   by address, and a ±0.5% instruction gate will keep tripping over it.
 - **O7. `m:c`/`:pos` over non-ASCII text is still quadratic** (fix 8 made the
   ASCII case linear in practice). graphemeToByte gets a `std::string`; the

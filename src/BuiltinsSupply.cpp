@@ -3126,4 +3126,98 @@ RakuError Interpreter::dieError(ValueList& a) {
     return RakuError{payload, msg};
 }
 
+// IO::Socket::INET's `.recv` and `.read` (the Socket arm of methodCallPart2).
+// TEXT comes in characters, as Rakudo's decoder hands them out: `.recv($n)`
+// takes $n whole characters from what `.get` has buffered ("linebuf") and
+// what one more read brings, and failing that all it has (Rakudo's
+// consume-exactly-chars, then consume-all-chars); it is NFC. A character is
+// whole when the next one is in, or when nothing can join it (a newline): the
+// one at the end waits, unless no more is coming. BYTES (`.read`, `:bin`) take
+// what the line reader holds first and then the socket; `.read($n)` answers
+// exactly $n unless the peer closes, `.recv` whatever has arrived.
+Value inetSocketRead(Interpreter& I, const Value& sock, const std::string& m, const ValueList& args) {
+    const int fd = (int)(*sock.hash())["fd"].toInt();
+    size_t want = 65536;
+    if (!args.empty() && args[0].isNumeric()) {
+        // `Inf` is a real argument here, not a mistake: it means "whatever
+        // has arrived". OpenSSL's bio-read calls `$.net-read.()`, whose
+        // closure defaults to `-> $n = Inf { $s.recv($n, :bin) }`, so the
+        // very first read of an SSL handshake asked for infinity — and
+        // sizing the buffer from it threw std::bad_alloc before the socket
+        // was touched. Anything absurd is capped for the same reason; recv
+        // is "up to" that many, so a smaller count is still correct.
+        static const size_t kCap = 64u * 1024 * 1024;
+        double d = args[0].toNum();
+        if (std::isfinite(d) && d >= 0) want = (size_t)std::min<double>(d, (double)kCap);
+    }
+    // `:bin` asks for BYTES, and `.read` is always binary — both answer a Buf:
+    // a Str made `Buf.new.append($chunk)` append the string instead, and an
+    // HTTP header loop spun forever with no error anywhere.
+    bool bin = m == "read";
+    for (auto& a : args)
+        if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal() || a.pairVal()->truthy();
+    Value& lbv = (*sock.hash())["linebuf"];
+    if (lbv.t != VT::Str) lbv = Value::str("");
+    // one read off the socket onto the buffer: what it brought, 0 at its end
+    auto pull = [&](size_t cap, std::string& into) -> ssize_t {
+        std::vector<char> buf(cap ? cap : 1);
+        bool p = I.gilPark();
+        ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);
+        I.gilUnpark(p);
+        if (n > 0) into.append(buf.data(), (size_t)n);
+        return n;
+    };
+    if (bin) {
+        std::string out;
+        {   std::string& lb = lbv.s.mut();
+            size_t take = std::min(want, lb.size());
+            out.assign(lb, 0, take);
+            lb.erase(0, take); }
+        // `.read($n)` is EXACTLY $n, blocking until it has them or the peer
+        // closes; `.recv` is up to $n, and what the buffer held is enough
+        while (out.size() < want && (m == "read" || out.empty())) {
+            ssize_t n = pull(std::min<size_t>(want - out.size(), 1u << 20), out);
+            if (n < 0 && out.empty()) return Value::nil();
+            if (n <= 0 || m != "read") break;
+        }
+        Value r = Value::str(out);
+        r.hashKind = "Buf"; identify(r);
+        return r;
+    }
+    // The bytes of the first `limit` whole characters of the buffer, if it
+    // has that many: `all` counts the one at the end, `!all` holds it back
+    // (and an incomplete UTF-8 sequence is never counted).
+    auto chars = [&](bool all, size_t& bytes) -> bool {
+        const std::string& lb = lbv.s.str();
+        size_t end = utf8TextPrefixLen(lb);
+        if (all) {
+            end = lb.size();
+            for (size_t i = lb.size(), back = 0; i > 0 && back < 4; i--, back++) {
+                unsigned char c = (unsigned char)lb[i - 1];
+                if ((c & 0xC0) == 0x80) continue;
+                size_t need = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+                if (lb.size() - (i - 1) < need) end = i - 1;
+                break;
+            }
+        }
+        size_t b = 0, k = 0;
+        for (; k < want && b < end; k++) b = uniClusterEndUtf8(lb, b, end);
+        bytes = b;
+        return k == want || all;
+    };
+    size_t bytes = 0;
+    if (!chars(false, bytes)) {
+        std::string more;
+        ssize_t n = pull(65536, more);
+        if (n < 0 && lbv.s.str().empty()) return Value::nil();
+        if (n > 0) lbv.s.mut().append(more);
+        if (!chars(false, bytes)) chars(true, bytes);
+    }
+    std::string& lb = lbv.s.mut();
+    std::string out = lb.substr(0, bytes);
+    lb.erase(0, bytes);
+    nfcDecodeInPlace(out);
+    return Value::str(out);
+}
+
 } // namespace rakupp

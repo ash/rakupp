@@ -1561,6 +1561,15 @@ static Value stdinNow(Interpreter& I) {
     Value* slot = Interpreter::findDynamicLenient("$*IN");
     return slot ? *slot : I.dynVar("$*IN");
 }
+// …and the handle `lines()` / `words()` hand their read to when standard
+// input cannot be read as text, so that its method refuses: closed, or binary
+// (`$*IN.encoding(Nil)`, which a fresh `$*IN` carries as its "bin")
+static std::optional<Value> unreadableStdin(Interpreter& I) {
+    if (stdinClosed()) return stdinNow(I);
+    if (I.stdinEnc_ != "bin") return std::nullopt;
+    VarExpr in("$*IN");
+    return I.eval(&in);
+}
 
 // `open('-')` is $*IN and `open('-', :w)` $*OUT (openStdStream). 6.d
 // deprecates the spelling; an IO::Path '-' is reported as Rakudo reports it,
@@ -2365,7 +2374,7 @@ void Interpreter::registerBuiltinsPart2() {
             Value h = I.eval(&af);
             return I.methodCall(h, "lines", named);
         }
-        if (stdinClosed()) return I.methodCall(stdinNow(I), "lines", named);   // …which refuses, closed
+        if (auto h = unreadableStdin(I)) return I.methodCall(*h, "lines", named);   // …which refuses
         // Standard input is STREAMED, one line per pull. Slurping to EOF first is
         // a deadlock whenever the writer is still open — which is precisely how a
         // `-ne` child is driven through a Proc::Async pipe, so `last if /2/` never
@@ -2429,7 +2438,7 @@ void Interpreter::registerBuiltinsPart2() {
                 return I.methodCall(h, "words", ValueList(a.begin(), a.end()));
             }
         }
-        if (stdinClosed()) return I.methodCall(stdinNow(I), "words", ValueList(a.begin(), a.end()));   // refuses
+        if (auto h = unreadableStdin(I)) return I.methodCall(*h, "words", ValueList(a.begin(), a.end()));   // refuses
         { std::ostringstream ss; ss << std::cin.rdbuf(); all = nfcDecoded(ss.str()); noteStdinAtEnd(); } // words() = $*IN.words
         std::istringstream ws(all);
         while (ws >> w) out.arr()->push_back(Value::str(w));
