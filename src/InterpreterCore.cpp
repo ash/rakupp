@@ -20,6 +20,8 @@ Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& 
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
+bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
+bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);    // …too
 // The native body a compiled binary attached to this routine (AotModules.h):
 // run it in the frame the call just bound. False when there is none, or when it
 // declined before running anything — the caller then walks the statements.
@@ -8373,6 +8375,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 if (!visited.empty()) {
                     if (as.size() == 2 && !c.ci().isMethod && c.ci().name.size() > 8 && c.ci().name.back() == '>' &&
                         c.ci().name.rfind("infix:<", 0) == 0) {
+                        if (Value bv; bridgedNumericInfix(*this, c.ci().name.substr(7, c.ci().name.size() - 8), as[0], as[1], bv))
+                            return bv;
                         try { return applyArith(c.ci().name.substr(7, c.ci().name.size() - 8), as[0], as[1]); }
                         catch (RakuError& e) {
                             if (e.message.rfind("Unsupported operator", 0) != 0) throw;
@@ -8404,6 +8408,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     c.ci().name.rfind("infix:<", 0) == 0) {
                     // (`infix:<×>`'s built-in is `*`: uniOpWritten)
                     const std::string bop = uniOpFold(c.ci().name.substr(7, c.ci().name.size() - 8));
+                    if (Value bv; bridgedNumericInfix(*this, bop, as[0], as[1], bv)) return bv;   // `V + 3`: V.Numeric
                     try { return applyArith(bop, as[0], as[1]); }
                     catch (RakuError& e) {
                         if (e.message.rfind("Unsupported operator", 0) != 0) throw;
@@ -17822,6 +17827,17 @@ static inline int intWordOp3(const std::string& op) {
 // applyArithGeneral, out of line. The general path's frame is over a page, so
 // every call paid a stack probe for it, the Int case included.
 [[gnu::noinline]] static Value applyArithGeneral(const std::string& op, const Value& l, const Value& r);
+// A junction's operator over an OBJECT operand (an eigenstate, or the side
+// that is not the junction): an object numifies through its .Numeric, as
+// `V == 9` does. Out of line, so the plain eigenstate loop stays as it was.
+[[gnu::noinline]] static void threadObjectEigenstates(const std::string& op, const Value& l, const Value& r,
+                                                      const Value& j, bool jleft, Value& out) {
+    for (auto& e : *j.arr()) {
+        const Value& a = jleft ? e : l; const Value& b = jleft ? r : e;
+        if (Value bv; bridgedNumericInfix(*g_cbInterp, op, a, b, bv)) out.arr()->push_back(std::move(bv));
+        else out.arr()->push_back(applyArith(op, a, b));
+    }
+}
 Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // Hot path: 1–2-char arithmetic/comparison ops on plain Int/Int — the
     // overwhelmingly common case — dispatched by a single char, skipping the
@@ -18368,7 +18384,11 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (out.enumName == "any") out.enumName = "all";
             else if (out.enumName == "all") out.enumName = "any";
         }
-        for (auto& e : *j.arr()) out.arr()->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
+        // an object eigenstate (or other side) numifies through its .Numeric
+        bool objStep = (jleft ? r : l).t == VT::Object;
+        if (!objStep) for (auto& e : *j.arr()) if (e.t == VT::Object) { objStep = true; break; }
+        if (RAKUPP_UNLIKELY(objStep) && g_cbInterp) threadObjectEigenstates(op, l, r, j, jleft, out);
+        else for (auto& e : *j.arr()) out.arr()->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
         return out;
     }
     // Signature-, object- and Numeric-matcher smartmatch, shared by every caller
@@ -21340,6 +21360,11 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         if (i < op.size() && tctx().cur->find("&infix:<" + op.substr(i) + ">"))
             return (i % 2) ? applyBinOp(op.substr(i), r, l) : applyBinOp(op.substr(i), l, r);
     }
+    // an object or enum operand: a user `multi infix:<op>`, then a .Numeric
+    // bridge, as evalBinary gives them (`[+]`, `Z+`, `X+`, `R+` reach here)
+    if (l.t == VT::Object || r.t == VT::Object ||
+        (boundInfixPossible(op) && (!l.enumType.empty() || !r.enumType.empty())))
+        if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
     // see isStringCmpOp: an object compares by its own `method Str`
     if ((l.t == VT::Object || r.t == VT::Object || isPlatformHash(l) || isPlatformHash(r)) && isStringCmpOp(op))
         return applyBinOp(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
@@ -21442,12 +21467,6 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
         if (Value* f = tctx().cur->find("&infix:<" + op + ">")) return callCallable(*f, ValueList{l, r});
         throw;
     }
-}
-static bool isNumOp(const std::string& op) {
-    static const std::set<std::string> ops = {
-        "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
-        "<", "<=", ">", ">=", "==", "!=", "<=>", "cmp", "before", "after"};
-    return ops.count(op) > 0;
 }
 
 // --- fast-path shape tests for evalBinary/evalIndex ------------------------
@@ -21741,12 +21760,12 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
 // Str`; everything else is applyArith.
 bool Interpreter::chainLink(const std::string& op, const Value& prev, const Value& next) {
     Value pc = prev, nc = next;
-    if ((pc.t == VT::Object || nc.t == VT::Object) && isNumOp(op)) {
-        pc = bridgeReal(*this, pc); nc = bridgeReal(*this, nc);
-    }
-    else if ((pc.t == VT::Object || nc.t == VT::Object) && isStringCmpOp(op)) {
-        if (pc.t == VT::Object) pc = Value::str(strOf(pc));
-        if (nc.t == VT::Object) nc = Value::str(strOf(nc));
+    if (pc.t == VT::Object || nc.t == VT::Object) {
+        if (Value res; bridgedNumericInfix(*this, op, pc, nc, res)) return res.truthy();
+        if (isStringCmpOp(op)) {
+            if (pc.t == VT::Object) pc = Value::str(strOf(pc));
+            if (nc.t == VT::Object) nc = Value::str(strOf(nc));
+        }
     }
     return applyArith(op, pc, nc).truthy();
 }
@@ -22941,14 +22960,9 @@ Value Interpreter::evalBinary(Binary* b) {
                     if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
                 }
         // numeric operators on a .Bridge/.Numeric object work through the bridge
-        if ((l.t == VT::Object || r.t == VT::Object) && isNumOp(op)) {
-            Value l2 = bridgeReal(*this, l), r2 = bridgeReal(*this, r);
-            if (l2.t != VT::Object && r2.t != VT::Object) {
-                Value res = applyArith(op, l2, r2);
-                tagTemporal(op, l2, r2, res);
-                return res;
-            }
-        }
+        // (`cmp` is not one: valueCmp orders an object as Rakudo does)
+        if (l.t == VT::Object || r.t == VT::Object)
+            if (Value res; bridgedNumericInfix(*this, op, l, r, res)) return res;
         // hyper metaop `>>op<<` — element-wise, resolving a user inner operator
         if (op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
             (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0)) {

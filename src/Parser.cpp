@@ -25,6 +25,8 @@ thread_local bool g_rxReservedHash = false;   // set by checkNullRegex (ParserRe
 
 namespace rakupp {
 
+bool isCoreEnumMemberName(const std::string& n);   // Interpreter.cpp: `Less`, `Order::More`, `SIGINT`, …
+
 // Does a pattern call `<sym>` — outside its quoted literals, where `"<sym>"`
 // is only text? Inside a code block a `<sym>` straight after a term is a
 // SUBSCRIPT: `{ $<item><sym> }` reads a capture's `sym` (issue #139). One in
@@ -9978,7 +9980,12 @@ ExprPtr Parser::parsePrimary() {
                 std::string full = name + advance().text;
                 auto nt = std::make_unique<NameTerm>(full); nt->noAutoQuote = t.flag; return nt;
             }
-            if (sigilless_.count(name)) { auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = t.flag; return nt; }
+            // …and so is a CORE enum member (`Less`, `Order::More`, `SIGINT`) that
+            // no `sub` of the name shadows: `Less R+ More` reverses a `+`, where the
+            // listop reading called `Less` with `R + More`
+            if (sigilless_.count(name) || (isCoreEnumMemberName(name) && !declaredSubNames_.count(name))) {
+                auto nt = std::make_unique<NameTerm>(name); nt->noAutoQuote = t.flag; return nt;
+            }
             // `int 3.14` — a native TYPE name is no listop: two terms in a row
             {
                 static const std::set<std::string> kNative = {
@@ -10059,9 +10066,12 @@ ExprPtr Parser::parsePrimary() {
                 if (open > 0) listopOk = false;
             }
             // A TYPE name is no listop: `Int ~ "x"` and even `Int ~"x"` are the
-            // infix on the type object (Rakudo), not the coercion `Int(~"x")`
+            // infix on the type object (Rakudo), not the coercion `Int(~"x")` —
+            // nor before a SPACED `<`, whatever closes it: `Int < 2, 3 > 2` is two
+            // comparisons, not `Int(<2, 3>) 2` (a tight `Int<…>` never gets here)
             if (listopOk && cur().kind == Tok::Op &&
-                (cur().text == "~" || cur().text == "+" || cur().text == "-") &&
+                (cur().text == "~" || cur().text == "+" || cur().text == "-" ||
+                 (cur().text == "<" && cur().spaceBefore)) &&
                 (isKnownTypeName(name) || declClassDecls_.count(name)))
                 listopOk = false;
             // `foo < 1` (space after `<`) is infix less-than, not the word-list `foo(< 1 >)` —
@@ -13908,7 +13918,11 @@ StmtPtr Parser::parseEnum() {
     // `LO -1`, `LO ~ "x"` and `north <= $v` called a routine nobody declared.
     // Rakudo reads a member as a term even when it shadows one: after
     // `enum Mode <print write>`, `print "x"` is two terms in a row there.
-    auto member = [&](const std::string& m) { declTypeNames_.insert(m); sigilless_.insert(m); };
+    // (the qualified `E::a` is a term as well: `E::a R+ b`)
+    auto member = [&](const std::string& m) {
+        declTypeNames_.insert(m); sigilless_.insert(m);
+        if (!ed->name.empty()) sigilless_.insert(ed->name + "::" + m);
+    };
     if (ed->values && ed->values->kind == NK::ArrayLit) {
         for (auto& it : static_cast<ArrayLit*>(ed->values.get())->items) {
             if (it->kind == NK::StrLit)

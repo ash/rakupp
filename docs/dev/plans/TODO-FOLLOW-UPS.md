@@ -35,21 +35,6 @@ moves to [TODO.md](TODO.md).
   FatRoast's S12 divergence. Test `.` `!` `*` `^` `:` with Cyrillic,
   Latin-1, CJK and astral names.
 
-- [ ] **`<` after a capitalized bare name, spaced as an infix, opens an angle
-  subscript** (found 2026-10-20 writing
-  t/regression/order-enum-term-cache.raku, which had to parenthesize around
-  it):
-
-  ```raku
-  say (Less < More, More > Same);   # Two terms in a row, Rakudo (True True)
-  say (Int < 2, 3 > 2);             # Two terms in a row, Rakudo two comparisons
-  ```
-
-  With whitespace before it, `<` is infix in Rakudo; `Foo<a b>` (no space)
-  is the postcircumfix. Find the matching-`>` lookahead for uppercase names
-  in src/Parser.cpp. Keep `Foo<bar>`, `%h<a b>`, `Array[Int]` and the `<…>`
-  term working.
-
 - [ ] **A plain `constant` leaks out of its block and out of an EVAL** (found
   2026-10-20 while caching the bare `Less` term, b35718ba; the leak predates
   that cache):

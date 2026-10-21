@@ -6,6 +6,39 @@
 namespace rakupp {
 
 void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // InterpreterOperators.cpp
+
+// How many positionals a `sort` / `min` / `max` callable takes: two or more is
+// a comparator, fewer a key mapper. An operator (`&infix:<cmp>`, `&[<=>]`) is
+// two, as Rakudo's infix protos `($, $, *%)` are, also when it is a multi
+// dispatcher some scope extended — its own signature says nothing then.
+static size_t byArity(const Callable* c) {
+    if (c->ci().params && !c->ci().params->empty()) return c->ci().params->size();
+    const std::string& nm = c->ci().name;
+    if (nm.size() > 8 && nm.compare(0, 7, "infix:<") == 0 && nm.back() == '>') return 2;
+    return c->ci().placeholders.empty() ? (size_t)c->ci().whateverArity : c->placeholderPos();
+}
+// The built-in `&infix:<<=>>` / `<cmp>` / `<leg>` handed to `sort` as itself,
+// which no user candidate extended: sort's operator lanes (cmpOp 1/2/3) answer
+// as it would. 0 for anything else.
+static int builtinCmpOp(const Callable* c) {
+    if (!c || !c->ci().builtin || c->ci().isMultiDispatcher) return 0;
+    const std::string& nm = c->ci().name;
+    return nm == "infix:<<=>>" ? 1 : nm == "infix:<cmp>" ? 2 : nm == "infix:<leg>" ? 3 : 0;
+}
+// Every item a plain Str: `cmp`, `leg` and valueCmp all answer a byte compare
+// for two of them (UTF-8 bytes order as code points), so sort that directly —
+// valueCmp makes two std::string copies per comparison to get there. False
+// leaves `order` untouched. `desc`: largest first.
+static bool sortPlainStrs(const ValueList& items, std::vector<size_t>& order, bool desc) {
+    for (auto& v : items)
+        if (v.t != VT::Str || !v.hashKind.empty() || !v.enumName.empty()) return false;
+    std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+        const int c = items[x].s.str().compare(items[y].s.str());
+        return desc ? c > 0 : c < 0;
+    });
+    return true;
+}
 
 // A `next`/`last` PAYLOAD (6.e) joins the loop's results as a value — a Slip
 // as its elements (`next slip($_, -$_)`), the Slip TYPE as itself.
@@ -2855,6 +2888,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value acc = Value::integer(0);
             for (auto& v : items) {
                 if (v.t == VT::Any || v.t == VT::Nil) warnUninitNum(v);   // 0, with Rakudo's warning
+                // an object adds its .Bridge / .Numeric (CORE's `+`, never a user multi)
+                if (v.t == VT::Object)
+                    if (Value b; bridgedNumericInfix(*this, "+", acc, v, b)) { acc = b; continue; }
                 acc = applyArith("+", acc, v);
             }
             return acc;
@@ -3435,12 +3471,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.t == VT::Pair && a.s == "by" && a.pairVal()) mapper = *a.pairVal();
             // a TWO-parameter block is a comparator, as for min/max
             bool comparator = false;
-            if (mapper.t == VT::Code && mapper.code()) {
-                auto* cc = mapper.code();
-                size_t ar = cc->ci().params && !cc->ci().params->empty() ? cc->ci().params->size()
-                          : (cc->ci().placeholders.empty() ? (size_t)cc->ci().whateverArity : cc->placeholderPos());
-                comparator = ar >= 2;
-            }
+            if (mapper.t == VT::Code && mapper.code())
+                comparator = byArity(mapper.code()) >= 2;
             auto cmp = [&](const Value& a, const Value& ak, const Value& b, const Value& bk) {
                 if (!comparator) return valueCmp(ak, bk);
                 long long o = callCallable(mapper, ValueList{a, b}).toInt();
@@ -3531,12 +3563,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // a TWO-parameter block is a COMPARATOR (`.min: { $^a <=> $^b }`),
             // not a key mapper: it orders pairs of elements, as `sort`'s does
             bool comparator = false;
-            if (mapper.t == VT::Code && mapper.code()) {
-                auto* cc = mapper.code();
-                size_t ar = cc->ci().params && !cc->ci().params->empty() ? cc->ci().params->size()
-                          : (cc->ci().placeholders.empty() ? (size_t)cc->ci().whateverArity : cc->placeholderPos());
-                comparator = ar >= 2;
-            }
+            if (mapper.t == VT::Code && mapper.code())
+                comparator = byArity(mapper.code()) >= 2;
             Value best, bestKey; bool started = false;
             std::vector<size_t> at;
             for (size_t i = 0; i < items.size(); i++) {
@@ -4130,9 +4158,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (size_t i = 0; i < order.size(); i++) order[i] = i;
             if (!args.empty() && args[0].t == VT::Code) {
                 Value blk = args[0];
-                size_t arity = blk.code()->ci().params && !blk.code()->ci().params->empty()
-                    ? blk.code()->ci().params->size()
-                    : (blk.code()->ci().placeholders.empty() ? (size_t)blk.code()->ci().whateverArity : blk.code()->placeholderPos());
+                size_t arity = byArity(blk.code());
                 // a 0-arity comparator ((1..10).sort(&rand)) has no candidate
                 if (arity == 0 && blk.code()->ci().params && blk.code()->ci().hadSig)
                     throw RakuError{Value::typeObj("X::TypeCheck::Argument"),
@@ -4205,22 +4231,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             cmpSwapped = sh < 0;
                         }
                     }
-                    // every item a plain Str, under `cmp` or `leg`: what applyArith
-                    // answers for two plain Strs is a byte compare (UTF-8 bytes
-                    // order as code points), so it is made directly
-                    auto plainStrs = [&]() {
-                        for (auto& v : items)
-                            if (v.t != VT::Str || !v.hashKind.empty() || !v.enumName.empty()) return false;
-                        return true;
-                    };
+                    if (!cmpOp) cmpOp = builtinCmpOp(blk.code());   // `&infix:<cmp>`, `&[<=>]`
                     if (cmpOp && cmpOp != 3 && sortByNativeInt(items, order, cmpSwapped)) {
                         // (ordered as the operator orders them)
                     }
-                    else if ((cmpOp == 2 || cmpOp == 3) && plainStrs()) {
-                        std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
-                            const int c = items[x].s.str().compare(items[y].s.str());
-                            return cmpSwapped ? c > 0 : c < 0;
-                        });
+                    else if ((cmpOp == 2 || cmpOp == 3) && sortPlainStrs(items, order, cmpSwapped)) {
+                        // (`cmp` and `leg` agree on two plain Strs)
                     }
                     else if (cmpOp) {
                         static const std::string kOps[] = {"", "<=>", "cmp", "leg"};
@@ -4250,7 +4266,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             return valueCmp(keys[x], keys[y]) < 0;
                         });
                 }
-            } else if (!sortByNativeInt(items, order)) {
+            } else if (!sortByNativeInt(items, order) && !sortPlainStrs(items, order, false)) {
                 std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
                     const Value& xa = items[x]; const Value& yb = items[y];
                     bool nx = xa.t == VT::Num && std::isnan(xa.n), ny = yb.t == VT::Num && std::isnan(yb.n);

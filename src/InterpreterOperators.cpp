@@ -2902,6 +2902,79 @@ Value Interpreter::applyUniOp(const std::string& name, const char* builtin, cons
     }
 }
 
+// A numeric operator over an object that has a .Bridge or .Numeric (Rakudo's
+// `infix:<+>(\a, \b) { a.Numeric + b.Numeric }`) answers through it: true with
+// `out` set, false when the operator is not one of these or an operand still
+// is an object. `cmp`, `before` and `after` are not among them: Rakudo
+// compares an object that is not a Real by its string, not its number.
+bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out) {
+    if (l.t != VT::Object && r.t != VT::Object) return false;
+    bool numOp;
+    switch (op.size()) {
+        case 1: numOp = op[0] == '+' || op[0] == '-' || op[0] == '*' || op[0] == '/' ||
+                        op[0] == '%' || op[0] == '<' || op[0] == '>'; break;
+        case 2: numOp = opEq(op, "**") || opEq(op, "%%") || opEq(op, "==") || opEq(op, "!=") ||
+                        opEq(op, "<=") || opEq(op, ">="); break;
+        case 3: numOp = opEq(op, "div") || opEq(op, "mod") || opEq(op, "gcd") || opEq(op, "lcm") ||
+                        opEq(op, "<=>"); break;
+        default: numOp = false;
+    }
+    if (!numOp) return false;
+    Value l2 = bridgeReal(I, l), r2 = bridgeReal(I, r);
+    if (l2.t == VT::Object || r2.t == VT::Object) return false;
+    out = applyArith(op, l2, r2);
+    tagTemporal(op, l2, r2, out);
+    return true;
+}
+
+// An object or enum operand that reaches applyBinOp — a step of `[+]`, `Z+`,
+// `X+`, `R+` — meets what evalBinary gives `V + V`: a `multi infix:<op>` some
+// scope declared, when a candidate takes the operands, and then the numeric
+// bridge above. False leaves the operands to the built-in as they are.
+bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out) {
+    if (boundInfixPossible(op) && Interpreter::tctx().cur)
+        if (Value* f = Interpreter::tctx().cur->find("&infix:<" + op + ">"))
+            try { out = I.callCallable(*f, ValueList{l, r}); return true; }
+            catch (RakuError& e) { // only "no candidate took these operands" falls back
+                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
+            }
+    return bridgedNumericInfix(I, op, l, r, out);
+}
+
+// valueCmp's `cmp` over an object operand (g_objCmp, Value.h) — what `sort`,
+// `min`, `max`, `before` and `$a cmp $b` order objects by. Rakudo's `cmp` is
+// `a.Stringy cmp b.Stringy` unless both sides are Reals; an object's default
+// Str is `Name<address>`, which made the order change from run to run.
+static bool objectCmpHook(const Value& a, const Value& b, int& out) {
+    Interpreter* I = g_revInterp;
+    if (!I) return false;
+    if (a.t == VT::Object && b.t == VT::Object && a.obj() == b.obj()) { out = 0; return true; }
+    // a Real's number: a built-in one, or an object that does Real or boxes one
+    // (`is Int`), through its .Bridge / .Numeric when it has them
+    auto realOf = [I](const Value& v, Value& n) {
+        if (v.t != VT::Object) { n = v; return v.isNumeric(); }
+        if (!v.obj() || !v.obj()->cls) return false;
+        const bool boxed = v.obj()->hasBoxed && v.obj()->boxed().isNumeric();
+        if (!boxed && !I->typeOrSubsetMatches(v, "Real")) return false;
+        n = bridgeReal(*I, v);
+        if (n.t == VT::Object && boxed) n = v.obj()->boxed();
+        return n.isNumeric();
+    };
+    if (Value x, y; realOf(a, x) && realOf(b, y)) { out = valueCmp(x, y); return true; }
+    auto stringy = [I](const Value& v) {
+        if (v.t == VT::Object && v.obj() && v.obj()->cls)
+            if (Value* m = v.obj()->cls->findMethod("Stringy")) {
+                ValueList none;
+                return Value::str(I->strOf(I->invokeMethod(*m, v, none)));
+            }
+        return Value::str(I->strOf(v));
+    };
+    out = valueCmp(stringy(a), stringy(b));
+    return true;
+}
+static const bool g_objCmpInstalled = ((g_objCmp = &objectCmpHook), true);
+
 // [op] reduce over an item list — shared by the [op] unary, prefix:<[op]>(…)
 // calls, and &prefix:<[op]> references. `op` may carry a leading '\' (scan form).
 Value Interpreter::applyReduce(std::string op, ValueList& items) {

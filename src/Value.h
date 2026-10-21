@@ -1825,6 +1825,12 @@ inline bool isStrEndsRange(const Value& v);
 // interpreter installs this. False: no such user method, render the default.
 using ObjMethodStrFn = bool (*)(const Value&, const char* method, std::string& out);
 extern ObjMethodStrFn g_objMethodStr;
+// `cmp` with an OBJECT operand (valueCmp), as Rakudo orders it: one object is
+// Same as itself, two Reals (`does Real`, an `is Int`) compare as numbers, and
+// anything else by its .Stringy, which runs a user `method Str`. Installed by
+// the interpreter (InterpreterOperators.cpp); false leaves the default order.
+using ObjCmpFn = bool (*)(const Value& a, const Value& b, int& out);
+extern ObjCmpFn g_objCmp;
 // A ROLE PUN's class name is an internal key (`Foo\x01pun3`), because two
 // `Foo[Int]` written apart have to be one type and a key is what the registry
 // indexes. What a user should SEE is `Foo[Int]`, and only the class registry —

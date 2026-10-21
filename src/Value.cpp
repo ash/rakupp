@@ -430,6 +430,7 @@ CodeInfo kNoCodeInfo;   // …and what one with no code of its own reads
 
 RakuReprFn g_rakuRepr = nullptr; // installed by Builtins.cpp (see Value.h)
 ObjMethodStrFn g_objMethodStr = nullptr; // installed by InterpreterCalls.cpp (see Value.h)
+ObjCmpFn g_objCmp = nullptr;             // installed by InterpreterOperators.cpp (see Value.h)
 TypeDispNameFn g_typeDispName = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
 ApplyArithFn g_applyArith = nullptr; // installed by Interpreter.cpp (see Value.h)
 ForceLazyFn g_forceLazy = nullptr; // installed by InterpreterBinding.cpp (see Value.h)
@@ -2188,6 +2189,9 @@ static int valueCmpImpl(const Value& a, const Value& b) {
         }
         return sa.size() < sb.size() ? -1 : sa.size() > sb.size() ? 1 : 0;
     }
+    // an OBJECT orders by what it says it is, not by its address (g_objCmp)
+    if ((a.t == VT::Object || b.t == VT::Object) && g_objCmp)
+        if (int c; g_objCmp(a, b, c)) return c;
     std::string x = a.toStr(), y = b.toStr();
     return x < y ? -1 : x > y ? 1 : 0;
 }
