@@ -191,18 +191,24 @@ static const long long kAll = 4000000000000000000LL; // a `*` / Inf rotor size: 
 // range for every string search that takes one — index, rindex, indices,
 // contains, substr-eq — and the answer is a RETURNED Failure naming the method,
 // the value and the range (Str sheet ST-27; roast asserts it with fails-like).
-// A position merely past the END of the string is not an error.
-Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
-                    const std::string& subject) {
-    const std::string range = "0.." + std::to_string(graphemeCount(subject));
-    const std::string msg = "start argument to " + what + " out of range. Is: " +
-                            got.gist() + "; should be in " + range;
+// A position merely past the END of the string is not an error. The exception
+// is the one Rakudo's Str!fail-oor builds: `what` is "Position in calling
+// 'index'", the range a Str, no comment, and the message reads "… out of
+// range. Is: -1, should be in 0..3".
+Value outOfRangePos(Interpreter& I, const std::string& method, const Value& got, long long chars) {
+    const std::string what = "Position in calling '" + method + "'";
+    const std::string range = "0.." + std::to_string(chars);
+    const std::string msg = what + " out of range. Is: " + got.gist() + ", should be in " + range;
     Value f = rakuppNewFailure();
     (*f.hash())["exception"] = I.makeTypedEx("X::OutOfRange",
-        {{"got", got}, {"what", Value::str("start argument to " + what)},
-         {"range", Value::str(range)}}, msg);
+        {{"got", got}, {"what", Value::str(what)}, {"range", Value::str(range)},
+         {"comment", Value::any()}}, msg);
     (*f.hash())["message"] = Value::str(msg);
     return f;
+}
+Value outOfRangePos(Interpreter& I, const std::string& method, const Value& got,
+                    const std::string& subject) {
+    return outOfRangePos(I, method, got, (long long)graphemeCount(subject));
 }
 
 static void parseRotorSpecs(const ValueList& args, bool isBatch,
@@ -726,9 +732,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // An EMPTY needle is found at EVERY position, the one past the end
         // included: `"foo".indices("")` is (0, 1, 2, 3) (roast indices.t).
         if (needle.empty()) {
-            if (from <= s.size())
-                for (size_t g = charPos(from); g <= graphemeCount(s); g++)
-                    out.arr()->push_back(Value::integer((long long)g));
+            // (from the position asked for: past the end there is nothing, Rakudo's `()`)
+            for (size_t g = (size_t)fromChar, n = graphemeCount(s); g <= n; g++)
+                out.arr()->push_back(Value::integer((long long)g));
             return out;
         }
         // a match must begin and end on grapheme boundaries, as for .index: the

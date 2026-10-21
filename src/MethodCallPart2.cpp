@@ -9038,69 +9038,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             inet_ntop(AF_INET, &sa.sin_addr, buf, sizeof(buf));
             return Value::str(buf);
         }
-        if (m == "recv" || m == "read") {
-            size_t want = 65536;
-            if (!args.empty() && args[0].isNumeric()) {
-                // `Inf` is a real argument here, not a mistake: it means "whatever
-                // has arrived". OpenSSL's bio-read calls `$.net-read.()`, whose
-                // closure defaults to `-> $n = Inf { $s.recv($n, :bin) }`, so the
-                // very first read of an SSL handshake asked for infinity — and
-                // sizing the buffer from it threw std::bad_alloc before the socket
-                // was touched. Anything absurd is capped for the same reason; recv
-                // is "up to" that many bytes, so a smaller buffer is still correct.
-                static const size_t kCap = 64u * 1024 * 1024;
-                double d = args[0].toNum();
-                if (std::isfinite(d) && d >= 0) want = (size_t)std::min<double>(d, (double)kCap);
-            }
-            // `:bin` asks for BYTES, and `.read` is always binary — both must answer a
-            // Buf, not a Str. Returning a Str made `Buf.new.append($chunk)` append
-            // the string instead: it compiles, runs, and simply never matches, which
-            // is how an HTTP header loop can spin forever with no error anywhere.
-            bool bin = (m == "read");
-            for (auto& a : args)
-                if (a.t == VT::Pair && a.s == "bin") bin = !a.pairVal() || a.pairVal()->truthy();
-            std::vector<char> buf(want ? want : 1);
-            size_t got = 0;
-            bool p = gilPark();
-            // `.read($n)` answers EXACTLY $n bytes, blocking until it has them or
-            // the peer closes; `.recv($n)` answers at most $n and returns what has
-            // arrived. One recv() served both, so a reader that asked for a fixed
-            // number got however much happened to be in the first packet — which is
-            // silent until a message straddles a packet boundary, and then a chunked
-            // HTTP body fails to parse its own chunk header.
-            while (got < buf.size()) {
-                ssize_t n = ::recv(fd, buf.data() + got, buf.size() - got, 0);
-                if (n <= 0) { if (n < 0 && got == 0) { gilUnpark(p); return Value::nil(); } break; }
-                got += (size_t)n;
-                if (m != "read") break;   // recv is "up to", not "exactly"
-            }
-            // TEXT: a character the byte count cut in two is completed from the
-            // stream — `.recv(1)` of "ꀁ" is that one character, not its first byte
-            if (!bin && got > 0) {
-                size_t k = got, lead = got;
-                while (k > 0 && (k == got || ((unsigned char)buf[k] & 0xC0) == 0x80)) {
-                    k--;
-                    if (((unsigned char)buf[k] & 0xC0) != 0x80) { lead = k; break; }
-                }
-                if (lead < got) {
-                    unsigned char c0 = (unsigned char)buf[lead];
-                    size_t need = c0 >= 0xF0 ? 4 : c0 >= 0xE0 ? 3 : c0 >= 0xC0 ? 2 : 1;
-                    size_t have = got - lead;
-                    if (have < need) {
-                        buf.resize(got + (need - have));
-                        while (have < need) {
-                            ssize_t n = ::recv(fd, buf.data() + got, need - have, 0);
-                            if (n <= 0) break;
-                            got += (size_t)n; have += (size_t)n;
-                        }
-                    }
-                }
-            }
-            gilUnpark(p);
-            Value r = Value::str(std::string(buf.data(), got)); // got==0 => "" (peer closed)
-            if (bin) { r.hashKind = "Buf"; identify(r); }
-            return r;
-        }
+        // characters for text, bytes for `.read` and `:bin`, one buffer with `.get`
+        if (m == "recv" || m == "read") return inetSocketRead(*this, inv, m, args);
         // `.get` — one line, buffered: bytes are pulled as they arrive, and the
         // carry-over between calls lives in the handle ("linebuf"). A socket's
         // nl-in is ["\n", "\r\n"], so the terminator is '\n' with an optional
@@ -9108,9 +9047,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // nothing buffered. LWP::Simple's local test servers read the request
         // this way — `Nil while $client.get.chars` — and without a socket .get
         // the call fell through to the FILE handle's reader and blocked both
-        // ends of the conversation. (A later .recv does not see linebuf: the
-        // suites read lines on one side of a socket and bytes on the other,
-        // never both on one side.)
+        // ends of the conversation. (`.recv` and `.read` read on from the
+        // same buffer: inetSocketRead.)
         if (m == "get" || m == "lines") {
             Value& lbv = (*inv.hash())["linebuf"];
             if (lbv.t != VT::Str) lbv = Value::str("");
@@ -9140,7 +9078,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (best != std::string::npos) {
                             std::string line = lb.substr(0, chompIt ? best : best + blen);
                             lb.erase(0, best + blen);
-                            return Value::str(line);
+                            return Value::str(nfcDecoded(line));
                         }
                     }
                     size_t nl = seps.empty() ? lb.find('\n') : std::string::npos;
@@ -9148,7 +9086,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         std::string line = lb.substr(0, nl);
                         lb.erase(0, nl + 1);
                         if (!line.empty() && line.back() == '\r') line.pop_back();
-                        return Value::str(line);
+                        return Value::str(nfcDecoded(line));
                     }
                     char buf[8192];
                     bool p = gilPark();
@@ -9160,7 +9098,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         std::string line = std::move(lb);
                         lb.clear();
                         if (!line.empty() && line.back() == '\r') line.pop_back();
-                        return Value::str(line);
+                        return Value::str(nfcDecoded(line));
                     }
                     lb.append(buf, (size_t)n);
                 }

@@ -8086,6 +8086,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // (unless it is an encoded string's blob, handled by .Str below)
     if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
         if (m == "Numeric" || m == "Int") return Value::integer(inv.blobElems());
+        refuseStrOnlyOnBlob(*this, inv, m);   // `$buf.uc`: no such method
         if (m == "chars" && inv.enumName.empty())
             throwTyped("X::Buf::AsStr", {{"method", "chars"}},
                        "Cannot use a Buf as a string, but you called the chars method on it");

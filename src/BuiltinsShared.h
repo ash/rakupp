@@ -214,6 +214,8 @@ size_t danglingNewlinePrefix(const std::string& s);
 
 std::shared_ptr<Value> baggyKey(const Value& v);
 size_t graphemeToByte(const std::string& s, long long chars);   // byte offset of grapheme `chars`
+void refuseStrOnlyOnBlob(Interpreter& I, const Value& inv, const std::string& m); // `$buf.uc` dies (MethodCallPart3.cpp)
+Value inetSocketRead(Interpreter& I, const Value& sock, const std::string& m, const ValueList& args); // INET .recv/.read (BuiltinsSupply.cpp)
 size_t codeArity(const Value& code);
 std::string cpToUtf8(uint32_t cp);
 std::string joinValues(const ValueList& items, const std::string& sep);
@@ -244,8 +246,9 @@ inline void fillArrayHoles(const Value& arr, ValueList& items) {
 }
 // A negative (or int64-overflowing) START POSITION for a string search is out of
 // range: a returned X::OutOfRange Failure naming the method (Str sheet ST-27).
-Value outOfRangePos(Interpreter& I, const std::string& what, const Value& got,
+Value outOfRangePos(Interpreter& I, const std::string& method, const Value& got,
                     const std::string& subject);
+Value outOfRangePos(Interpreter& I, const std::string& method, const Value& got, long long chars);
 std::vector<uint32_t> utf8cp(const std::string& s);
 long long strDistance(const std::string& before, const std::string& after);
 // Leading ASCII bytes of `s`, capped at `limit`; over such a run a codepoint
