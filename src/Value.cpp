@@ -2001,9 +2001,38 @@ bool objectStructEqv(const Value& a, const Value& b,
 // The small-Rat lane, applyArith's and the exact tower's: `+ - * /` (c) over
 // Rats, Ints and Bools whose parts are all under 2**62, exactly in __int128
 // (ratOp128) — orders of magnitude cheaper than the BigInt arms, and what
-// they would answer, a denominator past uint64 spilling to Num as theirs
-// does. False for a FatRat, a zero denominator or divisor, and a reduced
-// numerator wider than 64 bits.
+// they would answer, a denominator past uint64 spilling to the same Num as
+// theirs does. False for a FatRat, a zero denominator or divisor, and a
+// reduced numerator wider than 64 bits.
+// Past the uint64 denominator cap: n/d as the nearest double, ties to even —
+// rounded ONCE, as toNum rounds the BigInt arms' answer (ratioToDouble).
+// `(double)n / (double)d` rounded three times and put one spill in four an
+// ulp off (ledger O26). Binary long division to 55 bits, then the remainder
+// decides: |n| < 2^126 and 2^64 < d < 2^124 here, so every shift stays inside
+// 128 bits and the result is a normal double. Checked against Python's
+// float(Fraction(n, d)) on a million pairs, ~33,000 of them exact ties. Out of
+// line, so the lane's frame is what an in-range answer pays for.
+[[gnu::noinline]] static double smallRatSpill(__int128 n, __int128 d) {
+    auto bits = [](unsigned __int128 x) {
+        const unsigned long long hi = (unsigned long long)(x >> 64), lo = (unsigned long long)x;
+        return hi ? 128 - rakupp::clzll(hi) : lo ? 64 - rakupp::clzll(lo) : 0;
+    };
+    unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d;
+    int e = bits(a) - bits(b);
+    if (e >= 0) b <<= e; else a <<= -e;   // one bit length: a/b in (1/2, 2)
+    if (a < b) { a <<= 1; e--; }          // a/b in [1, 2)
+    unsigned long long q = 0;             // a/b * 2^54, 55 bits
+    for (int i = 0; i < 55; i++) {
+        q <<= 1;
+        if (a >= b) { a -= b; q |= 1; }
+        a <<= 1;
+    }
+    unsigned long long m = q >> 2;        // 53 bits, then two below them and a sticky remainder
+    const unsigned r = (unsigned)(q & 3);
+    if (r > 2 || (r == 2 && (a != 0 || (m & 1)))) m++;
+    const double v = std::ldexp((double)m, e - 52);
+    return n < 0 ? -v : v;
+}
 [[gnu::noinline]] bool smallRatLane(char c, const Value& l, const Value& r, Value& out) {
     auto parts = [](const Value& v, long long& n, long long& d) -> bool {
         const long long LIM = 1LL << 62;
@@ -2021,10 +2050,7 @@ bool objectStructEqv(const Value& a, const Value& b,
     long long n1, d1, n2, d2;
     __int128 n, d;
     if (!parts(l, n1, d1) || !parts(r, n2, d2) || !rakupp::ratOp128(c, n1, d1, n2, d2, n, d)) return false;
-    if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) {   // the uint64 denominator cap
-        out = Value::number((double)n / (double)d);
-        return true;
-    }
+    if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) { out = Value::number(smallRatSpill(n, d)); return true; }
     if (n < (__int128)LLONG_MIN || n > (__int128)LLONG_MAX || d > (__int128)LLONG_MAX) return false;
     out.t = VT::Rat;   // already reduced with d > 0: no second gcd
     out.ratNM() = std::make_shared<BigInt>((long long)n);
