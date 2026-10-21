@@ -143,7 +143,7 @@ the merge (2026-10-21) the stdin branch kept its O26–O32, which its code
 comments cite, and the others moved: the numeric branch's O26 (the Rat spill)
 is O33 and its O29 (Bool kernel variables) O34; the getc branch's O26 (a
 binary handle refusing text reads) is O35 and its open O27 (strscan's two
-instruction modes) O36. New items start at O37.
+instruction modes) O36. New items start at O37 (the first, a compiled join, was found by the merge's own gate).
 
 Ranked by what a user sees: a silent wrong answer, then a crash, a divergence,
 then speed. Each names the lane that found it and reproduced it at HEAD
@@ -160,6 +160,14 @@ coordinator.
   until the stack is gone), and `×=` ignores it. Fixed 2026-10-21: the node
   carries the name it was written with
   ([unicode-operator-names-apart.raku](../../../t/regression/unicode-operator-names-apart.raku)).
+- **O37. A compiled program's `~` joins do not renormalize** (the merge's
+  `--exe` gate, 2026-10-21; the base tree, 1ac4abdb, fails the same way). In
+  t/regression/nfc-join-window.raku, which passes interpreted, a binary built
+  with `--exe` fails the "~= interpolation join [~] nqp::concat prepend
+  elements agree" checks, and one built with `--exe -O` also answers
+  `"e" ~ "\x[301]"` with 2 codes where the interpreter has 1 (an é) and fails
+  the NFC/NFD round trip. The compiled tiers' string joins do not go through
+  NfcJoin.cpp's seam renormalization.
 - **O5. `.trans` tie-breaking** (lane D): Rakudo lets the LATER of two string
   keys of one length win (`'a..z'=>'A..Z','l'=>'X'` is HEXXO), the first inside
   one pair, and the earlier of a string and a regex; ours is first-wins
