@@ -9097,7 +9097,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
             }
             gilUnpark(p);
-            Value r = Value::str(std::string(buf.data(), got)); // got==0 => "" (peer closed)
+            // got==0 => "" (peer closed); text is NFC, as Rakudo's decoder makes it
+            Value r = Value::str(bin ? std::string(buf.data(), got) : nfcDecoded(std::string(buf.data(), got)));
             if (bin) { r.hashKind = "Buf"; identify(r); }
             return r;
         }
@@ -9140,7 +9141,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (best != std::string::npos) {
                             std::string line = lb.substr(0, chompIt ? best : best + blen);
                             lb.erase(0, best + blen);
-                            return Value::str(line);
+                            return Value::str(nfcDecoded(line));
                         }
                     }
                     size_t nl = seps.empty() ? lb.find('\n') : std::string::npos;
@@ -9148,7 +9149,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         std::string line = lb.substr(0, nl);
                         lb.erase(0, nl + 1);
                         if (!line.empty() && line.back() == '\r') line.pop_back();
-                        return Value::str(line);
+                        return Value::str(nfcDecoded(line));
                     }
                     char buf[8192];
                     bool p = gilPark();
@@ -9160,7 +9161,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         std::string line = std::move(lb);
                         lb.clear();
                         if (!line.empty() && line.back() == '\r') line.pop_back();
-                        return Value::str(line);
+                        return Value::str(nfcDecoded(line));
                     }
                     lb.append(buf, (size_t)n);
                 }

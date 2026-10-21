@@ -265,6 +265,151 @@ static void foldCrLf(std::string& text) {
     text.swap(out);
 }
 
+// A handle's `.getc` and `.readchars` hand out characters, which are graphemes:
+// over "q\x[301]x" `.getc` is "q\x[301]", and `.readchars(2)` never starts
+// with a stray mark (Rakudo's decoder gives out whole clusters). The cursor
+// holds the decoded text a cluster to an element, a CR LF as it came, so the
+// bytes behind the cursor can still be counted (`.encoding` switched midway);
+// it reads as "\n", the separator every text decoder translates. utf8-c8
+// keeps its codepoints apart, as Rakudo's does (a CR LF there is two reads).
+static Value charCursor(const std::string& text, bool c8) {
+    Value cs = Value::array();
+    auto& v = *cs.arr();
+    if (c8) {
+        for (auto cp : utf8cp(text)) v.push_back(Value::str(cpToUtf8(cp)));
+        return cs;
+    }
+    for (size_t i = 0, n = text.size(); i < n; ) {
+        unsigned char b = (unsigned char)text[i];   // ASCII before ASCII is a cluster of its own
+        size_t e = b < 0x80 && b != '\r' && (i + 1 == n || (unsigned char)text[i + 1] < 0x80)
+                 ? i + 1 : uniClusterEndUtf8(text, i, n);
+        v.push_back(Value::str(text.substr(i, e - i)));
+        i = e;
+    }
+    return cs;
+}
+static void appendCursorChar(std::string& out, const Value& c) {
+    std::string s = c.toStr();
+    out += s == "\r\n" ? std::string("\n") : s;
+}
+
+// One codepoint's bytes off standard input onto `out`; false at its end.
+static bool stdinCodepoint(std::string& out) {
+    int c = std::cin.get();
+    if (c == EOF) return false;
+    out += (char)(unsigned char)c;
+    unsigned char lead = (unsigned char)c;
+    int extra = lead >= 0xf0 ? 3 : lead >= 0xe0 ? 2 : lead >= 0xc0 ? 1 : 0;
+    for (int k = 0; k < extra; k++) {
+        int cc = std::cin.get();
+        if (cc == EOF) break;
+        out += (char)(unsigned char)cc;
+    }
+    return true;
+}
+// One character off standard input, "" at its end. A grapheme is not whole
+// until the character AFTER it is known: the next one may be a mark that
+// belongs to it. So this waits for it, as Rakudo's `$*IN.getc` does (sent "q",
+// then "\x[301]x" a second later, it answers "q\x[301]" once the x is there),
+// and puts back a character read ahead that starts the next grapheme. Nothing
+// joins what follows a control, so a line typed at a terminal is answered at
+// its newline; a CR waits for a possible LF, and CR LF reads as "\n". utf8-c8
+// reads a codepoint at a time.
+static std::string stdinGrapheme(bool c8) {
+    std::string g;
+    if (!stdinCodepoint(g) || c8) return g;
+    for (;;) {
+        unsigned char last = (unsigned char)g.back();
+        if ((last < 0x20 && last != '\r') || last == 0x7f) break;
+        int nx = std::cin.peek();
+        if (nx == EOF) { std::cin.clear(std::cin.rdstate() & ~std::ios::eofbit); break; }
+        size_t had = g.size();
+        if (nx < 0x80) {   // judged without taking it
+            g += (char)nx;
+            bool joins = uniClusterEndUtf8(g, 0, g.size()) > had;
+            g.resize(had);
+            if (!joins) break;
+            g += (char)std::cin.get();
+            continue;
+        }
+        stdinCodepoint(g);
+        if (uniClusterEndUtf8(g, 0, g.size()) > had) continue;
+        for (size_t k = g.size(); k > had; k--) std::cin.putback(g[k - 1]);
+        g.resize(had);
+        break;
+    }
+    if (g == "\r\n") g = "\n";
+    return g;
+}
+
+// `.getc` / `.readchars` on a handle: $*IN off the stream as it comes, any
+// other handle through the cursor above, loaded once and kept in "cps"/"cpos".
+static Value handleReadChars(Interpreter& I, const Value& inv, const std::string& m, const ValueList& args) {
+    const bool c8 = encKey(handleEnc(inv)) == "utf8c8";
+    const long long want = m == "getc" ? 1 : (args.empty() ? 65536 : args[0].toInt());
+    if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
+        // Straight off the stream: the whole point on a terminal is that the
+        // next character has not been typed yet, so there is nothing to load.
+        std::string out;
+        for (long long got = 0; got < want; got++) {
+            std::string g = stdinGrapheme(c8);
+            if (g.empty()) break;
+            out += g;
+        }
+        handleNfc(inv, out);
+        if (m == "getc") return out.empty() ? Value::nil() : Value::str(out);
+        return Value::str(out);
+    }
+    // A handle read by LINES so far hands the rest of its text to the
+    // character reader: `$fh.getc` after `$fh.get` continues where the line
+    // reader stopped. Each reader kept its own cursor, so the other started
+    // over from the top of the file (integration/advent2010-day03.t reads
+    // one character and then the rest of the line).
+    {
+        auto lit = inv.hash()->find("lines");
+        if (lit != inv.hash()->end() && lit->second.arr()) {
+            auto& ls = *lit->second.arr();
+            auto eit = inv.hash()->find("line-eols");
+            long long lp = (*inv.hash())["pos"].toInt();
+            std::string rest;
+            for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
+                rest += ls[i].toStr();
+                if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
+                    rest += (*eit->second.arr())[i].toStr();
+            }
+            (*inv.hash())["cps"] = charCursor(rest, c8);
+            (*inv.hash())["cpos"] = Value::integer(0);
+            inv.hash()->erase("lines"); inv.hash()->erase("line-eols"); inv.hash()->erase("pos");
+        }
+    }
+    if (inv.hash()->find("cps") == inv.hash()->end()) {
+        std::string path = (*inv.hash())["path"].toStr();
+        struct stat st;
+        if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+            throw RakuError{Value::typeObj("X::IO"), "Cannot read characters from a directory: " + path};
+        std::ifstream in(path, std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
+        std::string raw = ss.str();
+        auto ps = inv.hash()->find("cpskip"); // bytes already read under an EARLIER encoding
+        long long skip = ps != inv.hash()->end() ? ps->second.toInt() : 0;
+        if (skip > 0) raw = skip <= (long long)raw.size() ? raw.substr(skip) : std::string();
+        (*inv.hash())["cps"] = charCursor(I.decodeTextEnc(raw, handleEnc(inv)), c8);
+        (*inv.hash())["cpos"] = Value::integer(0);
+    }
+    long long pos = (*inv.hash())["cpos"].toInt();
+    auto& cps = *(*inv.hash())["cps"].arr();
+    if (m == "readchars") { // read up to N chars (default 65536), "" at EOF
+        std::string out;
+        for (long long got = 0; got < want && pos < (long long)cps.size(); got++, pos++) appendCursorChar(out, cps[pos]);
+        (*inv.hash())["cpos"] = Value::integer(pos);
+        return Value::str(out);
+    }
+    if (pos >= (long long)cps.size()) return Value::nil(); // getc at EOF → Nil
+    (*inv.hash())["cpos"] = Value::integer(pos + 1);
+    std::string out;
+    appendCursorChar(out, cps[pos]);
+    return Value::str(out);
+}
+
 // stat() for the IO methods that report a file's metadata. True (with `st`
 // filled) when the path is there; otherwise `out` carries the soft Failure
 // Rakudo hands back for .s/.z/.mode/.user/.group on a path that is not.
@@ -320,6 +465,34 @@ static void refuseNumericOnCode(Interpreter& I, const Value& inv, const std::str
         "abs", "sqrt", "floor", "ceiling", "round", "truncate", "sign", "exp", "log",
         "log10", "log2", "sin", "cos", "tan"};
     if (kNumOnly.count(m))
+        I.throwTypedV("X::Method::NotFound",
+                      {{"method", Value::str(m)}, {"typename", Value::str(inv.typeName())},
+                       {"private", Value::boolean(false)}},
+                      "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
+}
+
+// A Blob is not a Str: `Buf.new(1).uc` has no such method (Rakudo), where the
+// Str arms below read the bytes as text and answered "\x[1]" (and `uc($buf)`,
+// the sub being the method). These are the methods Rakudo's Str has and its
+// Blob does not; `.chars` and `.Str` die with X::Buf::AsStr on their own.
+// Called from methodCall, after a class's or a role's own methods.
+void refuseStrOnlyOnBlob(Interpreter& I, const Value& inv, const std::string& m) {
+    static const std::unordered_set<std::string> kStrOnly = {
+        "COERCE", "Complex", "Date", "DateTime", "EVAL", "Failure", "FatRat", "IO", "NFC", "NFD",
+        "NFKC", "NFKD", "Num", "Order", "Rat", "UInt", "Version", "abs", "acos", "acosec", "acosech",
+        "acosh", "acotan", "acotanh", "asec", "asech", "asin", "asinh", "atan", "atan2", "atanh",
+        "byte", "ceiling", "chomp", "chop", "chr", "cis", "comb", "conj", "contains", "cos", "cosec",
+        "cosech", "cosh", "cotan", "cotanh", "encode", "ends-with", "exp", "fc", "flip", "floor",
+        "indent", "index", "indices", "int", "int16", "int32", "int64", "int8", "is-prime",
+        "is-whitespace", "lc", "leading-whitespace", "lines", "log", "log10", "log2",
+        "naive-word-wrapper", "ord", "ords", "parse-base", "parse-names", "path", "pred", "printf",
+        "rand", "rindex", "roots", "round", "samecase", "samemark", "samespace", "sec", "sech",
+        "sign", "sin", "sinh", "sprintf", "sqrt", "starts-with", "subst", "subst-mutate", "substr",
+        "substr-eq", "substr-rw", "succ", "tan", "tanh", "tc", "tclc", "trailing-whitespace",
+        "trans", "trim", "trim-leading", "trim-trailing", "truncate", "uc", "uint", "uint16",
+        "uint32", "uint64", "uint8", "unimatch", "uniname", "uninames", "uniparse", "uniprop",
+        "uniprops", "unival", "univals", "unpolar", "wordcase", "words"};
+    if (kStrOnly.count(m))
         I.throwTypedV("X::Method::NotFound",
                       {{"method", Value::str(m)}, {"typename", Value::str(inv.typeName())},
                        {"private", Value::boolean(false)}},
@@ -3797,7 +3970,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else if (cit != inv.hash()->end() && cit->second.arr() && inv.hash()->count("cpos")) {
                     auto& cps = *cit->second.arr();
                     long long cp0 = (*inv.hash())["cpos"].toInt();
-                    for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cps.size(); i++) rest += cps[i].toStr();
+                    for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cps.size(); i++)
+                        if (sBin) rest += cps[i].toStr(); else appendCursorChar(rest, cps[i]);
                     (*inv.hash())["cpos"] = Value::integer((long long)cps.size());
                     partial = true;
                 }
@@ -3882,83 +4056,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             (*inv.hash())["slurped"] = Value::boolean(true);
             return Value::str(text);
         }
-        // .getc / .readchars: load the file's codepoints once, track a cursor in "cpos".
-        if (m == "getc" || m == "readchars") {
-            if (inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in") {
-                // Straight off the stream, one UTF-8 character at a time: the
-                // whole point on a terminal is that the next character has not
-                // been typed yet, so there is nothing to load up front.
-                long want = m == "getc" ? 1 : (args.empty() ? 65536 : args[0].toInt());
-                std::string out; long got = 0;
-                for (; got < want; got++) {
-                    int c = std::cin.get();
-                    if (c == EOF) break;
-                    std::string ch(1, (char)(unsigned char)c);
-                    unsigned char lead = (unsigned char)c;   // gather the continuations
-                    int extra = lead >= 0xf0 ? 3 : lead >= 0xe0 ? 2 : lead >= 0xc0 ? 1 : 0;
-                    for (int k = 0; k < extra; k++) {
-                        int cc = std::cin.get();
-                        if (cc == EOF) break;
-                        ch += (char)(unsigned char)cc;
-                    }
-                    out += ch;
-                }
-                handleNfc(inv, out);
-                if (m == "getc") return out.empty() ? Value::nil() : Value::str(out);
-                return Value::str(out);
-            }
-            // A handle read by LINES so far hands the rest of its text to the
-            // character reader: `$fh.getc` after `$fh.get` continues where the line
-            // reader stopped. Each reader kept its own cursor, so the other started
-            // over from the top of the file (integration/advent2010-day03.t reads
-            // one character and then the rest of the line).
-            {
-                auto lit = inv.hash()->find("lines");
-                if (lit != inv.hash()->end() && lit->second.arr()) {
-                    auto& ls = *lit->second.arr();
-                    auto eit = inv.hash()->find("line-eols");
-                    long long lp = (*inv.hash())["pos"].toInt();
-                    std::string rest;
-                    for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
-                        rest += ls[i].toStr();
-                        if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
-                            rest += (*eit->second.arr())[i].toStr();
-                    }
-                    Value cps = Value::array();
-                    for (auto cp : utf8cp(rest)) cps.arr()->push_back(Value::str(cpToUtf8(cp)));
-                    (*inv.hash())["cps"] = cps;
-                    (*inv.hash())["cpos"] = Value::integer(0);
-                    inv.hash()->erase("lines"); inv.hash()->erase("line-eols"); inv.hash()->erase("pos");
-                }
-            }
-            if (inv.hash()->find("cps") == inv.hash()->end()) {
-                std::string path = (*inv.hash())["path"].toStr();
-                struct stat st;
-                if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
-                    throw RakuError{Value::typeObj("X::IO"), "Cannot read characters from a directory: " + path};
-                std::ifstream in(path, std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
-                std::string raw = ss.str();
-                auto ps = inv.hash()->find("cpskip"); // bytes already read under an EARLIER encoding
-                long long skip = ps != inv.hash()->end() ? ps->second.toInt() : 0;
-                if (skip > 0) raw = skip <= (long long)raw.size() ? raw.substr(skip) : std::string();
-                Value cps = Value::array();
-                for (auto cp : utf8cp(decodeTextEnc(raw, handleEnc(inv)))) cps.arr()->push_back(Value::str(cpToUtf8(cp)));
-                (*inv.hash())["cps"] = cps;
-                (*inv.hash())["cpos"] = Value::integer(0);
-            }
-            long pos = (*inv.hash())["cpos"].toInt();
-            auto& cps = *(*inv.hash())["cps"].arr();
-            if (m == "readchars") { // read up to N chars (default 65536), "" at EOF
-                long want = args.empty() ? 65536 : args[0].toInt();
-                std::string out; long got = 0;
-                for (; got < want && pos < (long)cps.size(); got++, pos++) out += cps[pos].toStr();
-                (*inv.hash())["cpos"] = Value::integer(pos);
-                return Value::str(out);
-            }
-            if (pos >= (long)cps.size()) return Value::nil(); // getc at EOF → Nil
-            (*inv.hash())["cpos"] = Value::integer(pos + 1);
-            return cps[pos];
-        }
+        // .getc / .readchars: by character (handleReadChars, above)
+        if (m == "getc" || m == "readchars") return handleReadChars(*this, inv, m, args);
         // reading: lazily load the file into lines, track a cursor in "pos"
         bool isStdin = inv.hash()->find("std") != inv.hash()->end() && (*inv.hash())["std"].toStr() == "in";
         // A BINARY handle's cursor is a BYTE offset, and `seek`/`tell` speak in
@@ -6005,6 +6104,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "contains") { // an optional second positional is where to start
             long from = 0;
+            bool atPos = false;
             for (size_t i = 0; i < args.size(); i++)
                 if ((int)i != rxIdx && args[i].t != VT::Pair) {
                     if (args[i].isNumeric()) {
@@ -6012,8 +6112,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         if (fd < 0 || fd > 9.2e18) return outOfRangePos(*this, "contains", args[i], subj);
                     }
                     from = (long)graphemeToByte(subj, args[i].toInt());   // a CHARACTER position
+                    atPos = true;
                     break;
                 }
+            // …which must be a character of the string: at or past its end even
+            // /$/ is not looked for (Rakudo's `$pos < chars`; "abc".contains(/$/, 3)
+            // is False, as is "".contains(/$/, 0))
+            if (atPos && from >= (long)subj.size()) return Value::boolean(false);
             CallRegex rx(pat, nullptr); const Regex& re = *rx; RxMatch mm;
             return Value::boolean(re.ok() && from <= (long)subj.size() && re.search(subj, from, mm));
         }
@@ -6691,6 +6796,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
         bool keepSep = false, skipEmpty = false, fromEnd = false;
         long long limit = -1; bool haveLimit = false; // second positional (a `*` means unlimited)
+        bool limitArg = false;                        // …given at all, `*` included
         { bool first = true;
           for (auto& a : args) {
               if (a.t == VT::Pair) {
@@ -6702,6 +6808,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                   continue;
               }
               if (first) { first = false; continue; } // the delimiter itself
+              limitArg = true;
               if (!haveLimit && a.t != VT::Whatever) { limit = a.toInt(); haveLimit = true; }
               // keep scanning: adverbs may follow the limit (.split(",", 2, :v))
           }
@@ -6709,6 +6816,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         Value out = Value::array();
         out.isList = true; out.s = "Seq";
         if (haveLimit && limit <= 0) return out;
+        // With one Str needle and a limit, Rakudo answers a List where there is
+        // nothing to split: the string itself for a limit of 1, and for an empty
+        // string ("",), or () when the needle is empty too; :skip-empty and :v
+        // do not enter into it. A regex, several needles or :end stay a Seq.
+        if (limitArg && !fromEnd && d0.t != VT::Array && delims.size() == 1 && !delims[0].isRx &&
+            (s.empty() || (haveLimit && limit == 1))) {
+            Value whole = Value::array(); whole.isList = true;
+            if (!s.empty() || !delims[0].str.empty()) whole.arr()->push_back(Value::str(s));
+            return whole;
+        }
         long long pieces = 0; // the limit counts pieces before :skip-empty drops any
         auto emit = [&](const std::string& piece) { pieces++; if (!(skipEmpty && piece.empty())) out.arr()->push_back(Value::str(piece)); };
         // empty single delimiter => split into characters, with the empty-string
@@ -6718,7 +6835,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // one piece, not a q and a stray mark.
         if (delims.size() == 1 && !delims[0].isRx && delims[0].str.empty()) {
             if (s.empty()) return out; // ''.split('') is ()
-            if (haveLimit && limit == 1) { emit(s); return out; }
+            if (haveLimit && limit == 1) { emit(s); return out; }   // (under :end)
             emit("");
             for (size_t b = 0; b < s.size();) {
                 if (haveLimit && pieces == limit - 1) { emit(s.substr(b)); return out; }

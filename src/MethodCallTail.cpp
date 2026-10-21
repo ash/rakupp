@@ -726,9 +726,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // An EMPTY needle is found at EVERY position, the one past the end
         // included: `"foo".indices("")` is (0, 1, 2, 3) (roast indices.t).
         if (needle.empty()) {
-            if (from <= s.size())
-                for (size_t g = charPos(from); g <= graphemeCount(s); g++)
-                    out.arr()->push_back(Value::integer((long long)g));
+            // (from the position asked for: past the end there is nothing, Rakudo's `()`)
+            for (size_t g = (size_t)fromChar, n = graphemeCount(s); g <= n; g++)
+                out.arr()->push_back(Value::integer((long long)g));
             return out;
         }
         // a match must begin and end on grapheme boundaries, as for .index: the

@@ -196,7 +196,9 @@ logs and the reviews. This page is the complete list.
   BinaryHeap's gap; fifteen fixes, and a ledger of open items ranked by
   what a user sees. Three of them (O2–O4: text read from outside not NFC,
   five places counting codepoints for characters, `uc`/`chars` as subs
-  skipping dispatch) were fixed the same day.
+  skipping dispatch) were fixed the same day, and so was O23, what fixing
+  them turned up (a handle's `.getc` counting codepoints, socket text not
+  NFC, `Buf.uc` answering, three position edges).
 - **[TOOLS-3.23.md](TOOLS-3.23.md)** *(2026-08-29, opening v3.23.0)* — every
   gate, benchmark and measuring tool this project runs, reviewed before the
   re-baseline: twenty-five defects fixed, including binaries picked by bare PATH

@@ -214,6 +214,7 @@ size_t danglingNewlinePrefix(const std::string& s);
 
 std::shared_ptr<Value> baggyKey(const Value& v);
 size_t graphemeToByte(const std::string& s, long long chars);   // byte offset of grapheme `chars`
+void refuseStrOnlyOnBlob(Interpreter& I, const Value& inv, const std::string& m); // `$buf.uc` dies (MethodCallPart3.cpp)
 size_t codeArity(const Value& code);
 std::string cpToUtf8(uint32_t cp);
 std::string joinValues(const ValueList& items, const std::string& sep);

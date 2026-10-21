@@ -2552,7 +2552,9 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                         if (bad) { malformed = true; self->gilYieldNotify(); break; }
                     }
                     if (!take) { self->gilYieldNotify(); continue; }   // nothing whole yet
-                    chunk = Value::str(carry.substr(0, take));
+                    // decoded text is NFC, as Rakudo's decoder makes it (a
+                    // chunk ends on a cluster boundary, so it normalizes alone)
+                    chunk = Value::str(nfcDecoded(carry.substr(0, take)));
                     carry.erase(0, take);
                 }
                 if (emitCb.t == VT::Code) {
@@ -2602,7 +2604,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 carry.clear();
             }
             if (!tapClosed && !carry.empty() && emitCb.t == VT::Code) {
-                ValueList one{ Value::str(carry) };
+                ValueList one{ Value::str(nfcDecoded(carry)) };
                 try { self->callCallable(emitCb, one); } catch (...) {}
                 carry.clear();
             }
