@@ -314,6 +314,7 @@ void Scan::expr(Expr* e) {
                                                       "eq", "ne", "lt", "gt", "le", "ge"};
             if (g_opt.backend != Backend::Cnp) { fail("a chained comparison"); return; }
             for (auto& o : ch->ops) if (!kOk.count(o)) { fail("operator '" + o + "' in a chain"); return; }
+            for (auto& o : ch->ops) useOp("infix", o);   // (a user one answers each link, as for a Binary)
             for (auto& o : ch->operands) { expr(o.get()); if (!err.empty()) return; }
             return;
         }

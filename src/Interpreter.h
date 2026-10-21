@@ -2593,6 +2593,7 @@ public:
                      bool skipOwn = false);
     Value interpolate(ValueList& vals);   // evalInterp over evaluated parts (and a --cnp kernel's)
     bool chainLink(const std::string& op, const Value& prev, const Value& next);   // one link of `a < b < c`
+    bool chainLinkUser(const std::string& op, const Value& l, const Value& r, Value& out);   // …the program's operator's
     Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs,
                           bool skipOwn = false);
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to

@@ -535,40 +535,32 @@ struct Codegen {
     // Whether `op` is a metaoperator over an infix the program declares: `R-`,
     // `Z+`, `X~`, `!==`, `>>+<<`, `«*»`, and stacks of them. The metaops are the
     // runtime's (applyArith, rtReduce), which know nothing of compiled routines,
-    // so one over a shadowing routine is refused rather than answered with the
-    // built-in — and over a multi, the hyper, the one metaop whose interpreted
-    // form takes the user's candidates (Z, X, R and the reductions do not, yet).
-    // A false positive (a word op that merely starts with R, Z or X) costs a
-    // refusal, never an answer.
+    // so one over a routine in scope is refused rather than answered with the
+    // built-in — a multi's included: the interpreter's metaops take its
+    // candidates for an object operand, which no compile-time test can rule
+    // out. A false positive (a word op that merely starts with R, Z or X) costs
+    // a refusal, never an answer.
     bool metaOverDeclared(const std::string& op) {
         static const char* const kHyper[] = {">>", "<<", "\xC2\xBB", "\xC2\xAB"};
         std::string s = op;
-        bool hyper = false;
         for (int guard = 0; guard < 8 && s.size() > 1; guard++) {
             size_t n = 0;
             for (const char* h : kHyper)
-                if (s.size() > 2 && s.compare(0, 2, h) == 0) { n = 2; hyper = true; break; }
+                if (s.size() > 2 && s.compare(0, 2, h) == 0) { n = 2; break; }
             if (!n && (s[0] == 'R' || s[0] == 'Z' || s[0] == 'X' || s[0] == '!')) n = 1;
             if (!n) return false;
             s.erase(0, n);
             for (const char* h : kHyper)
-                if (s.size() > 2 && s.compare(s.size() - 2, 2, h) == 0) { s.erase(s.size() - 2); hyper = true; break; }
-            bool shadow;
-            if (opHere("infix:<" + s + ">", shadow) && (shadow || hyper)) return true;
+                if (s.size() > 2 && s.compare(s.size() - 2, 2, h) == 0) { s.erase(s.size() - 2); break; }
+            if (opHere("infix:<" + s + ">")) return true;
         }
         return false;
     }
     // Whether a routine or binding of `name` answers for the operator at THIS
     // site: one in scope (lexOpValue), a top-level routine, or — in a module
-    // routine, which cannot tell — any its module graph declares. `shadow`:
-    // over core operands too, which a top-level multi is not.
-    bool opHere(const std::string& name, bool& shadow) {
-        shadow = true;
-        if (moduleMode_ && lexOps_.count(name)) return true;
-        if (!lexOpValue(name).empty()) return true;
-        if (userOpFn(name).empty()) return false;
-        shadow = !multiNames.count(name);
-        return true;
+    // routine, which cannot tell — any its module graph declares
+    bool opHere(const std::string& name) {
+        return (moduleMode_ && lexOps_.count(name)) || !lexOpValue(name).empty() || !userOpFn(name).empty();
     }
     // The Value of the innermost operator binding this site can see, or "" for
     // none: an `&infix:<op>` variable or parameter in scope, a lexical sub, a
@@ -2283,8 +2275,7 @@ struct Codegen {
                     // (the runtime's reduce applies the built-in: see metaOverDeclared)
                     std::string inner = u->op.substr(1, u->op.size() - 2);
                     if (inner.size() > 1 && inner[0] == '\\') inner.erase(0, 1);   // [\+], the triangle form
-                    bool shadow;
-                    if ((opHere("infix:<" + inner + ">", shadow) && shadow) || metaOverDeclared(inner))
+                    if (opHere("infix:<" + inner + ">") || metaOverDeclared(inner))
                         unsupported("a reduction over the program's own infix:<" + inner + ">");
                     return "rtReduce(RT, " + cesc(u->op.substr(1, u->op.size() - 2)) + ", " + exArg(u->operand.get()) +
                            // (each comma item ONE operand, as the interpreter takes them: see rtReduce)
@@ -2887,7 +2878,7 @@ struct Codegen {
                 // the program's own `infix:«<»` is (the interpreter's chain does not
                 // call a user one either yet; Rakudo's does)
                 for (auto& o : ch->ops)
-                    if (bool shadow; opHere("infix:<" + o + ">", shadow) || metaOverDeclared(o))
+                    if (opHere("infix:<" + o + ">") || metaOverDeclared(o))
                         unsupported("a chained comparison over the program's own infix:<" + o + ">");
                 std::string binds, cond;
                 for (size_t k = 0; k < ch->operands.size(); k++)

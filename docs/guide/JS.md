@@ -216,8 +216,8 @@ Outside (refused, or run through `--fallback=wasm`):
 `EVAL` and `require` of computed names, `use` of a module,
 NativeCall, threads and `signal`, `temp`/`let`,
 `Proc::Async`, the `Test` module; and of the program's own operators, a
-reduction, `R`/`Z`/`X` metaoperator or chained comparison over one in scope
-(the runtime's metaops apply the built-in), a hyper over one, an override of
+metaoperator (a reduction, `R`, `Z`, `X`, a hyper) or a chained comparison
+over one in scope (the runtime's metaops apply the built-in), an override of
 an operator with an arm of its own (`&&`, `..`, `~~`, `++`…), and a `multi`
 with a candidate over core types used in operator form.
 

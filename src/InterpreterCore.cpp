@@ -30416,6 +30416,9 @@ Value Interpreter::eval(Expr* e) {
                 return code;
             }
             Value prev = eval(ch->operands[0].get());
+            // (the chain is `&&` over its links: a user operator's link answers
+            // with its own value, the first false one ends the chain with it)
+            Value last = Value::boolean(true);
             for (size_t k = 0; k < ch->ops.size(); k++) {
                 // `$s ~~ /re/ eq $want` — a smartmatch against a regex LITERAL
                 // goes on down the chain as its MATCH, not as the regex (Rakudo)
@@ -30436,10 +30439,15 @@ Value Interpreter::eval(Expr* e) {
                     prev = next;
                     continue;
                 }
-                if (!chainLink(ch->ops[k], prev, next)) return Value::boolean(false);
+                if (Value uv; chainLinkUser(ch->ops[k], prev, next, uv)) {
+                    if (!boolify(uv)) return uv;
+                    last = std::move(uv);
+                }
+                else if (!chainLink(ch->ops[k], prev, next)) return Value::boolean(false);
+                else last = Value::boolean(true);
                 prev = next;
             }
-            return Value::boolean(true);
+            return last;
         }
         case NK::Unary: return evalUnary(static_cast<Unary*>(e));
         case NK::Call: {

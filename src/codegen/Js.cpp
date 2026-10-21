@@ -760,33 +760,24 @@ struct JsGen {
     // in program()); an operator whose spelling is not here is the built-in.
     std::set<string> jsOps;
     // Whether a routine or binding of `name` answers for the operator here (the
-    // resolution userOpRoutine makes), and `shadow`: over core operands too,
-    // which a multi is not
-    bool opHere(const string& name, bool& shadow) {
-        shadow = true;
-        if (!jsOps.count(name)) return false;
-        if (codeVisible(name)) return true;
-        auto si = subs.find(name);
-        if (si == subs.end() || !subVisible(name)) return false;
-        shadow = !si->second.isMulti;
-        return true;
+    // resolution userOpRoutine makes)
+    bool opHere(const string& name) {
+        return jsOps.count(name) && (codeVisible(name) || (subs.count(name) && subVisible(name)));
     }
     // Whether `op` is a metaoperator (R Z X ! hyper, stacked) over one of them:
     // the runtime's metaops apply the built-in, so that is refused, never
-    // answered — over a multi only in the hyper, as Codegen.cpp's says why.
+    // answered — a multi's included, as Codegen.cpp's says why.
     bool metaOverDeclared(const string& op) {
         static const char* const kHyper[] = {">>", "<<", "\xC2\xBB", "\xC2\xAB"};
         string s = op;
-        bool hyper = false;
         for (int guard = 0; guard < 8 && s.size() > 1; guard++) {
             size_t n = 0;
-            for (const char* h : kHyper) if (s.size() > 2 && s.compare(0, 2, h) == 0) { n = 2; hyper = true; break; }
+            for (const char* h : kHyper) if (s.size() > 2 && s.compare(0, 2, h) == 0) { n = 2; break; }
             if (!n && (s[0] == 'R' || s[0] == 'Z' || s[0] == 'X' || s[0] == '!')) n = 1;
             if (!n) return false;
             s.erase(0, n);
-            for (const char* h : kHyper) if (s.size() > 2 && s.compare(s.size() - 2, 2, h) == 0) { s.erase(s.size() - 2); hyper = true; break; }
-            bool shadow;
-            if (opHere("infix:<" + s + ">", shadow) && (shadow || hyper)) return true;
+            for (const char* h : kHyper) if (s.size() > 2 && s.compare(s.size() - 2, 2, h) == 0) { s.erase(s.size() - 2); break; }
+            if (opHere("infix:<" + s + ">")) return true;
         }
         return false;
     }
@@ -926,7 +917,7 @@ struct JsGen {
             case NK::ChainExpr: {
                 auto* c = static_cast<ChainExpr*>(e);
                 for (auto& o : c->ops)   // (every link below is the built-in)
-                    if (bool shadow; opHere("infix:<" + o + ">", shadow) || metaOverDeclared(o))
+                    if (opHere("infix:<" + o + ">") || metaOverDeclared(o))
                         refuse("a chained comparison over the program's own infix:<" + o + ">", c->line);
                 // (_t1 = a, _t2 = b, R.truthy(a<b) && (_t3 = c, R.truthy(b<c)) && …): each
                 // operand evaluated once, later ones only while the chain still holds
@@ -1247,8 +1238,7 @@ struct JsGen {
             string inner = op.substr(1, op.size() - 2);
             bool tri = !inner.empty() && inner[0] == '\\';
             if (tri) inner = inner.substr(1);
-            bool shadow;
-            if ((opHere("infix:<" + inner + ">", shadow) && shadow) || metaOverDeclared(inner))
+            if (opHere("infix:<" + inner + ">") || metaOverDeclared(inner))
                 refuse("a reduction over the program's own infix:<" + inner + ">", u->line);
             return "R.reduceOp(" + jsStr(inner) + ", " + exArg(x) + (tri ? ", true" : "") + ")";
         }

@@ -459,6 +459,27 @@ Value Interpreter::hyperWalk(Value& v, const std::function<Value(Value&)>& leaf)
     return deep(v);
 }
 
+// One link of a chain (`$a < $b < $c`) that the program's own operator
+// answers, asked as evalBinary asks it for the same two operands: a shadowing
+// binding or plain sub (lexShadowedInfix), a multi that meets the built-in
+// over core operands (userInfixOverCore), a multi over an object or an enum,
+// where a no-match leaves the link to the built-in. False: chainLink's.
+bool Interpreter::chainLinkUser(const std::string& op, const Value& l, const Value& r, Value& out) {
+    if (lexShadowPossibleOrTwin(op)) {
+        if (Value* f = lexShadowedInfix(op, l, r)) { out = callCallable(*f, ValueList{l, r}); return true; }
+        if (userInfixOverCore(op, l, r, out)) return true;
+    }
+    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
+        boundInfixPossible(op))
+        if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
+            try { out = callCallable(*f, ValueList{l, r}); return true; }
+            catch (RakuError& e) {
+                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
+            }
+    return false;
+}
+
 Value Interpreter::hyperUnary(const std::string& op, Value v) {
     // a user overload for an OBJECT leaf wins, as it does for the plain prefix
     Value* userOp = tctx().cur ? tctx().cur->find("&prefix:<" + op + ">") : nullptr;
