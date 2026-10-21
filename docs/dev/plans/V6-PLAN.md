@@ -270,7 +270,8 @@ Each item is gated alone, so its effect has a number:
     and `isKnownTypeName` compare strings the same way. Wrap the name in an
     `MName`-style view at function entry, as MethodName.h does for methods.
   - Extend the Int fast path past two-character operators, to `<=>`, `cmp`,
-    `%%`, `div`, `mod`, `gcd` and `**`.
+    `%%`, `div`, `mod`, `gcd` and `**`. *Done 2026-10-21* (`<=>` and `cmp`
+    earlier), with `lcm`, `min` and `max`: REVIEW-PARALLEL-2026-10 O16.
 - **A dispatch table for builtin methods,** replacing the chain of about 1,300
   string compares. [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) §5 named it
   as a precondition.

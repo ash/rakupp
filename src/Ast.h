@@ -470,7 +470,9 @@ struct Binary : Expr {
     mutable DecidedOnce<signed char> fastShape{-1};
     // A numeric SUBTREE the interpreter evaluates without building a Value at
     // each node (Interpreter::typedTreeValue): -1 not yet looked at, 0 no,
-    // 1 yes. Only the shape is decided once; every leaf is read and its type
+    // 1 yes, 2 yes and both operands literals (`1/3`), whose Value is built
+    // once into litVal and shared while no operator shadows this one. Only
+    // the shape is decided once; every leaf is read and its type
     // checked on every evaluation. typedMiss counts evaluations in a row the
     // leaves did not allow it, and retires the handler past a limit. (In the
     // padding before litVal: sizeof(Binary) is unchanged.)

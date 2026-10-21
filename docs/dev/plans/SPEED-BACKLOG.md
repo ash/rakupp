@@ -33,7 +33,7 @@ theme the rows are sorted by complexity, largest first.
 | 5 | Pass the thread context down instead of reading `tctx_` (20% of a walking `loopsum`) | XL | runLoopBody, execPlainBlock, exec, evalAssign — INTERP-SPEED-PLAN task 4 |
 | 6 | A dispatch table and type-keyed inline caches for built-in methods | XL | Design first: hashing the method chain alone measured slower — V6 P2, [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) |
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
-| 19 | Operator names as integers; the Int fast path for `<=>`, `cmp`, `div`, `mod`, `gcd`, `**` | M | V6 P2 |
+| 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
 | 23 | Cache a class name's resolution on its node | M | A NameTerm also resolves lexically (`::T`, `my class`), so the cache needs a record that no scope binds the name; at most ~7% of a 10× `objects` run — V6 P1 |
 | 26 | Built-in methods in interpreted loops: `.map`/`.flat`/`.any` on a Seq; a CStruct's CArray field built once per pointer | M | TODO.md |
@@ -107,6 +107,18 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **Three numeric slow spots of the 2026-10 review** (O15–O17 of
+  [REVIEW-PARALLEL-2026-10](../findings/REVIEW-PARALLEL-2026-10.md), and row
+  19's Int fast path). A Rat literal beside a Num is its .Num in the loop
+  kernel, the typed subtree and applyArith: `$x = $x * 1.0000001 +
+  0.000000001` 3,418 → 57 instructions an iteration (the `e0` line: 58).
+  `** %% div mod gcd lcm min max` over two Ints are on applyArith's hot path
+  and the fused `$x = $a op $b` lane: `div` 2,745 → 1,144 and `**` 3,949 →
+  1,131 with no kernels. The small-Rat lane takes Int / Int and runs before
+  the general path, and `1/3` is built once: `$r += 1/3` 7,836 → 3,562 with
+  no kernels. Left open from it: the kernel declines `gcd` and an Int slot
+  given a Bool (`$s = $i %% 7`), and the lane's spill to Num rounds three
+  times (O26).
 - **`do { }` and `quietly { }`, after 38** (205f5e97): the same in-place
   path as `try`. `do { … }` −32.5% and `quietly { … }` −33.4% in
   instructions; a `when` in a `do`, `state`, `temp` or a phaser keep the call.

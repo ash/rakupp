@@ -1,5 +1,6 @@
 #include "CNumeric.h"
 #include "Value.h"
+#include "IntOps.h"
 #include <set>
 
 #include <cstring>
@@ -1995,6 +1996,42 @@ bool objectStructEqv(const Value& a, const Value& b,
     --g_objEqDepth;
     return ok;
 }
+
+#if RAKUPP_HAS_INT128
+// The small-Rat lane, applyArith's and the exact tower's: `+ - * /` (c) over
+// Rats, Ints and Bools whose parts are all under 2**62, exactly in __int128
+// (ratOp128) — orders of magnitude cheaper than the BigInt arms, and what
+// they would answer, a denominator past uint64 spilling to Num as theirs
+// does. False for a FatRat, a zero denominator or divisor, and a reduced
+// numerator wider than 64 bits.
+[[gnu::noinline]] bool smallRatLane(char c, const Value& l, const Value& r, Value& out) {
+    auto parts = [](const Value& v, long long& n, long long& d) -> bool {
+        const long long LIM = 1LL << 62;
+        if (v.t == VT::Rat) {
+            if (v.fatRat() || !v.ratN() || !v.ratD() || !v.ratN()->fitsLL() || !v.ratD()->fitsLL()) return false;
+            n = v.ratN()->toLL(); d = v.ratD()->toLL();
+        } else if (v.t == VT::Int) {
+            if (v.big()) { if (!v.big()->fitsLL()) return false; n = v.big()->toLL(); }
+            else n = v.i;
+            d = 1;
+        } else if (v.t == VT::Bool) { n = v.b ? 1 : 0; d = 1; }
+        else return false;
+        return n > -LIM && n < LIM && d != 0 && d < LIM;
+    };
+    long long n1, d1, n2, d2;
+    __int128 n, d;
+    if (!parts(l, n1, d1) || !parts(r, n2, d2) || !rakupp::ratOp128(c, n1, d1, n2, d2, n, d)) return false;
+    if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) {   // the uint64 denominator cap
+        out = Value::number((double)n / (double)d);
+        return true;
+    }
+    if (n < (__int128)LLONG_MIN || n > (__int128)LLONG_MAX || d > (__int128)LLONG_MAX) return false;
+    out.t = VT::Rat;   // already reduced with d > 0: no second gcd
+    out.ratNM() = std::make_shared<BigInt>((long long)n);
+    out.ratDM() = std::make_shared<BigInt>((long long)d);
+    return true;
+}
+#endif
 
 Value applyArith(const std::string& op, const Value& l, const Value& r);
 static int valueCmpImpl(const Value& a, const Value& b);

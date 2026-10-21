@@ -17756,6 +17756,29 @@ static inline bool nativeMixedSignNe(const Value& l, const Value& r) {
     return (uns(l) && neg(r)) || (neg(l) && uns(r));
 }
 
+// A Num and an untagged Rat with a denominator, as two doubles: the Rat as its
+// .Num, which is how applyArithGeneral's double arm (simpleNum) reads it.
+static inline bool numRatPair(const Value& l, const Value& r, double& a, double& b) {
+    auto one = [](const Value& v, double& d) {
+        if (!v.hashKind.empty()) return false;
+        if (v.t == VT::Num) { d = v.n; return true; }
+        if (!v.ratN() || !v.ratD() || v.ratD()->isZero()) return false;
+        d = v.toNum();
+        return true;
+    };
+    return ((l.t == VT::Num && r.t == VT::Rat) || (l.t == VT::Rat && r.t == VT::Num)) && one(l, a) && one(r, b);
+}
+// `div mod gcd lcm min max` by spelling: 1 for the four rtIntWordOp answers,
+// 2 for `min`, 3 for `max`, 0 for anything else.
+static inline int intWordOp3(const std::string& op) {
+    if (op.size() != 3) return 0;
+    const char c0 = op[0], c1 = op[1], c2 = op[2];
+    if (c0 == 'm' && c1 == 'i' && c2 == 'n') return 2;
+    if (c0 == 'm' && c1 == 'a' && c2 == 'x') return 3;
+    return (c0 == 'd' && c1 == 'i' && c2 == 'v') || (c0 == 'm' && c1 == 'o' && c2 == 'd') ||
+           (c0 == 'g' && c1 == 'c' && c2 == 'd') || (c0 == 'l' && c1 == 'c' && c2 == 'm') ? 1 : 0;
+}
+
 // Arithmetic on two machine Ints answers here; everything else goes to
 // applyArithGeneral, out of line. The general path's frame is over a page, so
 // every call paid a stack probe for it, the Int case included.
@@ -17773,14 +17796,16 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             case '+': if (c1 == '\0' && !rakupp::add_ovf(a, b, &z)) return Value::integer(z);
                       if (c1 != '\0' && rtIntBitOp(c1, a, b, z)) return Value::integer(z); break;   // +& +| +^ +< +>
             case '-': if (c1 == '\0' && !rakupp::sub_ovf(a, b, &z)) return Value::integer(z); break;
-            case '*': if (c1 == '\0' && !rakupp::mul_ovf(a, b, &z)) return Value::integer(z); break;
+            case '*': if (c1 == '\0' && !rakupp::mul_ovf(a, b, &z)) return Value::integer(z);
+                      if (c1 == '*' && !rakupp::pow_ovf(a, b, &z)) return Value::integer(z); break;   // (a negative power is a Rat)
             case '<': if (c1 == '\0') return Value::boolean(a < b);
                       if (c1 == '=') return Value::boolean(a <= b); break;
             case '>': if (c1 == '\0') return Value::boolean(a > b);
                       if (c1 == '=') return Value::boolean(a >= b); break;
             case '=': if (c1 == '=') return Value::boolean(a == b); break;
             case '!': if (c1 == '=') return Value::boolean(a != b && !nativeMixedSignNe(l, r)); break;
-            case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); } break;
+            case '%': if (c1 == '\0' && b != 0) { if (b == -1) return Value::integer(0); long long m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return Value::integer(m); }
+                      if (c1 == '%' && b != 0) return Value::boolean(b == -1 || a % b == 0); break;
         }
     }
     // `===` / `!===` on two plain Ints — what every `cas` asks, under its lock —
@@ -17799,15 +17824,32 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
             if (op[0] == '=' && op[1] == '=' && op[2] == '=') return Value::boolean(l.i == r.i);
             if ((op[0] == 'c' && op[1] == 'm' && op[2] == 'p') || (op[0] == '<' && op[1] == '=' && op[2] == '>'))
                 return Value::orderVal(l.i < r.i ? -1 : l.i > r.i ? 1 : 0);
+            // …and the word operators: `min`/`max` keep the right operand on a
+            // tie, as valueCmp's arm does; `div mod gcd lcm` are rtIntWordOp's
+            if (const int w = intWordOp3(op)) {
+                if (w == 2) return l.i < r.i ? l : r;
+                if (w == 3) return l.i > r.i ? l : r;
+                if (long long z; rtIntWordOp(op[0], op[1], l.i, r.i, z)) return Value::integer(z);
+            }
         }
         if (op.size() == 4 && op[0] == '!' && op[1] == '=' && op[2] == '=' && op[3] == '=') return Value::boolean(l.i != r.i);
     }
     // A Num with a Num or machine Int: the general path's double arm, without
-    // the page of tests in front of it (Interpreter.h rtNumPair, rtNumArith)
+    // the page of tests in front of it (Interpreter.h rtNumPair, rtNumArith).
+    // A plain Rat beside the Num is read as its .Num there (simpleNum).
     if ((l.t == VT::Num || r.t == VT::Num) && !op.empty() && op.size() <= 2) {
         double a, b;
         if (Value out; rtNumPair(l, r, a, b) && rtNumArith(op.c_str(), a, b, out)) return out;
+        if (Value out; numRatPair(l, r, a, b) && rtNumArith(op.c_str(), a, b, out)) return out;
     }
+#if RAKUPP_HAS_INT128
+    // `+ - * /` over Rats and machine Ints, and Int / Int: the exact tower's
+    // small-Rat lane, without the page of tests in front of it
+    if (op.size() == 1 && (op[0] == '+' || op[0] == '-' || op[0] == '*' || op[0] == '/') &&
+        (l.t == VT::Rat || r.t == VT::Rat || op[0] == '/') && (l.t == VT::Rat || l.t == VT::Int) &&
+        (r.t == VT::Rat || r.t == VT::Int) && l.hashKind.empty() && r.hashKind.empty())
+        if (Value out; smallRatLane(op[0], l, r, out)) return out;
+#endif
     return applyArithGeneral(op, l, r);
 }
 
@@ -18819,10 +18861,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         };
         auto getN = [](const Value& v) { return v.t == VT::Rat ? *v.ratN() : v.toBig(); };
         auto getD = [](const Value& v) { return v.t == VT::Rat ? *v.ratD() : BigInt(1); };
-        // Small-Rat fast path: when every component fits well under 2^62, do the
-        // exact arithmetic in native __int128 (products stay in range) and reduce
-        // with a native gcd — orders of magnitude cheaper than the BigInt path.
-        // Rakudo-spec spill applies here too: denominator past uint64 → Num.
+        // Rat parts that fit well under 2^62, for the native compares below
         auto smallParts = [](const Value& v, long long& n, long long& d) -> bool {
             const long long LIM = 1LL << 62;
             if (v.t == VT::Rat) {
@@ -18836,47 +18875,10 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             return n > -LIM && n < LIM && d < LIM;
         };
 #if RAKUPP_HAS_INT128
-        if (anyRat && !fat && (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/"))) {
-            long long n1, d1, n2, d2;
-            if (smallParts(l, n1, d1) && smallParts(r, n2, d2) &&
-                d1 != 0 && d2 != 0 && !(opEq(op, "/") && n2 == 0)) { // zero-den Rats take the slow path
-                __int128 n, d;
-                if (opEq(op, "*")) { n = (__int128)n1 * n2; d = (__int128)d1 * d2; }
-                else if (opEq(op, "/")) { n = (__int128)n1 * d2; d = (__int128)d1 * n2; }
-                else { d = (__int128)d1 * d2;
-                       n = opEq(op, "+") ? (__int128)n1 * d2 + (__int128)n2 * d1
-                                     : (__int128)n1 * d2 - (__int128)n2 * d1; }
-                if (d < 0) { n = -n; d = -d; }
-                // binary gcd — shifts and subtracts instead of ~15 __int128 divisions
-                auto ctz = [](unsigned __int128 x) -> int {
-                    unsigned long long lo = (unsigned long long)x;
-                    return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll((unsigned long long)(x >> 64));
-                };
-                unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d;
-                unsigned __int128 g;
-                if (a && b) {
-                    int sh = ctz(a | b);
-                    a >>= ctz(a);
-                    while (b) {
-                        b >>= ctz(b);
-                        if (a > b) { unsigned __int128 t = a; a = b; b = t; }
-                        b -= a;
-                    }
-                    g = a << sh;
-                } else g = a | b;
-                if (g > 1) { n /= (__int128)g; d /= (__int128)g; }
-                if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) // uint64 denominator cap
-                    return Value::number((double)n / (double)d);
-                if (n >= (__int128)LLONG_MIN && n <= (__int128)LLONG_MAX && d <= (__int128)LLONG_MAX) {
-                    // already reduced with d > 0 — build directly, no second gcd
-                    Value v; v.t = VT::Rat;
-                    v.ratNM() = std::make_shared<BigInt>((long long)n);
-                    v.ratDM() = std::make_shared<BigInt>((long long)d);
-                    return v;
-                }
-                // (reduced numerator wider than 64 bits: fall through to BigInt)
-            }
-        }
+        // the small-Rat lane (smallRatLane, also applyArith's own arm) — and for
+        // Int / Int too, which used to come here only to divmod BigInts
+        if ((anyRat || opEq(op, "/")) && !fat && (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/")))
+            if (Value v; smallRatLane(op[0], l, r, v)) return v;
 #endif // RAKUPP_HAS_INT128 (small-Rat fast path; MSVC falls through to BigInt)
         if (opEq(op, "+") || opEq(op, "-") || opEq(op, "*")) {
             if (smallInt) {
@@ -21654,6 +21656,43 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
     return nullptr;
 }
 
+// fusedIntAssign's operand: a variable or the node's literal holding a plain
+// machine Int (a full-width signed native allowed, as its arms are).
+static inline const Value* fusedIntLeaf(const Binary* b, Expr* x, bool isLit, Env* cur) {
+    const Value* p;
+    if (isLit) p = static_cast<const Value*>(b->litVal.get());
+    else {
+        auto* ve = static_cast<VarExpr*>(x);
+        Value* q = Interpreter::padPtrIn(ve, cur);
+        p = q ? q : cur->find(ve->name);
+    }
+    return (p && p->t == VT::Int && !p->big() && p->hashKind.empty() &&
+            (!p->natBits || (p->natBits == 64 && p->natSigned && !p->natFloat))) ? p : nullptr;
+}
+// …and its `div mod gcd lcm min max **`: applyArith's Int arms over two
+// operands with no native width or enum name (a native's operator is
+// nativeIntArith's, and `min` hands an enum back whole). Out of line:
+// inlined, it widened the frame the `+ - *` arms pay on every call.
+[[gnu::noinline]] static bool fusedIntWordAssign(Interpreter& I, Binary* b, Value* slot) {
+    const std::string& op = b->op;
+    const int w = op.size() == 2 && op[0] == '*' && op[1] == '*' ? 4 : intWordOp3(op);
+    if (!w || binaryShadowMaybe(op) || !plainIntSlotValue(*slot)) return false;
+    Env* const cur = Interpreter::tctx().cur.get();
+    const Value* lp = fusedIntLeaf(b, b->lhs.get(), b->fastShape == 2, cur);
+    const Value* rp = lp ? fusedIntLeaf(b, b->rhs.get(), b->fastShape == 1, cur) : nullptr;
+    if (!rp || lp->natBits || rp->natBits || !lp->enumName.empty() || !rp->enumName.empty()) return false;
+    long long z;
+    switch (w) {
+        case 2: z = lp->i < rp->i ? lp->i : rp->i; break;
+        case 3: z = lp->i > rp->i ? lp->i : rp->i; break;
+        case 4: if (rakupp::pow_ovf(lp->i, rp->i, &z)) return false; break;
+        default: if (!rtIntWordOp(op[0], op[1], lp->i, rp->i, z)) return false;
+    }
+    Interpreter::SlotStripe ws(I, slot);
+    slot->i = z;
+    return true;
+}
+
 // `$x = $a op $b` with `+`, `-` or `*` on two machine Ints (task 9, the fused
 // integer leaf): the result written into the slot, where the lane would build
 // an Int, move it in and destroy the temporary. Only for a node compiled to
@@ -21665,24 +21704,14 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
     if (anyPendingSubscripts() || (Expr::EvalFn)b->handler != &Interpreter::binaryFastHandler)
         return false;
     const std::string& op = b->op;
-    if (op.size() != 1 || (op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
+    if (op.size() != 1) return fusedIntWordAssign(*this, b, slot);
+    if ((op[0] != '+' && op[0] != '-' && op[0] != '*') || binaryShadowMaybe(op))
         return false;
     if (!plainIntSlotValue(*slot)) return false;
     Env* const cur = tctx().cur.get();
-    auto intLeaf = [&](Expr* x, bool isLit) -> const Value* {
-        const Value* p;
-        if (isLit) p = static_cast<const Value*>(b->litVal.get());
-        else {
-            auto* ve = static_cast<VarExpr*>(x);
-            Value* q = padPtrIn(ve, cur);
-            p = q ? q : cur->find(ve->name);
-        }
-        return (p && p->t == VT::Int && !p->big() && p->hashKind.empty() &&
-                (!p->natBits || (p->natBits == 64 && p->natSigned && !p->natFloat))) ? p : nullptr;
-    };
-    const Value* lp = intLeaf(b->lhs.get(), b->fastShape == 2);
+    const Value* lp = fusedIntLeaf(b, b->lhs.get(), b->fastShape == 2, cur);
     if (!lp) return false;
-    const Value* rp = intLeaf(b->rhs.get(), b->fastShape == 1);
+    const Value* rp = fusedIntLeaf(b, b->rhs.get(), b->fastShape == 1, cur);
     if (!rp) return false;
     long long z;
     if (op[0] == '+' ? rakupp::add_ovf(lp->i, rp->i, &z)
@@ -21866,35 +21895,43 @@ RAKUPP_ALWAYS_INLINE bool typedIntOp(char c, long long a, long long b, long long
     if (!(n1 > -LIM && n1 < LIM && d1 > 0 && d1 < LIM && n2 > -LIM && n2 < LIM && d2 > 0 && d2 < LIM))
         return false;
     __int128 n, d;
-    switch (c) {
-        case '*': n = (__int128)n1 * n2; d = (__int128)d1 * d2; break;
-        case '/': if (n2 == 0) return false; n = (__int128)n1 * d2; d = (__int128)d1 * n2; break;
-        case '+': n = (__int128)n1 * d2 + (__int128)n2 * d1; d = (__int128)d1 * d2; break;
-        case '-': n = (__int128)n1 * d2 - (__int128)n2 * d1; d = (__int128)d1 * d2; break;
-        default: return false;
-    }
-    if (d < 0) { n = -n; d = -d; }
-    auto ctz = [](unsigned __int128 x) -> int {
-        unsigned long long lo = (unsigned long long)x;
-        return lo ? __builtin_ctzll(lo) : 64 + __builtin_ctzll((unsigned long long)(x >> 64));
-    };
-    unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d, g;
-    if (a && b) {
-        int sh = ctz(a | b);
-        a >>= ctz(a);
-        while (b) {
-            b >>= ctz(b);
-            if (a > b) { unsigned __int128 t = a; a = b; b = t; }
-            b -= a;
-        }
-        g = a << sh;
-    } else g = a | b;
-    if (g > 1) { n /= (__int128)g; d /= (__int128)g; }
+    if (c == '%' || !rakupp::ratOp128(c, n1, d1, n2, d2, n, d)) return false;
     if (n < (__int128)LLONG_MIN || n > (__int128)LLONG_MAX || d > (__int128)LLONG_MAX) return false;
     o.f = TN_RAT; o.i = (long long)n; o.d = (long long)d;
     return true;
 }
 #endif
+
+// A Rat's .Num as Value::toNum computes it: one division when both parts are
+// exact doubles, else ratioToDouble's single rounding — and either way the
+// double nearest the value, so a literal's unreduced parts give the same one.
+[[gnu::noinline]] double typedRatNumWide(long long n, long long d) {
+    const double q = BigInt::ratioToDouble(BigInt(n), BigInt(d));
+    return n < 0 ? -q : q;
+}
+inline double typedNumOf(const TNum& v) {
+    if (v.f & TN_NUM) return v.n;
+    if (!(v.f & TN_RAT)) return (double)v.i;
+    constexpr unsigned long long kExact = 1ULL << 53;
+    return rakupp::magU(v.i) <= kExact && (unsigned long long)v.d <= kExact ? (double)v.i / (double)v.d
+                                                                           : typedRatNumWide(v.i, v.d);
+}
+
+// A Rat beside a Num: the Rat as its .Num, and Num arithmetic, out of line so
+// typedArithSlow's frame stays what the exact operands pay for. Never a native
+// num: a Rat is neither a native nor a Num literal (tagNativeNum).
+[[gnu::noinline]] bool typedNumRatArith(char c, const TNum& l, const TNum& r, TNum& o) {
+    const double a = typedNumOf(l), b = typedNumOf(r);
+    switch (c) {
+        case '+': o.n = a + b; break;
+        case '-': o.n = a - b; break;
+        case '*': o.n = a * b; break;
+        case '/': if (b == 0.0) return false; o.n = a / b; break;   // an inexact divide by zero is a Failure
+        default: return false;   // Num % … keeps the full path
+    }
+    o.f = TN_NUM;
+    return true;
+}
 
 // What applyArith answers for two typed operands that are not both plain Ints,
 // or false where it would answer something else (a bignum, a Failure, a Rat
@@ -21904,9 +21941,10 @@ RAKUPP_ALWAYS_INLINE bool typedIntOp(char c, long long a, long long b, long long
                                       TNum& o) {
     const unsigned char lf = l.f, rf = r.f;
     if (((lf | rf) & TN_RAT) || (c == '/' && !((lf | rf) & TN_NUM))) {
+        // exact: Rat op Rat/Int, and Int / Int (a Rat). Beside a Num a Rat is
+        // its .Num, as applyArith's double arm reads it (typedNumRatArith).
+        if ((lf | rf) & TN_NUM) return typedNumRatArith(c, l, r, o);
 #if RAKUPP_HAS_INT128
-        // exact: Rat op Rat/Int, and Int / Int (a Rat); beside a Num, declined
-        if ((lf | rf) & TN_NUM) return false;
         return typedRatArith(c, l.i, (lf & TN_RAT) ? l.d : 1, r.i, (rf & TN_RAT) ? r.d : 1, o);
 #else
         return false;
@@ -21980,7 +22018,7 @@ RAKUPP_ALWAYS_INLINE bool typedArith(char c, const TNum& l, const TNum& r, const
 }
 
 // 1 or 0 for a comparison of two typed operands, or -1 where it is declined
-// (a Rat beside a Num).
+// (an unsigned native's `!=`; a Rat without 128-bit integers).
 inline int typedCompare(const std::string& op, const TNum& l, const TNum& r) {
     const char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
     auto cmp = [&](auto a, auto b) -> int {
@@ -21994,9 +22032,9 @@ inline int typedCompare(const std::string& op, const TNum& l, const TNum& r) {
     if (((l.f | r.f) & TN_UNS) && c0 == '!') return -1;   // nativeMixedSignNe's rule
     const unsigned char k = (l.f | r.f) & (TN_NUM | TN_RAT);
     if (!k) return cmp(l.i, r.i);
-    if (k == TN_NUM) return cmp((l.f & TN_NUM) ? l.n : (double)l.i, (r.f & TN_NUM) ? r.n : (double)r.i);
+    // a Num with an Int or a Rat: the Rat as its .Num, as applyArith compares them
+    if (k & TN_NUM) return cmp(typedNumOf(l), typedNumOf(r));
 #if RAKUPP_HAS_INT128
-    if (k & TN_NUM) return -1;
     // exact, across: both denominators are positive
     return cmp((__int128)l.i * ((r.f & TN_RAT) ? r.d : 1), (__int128)r.i * ((l.f & TN_RAT) ? l.d : 1));
 #else
@@ -22096,22 +22134,21 @@ static bool typedOperand(Expr* e, Env* cur, TNum& o) {
 }
 
 // Whether a Binary is the root of a typed subtree: an arithmetic operator or
-// one of the six comparisons over typed operands, at least one of which is
-// itself an operator (two leaves are the fast shape's).
+// one of the six comparisons over typed operands. Asked only of a node the
+// fast shape declined, so two leaves come here when one is a Rat literal
+// (`$x * 1.5`) or both are literals (`1/3`).
 static bool typedTreeRoot(const Binary* b) {
     if (!typedOpArith(b->op) && !typedOpCmp(b->op)) return false;
     const Expr* l = b->lhs.get(); const Expr* r = b->rhs.get();
-    if (!l || !r) return false;
-    const bool inner = l->kind == NK::Binary || l->kind == NK::Unary ||
-                       r->kind == NK::Binary || r->kind == NK::Unary;
-    return inner && typedOperandShape(l, 0) && typedOperandShape(r, 0);
+    return l && r && typedOperandShape(l, 0) && typedOperandShape(r, 0);
 }
 
 // Decide once whether a Binary is a typed-subtree root, and compile it to
 // typedTreeHandler if it is (true).
 [[gnu::noinline]] bool Interpreter::typedTreeDecide(Binary* b) {
     const bool typed = typedTreeRoot(b);
-    b->typedTree = typed ? 1 : 0;
+    auto lit = [](const Expr* x) { return x->kind == NK::IntLit || x->kind == NK::NumLit; };
+    b->typedTree = !typed ? 0 : lit(b->lhs.get()) && lit(b->rhs.get()) ? 2 : 1;
     if (typed && !(Expr::EvalFn)b->handler) b->handler = &Interpreter::typedTreeHandler;
     return typed && (Expr::EvalFn)b->handler == &Interpreter::typedTreeHandler;
 }
@@ -22119,6 +22156,9 @@ static bool typedTreeRoot(const Binary* b) {
 bool Interpreter::typedTreeValue(Binary* b, Value& out) {
     const std::string& op = b->op;
     if (binaryShadowMaybe(op)) return false;
+    if (b->typedTree == 2) {   // two literals: the Value built once, then shared
+        if (const Value* c = static_cast<const Value*>(b->litVal.get())) { out = *c; return true; }
+    }
     Env* const cur = tctx().cur.get();
     TNum l, r;
     if (!typedOperand(b->lhs.get(), cur, l) || !typedOperand(b->rhs.get(), cur, r)) return false;
@@ -22126,11 +22166,16 @@ bool Interpreter::typedTreeValue(Binary* b, Value& out) {
         TNum o;
         if (!typedArith(op[0], l, r, b->lhs.get(), b->rhs.get(), o)) return false;
         out = typedResultValue(o);
-        return true;
     }
-    const int c = typedCompare(op, l, r);
-    if (c < 0) return false;
-    out = Value::boolean(c != 0);
+    else {
+        const int c = typedCompare(op, l, r);
+        if (c < 0) return false;
+        out = Value::boolean(c != 0);
+    }
+    if (b->typedTree == 2) {   // (a racing double-build frees the loser)
+        Value* mine = new Value(out);
+        if (b->litVal.publish(mine) != mine) delete mine;
+    }
     return true;
 }
 

@@ -88,6 +88,42 @@ inline unsigned long long magU(long long v) {
     return v < 0 ? 0ull - (unsigned long long)v : (unsigned long long)v;
 }
 
+#if RAKUPP_HAS_INT128
+// n1/d1 op n2/d2 for `+ - * /` (c), exactly: the small-Rat lane's arithmetic.
+// Every part must be of magnitude under 2**62 and both denominators positive,
+// so each product fits __int128. The result is reduced by a binary gcd, its
+// denominator positive; whether it fits the caller's representation is the
+// caller's to decide. False only for a zero divisor.
+__attribute__((always_inline)) inline bool ratOp128(char c, long long n1, long long d1, long long n2,
+                                                    long long d2, __int128& n, __int128& d) {
+    switch (c) {
+        case '*': n = (__int128)n1 * n2; d = (__int128)d1 * d2; break;
+        case '/': if (n2 == 0) return false; n = (__int128)n1 * d2; d = (__int128)d1 * n2; break;
+        case '+': n = (__int128)n1 * d2 + (__int128)n2 * d1; d = (__int128)d1 * d2; break;
+        default:  n = (__int128)n1 * d2 - (__int128)n2 * d1; d = (__int128)d1 * d2; break;
+    }
+    if (d < 0) { n = -n; d = -d; }
+    // binary gcd: shifts and subtracts instead of ~15 __int128 divisions
+    auto ctz = [](unsigned __int128 x) -> int {
+        const unsigned long long lo = (unsigned long long)x;
+        return lo ? ctzll(lo) : 64 + ctzll((unsigned long long)(x >> 64));
+    };
+    unsigned __int128 a = (unsigned __int128)(n < 0 ? -n : n), b = (unsigned __int128)d, g;
+    if (a && b) {
+        const int sh = ctz(a | b);
+        a >>= ctz(a);
+        while (b) {
+            b >>= ctz(b);
+            if (a > b) { const unsigned __int128 t = a; a = b; b = t; }
+            b -= a;
+        }
+        g = a << sh;
+    } else g = a | b;
+    if (g > 1) { n /= (__int128)g; d /= (__int128)g; }
+    return true;
+}
+#endif
+
 // count leading zeros of a nonzero 64-bit value.
 inline int clzll(unsigned long long x) {
 #if defined(__GNUC__) || defined(__clang__)

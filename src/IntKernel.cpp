@@ -284,13 +284,26 @@ struct Compiler {
     int exactSlot() { const int s = L->nint; L->nint += 2; return s; }
     // An Int or a Num as a Num: an Int literal is converted here, as the
     // generic path would convert it at run time; null for anything else.
+    // A Rat literal is taken only beside a Num (ratLitBesideNum), where the
+    // generic path reads it as its .Num: that Num is computed here, once.
     KNode* asNum(IKernel& k, KNode* n, KT t) {
         if (!n) return nullptr;
         if (t == KT::Num) return n;
+        if (t == KT::Exact && n->op == KOp::XLit) {
+            KNode* l = k.node(KOp::Lit);
+            l->lit = dbits(n->den ? Value::rat(BigInt((long long)n->lit), BigInt((long long)n->den)).toNum()
+                                  : (double)n->lit);
+            return l;
+        }
         if (t != KT::Int) return nullptr;
         if (n->op == KOp::Lit) { KNode* l = k.node(KOp::Lit); l->lit = dbits((double)n->lit); return l; }
         KNode* c = k.node(KOp::NOfInt); c->a = n;
         return c;
+    }
+    // `$x * 1.0000001`: a Rat literal (an exact constant) beside a Num, which
+    // the generic path reads as the literal's .Num. A computed Rat is refused.
+    static bool ratLitBesideNum(const KNode* n, KT t, KT other) {
+        return t == KT::Exact && other == KT::Num && n && n->op == KOp::XLit;
     }
     // An expression read as a condition: a Num is true when it is not zero
     // (its bits are not: -0e0).
@@ -782,7 +795,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // Num is converted, as the generic path converts it
             else if (lt == KT::Int && rt == KT::Int && kop != KOp::NDiv) {}
             // exact: an Int or a Rat on either side (two Ints under `/` make a
-            // Rat), computed exactly; a Num meeting a Rat is left alone
+            // Rat), computed exactly; a Num meeting a Rat literal is the Num lane's below
             else if ((lt == KT::Exact || lt == KT::Int) && (rt == KT::Exact || rt == KT::Int) && L && !L->sub &&
                      kHasExact) {
                 switch (kop) {
@@ -808,7 +821,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // no exact lane, and the Num lane below would answer a Num
             else if (!kHasExact && lt == KT::Int && rt == KT::Int && kop == KOp::NDiv)
                 return refuse("a Rat without 128-bit integers");
-            else if ((lt == KT::Num || lt == KT::Int) && (rt == KT::Num || rt == KT::Int) && L && !L->sub) {
+            else if ((lt == KT::Num || lt == KT::Int || ratLitBesideNum(l, lt, rt)) &&
+                     (rt == KT::Num || rt == KT::Int || ratLitBesideNum(r, rt, lt)) && L && !L->sub) {
                 switch (kop) {
                     case KOp::Add: kop = KOp::NAdd; break;
                     case KOp::Sub: kop = KOp::NSub; break;
@@ -971,7 +985,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 noteOp(a->op.substr(0, 1));
             }
             else if ((a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=") && tt == KT::Num &&
-                     (vt == KT::Num || vt == KT::Int)) {
+                     (vt == KT::Num || vt == KT::Int || ratLitBesideNum(v, vt, tt))) {
                 kop = a->op[0] == '+' ? KOp::NAddTo : a->op[0] == '-' ? KOp::NSubTo
                     : a->op[0] == '*' ? KOp::NMulTo : KOp::NDivTo;
                 v = asNum(k, v, vt);
