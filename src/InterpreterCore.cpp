@@ -11162,6 +11162,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // in a while COND stays visible after the loop
             Env* de = tcx.cur.get();
             while (de->loopFrame && de->parent) de = de->parent.get();
+            // `our $x = …`: the assignment goes into the package's cell (ourCell)
+            if (vd.declScope == "our")
+                if (Value* c = ourCell(ve, de)) return c;
             // Redeclaring a name in the SAME scope is the same variable, not a
             // second one — Rakudo warns and reuses the lexical. That is invisible
             // while the slot holds a plain value, since every reader finds it by
@@ -13611,7 +13614,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 global_->define(sigil + tctx().pkgPrefix + bare, *p);
             }
         }
-        if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1) {
+        // (a name ourCell bound to the package's own cell is one container
+        // already: nothing to publish)
+        if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1 && !ourBoundToCell(ve)) {
             if (Value* p = tctx().cur->find(ve->name)) {
                 std::string qual = ourPublishedName(ve->name, tctx().pkgPrefix);
                 noteSymbolMutation("our-declaration publish");
@@ -30951,6 +30956,9 @@ Value Interpreter::evalVarExpr(Expr* e) {
         std::shared_ptr<Env> deh = tctx().cur;
         while (deh->loopFrame && deh->parent) deh = deh->parent;
         Env* de = deh.get();
+        // a plain `our $x` binds the name to the package's one cell (ourCell)
+        if (vd.declScope == "our")
+            if (Value* c = ourCell(ve, de)) return *c;
         // the first run of a scope a BEGIN-time phaser already filled:
         // `my $x;` declares what is there, it does not reset it
         if (de->staticSeeded && vd.declScope == "my")

@@ -2134,6 +2134,58 @@ PRef<Value> Interpreter::varCell(Env* owner, const std::string& name) {
     return raw->promoteToCell();
 }
 
+// `our $x` declares a NAME for the package's variable, which is one container:
+// a cell held in GLOBAL under the published name, with `$x` in the declaring
+// scope bound to it, as Rakudo binds an `our` lexical to its stash entry. Each
+// run of the declaration binds the name again and nothing else. Before, a run
+// installed a fresh Proxy view as the variable and re-published it, flushing
+// the dispatch cache: `for ^400_000 { our $n += 1 }` cost ~8k instructions a
+// turn (ledger O26), every later read of `$n` was a FETCH call, `for ^3 { our
+// $n; $n++ }` counted to 1, `our $n = 100; for ^3 { our $n; $n++ }` lost the
+// 100, and `{ our $x = 1; $x := 5 }` rebound the package's variable where
+// Rakudo rebinds only the name. Only the plain declaration: a type, default,
+// trait, shape or export keeps the declaration's own path, and so does a
+// published name some other view already answers for (varCell gives null).
+Value* Interpreter::ourCell(const VarExpr* ve, Env* de) {
+    const VarDeclInfo& vd = ve->d();
+    const std::string& n = ve->name;
+    if (!global_ || !de || n.size() < 2 || (n[0] != '$' && n[0] != '@' && n[0] != '%') ||
+        !(nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2)) || n.find("::") != std::string::npos ||
+        ve->viaPseudoPkg || !vd.declType.empty() || !vd.declStubType.empty() || vd.declTypeExpr ||
+        !vd.declCoerce.empty() || vd.declDefault || vd.declDynamic || vd.declExport || vd.declSmiley ||
+        vd.declWhereExpr || !vd.containerIs.empty() || vd.declShape || vd.namedBind)
+        return nullptr;
+    Env* g = global_.get();
+    // (outside a package the published name is the name: no string to build)
+    std::string qual;
+    const std::string& pub = tctx().pkgPrefix.empty() ? n : (qual = ourPublishedName(n, tctx().pkgPrefix));
+    PRef<Value> cell;
+    if (g->localRaw(pub)) {
+        cell = varCell(g, pub);   // a plain slot becomes the cell
+        if (!cell) return nullptr;
+    } else {
+        noteSymbolMutation("our-declaration publish");
+        cell = makePayload<Value>(declInitial(ve, n[0]));
+        g->define(pub, Value::cellHolder(cell));
+    }
+    if (de != g || pub != n) {
+        Value* have = de->localRaw(n);
+        if (!have || !have->isCell() || have->cellS().get() != cell.get()) de->define(n, Value::cellHolder(cell));
+    }
+    return cell.get();
+}
+
+// Does `ve`'s name, as this scope sees it, share the cell its published name
+// holds? Then an `our` assignment has nothing left to publish.
+bool Interpreter::ourBoundToCell(const VarExpr* ve) {
+    if (!global_ || !tctx().cur) return false;
+    Value* lraw = tctx().cur->findRaw(ve->name);
+    if (!lraw || !lraw->isCell()) return false;
+    Value* graw = tctx().pkgPrefix.empty() ? global_->localRaw(ve->name)
+                                           : global_->localRaw(ourPublishedName(ve->name, tctx().pkgPrefix));
+    return graw && graw->isCell() && graw->cellS().get() == lraw->cellS().get();
+}
+
 // The shared cell behind the VARIABLE an already-evaluated expression names —
 // `$v`, or the one `my $v = 42` / `my $ = 42` just declared — promoted on first
 // use, so a Pair built from it (`a => $v`) holds that very container, as

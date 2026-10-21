@@ -2873,6 +2873,10 @@ public:
     // The shared cell behind a variable owned by `owner`, promoting it on first
     // use; null for a slot that holds some other Proxy.
     PRef<Value> varCell(Env* owner, const std::string& name);
+    // `our $x`: the package's cell, with `$x` in `de` bound to it; null when
+    // the declaration is not the plain form (InterpreterCalls.cpp)
+    Value* ourCell(const struct VarExpr* ve, Env* de);
+    bool ourBoundToCell(const struct VarExpr* ve);   // …and is `ve`'s name bound so now?
     Value* peekElemSlot(struct Index* ix);   // an element's slot, never autovivified
     Value decontList(const Value& v);        // a container-holding list's values, fresh
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names

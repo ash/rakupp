@@ -5987,8 +5987,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     // so a BARE `our $v;` — which never reaches the publish in
                     // evalAssign, having no initialiser to assign — is one
                     // container too.
-                    if (sigilVar) global_->define(qual, makeEnvSlotProxy(pkgEnv, sym));
-                    else global_->define(qual, kv.second);
+                    if (sigilVar && !kv.second.isCell()) global_->define(qual, makeEnvSlotProxy(pkgEnv, sym));
+                    else global_->define(qual, kv.second);   // (…or the cell ourCell bound it to: one container)
                 }
                 // During a `use` load, `is export` subs of a braced module also
                 // surface BARE to the importer (same-file code still sees only

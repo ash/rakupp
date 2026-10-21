@@ -95,8 +95,9 @@ Headline numbers, the final binary against the base tree:
 ## Fixed after the review
 
 O2–O4 of the ledger below, the same day, against the same base (cce315ef),
-and O24 against the O2–O4 commit (1918e400); each regression file runs clean
-under Rakudo and fails on its base.
+O24 against the O2–O4 commit (1918e400), and O26, found fixing O24, against
+O24's (dc76aa01); each regression file runs clean under Rakudo and fails on
+its base.
 
 | # | What | Where | Evidence |
 |---|---|---|---|
@@ -104,6 +105,7 @@ under Rakudo and fails on its base.
 | O3 | `.split('')` splits graphemes; `<space>` and `<cntrl>` (every built-in rule's ASCII lane) take a CR LF whole, as `\s` does; sprintf's `%s` width and precision count graphemes; `Match.raku` prints character offsets; `.indices` and `.contains(/rx/)` take a character position, found in the folded text under `:i`/`:m`. `charToByte` had no caller left and is gone (O21) | MethodCallPart3.cpp, Regex.cpp, Builtins.cpp, MethodCallTail.cpp | t/regression/grapheme-units-split-rules-sprintf.raku, 36 checks failing on the base |
 | O4 | `uc`, `lc`, `tc`, `chars` and `ord` as subs: a plain Str or Int keeps the short path and anything else is the method, so a Junction autothreads, an object answers with its own, and `chars($buf)` refuses as `.chars` does. `--exe -O`'s fastB table calls the same functions | BuiltinsSupply.cpp, BuiltinsRegister2.cpp | t/regression/case-subs-dispatch-as-methods.raku, 13 checks failing on the base; the same file under `--exe -O`, `--jit` and `--cnp` |
 | O24 | Standard input is read a block at a time. std::cin keeps no buffer of its own (it is synced with C stdio, and libc++ ignores `sync_with_stdio(false)`), so every `std::getline(std::cin, …)` and `ss << std::cin.rdbuf()` was a virtual call down to `getc` per character — over a thousand instructions a byte; a bare C++ getline loop over the file was 37.3G of the 40G. `stdinGetLine` and `stdinReadAll` read the same `stdin` FILE with getline(3) and fread, so `.read`, `.getc` and stdinReadAhead still see one stream, a line still arrives while the writer holds the pipe open, and std::cin's eof/fail bits come out as std::getline leaves them. std::getline's sentry flushed `$*OUT` before every line; the flush now comes before a read that may wait (stdio holds no whole line), so a raised `out-buffer` still shows its answer before blocking. An embedder's fed text (`rk_set_input`) is std::cin's own string buffer and keeps the old reader | MethodCallPart3.cpp (`$*IN.get`, `.lines` streamed and eager, `.slurp`, `nl-in`), BuiltinsRegister.cpp (`lines()` under `-n`/`-p`, `prompt`, `words()`), InterpreterBinding.cpp (`$*ARGFILES` `-`) | t/regression/stdin-reads-a-block-at-a-time.raku: 15 checks, the base fails its speed check (6× `.IO.lines`; now 0.6×). Instructions, 32 MB / 400k ASCII lines, base → now: `$*IN.lines` 40.0G → 2.90G, `lines()` 40.0G → 2.90G, `-n` 44.1G → 7.0G, a `$*IN.get` loop 45.5G → 8.5G, `$*IN.slurp` 57.4G → 0.19G; `.IO.lines` 4.6G. 27 MB / 300k lines of Latin, Greek, Cyrillic and CJK: `$*IN.lines` 43.4G → 11.9G, `-n` 46.5G → 15.0G, `.get` loop 47.6G → 16.1G, `.slurp` 56.4G → 7.9G; `.IO.lines` 13.4G. Rakudo reads the ASCII file from stdin in 3.5G. Like for like, stdin is now cheaper than a file: `-n` against `for $f.IO.lines -> $_ is copy { our $n += .chars }` 7.0G vs 8.2G, `$*IN.get` against `$fh.get` 8.4G vs 9.3G; what `-n` still pays over `lines()` is O26 and `is copy` (~1.9k a line) |
+| O26 | A plain `our $x` (no type, default, trait, shape or export) names the package's one container: a cell under the published name in GLOBAL, with the declaring scope's `$x` bound to it, as Rakudo binds an `our` lexical to its stash entry, so re-running the declaration only binds the name again. Each run used to make the variable a fresh closure Proxy onto the scope that ran it and publish that view again (`noteSymbolMutation`, which also flushed the multi-dispatch cache), and every later read was a FETCH call. The views also lost the variable: in a file, `for ^3 { our $n += 1 }` and a bare `our $n; $n++` counted to 1, a value set before the loop or through `$GLOBAL::` was dropped, `$P::q` missed a package loop's writes, a `.map` block and routines made in a loop each saw their own, `temp` restored to Any, and `$x := 5` rebound the package's variable where Rakudo rebinds the name only. The assignment publish (`evalAssign`) and the module-load republish leave a cell-bound name alone | InterpreterCalls.cpp (`ourCell`, `ourBoundToCell`), InterpreterCore.cpp (the `our` declare arms of `evalVarExpr` and `lvalue`, the `evalAssign` publish), InterpreterModules.cpp (republish), Interpreter.h | t/regression/our-is-one-container.raku: 31 checks, 20 failing on the base. Instructions, dc76aa01 → now: `for ^400_000 { our $n += 1 }` 3.35G → 1.69G, `{ our $n; $n += 1 }` 4.01G → 1.86G, a bare `{ our $n }` 1.70G → 0.98G (a bare `{ my $n }` is 0.99G), `{ our $n = 1 }` 3.47G → 2.07G, `sub f { our $n += 1 }` × 400k 4.92G → 2.95G; `-ne 'our $n += .chars; END say $n'` over 400k lines 7.09G → 5.54G. The rest is O27. Roast list and totals identical; perf-guard −0.5%…+0.2% in instructions |
 
 ## Open: the ledger
 
@@ -160,15 +162,26 @@ coordinator.
   - `"abc".indices("", 5)` is `(3)` (Rakudo `()`), `"abc".contains(/$/, 3)`
     True (Rakudo False), `"abc".split('', 1)` a Seq (Rakudo a List).
 
+- **O28. `our` forms O26 left on the old path** (found fixing it; Rakudo
+  2026.09 answers in brackets): a method's `our $k` inside `class C {
+  our $k = 5; method k { our $k } }` reads GLOBAL's `$k`, so `C.k` is
+  (Any) [5]: the method runs under its caller's package prefix. A TYPED or
+  defaulted `our` re-run in a loop still gets the per-run view: `for ^3 {
+  our Str $t ~= "x" }` gives `x` [`xxx`], `for ^2 { our $d is default(5);
+  $d++ }` 2 [7].
+
 ### Speed
 
-- **O26. `our $x` declared inside a loop body costs ~8k instructions an
-  iteration**: `for ^400_000 { our $n += 1 }` takes 3.31G instructions,
-  `my $n` or an `our $n` declared before the loop 0.047G (~35 an
-  iteration). It is how a `-n` one-liner keeps a total for its `END`
-  (`-ne 'our $n += .chars; END say $n'`), and it is 2.7G of that
-  program's 7.0G over 400k lines now that O24 is fixed. Found measuring
-  O24.
+- **O27. A variable outside the pad pays the full assignment path**: an
+  `our` name is never a pad slot (resolvePads' `slottableDecl` takes `my`
+  only), so `$n += 1` on one goes through `evalAssignInner` rather than the
+  simple-assign lane: with the kernels off, `our $n = 0; for ^400_000 {
+  $n += 1 }` is 1.13G instructions against 0.42G for `my $n` (~1.8k a
+  turn), and the `-n` total of O26 still pays it on every line (5.54G,
+  against 3.84G for the same loop over a `my`). A slot would hold the
+  cell ourCell binds (padPtrIn already derefs one), but the IntKernel's
+  declaration handling and the module republish, which reads only the
+  name map, have to learn about it first. Found fixing O26.
 - **O25. Fix 3's own `$_` is defined for any sub with an nqp op in it**:
   mayUseTopic's `default: return true` covers NqpOp, so since cce315ef a
   plain sub whose body holds `nqp::…` defines `$_` (Env::define, a hash
