@@ -3345,6 +3345,29 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     return false;
 }
 
+// A sigilled symbol in GLOBAL's own table: an `our` variable or routine, a lax
+// variable, a qualified write. Not a `my` the mainline keeps in its pad, a
+// built-in, or a name nobody declared — evaluating the name had answered for
+// those with what an undeclared read gives back, so `GLOBAL::<@zzz>:exists` was
+// True (ledger O31) — and not a LEXICAL routine (`sub f`, `my sub f`, a plain
+// `multi`), which sits in the mainline's table under its own name but is no
+// package symbol: `GLOBAL::<&f>:exists` is False for it, and `GLOBAL::{'&f'}`
+// Any (O32). The parser spells `GLOBAL::<$x>` as `$GLOBAL::x`; the table keeps
+// it as `$x`, and some writes under the long spelling. Null when it is not there.
+Value* Interpreter::globalTableSlot(const std::string& key) {
+    if (!global_ || key.size() < 2 || !std::strchr("$@%&", key[0])) return nullptr;
+    std::string bare = key;
+    if (key.size() > 9 && key.compare(1, 8, "GLOBAL::") == 0) bare = key.substr(0, 1) + key.substr(9);
+    auto it = global_->vars.find(bare);
+    if (it == global_->vars.end()) it = global_->vars.find(bare.substr(0, 1) + "GLOBAL::" + bare.substr(1));
+    if (it == global_->vars.end()) return nullptr;
+    Value* v = it->second.deref();
+    if (bare[0] == '&' && v->t == VT::Code && v->code() && v->code()->ci().lexicalSub &&
+        v->code()->ci().name == bare.substr(1))
+        return nullptr;
+    return v;
+}
+
 Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, ValueList& args) {
     if (m == "WHO") return self;
     const std::string key = args.empty() ? std::string() : args[0].toStr();
@@ -3359,22 +3382,12 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
         return f;
     }
     if (m == "EXISTS-KEY") {
-        // GLOBAL:: is the package's own table: an `our` variable or routine, a
-        // lax variable, a qualified write — not a `my` the mainline keeps in its
-        // pad, a built-in, or a name nobody declared. Evaluating the name
-        // answered for those with whatever an undeclared read gives back (an
-        // empty container, a routine), so `GLOBAL::<@zzz>:exists` was True
-        // (ledger O31). Only the existence question: a read keeps its path.
+        // GLOBAL:: is the package's own table (globalTableSlot), not whatever
+        // evaluating the name finds (ledger O31). Only the existence question:
+        // a read keeps its path.
         if (self.t == VT::Object && self.obj() && global_ && !key.empty() && std::strchr("$@%&", key[0])) {
             auto& at = self.obj()->attrs;
-            // (the parser spells `GLOBAL::<$x>` as `$GLOBAL::x`; the table keeps
-            // it as `$x`, and some writes under the long spelling)
-            if (at.count("mode") && at["mode"].toStr() == "G") {
-                std::string bare = key;
-                if (key.size() > 9 && key.compare(1, 8, "GLOBAL::") == 0) bare = key.substr(0, 1) + key.substr(9);
-                return Value::boolean(global_->vars.count(bare) > 0 ||
-                                      (bare.size() > 1 && global_->vars.count(bare.substr(0, 1) + "GLOBAL::" + bare.substr(1)) > 0));
-            }
+            if (at.count("mode") && at["mode"].toStr() == "G") return Value::boolean(globalTableSlot(key) != nullptr);
         }
         Value out;
         return Value::boolean(pseudoStashGet(self, key, out));

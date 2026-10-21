@@ -5063,7 +5063,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 c.code()->ciM().params = prms;
                 c.code()->ciM().body = &sd->body;
                 c.code()->ciM().langRev = langRev_;
-                c.code()->ciM().rakuAst = rakuAstPragma_;
+                c.code()->ciM().rakuAst = rakuAstPragma_; c.code()->ciM().lexicalSub = !sd->isOur && !sname.empty();
                 c.code()->closure = tctx().cur;
                 if (sd->retLiteralPresent && !sd->body.empty() && sd->body.back()->kind == NK::ExprStmt)
                     c.code()->ciM().retLiteral = static_cast<const ExprStmt*>(sd->body.back().get())->e.get();
@@ -5316,17 +5316,17 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         existing->code()->ci().isMultiDispatcher && tctx().cur->local(key) != existing) {
                         Value fresh; fresh.t = VT::Code; fresh.setCode(makePayload<Callable>());
                         fresh.code()->ciM().name = sname;
-                        fresh.code()->ciM().isMultiDispatcher = true;
+                        fresh.code()->ciM().isMultiDispatcher = true; fresh.code()->ciM().lexicalSub = !sd->isOur;
                         if (!sd->isProto) fresh.code()->coldM().candidates = existing->code()->cold().candidates;
                         tctx().cur->define(key, fresh);
                         existing = tctx().cur->local(key);
                     }
                     if (existing && existing->t == VT::Code && existing->code() && existing->code()->ci().isMultiDispatcher) {
-                        disp = existing->code(); dispVal = *existing;
+                        disp = existing->code(); dispVal = *existing; if (sd->isOur) disp->ciM().lexicalSub = false;   // (an `our multi`: the package's)
                     } else {
                         dispVal.t = VT::Code; dispVal.setCode(makePayload<Callable>());
                         dispVal.code()->ciM().name = sname;
-                        dispVal.code()->ciM().isMultiDispatcher = true;
+                        dispVal.code()->ciM().isMultiDispatcher = true; dispVal.code()->ciM().lexicalSub = !sd->isOur;
                         disp = dispVal.code();
                         tctx().cur->define(key, dispVal);
                     }

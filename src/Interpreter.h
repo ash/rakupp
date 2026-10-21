@@ -2882,6 +2882,7 @@ public:
     Value* ourCell(const struct VarExpr* ve, Env* de, Value* init = nullptr);
     bool ourBoundToCell(const struct VarExpr* ve);   // …and is `ve`'s name bound so now?
     const std::string& ourPkgPrefix(Env* de);        // …the package it belongs to, lexically
+    Value* globalTableSlot(const std::string& key);   // a sigilled symbol in GLOBAL's own table (O31/O32)
     static bool ourShareable(const struct VarExpr* ve); // …may it share the cell at all?
     static bool ourPlain(const struct VarExpr* ve);     // …with nothing for its scope to record?
     // the simple-assign lane's container for a name bound to a shared cell, or

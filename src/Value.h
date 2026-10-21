@@ -707,6 +707,10 @@ struct CodeInfo : RefCounted {
     mutable DecidedOnce<uint64_t> retFastKey{0};
     mutable DecidedOnce<ClassInfo*> retFastCls{nullptr};
     bool isMultiDispatcher = false;
+    // a NAMED routine declared without `our` (`sub f`, `my sub f`, `multi f`):
+    // lexical, so not its package's symbol however it was installed —
+    // `GLOBAL::<&f>:exists` is False for it (ledger O32)
+    bool lexicalSub = false;
     bool isMultiCandidate = false;                  // declared `multi` — dispatch may pass it over
     bool isProto = false;                           // `proto` — a dispatch group header, not a candidate
     bool isProtoBody = false;                       // …and its body is more than a bare `{*}`: the proto

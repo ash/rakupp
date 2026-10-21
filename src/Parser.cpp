@@ -9663,6 +9663,7 @@ ExprPtr Parser::parsePrimary() {
                         // `OUR::{EXPR}` keeps its head as CALLER's does: it is
                         // the package's symbol, not the innermost frame's
                         if (pseudoPkg == "OUR") sr->pkg = pseudoPkg;
+                        sr->globalStash = pseudoPkg == "GLOBAL" && name == "GLOBAL::";
                         return sr;
                     }
                     // `CORE::<Int>` — a sigilless key is a type or package name,

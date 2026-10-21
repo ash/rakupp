@@ -11400,6 +11400,13 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         std::string nm = symRefName(sr, &callerHead, &rawNm);
         if (nm.empty())
             throw RakuError{Value::typeObj("X::NoSuchSymbol"), "Cannot look up empty name"};
+        // `GLOBAL::{'$x'} = …` writes GLOBAL's table, making the slot as a
+        // Stash's key assignment does (ledger O32: an undeclared `$x` died
+        // X::Undeclared), under the bare name a qualified write uses too
+        if (sr->globalStash && global_ && sr->segs.empty() && nm.size() > 1 && std::strchr("$@%&", nm[0])) {
+            if (Value* p = globalTableSlot(nm)) return p;
+            return &global_->define(nm, nm[0] == '@' ? Value::array() : nm[0] == '%' ? Value::makeHash() : Value::any());
+        }
         // `OUR::{'&f'} := …` while a package body runs is the package's
         // symbol, from a block INSIDE the body too: Air::Base fills its `my
         // package EXPORT::DEFAULT` from a `for` loop. The slot is the package
@@ -28997,6 +29004,23 @@ struct RatLitParts {
         }
         case NK::SymbolicRef: {
             auto* sr = static_cast<SymbolicRef*>(e);
+            // `GLOBAL::{EXPR}` reads GLOBAL's table as a Stash's key: a sigilled
+            // symbol that is not there is Any, not the lexical or the
+            // X::NoSuchSymbol `::(…)` answers with (ledger O32). A sigilless one
+            // (a type, a package) resolves as `::(…)` does, the key evaluated once.
+            if (sr->globalStash && sr->nameExpr && sr->segs.empty()) {
+                const std::string k = eval(sr->nameExpr.get()).toStr();
+                if (!k.empty() && std::strchr("$@%&", k[0])) {
+                    Value* p = globalTableSlot(k);
+                    if (!p) return Value::any();
+                    if (p->t == VT::Hash && p->hashKind == proxyKind()) return deproxy(*p);
+                    return *p;
+                }
+                SymbolicRef byName;
+                byName.nameExpr = std::make_unique<StrLit>(k);
+                byName.line = e->line;
+                return eval(&byName);
+            }
             bool callerHead = false, settingTail = false;
             std::string rawNm;
             std::string nm = symRefName(sr, &callerHead, &rawNm, &settingTail);

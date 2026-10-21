@@ -396,6 +396,7 @@ struct SymbolicRef : Expr {
     std::vector<ExprPtr> segs; // trailing `::seg` path parts (literal StrLit or dynamic `::(…)`)
     std::string pkg;      // optional package qualifier `Foo::($bar)` → "Foo"
     std::string sigil;    // sigil form `$::(…)`/`@::(…)`/`%::(…)`/`&::(…)`; empty = bare `::(…)`
+    bool globalStash = false;   // `GLOBAL::{EXPR}`: a READ of GLOBAL's table (a missing key is Any)
     SymbolicRef(): Expr(NK::SymbolicRef) {}
 };
 
