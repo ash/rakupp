@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: d7c6d9d5 and 3e97932e (FLOAT-HEAVY-ISSUES).*
+*Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES).*
 
 ---
 
@@ -107,20 +107,37 @@ interpreted.
   interpreter's lean call path dropped what keeps the List's containers, and
   `$x[0] = 5` died "Cannot modify an immutable List".
 
+- **A compiled routine applies its `--> T`** (e30e2827): `sub r(--> Int) {
+  "x" }` answered "x" with or without -O, `--> Str()` did not coerce and
+  `--> Int:D` passed Int. Every way out is checked, in top-level, lexical and
+  anonymous subs, multi candidates, methods and pointy blocks, as the
+  interpreter checks it; a value of a core type passes inline, at no cost
+  measurable against the unchecked call (`--> Num` -O: 10.6 → 10.3 ns).
+- **A write through a kept List into a typed variable is checked**
+  (e30e2827), in both engines: `my Int $a; sub f($x) { $x[0] = "s" };
+  f(($a, 2))` stored the Str, and a Nil there stayed Nil instead of
+  resetting to the default.
+
 ### Fixed: crashes
+
+- **A worker thread's teardown no longer races the cycle collector**
+  (e30e2827). A worker gave its count back at the end of its body, before its
+  closure, ExecContext and frame pools were let go, and a collection on the
+  main thread could walk containers that teardown was freeing: Roast's
+  S07-hyperrace/basics.t segfaulted about one run in six. 300 runs, none.
+- **`-O` compiles a `--> Int` sub of no parameters that is an int kernel**
+  (e30e2827); its kernel guard named an `__a` its direct overload has not got.
 
 ### Left open
 
 - Issues 2, 4 and 14 still bundle the mainline; 10 (a `use`d module's sub
   costs ~6× compiled) and 21 (no array-element loop lane) are unchanged.
-- Found and open, the same on v5.5.0: a write through a kept List into a
-  typed variable (`my Int $a; f(($a, 2))`) is not type-checked, nor a Nil
-  reset; `sub f(int $x) { $x * 2**62 }` answers a BigInt where Rakudo wraps;
-  a `fail` in a block written at the mainline returns from the routine that
-  runs it (Rakudo dies); and a compiled routine called directly does not
-  check its `--> T`. Roast's S07-hyperrace/basics.t segfaults in its last
-  test about one run in six (as on d7c6d9d5); t/jit/run.raku's tier-up cases
-  calls, elements, inline, methods and natives enter no kernel.
+- Found and open, the same on v5.5.0: `sub f(int $x) { $x * 2**62 }`
+  answers a BigInt where Rakudo wraps; a `--> num` routine returning a Str
+  hands it back where Rakudo dies; a `fail` in a block written at the
+  mainline returns from the routine that runs it (Rakudo dies); and
+  t/jit/run.raku's tier-up cases calls, elements, inline, methods and
+  natives enter no kernel.
 - t/exe/fuzz.raku's 20 `*-shadow` programs, which failed at parse time on
   v5.5.0, were not valid Raku (Rakudo refuses them too); the generator now
   writes valid ones, and all 232 programs agree.
