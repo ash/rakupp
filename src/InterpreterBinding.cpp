@@ -5292,6 +5292,12 @@ void Interpreter::enforceTypedValue(const std::string& nm, const std::string& wa
             (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
 }
 
+const Callable& rtRetCallable(const char* retType) {
+    auto* keep = new PRef<Callable>(makePayload<Callable>());   // (a function-local static holds it)
+    (*keep)->coldM().retType = retType;
+    return **keep;
+}
+
 // --exe: a store into a `$` variable the program declared `want`. A Nil resets
 // it to the declared type, as `=` resets a typed container; anything else is
 // checked as the interpreter checks the same store (enforceTypedValue). Compiled
@@ -5455,11 +5461,29 @@ Value rtObjHash(const Value& v) {
 // as before: an Array copied from such a List is not to write the variables
 // (rtArrayVal decontainerizes the copy). (A user's Proxy has a STORE to call,
 // which a reference cannot; it is taken as before.)
+// …and a kept item for a TYPED variable (noteKeptVarType) is noted, so that
+// the store a module routine's `X[k] = v` makes through it is checked as `=`
+// into the variable checks it (rtKeptAssign)
+thread_local KeptItem t_keptItem;
 static Value& elemWriteTarget(Value& slot, bool list) {
     if (slot.isCell()) return *slot.deref();
     if (list)
-        if (PRef<Value> c = cellOfProxy(&slot)) return *c;
+        if (PRef<Value> c = cellOfProxy(&slot)) {
+            if (g_cbInterp && g_cbInterp->keptTyped(slot)) t_keptItem = {&slot, c.get()};
+            return *c;
+        }
     return slot;
+}
+void RtKept::check(Interpreter& I, Value& r) {
+    if (!proxy) return;
+    try { r = I.keptTypedStore(*proxy, r); }
+    catch (...) { r = std::move(old); throw; }
+}
+Value& rtKeptAssign(Interpreter& I, Value& ref, Value v) {
+    const KeptItem k = t_keptItem;
+    t_keptItem = {};
+    ref = k.cell == &ref ? I.keptTypedStore(*k.proxy, std::move(v)) : std::move(v);
+    return ref;
 }
 // stepOp: the `postfix:<++>` / `prefix:<-->` a step site resolves the place for
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp) {

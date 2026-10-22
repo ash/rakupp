@@ -1737,29 +1737,6 @@ inline Value hashEntryPair(const Value& h, const std::string& key, Value& entry)
 // and carried along by a plain Value copy, which is exactly what "the same
 // object" means for these. `whichOf` reads it; `===` compares that.
 // Blob stays out: it is immutable and compares by value in Rakudo too.
-// The type NAMED by a declared return type: `Map()` (a coercion) and `Map` (a
-// check) both name Map. Coercing-ness is retTypeCoerces() below.
-// A COERCION keeps its source in the parens: `Str(Numeric:D)`, `Foo\x01D()`.
-inline bool retTypeCoerces(const std::string& rt) {
-    return rt.size() > 2 && rt.back() == ')' && rt.find('(') != std::string::npos;
-}
-inline std::string retTypeName(const std::string& rt) {
-    std::string t = retTypeCoerces(rt) ? rt.substr(0, rt.find('(')) : rt;
-    // a `\x01D`/`\x01U` suffix records a `--> T:D`/`--> T:U` smiley
-    if (t.size() > 2 && t[t.size() - 2] == '\x01') t.resize(t.size() - 2);
-    return t;
-}
-inline char retTypeSmiley(const std::string& rt) {
-    std::string t = retTypeCoerces(rt) ? rt.substr(0, rt.find('(')) : rt;
-    return t.size() > 2 && t[t.size() - 2] == '\x01' ? t.back() : 0;
-}
-// the SOURCE type of a coercion (`Numeric:D` of `Str(Numeric:D)`), "" for `()`
-inline std::string retTypeCoerceFrom(const std::string& rt) {
-    if (!retTypeCoerces(rt)) return "";
-    size_t o = rt.find('(');
-    return rt.substr(o + 1, rt.size() - o - 2);
-}
-
 inline bool identityScalar(const Value& v) {
     return (v.t == VT::Str && v.hashKind == "Buf") ||
            ((v.t == VT::Num || v.t == VT::Int || v.t == VT::Rat) &&

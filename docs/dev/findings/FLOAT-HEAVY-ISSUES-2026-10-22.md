@@ -729,22 +729,43 @@ a regression file.
   after that body has read the outer counter, which Rakudo refuses to compile
   as rakupp does. The generator now names the inner counter apart; the loop
   variable `$a` still shadows.
-- **Not fixed.** Interpreter and compiled code against Rakudo: a write
-  through a kept List into a typed variable (`my Int $a; f(($a, 2))` writing
-  a Str) is not type-checked, and a Nil written there is not reset to the
-  type; a native `int` times an Int that does not fit (`sub f(int $x) { $x *
-  2**62 }; f(3)`) is the BigInt 13835058055282163712 where Rakudo wraps to
-  -4611686018427387904; and a `fail` in a block written at the mainline,
-  run by a routine, returns from that routine where Rakudo dies (Test's
-  `eval-lives-ok` relies on a `fail` at a string's top level returning).
-  Compiled against interpreted: a direct call of a compiled routine does not
-  check its `--> T` (`sub r(--> Int) { "x" }` answers "x"). Roast's
-  `S07-hyperrace/basics.t` segfaults in its last test (one RaceSeq iterator
-  pulled from several threads) about one run in six, on d7c6d9d5 as on the
-  second pass. On the second pass, `t/exe/run.raku`'s one `-O` disagreement
-  and `t/jit/run.raku`'s three are files that print a timing; five of the
-  JIT gate's 21 tier-up cases (calls, elements, inline, methods, natives)
-  still enter no kernel, as on v5.5.0.
+- **Third pass**, each on v5.5.0 too:
+  - Roast's `S07-hyperrace/basics.t` segfaulted in its last test (one
+    RaceSeq iterator pulled from several threads) about one run in six
+    (`worker-exit-vs-cycle-collector.raku`). A worker gave its count in
+    `liveWorkers_` back at the end of its body, before its closure's captures,
+    its ExecContext and its frame pools were let go; the cycle collector,
+    which runs on the main thread once that count is 0, walked containers
+    those releases were freeing. The count now goes back when the thread has
+    let go of everything (`WorkerExit`, the thread's first thread_local):
+    300 runs of that file without a crash.
+  - A compiled routine did not apply its `--> T`
+    (`exe-return-type-checks.raku`): `sub r(--> Int) { "x" }` answered "x",
+    `--> Str()` did not coerce, `--> Int:D` passed Int. Every way out of a
+    top-level, lexical or anonymous sub, multi candidate, method or pointy
+    block is checked now (`Codegen::retWrap`, by `checkRetType`; a value of a
+    core type passes inline, at no cost measurable against 41e4d32c's
+    unchecked call). On the way: `-O` did not
+    compile a `--> Int` sub of no parameters that is an int kernel (its
+    kernel guard named the `__a` its direct overload has not got).
+  - A write through a kept List into a typed variable was not checked, in
+    either engine (`kept-list-typed-writes.raku`): `my Int $a; f(($a, 2))`
+    writing a Str stored it, and a Nil stayed Nil instead of resetting to the
+    default. The kept item carries the variable's type, name and default;
+    interpreted, a store through it checks them, and compiled, where only a
+    bundle's module-mode routines meet such a List, `X[k] = v` and `X[k] op=
+    v` do.
+- **Not fixed.** Interpreter against Rakudo: a native `int` times an Int that
+  does not fit (`sub f(int $x) { $x * 2**62 }; f(3)`) is the BigInt
+  13835058055282163712 where Rakudo wraps to -4611686018427387904; a `--> num`
+  routine returning a Str hands it back where Rakudo dies ("This type cannot
+  unbox to a native number"); and a `fail` in a block written at the
+  mainline, run by a routine, returns from that routine where Rakudo dies
+  (Test's `eval-lives-ok` relies on a `fail` at a string's top level
+  returning). On the third pass `t/exe/run.raku`'s three `-O` disagreements
+  and `t/jit/run.raku`'s three are files that print a measurement, and five
+  of the JIT gate's 21 tier-up cases (calls, elements, inline, methods,
+  natives) still enter no kernel, as on v5.5.0.
 - **Rakudo itself:** `Num.Rat(0)` never returns for some doubles (issue 1),
   and in a long run Rakudo answers ever more slowly, growing past a gigabyte
   on pairs it answers at once in a fresh process.

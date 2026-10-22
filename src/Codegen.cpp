@@ -759,6 +759,40 @@ struct Codegen {
     // goes past every routine that is not that frame: an unframed one is never
     // it, and caught it all the same — `sub q { ap({ fail "z" }); … }` returned
     // the Failure from ap, and q sank it and died.
+    // The `--> T` a compiled routine applies on every way out (retWrap), or ""
+    // for none to apply: none written, a native (the interpreter checks none:
+    // a boxed value has no native tag), Mu or Any, or a name codegen cannot
+    // tell is a type — a constant naming one, a type capture, a parameterized
+    // type — which the interpreter resolves in the routine's scope. A module
+    // routine's call is the interpreter's, which applies it (checkRetType).
+    std::string retCheckOf(const std::string& rt) const {
+        if (rt.empty() || moduleMode_) return "";
+        auto known = [&](std::string t) {
+            if (t.size() > 2 && t[t.size() - 2] == ':') t.resize(t.size() - 2);   // `Numeric:D`
+            return !t.empty() && t.find_first_of("[(:\x01") == std::string::npos && t != "Mu" &&
+                   t != "Any" && !isNativeTypeName(t) && (isKnownTypeName(t) || classNames.count(t));
+        };
+        if (!known(retTypeName(rt))) return "";
+        if (retTypeCoerces(rt) && !retTypeCoerceFrom(rt).empty() && !known(retTypeCoerceFrom(rt))) return "";
+        return rt;
+    }
+    // …and `bodyText` — a routine body's statements, its ReturnEx catch
+    // included — so wrapped: what it returns, by any `return`, is checked
+    std::string retWrap(const std::string& rt, const std::string& bodyText) {
+        const std::string ck = retCheckOf(rt);
+        if (ck.empty()) return bodyText;
+        Param tp; tp.type = retTypeSmiley(ck) == 'U' ? std::string() : retTypeName(ck);
+        const std::string rv = gensym("__rv"), rc = gensym("__rc");
+        // (into a local the return elides, and the Callable built on the slow
+        // path alone: a value moved through a parameter, and the static's
+        // guard, cost a `--> Num` sub 40%)
+        return "    Value " + rv + " = [&]() -> Value {\n" + bodyText + "    }();\n"
+               "    if (!rtTypedFast(" + rv + ", " + std::string(typedFastCode(tp)) + ")) {\n"
+               "        static const Callable& " + rc + " = rtRetCallable(" + cesc(ck) + ");\n"
+               "        " + rv + " = RT.checkRetType(" + rc + ", std::move(" + rv + "));\n"
+               "    }\n"
+               "    return " + rv + ";\n";
+    }
     static std::string routineCatch(bool framed) {
         return framed ? "catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }"
                       : "catch (ReturnEx& __r) { if (__r.target) throw; return __r.v; }";
@@ -1801,8 +1835,9 @@ struct Codegen {
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
         const bool framed = __fs.used();
-        return "[=](ValueList& __a)->Value{ " + (framed ? framePrologue() : std::string()) +
-               "try {\n" + body + "} " + routineCatch(framed) + " }";
+        return "[=](ValueList& __a)->Value{\n" +
+               retWrap(d->retType, (framed ? framePrologue() : std::string()) +
+                                   "try {\n" + body + "} " + routineCatch(framed) + "\n") + "}";
     }
     // May calls of this lexical sub go straight to its body (lexDirect_)? As a
     // top-level sub's do: a plain signature the call site can match by count
@@ -2000,9 +2035,10 @@ struct Codegen {
         // a plain block stays TRANSPARENT so `return` reaches the enclosing sub
         const bool framed = __fs && __fs->used();
         std::string mk = be->isSub
-            ? "Value::closure([=](ValueList& __a)->Value{ " + (framed ? framePrologue() : std::string()) +
-              "try {\n" + body + "} " + routineCatch(framed) + " })"
-            : "Value::closure([=](ValueList& __a)->Value{\n" + body + "})";
+            ? "Value::closure([=](ValueList& __a)->Value{\n" +
+              retWrap(be->retType, (framed ? framePrologue() : std::string()) +
+                                   "try {\n" + body + "} " + routineCatch(framed) + "\n") + "})"
+            : "Value::closure([=](ValueList& __a)->Value{\n" + retWrap(be->retType, body) + "})";   // (`-> $x --> Int`)
         // A written signature (pointy params, `sub (…)`) rides in as the Code's
         // params — which is also what tells sort/map/for how many elements to
         // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
@@ -4197,6 +4233,13 @@ struct Codegen {
                 return lvalueExpr(tgt) + " = rtAttrNil(" + self_ + ", " + cesc(v->name.substr(2)) + ", " +
                        coerceFor(tgt, rhs, a->value.get()) + ")";
         }
+        // A module routine's `X[k] = v` may write through a List the interpreter
+        // kept (keepListContainers), whose item for a TYPED variable checks what
+        // it takes (rtKeptAssign). The value first, as `=` has it; a native
+        // program never holds such a List.
+        if (a->op == "=" && moduleMode_ && tgt->kind == NK::Index)
+            return "([&]() -> Value& { Value __kv = " + coerceFor(tgt, rhs, a->value.get()) +
+                   "; t_keptItem = {}; return rtKeptAssign(RT, " + lvalueExpr(tgt) + ", std::move(__kv)); }())";
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
         const std::string ubinop = a->written().substr(0, a->written().size() - 1);   // `×=`: `infix:<×>`
@@ -4230,20 +4273,23 @@ struct Codegen {
         // compound assignment to an index binds the slot once (avoids double side effects)
         if (tgt->kind == NK::Index) {
             std::string ref = lvalueExpr(tgt);
-            if (binop == "~") // in-place append (O(n) string building) — default, not -O-gated
-                return "([&]()->Value{ Value& __r = " + ref + "; rtCatAssign(__r, " + rhs + "); return __r; }())";
-            if (binop == ",")   // the metaop over `infix:<,>` — see rtCommaAssign
-                return "([&]()->Value{ Value& __r = " + ref + "; rtCommaAssign(__r, " + rhs + "); return __r; }())";
-            std::string fb = binop == "*" ? std::string() : fastBin(binop); // see `*=` note below
+            std::string fb = binop == "*" || binop == "~" || binop == "," ? std::string() : fastBin(binop); // see `*=` note below
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
                            : binop == "//" ? "!rtIsDefined(__r) ? (" + rhs + ") : __r"
                            : !fb.empty() ? fb + "(__r, " + rhs + ")"
                            : "applyArith(" + cesc(binop) + ", __r, " + rhs + ")";
-            if (fb.empty() && binop != "||" && binop != "&&" && binop != "//")
-                return "([&]()->Value{ Value& __r = " + ref + "; return applyArithInto("
-                       + cesc(binop) + ", __r, " + rhs + "); }())";
-            return "([&]()->Value{ Value& __r = " + ref + "; __r = " + nv + "; return __r; }())";
+            const bool into = fb.empty() && binop != "||" && binop != "&&" && binop != "//";
+            const std::string op = binop == "~" ? "rtCatAssign(__r, " + rhs + ");"   // in place (O(n) string building)
+                                 : binop == "," ? "rtCommaAssign(__r, " + rhs + ");"  // the metaop over `infix:<,>`
+                                 : into ? "applyArithInto(" + cesc(binop) + ", __r, " + rhs + ");"
+                                 : "__r = " + nv + ";";
+            // (in a module routine, through a kept item for a typed variable,
+            // the result is checked, and a refusal leaves the old value: RtKept)
+            if (moduleMode_)
+                return "([&]()->Value{ t_keptItem = {}; Value& __r = " + ref + "; RtKept __k(__r); " + op +
+                       " __k.check(RT, __r); return __r; }())";
+            return "([&]()->Value{ Value& __r = " + ref + "; " + op + " return __r; }())";
         }
         std::string lhs = lvalueExpr(tgt);
         // `$n op= V` into a native scalar is `$n = $n op V`, stored as any
@@ -5199,7 +5245,7 @@ struct Codegen {
     // The first lines of a kernel sub's Value function: the twin, when every
     // argument is a plain Int (`args`: the C++ expressions for them, or empty
     // for a ValueList `__a`). A twin that keeps bailing stops being tried.
-    std::string kernelEntry(const std::string& name, const std::vector<std::string>& args) {
+    std::string kernelEntry(const std::string& name, const std::vector<std::string>& args, bool boxed = true) {
         auto it = kernelSubs_.find(name);
         if (it == kernelSubs_.end()) return "";
         const int ar = it->second;
@@ -5209,7 +5255,9 @@ struct Codegen {
             guard = "__a.size() == " + std::to_string(ar);
             for (int i = 0; i < ar; i++) a.push_back("__a[" + std::to_string(i) + "]");
         }
-        else if (a.empty()) guard = "__a.empty()";
+        // (none at all: the direct overload of a sub of no parameters, which
+        // has no `__a` — its guard named one, and the C++ did not compile)
+        else if (a.empty()) guard = boxed ? "__a.empty()" : "true";
         const std::vector<Param>* ps = nullptr;
         if (auto sd = subDecls_.find(name); sd != subDecls_.end()) ps = &sigOf(sd->second);
         for (size_t i = 0; i < a.size(); i++) {
@@ -6912,10 +6960,9 @@ struct Codegen {
             });
             self_ = saved;
             line(0, "static Value " + fname + "(ValueList& __a) {");
-            if (__fs.used()) out << "    " << framePrologue();
-            line(1, "try {"); // a METHOD body is a ReturnEx boundary too (same rule as bodyDef)
-            out << mbody;
-            line(1, "} " + routineCatch(__fs.used()));
+            // (a METHOD body is a ReturnEx boundary too: same rule as bodyDef)
+            out << retWrap(md->retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
+                                        "    try {\n" + mbody + "    } " + routineCatch(__fs.used()) + "\n");
             line(0, "}");
         }
     }
@@ -7095,7 +7142,7 @@ struct Codegen {
     }
     // Emit a sub/candidate body given its C++ function name.
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false,
-                 const std::string& kernelName = "") {
+                 const std::string& kernelName = "", const std::string& retType = "") {
         BodyScope __bs{this, /*closure=*/false};
         lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
         struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
@@ -7148,7 +7195,7 @@ struct Codegen {
             if (!kernelName.empty() && !anyCell) {
                 std::vector<std::string> ka;
                 for (auto& p : ps) ka.push_back(mangleVar(p.name));
-                out << kernelEntry(kernelName, ka);
+                out << kernelEntry(kernelName, ka, /*boxed=*/false);
             }
             FrameScope __fs{this};
             std::string text = capture([&]() {
@@ -7157,10 +7204,8 @@ struct Codegen {
                         line(2, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
                 emitBody(body, &ps);
             });
-            if (__fs.used()) out << "    " << framePrologue();
-            line(1, "try {");
-            out << text;
-            line(1, "} " + routineCatch(__fs.used()));
+            out << retWrap(retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
+                                    "    try {\n" + text + "    } " + routineCatch(__fs.used()) + "\n");
             line(0, "}");
             // boxed adapter so named/slurpy/multi call sites still resolve
             line(0, "static Value " + fnName + "(ValueList __a) { return " + fnName + "(" + fwd + "); }");
@@ -7181,10 +7226,8 @@ struct Codegen {
             bindParams(ps, 2, false);
             emitBody(body, &ps);
         });
-        if (__fs.used()) out << "    " << framePrologue();
-        line(1, "try {");
-        out << text;
-        line(1, "} " + routineCatch(__fs.used()));
+        out << retWrap(retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
+                                "    try {\n" + text + "    } " + routineCatch(__fs.used()) + "\n");
         line(0, "}");
     }
     void subDef(SubDecl* d) {
@@ -7192,7 +7235,7 @@ struct Codegen {
         RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
                                           mangleSub(d->name) + "(__a); })", d->name)};
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
-                kernelSubs_.count(d->name) ? d->name : std::string());
+                kernelSubs_.count(d->name) ? d->name : std::string(), d->retType);
     }
 
     // A multi: emit each candidate, then a dispatcher that tries candidates
@@ -7209,7 +7252,8 @@ struct Codegen {
         RoutineScope __rs{this, ""};   // a candidate's &?ROUTINE is the candidate, not the dispatcher
         for (size_t i = 0; i < cands.size(); i++) {
             idx[cands[i]] = (int)i;
-            bodyDef(mangleSub(name) + "__" + std::to_string(i), cands[i]->params, cands[i]->body);
+            bodyDef(mangleSub(name) + "__" + std::to_string(i), cands[i]->params, cands[i]->body, false, "",
+                    cands[i]->retType);
         }
         // specificity: literal params (base cases) beat typed params beat untyped
         std::stable_sort(cands.begin(), cands.end(), [](SubDecl* a, SubDecl* b) {

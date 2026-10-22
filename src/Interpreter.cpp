@@ -6610,6 +6610,24 @@ Value Interpreter::currentThread() {
 // unwound.
 thread_local ThreadHot t_hot;
 
+// The end of a worker's body is not the end of its thread. After it, the
+// closure's captures go (BigStackThread::run_'s Fn), and at the thread's exit
+// its ExecContext and frame pools, each a release that may free a container
+// or note a cycle candidate. Decremented in the body, liveWorkers_ said 0
+// while those ran, and the cycle collector, which runs on the main thread
+// when it is 0 (cycleQuiet), walked containers they were freeing: Roast's
+// S07-hyperrace/basics.t segfaulted in hashEdges about one run in six. So a
+// body on a worker thread hands its count to t_workerExit, which run_ makes
+// the thread's FIRST thread_local, so that its destructor runs after every
+// other one. A body run inline on a thread that is not a worker's (no thread
+// could be made) gives it back at once.
+thread_local WorkerExit t_workerExit;
+void Interpreter::workerFinished() {
+    WorkerExit& w = t_workerExit;
+    if (w.onWorker && (!w.count || w.count == &liveWorkers_)) { w.count = &liveWorkers_; w.n++; }
+    else liveWorkers_--;
+}
+
 // Called from a worker's safe point every few thousand loop iterations: release the
 // GIL (waking a main thread parked in yieldToWorker), give the scheduler a chance to
 // hand the mutex over, then reacquire — mirroring sleepYield's save/park/restore.
@@ -6687,7 +6705,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             }
             ps->cv.notify_all();
             for (auto& f : fire) f();
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
         return p;
@@ -6719,7 +6737,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             fire.swap(ps->thens);          // `.then`s registered before the worker settled
         }
         for (auto& f : fire) f();          // run them now, still on the GIL — like keep/break
-        self->liveWorkers_--;
+        self->workerFinished();
         self->gilYieldNotify();            // release the GIL (waking any cooperative yielder)
         ps->cv.notify_all();
         fin->store(true, std::memory_order_release);
@@ -6802,7 +6820,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
         }
         self->saveCtx(wctx);
         self->cuedLoads_--;
-        self->liveWorkers_--;
+        self->workerFinished();
         self->gilYieldNotify();
         fin->store(true, std::memory_order_release);
     }), fin);
@@ -6961,7 +6979,7 @@ void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
             try { refold(); } catch (...) {}
             self->gilYieldNotify();
         }
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
 }

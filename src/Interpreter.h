@@ -1359,6 +1359,15 @@ struct ThreadHot {
     ExecContext* ctx = nullptr;   // see Interpreter::tctx()
 };
 RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
+// A worker thread's count in liveWorkers_, given back when the thread has let
+// go of everything (Interpreter::workerFinished)
+struct WorkerExit {
+    std::atomic<int>* count = nullptr;
+    int n = 0;
+    bool onWorker = false;
+    ~WorkerExit() { if (count && n) count->fetch_sub(n, std::memory_order_release); }
+};
+extern thread_local WorkerExit t_workerExit;
 // The line of the statement now executing (test diagnostics, callframe, the line
 // a call frame records for its caller). One process-wide value while only the
 // mainline runs Raku code — a plain relaxed store per statement, which is what
@@ -2876,6 +2885,9 @@ public:
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
     bool isContainerElem(const Value& v);    // …is this element one?
     void keepListContainers(const struct ListExpr* l, Value& list); // a kept literal holds its items' containers
+    void noteKeptVarType(const struct Expr* item, Value& proxy);     // …a typed variable's, with its type
+    Value keptTypedStore(const Value& proxy, Value v);               // …which a store through it checks
+    bool keptTyped(const Value& proxy) const;                         // …does it carry one?
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr, Env* scope = nullptr); // the cell of the variable `e` names (in `scope`)
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
@@ -3950,7 +3962,8 @@ public:
 #endif
         bool joinable_ = false;
         struct Fn { std::function<void()> f; };
-        static void run_(void* p) { std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
+        // (t_workerExit first: the thread's last thread_local to go — workerFinished)
+        static void run_(void* p) { t_workerExit.onWorker = true; std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
         // A body run INLINE (no thread could be made — always, in a WASM build
         // without pthreads) runs on the caller's thread, whose registers it
         // would otherwise replace: a worker body loads an empty context and
@@ -4094,6 +4107,7 @@ public:
         }), workers_.end());
     }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
+    void workerFinished();                 // a worker body's end: liveWorkers_ drops at its thread's exit
     std::atomic<bool> everSpawned_{false}; // a `start` has run: declarations pre-bind (see evalAssignInner)
     // Backpressure for worker creation, PARALLEL MODE ONLY. A tap-and-close
     // loop over interval supplies (syntax.t's CLOSE-phaser stress: 4 spawners
@@ -5810,6 +5824,21 @@ inline Value rtBindTyped(Value v, const Param& p, int fast, GetRT&& rt) {
     if (rtTypedFast(v, fast)) return v;
     return rt().bindTypedParam(std::move(v), p);
 }
+// `--> T` on a compiled routine's way out (Codegen::retWrap): a value of T as
+// it is (rtTypedFast), anything else as the interpreter's routine call checks
+// it, on a Callable carrying the type alone, built once per routine
+const Callable& rtRetCallable(const char* retType);
+// A module routine's `X[k] = v` (Codegen::assignImpl): through a kept List's
+// item for a typed variable, checked as `=` into that variable is
+struct KeptItem { const Value* proxy = nullptr; const Value* cell = nullptr; };
+extern thread_local KeptItem t_keptItem;
+Value& rtKeptAssign(Interpreter& I, Value& ref, Value v);
+// …and `X[k] op= v`: the result checked, and on a refusal the old value back
+struct RtKept {
+    const Value* proxy = nullptr; Value old;
+    explicit RtKept(Value& r) { if (t_keptItem.cell == &r) { proxy = t_keptItem.proxy; old = r; } t_keptItem = {}; }
+    void check(Interpreter& I, Value& r);
+};
 // …and a store into a compiled `$` variable declared `want`: what conforms as it
 // is, inline; a Nil, and everything else, as Interpreter::rtTypedScalarStore has it
 inline Value rtTypedStore(Interpreter& I, Value v, int fast, const char* want, const char* nm) {

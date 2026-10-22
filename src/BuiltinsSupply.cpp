@@ -537,7 +537,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         ValueList none; try { self->callCallable(fireW, none); } catch (...) {}
         { std::lock_guard<std::mutex> lk(ctx->timerM); ctx->timerOrder.erase(slot); }   // the next one's turn
         self->gilYieldNotify();
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -714,7 +714,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         try { self->maybeFinishSupply(ctx); } catch (...) {}
         readerDelta(chan, -1);
         if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -789,7 +789,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
         ctx->pending--;
         try { self->maybeFinishSupply(ctx); } catch (...) {}
         self->gilYieldNotify();
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -824,7 +824,7 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
         tctx().dynStack.push_back(spawnScope.get());
         if (!stopped) { try { fn(); } catch (...) {} }
         self->gilYieldNotify();
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
 }
@@ -881,7 +881,7 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
         if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
         self->gilYieldNotify();
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -979,7 +979,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
             self->gilYieldNotify();
         }
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap";
@@ -1080,7 +1080,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
         if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
@@ -1166,7 +1166,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                     }
                 }
             }
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
     });
@@ -2306,7 +2306,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 firstPass = false;
                 nap(secs);
             }
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
@@ -2436,7 +2436,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 if (self->workerAbort_.load(std::memory_order_relaxed)) ::close(cfd);
                 else deliver(cfd);
             }
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
@@ -2621,7 +2621,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
             self->gilYieldNotify();
             if (!tapClosed && fd >= 0) ::close(fd);
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
         // A tap made INSIDE a react dies with the react — the same reason the
@@ -2777,7 +2777,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 try { self->callCallable(doneCb, na); } catch (...) {}
                 self->gilYieldNotify();
             }
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
         if (!reactStack_.empty()) {
