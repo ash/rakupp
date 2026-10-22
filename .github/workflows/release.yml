@@ -138,8 +138,13 @@ jobs:
             *)     echo "no manylinux image for ${{ runner.arch }}"; exit 1 ;;
           esac
           sh tools/ci-pull.sh "$image" rakupp-manylinux > /dev/null   # retried: see tools/ci-pull.sh
+          # The image enables EPEL, and dnf refreshes every enabled repo before it
+          # installs anything; none of these packages comes from EPEL (clang and
+          # gcc-toolset-11 are AppStream). From 2026-10-21 EPEL 8's aarch64
+          # mirrors answered "All mirrors were tried" for repomd.xml, which failed
+          # linux-aarch64 on a docs-only commit. So the install leaves EPEL out.
           docker run --rm -v "$PWD:$PWD" -w "$PWD" rakupp-manylinux bash -ec '
-            dnf -q install -y clang gcc-toolset-11 gcc-toolset-11-libstdc++-devel
+            dnf -q --disablerepo=epel install -y clang gcc-toolset-11 gcc-toolset-11-libstdc++-devel
             gcc="--gcc-install-dir=/opt/rh/gcc-toolset-11/root/usr/lib/gcc/'"$triple"'/11"
             clang++ "$gcc" -v -x c++ /dev/null -fsyntax-only 2>&1 | grep "Selected GCC"
             CC=clang CXX=clang++ CFLAGS="$gcc -fPIE" CXXFLAGS="$gcc -fPIE" \
