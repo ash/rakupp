@@ -267,6 +267,18 @@ logs and the reviews. This page is the complete list.
 
   Eight borrowings, ranked; loop versioning and one-block shaped arrays are
   the two larger ones.
+- **[FLOAT-HEAVY-ISSUES-2026-10-22.md](FLOAT-HEAVY-ISSUES-2026-10-22.md)**
+  *(2026-10-15 at 5.4.1-78-g52df8573, re-checked 2026-10-22 at 5.5.0)* — 21
+  issues from one float-heavy benchmark program, interpreted and under
+  `--exe -O`, each with a minimal repro. The same computation in Fortran runs
+  176× CPython, in Go 123×, and in Rust, C++ and TypeScript ~55×. Raku++
+  `--exe` went from 2.5× to 3.2× with 5.5.0's `Num` fast path.
+  - Status on 5.5.0: 8 fixed, 4 partly fixed, 5 open.
+  - Open: `Num.Rat(0)` not exact, closure calls, module-sub calls, and
+    bundling over one list literal or one native array.
+  - New on 5.5.0: unary minus, `.push`/`.elems` dispatched by name, `@`-parameter
+    calls and small-array loops. These leave no hotspot above 6%, and native
+    types still cost 1.5× compiled.
 
 ## One-off bug reports
 
