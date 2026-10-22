@@ -13,17 +13,19 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v5.4.1** (2026-10-13) — **100.00% of Roast.**
+**Status:** current release **v5.5.0** (2026-10-22) — **100.00% of Roast.**
 Of the tests Roast expects an implementation to pass, **all 219,207** pass, and
 **all 1,425 files** in Roast's `spectest.data` pass completely (Roast
 `da425eb92`, which carries Unicode 18.0's tests). On Roast `1f521d798`, which
 v5.0.0 was measured against and whose todo for one TTY test does not name
 macOS 27, v5.1.0 passed 1,423 files; Rakudo 2026.08, measured the same way on
 the same machine, passes 1,414 of them ([ROAST.md](docs/status/ROAST.md)).
-v5.4.0 runs `.hyper` and `.race` on every core, loads a source in time linear
-in its length again, and against v5.3.0 runs `textsplit` 13% faster
-interpreted and 24% compiled; interpreted, `mainwhen` is 11% slower and
-`sortby` 8% ([BENCHMARKS.md](docs/status/BENCHMARKS.md)). Every release is
+v5.5.0 frees objects that refer to each other (#151), fetches the modules a
+program is missing with `rakupp --auto`, ships Alpine/musl archives, and
+against v5.4.0 runs `arrayops` 29% faster interpreted and 30% compiled; the
+call path is 4-9% slower and `regex` 6-7%. It was measured on an Apple M4
+standing in for the machine of record
+([BENCHMARKS.md](docs/status/BENCHMARKS.md)). Every release is
 written up in the [CHANGELOG](CHANGELOG.md), and what each major set out to do is in
 [VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
@@ -34,7 +36,7 @@ same harness (2026-09-16, 2,529 dists), passes 1,791; the other 738 cannot pass
 there under any engine, for want of libgsl, fontconfig or a network. Every distribution, with how it ran, is at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
-| | v5.4.1 | at v4.0.0 | at v3.0.0 |
+| | v5.5.0 | at v4.0.0 | at v3.0.0 |
 |---|---:|---:|---:|
 | Roast tests, skip and todo left out‡ | **219,207 of 219,207 (100.00%)** | — | — |
 | Roast tests, every declared test‡ | **220,845 of 220,845 (100.00%)** | 200,843 of 219,610 (91%) | 197,191 of 218,772 (90%) |
@@ -42,18 +44,18 @@ there under any engine, for want of libgsl, fontconfig or a network. Every distr
 | Official documentation examples byte-identical on both engines | **1,006**¶ | 957 | 945 |
 | Modules — the 59-dist battery, each against its own suite | **44 / 59** | 49 / 59† | 47 / 59 |
 | Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/) | **1,019 of 2,547**§ | 1,006 of 2,529 | — |
-| Local regression suite | **1,600** | 1,020 | 398 |
+| Local regression suite | **1,744** | 1,020 | 398 |
 
-Dashes mean the measurement did not exist yet. The v5.4.1 Roast figures are on
+Dashes mean the measurement did not exist yet. The v5.5.0 Roast figures are on
 the 1,425 files `spectest.data` lists at Roast `da425eb92`, one more than
 v5.2.1's (`S15-nfg/GraphemeBreakTest-4.t`, new with Unicode 18.0); the older
 columns were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at
 v3.0.0), and 656 is how many of the 1,424 files listed at Roast `1f749e338`
 v4.0.0 passed.
 
-¶ Measured for v5.0.0; v5.1.0 through v5.4.1 did not re-run that sweep.
+¶ Measured for v5.0.0; v5.1.0 through v5.5.0 did not re-run that sweep.
 
-The battery figure is v5.3.0's; v5.4.0 and v5.4.1 did not re-run it. It was
+The battery figure is v5.3.0's; v5.4.0 through v5.5.0 did not re-run it. It was
 48 / 59 at v5.0.1. Color, Encode and Trap broke between v5.0.1 and v5.2.1, and
 YAMLish no longer counts because Rakudo now fails its suite
 ([CHANGELOG](CHANGELOG.md)).
@@ -94,7 +96,7 @@ docker run --rm -it ghcr.io/ash/rakupp                       # the REPL
 docker run --rm -v "$PWD:/work" ghcr.io/ash/rakupp main.raku  # a file from here
 ```
 
-The tags are `latest`, the version and the minor (`5.4.1`, `5.4`); building on
+The tags are `latest`, the version and the minor (`5.5.0`, `5.5`); building on
 the image, modules and `--exe` inside it are in
 [INSTALL.md](docs/guide/INSTALL.md#docker).
 

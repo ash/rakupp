@@ -59,6 +59,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-10-09 | **v5.3.0** | Unicode 18.0, linear string building, `--sandbox`, spreadsheet formulas — loop kernels over arrays, hashes, Nums and Rats (`arraypush` −86%, `rats` −85%); Roast 1,425 / 1,425 on a Roast that moved to Unicode 18 |
 | 2026-10-13 | **v5.4.0** | `.hyper` and `.race` on every core, `use JSON::Native` answered by the engine, loading linear again (#141) and a scaling gate; `rakupp install` takes folders and programs — Roast unchanged at 1,425 / 1,425 |
 | 2026-10-13 | **v5.4.1** | `use Data::Native` inside a routine works again without the distribution installed — a patch release; Roast unchanged at 1,425 / 1,425 |
+| 2026-10-22 | **v5.5.0** | Reference cycles freed by a backup collector (#151), `rakupp --auto` installs what a program is missing, Alpine/musl archives and NativeCall on i386, decimal-literal float code on the fast tiers — Roast unchanged at 1,425 / 1,425; measured on an Apple M4 standing in for the M3 |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -291,6 +292,16 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   A `use` of Data::Native or a sibling inside a routine works again with
   nothing installed; v5.4.0 died on it, which kept its Raku.js archives and
   Sheets add-on from being built.
+- **Oct 22 — v5.5.0.** Roast unchanged (1,425 / 1,425, the same file list).
+  Objects that refer to each other are freed by a backup cycle collector
+  beside reference counting (#151); `rakupp --auto` fetches the modules a
+  program is missing; Alpine and the other musl Linuxes get release archives,
+  NativeCall works on 32-bit x86 and the Linux build runs on glibc 2.18; float
+  code written with decimal literals runs on the fast tiers. The machine of
+  record was out of reach, so the release was measured on an Apple M4, tied to
+  the M3 by two builds both machines timed. The call path (`subcall`,
+  `strpass`, `method`) is 4-9% slower than in v5.4.0 and `regex` 4% a match,
+  measured and left open.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

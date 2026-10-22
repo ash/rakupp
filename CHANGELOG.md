@@ -3,6 +3,353 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.5.0 (2026-10-22) — reference cycles freed, `rakupp --auto`, Alpine and i386, and decimal literals on the fast tiers
+
+Roast: **all 1,425 files** of `spectest.data` and **all 219,207** of its tests
+with skip and todo left out (220,845 of 220,845 counting them as passes), in
+three runs of three, on Roast `da425eb92` — the same Roast and the same file
+list as v5.4.1, archived as v5.5.0.list. The other gates: the compiler agrees
+with the interpreter on every `-O` kernel; slim binaries behave identically
+on all 1,144 corpus programs that finish (two need a network or a server and
+were not judged); the installed-binary gate and t/aot pass, t/aot once its
+expectations followed 48223469 (below); the adopters' suites are where v5.4.1 leaves them on this machine (iz4's
+t/07-install fails 5 of 32 under both, an install check this machine fails). Not run: the GCC and
+MinGW toolchain checks (not on this machine), Raku Koans, the module battery
+and the conformance sweep. The local suite passes all 1,744 checks. The module battery, the
+documentation examples, the `-O` harness and the ecosystem sweep were not
+re-run; their figures in the README and `docs/status/` are v5.4.x's or older,
+as labelled.
+
+**Measured on a different machine.** The machine of record, an Apple M3, is
+out of reach for now, so this release's benchmarks and gates ran on an Apple
+M4. The M4 takes 0.75–1.03× of the M3's time depending on the kernel, so its
+milliseconds are not comparable with earlier releases'; ratios are. The same
+sitting re-timed two builds the M3 had timed, to tie the two machines
+together ([BENCHMARKS.md](docs/status/BENCHMARKS.md#two-machines)), and the
+dashboard draws the M4's readings as lines of their own.
+
+### Faster
+
+Against a local v5.4.0 build in the same sitting
+([BENCHMARKS.md](docs/status/BENCHMARKS.md#v540-to-v550)): `arrayops` −29%
+interpreted and −30% compiled (30.1 → 21.5 ms), `rats` −16% compiled, and
+`textsplit` −10%, `sortby` −9%, `sortnums` −9% and `objects` −8% interpreted.
+The other rows moved by 3% or less, but for `regex`, which is slower (below).
+Figures in the items are instructions retired, base → after, unless they say
+otherwise.
+
+- **Float code written with decimal literals runs on the fast tiers**
+  (a508cc93). A decimal literal is a Rat, and a Rat beside a Num kept the loop
+  kernel, the typed subtree and the fast shape off, so code written the way
+  most people write it ran ~60× slower than the same line with `e0` literals.
+  `$x = $x * 1.0000001 + 0.000000001`: 3,418 → 57 an iteration (`e0`
+  literals: 58); under `--cnp` 6,410 → 57, under `--jit` 3,451 → 58.
+  `$x = $x * 1.5` 2,209 → 42.
+- **Standard input is read a block at a time** (dc76aa01). Every byte of
+  `$*IN` was a virtual `getc` call. 32 MB, 400k ASCII lines: `$*IN.lines` and
+  `lines()` 40.0G → 2.90G, `-n` 44.1G → 7.0G, a `$*IN.get` loop 45.5G →
+  8.5G, `$*IN.slurp` 57.4G → 0.19G. 27 MB of Latin, Greek, Cyrillic and CJK:
+  `$*IN.lines` 43.4G → 11.9G.
+- **`try`, `do` and `quietly` run their block in place** (6279175b, 205f5e97)
+  instead of building a closure and calling it: `try { $t += $_ }` 6,482 →
+  4,915 an iteration, a `try` that catches a `die` −42.7%, `do { so $t }`
+  4,837 → 3,266, `quietly { so $t }` 4,706 → 3,136. A body that needs the call
+  (`state`, a phaser, CATCH, `when`, `temp`, `@_`, a placeholder) keeps it.
+- **A closure is 88 bytes, and closures of one block share their code**
+  (f7d4dc67, 6d67f0cd). A Callable was 704 bytes; everything about the code now
+  lives in a block every closure of it shares. 100k closures kept: peak 125.6 →
+  61.6 MB; a closure made per iteration −3.3%, then −5.0%.
+- **Scopes come from the slab, and a body with no `state` gets no state frame**
+  (dca29704): `.map({ $_ * 2 })` 3,485 → 3,174 an element, `.grep({ … })`
+  −7.3%, `try { }` 7,411 → 6,482, each from one malloc a call to none.
+- **A block's placeholders live in its pad** (584f140a): a sort by
+  `{ $^a.abs <=> $^b.abs || $^a <=> $^b }` over 100k −12%,
+  `.map({ $^x + $^y })` −24% in wall time.
+- **`cmp`, `Less` and `== Less` take the short way** (b35718ba): `$o = Less`
+  −48.8%, `$o = $x cmp $y` −41.9%, two 100k sorts with `cmp` comparators
+  −54.7%; `(@a[3] cmp @a[5]) == More` 200k times ~77 → ~35 ms (Rakudo 2026.09
+  ~32).
+- **An `our` costs about what a `my` does** (432a3398, 62b8949f):
+  `for ^400_000 { our $n += 1 }` 3.35G → 0.93G.
+- **Int `div`, `mod`, `%%`, `**`, `gcd`, `lcm`, `min` and `max` on the hot
+  path** (a508cc93, 4c78cce6): with the kernels off `div` 2,745 → 1,144 and
+  `**` 3,949 → 1,131 an iteration; the loop and sub kernels take `gcd`
+  (2,382 → 81) and `lcm` (2,403 → 89). **`1/3` is a small Rat built once**
+  (a508cc93): `$r += 1/3` 7,836 → 3,562 with the kernels off.
+- **Big-Int gcd is Lehmer's algorithm** (f33a78be), and every Rat and FatRat
+  reduces by one: `(3**30_000 + 1) gcd 2**47_500` 0.91 s → 0.8 ms (Rakudo 7
+  ms); `FatRat.new(3**300_000 + 1, 2**475_000)` ran for minutes and takes 49 ms.
+- **Binding to an array element costs a third to a half less** (e46e839b,
+  bb3cc0af, cce315ef): `my $n := @a[3]` 200k times 137 → 89 ms (Rakudo 11),
+  and BIND-POS binds the variable's container: a heap in BinaryHeap 2.0's
+  shape, 2^16 pushes and pops, 47.7G → 36.5G, peak RSS 200 → 100 MB.
+- **Native arrays stay machine words** (6021c2fa, 44ed66bc, ff3fcc5b): a
+  2000×2000 `my int @m` filled and summed by `@m[$i; $j]` takes 317 → 34 MB
+  and 1.83 → 0.68 s; a 1M-element `my int @a` no longer unpacks for `.elems`,
+  `for`, `.sum`, `+=` or `++` (`@a[$i] += 1` 0.16 → 0.04 s, 86 → 9.5 MB).
+- **`.sum`, `.min` and `.max` read a plain Int array in place, and
+  `STMT for ^N` walks its range** (02fb7c6a): `.max` over 1M Ints, 20 calls,
+  0.43 → 0.05 s; `f($_) for ^5_000_000` peaked at 410 MB and now at the block
+  form's 9 MB. **`my @d = <fresh list>` takes the list's buffer over**
+  (4a1edb88): `my @d = @a »*« @b` over 2M Nums 46 → 13 ms.
+- **Small hashes and Int-keyed Pairs allocate less** (c37ce984, 9b3ed082): a
+  hash of up to four entries builds no probe index (objects.raku 428,683 →
+  228,677 mallocs), and `(^100_000).pairs` −44.7%, 62.9 → 30.6 MB.
+- **A bound `&infix:<op>` no longer slows the built-in operators it does not
+  spell** (e9841fec): a plain integer loop ran 23.8 ms alone and 93–96 ms
+  beside `role R[&infix:<tops>] { }`, BinaryHeap 2.0.3's role parameter.
+- **Reaching the per-thread context costs one TLV lookup per function on
+  macOS** (f9f0cac1): BinaryHeap's benchmarks −3.9% instructions / −5.1%
+  cycles, tools/bench with the kernels off −4.3% / −8.2%; the binary is
+  327 KB smaller.
+- **Quadratics made linear** (69d1df4d, 9550aecc, cce315ef): a `<?after …>`
+  calling a `my token` tried every start position (80 s at 12,000 characters;
+  Rakudo 0.11 s) and is bounded by the token's width; `rindex` 200 calls on
+  800,000 characters 0.23 → 0.0002 s; `substr-eq` 4.8 → 0.035 s; `m:c($pos)`
+  and `:pos` over ASCII text, a 5,000-token tokenizer 29.9G → 0.48G (over
+  non-ASCII text still quadratic).
+- **`.contains`, `.comb` and `.split` with a regex use the pattern cache**
+  (cce315ef): `.split(/\s+/)` 100k times 4.4G → 2.3G.
+- **Num and bitwise operators on the fast path, and labelled loops without
+  exceptions** (48223469): interpreted, `+&`/`+>` 311 → 3.5 ns an op, three
+  labelled `next` 209,490 → 1,962 ns. **Entering a `--cnp` kernel builds no
+  frame and hashes no names** (783bc53a): 4,382 → 1,794 instructions an entry.
+- **A loop kernel's variable may hold a Bool** (a8c61b84): the flag loop
+  `$found = True if $i == 500_000` 1,010 → 47 an iteration.
+- **A large program checks and loads in less time and memory** (777f23cf,
+  b7ce11f0, 28989c10, 8a027add): `-c` on a generated 150k-line program 826 →
+  632 ms and 1,100 → 854 MB; a VarExpr is 400 → 136 bytes; `$*DISTRO` on macOS
+  reads the kernel instead of spawning `sw_vers` (`-e '$*DISTRO.is-win'` 40 →
+  under 10 ms).
+
+### Slower
+
+Against the same v5.4.0 build, three interleaved rounds of perf-guard on the
+M4 put the call path 4–9% behind, with no overlap between the two builds'
+rounds: `junctionwide` +8.6%, `subcall` +7.3%, `strpass` +7.2%, `regexloop`
++5.7%, `privmeth` +4.5%, `method` +4.0%. Four of them are over the gate's 5%
+tolerance, and they are **accepted for this release, not fixed**. The costs
+the commits admitted when they landed do not add up to it — `subcall` +1.7%
+for every routine's own `$_` (cce315ef), `method` +0.5% (f7d4dc67), the method
+kernels +0.7–0.9% (dca29704), the cycle collector's `objects` +1.3–1.5%
+(7f40dd87), `$x andthen $_ = $_ + 0` +17.5% now that it writes through
+(4af50b85) — so the rest is not found yet
+([TODO.md](docs/dev/plans/TODO.md)). `strscan` is 10.8% faster, and
+`loadtime`, `objnew`, `substrloop` and `sharedappend` 5–7%.
+
+`regex` is 6% slower interpreted and 7% compiled. With the loop raised
+tenfold, so that startup no longer counts, both modes lose the same 4.0% a
+match, so the cost is in the regex runtime they share; it arrived in steps of
+about 1% along `main`, not in one commit, and the rest is about 0.1 ms more
+startup ([TODO.md](docs/dev/plans/TODO.md)).
+
+The perf-guard baseline is still the one recorded on the M3 for v5.2.0.
+Absolute times do not carry between machines, and the M4 refused a record at
+load 2.7 (three kernels' runs spread more than the tolerance), so it was not
+re-recorded; the comparison above is an A/B on one machine instead.
+
+### New
+
+- **Objects that refer to each other are freed** (#151; 7f40dd87, 16c15bf0).
+  Reference counting stays; a backup cycle collector beside it finds groups
+  whose counts only explain each other and breaks them, at scope exits and
+  compiled loop iterations, on the main thread while no worker is live. The
+  #151 loop freed 0 of 320,000 objects and grew 238 → 1,882 MB; it now frees
+  319,078 and grows 10 → 11 MB (Rakudo 2026.09 frees 319,252). Every call of a
+  routine that declares a `my sub` or keeps a block in a variable leaked its
+  frame, and no longer does; a group's DESTROYs run newest first, as Rakudo's
+  do. `RAKUPP_CYCLE=0|dry` and `RAKUPP_CYCLE_STATS=1` control and report it.
+- **`rakupp --auto` installs the modules a program is missing** (876229cb,
+  900db83d, 0cd055ad, 8f4e6386). Without it nothing is fetched, but the error
+  now names every module the program lacks and the two commands that get them
+  (`rakupp install app.raku`, `rakupp --auto app.raku`). With it, each missing
+  distribution is fetched from the zef index into the ordinary store and the
+  program carries on; stdout stays the program's. A name one typo away from a
+  far more depended-on one is refused, a script's fetches are pinned, and
+  `--exe`/`--bundle`/`--aot` fetch at compile time. It never fetches for
+  `require`, under `--sandbox`, in a compiled binary, an embedding host or
+  Raku.js; `RAKUPP_DEPS=0` turns it off.
+- **Documentation:** Raku++ inside an iOS or Android app (54fce929); "Unknown
+  VM" and `RAKUPP_VM_NAME=moar` for LibraryMake (#181, ea9138bc); what Raku++
+  depends on (b513d9a9); an engine comparison table,
+  [ENGINES.md](docs/status/ENGINES.md) (17eb041f).
+
+### Fixed: silent wrong answers
+
+- **`×` `÷` `−` `≤` `≥` `≠` are operators of their own** (a968d622). The lexer
+  turned them into `*` `/` `-` `<=` `>=` `!=`, so a `multi infix:<×>(V, V)` was
+  never consulted (`V.new × V.new` answered the built-in product, `$v ×= …`
+  0), a `my &infix:<×>` captured every `*` in its scope, and `×=` ignored it.
+  A node now carries the spelling it was written with.
+- **Compiled code calls the program's own operators** (65713c7f, 6fd22b55).
+  `--exe` reaches a plain `sub infix:<->`, a `my &infix:<*>`, an
+  `&infix:<+>` parameter, a lexical sub and a module's export, and
+  `--target=js` calls user operators at all. A comparison chain asks the
+  user's operator for every link (`1 <= 2 <= 3` over a user `infix:«<=»`).
+- **`/hello/i` is a compile error, as in Rakudo** (#168; 0820ef24). It parsed
+  as the regex with a postfix `i`, so the match ran silently case-sensitive.
+- **Text decoded from a file, `$*IN`, a pipe or a socket is NFC** (1918e400,
+  5e474d7d), as Rakudo's decoders make it: `e\x[301]` read from a file was 3
+  codes, not `eq` to `"\x[e9]"`, and missed as a hash key.
+- **Characters, not codepoints or bytes** (8edfb4c7, 1918e400, 5e474d7d,
+  cce315ef): `:continue(N)` and `:pos(N)` (a `:c($m.to)` scan after non-ASCII
+  text looped forever); `.split('')`; `<space>` and `<cntrl>` take a CR LF
+  whole; sprintf's `%s` width and precision; `Match.raku`'s offsets;
+  `.indices` and `.contains(/rx/)` positions; `.getc` and `.readchars`;
+  `.trans` with a Regex key; a bare `m:c` after non-ASCII text.
+- **A `~~` with a regex that holds a code block sets the caller's `$/`**
+  (#180; 166d51b9, 39a80444): since #147 the match went into the regex's home
+  scope, so TIRak's email, credit-card and docker-auth patterns found nothing.
+- **A Unicode property's value matches by any alias, and an unknown value
+  matches nothing** (32d904e3): `<:sc<Latn>>`, `<:gc<Uppercase_Letter>>` and
+  `<:Block<Arrows>>` matched every character. **The Unicode tables agree with
+  Unicode's own files** (32c91929): `unicmp`/`coll` ties, Bidi_Class,
+  Joining_Type, Indic_Conjunct_Break, Simple_Case_Folding, and NFC mapping
+  strings.
+- **Every routine has a `$_` of its own** (ef35899d, cce315ef). A sub with a
+  signature, and every method, wrote the caller's `$_`, so an `s///` in such a
+  sub rewrote the caller's topic; compiled, a pointy block's `$_` leaked too.
+- **`our` is one container, its package's** (e0fd3dbe, 432a3398, 8174a3c3,
+  cff43a59, 77741ce6, 9288492c). A module's exported `our` was a copy (#170);
+  an `our` in a loop body or a sub lost its value on re-entry; a method's
+  `our $k` read GLOBAL's; a module's `my`s became the importing program's
+  variables.
+- **A `constant` is bound before the BEGIN, CHECK and INIT that read it**
+  (#171; 8fe8d493).
+- **An Array's elements, and a `$` parameter, are items** (43e63076, fca60078,
+  a9ab7ad8, 29ae99db): `@rows.map({ my @y = $_; @y.elems })` over
+  `[1, 2], [3, 4]` was (2 2), Rakudo says (1 1); a named `$` parameter spread
+  its Array, in the interpreter and in `--exe`.
+- **`$_` on the right of `andthen`, `orelse` and `notandthen` is the left
+  side's container** (#185; 4af50b85, afc0de8d): `@a[0] andthen $_ = 2`
+  changed nothing, and `with @a[$i++] { $_ = 5 }` stepped `$i` twice.
+- **A native parameter holds a native** (b7c47a57): `sub f(int $x) { $x * 2 };
+  f(2**62)` printed 2**63 instead of wrapping. **A sigilless parameter counts
+  as one positional** (5549bf83). **An `is rw` parameter writes through an
+  argument flattened in with `|`** (202c2bcb).
+- **Integer and Rat answers, checked against Python** (a35d3284, b1a65e86,
+  e06890bc, d017123e, 477bf8d0, cce315ef): `gcd` and `lcm` with -2**63 came out
+  negative; a Rat or FatRat `.Num` past 2**53 could be an ulp off;
+  `.base-repeating` stopped at 10,000 digits; `expmod` with a modulus of zero
+  or less answered; `div`, `mod`, `gcd` and `+&` over a Num of 2**63 or more
+  were wrong (`1e20 div 7` was 1317624576693539401). **A FatRat prints at its
+  own precision, and `Rat.new` takes only Ints** (#173; 38e236da).
+- **Compressed data that zlib and our own inflate could not read** (#159;
+  671e51bd, d9709294, c4448e32): deflate could write an over-subscribed Huffman
+  code; inflate read trailers from the end of the buffer, and refused
+  concatenated gzip members.
+- **Objects meet their own operators and order the same way every run**
+  (6b080a07, a0fd6a69, d0a85b2b): `Z+`, `X+`, `R+`, `[+]`, `.sum` and a
+  junction's eigenstates consult a user `multi infix:<+>`; `cmp`, `sort`,
+  `min` and `max` order objects as Rakudo does, where they went by address.
+- **A test file ends with Rakudo's exit status** (07456d29): `plan 3; ok 0;
+  ok 0` exited 255 (Rakudo: 2), and a test compiled with `--exe` exited 0.
+- **And:** a subclass's attribute of another sigil keeps its accessor
+  (16329a82); a name in another script keeps its meaning (edf09560); an
+  operator nobody declared is an undeclared routine (145cddbf);
+  `Internals::JSON.to-json` honours `:pretty` (0fcc2b49); a native call fills a
+  CArray or Buf passed through `|@args` (#174; 8e82287e); `$?FILE` in an
+  EVALFILE'd file (5760e1b6); a core enum member or type name before an infix
+  is a term (c92b7789); `--target=js` binds a sigilless parameter as one
+  argument (ab34f1e6); a binary handle refuses text reads (f01c2ef2);
+  `@a.BIND-POS($i, $v)` keeps `$v`'s container (cce315ef); and the smaller
+  ones in 9550aecc (`.minmax` over Rats is a Range, a Set is no Map, `for` over
+  a slice aliases its elements).
+
+### Fixed: crashes, hangs and leaks
+
+- **Element assignments on two threads corrupted the heap** (1002666b), and
+  two more races in a threaded server (8f88fa1c): a Webraku blog server with
+  eight workers died within seconds; 2,880 requests at 32 concurrent now run
+  without an error. Printing to one handle from many threads (d278bc5f).
+- **`our` declarations on worker threads** (6ba94541) died in 50–100% of runs.
+- **A `run` child is reaped when it exits** (ce0aae38): after about 900
+  unasked children the next fork was refused.
+- **`1 +< $n` with `$n` = -2**63** recursed until SIGBUS, and `-2**63 div -1`
+  was undefined behaviour in the code `--exe` and `--jit` share (cce315ef).
+- **Leaks:** a cell bound into an attribute in a cycle (bb3cc0af); a deleted
+  hash value, 308 → 3 MB, and a closed handle in the exit-flush registry,
+  40,000 open/close pairs 91 → 2 MB (9550aecc).
+
+### Behaves like Rakudo
+
+- **raku.org's Air/Cro/Cromponent site loads and serves `/`** (0fbf7c29):
+  `[ … ]` is a statement list, a role may do a stub role, a module without
+  `unit` owns its EXPORT packages, and three more.
+- **Classes and roles:** a role's BUILD fills its required attribute before the
+  check (c832a1a7), so Cro::HTTP::Client sends requests; a BUILD that writes a
+  required attribute satisfies `is required` (e24ce9be); `.CREATE` (#182;
+  97f48de2); a stub's completion sees the types declared between, so
+  `use PDF::Lite` loads (#172; 87367bca).
+- **Modules:** `.first` or `.head` over a map or grep runs the blocks only until
+  it has its answer, so `rakupp install fez` installs (b6ac7079); DBIish
+  0.6.9's own suite is green (10528bb4, 68e623b6); `C::create()` reaches an
+  imported class's `our sub` (#169; 3c6cf2d5).
+- **Grammars:** a role's tokens see the role's imports, and `grammar G does R`
+  is still a Grammar (1f03ed24), so DSL::Shared passes its suite;
+  `rx/ <[{"]> /` no longer runs on to the end of the file (c2ee3947).
+
+### Compiled code
+
+- **`--exe -O` arithmetic** (48223469), ns an op: Num `$a * $b + $a` 41 → 17,
+  `+&`/`+>` 84 → 9, `.key`/`.value` 386 → 27, three labelled `next` 21,282 →
+  177. A program `--exe` has to bundle keeps native bodies for its own
+  routines.
+- **`--exe`** compiles a loop whose parameters have a trait, a type or a
+  default (2f46a996); its classes check `is required` and take attributive
+  parameters (87624125); its binaries answer `.WHY` and take `Rcmp` (a8cede75);
+  `$n⚛++` and `cas` compile natively (9550aecc).
+- **A routine whose native body declares a `my $*X` stays interpreted**
+  (48223469): the interpreter could not see a dynamic declared natively. The
+  bundling note names its source lines and says the routines are compiled
+  natively where they can be. t/aot followed both at this release: its
+  dynamic-vars case expected those routines native, and its bundling check
+  read the note's old wording.
+- **`--slim` cuts more, and what it cuts holds** (449ab6c4, 32d904e3,
+  b335755b, d37e7800): `use Data::Native` no longer stops the cut (#166),
+  unused Unicode properties are cut, and binaries that built and then
+  misbehaved are fixed.
+- **`--target=js`** (d017123e, 36098d73, 9550aecc): `expmod`,
+  `.base-repeating` and Rat `.Num` agree with the interpreter; an undeclared
+  dynamic is a Failure; `comb` takes whole graphemes.
+
+### Platforms and packaging
+
+- **Alpine and the other musl Linuxes get release archives** (5a8ce3c5):
+  `rakupp-linux-{x86_64,aarch64}-musl.tar.gz`, dynamically linked, so
+  NativeCall, extensions and `--jit` work. install.sh picks them when `ldd
+  --version` names musl.
+- **NativeCall works on 32-bit x86** (59f7e3c1, 9aa70005): every NativeCall
+  regression file passes on i386, with and without libffi. There is no i386
+  archive.
+- **The Linux release runs on glibc 2.18 and up, not 2.28** (6157dd5e): v5.4.1
+  did not start on Ubuntu 18.04.
+- **Only the highest vX.Y.Z tag becomes GitHub's latest release and ghcr.io's
+  `:latest`** (9550aecc).
+
+### Tools
+
+- **Oracle gates** (cbf84ca6, c4448e32, 34584271, 32c91929): our DEFLATE
+  against libz, Int and Rat arithmetic against Python (~580,000 cases), and
+  every line of Unicode's NormalizationTest, GraphemeBreakTest and
+  CollationTest. Most of the wrong-answer fixes above came from their first
+  runs.
+- **tools/run-fatroast.raku** (f1f80aaf and five more) runs FatRoast's
+  rewritten Roast trees beside plain Roast and compares every file's outcome.
+- **`--highlight` reads names in every script** (e96dc75b).
+
+### Left open
+
+Text against Perl is still far behind (`.trans` 94×, output 19×, regex
+captures 14×; [TEXT-PLAN.md](docs/dev/plans/TEXT-PLAN.md)). Rakudo is still
+5–10× faster at binding an array element (83 against 12 ms). `m:c` over
+non-ASCII text is still quadratic, and a compiled program's `~` joins do not
+renormalize. map and grep are still eager outside `.first`/`.head`. A fetch
+that fails partway leaves its already-installed dependencies behind, and
+`--auto` cannot run in Raku.js. CentOS 7 (glibc 2.17) is not supported. The
+ledger is in
+[findings/REVIEW-PARALLEL-2026-10.md](docs/dev/findings/REVIEW-PARALLEL-2026-10.md).
+
 ## v5.4.1 (2026-10-13) — `use Data::Native` inside a routine
 
 A patch release on v5.4.0. Roast is where v5.4.0 left it: **all 1,425 files**

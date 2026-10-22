@@ -6,7 +6,7 @@ works today, grouped by theme. **~** marks partial support; gaps are noted per s
 
 See [REFERENCE.md](REFERENCE.md) for an exhaustive lookup sheet (every operator, subroutine, and method with a verified example), [RECIPES.md](RECIPES.md) for recipes of runnable snippets (each verified against `rakupp`), [examples/](../../examples) for complete example programs, and [showcase/](../../showcase) for mid-size showcase programs.
 
-Roast standing, at v5.4.1: **100.00% of Roast's tests pass** (219,207 / 219,207, skip and todo left out; 220,845 / 220,845 of all declared tests), and on the stricter file bar **all 1,425 files fully pass** on the files Roast's `spectest.data` lists (Roast `da425eb92`). See [COUNTING.md](../status/COUNTING.md) for how these are defined.
+Roast standing, at v5.5.0: **100.00% of Roast's tests pass** (219,207 / 219,207, skip and todo left out; 220,845 / 220,845 of all declared tests), and on the stricter file bar **all 1,425 files fully pass** on the files Roast's `spectest.data` lists (Roast `da425eb92`). See [COUNTING.md](../status/COUNTING.md) for how these are defined.
 
 ## Language versions (6.c / 6.d / 6.e)
 

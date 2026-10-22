@@ -44,6 +44,31 @@ The same items grouped by theme, with a complexity estimate for each:
   with the input (+6% at 120k words); perf-guard `strscan` and `substrloop` +6%
   wall with +1% instructions. Not bisected; instruction counts are a
   deterministic bisect metric here.
+- [ ] **`regex` slower in v5.5.0, and no single commit did it** (2026-10-21,
+  Apple M4, local builds of v5.4.0 and v5.5.0 in one sitting): `regex` +6%
+  interpreted and +7% compiled. With the loop raised tenfold, so that startup
+  no longer counts, both modes lose the same 4.0% a match (interp 203.3 →
+  211.4 ms, `--exe` 134.9 → 140.3 ms), so the cost is in the regex runtime
+  both share (`regexMatch`, `Regex::search`/`matchNode`, Match building,
+  `$/`), not in the tree-walker; the rest is about 0.1 ms more startup. Along
+  `main`'s first-parent line it arrives in steps of about 1%: `6021c2fa`
+  +0.1%, `36098d73` +1.0%, `cc12af7c` +2.1%, `e9841fec` +2.1%, `403a7e70`
+  +4.0%. `git bisect` named `e9841fec` on the 50k kernel, which is startup
+  noise; on the tenfold kernel it equals its parent. `166d51b9` and
+  `39a80444` only touch regexes with code blocks or `:x`/`:c`. A flat
+  `sample` profile of both `--exe` binaries shows the same hot functions in
+  the same proportions, so the next step is instruction counts per commit
+  across the three stretches, not wall time.
+- [ ] **The call path is slower in v5.5.0, accepted at the release** (2026-10-21,
+  Apple M4, perf-guard, three interleaved rounds of v5.4.0's local build and
+  v5.5.0's, no overlap between the two): `junctionwide` +8.6%, `subcall`
+  +7.3%, `strpass` +7.2%, `regexloop` +5.7% (the regex item above),
+  `privmeth` +4.5%, `method` +4.0%. The costs admitted when the commits
+  landed do not add up to it: `subcall` +1.7% is O25 (cce315ef, every routine's
+  own `$_`), `method` +0.5% f7d4dc67, the method kernels +0.7–0.9% dca29704.
+  Not bisected; instruction counts per commit, as for `regex`. The perf-guard
+  baseline is still the M3's (v5.2.0); re-record it on a quiet machine of
+  record and say so in the CHANGELOG.
 - [ ] **Append — strings made of pieces**: [APPEND-PLAN.md](APPEND-PLAN.md),
   2026-10-06. Long strings may be views of a shared growable buffer, so
   prepending, `$k = $s` before each append and a `.substr` loop are linear on
