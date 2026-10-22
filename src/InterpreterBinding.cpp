@@ -5352,6 +5352,21 @@ Value rtObjHash(const Value& v) {
         g_cbInterp->throwTypedV("X::Assignment::RO", {{"typename", Value::str(ty)}, {"value", base}}, msg);
     throw RakuError{Value::typeObj("X::Assignment::RO"), msg};
 }
+// Where a write to an element lands: the element, or the container it IS — a
+// cell, or, in a LIST, the cell a kept List's item shares with its variable
+// (`($a, 2)`, built by the interpreter's keepListContainers), which the
+// interpreter's lvalue writes through. Returning the slot instead, the store
+// replaced that item with the value: `$a` never saw it, and a second write to
+// the same element then met an immutable List. An Array's element is replaced
+// as before: an Array copied from such a List is not to write the variables
+// (rtArrayVal decontainerizes the copy). (A user's Proxy has a STORE to call,
+// which a reference cannot; it is taken as before.)
+static Value& elemWriteTarget(Value& slot, bool list) {
+    if (slot.isCell()) return *slot.deref();
+    if (list)
+        if (PRef<Value> c = cellOfProxy(&slot)) return *c;
+    return slot;
+}
 // stepOp: the `postfix:<++>` / `prefix:<-->` a step site resolves the place for
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp) {
     if (isHash) {
@@ -5363,7 +5378,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
         // what a `$` scalar vivifies is ITEMIZED, as the interpreter's is:
         // `my $u; $u<k> = 3; say $u.raku` is `${:k(3)}`
         if (base.t != VT::Hash || !base.hash()) { base = Value::makeHash(); base.itemized = true; }
-        return (*base.hash())[key.toStr()];
+        return elemWriteTarget((*base.hash())[key.toStr()], false);   // a cell: through it (below)
     }
     // A Range and a List are immutable too, as the interpreter's lvalue() has
     // them: a write REPLACED the Range with a fresh Array and wrote into the
@@ -5384,7 +5399,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
         // the gaps read as the container's own default — `is default(v)` first,
         // then the element type's object (sheet LA-21)
         base.arr()->resize(i + 1, containerFill(base));
-    return (*base.arr())[i];
+    return elemWriteTarget((*base.arr())[i], base.isList);
 }
 // `@$h[$i] = v` / `%$h<k>++` for native codegen: the scalar's own Array (Hash)
 // is the subscript base, as the interpreter's lvalue() takes it (#122). Any

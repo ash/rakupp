@@ -1511,6 +1511,19 @@ Value rtNativeNeg(const Value& v) {
     if (v.t == VT::Num) { Value out = Value::number(-v.n); out.natBits = 64; out.natFloat = true; return out; }
     return applyArith("-", Value::integer(0), v);
 }
+// rtNeg's general case, as evalUnary runs it: a junction autothreads. An
+// undefined operand keeps the `0 - $x` it had, which is silent as the other
+// compiled arithmetic on one is: the warning prefixNumeric gives would name
+// "line 0", since compiled code carries no line.
+Value rtNegSlow(Interpreter& I, const Value& v) {
+    if (v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil) return applyArith("-", Value::integer(0), v);
+    if (isJunction(v)) {
+        Value out = Value::array(); out.enumName = v.enumName;
+        for (auto& e : *v.arr()) out.arr()->push_back(I.prefixNumeric("-", e));
+        return out;
+    }
+    return I.prefixNumeric("-", v);
+}
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out) { collectPHExpr(e, out); }
 
 // the root variable a write lands on: `@a`, `@a[$k]`, `%h<x><y>`, `$obj.attr`
@@ -3803,10 +3816,12 @@ Value rtArrayVal(const Value& v) {
         // these two must agree, or a program means one thing interpreted and
         // another compiled
         if (isMultiDimShaped(v)) return Value::array(shapedLeaves(v));
+        // (a kept List's items are its variables' containers: the copy takes
+        // their values, as coerceArray's decontCopiedElems gives them)
         if (v.isList) { Value r = listToArray(*v.arr()); r.isList = false;
-                        if (v.s == "Seq") deproxyElems(r); return r; }
+                        if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); return r; }
         Value r = Value::array(*v.arr()); // fresh buffer: `@a = @b` must not alias @b
-        if (v.s == "Seq") deproxyElems(r); // take-rw's Proxies decontainerize on assign
+        if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); // take-rw's Proxies decontainerize on assign
         return r;
     }
     // `my @a = 1..*` is lazy, as interpreted: flattening reached the cap
@@ -3950,7 +3965,7 @@ void Interpreter::runDestroyChain(const PRef<ObjectData>& od) {
 // Slip to splice, a lazy tail, shape, or a shared buffer takes the copying
 // path, whose semantics stay authoritative.
 Value rtArrayVal(Value&& v) {
-    if (v.t == VT::Array && v.arr() && v.isList && !v.ext() && !v.itemized &&
+    if (v.t == VT::Array && v.arr() && v.isList && !v.ext() && !v.itemized && !v.holdsContainers() &&
         !(v.shape() && !v.shape()->empty()) && v.payloadUnique()) {
         for (auto& it : *v.arr())
             if (it.t == VT::Array && it.arr() && it.s == "Slip")

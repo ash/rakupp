@@ -457,7 +457,28 @@ struct Codegen {
             }
         }
         if (any) { keptListVar_ = true; if (!keptListLine_) keptListLine_ = e->line ? e->line : curStmtLine_; }
+        // A module routine is not the whole program: the List it keeps may be
+        // written through anywhere — another module's routine, the program —
+        // and none of those writes is in view here, while its native List
+        // holds values, not the containers. So it stays interpreted (it died
+        // "Cannot modify an immutable List" where the interpreter wrote $c).
+        if (any && moduleMode_)
+            throw CodegenError{"a List that holds a variable's container, in a module routine", /*routineWide=*/true};
         return any;
+    }
+    // A kept List handed to a routine the program does not compile — a
+    // module's, or one reached through a Code value — may be written through
+    // there, where noteIndexWrite cannot look: the program's native Lists hold
+    // values, so the call counts as such a write (and the program is bundled,
+    // where the interpreter builds the List with its containers).
+    int keptForeignLine_ = 0;
+    void noteKeptToForeign(const std::vector<ExprPtr>& args) {
+        for (auto& a : args) {
+            const Expr* x = a.get();
+            if (x && x->kind == NK::Pair) x = static_cast<const PairExpr*>(x)->value.get();   // `:l(($a, $b))` too
+            if (x && x->kind == NK::ListExpr && static_cast<const ListExpr*>(x)->parenned && noteKeptItems(x))
+                if (!keptForeignLine_) keptForeignLine_ = x->line ? x->line : curStmtLine_ ? curStmtLine_ : 1;
+        }
     }
     // `my $m = (…)` / `$m := (…)` / `my \m = (…)` / `@o[0] = (…)`: the
     // assignment keeps the List (as the interpreter's evalAssign marks it)
@@ -643,7 +664,7 @@ struct Codegen {
         if (u->op == "!" || u->op == "not") return "Value::boolean(!RT.boolify(" + x + "))";
         if (u->op == "?")  return "Value::boolean(RT.boolify(" + x + "))";
         if (u->op == "-")  return nativeNumericStatic(u) ? "rtNativeNeg(" + x + ")"
-                                                         : "applyArith(\"-\", Value::integer(0), " + x + ")";
+                                                         : "rtNeg(RT, " + x + ")";
         if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
         if (u->op == "~")  return "Value::str(rtInterpStr(" + x + "))";   // `~$obj` asks its .Str
         if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
@@ -715,6 +736,17 @@ struct Codegen {
         ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; }
         bool used() const { return g->frameUse_.back() != 0; }
     };
+    // `fail` in a ROUTINE returns its Failure from that routine (rtFailRoutine;
+    // the builtin, seeing no routine frame of the interpreter's, threw it as
+    // `die`); in a BLOCK closure of one it is aimed at the routine's frame, as
+    // a `return` there is (rtFailFrom). "" where the builtin stands: outside
+    // any routine, and in a module routine, which runs in the interpreter's.
+    std::string failCall(const std::string& vl) {
+        if (routineRef_.empty() || moduleMode_ || frameUse_.empty()) return "";
+        if (nestKinds_.empty() || nestKinds_.back() != 'b') return "rtFailRoutine(RT, " + vl + ")";
+        frameUse_.back() = 1;
+        return "rtFailFrom(RT, " + vl + ", __fid, __flive)";
+    }
     static std::string framePrologue() {
         return "RtRoutineFrame __rf(RT); const uint64_t __fid = __rf.id; "
                "const std::shared_ptr<bool> __flive = __rf.live;\n";
@@ -1163,6 +1195,12 @@ struct Codegen {
 
     // A lexical `sub f (…) { … }` inside a block becomes a native closure stored
     // in the runtime env, so calls (including self-recursive ones) resolve by name.
+    // …and, -O, one with a plain signature is also called DIRECTLY where the
+    // C++ scope that holds it is in reach: its name -> the weak handle on its
+    // body, and its arity (hoistLexicalSubs, the Call case). Scoped like
+    // envSubs, by BodyScope and DeclScope, which put it back on the way out.
+    struct LexDirect { std::string weak; int arity; };
+    std::map<std::string, LexDirect> lexDirect_;
     // a labelled native loop being emitted (loopLabels_, below)
     struct LoopLabel { std::string label, nextAt, lastAt; bool usedNext = false, usedLast = false; };
     struct BodyScope {
@@ -1171,6 +1209,7 @@ struct Codegen {
         std::vector<std::string> savedCellsLive;
         int savedDepth;
         std::vector<LoopLabel> savedLabels;
+        std::map<std::string, LexDirect> savedLexDirect;
         BodyScope(Codegen* g_, bool closure) : g(g_),
             savedHoisted(g_->hoisted), savedSpecials(g_->boundSpecials),
             savedEnvSubs(g_->envSubs), savedCells(g_->cellVars_),
@@ -1178,10 +1217,12 @@ struct Codegen {
             savedCellsLive(g_->cellsLive_), savedDepth(g_->loopDepth_), savedLabels(std::move(g_->loopLabels_)) {
             g->loopDepth_ = 0;               // break/continue never cross a C++ function boundary
             g->loopLabels_.clear();          // …nor does a goto
+            savedLexDirect = g->lexDirect_;
             if (!closure) { g->hoisted.clear(); g->boundSpecials.clear(); g->cellVars_.clear(); g->cellsLive_.clear(); }
             // a closure inherits the lexical sets (copy-in); additions are discarded on exit
         }
         ~BodyScope() {
+            g->lexDirect_ = std::move(savedLexDirect);
             g->hoisted = std::move(savedHoisted);
             g->boundSpecials = std::move(savedSpecials);
             g->envSubs = std::move(savedEnvSubs);
@@ -1223,9 +1264,38 @@ struct Codegen {
         // sub closing over an enclosing `my` would not compile at all.
         if (anyLexical) predeclareBlockLocals(stmts, ind);
 
+        // -O: a lexical sub lexDirectOk takes is ALSO called directly, by every
+        // call site in this scope its own recursive ones included (lexDirect_).
+        // Its body is a std::function held by this scope and by the Code object
+        // the env gets; the call sites reach it through a WEAK handle, so a body
+        // that calls itself does not keep itself alive, and a handle that has
+        // gone takes the env, as every call did: through RT.dynVar and
+        // callCallable, a recursion of 2**10 leaves ran 5x a top-level sub's.
+        std::map<const SubDecl*, std::string> strong;
+        // (a sub declared here hides an outer one of its name from this scope,
+        // whether or not it is called directly itself)
         for (auto& st : stmts)
-            if (SubDecl* d = lexical(st.get()))
-                line(ind, "RT.dynVarRef(" + cesc("&" + d->name) + ") = " + subClosure(d) + ";");
+            if (SubDecl* d = lexical(st.get())) lexDirect_.erase(d->name);
+        for (auto& st : stmts)
+            if (SubDecl* d = lexical(st.get()); d && lexDirectOk(d)) {
+                const std::string f = gensym("__lsf"), w = gensym("__lsw");
+                line(ind, "auto " + f + " = std::make_shared<std::function<Value(ValueList&)>>(); "
+                          "std::weak_ptr<std::function<Value(ValueList&)>> " + w + " = " + f + ";");
+                lexDirect_[d->name] = {w, (int)d->params.size()};
+                strong[d] = f;
+            }
+        for (auto& st : stmts)
+            if (SubDecl* d = lexical(st.get())) {
+                auto it = strong.find(d);
+                if (it == strong.end()) {
+                    line(ind, "RT.dynVarRef(" + cesc("&" + d->name) + ") = " + subClosure(d) + ";");
+                    continue;
+                }
+                line(ind, "*" + it->second + " = " + subClosureLambda(d) + ";");
+                line(ind, "RT.dynVarRef(" + cesc("&" + d->name) + ") = " +
+                          subSig("Value::closure([" + it->second + "](ValueList& __a)->Value{ return (*" +
+                                 it->second + ")(__a); })", d) + ";");
+            }
     }
 
     // Declare this block's own `my` slots — the ones a nested closure READS
@@ -1687,6 +1757,10 @@ struct Codegen {
 
     std::string subClosure(SubDecl* d) {
         if (d->isNative) return nativeSubClosure(d);
+        return subSig("Value::closure(" + subClosureLambda(d) + ")", d);
+    }
+    // …its body, as the C++ lambda the Code object runs
+    std::string subClosureLambda(SubDecl* d) {
         Nest __nest{this, 's'};
         RoutineScope __rs{this, ""};
         std::set<std::string> params;
@@ -1719,8 +1793,19 @@ struct Codegen {
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
         const bool framed = __fs.used();
-        return subSig("Value::closure([=](ValueList& __a)->Value{ " + (framed ? framePrologue() : std::string()) +
-                      "try {\n" + body + "} " + routineCatch(framed) + " })", d);
+        return "[=](ValueList& __a)->Value{ " + (framed ? framePrologue() : std::string()) +
+               "try {\n" + body + "} " + routineCatch(framed) + " }";
+    }
+    // May calls of this lexical sub go straight to its body (lexDirect_)? As a
+    // top-level sub's do: a plain signature the call site can match by count
+    // (simpleSig, and the site's own simpleArgs), and nothing the Code object
+    // does around a call that the body does not — no return type or `is rw`
+    // to apply, no trait, no `wrap` in the program to see every call.
+    bool lexDirectOk(const SubDecl* d) const {
+        return optimize_ && !d->isNative && !d->isMulti && !d->isProto && d->retType.empty() && !d->retRw &&
+               d->traits.empty() && d->altParams.empty() && d->handles.empty() && !d->deprecated &&
+               !d->testAssertion && !d->isOur && !d->immediateCall && simpleSig(d->params) &&
+               srcText_.find("wrap") == std::string::npos;
     }
 
     // The runtime Code object of a compiled routine carries the signature the
@@ -2211,6 +2296,9 @@ struct Codegen {
                 if (multiNames.count(n)) return mangleSub(n) + "(ValueList{})";     // zero-arg multi dispatch
                 if (envSubs.count(n))    return "RT.callCallable(RT.dynVar(" + cesc("&" + n) + "), ValueList{})"; // lexical sub
                 if (classNames.count(n)) return "Value::typeObj(" + cesc(n) + ")";  // a user class: a type object
+                // a bare `fail` in a routine (the Call case's rtFailRoutine)
+                if (n == "fail" && !moduleExports_.count(n) && !callEnvNames_.count(n))
+                    if (std::string fc = failCall("ValueList{}"); !fc.empty()) return fc;
                 // a statement label as a term (`next(L)`, `L.last`, `:label(L)`):
                 // the interpreter builds the Label from the unit's label table,
                 // which compiled code does not carry, and rtNameTerm would mint a
@@ -2324,7 +2412,7 @@ struct Codegen {
                         });
                     } else body = "return " + exArg(u->operand.get()) + ";\n";
                     if (u->op == "do") return "([&]()->Value{\n" + body + "}())";
-                    return "([&]()->Value{ try { Value __r = ([&]()->Value{\n" + body + "}()); "
+                    return "([&]()->Value{ RtTryScope __ts(Interpreter::tctx()); try { Value __r = ([&]()->Value{\n" + body + "}()); "
                            "RT.dynVarRef(\"$!\") = Value::nil(); return __r; } "
                            "catch (const RakuError& __e) { RT.dynVarRef(\"$!\") = RT.exceptionFor(__e); return Value::nil(); } }())";
                 }
@@ -2355,7 +2443,7 @@ struct Codegen {
                     std::string add = "rtStep(_o, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
                     if (auto* nv = nativeScalarRef(u->operand.get()))   // a native wraps, and stays native
-                        add = "rtNativeStoreLike(_o, rtNativeArith(\"+\", _o, Value::integer(" + delta + ")), " +
+                        add = "rtNativeStoreLike(_o, rtNativeAdd(_o, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
                            "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())");
@@ -2366,7 +2454,7 @@ struct Codegen {
                     std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
                     if (auto* nv = nativeScalarRef(u->operand.get()))
-                        add = "rtNativeStoreLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
+                        add = "rtNativeStoreLike(_r, rtNativeAdd(_r, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
                            "; _r=" + add + "; return _r; }())");
@@ -2583,7 +2671,7 @@ struct Codegen {
                 }
                 // a NATIVE operation (Ast.h nativeNumericStatic): wraps at 64 bits,
                 // and its value carries the native tags, as the interpreter's does
-                if (nativeNumericStatic(b)) return "rtNativeArith(" + cesc(b->op) + ", " + L + ", " + R + ")";
+                if (nativeNumericStatic(b)) return nativeArithCall(b->op, L, R);
                 if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
                 return std::string(starFn(b)) + "(" + cesc(b->op) + ", " + L + ", " + R + ")";
             }
@@ -2682,11 +2770,21 @@ struct Codegen {
                 // `(* < 1)(0)` are calls OF that WhateverCode, not a bigger
                 // curry. Emitted as a plain term the chain ran eagerly and the
                 // call had a Bool in front of it.
+                // a routine the program may not have compiled, given a kept List
+                if (c->callee || codeVars.count(c->name) || envSubs.count(c->name) ||
+                    ((moduleExports_.count(c->name) || callEnvNames_.count(c->name)) &&
+                     !userSubs.count(c->name) && !multiNames.count(c->name)))
+                    noteKeptToForeign(c->args);
                 if (c->callee) return "RT.callCallable(" + exArg(c->callee.get()) + ", " + vl + ")";
                 if (codeVars.count(c->name)) // a `my &name = …` variable called by bare name
                     return "RT.callCallable(" + mangleVar("&" + c->name) + ", " + vl + ")";
-                if (envSubs.count(c->name))  // a lexical sub registered in the runtime env
+                if (envSubs.count(c->name)) {  // a lexical sub registered in the runtime env
+                    // …called straight, where its handle is in reach (lexDirect_)
+                    if (auto ld = lexDirect_.find(c->name);
+                        ld != lexDirect_.end() && !slip && simpleArgs(c->args) && (int)c->args.size() == ld->second.arity)
+                        return "rtLexCall(RT, " + ld->second.weak + ", " + vl + ", " + cesc("&" + c->name) + ")";
                     return "RT.callCallable(RT.dynVar(" + cesc("&" + c->name) + "), " + vl + ")";
+                }
                 if (multiNames.count(c->name)) return mangleSub(c->name) + "(" + vl + ")"; // multi dispatcher
                 if (userSubs.count(c->name)) {
                     // `is rw` params: pass a named ValueList (the callee binds references
@@ -2760,6 +2858,11 @@ struct Codegen {
                     if (fb != fastB.end())
                         return std::string(fb->second) + "(RT, " + ex(c->args[0].get()) + ")";
                 }
+                // `fail` in a ROUTINE returns its Failure from that routine: the
+                // builtin sees no routine frame of the interpreter's in compiled
+                // code, and threw the exception as `die` does outside one
+                if (c->name == "fail" && !moduleExports_.count(c->name) && !callEnvNames_.count(c->name))
+                    if (std::string fc = failCall(vl); !fc.empty()) return fc;
                 return builtinCall(c->name, vl);
             }
             case NK::MethodCall: {
@@ -2860,6 +2963,15 @@ struct Codegen {
                     (name == "key" || name == "value" || name == "Int"))
                     return std::string(name == "key" ? "rtMKey" : name == "value" ? "rtMValue" : "rtMInt") +
                            "(RT, " + ex(m->inv.get()) + ")";
+                // -O: `.elems`, `.defined` and a one-argument `.push`, which
+                // methodCall answers first thing for a plain invocant: the same
+                // tests at the call site (rtMElems, rtMDefined, rtMPush)
+                if (optimize_ && !m->meta && !m->bang && !hasWhatever(e)) {
+                    if (m->args.empty() && (name == "elems" || name == "defined"))
+                        return std::string(name == "elems" ? "rtMElems" : "rtMDefined") + "(RT, " + ex(m->inv.get()) + ")";
+                    if (name == "push" && m->args.size() == 1 && simpleArgs(m->args) && !isSlip(m->args[0].get()))
+                        return "rtMPush(RT, " + ex(m->inv.get()) + ", " + emitArg(m->args[0].get()) + ")";
+                }
                 return "RT.methodCall(" + (wcDepth > 0 && hasWhatever(e) ? ex(m->inv.get()) : exArg(m->inv.get())) +
                        ", " + cesc(name) + ", " + argsVL(m->args) + ")";
             }
@@ -3028,6 +3140,13 @@ struct Codegen {
     // reaches it only from outside was an I64 slot whose guard always failed.
     // The guard still decides at run time.
     std::set<std::string> topNumInit_;
+    // Top-level `constant NAME = <machine Int literal>`, untyped: a kernel
+    // reads NAME as that literal (kExpr). A kernel is a top-level sub, which
+    // sees no declaration of NAME but this one (a sigilless one in a routine
+    // is refused, and a nested block's is not in its scope), and a constant
+    // is never assigned. Through the global it read, `($m % BIG)` kept the
+    // whole sub off its kernel: 8.4 ns a call against 1.5 for the literal.
+    std::map<std::string, const Expr*> litConsts_;
     bool atTopLevel_ = false;         // emitting the mainline (not a sub body)
 
     void emitPhaserBody(Block* b, int ind) {
@@ -3182,16 +3301,18 @@ struct Codegen {
     struct DeclScope {
         Codegen* g;
         std::set<std::string> savedHoist, savedCodeVars, savedEnvSubs;
+        std::map<std::string, LexDirect> savedLexDirect;
         bool savedTop;
         explicit DeclScope(Codegen* c)
             : g(c), savedHoist(c->hoisted), savedCodeVars(c->codeVars), savedEnvSubs(c->envSubs),
-              savedTop(c->atTopLevel_) {
+              savedLexDirect(c->lexDirect_), savedTop(c->atTopLevel_) {
             c->hoisted.clear();
             c->atTopLevel_ = false;
         }
         ~DeclScope() {
             g->hoisted = std::move(savedHoist); g->atTopLevel_ = savedTop;
             g->codeVars = std::move(savedCodeVars); g->envSubs = std::move(savedEnvSubs);
+            g->lexDirect_ = std::move(savedLexDirect);
         }
         DeclScope(const DeclScope&) = delete;
         DeclScope& operator=(const DeclScope&) = delete;
@@ -3509,7 +3630,7 @@ struct Codegen {
                         std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                           ", [&]() -> Interpreter& { return RT; })";
                         if (auto* nv = nativeScalarRef(u->operand.get()))
-                            add = "rtNativeStoreLike(_r, rtNativeArith(\"+\", _r, Value::integer(" + delta + ")), " +
+                            add = "rtNativeStoreLike(_r, rtNativeAdd(_r, Value::integer(" + delta + ")), " +
                                   cesc(nv->name) + ", true)";
                         line(ind, "{ Value& _r = " + stepLvalueExpr(u) + "; _r = " + add + "; }");
                         if (std::string w = viewSyncWrap(u->operand.get(), "Value()"); w != "Value()")
@@ -3805,8 +3926,11 @@ struct Codegen {
             // so the plain assignment around it keeps the variable native.
             if (!n.empty() && n[0] == '$') {
                 const std::string src = value && nativeNumericStatic(value) ? "true" : "false";
-                if (v->declare && isNativeScalarDecl(v->d().declType))
-                    return "rtNativeStore(" + rhs + ", " + cesc(v->d().declType) + ", " + cesc(n) + ", " + src + ")";
+                if (v->declare && isNativeScalarDecl(v->d().declType)) {
+                    const std::string& dt = v->d().declType;
+                    const char* kind = dt == "num" || dt == "num64" ? "1" : dt == "int" || dt == "int64" ? "2" : "0";
+                    return "rtNativeStoreK(" + rhs + ", " + kind + ", " + cesc(dt) + ", " + cesc(n) + ", " + src + ")";
+                }
                 if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
                     return "rtNativeStoreLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
@@ -4055,7 +4179,7 @@ struct Codegen {
                               !static_cast<NumLit*>(ve)->imaginary;
             const bool nativeOp = binop != "/" &&
                 (nativeNumericStatic(ve) || (tv->nativeIntRead ? vInt : vNum));
-            std::string val = nativeOp ? "rtNativeArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")"
+            std::string val = nativeOp ? nativeArithCall(binop, lhs, rhs)
                                        : "applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
             return lhs + " = rtNativeStoreLike(" + lhs + ", " + val + ", " + cesc(tv->name) + ", " +
                    (nativeOp && binop != "div" && binop != "%" && binop != "mod" ? "true" : "false") + ")";
@@ -4565,6 +4689,9 @@ struct Codegen {
     void blockValue(Block* b, int ind, const std::string& dst) {
         if (b->stmts.empty()) return;
         CellScope __cs{this};
+        // (its lexical subs' C++ handles end with the braces around it)
+        struct LexDirectScope { Codegen* g; std::map<std::string, LexDirect> saved;
+                                ~LexDirectScope() { g->lexDirect_ = std::move(saved); } } __lds{this, lexDirect_};
         hoistLexicalSubs(b->stmts, ind);
         for (size_t i = 0; i + 1 < b->stmts.size(); i++) stmt(b->stmts[i].get(), ind);
         stmtValue(b->stmts.back().get(), ind, dst);
@@ -4739,6 +4866,12 @@ struct Codegen {
                 if (!l->big.empty()) return "";
                 isInt = true;
                 return l->v == LLONG_MIN ? "INT64_MIN" : "INT64_C(" + std::to_string(l->v) + ")";
+            }
+            case NK::NameTerm: {   // a literal constant (litConsts_)
+                auto* n = static_cast<const NameTerm*>(e);
+                auto it = litConsts_.find(n->name);
+                if (it == litConsts_.end() || !n->ofType.empty() || n->defConstraint) return "";
+                return kExpr(it->second, ps, cond, isInt, ok);
             }
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
@@ -5019,10 +5152,14 @@ struct Codegen {
     // A `where` or `:D`/`:U` constraint keeps the boxed path, whose bindParams
     // refuses it as the plain build does: the direct-Value body checked neither,
     // so -O compiled `sub f(Int:D $n)` natively with its smiley silently absent.
+    // A plain `@x` / `%h` qualifies too: bindParams binds it unitemized and
+    // checks nothing, so the direct body can do the same to the Value it is
+    // passed — through a ValueList it cost ~12 ns a call more than `$x`.
     static bool simpleSig(const std::vector<Param>& ps) {
         for (const Param& p : ps)
-            if (p.named || p.slurpy || p.invocant || p.defaultVal || p.subSig || p.isRw || p.sigil != '$' ||
-                p.whereExpr || p.defConstraint) return false;
+            if (p.named || p.slurpy || p.invocant || p.defaultVal || p.subSig || p.isRw ||
+                (p.sigil != '$' && p.sigil != '@' && p.sigil != '%') || p.whereExpr || p.defConstraint)
+                return false;
         return true;
     }
     // A call site can take the fast path only when it passes plain positional args
@@ -5033,6 +5170,14 @@ struct Codegen {
             if (a->kind == NK::Unary && static_cast<Unary*>(a.get())->op == "|") return false;
         }
         return true;
+    }
+    // A NATIVE operation (rtNativeArith), through its operator's own helper
+    // where it has one
+    static std::string nativeArithCall(const std::string& op, const std::string& L, const std::string& R) {
+        const char* f = op == "+" ? "rtNativeAdd" : op == "-" ? "rtNativeSub" : op == "*" ? "rtNativeMul"
+                      : op == "/" ? "rtNativeDiv" : nullptr;
+        if (f) return std::string(f) + "(" + L + ", " + R + ")";
+        return "rtNativeArith(" + cesc(op) + ", " + L + ", " + R + ")";
     }
     // -O: the inline int-fast-path helper for a binary op (empty = use applyArith)
     std::string fastBin(const std::string& op) {
@@ -6492,13 +6637,16 @@ struct Codegen {
         line(ind, "static const Param& " + pd + " = rtParamOf(RtSigParam" + sigRow(p) + ");");
         return pd;
     }
-    static std::string bindTypedExpr(const std::string& got, const std::string& pd, const Param& p) {
+    // the RTB_* code rtBindTyped passes an instance of the parameter's type by
+    static const char* typedFastCode(const Param& p) {
         const std::string& t = p.type;
-        const char* fast = t == "Int" ? "RTB_INT" : t == "Str" || t == "str" ? "RTB_STR"
-                         : t == "Num" || t == "num" || t == "num64" ? "RTB_NUM"
-                         : t == "Rat" ? "RTB_RAT" : t == "Bool" ? "RTB_BOOL"
-                         : t == "int" ? "RTB_MACHINE_INT" : "RTB_NONE";
-        return "rtBindTyped(" + got + ", " + pd + ", " + fast + ", [&]() -> Interpreter& { return RT; })";
+        return t == "Int" ? "RTB_INT" : t == "Str" || t == "str" ? "RTB_STR"
+             : t == "Num" || t == "num" || t == "num64" ? "RTB_NUM"
+             : t == "Rat" ? "RTB_RAT" : t == "Bool" ? "RTB_BOOL"
+             : t == "int" ? "RTB_MACHINE_INT" : "RTB_NONE";
+    }
+    static std::string bindTypedExpr(const std::string& got, const std::string& pd, const Param& p) {
+        return "rtBindTyped(" + got + ", " + pd + ", " + typedFastCode(p) + ", [&]() -> Interpreter& { return RT; })";
     }
     // Emit binding lines that pull each parameter out of the call's `__a`
     // ValueList — handling positional, named, optional/default, and slurpy.
@@ -6646,6 +6794,8 @@ struct Codegen {
             std::string fname = md->isMulti ? methodCandFn(cd->name, mkey, multiSeq[mkey]++)
                                             : methodFn(cd->name, mkey);
             BodyScope __bs{this, /*closure=*/false};
+            lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
+            RoutineScope __rs{this, ""};   // (a routine: its `fail` returns from it)
             FrameScope __fs{this};
             std::string saved = self_;
             std::string mbody = capture([&]() {
@@ -6856,6 +7006,7 @@ struct Codegen {
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false,
                  const std::string& kernelName = "") {
         BodyScope __bs{this, /*closure=*/false};
+        lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
         struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
             __cp{this, std::exchange(curParams_, &ps)};
         std::set<std::string> params;
@@ -6882,12 +7033,26 @@ struct Codegen {
             for (size_t i = 0; i < ps.size(); i++) {
                 std::string nm = anyCell ? "__p" + std::to_string(i) : mangleVar(ps[i].name);
                 if (checkedParam(ps[i]) && !ps[i].name.empty()) {
-                    std::string pd = typedParamDesc(ps[i], 1);
-                    line(1, nm + " = " + bindTypedExpr("std::move(" + nm + ")", pd, ps[i]) + ";");
+                    // what conforms as it is stays where it is: no descriptor to
+                    // build (a function-local static's guard), no 128-byte move
+                    // back into the parameter — a `num` sub's two cost it more
+                    // than its arithmetic did
+                    if (std::string fc = typedFastCode(ps[i]); fc != "RTB_NONE") {
+                        const std::string pd = gensym("__pd");
+                        line(1, "if (!rtTypedFast(" + nm + ", " + fc + ")) { static const Param& " + pd +
+                                " = rtParamOf(RtSigParam" + sigRow(ps[i]) + "); " + nm + " = RT.bindTypedParam(std::move(" +
+                                nm + "), " + pd + "); }");
+                    }
+                    else {
+                        std::string pd = typedParamDesc(ps[i], 1);
+                        line(1, nm + " = " + bindTypedExpr("std::move(" + nm + ")", pd, ps[i]) + ";");
+                    }
                 }
-                // …and each `$` one holds what it was given as ONE item, as the
-                // boxed path's bindParams has it (bindAs)
-                if (!ps[i].isRaw) line(1, "itemizeScalar(" + nm + ");");
+                // …and each `$` one holds what it was given as ONE item, and an
+                // `@` / `%` one unitemized, as the boxed path's bindParams has it
+                // (bindAs)
+                if (!ps[i].isRaw)
+                    line(1, ps[i].sigil == '$' ? "itemizeScalar(" + nm + ");" : nm + " = unitemized(std::move(" + nm + "));");
             }
             if (!kernelName.empty() && !anyCell) {
                 std::vector<std::string> ka;
@@ -7284,6 +7449,11 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             const bool num = a->op == "=" && tv->d().declType.empty() && v && v->kind == NK::NumLit &&
                              !static_cast<NumLit*>(v)->isRat && !static_cast<NumLit*>(v)->imaginary;
             (num ? g.topNumInit_ : otherInit).insert(tv->name);
+            // `constant BIG = 1125899906842624` (or `= -5`): see litConsts_
+            if (a->op == "=" && tv->d().declScope == "constant" && tv->d().declType.empty() &&
+                !tv->name.empty() && !std::strchr("$@%&", tv->name[0]) && v && v->kind == NK::IntLit &&
+                static_cast<IntLit*>(v)->big.empty())
+                g.litConsts_[tv->name] = a->value.get();
         }
         for (auto& nm : otherInit) g.topNumInit_.erase(nm);
     }
@@ -7556,6 +7726,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         unsupported("a List that holds a variable's container (line " + std::to_string(g.keptListLine_) +
                     "), anywhere in a program that writes through a subscript of a scalar or parameter (line " +
                     std::to_string(g.listWriteLine_) + ")");
+    if (g.keptForeignLine_)
+        unsupported("a List that holds a variable's container, passed to a routine outside the program (line " +
+                    std::to_string(g.keptForeignLine_) + "), which may write through it");
     for (const std::string& n : g.keptNames_)
         if (g.writtenNames_.count(n))
             unsupported("a List that holds " + n + "'s container, read after " + n + " is written");

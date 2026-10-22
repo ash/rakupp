@@ -245,6 +245,9 @@ struct Compiler {
     std::vector<std::string> ops;
     bool prefix = false;
     bool resolveFailed = false;      // a call named a routine that could not be linked (not the syntax)
+    // the interpreter's `constant` names, while no other thread can be adding
+    // to them (null otherwise: a constant term then refuses)
+    const std::unordered_set<std::string>* constants = nullptr;
 
     bool compileSub(Callable& c, IKernel*& out);
     KNode* expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t);
@@ -560,6 +563,33 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             auto* l = static_cast<IntLit*>(e);
             if (!l->big.empty()) return refuse("an integer literal beyond 64 bits");
             KNode* n = k.node(KOp::Lit); n->lit = l->v; t = KT::Int;
+            return n;
+        }
+        case NK::NameTerm: {
+            // A top-level `constant` holding a machine Int is that literal.
+            // Only where the term resolves from the global scope itself — a
+            // top-level sub's body, a loop of the mainline — and to the
+            // program's own top-level constant: that one runs once, so every
+            // closure sharing this kernel reads the same value, and a constant
+            // is never assigned. From any scope between, a declaration that
+            // has not run yet at the first call (an outer routine's `my \N`
+            // below the call) would leave the global's value baked into the
+            // kernel for every later one. Its slot must hold the value itself,
+            // not a container another name shares.
+            auto* nt = static_cast<NameTerm*>(e);
+            if (!constants) {   // a verdict for now, not for the body (resolveFailed; the loop's retry)
+                resolveFailed = true;
+                return refuse("the term " + nt->name + " while other threads are live");
+            }
+            if (!nt->ofType.empty() || nt->defConstraint || !constants->count(nt->name))
+                return refuse("the term " + nt->name);
+            const Callable* home = c ? c : L ? L->sub : nullptr;
+            Env* scope = home ? (home->closure ? home->closure.get() : global) : L ? L->env : nullptr;
+            Env* owner = nullptr;
+            const Value* p = scope ? scope->findRaw(nt->name, &owner) : nullptr;
+            if (!p || scope != global || owner != global || p->deref() != p || !plainIntValue(*p))
+                return refuse("the term " + nt->name + " (not a top-level Int constant)");
+            KNode* n = k.node(KOp::Lit); n->lit = p->i; t = KT::Int;
             return n;
         }
         case NK::NumLit: {
@@ -2845,6 +2875,7 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
             CompilingHere ch;
             Compiler cc;
             cc.global = global_.get();
+            if (liveWorkers_.load(std::memory_order_acquire) == 0) cc.constants = &constantNames_;
             IKernel* root = nullptr;
             const bool ok = cc.compileSub(c, root) && root == static_cast<IKernel*>(c.ci().intKernel.k.load());
             finishSession(cc, ok, &c);
@@ -2958,6 +2989,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                 cx.loops = 1;
                 cc = Compiler{};
                 cc.global = global_.get();
+                if (!threads) cc.constants = &constantNames_;
                 cc.L = &cx;
                 body = root = nullptr;
                 if (isFor) {

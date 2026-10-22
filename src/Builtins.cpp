@@ -6344,19 +6344,12 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // `.push` onto a plain untyped Array, of arguments that are no list, Slip,
     // Nil or native: straight to the store. The guards rule out every special
     // case the general path meets before its push arm (methodCallTail), which
-    // it reached only after ~250 ns of other method checks per call.
-    if (m.size() == 4 && opEq(m, "push") && !args.empty() && inv.t == VT::Array && inv.arr() &&
-        !inv.isList && inv.s.empty() && inv.enumName.empty() && inv.enumType.empty() && inv.hashKind.empty() &&
-        inv.pk_ != PK::Packed && !inv.ext() && inv.ofType().empty() && !inv.pairVal() &&
-        !(inv.shape() && !inv.shape()->empty()) && !inv.holdsContainers() && builtinExt_.empty()) {
-        // (an Array argument is one element, as in the general arm; a List,
-        // Seq or Slip is not taken here — a Slip slips, and a parenthesized
-        // List literal keeps its variables' containers)
+    // it reached only after ~250 ns of other method checks per call. (The
+    // tests are Interpreter.h's, and -O's rtMPush makes the same ones.)
+    if (m.size() == 4 && opEq(m, "push") && !args.empty() && rtPushPlainTarget(inv) && builtinExt_.empty()) {
         bool plain = true;
         for (auto& a : args)
-            if ((a.t == VT::Array && (a.isList || !a.s.empty())) || a.t == VT::Nil || a.natBits) {
-                plain = false; break;
-            }
+            if (!rtPushPlainArg(a)) { plain = false; break; }
         if (plain) {
             Interpreter::ParStripe mutStripe(*this, inv.arr());
             for (auto& a : args) inv.arr()->push_back(a);
@@ -6374,8 +6367,9 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // in an interpreted loop. Each arm answers what the chain's own arm does.
     // Anything tagged goes the long way: an enum value or type, an allomorph, a
     // native, a big Int, and a lazy, packed, shaped or Seq array.
-    if (args.empty() && !skipOwn && m.size() >= 2 && m.size() <= 7 && inv.hashKind.empty() &&
-        inv.enumName.empty() && inv.enumType.empty() && !inv.natBits && !inv.natFloat && builtinExt_.empty()) {
+    // (The plain-value test and the `.elems` one are Interpreter.h's, which -O's
+    // rtMElems and rtMDefined make too.)
+    if (args.empty() && !skipOwn && m.size() >= 2 && m.size() <= 7 && rtQueryPlain(inv) && builtinExt_.empty()) {
         // `.WHICH` of a plain value — the general arm's own answer (whichOf)
         auto which = [&]() {
             Value w = Value::str(whichOf(inv));
@@ -6403,14 +6397,16 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             case VT::Bool:
                 if (opEq(m, "WHICH")) return which();
                 break;
+            case VT::Any:
+            case VT::Nil:
+                if (opEq(m, "defined")) return Value::boolean(false);
+                break;
             // a CORE type object (a user class may declare its own WHICH)
             case VT::Type:
                 if (opEq(m, "WHICH") && !classes_.count(inv.s)) return which();
                 break;
             case VT::Array:
-                if (opEq(m, "elems") && inv.arr() && inv.s.empty() && !inv.ext() &&
-                    inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()))
-                    return Value::integer((long long)inv.arr()->size());
+                if (opEq(m, "elems") && rtElemsPlain(inv)) return Value::integer((long long)inv.arr()->size());
                 // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
                 if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
                     inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&

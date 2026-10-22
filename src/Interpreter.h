@@ -1558,6 +1558,10 @@ public:
 
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    // compiled `try` blocks running on this thread (RtTryScope): a `fail` in a
+    // compiled routine called under one dies, as the interpreter's does under
+    // the `use fatal` a `try` puts its callee in (rtFailRoutine)
+    int compiledTry = 0;
     // The signature bindParams is binding now, so a binding error can carry
     // its Parameter object (`$!.parameter`) — built only when one is thrown.
     const std::vector<Param>* bindingParams = nullptr;
@@ -4766,6 +4770,7 @@ private:
     // a `where`'s Code, built once for a declaration scope, or null (staticWhereCode)
     const Value* staticWhereCode(const Param& p, const std::vector<Param>& sig, const std::shared_ptr<Env>& scope);
     static Value binaryFastHandler(Interpreter& I, Expr* e);   // a Binary's compiled fast shape
+    static Value unaryNegHandler(Interpreter& I, Expr* e);     // `-$x`'s, on a plain lexical
     bool fusedIntAssign(Binary* b, Value* slot);   // `$x = $a op $b` on Ints, into the slot
     static Value typedTreeHandler(Interpreter& I, Expr* e);    // a Binary's numeric subtree, typed
     bool typedTreeValue(Binary* b, Value& out);    // that subtree's value, or false (nothing evaluated)
@@ -5152,11 +5157,47 @@ inline Value rtNativeArith(const char* op, const Value& l, const Value& r) {
     }
     return rtNativeArithSlow(op, l, r);
 }
+// …and its `+ - * /`, for a codegen site that knows the operator: the same
+// answers, without rtNativeArith's dispatch on the operator's text — which
+// left it and rtNumArith out of line, so a `num` sub's `$a * $b + 1e0` cost
+// three times its untyped twin's rtMul and rtAdd.
+inline bool rtNativeIntPair(const Value& l, const Value& r) {
+    return l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() && l.hashKind.empty() && r.hashKind.empty() &&
+           l.enumName.empty() && r.enumName.empty();
+}
+inline Value rtNativeIntOf(unsigned long long x) {   // an int's 64 bits, wrapped
+    Value out = Value::integer((long long)x); out.natBits = 64; out.natSigned = true;
+    return out;
+}
+inline Value rtNativeNumOf(double d) { Value out = Value::number(d); out.natBits = 64; out.natFloat = true; return out; }
+inline Value rtNativeAdd(const Value& l, const Value& r) {
+    double a, b;
+    if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i + (unsigned long long)r.i);
+    if (rtNumPair(l, r, a, b)) return rtNativeNumOf(a + b);
+    return rtNativeArithSlow("+", l, r);
+}
+inline Value rtNativeSub(const Value& l, const Value& r) {
+    double a, b;
+    if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i - (unsigned long long)r.i);
+    if (rtNumPair(l, r, a, b)) return rtNativeNumOf(a - b);
+    return rtNativeArithSlow("-", l, r);
+}
+inline Value rtNativeMul(const Value& l, const Value& r) {
+    double a, b;
+    if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i * (unsigned long long)r.i);
+    if (rtNumPair(l, r, a, b)) return rtNativeNumOf(a * b);
+    return rtNativeArithSlow("*", l, r);
+}
+inline Value rtNativeDiv(const Value& l, const Value& r) {   // (two ints, or a zero divisor: the slow path's)
+    double a, b;
+    if (!rtNativeIntPair(l, r) && rtNumPair(l, r, a, b) && b != 0.0) return rtNativeNumOf(a / b);
+    return rtNativeArithSlow("/", l, r);
+}
 // The store into a native (codegen): a plain Num into a `num`, or a plain
 // machine Int into an `int`, changes only the tags — wrapNative's own fast arms,
 // after nativeAssignCheck has nothing to say about either. Anything else takes
 // rtNativeValue / rtNativeValueLike, which built two std::strings per store.
-inline bool rtNativeStoreFast(Value& v, bool isFloat) {
+RAKUPP_ALWAYS_INLINE bool rtNativeStoreFast(Value& v, bool isFloat) {
     if (v.x_ || v.p_ || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty()) return false;
     if (isFloat ? v.t != VT::Num : v.t != VT::Int) return false;
     v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
@@ -5164,13 +5205,15 @@ inline bool rtNativeStoreFast(Value& v, bool isFloat) {
     v.natBits = 64; v.natFloat = isFloat; v.natSigned = !isFloat;
     return true;
 }
-inline Value rtNativeStore(Value v, const char* type, const char* name, bool srcNative) {
-    const bool num = std::strcmp(type, "num") == 0 || std::strcmp(type, "num64") == 0;
-    if ((num || std::strcmp(type, "int") == 0 || std::strcmp(type, "int64") == 0) && rtNativeStoreFast(v, num))
-        return v;
+// `kind` is the declared type's, decided where the code was generated: 1 a
+// full-width float (`num`, `num64`), 2 a full-width int (`int`, `int64`), 0
+// anything else. Comparing the type's name instead was two strcmp calls a store
+// (out of line, as this was): half the time of a `num` sub's loop.
+RAKUPP_ALWAYS_INLINE Value rtNativeStoreK(Value v, int kind, const char* type, const char* name, bool srcNative) {
+    if (kind && rtNativeStoreFast(v, kind == 1)) return v;
     return rtNativeValue(v, type, name, srcNative);
 }
-inline Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
+RAKUPP_ALWAYS_INLINE Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
     if (!slot.natBits) return v;   // not (or no longer) a native container
     if (slot.natBits == 64 && (slot.natFloat || slot.natSigned) && rtNativeStoreFast(v, slot.natFloat)) return v;
     return rtNativeValueLike(slot, v, name, srcNative);
@@ -5208,6 +5251,21 @@ inline Value& applyArithInto(const std::string& op, Value& dst, const Value& r) 
 inline Value rtAdd(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a + b); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a - b); return applyArith("-", l, r); }
 inline Value rtMul(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a * b); return applyArith("*", l, r); }
+// prefix `-`: Interpreter::prefixNumeric's machine-Int and Num arms inline, and
+// everything else through prefixNumeric itself. It was emitted as `0 - $x`, the
+// string-keyed dispatcher on a mixed pair the Num lane never sees — and that
+// answered +0 for `-$x` on 0e0, where the interpreter and Rakudo answer -0.
+Value rtNegSlow(Interpreter& I, const Value& v);
+Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fail` returns (BuiltinsRegister.cpp)
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a); // `fail` in a compiled routine
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live); // …in a block of one
+inline Value rtNeg(Interpreter& I, const Value& v) {
+    if (v.hashKind.empty()) {
+        if (v.t == VT::Num) return Value::number(-v.n);
+        if (v.t == VT::Int && !v.big() && v.i != LLONG_MIN) return Value::integer(-v.i);
+    }
+    return rtNegSlow(I, v);
+}
 // `/` has no Int case (two Ints make a Rat); a zero divisor is the general path's Failure
 inline Value rtSlash(const Value& l, const Value& r) { double a, b; if (rtNumPair(l, r, a, b) && b != 0.0) return Value::number(a / b); return applyArith("/", l, r); }
 inline Value rtLt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a <  b); return applyArith("<",  l, r); }
@@ -5282,6 +5340,62 @@ inline Value rtMInt(Interpreter& I, const Value& v) {
         v.n > -9.2e18 && v.n < 9.2e18)   // (NaN fails both tests)
         return Value::integer((long long)v.n);   // the cast truncates toward zero, as .Int does
     return I.methodCall(v, "Int", ValueList{});
+}
+// The tests methodCall's own leading arms make (Builtins.cpp) for `.push` onto
+// a plain Array and for the zero-argument queries on a plain value — here, so
+// that -O's call-site forms below make the SAME tests. Those arms answer in a
+// few ns once reached; reaching one from compiled code cost a std::string, a
+// ValueList and the constructor checks in front of it (`@a.elems` ~25 ns).
+// A plain untyped Array, no List or Seq or Slip, nothing it must check or wrap:
+inline bool rtPushPlainTarget(const Value& inv) {
+    return inv.t == VT::Array && inv.arr() && !inv.isList && inv.s.empty() && inv.enumName.empty() &&
+           inv.enumType.empty() && inv.hashKind.empty() && inv.pk_ != PK::Packed && !inv.ext() &&
+           inv.ofType().empty() && !inv.pairVal() && !(inv.shape() && !inv.shape()->empty()) &&
+           !inv.holdsContainers();
+}
+// …and an argument that is one element as it is: an Array is (it is not
+// flattened), a List, Seq or Slip is not (a Slip slips, and a parenthesized
+// List literal keeps its variables' containers), nor a Nil or a native
+inline bool rtPushPlainArg(const Value& a) {
+    return !((a.t == VT::Array && (a.isList || !a.s.empty())) || a.t == VT::Nil || a.natBits);
+}
+// A plain value for the zero-argument arms: no enum, allomorph or native tag
+inline bool rtQueryPlain(const Value& v) {
+    return v.hashKind.empty() && v.enumName.empty() && v.enumType.empty() && !v.natBits && !v.natFloat;
+}
+// `.elems` of a plain reified Array: not lazy, packed, shaped or a Seq
+inline bool rtElemsPlain(const Value& v) {
+    return v.t == VT::Array && v.arr() && v.s.empty() && !v.ext() && v.pk_ != PK::Packed &&
+           !(v.shape() && !v.shape()->empty());
+}
+inline Value rtMElems(Interpreter& I, const Value& v) {
+    if (rtElemsPlain(v) && rtQueryPlain(v) && I.builtinExt_.empty()) return Value::integer((long long)v.arr()->size());
+    return I.methodCall(v, "elems", ValueList{});
+}
+// `.defined`: a plain Num, machine Int or Str is (methodCall's arm), and Any
+// and Nil are not — neither can carry a method of its own but by `augment`
+inline Value rtMDefined(Interpreter& I, const Value& v) {
+    if (rtQueryPlain(v) && I.builtinExt_.empty()) {
+        if (v.t == VT::Num || (v.t == VT::Int && !v.big()) || v.t == VT::Str) return Value::boolean(true);
+        if (v.t == VT::Any || v.t == VT::Nil) return Value::boolean(false);
+    }
+    return I.methodCall(v, "defined", ValueList{});
+}
+inline Value rtMPush(Interpreter& I, const Value& inv, Value a) {
+    if (rtPushPlainTarget(inv) && rtPushPlainArg(a) && I.builtinExt_.empty()) {
+        Interpreter::ParStripe mutStripe(I, inv.arr());
+        inv.arr()->push_back(std::move(a));
+        return inv;
+    }
+    return I.methodCall(inv, "push", ValueList{std::move(a)});
+}
+// -O: a call of a lexical sub straight to its body (Codegen::lexDirect_) — what
+// callCallable runs for the Code object, without finding it by name first —
+// or, once the scope that held the body has gone, through the env as before
+inline Value rtLexCall(Interpreter& I, const std::weak_ptr<std::function<Value(ValueList&)>>& w, ValueList a,
+                       const char* amp) {
+    if (auto f = w.lock()) return (*f)(a);
+    return I.callCallable(I.dynVar(amp), std::move(a));
 }
 // The sweep: every named builtin mirrors its sub form EXACTLY (each body is the
 // old registered lambda's 1-arg case, verbatim). Delegators keep full
@@ -5682,6 +5796,12 @@ struct RtRoutineFrame {
     ~RtRoutineFrame();
 };
 [[noreturn]] void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live);
+// --exe: a compiled `try` block's body is running (ExecContext::compiledTry)
+struct RtTryScope {
+    ExecContext& t;
+    explicit RtTryScope(ExecContext& c) : t(c) { t.compiledTry++; }
+    ~RtTryScope() { t.compiledTry--; }
+};
 // --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
 // steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)
 // --exe multi dispatch guards: the idx-th positional argument by reference

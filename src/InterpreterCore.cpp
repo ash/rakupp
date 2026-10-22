@@ -21820,6 +21820,25 @@ Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
     return I.evalBinary(b);
 }
 
+// …and the handler `-$x` is compiled to, `$x` a plain lexical: evalUnary's
+// Num / machine-Int arm, with the variable read by pointer. Anything else —
+// a native, a tagged or undefined value, a user `sub prefix:<->` declared
+// since — goes to evalUnary, which reads the variable again.
+Value Interpreter::unaryNegHandler(Interpreter& I, Expr* e) {
+    auto* u = static_cast<Unary*>(e);
+    if (!g_userPrefixShadow.load(std::memory_order_relaxed)) {
+        Env* const cur = tctx().cur.get();
+        auto* ve = static_cast<VarExpr*>(u->operand.get());
+        const Value* p = padPtrIn(ve, cur);
+        if (!p) p = cur->find(ve->name);
+        if (p && p->hashKind.empty() && p->enumName.empty() && !p->natBits) {
+            if (p->t == VT::Num) return Value::number(-p->n);
+            if (p->t == VT::Int && !p->big() && p->i != LLONG_MIN) return Value::integer(-p->i);
+        }
+    }
+    return I.evalUnary(u);
+}
+
 // --- typed subtrees (INTERP-SPEED-PLAN, tier 1 item 1) ----------------------
 // `$zr * $zr - $zi * $zi + $cr` is a Binary whose operands are Binaries, so it
 // has no fast shape: each node evaluated both operands into Values and ran the
@@ -24240,6 +24259,8 @@ Value rtSlipOf(const Value& v) { return slipOf(v); }
 //   0  one of the arms above the ++/-- one: run the function from the top
 //   1  `++` / `--`: straight to that arm
 //   2  anything else: straight to evaluating the operand
+//   3  prefix `-`: as 2, then prefixNumeric's Num and machine-Int arms
+//      before the page of tests that cannot apply to either
 // EARLY must name every operator an arm above the operand path tests for; one
 // missing from it would skip its own arm. An operator rewritten on a live node
 // (the BEGIN arm evaluates its node as `do`) must stay on the same path.
@@ -24253,6 +24274,7 @@ static signed char unaryPath(const std::string& op) {
     if (op.size() >= 3 && op.front() == '[' && op.back() == ']') return 0;
     if (EARLY.count(op)) return 0;
     if (opEq(op, "++") || opEq(op, "--")) return 1;
+    if (opEq(op, "-")) return 3;
     return 2;
 }
 
@@ -24260,7 +24282,7 @@ Value Interpreter::evalUnary(Unary* u) {
     signed char path = u->evalPath;
     if (path < 0) u->evalPath = path = unaryPath(u->op);
     if (path == 1) goto incDec;
-    if (path == 2) goto operand;
+    if (path >= 2) goto operand;
     // hyper prefix `-«(…)` / `--«%h`: apply the op per element, descending into
     // nested arrays and hash values (keys kept); ++/-- mutate the elements in
     // place through the shared containers and yield the new values (prefix).
@@ -25519,6 +25541,17 @@ Value Interpreter::evalUnary(Unary* u) {
     }
   operand:
     Value v = eval(u->operand.get());
+    // `-$x` on a plain Num or machine Int, which is what prefixNumeric answers.
+    // No user operator can claim it: a plain `sub prefix:<->` sets the shadow
+    // flag, and the multi lookup below is for objects only. A native keeps its
+    // own arm (it wraps, and stays native).
+    if (path == 3 && v.hashKind.empty() && v.enumName.empty() && !v.natBits &&
+        !g_userPrefixShadow.load(std::memory_order_relaxed)) {
+        // a plain lexical operand: compile the node (see unaryNegHandler)
+        if (plainLexVar(u->operand.get()) && !(Expr::EvalFn)u->handler) u->handler = &Interpreter::unaryNegHandler;
+        if (v.t == VT::Num) return Value::number(-v.n);
+        if (v.t == VT::Int && !v.big() && v.i != LLONG_MIN) return Value::integer(-v.i);
+    }
     // Whatever-currying for prefix ops: `~*`, `-*`, `+*`, `?*`, `!*` become a
     // WhateverCode (e.g. `.sort: ~*` sorts by stringification). `^*` is here too,
     // because `@chars[^(*-1)]` — everything but the last element — is how
