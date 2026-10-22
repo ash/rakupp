@@ -1,6 +1,8 @@
-# `my $*X` in a native body is declared in the routine's own frame
-# (rtAotDeclDyn), so callers further down the call chain — native or
-# interpreted — find it, and the caller's own `$*X` is untouched afterwards.
+# `my $*X` is declared in the routine's own frame, so callers further down
+# the call chain — native or interpreted — find it, and the caller's own
+# `$*X` is untouched afterwards. Since 48223469 a routine that declares one
+# stays interpreted: a native body's `my $*X` was invisible to the
+# interpreter. The readers and the writer below are still native.
 unit module Aot::Dyn;
 
 sub read-native() {   #aot: native
@@ -15,21 +17,21 @@ sub write-native($v) {   #aot: native
     'wrote'
 }
 
-sub declares() is export {   #aot: native
+sub declares() is export {   #aot: interpreted (a dynamic variable declared inside a routine)
     my $*DEPTH = 1;
     read-native() ~ ' ' ~ read-interpreted()
 }
-sub declares-and-callee-writes() is export {   #aot: native
+sub declares-and-callee-writes() is export {   #aot: interpreted (a dynamic variable declared inside a routine)
     my $*DEPTH = 'mine';
     my $before = $*DEPTH;
     write-native('changed by callee');
     "$before -> $*DEPTH"
 }
-sub nested($n) is export {   #aot: native
+sub nested($n) is export {   #aot: interpreted (a dynamic variable declared inside a routine)
     my $*DEPTH = $n;
     $n > 0 ?? read-native() ~ ',' ~ nested($n - 1) !! read-native() ~ '.'
 }
-sub shadow-and-restore() is export {   #aot: native
+sub shadow-and-restore() is export {   #aot: interpreted (a dynamic variable declared inside a routine)
     my $*DEPTH = 'outer';
     my $inner = declares();
     "$inner / still $*DEPTH"
@@ -37,7 +39,7 @@ sub shadow-and-restore() is export {   #aot: native
 sub reads-callers() is export {   #aot: native
     read-native()
 }
-sub through-closure() is export {   #aot: native
+sub through-closure() is export {   #aot: interpreted (a dynamic variable declared inside a routine)
     my $*DEPTH = 'seen by a block';
     (1, 2).map({ $*DEPTH ~ " $_" }).join('; ')
 }

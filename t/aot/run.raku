@@ -225,7 +225,9 @@ sub check-case($case) {
     unless ($crc // -1) == 0 && $bin.e {
         return [|@why, "--exe failed (exit {$crc // 'timeout'}): {$ce.lines.grep(/error|rror:/).head(3).join(' | ')}"];
     }
-    my $bundled = so $ce ~~ / 'bundling the whole program' /;
+    # 48223469 reworded the note ("bundling the program with the interpreter
+    # instead, its routines compiled natively where they can be"); both read.
+    my $bundled = so $ce ~~ / 'bundling the ' ['whole ']? 'program' /;
     my $wants-bundled = so %d<expect>.grep(*[0] eq 'bundled');
     @why.push: $wants-bundled ?? 'the program was expected to fall back to bundling, and did not'
                               !! 'the program fell back to bundling' if $bundled != $wants-bundled;
