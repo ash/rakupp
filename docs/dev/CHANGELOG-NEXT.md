@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: d7c6d9d5 (FLOAT-HEAVY-ISSUES).*
+*Covered so far: d7c6d9d5 and 3e97932e (FLOAT-HEAVY-ISSUES).*
 
 ---
 
@@ -43,6 +43,16 @@ interpreted.
 - **A top-level `constant` holding a machine Int is a literal to the int
   kernels** (d7c6d9d5), compiled and interpreted: two constant references in a
   sub 9.2 → 1.5 compiled, 213.9 → 5.7 interpreted (two literals: 1.7 / 5.5).
+- **A sub typed `num`, `int`, `Num`, `Int` or `Str` takes the interpreter's
+  lean call path** (3e97932e; issue 17), when each argument already is of its
+  parameter's type, and an argument that is not goes the general way. Against
+  d7c6d9d5, interpreted: `(num $a, num $b --> num)` 387.1 → 152.6 (untyped
+  144.8), `(Num $a, Num $b --> Num)` 360.8 → 148.3, `num < num` 245.2 → 143.1.
+- **A loop kernel takes `int` and `num` variables** (3e97932e; issue 17), at
+  full width: it bails where a result leaves int64, and the native path then
+  wraps. Interpreted, the issue-15 float loops 1,024 → 292 and 2,332 → 581
+  (untyped 282 and 407), and perf-guard's strscan, which counts in a `my
+  int`, 96.4 → 6.0 ms.
 
 ### Fixed: silent wrong answers
 
@@ -70,17 +80,47 @@ interpreted.
   either engine: `0.1e0.Rat(0)` is 1/10, as in Rakudo, which the findings
   file had wrong. 13,222 (input, epsilon) pairs agree with Rakudo 2026.09.
 
+- **A `$` store in compiled code resets on Nil and checks a declared type**
+  (3e97932e), as `=` does interpreted: `my $r = try die "x"` left Nil (Any),
+  `my @a = Nil` was `[]` (`[Any]`), `my Int $x; $x = "a"` stored the Str and
+  `$x = Nil` the Nil. In a bundle, a module-mode routine's store into one of
+  the interpreter's variables asks its declaration.
+- **`-O` answers as plain `--exe` and the interpreter do** (3e97932e): `~` and
+  an interpolation join two Strs NFC (`"e" ~ "\x[301]"` was two code points);
+  `my ($a, $b) = $j` iterates the List in `$j` (it bound it to `$a`) and a
+  Hash gives its pairs; `!=` between an unsigned native and a negative signed
+  one is False, as in Rakudo; `my $bound := $q` is no longer compiled as a
+  copy (it bundles).
+- **Instant and Duration arithmetic answer Rakudo's types** (3e97932e):
+  `-$duration` and `abs $duration` are Durations (were Rats), `0 - $duration`
+  and `7 % $duration` Nums (were Durations), `-$instant` a Num; compiled, no
+  operator kept the tag (`$d - 0` was a Rat).
+- **`.push($s)` and `.unshift($s)` slip a Slip held in `$s`** (3e97932e), as
+  Rakudo does; the `unshift` sub is the method (it answered the new length,
+  slipped nothing and checked no element type).
+- **`my ($k, $v) = %h` takes the pairs** (3e97932e); `$k` held the Hash.
+- **`fail` in a block that another routine runs returns from the routine it
+  was written in** (3e97932e), as a `return` does, in both engines: `sub q {
+  ap({ fail "z" }); … }` returned the Failure from `ap`, and `q` sank it and
+  died.
+- **`f(($a, 2))` writes `$a` from a sub's second call on** (3e97932e): the
+  interpreter's lean call path dropped what keeps the List's containers, and
+  `$x[0] = 5` died "Cannot modify an immutable List".
+
 ### Fixed: crashes
 
 ### Left open
 
 - Issues 2, 4 and 14 still bundle the mainline; 10 (a `use`d module's sub
-  costs ~6× compiled), 17 (a `num` sub off the interpreter's lean call path)
-  and 21 (no array-element loop lane) are unchanged.
-- On v5.5.0 as on this branch: t/exe/fuzz.raku fails 20 of its `*-shadow`
-  shape programs at parse time ("Lexical symbol '$ca' is already bound to an
-  outer symbol"); t/jit/run.raku's tier-up cases calls, elements, inline,
-  methods and natives enter no kernel; and t/exe/run.raku finds -O answering
-  differently on nfc-join-window.raku and
-  typed-subtree-native-and-rat-leaves.raku. Compiled, `my $r = try die "x"`
-  leaves $r Nil (interpreted and in Rakudo: Any).
+  costs ~6× compiled) and 21 (no array-element loop lane) are unchanged.
+- Found and open, the same on v5.5.0: a write through a kept List into a
+  typed variable (`my Int $a; f(($a, 2))`) is not type-checked, nor a Nil
+  reset; `sub f(int $x) { $x * 2**62 }` answers a BigInt where Rakudo wraps;
+  a `fail` in a block written at the mainline returns from the routine that
+  runs it (Rakudo dies); and a compiled routine called directly does not
+  check its `--> T`. Roast's S07-hyperrace/basics.t segfaults in its last
+  test about one run in six (as on d7c6d9d5); t/jit/run.raku's tier-up cases
+  calls, elements, inline, methods and natives enter no kernel.
+- t/exe/fuzz.raku's 20 `*-shadow` programs, which failed at parse time on
+  v5.5.0, were not valid Raku (Rakudo refuses them too); the generator now
+  writes valid ones, and all 232 programs agree.
