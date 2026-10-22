@@ -599,8 +599,11 @@ struct CodeInfo : RefCounted {
     // hoisting step (see bodyEntryWork in InterpreterCore.cpp).
     mutable DecidedOnce<signed char> bodyWork{-1};
     // 1 = a plain sub: every step of a call that its shape rules out can be
-    // left out (Interpreter::callPlainSub); 0 = not; -1 = not yet decided.
+    // left out (Interpreter::callPlainSub); 2 = one whose parameters or return
+    // type name a core type the lean binder takes too (Param::leanType,
+    // leanRet); 0 = not; -1 = not yet decided.
     mutable DecidedOnce<signed char> plainShape{-1};
+    mutable DecidedOnce<signed char> leanRet{0};   // (a LeanType, for plainShape 2)
     mutable KernelSlot intKernel;
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
     // parameters builds that array only then. -1 = not yet scanned.

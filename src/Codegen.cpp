@@ -742,7 +742,11 @@ struct Codegen {
     // a `return` there is (rtFailFrom). "" where the builtin stands: outside
     // any routine, and in a module routine, which runs in the interpreter's.
     std::string failCall(const std::string& vl) {
-        if (routineRef_.empty() || moduleMode_ || frameUse_.empty()) return "";
+        // a module routine's own `fail` is the builtin's, which sees its frame;
+        // one in a BLOCK of it is aimed at that frame, as a `return` there is
+        if (moduleMode_)
+            return !nestKinds_.empty() && nestKinds_.back() == 'b' ? "rtFailAt(RT, " + vl + ", __fid, __env)" : "";
+        if (routineRef_.empty() || frameUse_.empty()) return "";
         if (nestKinds_.empty() || nestKinds_.back() != 'b') return "rtFailRoutine(RT, " + vl + ")";
         frameUse_.back() = 1;
         return "rtFailFrom(RT, " + vl + ", __fid, __flive)";
@@ -751,9 +755,13 @@ struct Codegen {
         return "RtRoutineFrame __rf(RT); const uint64_t __fid = __rf.id; "
                "const std::shared_ptr<bool> __flive = __rf.live;\n";
     }
+    // A return aimed at a frame (a `return` or `fail` in a block, rtReturnFrom)
+    // goes past every routine that is not that frame: an unframed one is never
+    // it, and caught it all the same — `sub q { ap({ fail "z" }); … }` returned
+    // the Failure from ap, and q sank it and died.
     static std::string routineCatch(bool framed) {
         return framed ? "catch (ReturnEx& __r) { if (__r.target && __r.target != __fid) throw; return __r.v; }"
-                      : "catch (ReturnEx& __r) { return __r.v; }";
+                      : "catch (ReturnEx& __r) { if (__r.target) throw; return __r.v; }";
     }
 
     // The top-level class and enum declarations the pre-pass registered. One
@@ -2681,20 +2689,32 @@ struct Codegen {
                 // A literal part contributes its C string directly — routing it
                 // through Value::str(…).toStr() built and destroyed a whole
                 // Value per part on every evaluation ("key$i" in a fill loop).
-                // A leading literal is wrapped in std::string so operator+ has
-                // a string operand whatever follows it.
-                std::string acc;
-                for (size_t i = 0; i < s->parts.size(); i++) {
-                    std::string piece;
-                    if (s->parts[i]->kind == NK::StrLit) {
-                        piece = cesc(static_cast<StrLit*>(s->parts[i].get())->v);
-                        if (i == 0) piece = "std::string(" + piece + ")";
-                    }
-                    else piece = "rtInterpStr(" + ex(s->parts[i].get()) + ")";
-                    if (i) acc += " + ";
-                    acc += piece;
+                // The parts join as `~` joins them, NFC across each seam
+                // (nfcAppendPart, which the interpreter's interpolation uses):
+                // appended as bytes, "$a$b" with $a = "e" and $b a combining
+                // acute was two code points compiled and one interpreted. An
+                // ASCII literal joins as it is, with no test at run time.
+                bool asciiOnly = true;
+                for (auto& p : s->parts) {
+                    if (p->kind != NK::StrLit) { asciiOnly = false; break; }
+                    for (unsigned char ch : static_cast<StrLit*>(p.get())->v) if (ch >= 0x80) asciiOnly = false;
                 }
-                return "Value::str(" + acc + ")";
+                if (asciiOnly) {
+                    std::string lit;
+                    for (auto& p : s->parts) lit += static_cast<StrLit*>(p.get())->v;
+                    return "Value::str(" + cesc(lit) + ")";
+                }
+                std::string o = "([&]()->Value{ std::string __is;";
+                for (auto& p : s->parts) {
+                    if (p->kind == NK::StrLit) {
+                        const std::string& v = static_cast<StrLit*>(p.get())->v;
+                        bool ascii = true;
+                        for (unsigned char ch : v) if (ch >= 0x80) ascii = false;
+                        o += ascii ? " __is += " + cesc(v) + ";" : " nfcAppendPart(__is, std::string(" + cesc(v) + "));";
+                    }
+                    else o += " nfcAppendPart(__is, rtInterpStr(" + ex(p.get()) + "));";
+                }
+                return o + " return Value::str(std::move(__is)); }())";
             }
             case NK::Call: {
                 auto* c = static_cast<Call*>(e);
@@ -3606,12 +3626,21 @@ struct Codegen {
                         if (!v->declare || v->name.empty() || v->name[0] != '$') { allDecl = false; break; }
                     }
                     if (allDecl) {
+                        // ONE item on the right is iterated, itemized or not —
+                        // `my ($a, $b) = $pair-list` takes its two elements, as
+                        // in Rakudo and interpreted (the single-argument rule);
+                        // it bound the whole List to $a. A comma list on the
+                        // right keeps its items as they are.
                         std::string tmp = gensym("__la");
-                        line(ind, "Value " + tmp + " = rtArrayVal(" + exArg(a->value.get()) + ");");
+                        const bool single = a->value && a->value->kind != NK::ListExpr;
+                        std::string rhs = exArg(a->value.get());
+                        if (single) rhs = "unitemized(" + rhs + ")";
+                        line(ind, "Value " + tmp + " = rtArrayVal(" + rhs + ");");
                         for (size_t k = 0; k < lst->items.size(); k++) {
                             auto* v = static_cast<VarExpr*>(lst->items[k].get());
-                            line(ind, declOrAssign(v->name, "rtIndexGet(" + tmp +
-                                      ", Value::integer(" + std::to_string(k) + "), false)") + ";");
+                            // (each as `=` stores it: past the end is Nil, which resets)
+                            line(ind, declOrAssign(v->name, scalarStore(v, "rtIndexGet(" + tmp +
+                                      ", Value::integer(" + std::to_string(k) + "), false)")) + ";");
                         }
                         return;
                     }
@@ -3914,12 +3943,42 @@ struct Codegen {
         unsupported("assignment to this target");
     }
 
+    // What a store of `rhs` into the scalar `v` is, by the declaration the
+    // parser resolved it to (VarExpr::lexResolved / readType, or its own when
+    // it declares). An untyped one resets to Any on a Nil, as `=` resets a
+    // container to its default (`my $r = try die` held Nil); a typed one is
+    // checked as the interpreter checks it, and resets to its type
+    // (rtTypedStore — compiled code checked nothing, so `my Int $x; $x = "a"`
+    // stored the Str). A name the program does not declare lexically (a
+    // dynamic, a package's) is stored as it is.
+    static bool plainScalarName(const std::string& n) {
+        return n.size() > 1 && n[0] == '$' && n != "$_" && n != "$/" && n != "$!" &&
+               !std::strchr("!.*?^=~<", n[1]);
+    }
+    std::string scalarStore(const VarExpr* v, const std::string& rhs) {
+        const std::string& n = v->name;
+        if (!plainScalarName(n) || v->viaPseudoPkg || v->pkgSymbol || v->processScoped) return rhs;
+        // a module routine's store into a variable of the scope around it, which
+        // is the interpreter's: by the declaration the interpreter keeps (its
+        // `is default`, its constraint), which this routine cannot see
+        if (moduleMode_ && !v->declare && aotFree_.count(n)) return "RT.rtOuterScalarStore(" + rhs + ", " + cesc(n) + ")";
+        std::string ty;
+        if (v->declare) ty = v->d().declType;
+        else if (v->lexResolved) ty = v->d().readType;
+        else if (topVars_.count(n)) { auto t = topVarTypes_.find(n); if (t != topVarTypes_.end()) ty = t->second; }
+        else return rhs;
+        if (ty.empty() || ty == "Any") return "rtNilToAny(" + rhs + ")";
+        if (ty[0] >= 'a' && ty[0] <= 'z') return rhs;   // a native: the native store has it
+        Param tp; tp.type = ty;
+        return "rtTypedStore(RT, " + rhs + ", " + typedFastCode(tp) + ", " + cesc(ty) + ", " + cesc(n) + ")";
+    }
     // Assigning a list to an @-array materializes a fresh (bracket-gisting) Array.
     std::string coerceFor(Expr* tgt, const std::string& rhs, Expr* value = nullptr) {
         if (tgt->kind == NK::VarExpr) {
             auto* v = static_cast<VarExpr*>(tgt);
             const std::string& n = v->name;
-            if (!n.empty() && n[0] == '@') return "rtArrayVal(" + rhs + ")";
+            // (`@a = Nil` is one element, the default: [Any], as coerceArray has it)
+            if (!n.empty() && n[0] == '@') return "rtArrayVal(rtNilToAny(" + rhs + "))";
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…
             // A store into a NATIVE scalar converts, checks and wraps as the
             // interpreter's does, and the value comes back carrying the width,
@@ -3936,7 +3995,9 @@ struct Codegen {
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
                 // `=` does: `my $a = [1, 2]; for $a { … }` is one iteration, and
                 // `.raku` says `$[1, 2]`. (What can only be a scalar skips it.)
-                if (!scalarOnly(value)) return "rtItemized(" + rhs + ")";
+                const std::string st = scalarStore(v, rhs);
+                if (!scalarOnly(value)) return "rtItemized(" + st + ")";
+                return st;
             }
         }
         return rhs;
@@ -4001,6 +4062,16 @@ struct Codegen {
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
             auto* dv = static_cast<VarExpr*>(tgt);
             refuseDeclTraits(dv);
+            // `my $b := $q` / `my @a := @b` alias a container, which a C++ local
+            // cannot: as a copy, a later write to $q (or a push to @b) did not
+            // show through (see the `:=` arm in assignImpl's tail)
+            if (a->op == ":=" && dv->name.size() > 1) {
+                const Expr* v = a->value.get();
+                const bool container = v && (v->kind == NK::VarExpr || v->kind == NK::Index);
+                if (dv->name[0] == '@' || dv->name[0] == '%' || (dv->name[0] == '$' && container))
+                    throw CodegenError{"binding a declaration to a container (`my " + dv->name + " := …`)",
+                                       /*routineWide=*/true};
+            }
             if (std::string sh = shapedInit(dv, exArg(a->value.get())); !sh.empty()) // `my @a[3;2] = …`
                 return atTopLevel_ && topVars_.count(dv->name) ? mangleVar(dv->name) + " = " + sh
                                                                : declVar(dv->name, sh);
@@ -4044,10 +4115,20 @@ struct Codegen {
                 return o + " return " + t + "; }())";
             }
         }
-        // Scalar `:=` binds ≈ assigns natively; container aliasing isn't modeled, so bundle that.
+        // Scalar `:=` to a VALUE binds as an assignment does; to a CONTAINER —
+        // a variable or an element — it aliases, and a C++ local cannot alias
+        // another: compiled as a copy, `my $b := $q; $q = 5` left $b at the old
+        // value, where the interpreter and Rakudo see 5. Refused (routine-wide,
+        // as a module routine's statements cannot alias its C++ locals either),
+        // so the program bundles and binds as the interpreter does.
         if (a->op == ":=") {
-            if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->name.empty() && static_cast<VarExpr*>(tgt)->name[0] == '$')
+            if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->name.empty() && static_cast<VarExpr*>(tgt)->name[0] == '$') {
+                const Expr* v = a->value.get();
+                if (v && (v->kind == NK::VarExpr || v->kind == NK::Index))
+                    throw CodegenError{"binding a scalar to a container (`" + static_cast<VarExpr*>(tgt)->name +
+                                       " := …`)", /*routineWide=*/true};
                 return lvalueExpr(tgt) + " = " + exArg(a->value.get());
+            }
             unsupported("binding (:=) of a non-scalar");
         }
         std::string rhs = exArg(a->value.get());
@@ -5267,6 +5348,9 @@ struct Codegen {
         auto* b = static_cast<Binary*>(e);
         if (opShadows("infix:<" + b->op + ">")) return "";   // (a lane computes the built-in)
         static const std::set<std::string> cmp = {"<", "<=", ">", ">=", "==", "!="};
+        // (`!=` on natives is the boxed path's: a uint against a negative int
+        // is False there, rtNativeMixedSignNe, which raw int64s cannot see)
+        if (b->op == "!=" && (readsNativeInt(b->lhs.get()) || readsNativeInt(b->rhs.get()))) return "";
         if (cmp.count(b->op)) {
             std::string a = laneInt(b->lhs.get(), L); if (a.empty()) return "";
             std::string c = laneInt(b->rhs.get(), L); if (c.empty()) return "";
@@ -5279,6 +5363,13 @@ struct Codegen {
             return "(" + a + " % " + c + " == 0)";
         }
         return "";
+    }
+    static bool readsNativeInt(Node* n) {
+        if (!n) return false;
+        if (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->nativeIntRead) return true;
+        bool any = false;
+        forEachAstChild(n, [&](Node* c) { if (!any && readsNativeInt(c)) any = true; });
+        return any;
     }
     static std::string joinAnd(const std::vector<std::string>& v) {
         std::string s;

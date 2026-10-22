@@ -3484,6 +3484,15 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             }
         }
     };
+    // a HASH alone on the right, in a Scalar or not, is the list of its pairs,
+    // as rtArrayVal makes it for compiled code: `my ($k, $v) = %h` is :a(1) and
+    // Any in Rakudo, and $k held the whole Hash
+    const std::string& hk = rhs.hashKind;
+    if (!isBinding && rhs.t == VT::Hash && rhs.hash() &&
+        (hk.empty() || hk == "Map" || !hk.rfind("Set", 0) || !hk.rfind("Bag", 0) || !hk.rfind("Mix", 0))) {
+        bind(lst, hashToPairs(rhs));
+        return;
+    }
     bind(lst, rhs);
 }
 // `@a[|| @dims] = …` / `%h{|| <a b>, "c"}:delete` (6.e): the runtime list names

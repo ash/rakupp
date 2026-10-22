@@ -319,10 +319,11 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     ioExpr(io, d.declTypeExpr);
     F(io, n.nativeStrRead); F(io, n.nativeIntRead);
     F(io, n.nativeNumRead);
+    F(io, n.lexResolved); F(io, d.readType);
     if constexpr (IO::reading) {
         if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
             d.declDynamic || d.declExport || !d.containerIs.empty() || !d.containerOf.empty() ||
-            d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr)
+            d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr || !d.readType.empty())
             n.dm() = std::move(scratch);
     }
     n.syncAttrCache(); }  // derived from `name`, not stored

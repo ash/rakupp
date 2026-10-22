@@ -5736,8 +5736,8 @@ static bool isCoolValue(const Value& v) {
 // nominal predicate and `~~` to say no, so a value this engine represents its
 // own way errs toward being taken. Nil resets the slot, and a Failure or a
 // Proxy keeps the old leniency.
-static bool builtinTypeRefuses(Interpreter& I, const std::string& nm, const Value& rhs,
-                               const std::string& want) {
+bool builtinTypeRefuses(Interpreter& I, const std::string& nm, const Value& rhs,
+                        const std::string& want) {
     if (nm.empty() || nm[0] != '$' || rhs.t == VT::Nil) return false;
     if (rhs.t == VT::Hash && (rhs.hashKind == "Failure" || rhs.hashKind == "Proxy")) return false;
     // Any is everything but Mu and Junction, and a class declared `is Mu`
@@ -7656,14 +7656,46 @@ static bool isElementPath(const Expr* e) {
         return !static_cast<const VarExpr*>(k)->name.empty() && static_cast<const VarExpr*>(k)->name[0] == '$';
     return k->kind == NK::StrLit || k->kind == NK::IntLit;
 }
+// The core types a plain sub's parameters and return may name and still take
+// the lean path (Param::leanType, CodeInfo::leanRet). A parameter of one binds
+// an argument already of that type as the general binder does — typeCheckBind
+// passes it, bindNativeParam makes a native of it — and any other argument
+// declines the lean path for the call, so the general binder answers it. A
+// return of a native type is not checked (checkRetType: a boxed value has no
+// native tag); of a boxed one, a value of that type is what the check passes.
+enum LeanType : signed char { LeanNone = 0, LeanNum = 1, LeanInt = 2, LeanBoxNum = 3, LeanBoxInt = 4,
+                              LeanStr = 5, LeanNative = 6 /* a return of num, int or str */ };
+static signed char leanTypeOf(const std::string& t, bool ret) {
+    if (t.empty()) return LeanNone;
+    if (t == "num" || t == "num64") return ret ? LeanNative : LeanNum;
+    if (t == "int" || t == "int64") return ret ? LeanNative : LeanInt;
+    if (ret && t == "str") return LeanNative;
+    if (t == "Num") return LeanBoxNum;
+    if (t == "Int") return LeanBoxInt;
+    if (t == "Str") return LeanStr;
+    return -1;
+}
+// …and the call-time half: an argument the lean binder takes for `k`
+static inline bool leanArgFits(const Value& v, signed char k) {
+    if (k == LeanNone) return true;
+    if (!v.hashKind.empty() || !v.enumName.empty()) return false;
+    switch (k) {
+        case LeanNum: case LeanBoxNum: return v.t == VT::Num;
+        case LeanInt:                  return v.t == VT::Int && !v.big();
+        case LeanBoxInt:               return v.t == VT::Int;
+        case LeanStr:                  return v.t == VT::Str;
+        default:                       return true;
+    }
+}
 // A PLAIN SUB: a named or anonymous routine (not a block, method, multi,
-// builtin or native) whose signature is plain `$x` positionals — no type, no
-// default, no trait, no where — and whose body has no phaser, CATCH, CONTROL,
-// nested named sub or hoisted `my`, and no `-->`/`is rw` on the routine. Most
-// of callCallableRaw exists for what such a sub does not have. Decided once,
-// after the first call has settled what it decides (pads, the CATCH scan,
-// hoistNeed, the arity bounds); until then -1 keeps the full path.
-static bool plainSubShape(Callable& c) {
+// builtin or native) whose signature is plain `$x` positionals — no default,
+// no trait, no where, no type but a LeanType — and whose body has no phaser,
+// CATCH, CONTROL, nested named sub or hoisted `my`, and no `is rw` or `-->`
+// but a LeanType on the routine. Most of callCallableRaw exists for what such
+// a sub does not have. Decided once, after the first call has settled what it
+// decides (pads, the CATCH scan, hoistNeed, the arity bounds); until then -1
+// keeps the full path. 2 when a type is named (callPlainSub's typed arms).
+static signed char plainSubShape(Callable& c) {
     signed char v = c.ci().plainShape;
     if (v >= 0) return v;
     if (c.ci().padReady != 1 || c.ci().catchScan.get() < 0 || c.ci().controlScan.get() < 0 ||
@@ -7673,19 +7705,34 @@ static bool plainSubShape(Callable& c) {
                  !c.ci().isMultiCandidate && !c.ci().isProto && !c.ci().isWhateverCode && !c.ci().isRegexRoutine &&
                  !c.cold().deprecated && !c.ci().testAssertion && c.ci().hadSig && c.ci().params && c.ci().body &&
                  c.ci().placeholders.empty() && !c.ci().usesArgs && !c.ci().implicitArgs && !c.cold().hasPrimed &&
-                 c.cold().retType.empty() && !c.ci().retLiteral && !c.ci().retRw && c.ci().padLayout &&
+                 !c.ci().retLiteral && !c.ci().retRw && c.ci().padLayout &&
                  bodyEntryWork(c) == 0 && c.ci().catchScan.get() == 0 && c.ci().controlScan.get() == 0 &&
                  (signed char)c.ci().hoistNeed == 0 && c.ci().arityShape.get() == 1 && !c.ci().arityUnbounded;
+    const signed char ret = plain ? leanTypeOf(c.cold().retType, true) : 0;
+    bool typed = ret > 0;
+    if (ret < 0) plain = false;
     if (plain)
-        for (auto& p : *c.ci().params)
+        for (auto& p : *c.ci().params) {
+            const signed char k = leanTypeOf(p.type, false);
             if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy ||
                 p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
                 p.hadWhere || p.defConstraint || p.coerce || p.typeCapture || p.codeSig ||
-                !p.captureName.empty() || !p.type.empty() || p.padSlot < 0 ||
+                !p.captureName.empty() || k < 0 || p.padSlot < 0 ||
                 (const void*)p.padOwner != (const void*)c.ci().padLayout.get() ||
                 (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) { plain = false; break; }
-    c.ci().plainShape = plain ? 1 : 0;
-    return plain;
+            p.leanType = k;
+            if (k) typed = true;
+        }
+    c.ci().leanRet = ret > 0 ? ret : 0;
+    c.ci().plainShape = !plain ? 0 : typed ? 2 : 1;
+    return c.ci().plainShape;
+}
+// A lean call's answer under its `--> T` (leanTypeOf): what checkRetType
+// passes as it is, or that check
+static inline Value leanReturn(Interpreter& I, const Callable& c, Value v) {
+    const signed char k = c.ci().leanRet;
+    if (k == LeanNone || k == LeanNative || leanArgFits(v, k)) return v;
+    return I.checkRetType(c, std::move(v));
 }
 
 // callCallableRaw for a plain sub whose arguments bind plainly: the same steps
@@ -7705,12 +7752,17 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     env->parent = stateFrameOf(c);
     env->layout = c.ci().padLayout.get();
     env->pad.resize(c.ci().padLayout->names.size());
-    // bindParams' simple path, for a parameter with no type and no trait
+    // bindParams' simple path, for a parameter with no trait, and no type but
+    // a LeanType the caller found the argument to be (callCallableRaw)
     uint64_t live = 0;
     const auto& params = *c.ci().params;
+    const bool typed = c.ci().plainShape == 2;
     for (size_t i = 0; i < params.size(); i++) {
         Value v = std::move(args[i]);
-        if (v.natBits) dropNativeTags(v);   // a boxed parameter takes the VALUE
+        const signed char k = typed ? (signed char)params[i].leanType : LeanNone;
+        if (k == LeanNum) wrapNative(v, 64, true, /*isFloat=*/true);   // bindNativeParam's
+        else if (k == LeanInt) wrapNative(v, 64, true);
+        else if (v.natBits) dropNativeTags(v);   // a boxed parameter takes the VALUE
         v.readonly = true;
         itemizeScalar(v);
         const int ps = params[i].padSlot;
@@ -7804,11 +7856,11 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         if (failed(r.v)) runLetRestoresOf(tcx.cur);
         restore();
         if (r.target && r.target != savedFrameTop && r.target < savedFrameTop) throw;
-        return std::move(r.v);
+        return leanReturn(*this, c, std::move(r.v));
     } catch (BreakGivenEx& b) {
         leaveNoPhasers();
         restore();
-        if (tcx.returning) { tcx.returning = false; return std::move(tcx.returnV); }
+        if (tcx.returning) { tcx.returning = false; return leanReturn(*this, c, std::move(tcx.returnV)); }
         return b.hasVal ? b.v : last;
     } catch (LeaveEx& le) {
         leaveNoPhasers();
@@ -7836,7 +7888,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     }
     if (failed(last)) runLetRestoresOf(tcx.cur);
     restore();
-    return last;
+    return leanReturn(*this, c, std::move(last));
 }
 
 // An `is rw` parameter bound to the caller's own container (bindArgCell) reads
@@ -7942,11 +7994,25 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 return kv;
             }
         }
-        if (plainSubShape(pc) && args.size() == pc.ci().params->size()) {
+        if (const signed char shape = plainSubShape(pc); shape && args.size() == pc.ci().params->size()) {
             bool plainArgs = true;
             for (auto& a : args)
                 if (isNamedArg(a) || (a.t == VT::Array && isJunction(a)) || isMuTypeObject(a) ||
                     (a.t == VT::Str && !a.hashKind.empty())) { plainArgs = false; break; }
+            // …and each typed parameter's argument already of its type
+            if (plainArgs && shape == 2)
+                for (size_t i = 0; i < args.size(); i++)
+                    if (!leanArgFits(args[i], (*pc.ci().params)[i].leanType)) { plainArgs = false; break; }
+            // …and no `(…)` argument: its List keeps its variables' containers
+            // (keepListContainers, after the general binder), so `f(($a, 2))`
+            // writes $a. From a sub's second call on, when this path took it,
+            // the write died "Cannot modify an immutable List".
+            if (plainArgs && rwArgs)
+                for (auto& ae : *rwArgs)
+                    if (ae && ae->kind == NK::ListExpr && static_cast<const ListExpr*>(ae.get())->parenned) {
+                        plainArgs = false;
+                        break;
+                    }
             if (plainArgs) return callPlainSub(codeVal, pc, args, ownFrame);
         }
     }
@@ -21192,48 +21258,6 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     }
     return mv;
 }
-// Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
-// Duration±x→Duration; everything else drops to plain numbers (like Rakudo's *).
-void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res) {
-    // `*`, `/` and `**` with an Instant or Duration operand take Real's path
-    // through the Num bridge, as Rakudo does: `Duration.new(3) * 2` is the
-    // Num 6, not a Rat (and `$d * $d` is a Num too)
-    if ((opEq(op, "*") || opEq(op, "/") || opEq(op, "**")) && res.isNumeric() && res.hashKind.empty() &&
-        (l.hashKind == "Duration" || r.hashKind == "Duration" ||
-         l.hashKind == "Instant" || r.hashKind == "Instant")) {
-        res = Value::number(res.toNum());
-        return;
-    }
-    if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "%")) || !res.isNumeric() || !res.hashKind.empty()) return;
-    bool li = l.hashKind == "Instant", ri = r.hashKind == "Instant";
-    bool ld = l.hashKind == "Duration", rd = r.hashKind == "Duration";
-    if (opEq(op, "%")) {   // Duration % Real is a Duration; nothing else stays temporal
-        if (ld && !ri && !rd) {
-            if (res.t == VT::Num && std::isfinite(res.n) && g_revInterp) {
-                Value b = res; b = g_revInterp->methodCall(b, "Rat", ValueList{});
-                if (b.t == VT::Rat) res = b;
-            }
-            res.hashKind = "Duration"; identify(res);
-        }
-        return;
-    }
-    if (!(li || ri || ld || rd)) return;
-    // two points in time do not add up to a third
-    if (opEq(op, "+") && li && ri)
-        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
-                        "Cannot resolve caller infix:<+>(Instant:D, Instant:D)"};
-    if (opEq(op, "-")) res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
-    else res.hashKind = (li || ri) ? "Instant" : "Duration";
-    // a Duration is a Rat (Rakudo's `has Rat $.tai`): `Duration.new(4.5) - 1e0`
-    // is Duration.new(3.5), not a float
-    if (res.hashKind == "Duration" && ((res.t == VT::Num && std::isfinite(res.n)) || res.t == VT::Int) &&
-        g_revInterp) {
-        Value b = res; b.hashKind = "";
-        b = g_revInterp->methodCall(b, "Rat", ValueList{});
-        if (b.t == VT::Rat) { b.hashKind = "Duration"; res = b; }
-    }
-    identify(res); // the sum is a new Instant/Duration, with its own identity
-}
 struct HyperOpName {
     const std::string* prev;
     explicit HyperOpName(const std::string& n) : prev(g_hyperOpName) { g_hyperOpName = &n; }
@@ -25984,28 +26008,11 @@ Value* Interpreter::compoundCheckSlot(Assign* a, bool& sameTypeOk) {
 
 void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
     // (a Failure used to return here — "it soaks into any container". It does,
-    // but only into an UNTYPED one: the loop below detonates it when the target
-    // has a declared nominal type, which is where the type check must look at
-    // the value. An untyped target has no varDefault entry and falls through.)
-    // UInt is `subset UInt of Int where * >= 0`, so an assignment to one is
-    // checked like any other typed slot — rtTypeMatch already knows the rule.
-    // Without it here `my UInt $x = -42` simply stored the negative number
-    // (S32-num/int.t, "UInt rejects negative numbers").
-    static const std::set<std::string> kChecked = {
-        "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
-    };
+    // but only into an UNTYPED one: enforceTypedValue detonates it when the
+    // target has a declared nominal type, which is where the type check must
+    // look at the value. An untyped target has no varDefault entry and falls
+    // through.)
     varWhereCheck(nm, rhs);   // `my $x where Int|Num`
-    auto undefOk = [&](const std::string& want) {
-        std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
-        if (tn == want) return true;
-        if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, want);   // `my Int $v = Color`
-        if (want == "Int" && tn == "IntStr") return true;
-        if (want == "Num" && tn == "NumStr") return true;
-        if (want == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
-        if (want == "Str" && (tn == "IntStr" || tn == "NumStr" ||
-                              tn == "RatStr" || tn == "ComplexStr")) return true;
-        return false;
-    };
     for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
         // A coercion-typed slot CONVERTS what it is handed rather than refusing
         // it: `my Int() $x; $x = "7"` stores 7, as the declaration form already
@@ -26026,49 +26033,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
             auto dti = en->xr().varDefaultType.find(nm);
             const Value& dty = dti != en->xr().varDefaultType.end() ? dti->second : di->second;
             if (dty.t != VT::Type || en->xr().varDefaultUntyped.count(nm)) break;
-            const std::string& want = dty.s;
-                // A TYPED container cannot hold a Failure quietly: checking the type
-                // means looking at the value, and looking at a Failure detonates it.
-                // (`my $x = "abc".Rat` keeps the Failure — no type to check — which
-                // is why only this path throws.) A Weekly Challenge solution turned
-                // on it: `try { $rat = $s.Rat }; if $! { …fallback… }` never took
-                // its fallback, and the stored Failure blew up somewhere else.
-                if (rhs.t == VT::Hash && rhs.hashKind == "Failure") failureDetonate(rhs);
-            if (want == "atomicint") {
-                if (!(rhs.t == VT::Int || rhs.t == VT::Num ||
-                      rhs.t == VT::Rat || rhs.t == VT::Bool))
-                    throwTypedV("X::TypeCheck::Assignment",
-                        {{"got", rhs}, {"expected", Value::typeObj("Int")},
-                         {"symbol", Value::str(nm)}},
-                        "Type check failed in assignment to " + nm +
-                        "; expected atomicint but got " + rhs.typeName());
-                rhs = Value::integer(rhs.toInt());
-                break;
-            }
-            // a COERCION subset (`subset S of Int()`) converts what it holds:
-            // `my S $v; $v = "42"` stores 42
-            if (isDefined(rhs) && subsets_.count(want) && isCoercionSubset(want)) {
-                const SubsetInfo& si = subsets_[want];
-                if (!si.base.empty() && rhs.typeName() != si.base) {
-                    try { rhs = coerceToType(rhs, si.base); } catch (RakuError&) {}
-                }
-            }
-            // (one of the seven core types needs nothing past rtTypeMatch)
-            const bool core = kChecked.count(want) > 0;
-            if ((core &&
-                 (isDefined(rhs) ? !rtTypeMatch(rhs, want) : !undefOk(want))) ||
-                // …read as the scope that declared the variable reads the name
-                (userTypeRefuses(rhs, want) && !lexicalAliasAccepts(en, want, rhs)) ||
-                (!core && builtinTypeRefuses(*this, nm, rhs, want)) ||
-                // a SUBSET's where-clause is late-bound: asked on every write
-                (rhs.t != VT::Nil && subsets_.count(want) && !isCoercionSubset(want) &&
-                 !subsetMatches(want, rhs, 0)))
-                throwTypedV("X::TypeCheck::Assignment",
-                    {{"got", rhs}, {"expected", Value::typeObj(want)},
-                     {"symbol", Value::str(nm)}},
-                    "Type check failed in assignment to " + nm +
-                    "; expected " + want + " but got " + rhs.typeName() +
-                    (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
+            enforceTypedValue(nm, dty.s, rhs, en);
             break;
         }
         if (en->local(nm)) break;

@@ -5223,6 +5223,100 @@ void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live) {
             "is outside the dynamic scope of the Routine where `return` was used)"};
     throw ReturnEx{std::move(v), id};
 }
+bool builtinTypeRefuses(Interpreter& I, const std::string& nm, const Value& rhs,
+                        const std::string& want);   // (InterpreterCore.cpp)
+// The check a store into a scalar DECLARED `want` makes once the type is known —
+// enforceTypedAssign's, which finds it in the declaring scope's tables, and
+// compiled code's (rtTypedScalarStore), which knows it from the declaration.
+// `en` is the scope that reads the type's name (a lexical alias of it).
+void Interpreter::enforceTypedValue(const std::string& nm, const std::string& want, Value& rhs, Env* en) {
+    // UInt is `subset UInt of Int where * >= 0`, so an assignment to one is
+    // checked like any other typed slot — rtTypeMatch already knows the rule.
+    // Without it here `my UInt $x = -42` simply stored the negative number
+    // (S32-num/int.t, "UInt rejects negative numbers").
+    static const std::set<std::string> kChecked = {
+        "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
+    };
+    auto undefOk = [&](const std::string& w) {
+        std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
+        if (tn == w) return true;
+        if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, w);   // `my Int $v = Color`
+        if (w == "Int" && tn == "IntStr") return true;
+        if (w == "Num" && tn == "NumStr") return true;
+        if (w == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
+        if (w == "Str" && (tn == "IntStr" || tn == "NumStr" ||
+                           tn == "RatStr" || tn == "ComplexStr")) return true;
+        return false;
+    };
+    // A TYPED container cannot hold a Failure quietly: checking the type
+    // means looking at the value, and looking at a Failure detonates it.
+    // (`my $x = "abc".Rat` keeps the Failure — no type to check — which
+    // is why only this path throws.) A Weekly Challenge solution turned
+    // on it: `try { $rat = $s.Rat }; if $! { …fallback… }` never took
+    // its fallback, and the stored Failure blew up somewhere else.
+    if (rhs.t == VT::Hash && rhs.hashKind == "Failure") failureDetonate(rhs);
+    if (want == "atomicint") {
+        if (!(rhs.t == VT::Int || rhs.t == VT::Num ||
+              rhs.t == VT::Rat || rhs.t == VT::Bool))
+            throwTypedV("X::TypeCheck::Assignment",
+                {{"got", rhs}, {"expected", Value::typeObj("Int")},
+                 {"symbol", Value::str(nm)}},
+                "Type check failed in assignment to " + nm +
+                "; expected atomicint but got " + rhs.typeName());
+        rhs = Value::integer(rhs.toInt());
+        return;
+    }
+    // a COERCION subset (`subset S of Int()`) converts what it holds:
+    // `my S $v; $v = "42"` stores 42
+    if (isDefined(rhs) && subsets_.count(want) && isCoercionSubset(want)) {
+        const SubsetInfo& si = subsets_[want];
+        if (!si.base.empty() && rhs.typeName() != si.base) {
+            try { rhs = coerceToType(rhs, si.base); } catch (RakuError&) {}
+        }
+    }
+    // (one of the seven core types needs nothing past rtTypeMatch)
+    const bool core = kChecked.count(want) > 0;
+    if ((core &&
+         (isDefined(rhs) ? !rtTypeMatch(rhs, want) : !undefOk(want))) ||
+        // …read as the scope that declared the variable reads the name
+        (userTypeRefuses(rhs, want) && !lexicalAliasAccepts(en, want, rhs)) ||
+        (!core && builtinTypeRefuses(*this, nm, rhs, want)) ||
+        // a SUBSET's where-clause is late-bound: asked on every write
+        (rhs.t != VT::Nil && subsets_.count(want) && !isCoercionSubset(want) &&
+         !subsetMatches(want, rhs, 0)))
+        throwTypedV("X::TypeCheck::Assignment",
+            {{"got", rhs}, {"expected", Value::typeObj(want)},
+             {"symbol", Value::str(nm)}},
+            "Type check failed in assignment to " + nm +
+            "; expected " + want + " but got " + rhs.typeName() +
+            (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
+}
+
+// --exe: a store into a `$` variable the program declared `want`. A Nil resets
+// it to the declared type, as `=` resets a typed container; anything else is
+// checked as the interpreter checks the same store (enforceTypedValue). Compiled
+// code checked nothing: `my Int $x; $x = "a"` stored the Str, `$x = Nil` the Nil.
+Value Interpreter::rtTypedScalarStore(Value rhs, const char* want, const char* nm) {
+    if (rhs.t == VT::Nil) return rtTypedDefault(want, '$');
+    enforceTypedValue(nm, want, rhs, global_.get());
+    return rhs;
+}
+// …and one into a `$` the INTERPRETER declared, from a module routine's native
+// body (which runs in the routine's interpreter frame): a Nil resets it to the
+// default its declaration recorded, anything else is checked by that
+// declaration (enforceTypedAssign)
+Value Interpreter::rtOuterScalarStore(Value rhs, const char* nm) {
+    if (rhs.t == VT::Nil) {
+        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
+            auto di = en->xr().varDefault.find(nm);
+            if (di != en->xr().varDefault.end()) return di->second;
+            if (en->local(nm)) break;
+        }
+        return Value::any();
+    }
+    enforceTypedAssign(nm, rhs);
+    return rhs;
+}
 // What `++` / `--` store: they ARE .succ / .pred. A Str always steps as a
 // string in Rakudo — even a numeric-looking one ("42"++ is Str "43", "10"--
 // keeps its width, "09") — and strSucc/strPred pick the magic window

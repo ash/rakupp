@@ -16,8 +16,10 @@ lines.
   18–21 are new on 5.5.0.
 - **After the fix branch** (`claude/float-heavy-fixes`, 2026-10-22) says what
   that branch changed, measured against a v5.5.0 build in the same sitting,
-  best of 3. [Found while fixing](#found-while-fixing) lists the wrong answers
-  the work turned up on the way, most of them fixed there too.
+  best of 3. Its second pass (issue 17, and the wrong answers the first left
+  open) is measured against the first pass's build, d7c6d9d5.
+  [Found while fixing](#found-while-fixing) lists the wrong answers the work
+  turned up on the way, most of them fixed there too.
 - The probe scripts in the appendix reproduce the cost numbers in either mode.
 
 ## How it compares with other languages
@@ -71,7 +73,7 @@ over six input sizes.
 | 14 | native arrays bundle the whole program | still bundles; routines native | unchanged |
 | 15 | the loop lane gives a read-only variable an int slot | **fixed** | |
 | 16 | the code generator ignores native types | partly: fast arms added, still boxed; `num` code 3× untyped | **at the untyped code's speed** on every probe; still boxed |
-| 17 | native types leave the interpreter's kernels | **fixed** for `int`, not for `num` | unchanged for `num` |
+| 17 | native types leave the interpreter's kernels | **fixed** for `int`, not for `num` | **fixed** for `num`: a `num` sub and loop at the untyped code's cost |
 | 18 | unary minus on a `Num` is generic | new | **fixed**, both modes |
 | 19 | Array methods dispatch by name (`--exe`) | new | **fixed** for `.elems`, `.defined`, a one-argument `.push` |
 | 20 | a sub with an `@` parameter takes the `ValueList` path | new | **fixed** |
@@ -517,10 +519,23 @@ the same pattern.
   `(int $m --> int)` sub costs 6.2 ns against 6.8 untyped. The `num` sub
   costs 418.5 against 140.8, and the issue-15 float loops cost 1,075 / 2,362 ns
   typed against 276 / 410 untyped (`$x` read only / also written).
-- **After the fix branch:** unchanged. The `num` sub misses the lean call
-  path (`plainSubShape` takes untyped `$` parameters only) and pays the
-  general binder's type-name lookups and `checkRetType` on every call; the
-  int sub escapes them only because it runs as a kernel.
+- **After the fix branch:** unchanged by its first pass. The `num` sub
+  missed the lean call path (`plainSubShape` took untyped `$` parameters
+  only) and paid the general binder's type-name lookups and `checkRetType`
+  on every call; the int sub escaped them only because it runs as a kernel.
+  The loops entered no loop kernel: one refused every native variable.
+- **After the second pass:** a sub whose parameters and return name `num`,
+  `int`, `Num`, `Int` or `Str` takes the lean path when each argument already
+  is of its type, and binds it as the general binder does (any other argument
+  goes the general way). A loop kernel takes a full-width `int` or `num`
+  variable as a plain Int or Num, bails where a result leaves int64 (the
+  native path then wraps), and writes the number back into the native cell.
+  Interpreted, against d7c6d9d5, ns per call: the `num` sub 387.1 → 152.6
+  (untyped 144.8), the `Num` one 360.8 → 148.3, `num < num` 245.2 → 143.1
+  (untyped 134.6), the issue-15 loops 1,024 / 2,332 → 292 / 581 (untyped
+  282 / 407; the second's `num $x is copy` still takes the general binder).
+  perf-guard's strscan, whose loop counts in a `my int`, runs as a kernel:
+  96.4 → 6.0 ms.
 
 ## Found on 5.5.0
 
@@ -645,8 +660,8 @@ sub sum-while(@a) { my $s = 0e0; my $i = 0; my $k = @a.elems;
 ## Found while fixing
 
 Checked against the interpreter and Rakudo 2026.09 while the issues above were
-worked on. All but the last group are fixed on the fix branch, each with a
-regression file.
+worked on. All but the last two groups are fixed on the fix branch, each with
+a regression file.
 
 - **A kept List was not written through in compiled code**
   (`t/regression/exe-kept-list-writes.raku`). `f(($a, 2))` with `sub f($x) {
@@ -670,25 +685,66 @@ regression file.
   what makes `(try q(-1)) // "caught: $!"` catch it, as interpreted.
 - **Compiled `-$x` on 0e0 was +0**, and on an object asked `.Bridge`
   (issue 18; `exe-float-fast-paths.raku`).
-- **Not fixed, interpreter against Rakudo:** `-Duration.new(3)`, `abs` of a
-  Duration and `0 - $duration` answer a Rat, a Rat and a Duration where
-  Rakudo answers Duration, Duration and Num; `@a.push($s)` with `$s` holding a
-  Slip stores the Slip where Rakudo slips it; and a write through a kept List
-  into a typed variable (`my Int $a; f(($a, 2))` writing a Str) is not
-  type-checked; and a `fail` in a block that another routine calls (`sub
-  viaapply { apply({ fail "x" }); … }`) returns from `apply`, and the
-  statement then sinks the Failure and dies, where Rakudo returns it from
-  `viaapply`. **Not fixed, compiled against
-  interpreted:** `my $r = try die "x"` leaves `$r` Nil, where the interpreter
-  and Rakudo reset it to Any. On v5.5.0 too, `t/exe/fuzz.raku` fails its 20
-  `*-shadow` shape programs at parse time ("Lexical symbol '$ca' is already
-  bound to an outer symbol"), five of `t/jit/run.raku`'s 21 tier-up cases
-  (calls, elements, inline, methods, natives) enter no kernel, and
-  `t/exe/run.raku` finds `-O` answering differently from no `-O` on
-  `nfc-join-window.raku` (`e` + combining acute: `"1 2 E9"` for `"1 1 E9"`)
-  and `typed-subtree-native-and-rat-leaves.raku` (2 failures for 1), byte for
-  byte as on v5.5.0. That gate's other two `not ok`s, and the JIT gate's
-  three, are files whose output prints a timing.
+- **Second pass, compiled against interpreted**, each on v5.5.0 too:
+  - A store into a `$` neither reset on Nil nor checked a declared type
+    (`exe-scalar-store-nil-and-type.raku`): `my $r = try die "x"` left `$r`
+    Nil (interpreted and in Rakudo: Any), `my @a = Nil` was `[]`, `my Int $x;
+    $x = "a"` stored the Str and `$x = Nil` the Nil. A store checks the type
+    the parser resolved the name to (`VarExpr::readType`) as the interpreter
+    checks it; in a bundle, a module-mode routine's store into one of the
+    interpreter's variables asks that variable's declaration.
+  - `-O` answered differently from plain `--exe` on `nfc-join-window.raku`
+    and `typed-subtree-native-and-rat-leaves.raku`
+    (`exe-nfc-join-and-destructure.raku`). `~` and an interpolation joined
+    two Strs byte by byte where the interpreter joins them NFC (`"e" ~
+    "\x[301]"` was two code points); `my ($a, $b) = $j` with a List in `$j`
+    bound the List to `$a` instead of iterating it; `!=` between an unsigned
+    native and a negative signed one was True in the condition lane (Rakudo:
+    False); and `my $bound := $q` compiled as a copy, so `$bound` missed
+    later writes (a `:=` of a scalar to a container is not compiled natively
+    now: it bundles).
+  - A `fail` in a block that another routine runs (`sub q { ap({ fail "z" });
+    … }`) returned from `ap`, and `q` sank the Failure and died: compiled, a
+    sub without a frame of its own caught a return aimed past it, and a
+    module routine's block asked the builtin, which saw `ap`'s frame.
+- **Second pass, interpreter against Rakudo**
+  (`duration-slip-fail-destructure.raku`), each on v5.5.0 too:
+  - `-$duration` and `abs $duration` were bare Rats (Rakudo: Durations), and
+    `0 - $duration`, `7 % $duration` and `5 - $instant` Durations (Rakudo:
+    the Num of the Bridges); `-$instant` is a Num. Compiled, every operator
+    dropped the tag (`$d - 0` was a Rat).
+  - `@a.push($s)` and `.unshift($s)` with a Slip in `$s` stored the Slip
+    (Rakudo slips it); the `unshift` sub answered the new length, slipped
+    nothing and checked no element type.
+  - `my ($k, $v) = %h` put the Hash in `$k` (Rakudo: its pairs).
+  - The `fail` in a block above, interpreted: the builtin returned from the
+    routine that ran the block. It returns from the one it was written in,
+    as a `return` does, and dies once that one has returned.
+- **Second pass, found on the way:** from a sub's second call on, the lean
+  call path took `f(($a, 2))` and dropped what makes the List keep `$a`'s
+  container, so `$x[0] = 5` in `f` died "Cannot modify an immutable List"
+  (`native-typed-sub-lean-and-loop-kernel.raku`). On v5.5.0 too.
+- **`t/exe/fuzz.raku`'s 20 `*-shadow` programs were not valid Raku.** The
+  inner `while` / `until` loop's counter is a `my` of the outer body, written
+  after that body has read the outer counter, which Rakudo refuses to compile
+  as rakupp does. The generator now names the inner counter apart; the loop
+  variable `$a` still shadows.
+- **Not fixed.** Interpreter and compiled code against Rakudo: a write
+  through a kept List into a typed variable (`my Int $a; f(($a, 2))` writing
+  a Str) is not type-checked, and a Nil written there is not reset to the
+  type; a native `int` times an Int that does not fit (`sub f(int $x) { $x *
+  2**62 }; f(3)`) is the BigInt 13835058055282163712 where Rakudo wraps to
+  -4611686018427387904; and a `fail` in a block written at the mainline,
+  run by a routine, returns from that routine where Rakudo dies (Test's
+  `eval-lives-ok` relies on a `fail` at a string's top level returning).
+  Compiled against interpreted: a direct call of a compiled routine does not
+  check its `--> T` (`sub r(--> Int) { "x" }` answers "x"). Roast's
+  `S07-hyperrace/basics.t` segfaults in its last test (one RaceSeq iterator
+  pulled from several threads) about one run in six, on d7c6d9d5 as on the
+  second pass. On the second pass, `t/exe/run.raku`'s one `-O` disagreement
+  and `t/jit/run.raku`'s three are files that print a timing; five of the
+  JIT gate's 21 tier-up cases (calls, elements, inline, methods, natives)
+  still enter no kernel, as on v5.5.0.
 - **Rakudo itself:** `Num.Rat(0)` never returns for some doubles (issue 1),
   and in a long run Rakudo answers ever more slowly, growing past a gigabyte
   on pairs it answers at once in a fresh process.

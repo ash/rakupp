@@ -2111,6 +2111,8 @@ public:
     Value roleCandidates(ClassInfo* ci);
     std::string docModeText(); // what `--doc` prints: $=pod through Pod::To::Text
     void checkReturnInDynamicScope(uint64_t lexicalFrame); // a return whose routine has already exited dies
+    bool lexicalRoutineLive();                             // …that routine is still running (or there is none)
+    bool routineEnvRunning(const Env* routineEnv);         // …this activation of a routine is (null: none)
     // what a program BOUND into the setting: `$CORE::_ := 50` (the `&` names
     // go to builtinRefs_, where `&none` finds them)
     std::unordered_map<std::string, Value> coreVars_;
@@ -2992,6 +2994,9 @@ public:
         return static_cast<const PadLayout*>((const void*)ve->padOwner);
     }
     void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign
+    void enforceTypedValue(const std::string& nm, const std::string& want, Value& rhs, Env* en); // …its check, type known
+    Value rtTypedScalarStore(Value rhs, const char* want, const char* nm);   // --exe: a store into a typed `$`
+    Value rtOuterScalarStore(Value rhs, const char* nm);   // …into an interpreter-held `$` (a module routine's)
     // The striped-lock pool shared by cas, the atomic-* family, and Channel:
     // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended
     // cost under the GIL. Recursive so a holder may re-enter its own stripe.
@@ -5110,6 +5115,7 @@ inline bool rtIntWordOp(char c0, char c1, long long a, long long b, long long& z
     z = (long long)(q * y);
     return true;
 }
+Value applyArithLit(const char* op, const Value& l, const Value& r);   // its general case (InterpreterCore.cpp)
 inline Value applyArith(const char* op, const Value& l, const Value& r) {
     if (rtBothInt(l, r) && op[0] != '\0') {
         long long a = l.i, b = r.i, z;
@@ -5127,7 +5133,7 @@ inline Value applyArith(const char* op, const Value& l, const Value& r) {
     }
     // (a Num goes on to the string form, whose Num arm answers it: inlined at
     // every call site, a second arm here cost the Int-and-Str code its size)
-    return applyArith(std::string(op), l, r);
+    return applyArithLit(op, l, r);
 }
 // A NATIVE operation (codegen: Ast.h nativeNumericStatic). Its common cases
 // inline — `+ - *` over two plain Ints, wrapping at 64 bits as rtNativeIntOp
@@ -5259,6 +5265,7 @@ Value rtNegSlow(Interpreter& I, const Value& v);
 Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fail` returns (BuiltinsRegister.cpp)
 [[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a); // `fail` in a compiled routine
 [[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live); // …in a block of one
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env); // …in a block of a module routine
 inline Value rtNeg(Interpreter& I, const Value& v) {
     if (v.hashKind.empty()) {
         if (v.t == VT::Num) return Value::number(-v.n);
@@ -5273,7 +5280,16 @@ inline Value rtLe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l
 inline Value rtGt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i >  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a >  b); return applyArith(">",  l, r); }
 inline Value rtGe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i >= r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a >= b); return applyArith(">=", l, r); }
 inline Value rtEq(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a == b); return applyArith("==", l, r); }
-inline Value rtNe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a != b); return applyArith("!=", l, r); }
+// Rakudo's `!=` between a native uint and a NEGATIVE native int is False,
+// whatever the other holds (the interpreter's nativeMixedSignNe; Roast's
+// S02-types/signed-unsigned-native.t): the Int arms below answered `l.i != r.i`
+inline bool rtNativeMixedSignNe(const Value& l, const Value& r) {
+    if (!(l.natBits | r.natBits)) return false;
+    auto uns = [](const Value& v) { return v.natBits && !v.natSigned && !v.natFloat; };
+    auto neg = [](const Value& v) { return v.natBits && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0; };
+    return (uns(l) && neg(r)) || (neg(l) && uns(r));
+}
+inline Value rtNe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i != r.i && !rtNativeMixedSignNe(l, r)); if (rtNumPair(l, r, a, b)) return Value::boolean(a != b); return applyArith("!=", l, r); }
 // Native-bool comparison for boolean context (if/while/ternary): skips building
 // a Bool Value and re-reading it. Int and Num fast paths, else the general operator.
 inline bool rtLtB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i <  r.i; if (rtNumPair(l, r, a, b)) return a <  b; return applyArith("<",  l, r).truthy(); }
@@ -5281,7 +5297,7 @@ inline bool rtLeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l
 inline bool rtGtB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i >  r.i; if (rtNumPair(l, r, a, b)) return a >  b; return applyArith(">",  l, r).truthy(); }
 inline bool rtGeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i >= r.i; if (rtNumPair(l, r, a, b)) return a >= b; return applyArith(">=", l, r).truthy(); }
 inline bool rtEqB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i == r.i; if (rtNumPair(l, r, a, b)) return a == b; return applyArith("==", l, r).truthy(); }
-inline bool rtNeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i != r.i; if (rtNumPair(l, r, a, b)) return a != b; return applyArith("!=", l, r).truthy(); }
+inline bool rtNeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i != r.i && !rtNativeMixedSignNe(l, r); if (rtNumPair(l, r, a, b)) return a != b; return applyArith("!=", l, r).truthy(); }
 // `+&` `+|` `+^` `+<` `+>`: the machine-Int case inline (rtIntBitOp), as `%` and `div` have
 inline Value rtBitAnd(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::integer(l.i & r.i); return applyArith("+&", l, r); }
 inline Value rtBitOr(const Value& l, const Value& r)  { if (rtBothInt(l, r)) return Value::integer(l.i | r.i); return applyArith("+|", l, r); }
@@ -5294,7 +5310,16 @@ inline Value rtDiv(const Value& l, const Value& r) {
     if (rtBothInt(l, r) && r.i != 0 && r.i != -1) { long long q = l.i / r.i; if ((l.i % r.i) && ((l.i < 0) != (r.i < 0))) q--; return Value::integer(q); }
     return applyArith("div", l, r);
 }
-inline Value rtConcat(const Value& l, const Value& r) { if (l.t == VT::Str && r.t == VT::Str) return Value::str(l.s + r.s); return applyArith("~", l, r); }
+// `~`: two plain Strs join as applyArith's Str arm joins them, NFC across the
+// seam (nfcConcatStr). The bytes were simply appended, so `"e" ~ "\x[301]"`
+// was two code points compiled -O and one interpreted; and a tagged Str (an
+// allomorph, a Version, an enum's) took the plain arm too.
+inline Value rtConcat(const Value& l, const Value& r) {
+    if (l.t == VT::Str && r.t == VT::Str && l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() &&
+        r.enumName.empty())
+        return nfcConcatStr(l.s, r.s);
+    return applyArith("~", l, r);
+}
 // Cached-builtin call for native codegen: the per-name pointer is resolved once
 // at program start (__rakupp_register → Interpreter::builtinPtr); a null (not a
 // registered builtin — e.g. a module-loaded routine) falls back to the full
@@ -5622,6 +5647,9 @@ inline bool rtForHas(const Value& lst, size_t i) {
     return (lst.arr() && i < lst.arr()->size()) || (lst.ext() && rtForPull(lst, i));
 }
 // What a `$` container stores (native codegen): a list ITEMIZED, as `=` does.
+// --exe: what an untyped `$` container stores — a Nil resets it to Any, as `=`
+// resets a container to its default (`my $r = try die "x"` holds Any)
+inline Value rtNilToAny(Value v) { if (v.t == VT::Nil) return Value::any(); return v; }
 inline Value rtItemized(Value v) {
     if ((v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) && !v.itemized) v.itemized = true;
     return v;
@@ -5781,6 +5809,12 @@ template <class GetRT>
 inline Value rtBindTyped(Value v, const Param& p, int fast, GetRT&& rt) {
     if (rtTypedFast(v, fast)) return v;
     return rt().bindTypedParam(std::move(v), p);
+}
+// …and a store into a compiled `$` variable declared `want`: what conforms as it
+// is, inline; a Nil, and everything else, as Interpreter::rtTypedScalarStore has it
+inline Value rtTypedStore(Interpreter& I, Value v, int fast, const char* want, const char* nm) {
+    if (rtTypedFast(v, fast)) return v;
+    return I.rtTypedScalarStore(std::move(v), want, nm);
 }
 // --exe: a compiled routine one of whose BLOCKS says `return`. The return
 // leaves the routine, through whatever runs the block (`.map`'s own loop,

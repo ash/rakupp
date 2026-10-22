@@ -628,8 +628,13 @@ private:
     // whether that declaration is a native int. A read resolves to the NEAREST
     // frame that declares its name — see VarExpr::nativeIntRead.
     std::vector<std::map<std::string, char>> nativeIntDecl_ = {{}};   // 0 boxed, 'i' int, 'n' num
+    // …and, beside it, the type each declaration gave its name ("" untyped):
+    // VarExpr::lexResolved / readType
+    std::vector<std::map<std::string, std::string>> scalarDeclType_ = {{}};
+    std::vector<std::pair<std::string, std::string>> pendingParamType_;
     static bool isNativeIntTypeName(const std::string& t);
     static char nativeScalarKind(const std::string& t);   // 'i', 'n' or 0
+    void resolveScalarDecl(VarExpr& e);
     void noteLexRead(const std::string& n, size_t at);
     void noteLexDecl(const std::string& n, size_t at, int line);
     void noteScalarDecls(const Expr* e);

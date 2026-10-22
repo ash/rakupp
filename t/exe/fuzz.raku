@@ -121,10 +121,11 @@ unless $onlyOps {
     # three processes for half an hour before this was noticed, and a generator
     # that can hang is worse than no generator, since a hang looks exactly like
     # a slow compile.
-    sub mkloop($kind, $v, $body) {
+    # (`$cn` names the counter, `$c$cn`: see the -shadow shape below)
+    sub mkloop($kind, $v, $body, $cn = $v) {
         given $kind {
-            when 'while' { "my \$c$v = -1;\nwhile \$c$v < 3 \{\n    \$c$v = \$c$v + 1;\n    my \$$v = \$c$v;\n$body\n}" }
-            when 'until' { "my \$c$v = -1;\nuntil \$c$v >= 3 \{\n    \$c$v = \$c$v + 1;\n    my \$$v = \$c$v;\n$body\n}" }
+            when 'while' { "my \$c$cn = -1;\nwhile \$c$cn < 3 \{\n    \$c$cn = \$c$cn + 1;\n    my \$$v = \$c$cn;\n$body\n}" }
+            when 'until' { "my \$c$cn = -1;\nuntil \$c$cn >= 3 \{\n    \$c$cn = \$c$cn + 1;\n    my \$$v = \$c$cn;\n$body\n}" }
             when 'cloop' { "loop (my \$$v = 0; \$$v < 4; \$$v++) \{\n$body\n}" }
             when 'forin' { "for 0 .. 3 -> \$$v \{\n$body\n}" }
             when 'forex' { "for 0 ..^ 4 -> \$$v \{\n$body\n}" }
@@ -160,8 +161,13 @@ unless $onlyOps {
             # whole function body, the inner reused the outer's C++ variable, its
             # init reset the outer counter, and the outer loop ran exactly once.
             # Silently, in the default compile.
+            # The COUNTER of a `while` / `until` is not in a header: it is a
+            # `my` of the outer body, written after that body has read the
+            # outer counter, which Rakudo refuses to compile ("Lexical symbol
+            # '$ca' is already bound to an outer symbol") and rakupp with it —
+            # so it has a name of its own, and `$a` is what shadows.
             my $same = $b.subst('$V', '$a', :g).subst('N', '3', :g).lines.map({ '    ' ~ $_ }).join("\n");
-            my $smid = mkloop($k, 'a', $same).lines.map({ '    ' ~ $_ }).join("\n");
+            my $smid = mkloop($k, 'a', $same, 'a2').lines.map({ '    ' ~ $_ }).join("\n");
             @progs.push: "$k-{$bn}-shadow" => "my \$t = 0;\n{mkloop($k, 'a', $smid)}\nsay \"\$t\";\n";
         }
     }

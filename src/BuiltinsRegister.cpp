@@ -221,6 +221,15 @@ Value rtFailureFor(Interpreter& I, ValueList& a) {
     if (I.fatalHere() || I.tctx().compiledTry > 0 || !*live) failAsDie(f);
     throw ReturnEx{f, id};
 }
+// …and in a BLOCK of a module routine, which runs in a frame of the
+// interpreter's (`__fid`, `__env`): the builtin, run by the block, saw the
+// frame of whatever routine called the block — `ap({ fail "z" })` returned
+// from ap
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env) {
+    Value f = rtFailureFor(I, a);
+    if (I.fatalHere() || I.tctx().compiledTry > 0 || !id || !env || !I.routineEnvRunning(env)) failAsDie(f);
+    throw ReturnEx{f, id};
+}
 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
@@ -654,8 +663,17 @@ void Interpreter::registerBuiltins() {
         // the exception itself is thrown where the fail was written — and so
         // it does under `use fatal`, which a `try` block's scope is, and under
         // a compiled `try`, which catches only what is thrown (rtFailRoutine)
-        if (I.tctx().curRoutineFrame == 0 || I.fatalHere() || I.tctx().compiledTry > 0)
+        // The routine it was WRITTEN in is the one it returns from, as for a
+        // `return` (Rakudo throws it to its lexical caller): in a block that
+        // another routine runs — `sub q { ap({ fail "x" }); … }` — it returned
+        // from ap, whose caller sank the Failure and died. Once that routine
+        // has gone (a block it handed out), there is nothing to return from,
+        // and Rakudo throws the exception.
+        const uint64_t lf = I.lexicalRoutineFrame();
+        if (I.tctx().curRoutineFrame == 0 || I.fatalHere() || I.tctx().compiledTry > 0 ||
+            (lf && !I.lexicalRoutineLive()))
             throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
+        if (lf && lf < I.tctx().curRoutineFrame) throw ReturnEx{f, lf};
         throw ReturnEx{f};
     };
     // val(Str) — a fully-numeric string becomes the matching allomorph
