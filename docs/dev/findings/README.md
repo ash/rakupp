@@ -268,17 +268,22 @@ logs and the reviews. This page is the complete list.
   Eight borrowings, ranked; loop versioning and one-block shaped arrays are
   the two larger ones.
 - **[FLOAT-HEAVY-ISSUES-2026-10-22.md](FLOAT-HEAVY-ISSUES-2026-10-22.md)**
-  *(2026-10-15 at 5.4.1-78-g52df8573, re-checked 2026-10-22 at 5.5.0)* — 21
-  issues from one float-heavy benchmark program, interpreted and under
-  `--exe -O`, each with a minimal repro. The same computation in Fortran runs
-  176× CPython, in Go 123×, and in Rust, C++ and TypeScript ~55×. Raku++
-  `--exe` went from 2.5× to 3.2× with 5.5.0's `Num` fast path.
-  - Status on 5.5.0: 8 fixed, 4 partly fixed, 5 open.
-  - Open: `Num.Rat(0)` not exact, closure calls, module-sub calls, and
-    bundling over one list literal or one native array.
-  - New on 5.5.0: unary minus, `.push`/`.elems` dispatched by name, `@`-parameter
-    calls and small-array loops. These leave no hotspot above 6%, and native
-    types still cost 1.5× compiled.
+  *(2026-10-15 at 5.4.1-78-g52df8573, re-checked 2026-10-22 at 5.5.0,
+  re-measured 2026-10-23 at 5.5.0-8-g15a27449)* — 23 issues from one
+  float-heavy benchmark program, interpreted and under `--exe -O`, each with a
+  minimal repro.
+  - The same computation in Fortran runs 177× CPython, in Go 122×, and in
+    Rust, C++ and TypeScript ~55×.
+  - Raku++ `--exe` went from 2.5× to 3.2× with 5.5.0's `Num` fast path, and
+    to 3.5× on 5.5.0-8.
+  - The fix branch closed issues 9, 11 and 16–20. Issue 1 turned out
+    misreported: Rakudo's `.Rat(0)` is not exact either.
+  - Each fixed construct got 2–5× cheaper, but the whole program gained only
+    1.06× compiled (1.24× for its native-typed copy). No function holds more
+    than 4.3% of the profile, and array reads and loops did not move.
+  - Open: issue 21 (an array-element lane), bundling over a list literal, a
+    native array or `CATCH`, module-sub calls, `.pop`/`.splice` dispatched by
+    name (22), and a native-typed program still 1.3× its untyped twin (23).
 
 ## One-off bug reports
 
