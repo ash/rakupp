@@ -52,6 +52,19 @@ moves to [TODO.md](TODO.md).
   bare name outside that scope should not see it. Also check an ordinary
   name (`{ constant FOO = 1 }; say FOO`) against the oracle.
 
+- [ ] **An anonymous `rule { … }` has no sigspace** (found 2026-10-23 while
+  making compiled regex literals values; compiled code answers the same):
+
+  ```raku
+  my $r = rule { a b }; say 'a b' ~~ $r   # Nil, Rakudo ｢a b｣
+  say 'ab' ~~ $r                          # ｢ab｣, Rakudo Nil
+  ```
+
+  It matches as a `token` would. `rx:s/a b/` and a named `my rule` are
+  right. Start at regexMatch's `wired` test (src/InterpreterCore.cpp
+  ~20533), which reads the `rule` kind into "sr" flags only for a value it
+  counts as wired.
+
 ## Operators and types
 
 - [ ] **Built-in prefix and postfix operators fail when called by name**
@@ -162,6 +175,21 @@ moves to [TODO.md](TODO.md).
   binder's copy (bindParams' simple path, callPlainSub) may take that form
   or drop `holdsCells`. `f(($a, 2))` itself works since d7c6d9d5 (and on a
   second call since 3e97932e).
+
+- [ ] **The interpreter does not sink a ternary's branches** (found
+  2026-10-23 while making compiled regex literals values; compiled code is
+  right):
+
+  ```raku
+  $_ = 'abc'; False ?? /q/ !! /c/; say $/   # Nil, Rakudo and --exe ｢c｣
+  ```
+
+  Sink context reaches a ternary's branches in Rakudo, and a sunk regex
+  literal matches `$_`. Interpreter::exec's ExprStmt arm
+  (src/InterpreterCore.cpp, "A bare regex STATEMENT") matches only a
+  RegexLit that is the statement itself; codegen's exSunk takes a ternary
+  apart. t/regression/exe-regex-literal-values.raku skips that line for the
+  interpreter; drop the skip with the fix.
 
 ## Processes and diagnostics
 

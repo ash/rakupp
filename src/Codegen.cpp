@@ -1120,13 +1120,58 @@ struct Codegen {
         return (hasStarLit(b->lhs.get()) || hasStarLit(b->rhs.get())) ? "applyArith" : "applyArithValue";
     }
 
+    // A regex literal is the Regex OBJECT wherever its value is taken, as the
+    // interpreter's eval has it (evalValueOf, the RegexLit case): `/…/` and
+    // `rx/…/`, but never `m//`, which matches `$_` wherever it is written. ex()
+    // gives the match, which is what a condition (exBool) and a statement
+    // (exSunk) want; each value position asks for this instead.
+    static bool rxValueLit(Expr* e) {
+        return e && e->kind == NK::RegexLit && !static_cast<RegexLit*>(e)->isM;
+    }
+    std::string rxValue(Expr* e) {
+        requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
+        return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
+    }
+    std::string exVal(Expr* e) { return rxValueLit(e) ? rxValue(e) : ex(e); }
+    // …and a ternary that can answer one, which a condition and a statement
+    // take apart so that the regex still matches the topic there
+    static bool rxTernary(Expr* e) {
+        if (!e || e->kind != NK::Ternary) return false;
+        auto* t = static_cast<Ternary*>(e);
+        return rxValueLit(t->then.get()) || rxValueLit(t->els.get()) ||
+               rxTernary(t->then.get()) || rxTernary(t->els.get());
+    }
+    // A statement's expression, whose value nobody reads. Sink context reaches
+    // a ternary's branches, so a regex branch matches `$_`, as in Rakudo:
+    // `$_ = 'abc'; False ?? /q/ !! /c/;` sets `$/`.
+    std::string exSunk(Expr* e) {
+        if (!rxTernary(e)) return ex(e);
+        auto* t = static_cast<Ternary*>(e);
+        return "(" + exBool(t->cond.get()) + " ? (" + exSunk(t->then.get()) + ") : (" + exSunk(t->els.get()) + "))";
+    }
+    // Whether a Regex VALUE holds is a match against the topic, and the
+    // runtime's boolify reads the interpreter's `$_`, which is not the topic
+    // a compiled loop holds natively. So where one is asked for its truth on
+    // the spot, the truth is the match exBool emits: `for <xa yb> { say $_ if
+    // /a/ && /b/ }` printed both, judged against the program's `$_`.
+    static bool rxTruthy(Expr* e) { return rxValueLit(e) || rxTernary(e); }
+    // …and as `&&`/`||`'s left side it is the VALUE handed on, with that
+    // truth set in `t`: `(True ?? /b/ !! /a/) && 'y'` is the Regex for "xa"
+    std::string exValTruth(Expr* e, const std::string& t) {
+        if (rxTernary(e)) {
+            auto* tn = static_cast<Ternary*>(e);
+            return "(" + exBool(tn->cond.get()) + " ? (" + exValTruth(tn->then.get(), t) + ") : (" +
+                   exValTruth(tn->els.get(), t) + "))";
+        }
+        if (rxValueLit(e)) return "((" + t + " = " + exBool(e) + "), " + rxValue(e) + ")";
+        return "([&]()->Value{ Value _v = " + ex(e) + "; " + t + " = RT.boolify(_v); return _v; }())";
+    }
+
     // Expression in value position: a `*`-bearing expression becomes a WhateverCode closure.
     std::string exArg(Expr* e) {
-        // A regex literal in argument position is the Regex object (not a $_ match).
-        if (e->kind == NK::RegexLit) {
-            requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
-            return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
-        }
+        // A regex literal in argument position is the Regex object (not a $_
+        // match) — but `m//` is the match: `my $m = m/b/` stored the Regex
+        if (rxValueLit(e)) return rxValue(e);
         // A LONE `*` is the Whatever VALUE, not a curry: `my $w = *`, `f(*)` and
         // `@a[*]` all hand over the star itself, and Rakudo composes only when an
         // OPERATOR is written around it. Curried, it became a one-argument
@@ -1231,6 +1276,19 @@ struct Codegen {
             // body's `+` had become the user's, so the loop stopped terminating.
             if (it != cmp.end() && !opDeclared("infix:<" + b->written() + ">"))
                 return it->second + "(" + ex(b->lhs.get()) + ", " + ex(b->rhs.get()) + ")";
+        }
+        // a ternary's regex branch, as a condition, matches the topic (rxTernary)
+        if (rxTernary(e)) {
+            auto* t = static_cast<Ternary*>(e);
+            return "(" + exBool(t->cond.get()) + " ? " + exBool(t->then.get()) + " : " + exBool(t->els.get()) + ")";
+        }
+        // …and so does a regex on either side of `&&`/`||` (rxTruthy)
+        if (e->kind == NK::Binary) {
+            auto* b = static_cast<Binary*>(e);
+            const bool conj = b->op == "&&" || b->op == "and", disj = b->op == "||" || b->op == "or";
+            if ((conj || disj) && (rxTruthy(b->lhs.get()) || rxTruthy(b->rhs.get())) &&
+                !hasWhatever(e) && !opDeclared("infix:<" + b->written() + ">"))
+                return "(" + exBool(b->lhs.get()) + (conj ? " && " : " || ") + exBool(b->rhs.get()) + ")";
         }
         return "RT.boolify(" + ex(e) + ")";
     }
@@ -2357,8 +2415,9 @@ struct Codegen {
                 return "RT.rtNameTerm(" + cesc(n) + ")";
             }
             case NK::Ternary: {
+                // a branch is a VALUE: `True ?? /y/ !! /z/` is the Regex (exVal)
                 auto* t = static_cast<Ternary*>(e);
-                return "(" + exBool(t->cond.get()) + " ? (" + ex(t->then.get()) + ") : (" + ex(t->els.get()) + "))";
+                return "(" + exBool(t->cond.get()) + " ? (" + exVal(t->then.get()) + ") : (" + exVal(t->els.get()) + "))";
             }
             case NK::NqpOp: {
                 // `use nqp` subset. Control forms emit native C++ (their args must
@@ -2510,6 +2569,10 @@ struct Codegen {
                     return "([&]()->Value{ RT.quietDepth_++; try { Value __q = " + body +
                            "; RT.quietDepth_--; return __q; } catch (...) { RT.quietDepth_--; throw; } }())";
                 }
+                // `?`/`!` of a regex: its truth on the spot, the match (rxTruthy)
+                if ((u->op == "!" || u->op == "not" || u->op == "?") && rxTruthy(u->operand.get()) &&
+                    !opDeclared("prefix:<" + u->op + ">"))
+                    return std::string("Value::boolean(") + (u->op == "?" ? "" : "!") + exBool(u->operand.get()) + ")";
                 std::string x = ex(u->operand.get());
                 // A user `prefix:<op>` that overloads this spelling: a multi wins
                 // over the built-in for an object operand, which is evalUnary's
@@ -2588,8 +2651,9 @@ struct Codegen {
                           static_cast<NameTerm*>(b->rhs.get())->name == "\xe2\x88\x9e")))
                         unsupported("an endless `xx *` repetition");
                     // list repetition thunks its left side (re-evaluate per copy);
-                    // rtXxAppend splices a Slip's elements (`|(1,2) xx 2` is 4 elems)
-                    std::string L = ex(b->lhs.get()), R = ex(b->rhs.get());
+                    // rtXxAppend splices a Slip's elements (`|(1,2) xx 2` is 4 elems).
+                    // A regex literal there is the Regex (`/x/ xx 2`, exVal)
+                    std::string L = exVal(b->lhs.get()), R = exVal(b->rhs.get());
                     // …and a count that names no count at all (`NaN`, `-Inf`) is
                     // the same refusal the interpreter gives, so the two engines
                     // agree on S03-operators/repeat.t's throws-like block.
@@ -2688,6 +2752,13 @@ struct Codegen {
                 // something that was not callable at all.
                 if (b->op == "&&" || b->op == "and" || b->op == "||" || b->op == "or" || b->op == "//") {
                     std::string L = exArg(b->lhs.get()), R = exArg(b->rhs.get());
+                    // a regex on the left holds by matching the topic (exValTruth)
+                    if (b->op != "//" && rxTruthy(b->lhs.get())) {
+                        L = exValTruth(b->lhs.get(), "_t");
+                        if (b->op == "&&" || b->op == "and")
+                            return "([&]()->Value{ bool _t = false; Value _a=(" + L + "); return _t?(" + R + "):_a; }())";
+                        return "([&]()->Value{ bool _t = false; Value _a=(" + L + "); return _t?_a:(" + R + "); }())";
+                    }
                     if (b->op == "&&" || b->op == "and")
                         return "([&]()->Value{ Value _a=(" + L + "); return RT.boolify(_a)?(" + R + "):_a; }())";
                     if (b->op == "||" || b->op == "or")
@@ -2763,6 +2834,11 @@ struct Codegen {
                 // `[2 3 4]`. Refuse, exactly as an `is rw` NativeCall param
                 // does, and let --exe fall back to bundling and stay CORRECT.
                 if (c->name == "take-rw" && !c->callee) unsupported("take-rw");
+                // `so`/`not` of a regex: its truth on the spot, the match (rxTruthy)
+                if (!c->callee && (c->name == "so" || c->name == "not") && c->args.size() == 1 &&
+                    rxTruthy(c->args[0].get()) && !userSubs.count(c->name) && !multiNames.count(c->name) &&
+                    !codeVars.count(c->name) && !envSubs.count(c->name) && !callEnvNames_.count(c->name))
+                    return std::string("Value::boolean(") + (c->name == "not" ? "!" : "") + exBool(c->args[0].get()) + ")";
                 // A `*` written under a USER operator — `*!`, `* quack 5`,
                 // `(* + 1)!` — is a Whatever-curry, which evalCall builds and
                 // the emitter below does not: it handed the operator the Whatever
@@ -3077,7 +3153,8 @@ struct Codegen {
                 // …and a `*` written on either side curries the whole `=>` (rtPairCurry)
                 if (p->keyExpr) {
                     auto isVar = [](Expr* x) { return x && x->kind == NK::VarExpr ? "true" : "false"; };
-                    return "rtPairOf(" + ex(p->keyExpr.get()) + ", " + val + ", " + isVar(p->keyExpr.get()) +
+                    // (a regex key is the Regex: `.trans(/\s/ => '_')`, exVal)
+                    return "rtPairOf(" + exVal(p->keyExpr.get()) + ", " + val + ", " + isVar(p->keyExpr.get()) +
                            ", " + isVar(p->value.get()) + ")";
                 }
                 return "Value::pair(" + cesc(p->key) + ", " + val + ")";
@@ -3749,7 +3826,7 @@ struct Codegen {
                     line(ind, "rtSinkStmt(RT, " + ex(e) + ");");
                     return;
                 }
-                line(ind, ex(e) + ";");
+                line(ind, exSunk(e) + ";");
                 return;
             }
             case NK::VarDecl: {
