@@ -9,7 +9,7 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
-e24f05f1 (NUM-UNBOX-PLAN P0).*
+e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a.*
 
 ---
 
@@ -129,6 +129,14 @@ interpreted.
   underflows ended the loop with the values it held at that point: `$t = $x
   ** ($k + 1e0)` with `$x` 1e-200 answered 1e-200, where Rakudo gives an
   X::Numeric::Underflow Failure.
+- **A `<name>` that calls a `my token` matches in .comb, .split and
+  .contains** (8644846a). Compiled code declares its tokens where .comb did
+  not look, so with -O and without `'abq xyzq aq'.comb(/ <?after <two>>
+  'q' /)` (`my token two { 'ab' | 'xyz' }`) answered three q's and
+  `.comb(/<two>/)` twelve empty strings. .split and .contains missed one in
+  both engines: `'zzz'.contains(/<two>/)` was True, `'zz'.split(/<two>/)`
+  cut between every character. Rakudo 2026.09 agrees but on the
+  lookbehinds, where it matches the subrule against the reversed text.
 
 ### Fixed: crashes
 
