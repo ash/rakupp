@@ -8,7 +8,8 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES).*
+*Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
+9d48b3b5, 184c423c, 72e0c5fb and 316e5855 (FatRoast).*
 
 ---
 
@@ -127,6 +128,76 @@ interpreted.
   S07-hyperrace/basics.t segfaulted about one run in six. 300 runs, none.
 - **`-O` compiles a `--> Int` sub of no parameters that is an int kernel**
   (e30e2827); its kernel guard named an `__a` its direct overload has not got.
+
+### Fixed: what FatRoast found
+
+FatRoast's fattened Roast (strings-v1.mixed, names-v1.mixed, ops-v1; Roast
+da425eb92) through tools/run-fatroast.raku, rakupp against Rakudo 2026.09
+run the same way. Every fattened file Rakudo passes now passes here; fully
+passing, before → after (Rakudo): strings-v1 537 → 539 (507), names-v1 933 →
+951 (933), ops-v1 428 → 428 (418; infinity.t gained, one S17 file lost to
+the 10 s limit under -j load in each run). What is left fails on Rakudo too:
+the v1 transforms broke it, and their v2 (the last paragraph) does not.
+
+- **A variable named beyond ASCII interpolates into a pattern and a
+  replacement** (9d48b3b5): `/$é/`, `/@𝐯/`, `/"$ч"/`, `<$甲>`, `/$*ж/`,
+  `s/q/$ч/`, `%ü<k>` and `@é[1]` in a replacement. Each scanner read `$é` as
+  `$` and a literal `é`.
+- **A twigil takes a name in any script** (9d48b3b5): `has $.ч` made no
+  accessor, `$!ч` was "Two terms in a row", `$*ч` not assignable, `$^ч` and
+  `$:ч` routines.
+- **A type named beyond ASCII is a type to the parser's guesses** (9d48b3b5):
+  `Éx:D` was the call `Éx(:D)`; `Ро[Int]`, `Éx .new`, `new Еx:` and
+  `handles Бэк` likewise.
+- **`万` and the other CJK ideographs with a numeric value are letters**
+  (9d48b3b5), as in Rakudo: `my class 万 {}` was "Undefined routine 'class'" and
+  `sub 万` the number 10000.
+- **A name that starts with a quote word and goes on beyond ASCII is that
+  name** (9d48b3b5): `class Q̲x` made every later `Q { … }` a type name, and
+  `Q̲x.^name` a Q quote; `?&е` was the infix `?&`.
+- **`.samecase`, `s:ii` and `:ignoremark` work by grapheme in any script**
+  (9d48b3b5): a combining mark took a pattern position, `s:ii` was ASCII-only,
+  `m:m/ w̲x /` never matched and `:i:m` folded ASCII only.
+- **EVAL refuses an undeclared variable before an undeclared routine**
+  (9d48b3b5), as Rakudo does: `EVAL '{ my $v = 1 }; nope $v'` is X::Undeclared.
+- **`my Int $x = ∞`'s exception carries Inf** (9d48b3b5), and says so; `.value`
+  was Any.
+- **`/:my $x = 1; a/` compiles** (9d48b3b5); a leading `:my` was taken for an
+  adverb and the `;` refused.
+- **`--highlight` reads the Unicode quotes, hyper operators, word lists
+  after a listop and in `<<…>>`/`«…»`, the Whatever `*`, ranges, shifts,
+  `q(…)` calls, a routine named `s`, `:sym<…>` token names and radix
+  numbers** (184c423c). FatRoast places its edits by these spans: `“…”`,
+  `‘…’` and `｢…｣` were no strings, `is <a b>` no word list, `>>+<<` began a
+  `< … >` word list that swapped strings and code to the end of the line,
+  and a `"…"` ended at a quote inside its `{…}` block. Fattened again with
+  this build, the v1 files `rakupp -c` refuses while their plain form
+  compiles go 61 → 55, 49 → 48 and 8 → 7; FatRoast's v2 transforms bring
+  each to 0.
+- **`val('NaN+Inf\i')`, `val('Inf\i')` and `val('NaN\i')` are ComplexStr**
+  (72e0c5fb), as in Rakudo; they were Str, refused for carrying no digit. And
+  a word-list word reads Inf and NaN as val() does: `<0+NaNi>` was a Complex
+  where Rakudo keeps a Str.
+- **A Complex and a plain Str order as strings** (72e0c5fb): `"abc" cmp
+  <0+0i>` was Same; and `1 before <1+0i>` follows its own `cmp`.
+- **`IntStr.new` and the other allomorph constructors check what they bind**
+  (72e0c5fb): `IntStr.new("x", "y")` made an IntStr of two Strs, where Rakudo
+  dies.
+- **`.indices` reads a Cool number as its Str** (72e0c5fb): `422.indices(2)`
+  was "No such method". Roast's S32-str/indices.t died there and had been
+  counted passing; see the next entry.
+- **run-roast counts a run that printed no plan as no pass** (316e5855): a file
+  that died before its `done-testing`, every test so far passing, was
+  PASS. Raku++'s S32-str/indices.t was a false `[PASS] 18/18` in every run of
+  Roast, and Rakudo's fattened S32-str/val.t `[PASS] 93/93`.
+
+FatRoast's v2 transforms (strings-v2, names-v2, ops-v2, made in the FatRoast
+repo beside these fixes) leave alone what v1 broke on every engine. Fully
+passing under the corrected harness, Raku++ / Rakudo 2026.09, v1 → v2:
+strings 538 / 507 of 1413 → 675 / 648 of 1414; names 951 / 933 of 1181 →
+1022 / 1010 of 1166; ops 429 / 418 of 446 → 422 / 420 of 422. Plain Roast:
+1419 / 1396 of 1419. In none of the seven does Rakudo pass a file Raku++
+does not.
 
 ### Left open
 
