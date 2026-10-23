@@ -2081,8 +2081,17 @@ Value valAllomorph(const Value& v) {
         // is Str under Rakudo, and Text::SubParsers runs every token of "The
         // average mass is 55 lbs." through val — "is" came back as a Str, but
         // its numeric sub-parser then tried the prefix "i" and got 0+1i.
-        case VT::Complex: if (v.s.str().find_first_of("0123456789") == std::string::npos) return v;
-                          n.hashKind = "ComplexStr"; break;
+        // Without a digit it is still a number when its parts are Inf and NaN
+        // as Rakudo takes them: `NaN+Inf\i`, `-Inf\i` (FatRoast keeps such a
+        // word list word's letters by asking val). An imaginary NaN takes no
+        // sign and no real part: `NaN\i` is one, `1+NaN\i` and `-NaN\i` are Str.
+        case VT::Complex: {
+            const std::string w = v.s.str();
+            auto ends = [&](const std::string& t) { return w.size() >= t.size() && w.compare(w.size() - t.size(), t.size(), t) == 0; };
+            if (ends("NaN\\i") ? w != "NaN\\i"
+                               : w.find_first_of("0123456789") == std::string::npos && !ends("Inf\\i")) return v;
+            n.hashKind = "ComplexStr"; break;
+        }
         default: return v;
     }
     n.s = v.s; // the allomorph's Str face is the original spelling

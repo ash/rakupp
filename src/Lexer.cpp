@@ -1572,6 +1572,10 @@ static bool unicodeNumeralValue(uint32_t cp, long long& num, long long& den) {
     // so they are excluded here and handled by the digit path.
     if (cp < 0x80) return false;
     if (ndDigitValue(cp) >= 0) return false;
+    // A CJK ideograph that carries a value (一, 十, 万) is a LETTER, Lo: `万` is
+    // a name in Raku, and as a numeral `class 万 {}` declared nothing and `sub
+    // 万` was the number 10000. 〇 is Nl and stays a numeral.
+    if (uniUnifiedIdeograph(cp)) return false;
     // the QUIET probe: a --slim binary lexes its own embedded source at
     // runtime (grammar programs re-parse), and this classifier runs for every
     // non-ASCII cp — comments included; the throwing table killed it on a »
@@ -2164,8 +2168,11 @@ void Lexer::scanDeclaredSubNames(
                     continue;
                 size_t i = pos + kl;
                 while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
+                // the whole name, in any script: `class Q̲x` (Q, U+0332, x)
+                // declares no `Q`, and stopping at the mark made every later
+                // `Q { … }` in the file the name of an undeclared type
                 size_t b = i;
-                while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_')) i++;
+                if (uniIdentCharAt(src, b, true)) i = uniIdentEnd(src, b, false);
                 if (i > b) open.back().push_back({src.substr(b, i - b), pos});
                 break;
             }
@@ -2177,7 +2184,12 @@ void Lexer::scanDeclaredSubNames(
         if (i >= src.size() || !ascii::isspace((unsigned char)src[i])) { pos += 3; continue; } // `subset`, `submethod`
         while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
         size_t b = i;
-        while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_' || src[i] == '-')) i++;
+        while (i < src.size() && (ascii::isalnum((unsigned char)src[i]) || src[i] == '_' || src[i] == '-' ||
+                                  (unsigned char)src[i] >= 0x80)) {   // …and `sub q̲`, likewise
+            const size_t l = (unsigned char)src[i] >= 0x80 ? uniIdentCharAt(src, i) : 1;
+            if (!l) break;
+            i += l;
+        }
         std::string name = src.substr(b, i - b);
         size_t after = i;
         while (after < src.size() && (src[after] == ' ' || src[after] == '\t')) after++;
@@ -2270,6 +2282,9 @@ bool Lexer::tryQuoteForm(Token& out) {
         if (w.size() >= 5) return false;
         w += src_[p]; p++;
     }
+    // A letter or mark beyond ASCII continues the NAME (`Q̲x` is Q, U+0332, x),
+    // and is never a delimiter: no quote word starts here
+    if ((unsigned char)src_[p] >= 0x80 && uniIdentCharAt(src_, p)) return false;
     bool isRegex = (w == "rx" || w == "m" || w == "ms" || w == "mm");
     bool isSubst = (w == "s" || w == "S" || w == "ss" || w == "SS");
     // transliteration tr/from/to/ (Raku dropped y///). `TR///` is the
@@ -3342,9 +3357,10 @@ Token Lexer::lexIdentOrVar() {
         }
         // optional twigil
         char tw = peek();
+        // …before a name in any script: `$.ч`, `$!é`, `$*𝐯`, `$^ш`
         if ((tw == '*' || tw == '.' || tw == '!' || tw == '^' || tw == '?' ||
              tw == ':' || tw == '=' || tw == '~') &&
-            (isIdentStart(peek(1)) )) {
+            (isIdentStart(peek(1)) || unicodeLetterAt(1))) {
             name += advance();
         }
         if (ascii::isdigit((unsigned char)peek())) {
@@ -4189,7 +4205,8 @@ Token Lexer::lexOperator(bool termBefore) {
     // as an operator with nothing on its left.
     if (!termBefore && (peek() == '~' || peek() == '+' || peek() == '?') &&
         peek(1) == '&' && (ascii::isalpha((unsigned char)peek(2)) || peek(2) == '_' ||
-                           peek(2) == '!' || peek(2) == '.' || peek(2) == '*')) {
+                           peek(2) == '!' || peek(2) == '.' || peek(2) == '*' ||
+                           unicodeLetterAt(2))) {   // `?&е`, a name in any script
         std::string pfx(1, advance());
         return make(Tok::Op, pfx);
     }
@@ -5528,6 +5545,18 @@ void Lexer::slangEmitToken(std::vector<Token>& out, bool spaced, size_t end, Tok
     t.spaceBefore = spaced;
     t.flag = flag;
     out.push_back(t);
+}
+
+// Whether `t`, a part of the word-list Complex `word`, reads as val() reads it
+// (`im`: 0 the real part, 1 the imaginary one, 2 an imaginary one alone).
+// strtod takes any `inf` or `nan`; a part without a digit is a number only as
+// Inf or NaN, an imaginary one only before `\i`, and an imaginary NaN only
+// alone: `<0+NaNi>`, `<1+NaN\i>` and `<inf+1i>` are words, as in Rakudo.
+bool complexWordPart(const std::string& t, int im, const std::string& word) {
+    if (t.find_first_of("0123456789") != std::string::npos) return true;
+    const bool backslashI = word.size() > 2 && word.compare(word.size() - 2, 2, "\\i") == 0;
+    if (t == "NaN") return im == 0 || (im == 2 && backslashI);
+    return (t == "Inf" || t == "+Inf" || t == "-Inf") && (im == 0 || backslashI);
 }
 
 } // namespace rakupp

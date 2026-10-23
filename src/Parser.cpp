@@ -26,6 +26,8 @@ thread_local bool g_rxReservedHash = false;   // set by checkNullRegex (ParserRe
 namespace rakupp {
 
 bool isCoreEnumMemberName(const std::string& n);   // Interpreter.cpp: `Less`, `Order::More`, `SIGINT`, …
+bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万` read as types, `ч` not
+static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
 // Does a pattern call `<sym>` — outside its quoted literals, where `"<sym>"`
 // is only text? Inside a code block a `<sym>` straight after a term is a
@@ -1761,6 +1763,8 @@ static void checkLiteralDeclType(const Expr* target, const Expr* value, int line
         auto* nl = static_cast<const NumLit*>(value);
         got = nl->imaginary ? "Complex" : nl->isRat ? "Rat" : "Num";
         spell = nl->raw;
+        // `∞` is `Inf` spelled in Unicode, and Rakudo names (and carries) it so
+        if (spell == "\xE2\x88\x9E") spell = "Inf";
     }
     else if (value->kind == NK::NameTerm) {
         const std::string& n = static_cast<const NameTerm*>(value)->name;
@@ -6249,6 +6253,7 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
 }
 
 static ExprPtr angleWordNumeric(const std::string& w); // defined below
+bool complexWordPart(const std::string& t, int im, const std::string& word); // Lexer.cpp
 
 // `Foo::<$x>:exists` / `:!exists` asks the package's table for `qual`, not the
 // autovivifying read (O31: the adverb went to the enclosing call). Null: none.
@@ -6621,7 +6626,7 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
         if (end != s && end < s + w.size() - 1 && (*end == '+' || *end == '-')) {
             char* end2 = nullptr;
             double im = cnum::strtod(end, &end2);
-            if (end2 == s + w.size() - 1) {
+            if (end2 == s + w.size() - 1 && complexWordPart({s, size_t(end - s)}, 0, wIn) && complexWordPart({end, size_t(end2 - end)}, 1, wIn)) {
                 auto nl = std::make_unique<NumLit>(re);
                 auto ni = std::make_unique<NumLit>(im); ni->imaginary = true;
                 ni->raw = "<" + w + ">"; // marks the literal; see checkLiteralDeclType
@@ -6629,7 +6634,7 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
                 b->lhs = std::move(nl); b->rhs = std::move(ni);
                 return b;
             }
-        } else if (end == s + w.size() - 1 && end != s) { // pure imaginary <3i>
+        } else if (end == s + w.size() - 1 && end != s && complexWordPart({s, size_t(end - s)}, 2, wIn)) { // pure imaginary <3i>
             auto ni = std::make_unique<NumLit>(re); ni->imaginary = true;
             return ni;
         }
@@ -7333,6 +7338,9 @@ ExprPtr Parser::parsePrimary() {
                 // inline adverb (`/:s^.../`) is part of the pattern — stop
                 if (j >= full.size() || full[j] != ' ') break;
                 std::string adv = full.substr(i + 1, j - i - 1);
+                // (a declaration is the pattern's first statement: `/:my $x = 1; a/`)
+                if (adv == "my" || adv == "our" || adv == "state" || adv == "constant" ||
+                    adv == "temp" || adv == "let") break;
                 if (adv == "P5" || adv == "Perl5") p5 = true;
                 i = j;
                 while (i < full.size() && full[i] == ' ') i++;
@@ -7607,7 +7615,7 @@ ExprPtr Parser::parsePrimary() {
             {
                 const std::string& vt = cur().text;
                 if (vt.size() > 2 && vt[1] == '!' && std::strchr("$@%&", vt[0]) &&
-                    (ascii::isalpha((unsigned char)vt[2]) || vt[2] == '_') &&
+                    (nameLetterAt(vt, 2) || vt[2] == '_') &&
                     classDepth_ == 0 && !strictSep_ && !inEmbedded_)
                     throw ParseError("Cannot understand " + vt + " in this context", cur().line);
             }
@@ -8728,7 +8736,7 @@ ExprPtr Parser::parsePrimary() {
                         if (tk.kind == Tok::RBrace) { depth--; continue; }
                         if (depth == 1 && tk.kind == Tok::Var && tk.text.size() > 2 &&
                             (tk.text[1] == '^' || tk.text[1] == ':') &&
-                            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+                            (nameLetterAt(tk.text, 2) || tk.text[2] == '_'))
                             throw ParseError("Placeholder variable '" + tk.text +
                                              "' cannot override existing signature", tk.line,
                                              "X::Signature::Placeholder", {{"placeholder", tk.text}});
@@ -8845,7 +8853,7 @@ ExprPtr Parser::parsePrimary() {
             // spells `Foo.new` — unless the program declared a `sub new` of its own
             // …but `new Foo:` IS Raku: the indirect-invocant form, `Foo.new`
             if (name == "new" && peek().kind == Tok::Ident && peek().spaceBefore &&
-                ascii::isupper((unsigned char)peek().text[0]) && !declaredSubNames_.count("new") &&
+                typeLikeName(peek().text) && !declaredSubNames_.count("new") &&
                 peek(2).kind == Tok::Op && peek(2).text == ":" && !peek(2).spaceBefore &&
                 !(peek(3).kind == Tok::Ident && !peek(3).spaceBefore)) {
                 advance();                        // new
@@ -8858,7 +8866,7 @@ ExprPtr Parser::parsePrimary() {
                 return mc;
             }
             if (name == "new" && peek().kind == Tok::Ident && peek().spaceBefore &&
-                ascii::isupper((unsigned char)peek().text[0]) && !declaredSubNames_.count("new"))
+                typeLikeName(peek().text) && !declaredSubNames_.count("new"))
                 throw ParseError("Unsupported use of C++ constructor syntax. In Raku please use: method call syntax.",
                                  t.line, "X::Obsolete",
                                  {{"old", "C++ constructor syntax"}, {"replacement", "method call syntax"}});
@@ -9776,7 +9784,7 @@ ExprPtr Parser::parsePrimary() {
             }
             // parameterized type: `Array[Int]`, `Hash[Int,Str]`, `Foo[Bar]` — a capitalized
             // runtime type parameterization with a variable: array[$T].new / Blob[$T]
-            if (!name.empty() && (ascii::isupper((unsigned char)name[0]) || name == "array") &&
+            if (!name.empty() && (typeLikeName(name) || name == "array") &&
                 isKind(Tok::LBracket) && !cur().spaceBefore &&
                 peek().kind == Tok::Var && peek(2).kind == Tok::RBracket) {
                 advance(); // [
@@ -9809,10 +9817,10 @@ ExprPtr Parser::parsePrimary() {
                 }
                 return false;
             };
-            if (!name.empty() && (ascii::isupper((unsigned char)name[0]) || name == "array") &&
+            if (!name.empty() && (typeLikeName(name) || name == "array") &&
                 isKind(Tok::LBracket) && !cur().spaceBefore && !valueArgFollows() &&
                 peek().kind == Tok::Ident && !peek().text.empty() &&
-                (ascii::isupper((unsigned char)peek().text[0]) ||
+                (typeLikeName(peek().text) ||
                  [&]{ static const std::set<std::string> nat = {
                           "int","int8","int16","int32","int64","uint","uint8","uint16",
                           "uint32","uint64","byte","atomicint","num","num32","num64","str"};
@@ -9888,7 +9896,7 @@ ExprPtr Parser::parsePrimary() {
             // type smiley on a type name: `Foo:D` / `Channel:U` / `Bar:_` — a
             // DEFINITENESS-constrained type, which the value carries so that
             // `.^name`, smartmatch and `.^base_type` all see it
-            if (!name.empty() && ascii::isupper((unsigned char)name[0]) &&
+            if (typeLikeName(name) &&
                 isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
                 (peek().text == "U" || peek().text == "D" || peek().text == "_")) {
                 advance(); std::string sm = advance().text; // : and the smiley letter
@@ -9952,7 +9960,7 @@ ExprPtr Parser::parsePrimary() {
             // a postfix method call on the type — `Thing .new` is `Thing.new`, NOT a
             // listop call `Thing(.new)`. (Whitespace before a postfix `.` is allowed.)
             // Require an identifier after the dot so `.method` is meant, not `.=`/`.(`.
-            if (!name.empty() && ascii::isupper((unsigned char)name[0]) &&
+            if (typeLikeName(name) &&
                 cur().kind == Tok::Op && cur().text == "." && cur().spaceBefore &&
                 peek().kind == Tok::Ident)
                 return std::make_unique<NameTerm>(name);
@@ -11388,7 +11396,7 @@ void Parser::checkPlaceholderOrder(size_t openAt) {
         if (tk.kind == Tok::RBrace) { depth--; continue; }
         if (depth != 0 || tk.kind != Tok::Var || tk.text.size() < 2) continue;
         if (tk.text.size() > 2 && tk.text[1] == '^' &&
-            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_')) {
+            (nameLetterAt(tk.text, 2) || tk.text[2] == '_')) {
             const std::string bare = tk.text.substr(0, 1) + tk.text.substr(2);
             if (!introduced.insert(tk.text).second) continue;
             for (size_t j : plain) {
@@ -11804,7 +11812,7 @@ bool Parser::braceLooksHash(bool emptyIsHash) {
                  (tk.text.size() > 2 &&
                   (tk.text[1] == '^' ||
                    (tk.text[1] == ':' &&
-                    (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_')))))) { isHash = false; break; }
+                    (nameLetterAt(tk.text, 2) || tk.text[2] == '_')))))) { isHash = false; break; }
             // …and the same variables reached through a STRING INTERPOLATION,
             // which is a token the scan cannot see into from the outside
             if (tk.kind == Tok::StrInterp && strInterpUsesTopic(tk.text)) { isHash = false; break; }
@@ -14063,12 +14071,12 @@ void Parser::checkVirtualCallInDefault(size_t defStart) {
         if (tk.kind == Tok::RBrace) { if (!claims.empty()) claims.pop_back(); continue; }
         if (tk.kind != Tok::Var || tk.text.size() <= 2) continue;
         if (tk.text[1] == '.' &&
-            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+            (nameLetterAt(tk.text, 2) || tk.text[2] == '_'))
             throw ParseError("Virtual call " + tk.text + " may not be used on "
                              "partially constructed object", tk.line,
                              "X::Syntax::VirtualCall", {{"call", tk.text}});
         if (tk.text[1] == '^' &&
-            (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_')) {
+            (nameLetterAt(tk.text, 2) || tk.text[2] == '_')) {
             // the INNERMOST enclosing block decides: `{ do { $^a } }` is an
             // error in Rakudo even though the outer block could have taken it
             if (!claims.empty() && claims.back()) continue;
@@ -15529,7 +15537,7 @@ std::string Parser::placeholderIn(size_t openAt) {
         if (tk.kind == Tok::LBrace) depth++;
         else if (tk.kind == Tok::RBrace) { if (depth == 0) break; depth--; }
         else if (depth == 0 && tk.kind == Tok::Var && tk.text.size() > 2 && tk.text[0] == '$' &&
-                 tk.text[1] == '^' && (ascii::isalpha((unsigned char)tk.text[2]) || tk.text[2] == '_'))
+                 tk.text[1] == '^' && (nameLetterAt(tk.text, 2) || tk.text[2] == '_'))
             return "$" + tk.text.substr(2);
     }
     return std::string();

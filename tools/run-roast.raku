@@ -1272,7 +1272,12 @@ my sub tally($k) {
             if $sp > 0 { $notap-declared += $sp; $notap-counted++; %sec-decl{$sec} += $sp } else { $notap-unknown++ }
         }
     }
-    elsif $failed == 0 && ($planned < 0 || $planned == $ran) {
+    # A run that printed no plan did not finish: Test prints one first (`plan
+    # N`) or last (`done-testing`). Taking none for a pass made a file that
+    # died before its `done-testing`, every test so far passing, a PASS
+    # (2026-10-23: Rakudo, dying at the 94th test of a fattened
+    # S32-str/val.t, was `[PASS] 93/93`).
+    elsif $failed == 0 && $planned == $ran {
         $pass++;
         %sec-full{$sec} += 1;
         $mark = 'PASS';

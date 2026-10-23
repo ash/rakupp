@@ -8391,7 +8391,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (had) if (Value* sl2 = tctx().cur->find("$/")) *sl2 = saved;
                 return hit;
             }
-            if (h.empty() || !ascii::isupper((unsigned char)h[0])) return false;
+            if (h.empty() || !typeNameLead((unsigned char)h[0])) return false;   // `handles Éx` too
             auto cit = classes_.find(h);
             return cit != classes_.end() && cit->second && cit->second->findMethod(m) != nullptr;
         };

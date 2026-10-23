@@ -3,6 +3,7 @@
 #include "Unicode.h"
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -99,6 +100,10 @@ struct Scanner {
     // `class`, `role`, …), so the next identifier is that NAME even if spelled like a
     // keyword — e.g. `method role { … }` declares a method called `role`.
     bool declNext = false;
+    // Where the last name that can be a LISTOP ended (npos when the last name
+    // was a method, a declared name or a term such as `pi`). After it, a
+    // spaced `<` with a word tight after it opens a word list: `is <a b>, …`.
+    size_t listopEnd = std::string::npos;
 
     explicit Scanner(const std::string& src) : s(src) {}
     char cur() const { return i < s.size() ? s[i] : '\0'; }
@@ -195,7 +200,27 @@ struct Scanner {
             if (c == '#') { scanLineComment(); continue; }
             if (c == '=' && atLineStart() && identStart(at(i + 1))) { scanPod(); continue; }
             if (c == '\'' || c == '"') { scanQuote(c); continue; }
+            if ((unsigned char)c >= 0xE2 && scanUnicodeQuote()) continue;
+            if (hyperOpEnd(i)) { scanOperator(); continue; }
+            // `<<a "b c" $x>>` and `«a b»` are word lists in term position, and
+            // `%h<<a>>` / `%h«a»` subscripts after a term
+            if (size_t e = doubleAngleEnd(i)) { emit(s.substr(i, e - i), "s", true); i = e; continue; }
+            // A reduction where a term is wanted is an operator: `[<=] @b` and
+            // `[<] 1, 2` were an array holding a word list from the `<` on
+            if (c == '[' && (!lastWasValue || spacedFromListop())) {
+                if (size_t e = reduceOpEnd(i)) {
+                    emitText(s.substr(i, e - i));
+                    lastWasValue = false; methodNext = false; declNext = false;
+                    i = e;
+                    continue;
+                }
+            }
             if (c == '<' && !lastWasValue && looksLikeQw()) { scanAngleQw(); continue; }
+            // A name is a value here, so `<` after it is an operator, but after
+            // a listop, a keyword or an infix word it starts the term: `is <a
+            // b>, …`, `for <a b> {…}`, `$a cmp <a b>`. Only spaced from the
+            // name and tight against its first word: `elems < 3` compares.
+            if (c == '<' && afterListop() && looksLikeQw()) { scanAngleQw(); continue; }
             if (c == '<' && lastWasValue && looksLikeAngleKey()) { scanAngleQw(); continue; } // sym<int> / %h<key> / (…)<last>
             if (c == '/' && !lastWasValue) { scanRegex(); continue; }
             if (c == '/' && lastWasValue) {
@@ -212,6 +237,17 @@ struct Scanner {
             }
             if (ascii::isdigit((unsigned char)c) ||
                 (c == '.' && ascii::isdigit((unsigned char)at(i + 1)) && !lastWasValue)) { scanNumber(); continue; }
+            // `:16<ff>`, `:12<1a.b*12**2>` — a RADIX number, not `:16` then a
+            // `<ff>` word list: the digits in the brackets are a number's
+            if (c == ':' && ascii::isdigit((unsigned char)at(i + 1))) {
+                size_t j = i + 1;
+                while (ascii::isdigit((unsigned char)at(j))) j++;
+                if (at(j) == '<') {
+                    size_t e = j + 1;
+                    while (e < s.size() && s[e] != '>' && s[e] != '\n' && s[e] != ' ') e++;
+                    if (at(e) == '>') { emit(s.substr(i, e + 1 - i), "mi", true); i = e + 1; continue; }
+                }
+            }
             if (c == '$' || c == '@' || c == '%' || c == '&') { scanVariable(); continue; }
             if (nameCharAt(i, true)) { scanIdent(); continue; }
             scanOperator();
@@ -314,15 +350,63 @@ struct Scanner {
         i = (nl == std::string::npos ? s.size() : nl);
     }
 
-    void scanQuote(char q) {
-        size_t j = i + 1;
+    // A quoted string from i, its opener `open` bytes long, to the first of
+    // `closers`. In an interpolating one (`"…"`, `“…”`) a `{…}` block is code,
+    // and a string inside it does not close the outer one: `"a {f("b")} c"`
+    // ended at the inner `"`, and its code was read as strings. `｢…｣` has no
+    // escapes.
+    void scanQuoted(size_t open, std::initializer_list<const char*> closers, bool interp, bool escapes = true) {
+        size_t j = i + open;
         while (j < s.size()) {
-            if (s[j] == '\\') { j += 2; continue; }
-            if (s[j] == q) { j++; break; }
+            if (escapes && s[j] == '\\') { j += 2; continue; }
+            if (interp && s[j] == '{') { j = blockEnd(j); continue; }
+            size_t n = 0;
+            for (const char* c : closers) if (s.compare(j, std::strlen(c), c) == 0) { n = std::strlen(c); break; }
+            if (n) { j += n; break; }
             j++;
         }
+        j = std::min(j, s.size());
         emit(s.substr(i, j - i), "s", true);
         i = j;
+    }
+    void scanQuote(char q) { scanQuoted(1, {q == '"' ? "\"" : "'"}, q == '"'); }
+
+    // Just past the `}` closing the block that opens at k; a string in the
+    // block is skipped whole
+    size_t blockEnd(size_t k) const {
+        int d = 0;
+        while (k < s.size()) {
+            const char c = s[k];
+            if (c == '\\') { k += 2; continue; }
+            if (c == '{') d++;
+            else if (c == '}' && --d == 0) return k + 1;
+            else if (c == '"' || c == '\'') {
+                for (k++; k < s.size() && s[k] != c; k++) if (s[k] == '\\') k++;
+            }
+            k++;
+        }
+        return s.size();
+    }
+
+    // The Unicode quotes, as Rakudo pairs them: `“…”`, `„…”`/`„…“`, `”…”`
+    // interpolate as `"…"` does, `‘…’`, `‚…’`/`‚…‘`, `’…’` do not, and `｢…｣`
+    // has no escapes. They were punctuation and names here, so FatRoast left
+    // their letters alone and renamed what it took for code in them.
+    bool scanUnicodeQuote() {
+        if (s.compare(i, 2, "\xE2\x80") == 0 && i + 2 < s.size()) {
+            const unsigned char b = (unsigned char)s[i + 2];
+            const bool tail = b == 0x9D || b == 0x99;          // `”…”`, `’…’`: only in term position
+            if (tail && lastWasValue && !spacedFromListop()) return false;
+            switch (b) {
+            case 0x9C: case 0x9D: scanQuoted(3, {"\xE2\x80\x9D"}, true); return true;
+            case 0x9E: scanQuoted(3, {"\xE2\x80\x9D", "\xE2\x80\x9C"}, true); return true;
+            case 0x98: case 0x99: scanQuoted(3, {"\xE2\x80\x99"}, false); return true;
+            case 0x9A: scanQuoted(3, {"\xE2\x80\x99", "\xE2\x80\x98"}, false); return true;
+            }
+            return false;
+        }
+        if (s.compare(i, 3, "\xEF\xBD\xA2") == 0) { scanQuoted(3, {"\xEF\xBD\xA3"}, false, false); return true; }
+        return false;
     }
 
     // `<word>` immediately after a value: an angle subscript / sym<…> / regex
@@ -334,6 +418,28 @@ struct Scanner {
         if (j >= s.size() || !(ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) return false;
         while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' || s[j] == '-' || s[j] == '\'')) j++;
         return j < s.size() && s[j] == '>';
+    }
+
+    // Where a `[…]` reduction starting at k ends when its operator holds a `<`
+    // or `>` (`[<=]`, `[\<]`, `[R>]`, `[<=>]`), or 0
+    size_t reduceOpEnd(size_t k) const {
+        size_t j = k + 1;
+        if (at(j) == '\\') j++;
+        if (at(j) == 'R' || at(j) == 'Z' || at(j) == 'X') j++;
+        const size_t ops = j;
+        bool angle = false;
+        while (j < s.size() && std::strchr("<>=!~+-*/%^&|?.", s[j]) && s[j]) { angle |= s[j] == '<' || s[j] == '>'; j++; }
+        return angle && j > ops && at(j) == ']' ? j + 1 : 0;
+    }
+    bool spacedFromListop() const {
+        if (listopEnd == std::string::npos || i <= listopEnd) return false;
+        for (size_t k = listopEnd; k < i; k++) if (s[k] != ' ' && s[k] != '\t') return false;
+        return true;
+    }
+    bool afterListop() const {
+        if (!spacedFromListop()) return false;
+        const char n = at(i + 1);
+        return n && !ascii::isspace((unsigned char)n) && n != '=' && n != '<' && n != '>';
     }
 
     bool looksLikeQw() const {
@@ -499,6 +605,9 @@ struct Scanner {
         auto formFollows = [&]() -> bool {
             size_t k = j; while (k < s.size() && (s[k] == ' ' || s[k] == '\t')) k++;
             if (k < s.size() && s[k] == ':') return true;                 // adverb → quote form
+            // a name tight against `(` is always a call: `q($a, $b)` calls a `sub q`
+            // (S02-literals/quoting.t), and only `q ($a)` quotes
+            if (k == j && k < s.size() && s[k] == '(') return false;
             if (k < s.size() && (s[k]=='/'||s[k]=='{'||s[k]=='['||s[k]=='('||s[k]=='<'||s[k]=='!'||s[k]=='|'||s[k]=='\''||s[k]=='"')) return true;
             // An ADJACENT non-ASCII delimiter: `q«a b»`, `Q♥…♥`, `q:to｢END｣`.
             // Adjacency is what the lexer requires of these too — with no adverb
@@ -509,12 +618,14 @@ struct Scanner {
         static const std::set<std::string> strForms = {"q", "qq", "Q", "qw", "qqw", "Qw", "qww"};
         static const std::set<std::string> rxForms = {"m", "rx", "ms", "mm"};
         static const std::set<std::string> substForms = {"s", "S", "tr", "TR", "Tr"};
-        if (!methodNext && formFollows()) {
+        if (!methodNext && !declNext && formFollows()) {   // (`sub s { … }` declares a routine)
             if (strForms.count(w)) { scanQuoteForm(i, j, "s", false); return; }
             if (rxForms.count(w))  { scanQuoteForm(i, j, "sr", false); return; }
             if (substForms.count(w)) { scanQuoteForm(i, j, "sr", true); return; }
         }
 
+        static const std::set<std::string> terms = {"self", "now", "time", "pi", "e", "i", "tau", "rand"};
+        const bool listop = !methodNext && !declNext && ascii::islower((unsigned char)w[0]) && !terms.count(w);
         const char* cls;
         bool introduces = false;
         if (methodNext) {
@@ -540,6 +651,14 @@ struct Scanner {
                 while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) p++;
                 size_t nameStart = p;
                 while (p < s.size() && (identCont(s[p]) || s[p] == '-' || s[p] == ':')) p++;
+                // `token infix:sym<+>`, `rule t:sym«a b»`: the brackets are the
+                // name's, and the body after them a pattern (it was read as code)
+                if (s.substr(nameStart, p - nameStart).find(':') != std::string::npos &&
+                    (at(p) == '<' || s.compare(p, 2, "\xC2\xAB") == 0)) {
+                    const std::string close = at(p) == '<' ? ">" : "\xC2\xBB";
+                    const size_t e = s.find(close, p + 1);
+                    if (e != std::string::npos && s.find('\n', p) > e) p = e + close.size();
+                }
                 size_t nameEnd = p;
                 while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) p++;
                 if (p < s.size() && s[p] == '(') { int d = 1; p++; while (p < s.size() && d) { if (s[p]=='(') d++; else if (s[p]==')') d--; p++; } while (p < s.size() && (s[p]==' '||s[p]=='\t')) p++; }
@@ -604,11 +723,122 @@ struct Scanner {
         emit(std::move(w), cls, true);
         declNext = introduces;
         i = j;
+        listopEnd = listop ? j : std::string::npos;
+    }
+
+    // Where a HYPER operator starting at k ends — `>>+<<`, `<<~>>`, `»×«`,
+    // `>>[&infix:<+>]<<` — or 0 when none starts there: a hyper bracket, an
+    // infix spelled in punctuation or one in `[…]`, and a hyper bracket again,
+    // with no space outside the brackets.
+    size_t hyperOpEnd(size_t k) const {
+        auto bracket = [&](size_t p) -> size_t {
+            if ((at(p) == '>' && at(p + 1) == '>') || (at(p) == '<' && at(p + 1) == '<')) return 2;
+            if ((unsigned char)at(p) == 0xC2 && ((unsigned char)at(p + 1) == 0xBB || (unsigned char)at(p + 1) == 0xAB)) return 2;
+            return 0;
+        };
+        size_t b = bracket(k);
+        if (!b) return 0;
+        size_t j = k + b, body = j;
+        // a word infix: `>>dot<<`, `»min«`, and after a term and a space
+        // `<<cmp>>` (tight, `%h<<a>>` is a subscript; in term position a list)
+        if (nameCharAt(j, true)) {
+            const bool opens = at(k) == '>' || (unsigned char)at(k + 1) == 0xBB;
+            if (!opens && !(lastWasValue && k > 0 && ascii::isspace((unsigned char)s[k - 1]))) return 0;
+            const size_t e = nameEnd(j);
+            return bracket(e) ? e + bracket(e) : 0;
+        }
+        if (at(j) == '[') {   // a bracketed infix: `>>[+]<<`, `»[&infix:<+>]«`
+            for (int d = 0; j < s.size(); j++) {
+                if (s[j] == '\n') return 0;
+                if (s[j] == '[') d++;
+                else if (s[j] == ']' && --d == 0) { j++; break; }
+            }
+            return j < s.size() && bracket(j) ? j + bracket(j) : 0;
+        }
+        while (j < s.size() && !bracket(j)) {
+            unsigned char c = (unsigned char)s[j];
+            if (c < 0x80 && (ascii::isspace(c) || ascii::isalnum(c) || c == '_' || c == '\'' || c == '"' ||
+                             c == '(' || c == ')' || c == '{' || c == '}' || c == ';' || c == '<' || c == '>' ||
+                             c == '$' || c == '@' || c == '#')) return 0;
+            if (c >= 0x80 && nameCharAt(j, true)) return 0;
+            j += c < 0x80 ? 1 : (size_t)utf8Len(c);
+        }
+        if (j == body || j >= s.size()) return 0;
+        return j + bracket(j);
+    }
+
+    // Where a `<<…>>` or `«…»` word list starting at k ends, or 0. It may run
+    // over lines and quote a word (`<<a "b >> c">>`). After a term — a
+    // subscript (`%h<<a>>`, `%h«$k»`), or a list after a listop name, which
+    // reads as a term here too (`say <<a b>>`) — it starts tight, so the
+    // spaced `$x << 1` is left alone.
+    size_t doubleAngleEnd(size_t k) const {
+        std::string close;
+        if (at(k) == '<' && at(k + 1) == '<') close = ">>";
+        else if ((unsigned char)at(k) == 0xC2 && (unsigned char)at(k + 1) == 0xAB) close = "\xC2\xBB";
+        else return 0;
+        size_t j = k + 2;
+        if (lastWasValue && (j >= s.size() || ascii::isspace((unsigned char)s[j]))) return 0;
+        // tight after a prefix operator it is that operator's HYPER marker:
+        // `~<<@a`, `-<<$x`, `!«@b`
+        if (k > 0 && std::strchr("~-+!?^", s[k - 1]) && !ascii::isspace((unsigned char)at(j))) return 0;
+        while (j < s.size()) {
+            if (s.compare(j, close.size(), close) == 0) return j + close.size();
+            if (s[j] == '\\') { j += 2; continue; }
+            if (s[j] == '"' || s[j] == '\'') {
+                const char q = s[j];
+                for (j++; j < s.size() && s[j] != q; j++) if (s[j] == '\\') j++;
+            }
+            j++;
+        }
+        return 0;
     }
 
     void scanOperator() {
         // A method-call dot (or private `!`) arms methodNext for the following name.
         char c = cur();
+        // A shift after a term is one operator, `=` form included: read by the
+        // byte, the `<` of `$v +<= 1` began a word list in term position
+        if ((c == '+' || c == '~') && lastWasValue && (at(i + 1) == '<' || at(i + 1) == '>') && at(i + 2) != at(i + 1)) {
+            size_t j = i + 2;
+            if (at(j) == '=') j++;
+            emitText(s.substr(i, j - i));
+            lastWasValue = false; methodNext = false; declNext = false;
+            i = j;
+            return;
+        }
+        // A hyper operator is one operator. Byte by byte, the `<<` that closes
+        // `$a >>+<< $b` looked like a `<…>` word list in term position, and the
+        // rest of the line up to the next `>` became a string: FatRoast mapped
+        // letters in that "string" and missed the names in it.
+        if (size_t e = hyperOpEnd(i)) {
+            emitText(s.substr(i, e - i));
+            lastWasValue = false; methodNext = false; declNext = false;
+            i = e;
+            return;
+        }
+        // A range or sequence operator is one operator: read by the byte, the
+        // second dot of `1..10` began a number, `.10`.
+        if (c == '.' && at(i + 1) == '.') {
+            size_t j = i + 2;
+            if (at(j) == '.' || at(j) == '^') j++;
+            emitText(s.substr(i, j - i));
+            lastWasValue = false; methodNext = false; declNext = false;
+            i = j;
+            return;
+        }
+        // A `*` where a term is wanted is the Whatever, and a term itself: what
+        // follows it is an operator, so `(* < 5)` is no `< … >` word list and
+        // `* / 2` no regex. After a term it is multiplication (`**` the power).
+        if (c == '*') {
+            const bool whatever = !lastWasValue;
+            size_t j = i + 1;
+            if (!whatever && at(j) == '*') j++;
+            emitText(s.substr(i, j - i));
+            lastWasValue = whatever; methodNext = false; declNext = false;
+            i = j;
+            return;
+        }
         // detect `.` / `.^` / `.?` / `.+` / `.*` / `.&` / `!` method introducers
         if (c == '.' && at(i + 1) != '.') {
             size_t j = i + 1;

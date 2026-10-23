@@ -264,6 +264,52 @@ static bool inRanges(const uint32_t* R, size_t n, uint32_t cp) {   // (lo, hi) p
 // the parser (does this char continue an interpolated name?) and collation
 // (a Han character's implicit weight). Same answer as uniBinaryProp gives.
 bool uniIdContinue(uint32_t cp)      { return inRanges(ucd::IDCONT, ucd::IDCONT_N, cp); }
+
+// The identifier character at s[i], as its byte length, or 0 when there is
+// none. An ASCII one is a letter, a digit or `_`; beyond ASCII it is
+// ID_Continue: a letter, mark or digit of any script, never punctuation (`»`,
+// `…`), a symbol or `¢`. With `start`, whether it may START a name: no digit
+// then, since `$0` and `$١` are captures. The scanners that read a variable's
+// name out of a pattern or a replacement ask it, so `/$é/`, `/@𝐯/` and
+// `s/x/$ч/` read the name the lexer read; their ASCII tests took `$é` for
+// `$` then a literal `é`.
+size_t uniIdentCharAt(const std::string& s, size_t i, bool start) {
+    if (i >= s.size()) return 0;
+    const unsigned char b = (unsigned char)s[i];
+    if (b < 0x80) return ascii::isalpha(b) || b == '_' || (!start && ascii::isdigit(b)) ? 1 : 0;
+    const size_t len = (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 0;
+    if (!len || i + len > s.size()) return 0;
+    uint32_t cp = b & (0xFF >> (len + 1));
+    for (size_t k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3F);
+    if (!uniIdContinue(cp) || (start && uniDigitValue(cp) >= 0)) return 0;
+    return len;
+}
+// Where the name whose first character is at s[i] ends: its characters, and a
+// `-` (and with `apos`, a `'`) that a letter follows, the one rule of
+// rakuIdentJoins (`$comment-char`, `$é-ü`; never `$x-1`).
+// Does this name read as a TYPE's where the parser has only its spelling to go
+// on (`Foo:D`, `Foo[Int]`, `Foo .new`)? An upper-case first letter, or one
+// beyond ASCII that is not a lower-case letter: `Éx`, `万`, `갂`, `𝐀` read as
+// types, `ч` and `é` as routines, as `X` and `x` do. `ascii::isupper` alone
+// read `Éx:D` as the call `Éx(:D)`. (Declared where Parser.cpp calls it.)
+bool uniTypeLikeName(const std::string& n) {
+    if (n.empty()) return false;
+    const unsigned char b = (unsigned char)n[0];
+    if (b < 0x80) return ascii::isupper(b);
+    const size_t len = (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
+    if (len == 1 || len > n.size()) return false;
+    uint32_t cp = b & (0xFF >> (len + 1));
+    for (size_t k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)n[k] & 0x3F);
+    return uniSimpleUpper(cp) == cp;   // no upper-case mapping: not a lower-case letter
+}
+size_t uniIdentEnd(const std::string& s, size_t i, bool apos) {
+    while (i < s.size()) {
+        if (size_t l = uniIdentCharAt(s, i)) { i += l; continue; }
+        if ((s[i] == '-' || (apos && s[i] == '\'')) && uniIdentCharAt(s, i + 1, true)) { i++; continue; }
+        break;
+    }
+    return i;
+}
 bool uniUnifiedIdeograph(uint32_t cp) { return inRanges(ucd::UIDEO, ucd::UIDEO_N, cp); }
 
 // Strict binary-property test for uniprop(): 1/0 if `prop` is a known binary

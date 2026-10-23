@@ -804,6 +804,10 @@ with its tag, after the release run is green.
   processes outlive it. mutsu's suite starts `rakudo -e` one-liners (one a
   left-recursive grammar that never ends), and two kept a core each busy for
   25 minutes after the run. Kill the file's process group, not just the file.
+  A foreign engine's file can hold the run itself: under Rakudo 2026.09,
+  FatRoast's names-v1 and names-v2 S12-enums/thorough.t ran on past the
+  120 s limit for over ten minutes, and the part waited until it was killed
+  by hand (2026-10-23, twice).
 - [ ] **User candidates beside a core ROUTINE (decision needed)**:
   `multi sub abs(Int $x) { … }; abs(-3)` is X::Multi::Ambiguous in Rakudo
   2026.09 — the user candidate ties the core `(Int:D \a)` (the message also

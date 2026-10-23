@@ -3105,6 +3105,25 @@ bool strHasNoUpper(const std::string& s) {
     return true;
 }
 uint32_t toUpperCp(uint32_t c) { return uniSimpleUpper(c); }
+// `.samecase($pat)`: each GRAPHEME of `s` takes the case of the pattern's
+// grapheme in its position, the last one repeating past the pattern's end. An
+// upper-case pattern grapheme upper-cases, a lower-case one lower-cases, and one
+// with no case (a space, a digit, `中`) leaves the grapheme as it is. Counted in
+// codepoints, a combining mark took a position of its own, so `"e̲x"` over
+// "Ab" came out "E̲x"; `s:ii///` asks it too.
+std::string sameCase(const std::string& s, const std::string& pat) {
+    if (pat.empty()) return s;
+    const auto src = utf8cp(s), pc = utf8cp(pat);
+    GraphemeMap sg(src, s), pg(pc, pat);
+    std::string r;
+    for (size_t g = 0; g < sg.count(); g++) {
+        const uint32_t mask = pc[pg.cpAt(std::min(g, pg.count() - 1))];
+        const int how = toLowerCp(mask) != mask ? 1 : toUpperCp(mask) != mask ? 2 : 0;
+        for (size_t k = sg.cpAt(g), e = sg.cpAt(g + 1); k < e; k++)
+            r += cpToUtf8(how == 1 ? toUpperCp(src[k]) : how == 2 ? toLowerCp(src[k]) : src[k]);
+    }
+    return r;
+}
 // Grapheme-level case change (NFG-aware), driven by the full Unicode case
 // tables. `kind`: 0=lc, 1=uc, 3=fc (fold). `tcMode`: 0 = map every grapheme
 // with `kind`; 1 = titlecase the first grapheme only (rest unchanged); 2 =

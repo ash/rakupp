@@ -18680,6 +18680,14 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
 
     // ---- Complex arithmetic ----
     if (l.t == VT::Complex || r.t == VT::Complex) {
+        // A Complex against a plain Str orders by the strings, as a Real does
+        // (only the catch-all `cmp(\a, \b)` takes both, and it compares them
+        // Stringy): `"abc" cmp <0+0i>` is More, not the Same of 0+0i against
+        // "abc" numified
+        const bool ordering = opEq(op, "cmp") || opEq(op, "before") || opEq(op, "after");
+        auto plainStr = [](const Value& v) { return v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty(); };
+        if (ordering && (plainStr(l) || plainStr(r)))
+            return applyArith(op, Value::str(l.toStr()), Value::str(r.toStr()));
         auto toC = [](const Value& v) {
             return v.t == VT::Complex ? std::complex<double>(v.n, v.im())
                                       : std::complex<double>(v.toNum(), 0.0);
@@ -18717,14 +18725,15 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             double scale = std::max(std::abs(a), std::abs(b));
             return Value::boolean(std::abs(a - b) <= 1e-15 * scale);
         }
-        if (opEq(op, "cmp")) { // by real part, then imaginary part; NaN sorts as More
+        if (ordering) { // by real part, then imaginary part; NaN sorts as More
             auto ncmp = [](double x, double y) {
                 if (std::isnan(x)) return std::isnan(y) ? 0 : 1;
                 if (std::isnan(y)) return -1;
                 return x < y ? -1 : x > y ? 1 : 0;
             };
             int c = ncmp(a.real(), b.real()); if (!c) c = ncmp(a.imag(), b.imag());
-            return Value::orderVal(c);
+            // `before` and `after` are `cmp`'s Less and More: `1 before <1+0i>` is False
+            return opEq(op, "cmp") ? Value::orderVal(c) : Value::boolean(opEq(op, "before") ? c < 0 : c > 0);
         }
         if (opEq(op, "<") || opEq(op, "<=") || opEq(op, ">") || opEq(op, ">=") || opEq(op, "<=>")) {
             // arithmetic comparison coerces to Real: ok when |im| is within

@@ -125,8 +125,7 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
     // `/$!a/`, `/<$!a>/`, `/{ $!a }/` — a regex is a method on its cursor,
     // not on the class that wrote it, so an attribute is not reachable
     auto attrInRegex = [&](size_t at) {
-        size_t e = at + 2;
-        while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
+        size_t e = uniIdentEnd(pat, at + 2, false);
         std::string sym = pat.substr(at, e - at);
         throw ParseError("Attribute " + sym + " not available inside of a regex, since regexes are "
                          "methods on Cursor.\nConsider storing the attribute in a lexical, and using that in the regex.",
@@ -433,7 +432,7 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
                                       std::strchr(" \t\n)]|&/", pat[i + 1]) ||
                                       // `$+` is the anchor quantified (`$*FOO`/`$?FILE` are variables)
                                       (std::strchr("+*?", pat[i + 1]) &&
-                                       (i + 2 >= pat.size() || !(ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')))))) {
+                                       !uniIdentCharAt(pat, i + 2, true))))) {
             if (i + 1 < pat.size() && pat[i + 1] == c) i++;   // `^^` / `$$`
             atomStart = groupStart = afterBranch = false;
             lastKind = LkNonQuant;
@@ -451,13 +450,12 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
         }
         if (!(c == '*' && i + 1 < pat.size() && pat[i + 1] == '*')) lastKind = LkAtom;
         atomStart = groupStart = afterBranch = false;
-        if (c == '$' && i + 2 < pat.size() && pat[i + 1] == '!' && ascii::isalpha((unsigned char)pat[i + 2]))
+        if (c == '$' && i + 2 < pat.size() && pat[i + 1] == '!' && uniIdentCharAt(pat, i + 2, true))
             attrInRegex(i);
         // `/%h/` — a hash variable in a pattern is reserved. Not the alias
         // `%h=( … )`, and not a `%` separator after a quantifier.
-        if (c == '%' && i + 1 < pat.size() && ascii::isalpha((unsigned char)pat[i + 1])) {
-            size_t j = i + 1;
-            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' || pat[j] == '-')) j++;
+        if (c == '%' && i + 1 < pat.size() && uniIdentCharAt(pat, i + 1, true)) {
+            size_t j = uniIdentEnd(pat, i + 1, false);
             while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
             size_t b = i;
             while (b > 0 && (pat[b - 1] == ' ' || pat[b - 1] == '\t' || pat[b - 1] == '\n')) b--;

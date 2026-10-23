@@ -679,15 +679,16 @@ bool importsMaySupplyName(const std::set<std::string>& imports, const std::vecto
 }
 
 std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::string& src,
-                                              const std::vector<std::string>& searchPath) {
+                                              const std::vector<std::string>& searchPath, bool scoped) {
     Checker C;
     C.pushScope();   // unit scope
     C.walkStmts(prog.stmts);
     C.popScope();
     if (C.standDown || C.out.empty()) return {};
-    C.out.erase(std::remove_if(C.out.begin(), C.out.end(),
-                               [&](const UndeclaredVar& c) { return !c.heredoc && textDeclares(src, c.name); }),
-                C.out.end());
+    if (!scoped)
+        C.out.erase(std::remove_if(C.out.begin(), C.out.end(),
+                                   [&](const UndeclaredVar& c) { return !c.heredoc && textDeclares(src, c.name); }),
+                    C.out.end());
     if (C.out.empty()) return {};
     if (!C.imports.empty()) {
         std::vector<std::string> sp(C.extraLibs.begin(), C.extraLibs.end());

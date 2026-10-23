@@ -43,8 +43,12 @@ struct UndeclaredVar {
 // a declaration somewhere. That is what makes the pass safe against the binders
 // rakupp's parser does not yet keep (see textDeclares in DeclCheck.cpp), at the
 // cost of not reporting a name that IS declared, but in another scope.
+// `scoped` leaves that pardon out, for a unit already refused for something
+// else: a name declared in another scope only is then reported too, so the
+// refusal can name the variable, as Rakudo's does, rather than the routine.
 std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog, const std::string& src,
-                                              const std::vector<std::string>& searchPath);
+                                              const std::vector<std::string>& searchPath,
+                                              bool scoped = false);
 
 // The names a lexically lax region auto-vivifies — what `no strict` MAKES legal
 // rather than what it hides. Same walk as findUndeclaredVars, opposite face of

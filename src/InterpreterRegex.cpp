@@ -401,11 +401,8 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
             }
         }
         // `@$aref` — the array a scalar holds, interpolated like `@arr`
-        if (pat[i] == '@' && i + 2 < pat.size() && pat[i + 1] == '$' &&
-            (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) {
-            size_t j = i + 2;
-            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
-                   (pat[j] == '-' && j + 1 < pat.size() && ascii::isalpha((unsigned char)pat[j + 1])))) j++;
+        if (pat[i] == '@' && i + 2 < pat.size() && pat[i + 1] == '$' && uniIdentCharAt(pat, i + 2, true)) {
+            size_t j = uniIdentEnd(pat, i + 2, false);
             Value* v = tctx().cur->find("$" + pat.substr(i + 2, j - i - 2));
             if (v && v->t == VT::Array && v->arr() && !v->arr()->empty()) {
                 std::vector<std::string> els;
@@ -421,11 +418,8 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 continue;
             }
         }
-        if (pat[i] == '@' && i + 1 < pat.size() &&
-            (ascii::isalpha((unsigned char)pat[i + 1]) || pat[i + 1] == '_')) {
-            size_t j = i + 1;
-            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
-                   (pat[j] == '-' && j + 1 < pat.size() && ascii::isalpha((unsigned char)pat[j + 1])))) j++;
+        if (pat[i] == '@' && i + 1 < pat.size() && uniIdentCharAt(pat, i + 1, true)) {
+            size_t j = uniIdentEnd(pat, i + 1, false);   // `@𝐯` too
             Value* v = tctx().cur->find("@" + pat.substr(i + 1, j - i - 1));
             if (v && v->t == VT::Array && v->arr() && !v->arr()->empty()) {
                 // `<@arr>` compiles each element AS A REGEX; a bare `@arr` is an
@@ -956,17 +950,15 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
             // under the bare name, so the twigil is skipped for the lookup.
             // IO::Glob builds its alternation regexes as `@alts.map({ rx/$base$^alt/ })`.
             size_t tw = (pat[i] == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':' || pat[i + 1] == '*') &&
-                         (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+                         uniIdentCharAt(pat, i + 2, true)) ? 1 : 0;
             // …and `$*name` is a DYNAMIC variable, looked up by its full name
             const bool dynTw = tw && pat[i + 1] == '*';
             if (pat[i] == '$' && i + 1 + tw < pat.size() && !(i > 0 && pat[i - 1] == '@') &&   // `@$aref` is the array pass's
-                (ascii::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
-                size_t j = i + 1 + tw;
+                uniIdentCharAt(pat, i + 1 + tw, true)) {
                 // kebab-case names too: `-`/`'` + letter continues the identifier
-                // (`/^ \\h* $comment-char /` — Text::Utils), as rxInterpArrays does
-                while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
-                       ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
-                        ascii::isalpha((unsigned char)pat[j + 1])))) j++;
+                // (`/^ \\h* $comment-char /` — Text::Utils), as rxInterpArrays does;
+                // and a name beyond ASCII is one name (`/$é/`)
+                size_t j = uniIdentEnd(pat, i + 1 + tw);
                 Value* v = dynTw ? findDynamicLenient("$*" + pat.substr(i + 2, j - i - 2))
                                  : tctx().cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
                 // a `$*name` nothing declares — and the pattern does not declare
@@ -1102,14 +1094,11 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
         if (c == '\'' && !braces) { inSq = !inSq; out += c; continue; }
         if (inSq || braces) { out += c; continue; }
         size_t tw = (c == '$' && i + 2 < pat.size() && (pat[i + 1] == '^' || pat[i + 1] == ':') &&
-                     (ascii::isalpha((unsigned char)pat[i + 2]) || pat[i + 2] == '_')) ? 1 : 0;
+                     uniIdentCharAt(pat, i + 2, true)) ? 1 : 0;
         if (c == '$' && i + 1 + tw < pat.size() && !(i > 0 && pat[i - 1] == '@') &&
-            (ascii::isalpha((unsigned char)pat[i + 1 + tw]) || pat[i + 1 + tw] == '_')) {
-            size_t j = i + 1 + tw;
+            uniIdentCharAt(pat, i + 1 + tw, true)) {
             // kebab-case names continue through `-`/`'` + letter (same rule as above)
-            while (j < pat.size() && (ascii::isalnum((unsigned char)pat[j]) || pat[j] == '_' ||
-                   ((pat[j] == '-' || pat[j] == '\'') && j + 1 < pat.size() &&
-                    ascii::isalpha((unsigned char)pat[j + 1])))) j++;
+            size_t j = uniIdentEnd(pat, i + 1 + tw);
             // `<$p>` is the assertion form: it already compiles the value as a
             // regex at match time, so leave it alone.
             bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
@@ -1436,16 +1425,11 @@ static std::string applyCaseMarkWords(const std::string& orig, const std::string
 // match the LAST character decides. A source character with no case (a space,
 // a digit) leaves the replacement character as it is — Rakudo's rule, so
 // `"a b"` over `FOO` is `fOo`.
+// It is `.samecase` with the match as the pattern, grapheme by grapheme in any
+// script; a byte-wise ASCII pass left `s:ii/\w+/xyz/` over "e̲E̲" all lower.
+std::string sameCase(const std::string& s, const std::string& pat);   // Builtins.cpp
 static std::string applySamecase(const std::string& orig, const std::string& repl) {
-    if (orig.empty()) return repl;
-    std::string r = repl;
-    for (size_t i = 0; i < r.size(); i++) {
-        unsigned char oc = orig[i < orig.size() ? i : orig.size() - 1];
-        if (!ascii::isalpha((unsigned char)r[i])) continue;
-        if (ascii::isupper(oc)) r[i] = ascii::toupper((unsigned char)r[i]);
-        else if (ascii::islower(oc)) r[i] = ascii::tolower((unsigned char)r[i]);
-    }
-    return r;
+    return sameCase(repl, orig);
 }
 // …and under `:sigspace` it works WORD by word: the n-th word of the
 // replacement takes its case from the n-th word of the match (the last one
@@ -1827,11 +1811,10 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             if (realPat[i] == '$' && i + 1 < realPat.size()) {
                 size_t j = i + 1;
                 if (realPat[j] == '^' && j + 1 < realPat.size()) j++; // $^a is visible as $a
-                if (j < realPat.size() && (ascii::isalpha((unsigned char)realPat[j]) || realPat[j] == '_')) {
-                    std::string nm;
-                    while (j < realPat.size() && (ascii::isalnum((unsigned char)realPat[j]) || realPat[j] == '_' ||
-                           ((realPat[j] == '-' || realPat[j] == '\'') && j + 1 < realPat.size() &&
-                            ascii::isalpha((unsigned char)realPat[j + 1])))) nm += realPat[j++];
+                if (uniIdentCharAt(realPat, j, true)) {
+                    const size_t e = uniIdentEnd(realPat, j);
+                    std::string nm = realPat.substr(j, e - j);
+                    j = e;
                     if (Value* v = tctx().cur->find("$" + nm)) {
                         // A variable holding a REGEX is a sub-pattern, not text to
                         // quote: `s/^($token) \: //` (HTTP::Tinyish) matched the
@@ -2204,8 +2187,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 }
                 r += mv.toStr(); i = i + 1; continue;   // bare `$/`
             }
-            if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && (ascii::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
-                size_t j = i + 2; std::string nm; while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_')) nm += s[j++];
+            if (s[i] == '$' && i + 2 < s.size() && s[i + 1] == '^' && uniIdentCharAt(s, i + 2, true)) {
+                size_t j = uniIdentEnd(s, i + 2, false); std::string nm = s.substr(i + 2, j - i - 2);
                 if (Value* v = tctx().cur->find("$" + nm)) r += v->toStr(); // $^a placeholder (also visible as $a)
                 i = j - 1; continue;
             }
@@ -2213,28 +2196,23 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             // Air's Tabs fills its CSS with `s:g/'%ALIGN-MENU%'/$.align-menu/`,
             // which came out as the literal text `$.align-menu`
             if (s[i] == '$' && i + 2 < s.size() && (s[i + 1] == '.' || s[i + 1] == '!') &&
-                (ascii::isalpha((unsigned char)s[i + 2]) || s[i + 2] == '_')) {
-                size_t j = i + 2;
-                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
-                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
-                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) j++;
+                uniIdentCharAt(s, i + 2, true)) {
+                size_t j = uniIdentEnd(s, i + 2);
                 size_t k = subscriptsEnd(j);
                 size_t chainEnd = methodChain(i, k);
                 size_t e = chainEnd != i ? chainEnd : k;
                 r += evalString(s.substr(i, e - i)).toStr();
                 i = e - 1; continue;
             }
-            if (s[i] == '$' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1; std::string nm;
-                // A hyphen or apostrophe CONTINUES an identifier when a letter or
-                // digit follows it, exactly as it does everywhere else in Raku.
+            if (s[i] == '$' && i + 1 < s.size() && uniIdentCharAt(s, i + 1, true)) {
+                // A hyphen or apostrophe CONTINUES an identifier when a letter
+                // follows it, exactly as it does everywhere else in Raku.
                 // Stopping at the hyphen made `s/$sep\n/$commit-sep/` interpolate
                 // an undeclared `$commit` — the empty string — and leave `-sep` as
                 // literal text, so Git::Log's record separator became the four
                 // characters `-sep` and two commits came back glued into one.
-                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
-                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
-                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) nm += s[j++];
+                // A name beyond ASCII is one name too (`s/x/$ч/`).
+                size_t j = uniIdentEnd(s, i + 1); std::string nm = s.substr(i + 1, j - i - 1);
                 // …with its postfix subscripts, as in any interpolating string:
                 // `s/.*/$t[1]/`, `$h<key>`, `$h{$k}`, chained, then `.method()`
                 size_t k = subscriptsEnd(j);
@@ -2249,11 +2227,8 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 i = j - 1; continue; // interpolate a scalar variable in the replacement
             }
             // `%h<key>` / `%h{$k}` — a hash interpolates only when subscripted
-            if (s[i] == '%' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1;
-                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
-                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
-                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) j++;
+            if (s[i] == '%' && i + 1 < s.size() && uniIdentCharAt(s, i + 1, true)) {
+                size_t j = uniIdentEnd(s, i + 1);
                 size_t k = subscriptsEnd(j);
                 if (k > j) {
                     try { r += evalString(s.substr(i, k - i)).toStr(); i = k - 1; continue; }
@@ -2261,17 +2236,9 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                     catch (...) { }
                 }
             }
-            if (s[i] == '@' && i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '_')) {
-                size_t j = i + 1; std::string nm;
-                // A hyphen or apostrophe CONTINUES an identifier when a letter or
-                // digit follows it, exactly as it does everywhere else in Raku.
-                // Stopping at the hyphen made `s/$sep\n/$commit-sep/` interpolate
-                // an undeclared `$commit` — the empty string — and leave `-sep` as
-                // literal text, so Git::Log's record separator became the four
-                // characters `-sep` and two commits came back glued into one.
-                while (j < s.size() && (ascii::isalnum((unsigned char)s[j]) || s[j] == '_' ||
-                       ((s[j] == '-' || s[j] == '\'') && j + 1 < s.size() &&
-                        (ascii::isalnum((unsigned char)s[j + 1]) || s[j + 1] == '_')))) nm += s[j++];
+            if (s[i] == '@' && i + 1 < s.size() && uniIdentCharAt(s, i + 1, true)) {
+                // the same name rule as `$name` above
+                size_t j = uniIdentEnd(s, i + 1); std::string nm = s.substr(i + 1, j - i - 1);
                 // `@arr[expr]` — a non-empty subscript indexes one element (captures
                 // are already bound, so the subscript may use $0/$<name>).
                 if (j < s.size() && s[j] == '[') {

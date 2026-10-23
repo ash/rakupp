@@ -1707,12 +1707,13 @@ Regex::NodePtr Regex::parseAtom() {
     // `%bases=( … )+`, `@a=( … )+`, `$x=( … )` — the capture is bound to a
     // VARIABLE of the enclosing scope. Parsed as the `%<name>=` form under a
     // name no `$/` key can have; the match builder writes the variable.
-    if ((c == '$' || c == '@' || c == '%') && isalpha((unsigned char)peek(1))) {
+    if ((c == '$' || c == '@' || c == '%') && uniIdentCharAt(pat_, pos_ + 1, true)) {
         size_t q = pos_ + 1;
-        while (q < pat_.size() && (isalnum((unsigned char)pat_[q]) || pat_[q] == '_' ||
-               (pat_[q] == '-' && q + 1 < pat_.size() && isalpha((unsigned char)pat_[q + 1])) ||
-               (pat_[q] == ':' && q + 2 < pat_.size() && pat_[q + 1] == ':' && isalpha((unsigned char)pat_[q + 2]))))
-            q += (pat_[q] == ':') ? 2 : 1;
+        while (q < pat_.size()) {
+            if (pat_[q] == ':' && q + 2 < pat_.size() && pat_[q + 1] == ':' && uniIdentCharAt(pat_, q + 2, true)) q += 2;
+            else if (size_t e = uniIdentEnd(pat_, q, false); e > q) q = e;
+            else break;
+        }
         size_t e = q;
         while (e < pat_.size() && (pat_[e] == ' ' || pat_[e] == '\t')) e++;
         if (e + 1 < pat_.size() && pat_[e] == '=' && pat_[e + 1] != '=') {
@@ -2631,7 +2632,7 @@ Regex::NodePtr Regex::parseAtom() {
                 vm->icase = curIcase_; vm->imark = curImark_;   // `:i "{NAME}"` folds like the text around it
                 seq->kids.push_back(std::move(vm));
             } else if (q == '"' && peek() == '$' &&
-                       (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) {
+                       (ascii::isdigit((unsigned char)peek(1)) || uniIdentCharAt(pat_, pos_ + 1, true))) {
                 // "$0" / "$var" inside a double-quoted regex literal matches the
                 // value at match time (in-flight capture or scope variable)
                 pos_++;
@@ -2640,6 +2641,8 @@ Regex::NodePtr Regex::parseAtom() {
                     char p = peek();
                     if (ascii::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
                     else if (p == '-' && (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
+                    else if (size_t L = (unsigned char)p >= 0x80 && !ascii::isdigit((unsigned char)var[1])
+                                            ? uniIdentCharAt(pat_, pos_) : 0) { var.append(pat_, pos_, L); pos_ += L; }
                     else break;
                 }
                 flush();
@@ -2745,11 +2748,19 @@ Regex::NodePtr Regex::parseAtom() {
         std::string var = "$";
         // `$*name` — a DYNAMIC variable, never the end anchor quantified
         // (Template::Mustache's `/$*LEFT '>' … $*RIGHT/`; a grammar's `:my $*Q`)
-        if (peek() == '*' && (ascii::isalpha((unsigned char)peek(1)) || peek(1) == '_')) { var += '*'; pos_++; }
+        if (peek() == '*' && uniIdentCharAt(pat_, pos_ + 1, true)) { var += '*'; pos_++; }
+        const size_t nameAt = var.size();
         while (!eof()) {
             char p = peek();
             if (ascii::isalnum((unsigned char)p) || p == '_') { var += p; pos_++; }
             else if (p == '-' && (ascii::isalnum((unsigned char)peek(1)) || peek(1) == '_')) { var += p; pos_++; }
+            // a name beyond ASCII (`$é`, `$𝐯x`), which a digit cannot start
+            // (`$١` is a capture, below) and a capture number does not run into
+            // (`(a)$0é` is `$0`, then the letter)
+            else if (size_t L = (unsigned char)p >= 0x80 && !ascii::isdigit((unsigned char)var[nameAt])
+                                    ? uniIdentCharAt(pat_, pos_, var.size() == nameAt) : 0) {
+                var.append(pat_, pos_, L); pos_ += L;
+            }
             else break;
         }
         // `$٠` — a capture number in any script's decimal digits is that number
@@ -3905,9 +3916,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                             }
                         }
                         sb = baseCp(sb);
-                        if (lb != sb && !(n->icase && lb < 0x80 && sb < 0x80 &&
-                                          ascii::tolower((int)lb) == ascii::tolower((int)sb))) return false;
-                        i += (size_t)lcl;
+                        if (lb != sb && !(n->icase && uniSimpleFold(lb) == uniSimpleFold(sb))) return false;
+                        // the literal steps a GRAPHEME too: its own marks are ignored
+                        // as the input's are (`m:m/ w̲x /` matches "wx" and "w̲x")
+                        i = uniClusterEndUtf8(n->lit, i, n->lit.size());
                         ip = (long)uniClusterEndUtf8(st.s, ip, len);
                     }
                     // literal-prefix bookkeeping (LTM tie-break), same as the other Lit exits
