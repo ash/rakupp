@@ -717,8 +717,18 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (neg) num = -num;
         return Value::rat(std::move(num), std::move(fden));
     }
-    // Str.indices($needle, :overlap) — every start position of the substring
-    if (m == "indices" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
+    // Str.indices($needle, :overlap) — every start position of the substring.
+    // A Cool number is its Str, as for `.index`: `422.indices(2)` is (1, 2)
+    // (S32-str/indices.t died there; it had read as passing, as the harness
+    // took a run that printed no plan for a pass)
+    if (m == "indices" && (inv.t == VT::Str || inv.t == VT::Match || inv.t == VT::Int || inv.t == VT::Num ||
+                           inv.t == VT::Rat || inv.t == VT::Bool) && !args.empty()) {
+        // …and a type object is no needle, as for `.index`: `42.indices: Str`
+        // dies (it answered (0 1 2), the type read as "")
+        if (a0().t == VT::Type)
+            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
+                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
+                a0().typeName() + " (" + a0().gist() + ")"};
         std::string s = inv.toStr(), needle = a0().toStr();
         bool overlap = false, icase = false, imark = false;
         for (auto& a : args) if (a.t == VT::Pair) {

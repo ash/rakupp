@@ -6253,6 +6253,7 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
 }
 
 static ExprPtr angleWordNumeric(const std::string& w); // defined below
+bool complexWordPart(const std::string& t, int im, const std::string& word); // Lexer.cpp
 
 // `Foo::<$x>:exists` / `:!exists` asks the package's table for `qual`, not the
 // autovivifying read (O31: the adverb went to the enclosing call). Null: none.
@@ -6625,7 +6626,7 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
         if (end != s && end < s + w.size() - 1 && (*end == '+' || *end == '-')) {
             char* end2 = nullptr;
             double im = cnum::strtod(end, &end2);
-            if (end2 == s + w.size() - 1) {
+            if (end2 == s + w.size() - 1 && complexWordPart({s, size_t(end - s)}, 0, wIn) && complexWordPart({end, size_t(end2 - end)}, 1, wIn)) {
                 auto nl = std::make_unique<NumLit>(re);
                 auto ni = std::make_unique<NumLit>(im); ni->imaginary = true;
                 ni->raw = "<" + w + ">"; // marks the literal; see checkLiteralDeclType
@@ -6633,7 +6634,7 @@ static ExprPtr angleWordNumeric(const std::string& wIn) {
                 b->lhs = std::move(nl); b->rhs = std::move(ni);
                 return b;
             }
-        } else if (end == s + w.size() - 1 && end != s) { // pure imaginary <3i>
+        } else if (end == s + w.size() - 1 && end != s && complexWordPart({s, size_t(end - s)}, 2, wIn)) { // pure imaginary <3i>
             auto ni = std::make_unique<NumLit>(re); ni->imaginary = true;
             return ni;
         }

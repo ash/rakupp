@@ -5547,4 +5547,16 @@ void Lexer::slangEmitToken(std::vector<Token>& out, bool spaced, size_t end, Tok
     out.push_back(t);
 }
 
+// Whether `t`, a part of the word-list Complex `word`, reads as val() reads it
+// (`im`: 0 the real part, 1 the imaginary one, 2 an imaginary one alone).
+// strtod takes any `inf` or `nan`; a part without a digit is a number only as
+// Inf or NaN, an imaginary one only before `\i`, and an imaginary NaN only
+// alone: `<0+NaNi>`, `<1+NaN\i>` and `<inf+1i>` are words, as in Rakudo.
+bool complexWordPart(const std::string& t, int im, const std::string& word) {
+    if (t.find_first_of("0123456789") != std::string::npos) return true;
+    const bool backslashI = word.size() > 2 && word.compare(word.size() - 2, 2, "\\i") == 0;
+    if (t == "NaN") return im == 0 || (im == 2 && backslashI);
+    return (t == "Inf" || t == "+Inf" || t == "-Inf") && (im == 0 || backslashI);
+}
+
 } // namespace rakupp

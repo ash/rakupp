@@ -132,7 +132,35 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
     if (inv.t == VT::Type && m == "new" &&
         (inv.s == "IntStr" || inv.s == "NumStr" || inv.s == "RatStr" || inv.s == "ComplexStr")) {
         // IntStr.new(42, "42") — the number AND its string face
+        // It binds `(Int:D $i, Str:D $s)`, and the others `Rat:D $r`, `Num:D
+        // $n`, `Complex:D $c`: `IntStr.new("x", "y")` dies, where it made an
+        // IntStr of a Str (found 2026-10-23: FatRoast's fattened S32-str/val.t
+        // reached it, and Rakudo died where Raku++ ran on)
+        if (args.size() >= 2) {
+            const bool isInt = inv.s == "IntStr", isRat = inv.s == "RatStr", isNum = inv.s == "NumStr";
+            const std::string type = isInt ? "Int" : isRat ? "Rat" : isNum ? "Num" : "Complex";
+            const std::string pname = isInt ? "$i" : isRat ? "$r" : isNum ? "$n" : "$c";
+            auto bindTo = [&](const Value& v, const std::string& want, const std::string& param, bool ok) {
+                if (ok) return;
+                if (v.t == VT::Type && std::string(v.s.c_str()) == want)
+                    throwTypedV("X::Parameter::InvalidConcreteness",
+                        {{"expected", Value::str(want)}, {"got", v}, {"routine", Value::str("new")},
+                         {"param", Value::str(param)}, {"should-be-concrete", Value::boolean(true)},
+                         {"param-is-invocant", Value::boolean(false)}},
+                        "Parameter '" + param + "' of routine 'new' must be an object instance of type '" + want +
+                        "', not a type object of type '" + want + "'. Did you forget a '.new'?");
+                throwTypedV("X::TypeCheck::Binding::Parameter",
+                    {{"got", v}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(param)}},
+                    "Type check failed in binding to parameter '" + param + "'; expected " + want +
+                    " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
+            };
+            const Value& a = args[0];
+            bindTo(a, type, pname, isInt ? a.t == VT::Int || a.t == VT::Bool : isRat ? a.t == VT::Rat && !a.fatRat()
+                                 : isNum ? a.t == VT::Num : a.t == VT::Complex);
+            bindTo(args[1], "Str", "$s", args[1].t == VT::Str || args[1].isAllomorph());
+        }
         Value n = args.empty() ? Value::integer(0) : args[0];
+        if (inv.s == "IntStr" && n.t == VT::Bool) n = Value::integer(n.b ? 1 : 0);   // a Bool binds as the Int it is
         std::string face = args.size() > 1 ? args[1].toStr() : n.toStr();
         n.hashKind = inv.s;
         n.s = face;
