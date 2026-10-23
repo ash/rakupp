@@ -40,7 +40,8 @@ spans 'qw«a b»', '<span class="s">qw«a b»</span>', 'qw«a b»';
 # …and the ASCII forms are where they were
 spans 'q:to/END/', '<span class="s">q:to/END/</span>', 'q:to/END/';
 spans 'q{a{b}c}',  '<span class="s">q{a{b}c}</span>',  'q{} still nests';
-spans 'q(x)',      '<span class="s">q(x)</span>',      'q(x)';
+spans 'q (x)',     '<span class="s">q (x)</span>',     'q (x)';
+spans 'q(x)',      '<span class="n">q</span>(',         'q(x) is a call, as in Rakudo';
 spans '$x ~~ s/a/b/', '<span class="sr">s/a/b/</span>', 's/// keeps both halves';
 spans '$x ~~ s[a][b]', '<span class="sr">s[a][b]</span>', 's[][] keeps both halves';
 
