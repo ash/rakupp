@@ -6241,7 +6241,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // is False, as is "".contains(/$/, 0))
             if (atPos && from >= (long)subj.size()) return Value::boolean(false);
             CallRegex rx(pat, nullptr); const Regex& re = *rx; RxMatch mm;
-            return Value::boolean(re.ok() && from <= (long)subj.size() && re.search(subj, from, mm));
+            // a `<name>` that calls a `my token` is resolved as .subst resolves
+            // it (substSelect); unresolved it matched as nothing, and
+            // `'zzz'.contains(/<two>/)` was True in both engines
+            std::set<std::string> lexNames; SubResolver resolver; const GrammarHooks* useHooks = nullptr;
+            if (!namedRegex_.empty() && pat.find('<') != std::string::npos)
+                lexSubResolver(resolver, lexNames, useHooks);
+            const LexRegexLookup lexLookup = lexRegexLookup();
+            LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
+            return Value::boolean(re.ok() && from <= (long)subj.size() &&
+                                  re.search(subj, from, mm, resolver, lexNames.empty() ? nullptr : &lexNames));
         }
         if (m == "subst") {
             long nsub = 0;
@@ -6300,7 +6309,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 // …and so does a call to a regex declared in SCOPE (`my regex nm
                 // {…}; $s.comb(/<nm>+/)`): only the `~~` machinery resolves it,
-                // the standalone compile below matched it as nothing at all
+                // the standalone compile below matched it as nothing at all.
+                // Compiled code declares one into namedRegex_ alone
+                // (RT.registerNamedRegex) and binds no `&nm`, so that table is
+                // asked too: `'abq aq'.comb(/<?after <two>> q/)` with `my token
+                // two { 'ab' | 'xyz' }` answered both q's under --exe
                 for (size_t k = 0; k + 1 < pat.size() && !bareCode; k++) {
                     if (pat[k] == '\\') { k++; continue; }
                     if (pat[k] != '<') continue;
@@ -6308,8 +6321,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (b < pat.size() && (pat[b] == '&' || pat[b] == '.')) b++;
                     size_t e = b;
                     while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
-                    if (e == b || !tctx().cur) continue;
-                    Value* rv = tctx().cur->find("&" + pat.substr(b, e - b));
+                    if (e == b) continue;
+                    const std::string nm = pat.substr(b, e - b);
+                    if (namedRegex_.count(nm)) { bareCode = true; continue; }
+                    if (!tctx().cur) continue;
+                    Value* rv = tctx().cur->find("&" + nm);
                     if (rv && rv->t == VT::Code && rv->code() && rv->code()->ci().isRegexRoutine) bareCode = true;
                 }
                 if (bareCode) {
@@ -6371,7 +6387,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // String::CamelCase — which splits on a pair of zero-width lookarounds
             // — turned "YearBBS" into "Year BS".
             long scan = pos;
-            while (re.ok() && scan <= (long)subj.size() && re.search(subj, scan, mm)) {
+            // …and a `<name>` that calls a `my token` is resolved as .subst
+            // resolves it: unresolved it matched as nothing, a separator at
+            // every character (`'zz'.split(/<two>/)` was "", "z", "z", "")
+            std::set<std::string> lexNames; SubResolver resolver; const GrammarHooks* useHooks = nullptr;
+            if (!namedRegex_.empty() && pat.find('<') != std::string::npos)
+                lexSubResolver(resolver, lexNames, useHooks);
+            const LexRegexLookup lexLookup = lexRegexLookup();
+            LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
+            while (re.ok() && scan <= (long)subj.size() &&
+                   re.search(subj, scan, mm, resolver, lexNames.empty() ? nullptr : &lexNames)) {
                 if (haveLimit && pieces >= limit - 1) break;
                 emit(subj.substr(pos, mm.from - pos));
                 if (want) {
@@ -6966,13 +6991,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         struct Sep { size_t at, len, which; };
         std::vector<Sep> seps;
         size_t pos = 0;
+        // a regex delimiter's `<name>` calling a `my token` resolves as in .subst
+        std::set<std::string> lexNames; SubResolver resolver; const GrammarHooks* useHooks = nullptr;
+        if (!namedRegex_.empty())
+            for (const Delim& d : delims)
+                if (d.isRx && d.str.find('<') != std::string::npos) { lexSubResolver(resolver, lexNames, useHooks); break; }
+        const LexRegexLookup lexLookup = lexRegexLookup();
+        LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
         while (pos <= s.size()) {
             size_t bestStart = std::string::npos, bestLen = 0, bestWhich = 0; // earliest, then longest match
             for (size_t di = 0; di < delims.size(); di++) {
                 const Delim& d = delims[di];
                 if (d.isRx) {
                     CallRegex rx(d.str, nullptr); const Regex& re = *rx; RxMatch mm;
-                    if (re.ok() && re.search(s, (long)pos, mm) && mm.to > mm.from) {
+                    if (re.ok() && re.search(s, (long)pos, mm, resolver, lexNames.empty() ? nullptr : &lexNames) &&
+                        mm.to > mm.from) {
                         size_t st = mm.from, ln = mm.to - mm.from;
                         if (st < bestStart || (st == bestStart && ln > bestLen)) { bestStart = st; bestLen = ln; bestWhich = di; }
                     }

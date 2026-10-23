@@ -514,7 +514,11 @@ The same items grouped by theme, with a complexity estimate for each:
   - `--cnp`: typed-subtree-native-and-rat-leaves.raku's 27, "a FatRat leaf
     keeps the general path", fails.
   - Both gates' other difference, lookbehind-lexical-token-window.raku, is a
-    timing line the program prints.
+    timing line the program prints. Behind it both compiled builds failed
+    one of its checks alike, which a gate comparing them cannot see: .comb
+    did not resolve a `my token` compiled code declares (fixed 2026-10-23;
+    t/regression/exe-lexical-token-calls.raku holds both builds and the
+    interpreter to one set of answers).
 - [ ] **`--exe` / AOT findings** (t/aot):
   - `&?ROUTINE.name` is empty and `callframe(0).line` is 0.
   - `$Mod::var` of a unit module fails.
