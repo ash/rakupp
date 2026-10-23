@@ -171,10 +171,10 @@ The same items grouped by theme, with a complexity estimate for each:
   - [UNBOX-PLAN.md](UNBOX-PLAN.md): P3–P5, partly overtaken by `--cnp`.
 - [ ] **Compiled float code at C's speed**: [NUM-UNBOX-PLAN.md](NUM-UNBOX-PLAN.md).
   Where `-O` leaves the box it already matches C, and elsewhere it is 6–190×
-  slower. P0 is a wrong answer and comes first: the F64 loop lane answers
-  `Inf` for a zero divisor, where both engines and Rakudo fail. Then come a
-  refusal census, Num twins of routines, native arrays under `--exe`, element
-  lanes, and small arrays that never leave their routine.
+  slower. P0, a wrong answer, is done: the F64 loop lane answered `Inf` for a
+  zero divisor, where both engines and Rakudo fail. Next come a refusal
+  census, Num twins of routines, native arrays under `--exe`, element lanes,
+  and small arrays that never leave their routine.
 - [ ] **`--exe` native module bodies**: the remaining cost is method dispatch
   (the `RT.methodCall` ladder).
 - [ ] **Built-in methods in interpreted loops**: each walked methodCall's

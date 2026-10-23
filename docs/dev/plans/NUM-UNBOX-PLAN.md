@@ -147,16 +147,46 @@ Two reasons the gates did not see it:
 - **`t/exe/fuzz.raku`'s operator matrix has `0e0` only as a truth value,**
   never as a divisor.
 
-The fix:
+**Done, 2026-10-23.** The fix turned up two more defects in how the lane
+leaves:
 
-- The lane's F64 `/` bails when the divisor is `0.0`, `-0.0` included. The
-  bail and the snapshot restore already exist for I64 overflow.
-- The operator matrix gains `0e0`, `-0e0` and `0` as right operands.
-- A regression file pins the shapes with Rakudo's answers.
+- **The divide.** The lane's F64 `/`, binary and compound, bails when the
+  divisor is `0.0` (`-0.0` and an Int 0 included). `/=` is refused by the
+  type pass today, so its arm is a guard for the day it is not.
+- **A bail with nowhere to land.** The entry snapshot and the landing pad
+  were emitted only for a lane holding an I64 slot, on the reasoning that
+  only integer overflow bails. A Num `**` that underflows bailed too, and so
+  does the fixed `/`. In a lane of Num slots alone, a bail jumped to the
+  label, fell through to the commit, and the loop counted as finished with
+  the values it held at the bail:
+  - `$t = $x ** ($k + 1e0)` with `$x = 1e-200` answered `Num 1e-200`, where
+    Rakudo gives an `X::Numeric::Underflow` Failure. This was wrong before
+    this work.
+  - The first version of the fixed `/` answered the quotient before the
+    zero.
 
-This comes first because every step below adds code that divides, and each
-one keeps the same rule: an operation whose boxed answer is not a plain
-number bails.
+  Every lane gets the pad now. Where nothing can bail, clang drops it as dead
+  code.
+- **`&&` and `||`.** Their right side's checks had been hoisted ahead of the
+  whole condition. With a check on `/`, `$d != 0e0 && 1e0 / $d > …` would
+  have left the lane on every zero `$d` it steps around, so those checks now
+  run only when Raku evaluates the right side.
+- **Prefix `-`.** Past int64, it bailed with a `break`, which left only the
+  innermost loop: UNBOX-PLAN's bug 1, in the one place it survived. It is a
+  `goto` now.
+
+The gates for it:
+
+- **`t/regression/exe-num-lane-bails.raku`** compiles its program with `-O`
+  and without, and holds each build to Rakudo's 20 answers. The build before
+  this fix fails 11 of them.
+- **`t/exe/fuzz.raku`'s operator matrix** gains a zero divisor (`0`, `0e0`,
+  `-0e0`) under four shapes: stored, accumulated, and guarded by `&&` and by
+  `||`.
+
+Every step below adds code that divides, and each one keeps the same rule: an
+operation whose boxed answer is not a plain number bails, and every bail has
+somewhere to land.
 
 ## P1. Num twins of routines
 
@@ -454,7 +484,7 @@ copy.
 
 | | | |
 |---|---|---|
-| **P0** | the F64 lane's zero divisor: a wrong answer, with and without `-O` | first |
+| **P0** | the F64 lane's zero divisor: a wrong answer, with and without `-O` | **DONE** |
 | **P1.0** | the refusal census, `RAKUPP_LANE_REPORT=1` | before P1 |
 | **P1** | Num and mixed twins of routines | |
 | **P1b** | a lane may call a twin | |

@@ -12,7 +12,9 @@
 # Two matrices, both small and both exhaustive over what the lane admits:
 #
 #   operators   every binary, compound-assignment and unary operator, against
-#               every combination of Int and Num operands
+#               every combination of Int and Num operands; and `/` with a zero
+#               divisor (0, 0e0, -0e0), stored, accumulated and guarded by
+#               `&&` / `||`
 #   shapes      every loop kind (while / until / C-style / for over an
 #               inclusive range / for over an exclusive one) against every body
 #               shape (plain, next, last, both, if-else, elsif, postfix unless,
@@ -89,6 +91,27 @@ unless $onlyShapes {
                 my \$a = %v{$lt}[0]; my \$b = %v{$rt}[1]; my \$i = 0;
                 while \$i < 4 \{ \$a $op \$b; \$i = \$i + 1 }
                 say "\$a";
+                END
+        } }
+    }
+    # A zero divisor (NUM-UNBOX-PLAN P0): the boxed `/` answers a Failure,
+    # and the F64 lane divided and answered Inf. Only stdout is compared and
+    # the interpreted run dies in some of these, so each one catches that and
+    # prints how its loop ended and what `$r` holds. The guarded shapes run
+    # the division only where `&&` / `||` reach it.
+    my %z = I => '0', F => '0e0', N => '-0e0';
+    my @div0 =
+        store => '$r = $a / $b',
+        acc   => '$r = $r + $a / $b',
+        and   => 'if $b != 0e0 && $a / $b > 1e0 { $r = $r + 1e0 }',
+        or    => 'if $b == 0e0 || $a / $b > 1e0 { $r = $r + 1e0 }';
+    for @div0 -> (:key($shape), :value($body)) {
+        for <I F> -> $lt { for <I F N> -> $rt {
+            @progs.push: "div0-$shape-$lt$rt" =>
+                qq:to/END/;
+                my \$a = %v{$lt}[0]; my \$b = %z{$rt}; my \$r = 0e0; my \$i = 0;
+                my \$out = (try \{ while \$i < 4 \{ $body; \$i = \$i + 1 }; 'ran' }) // "died: \{\$!.^name}";
+                say \$out; say \$r.^name; say (try \{ ~(\$r + 0) }) // "died: \{\$!.^name}";
                 END
         } }
     }

@@ -6190,8 +6190,10 @@ struct Codegen {
                     LT t = uNodeType(u->operand.get());
                     if (t == LT::F64) return uCast("(-(" + uExpr(u->operand.get(), LT::F64, pre) + "))", LT::F64, want);
                     std::string a = uExpr(u->operand.get(), LT::I64, pre), tv = gensym("__ut");
+                    // (a goto, as every bail is: a break left only the innermost
+                    // loop, and the ones around it ran on a value already abandoned)
                     pre.push_back("long long " + tv + "; if (rakupp::sub_ovf(0LL, " + a + ", &" + tv + ")) { "
-                                  + uBail_ + " = true; break; }");
+                                  + uBail_ + " = true; goto " + uBailLabel_ + "; }");
                     return uCast(tv, LT::I64, want);
                 }
                 // ++ / -- in expression position: the statement form is handled
@@ -6203,9 +6205,21 @@ struct Codegen {
                 auto* b = static_cast<Binary*>(e);
                 const std::string& op = b->op;
                 if (op == "&&" || op == "||") {
-                    std::string l = uCond(b->lhs.get(), pre), r = uCond(b->rhs.get(), pre);
+                    // The right side's checks (an overflow, a zero divisor) run
+                    // only when Raku evaluates that side: hoisted ahead of the
+                    // whole condition, `$d != 0e0 && 1e0 / $d > 1e0` left the
+                    // lane on every zero `$d` it was written to step around.
+                    std::vector<std::string> rpre;
+                    std::string l = uCond(b->lhs.get(), pre), r = uCond(b->rhs.get(), rpre);
                     if (l.empty() || r.empty()) return "";
-                    return "((" + l + ") " + op + " (" + r + "))";
+                    if (rpre.empty()) return "((" + l + ") " + op + " (" + r + "))";
+                    std::string tv = gensym("__ut");
+                    pre.push_back("bool " + tv + " = (" + l + ");");
+                    pre.push_back(std::string("if (") + (op == "&&" ? "" : "!") + tv + ") {");
+                    for (auto& p : rpre) pre.push_back(p);
+                    pre.push_back(tv + " = (" + r + ");");
+                    pre.push_back("}");
+                    return "(" + tv + ")";
                 }
                 if (uStrOp(op)) {
                     // the Str lane: the interpreter's answers for two plain Strs
@@ -6252,8 +6266,18 @@ struct Codegen {
                     pre.push_back("const long long " + x + " = " + a + ", " + y + " = " + c + ";");
                     return uCast("(" + x + (op == "min" ? " < " : " > ") + y + " ? " + x + " : " + y + ")", LT::I64, want);
                 }
-                if (operandT == LT::F64)   // IEEE 754: no overflow, and x/0 is Inf as Raku's Num is
+                if (operandT == LT::F64) {
+                    // IEEE 754 has no overflow trap, but x/0 is not Inf to Raku:
+                    // rtSlash hands a zero divisor (-0e0 too) to applyArith,
+                    // whose answer is a Failure, so it leaves the lane
+                    if (op == "/") {
+                        std::string y = gensym("__ut");
+                        pre.push_back("const double " + y + " = " + c + "; if (" + y + " == 0.0) { "
+                                    + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                        return uCast("((" + a + ") / " + y + ")", LT::F64, want);
+                    }
                     return uCast("((" + a + ") " + op + " (" + c + "))", LT::F64, want);
+                }
                 if (op == "%") {           // rtMod's int case: floored, and 0 leaves the lane
                     std::string tv = gensym("__ut");
                     pre.push_back("if ((" + c + ") == 0) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
@@ -6533,6 +6557,12 @@ struct Codegen {
             // and is refused in the one place that sees both widths.
             if (operandT == LT::F64 && binop == "%") return false;
             if (operandT == LT::F64) {
+                if (binop == "/") {   // a zero divisor leaves the lane, as the binary `/` does
+                    std::string y = gensym("__ut");
+                    pre.push_back("const double " + y + " = " + r + "; if (" + y + " == 0.0) { "
+                                + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+                    r = y;
+                }
                 rhs = uCast("((" + uCast(lv, t, LT::F64) + ") " + binop + " (" + r + "))", LT::F64, t);
             } else if (binop == "%") {
                 std::string tv = gensym("__ut");
@@ -6682,19 +6712,21 @@ struct Codegen {
         // trade here: an overflow is rare, and the alternative (resuming the
         // boxed loop mid-flight) has to reproduce the exact point a bail
         // happened, which is where this kind of pass gets its wrong answers.
+        // Every lane gets it, not only one holding an I64 slot: a Num `/` with a
+        // zero divisor and a Num `**` that underflows bail too, and a bail with
+        // no landing fell through to the commit — the loop counted as finished,
+        // with the values it held at the bail. Where nothing can bail, the C++
+        // compiler drops the snapshot and the pad as dead code.
         std::vector<std::string> entry;
-        bool canBail = false;
-        for (auto& kv : uType_) if (kv.second == LT::I64) canBail = true;
-        if (canBail)
-            for (auto& n : names) {
-                std::string e = gensym("__ue");
-                entry.push_back(e);
-                // (a Str slot's box is never written before the commit, so
-                // it needs no snapshot to be rewound to — nor is a box the
-                // loop only reads, which may even hold an Int read as a double)
-                if (uType_[n] != LT::STR && U.written.count(n))
-                    line(ind + 1, std::string(uCType(uType_[n])) + e + " = " + uLocal_[n] + ";");
-            }
+        for (auto& n : names) {
+            std::string e = gensym("__ue");
+            entry.push_back(e);
+            // (a Str slot's box is never written before the commit, so
+            // it needs no snapshot to be rewound to — nor is a box the
+            // loop only reads, which may even hold an Int read as a double)
+            if (uType_[n] != LT::STR && U.written.count(n))
+                line(ind + 1, std::string(uCType(uType_[n])) + e + " = " + uLocal_[n] + ";");
+        }
         line(ind + 1, "bool " + uBail_ + " = false; (void)" + uBail_ + ";");
         if (!uStmt(loop, ind + 1)) good = false;
         // The landing pad. A bail can happen inside any depth of nested loop, so
@@ -6703,14 +6735,12 @@ struct Codegen {
         // Jumping forward to a label in the same block, out of inner scopes, is
         // the one use of goto this codebase has, and it is the correct one.
         line(ind + 1, uBailLabel_ + ": ;");
-        if (canBail) {
-            line(ind + 1, "if (" + uBail_ + ") {");
-            for (size_t i = 0; i < names.size(); i++)
-                if (uType_[names[i]] != LT::STR && U.written.count(names[i]))
-                    line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
-            line(ind + 2, "break;");
-            line(ind + 1, "}");
-        }
+        line(ind + 1, "if (" + uBail_ + ") {");
+        for (size_t i = 0; i < names.size(); i++)
+            if (uType_[names[i]] != LT::STR && U.written.count(names[i]))
+                line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
+        line(ind + 2, "break;");
+        line(ind + 1, "}");
         // Only what the loop WRITES is committed: a slot it merely read must not
         // be re-stored, which would be a no-op on a good day and a retyping on a
         // bad one.
