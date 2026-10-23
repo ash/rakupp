@@ -10,7 +10,7 @@ here.*
 
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
-72e0c5fb and 316e5855 (FatRoast).*
+72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a).*
 
 ---
 
@@ -55,6 +55,16 @@ interpreted.
   wraps. Interpreted, the issue-15 float loops 1,024 → 292 and 2,332 → 581
   (untyped 282 and 407), and perf-guard's strscan, which counts in a `my
   int`, 96.4 → 6.0 ms.
+- **`for ^$n -> int $i` and `-> Int $i` run as `-> $i` does** (07775af3;
+  FORTRAN-LESSONS-2026-10-15 item 1a). A typed loop variable bound each
+  iteration through the general binder and reached no kernel; a lone `int`,
+  `int64` or `Int` parameter over an integer Range now takes the counted
+  path, the loop kernels and the `--cnp` site, keeping what the binding
+  gave it (read-only, and a native `int` wraps). Against a87a6b73, best of
+  3: `$s = $s + $i` over 10M, interpreted, 1.211 → 0.018 s with `-> int
+  $i` (untyped 0.017); a hash-increment body no kernel takes, 1M, 0.217 →
+  0.023 s (untyped 0.020); the findings file's `--cnp` dot loop over 10M
+  `num`s 1.860 → 0.144 s (untyped 0.143).
 
 ### Fixed: silent wrong answers
 

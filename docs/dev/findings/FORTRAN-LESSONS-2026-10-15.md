@@ -443,6 +443,9 @@ obstacle instead, in three places:
   of machine integers binds exactly what the counted path mints.
 - **Why it ranks first:** this is the loop a Fortran programmer writes first,
   because it is the `do i = 1, n` spelling.
+- **Done** (07775af3, 2026-10-24), for a lone `int`, `int64` or `Int`
+  parameter over an integer Range: the `--cnp` dot loop 1,860 → 144 ms,
+  the same as `-> $i`. A Range with a BigInt end keeps general binding.
 
 **b. `--exe -O` with `my int` and `my num`: 52 → about 0.6 ns an iteration.**
 

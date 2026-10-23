@@ -2650,6 +2650,13 @@ static inline bool sameBoundValue(const Value& now, const Value& was) {
            now.hashKind == was.hashKind && now.enumName == was.enumName && now.enumType == was.enumType;
 }
 
+// A Range one of whose carried ends is a BigInt, which rFrom/rTo do not hold
+// (they saturate, or keep only the width): it is not walked by those fields.
+static bool rangeCarriesBigInt(const Value& v) {
+    const RangeEnds* re = rangeEnds(v);
+    return re && ((re->from.t == VT::Int && re->from.big()) || (re->to.t == VT::Int && re->to.big()));
+}
+
 // exec's `for` arm, in a frame of its own. A switch's frame is the largest
 // over its arms, and this arm is two-thirds of exec: every statement of
 // every program paid for its locals — over a page, so a stack probe — on
@@ -3341,9 +3348,16 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                            loopPhaserMask(fs->body.get()) == 0;
     // Fast paths for the common single-topic loop: avoid materializing the
     // whole sequence up front (a Range of N ints or a copy of an N-elem array).
+    // `-> int $i` / `-> Int $i` (countedForParam) joins them over a Range of
+    // machine integers only, whose arm below is the one it takes: over
+    // anything else its binding has a type to check, and a BigInt end is not
+    // in the integer fields that arm walks.
+    const Param* countedParam = !fs->params.empty() && listv.t == VT::Range && !listv.rNum() &&
+                                listv.ofType() != "Str" && !rangeCarriesBigInt(listv)
+                              ? countedForParam(fs) : nullptr;
     if (!scalarItem && !fs->destructure && loopVars.size() <= 1 &&
-        fs->params.empty()) { // a sub-signature (`-> $ (:$k)`) needs real binding
-        const std::string var = loopVars.empty() ? "$_" : loopVars[0];
+        (fs->params.empty() || countedParam)) { // a sub-signature (`-> $ (:$k)`) needs real binding
+        const std::string var = countedParam ? countedParam->name : loopVars.empty() ? "$_" : loopVars[0];
         // The integer-Range path below mints its own topic instead of
         // going through asTopic, so it has to apply markTopic itself —
         // but the answer is FIXED for the whole loop (neither the traits
@@ -3352,14 +3366,24 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // it per iteration cost ~1% on optbench/intsum, which is the
         // shape this fast path exists for.
         Value probe = Value::integer(0);
-        if (!var.empty() && var[0] == '$') markTopic(probe, 0);
+        // A typed parameter is bound by the binder, once: what it gives a
+        // machine Int (readonly, and a native's tags) it gives every one, so
+        // its type check and its wrap are the binder's own.
+        if (countedParam) {
+            probe = bindTypedParam(std::move(probe), *countedParam);
+            probe.readonly = true;
+        }
+        else if (!var.empty() && var[0] == '$') markTopic(probe, 0);
         // (a sigilless `-> \i` over bare Ints has nothing to write to, as asTopic says)
         else if (immSrc && !var.empty() && (ascii::isalpha((unsigned char)var[0]) || var[0] == '_'))
             probe.readonly = probe.immutableBind = true;
         const bool roInt = probe.readonly, immInt = probe.immutableBind;
+        const int natInt = probe.natBits;
+        const bool natSgn = probe.natSigned;
         auto topicInt = [&](long long n) {
             Value v = Value::integer(n);
             v.readonly = roInt; v.immutableBind = immInt;
+            if (natInt) { v.natBits = natInt; v.natSigned = natSgn; }
             return v;
         };
         // Reuse one Env across iterations for speed. This is only safe when

@@ -1365,14 +1365,16 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
         case NK::IfStmt: return lif(k, static_cast<IfStmt*>(s), false);
         case NK::ForStmt: {
             auto* fs = static_cast<ForStmt*>(s);
-            if (fs->asExpr || fs->destructure || fs->rwVars || !fs->params.empty() || fs->emptyPointy ||
+            // (`-> int $j` holds its Int as `-> $j` does: countedForParam)
+            const Param* cp = countedForParam(fs);
+            if (fs->asExpr || fs->destructure || fs->rwVars || (!fs->params.empty() && !cp) || fs->emptyPointy ||
                 fs->hyper || fs->vars.size() > 1)
                 return refuse("a nested `for` of this shape");
             for (auto tr : fs->varTraits) if (tr) return refuse("a nested `for` with an `is rw` / `is raw` variable");
             KNode* hi = nullptr;
             KNode* lo = lrange(k, fs->list.get(), hi);
             if (!lo) return nullptr;
-            const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+            const std::string var = cp ? cp->name : fs->vars.empty() ? "$_" : fs->vars[0];
             const int slot = L->nint++;
             L->scopes.push_back({{var, KT::Int, slot, true}});
             L->loops++;
@@ -3029,8 +3031,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                     auto* fs = static_cast<ForStmt*>(loop);
                     cx.scopes.push_back({{var, KT::Int, kVarSlot, true}});
                     cx.inModifier = fs->modifier;
-                    if (fs->asExpr || fs->destructure || fs->rwVars || !fs->params.empty() || fs->emptyPointy ||
-                        fs->hyper || fs->vars.size() > 1 || !fs->label.empty())
+                    if (fs->asExpr || fs->destructure || fs->rwVars || (!fs->params.empty() && !countedForParam(fs)) ||
+                        fs->emptyPointy || fs->hyper || fs->vars.size() > 1 || !fs->label.empty())
                         cx.why = "a `for` of this shape";
                     else {
                         bool traits = false;

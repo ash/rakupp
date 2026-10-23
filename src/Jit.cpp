@@ -560,7 +560,8 @@ void Scan::stmt(Stmt* s) {
             auto* fs = static_cast<ForStmt*>(s);
             LoopStmt* lp = g_opt.backend == Backend::Cnp ? nestedForLoopImpl(fs) : nullptr;
             if (!lp) { fail("a nested `for` of this shape"); return; }
-            const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+            const Param* cp = countedForParam(fs);
+            const std::string var = cp ? cp->name : fs->vars.empty() ? "$_" : fs->vars[0];
             Scan pre;
             pre.scopes.push_back({var});
             pre.block(fs->body.get(), true);
@@ -929,7 +930,9 @@ LoopStmt* nestedForLoopImpl(ForStmt* fs) {
     auto it = cache.find(fs);
     if (it != cache.end()) return it->second;
     LoopStmt* lp = nullptr;
-    const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+    // (`-> int $j` lowers as `my int $j`, a native register: countedForParam)
+    const Param* cp = countedForParam(fs);
+    const std::string var = cp ? cp->name : fs->vars.empty() ? "$_" : fs->vars[0];
     Expr* lo = nullptr; Expr* hi = nullptr; bool exTo = false;
     if (fs->list && fs->list->kind == NK::Unary) {
         auto* u = static_cast<Unary*>(fs->list.get());
@@ -942,7 +945,7 @@ LoopStmt* nestedForLoopImpl(ForStmt* fs) {
         }
     }
     const bool shapeOk = hi && fs->label.empty() && !fs->asExpr && !fs->modifier && !fs->destructure &&
-                         !fs->rwVars && fs->params.empty() && fs->vars.size() <= 1 && fs->body &&
+                         !fs->rwVars && (fs->params.empty() || cp) && fs->vars.size() <= 1 && fs->body &&
                          (var == "$_" || plainScalar(var));
     if (shapeOk) {
         auto mkVar = [&](const std::string& n, bool decl) {
@@ -956,6 +959,7 @@ LoopStmt* nestedForLoopImpl(ForStmt* fs) {
         init->line = fs->line;
         auto* a1 = new Assign(); a1->line = fs->line; a1->op = "=";
         a1->target.reset(mkVar(var, true));
+        if (cp && cp->type != "Int") static_cast<VarExpr*>(a1->target.get())->dm().declType = cp->type;
         if (lo) { auto* l = new IntLit(static_cast<IntLit*>(lo)->v); l->line = fs->line; a1->value.reset(l); }
         else { auto* z = new IntLit(0); z->line = fs->line; a1->value.reset(z); }
         auto* a2 = new Assign(); a2->line = fs->line; a2->op = "=";
@@ -1027,14 +1031,21 @@ void examine(Site* s) {
         // fast path, so the source of the iteration is already known to be a
         // range of machine integers. What is left to ask about is the BINDING.
         auto* fs = static_cast<ForStmt*>(loop);
-        const std::string var = fs->vars.empty() ? "$_" : fs->vars[0];
+        // `-> int $i` / `-> Int $i` is bound from the same counted path as
+        // `-> $i` (countedForParam), and over a Range only
+        const Param* cp = countedForParam(fs);
+        const std::string var = cp ? cp->name : fs->vars.empty() ? "$_" : fs->vars[0];
         // `for @a`: the interpreter installs a site for it from its array path
         // only, and only for copy-and-patch (see synthArrayLoop)
         const bool overArray = fs->list && fs->list->kind == NK::VarExpr &&
                                plainArray(static_cast<VarExpr*>(fs->list.get())->name);
         if (!loop->label.empty() || fs->asExpr || fs->modifier || fs->destructure ||
-            fs->rwVars || !fs->params.empty() || fs->vars.size() > 1)
+            fs->rwVars || (!fs->params.empty() && (!cp || overArray)) || fs->vars.size() > 1)
             sc.fail("a loop shape the JIT does not take");
+        // (the counter of `-> int $i` is a native cell, which only copy-and-patch
+        // binds: runIfReady's fullNative. Refused here, before a compile.)
+        else if (cp && cp->type != "Int" && g_opt.backend != Backend::Cnp)
+            sc.fail("a native `int` loop variable, which only copy-and-patch takes");
         else if (overArray && g_opt.backend != Backend::Cnp)
             sc.fail("a `for` over an array, which only copy-and-patch takes");
         else if (overArray && var != "$_" && !plainScalar(var) && !plainArray(var))
