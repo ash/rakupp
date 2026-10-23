@@ -15,26 +15,6 @@ moves to [TODO.md](TODO.md).
 
 ## Names and parsing
 
-- [ ] **A non-ASCII name after a twigil is dropped by the lexer** (found
-  2026-10-19 by FatRoast's `names-v1`, while fixing non-ASCII binding in
-  edf09560):
-
-  ```raku
-  class A { has $.ч = 1 }; say A.new.ч                    # No such method 'ч', Rakudo 1
-  class A { has $!ч = 4; method m { $!ч } }; say A.new.m  # Two terms in a row, Rakudo 4
-  my $*ч = 3; sub f { $*ч }; say f()                      # Target is not assignable, Rakudo 3
-  say { $^ч + $^ш }(1, 2)                                 # Undefined routine 'ч', Rakudo 3
-  say { $:ч }(ч => 5)                                     # ч => True, Rakudo 5
-  ```
-
-  `rakupp --ast` shows `has $.ч` as `$.`. src/Lexer.cpp (~3346) takes a
-  twigil only when `isIdentStart(peek(1))`, which is ASCII. Downstream,
-  `ascii::isalpha(name[2])` tests (src/InterpreterCalls.cpp ~4792;
-  src/Parser.cpp ~7500, 8628, 11253, 11665, 13902, 13907, 15368) want
-  `nameLetterAt(name, 2)` from src/Ast.h. Probably most of what is left of
-  FatRoast's S12 divergence. Test `.` `!` `*` `^` `:` with Cyrillic,
-  Latin-1, CJK and astral names.
-
 - [ ] **A plain `constant` leaks out of its block and out of an EVAL** (found
   2026-10-20 while caching the bare `Less` term, b35718ba; the leak predates
   that cache):
@@ -310,42 +290,44 @@ moves to [TODO.md](TODO.md).
 
 ## FatRoast
 
-- [ ] **Triage the first FatRoast leads** (found 2026-10-20 by the first full
-  run of tools/run-fatroast.raku). Read-only: report, then file each finding
-  here or in TODO-MISCELLANEOUS.md.
-  1. `ops-v1` costs rakupp 17 files that pass in plain Roast:
-     S02-literals/numeric.t, S02-literals/quoting.t (noTAP),
-     S02-names-vars/varnames.t (noTAP), S02-names/pseudo-6e.t,
-     S02-types/infinity.t, S02-types/whatever.t, S03-operators/assign.t
-     (noTAP), S03-smartmatch/signature-signature.t (noTAP),
-     S04-declarations/our.t, S05-grammar/protoregex.t, S06-advanced/wrap.t
-     (noTAP), S06-other/main-usage.t, S06-other/main.t,
-     S06-signature/introspection.t (noTAP), S09-typed-arrays/hashes.t
-     (noTAP), S12-meta/primitives.t, S32-list/pick.t (noTAP). For each, does
-     Rakudo lose it too (the transform or a shared bug), or only rakupp (a
-     lead: reduce it to a one-to-three-line reproducer)? assign.t and
-     pick.t are at least partly the transform bug below.
-  2. `strings-v1.mixed` S32-io/io-cathandle.t takes ~32 s under rakupp (17 s
-     system time) against ~1 s plain, so it times out at run-roast's 10 s;
-     run alone rakupp passes 15/31 and Rakudo 3/31. Find what is slow
-     (`sample`/dtrace), and why rakupp passes 12 more.
+- [ ] **What FatRoast's v2 transforms still break on both engines** (in
+  the FatRoast repo, /Users/ash/fatroast, not this one; found 2026-10-23).
+  strings-v2, names-v2 and ops-v2 left alone what v1 broke (the CHANGELOG
+  entry has the counts): no fattened file is refused any more where the
+  plain one compiles, and of the files that fully pass in Roast, Rakudo
+  fails 743 under strings-v2, 148 under names-v2 and 1 under ops-v2 (v1:
+  883, 240, 27). Most of strings-v2's are the `mixed` palette doing what it
+  says (it keeps neither case nor order). Candidates for a v3, each a
+  changed rule (docs/PLAN.md invariant 3):
+  - strings: a PATH in a string (`open('t')` in S16-io/getc.t, file names):
+    mapped, it names no file, and two tests running in one overlay can
+    collide on the mapped name (S16-filehandles/filetest.t, open.t and getc.t
+    passed in one Raku++ run and failed in the next).
+  - strings: a hash key spelled both ways, bare (`foo => 1`, `:foo`) and
+    quoted (`%h<foo>`, `'foo' => 1`). Leaving `%h<foo>` subscripts alone was
+    measured: 26 files gained and 16 lost, a wash, so it was not taken.
+  - names: a renamed class or sub spelled in a string (`is Foo.^name,
+    'Foo'`): the rename could follow a string that is exactly the name.
+  - FatRoast's tokens come from this repo's highlighter: a misread there is
+    an edit in the wrong place (the 2026-10-23 fixes are in CHANGELOG-NEXT).
 
-  Run: `nice build/rakupp tools/run-fatroast.raku -j2 --parts=roast,ops-v1
-  --engine=build/rakupp,/opt/homebrew/bin/rakudo --overlay=<scratch>`;
-  results in OVERLAY/lists/ops-v1.rakupp-vs-rakudo.diff, *.lost, *.log.
+  To measure a candidate: fatten into a scratch directory with this repo's
+  build/rakupp (it is the highlighter FatRoast tokenizes with), give it
+  fat/README.md, and run `build/rakupp tools/run-fatroast.raku
+  --fatroast=<scratch> --engine=build/rakupp,rakudo --overlay=<scratch2>`;
+  a compile-only check (`rakupp -c` on each fattened file and its plain
+  one, from an overlay of Roast) finds the breaking rules in two minutes.
+  Under Rakudo, kill S12-enums/thorough.t by hand in the names parts (see
+  "run-roast leaves grandchildren behind" in TODO.md).
 
-- [ ] **FatRoast `ops-v1` rewrites `+<=` and `~<=` into `+≤`, which does not
-  compile** (in the FatRoast repo, /Users/ash/fatroast, not this one; found
-  2026-10-20):
-  lib/FatRoast/Transform.rakumod lines 262-263 (the `comparison` rules for
-  `<=`→`≤` and `>=`→`≥`) also fire inside `+<=`, `+>=`, `~<=`, `~>=`.
-  Committed victims: fat/ops-v1/S03-operators/assign.t (4 lines) and
-  fat/ops-v1/S32-list/pick.t:173 (`$v +≤ 1`); Rakudo rejects them
-  ("Preceding context expects a term, but found infix ≤"). First decide
-  whether to fix ops-v1 in place or bump to ops-v2 (docs/PLAN.md invariant
-  3: a changed rule is a new version, which renames the fat/ tree and the
-  run-fatroast part). Then extend the lookbehinds, scan fat/ops-v1 for
-  other rewrites that fail `rakudo -c` where the plain file passes, add a
-  case to t/01-transforms.rakutest, and regenerate (`nice rakupp
-  bin/fatroast fatten --roast=$HOME/roast --out=fat --jobs=2`, Roast at
-  da425eb92).
+- [ ] **An undeclared variable is named where its spelling first appears,
+  inside a literal too**: in names-v1's integration/advent2014-day16.t,
+  `$a` is undeclared in `Q:s/foo $a\n/` (line 22, where Rakudo names it),
+  and Raku++ names line 16, where `say Q/foo $a \n/` holds the spelling in a
+  literal that interpolates nothing. Both refuse the file; only the line
+  differs (found 2026-10-23). Likely DeclCheck's textual scan.
+
+- [ ] **`.index(Str)` and `.indices(Str)` die as X::TypeCheck::Binding::
+  Parameter; Rakudo 2026.09 dies X::Multi::NoMatch** ("Cannot resolve caller
+  indices(Str:D: Str:U)"), naming the candidates. Roast asserts only
+  `dies-ok` (S32-str/index.t, indices.t). Found 2026-10-23.
