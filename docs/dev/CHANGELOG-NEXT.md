@@ -9,7 +9,7 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
-e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a.*
+e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d.*
 
 ---
 
@@ -137,6 +137,14 @@ interpreted.
   both engines: `'zzz'.contains(/<two>/)` was True, `'zz'.split(/<two>/)`
   cut between every character. Rakudo 2026.09 agrees but on the
   lookbehinds, where it matches the subrule against the reversed text.
+- **A compiled regex literal is the Regex where its value is taken**
+  (74806a6d), natively with -O and without, as interpreted: a Pair's key
+  (`'a b c'.trans(/\s/ => '_')` changed nothing), a ternary's branch
+  (`.grep(True ?? /c/ !! /a/)` kept everything, `return True ?? /b/ !! /q/`
+  was Nil) and `/x/ xx 2` (two Nils); `m//` is the match (`my $m = m/c/`
+  stored the Regex). A regex asked for its truth in a compiled loop matches
+  the loop's topic: `for <xa yb ab> { say $_ if /a/ && /b/ }` printed xa and
+  yb, judged against the program's `$_`.
 
 ### Fixed: crashes
 
