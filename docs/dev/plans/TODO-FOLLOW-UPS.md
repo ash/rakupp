@@ -198,6 +198,24 @@ moves to [TODO.md](TODO.md).
 
 ## Backends
 
+- [ ] **`--exe`: the F64 loop lane answers `Inf` for a zero divisor** (found
+  2026-10-23 while writing NUM-UNBOX-PLAN; on 5.5.0-8):
+
+  ```raku
+  sub f($x) { my $s = 0e0; my $i = 0; while $i < 3 { $s = $s + 1e0 / $x; $i++ }; $s }
+  my $r = f(0e0); say $r.^name; say (try { $r + 0 } // "died: $!")
+  # interpreted and Rakudo: dies "Attempt to divide 1 by zero using /"
+  # --exe, with -O and without: Num, Inf
+  ```
+
+  The lane (Codegen's unboxed loop lanes, on without `-O` as well) emits
+  `a / b` over doubles with no test. UNBOX-PLAN P1 took that from a boxed
+  path that answered `Inf`; the boxed path fails now, as Rakudo does. Make
+  the F64 `/` bail on a `0.0` divisor, as an I64 overflow bails, and give
+  `t/exe/fuzz.raku`'s operator matrix `0e0`, `-0e0` and `0` as right
+  operands. `t/exe/run.raku` cannot see it: both of its builds carry the
+  lane. [NUM-UNBOX-PLAN.md](NUM-UNBOX-PLAN.md) P0.
+
 - [ ] **`--exe`: `:=` inside a natively compiled routine copies instead of
   aliasing** (found 2026-10-19 verifying the non-ASCII binding fix; the
   ASCII copy fails the same way, so it is older):
