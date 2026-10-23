@@ -132,4 +132,13 @@ inline size_t uniQuoteSpanEnd(const std::string& s, size_t i) {
     }
     return 0;
 }
+
+// The identifier character at s[i], as its byte length, or 0 when there is
+// none: ASCII letters, digits and `_`, and beyond ASCII ID_Continue; with
+// `start`, no digit (`$0`, `$١` are captures). uniIdentEnd: where the name
+// whose first character is at s[i] ends, through a `-` (and with `apos` a
+// `'`) that a letter follows. For the scanners that read a name out of a
+// pattern or a replacement, so they read it as the lexer does (Unicode.cpp).
+size_t uniIdentCharAt(const std::string& s, size_t i, bool start = false);
+size_t uniIdentEnd(const std::string& s, size_t i, bool apos = true);
 }

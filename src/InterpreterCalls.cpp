@@ -5049,7 +5049,7 @@ static void addIfPlaceholder(const std::string& name, std::set<std::string>& out
     }
     else if (name == "@_" || name == "%_") out.insert(name); // implicit slurpies — consumers filter
     else if (name.size() > 2 && name[1] == '!' &&
-             (ascii::isalpha((unsigned char)name[2]) || name[2] == '_'))
+             (nameLetterAt(name, 2) || name[2] == '_'))
         out.insert(name); // $!attr — attribute references; placeholder consumers filter these
 }
 void collectPHExpr(const Expr* e, std::set<std::string>& out) {

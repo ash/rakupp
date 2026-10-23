@@ -43,6 +43,7 @@ static bool hashTypeParam(const Value& inv, bool key, Value& out) {
     return true;
 }
 bool isP5Pattern(const std::string& pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
+std::string sameCase(const std::string& s, const std::string& pat);   // Builtins.cpp: `.samecase`, by grapheme
 std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const std::string& flags);   // InterpreterCore.cpp
 // A pattern for one `.contains` / `.comb` / `.split` call: the per-thread
 // cache's compiled form (these compiled it afresh on every call, half of a
@@ -5574,19 +5575,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             (args.empty() ? std::string("") : args[0].typeName() + ":U") +
                             "); the pattern must be a defined Str"};
     }
-    if (m == "samecase") { // copy the case pattern of the arg, position by position (last char repeats)
-        auto src = utf8cp(inv.toStr());
-        auto pat = utf8cp(args.empty() ? "" : args[0].toStr());
-        std::string r;
-        for (size_t i = 0; i < src.size(); i++) {
-            uint32_t c = src[i];
-            uint32_t mask = pat.empty() ? 0 : pat[std::min(i, pat.size() - 1)];
-            if (mask && toLowerCp(mask) != mask) r += cpToUtf8(toUpperCp(c));      // mask is upper
-            else if (mask && toUpperCp(mask) != mask) r += cpToUtf8(toLowerCp(c)); // mask is lower
-            else r += cpToUtf8(c);                                                 // uncased: unchanged
-        }
-        return Value::str(r);
-    }
+    if (m == "samecase") // copy the case pattern of the arg, grapheme by grapheme (the last repeats)
+        return Value::str(sameCase(inv.toStr(), args.empty() ? "" : args[0].toStr()));
     // `.samespace($pat)` — copy the pattern's WHITESPACE RUNS onto the
     // invocant's, run by run in order. A run the pattern does not reach keeps
     // whatever the invocant had, so "a b c".samespace("x  y") is "a  b c".

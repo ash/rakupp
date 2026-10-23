@@ -2368,8 +2368,10 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // …and so is a call to a routine nothing declares: `EVAL '$bad = 1;
     // nope()'` dies before `$bad` is set. Only for a snippet the call walker
     // sees all of (plain statements; any declaration or other statement kind
-    // makes it opaque), and only names no scope, builtin or type answers.
-    if (mainlinePH && declCheckEnabled() && !noStrictHere()) checkUndeclaredCalls(prog->stmts);
+    // makes it opaque), and only names no scope, builtin or type answers. The
+    // variables are judged first: Rakudo refuses one the moment it parses it
+    // (X::Undeclared) and the routines only at the end of the compilation
+    // (X::Undeclared::Symbols), so `EVAL 'nope $var'` is about `$var`.
     if (mainlinePH && declCheckEnabled() && !noStrictHere()) {
         auto us = findUndeclaredVars(*prog, src, libPaths_);
         for (auto& u : us) {
@@ -2393,6 +2395,18 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
             if (verdict == 1 || (verdict == 0 && tctx().cur && tctx().cur->find(u.name))) continue;
             if (verdict == 2) { tctx().cur->define(u.name, typedDefault("", u.name[0])); continue; }
             throwUndeclaredVar(u.name, &u.inScope);
+        }
+        // A snippet refused for an undeclared routine is refused for its
+        // variable first when it has one, even one the pass above pardoned for
+        // being declared in another scope: `EVAL '{ my $var = 1 }; nope $var'`
+        // is X::Undeclared in Rakudo (roast integration/advent2010-day07.t).
+        try { checkUndeclaredCalls(prog->stmts); }
+        catch (RakuError& e) {
+            if (!(e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols")) throw;
+            for (auto& u : findUndeclaredVars(*prog, src, libPaths_, /*scoped=*/true))
+                if (!isSpecialVar(u.name) && !(tctx().cur && tctx().cur->find(u.name)))
+                    throwUndeclaredVar(u.name, &u.inScope);
+            throw;
         }
     }
     // A call that can never bind is a compile error of the snippet too:
