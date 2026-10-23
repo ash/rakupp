@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20.*
+*Collected 2026-10-20; added to 2026-10-23.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -90,6 +90,78 @@ moves to [TODO.md](TODO.md).
   constraint of its own. Carry the constraint with the cell, or give the
   aliasing scope's `$_` the source's entries. Plain `with $x { … }` loops
   must not get measurably slower (instructions retired).
+
+- [ ] **A native `int` times `2**62` does not wrap** (found 2026-10-22 by the
+  FLOAT-HEAVY-ISSUES work, e30e2827; on v5.5.0 too):
+
+  ```raku
+  sub f(int $x) { $x * 2**62 }; say f(3)     # 13835058055282163712, Rakudo -4611686018427387904
+  my int $i = 3; say $i * 2**62               # the same
+  my int $k = 3; say $k * 4611686018427387904 # -4611686018427387904 in both
+  my int $j = 3; my $b = 2**62; say $j * $b   # 13835058055282163712 in both
+  ```
+
+  Rakudo folds `2**62` into a literal, which the native candidate takes; a
+  written literal already wraps here, and an Int in a variable promotes in
+  both. nativeIntArith (src/InterpreterCore.cpp) takes the other operand as
+  native when it is an IntLit; an expression of literals that folds to an
+  Int in range (`2**62`, `1 +< 40`) is the same case. Check the `-O` lane
+  (Codegen `nativeOp`, which asks `vInt`) agrees.
+
+- [ ] **A native return type is not checked** (found 2026-10-22 while making
+  compiled routines check `--> T`, e30e2827; on v5.5.0 too):
+
+  ```raku
+  sub rn(--> num) { "s" }; say rn()   # s, Rakudo: This type cannot unbox to a native number: P6opaque, Str
+  sub ri(--> int) { "s" }; say ri()   # s, Rakudo: …to a native integer: P6opaque, Str
+  sub rs(--> str) { 5 }; say rs()     # 5, Rakudo: …to a native string: P6opaque, Int
+  ```
+
+  checkRetType (src/InterpreterCore.cpp) leaves a native name unchecked on
+  purpose ("a boxed value has no native tag"), and Codegen::retCheckOf
+  follows it, so both engines agree today. A fix is the binder's refusal
+  (nativeParamTakes, throwNativeUnbox in src/InterpreterBinding.cpp) at the
+  return: `--> num` takes a Num or a NumStr, `--> int` an Int, `--> str` a
+  Str. Then drop the native exclusion in retCheckOf and leanReturn's
+  LeanNative arm.
+
+## Control flow and containers
+
+- [ ] **A `fail` in a block written at the mainline returns from the routine
+  that runs it** (found 2026-10-22 while making `fail` lexotic, 3e97932e; on
+  v5.5.0 too):
+
+  ```raku
+  sub ap(&b) { b() }
+  my $r = ap({ fail "x" }); say $r.^name   # Failure, Rakudo dies "x" at the mainline
+  ```
+
+  The builtin (B["fail"], src/BuiltinsRegister.cpp) now returns from the
+  routine the `fail` was written in, but with none (lexicalRoutineFrame 0)
+  it still returns from the dynamic one. Rakudo throws the exception there.
+  The catch: Test's `eval-lives-ok` runs its string in a routine of its own
+  (evalAsRoutine, same file), and a `fail` at the string's top level must
+  return from that. Give evalAsRoutine an Env that is a routine frame, so
+  the string's code has a lexical routine, then make lf == 0 die. Roast's
+  advent2009-day20.t is the case that relies on it.
+
+- [ ] **A List kept in a variable loses its containers when passed to a sub**
+  (found 2026-10-22 while timing writes through bindings, e30e2827; on
+  v5.5.0 too):
+
+  ```raku
+  sub w($l) { $l[0] = 1 }
+  my $m = 0; my $ml = ($m, 2); $ml[0] = 5; say $m   # 5 in both
+  my $k = 0; my $kl = ($k, 2); w($kl); say $k       # Cannot modify an immutable List ((0 2)), Rakudo 1
+  ```
+
+  keepListContainers keeps `$k`'s container when the literal is assigned to
+  `$kl`, and a write through `$kl` itself works; one through the parameter
+  meets values. Look at what the call hands the parameter: decontList
+  (src/InterpreterCalls.cpp) gives built-ins a List's values, and the
+  binder's copy (bindParams' simple path, callPlainSub) may take that form
+  or drop `holdsCells`. `f(($a, 2))` itself works since d7c6d9d5 (and on a
+  second call since 3e97932e).
 
 ## Processes and diagnostics
 
@@ -218,6 +290,23 @@ moves to [TODO.md](TODO.md).
 
   Baseline on a clean worktree build: the main checkout's binary and tree
   drift apart and fail 0/16.
+
+- [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
+  2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS
+  arm64): the gate ends `not ok - only 16 of the 21 tier-up cases actually
+  entered a kernel`. The five are t/jit/cases/calls.raku, elements.raku,
+  inline.raku, methods.raku and natives.raku:
+
+  ```bash
+  RAKUPP_NO_KERNELS=1 build/rakupp --jit=sync,threshold=0,nocache,stats t/jit/cases/calls.raku
+  ```
+
+  prints `kernels entered 0` (the other 16 print 1 or more). Each still
+  agrees with the interpreter, so only the coverage check fails. For each
+  case, `--jit=verbose` says why its loop is declined: a whitelist the
+  case's construct (a call, an element, an inlined sub, a method, a native)
+  has fallen off, or the case no longer shows what its header says. Then
+  fix the backend or the case.
 
 ## FatRoast
 

@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-15.*
+*Started 2026-10-03. Last updated 2026-10-23.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -229,14 +229,6 @@ The same items grouped by theme, with a complexity estimate for each:
     CPointer), and autothreads over a Junction (Rakudo: P6opaque).
   - `.resume` resumes an exception thrown by `die`, or by the engine (Rakudo:
     "This exception is not resumable").
-- [ ] **S07-hyperrace/basics.t segfaults under load** (found 2026-10-15): in
-  "Concurrent iterator access", ten `start` workers asking one `(^10).race`
-  for `.iterator` at once end the process with SIGSEGV (exit 139) after the
-  HyperSeq half passes, so the file reports 89 of 90. Alone it passes; run in
-  a loop beside a Roast sweep it crashed 1 of 16 times on 5549bf83 and 3 of
-  16 with the native-parameter batch, and two of six sweeps that day caught
-  it (the race is older than the batch, which touches no iterator code).
-
 - [ ] **HyperSeq edges against Rakudo 2026.09** (found 2026-10-09; `.raku`
   and `(1..Inf).hyper.map` fixed 2026-10-10): `.elems` then `.list` answers
   twice where Rakudo's `.elems` consumes it (X::Seq::Consumed);

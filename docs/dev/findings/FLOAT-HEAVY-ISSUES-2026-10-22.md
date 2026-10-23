@@ -762,7 +762,11 @@ a regression file.
   unbox to a native number"); and a `fail` in a block written at the
   mainline, run by a routine, returns from that routine where Rakudo dies
   (Test's `eval-lives-ok` relies on a `fail` at a string's top level
-  returning). On the third pass `t/exe/run.raku`'s three `-O` disagreements
+  returning). In both engines, a List kept in a variable and handed to a sub
+  (`my $kl = ($k, 2); w($kl)` with `sub w($l) { $l[0] = 1 }`) dies "Cannot
+  modify an immutable List" where Rakudo writes `$k`. Each is in
+  [TODO-FOLLOW-UPS.md](../plans/TODO-FOLLOW-UPS.md), and issue 21 is
+  [SPEED-BACKLOG.md](../plans/SPEED-BACKLOG.md) #48. On the third pass `t/exe/run.raku`'s three `-O` disagreements
   and `t/jit/run.raku`'s three are files that print a measurement, and five
   of the JIT gate's 21 tier-up cases (calls, elements, inline, methods,
   natives) still enter no kernel, as on v5.5.0.
