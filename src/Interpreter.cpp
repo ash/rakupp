@@ -1511,6 +1511,19 @@ Value rtNativeNeg(const Value& v) {
     if (v.t == VT::Num) { Value out = Value::number(-v.n); out.natBits = 64; out.natFloat = true; return out; }
     return applyArith("-", Value::integer(0), v);
 }
+// rtNeg's general case, as evalUnary runs it: a junction autothreads. An
+// undefined operand keeps the `0 - $x` it had, which is silent as the other
+// compiled arithmetic on one is: the warning prefixNumeric gives would name
+// "line 0", since compiled code carries no line.
+Value rtNegSlow(Interpreter& I, const Value& v) {
+    if (v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil) return applyArith("-", Value::integer(0), v);
+    if (isJunction(v)) {
+        Value out = Value::array(); out.enumName = v.enumName;
+        for (auto& e : *v.arr()) out.arr()->push_back(I.prefixNumeric("-", e));
+        return out;
+    }
+    return I.prefixNumeric("-", v);
+}
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out) { collectPHExpr(e, out); }
 
 // the root variable a write lands on: `@a`, `@a[$k]`, `%h<x><y>`, `$obj.attr`
@@ -3803,10 +3816,12 @@ Value rtArrayVal(const Value& v) {
         // these two must agree, or a program means one thing interpreted and
         // another compiled
         if (isMultiDimShaped(v)) return Value::array(shapedLeaves(v));
+        // (a kept List's items are its variables' containers: the copy takes
+        // their values, as coerceArray's decontCopiedElems gives them)
         if (v.isList) { Value r = listToArray(*v.arr()); r.isList = false;
-                        if (v.s == "Seq") deproxyElems(r); return r; }
+                        if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); return r; }
         Value r = Value::array(*v.arr()); // fresh buffer: `@a = @b` must not alias @b
-        if (v.s == "Seq") deproxyElems(r); // take-rw's Proxies decontainerize on assign
+        if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); // take-rw's Proxies decontainerize on assign
         return r;
     }
     // `my @a = 1..*` is lazy, as interpreted: flattening reached the cap
@@ -3950,7 +3965,7 @@ void Interpreter::runDestroyChain(const PRef<ObjectData>& od) {
 // Slip to splice, a lazy tail, shape, or a shared buffer takes the copying
 // path, whose semantics stay authoritative.
 Value rtArrayVal(Value&& v) {
-    if (v.t == VT::Array && v.arr() && v.isList && !v.ext() && !v.itemized &&
+    if (v.t == VT::Array && v.arr() && v.isList && !v.ext() && !v.itemized && !v.holdsContainers() &&
         !(v.shape() && !v.shape()->empty()) && v.payloadUnique()) {
         for (auto& it : *v.arr())
             if (it.t == VT::Array && it.arr() && it.s == "Slip")
@@ -6595,6 +6610,24 @@ Value Interpreter::currentThread() {
 // unwound.
 thread_local ThreadHot t_hot;
 
+// The end of a worker's body is not the end of its thread. After it, the
+// closure's captures go (BigStackThread::run_'s Fn), and at the thread's exit
+// its ExecContext and frame pools, each a release that may free a container
+// or note a cycle candidate. Decremented in the body, liveWorkers_ said 0
+// while those ran, and the cycle collector, which runs on the main thread
+// when it is 0 (cycleQuiet), walked containers they were freeing: Roast's
+// S07-hyperrace/basics.t segfaulted in hashEdges about one run in six. So a
+// body on a worker thread hands its count to t_workerExit, which run_ makes
+// the thread's FIRST thread_local, so that its destructor runs after every
+// other one. A body run inline on a thread that is not a worker's (no thread
+// could be made) gives it back at once.
+thread_local WorkerExit t_workerExit;
+void Interpreter::workerFinished() {
+    WorkerExit& w = t_workerExit;
+    if (w.onWorker && (!w.count || w.count == &liveWorkers_)) { w.count = &liveWorkers_; w.n++; }
+    else liveWorkers_--;
+}
+
 // Called from a worker's safe point every few thousand loop iterations: release the
 // GIL (waking a main thread parked in yieldToWorker), give the scheduler a chance to
 // hand the mutex over, then reacquire — mirroring sleepYield's save/park/restore.
@@ -6672,7 +6705,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             }
             ps->cv.notify_all();
             for (auto& f : fire) f();
-            self->liveWorkers_--;
+            self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
         return p;
@@ -6704,7 +6737,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             fire.swap(ps->thens);          // `.then`s registered before the worker settled
         }
         for (auto& f : fire) f();          // run them now, still on the GIL — like keep/break
-        self->liveWorkers_--;
+        self->workerFinished();
         self->gilYieldNotify();            // release the GIL (waking any cooperative yielder)
         ps->cv.notify_all();
         fin->store(true, std::memory_order_release);
@@ -6787,7 +6820,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
         }
         self->saveCtx(wctx);
         self->cuedLoads_--;
-        self->liveWorkers_--;
+        self->workerFinished();
         self->gilYieldNotify();
         fin->store(true, std::memory_order_release);
     }), fin);
@@ -6946,7 +6979,7 @@ void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
             try { refold(); } catch (...) {}
             self->gilYieldNotify();
         }
-        self->liveWorkers_--;
+        self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
 }

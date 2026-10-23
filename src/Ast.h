@@ -239,6 +239,7 @@ struct VarDeclInfo {
     bool declBare = false;       // the statement is ONLY this declaration (no initializer)
     bool declHasWhere = false;   // `my Int:D $x where …` — Rakudo asks no initializer then // …and it came from `use variables`, not the declaration
     bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
+    std::string readType;        // a USE's: the type the nearest declaration of its name gave it (VarExpr::lexResolved)
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list
@@ -296,6 +297,10 @@ struct VarExpr : Expr {
     // not one. Integer operators on it are the native, wrapping candidates.
     bool nativeIntRead = false;
     bool nativeNumRead = false;  // …and the same for a variable declared `num` / `num64`
+    // …and any `$` use the parser resolved to a lexical declaration (its type,
+    // if it was declared with one, is d().readType): what a compiled store into
+    // it checks and resets to (Codegen::scalarStore)
+    bool lexResolved = false;
     bool pkgSymbol = false;      // `Foo::<bar>` — a package symbol-table slot; assigning autovivifies it
     // Written as a pseudo-package lookup (`MY::<$x>`, `LEXICAL::<$y>`): a MISS is
     // an answer, not a compile error. Rakudo hands back Nil before 6.e and a
@@ -901,6 +906,10 @@ struct Param {
     //              undecided.
     mutable DecidedOnce<signed char> natKind{-1};
     mutable DecidedOnce<signed char> typeKnown{0};
+    //   leanType — the core type callPlainSub binds this parameter by itself
+    //              (a LeanType in InterpreterCore.cpp), set with the routine's
+    //              plainShape.
+    mutable DecidedOnce<signed char> leanType{0};
     //   aliasTarget — typeAliasTarget(type), resolved ONCE. That call is a hashed
     //   std::string lookup and multi dispatch asks it per parameter per CANDIDATE,
     //   twice in the same pass; the pointer is into typeAliasCache_, which is only
@@ -1625,6 +1634,30 @@ inline bool nativeNumericStatic(const Expr* e, char* kind = nullptr) {
 // return type — but it still belongs to the signature: Rakudo renders
 // `:(| --> Nil)` and answers Nil to `.returns`. The literal as written ("Nil",
 // "Empty", "True", "False"), or "" for anything else.
+// The type NAMED by a declared return type: `Map()` (a coercion) and `Map` (a
+// check) both name Map. Coercing-ness is retTypeCoerces() below.
+// A COERCION keeps its source in the parens: `Str(Numeric:D)`, `Foo\x01D()`.
+inline bool retTypeCoerces(const std::string& rt) {
+    return rt.size() > 2 && rt.back() == ')' && rt.find('(') != std::string::npos;
+}
+inline std::string retTypeName(const std::string& rt) {
+    std::string t = retTypeCoerces(rt) ? rt.substr(0, rt.find('(')) : rt;
+    // a `\x01D`/`\x01U` suffix records a `--> T:D`/`--> T:U` smiley
+    if (t.size() > 2 && t[t.size() - 2] == '\x01') t.resize(t.size() - 2);
+    return t;
+}
+inline char retTypeSmiley(const std::string& rt) {
+    std::string t = retTypeCoerces(rt) ? rt.substr(0, rt.find('(')) : rt;
+    return t.size() > 2 && t[t.size() - 2] == '\x01' ? t.back() : 0;
+}
+// the SOURCE type of a coercion (`Numeric:D` of `Str(Numeric:D)`), "" for `()`
+inline std::string retTypeCoerceFrom(const std::string& rt) {
+    if (!retTypeCoerces(rt)) return "";
+    size_t o = rt.find('(');
+    return rt.substr(o + 1, rt.size() - o - 2);
+}
+// (here, not in Value.h: the code generator applies a return type too)
+
 inline std::string retLiteralText(const Expr* e) {
     if (!e) return "";
     if (e->kind == NK::NameTerm) {

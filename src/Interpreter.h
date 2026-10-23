@@ -1359,6 +1359,15 @@ struct ThreadHot {
     ExecContext* ctx = nullptr;   // see Interpreter::tctx()
 };
 RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
+// A worker thread's count in liveWorkers_, given back when the thread has let
+// go of everything (Interpreter::workerFinished)
+struct WorkerExit {
+    std::atomic<int>* count = nullptr;
+    int n = 0;
+    bool onWorker = false;
+    ~WorkerExit() { if (count && n) count->fetch_sub(n, std::memory_order_release); }
+};
+extern thread_local WorkerExit t_workerExit;
 // The line of the statement now executing (test diagnostics, callframe, the line
 // a call frame records for its caller). One process-wide value while only the
 // mainline runs Raku code — a plain relaxed store per statement, which is what
@@ -1558,6 +1567,10 @@ public:
 
 struct ExecContext {
     std::shared_ptr<Env> cur;
+    // compiled `try` blocks running on this thread (RtTryScope): a `fail` in a
+    // compiled routine called under one dies, as the interpreter's does under
+    // the `use fatal` a `try` puts its callee in (rtFailRoutine)
+    int compiledTry = 0;
     // The signature bindParams is binding now, so a binding error can carry
     // its Parameter object (`$!.parameter`) — built only when one is thrown.
     const std::vector<Param>* bindingParams = nullptr;
@@ -2107,6 +2120,8 @@ public:
     Value roleCandidates(ClassInfo* ci);
     std::string docModeText(); // what `--doc` prints: $=pod through Pod::To::Text
     void checkReturnInDynamicScope(uint64_t lexicalFrame); // a return whose routine has already exited dies
+    bool lexicalRoutineLive();                             // …that routine is still running (or there is none)
+    bool routineEnvRunning(const Env* routineEnv);         // …this activation of a routine is (null: none)
     // what a program BOUND into the setting: `$CORE::_ := 50` (the `&` names
     // go to builtinRefs_, where `&none` finds them)
     std::unordered_map<std::string, Value> coreVars_;
@@ -2870,6 +2885,9 @@ public:
     bool containerElemFor(const struct Expr* e, Value& out); // element = the container `e` names
     bool isContainerElem(const Value& v);    // …is this element one?
     void keepListContainers(const struct ListExpr* l, Value& list); // a kept literal holds its items' containers
+    void noteKeptVarType(const struct Expr* item, Value& proxy);     // …a typed variable's, with its type
+    Value keptTypedStore(const Value& proxy, Value v);               // …which a store through it checks
+    bool keptTyped(const Value& proxy) const;                         // …does it carry one?
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr, Env* scope = nullptr); // the cell of the variable `e` names (in `scope`)
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
@@ -2988,6 +3006,9 @@ public:
         return static_cast<const PadLayout*>((const void*)ve->padOwner);
     }
     void enforceTypedAssign(const std::string& nm, Value& rhs); // typed-assign contract, shared by `=` and atomic-assign
+    void enforceTypedValue(const std::string& nm, const std::string& want, Value& rhs, Env* en); // …its check, type known
+    Value rtTypedScalarStore(Value rhs, const char* want, const char* nm);   // --exe: a store into a typed `$`
+    Value rtOuterScalarStore(Value rhs, const char* nm);   // …into an interpreter-held `$` (a module routine's)
     // The striped-lock pool shared by cas, the atomic-* family, and Channel:
     // real mutual exclusion in parallel (no-GIL) mode, negligible uncontended
     // cost under the GIL. Recursive so a holder may re-enter its own stripe.
@@ -3941,7 +3962,8 @@ public:
 #endif
         bool joinable_ = false;
         struct Fn { std::function<void()> f; };
-        static void run_(void* p) { std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
+        // (t_workerExit first: the thread's last thread_local to go — workerFinished)
+        static void run_(void* p) { t_workerExit.onWorker = true; std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
         // A body run INLINE (no thread could be made — always, in a WASM build
         // without pthreads) runs on the caller's thread, whose registers it
         // would otherwise replace: a worker body loads an empty context and
@@ -4085,6 +4107,7 @@ public:
         }), workers_.end());
     }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
+    void workerFinished();                 // a worker body's end: liveWorkers_ drops at its thread's exit
     std::atomic<bool> everSpawned_{false}; // a `start` has run: declarations pre-bind (see evalAssignInner)
     // Backpressure for worker creation, PARALLEL MODE ONLY. A tap-and-close
     // loop over interval supplies (syntax.t's CLOSE-phaser stress: 4 spawners
@@ -4766,6 +4789,7 @@ private:
     // a `where`'s Code, built once for a declaration scope, or null (staticWhereCode)
     const Value* staticWhereCode(const Param& p, const std::vector<Param>& sig, const std::shared_ptr<Env>& scope);
     static Value binaryFastHandler(Interpreter& I, Expr* e);   // a Binary's compiled fast shape
+    static Value unaryNegHandler(Interpreter& I, Expr* e);     // `-$x`'s, on a plain lexical
     bool fusedIntAssign(Binary* b, Value* slot);   // `$x = $a op $b` on Ints, into the slot
     static Value typedTreeHandler(Interpreter& I, Expr* e);    // a Binary's numeric subtree, typed
     bool typedTreeValue(Binary* b, Value& out);    // that subtree's value, or false (nothing evaluated)
@@ -5105,6 +5129,7 @@ inline bool rtIntWordOp(char c0, char c1, long long a, long long b, long long& z
     z = (long long)(q * y);
     return true;
 }
+Value applyArithLit(const char* op, const Value& l, const Value& r);   // its general case (InterpreterCore.cpp)
 inline Value applyArith(const char* op, const Value& l, const Value& r) {
     if (rtBothInt(l, r) && op[0] != '\0') {
         long long a = l.i, b = r.i, z;
@@ -5122,7 +5147,7 @@ inline Value applyArith(const char* op, const Value& l, const Value& r) {
     }
     // (a Num goes on to the string form, whose Num arm answers it: inlined at
     // every call site, a second arm here cost the Int-and-Str code its size)
-    return applyArith(std::string(op), l, r);
+    return applyArithLit(op, l, r);
 }
 // A NATIVE operation (codegen: Ast.h nativeNumericStatic). Its common cases
 // inline — `+ - *` over two plain Ints, wrapping at 64 bits as rtNativeIntOp
@@ -5152,11 +5177,47 @@ inline Value rtNativeArith(const char* op, const Value& l, const Value& r) {
     }
     return rtNativeArithSlow(op, l, r);
 }
+// …and its `+ - * /`, for a codegen site that knows the operator: the same
+// answers, without rtNativeArith's dispatch on the operator's text — which
+// left it and rtNumArith out of line, so a `num` sub's `$a * $b + 1e0` cost
+// three times its untyped twin's rtMul and rtAdd.
+inline bool rtNativeIntPair(const Value& l, const Value& r) {
+    return l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() && l.hashKind.empty() && r.hashKind.empty() &&
+           l.enumName.empty() && r.enumName.empty();
+}
+inline Value rtNativeIntOf(unsigned long long x) {   // an int's 64 bits, wrapped
+    Value out = Value::integer((long long)x); out.natBits = 64; out.natSigned = true;
+    return out;
+}
+inline Value rtNativeNumOf(double d) { Value out = Value::number(d); out.natBits = 64; out.natFloat = true; return out; }
+inline Value rtNativeAdd(const Value& l, const Value& r) {
+    double a, b;
+    if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i + (unsigned long long)r.i);
+    if (rtNumPair(l, r, a, b)) return rtNativeNumOf(a + b);
+    return rtNativeArithSlow("+", l, r);
+}
+inline Value rtNativeSub(const Value& l, const Value& r) {
+    double a, b;
+    if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i - (unsigned long long)r.i);
+    if (rtNumPair(l, r, a, b)) return rtNativeNumOf(a - b);
+    return rtNativeArithSlow("-", l, r);
+}
+inline Value rtNativeMul(const Value& l, const Value& r) {
+    double a, b;
+    if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i * (unsigned long long)r.i);
+    if (rtNumPair(l, r, a, b)) return rtNativeNumOf(a * b);
+    return rtNativeArithSlow("*", l, r);
+}
+inline Value rtNativeDiv(const Value& l, const Value& r) {   // (two ints, or a zero divisor: the slow path's)
+    double a, b;
+    if (!rtNativeIntPair(l, r) && rtNumPair(l, r, a, b) && b != 0.0) return rtNativeNumOf(a / b);
+    return rtNativeArithSlow("/", l, r);
+}
 // The store into a native (codegen): a plain Num into a `num`, or a plain
 // machine Int into an `int`, changes only the tags — wrapNative's own fast arms,
 // after nativeAssignCheck has nothing to say about either. Anything else takes
 // rtNativeValue / rtNativeValueLike, which built two std::strings per store.
-inline bool rtNativeStoreFast(Value& v, bool isFloat) {
+RAKUPP_ALWAYS_INLINE bool rtNativeStoreFast(Value& v, bool isFloat) {
     if (v.x_ || v.p_ || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty()) return false;
     if (isFloat ? v.t != VT::Num : v.t != VT::Int) return false;
     v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
@@ -5164,13 +5225,15 @@ inline bool rtNativeStoreFast(Value& v, bool isFloat) {
     v.natBits = 64; v.natFloat = isFloat; v.natSigned = !isFloat;
     return true;
 }
-inline Value rtNativeStore(Value v, const char* type, const char* name, bool srcNative) {
-    const bool num = std::strcmp(type, "num") == 0 || std::strcmp(type, "num64") == 0;
-    if ((num || std::strcmp(type, "int") == 0 || std::strcmp(type, "int64") == 0) && rtNativeStoreFast(v, num))
-        return v;
+// `kind` is the declared type's, decided where the code was generated: 1 a
+// full-width float (`num`, `num64`), 2 a full-width int (`int`, `int64`), 0
+// anything else. Comparing the type's name instead was two strcmp calls a store
+// (out of line, as this was): half the time of a `num` sub's loop.
+RAKUPP_ALWAYS_INLINE Value rtNativeStoreK(Value v, int kind, const char* type, const char* name, bool srcNative) {
+    if (kind && rtNativeStoreFast(v, kind == 1)) return v;
     return rtNativeValue(v, type, name, srcNative);
 }
-inline Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
+RAKUPP_ALWAYS_INLINE Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
     if (!slot.natBits) return v;   // not (or no longer) a native container
     if (slot.natBits == 64 && (slot.natFloat || slot.natSigned) && rtNativeStoreFast(v, slot.natFloat)) return v;
     return rtNativeValueLike(slot, v, name, srcNative);
@@ -5208,6 +5271,22 @@ inline Value& applyArithInto(const std::string& op, Value& dst, const Value& r) 
 inline Value rtAdd(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::add_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a + b); return applyArith("+", l, r); }
 inline Value rtSub(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::sub_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a - b); return applyArith("-", l, r); }
 inline Value rtMul(const Value& l, const Value& r) { long long z; double a, b; if (rtBothInt(l, r) && !rakupp::mul_ovf(l.i, r.i, &z)) return Value::integer(z); if (rtNumPair(l, r, a, b)) return Value::number(a * b); return applyArith("*", l, r); }
+// prefix `-`: Interpreter::prefixNumeric's machine-Int and Num arms inline, and
+// everything else through prefixNumeric itself. It was emitted as `0 - $x`, the
+// string-keyed dispatcher on a mixed pair the Num lane never sees — and that
+// answered +0 for `-$x` on 0e0, where the interpreter and Rakudo answer -0.
+Value rtNegSlow(Interpreter& I, const Value& v);
+Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fail` returns (BuiltinsRegister.cpp)
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a); // `fail` in a compiled routine
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live); // …in a block of one
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env); // …in a block of a module routine
+inline Value rtNeg(Interpreter& I, const Value& v) {
+    if (v.hashKind.empty()) {
+        if (v.t == VT::Num) return Value::number(-v.n);
+        if (v.t == VT::Int && !v.big() && v.i != LLONG_MIN) return Value::integer(-v.i);
+    }
+    return rtNegSlow(I, v);
+}
 // `/` has no Int case (two Ints make a Rat); a zero divisor is the general path's Failure
 inline Value rtSlash(const Value& l, const Value& r) { double a, b; if (rtNumPair(l, r, a, b) && b != 0.0) return Value::number(a / b); return applyArith("/", l, r); }
 inline Value rtLt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a <  b); return applyArith("<",  l, r); }
@@ -5215,7 +5294,16 @@ inline Value rtLe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l
 inline Value rtGt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i >  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a >  b); return applyArith(">",  l, r); }
 inline Value rtGe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i >= r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a >= b); return applyArith(">=", l, r); }
 inline Value rtEq(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i == r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a == b); return applyArith("==", l, r); }
-inline Value rtNe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i != r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a != b); return applyArith("!=", l, r); }
+// Rakudo's `!=` between a native uint and a NEGATIVE native int is False,
+// whatever the other holds (the interpreter's nativeMixedSignNe; Roast's
+// S02-types/signed-unsigned-native.t): the Int arms below answered `l.i != r.i`
+inline bool rtNativeMixedSignNe(const Value& l, const Value& r) {
+    if (!(l.natBits | r.natBits)) return false;
+    auto uns = [](const Value& v) { return v.natBits && !v.natSigned && !v.natFloat; };
+    auto neg = [](const Value& v) { return v.natBits && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0; };
+    return (uns(l) && neg(r)) || (neg(l) && uns(r));
+}
+inline Value rtNe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i != r.i && !rtNativeMixedSignNe(l, r)); if (rtNumPair(l, r, a, b)) return Value::boolean(a != b); return applyArith("!=", l, r); }
 // Native-bool comparison for boolean context (if/while/ternary): skips building
 // a Bool Value and re-reading it. Int and Num fast paths, else the general operator.
 inline bool rtLtB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i <  r.i; if (rtNumPair(l, r, a, b)) return a <  b; return applyArith("<",  l, r).truthy(); }
@@ -5223,7 +5311,7 @@ inline bool rtLeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l
 inline bool rtGtB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i >  r.i; if (rtNumPair(l, r, a, b)) return a >  b; return applyArith(">",  l, r).truthy(); }
 inline bool rtGeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i >= r.i; if (rtNumPair(l, r, a, b)) return a >= b; return applyArith(">=", l, r).truthy(); }
 inline bool rtEqB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i == r.i; if (rtNumPair(l, r, a, b)) return a == b; return applyArith("==", l, r).truthy(); }
-inline bool rtNeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i != r.i; if (rtNumPair(l, r, a, b)) return a != b; return applyArith("!=", l, r).truthy(); }
+inline bool rtNeB(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return l.i != r.i && !rtNativeMixedSignNe(l, r); if (rtNumPair(l, r, a, b)) return a != b; return applyArith("!=", l, r).truthy(); }
 // `+&` `+|` `+^` `+<` `+>`: the machine-Int case inline (rtIntBitOp), as `%` and `div` have
 inline Value rtBitAnd(const Value& l, const Value& r) { if (rtBothInt(l, r)) return Value::integer(l.i & r.i); return applyArith("+&", l, r); }
 inline Value rtBitOr(const Value& l, const Value& r)  { if (rtBothInt(l, r)) return Value::integer(l.i | r.i); return applyArith("+|", l, r); }
@@ -5236,7 +5324,16 @@ inline Value rtDiv(const Value& l, const Value& r) {
     if (rtBothInt(l, r) && r.i != 0 && r.i != -1) { long long q = l.i / r.i; if ((l.i % r.i) && ((l.i < 0) != (r.i < 0))) q--; return Value::integer(q); }
     return applyArith("div", l, r);
 }
-inline Value rtConcat(const Value& l, const Value& r) { if (l.t == VT::Str && r.t == VT::Str) return Value::str(l.s + r.s); return applyArith("~", l, r); }
+// `~`: two plain Strs join as applyArith's Str arm joins them, NFC across the
+// seam (nfcConcatStr). The bytes were simply appended, so `"e" ~ "\x[301]"`
+// was two code points compiled -O and one interpreted; and a tagged Str (an
+// allomorph, a Version, an enum's) took the plain arm too.
+inline Value rtConcat(const Value& l, const Value& r) {
+    if (l.t == VT::Str && r.t == VT::Str && l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() &&
+        r.enumName.empty())
+        return nfcConcatStr(l.s, r.s);
+    return applyArith("~", l, r);
+}
 // Cached-builtin call for native codegen: the per-name pointer is resolved once
 // at program start (__rakupp_register → Interpreter::builtinPtr); a null (not a
 // registered builtin — e.g. a module-loaded routine) falls back to the full
@@ -5282,6 +5379,62 @@ inline Value rtMInt(Interpreter& I, const Value& v) {
         v.n > -9.2e18 && v.n < 9.2e18)   // (NaN fails both tests)
         return Value::integer((long long)v.n);   // the cast truncates toward zero, as .Int does
     return I.methodCall(v, "Int", ValueList{});
+}
+// The tests methodCall's own leading arms make (Builtins.cpp) for `.push` onto
+// a plain Array and for the zero-argument queries on a plain value — here, so
+// that -O's call-site forms below make the SAME tests. Those arms answer in a
+// few ns once reached; reaching one from compiled code cost a std::string, a
+// ValueList and the constructor checks in front of it (`@a.elems` ~25 ns).
+// A plain untyped Array, no List or Seq or Slip, nothing it must check or wrap:
+inline bool rtPushPlainTarget(const Value& inv) {
+    return inv.t == VT::Array && inv.arr() && !inv.isList && inv.s.empty() && inv.enumName.empty() &&
+           inv.enumType.empty() && inv.hashKind.empty() && inv.pk_ != PK::Packed && !inv.ext() &&
+           inv.ofType().empty() && !inv.pairVal() && !(inv.shape() && !inv.shape()->empty()) &&
+           !inv.holdsContainers();
+}
+// …and an argument that is one element as it is: an Array is (it is not
+// flattened), a List, Seq or Slip is not (a Slip slips, and a parenthesized
+// List literal keeps its variables' containers), nor a Nil or a native
+inline bool rtPushPlainArg(const Value& a) {
+    return !((a.t == VT::Array && (a.isList || !a.s.empty())) || a.t == VT::Nil || a.natBits);
+}
+// A plain value for the zero-argument arms: no enum, allomorph or native tag
+inline bool rtQueryPlain(const Value& v) {
+    return v.hashKind.empty() && v.enumName.empty() && v.enumType.empty() && !v.natBits && !v.natFloat;
+}
+// `.elems` of a plain reified Array: not lazy, packed, shaped or a Seq
+inline bool rtElemsPlain(const Value& v) {
+    return v.t == VT::Array && v.arr() && v.s.empty() && !v.ext() && v.pk_ != PK::Packed &&
+           !(v.shape() && !v.shape()->empty());
+}
+inline Value rtMElems(Interpreter& I, const Value& v) {
+    if (rtElemsPlain(v) && rtQueryPlain(v) && I.builtinExt_.empty()) return Value::integer((long long)v.arr()->size());
+    return I.methodCall(v, "elems", ValueList{});
+}
+// `.defined`: a plain Num, machine Int or Str is (methodCall's arm), and Any
+// and Nil are not — neither can carry a method of its own but by `augment`
+inline Value rtMDefined(Interpreter& I, const Value& v) {
+    if (rtQueryPlain(v) && I.builtinExt_.empty()) {
+        if (v.t == VT::Num || (v.t == VT::Int && !v.big()) || v.t == VT::Str) return Value::boolean(true);
+        if (v.t == VT::Any || v.t == VT::Nil) return Value::boolean(false);
+    }
+    return I.methodCall(v, "defined", ValueList{});
+}
+inline Value rtMPush(Interpreter& I, const Value& inv, Value a) {
+    if (rtPushPlainTarget(inv) && rtPushPlainArg(a) && I.builtinExt_.empty()) {
+        Interpreter::ParStripe mutStripe(I, inv.arr());
+        inv.arr()->push_back(std::move(a));
+        return inv;
+    }
+    return I.methodCall(inv, "push", ValueList{std::move(a)});
+}
+// -O: a call of a lexical sub straight to its body (Codegen::lexDirect_) — what
+// callCallable runs for the Code object, without finding it by name first —
+// or, once the scope that held the body has gone, through the env as before
+inline Value rtLexCall(Interpreter& I, const std::weak_ptr<std::function<Value(ValueList&)>>& w, ValueList a,
+                       const char* amp) {
+    if (auto f = w.lock()) return (*f)(a);
+    return I.callCallable(I.dynVar(amp), std::move(a));
 }
 // The sweep: every named builtin mirrors its sub form EXACTLY (each body is the
 // old registered lambda's 1-arg case, verbatim). Delegators keep full
@@ -5508,6 +5661,9 @@ inline bool rtForHas(const Value& lst, size_t i) {
     return (lst.arr() && i < lst.arr()->size()) || (lst.ext() && rtForPull(lst, i));
 }
 // What a `$` container stores (native codegen): a list ITEMIZED, as `=` does.
+// --exe: what an untyped `$` container stores — a Nil resets it to Any, as `=`
+// resets a container to its default (`my $r = try die "x"` holds Any)
+inline Value rtNilToAny(Value v) { if (v.t == VT::Nil) return Value::any(); return v; }
 inline Value rtItemized(Value v) {
     if ((v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) && !v.itemized) v.itemized = true;
     return v;
@@ -5668,6 +5824,27 @@ inline Value rtBindTyped(Value v, const Param& p, int fast, GetRT&& rt) {
     if (rtTypedFast(v, fast)) return v;
     return rt().bindTypedParam(std::move(v), p);
 }
+// `--> T` on a compiled routine's way out (Codegen::retWrap): a value of T as
+// it is (rtTypedFast), anything else as the interpreter's routine call checks
+// it, on a Callable carrying the type alone, built once per routine
+const Callable& rtRetCallable(const char* retType);
+// A module routine's `X[k] = v` (Codegen::assignImpl): through a kept List's
+// item for a typed variable, checked as `=` into that variable is
+struct KeptItem { const Value* proxy = nullptr; const Value* cell = nullptr; };
+extern thread_local KeptItem t_keptItem;
+Value& rtKeptAssign(Interpreter& I, Value& ref, Value v);
+// …and `X[k] op= v`: the result checked, and on a refusal the old value back
+struct RtKept {
+    const Value* proxy = nullptr; Value old;
+    explicit RtKept(Value& r) { if (t_keptItem.cell == &r) { proxy = t_keptItem.proxy; old = r; } t_keptItem = {}; }
+    void check(Interpreter& I, Value& r);
+};
+// …and a store into a compiled `$` variable declared `want`: what conforms as it
+// is, inline; a Nil, and everything else, as Interpreter::rtTypedScalarStore has it
+inline Value rtTypedStore(Interpreter& I, Value v, int fast, const char* want, const char* nm) {
+    if (rtTypedFast(v, fast)) return v;
+    return I.rtTypedScalarStore(std::move(v), want, nm);
+}
 // --exe: a compiled routine one of whose BLOCKS says `return`. The return
 // leaves the routine, through whatever runs the block (`.map`'s own loop,
 // interpreted code), so the routine is an interpreter frame for the length of
@@ -5682,6 +5859,12 @@ struct RtRoutineFrame {
     ~RtRoutineFrame();
 };
 [[noreturn]] void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live);
+// --exe: a compiled `try` block's body is running (ExecContext::compiledTry)
+struct RtTryScope {
+    ExecContext& t;
+    explicit RtTryScope(ExecContext& c) : t(c) { t.compiledTry++; }
+    ~RtTryScope() { t.compiledTry--; }
+};
 // --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
 // steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)
 // --exe multi dispatch guards: the idx-th positional argument by reference

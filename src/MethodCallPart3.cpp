@@ -1879,31 +1879,67 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         else if (inv.t == VT::Int || inv.t == VT::Bool) r = Value::rat(inv.toBig(), BigInt(1));
         else {
-            // Num→Rat by continued fractions (Rakudo's default epsilon 1e-6):
-            // pi.Rat == 355/113; dyadic values come out exact (4.5e0 → 9/2).
+            // Num→Rat by continued fractions, step for step as Rakudo's Num.Rat
+            // (default epsilon 1e-6): pi.Rat == 355/113; dyadic values come out
+            // exact (4.5e0 → 9/2). The walk stops where Rakudo's does — the
+            // fractional part reaches 0, or b/d, correctly rounded as MoarVM's
+            // div_In rounds it, is within epsilon — and its convergents are
+            // Ints, so a small value or a small epsilon walks on past int64
+            // (`1e-300.Rat(0)` stopped at 0/1, a fractional part below 1e-18
+            // stopped a convergent early, and b/d past 2**53 rounded twice).
+            // `.Rat(0)` is therefore NOT the double's exact binary value, in
+            // either engine: `0.1e0.Rat(0)` is 1/10.
             double x = inv.toNum();
             double eps = args.size() > 0 ? args[0].toNum() : 1e-6;
+            const bool neg = x < 0;
+            const double num = neg ? -x : x;
+            double fr = num - std::floor(num);
             if (std::isnan(x)) r = Value::ratZ(BigInt(0), BigInt(0));
             else if (std::isinf(x)) r = Value::ratZ(BigInt(x > 0 ? 1 : -1), BigInt(0));
-            else if (std::fabs(x) >= 9007199254740992.0) // any double ≥ 2**53 is an integer: exact, no CF walk (`1e19.Rat` was 1)
-                r = Value::rat(numToIntExact(x).toBig(), BigInt(1));
+            else if (fr == 0.0) r = Value::rat(numToIntExact(x).toBig(), BigInt(1));   // an integer: exact
             else {
-                bool neg = x < 0; double ax = neg ? -x : x, v = ax;
-                long long p0 = 0, q0 = 1, p1 = 1, q1 = 0; // CF convergents h/k
-                for (int it = 0; it < 64; it++) {
-                    double fa = std::floor(v);
-                    if (fa > 9e17) break; // convergent would overflow
-                    long long a = (long long)fa;
-                    if (p1 && a > (LLONG_MAX - p0) / p1) break;
-                    if (q1 && a > (LLONG_MAX - q0) / q1) break;
-                    long long p2 = a * p1 + p0, q2 = a * q1 + q0;
-                    p0 = p1; q0 = q1; p1 = p2; q1 = q2;
-                    if (std::abs((double)p1 / (double)q1 - ax) <= eps) break;
-                    double frac = v - fa;
-                    if (frac <= 1e-18) break;
-                    v = 1.0 / frac;
+                // a/c and b/d are the last two convergents: machine ints while
+                // they fit (num < 2**52 here), BigInts from the first overflow on
+                long long a = 1, b = (long long)std::floor(num), c = 0, d = 1;
+                bool big = false, exact = false;
+                BigInt A, B, C, D;
+                auto quot = [&]() {
+                    if (!big && b <= (1LL << 53) && d <= (1LL << 53)) return (double)b / (double)d;
+                    return big ? BigInt::ratioToDouble(B, D) : BigInt::ratioToDouble(BigInt(b), BigInt(d));
+                };
+                // Where Rakudo's walk never ends, this one answers the double's
+                // exact value, which is within any epsilon. That is a small
+                // epsilon whose b/d stays an ulp away while the fractional part,
+                // all rounding error by then, never reaches 0: it runs on past
+                // the 2**1074 that bounds every double's exact denominator
+                // (`7.01492021304424e-06.Rat(0)` grows Ints until memory runs
+                // out), or meets a subnormal whose reciprocal is Inf (Rakudo
+                // dies storing it in an Int).
+                for (int step = 0; fr != 0.0 && std::fabs(num - quot()) > eps; step++) {
+                    if (step == 4000 || (big && D.bitLength() > 1100)) { exact = true; break; }
+                    const double m = 1.0 / fr;
+                    if (!std::isfinite(m)) { exact = true; break; }
+                    const double fq = std::floor(m);
+                    fr = m - fq;
+                    if (!big) {
+                        long long q = 0, qb = 0, qd = 0;
+                        if (fq < 9.2e18 && ((q = (long long)fq), true) && !rakupp::mul_ovf(q, b, &qb) &&
+                            !rakupp::add_ovf(qb, a, &qb) && !rakupp::mul_ovf(q, d, &qd) && !rakupp::add_ovf(qd, c, &qd)) {
+                            a = b; b = qb; c = d; d = qd;
+                            continue;
+                        }
+                        big = true; A = BigInt(a); B = BigInt(b); C = BigInt(c); D = BigInt(d);
+                    }
+                    const BigInt Q = numToIntExact(fq).toBig();
+                    BigInt nb = Q * B + A; A = std::move(B); B = std::move(nb);
+                    BigInt nd = Q * D + C; C = std::move(D); D = std::move(nd);
                 }
-                r = Value::rat(BigInt(neg ? -p1 : p1), BigInt(q1 ? q1 : 1));
+                if (exact) {   // num = mant * 2**e2 exactly, with mant a 53-bit integer
+                    int e2 = 0;
+                    const long long mant = (long long)std::ldexp(std::frexp(num, &e2), 53);
+                    r = Value::rat(BigInt(neg ? -mant : mant), BigInt(2).pow(53 - e2));
+                }
+                else r = big ? Value::rat(neg ? -B : B, D) : Value::rat(BigInt(neg ? -b : b), BigInt(d));
             }
         }
         r.fatRatM() = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
@@ -6205,7 +6241,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // is False, as is "".contains(/$/, 0))
             if (atPos && from >= (long)subj.size()) return Value::boolean(false);
             CallRegex rx(pat, nullptr); const Regex& re = *rx; RxMatch mm;
-            return Value::boolean(re.ok() && from <= (long)subj.size() && re.search(subj, from, mm));
+            // a `<name>` that calls a `my token` is resolved as .subst resolves
+            // it (substSelect); unresolved it matched as nothing, and
+            // `'zzz'.contains(/<two>/)` was True in both engines
+            std::set<std::string> lexNames; SubResolver resolver; const GrammarHooks* useHooks = nullptr;
+            if (!namedRegex_.empty() && pat.find('<') != std::string::npos)
+                lexSubResolver(resolver, lexNames, useHooks);
+            const LexRegexLookup lexLookup = lexRegexLookup();
+            LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
+            return Value::boolean(re.ok() && from <= (long)subj.size() &&
+                                  re.search(subj, from, mm, resolver, lexNames.empty() ? nullptr : &lexNames));
         }
         if (m == "subst") {
             long nsub = 0;
@@ -6264,7 +6309,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 // …and so does a call to a regex declared in SCOPE (`my regex nm
                 // {…}; $s.comb(/<nm>+/)`): only the `~~` machinery resolves it,
-                // the standalone compile below matched it as nothing at all
+                // the standalone compile below matched it as nothing at all.
+                // Compiled code declares one into namedRegex_ alone
+                // (RT.registerNamedRegex) and binds no `&nm`, so that table is
+                // asked too: `'abq aq'.comb(/<?after <two>> q/)` with `my token
+                // two { 'ab' | 'xyz' }` answered both q's under --exe
                 for (size_t k = 0; k + 1 < pat.size() && !bareCode; k++) {
                     if (pat[k] == '\\') { k++; continue; }
                     if (pat[k] != '<') continue;
@@ -6272,8 +6321,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (b < pat.size() && (pat[b] == '&' || pat[b] == '.')) b++;
                     size_t e = b;
                     while (e < pat.size() && (ascii::isalnum((unsigned char)pat[e]) || pat[e] == '_' || pat[e] == '-')) e++;
-                    if (e == b || !tctx().cur) continue;
-                    Value* rv = tctx().cur->find("&" + pat.substr(b, e - b));
+                    if (e == b) continue;
+                    const std::string nm = pat.substr(b, e - b);
+                    if (namedRegex_.count(nm)) { bareCode = true; continue; }
+                    if (!tctx().cur) continue;
+                    Value* rv = tctx().cur->find("&" + nm);
                     if (rv && rv->t == VT::Code && rv->code() && rv->code()->ci().isRegexRoutine) bareCode = true;
                 }
                 if (bareCode) {
@@ -6335,7 +6387,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // String::CamelCase — which splits on a pair of zero-width lookarounds
             // — turned "YearBBS" into "Year BS".
             long scan = pos;
-            while (re.ok() && scan <= (long)subj.size() && re.search(subj, scan, mm)) {
+            // …and a `<name>` that calls a `my token` is resolved as .subst
+            // resolves it: unresolved it matched as nothing, a separator at
+            // every character (`'zz'.split(/<two>/)` was "", "z", "z", "")
+            std::set<std::string> lexNames; SubResolver resolver; const GrammarHooks* useHooks = nullptr;
+            if (!namedRegex_.empty() && pat.find('<') != std::string::npos)
+                lexSubResolver(resolver, lexNames, useHooks);
+            const LexRegexLookup lexLookup = lexRegexLookup();
+            LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
+            while (re.ok() && scan <= (long)subj.size() &&
+                   re.search(subj, scan, mm, resolver, lexNames.empty() ? nullptr : &lexNames)) {
                 if (haveLimit && pieces >= limit - 1) break;
                 emit(subj.substr(pos, mm.from - pos));
                 if (want) {
@@ -6930,13 +6991,21 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         struct Sep { size_t at, len, which; };
         std::vector<Sep> seps;
         size_t pos = 0;
+        // a regex delimiter's `<name>` calling a `my token` resolves as in .subst
+        std::set<std::string> lexNames; SubResolver resolver; const GrammarHooks* useHooks = nullptr;
+        if (!namedRegex_.empty())
+            for (const Delim& d : delims)
+                if (d.isRx && d.str.find('<') != std::string::npos) { lexSubResolver(resolver, lexNames, useHooks); break; }
+        const LexRegexLookup lexLookup = lexRegexLookup();
+        LexRegexScope lexScope(lexNames.empty() ? nullptr : &lexLookup);
         while (pos <= s.size()) {
             size_t bestStart = std::string::npos, bestLen = 0, bestWhich = 0; // earliest, then longest match
             for (size_t di = 0; di < delims.size(); di++) {
                 const Delim& d = delims[di];
                 if (d.isRx) {
                     CallRegex rx(d.str, nullptr); const Regex& re = *rx; RxMatch mm;
-                    if (re.ok() && re.search(s, (long)pos, mm) && mm.to > mm.from) {
+                    if (re.ok() && re.search(s, (long)pos, mm, resolver, lexNames.empty() ? nullptr : &lexNames) &&
+                        mm.to > mm.from) {
                         size_t st = mm.from, ln = mm.to - mm.from;
                         if (st < bestStart || (st == bestStart && ln > bestLen)) { bestStart = st; bestLen = ln; bestWhich = di; }
                     }

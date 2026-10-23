@@ -1229,9 +1229,10 @@ void Interpreter::registerBuiltinsPart5() {
     };
     B["unshift"] = [](Interpreter& I, ValueList& a) -> Value {
         arrayOpArgs("unshift", a, false);
-        // a List refuses resizing — the METHOD arm owns the X::Immutable throw
-        if (!a.empty() && a[0].t == VT::Array && a[0].isList) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "unshift", rest); }
-        if (!a.empty() && a[0].t == VT::Array) { for (size_t i = a.size(); i > 1; i--) a[0].arr()->insert(a[0].arr()->begin(), a[i - 1]); return Value::integer((long long)a[0].arr()->size()); }
+        // the METHOD's: a List refuses resizing, a typed array checks, a Slip
+        // slips, and the answer is the array (this inserted each argument as
+        // it was and answered the new length)
+        if (!a.empty() && a[0].t == VT::Array) { Value inv = a[0]; ValueList rest(a.begin() + 1, a.end()); return I.methodCall(inv, "unshift", rest); }
         return Value::any();
     };
 }

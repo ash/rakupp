@@ -205,7 +205,8 @@ enum class KT { Int, Bool, Str, Void, Num, Exact };
 // has when the kernel is compiled — which is the type it must still have at
 // every later entry.
 struct LSym { std::string name; KT t; int slot; bool ro; };
-struct LOuter { std::string name; KT t; int slot; bool written; };
+// (`nat`: a full-width native's, `int` or `num` — see nativeInt64Value)
+struct LOuter { std::string name; KT t; int slot; bool written; bool nat = false; };
 // A container of the program the loop reads or writes in place: `@a` or `%h`,
 // and the kind of element it holds (Int or Str, from its contents or from the
 // first value the loop stores; Void while neither has said).
@@ -245,6 +246,9 @@ struct Compiler {
     std::vector<std::string> ops;
     bool prefix = false;
     bool resolveFailed = false;      // a call named a routine that could not be linked (not the syntax)
+    // the interpreter's `constant` names, while no other thread can be adding
+    // to them (null otherwise: a constant term then refuses)
+    const std::unordered_set<std::string>* constants = nullptr;
 
     bool compileSub(Callable& c, IKernel*& out);
     KNode* expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t);
@@ -351,6 +355,11 @@ bool plainVarRead(const VarExpr* v) {
     return !v->declare && !v->viaPseudoPkg && !v->pkgSymbol && !v->processScoped &&
            !v->nativeIntRead && !v->nativeNumRead && !v->nativeStrRead && !v->synthTopic;
 }
+// …or of a variable declared `int` / `num` (of any width: its value says which)
+bool nativeVarRead(const VarExpr* v) {
+    return (v->nativeIntRead || v->nativeNumRead) && !v->declare && !v->viaPseudoPkg && !v->pkgSymbol &&
+           !v->processScoped && !v->nativeStrRead && !v->synthTopic;
+}
 
 // `$name`: no twigil, not the topic, not a package name. (The topic is a loop
 // kernel's own variable when it is the loop's, and found as a local first.)
@@ -372,6 +381,21 @@ inline bool plainIntValue(const Value& v) {
 }
 inline bool plainNumValue(const Value& v) {
     return v.t == VT::Num && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty() && v.s.empty();
+}
+// A FULL-WIDTH native's value, `int` / `int64` or `num` / `num64`: the same
+// number a plain one is, and arithmetic on it the same until a result leaves
+// int64, where the kernel bails and the native path wraps. The write-back sets
+// the number in place, so the cell stays the native it was. (A sized native
+// wraps or rounds at its own width, which nothing here would do.)
+inline bool nativeInt64Value(const Value& v) {
+    return v.t == VT::Int && v.natBits == 64 && v.natSigned && !v.natFloat && !v.x_ && v.pk_ == PK::None &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+           v.hashKind.empty() && v.s.empty();
+}
+inline bool nativeNum64Value(const Value& v) {
+    return v.t == VT::Num && v.natBits == 64 && v.natFloat && !v.x_ && v.pk_ == PK::None &&
            !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
            v.hashKind.empty() && v.s.empty();
 }
@@ -562,6 +586,33 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             KNode* n = k.node(KOp::Lit); n->lit = l->v; t = KT::Int;
             return n;
         }
+        case NK::NameTerm: {
+            // A top-level `constant` holding a machine Int is that literal.
+            // Only where the term resolves from the global scope itself — a
+            // top-level sub's body, a loop of the mainline — and to the
+            // program's own top-level constant: that one runs once, so every
+            // closure sharing this kernel reads the same value, and a constant
+            // is never assigned. From any scope between, a declaration that
+            // has not run yet at the first call (an outer routine's `my \N`
+            // below the call) would leave the global's value baked into the
+            // kernel for every later one. Its slot must hold the value itself,
+            // not a container another name shares.
+            auto* nt = static_cast<NameTerm*>(e);
+            if (!constants) {   // a verdict for now, not for the body (resolveFailed; the loop's retry)
+                resolveFailed = true;
+                return refuse("the term " + nt->name + " while other threads are live");
+            }
+            if (!nt->ofType.empty() || nt->defConstraint || !constants->count(nt->name))
+                return refuse("the term " + nt->name);
+            const Callable* home = c ? c : L ? L->sub : nullptr;
+            Env* scope = home ? (home->closure ? home->closure.get() : global) : L ? L->env : nullptr;
+            Env* owner = nullptr;
+            const Value* p = scope ? scope->findRaw(nt->name, &owner) : nullptr;
+            if (!p || scope != global || owner != global || p->deref() != p || !plainIntValue(*p))
+                return refuse("the term " + nt->name + " (not a top-level Int constant)");
+            KNode* n = k.node(KOp::Lit); n->lit = p->i; t = KT::Int;
+            return n;
+        }
         case NK::NumLit: {
             // `0.5e0`; `0.5` is a Rat
             auto* l = static_cast<NumLit*>(e);
@@ -631,7 +682,11 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             const bool natParam = !L && v->nativeIntRead && !v->declare && !v->viaPseudoPkg && !v->pkgSymbol &&
                                   !v->processScoped && !v->nativeNumRead && !v->nativeStrRead && !v->synthTopic &&
                                   nativeIntParam(*c, v->name);
-            if (!natParam && !plainVarRead(v)) return refuse("variable " + v->name + " (a declaration or a special form)");
+            // …and to a loop kernel a native variable of the program is one of
+            // its numbers, at full width (nativeInt64Value)
+            const bool natVar = L && nativeVarRead(v);
+            if (!natParam && !natVar && !plainVarRead(v))
+                return refuse("variable " + v->name + " (a declaration or a special form)");
             if (!L) {
                 const int i = paramIndex(*c, v->name);
                 if (i < 0) return nullptr;
@@ -663,14 +718,22 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     }
                     const Value& cv = *cvp;
                     KT vt;
-                    if (plainIntValue(cv) && L->promoted(v->name)) { vt = KT::Exact; slot = exactSlot(); }
+                    bool nat = false;
+                    if (natVar) {
+                        // (never promoted: a native int holds no Rat)
+                        if (v->nativeIntRead && nativeInt64Value(cv) && !L->promoted(v->name)) { vt = KT::Int; slot = L->nint++; }
+                        else if (v->nativeNumRead && nativeNum64Value(cv)) { vt = KT::Num; slot = L->nint++; }
+                        else return refuse("variable " + v->name + " is not a full-width native int or num");
+                        nat = true;
+                    }
+                    else if (plainIntValue(cv) && L->promoted(v->name)) { vt = KT::Exact; slot = exactSlot(); }
                     else if (plainIntValue(cv)) { vt = KT::Int; slot = L->nint++; }
                     else if (plainRatValue(cv) && kHasExact) { vt = KT::Exact; slot = exactSlot(); }
                     else if (plainNumValue(cv)) { vt = KT::Num; slot = L->nint++; }
                     else if (plainStrValue(cv)) { vt = KT::Str; slot = L->nstr++; }
                     else if (plainBoolValue(cv)) { vt = KT::Bool; slot = L->nint++; }   // 0 or 1
                     else return refuse("variable " + v->name + " holds neither a plain Int, Rat, Num, Str nor Bool");
-                    L->outer.push_back({v->name, vt, slot, false});
+                    L->outer.push_back({v->name, vt, slot, false, nat});
                     o = &L->outer.back();
                 }
                 st = o->t; slot = o->slot;
@@ -2845,6 +2908,7 @@ bool Interpreter::tryIntKernel(Callable& c, ValueList& args, int callDepth, Valu
             CompilingHere ch;
             Compiler cc;
             cc.global = global_.get();
+            if (liveWorkers_.load(std::memory_order_acquire) == 0) cc.constants = &constantNames_;
             IKernel* root = nullptr;
             const bool ok = cc.compileSub(c, root) && root == static_cast<IKernel*>(c.ci().intKernel.k.load());
             finishSession(cc, ok, &c);
@@ -2958,6 +3022,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                 cx.loops = 1;
                 cc = Compiler{};
                 cc.global = global_.get();
+                if (!threads) cc.constants = &constantNames_;
                 cc.L = &cx;
                 body = root = nullptr;
                 if (isFor) {
@@ -3130,7 +3195,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             if (!cellPrivate(owner, cell, &why))
                 return notEntered("while other threads are live:", o.name + " may be shared (" + why + ")");
         }
-        if (o.t == KT::Int ? !plainIntValue(*cell) : o.t == KT::Num ? !plainNumValue(*cell)
+        if (o.nat ? !(o.t == KT::Int ? nativeInt64Value(*cell) : nativeNum64Value(*cell))
+            : o.t == KT::Int ? !plainIntValue(*cell) : o.t == KT::Num ? !plainNumValue(*cell)
             : o.t == KT::Exact ? !(plainIntValue(*cell) || plainRatValue(*cell))
             : o.t == KT::Bool ? !plainBoolValue(*cell) : !plainStrValue(*cell))
             return notEntered("a value of another type in", o.name);

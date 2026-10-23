@@ -155,6 +155,82 @@ static void throwIfBoolMatcher(const ValueList& matchers) {
                 "'.  Did you mean to use $_ inside a block?"};
 }
 
+// The Failure `fail` returns, from its arguments: `fail $ex` / `fail "msg"`
+// (→ X::AdHoc) / bare `fail` (picks up $!). `//` / .defined treat it as
+// undefined, so a fallback value is chosen. (The builtin, and -O's
+// rtFailRoutine for a compiled routine, which has no interpreter frame for
+// the builtin to see.)
+Value rtFailureFor(Interpreter& I, ValueList& a) {
+    Value ex;
+    // `fail $failure` RE-ARMS it: the new Failure carries the same exception
+    // (unhandled again) — `foo() orelse fail $_` passes the error up
+    if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Failure" && a[0].hash() &&
+        a[0].hash()->count("exception")) {
+        ex = (*a[0].hash())["exception"];
+    } else if (!a.empty() && a[0].t == VT::Object) {
+        ex = a[0];
+    } else if (!a.empty()) {
+        auto it = I.classes_.find("X::AdHoc");
+        if (it != I.classes_.end()) {
+            ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = it->second;
+            ex.obj()->attrs["message"] = Value::str(a[0].toStr());
+            // `fail %h` keeps the value as the exception's PAYLOAD, as Rakudo's
+            // X::AdHoc does (Text::SubParsers reports a failed parse that way)
+            ex.obj()->attrs["payload"] = a[0];
+        } else ex = Value::str(a[0].toStr());
+    } else {
+        // the ROUTINE's own `$!`, as `die` reads it: an error the caller
+        // caught is not this routine's to fail with — a bare `fail` in a
+        // sub called after a `try` says "Failed" (Rakudo)
+        Value* be = nullptr;
+        for (Env* en = I.tctx().cur.get(); en; en = en->parent.get()) {
+            if ((be = en->local("$!"))) break;
+            if (en->routineFrame) break;
+        }
+        if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be;
+    }
+    // a bare `fail` with no $! still carries an exception — X::AdHoc
+    // "Failed" — so `.exception.message` answers rather than dying on Any
+    if (ex.t != VT::Object)
+        ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.str() : std::string("Failed"));
+    Value f = rakuppNewFailure();
+    (*f.hash())["exception"] = ex;
+    (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
+                         ? ex.obj()->attrs["message"] : Value::str("Failed");
+    return f;
+}
+// `fail` in a compiled ROUTINE: it returns the Failure from that routine (the
+// routine's ReturnEx catch), where the builtin, which sees no routine frame
+// of the interpreter's, threw it as `die` — every compiled sub that failed died.
+// It still dies under `use fatal`, and while a compiled `try` runs: the
+// interpreter runs a `try`'s callee under `use fatal` (`try q(-1)` catches q's
+// failure), and a compiled `try` catches only what is thrown.
+[[noreturn]] static void failAsDie(const Value& f) {
+    throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
+}
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a) {
+    Value f = rtFailureFor(I, a);
+    if (I.fatalHere() || I.tctx().compiledTry > 0) failAsDie(f);
+    throw ReturnEx{f};
+}
+// …and in one of its BLOCKS, which may run after the routine has returned, on
+// another thread, or through interpreted code: aimed at the routine's frame as
+// a `return` there is (rtReturnFrom), and `die` once that frame is gone
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live) {
+    Value f = rtFailureFor(I, a);
+    if (I.fatalHere() || I.tctx().compiledTry > 0 || !*live) failAsDie(f);
+    throw ReturnEx{f, id};
+}
+// …and in a BLOCK of a module routine, which runs in a frame of the
+// interpreter's (`__fid`, `__env`): the builtin, run by the block, saw the
+// frame of whatever routine called the block — `ap({ fail "z" })` returned
+// from ap
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env) {
+    Value f = rtFailureFor(I, a);
+    if (I.fatalHere() || I.tctx().compiledTry > 0 || !id || !env || !I.routineEnvRunning(env)) failAsDie(f);
+    throw ReturnEx{f, id};
+}
+
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;
 
@@ -582,52 +658,22 @@ void Interpreter::registerBuiltins() {
         throw ReturnEx{d->next(a)};
     };
     B["fail"] = [](Interpreter& I, ValueList& a) -> Value {
-        // Return an (undefined) Failure from the enclosing sub carrying an exception:
-        // `fail $ex` / `fail "msg"` (→ X::AdHoc) / bare `fail` (picks up $!). `//` /
-        // .defined treat it as undefined, so a fallback value is chosen.
-        Value ex;
-        // `fail $failure` RE-ARMS it: the new Failure carries the same exception
-        // (unhandled again) — `foo() orelse fail $_` passes the error up
-        if (!a.empty() && a[0].t == VT::Hash && a[0].hashKind == "Failure" && a[0].hash() &&
-            a[0].hash()->count("exception")) {
-            ex = (*a[0].hash())["exception"];
-        } else if (!a.empty() && a[0].t == VT::Object) {
-            ex = a[0];
-        } else if (!a.empty()) {
-            auto it = I.classes_.find("X::AdHoc");
-            if (it != I.classes_.end()) {
-                ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = it->second;
-                ex.obj()->attrs["message"] = Value::str(a[0].toStr());
-                // `fail %h` keeps the value as the exception's PAYLOAD, as Rakudo's
-                // X::AdHoc does (Text::SubParsers reports a failed parse that way)
-                ex.obj()->attrs["payload"] = a[0];
-            } else ex = Value::str(a[0].toStr());
-        } else {
-            // the ROUTINE's own `$!`, as `die` reads it: an error the caller
-            // caught is not this routine's to fail with — a bare `fail` in a
-            // sub called after a `try` says "Failed" (Rakudo)
-            Value* be = nullptr;
-            for (Env* en = I.tctx().cur.get(); en; en = en->parent.get()) {
-                if ((be = en->local("$!"))) break;
-                if (en->routineFrame) break;
-            }
-            if (be && be->t != VT::Nil && be->t != VT::Type) ex = *be;
-        }
-        // a bare `fail` with no $! still carries an exception — X::AdHoc
-        // "Failed" — so `.exception.message` answers rather than dying on Any
-        if (ex.t != VT::Object)
-            ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.str() : std::string("Failed"));
-        Value f = rakuppNewFailure();
-        (*f.hash())["exception"] = ex;
-        (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
-                             ? ex.obj()->attrs["message"] : Value::str("Failed");
+        Value f = rtFailureFor(I, a);
         // with no ROUTINE to return from, `fail` behaves like `die` (Rakudo):
         // the exception itself is thrown where the fail was written — and so
-        // it does under `use fatal`, which a `try` block's scope is
-        if (I.tctx().curRoutineFrame == 0 || I.fatalHere()) {
-            std::string msg = (*f.hash())["message"].toStr();
-            throw RakuError{ex, msg};
-        }
+        // it does under `use fatal`, which a `try` block's scope is, and under
+        // a compiled `try`, which catches only what is thrown (rtFailRoutine)
+        // The routine it was WRITTEN in is the one it returns from, as for a
+        // `return` (Rakudo throws it to its lexical caller): in a block that
+        // another routine runs — `sub q { ap({ fail "x" }); … }` — it returned
+        // from ap, whose caller sank the Failure and died. Once that routine
+        // has gone (a block it handed out), there is nothing to return from,
+        // and Rakudo throws the exception.
+        const uint64_t lf = I.lexicalRoutineFrame();
+        if (I.tctx().curRoutineFrame == 0 || I.fatalHere() || I.tctx().compiledTry > 0 ||
+            (lf && !I.lexicalRoutineLive()))
+            throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
+        if (lf && lf < I.tctx().curRoutineFrame) throw ReturnEx{f, lf};
         throw ReturnEx{f};
     };
     // val(Str) — a fully-numeric string becomes the matching allomorph

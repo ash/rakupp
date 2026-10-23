@@ -194,6 +194,9 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                               (inLeap ? ",True" : "") + ")");
         }
         if (m == "Num") return Value::number(inv.toNum());
+        // Real's `self < 0 ?? -self !! self`: a Duration's is a Duration, an
+        // Instant's itself, or the Num prefix `-` makes of it (were bare Rats)
+        if (m == "abs" && args.empty()) return bare.toNum() < 0 ? prefixNumeric("-", inv) : inv;
         if (m == "Real" || m == "Bridge" || m == "narrow" || m == "Rat" || m == "FatRat" || m == "Numeric")
             return m == "Real" && inv.hashKind == "Instant" ? inv : methodCall(bare, m, args);
         if (m == "Int") return methodCall(bare, "Int", args);

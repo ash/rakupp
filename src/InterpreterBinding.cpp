@@ -5225,6 +5225,106 @@ void rtReturnFrom(Value v, uint64_t id, const std::shared_ptr<bool>& live) {
             "is outside the dynamic scope of the Routine where `return` was used)"};
     throw ReturnEx{std::move(v), id};
 }
+bool builtinTypeRefuses(Interpreter& I, const std::string& nm, const Value& rhs,
+                        const std::string& want);   // (InterpreterCore.cpp)
+// The check a store into a scalar DECLARED `want` makes once the type is known —
+// enforceTypedAssign's, which finds it in the declaring scope's tables, and
+// compiled code's (rtTypedScalarStore), which knows it from the declaration.
+// `en` is the scope that reads the type's name (a lexical alias of it).
+void Interpreter::enforceTypedValue(const std::string& nm, const std::string& want, Value& rhs, Env* en) {
+    // UInt is `subset UInt of Int where * >= 0`, so an assignment to one is
+    // checked like any other typed slot — rtTypeMatch already knows the rule.
+    // Without it here `my UInt $x = -42` simply stored the negative number
+    // (S32-num/int.t, "UInt rejects negative numbers").
+    static const std::set<std::string> kChecked = {
+        "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
+    };
+    auto undefOk = [&](const std::string& w) {
+        std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
+        if (tn == w) return true;
+        if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, w);   // `my Int $v = Color`
+        if (w == "Int" && tn == "IntStr") return true;
+        if (w == "Num" && tn == "NumStr") return true;
+        if (w == "Rat" && (tn == "RatStr" || tn == "FatRat")) return true;
+        if (w == "Str" && (tn == "IntStr" || tn == "NumStr" ||
+                           tn == "RatStr" || tn == "ComplexStr")) return true;
+        return false;
+    };
+    // A TYPED container cannot hold a Failure quietly: checking the type
+    // means looking at the value, and looking at a Failure detonates it.
+    // (`my $x = "abc".Rat` keeps the Failure — no type to check — which
+    // is why only this path throws.) A Weekly Challenge solution turned
+    // on it: `try { $rat = $s.Rat }; if $! { …fallback… }` never took
+    // its fallback, and the stored Failure blew up somewhere else.
+    if (rhs.t == VT::Hash && rhs.hashKind == "Failure") failureDetonate(rhs);
+    if (want == "atomicint") {
+        if (!(rhs.t == VT::Int || rhs.t == VT::Num ||
+              rhs.t == VT::Rat || rhs.t == VT::Bool))
+            throwTypedV("X::TypeCheck::Assignment",
+                {{"got", rhs}, {"expected", Value::typeObj("Int")},
+                 {"symbol", Value::str(nm)}},
+                "Type check failed in assignment to " + nm +
+                "; expected atomicint but got " + rhs.typeName());
+        rhs = Value::integer(rhs.toInt());
+        return;
+    }
+    // a COERCION subset (`subset S of Int()`) converts what it holds:
+    // `my S $v; $v = "42"` stores 42
+    if (isDefined(rhs) && subsets_.count(want) && isCoercionSubset(want)) {
+        const SubsetInfo& si = subsets_[want];
+        if (!si.base.empty() && rhs.typeName() != si.base) {
+            try { rhs = coerceToType(rhs, si.base); } catch (RakuError&) {}
+        }
+    }
+    // (one of the seven core types needs nothing past rtTypeMatch)
+    const bool core = kChecked.count(want) > 0;
+    if ((core &&
+         (isDefined(rhs) ? !rtTypeMatch(rhs, want) : !undefOk(want))) ||
+        // …read as the scope that declared the variable reads the name
+        (userTypeRefuses(rhs, want) && !lexicalAliasAccepts(en, want, rhs)) ||
+        (!core && builtinTypeRefuses(*this, nm, rhs, want)) ||
+        // a SUBSET's where-clause is late-bound: asked on every write
+        (rhs.t != VT::Nil && subsets_.count(want) && !isCoercionSubset(want) &&
+         !subsetMatches(want, rhs, 0)))
+        throwTypedV("X::TypeCheck::Assignment",
+            {{"got", rhs}, {"expected", Value::typeObj(want)},
+             {"symbol", Value::str(nm)}},
+            "Type check failed in assignment to " + nm +
+            "; expected " + want + " but got " + rhs.typeName() +
+            (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
+}
+
+const Callable& rtRetCallable(const char* retType) {
+    auto* keep = new PRef<Callable>(makePayload<Callable>());   // (a function-local static holds it)
+    (*keep)->coldM().retType = retType;
+    return **keep;
+}
+
+// --exe: a store into a `$` variable the program declared `want`. A Nil resets
+// it to the declared type, as `=` resets a typed container; anything else is
+// checked as the interpreter checks the same store (enforceTypedValue). Compiled
+// code checked nothing: `my Int $x; $x = "a"` stored the Str, `$x = Nil` the Nil.
+Value Interpreter::rtTypedScalarStore(Value rhs, const char* want, const char* nm) {
+    if (rhs.t == VT::Nil) return rtTypedDefault(want, '$');
+    enforceTypedValue(nm, want, rhs, global_.get());
+    return rhs;
+}
+// …and one into a `$` the INTERPRETER declared, from a module routine's native
+// body (which runs in the routine's interpreter frame): a Nil resets it to the
+// default its declaration recorded, anything else is checked by that
+// declaration (enforceTypedAssign)
+Value Interpreter::rtOuterScalarStore(Value rhs, const char* nm) {
+    if (rhs.t == VT::Nil) {
+        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
+            auto di = en->xr().varDefault.find(nm);
+            if (di != en->xr().varDefault.end()) return di->second;
+            if (en->local(nm)) break;
+        }
+        return Value::any();
+    }
+    enforceTypedAssign(nm, rhs);
+    return rhs;
+}
 // What `++` / `--` store: they ARE .succ / .pred. A Str always steps as a
 // string in Rakudo — even a numeric-looking one ("42"++ is Str "43", "10"--
 // keeps its width, "09") — and strSucc/strPred pick the magic window
@@ -5354,6 +5454,39 @@ Value rtObjHash(const Value& v) {
         g_cbInterp->throwTypedV("X::Assignment::RO", {{"typename", Value::str(ty)}, {"value", base}}, msg);
     throw RakuError{Value::typeObj("X::Assignment::RO"), msg};
 }
+// Where a write to an element lands: the element, or the container it IS — a
+// cell, or, in a LIST, the cell a kept List's item shares with its variable
+// (`($a, 2)`, built by the interpreter's keepListContainers), which the
+// interpreter's lvalue writes through. Returning the slot instead, the store
+// replaced that item with the value: `$a` never saw it, and a second write to
+// the same element then met an immutable List. An Array's element is replaced
+// as before: an Array copied from such a List is not to write the variables
+// (rtArrayVal decontainerizes the copy). (A user's Proxy has a STORE to call,
+// which a reference cannot; it is taken as before.)
+// …and a kept item for a TYPED variable (noteKeptVarType) is noted, so that
+// the store a module routine's `X[k] = v` makes through it is checked as `=`
+// into the variable checks it (rtKeptAssign)
+thread_local KeptItem t_keptItem;
+static Value& elemWriteTarget(Value& slot, bool list) {
+    if (slot.isCell()) return *slot.deref();
+    if (list)
+        if (PRef<Value> c = cellOfProxy(&slot)) {
+            if (g_cbInterp && g_cbInterp->keptTyped(slot)) t_keptItem = {&slot, c.get()};
+            return *c;
+        }
+    return slot;
+}
+void RtKept::check(Interpreter& I, Value& r) {
+    if (!proxy) return;
+    try { r = I.keptTypedStore(*proxy, r); }
+    catch (...) { r = std::move(old); throw; }
+}
+Value& rtKeptAssign(Interpreter& I, Value& ref, Value v) {
+    const KeptItem k = t_keptItem;
+    t_keptItem = {};
+    ref = k.cell == &ref ? I.keptTypedStore(*k.proxy, std::move(v)) : std::move(v);
+    return ref;
+}
 // stepOp: the `postfix:<++>` / `prefix:<-->` a step site resolves the place for
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp) {
     if (isHash) {
@@ -5365,7 +5498,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
         // what a `$` scalar vivifies is ITEMIZED, as the interpreter's is:
         // `my $u; $u<k> = 3; say $u.raku` is `${:k(3)}`
         if (base.t != VT::Hash || !base.hash()) { base = Value::makeHash(); base.itemized = true; }
-        return (*base.hash())[key.toStr()];
+        return elemWriteTarget((*base.hash())[key.toStr()], false);   // a cell: through it (below)
     }
     // A Range and a List are immutable too, as the interpreter's lvalue() has
     // them: a write REPLACED the Range with a fresh Array and wrote into the
@@ -5386,7 +5519,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
         // the gaps read as the container's own default — `is default(v)` first,
         // then the element type's object (sheet LA-21)
         base.arr()->resize(i + 1, containerFill(base));
-    return (*base.arr())[i];
+    return elemWriteTarget((*base.arr())[i], base.isList);
 }
 // `@$h[$i] = v` / `%$h<k>++` for native codegen: the scalar's own Array (Hash)
 // is the subscript base, as the interpreter's lvalue() takes it (#122). Any

@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-15.*
+*Started 2026-10-03. Last updated 2026-10-23.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -169,6 +169,12 @@ The same items grouped by theme, with a complexity estimate for each:
   - [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md): a per-class
     construction plan.
   - [UNBOX-PLAN.md](UNBOX-PLAN.md): P3–P5, partly overtaken by `--cnp`.
+- [ ] **Compiled float code at C's speed**: [NUM-UNBOX-PLAN.md](NUM-UNBOX-PLAN.md).
+  Where `-O` leaves the box it already matches C, and elsewhere it is 6–190×
+  slower. P0, a wrong answer, is done: the F64 loop lane answered `Inf` for a
+  zero divisor, where both engines and Rakudo fail. Next come a refusal
+  census, Num twins of routines, native arrays under `--exe`, element lanes,
+  and small arrays that never leave their routine.
 - [ ] **`--exe` native module bodies**: the remaining cost is method dispatch
   (the `RT.methodCall` ladder).
 - [ ] **Built-in methods in interpreted loops**: each walked methodCall's
@@ -229,14 +235,6 @@ The same items grouped by theme, with a complexity estimate for each:
     CPointer), and autothreads over a Junction (Rakudo: P6opaque).
   - `.resume` resumes an exception thrown by `die`, or by the engine (Rakudo:
     "This exception is not resumable").
-- [ ] **S07-hyperrace/basics.t segfaults under load** (found 2026-10-15): in
-  "Concurrent iterator access", ten `start` workers asking one `(^10).race`
-  for `.iterator` at once end the process with SIGSEGV (exit 139) after the
-  HyperSeq half passes, so the file reports 89 of 90. Alone it passes; run in
-  a loop beside a Roast sweep it crashed 1 of 16 times on 5549bf83 and 3 of
-  16 with the native-parameter batch, and two of six sweeps that day caught
-  it (the race is older than the batch, which touches no iterator code).
-
 - [ ] **HyperSeq edges against Rakudo 2026.09** (found 2026-10-09; `.raku`
   and `(1..Inf).hyper.map` fixed 2026-10-10): `.elems` then `.list` answers
   twice where Rakudo's `.elems` consumes it (X::Seq::Consumed);
@@ -516,7 +514,11 @@ The same items grouped by theme, with a complexity estimate for each:
   - `--cnp`: typed-subtree-native-and-rat-leaves.raku's 27, "a FatRat leaf
     keeps the general path", fails.
   - Both gates' other difference, lookbehind-lexical-token-window.raku, is a
-    timing line the program prints.
+    timing line the program prints. Behind it both compiled builds failed
+    one of its checks alike, which a gate comparing them cannot see: .comb
+    did not resolve a `my token` compiled code declares (fixed 2026-10-23;
+    t/regression/exe-lexical-token-calls.raku holds both builds and the
+    interpreter to one set of answers).
 - [ ] **`--exe` / AOT findings** (t/aot):
   - `&?ROUTINE.name` is empty and `callframe(0).line` is 0.
   - `$Mod::var` of a unit module fails.

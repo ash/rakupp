@@ -110,6 +110,13 @@ throws `X::Numeric::DivideByZero` there instead**, so `1e0 / 0e0` is a
 pre-existing divergence of this interpreter's, visible with no lane in sight and
 not introduced here.
 
+*2026-10-23: no longer true, and recorded here rather than quietly fixed. The
+boxed path now fails as Rakudo does: `rtSlash` hands a zero divisor to
+`applyArith`. The lane, unchanged, answered `Inf`, so a `while` loop that
+divided a Num by zero gave a wrong answer compiled, with `-O` and without. It
+bails on a zero divisor now; [NUM-UNBOX-PLAN.md](NUM-UNBOX-PLAN.md), P0, has
+that fix and the missing landing pad it uncovered.*
+
 ### Lane types, and the rule that keeps them sound
 
 Each slot gets one lane type, `I64` or `F64`, inferred by a fixpoint over the

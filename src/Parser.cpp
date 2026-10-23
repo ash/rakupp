@@ -7927,17 +7927,8 @@ ExprPtr Parser::parsePrimary() {
                 auto ft = scalarDeclTypes_.back().find(raw);
                 if (ft != scalarDeclTypes_.back().end() && ft->second == "str") e->nativeStrRead = true;
             }
-            // …and a variable DECLARED native int, in this block or any around
-            // it: the nearest declaration of the name decides
-            if (raw == e->name && raw.size() > 1 && raw[0] == '$')
-                for (auto fr = nativeIntDecl_.rbegin(); fr != nativeIntDecl_.rend(); ++fr) {
-                    auto it = fr->find(raw);
-                    if (it != fr->end()) {
-                        e->nativeIntRead = it->second == 'i';
-                        e->nativeNumRead = it->second == 'n';
-                        break;
-                    }
-                }
+            // …and what its declaration says (resolveScalarDecl)
+            if (raw == e->name && raw.size() > 1 && raw[0] == '$') resolveScalarDecl(*e);
             // a PACKAGE-qualified variable autovivifies its packages:
             // `$A40::x = 41` makes `A40` a name (its `.WHO` holds `$x`)
             {
@@ -11345,6 +11336,30 @@ void Parser::noteScalarDecls(const Expr* e) {
     if (!ve->declare || ve->name.size() < 2 || ve->name[0] != '$') return;
     scalarDeclTypes_.back()[ve->name] = ve->d().declType;
     nativeIntDecl_.back()[ve->name] = nativeScalarKind(ve->d().declType);
+    scalarDeclType_.back()[ve->name] = ve->d().declType;
+}
+
+// A `$name` use and the declaration of it in this block or any around it,
+// the nearest one deciding: whether it is a native int or num (its reads are
+// then VarExpr::nativeIntRead / nativeNumRead), and its declared type, boxed
+// or not, for what a store into it does (lexResolved, readType)
+void Parser::resolveScalarDecl(VarExpr& e) {
+    for (auto fr = nativeIntDecl_.rbegin(); fr != nativeIntDecl_.rend(); ++fr) {
+        auto it = fr->find(e.name);
+        if (it != fr->end()) {
+            e.nativeIntRead = it->second == 'i';
+            e.nativeNumRead = it->second == 'n';
+            break;
+        }
+    }
+    for (auto fr = scalarDeclType_.rbegin(); fr != scalarDeclType_.rend(); ++fr) {
+        auto it = fr->find(e.name);
+        if (it != fr->end()) {
+            e.lexResolved = true;
+            if (!it->second.empty()) e.dm().readType = it->second;
+            break;
+        }
+    }
 }
 
 char Parser::nativeScalarKind(const std::string& t) {
@@ -11493,6 +11508,9 @@ std::unique_ptr<Block> Parser::parseBlock() {
     nativeIntDecl_.emplace_back();
     for (auto& pn : pendingParamNative_) nativeIntDecl_.back()[pn.first] = pn.second;
     pendingParamNative_.clear();
+    scalarDeclType_.emplace_back();
+    for (auto& pt : pendingParamType_) scalarDeclType_.back()[pt.first] = pt.second;
+    pendingParamType_.clear();
     dynUsed_.emplace_back();
     lexUsed_.emplace_back(); lexDecl_.emplace_back();
     for (auto& pn : pendingParamNames_) lexDecl_.back().insert(pn);
@@ -11521,6 +11539,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     monkeyScopes_.pop_back();
     scalarDeclTypes_.pop_back();
     if (nativeIntDecl_.size() > 1) nativeIntDecl_.pop_back();
+    if (scalarDeclType_.size() > 1) scalarDeclType_.pop_back();
     if (dynUsed_.size() > 1) dynUsed_.pop_back();
     if (lexUsed_.size() > 1) { lexUsed_.pop_back(); lexDecl_.pop_back(); }
     varsPragma_ = savedVarsPragma;
@@ -12930,11 +12949,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     // one there is no outer binding — see noteLexDecl)
     pendingParamNames_.clear();
     pendingParamNative_.clear();
+    pendingParamType_.clear();
     std::function<void(const std::vector<Param>&)> addNames = [&](const std::vector<Param>& ps) {
         for (auto& p : ps) {
             if (!p.name.empty()) pendingParamNames_.push_back(p.name);
-            if (p.name.size() > 1 && p.name[0] == '$')
+            if (p.name.size() > 1 && p.name[0] == '$') {
                 pendingParamNative_.emplace_back(p.name, nativeScalarKind(p.type));
+                pendingParamType_.emplace_back(p.name, p.type);
+            }
             if (p.subSig) addNames(*p.subSig);
         }
     };

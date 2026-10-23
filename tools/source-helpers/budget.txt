@@ -9,7 +9,7 @@ default function 1500
 file src/Builtins.cpp 10512
 file src/InterpreterCore.cpp 32830
 file src/MethodCallPart2.cpp 11200
-file src/Parser.cpp 18200
+file src/Parser.cpp 18240
 
 function Interpreter::evalAssignInner 3797
 function Interpreter::evalBinary 1704
@@ -27,6 +27,6 @@ function applyArithGeneral 2573
 function main 1762
 
 compiler Apple clang version 21.0.0 (clang-2100.3.34.2)
-preprocessed src/BuiltinsParts.h 92678
-preprocessed src/Interpreter.h 84200
-preprocessed src/InterpreterParts.h 100695
+preprocessed src/BuiltinsParts.h 92815
+preprocessed src/Interpreter.h 84290
+preprocessed src/InterpreterParts.h 100795

@@ -1,7 +1,8 @@
-# Float-heavy code under Raku++: 21 issues, interpreted and `--exe`
+# Float-heavy code under Raku++: 23 issues, interpreted and `--exe`
 
 *First measured 2026-10-15 at 5.4.1-78-g52df8573, re-checked 2026-10-22 at
-5.5.0, on Apple Silicon (arm64), macOS, at a load average of 3–5. Times are
+5.5.0, and re-measured whole 2026-10-23 at 5.5.0-8-g15a27449, on Apple Silicon
+(arm64), macOS, at a load average of 3–5. Times are
 the best of 3 unless an entry says otherwise; read the ratios rather than the
 absolute times.*
 
@@ -14,6 +15,16 @@ lines.
 
 - Each entry keeps its 5.4.1 report and adds an **On 5.5.0** line. Issues
   18–21 are new on 5.5.0.
+- **After the fix branch** (`claude/float-heavy-fixes`, 2026-10-22) says what
+  that branch changed, measured against a v5.5.0 build in the same sitting,
+  best of 3. Its second pass (issue 17, and the wrong answers the first left
+  open) is measured against the first pass's build, d7c6d9d5.
+  [Found while fixing](#found-while-fixing) lists the wrong answers the work
+  turned up on the way, most of them fixed there too.
+- **On 5.5.0-8** (2026-10-23, 5.5.0-8-g15a27449, with the fix branch merged)
+  the whole program was re-measured, in one interleaved run with the other
+  languages and head to head with 5.5.0. That measurement found issues 22
+  and 23; see [Re-measured on 5.5.0-8](#re-measured-on-550-8).
 - The probe scripts in the appendix reproduce the cost numbers in either mode.
 
 ## How it compares with other languages
@@ -25,12 +36,15 @@ over six input sizes.
 
 | | × CPython |
 |---|--:|
-| Fortran (gfortran `-O3`) | 176× |
-| Go | 123× |
+| Fortran (gfortran `-O3`) | 177× |
+| Go | 122× |
 | Rust, C++, TypeScript | ~55× each |
-| Raku++ 5.5.0, `--exe -O` | 3.2× (2.5× on 5.4.1) |
-| Raku++ 5.5.0, `--exe -O`, native types | 2.2× (1.7×) |
-| Raku++ 5.5.0, interpreted | 0.47× (0.44×) |
+| Raku++ 5.5.0-8, `--exe -O` | 3.5× (5.5.0: 3.2×, 5.4.1: 2.5×) |
+| Raku++ 5.5.0-8, `--exe -O`, native types | 2.7× (2.2×, 1.7×) |
+| Raku++ 5.5.0-8, interpreted | 0.48× (0.47×, 0.44×) |
+
+The other languages' figures are from the 2026-10-23 run and match the
+2026-10-15 run within 3%.
 
 - **Fortran and Go lead on data layout, not language.** Their versions
   allocate nothing per call: integers and doubles in fixed arrays, and buffers
@@ -39,39 +53,41 @@ over six input sizes.
   formatting.
 - **Raku++'s gap is the same kind of cost on a larger scale.** Every value is a
   128-byte box, and every operation, array access and `.push` is a runtime
-  call. The profile under [Found on 5.5.0](#found-on-550) shows no single
-  hotspot.
+  call. The profiles under [Found on 5.5.0](#found-on-550) and
+  [Re-measured on 5.5.0-8](#re-measured-on-550-8) show no single hotspot.
 - **Per construct, compiled Raku++ beats CPython only on scalar float work.**
-  It is 2–10× cheaper there, and level with CPython on arrays and calls. Its
-  speed-up falls from 3.5× on the smallest input to 2.2× on the largest,
-  where a recursion of about 1,000 ten-argument calls dominates. A compiled
-  call costs 23 ns against CPython's 36.
+  It is 2–10× cheaper there, and level with CPython on array reads and loops.
+  On 5.5.0-8 its speed-up falls from 4.0× on the smallest input to 2.3× on
+  the largest, where a recursion of about 1,000 ten-argument calls
+  dominates. A compiled call costs 23 ns against CPython's 36.
 
 ## Status on 5.5.0
 
-| # | issue | on 5.5.0 |
-|---|---|---|
-| 1 | `Num.Rat(0)` is not exact | still present |
-| 2 | one list literal bundles the whole program | still bundles; the bundle's routines are now native |
-| 3 | `for $*IN.lines` buffers all of stdin (`--exe`) | **fixed** |
-| 4 | `CATCH` or `Int(…)` bundles the whole program | `Int(…)` **fixed**; `CATCH` still bundles, routines native |
-| 5 | no `Num` fast path | **fixed** for `+ - * /` and comparisons; unary minus is issue 18 |
-| 6 | `+&` `+>` `+<` off the int fast path | **fixed** |
-| 7 | labelled `next` is a control exception | **fixed**; still about 20× a `while`/`last` loop |
-| 8 | type-object terms looked up by name | **fixed** |
-| 9 | closures are not direct calls (`--exe`) | still present, 5.2× (was 6.5×) |
-| 10 | a `use`d module's sub costs ~6× (`--exe`) | still present |
-| 11 | smaller costs | three of four **fixed**; `constant` still costs |
-| 12 | a Failure stored in a native becomes `2` | **fixed**: dies |
-| 13 | a typed `for` parameter breaks the `--exe` build | **fixed** |
-| 14 | native arrays bundle the whole program | still bundles; routines native |
-| 15 | the loop lane gives a read-only variable an int slot | **fixed** |
-| 16 | the code generator ignores native types | partly: fast arms added, still boxed; `num` code 3× untyped |
-| 17 | native types leave the interpreter's kernels | **fixed** for `int`, not for `num` |
-| 18 | unary minus on a `Num` is generic | new |
-| 19 | Array methods dispatch by name (`--exe`) | new |
-| 20 | a sub with an `@` parameter takes the `ValueList` path | new |
-| 21 | iterating a small array costs about what CPython does | new |
+| # | issue | on 5.5.0 | after the fix branch |
+|---|---|---|---|
+| 1 | `Num.Rat(0)` is not exact | still present | **misreported**: Rakudo answers the same; fixed where the two differed |
+| 2 | one list literal bundles the whole program | still bundles; the bundle's routines are now native | still bundles; three wrong answers around it **fixed** |
+| 3 | `for $*IN.lines` buffers all of stdin (`--exe`) | **fixed** | |
+| 4 | `CATCH` or `Int(…)` bundles the whole program | `Int(…)` **fixed**; `CATCH` still bundles, routines native | unchanged |
+| 5 | no `Num` fast path | **fixed** for `+ - * /` and comparisons; unary minus is issue 18 | |
+| 6 | `+&` `+>` `+<` off the int fast path | **fixed** | |
+| 7 | labelled `next` is a control exception | **fixed**; still about 20× a `while`/`last` loop | |
+| 8 | type-object terms looked up by name | **fixed** | |
+| 9 | closures are not direct calls (`--exe`) | still present, 5.2× (was 6.5×) | **fixed**: 1.06× a top-level sub |
+| 10 | a `use`d module's sub costs ~6× (`--exe`) | still present | unchanged |
+| 11 | smaller costs | three of four **fixed**; `constant` still costs | `constant` **fixed**, both modes |
+| 12 | a Failure stored in a native becomes `2` | **fixed**: dies | |
+| 13 | a typed `for` parameter breaks the `--exe` build | **fixed** | |
+| 14 | native arrays bundle the whole program | still bundles; routines native | unchanged |
+| 15 | the loop lane gives a read-only variable an int slot | **fixed** | |
+| 16 | the code generator ignores native types | partly: fast arms added, still boxed; `num` code 3× untyped | **at the untyped code's speed** on every probe; still boxed |
+| 17 | native types leave the interpreter's kernels | **fixed** for `int`, not for `num` | **fixed** for `num`: a `num` sub and loop at the untyped code's cost |
+| 18 | unary minus on a `Num` is generic | new | **fixed**, both modes |
+| 19 | Array methods dispatch by name (`--exe`) | new | **fixed** for `.elems`, `.defined`, a one-argument `.push` |
+| 20 | a sub with an `@` parameter takes the `ValueList` path | new | **fixed** |
+| 21 | iterating a small array costs about what CPython does | new | 9–12% faster through 19 and 20; no array lane |
+| 22 | `.pop`, `.splice` and methods on an array element dispatch by name | — | found on 5.5.0-8 |
+| 23 | the native-typed program is still ~1.3× slower than untyped | — | found on 5.5.0-8 |
 
 ## Behaviour
 
@@ -83,20 +99,34 @@ say 2.6799999999999997e0.Rat(1e-300).nude;
 say 0.1e0.Rat(0).nude;
 ```
 
-| | actual (both modes) | expected |
+| | actual (both modes, and Rakudo 2026.09) | the double's exact value |
 |---|---|---|
 | `2.6799999999999997e0.Rat(0)` and `.Rat(1e-300)` | `(392892154991943 146601550370128)` | `(377176468792279 140737488355328)` |
 | `0.1e0.Rat(0)` | `(1 10)` | `(3602879701896397 36028797018963968)` |
 
 The expected values have a power-of-two denominator, the double's exact
-binary value. That is what Rakudo returns, and what CPython's
-`float.as_integer_ratio()` returns.
+binary value. That is what CPython's `float.as_integer_ratio()` returns.
+*(The 5.4.1 report also said Rakudo returns it. It does not: see the fix
+branch line below.)*
 
 - **Impact:** any exact-arithmetic code that relies on `.Rat(0)` to recover a
   double's true value gets a nearby rational instead.
 - **Workaround:** decompose the double by hand: scale by powers of two, which
   is exact, and take `floor()`.
 - **On 5.5.0:** unchanged in both modes; the same three outputs.
+- **After the fix branch:** the three outputs above are Rakudo 2026.09's too:
+  its Num.Rat walks the continued fraction until the fractional part is 0 or
+  b/d is within epsilon, and `.Rat(0)` is not the exact value in either
+  engine. Raku++ now walks it step for step as Rakudo does, where it had
+  differed: its convergents were int64, so `1e-300.Rat(0)` was 0/1 (Rakudo:
+  1/10³⁰⁰); a fractional part below 1e-18 stopped a convergent early; and b/d
+  past 2⁵³ was rounded twice (MoarVM's `div_In` rounds it once). Where
+  Rakudo's own walk never ends — `7.01492021304424e-06.Rat(0)` grows Ints
+  until memory runs out, `5e-324.Rat(0)` dies — Raku++ answers the exact
+  value. 13,222 (input, epsilon) pairs agree with Rakudo; the rest of the
+  120,054 were not judged, Rakudo slowing to a crawl in long runs.
+  **Workaround** for the exact value, in either engine: the decomposition
+  above.
 
 ### 2. `--exe` bundles the whole program over one list literal
 
@@ -125,6 +155,10 @@ my @counts = 0; bump(@counts);  # ... and, anywhere else, a write through a para
   bundle compiles the routines natively: `--exe: 2 of 2 program routines
   compiled natively`. Going by the note, one occurrence now costs the
   mainline its native code rather than every routine (not timed).
+- **After the fix branch:** still bundles. Testing it found that those native
+  routines wrote into a kept List's item instead of through it — the
+  bundle's answers differed from the interpreter's — and two more holes like
+  it; see [Found while fixing](#found-while-fixing).
 
 ### 3. `--exe`: `for $*IN.lines` reads all of stdin before the first iteration
 
@@ -164,6 +198,7 @@ say Int(2.5e0);
 - **On 5.5.0:** `say Int(2.5e0)` compiles natively and prints `2`. The `CATCH`
   program still bundles (`phaser / CATCH block (line 1)`), but its routines
   are compiled natively inside the bundle, as in issue 2.
+- **After the fix branch:** unchanged.
 
 ## Performance
 
@@ -253,6 +288,13 @@ two.
 
 - **On 5.5.0:** still present. The closure takes 209 µs compiled against
   40 µs for the top-level sub (5.2×). Interpreted, 361 against 465 µs.
+- **After the fix branch:** fixed under `-O`: 42.5 µs against 39.9 (210.6 on
+  5.5.0). Every call of a lexical sub found `&walk` in the runtime env and
+  went through callCallable; a call site in its scope now reaches the body directly,
+  through a weak handle (so a body that calls itself does not keep itself
+  alive), and takes the old path once that scope has gone. A sub with a
+  return type, a trait or other than plain parameters, and every sub in a
+  program that says `wrap`, keeps the old path.
 
 ### 10. Under `--exe`, calling a sub from a `use`d module costs about 6×
 
@@ -283,6 +325,13 @@ printf "local sub  : %6.1f ns/call\n", (now - $t) / $N * 1e9;
   compiling.
 - **On 5.5.0:** still present: 64–75 ns per module call against about 10 ns
   for the local sub, and `--exe-info` still says `"mode":"native"`.
+- **After the fix branch:** unchanged. The call is `callEnvFirstAmp("&add3",
+  …)` — a lookup by name, callCallable, and the interpreter's own int kernel
+  for `add3`, which runs before the module's native body is reached. The
+  module's body is an `(Interpreter&, Env*, Value&)` function reading its
+  parameters from the frame, so a direct call needs a second, Value-parameter
+  entry per module routine, and the program's call site the proof that the
+  name still means it.
 
 ### 11. Smaller costs
 
@@ -308,6 +357,15 @@ issues 5 and 6 are close to the floor.
 
 Interpreted, the chained comparison and the Pair methods still cost about
 1.5× and 2.4× their alternatives.
+
+**After the fix branch:** two `constant` references cost 1.5 ns compiled and
+5.7 interpreted, against 9.2 / 213.9 on 5.5.0 (two literals: 1.7 / 5.5). The
+constant kept the sub off its int kernel in both engines; a top-level
+`constant` holding a machine Int is now that literal to both kernel
+compilers. The interpreter's takes it only where the term resolves from the
+global scope itself — a top-level sub, a mainline loop — so a shadowing
+declaration that has not run yet at the first call cannot leave the global's
+value in the kernel, and none while other threads run.
 
 ## Native types (`num`, `int`, native arrays)
 
@@ -381,6 +439,7 @@ say @a[1];
 - **On 5.5.0:** `my num @a` still bundles (`a typed @ variable (my num @a)
   (line 1)`), but the routines inside the bundle are compiled natively, as in
   issue 2. The other spellings were not re-checked.
+- **After the fix branch:** unchanged.
 
 ### 15. The `-O` loop lane gives a read-only variable an int slot
 
@@ -437,6 +496,24 @@ sub f(num $x --> num) { my num $s = 0e0; my int $i = 0;
 
   The whole native-typed program is still about 1.5× slower compiled than
   its untyped version.
+- **After the fix branch:** each probe at the untyped code's speed; natives
+  are still boxed Values. Three costs were left: `rtNativeArith` and
+  `rtNumArith` dispatched on the operator's text and were not inlined (a
+  helper per operator now); a typed parameter that already conforms was moved
+  back into itself and its descriptor's static guard read (it stays where it
+  is now); and a native store compared the type's name with `strcmp`, out of
+  line, twice (the kind is decided where the code is generated).
+
+  | `--exe -O`, ns/op | 5.5.0 | fix branch | untyped |
+  |---|---:|---:|---:|
+  | `(num $a, num $b --> num)` | 29.1 | 10.0 | 9.7 |
+  | `(Num $a, Num $b --> Num)` | 22.3 | 9.7 | |
+  | `num < num` | 19.5 | 6.2 | 6.2 |
+  | `(int $m --> int)` | 10.6 | 5.5 | 1.5 |
+  | the issue-15 `num` loop, `$x` read only | 28.5 | 9.5 | 8.7 |
+  | …and `$x` also written | 28.1 | 9.4 | 8.7 |
+
+  Interpreted, the native subs cost what they did (issue 17).
 
 ### 17. Native types take subs off the interpreter's machine-value kernels
 
@@ -452,6 +529,23 @@ the same pattern.
   `(int $m --> int)` sub costs 6.2 ns against 6.8 untyped. The `num` sub
   costs 418.5 against 140.8, and the issue-15 float loops cost 1,075 / 2,362 ns
   typed against 276 / 410 untyped (`$x` read only / also written).
+- **After the fix branch:** unchanged by its first pass. The `num` sub
+  missed the lean call path (`plainSubShape` took untyped `$` parameters
+  only) and paid the general binder's type-name lookups and `checkRetType`
+  on every call; the int sub escaped them only because it runs as a kernel.
+  The loops entered no loop kernel: one refused every native variable.
+- **After the second pass:** a sub whose parameters and return name `num`,
+  `int`, `Num`, `Int` or `Str` takes the lean path when each argument already
+  is of its type, and binds it as the general binder does (any other argument
+  goes the general way). A loop kernel takes a full-width `int` or `num`
+  variable as a plain Int or Num, bails where a result leaves int64 (the
+  native path then wraps), and writes the number back into the native cell.
+  Interpreted, against d7c6d9d5, ns per call: the `num` sub 387.1 → 152.6
+  (untyped 144.8), the `Num` one 360.8 → 148.3, `num < num` 245.2 → 143.1
+  (untyped 134.6), the issue-15 loops 1,024 / 2,332 → 292 / 581 (untyped
+  282 / 407; the second's `num $x is copy` still takes the general binder).
+  perf-guard's strscan, whose loop counts in a `my int`, runs as a kernel:
+  96.4 → 6.0 ms.
 
 ## Found on 5.5.0
 
@@ -487,6 +581,15 @@ sub neg($x) { -$x }
   one float program, 25 of the 27 `applyArith(` call sites left in the
   generated C++ were `applyArith("-", Value::integer(0), …)`.
 - **Suggested fix:** a `rtNeg` helper with `Int` and `Num` arms.
+- **After the fix branch:** fixed. Compiled, `-$x` is `rtNeg`, with Num and
+  machine-Int arms inline and the interpreter's prefixNumeric for the rest:
+  5.2 ns against 6.5 for `0e0 - $x` (12.9 on 5.5.0). That also fixed two
+  disagreements: `0 - $x` gave +0 for `-$x` on 0e0, where the interpreter and
+  Rakudo give -0, and numified an object through `.Bridge` where they ask
+  `.Numeric`. Interpreted, the operator has the same arm and a per-node
+  handler: 128.6 against 126.9 (143.5 on 5.5.0). `my $y = -$x` is still about
+  100 ns slower than `my $y = 0e0 - $x`, as `my $y = +$x` and `?$x` are: the
+  declaration lane takes only some right-hand sides.
 
 ### 19. Under `--exe`, `.push`, `.elems` and `.defined` dispatch by name
 
@@ -509,6 +612,11 @@ sub three() { my @a; @a.push(1e0); @a.push(2e0); @a.push(3e0); @a }
 - **Suggested fix:** when the receiver is known to be an `Array` (an `@`
   variable or parameter), call the method's C++ body directly. `.defined` on
   any `Value` is a tag test.
+- **After the fix branch:** fixed for these three. methodCall already
+  answered them in its first lines for a plain invocant; `-O` now makes the
+  same tests at the call site (one set of predicates, which methodCall uses
+  too): `@a.elems` 8.0 ns (24.9), `$x.defined` 6.4 (9.7), `my @a`, three
+  `.push`, return 54.1 (89.8). `[1e0, 2e0, 3e0]` is unchanged at 66.
 
 ### 20. A sub with an `@` parameter gets no direct-arity overload
 
@@ -526,6 +634,9 @@ at(@ten); dollar(@ten);
   per call.
 - **Suggested fix:** let an `@` parameter that is bound, not copied, take a
   `Value` in the direct overload.
+- **After the fix branch:** fixed: a plain `@` or `%` parameter takes the
+  direct overload, bound unitemized as the boxed path binds it. 3.9 ns, the
+  same as `sub ($x)` (16.8 on 5.5.0).
 
 ### 21. Iterating a small array costs about what CPython does
 
@@ -552,6 +663,225 @@ sub sum-while(@a) { my $s = 0e0; my $i = 0; my $k = @a.elems;
 - **For comparison:** compiled scalar `Num` arithmetic is 2–10× cheaper than
   CPython's, so a program that mixes the two lands at roughly 3× CPython
   overall.
+- **After the fix branch:** `for @a -> $x` 148.8 ns and the `while` loop
+  155.2 (168.6 / 170.6 on 5.5.0), from issues 19 and 20; there is still no
+  array-element lane.
+
+## Found while fixing
+
+Checked against the interpreter and Rakudo 2026.09 while the issues above were
+worked on. All but the last two groups are fixed on the fix branch, each with
+a regression file.
+
+- **A kept List was not written through in compiled code**
+  (`t/regression/exe-kept-list-writes.raku`). `f(($a, 2))` with `sub f($x) {
+  $x[0] = 5 }` writes `$a` in Rakudo and interpreted. Compiled, three ways it
+  did not: (A) bundled for issue 2, the program's native routines stored into
+  the List's item instead of through it, so `$a` stayed 1 and a second write
+  to the item died "Cannot modify an immutable List"; (B) a native program
+  passing such a List to a **module's** routine built it of values, and the
+  module's write died; (C) a module routine keeping one did the same. Now
+  `rtIndexRef` writes through the cell a List's item shares with its
+  variable (an Array copied from such a List takes the values, so writing
+  the copy writes no variable), a call that hands a kept List to a routine
+  outside the program bundles it, and a module routine keeping one stays
+  interpreted.
+- **`fail` in a compiled routine died** (`exe-fail-in-routine.raku`). The
+  builtin returns from the routine only when the interpreter has a routine
+  frame, which compiled code never has, so `q(-1) // "failed"` printed the
+  exception and exited 1, with or without `-O`. It returns the Failure now;
+  in a block closure of the routine it is aimed at the routine's frame, as a
+  `return` there is; and it still dies while a compiled `try` runs, which is
+  what makes `(try q(-1)) // "caught: $!"` catch it, as interpreted.
+- **Compiled `-$x` on 0e0 was +0**, and on an object asked `.Bridge`
+  (issue 18; `exe-float-fast-paths.raku`).
+- **Second pass, compiled against interpreted**, each on v5.5.0 too:
+  - A store into a `$` neither reset on Nil nor checked a declared type
+    (`exe-scalar-store-nil-and-type.raku`): `my $r = try die "x"` left `$r`
+    Nil (interpreted and in Rakudo: Any), `my @a = Nil` was `[]`, `my Int $x;
+    $x = "a"` stored the Str and `$x = Nil` the Nil. A store checks the type
+    the parser resolved the name to (`VarExpr::readType`) as the interpreter
+    checks it; in a bundle, a module-mode routine's store into one of the
+    interpreter's variables asks that variable's declaration.
+  - `-O` answered differently from plain `--exe` on `nfc-join-window.raku`
+    and `typed-subtree-native-and-rat-leaves.raku`
+    (`exe-nfc-join-and-destructure.raku`). `~` and an interpolation joined
+    two Strs byte by byte where the interpreter joins them NFC (`"e" ~
+    "\x[301]"` was two code points); `my ($a, $b) = $j` with a List in `$j`
+    bound the List to `$a` instead of iterating it; `!=` between an unsigned
+    native and a negative signed one was True in the condition lane (Rakudo:
+    False); and `my $bound := $q` compiled as a copy, so `$bound` missed
+    later writes (a `:=` of a scalar to a container is not compiled natively
+    now: it bundles).
+  - A `fail` in a block that another routine runs (`sub q { ap({ fail "z" });
+    … }`) returned from `ap`, and `q` sank the Failure and died: compiled, a
+    sub without a frame of its own caught a return aimed past it, and a
+    module routine's block asked the builtin, which saw `ap`'s frame.
+- **Second pass, interpreter against Rakudo**
+  (`duration-slip-fail-destructure.raku`), each on v5.5.0 too:
+  - `-$duration` and `abs $duration` were bare Rats (Rakudo: Durations), and
+    `0 - $duration`, `7 % $duration` and `5 - $instant` Durations (Rakudo:
+    the Num of the Bridges); `-$instant` is a Num. Compiled, every operator
+    dropped the tag (`$d - 0` was a Rat).
+  - `@a.push($s)` and `.unshift($s)` with a Slip in `$s` stored the Slip
+    (Rakudo slips it); the `unshift` sub answered the new length, slipped
+    nothing and checked no element type.
+  - `my ($k, $v) = %h` put the Hash in `$k` (Rakudo: its pairs).
+  - The `fail` in a block above, interpreted: the builtin returned from the
+    routine that ran the block. It returns from the one it was written in,
+    as a `return` does, and dies once that one has returned.
+- **Second pass, found on the way:** from a sub's second call on, the lean
+  call path took `f(($a, 2))` and dropped what makes the List keep `$a`'s
+  container, so `$x[0] = 5` in `f` died "Cannot modify an immutable List"
+  (`native-typed-sub-lean-and-loop-kernel.raku`). On v5.5.0 too.
+- **`t/exe/fuzz.raku`'s 20 `*-shadow` programs were not valid Raku.** The
+  inner `while` / `until` loop's counter is a `my` of the outer body, written
+  after that body has read the outer counter, which Rakudo refuses to compile
+  as rakupp does. The generator now names the inner counter apart; the loop
+  variable `$a` still shadows.
+- **Third pass**, each on v5.5.0 too:
+  - Roast's `S07-hyperrace/basics.t` segfaulted in its last test (one
+    RaceSeq iterator pulled from several threads) about one run in six
+    (`worker-exit-vs-cycle-collector.raku`). A worker gave its count in
+    `liveWorkers_` back at the end of its body, before its closure's captures,
+    its ExecContext and its frame pools were let go; the cycle collector,
+    which runs on the main thread once that count is 0, walked containers
+    those releases were freeing. The count now goes back when the thread has
+    let go of everything (`WorkerExit`, the thread's first thread_local):
+    300 runs of that file without a crash.
+  - A compiled routine did not apply its `--> T`
+    (`exe-return-type-checks.raku`): `sub r(--> Int) { "x" }` answered "x",
+    `--> Str()` did not coerce, `--> Int:D` passed Int. Every way out of a
+    top-level, lexical or anonymous sub, multi candidate, method or pointy
+    block is checked now (`Codegen::retWrap`, by `checkRetType`; a value of a
+    core type passes inline, at no cost measurable against 41e4d32c's
+    unchecked call). On the way: `-O` did not
+    compile a `--> Int` sub of no parameters that is an int kernel (its
+    kernel guard named the `__a` its direct overload has not got).
+  - A write through a kept List into a typed variable was not checked, in
+    either engine (`kept-list-typed-writes.raku`): `my Int $a; f(($a, 2))`
+    writing a Str stored it, and a Nil stayed Nil instead of resetting to the
+    default. The kept item carries the variable's type, name and default;
+    interpreted, a store through it checks them, and compiled, where only a
+    bundle's module-mode routines meet such a List, `X[k] = v` and `X[k] op=
+    v` do.
+- **Not fixed.** Interpreter against Rakudo: a native `int` times an Int that
+  does not fit (`sub f(int $x) { $x * 2**62 }; f(3)`) is the BigInt
+  13835058055282163712 where Rakudo wraps to -4611686018427387904; a `--> num`
+  routine returning a Str hands it back where Rakudo dies ("This type cannot
+  unbox to a native number"); and a `fail` in a block written at the
+  mainline, run by a routine, returns from that routine where Rakudo dies
+  (Test's `eval-lives-ok` relies on a `fail` at a string's top level
+  returning). In both engines, a List kept in a variable and handed to a sub
+  (`my $kl = ($k, 2); w($kl)` with `sub w($l) { $l[0] = 1 }`) dies "Cannot
+  modify an immutable List" where Rakudo writes `$k`. Each is in
+  [TODO-FOLLOW-UPS.md](../plans/TODO-FOLLOW-UPS.md), and issue 21 is
+  [SPEED-BACKLOG.md](../plans/SPEED-BACKLOG.md) #48. On the third pass `t/exe/run.raku`'s three `-O` disagreements
+  and `t/jit/run.raku`'s three are files that print a measurement, and five
+  of the JIT gate's 21 tier-up cases (calls, elements, inline, methods,
+  natives) still enter no kernel, as on v5.5.0.
+- **Rakudo itself:** `Num.Rat(0)` never returns for some doubles (issue 1),
+  and in a long run Rakudo answers ever more slowly, growing past a gigabyte
+  on pairs it answers at once in a fresh process.
+
+## Re-measured on 5.5.0-8
+
+*2026-10-23, 5.5.0-8-g15a27449 against v5.5.0 in the same sitting. The whole
+program ran interleaved, 5 rounds, fastest of each; the probes ran
+interleaved, best of 3. Load average about 4.*
+
+**The whole program.** Head to head with 5.5.0:
+
+| 5.5.0 → 5.5.0-8 | smallest input | middle | largest | mean |
+|---|---:|---:|---:|---:|
+| `--exe -O` | 1.17× | 1.06× | 1.02× | 1.06× |
+| `--exe -O`, the native-typed copy | 1.24× | 1.22× | 1.29× | 1.24× |
+| interpreted, either copy | 1.03× | 1.02× | 1.01× | 1.01× |
+
+The output was unchanged: identical to the other languages' on every input
+tried, in both modes and both copies.
+
+**Per construct, this sitting** (ns per operation, `--exe -O`):
+
+| construct | 5.5.0 | 5.5.0-8 |
+|---|---:|---:|
+| `@a.elems` | 28.7 | 7.9 |
+| `$x.defined` | 13.3 | 5.7 |
+| `my @a`, three `.push`, return it | 88.2 | 52.7 |
+| `sub (@x)` | 16.8 | 3.9 |
+| `-$x` | 12.9 | 5.0 |
+| two `constant` references | 8.7 | 1.5 |
+| recursive `my sub`, 2¹⁰ leaves | 213 µs | 42 µs |
+| `$a[$i]` | 14.3 | 14.4 |
+| `[1e0, 2e0, 3e0]` | 64.4 | 65.9 |
+| `for @a -> $x`, 10 Nums | 166.3 | 165.7 |
+| `while` with `@a[$i]`, 10 Nums | 177.9 | 168.1 |
+| a 10-parameter call | 17.6 | 17.3 |
+
+These confirm the fix branch's figures for issues 9, 11 and 16–20. The one
+exception is `for @a -> $x`, where this sitting did not reproduce the branch's
+168.6 → 148.8.
+
+**Why a 2–5× gain per construct gives 1.06× overall.** The constructs the
+fixes reached were a small share of the run. The compiled profile, 5.5.0
+against 5.5.0-8:
+
+| share of samples | 5.5.0 | 5.5.0-8 |
+|---|---:|---:|
+| the generated `u_*` functions themselves (inlined box handling, tag checks, and now the call-site `.push`/`.elems`) | 26% | 31% |
+| array and argument-list machinery: `RVec<Value>` growth and teardown, `rtIndexGet`, `listToArray`, `Value::array` | 26% | 25% |
+| boxed scalar operations: `rtAdd`/`rtMul`/`rtGe`…, `boolify`, `truthy`, `toInt` | 23% | 22% |
+| `methodCall` and its parts | 6% | 2% |
+| malloc, free, memmove | 8% | 8% |
+
+No function has more than 4.3% of samples on 5.5.0-8; the largest is
+`RVec<Value>::growAndBuild`. Reading array elements and iterating arrays did
+not move, and the boxed `Value` is about half of the time. Issue 21 (an
+array-element lane, and `Num` locals that are plain `double`s) is the lever
+left. More fast paths at call sites are not.
+
+### 22. `.pop`, `.splice` and methods on an array element still dispatch by name
+
+```raku
+sub arr-pp(@a, $x) { @a.push($x); @a.pop }
+sub elem-pp($acc, $x) { $acc[0].push($x); $acc[0].pop }
+sub elem-elems($acc) { $acc[0].elems }
+```
+
+- **Cost, `--exe -O`:**
+  - `@a.push($x); @a.pop` takes 140.7 ns. A `.push` is 10–15 ns (three of
+    them, with the array's creation, take 52.7), so `.pop` is about 125.
+  - Three `.push`es and a `.splice(1)` take 268.7 ns.
+  - `$acc[0].push($x); $acc[0].pop` takes 170.3 ns.
+  - `$acc[0].elems` takes 18.1 ns against 7.9 for `@a.elems`.
+- **Compiles to:** `RT.methodCall(v_aa, "pop", …)` and
+  `RT.methodCall(v_aa, "splice", …)`. A method on an element or on a `$`
+  that holds an Array goes through `rtMutMethod`.
+- **Suggested fix:** extend issue 19's call-site answers to `.pop`, `.shift`,
+  `.unshift`, `.splice` and `.append`, and to an invocant that is an element
+  or a `$` holding an Array.
+
+### 23. The native-typed program is still about 1.3× slower than its untyped twin
+
+- **Actual:** every native probe runs at the untyped code's speed (issue 16),
+  but the program's native-typed copy is not:
+  - compiled, the middle input takes 83.1 µs against 63.1 untyped;
+  - against CPython it is 2.7× against 3.5× over the whole run.
+- **Profile, against the untyped copy's** (share of samples):
+  - The `methodCall` family (`methodCall`, `methodCallInner`,
+    `methodCallPart2`, `methodCallPart3`, `methodCallTail`) takes about 12%,
+    against about 2%. It is reached from `rtMPush`, `rtMutMethod` and
+    `rtMDefined`, so some of the copy's `.push`/`.defined` calls miss the
+    call-site answer. A plain `.push` or `.defined` of a `num` or `int`
+    value does not miss it: 55 and 5.5 ns.
+  - The native arithmetic helpers (`rtNativeAdd`, `rtNativeMul`,
+    `rtNativeSub`, `rtNativeArithSlow`, `rtNativeIntOp`,
+    `Value::natWidthOfType`) take about 6%, against none. `rtNativeArithSlow`
+    is there, so some native operations still leave the per-operator
+    helpers.
+- **Not yet located:** which shapes in the copy take those paths. Its arrays
+  are untyped (issue 14 keeps native arrays out), and its loops are `while`
+  loops over `int` counters.
 
 ## Checked and found correct
 
@@ -763,4 +1093,28 @@ bench 'untyped, $x only read in the loop', -> $n { for ^$n { ro-plain(1.5e0) } }
 bench 'num, $x only read in the loop', -> $n { for ^$n { ro-num(1.5e0) } }, $N;
 bench 'num, $x also written in the loop', -> $n { for ^$n { rw-num(1.5e0) } }, $N;
 bench 'untyped, $x also written in the loop', -> $n { for ^$n { rw-plain(1.5e0) } }, $N;
+```
+
+The third script measures issue 22, in the same way:
+
+```raku
+sub bench($name, &f, $n) {
+    my $best = 1e300;
+    for ^3 { my $t = now; f($n); my $d = (now - $t) / $n * 1e9; $best = $d if $d < $best }
+    printf "  %-46s %8.1f ns/op\n", $name, $best;
+}
+my $N = 300_000;
+sub arr-pp(@a, $x) { @a.push($x); @a.pop }
+sub elem-pp($acc, $x) { $acc[0].push($x); $acc[0].pop }
+sub elem-p3($acc, $x) { my $c = $acc[0]; $c.push($x); $c.push($x); $c.push($x); $c.splice(1) }
+sub arr-p3(@a, $x) { @a.push($x); @a.push($x); @a.push($x); @a.splice(1) }
+sub elem-elems($acc) { $acc[0].elems }
+sub arr-elems(@a) { @a.elems }
+my @a = 1e0; my $acc = [[1e0],];
+bench '@a.push($x); @a.pop', -> $n { for ^$n { arr-pp(@a, 1.5e0) } }, $N;
+bench '$acc[0].push($x); $acc[0].pop', -> $n { for ^$n { elem-pp($acc, 1.5e0) } }, $N;
+bench '@a: three .push, then .splice(1)', -> $n { for ^$n { arr-p3(@a, 1.5e0) } }, $N;
+bench '$c = $acc[0]: three .push, then .splice(1)', -> $n { for ^$n { elem-p3($acc, 1.5e0) } }, $N;
+bench '@a.elems', -> $n { for ^$n { arr-elems(@a) } }, $N;
+bench '$acc[0].elems', -> $n { for ^$n { elem-elems($acc) } }, $N;
 ```

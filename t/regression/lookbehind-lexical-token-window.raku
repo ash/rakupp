@@ -10,8 +10,13 @@
 # token's width is now read from the token's own pattern; a token whose body
 # depends on runtime values is still taken as unbounded, as before.
 #
-# Correctness is checked against Rakudo 2026.09; the time by size, as
-# t/scaling does it: 8x the text must cost well under 64x the time.
+# Correctness is checked against Rakudo 2026.09, but for the longer branch
+# and the different widths: Rakudo matches a subrule inside `<?after …>`
+# against the reversed text, so `<?after <two>> 'q'` passes 'baq' and not
+# 'abq'. Those two hold the lookbehind's own definition, which the
+# interpreter gives (and compiled code, since exe-lexical-token-calls.raku's
+# fix). The time is checked by size, as t/scaling does it: 8x the text must
+# cost well under 64x the time.
 #
 # Contract: exit 0 + last line PASS.
 

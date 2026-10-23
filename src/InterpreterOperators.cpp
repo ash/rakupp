@@ -579,6 +579,65 @@ Value Interpreter::prefixStringify(const Value& v) {
         }
     return Value::str(strOf(v));
 }
+// Instant/Duration algebra: Instant−Instant→Duration, Instant±Duration→Instant,
+// Duration±x→Duration; everything else drops to plain numbers (like Rakudo's *).
+void tagTemporal(const std::string& op, const Value& l, const Value& r, Value& res) {
+    // `*`, `/` and `**` with an Instant or Duration operand take Real's path
+    // through the Num bridge, as Rakudo does: `Duration.new(3) * 2` is the
+    // Num 6, not a Rat (and `$d * $d` is a Num too)
+    if ((opEq(op, "*") || opEq(op, "/") || opEq(op, "**")) && res.isNumeric() && res.hashKind.empty() &&
+        (l.hashKind == "Duration" || r.hashKind == "Duration" ||
+         l.hashKind == "Instant" || r.hashKind == "Instant")) {
+        res = Value::number(res.toNum());
+        return;
+    }
+    if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "%")) || !res.isNumeric() || !res.hashKind.empty()) return;
+    bool li = l.hashKind == "Instant", ri = r.hashKind == "Instant";
+    bool ld = l.hashKind == "Duration", rd = r.hashKind == "Duration";
+    // Real − Instant and Real − Duration have no candidate of their own, and
+    // Real's takes both Bridges, as `%` does with a non-Duration on the left:
+    // `0 - $d` is the Num -1.5, not Duration.new(-1.5)
+    if ((opEq(op, "-") && (ri || rd) && !li && !ld) || (opEq(op, "%") && !ld && (li || ri || rd))) {
+        res = Value::number(res.toNum());
+        return;
+    }
+    if (opEq(op, "%")) {   // Duration % Real is a Duration; nothing else stays temporal
+        if (ld) {
+            if (res.t == VT::Num && std::isfinite(res.n) && g_revInterp) {
+                Value b = res; b = g_revInterp->methodCall(b, "Rat", ValueList{});
+                if (b.t == VT::Rat) res = b;
+            }
+            res.hashKind = "Duration"; identify(res);
+        }
+        return;
+    }
+    if (!(li || ri || ld || rd)) return;
+    // two points in time do not add up to a third
+    if (opEq(op, "+") && li && ri)
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller infix:<+>(Instant:D, Instant:D)"};
+    if (opEq(op, "-")) res.hashKind = (li && ri) ? "Duration" : li ? "Instant" : "Duration";
+    else res.hashKind = (li || ri) ? "Instant" : "Duration";
+    // a Duration is a Rat (Rakudo's `has Rat $.tai`): `Duration.new(4.5) - 1e0`
+    // is Duration.new(3.5), not a float
+    if (res.hashKind == "Duration" && ((res.t == VT::Num && std::isfinite(res.n)) || res.t == VT::Int) &&
+        g_revInterp) {
+        Value b = res; b.hashKind = "";
+        b = g_revInterp->methodCall(b, "Rat", ValueList{});
+        if (b.t == VT::Rat) { b.hashKind = "Duration"; res = b; }
+    }
+    identify(res); // the sum is a new Instant/Duration, with its own identity
+}
+// The literal-operator applyArith's general case (Interpreter.h), which every
+// compiled operator reaches: an Instant or Duration operand is tagged as the
+// interpreter's binary operator tags it after applyArith. Compiled, `$d - 0`
+// and `$d % 1` were the bare Rat, and `0 - $d` a Rat for the Num.
+Value applyArithLit(const char* op, const Value& l, const Value& r) {
+    const std::string o(op);
+    Value res = applyArith(o, l, r);
+    if (!l.hashKind.empty() || !r.hashKind.empty()) tagTemporal(o, l, r, res);
+    return res;
+}
 // `-$i` for a machine Int: the one value whose negation does not fit, the
 // minimum int64, promotes to a big Int (`-(-2**63)` is 2**63, not itself).
 static Value negInt(long long i) {
@@ -689,6 +748,15 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         return (op == "-" ? negInt(n) : Value::integer(n));
     }
     if (op == "-") {
+        // a Duration negates to a Duration (Rakudo's prefix:<->(Duration:D));
+        // an Instant has no candidate of its own, and Real's is its Bridge's,
+        // a Num. Both were the bare Rat.
+        if (v.isNumeric() && (v.hashKind == "Duration" || v.hashKind == "Instant")) {
+            Value bare = v; bare.hashKind.clear();
+            if (v.hashKind == "Instant") return Value::number(-bare.toNum());
+            Value r = prefixNumeric("-", bare); r.hashKind = "Duration";
+            return identify(r);
+        }
         // `0 - z`, not `(-re, -im)`: Raku's unary minus on a Complex subtracts
         // from zero, so `-i` has a POSITIVE zero real part (0 - 0 is +0, where
         // -0.0 is negative zero and `(-i).re.raku` then prints "-0e0").
@@ -1066,18 +1134,24 @@ void Interpreter::seedStaticScope(const void* key, Env* env) {
 // A `return` needs the routine it was WRITTEN in to be running still: a
 // block that outlived it (`sub a1 { my &x = { return }; &x }`) has nothing to
 // return from — X::ControlFlow::Return, out of its dynamic scope
-void Interpreter::checkReturnInDynamicScope(uint64_t lf) {
-    if (!lf) return;
-    // the routine ACTIVATION the return was written in, by identity (frame
+bool Interpreter::lexicalRoutineLive() {
+    // the routine ACTIVATION the code was written in, by identity (frame
     // numbers are reused by later calls at the same depth)
     Env* mine = nullptr;
     for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         if (e->routineFrame) { mine = e; break; }
-    if (!mine || mine == tctx().curRoutineEnv) return;
+    return routineEnvRunning(mine);
+}
+bool Interpreter::routineEnvRunning(const Env* mine) {
+    if (!mine || mine == tctx().curRoutineEnv) return true;
     // …running now: the current routine, or one of the callers'
     for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it)
         for (Env* e = *it; e; e = e->parent.get())
-            if (e->routineFrame) { if (e == mine) return; break; }
+            if (e->routineFrame) { if (e == mine) return true; break; }
+    return false;
+}
+void Interpreter::checkReturnInDynamicScope(uint64_t lf) {
+    if (!lf || lexicalRoutineLive()) return;
     throwTypedV("X::ControlFlow::Return", {{"out-of-dynamic-scope", Value::boolean(true)}},
                 "Attempt to return outside of immediately-enclosing Routine (i.e. `return` execution "
                 "is outside the dynamic scope of the Routine where `return` was used)");
@@ -1219,11 +1293,12 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
     swap(a.loopCtlLabel, b.loopCtlLabel); swap(a.labelLoops, b.labelLoops);
     swap(a.uninitName, b.uninitName); swap(a.bindingParams, b.bindingParams); swap(a.keepListOf, b.keepListOf); swap(a.lvalueListSlot, b.lvalueListSlot);
+    swap(a.compiledTry, b.compiledTry);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1480,
+static_assert(sizeof(ExecContext) == 1488,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif

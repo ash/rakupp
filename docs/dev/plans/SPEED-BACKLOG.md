@@ -39,7 +39,6 @@ theme the rows are sorted by complexity, largest first.
 | 26 | Built-in methods in interpreted loops: `.map`/`.flat`/`.any` on a Seq; a CStruct's CArray field built once per pointer | M | TODO.md |
 | 30 | Bisect the interpreted slowdowns shipped in v5.4.0 (`mainwhen` +11%, `sortby` +8%) | S–M | Instruction counts make the bisect deterministic — TODO.md |
 | 42 | `$v ~~ Int` against a core type object: ~0.55 µs compiled, ~1 µs interpreted | M | rtSmartmatch's type-object arm, ahead of the general smartmatch — float report 2026-10-15, item 8 |
-| 43 | A `constant` reference keeps a sub off the int kernels: two of them 561 ns a call, two literals 7.8 | S–M | The kernel compiler refuses the NameTerm; a top-level `constant` bound to an Int literal can be read as the literal — float report, item 11 |
 
 ## 2. Memory and value representation
 
@@ -62,8 +61,8 @@ theme the rows are sorted by complexity, largest first.
 | 35 | `--slim` review: what it actually removes | S–M | Binary size; the 12.5 / 12.75 MB budgets are a stopgap — [SLIM-PLAN.md](SLIM-PLAN.md) |
 | 44 | `--exe`: one refused construct (a CATCH, a phaser, `my num @a`, a kept List) bundles the program — its routines now keep native bodies, but its mainline and anonymous blocks are interpreted, and a call into a native body costs an interpreted call (~250 ns) | M–L | Mainline loops and block closures as native bodies, and a cheaper interpreter-to-native call — float report, items 2, 4, 14; feeds #3 and #45 |
 | 45 | `--exe`: a module routine called from the program costs ~6× a local one (68 vs 10.6 ns) | L | The call goes through callEnvFirstAmp and the interpreter's binding, and the native body runs inside that — float report, item 10; near #13 |
-| 46 | `--exe`: a native-typed value is still a boxed Value; a `num`-typed sub is ~2.4× its untyped twin (62 vs 26 ns) | L | Typed locals as C++ doubles/int64s; the stores, ops and `int` kernels are done — float report, item 16; near #29 |
-| 47 | `--exe`: a `my sub` is called through `RT.dynVar("&name")` and callCallable, ~170 ns against ~25 for a top-level sub | M | A direct call needs the arity proved at the call site and a handle to the closure that cannot outlive it — float report, item 9 |
+| 46 | `--exe`: a native-typed value is still a boxed Value. Since d7c6d9d5 native code runs at the untyped code's speed (a `num` sub 10.0 vs 9.7 ns, a `num` loop 9.5 vs 8.7), but no faster: typed locals are not C++ doubles/int64s | L | Typed locals as C++ doubles/int64s; the stores, ops and `int` kernels are done — float report, item 16; near #29 |
+| 48 | A loop over a small array costs about what CPython does: summing 10 Nums `--exe -O` 148.8 ns with `for @a -> $x` and 155.2 with `while` and `@a[$i]` (CPython 127 / 195); 915 / 1,591 interpreted on v5.5.0 | L | An array-element loop lane: an element read as a Num or Int without its 128-byte Value copy, so the double lane takes a loop that iterates an array; OPTIMIZATION.md lists it as future work — float report, item 21; near #29 |
 
 ## 4. Lists, strings and laziness
 
@@ -107,6 +106,17 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **43 and 47, two of the float report's** (d7c6d9d5;
+  [FLOAT-HEAVY-ISSUES-2026-10-22](../findings/FLOAT-HEAVY-ISSUES-2026-10-22.md)
+  issues 11 and 9). A top-level `constant` bound to a machine Int is a
+  literal to the int kernels, compiled and interpreted: two constant
+  references in a sub 9.2 → 1.5 ns compiled, 213.9 → 5.7 interpreted. A
+  `my sub` is called directly under `-O`, through a weak handle while its
+  scope lives: a recursion of 2**10 leaves 210.6 → 42.5 µs (a top-level
+  sub: 39.9). On the same branch, issue 17 (3e97932e): a `num`-typed sub
+  takes the interpreter's lean call path (387 → 153 ns, untyped 145), and a
+  loop kernel takes `int` and `num` variables (a `num` loop 1,024 → 292).
+
 - **Three numeric slow spots of the 2026-10 review** (O15–O17 of
   [REVIEW-PARALLEL-2026-10](../findings/REVIEW-PARALLEL-2026-10.md), and row
   19's Int fast path). A Rat literal beside a Num is its .Num in the loop
@@ -144,7 +154,7 @@ theme the rows are sorted by complexity, largest first.
   bodies for its own routines, matched to the binary's run-time parse by an
   AST fingerprint (AotModules.h attachMainAot): a Mandelbrot routine in a
   program with one `CATCH` elsewhere 30 → 3.7 ms (3.5 fully native). Open
-  from it: 42–47.
+  from it: 42, 44–46 and 48 (43 and 47 closed in d7c6d9d5, above).
 - **9, `Env::vars` and `Env` on the slab** (dca29704): re-measured first. Of 24
   block and call shapes, three still allocated per iteration, and inline
   slots were not the answer to any of them. A bare block's `$_` was a map

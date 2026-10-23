@@ -2026,6 +2026,14 @@ static const Value* slotProxyRef(const Value& proxy);
 static Value slotProxyReadRef(Interpreter& I, const Value& proxy, const Value& ref);
 static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& ref, const Value& nv);
 
+// A shared-cell proxy is its cell, FETCH and STORE; only one a kept List's
+// item for a typed variable is tagged with (noteKeptVarType) holds more. So
+// a write through any other binding pays a size test, inline, and is the
+// plain store it was (keptTypedStore otherwise).
+static constexpr size_t kPlainCellProxyKeys = 3;
+static inline bool keptTagged(const Value& proxy) {
+    return proxy.t == VT::Hash && proxy.hash() && proxy.hash()->size() > kPlainCellProxyKeys;
+}
 Value Interpreter::deproxy(Value v) {
     if (v.t == VT::Hash && v.hashKind == proxyKind() && v.hash()) {
         if (const Value* r = slotProxyRef(v)) return slotProxyReadRef(*this, v, *r);   // compact slot: no call
@@ -2046,7 +2054,11 @@ Value Interpreter::deproxy(Value v) {
 // SECOND parameter; a one-parameter STORE still gets just the value.
 Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
     if (const Value* r = slotProxyRef(proxy)) return slotProxyWriteRef(*this, proxy, *r, v);   // compact slot: no call
-    if (PRef<Value> c = cellOfProxy(&proxy)) { *c = v; return *c; }   // a shared cell: no call
+    if (PRef<Value> c = cellOfProxy(&proxy)) {   // a shared cell: no call
+        if (RAKUPP_UNLIKELY(keptTagged(proxy))) *c = keptTypedStore(proxy, v);
+        else *c = v;
+        return *c;
+    }
     auto it = proxy.hash()->find("STORE");
     if (it == proxy.hash()->end()) return v;
     // `method ($val)` takes the Proxy as its invocant; `sub ($, $v)` takes it as the
@@ -2410,6 +2422,7 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
         const Expr* it = l->items[i].get();
         Value c;
         if ((it->kind == NK::VarExpr || it->kind == NK::Assign) && containerElemFor(it, c)) {
+            noteKeptVarType(it, c);
             (*list.arr())[i] = std::move(c);
             holds = true;
             continue;
@@ -2434,6 +2447,39 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
         holds = true;
     }
     if (holds) list.markHoldsContainers();
+}
+// A kept item for a TYPED variable (`my Int $a; f(($a, 2))`) carries what a
+// store into the variable checks: its type, its name and the default a Nil
+// resets it to, found as enforceTypedAssign finds them. A write through the
+// List stored anything, and a Nil stayed Nil. (keptTypedStore applies them.)
+static const std::string kKeptType = "\x01keptType", kKeptName = "\x01keptName", kKeptDefault = "\x01keptDefault";
+void Interpreter::noteKeptVarType(const Expr* it, Value& proxy) {
+    if (it->kind == NK::Assign) it = static_cast<const Assign*>(it)->target.get();
+    if (!it || it->kind != NK::VarExpr || !proxy.hash()) return;
+    const std::string& nm = static_cast<const VarExpr*>(it)->name;
+    Env* own = nullptr;
+    if (!tctx().cur->findRaw(nm, &own) || !own || !own->ex) return;
+    auto di = own->ex->varDefault.find(nm);
+    if (di == own->ex->varDefault.end()) return;
+    auto dti = own->ex->varDefaultType.find(nm);
+    const Value& ty = dti != own->ex->varDefaultType.end() ? dti->second : di->second;
+    if (ty.t != VT::Type || own->ex->varDefaultUntyped.count(nm) || ty.s == "Any" || ty.s == "Mu") return;
+    (*proxy.hash())[kKeptType] = Value::str(ty.s);
+    (*proxy.hash())[kKeptName] = Value::str(nm);
+    (*proxy.hash())[kKeptDefault] = di->second;
+}
+bool Interpreter::keptTyped(const Value& proxy) const {
+    return keptTagged(proxy) && proxy.hash()->find(kKeptType) != proxy.hash()->end();
+}
+Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
+    if (!keptTagged(proxy)) return v;
+    const ValueHash* h = &*proxy.hash();
+    auto ty = h->find(kKeptType);
+    if (ty == h->end()) return v;
+    if (v.t == VT::Nil) { auto d = h->find(kKeptDefault); return d != h->end() ? d->second : Value::any(); }
+    auto nm = h->find(kKeptName);
+    enforceTypedValue(nm != h->end() ? nm->second.s.str() : std::string("$x"), ty->second.s.str(), v, global_.get());
+    return v;
 }
 // …and is this element such a container (or a real cell)?
 bool Interpreter::isContainerElem(const Value& v) {
@@ -2752,10 +2798,11 @@ const Value& cellProxyStore() {
         Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
         static const std::vector<Param> kTwo(2);
         st.code()->ciM().params = &kTwo;
-        st.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
+        st.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
             PRef<Value> c = a.size() < 2 ? nullptr : cellOfProxy(&a[0]);
             if (!c) return a.empty() ? Value::any() : a.back();
-            *c = a[1];
+            if (keptTagged(a[0])) *c = I.keptTypedStore(a[0], a[1]);
+            else *c = a[1];
             return *c;
         };
         return st;
@@ -3484,6 +3531,15 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             }
         }
     };
+    // a HASH alone on the right, in a Scalar or not, is the list of its pairs,
+    // as rtArrayVal makes it for compiled code: `my ($k, $v) = %h` is :a(1) and
+    // Any in Rakudo, and $k held the whole Hash
+    const std::string& hk = rhs.hashKind;
+    if (!isBinding && rhs.t == VT::Hash && rhs.hash() &&
+        (hk.empty() || hk == "Map" || !hk.rfind("Set", 0) || !hk.rfind("Bag", 0) || !hk.rfind("Mix", 0))) {
+        bind(lst, hashToPairs(rhs));
+        return;
+    }
     bind(lst, rhs);
 }
 // `@a[|| @dims] = …` / `%h{|| <a b>, "c"}:delete` (6.e): the runtime list names

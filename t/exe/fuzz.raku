@@ -12,7 +12,9 @@
 # Two matrices, both small and both exhaustive over what the lane admits:
 #
 #   operators   every binary, compound-assignment and unary operator, against
-#               every combination of Int and Num operands
+#               every combination of Int and Num operands; and `/` with a zero
+#               divisor (0, 0e0, -0e0), stored, accumulated and guarded by
+#               `&&` / `||`
 #   shapes      every loop kind (while / until / C-style / for over an
 #               inclusive range / for over an exclusive one) against every body
 #               shape (plain, next, last, both, if-else, elsif, postfix unless,
@@ -92,6 +94,27 @@ unless $onlyShapes {
                 END
         } }
     }
+    # A zero divisor (NUM-UNBOX-PLAN P0): the boxed `/` answers a Failure,
+    # and the F64 lane divided and answered Inf. Only stdout is compared and
+    # the interpreted run dies in some of these, so each one catches that and
+    # prints how its loop ended and what `$r` holds. The guarded shapes run
+    # the division only where `&&` / `||` reach it.
+    my %z = I => '0', F => '0e0', N => '-0e0';
+    my @div0 =
+        store => '$r = $a / $b',
+        acc   => '$r = $r + $a / $b',
+        and   => 'if $b != 0e0 && $a / $b > 1e0 { $r = $r + 1e0 }',
+        or    => 'if $b == 0e0 || $a / $b > 1e0 { $r = $r + 1e0 }';
+    for @div0 -> (:key($shape), :value($body)) {
+        for <I F> -> $lt { for <I F N> -> $rt {
+            @progs.push: "div0-$shape-$lt$rt" =>
+                qq:to/END/;
+                my \$a = %v{$lt}[0]; my \$b = %z{$rt}; my \$r = 0e0; my \$i = 0;
+                my \$out = (try \{ while \$i < 4 \{ $body; \$i = \$i + 1 }; 'ran' }) // "died: \{\$!.^name}";
+                say \$out; say \$r.^name; say (try \{ ~(\$r + 0) }) // "died: \{\$!.^name}";
+                END
+        } }
+    }
     for @un -> $op {
         for <I F> -> $lt {
             @progs.push: "un-{$op.subst(/\W/, '_', :g)}-$lt" =>
@@ -121,10 +144,11 @@ unless $onlyOps {
     # three processes for half an hour before this was noticed, and a generator
     # that can hang is worse than no generator, since a hang looks exactly like
     # a slow compile.
-    sub mkloop($kind, $v, $body) {
+    # (`$cn` names the counter, `$c$cn`: see the -shadow shape below)
+    sub mkloop($kind, $v, $body, $cn = $v) {
         given $kind {
-            when 'while' { "my \$c$v = -1;\nwhile \$c$v < 3 \{\n    \$c$v = \$c$v + 1;\n    my \$$v = \$c$v;\n$body\n}" }
-            when 'until' { "my \$c$v = -1;\nuntil \$c$v >= 3 \{\n    \$c$v = \$c$v + 1;\n    my \$$v = \$c$v;\n$body\n}" }
+            when 'while' { "my \$c$cn = -1;\nwhile \$c$cn < 3 \{\n    \$c$cn = \$c$cn + 1;\n    my \$$v = \$c$cn;\n$body\n}" }
+            when 'until' { "my \$c$cn = -1;\nuntil \$c$cn >= 3 \{\n    \$c$cn = \$c$cn + 1;\n    my \$$v = \$c$cn;\n$body\n}" }
             when 'cloop' { "loop (my \$$v = 0; \$$v < 4; \$$v++) \{\n$body\n}" }
             when 'forin' { "for 0 .. 3 -> \$$v \{\n$body\n}" }
             when 'forex' { "for 0 ..^ 4 -> \$$v \{\n$body\n}" }
@@ -160,8 +184,13 @@ unless $onlyOps {
             # whole function body, the inner reused the outer's C++ variable, its
             # init reset the outer counter, and the outer loop ran exactly once.
             # Silently, in the default compile.
+            # The COUNTER of a `while` / `until` is not in a header: it is a
+            # `my` of the outer body, written after that body has read the
+            # outer counter, which Rakudo refuses to compile ("Lexical symbol
+            # '$ca' is already bound to an outer symbol") and rakupp with it —
+            # so it has a name of its own, and `$a` is what shadows.
             my $same = $b.subst('$V', '$a', :g).subst('N', '3', :g).lines.map({ '    ' ~ $_ }).join("\n");
-            my $smid = mkloop($k, 'a', $same).lines.map({ '    ' ~ $_ }).join("\n");
+            my $smid = mkloop($k, 'a', $same, 'a2').lines.map({ '    ' ~ $_ }).join("\n");
             @progs.push: "$k-{$bn}-shadow" => "my \$t = 0;\n{mkloop($k, 'a', $smid)}\nsay \"\$t\";\n";
         }
     }

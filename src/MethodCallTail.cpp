@@ -5204,14 +5204,17 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // stored the Slip itself, which left `@a.push: Empty` one element
             // longer than Rakudo (roast S02-types/undefined-types.t) and, once
             // a typed array started checking its elements, made an Int array
-            // reject the Empty it should have ignored.
+            // reject the Empty it should have ignored. …and so does one in a
+            // Scalar: Rakudo's push asks the value's type, through the
+            // container, so `my $s = slip(1, 2); @a.push($s)` is [1, 2] (the
+            // sub form already said so; `.append($s)` is one item).
             auto slipped = [](const ValueList& in) -> ValueList {
                 bool any = false;
-                for (auto& x : in) if (x.t == VT::Array && x.s == "Slip" && !x.itemized) { any = true; break; }
+                for (auto& x : in) if (x.t == VT::Array && x.s == "Slip") { any = true; break; }
                 if (!any) return in;
                 ValueList out;
                 for (auto& x : in)
-                    if (x.t == VT::Array && x.s == "Slip" && !x.itemized) {
+                    if (x.t == VT::Array && x.s == "Slip") {
                         if (x.arr()) for (auto& y : *x.arr()) out.push_back(y);
                     }
                     else out.push_back(x);
