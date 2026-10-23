@@ -8,7 +8,8 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES).*
+*Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
+e24f05f1 (NUM-UNBOX-PLAN P0).*
 
 ---
 
@@ -117,6 +118,17 @@ interpreted.
   (e30e2827), in both engines: `my Int $a; sub f($x) { $x[0] = "s" };
   f(($a, 2))` stored the Str, and a Nil there stayed Nil instead of
   resetting to the default.
+
+- **A compiled loop's Num division by zero fails** (e24f05f1), as interpreted
+  and in Rakudo, with X::Numeric::DivideByZero. The unboxed loop lane, on with
+  `-O` and without, divided doubles and answered Inf: `while … { $t = 1e0 /
+  $x }` with `$x` 0e0 returned Inf, and `$s = $s + 1e0 / $x` ran on where it
+  dies. The lane bails on a zero divisor now, -0e0 and an Int 0 included.
+- **A compiled loop of Nums alone leaves its lane correctly** (e24f05f1). A
+  lane with no Int slot had no landing for a bail, so a Num `**` that
+  underflows ended the loop with the values it held at that point: `$t = $x
+  ** ($k + 1e0)` with `$x` 1e-200 answered 1e-200, where Rakudo gives an
+  X::Numeric::Underflow Failure.
 
 ### Fixed: crashes
 
