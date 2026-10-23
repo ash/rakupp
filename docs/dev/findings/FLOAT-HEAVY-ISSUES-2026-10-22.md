@@ -1,7 +1,8 @@
-# Float-heavy code under Raku++: 21 issues, interpreted and `--exe`
+# Float-heavy code under Raku++: 23 issues, interpreted and `--exe`
 
 *First measured 2026-10-15 at 5.4.1-78-g52df8573, re-checked 2026-10-22 at
-5.5.0, on Apple Silicon (arm64), macOS, at a load average of 3–5. Times are
+5.5.0, and re-measured whole 2026-10-23 at 5.5.0-8-g15a27449, on Apple Silicon
+(arm64), macOS, at a load average of 3–5. Times are
 the best of 3 unless an entry says otherwise; read the ratios rather than the
 absolute times.*
 
@@ -20,6 +21,10 @@ lines.
   open) is measured against the first pass's build, d7c6d9d5.
   [Found while fixing](#found-while-fixing) lists the wrong answers the work
   turned up on the way, most of them fixed there too.
+- **On 5.5.0-8** (2026-10-23, 5.5.0-8-g15a27449, with the fix branch merged)
+  the whole program was re-measured, in one interleaved run with the other
+  languages and head to head with 5.5.0. That measurement found issues 22
+  and 23; see [Re-measured on 5.5.0-8](#re-measured-on-550-8).
 - The probe scripts in the appendix reproduce the cost numbers in either mode.
 
 ## How it compares with other languages
@@ -31,12 +36,15 @@ over six input sizes.
 
 | | × CPython |
 |---|--:|
-| Fortran (gfortran `-O3`) | 176× |
-| Go | 123× |
+| Fortran (gfortran `-O3`) | 177× |
+| Go | 122× |
 | Rust, C++, TypeScript | ~55× each |
-| Raku++ 5.5.0, `--exe -O` | 3.2× (2.5× on 5.4.1) |
-| Raku++ 5.5.0, `--exe -O`, native types | 2.2× (1.7×) |
-| Raku++ 5.5.0, interpreted | 0.47× (0.44×) |
+| Raku++ 5.5.0-8, `--exe -O` | 3.5× (5.5.0: 3.2×, 5.4.1: 2.5×) |
+| Raku++ 5.5.0-8, `--exe -O`, native types | 2.7× (2.2×, 1.7×) |
+| Raku++ 5.5.0-8, interpreted | 0.48× (0.47×, 0.44×) |
+
+The other languages' figures are from the 2026-10-23 run and match the
+2026-10-15 run within 3%.
 
 - **Fortran and Go lead on data layout, not language.** Their versions
   allocate nothing per call: integers and doubles in fixed arrays, and buffers
@@ -45,13 +53,13 @@ over six input sizes.
   formatting.
 - **Raku++'s gap is the same kind of cost on a larger scale.** Every value is a
   128-byte box, and every operation, array access and `.push` is a runtime
-  call. The profile under [Found on 5.5.0](#found-on-550) shows no single
-  hotspot.
+  call. The profiles under [Found on 5.5.0](#found-on-550) and
+  [Re-measured on 5.5.0-8](#re-measured-on-550-8) show no single hotspot.
 - **Per construct, compiled Raku++ beats CPython only on scalar float work.**
-  It is 2–10× cheaper there, and level with CPython on arrays and calls. Its
-  speed-up falls from 3.5× on the smallest input to 2.2× on the largest,
-  where a recursion of about 1,000 ten-argument calls dominates. A compiled
-  call costs 23 ns against CPython's 36.
+  It is 2–10× cheaper there, and level with CPython on array reads and loops.
+  On 5.5.0-8 its speed-up falls from 4.0× on the smallest input to 2.3× on
+  the largest, where a recursion of about 1,000 ten-argument calls
+  dominates. A compiled call costs 23 ns against CPython's 36.
 
 ## Status on 5.5.0
 
@@ -78,6 +86,8 @@ over six input sizes.
 | 19 | Array methods dispatch by name (`--exe`) | new | **fixed** for `.elems`, `.defined`, a one-argument `.push` |
 | 20 | a sub with an `@` parameter takes the `ValueList` path | new | **fixed** |
 | 21 | iterating a small array costs about what CPython does | new | 9–12% faster through 19 and 20; no array lane |
+| 22 | `.pop`, `.splice` and methods on an array element dispatch by name | — | found on 5.5.0-8 |
+| 23 | the native-typed program is still ~1.3× slower than untyped | — | found on 5.5.0-8 |
 
 ## Behaviour
 
@@ -89,7 +99,7 @@ say 2.6799999999999997e0.Rat(1e-300).nude;
 say 0.1e0.Rat(0).nude;
 ```
 
-| | actual (both modes) | expected |
+| | actual (both modes, and Rakudo 2026.09) | the double's exact value |
 |---|---|---|
 | `2.6799999999999997e0.Rat(0)` and `.Rat(1e-300)` | `(392892154991943 146601550370128)` | `(377176468792279 140737488355328)` |
 | `0.1e0.Rat(0)` | `(1 10)` | `(3602879701896397 36028797018963968)` |
@@ -774,6 +784,105 @@ a regression file.
   and in a long run Rakudo answers ever more slowly, growing past a gigabyte
   on pairs it answers at once in a fresh process.
 
+## Re-measured on 5.5.0-8
+
+*2026-10-23, 5.5.0-8-g15a27449 against v5.5.0 in the same sitting. The whole
+program ran interleaved, 5 rounds, fastest of each; the probes ran
+interleaved, best of 3. Load average about 4.*
+
+**The whole program.** Head to head with 5.5.0:
+
+| 5.5.0 → 5.5.0-8 | smallest input | middle | largest | mean |
+|---|---:|---:|---:|---:|
+| `--exe -O` | 1.17× | 1.06× | 1.02× | 1.06× |
+| `--exe -O`, the native-typed copy | 1.24× | 1.22× | 1.29× | 1.24× |
+| interpreted, either copy | 1.03× | 1.02× | 1.01× | 1.01× |
+
+The output was unchanged: identical to the other languages' on every input
+tried, in both modes and both copies.
+
+**Per construct, this sitting** (ns per operation, `--exe -O`):
+
+| construct | 5.5.0 | 5.5.0-8 |
+|---|---:|---:|
+| `@a.elems` | 28.7 | 7.9 |
+| `$x.defined` | 13.3 | 5.7 |
+| `my @a`, three `.push`, return it | 88.2 | 52.7 |
+| `sub (@x)` | 16.8 | 3.9 |
+| `-$x` | 12.9 | 5.0 |
+| two `constant` references | 8.7 | 1.5 |
+| recursive `my sub`, 2¹⁰ leaves | 213 µs | 42 µs |
+| `$a[$i]` | 14.3 | 14.4 |
+| `[1e0, 2e0, 3e0]` | 64.4 | 65.9 |
+| `for @a -> $x`, 10 Nums | 166.3 | 165.7 |
+| `while` with `@a[$i]`, 10 Nums | 177.9 | 168.1 |
+| a 10-parameter call | 17.6 | 17.3 |
+
+These confirm the fix branch's figures for issues 9, 11 and 16–20. The one
+exception is `for @a -> $x`, where this sitting did not reproduce the branch's
+168.6 → 148.8.
+
+**Why a 2–5× gain per construct gives 1.06× overall.** The constructs the
+fixes reached were a small share of the run. The compiled profile, 5.5.0
+against 5.5.0-8:
+
+| share of samples | 5.5.0 | 5.5.0-8 |
+|---|---:|---:|
+| the generated `u_*` functions themselves (inlined box handling, tag checks, and now the call-site `.push`/`.elems`) | 26% | 31% |
+| array and argument-list machinery: `RVec<Value>` growth and teardown, `rtIndexGet`, `listToArray`, `Value::array` | 26% | 25% |
+| boxed scalar operations: `rtAdd`/`rtMul`/`rtGe`…, `boolify`, `truthy`, `toInt` | 23% | 22% |
+| `methodCall` and its parts | 6% | 2% |
+| malloc, free, memmove | 8% | 8% |
+
+No function has more than 4.3% of samples on 5.5.0-8; the largest is
+`RVec<Value>::growAndBuild`. Reading array elements and iterating arrays did
+not move, and the boxed `Value` is about half of the time. Issue 21 (an
+array-element lane, and `Num` locals that are plain `double`s) is the lever
+left. More fast paths at call sites are not.
+
+### 22. `.pop`, `.splice` and methods on an array element still dispatch by name
+
+```raku
+sub arr-pp(@a, $x) { @a.push($x); @a.pop }
+sub elem-pp($acc, $x) { $acc[0].push($x); $acc[0].pop }
+sub elem-elems($acc) { $acc[0].elems }
+```
+
+- **Cost, `--exe -O`:**
+  - `@a.push($x); @a.pop` takes 140.7 ns. A `.push` is 10–15 ns (three of
+    them, with the array's creation, take 52.7), so `.pop` is about 125.
+  - Three `.push`es and a `.splice(1)` take 268.7 ns.
+  - `$acc[0].push($x); $acc[0].pop` takes 170.3 ns.
+  - `$acc[0].elems` takes 18.1 ns against 7.9 for `@a.elems`.
+- **Compiles to:** `RT.methodCall(v_aa, "pop", …)` and
+  `RT.methodCall(v_aa, "splice", …)`. A method on an element or on a `$`
+  that holds an Array goes through `rtMutMethod`.
+- **Suggested fix:** extend issue 19's call-site answers to `.pop`, `.shift`,
+  `.unshift`, `.splice` and `.append`, and to an invocant that is an element
+  or a `$` holding an Array.
+
+### 23. The native-typed program is still about 1.3× slower than its untyped twin
+
+- **Actual:** every native probe runs at the untyped code's speed (issue 16),
+  but the program's native-typed copy is not:
+  - compiled, the middle input takes 83.1 µs against 63.1 untyped;
+  - against CPython it is 2.7× against 3.5× over the whole run.
+- **Profile, against the untyped copy's** (share of samples):
+  - The `methodCall` family (`methodCall`, `methodCallInner`,
+    `methodCallPart2`, `methodCallPart3`, `methodCallTail`) takes about 12%,
+    against about 2%. It is reached from `rtMPush`, `rtMutMethod` and
+    `rtMDefined`, so some of the copy's `.push`/`.defined` calls miss the
+    call-site answer. A plain `.push` or `.defined` of a `num` or `int`
+    value does not miss it: 55 and 5.5 ns.
+  - The native arithmetic helpers (`rtNativeAdd`, `rtNativeMul`,
+    `rtNativeSub`, `rtNativeArithSlow`, `rtNativeIntOp`,
+    `Value::natWidthOfType`) take about 6%, against none. `rtNativeArithSlow`
+    is there, so some native operations still leave the per-operator
+    helpers.
+- **Not yet located:** which shapes in the copy take those paths. Its arrays
+  are untyped (issue 14 keeps native arrays out), and its loops are `while`
+  loops over `int` counters.
+
 ## Checked and found correct
 
 - **`Str.Num`** is correctly rounded: 200,000 decimal strings, compared with
@@ -984,4 +1093,28 @@ bench 'untyped, $x only read in the loop', -> $n { for ^$n { ro-plain(1.5e0) } }
 bench 'num, $x only read in the loop', -> $n { for ^$n { ro-num(1.5e0) } }, $N;
 bench 'num, $x also written in the loop', -> $n { for ^$n { rw-num(1.5e0) } }, $N;
 bench 'untyped, $x also written in the loop', -> $n { for ^$n { rw-plain(1.5e0) } }, $N;
+```
+
+The third script measures issue 22, in the same way:
+
+```raku
+sub bench($name, &f, $n) {
+    my $best = 1e300;
+    for ^3 { my $t = now; f($n); my $d = (now - $t) / $n * 1e9; $best = $d if $d < $best }
+    printf "  %-46s %8.1f ns/op\n", $name, $best;
+}
+my $N = 300_000;
+sub arr-pp(@a, $x) { @a.push($x); @a.pop }
+sub elem-pp($acc, $x) { $acc[0].push($x); $acc[0].pop }
+sub elem-p3($acc, $x) { my $c = $acc[0]; $c.push($x); $c.push($x); $c.push($x); $c.splice(1) }
+sub arr-p3(@a, $x) { @a.push($x); @a.push($x); @a.push($x); @a.splice(1) }
+sub elem-elems($acc) { $acc[0].elems }
+sub arr-elems(@a) { @a.elems }
+my @a = 1e0; my $acc = [[1e0],];
+bench '@a.push($x); @a.pop', -> $n { for ^$n { arr-pp(@a, 1.5e0) } }, $N;
+bench '$acc[0].push($x); $acc[0].pop', -> $n { for ^$n { elem-pp($acc, 1.5e0) } }, $N;
+bench '@a: three .push, then .splice(1)', -> $n { for ^$n { arr-p3(@a, 1.5e0) } }, $N;
+bench '$c = $acc[0]: three .push, then .splice(1)', -> $n { for ^$n { elem-p3($acc, 1.5e0) } }, $N;
+bench '@a.elems', -> $n { for ^$n { arr-elems(@a) } }, $N;
+bench '$acc[0].elems', -> $n { for ^$n { elem-elems($acc) } }, $N;
 ```
