@@ -158,6 +158,27 @@ void markCoopLoopControl(Stmt* loop) {
     if (body && !hasControlBlock(body)) for (auto& x : body->stmts) markCoop(x.get(), loop->label);
 }
 
+// A lone `for` parameter that binds a machine Int AS ITSELF: typed `int`,
+// `int64` or `Int`, with nothing else on it to check, convert or alias. Its
+// type sends it to `params` (Parser.cpp, pointyParamNeedsBinding), but over a
+// Range of machine integers binding changes no value — a full-width native's
+// wrap of an Int that fits is only its tags — so the counted-range path takes
+// it as it takes `-> $i`, asking the binder once for those tags, and so do the
+// loop kernels and the --jit / --cnp site (FORTRAN-LESSONS-2026-10-15, 1a).
+const Param* countedForParam(const ForStmt* fs) {
+    if (fs->destructure || fs->rwVars || fs->params.size() != 1 || !fs->vars.empty()) return nullptr;
+    const Param& p = fs->params[0];
+    if (p.sigil != '$' || p.name.size() < 2 ||
+        !(ascii::isalpha((unsigned char)p.name[1]) || p.name[1] == '_') ||   // (no twigil)
+        !(p.type == "int" || p.type == "int64" || p.type == "Int") ||
+        p.named || p.slurpy || p.invocant || p.optional || p.defaultVal || p.litVal ||
+        p.whereExpr || p.hadWhere || p.defConstraint || p.coerce || p.subSig || p.codeSig ||
+        p.isRw || p.isRaw || p.isCopy || p.typeCapture || p.typeFromCapture ||
+        !p.captureName.empty() || !p.userTraits.empty() || !p.shapeDims.empty())
+        return nullptr;
+    return &p;
+}
+
 // ---- the node visitors -------------------------------------------------
 //
 // Declared before use so the mutually recursive ones (an Expr holding a Stmt

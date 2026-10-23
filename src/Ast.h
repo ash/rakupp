@@ -1355,6 +1355,11 @@ struct ForStmt : Stmt {
     ForStmt(): Stmt(NK::ForStmt) {}
 };
 
+// `for ^$n -> int $i`: the lone `int` / `int64` / `Int` parameter that the
+// counted-range path, the loop kernels and the --jit / --cnp site take as they
+// take `-> $i`; null for any other signature (AstSerial.cpp says why)
+const Param* countedForParam(const ForStmt* fs);
+
 struct ReturnStmt : Stmt {
     ExprPtr value; // may be null
     bool isRw = false; // `return-rw` — return the container itself, not a decontainerized copy
