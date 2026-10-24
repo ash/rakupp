@@ -260,7 +260,8 @@ logs and the reviews. This page is the complete list.
   compiler: fixed types, trip counts fixed at entry, contiguous arrays, no
   aliasing. Raku has most of them. The largest measured gaps are places where
   Raku++ does not use them:
-  - `my num`/`my int` make `--exe -O` 90× slower than untyped variables;
+  - `my num`/`my int` make `--exe -O` 90× slower than untyped variables (done
+    in d0ba733b);
   - `-> int $i` keeps a loop out of `--cnp` (20×; done in 07775af3);
   - `@m[$i;$j]` keeps a matmul out of `--cnp` (630× C);
   - `.max` over a `num` array unpacks it (30–60×).
