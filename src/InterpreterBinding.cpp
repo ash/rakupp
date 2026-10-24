@@ -7998,7 +7998,10 @@ bool Interpreter::checkElemTypeOrShrink(const std::string& want, Value& v, const
         checkElemType(want, v, symbol);
     }
     catch (...) {
-        if (growBase && growBase->arr() && growBase->arr()->size() > growSize) growBase->arr()->resize(growSize);
+        if (growBase && growBase->arr()) {   // (under push's stripe, as the growth was)
+            ParStripe gs(*this, growBase->arr());
+            if (growBase->arr()->size() > growSize) growBase->arr()->resize(growSize);
+        }
         throw;
     }
     return false;

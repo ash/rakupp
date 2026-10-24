@@ -11780,8 +11780,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         std::to_string(d + 1) + " out of range (must be 0.." +
                         std::to_string((*shape)[d] - 1) + ")"};
                 if (i < 0) i = 0;
-                while ((long long)node->arr()->size() <= i)
-                    node->arr()->push_back(containerFill(*node));
+                growToIndex(*this, *node->arr(), i, [&] { return containerFill(*node); });
                 node = &(*node->arr())[i];
                 d++;
             }
@@ -11999,7 +11998,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat) {
                     long long j = kv.toInt();
                     if (j < 0) negIndexThrow(j);
-                    while ((long long)arr->size() <= j) arr->push_back(Value::any());
+                    growToIndex(*this, *arr, j, [] { return Value::any(); });
                     return &(*arr)[(size_t)j];
                 }
             }
@@ -12051,7 +12050,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
                     long long j = kv.toInt();
                     if (j < 0) negIndexThrow(j);
-                    while ((long long)arr->size() <= j) arr->push_back(Value::any());
+                    growToIndex(*this, *arr, j, [] { return Value::any(); });
                     return &(*arr)[(size_t)j];
                 }
                 return &atPosHold;
@@ -12074,7 +12073,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                                 long long j = kv2.toInt();
                                 if (j < 0) negIndexThrow(j);
                                 if (j < 0) j = 0;
-                                while ((long long)slot.arr()->size() <= j) slot.arr()->push_back(Value::any());
+                                growToIndex(*this, *slot.arr(), j, [] { return Value::any(); });
                                 return &(*slot.arr())[j];
                             }
             }
@@ -12192,12 +12191,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     throwTypedV("X::TypeCheck::Assignment",
                         {{"got", Value::typeObj("Hash")}, {"expected", Value::typeObj(want)}},
                         "Type check failed in assignment; expected " + want + " but got Hash");
-            while ((long long)base->arr()->size() <= i)
-                base->arr()->push_back(containerFill(*base));
             // the slot being NAMED starts as the container's default, so
             // `@a[0]++` under `is default(42)` counts from 42 (an assignment
             // just overwrites it; the gaps stay holes)
-            if (grown && base->elemDefault()) (*base->arr())[i] = *base->elemDefault();
+            growToIndex(*this, *base->arr(), i, [&] { return containerFill(*base); },
+                        grown ? base->elemDefault().get() : nullptr);
             tctx().lastLvalueElemIdx = i;
             return &(*base->arr())[i];
         }
@@ -12422,7 +12420,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 long long i = iv.toInt();
                 if (i < 0) negIndexThrow(i);
                 if (i < 0) i = 0;
-                while ((long long)cur->arr()->size() <= i) cur->arr()->push_back(Value::any());
+                growToIndex(*this, *cur->arr(), i, [] { return Value::any(); });
                 cur = &(*cur->arr())[i];
             }
             return cur;
