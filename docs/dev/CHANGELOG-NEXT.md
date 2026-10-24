@@ -10,7 +10,7 @@ here.*
 
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
-72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a).*
+72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a.*
 
 ---
 
@@ -156,6 +156,14 @@ interpreted.
   stored the Regex). A regex asked for its truth in a compiled loop matches
   the loop's topic: `for <xa yb ab> { say $_ if /a/ && /b/ }` printed xa and
   yb, judged against the program's `$_`.
+- **A `for` over a Range with a BigInt end walks its real integers**
+  (e614993a), interpreted and natively with -O and without. The counted loops
+  walked the saturated int64 fields beside the carried ends: `for 2**64 ..
+  2**64 + 2 -> $i` ran once, at 9223372036854775807 (Rakudo: three times from
+  2**64), `9223372036854775806 .. 9223372036854775808` stopped one short, and
+  `-2**64 - 1 .. -2**64` ran once at int64's min. `2**64 .. *` carried no
+  start at all, so its .raku said 9223372036854775807..Inf; it walks lazily
+  now, until its `last`.
 
 ### Fixed: crashes
 
