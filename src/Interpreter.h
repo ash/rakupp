@@ -2761,6 +2761,7 @@ public:
     bool isCoercionSubset(const std::string& type) const;
     // Run a Proxy's STORE for `$proxy = v`. See the definition in InterpreterCalls.cpp.
     Value proxyStore(const Value& proxy, const Value& v);
+    void storeThrough(Value& slot, const Value& v);   // a Proxy slot (a bound element) takes v through it
     // Proxies over the places a value can live — an Env variable slot (what
     // `$y := $x` binds), an array element, a hash entry, or a fresh anonymous
     // cell. All four read/write through native FETCH/STORE closures, so the
@@ -2893,6 +2894,7 @@ public:
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr, Env* scope = nullptr); // the cell of the variable `e` names (in `scope`)
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
+    bool bindToDeclared(struct Assign* a, bool sink, Value& out); // `@b[1] := my $c`: declare, then bind (InterpreterCalls.cpp)
     const void* containerId(const Value* slot); // what `=:=` compares (see InterpreterCalls.cpp)
     void assignContainerPrologue(struct Assign* a, bool isBind); // evalAssign's `:=` / `f() =` arms
     void setupRwSlots(const std::vector<Param>* params, std::shared_ptr<Env>& env, const std::vector<Value*>* slots);

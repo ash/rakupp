@@ -2073,6 +2073,14 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
                                       : callCallable(it->second, { v });
 }
 
+// A store into a slot holding a Proxy (a bound container: `@b[1] := $c`, or a
+// user's Proxy) goes through it, as the single-element store does. A slice or
+// a list assignment wrote the slot outright, unbinding `$c` instead.
+void Interpreter::storeThrough(Value& slot, const Value& v) {
+    if (slot.t == VT::Hash && slot.hashKind == proxyKind() && slot.hash()) { Value p = slot; proxyStore(p, v); }
+    else slot = v;
+}
+
 Value Interpreter::makePathProxy(std::shared_ptr<Env> scope, Expr* path) {
     escapeRefs(path, scope.get());   // PARALLEL-SCALING-PLAN P2: it re-reads the path from anywhere
     Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
@@ -2364,6 +2372,33 @@ bool Interpreter::bindAttrAlias(Assign* a, bool sigilDeclBind) {
         if (tctx().cur->findRaw(tv->name, &own) && own)
             own->x().varDefault[tv->name] = Value::typeObj(attrType);
     }
+    return true;
+}
+
+// `$x := my $c` / `@b[1] := my $c = 4`: the right side DECLARES the container it
+// names, so the declaration runs first and the bind takes that variable. The
+// bind arms looked `$c` up before the declaration made it, and the declaration
+// then made a fresh one, so `@b[1] = 9` never reached `$c` (the sigilless
+// `my \x = my $y` has its own arm for the same reason). False: not this shape.
+bool Interpreter::bindToDeclared(Assign* a, bool sink, Value& out) {
+    if (!opEq(a->op, ":=") || !a->target || !a->value ||
+        (a->target->kind != NK::VarExpr && a->target->kind != NK::Index))
+        return false;
+    const Expr* v = a->value.get();
+    if (v->kind == NK::Assign && opEq(static_cast<const Assign*>(v)->op, "="))
+        v = static_cast<const Assign*>(v)->target.get();
+    if (!v || v->kind != NK::VarExpr) return false;
+    auto* dv = static_cast<const VarExpr*>(v);
+    if (!dv->declare || dv->name.size() < 2 || dv->name[0] != '$' || !dv->d().pseudoPkg.empty() ||
+        !(nameLetterAt(dv->name, 1) || dv->name[1] == '_' || dv->name[1] == '\x01'))
+        return false;
+    eval(a->value.get());
+    Assign alias;
+    alias.op = ":=";
+    alias.target.reset(a->target.get());
+    alias.value = std::make_unique<VarExpr>(dv->name);
+    struct Give { Assign& a; ~Give() { a.target.release(); } } give{alias};
+    out = evalAssign(&alias, sink);
     return true;
 }
 
@@ -3543,7 +3578,8 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 if (nb && !isBinding && nativeRefusesKind(v, nf))   // `my num ($a, $b) = 1/2, 2e0`
                     throwNativeKind(v, nf, ns);
                 if (!nb && !isBinding && v.natBits) dropNativeTags(v);   // see dropNativeTags
-                *lv = v;
+                if (isBinding) *lv = v;
+                else storeThrough(*lv, v);   // (a bound element: `($x, @b[1]) = 1, 2`)
                 if (nb && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
                     nativeAssignCheck(*lv, nb, nf, tgt->kind == NK::VarExpr
                                            ? static_cast<VarExpr*>(tgt)->name : std::string("$x"), ns);

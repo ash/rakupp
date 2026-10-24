@@ -13389,6 +13389,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             }
         }
     }
+    if (Value r; bindToDeclared(a, sink, r)) return r;   // `@b[1] := my $c`
     // `:(…) := RHS` binds RHS as an argument list to the literal's parameters,
     // whose variables are the enclosing scope's own (S06-other/pairs-as-lvalues.t).
     // A List binds as its Capture: a Pair element is a NAMED argument. A part of
@@ -15707,14 +15708,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                         Value stored = ks[i]; stored.itemized = false;
                                         bp->hash()->setObjKey(key, stored);
                                     }
-                                    (*bp->hash())[key] = v;
+                                    storeThrough((*bp->hash())[key], v);
                                 }
                             }
                             else if (bp->t == VT::Array && bp->arr()) {
                                 long long j = ks[i].toInt();
                                 if (j < 0) negIndexThrow(j); // (this skipped the key and kept the rest of the assignment)
                                 if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1, Value::any());
-                                (*bp->arr())[j] = v;
+                                storeThrough((*bp->arr())[j], v);
                             }
                             out.arr()->push_back(std::move(took));
                         }
@@ -32590,11 +32591,11 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             const bool mutableBase = bv &&
                 ((bv->t == VT::Hash && bv->hashKind.empty() && bn[0] == '%') ||
                  (bv->t == VT::Array && !bv->isList && bn[0] == '@'));
-            if (mutableBase && inv.t != VT::Array && inv.t != VT::Hash) {
+            if (mutableBase && ((inv.t != VT::Array && inv.t != VT::Hash) || cellOfProxy(&inv))) {   // (or bound: `@b[1] := $c`)
                 Value sc = Value::makeHash(); sc.hashKind = "Scalar";
                 (*sc.hash())["name"] = Value::str("element");
                 (*sc.hash())["default"] = Value::any();
-                (*sc.hash())["value"] = inv;
+                (*sc.hash())["value"] = cellOfProxy(&inv) ? *cellOfProxy(&inv) : inv;
                 return sc;
             }
         }
