@@ -158,7 +158,8 @@ void setReg(RkCnpFrame* f, uint64_t k, const Value& v) {
     else if (v.enumName.empty() && v.t == VT::Bool)       { f->r[k] = v.b ? 1 : 0; f->t[k] = RK_T_BOOL; }
     // a Rat whose parts fit an int64 rides the Rat lane (a zero denominator,
     // `1/0`, stays boxed: only applyArith knows what it means)
-    else if (v.enumName.empty() && v.t == VT::Rat && v.hashKind.empty() && v.ratN() && v.ratD() &&
+    // (a FatRat stays boxed: the lane's answers would be Rats)
+    else if (v.enumName.empty() && v.t == VT::Rat && v.hashKind.empty() && !v.fatRat() && v.ratN() && v.ratD() &&
              v.ratN()->fitsLL() && v.ratD()->fitsLL() && !v.ratD()->isZero()) {
         f->r[k] = v.ratN()->toLL(); f->den[k] = v.ratD()->toLL(); f->t[k] = RK_T_RAT;
     }
@@ -182,6 +183,7 @@ const char* const kOpNames[] = {
     "+&", "+|", "+^", "+<", "+>",
     "min", "max", "^^",
     "\0neg", "\0plus", "\0not", "\0so", "\0bnot", "\0str",
+    "\0succ", "\0pred",
 };
 static_assert(sizeof(kOpNames) / sizeof(*kOpNames) == RK_OP__COUNT,
               "kOpNames and enum RkCnpOp must stay in step");
@@ -520,6 +522,17 @@ int rk_cnp_unop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a) {
                 return 0;
             }
         }
+        // `++` / `--` step a machine Int by one while it stays one; anything
+        // else steps as the interpreter's does — a Bool's succ is True, a
+        // Str's is its magic increment — where `+ 1` made a Bool an Int
+        if ((op == (uint64_t)RK_OP_SUCC || op == (uint64_t)RK_OP_PRED) && f->t[a] == RK_T_INT) {
+            long long x;
+            if (!(op == (uint64_t)RK_OP_SUCC ? rakupp::add_ovf((long long)f->r[a], 1LL, &x)
+                                             : rakupp::sub_ovf((long long)f->r[a], 1LL, &x))) {
+                setReg(f, d, Value::integer(x));
+                return 0;
+            }
+        }
         Value v = regValue(f, a);
         // Verbatim from what Codegen emits for the same operators, so that a
         // kernel and a compiled program cannot disagree about them.
@@ -530,6 +543,8 @@ int rk_cnp_unop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a) {
             case RK_OP_SO:   setReg(f, d, Value::boolean(interpOf(f).boolify(v))); break;
             case RK_OP_STR:  setReg(f, d, Value::str(v.toStr())); break;
             case RK_OP_BNOT: setReg(f, d, Value::integer(~v.toInt())); break;
+            case RK_OP_SUCC: setReg(f, d, interpOf(f).stepValue(v, true)); break;
+            case RK_OP_PRED: setReg(f, d, interpOf(f).stepValue(v, false)); break;
             default: return 1;
         }
         return 0;
@@ -1140,11 +1155,8 @@ int Lower::expr(Expr* e) {
                 int base; std::vector<int> keys;
                 if (!indexChain(static_cast<Index*>(u->operand.get()), base, keys)) return 0;
                 int old = chainGet(base, keys);
-                int one = temp();
-                emit(ids().loadi, (uint64_t)one, (uint64_t)(long long)1);
                 int nv = temp();
-                emit(ids().binop, (uint64_t)nv, (uint64_t)old, (uint64_t)one,
-                     (uint64_t)(op == "++" ? RK_OP_ADD : RK_OP_SUB));
+                emit(ids().unop, (uint64_t)nv, (uint64_t)old, (uint64_t)(op == "++" ? RK_OP_SUCC : RK_OP_PRED));
                 chainSet(base, keys, nv);
                 return u->postfix ? old : nv;
             }
@@ -1162,8 +1174,12 @@ int Lower::expr(Expr* e) {
                 }
                 int scratch = temp();
                 int h = emit(ids().incr, (uint64_t)r, (uint64_t)delta, (uint64_t)scratch);
-                colds.push_back({ColdReq::BinopImm, h, (uint64_t)r, (uint64_t)r, (uint64_t)delta,
-                                 RK_OP_ADD | nat, scratch, 0, false});
+                // (the cold half: a native wraps; anything else steps as `++`
+                // does, which is not `+ 1` for a Bool or a Str — RK_OP_SUCC)
+                if (nat) colds.push_back({ColdReq::BinopImm, h, (uint64_t)r, (uint64_t)r, (uint64_t)delta,
+                                          RK_OP_ADD | nat, scratch, 0, false});
+                else colds.push_back({ColdReq::Unop, h, (uint64_t)r, (uint64_t)r, 0,
+                                      op == "++" ? RK_OP_SUCC : RK_OP_PRED, 0, 0, false});
                 return u->postfix ? old : r;
             }
             int a = expr(u->operand.get());
