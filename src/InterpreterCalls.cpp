@@ -4757,11 +4757,13 @@ static bool packedRhsPure(const Expr* e, int depth = 0) {
                (nameLetterAt(ve->name, 1) || ve->name[1] == '_');
     };
     switch (e->kind) {
-        case NK::IntLit: case NK::NumLit: return true;
+        case NK::IntLit: case NK::NumLit: case NK::BoolLit: return true;
         case NK::VarExpr: return lex(e, '$');
         case NK::Binary: {
             auto* b = static_cast<const Binary*>(e);
-            static const char* kOps[] = {"+", "-", "*", "/", "%", "div", "mod", "+&", "+|", "+^", "+<", "+>", "**"};
+            // (and the numeric tests, whose Bool an int array holds as 0 or 1)
+            static const char* kOps[] = {"+", "-", "*", "/", "%", "div", "mod", "+&", "+|", "+^", "+<", "+>", "**",
+                                         "%%", "==", "!=", "<", "<=", ">", ">="};
             bool ok = false;
             for (const char* o : kOps) if (b->op == o) { ok = true; break; }
             return ok && packedRhsPure(b->lhs.get(), depth + 1) && packedRhsPure(b->rhs.get(), depth + 1);
@@ -4884,6 +4886,7 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
     Value v = eval(a->value.get());
     v.readonly = v.immutableBind = false;
     if (v.natBits == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
+    if (!pa->isNum && v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);   // (an int array holds True as 1)
     if (!plainWordValue(v, pa->isNum)) return false;
     if (op != '=') {
         if (pa->isNum) {

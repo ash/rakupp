@@ -1856,6 +1856,7 @@ struct ExecContext {
     // store, which may grow it: a refused element takes the new slots back off
     // (checkElemTypeOrShrink). Null for anything else.
     Value* lastLvalueGrowBase = nullptr;
+    long long lastLvalueElemIdx = 0;   // …and the index of the element it named (nativeElemStore's message)
     size_t lastLvalueGrowSize = 0;
     // An element write through a list of an Array's elements (ElemView): the
     // array and the index there the write is mirrored to, set by lvalue() and
@@ -3198,6 +3199,11 @@ public:
     // empty one, or Any/Mu, checks nothing. `symbol` names the container in
     // the message when the site knows it ("@a", "@!data").
     std::string elemTypeOf(const Value& container);
+    std::string elemTypeForStore(const Value& container, bool isHash);   // …or a native array's own (`int8`)
+    std::string nativeElemTypeOf(const Value& container);   // `int8` of a `my int8 @a`, or ""
+    void nativeElemStore(const std::string& t, Value& v, char how, long long idx = 0, const std::string& op = "", Value* handed = nullptr);
+    Value sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol);
+    Value sliceStoreResult(const Value& container);
     void checkElemType(const std::string& want, const Value& v, const std::string& symbol);
     void checkElemType(const Value& container, const Value& v, const std::string& symbol = "") {
         std::string w = elemTypeOf(container);
@@ -3354,7 +3360,7 @@ public:
     Value nilAttrDefault(const ClassAttr& at, const std::string& resolvedType);
     void minmaxOperands(const ValueList& items, ValueList& each, std::vector<char>* exOf);   // what `.minmax` compares
     Value minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);
-    void checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol, Value* growBase, size_t growSize);
+    bool checkElemTypeOrShrink(const std::string& want, Value& v, const std::string& symbol, Value* growBase, size_t growSize, Value* passed = nullptr);
     Value* newGlobalSymbolSlot(const std::string& nm);                    // `GLOBAL::<Probe> = 43`
     void publishOurExport(const std::string& name, const Value& v);       // `our &f is export = …` in EXPORT::DEFAULT
     Value hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args);

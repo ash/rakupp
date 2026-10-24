@@ -7543,7 +7543,7 @@ bool Interpreter::boolify(const Value& v) {
 // (The untyped reset is the `Any` TYPE OBJECT, not the bare undefined value:
 // that one is a HOLE — a deleted or never-written slot — and `.List`, `:exists`
 // and the typed renderings tell the two apart, as Rakudo does.)
-void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v, char how = 'o');   // InterpreterBinding.cpp
 std::string coercionTarget(const std::string& t, std::string* from = nullptr);   // InterpreterBinding.cpp
 // an element type as a store must satisfy it: a coercion type's target (`Hash(Any)` → Hash)
 static std::string elemTargetOf(const std::string& want) {
@@ -11700,7 +11700,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // value, so hand it the constraint here (the twin of
         // lastLvalueAttrType). Cleared by the assignment before it asks.
         if (base) {
-            tcx.lastLvalueElemType = elemTypeOf(*base);
+            tcx.lastLvalueElemType = elemTypeForStore(*base, idx->isHash);
             if (!tcx.lastLvalueElemType.empty() && !idx->isHash && base->t == VT::Array && base->arr()) {
                 tcx.lastLvalueGrowBase = base;
                 tcx.lastLvalueGrowSize = base->arr()->size();
@@ -12156,6 +12156,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `@a[0]++` under `is default(42)` counts from 42 (an assignment
             // just overwrites it; the gaps stay holes)
             if (grown && base->elemDefault()) (*base->arr())[i] = *base->elemDefault();
+            tctx().lastLvalueElemIdx = i;
             return &(*base->arr())[i];
         }
     }
@@ -15634,12 +15635,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             materializeLazy(rv, ks.size());
                             if (rv.arr()) vs = *rv.arr();
                         }
-                        Value out = Value::array(); out.isList = true;
+                        Value out = sliceStoreResult(*bp);   // (a List, or a native array's own kind)
                         for (size_t i = 0; i < ks.size(); i++) {
                             Value v = i < vs.size() ? nilElemDefault(vs[i], *bp) : Value::any();
-                            // a typed container checks a SLICE assignment too
-                            coerceElemValue(*this, elemTypeOf(*bp), v);
-                            checkElemType(*bp, v, containerNameOf(ix->base.get(), ix->isHash ? '%' : '@'));
+                            // a typed container checks a SLICE assignment too (sliceElemStore)
+                            Value took = sliceElemStore(*bp, ix->isHash, v, containerNameOf(ix->base.get(), ix->isHash ? '%' : '@'));
                             if (ix->isHash && bp->t == VT::Hash && bp->hash()) {
                                 const std::string& hk = bp->hashKind;
                                 if (hk == "SetHash" || hk == "BagHash" || hk == "MixHash") {
@@ -15667,7 +15667,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1, Value::any());
                                 (*bp->arr())[j] = v;
                             }
-                            out.arr()->push_back(v);
+                            out.arr()->push_back(std::move(took));
                         }
                         return sink ? Value::any() : out;
                     }
@@ -16189,12 +16189,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // $*ERR` throws — roast S02-types/array.t). The Index lvalue arm left
         // the constraint behind; Nil is not an assignment but a RESET, and the
         // arm further down turns it into the element default.
+        Value nativePassThrough; bool elemPass = false;   // (what a native element's `=` answers: below)
         if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target->kind == NK::Index && !tctx().lastLvalueElemType.empty()) {
-            std::string want = tctx().lastLvalueElemType;
-            tctx().lastLvalueElemType.clear();
+            std::string want = std::exchange(tctx().lastLvalueElemType, {});
             auto* ixt = static_cast<Index*>(a->target.get());
-            coerceElemValue(*this, want, rhs);   // `my Int() %h; %h<a> = "1"`
-            checkElemTypeOrShrink(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'), growBase, growSize);
+            coerceElemValue(*this, want, rhs, '=');   // `my Int() %h; %h<a> = "1"`
+            elemPass = checkElemTypeOrShrink(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'), growBase,
+                                             growSize, opEq(a->op, "=") ? &nativePassThrough : nullptr);
         }
         // …and `%h.AT-KEY(k) = v` / `@a.AT-POS(i) = v`, the method spelling
         if (opEq(a->op, "=") && a->target->kind == NK::MethodCall && !tctx().lastLvalueElemType.empty()) {
@@ -17146,11 +17147,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (nb && opEq(a->op, "=") && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
             nativeAssignCheck(*lv, nb, nf, a->target->kind == NK::VarExpr
                                    ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x"), ns);
-        // (a native ELEMENT store answers what was assigned — `(@u8[0] = -1)`
-        // is -1 — while the slot keeps the wrapped value)
-        Value nativePassThrough;
-        const bool elemPass = nb && opEq(a->op, "=") && a->target->kind == NK::Index && lv->t == VT::Int;
-        if (elemPass) nativePassThrough = *lv;
+        // (a native ELEMENT store answers what it was handed — `(@u8[0] = -1)`
+        // is -1 — while the slot keeps it wrapped; see checkElemTypeOrShrink)
+        if (!elemPass && nb && opEq(a->op, "=") && a->target->kind == NK::Index && lv->t == VT::Int)
+            { elemPass = true; nativePassThrough = *lv; }
         if (nb) wrapNative(*lv, nb, ns, nf);
         if (elemPass && !sink) { nativePassThrough.natBits = 0; return nativePassThrough; }
         // A `constant` is immutable once it holds its value — `constant C = 5;
@@ -25561,7 +25561,7 @@ Value Interpreter::evalUnary(Unary* u) {
             std::string want = tctx().lastLvalueElemType;
             tctx().lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(u->operand.get());
-            coerceElemValue(*this, want, newv);
+            coerceElemValue(*this, want, newv, '+');
             checkElemType(want, newv, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
         }
         *lv = newv;

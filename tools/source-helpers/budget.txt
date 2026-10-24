@@ -28,5 +28,5 @@ function main 1762
 
 compiler Apple clang version 21.0.0 (clang-2100.3.34.2)
 preprocessed src/BuiltinsParts.h 92835
-preprocessed src/Interpreter.h 84290
+preprocessed src/Interpreter.h 84300
 preprocessed src/InterpreterParts.h 100815

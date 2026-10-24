@@ -381,13 +381,15 @@ int rk_st_idxw(F* f, int64_t* r, uint8_t* t) {
     NEXT;
 }
 // `@a[$i] = $x` into a packed `int` / `num` array: the word, with no call, as
-// rk_cnp_idxset's own packed lane stores it. A value of the other kind, a key
+// rk_cnp_idxset's own packed lane stores it (a Bool into an int array as its
+// 0 or 1). A value of the other kind, a key
 // past the end, a box with no view or a live worker thread (a word written
 // there could race the one-time unpack) goes to rk_cnp_idxset.
 int rk_st_idxsetw(F* f, int64_t* r, uint8_t* t) {
     const RkCnpView* v = &f->views[OP0];
     uint64_t k = OP1, x = OP2;
-    if (t[OP0] != RK_T_BOX || !v->w || t[k] != RK_T_INT || t[x] != v->tag || *v->gone || *f->workers) SLOW;
+    if (t[OP0] != RK_T_BOX || !v->w || t[k] != RK_T_INT || *v->gone || *f->workers) SLOW;
+    if (t[x] != v->tag && !(t[x] == RK_T_BOOL && v->tag == RK_T_INT)) SLOW;   // (True as 1)
     int64_t* w = v->w[0];
     uint64_t i = (uint64_t)r[k];
     if (i >= (uint64_t)(v->w[1] - w)) SLOW;   // (a negative key too)

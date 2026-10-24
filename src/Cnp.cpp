@@ -497,7 +497,7 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
             size_t at;
             Interpreter& I = interpOf(f);
             if (PackedArr* pa = packedAt(f, (uint64_t)s.base, (uint64_t)s.keys[0], at))
-                if (f->t[val] == (pa->isNum ? RK_T_NUM : RK_T_INT) &&
+                if ((f->t[val] == (pa->isNum ? RK_T_NUM : RK_T_INT) || (!pa->isNum && f->t[val] == RK_T_BOOL)) &&
                     !(I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)) {
                     pa->w[at] = f->r[val];   // (a Num register holds its bits)
                     return 0;
@@ -509,8 +509,14 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
             cur = &rtIndexRef(*cur, regValue(f, (uint64_t)s.keys[i]), s.hash[i] != 0);
         // stored as the interpreter stores an element: Nil resets it to the
         // default (Any), a container goes in as one item, a native's tags stay
-        // behind, and the stored value is a fresh writable one
+        // behind, and the stored value is a fresh writable one; a native
+        // array's element converts (True as 1) or refuses (nativeElemStore)
         Value v = regValue(f, val);
+        if (!s.hash.back())
+            if (std::string nt = interpOf(f).nativeElemTypeOf(*cur); !nt.empty()) {
+                const Value k = regValue(f, (uint64_t)s.keys.back());
+                interpOf(f).nativeElemStore(nt, v, '=', k.t == VT::Int && !k.big() ? k.i : 0);
+            }
         if (v.t == VT::Nil) v = cur->ofType().empty() ? Value::typeObj("Any") : typedElemDefault(*cur);   // (`my int @a`: 0)
         v.readonly = v.immutableBind = false;
         if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;

@@ -1267,13 +1267,20 @@ std::string coercionTarget(const std::string& t, std::string* from = nullptr) {
 // coercion type's full name. A nested source coerces inside out:
 // `Str(Int(Cool))` makes 4.7 the Int 4 and then "4". An undefined value is not
 // coerced (Rakudo's attempt fails, with another error).
-void coerceElemValue(Interpreter& I, const std::string& want, Value& v) {
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v, char how) {
+    // a NATIVE array's element (lvalue hands its type over: elemTypeForStore)
+    // converts, or refuses, by the natives' own rules; `=` refuses later, in
+    // checkElemTypeOrShrink, which knows how far the store grew the array
+    if (!want.empty() && !typeNameLead(want[0]) && isNativeTypeName(want)) {
+        I.nativeElemStore(want, v, how == '=' ? 'c' : how);
+        return;
+    }
     std::string from;
     std::string target = coercionTarget(want, &from);
     if (target.empty() || v.t == VT::Nil || !rtIsDefined(v) || I.typeOrSubsetMatches(v, target)) return;
     std::string inner = coercionTarget(from);
     if (!inner.empty()) {
-        coerceElemValue(I, from, v);
+        coerceElemValue(I, from, v, how);
         if (!I.typeOrSubsetMatches(v, inner)) return;
     }
     else if (!from.empty() && from != "Any" && from != "Mu" && !I.typeOrSubsetMatches(v, from)) return;
@@ -1281,6 +1288,94 @@ void coerceElemValue(Interpreter& I, const std::string& want, Value& v) {
     // a coercion that fails throws its own error (`"abc"` into an Int() is X::Str::Numeric)
     if (v.t == VT::Hash && v.hashKind == "Failure") failureDetonate(v);
 }
+// …and the type a store into one of its elements answers to: the element
+// type, or a native array's own (`int8` of `my int8 @a`), which elemTypeOf
+// leaves out because a native is no type an element is checked against
+std::string Interpreter::elemTypeForStore(const Value& container, bool isHash) {
+    if (!isHash) if (std::string t = nativeElemTypeOf(container); !t.empty()) return t;
+    return elemTypeOf(container);
+}
+std::string Interpreter::nativeElemTypeOf(const Value& container) {
+    if (container.t != VT::Array || container.ofType().empty()) return "";
+    std::string t = container.ofType().substr(0, topLevelComma(container.ofType()));
+    return !t.empty() && !typeNameLead(t[0]) && isNativeTypeName(t) ? t : "";
+}
+
+// What a store into an element of a native `int` / `num` / `str` array leaves
+// there, by Rakudo's rules, or its refusal. An int array takes an Int that
+// fits (a Bool as 0 or 1, an IntStr or an enum as its Int), wrapped to the
+// width; a num array a Num (num32 rounds); a str array a Str. `how` names the
+// store, which decides the conversion and the words of a refusal:
+//   '=' `@a[$i] = v`: X::TypeCheck naming element #idx ('c' converts only,
+//       for checkElemTypeOrShrink to wrap or refuse)
+//   'o' through the element's container (`+=`, `||=`): refused as an unbox
+//   '+' `++` / `--`: wraps at the width, as the native step does
+//   'p' push / unshift (X::TypeCheck naming `op`), 'a' append / prepend (an unbox)
+//   's' a slice store, coerced through .Int / .UInt / .Num / .Str as Rakudo's
+//       slice is (so -1 into a uint slice dies: its .UInt is a Failure)
+// A big Int is never wrapped but by a step: it is too wide. *handed, when
+// asked for, gets the value as it went in, before the wrap.
+void Interpreter::nativeElemStore(const std::string& t, Value& v, char how, long long idx, const std::string& op,
+                                  Value* handed) {
+    const char fam = t == "str" ? 's' : t.compare(0, 3, "num") == 0 ? 'n'
+                   : t.compare(0, 4, "uint") == 0 || t == "byte" ? 'u' : 'i';
+    if (how == 's') {
+        if (fam == 's') { if (v.t != VT::Str || v.isAllomorph()) v = Value::str(v.toStr()); }
+        else if (v.t == VT::Nil) { warnUninit("Use of Nil in numeric context"); v = fam == 'n' ? Value::number(0) : Value::integer(0); }
+        else if (fam == 'n' ? v.t != VT::Num
+                            : v.t != VT::Int || (fam == 'u' && (v.big() ? v.big()->sign < 0 : v.i < 0))) {
+            v = coerceToType(v, fam == 'n' ? "Num" : fam == 'u' ? "UInt" : "Int");
+            if (v.t == VT::Hash && v.hashKind == "Failure") throwNativeKind(v, fam == 'n', fam != 'u');
+        }
+    }
+    if (fam == 'i' || fam == 'u') {
+        if (v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);
+        if (v.t == VT::Int) {
+            if (!v.big() && (v.isAllomorph() || !v.enumName.empty() || !v.enumType.empty())) v = Value::integer(v.toInt());
+            if (how == 'c') return;
+            if (v.big() && how != '+') {
+                if (fam == 'u' && v.big()->sign < 0)
+                    throw RakuError{Value::typeObj("X::AdHoc"), "Cannot unbox negative bigint into native unsigned integer"};
+                if (fam == 'i' || v.big()->bitLength() > 64) throwNativeTooWide(v);
+            }
+            if (handed) { *handed = v; dropNativeTags(*handed); }
+            bool sg = true;
+            const int bits = Value::natWidthOfType(t, sg);
+            wrapNative(v, bits ? bits : (how == '+' && v.big() ? 64 : 0), bits ? sg : true);
+            dropNativeTags(v);
+            return;
+        }
+    }
+    else if (fam == 'n' && v.t == VT::Num) {
+        if (v.isAllomorph()) wrapNative(v, 64, true, true);
+        if (handed) { *handed = v; dropNativeTags(*handed); }
+        if (t == "num32" && how != 'c') wrapNative(v, 32, true, true);
+        dropNativeTags(v);
+        return;
+    }
+    else if (fam == 's' && (v.t == VT::Str || v.isAllomorph())) {   // (an allomorph's Str side)
+        if (v.isAllomorph()) v = Value::str(v.toStr());
+        dropNativeTags(v);
+        if (handed) *handed = v;
+        return;
+    }
+    if (how == 'c') return;
+    if (how == '=' || how == 'p') {
+        const std::string kind = fam == 'n' ? "num" : fam == 's' ? "str" : fam == 'u' ? "uint" : "int";
+        const std::string what = how == '=' ? "assignment to " + kind + " array element #" + std::to_string(idx)
+                                            : op + " to " + kind + " array";
+        throwTypedV("X::TypeCheck", {{"got", v}, {"expected", Value::typeObj(t)}, {"operation", Value::str(what)}},
+                    "Type check failed in " + what + "; expected " + t + " but got " + v.typeName() + " (" +
+                        (isDefined(v) ? typeCheckRepr(v) : v.typeName()) + ")");
+    }
+    if (!isDefined(v))
+        throw RakuError{Value::typeObj("X::AdHoc"), "Cannot unbox a type object (" + v.typeName() + ") to " +
+                                                        (fam == 'n' ? "a num." : fam == 's' ? "a str." : "int.")};
+    if (fam == 's')
+        throw RakuError{Value::typeObj("X::AdHoc"), "This type cannot unbox to a native string: P6opaque, " + v.typeName()};
+    throwNativeKind(v, fam == 'n', fam != 'u');
+}
+
 std::string Interpreter::elemTypeOf(const Value& container) {
     if (container.ofType().empty()) return "";
     if (container.t != VT::Array && container.t != VT::Hash) return ""; // Range/IO::Path ride on ofType too
@@ -1370,6 +1465,7 @@ void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& 
 }
 
 void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {
+    if (!want.empty() && !typeNameLead(want[0]) && isNativeTypeName(want)) return;   // (coerceElemValue checked it)
     // Nil RESETS the element to its default — the bare type, which a `:D`
     // element type refuses (`my Int:D @a; @a[2] = Nil` dies)
     if (v.t == VT::Nil && want.size() > 2 && want.compare(want.size() - 2, 2, ":D") == 0) {
@@ -7751,13 +7847,51 @@ Value* Interpreter::newGlobalSymbolSlot(const std::string& nm) {
 // checkElemType for an element assignment that may have GROWN the array
 // (ExecContext::lastLvalueGrowBase): a refusal takes the new slots back off,
 // so `@a[5] = "s"` into an `Int @a` leaves it as it was.
-void Interpreter::checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol,
-                                        Value* growBase, size_t growSize) {
-    try { checkElemType(want, v, symbol); }
+// A native array's element, which coerceElemValue converted, is wrapped to
+// its width here, or refused. The assignment answers the value it was handed,
+// before the wrap, and that goes to *passed (true when set): Rakudo's
+// `(@u8[$i] = -1)` is -1 and `(@i8[$i] = 300)` is 300, as its ASSIGN-POS
+// candidates' `--> uint` / `--> int` return them.
+bool Interpreter::checkElemTypeOrShrink(const std::string& want, Value& v, const std::string& symbol,
+                                        Value* growBase, size_t growSize, Value* passed) {
+    try {
+        if (!want.empty() && !typeNameLead(want[0]) && isNativeTypeName(want)) {
+            nativeElemStore(want, v, '=', tctx().lastLvalueElemIdx, "", passed);
+            return passed != nullptr;
+        }
+        checkElemType(want, v, symbol);
+    }
     catch (...) {
         if (growBase && growBase->arr() && growBase->arr()->size() > growSize) growBase->arr()->resize(growSize);
         throw;
     }
+    return false;
+}
+
+// What a SLICE store, `@a[0, 1] = …`, answers: a List of what each element
+// took, or for a native array an array of its family's full width. Rakudo's
+// `(@i8[0, 1] = 300, 1)` is array[int].new(300, 1) while @i8 holds 44 and 1.
+Value Interpreter::sliceStoreResult(const Value& container) {
+    Value out = Value::array();
+    const std::string t = nativeElemTypeOf(container);
+    if (t.empty()) out.isList = true;
+    else out.ofTypeM() = t == "str" ? "str" : t.compare(0, 3, "num") == 0 ? "num"
+                       : t.compare(0, 4, "uint") == 0 || t == "byte" ? "uint" : "int";
+    return out;
+}
+// …and one value of it: coerced and checked as the container's element type
+// asks, or as a native array's element takes it (nativeElemStore's 's'). What
+// it answers for the slice's result is, for a native, the value before the wrap.
+Value Interpreter::sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol) {
+    const std::string want = elemTypeForStore(container, isHash);
+    if (!want.empty() && !typeNameLead(want[0])) {   // (a native: elemTypeForStore)
+        Value handed;
+        nativeElemStore(want, v, 's', 0, "", &handed);
+        return handed;
+    }
+    coerceElemValue(*this, want, v, 's');
+    checkElemType(container, v, symbol);
+    return v;
 }
 
 // An attribute's .type carries the CONTAINER shape, as in Rakudo:
