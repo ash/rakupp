@@ -1,420 +1,328 @@
-# Raku++
-
-[raku.online](https://raku.online) is the official public area of this project.
-
-A from-scratch implementation of the [Raku](https://raku.org) programming
-language in **C++17, with no third-party dependencies** — a
-[hand-written](docs/guide/faq/hand-written.md) lexer, parser, and tree-walking
-evaluator that runs real Raku (classes, roles, grammars, regexes,
-multi-dispatch, junctions, lazy sequences, a bignum tower, Unicode-correct
-strings, and concurrency), can also **compile** a program to a standalone
-native binary, and — as **[Raku.js](rakujs)** — **runs in the browser** via
-WebAssembly, no server required. It is not a fork of Rakudo and shares no code
-with it; it targets the *language*, measured against
-[**Roast**](https://github.com/Raku/roast), the official Raku test suite.
-
-**Status:** current release **v5.5.0** (2026-10-22) — **100.00% of Roast.**
-Of the tests Roast expects an implementation to pass, **all 219,207** pass, and
-**all 1,425 files** in Roast's `spectest.data` pass completely (Roast
-`da425eb92`, which carries Unicode 18.0's tests). On Roast `1f521d798`, which
-v5.0.0 was measured against and whose todo for one TTY test does not name
-macOS 27, v5.1.0 passed 1,423 files; Rakudo 2026.08, measured the same way on
-the same machine, passes 1,414 of them ([ROAST.md](docs/status/ROAST.md)).
-v5.5.0 frees objects that refer to each other (#151), fetches the modules a
-program is missing with `rakupp --auto`, ships Alpine/musl archives, and
-against v5.4.0 runs `arrayops` 29% faster interpreted and 30% compiled; the
-call path is 4-9% slower and `regex` 6-7%. It was measured on an Apple M4
-standing in for the machine of record
-([BENCHMARKS.md](docs/status/BENCHMARKS.md)). Every release is
-written up in the [CHANGELOG](CHANGELOG.md), and what each major set out to do is in
-[VERSIONS.md](docs/dev/plans/VERSIONS.md).
-
-**Next:** v6 is about speed ([V6-PLAN.md](docs/dev/plans/V6-PLAN.md)). Beside
-it, the ecosystem: **1,019 of 2,547** distributions pass their own test suites,
-measured by a fresh sweep on v5.0.0. Rakudo, run on the same machine through the
-same harness (2026-09-16, 2,529 dists), passes 1,791; the other 738 cannot pass
-there under any engine, for want of libgsl, fontconfig or a network. Every distribution, with how it ran, is at
-[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
-
-| | v5.5.0 | at v4.0.0 | at v3.0.0 |
-|---|---:|---:|---:|
-| Roast tests, skip and todo left out‡ | **219,207 of 219,207 (100.00%)** | — | — |
-| Roast tests, every declared test‡ | **220,845 of 220,845 (100.00%)** | 200,843 of 219,610 (91%) | 197,191 of 218,772 (90%) |
-| Roast files fully passing, of 1,425 | **1,425** | 656 | — |
-| Official documentation examples byte-identical on both engines | **1,006**¶ | 957 | 945 |
-| Modules — the 59-dist battery, each against its own suite | **44 / 59** | 49 / 59† | 47 / 59 |
-| Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/) | **1,019 of 2,547**§ | 1,006 of 2,529 | — |
-| Local regression suite | **1,744** | 1,020 | 398 |
-
-Dashes mean the measurement did not exist yet. The v5.5.0 Roast figures are on
-the 1,425 files `spectest.data` lists at Roast `da425eb92`, one more than
-v5.2.1's (`S15-nfg/GraphemeBreakTest-4.t`, new with Unicode 18.0); the older
-columns were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at
-v3.0.0), and 656 is how many of the 1,424 files listed at Roast `1f749e338`
-v4.0.0 passed.
-
-¶ Measured for v5.0.0; v5.1.0 through v5.5.0 did not re-run that sweep.
-
-The battery figure is v5.3.0's; v5.4.0 through v5.5.0 did not re-run it. It was
-48 / 59 at v5.0.1. Color, Encode and Trap broke between v5.0.1 and v5.2.1, and
-YAMLish no longer counts because Rakudo now fails its suite
-([CHANGELOG](CHANGELOG.md)).
-
-§ A fresh sweep of every distribution in the index on the v5.0.0 release binary, 2026-09-29 ([ECOSWEEP](docs/dev/findings/ECOSWEEP-2026-08.md)); v4.0.0's figure was a warm-store board.
-
-† v4.0.1, re-measured against Rakudo on 2026-09-29. v4.0.0 published 50 / 59,
-but its runner's reference engine was Raku++ itself (see the v5.0.0
-[CHANGELOG](CHANGELOG.md) entry).
-
-‡ How these are counted and gated — [COUNTING.md](docs/status/COUNTING.md).
-
-## Install
-
-```sh
-curl -fsSL https://raku.online/install.sh | sh          # macOS, Linux, the BSDs
-```
-
-```powershell
-# Windows, in a PowerShell window — irm and iex are PowerShell's own aliases
-irm https://raku.online/install-windows.ps1 | iex
-```
-
-Neither needs root or an administrator. Each downloads the archive for the
-machine it is running on, checks it against the published SHA-256, unpacks it
-into a per-user prefix, asks whether you also want the engine under the second
-name `raku`, and puts it on your `PATH`. Then open a new terminal.
-
-```sh
-rakupp upgrade        # later: replace it with the latest release, in place
-```
-
-Or run it from **Docker**, with nothing installed at all — every release is an
-image for `linux/amd64` and `linux/arm64`:
-
-```sh
-docker run --rm -it ghcr.io/ash/rakupp                       # the REPL
-docker run --rm -v "$PWD:/work" ghcr.io/ash/rakupp main.raku  # a file from here
-```
-
-The tags are `latest`, the version and the minor (`5.5.0`, `5.5`); building on
-the image, modules and `--exe` inside it are in
-[INSTALL.md](docs/guide/INSTALL.md#docker).
-
-On Debian and Ubuntu there is a `.deb` —
-`sudo apt install ./rakupp-linux-x86_64.deb` after downloading it, see
-[INSTALL.md](docs/guide/INSTALL.md#debian-and-ubuntu-a-deb). On macOS there is
-the Homebrew tap — `brew tap ash/rakupp && brew install rakupp` — and on
-Windows a wizard:
-**[rakupp-setup-windows-x64.exe](https://github.com/ash/rakupp/releases/latest/download/rakupp-setup-windows-x64.exe)**, with the same two questions
-as checkboxes and an Add/Remove Programs entry.
-
-Or unpack a **prebuilt archive** — macOS universal, Linux x86_64 and ARM64
-(static libstdc++, glibc 2.18+), the same two for musl (Alpine 3.21+), Linux
-RISC-V (riscv64, glibc 2.35+), OpenBSD, Windows x64 — from the
-[Releases page](https://github.com/ash/rakupp/releases/latest) and put its
-`bin/` on your `PATH`.
-
-**Which version.** Install a release. `main` is where development happens,
-and it can be broken between releases. The newest minor gets fixes as `x.y.z`
-patch releases, cut from a release branch when one is needed, so a patch
-release holds fixes only. Breaking changes come only in a major, with a
-deprecation warning one minor ahead where that is possible. See
-[INSTALL.md](docs/guide/INSTALL.md#which-version).
-
-### Build from source
-
-```sh
-# Needs a C++17 compiler + CMake → produces build/rakupp
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j 4
-```
-
-`cmake --install build --prefix ~/.local` then installs the binary plus the
-runtime that `--exe` links against. Windows (MSVC) specifics, the **GNU Guix**
-channel, and the **Nix flake** are in
-**[INSTALL.md](docs/guide/INSTALL.md)**.
-
-## Quick start
-
-**Write it. Run it. Compile it.**
-
-```sh
-rakupp -e 'say "hello, world"'   # a one-liner  (or: echo 'say 42' | rakupp)
-rakupp app.raku                  # run a file — no build step
-rakupp --exe app.raku -o app     # compile it
-./app                            # one file, and it needs nothing you have
-```
-
-## Common options
-
-| Option | Meaning |
-|---|---|
-| `FILE` / `-e 'CODE'` / `-` *(stdin)* | Run a program from a file, a one-liner, or standard input (`rakupp - ARGS…` gives a stdin program its `@*ARGS`) |
-| `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
-| `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The Perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
-| `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |
-| `--jit[=SPEC]` | *(work in progress)* Compile hot loops to native code *while the program runs* and enter them mid-loop. Off by default; see [JIT.md](docs/guide/JIT.md) |
-| `--cnp[=SPEC]` | *(work in progress)* The same, by copy-and-patch: hot loops are stitched from machine-code snippets compiled into rakupp itself, so no C++ compiler is needed and nothing is cached. Off by default. These two are one feature with two backends, and the plan is for `--cnp` to become the default and `--jit` to go; see [JIT.md](docs/guide/JIT.md#--cnp-the-same-thing-without-a-compiler) |
-| `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
-| `--target=js SRC -o OUT.js` | Transpile to JavaScript for Node, Bun, Deno or a browser (`--verify` checks it against the interpreter; see [JS.md](docs/guide/JS.md), walked through in [JS-TUTORIAL.md](docs/guide/JS-TUTORIAL.md)) |
-| `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
-| `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
-| `--jupyter FILE` | Run as a Jupyter kernel (`--jupyter-install` registers it with Jupyter) |
-| `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
-| `-c` / `--ast SRC` | Compile-check only (parse + every variable declared) / print the parsed AST |
-| `-q` / `--quiet` | Drop what a mode says about itself (`Syntax OK`, `Compiled …`, the installer's `already installed:`); output, warnings and errors stay. Any mode |
-| `--watch` | Rerun on change — the program file, or a module under `-I`/`lib/`; with `-c` or `--lint`, a live check loop |
-| `--repl-after` / `--trace` / `--stagestats` | Run, then a session on the program's live state (python `-i`) / print each statement as it runs / phase timings and module-load times |
-| `--json` | `-c` and `--lint` findings as a JSON array (file, line, severity, rule, message) |
-| `--seed[=N]` / `--stack-size=N` | Pin the random generator (bare `--seed` picks and prints one) / size the recursion ceiling (default 1G, a bare number is MiB) |
-| `--env-file=FILE` / `RAKUPP_OPT` / `--color=WHEN` / `-x` | Load a `.env` first / standing options from the environment (options only) / colour `auto`, `always`, `never` (`NO_COLOR` honoured) / skip to the `#!` line |
-| `rakupp doc SYMBOL` / `--completions=SHELL` | Look a builtin, method or operator up offline / a completion script for bash, zsh or fish |
-| `-v` / `--version` · `-V` / `--info` | The release, the build it came from and the platform, on one line / the full build report: also the Raku version implemented, the compiler, the FFI backend NativeCall found and which binary answered. Quote `--info` whole in a bug report |
-
-Flags are position-independent and cluster like Perl's (`rakupp -pi.bak -e
-'$_ = $_.subst("a", "b")' *.txt` works as you'd hope). Full reference:
-[CLI.md](docs/guide/CLI.md).
-
-## Modules
-
-Raku++ installs modules from the ecosystem with **its own installer** —
-compatible with [zef](https://github.com/ugexe/zef), so a module installed by
-either tool is picked up by `use` under either engine:
-
-```sh
-rakupp install JSON::Fast        # or: zef install JSON::Fast   (via Rakudo)
-rakupp install ./my-dist         # a checkout, or a URL:
-rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
-rakupp install -r lib            # module files, with or without a META6.json
-rakupp install app.raku          # the modules a program uses
-```
-
-```raku
-use JSON::Fast;                             # works after either install
-say to-json({ name => 'Ada' }, :!pretty);   # {"name":"Ada"}
-```
-
-It also loads your own module files from `lib/` (and `-I` / `RAKULIB` / `use lib`
-paths), and a `use` that cannot be found or fails to compile is **fatal**.
-How much of the ecosystem runs today: all 2,547 distributions, each with its
-sweep verdict, are listed at
-[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
-If an install stops with *Unknown VM; don't know how to build*, as LibraryMake's
-does (many native modules build with it), see
-[faq/unknown-vm.md](docs/guide/faq/unknown-vm.md).
-Full guide: **[MODULES.md](docs/guide/MODULES.md)**.
-
-### …and the batteries, with nothing installed
-
-`use Data::Native` is answered by the **compiler itself** — no file is read, no
-module is loaded, no dependency is resolved:
-
-```raku
-use Data::Native;
-
-say to-json({ ok => True });            # JSON
-say from-csv("a,b\n1,2\n", :headers);   # CSV
-say sha256-hex('abc');                  # digests and HMAC
-say uncompress(compress('big'.encode));  # zlib / gzip / raw deflate
-say crypt_random_buf(32);               # bytes from the OS CSPRNG
-```
-
-Five tags, thirty-two names, every signature copied from the ecosystem module it
-stands in for. It is **designed** to be portable — the companion distribution,
-which would compose `JSON::Fast`, `Digest::SHA2`, `Compress::Zlib` and
-`Crypt::Random` so the same program runs on Rakudo unchanged, is **not published
-yet**. Until it is, `use Data::Native` works on Raku++ and nowhere else.
-A program using it compiles to a standalone binary, because there is nothing
-left to find at run time.
-
-Guide: **[DATA-NATIVE.md](docs/guide/DATA-NATIVE.md)**.
-
-## Code to read and run
-
-Three directories of runnable programs — as much for exploring Raku as for
-exploring Raku++:
-
-- **[examples/](examples)** — complete example programs: Mandelbrot, Game of
-  Life, a JSON parser on a Raku grammar, a quine, …
-- **[showcase/](showcase)** — mid-size programs: a Scheme interpreter built on
-  a Raku grammar, and a pastebin HTTP server on raw sockets.
-- **[live/](live)** — real software from the ecosystem, run unmodified: whole
-  tools people already use, driven by Raku++ exactly as their authors wrote
-  them. The other direction — other people's software that reached for *this*
-  engine — is **[live/ADOPTIONS.md](live/ADOPTIONS.md)**: a Wolfram paclet, a
-  browser playground offering rakupp as one of four runtimes, a course of Raku
-  koans graded by Raku.js, a Guix channel, an agent runtime and an invariants
-  tool shipped as standalone files built by Raku++.
-
-## Run Raku in the browser — Raku.js
-
-▶ **Try it live: [raku.online/play](https://raku.online/play)** · **Learn it interactively: [raku.online/tour](https://raku.online/tour/)**
-
-**[Raku.js](rakujs)** is the *same* interpreter compiled to **WebAssembly** with
-Emscripten — the exact semantics as native `rakupp`, running entirely client-side
-with no server. Putting a real, running Raku editor on any static page is one
-script tag:
-
-```html
-<script src="https://raku.online/raku.js"></script>
-
-<pre data-raku>say "Hello from an embedded editor!";</pre>
-```
-
-Handy for docs, tutorials, or a course — and nothing has to be loaded from
-raku.online: three files copied into a directory of your own site are a
-complete install. It also powers a standalone
-[playground](rakujs/PLAYGROUND.md), and answers to `rakupp_run()` if you would
-rather drive it from your own JavaScript. All three routes are in
-[rakujs/README.md](rakujs/README.md).
-
-## Use Raku from Python, JavaScript, Go, Rust, C++, Wolfram Language
-
-*Work in progress: committed so it is not lost and re-gated on every push,
-but not announced yet — the official announcement will come when it settles.*
-
-`librakupp` embeds the interpreter behind a small C ABI, and
-**[bindings/](bindings/README.md)** wraps it for six host languages. Each
-gives you the same two things in its own idiom: **run Raku** — evaluate
-source, call Raku routines with your own values, read results back as native
-types — and **parse with Raku grammars**, where the grammar stays a `.raku`
-file and `.made` values are computed by Raku actions during the parse. Every
-language has a guide and two runnable examples in
-[bindings/examples/](bindings/examples/README.md), kept honest by two smoke
-gates that re-run everything the guides claim.
-
-The same C ABI runs inside iOS and Android apps as native code — the
-interpreter compiled for the phone, with threads and deep recursion that the
-WebAssembly build lacks: [EMBEDDING.md](docs/guide/EMBEDDING.md#mobile-apps-ios-and-android).
-
-## Errors underlined as you type — the language server
-
-`rakupp --lsp` is a Language Server: an editor sends it your code and it sends
-back the syntax errors, undeclared variables and `--lint` findings, which the
-editor underlines. These are the same findings `rakupp --lint` prints, from the
-same code, and the server never runs the file. The VS Code extension in
-[editors/vscode](editors/vscode/) is a thin client for it; any other editor with
-an LSP client can start `rakupp --lsp` directly.
-
-Guide: **[LSP.md](docs/guide/integrations/LSP.md)**. It covers building and
-installing the extension, what each diagnostic means, and what to check when
-nothing is underlined.
-
-## Give an AI agent a Raku interpreter — MCP
-
-*Work in progress, on the same terms as the bindings above.*
-
-`rakupp --mcp` serves the interpreter over the
-[Model Context Protocol](https://modelcontextprotocol.io) — JSON-RPC on
-stdio — so MCP clients (Claude Code, Claude Desktop, and their kind) get two
-tools: **`raku`**, one persistent session per conversation, with exact
-Rat and big-integer arithmetic; and **`raku-parse`**, grammars as
-deterministic text extraction, with line/column/rule diagnosis when a parse
-fails. Registering it with Claude Code is one line:
-
-```sh
-claude mcp add raku -- /path/to/rakupp --mcp
-```
-
-— or, where there is no `claude` CLI (the desktop app alone is enough), a
-`.mcp.json` at the project root, read automatically when a session starts:
-
-```json
-{
-  "mcpServers": {
-    "raku": {
-      "command": "/absolute/path/to/rakupp",
-      "args": ["--mcp"]
-    }
-  }
-}
-```
-
-This repository carries one, pointing at `./build/rakupp`: a built checkout
-serves its own interpreter to the agent working on it.
-
-Guide: **[MCP.md](docs/guide/integrations/MCP.md)**. Gated by `tools/mcp-smoke.raku`,
-which drives the server exactly as a client does, on every push.
-
-## Raku in a notebook — Jupyter
-
-`rakupp --jupyter-install` registers the binary as a Jupyter kernel; after
-that, `jupyter console --kernel raku` or picking **Raku++** in JupyterLab runs
-notebook cells through this engine. One interpreter serves the whole notebook,
-so a sub defined in cell 3 is callable in cell 9; a cell's output streams as it
-is produced; a cell that dies leaves the session intact; and
-`jupyter-display($html, 'text/html')` hands the frontend something to render.
-
-Nothing needs installing on the Raku side — **no ZeroMQ, no Python module, no
-shared library**. The binary speaks ZMTP and signs its own messages, because
-this project links no third-party libraries.
-
-Guide: **[JUPYTER.md](docs/guide/integrations/JUPYTER.md)**. Gated by
-`tools/jupyter-smoke.raku` — a Jupyter client written in Raku, with its own
-HMAC-SHA256 pinned to the RFC 4231 vectors, so both halves of the protocol
-have to agree.
-
-## Documentation
-
-Start with the **[presentation](presentation)** (a slide deck — PDF or
-interactive HTML), **[HIGHLIGHTS.md](docs/guide/HIGHLIGHTS.md)** (the key
-features on one page), or **[GUIDE.md](docs/guide/GUIDE.md)** (the full
-overview). The complete annotated index is **[docs/README.md](docs/README.md)**;
-the shape of it:
-
-- **[docs/guide/](docs/guide/)** — the manual: [FEATURES.md](docs/guide/FEATURES.md),
-  the [REFERENCE.md](docs/guide/REFERENCE.md) lookup sheet, a
-  [RECIPES.md](docs/guide/RECIPES.md), the [faq/](docs/guide/faq/), modules,
-  Unicode, async, networking, NativeCall, embedding, the CLI.
-- **[docs/cookbook/](docs/cookbook/)** — whole tasks worked end to end, the
-  programs beside the page. Mirrored at
-  [raku.online/cookbook/](https://raku.online/cookbook/).
-- **[docs/internals/](docs/internals/)** — how it works inside:
-  [ARCHITECTURE.md](docs/internals/ARCHITECTURE.md), parsing, the runtime
-  model, the optimizer — and the 320-page book *Raku++ Internals*
-  ([docs/book/](docs/book/)).
-- **[docs/status/](docs/status/)** — how good it is:
-  [ROAST.md](docs/status/ROAST.md) per-section statistics,
-  [COUNTING.md](docs/status/COUNTING.md) methodology,
-  [BENCHMARKS.md](docs/status/BENCHMARKS.md) vs Rakudo, mutsu, and Perl,
-  [ROADMAP.md](docs/status/ROADMAP.md). Every one of those numbers charted
-  release over release — Roast, the ecosystem, and each benchmark kernel on
-  all four engines — is at
-  [raku.online/spec/dashboard](https://raku.online/spec/dashboard/).
-- **The story:** [MILESTONES.md](docs/status/MILESTONES.md) (the dated
-  timeline), [JOURNEY.md](docs/dev/JOURNEY.md) (the method),
-  [LONGREAD.md](LONGREAD.md) (the whole arc, long-form).
-
-## Talks
-
-Raku++ is being presented at the two forthcoming Perl & Raku conferences —
-what it is, why it exists, and how it is developed:
-
-| When | Where | Event |
-|---|---|---|
-| Saturday **21 November 2026** | The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH, UK | [London Perl & Raku Workshop 2026](https://act.yapc.eu/lpw2026/) ([proposal 8059](https://act.yapc.eu/lpw2026/talk/8059)) |
-| **14–16 April 2027** | Stadtteilzentrum Nordstadt Bürgerschule, Klaus-Müller-Kilian-Weg 2, 30167 Hannover, Germany | [29. Deutscher Perl/Raku-Workshop 2027](https://act.yapc.eu/gpw2027/) ([proposal 8053](https://act.yapc.eu/gpw2027/talk/8053)) |
-
-FOSDEM 2027 (Brussels, ULB Solbosch) is on the wish list, but its dates and
-call for participation are not out yet. The running list, with what the talks
-cover and the slides, is **[TALKS.md](TALKS.md)**.
-
-## Author
-
-Raku++ is created by [Andrew Shitov](https://andrewshitov.com). Read the
-announcement:
-[Raku++ — the fastest Raku compiler](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/).
-More posts about Raku and Raku++: **[BLOG.md](BLOG.md)**.
-
-What other people write about Raku++ — the newsletters, posts and remarks —
-is collected in **[MENTIONS.md](MENTIONS.md)**; other people's software that
-reached for the engine is in **[live/ADOPTIONS.md](live/ADOPTIONS.md)**.
-
-Organisations that run Raku on Raku++ can get commercial support — support
-agreements, fixes and features on demand, help moving code from Rakudo,
-performance work and training — from the team that builds it:
-**[raku.online/support](https://raku.online/support/)**.
-
-## License
-
-[Artistic License 2.0](LICENSE) — the same license Raku itself uses.
+# docs/dev/findings/ — what we ran, and what it found
+
+The record of things measured against something outside this repo: Rakudo as the
+oracle, the Roast suite, the module ecosystem, other engines, another language's
+runtime. Where [`plans/`](../plans/) says what we intend and
+[`experiments/`](../experiments/) says what we tried and sometimes reverted, this
+directory says **what we pointed the engine at, and what came back**.
+
+Every entry below names the date or version it is anchored to, because most of
+these are snapshots and a snapshot with no date is a claim with no evidence. A
+few are living logs, appended to as work continues; those are marked.
+
+The annotated selection in the [dev index](../README.md) covers the divergence
+logs and the reviews. This page is the complete list.
+
+## Divergence logs — a corpus run under both engines
+
+- **[BEHIND-THE-DOCS.md](BEHIND-THE-DOCS.md)** *(living; started 2026-09-28,
+  Rakudo v2026.08)* — what writing the book *Raku Behind the Docs*
+  (raku.online/deep/) found by re-probing every semantics-sheet item as a
+  short program: prose in the sheets that Rakudo, or the sheet's own output,
+  contradicts; Rakudo behaviours the sheets do not record; and every book
+  example on which Raku++ differs from Rakudo, generated into
+  [`behind-the-docs/`](behind-the-docs/).
+- **[CORPUS-DIFF.md](CORPUS-DIFF.md)** *(living; rounds 1–4, 2026-07-18 →
+  2026-07-22)* — byte-for-byte differential of the raku-corpus programs against
+  committed Rakudo v2026.06 references, round by round: 1,443 of 1,789 exact
+  matches at the first run, 1,532 of 1,812 (84.5%) by round four, with grammar
+  and `Match` residue the largest remaining cluster. Data in
+  [`corpus-diff/`](corpus-diff/).
+- **[PWC-DIVERGENCES.md](PWC-DIVERGENCES.md)** *(living; swept 2026-07-14, round
+  two 2026-08-20)* — 10,428 Perl Weekly Challenge solutions under both engines:
+  byte-identical output went 2,663 → 4,056 of ~6,800 comparable programs over
+  fifteen batches, and six authors hold 51% of the 2,707 remaining mismatches.
+  Data in [`pwc/`](pwc/).
+- **[COURSE-DIVERGENCES.md](COURSE-DIVERGENCES.md)** *(living; 2026-07-20 on
+  rakupp 0.9.0, first swept 2026-07-13)* — 1,778 course.raku.org snippets, 1,698
+  byte-identical (95.5%); the real divergences cluster in reactive/async
+  (`await` on a Supply, `done` inside `react`, interval timers) and `rule`
+  sigspace around `%`. Data in [`course-diff/`](course-diff/).
+- **[SPEC-DIVERGENCES.md](SPEC-DIVERGENCES.md)** *(2026-07-20, Rakudo v2026.06)*
+  — the 18 disagreements found by dual-verifying 260 examples across 111
+  raku.online specification pages; 17 fixed, leaving native typed arrays boxed as
+  `Array[int]`.
+- **[ROSETTACODE.md](ROSETTACODE.md)** — 333 RosettaCode Raku tasks under both
+  engines: of the 197 comparable ones, 34 match byte-for-byte and 41% run to
+  completion, parse errors the largest blocker. Eleven fixes landed.
+- **[BUGS.md](BUGS.md)** *(living; from 2026-07-17, appended through 2026-08-09)*
+  — article-series snippets cross-checked against Rakudo. Quantified-capture
+  arity, Blob range slices and eager junction collapse fixed; non-Latin hash
+  names, ideograph numerals shadowing identifiers, `+'+'` returning `0e0` and
+  `$?FILE` in modules still open.
+- **[BUGS-JS-SHOWCASE.md](BUGS-JS-SHOWCASE.md)** *(2026-07-19)* — fourteen
+  divergences from writing the JavaScript/TypeScript interpreter in
+  `showcase/js`: the four grammar/lexer bugs and both `CATCH` bugs are fixed;
+  five runtime and three `--exe`-only divergences remain open.
+- **[BUGS-SQLITE-SHOWCASE.md](BUGS-SQLITE-SHOWCASE.md)** *(2026-08-18)* — ten
+  divergences from the NativeCall SQLite client in `showcase/sqlite` — `LEAVE`
+  firing at its declaration in methods, `.throw` on any object, `Pointer`
+  numification, NULL `char*` — all fixed and every workaround retired.
+- **[TRIAGE.md](TRIAGE.md)** *(living; 2026-07-11, 07-12, 08-20, 08-31, 09-01, 09-07)* —
+  behavioural gaps hit while writing real programs *outside* the harness: array
+  assignment aliasing, `next` inside `.map`, `return` in `CATCH`, native `--exe`
+  multi-method dispatch, role-body lexicals shared across composers, what the
+  `END` phaser fix reaches and what it leaves to `--target=js`, each with a
+  minimal repro.
+
+## Ecosystem campaigns
+
+- **[ECOSWEEP-2026-08.md](ECOSWEEP-2026-08.md)** *(living; 2026-08-23 →
+  2026-08-30)* — every REA distribution put through `rakupp test` across six
+  sittings: 624 of 2,524 green at the first pass, 746 of 2,526 after the fix
+  campaigns, with 18 reproducible regressions and 383 distributions still
+  dependency-blocked. Data in [`ecosweep/`](ecosweep/).
+- **[rakuast/README.md](rakuast/README.md)** *(2026-09-11, Rakudo 2026.08)* — the
+  RakuAST tree-oracle baseline over raku-corpus: 1,858 of 1,870 programs
+  tree, 162,992 nodes, 213 classes; the 12 that do not, and the harness traps.
+- **[FRESH100-2026-08-20.md](FRESH100-2026-08-20.md)** *(2026-08-20)* — the 100
+  newest REA distributions under `rakupp test`: 16 pass, 49 are blocked by a
+  dependency before their own suite runs, five parse gaps proved ours against
+  Rakudo — and our own installer is the top blocker. Data in
+  [`fresh100/`](fresh100/).
+
+## Roast and the specification
+
+- **[ROAST-GAPS.md](ROAST-GAPS.md)** *(living; from 2026-07-11)* — every failing
+  Roast file bucketed into six blocker classes (parser clusters, missing types
+  and runtime subsystems, Unicode data, semantic bugs, S17 timing), with a
+  suggested attack order.
+- **[CONFORMANCE.md](CONFORMANCE.md)** *(historical, not maintained)* — all ten
+  `FEATURES.md` sections walked against docs.raku.org, fixing every safely
+  fixable divergence — `.raku` round-trips, `^^`, `~~ Callable`,
+  `when`/`proceed`/`succeed`, `CATCH` in closures — and lifting Roast
+  fully-passing from 224 to 249 with no regressions.
+- **[ROAST-SNAPSHOTS.md](ROAST-SNAPSHOTS.md)** *(2026-08-21 → 2026-09-21)* — the
+  dated per-sitting notes ROAST.md carried while the suite was being worked
+  through, moved out at v5.0.0.
+
+## Knowledge sheets — Rakudo's sources read at the release tag
+
+- **[semantics/](semantics/README.md)** *(started 2026-09-17, Rakudo tag
+  2026.08)* — behaviour that neither docs.raku.org nor Roast states, extracted
+  from Rakudo's setting one type at a time as executable probes with the
+  oracle's output recorded verbatim, for a later session to implement without
+  the source open. The rule: features and semantics, never internals. Sheets so far:
+  [Supply.md](semantics/Supply.md) — 69 items, 38 neither fully documented
+  nor fully Roast-asserted, three Rakudo bugs flagged so that nobody copies
+  them; IMPLEMENTED 2026-09-18 (rakupp differs on 7, four of them on purpose;
+  Roast S17-supply went 27 → 55 of 58 files); [Nil-Any.md](semantics/Nil-Any.md) —
+  Nil and Any as a one-element list, 50 items, 16 undeclared, rakupp
+  differs on 43; [Str.md](semantics/Str.md) — Str, Stringy,
+  the string half of Cool and the allomorphs, 66 items, 12 undeclared,
+  rakupp differs on 60, ten Rakudo bugs flagged (three of them hangs);
+  [List-Array.md](semantics/List-Array.md) — List, Array, Seq and Slip, 36
+  items, 4 undeclared, rakupp differs on 29; [Hash-Map-Pair.md](semantics/Hash-Map-Pair.md)
+  — Hash, Map and Pair, 20 items, 2 undeclared, rakupp differs on 16;
+  [IO.md](semantics/IO.md) — IO::Path, IO::Handle, IO::Spec::Unix,
+  IO::Special, IO::Pipe and IO::CatHandle, 26 items, 7 undeclared, rakupp
+  differs on 24, one quirk (slurp throws where the docs say fail);
+  [Range.md](semantics/Range.md) — Range and its operators, 33 items, 12
+  undeclared, rakupp differs on 29, two Rakudo bugs flagged (`reverse` of a
+  non-integral range, `first(:end, :kv)`); [Int-Num-Rat.md](semantics/Int-Num-Rat.md)
+  — Int, Num, Rat, FatRat and the Real/Numeric roles, 28 items, 3 undeclared,
+  rakupp differs on 26, six Rakudo bugs flagged (`7 mod 2.5`, a negative base
+  to a negative power, `[lcm] ()`, `1 +< -64`, `narrow` losing the value,
+  `polymod` with a non-Int divisor);
+  [Sequence.md](semantics/Sequence.md) — the `...` operator, 29 items, 13
+  undeclared, rakupp differs on 28, two Rakudo bugs flagged (a `none`
+  endpoint taken for infinity, chained `^...^` keeping its end);
+  [Promise.md](semantics/Promise.md) — Promise, await, start, sleep, Lock,
+  Lock::Async, Lock::Soft and Semaphore, 36 items, 12 undeclared, rakupp
+  differs on 36, four Rakudo bugs flagged (a dying `:synchronous` then, a Nil
+  in a Channel hanging `await`, `sleep-timer NaN`, 32-bit Semaphore permits);
+  [Date-Time.md](semantics/Date-Time.md) — Instant, Duration, Date and
+  DateTime, 33 items, 4 undeclared, rakupp differs on 31, four Rakudo bugs
+  flagged (Date ranges compared by Str, a date-only DateTime string throwing
+  X::AdHoc, `.Str` rounding to second 60, `cmp` on DateTimes by Str);
+  [Proc-Async.md](semantics/Proc-Async.md) — Proc, Proc::Async, `run` and
+  `shell`, 37 items, 9 undeclared, rakupp differs on 36, two Rakudo bugs
+  flagged (a pre-spawn `.exitcode` of 1 that freezes the status, `IO::Pipe.read`
+  ignoring its count);
+  [Code-Introspection.md](semantics/Code-Introspection.md) — Code, Block,
+  Routine, Signature, Parameter, Attribute and WhateverCode, 37 items, 24
+  undeclared, rakupp differs on 37, eight Rakudo bugs flagged (`.multi`
+  answering 0, method signatures printing a double colon, `.prec` failing its
+  own return check, `.raku` spellings that do not re-parse, hand-built
+  Signatures that cannot bind, `Parameter.new` name handling, a null `.file`
+  on a WhateverCode, ForeignCode gist);
+  [Exception-Backtrace.md](semantics/Exception-Backtrace.md) — Exception,
+  Backtrace, Failure and the control-exception protocol, 36 items, 15
+  undeclared, rakupp differs on 35, three Rakudo bugs flagged (a rethrown
+  CX::Return replacing the value, a bare `succeed` yielding an engine null,
+  LEAVE running before NEXT in a loop);
+  [Set-Bag-Mix.md](semantics/Set-Bag-Mix.md) — Set, Bag, Mix, their hash
+  forms and the set operators, 44 items, 17 undeclared, rakupp differs on 44,
+  four Rakudo bugs flagged (`.Bag` truncating the source Mix, an uninitialised
+  `is Set` variable, set operators hanging on a Junction, a Hash intersection
+  ignoring false values); [Blob-Buf.md](semantics/Blob-Buf.md) — Blob, Buf,
+  the typed buffers and the encodings, 37 items, 21 undeclared, rakupp differs
+  on 37, nine Rakudo bugs flagged (`.bytes` of native-Int blobs, `allocate`
+  with an empty pattern hanging, `splice` past the end, signed `~&` and `~|`,
+  two endless recursions, `read-bits` and `write-ubits` off by bits);
+  [Grammar-Match.md](semantics/Grammar-Match.md) — Grammar, Match and
+  Regex as objects, 41 items, 23 undeclared, rakupp differs on 39, five Rakudo
+  bugs flagged (`.actions` answering NQPMu, a type-object topic warning instead
+  of False, `:nth` with `:x`, `:x(Nil)`, `.substr` with a regex);
+  [Compiler-Side.md](semantics/Compiler-Side.md) — the precedence table, the
+  quote constructs and sink context, 34 items, 8 undeclared, rakupp differs on
+  32, one Rakudo bug flagged (a brace-delimited `qx` running a nested brace
+  group as its own command).
+
+## Reviews — before and after a release
+
+- **[REVIEW-1.0.md](REVIEW-1.0.md)** *(2026-07-12, updated 07-13)* — eight finder
+  angles over the uncommitted native-codegen batch plus six module reviews before
+  tagging v1.0: eleven codegen bugs, two kill-proof zombie mechanisms, silent
+  wrong answers, and the subtest Pair-form no-op that had inflated the 418-file
+  Roast baseline.
+- **[REVIEW-2.0.md](REVIEW-2.0.md)** *(2026-08-06)* — nine parallel fresh-eyes
+  passes over the ~57k-line hand-written `src/`, landing five gated batches.
+  Copy-then-diverge was the dominant defect class; Roast rose from 194,980/589
+  files to 197,060/593 with zero down-movers.
+- **[REVIEW-3.5.md](REVIEW-3.5.md)** *(2026-08-19)* — a profile-first pass: an
+  ASCII `uc` fast path cut a dispatch benchmark 28%, and the clone detector
+  surfaced sigilless-name shadowing, `m:g` answering `Nil` instead of an empty
+  `List`, and issue #22's junction autothreading.
+- **[REVIEW-3.7.md](REVIEW-3.7.md)** *(2026-08-27, at v3.7.0+37)* — the red
+  perf-guard turned out to be a stale baseline rather than a regression; the
+  clone sweep found fifteen drifted clusters, worst of them compiled `[op]`
+  reduce disagreeing with the interpreter, fixed in three same-day batches.
+- **[REVIEW-PARALLEL-2026-10.md](REVIEW-PARALLEL-2026-10.md)** *(2026-10-21, at
+  5.4.1-160)* — the week of parallel speed sessions read against each other:
+  two filters built for one job on one afternoon, two copies of the Num lane,
+  a closure-shared kernel calling the wrong closure's routine, the plain-sub
+  lane missing the routine's own `$_`, and the BIND-POS alias behind most of
+  BinaryHeap's gap; fifteen fixes, and a ledger of open items ranked by
+  what a user sees. Three of them (O2–O4: text read from outside not NFC,
+  five places counting codepoints for characters, `uc`/`chars` as subs
+  skipping dispatch) were fixed the same day, and so was O23, what fixing
+  them turned up (a handle's `.getc` counting codepoints, socket text not
+  NFC, `Buf.uc` answering, three position edges), and O35, what fixing that
+  turned up (a `:bin` handle reading text, INET `.recv($n)` counting bytes,
+  the out-of-range Failure of `.index` and its kin).
+- **[TOOLS-3.23.md](TOOLS-3.23.md)** *(2026-08-29, opening v3.23.0)* — every
+  gate, benchmark and measuring tool this project runs, reviewed before the
+  re-baseline: twenty-five defects fixed, including binaries picked by bare PATH
+  lookup and hand-written lists that nothing compares against, and gate 7 shown
+  to have no red path at all.
+
+## Release-gate post-mortems
+
+- **[OPEN-3.21.md](OPEN-3.21.md)** *(v3.21.0 sitting, 2026-08-29)* — seven
+  findings: `flat` over a bound array shipped wrong RIPEMD digests, plus six gate
+  defects — corrupted status lines, no archived baseline, a 1,253-process fork
+  bomb, an unexplained perf-baseline move.
+- **[GATES-3.22.md](GATES-3.22.md)** *(v3.22.0)* — each of those fixed and
+  measured: a bound `@` parameter keeps a `List`, the Roast harness stops
+  splicing child output into its status lines, and the moved perf baseline
+  survives four more eliminations uncaused.
+- **[OPEN-5.3.md](OPEN-5.3.md)** *(v5.3.0 sitting, 2026-10-08/09)* — what the
+  release ships broken or degraded: interpreted calls 5–10% slower than v5.2.1,
+  the deliberate Rakudo-compatible refusals that break three Raku Koans, three
+  battery dists broken since v5.0.1, and the Raku.js and embedding gaps still
+  open after the crash fix.
+
+## Performance investigations
+
+- **[STRING-SCAN-QUADRATICS.md](STRING-SCAN-QUADRATICS.md)** *(2026-08-09, at
+  v3.0.1)* — seven per-character string operations rescanned the whole string on
+  every call, making `JSON::Fast`'s parse quadratic in both the ASCII and
+  non-ASCII lanes; caching the verdicts on the immutable `StrBody` left only the
+  AST-walk gap to Rakudo.
+- **[HASHFILL-AND-BIGINT.md](HASHFILL-AND-BIGINT.md)** *(2026-08-21 and
+  2026-09-01)* — the two times an outside comparison said we were slower and did
+  not say where: `hashfill` against perl, `bigint` against mutsu. What each
+  turned out to be, why the competitor's own answer was the wrong answer both
+  times, and the thing they had in common — a large share of both gaps was
+  copying rather than computing.
+- **[BENCHMARKS-HISTORY.md](BENCHMARKS-HISTORY.md)** *(2026-07 → 2026-09-20)* —
+  BENCHMARKS.md as it stood before the v5.0.0 sitting: every dated re-snapshot,
+  the campaigns behind each kernel's movement, and the Rosetta and machine
+  corrections.
+- **[DISPATCH-PROBES.md](DISPATCH-PROBES.md)** *(2026-09-29, at
+  5.0.1-14-geb48f46c)* — where a tree-walker's time goes beyond the operations
+  themselves. A ladder of five walkers on real `Value`s prices quickening,
+  closure compilation, borrowed results and superinstructions. A profile of the
+  engine found ~19% in thread-local-storage reads and ~11% in per-iteration
+  block entry/exit. The second became `Block::entryWork`: −10 to −11% on loop
+  kernels, with Roast, the corpus and the module battery unchanged.
+- **[PYTHON-BINDING-PERF-2026-10-03.md](PYTHON-BINDING-PERF-2026-10-03.md)**
+  *(2026-10-03, at v5.2.0)* — the Python binding's grammar benchmark on the
+  library the PyPI wheel installs: parse from Python costs what it costs in
+  `rakupp` (0.9×), eager tree conversion 1.5×. Lazy field-by-field access got
+  a quarter to a half slower than with the 4.0.1 library while the engine-side walk
+  did not, so the extra time is in crossing the C interface. Cause open.
+- **[FORTRAN-LESSONS-2026-10-15.md](FORTRAN-LESSONS-2026-10-15.md)**
+  *(2026-10-15, at 5.4.1-77-g0d779b9b)* — what makes Fortran fast, read from
+  gfortran's, Flang's and LFortran's sources, set against Raku++ on the same
+  numeric kernels. Fortran's speed comes from facts the language gives the
+  compiler: fixed types, trip counts fixed at entry, contiguous arrays, no
+  aliasing. Raku has most of them. The largest measured gaps are places where
+  Raku++ does not use them:
+  - `my num`/`my int` make `--exe -O` 90× slower than untyped variables (done
+    in d0ba733b);
+  - `-> int $i` keeps a loop out of `--cnp` (20×; done in 07775af3);
+  - `@m[$i;$j]` keeps a matmul out of `--cnp` (630× C);
+  - `.max` over a `num` array unpacks it (30–60×).
+
+  Eight borrowings, ranked; loop versioning and one-block shaped arrays are
+  the two larger ones.
+- **[FLOAT-HEAVY-ISSUES-2026-10-22.md](FLOAT-HEAVY-ISSUES-2026-10-22.md)**
+  *(2026-10-15 at 5.4.1-78-g52df8573, re-checked 2026-10-22 at 5.5.0,
+  re-measured 2026-10-23 at 5.5.0-8-g15a27449)* — 23 issues from one
+  float-heavy benchmark program, interpreted and under `--exe -O`, each with a
+  minimal repro.
+  - The same computation in Fortran runs 177× CPython, in Go 122×, and in
+    Rust, C++ and TypeScript ~55×.
+  - Raku++ `--exe` went from 2.5× to 3.2× with 5.5.0's `Num` fast path, and
+    to 3.5× on 5.5.0-8.
+  - The fix branch closed issues 9, 11 and 16–20. Issue 1 turned out
+    misreported: Rakudo's `.Rat(0)` is not exact either.
+  - Each fixed construct got 2–5× cheaper, but the whole program gained only
+    1.06× compiled (1.24× for its native-typed copy). No function holds more
+    than 4.3% of the profile, and array reads and loops did not move.
+  - Open: issue 21 (an array-element lane), bundling over a list literal, a
+    native array or `CATCH`, module-sub calls, `.pop`/`.splice` dispatched by
+    name (22), and a native-typed program still 1.3× its untyped twin (23).
+- **[FORTRAN-GAP-2026-10-24.md](FORTRAN-GAP-2026-10-24.md)** *(2026-10-24, at
+  5.5.0-59-g64313848)* — why the float-heavy program stays 51× behind
+  Fortran compiled, and what would close it.
+  - About 3× of the gap is the program's layout. Rust, with the same layout,
+    is 16× faster than Raku++.
+  - libm is 0.3% of the compiled profile and bigints 0%; the rest is boxes.
+    That answers NUM-UNBOX-PLAN's "other 12%".
+  - Three kernels written the Fortran way (natives, fixed tables) run
+    1.1–1.6× slower under `--exe -O` than untyped, and 5–11× slower with
+    native arrays, which bundle the program.
+  - Two defects:
+    - in a bundled program, `-O` drops a routine that updates a file-scope
+      variable;
+    - `try` around a returned Failure answers differently compiled.
+  - The lever beyond the plan: a routine declared all-native compiles to a
+    plain C++ function with no bail. Native semantics are machine semantics,
+    so such a routine may also write to file-scope native tables.
+
+## One-off bug reports
+
+- **[BUG-SPAWNCAPTURE-HANG.md](BUG-SPAWNCAPTURE-HANG.md)** *(2026-08-18)* — two
+  rakugrid generator hangs where the parent parked in a syscall inside
+  `spawnCapture` after the child had exited and its zombie went unreaped;
+  `SIGCONT`/`SIGCHLD` freed it, which points at a lost wakeup. Still
+  unreproduced from a small script.
+
+## Sub-series
+
+- **[engines/](engines/README.md)** — nine implementations of dynamic languages
+  read against this codebase, one findings doc each: Perl 5, PHP 7, CPython,
+  Ruby, MoarVM, Rakudo, Lua/LuaJIT, JavaScriptCore and V8's front end. Each pairs
+  an engine's primary sources with the measured state of our own structures and
+  ranks what transfers. It has [its own index](engines/README.md), which also
+  records which findings were already ours before the corresponding engine was
+  read.
+
+## Data directories
+
+Raw output for the logs above, kept so a claim can be re-checked rather than
+taken on trust: [`corpus-diff/`](corpus-diff/), [`course-diff/`](course-diff/),
+[`ecosweep/`](ecosweep/), [`fresh100/`](fresh100/), [`pwc/`](pwc/).
