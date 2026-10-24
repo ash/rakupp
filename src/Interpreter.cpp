@@ -3015,6 +3015,45 @@ static Value applyArithHook(const std::string& op, const Value& l, const Value& 
 }
 static const bool g_applyArithInstalled = ((g_applyArith = &applyArithHook), true);
 
+// A Range one of whose carried ends is a BigInt, which rFrom/rTo do not hold
+// (they saturate, or keep only the width), stepped exactly and lazily, so
+// `2**64 .. *` runs until its `last`: `first` puts its first element in
+// `cur`, otherwise `cur` moves on by one. 1 while `cur` is in the range, 0
+// past it, and -1 for a range with no BigInt end, which its integer fields
+// walk. The interpreter's counted `for` and --exe's both step through it.
+int rtBigRangeStep(const Value& r, Value& cur, bool first) {
+    const RangeEnds* re = rangeEnds(r);
+    if (!re || !((re->from.t == VT::Int && re->from.big()) || (re->to.t == VT::Int && re->to.big())))
+        return -1;
+    if (first) cur = r.rExFrom() ? applyArith("+", re->from, Value::integer(1)) : re->from;
+    else cur = applyArith("+", cur, Value::integer(1));
+    return applyArith(r.rExTo() ? "<" : "<=", cur, re->to).truthy() ? 1 : 0;
+}
+
+// execForStmt's counted arm, for a Range whose BigInt end its integer fields
+// do not hold: `for 2**64 .. 2**64 + 2` walked them, once, at int64's max.
+// Stepped through rtBigRangeStep, one element ahead because LAST needs to
+// know, in a fresh scope an iteration; `ro`/`imm` are what the arm decided
+// its topic is. (A typed parameter never gets here: execForStmt keeps such a
+// range on the binder.)
+void Interpreter::runBigRangeFor(ForStmt* fs, const Value& r, const std::string& var, bool ro, bool imm,
+                                 ValueList* col) {
+    auto topicOf = [&](const Value& n) { Value v = n; v.readonly = ro; v.immutableBind = imm; return v; };
+    Value cur;
+    Value* topic = nullptr;
+    std::function<void()> rb = [&] { if (topic) *topic = topicOf(cur); };
+    int in = rtBigRangeStep(r, cur, true);
+    for (bool first = true; in == 1; first = false) {
+        Value next = cur;
+        in = rtBigRangeStep(r, next, false);
+        auto scope = makeSlabShared<Env>();
+        scope->parent = tctx().cur;
+        topic = &scope->define(var, topicOf(cur));
+        if (!runLoopBody(fs->body.get(), scope, fs->label, first, in != 1, col, rb)) break;
+        cur = std::move(next);
+    }
+}
+
 Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     if (from.t == VT::Str && to.t == VT::Str) {
         if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
@@ -3045,6 +3084,8 @@ Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
             r.rNumM() = true; r.n = from.toNum(); r.imM() = INFINITY;
             attachRangeEnds(r, from, Value::number(INFINITY));
         }
+        // (a BigInt start is not in the integer fields: `2**64..*` kept int64's max)
+        else if (from.t == VT::Int && from.big()) attachRangeEnds(r, from, Value::number(INFINITY));
         return r;
     }
     if (from.t == VT::Whatever) {

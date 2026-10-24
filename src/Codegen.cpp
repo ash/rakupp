@@ -4823,6 +4823,7 @@ struct Codegen {
             // then indexes either the integers or a materialised element list.
             std::string rv = gensym("__rv"), lst = gensym("__rl"), isInt = gensym("__ri");
             std::string lo = gensym("__lo"), hi = gensym("__hi"), i = gensym("__i");
+            std::string bc = gensym("__bc"), big = gensym("__bg");
             if (upto)
                 line(ind + 1, "Value " + rv + " = rtRangeVal(Value::integer(0), " + ex(upto->operand.get()) + ", false, true);");
             else {
@@ -4833,12 +4834,21 @@ struct Codegen {
             // (a fractional range, `0..^2.5`, is no integer range: its elements are listed)
             line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType().empty() && !" + rv + ".rNum());");
             line(ind + 1, "Value " + lst + "; long long " + lo + ", " + hi + ";");
-            line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
+            // (a BigInt end is not in the integer fields: `bc` holds the element,
+            // stepped through the carried ends by rtBigRangeStep as the
+            // interpreter's walk is, and the counter only counts)
+            line(ind + 1, "Value " + bc + "; const int " + big + " = " + isInt + " ? rtBigRangeStep(" + rv + ", " +
+                          bc + ", true) : -1;");
+            line(ind + 1, "if (" + big + " >= 0) { " + lo + " = 0; " + hi + " = " + big +
+                          " ? 9223372036854775807LL : -1; }");
+            line(ind + 1, "else if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
                                                  + hi + " = " + rv + ".rTo() - (" + rv + ".rExTo() ? 1 : 0); }");
             line(ind + 1, "else { " + lst + " = rtArrayVal(" + rv + "); " + lo + " = 0; "
                                     + hi + " = (long long)" + lst + ".arr()->size() - 1; }");
-            line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
-            std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr())[" + i + "]";
+            line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + " && (" + big + " < 0 || " + i +
+                          " == 0 || rtBigRangeStep(" + rv + ", " + bc + ", false) == 1); " + i + "++) {");
+            std::string elem = big + " >= 0 ? " + bc + " : " + isInt + " ? Value::integer(" + i + ") : (*" + lst +
+                               ".arr())[" + i + "]";
             line(ind + 2, declLoopVar(elem, ""));
             if (topicLoop) topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
