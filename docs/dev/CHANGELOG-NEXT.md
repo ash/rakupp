@@ -12,7 +12,7 @@ here.*
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
 de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
-4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001.*
+4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001; 960e8aed.*
 
 ---
 
@@ -203,6 +203,16 @@ interpreted.
   made a key of the Failure's fields. Slices, junctions, `++`, `:delete`,
   native arrays and the AT-POS / *-KEY methods throw too, interpreted,
   compiled and in a `--cnp` kernel.
+- **A store into a native array's element converts or refuses as Rakudo's
+  does** (960e8aed). An `int` element held True, 1.5 or 2**70 as it came, an
+  int8 one 300 and a uint8 one -1, `@a.push(1)` put an Int into a num array,
+  and `@a[0] += 1.5` left 3.5. True is 1 now, 300 into an int8 is 44, and a
+  Rat dies with the X::TypeCheck or unbox message Rakudo gives for that store
+  (`=`, `+=`, a slice, push, append, splice). A store answers what it was
+  handed, `(@u8[$i] = -1)` is -1, and a slice an `array[int]` of those. 103
+  probes of the forms agree with Rakudo 2026.09. Bools keep a packed array
+  packed: `@a[$i] = $i %% 3` under `--cnp` takes 8.1 ms over 1M, from 30.9
+  on a87a6b73 (best of 3).
 
 ### Fixed: crashes
 
@@ -301,3 +311,8 @@ does not.
   before any subscript sees it, and one that has thrown is not marked
   handled, so using it again rethrows its exception where Rakudo dies with
   another (85d56001).
+- A native element written through an alias (`my $x := @n[1]; $x = 1.5`,
+  `for @n { $_ = 1.5 }`) or by `||= Nil` takes the value as it comes, where
+  Rakudo refuses each (960e8aed). Rakudo's literal-index
+  `(@u[0] = 2**64 - 1)` answers -1; Raku++ answers 2**64 - 1, as Rakudo does
+  under a computed key.
