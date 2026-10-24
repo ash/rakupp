@@ -3987,7 +3987,18 @@ Value containerFill(const Value& base) {
     return Value::any();
 }
 
+// A Failure used as a subscript throws what it carries, as Rakudo's does, a
+// slice's or a junction's element too. It is no number to index by and no
+// string to key by: read as one it was the 2 its hash holds, so `@a[1 div 0]
+// = 5` stored into @a[2]. A handled Failure is left as it is.
+void detonateFailureKey(const Value& key) {
+    if (key.t == VT::Hash) { if (key.hashKind == "Failure") failureDetonate(key); }
+    else if (key.t == VT::Array && key.arr() && !key.ext())
+        for (const Value& e : *key.arr())
+            if (e.t == VT::Hash && e.hashKind == "Failure") failureDetonate(e);
+}
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
+    detonateFailureKey(key);
     // A Whatever — or a WhateverCode such as `*-1` — is an END-RELATIVE
     // subscript however it arrived. Native codegen picks idxW when it can SEE
     // the star written in the subscript; when the star came through a variable
@@ -5487,6 +5498,7 @@ Value& rtKeptAssign(Interpreter& I, Value& ref, Value v) {
 }
 // stepOp: the `postfix:<++>` / `prefix:<-->` a step site resolves the place for
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp) {
+    detonateFailureKey(key);
     if (isHash) {
         // A Pair is Associative but immutable: `$p<a> = 9` is X::Assignment::RO,
         // as the interpreter's lvalue refuses it. Vivifying below REPLACED the

@@ -4802,6 +4802,7 @@ private:
     static bool packedIndexShape(const Index* ix);   // `@a[$i]` / `@a[3]` / `@a[$i + 1]`: the packed lanes' 1-D subscript
     PackedArr* packedWordAt(Index* ix, size_t& at);   // …the word it names in a still-packed array, or null
     bool packedComputedRead(Index* ix, const Value& base, std::optional<Value>& key, Value& out);   // `@a[$i + 1]` from the words
+    Value subscriptKey(Expr* e);   // a subscript's key, evaluated; a Failure throws (detonateFailureKey)
     bool packedStep(Unary* u, Value& out);         // `@a[$i]++` on that word (PACKED-ARRAY-PLAN)
     static bool shapedLaneShape(const Index* ix);   // `@m[$i; 2]`: the shaped-array lanes' syntax
     const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null
@@ -5710,6 +5711,7 @@ inline Value applyArithValue(const char* op, const Value& l, const Value& r) {
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev = 1); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
+void   detonateFailureKey(const Value& key);   // a Failure used as a subscript throws (rtIndexGet)
 // `$l ~~ $r` / `$l !~~ $r` once BOTH sides are values. A Callable matcher is
 // INVOKED with the topic — the arm that lives in evalBinary, which emitted code
 // never runs — and everything else goes to the interpreter's own smartmatch,

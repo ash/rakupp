@@ -962,6 +962,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto kkey = [objKeyed](const Value& k) -> std::string {
             return objKeyed ? objHashIndex(k) : k.toStr();
         };
+        // (a Failure key throws, as `%h{$f}` does)
+        if (!args.empty() && m.size() > 4 && m.compare(m.size() - 4, 4, "-KEY") == 0) detonateFailureKey(args[0]);
         if (m == "AT-KEY" && !args.empty()) {
             auto it = inv.hash()->find(kkey(args[0]));
             return it != inv.hash()->end() ? it->second : Value::any();

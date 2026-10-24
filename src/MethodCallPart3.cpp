@@ -1495,6 +1495,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // ASSIGN-POS and BIND-POS take a trailing value, so their last arg is it.
         const bool writes = (m == "ASSIGN-POS" || m == "BIND-POS");
         size_t nidx = writes ? (args.size() > 1 ? args.size() - 1 : args.size()) : args.size();
+        for (size_t q = 0; q < nidx; q++) detonateFailureKey(args[q]);   // (a Failure index throws, as `@a[$f]`)
         const auto& shp = inv.shape();
         const size_t ndim = (shp && shp->size() >= 2) ? shp->size() : 0;
         // a natively typed array has no containers to delete or rebind

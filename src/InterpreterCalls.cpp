@@ -4836,6 +4836,12 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
     return pa;
 }
 
+Value Interpreter::subscriptKey(Expr* e) {
+    Value k = eval(e);
+    detonateFailureKey(k);
+    return k;
+}
+
 // evalIndex's array arm for a packed `int` / `num` array read with a
 // COMPUTED key (`@a[$i + 1]`; the fast paths take a variable or a literal):
 // the word, when the key is a machine Int in range. The arm's arr() unpacks
@@ -4846,7 +4852,7 @@ bool Interpreter::packedComputedRead(Index* ix, const Value& base, std::optional
     if (base.t != VT::Array || !base.packedLive() || !base.hashKind.empty() || base.elemDefault() ||
         ix->index->kind == NK::Range)
         return false;
-    key = eval(ix->index.get());
+    key = subscriptKey(ix->index.get());
     if (key->t != VT::Int || key->big() || !key->hashKind.empty() || !base.packedLive()) return false;
     const PackedArr* pa = base.packed();
     if (key->i < 0 || key->i >= (long long)pa->w.size()) return false;
