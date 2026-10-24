@@ -11,7 +11,7 @@ here.*
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
-de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b).*
+de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec.*
 
 ---
 
@@ -76,6 +76,10 @@ interpreted.
   lane's store-back lost the native's width; it now rebuilds the native, so
   `$i` after the loop still wraps. The findings file's `sub f(int $nn -->
   num)` over 10M, against a87a6b73, best of 3: 240 → 5.1 ms (untyped 5.1).
+- **A packed `int` / `num` array keeps its words under a computed key**
+  (5e5d80ec). `@a[$i + 1]`, read or stored, unpacked the array for good in
+  the interpreter, so a `--cnp` loop entered after it read boxed Values. The
+  key is still evaluated once.
 
 ### Fixed: silent wrong answers
 
