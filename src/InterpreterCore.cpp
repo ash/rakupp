@@ -27313,7 +27313,10 @@ Value Interpreter::evalIndex(Index* idx) {
     // Fast path: `@plainvar[intexpr]` — the overwhelmingly common array read.
     // Grab the array's shared_ptr (one refcount, safe across the index eval)
     // instead of copying the whole ~300-byte Value three times through eval().
-    if (!idx->isHash && idx->adverb.empty() && idx->index &&
+    std::optional<Value> early;   // a key evaluated here that the array arm below takes
+    // (a Range written as the key, `@a[$k++ .. 2]`, is never one Int: the array
+    // arm evaluates its two ends itself)
+    if (!idx->isHash && idx->adverb.empty() && idx->index && idx->index->kind != NK::Range &&
         idx->base->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(idx->base.get());
         // `@a[|| @dims]` is a navigation, not a subscript: its index expression is
@@ -27352,8 +27355,10 @@ Value Interpreter::evalIndex(Index* idx) {
                         if (bp->shape()) shapedBoundsCheck(bp->shape(), 0, ix);
                         return Value::any();
                     }
-                    // non-Int subscript (range/whatever/list): fall through with the
-                    // base already at hand — re-enter the general machinery below
+                    // non-Int subscript (range/whatever/list): fall through to the
+                    // general machinery's array arm, which takes this key rather
+                    // than evaluating it again (`@a[$i++ + 0.5]` steps $i once)
+                    early = std::move(iv);
                 }
             }
         }
@@ -28626,8 +28631,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // 20,000 reads of a 20,000-element array took 12.9 s against 8 ms for the
         // same loop over a lexical.
         // (a packed array's word for a computed key, before arr() unpacks it)
-        std::optional<Value> early;
-        if (Value w; packedComputedRead(idx, base, early, w)) return w;
+        if (Value w; !early && packedComputedRead(idx, base, early, w)) return w;
         ValueList built;
         if (!(base.t == VT::Array && base.arr())) built = base.flatten();
         const ValueList& src = (base.t == VT::Array && base.arr()) ? *base.arr() : built;
