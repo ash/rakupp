@@ -141,6 +141,8 @@ static const std::unordered_set<std::string> kNeedsEndKeyword = {
     "my", "our", "state", "constant",
     // …and `sub` itself: `sub sub($x) {…}; sub('x')` (S02-names/identifier.t)
     "sub",
+    // …and the block prefixes: `sub start($x) {…}; start(5)` calls it with 5, not a Block
+    "start", "do", "try", "gather", "quietly", "once", "react", "supply",
 };
 
 // every keyword that can follow a statement as a modifier — `with` and `without`
@@ -9207,9 +9209,10 @@ ExprPtr Parser::parsePrimary() {
                 u->operand = std::move(be);
                 return u;
             }
-            if (name == "react" || name == "supply") {
+            if ((name == "react" || name == "supply") && !kwCallHere(name)) {
                 advance();
-                auto call = std::make_unique<Call>(); call->name = name;
+                // (CORE:: when the unit has a routine of this name: the prefix still wins)
+                auto call = std::make_unique<Call>(); call->name = kwNamedSubs_.count(name) ? "CORE::" + name : name;
                 if (isKind(Tok::LBrace)) {
                     bool saved = inReactBlock_; inReactBlock_ = true;
                     auto blk = parseBlock();
@@ -9267,9 +9270,8 @@ ExprPtr Parser::parsePrimary() {
                                // …a LABELED loop too: `eager MOO: for …`
                                (peek().kind == Tok::Ident && peek(2).kind == Tok::Op &&
                                 peek(2).text == ":" && !peek(2).spaceBefore && loopWord(peek(3))));
-            if (name == "do" || name == "try" || name == "gather" || name == "quietly" ||
-                name == "once" || loopPrefix ||
-                name == "BEGIN" || name == "ENTER") {
+            if ((name == "do" || name == "try" || name == "gather" || name == "quietly" ||
+                 name == "once" || loopPrefix || name == "BEGIN" || name == "ENTER") && !kwCallHere(name)) {
                 advance();
                 auto u = std::make_unique<Unary>();
                 // BEGIN/ENTER in value position evaluate their block/expr and yield it
@@ -9382,14 +9384,14 @@ ExprPtr Parser::parsePrimary() {
             // it is that term: PDF::Content::Image binds the offset of a data
             // URI's payload to `my Numeric \start` and then calls
             // `substr($data-uri, start)`.
-            if (name == "start" && peek().kind != Tok::FatArrow && !sigilless_.count("start")) {
+            if (name == "start" && peek().kind != Tok::FatArrow && !sigilless_.count("start") && !kwCallHere(name)) {
                 // `start` thunks its argument so it runs on the worker, not eagerly on
                 // the current thread. `start { … }` already carries its block; `start EXPR`
                 // (e.g. `start render-page($d)`) must wrap EXPR in a deferred block, else
                 // it evaluates before the promise is even spawned (defeating parallelism).
                 advance();
                 auto call = std::make_unique<Call>();
-                call->name = "start";
+                call->name = kwNamedSubs_.count("start") ? "CORE::start" : "start";   // (as react's)
                 auto be = std::make_unique<BlockExpr>();
                 if (isKind(Tok::LBrace)) {
                     auto blk = parseBlock();
@@ -17720,6 +17722,21 @@ int g_preludeCols = 0;
 
 Program Parser::parseProgram() {
     Program prog;
+    // kwNamedSubs_ from the top, as a routine declared further down is visible
+    // (`say start(5); sub start($x) {…}`); `sub sub` waits for its declaration
+    for (size_t i = 0; i + 1 < toks_.size(); i++) {
+        const Token& t = toks_[i];
+        if (t.kind != Tok::Ident) continue;
+        const bool scope = t.text == "my" || t.text == "our" || t.text == "state";   // `my &start`
+        const bool routine = t.text == "sub" || t.text == "multi" || t.text == "proto" || t.text == "only";
+        if (!scope && !routine) continue;
+        size_t j = i + 1;   // (`multi sub start`: past the `sub`)
+        if (routine && t.text != "sub" && toks_[j].kind == Tok::Ident && toks_[j].text == "sub" && j + 1 < toks_.size()) j++;
+        const Token& n = toks_[j];
+        const std::string nm = scope ? (n.kind == Tok::Var && n.text.size() > 1 && n.text[0] == '&' ? n.text.substr(1) : "")
+                                     : (n.kind == Tok::Ident ? n.text : "");
+        if (!nm.empty() && nm != "sub" && kNeedsEndKeyword.count(nm)) kwNamedSubs_.insert(nm);
+    }
     try {
         while (!isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;

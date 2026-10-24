@@ -5135,7 +5135,7 @@ bool assignSpawns(const Assign* a) {
     }
     std::set<std::string> calls;
     spCallsE(a->value.get(), calls);
-    bool r = calls.count("start") > 0;
+    bool r = calls.count("start") > 0 || calls.count("CORE::start") > 0;   // (CORE:: when the unit has a `sub start`)
     std::lock_guard<std::mutex> lk(mu);
     cache[a] = r;
     return r;
