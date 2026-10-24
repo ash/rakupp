@@ -12,7 +12,7 @@ here.*
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
 de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
-4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001; 960e8aed.*
+4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001; 960e8aed; 7fcca8a8.*
 
 ---
 
@@ -87,6 +87,11 @@ interpreted.
   findings file's dot loop 140.9 → 58.6 ms, one read 80.7 → 45.7 ms (no
   read: 42.2), axpy 178.5 → 64.5 ms, a three-point stencil over 1M 103.8 →
   33.9 ms, and its flat 200×200 matmul 419.0 → 60.4 ms (with 5e5d80ec).
+- **`my num @c = @b` copies a packed array's words** (7fcca8a8) and leaves
+  @b packed; it read @b's Values, which unpacked it for good. Against
+  a87a6b73, best of 3, 10M elements under `--cnp`: the findings file's
+  axpy-loop, which starts that way, 403.3 → 64.7 ms, and reading @b after the
+  copy 258.6 → 44.9 ms.
 
 ### Fixed: silent wrong answers
 
