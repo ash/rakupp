@@ -12,7 +12,7 @@ here.*
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
 de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
-4405241a (FORTRAN-LESSONS 2).*
+4405241a (FORTRAN-LESSONS 2); 769ed705.*
 
 ---
 
@@ -192,6 +192,11 @@ interpreted.
   `$s++` on "a" died "Cannot convert string to number", and `@flags[$i]++`
   made a Bool element an Int. A FatRat whose parts fit two words ran on the
   Rat lane, so `$fr * 3 + 0` answered a Rat; it stays boxed now.
+- **A subscript's key is evaluated once** (769ed705), as in Rakudo. A key
+  that was no machine Int was evaluated by evalIndex's fast arm and again by
+  the general path: with `my @a = 10, 20, 30`, `@a[$i++ + 0.5]` read 20 and
+  left $i at 2 (Rakudo: 10, and 1), `@a[($i++, 1)]` read (20 20), and
+  `@a[key()]` called key() twice.
 
 ### Fixed: crashes
 
