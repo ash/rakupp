@@ -131,6 +131,7 @@ enum RkCnpOp {
     RK_OP_BAND, RK_OP_BOR, RK_OP_BXOR, RK_OP_SHL, RK_OP_SHR,
     RK_OP_MIN, RK_OP_MAX, RK_OP_XOR,
     RK_OP_NEG, RK_OP_PLUS, RK_OP_NOT, RK_OP_SO, RK_OP_BNOT, RK_OP_STR,
+    RK_OP_SUCC, RK_OP_PRED,   // what `++` / `--` store: .succ / .pred (Interpreter::stepValue)
     RK_OP__COUNT
 };
 // Or'd into an operator index for a NATIVE int operation: its cold path wraps

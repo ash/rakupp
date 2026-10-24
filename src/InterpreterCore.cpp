@@ -3403,6 +3403,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
         };
         if (listv.t == VT::Range && !listv.rNum() && listv.ofType() != "Str") {
+            // (a BigInt end is not in the fields walked below: runBigRangeFor)
+            if (rangeCarriesBigInt(listv)) { runBigRangeFor(fs, listv, var, roInt, immInt, col); return forResult(); }
             long long lo = listv.rFrom() + (listv.rExFrom() ? 1 : 0);
             long long hi = listv.rTo() - (listv.rExTo() ? 1 : 0);
             // (an endless range is not handed out: only a `last` ends it)
@@ -29855,6 +29857,8 @@ struct RatLitParts {
                     rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = INFINITY;
                     attachRangeEnds(rr, from, Value::number(INFINITY));
                 }
+                // (a BigInt start is not in the integer fields: `2**64..*` kept int64's max)
+                else if (from.t == VT::Int && from.big()) attachRangeEnds(rr, from, Value::number(INFINITY));
                 return rr;
             }
             if (from.t == VT::Whatever) {

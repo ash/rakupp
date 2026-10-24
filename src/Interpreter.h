@@ -2069,6 +2069,7 @@ public:
                      const std::function<void()>& rebind = nullptr); // handles redo/next/last + FIRST/LAST; false => last.
                                                     // collect!=null: append each iteration's value (value context)
     void runLoopLast(Block* body, const std::shared_ptr<Env>& scope); // LAST {…} at loop end, in the final iteration's scope
+    void runBigRangeFor(ForStmt* fs, const Value& r, const std::string& var, bool ro, bool imm, ValueList* col); // over a BigInt end
     // `hyper for` / `race for`: run `n` iterations of `fs` over worker threads.
     // `bind` defines iteration i's loop variable in its fresh scope (false: no
     // such element any more, skip it); `writeBack`, when given, carries a write
@@ -5754,6 +5755,7 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
+int    rtBigRangeStep(const Value& r, Value& cur, bool first); // a BigInt-ended range's next element (Interpreter.cpp)
 // argv -> MAIN args (--opt named, rest positional). `scope`, when given, is the
 // interpreter whose symbols decide whether a word NAMES an enum value; without
 // one only the spellings that need no scope (Bool's four) convert.

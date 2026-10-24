@@ -456,6 +456,11 @@ obstacle instead, in three places:
   into it.
 - **The direction is the point:** declaring types should make a compiled
   program faster, never 90× slower.
+- **Done** (d0ba733b, 2026-10-24). The lane already took a native declared
+  in its body; one declared in the loop header is now taken too, and its
+  store-back rebuilds the native. The loop of the table above, in a sub over
+  10M, 240 → 5.1 ms against a87a6b73, the same as untyped. `for ^$n -> int
+  $i` takes the lane too (c95d9332): 60.6 → 2.2 ms.
 
 **c. `--exe` with a `my num @a`.** Today it bundles the whole program with the
 interpreter. The fix is an emitted loop over `double*` with the versioning

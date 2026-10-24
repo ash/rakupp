@@ -4823,6 +4823,7 @@ struct Codegen {
             // then indexes either the integers or a materialised element list.
             std::string rv = gensym("__rv"), lst = gensym("__rl"), isInt = gensym("__ri");
             std::string lo = gensym("__lo"), hi = gensym("__hi"), i = gensym("__i");
+            std::string bc = gensym("__bc"), big = gensym("__bg");
             if (upto)
                 line(ind + 1, "Value " + rv + " = rtRangeVal(Value::integer(0), " + ex(upto->operand.get()) + ", false, true);");
             else {
@@ -4833,12 +4834,21 @@ struct Codegen {
             // (a fractional range, `0..^2.5`, is no integer range: its elements are listed)
             line(ind + 1, "bool " + isInt + " = (" + rv + ".t == VT::Range && " + rv + ".ofType().empty() && !" + rv + ".rNum());");
             line(ind + 1, "Value " + lst + "; long long " + lo + ", " + hi + ";");
-            line(ind + 1, "if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
+            // (a BigInt end is not in the integer fields: `bc` holds the element,
+            // stepped through the carried ends by rtBigRangeStep as the
+            // interpreter's walk is, and the counter only counts)
+            line(ind + 1, "Value " + bc + "; const int " + big + " = " + isInt + " ? rtBigRangeStep(" + rv + ", " +
+                          bc + ", true) : -1;");
+            line(ind + 1, "if (" + big + " >= 0) { " + lo + " = 0; " + hi + " = " + big +
+                          " ? 9223372036854775807LL : -1; }");
+            line(ind + 1, "else if (" + isInt + ") { " + lo + " = " + rv + ".rFrom() + (" + rv + ".rExFrom() ? 1 : 0); "
                                                  + hi + " = " + rv + ".rTo() - (" + rv + ".rExTo() ? 1 : 0); }");
             line(ind + 1, "else { " + lst + " = rtArrayVal(" + rv + "); " + lo + " = 0; "
                                     + hi + " = (long long)" + lst + ".arr()->size() - 1; }");
-            line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + "; " + i + "++) {");
-            std::string elem = isInt + " ? Value::integer(" + i + ") : (*" + lst + ".arr())[" + i + "]";
+            line(ind + 1, "for (long long " + i + " = " + lo + "; " + i + " <= " + hi + " && (" + big + " < 0 || " + i +
+                          " == 0 || rtBigRangeStep(" + rv + ", " + bc + ", false) == 1); " + i + "++) {");
+            std::string elem = big + " >= 0 ? " + bc + " : " + isInt + " ? Value::integer(" + i + ") : (*" + lst +
+                               ".arr())[" + i + "]";
             line(ind + 2, declLoopVar(elem, ""));
             if (topicLoop) topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
@@ -5733,9 +5743,8 @@ struct Codegen {
                         tv->d().declShape || tv->d().declTypeExpr || tv->pkgSymbol || tv->viaPseudoPkg) {
                         U.fail(); return;
                     }
-                    // a native in a loop HEADER outlives the lane in a box the
-                    // store-back would replace without its width: not taken
-                    if (nk && U.inHeader) { U.fail(); return; }
+                    // (a native in a loop HEADER outlives the lane: its
+                    // store-back builds the native, as its declaration does)
                     if (nk) U.natDecl[nm] = nk;
                     if (nk) U.pinned.insert(nm);
                     // A declaration that SHADOWS a name the lane already holds
@@ -5887,7 +5896,11 @@ struct Codegen {
                 auto* f = static_cast<ForStmt*>(st);
                 U.atTop = false;
                 if (f->asExpr || f->rwVars || f->destructure) { U.fail(); return; }
-                if (f->vars.size() > 1 || !f->params.empty()) { U.fail(); return; }
+                // (`-> int $i` / `-> Int $i` counts as `-> $i` does: countedForParam.
+                // A native operation that leaves int64 bails, and the boxed loop
+                // binds it as the native it is, which wraps.)
+                const Param* cp = countedForParam(f);
+                if (f->vars.size() > 1 || (!f->params.empty() && !cp)) { U.fail(); return; }
                 Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
                 if (!uRangeOf(f, rFrom, rTo, exF, exT)) { U.fail(); return; }
                 { bool sv = U.inHeader; U.inHeader = true;
@@ -5895,7 +5908,7 @@ struct Codegen {
                   uCollectExpr(rTo, U);
                   U.inHeader = sv; }
                 if (!U.ok) return;
-                std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
+                std::string tv = cp ? cp->name : f->vars.empty() ? std::string("$_") : f->vars[0];
                 if (U.topics.count(tv) || U.slots.count(tv)) { U.fail(); return; }  // shadowing
                 U.topics.insert(tv);
                 U.local.insert(tv);
@@ -6463,7 +6476,8 @@ struct Codegen {
                 auto* f = static_cast<ForStmt*>(st);
                 Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
                 if (!uRangeOf(f, rFrom, rTo, exF, exT)) return false;
-                std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
+                const Param* cp = countedForParam(f);
+                std::string tv = cp ? cp->name : f->vars.empty() ? std::string("$_") : f->vars[0];
                 std::string lv = uLocal_[tv];
                 std::vector<std::string> pre;
                 std::string lo = rFrom ? uExpr(rFrom, LT::I64, pre) : std::string("0LL");
@@ -6828,11 +6842,17 @@ struct Codegen {
             }
         // An escaping name's box may hold anything at all (it was `Value::any()`
         // a moment ago), so this CONSTRUCTS rather than writing a payload under
-        // a tag that was never checked.
-        for (auto& n : escStore)
-            line(ind + 1, varRef(n) + " = " + (uType_[n] == LT::F64 ? "Value::number(" : uType_[n] == LT::STR
-                                                   ? "Value::str(std::move(" : "Value::integer(")
-                        + uLocal_[n] + (uType_[n] == LT::STR ? "));" : ");"));
+        // a tag that was never checked. A native (`loop (my int $i …)`) is built
+        // as its declaration builds it, tags and all, so that `$i` after the
+        // loop is still the native it was declared.
+        for (auto& n : escStore) {
+            std::string v = (uType_[n] == LT::F64 ? "Value::number(" : uType_[n] == LT::STR
+                                 ? "Value::str(std::move(" : "Value::integer(")
+                          + uLocal_[n] + (uType_[n] == LT::STR ? "))" : ")");
+            if (auto nd = U.natDecl.find(n); nd != U.natDecl.end())
+                v = "rtNativeStoreK(" + v + (nd->second == 'n' ? ", 1, \"num\", " : ", 2, \"int\", ") + cesc(n) + ", false)";
+            line(ind + 1, varRef(n) + " = " + v + ";");
+        }
         line(ind + 1, ok + " = true;");
         line(ind, "} while (0);");
         line(ind, "if (!" + ok + ") {");
