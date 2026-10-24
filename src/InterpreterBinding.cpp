@@ -1376,6 +1376,52 @@ void Interpreter::nativeElemStore(const std::string& t, Value& v, char how, long
     throwNativeKind(v, fam == 'n', fam != 'u');
 }
 
+// A container that ALIASES an element of a native array is the element's own
+// (Rakudo's IntPosRef / NumPosRef / StrPosRef): a store through it converts,
+// wraps or refuses as `+=` on the element does (nativeElemStore's 'o'), and it
+// reads as the native it holds. A `for` or `given` topic and an `is rw`
+// parameter over an `int` / `num` element carry the element's width tags for
+// that, so the stores a native variable judges are judged there and then; a
+// `str` element has no tag, and its alias is judged as it is copied back.
+// What goes back into the element goes through nativeElemStore, which drops
+// the tags again.
+void Interpreter::nativeElemTag(const std::string& t, Value& v) {
+    if (t.empty() || t == "str" || (v.t != VT::Int && v.t != VT::Num)) return;
+    const bool isFloat = t.compare(0, 3, "num") == 0;
+    bool sg = true;
+    const int bits = isFloat ? (t == "num32" ? 32 : 64) : Value::natWidthOfType(t, sg);
+    wrapNative(v, bits ? bits : 64, sg, isFloat);
+}
+std::string Interpreter::nativeElemTypeAt(const Expr* e) {
+    if (!e || e->kind != NK::Index || !tctx().cur) return "";
+    auto* ix = static_cast<const Index*>(e);
+    if (ix->isHash || ix->multiDim || !ix->base || ix->base->kind != NK::VarExpr) return "";
+    const std::string& n = static_cast<const VarExpr*>(ix->base.get())->name;
+    const Value* av = n.size() > 1 && n[0] == '@' ? tctx().cur->find(n) : nullptr;
+    return av ? nativeElemTypeOf(*av->deref()) : "";
+}
+// …and of the array a `for` walks: the source itself, or the array behind the
+// views the loop aliases through (`@n[0, 1]`, `@n.grep(…)`, `@n.reverse`, `|@n`)
+std::string Interpreter::nativeLoopElemType(const Value& src, const Expr* e) {
+    if (std::string t = nativeElemTypeOf(src); !t.empty()) return t;
+    for (int hop = 0; e && hop < 4; hop++) {
+        if (e->kind == NK::Index) return nativeElemTypeAt(e);
+        if (e->kind == NK::VarExpr) {
+            const std::string& n = static_cast<const VarExpr*>(e)->name;
+            const Value* av = n.size() > 1 && n[0] == '@' && tctx().cur ? tctx().cur->find(n) : nullptr;
+            return av ? nativeElemTypeOf(*av->deref()) : "";
+        }
+        if (e->kind == NK::Unary && static_cast<const Unary*>(e)->op == "|") e = static_cast<const Unary*>(e)->operand.get();
+        else if (e->kind != NK::MethodCall) return "";
+        else {
+            auto* mc = static_cast<const MethodCall*>(e);
+            if (mc->method != "grep" && mc->method != "reverse" && mc->method != "values" && mc->method != "list") return "";
+            e = mc->inv.get();
+        }
+    }
+    return "";
+}
+
 std::string Interpreter::elemTypeOf(const Value& container) {
     if (container.ofType().empty()) return "";
     if (container.t != VT::Array && container.t != VT::Hash) return ""; // Range/IO::Path ride on ofType too
@@ -2626,10 +2672,18 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         if (!nm.empty() && nm[0] == '@' && !(v.t == VT::Array && v.shape())) v = coerceArray(v);
         else if (!nm.empty() && nm[0] == '%') v = coerceHash(v);
     }
+    if (target && target->kind == NK::Index) tctx().lastLvalueElemType.clear();
     if (Value* lv = lvalue(target)) {
         if (lv->readonly)
             throwNotWritable(*lv);
         v.readonly = v.immutableBind = false;                 // the flag marks the container, not the value
+        // a native converts or refuses what it is given, as `=` into it does:
+        // `$i .= Str` and `@ints[0] .= Str` die
+        const int nb = lv->natBits; const bool ns = lv->natSigned, nf = lv->natFloat;
+        if (nb) { nativeUndefCheck(v, nullptr, lv); nativeAssignCheck(v, nb, nf, containerNameOf(target, '$'), ns); }
+        if (target && target->kind == NK::Index)
+            if (std::string t = std::exchange(tctx().lastLvalueElemType, {}); !t.empty() && !typeNameLead(t[0]))
+                nativeElemStore(t, v, 'o', tctx().lastLvalueElemIdx);
         // a Proxy (a `take-rw` element as the topic) STOREs, as `=` does
         if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash() && lv->hash()->count("STORE")) {
             Value stored = *lv;
@@ -2649,6 +2703,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
             }
         }
         *lv = std::move(v);
+        if (nb) wrapNative(*lv, nb, ns, nf);
         return *lv;
     }
     return v;

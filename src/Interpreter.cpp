@@ -1406,20 +1406,11 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
 
 void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign) {
     if (bits <= 0) return;
+    (void)what;   // (Rakudo's refusals name the value's type, not the container)
     if (nativeRefusesKind(v, isFloat)) throwNativeKind(v, isFloat, sign);
-    // a native NUM refuses a Str too (`my num $n; $n = "x"`)
-    if (isFloat) {
-        if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
-            throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
-                "Type check failed in assignment to " + what + "; expected num but got Str (\"" +
-                v.s.str() + "\")"};
-        return;
-    }
-    if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty())
-        throw RakuError{Value::typeObj("X::TypeCheck::Assignment"),
-            "Type check failed in assignment to " + what +
-            "; expected " + (bits == 64 ? "int" : "int" + std::to_string(bits)) +
-            " but got Str (\"" + v.s.str() + "\")"};
+    // …and a Str is no number either (`my num $n; $n = "x"`, `my int $i = "7"`)
+    if (v.t == VT::Str && !v.isAllomorph() && v.hashKind.empty()) throwNativeKind(v, isFloat, sign);
+    if (isFloat) return;
     // Too wide for a machine integer at ALL is refused whatever the declared
     // width (`my int8 $x = 2**64` too); an unsigned one takes the full 64 bits.
     if (v.t == VT::Int && v.big() &&
@@ -1428,11 +1419,12 @@ void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string
 }
 
 // A native container cannot hold a type object, Nil included: `my int $x = Nil`
-// dies "Cannot unbox a type object (Nil) to int." rather than storing (Any).
+// dies "Cannot unbox a type object (Nil) to int." rather than storing (Any),
+// and `$x = $y` with $y holding Any (as Nil leaves a `$`) names the Any.
 // The declared type is on a DECLARING target; a sized native assigned later is
 // known by its slot's natBits.
 void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
-    if (rv.t != VT::Nil && rv.t != VT::Type) return;
+    if (rv.t != VT::Nil && rv.t != VT::Type && rv.t != VT::Any) return;
     const char* kind = nullptr;
     if (target && target->kind == NK::VarExpr) {
         auto* tv = static_cast<const VarExpr*>(target);
@@ -1448,7 +1440,7 @@ void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
     }
     if (!kind && slot && slot->natBits) kind = slot->natFloat ? "num" : "int";
     if (!kind) return;
-    const std::string what = rv.t == VT::Nil ? std::string("Nil") : rv.s.str();
+    const std::string what = rv.t == VT::Nil ? std::string("Nil") : rv.t == VT::Any ? std::string("Any") : rv.s.str();
     throw RakuError{Value::typeObj("X::AdHoc"),
         "Cannot unbox a type object (" + what + ") to " +
         (std::string(kind) == "int" ? "int." : std::string("a ") + kind + ".")};
@@ -1465,7 +1457,7 @@ static Value nativeStoreValue(const Value& v, int bits, bool sign, bool isFloat,
                               const std::string& name, bool srcNative) {
     Value slotLike = isFloat ? Value::number(0) : Value::integer(0);
     slotLike.natBits = bits; slotLike.natSigned = sign; slotLike.natFloat = isFloat;
-    if (v.t == VT::Nil || v.t == VT::Type) nativeUndefCheck(v, nullptr, &slotLike);
+    if (v.t == VT::Nil || v.t == VT::Type || v.t == VT::Any) nativeUndefCheck(v, nullptr, &slotLike);
     Value out = v;
     out.readonly = out.immutableBind = false;
     if (!(srcNative && (out.t == VT::Int || out.t == VT::Num)))

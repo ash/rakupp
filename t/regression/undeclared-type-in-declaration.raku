@@ -52,7 +52,7 @@ check decl('use Test; my Whatever::Unknown $x; 1'), 1, 'an importing unit stands
 
 # --- N-27: what a native container refuses, once it exists ------------------
 check (try { my int8 $v; $v = "foo"; 'stored' }) // $!.^name,
-      'X::TypeCheck::Assignment', 'a Str does not go into a native int';
+      'X::AdHoc', 'a Str does not go into a native int (an unbox, as Rakudo refuses it)';
 check (try { my int64 $v; $v = 2**64; 'stored' }) // $!.^name,
       'X::AdHoc', 'nor does an Int too wide to unbox';
 # …but a value that merely overflows the WIDTH is truncated, not refused

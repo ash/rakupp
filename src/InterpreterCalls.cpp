@@ -668,6 +668,10 @@ void Interpreter::rwWriteThrough(Expr* target) {
     // after-return closure case — IO::Capture::Simple's captured `$*OUT` writing
     // two rw hops away once the frames have gone — is NOT served by this path;
     // it needs the container model, big-area #2, and stays open.)
+    // (an element of a native array takes what its alias holds as `+=` would:
+    // an `int` parameter's tags already judged it, a `str` one's is judged here)
+    if (std::string t = nativeElemTypeAt(peelIncDec(it->second.first)); !t.empty())
+        try { nativeElemStore(t, v, 'o'); } catch (...) { tctx().cur = savedCur; throw; }
     try {
         Expr* tgt = peelIncDec(it->second.first);
         if (!assignMultiDimSlice(tgt, v))
@@ -2671,6 +2675,10 @@ static long long slotPack(size_t idx, size_t size) {
 }
 static size_t slotIdx(const Value& ref) { return (size_t)(uint32_t)(uint64_t)ref.i; }
 static size_t slotSize(const Value& ref) { return (size_t)((uint64_t)ref.i >> 32); }
+// what an element of a native array of type `t` holds before anything is stored
+static Value nativeFill(const std::string& t) {
+    return t == "str" ? Value::str("") : t.compare(0, 3, "num") == 0 ? Value::number(0) : Value::integer(0);
+}
 
 // The `$` variables a `for` modifier's one-item list can END on:
 // `.++ for do given 1 { when True { $a } }` iterates $a's container, not a copy
@@ -2743,7 +2751,7 @@ Value Interpreter::makePairCellProxy(PRef<Value> cell) {
     return proxy;
 }
 
-Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
+Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
     // the proxy alongside the value (proxyStore's `sub ($, $v)` spelling); a
     // builtin never binds its params, so they cost nothing else.
@@ -2771,6 +2779,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx) {
     Value last = idx < n ? (*arr)[idx] : Value::any();
     Value av; av.t = VT::Array; av.setArr(std::move(arr));   // shares the storage
     av.i = slotPack(idx, n);
+    if (!nativeT.empty()) av.ofTypeM() = nativeT;   // a native array's element: see slotProxyWriteRef
     h.addFresh(kSlotArr().s, kSlotArr().h, std::move(av));
     h.addFresh(kSlotLast().s, kSlotLast().h, std::move(last));
     h.addFresh(proxyKeyFetch().s, proxyKeyFetch().h, kFetch);
@@ -2839,7 +2848,7 @@ static Value slotProxyReadRef(Interpreter& I, const Value& proxy, const Value& r
     Interpreter::ParStripe ps(I, arr);
     Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h);
     if (slotProxyDetached(ref, arr)) return last ? *last : Value::any();
-    Value v = idx < arr->size() ? (*arr)[idx] : Value::any();
+    Value v = idx < arr->size() ? (*arr)[idx] : ref.ofType().empty() ? Value::any() : nativeFill(ref.ofType());
     if (last) *last = v;   // what the alias keeps if the array shrinks later
     return v;
 }
@@ -2853,13 +2862,19 @@ Value Interpreter::slotProxyRead(const Value& proxy) {
     return ref ? slotProxyReadRef(*this, proxy, *ref) : Value::any();
 }
 
-static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& ref, const Value& nv) {
+// A NATIVE array's element (`my $x := @n[1]`) stores as one through the
+// element's own container does (nativeElemStore's 'o'): `$x = 1.5` dies, `$x
+// = 300` into an int8 keeps 44 and answers it, as Rakudo's IntPosRef does.
+// The bind did not grow the array; a store past its end does, with zeroes.
+static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& ref, const Value& in) {
     ValueList* arr = ref.arr();
     const size_t idx = slotIdx(ref);
+    Value nv = in;
+    if (!ref.ofType().empty()) I.nativeElemStore(ref.ofType(), nv, 'o', (long long)idx);
     Interpreter::ParStripe ps(I, arr);
     if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
     if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
-    while (arr->size() <= idx) arr->push_back(Value::any());
+    while (arr->size() <= idx) arr->push_back(ref.ofType().empty() ? Value::any() : nativeFill(ref.ofType()));
     (*arr)[idx] = nv;
     return nv;
 }
@@ -3377,9 +3392,11 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
                 if (bp && ((ix->isHash && bp->t == VT::Hash && bp->hash() && bp->hashKind.empty()) ||
                            (!ix->isHash && bp->t == VT::Array && bp->arr() && !bp->isList))) {
+                    const std::string natT = ix->isHash ? std::string() : nativeElemTypeOf(*bp);
                     for (auto& k : keys) {
                         Value v = vi < vals.size() ? vals[vi] : Value::any();
                         vi++;
+                        if (!natT.empty()) nativeElemStore(natT, v, 'o');   // (as one element target is: below)
                         if (ix->isHash) (*bp->hash())[k.toStr()] = v;
                         else {
                             long long i = k.toInt();
@@ -3487,6 +3504,9 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     const std::string& ct = static_cast<VarExpr*>(tgt)->d().declCoerce;
                     if (!ct.empty()) v = coerceToType(v, ct);
                 }
+                // an ELEMENT of a native array converts or refuses as one through
+                // its own container does: `(@ints[0], @ints[1]) = 300, 1.5` dies
+                if (!isBinding) if (std::string t = nativeElemTypeAt(tgt); !t.empty()) nativeElemStore(t, v, 'o');
                 Value* lv = lvalue(tgt);
                 // Nil RESETS a `$` variable, as `$x = Nil` does: to its `is
                 // default`, its type object or Any. Stored as it came, `my ($a,

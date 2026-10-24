@@ -180,6 +180,7 @@ bool topicChanged(const Value& now, const Value& orig) {
 
 struct TopicAlias {
     Value* slot = nullptr; Env* sc = nullptr; Value orig;
+    Interpreter* I = nullptr; std::string natT;   // a native array's element: Interpreter::nativeElemTag
     ~TopicAlias() {
         if (!slot || !sc) return;
         // A destructor runs noexcept: comparing the topics can run user code
@@ -188,7 +189,11 @@ struct TopicAlias {
         // aborted the whole process. Failing to compare means "unchanged".
         try {
             auto it = sc->vars.find("$_");
-            if (it != sc->vars.end() && topicChanged(it->second, orig)) *slot = it->second;
+            if (it != sc->vars.end() && topicChanged(it->second, orig)) {
+                Value v = it->second;
+                if (I && !natT.empty()) I->nativeElemStore(natT, v, 'o');
+                *slot = std::move(v);
+            }
         } catch (...) {}
     }
 };
@@ -2480,6 +2485,8 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         // here — an array/hash topic already writes through its elements,
         // and a literal or call result has nowhere to write back to.
         Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
+        const std::string natT = topicSlot ? nativeElemTypeAt(g->topic.get()) : std::string();
+        nativeElemTag(natT, topic);   // (`$_ = 1.5 given @n[0]` dies: nativeElemTag)
         // …which a plain `$name` lacks only when it is bound to a VALUE: then
         // `$_ = 5 with $p` dies, as the block form does
         if (!topicSlot && !skip && g->topic && g->topic->kind == NK::VarExpr && topic.t != VT::Array &&
@@ -2513,8 +2520,12 @@ Value Interpreter::execGivenStmt(Stmt* s) {
             throw;
         }
         tctx().curGivenFrame = savedGF;
-        if (topicSlot && topicChanged(env->vars["$_"], topic))
-            *topicSlot = env->vars["$_"];   // write the alias back
+        if (topicSlot && topicChanged(env->vars["$_"], topic)) {
+            Value back = env->vars["$_"];
+            try { if (!natT.empty()) nativeElemStore(natT, back, 'o'); }   // (a str's refusal)
+            catch (...) { if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_"); throw; }
+            *topicSlot = std::move(back);   // write the alias back
+        }
         // …and the ELSE branch of `with`/`without` aliases the topic too:
         // `with %h<k> { } else { $_ = … }` writes through the container, which
         // is how PDF initialises its document ID. No slot is taken up front
@@ -2533,7 +2544,9 @@ Value Interpreter::execGivenStmt(Stmt* s) {
     // the same aliasing as the modifier form above: `given $str { s/x/y/ }`
     // rewrites $str
     Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
-    TopicAlias tback{topicSlot, scope.get(), topic};   // however the block exits
+    const std::string natT = topicSlot ? nativeElemTypeAt(g->topic.get()) : std::string();
+    nativeElemTag(natT, topic);   // (`given @n[0] { $_ = 1.5 }` dies: nativeElemTag)
+    TopicAlias tback{topicSlot, scope.get(), topic, this, natT};   // however the block exits
     // A POINTY block binds its own parameter and leaves `$_` alone:
     // `with 1 -> $a { .flip }` flips the OUTER topic, and `$_ = 7` in it
     // assigns there — for whichever branch runs, the `else -> $e { }`
@@ -2853,9 +2866,15 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             auto isRwVar = [&](size_t k) {
                 return k < fs->varTraits.size() && (fs->varTraits[k] & ForStmt::VT_RW);
             };
+            const std::string natT = nativeElemTypeOf(*src);   // (an element's alias: nativeElemTag)
             auto bindVar = [&](Env* sc, size_t k, Value v) {
                 if (!isRwVar(k)) v.readonly = true;
+                else if (!kvMode || k == 1) nativeElemTag(natT, v);
                 sc->define(fs->vars[k], std::move(v));
+            };
+            auto back = [&](size_t at, Value v) {
+                if (!natT.empty()) nativeElemStore(natT, v, 'o', (long long)at);
+                (*arr)[at] = std::move(v);
             };
             for (size_t i = 0; i < total; i += step) {
                 auto scope = makeSlabShared<Env>();
@@ -2869,11 +2888,11 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + step >= total, col);
                 if (kvMode) {
                     auto it = scope->vars.find(fs->vars[1]);
-                    if (isRwVar(1) && it != scope->vars.end() && i < arr->size()) (*arr)[i] = *it->second.deref();
+                    if (isRwVar(1) && it != scope->vars.end() && i < arr->size()) back(i, *it->second.deref());
                 }
                 else for (size_t k = 0; k < n && i + k < arr->size(); k++) {
                     auto it = scope->vars.find(fs->vars[k]);
-                    if (isRwVar(k) && it != scope->vars.end()) (*arr)[i + k] = *it->second.deref();
+                    if (isRwVar(k) && it != scope->vars.end()) back(i + k, *it->second.deref());
                 }
                 if (!cont) break;
             }
@@ -3257,6 +3276,17 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     const bool aliasVars = fs->vars.empty() || fs->rwVars ||
         (phVars.empty() && fs->vars.size() == 1 && !fs->varTraits.empty() &&
          (fs->varTraits[0] & ForStmt::VT_RAW));
+    // …a native array's element, which converts or refuses what it is given
+    // (nativeElemTag): its tags, worked out once, and what goes back, judged
+    // only when it is not a plain number still carrying them
+    const std::string natT = aliasVars ? nativeLoopElemType(listv, fs->list.get()) : std::string();
+    Value natProto = natT.compare(0, 3, "num") == 0 ? Value::number(0) : Value::integer(0);
+    nativeElemTag(natT, natProto);
+    auto natBack = [&](Value& v, size_t at) {
+        if (natProto.natBits && v.natBits == natProto.natBits && v.natSigned == natProto.natSigned &&
+            v.natFloat == natProto.natFloat && v.t == natProto.t) dropNativeTags(v);
+        else if (!natT.empty()) nativeElemStore(natT, v, 'o', (long long)at);
+    };
     // WHAT A WRITE TO THE LOOP VARIABLE MEANS. All three answers live in
     // markTopic below, because the loop binds its own variables and none
     // of this reaches bindParams: typed, `is copy` and sub-signature
@@ -3319,6 +3349,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // values there is nothing to write to (`for $bag.kv -> \k, \v`)
         else if (!nm.empty() && immSrc && (std::isalpha((unsigned char)nm[0]) || nm[0] == '_'))
             v.readonly = v.immutableBind = true;
+        if (natProto.natBits && v.t == natProto.t &&
+            (loopVars.empty() || (k < fs->varTraits.size() && (fs->varTraits[k] & (ForStmt::VT_RW | ForStmt::VT_RAW)))))
+            { v.natBits = natProto.natBits; v.natSigned = natProto.natSigned; v.natFloat = natProto.natFloat; }
         return v;
     };
     // `for $a -> $v is rw` / `for ($a) -> $v is rw` / `for $a -> \v`: one item, and the
@@ -3665,7 +3698,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (rw) {
                     auto it = scope->vars.find(var);
                     if (it != scope->vars.end()) {
-                        const Value& nv = *it->second.deref();
+                        Value& nv = *it->second.deref();   // (the topic: rebound next time round)
+                        natBack(nv, i);
                         if (listv.packedLive() && i < pa->w.size() && plainWordValue(nv, pa->isNum)) {
                             if (pa->isNum) std::memcpy(&pa->w[i], &nv.n, 8);
                             else pa->w[i] = nv.i;
@@ -3841,8 +3875,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if (rw) {
                     auto it = scope->vars.find(var);
                     if (it != scope->vars.end() && !(wasHole && sameBoundValue(*it->second.deref(), *holeDflt))) {
+                        Value& nv = *it->second.deref();   // (the topic: rebound next time round)
+                        natBack(nv, pi);
                         ParStripe es3(*this, arr.get());
-                        if (pi < arr->size()) { (*arr)[pi] = *it->second.deref();
+                        if (pi < arr->size()) { (*arr)[pi] = nv;
                             // the topic was itemized on the way IN (the element is a
                             // container); don't stamp that flag onto the element itself
                             if ((*arr)[pi].t == VT::Array && arrayElemSrc) (*arr)[pi].itemized = false; } }
@@ -3934,9 +3970,11 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             if (!backArr) return;
             Value* nv = sc->local(backName);
             if (!nv) return;
+            Value back = *nv;
+            natBack(back, at);
             ParStripe es(*this, backArr.get());
             if (at < backArr->size()) {
-                (*backArr)[at] = *nv;
+                (*backArr)[at] = std::move(back);
                 (*backArr)[at].readonly = (*backArr)[at].immutableBind = false;
                 if ((*backArr)[at].t == VT::Array) (*backArr)[at].itemized = false;
             }
@@ -3984,6 +4022,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 }
             }
             bindParams(fs->params, row, scope, false, /*blockParams=*/true);
+            if (backArr && !natT.empty()) if (Value* bv = scope->local(backName)) nativeElemTag(natT, *bv);
             // `redo` binds the parameters afresh — an `is copy` one is a
             // new copy of the element, as in the fast paths above (their
             // `rb`). This path had no rebind, so `-> $i is copy { …; $i
@@ -9835,7 +9874,8 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
             if (pv) {
                 Value cur = paramValue(pv);
                 if (!syncedUnchanged(p.name, cur))
-                    try { if (Value* lv = lvalue(peelIncDec(ae))) storeInto(lv, cur); } catch (...) {}
+                    try { if (std::string t = nativeElemTypeAt(peelIncDec(ae)); !t.empty()) nativeElemStore(t, cur, 'o');
+                          if (Value* lv = lvalue(peelIncDec(ae))) storeInto(lv, cur); } catch (...) {}
             }
         }
         pi++;
@@ -9952,6 +9992,7 @@ void Interpreter::linkNamedRw(const Param& p, std::shared_ptr<Env>& env,
     escapeRefs(ae, tctx().cur.get());   // PARALLEL-SCALING-PLAN P2: the link writes these from anywhere
     env->x().rwLinks[p.name] = { ae, tctx().cur };
     Value* ip = env->local(p.name);
+    if (ip) nativeElemTag(nativeElemTypeAt(ae), *ip);   // `f(:x(@ints[0]))`: see nativeElemTag
     env->x().rwSynced[p.name] = ip ? *ip : Value::any();
     anyRwLinks_ = true;
 }
@@ -10078,6 +10119,7 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             if (bindArgCell(p, ae, env)) { pi++; continue; }
             escapeRefs(ae, tctx().cur.get());   // PARALLEL-SCALING-PLAN P2: the link writes these from anywhere
             env->x().rwLinks[p.name] = { ae, tctx().cur };
+            if (Value* vp = env->local(p.name)) nativeElemTag(nativeElemTypeAt(ae), *vp);   // `f(@ints[0])`
             // A CHAIN of `is rw` parameters must ALSO reach the ORIGINAL
             // container. `outer($x is rw)` handing $x on to `inner($y is rw)`
             // links $y one hop, to `$x` in OUTER's scope — right while outer is
@@ -13150,7 +13192,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 return sink ? Value::any() : *slot;
                             }
                             Value rv = evalValueOf(a->value.get());
-                            if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, a->target.get(), slot);
+                            if (rv.t == VT::Nil || rv.t == VT::Type || rv.t == VT::Any) nativeUndefCheck(rv, a->target.get(), slot);
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
                                 rv.readonly = rv.immutableBind = false;
@@ -15204,8 +15246,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             : (v.t == VT::Array && v.arr() && !v.isList && !v.ext() &&
                                !(v.shape() && !v.shape()->empty()));
             };
+            Value sbase;
             if (simple(tix) && simple(six) &&
-                plainBase(eval(tix->base.get()), tix->isHash) && plainBase(eval(six->base.get()), six->isHash)) {
+                plainBase(eval(tix->base.get()), tix->isHash) && plainBase(sbase = eval(six->base.get()), six->isHash)) {
+                // a NATIVE array's element is no Value to share: the target takes
+                // the alias `my $x := @ints[0]` makes (makeArraySlotProxy)
+                const std::string natT = six->isHash ? std::string() : nativeElemTypeOf(sbase);
+                const long long k = natT.empty() ? -1 : subscriptKey(six->index.get()).toInt();
+                if (Value* dst = k >= 0 ? lvalue(tix) : nullptr) {
+                    *dst = makeArraySlotProxy(sbase.arrS(), (size_t)k, natT);
+                    return sink ? Value::any() : deproxy(*dst);
+                }
                 Value* src = lvalue(six);
                 PRef<Value> cell = src ? cellOfProxy(src) : nullptr;
                 if (src && !cell && !(src->t == VT::Hash && src->hashKind == "Proxy")) {
@@ -16008,15 +16059,17 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (i < 0) negIndexThrow(i);
                     if (i >= 0) {
                         // `my $x := @a[5]` on a shorter array autovivifies the slot,
-                        // so the later `$x = 9` lands at 5 and not past the end
+                        // so the later `$x = 9` lands at 5 and not past the end (a
+                        // native array's store grows it: makeArraySlotProxy)
+                        const std::string natT = nativeElemTypeOf(*base);
                         Value fill = containerFill(*base);
-                        while ((long long)arr->size() <= i) arr->push_back(fill);
+                        while (natT.empty() && (long long)arr->size() <= i) arr->push_back(fill);
                         size_t at = (size_t)i;
                         // the slot may ALREADY hold an alias (BIND-POS put one
                         // there): bind to that container, not to the slot holding it
-                        Value proxy = ((*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" &&
+                        Value proxy = at < arr->size() && ((*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" &&
                                        (*arr)[at].hash())
-                                    ? (*arr)[at] : makeArraySlotProxy(arr, at);
+                                    ? (*arr)[at] : makeArraySlotProxy(arr, at, natT);
                         Value* blv = lvalue(a->target.get());
                         *blv = proxy;
                         return sink ? Value::any() : deproxy(proxy);
@@ -17137,8 +17190,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 rhs.itemized = true;
             // a native VARIABLE refuses a value of the wrong kind before the
             // store, so a caught refusal leaves it holding what it held
-            if (nb && opEq(a->op, "=") && a->target->kind == NK::VarExpr && nativeNeedsCheck(rhs, nf))
-                nativeAssignCheck(rhs, nb, nf, static_cast<VarExpr*>(a->target.get())->name, ns);
+            if (nb && opEq(a->op, "=") && (a->target->kind == NK::VarExpr || a->target->kind == NK::NameTerm) &&
+                nativeNeedsCheck(rhs, nf))   // (`sub f(\a) { a = 1.5 }` over a native element too)
+                nativeAssignCheck(rhs, nb, nf, containerNameOf(a->target.get(), '$'), ns);
             if (!nb && opEq(a->op, "=") && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
             SlotStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
             *lv = rhs;
@@ -17241,7 +17295,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (scElem) tctx().lastLvalueElemType.clear();
             if (!deferLv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
             if (scElem) { scElemWant = tctx().lastLvalueElemType; tctx().lastLvalueElemType.clear(); }
-            Value cur = lv ? *lv : eval(a->target.get());
+            // (through an alias, `my $x := @a[0]; $x ||= 5`, the value is the element's)
+            const auto aliasOf = [&](const Value* p) { return p && p->t == VT::Hash && p->hashKind == proxyKind() && p->hash(); };
+            Value cur = aliasOf(lv) ? deproxy(*lv) : lv ? *lv : eval(a->target.get());
             bool keep = scOr ? cur.truthy() : scAnd ? !cur.truthy()
                       : scAt ? !topicDefined(cur) : topicDefined(cur);
             // a `$`-variable target answers its CONTAINER: a List it holds
@@ -17258,12 +17314,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (scElem) { scElemWant = tctx().lastLvalueElemType; tctx().lastLvalueElemType.clear(); }
             }
             if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
-            if (!scElemWant.empty() && rhs.t != VT::Nil) {
+            // (Nil resets a typed element, and a native one has nothing to reset to)
+            if (!scElemWant.empty() && (rhs.t != VT::Nil || !typeNameLead(scElemWant[0]))) {
                 auto* ixt = static_cast<Index*>(a->target.get());
                 coerceElemValue(*this, scElemWant, rhs);
                 checkElemType(scElemWant, rhs, opAssignElemName(*this, ixt));
             }
+            if (aliasOf(lv)) { Value p = *lv; proxyStore(p, rhs); return sink ? Value::any() : deproxy(p); }
             int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
+            if (nb) nativeUndefCheck(rhs, nullptr, lv);   // `$i ||= Nil` dies, as `$i = Nil` does
+            if (nb && nativeNeedsCheck(rhs, nf)) nativeAssignCheck(rhs, nb, nf, containerNameOf(a->target.get(), '$'), ns);
             // an `@` or `%` container ASSIGNS what it is given, as `=` does:
             // `state @colors ||= <green yellow>` holds a mutable Array (Cro's
             // `cro run` shifts colours off one), not the List literal itself
@@ -22488,7 +22548,7 @@ bool Interpreter::nativeDeclShape(const VarExpr* v, const Expr* rhs) {
     int bits; bool sign, isFloat;
     nativeDeclSpec(tv->d().declType, bits, sign, isFloat);
     Value rv = evalValueOf(a->value.get());
-    if (rv.t == VT::Nil || rv.t == VT::Type) nativeUndefCheck(rv, tv, nullptr);
+    if (rv.t == VT::Nil || rv.t == VT::Type || rv.t == VT::Any) nativeUndefCheck(rv, tv, nullptr);
     rv.readonly = rv.immutableBind = false;
     if (nativeNeedsCheck(rv, isFloat)) nativeAssignCheck(rv, bits, isFloat, tv->name, sign);
     wrapNative(rv, bits, sign, isFloat);

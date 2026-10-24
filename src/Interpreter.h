@@ -2767,7 +2767,7 @@ public:
     // whole existing Proxy plumbing (deproxy on read, proxyStore on assign)
     // applies unchanged. take-rw hands these out; := uses the Env one.
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
-    Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx);
+    Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT = "");
     Value makePairCellProxy(PRef<Value> cell);   // a Pair's value container, as a Proxy
     // `$s.substr-rw(from, len)` as a Proxy over the variable `vname` in `owner`:
     // reading reads the text there now, assigning splices into the variable
@@ -3202,6 +3202,9 @@ public:
     std::string elemTypeForStore(const Value& container, bool isHash);   // …or a native array's own (`int8`)
     std::string nativeElemTypeOf(const Value& container);   // `int8` of a `my int8 @a`, or ""
     void nativeElemStore(const std::string& t, Value& v, char how, long long idx = 0, const std::string& op = "", Value* handed = nullptr);
+    void nativeElemTag(const std::string& t, Value& v);   // …an alias of one (`for @n { $_ = … }`) carries its tags
+    std::string nativeElemTypeAt(const Expr* e);   // the native type of the array `@n[…]` names, or ""
+    std::string nativeLoopElemType(const Value& src, const Expr* e);   // …of the array a `for` walks
     Value sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol);
     Value sliceStoreResult(const Value& container);
     void checkElemType(const std::string& want, const Value& v, const std::string& symbol);

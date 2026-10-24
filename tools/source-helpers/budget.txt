@@ -7,11 +7,11 @@ default file 10000
 default function 1500
 
 file src/Builtins.cpp 10512
-file src/InterpreterCore.cpp 32840
+file src/InterpreterCore.cpp 32900
 file src/MethodCallPart2.cpp 11200
 file src/Parser.cpp 18200
 
-function Interpreter::evalAssignInner 3797
+function Interpreter::evalAssignInner 3805
 function Interpreter::evalBinary 1704
 function Interpreter::evalIndex 2106
 function Interpreter::evalUnary 1552
