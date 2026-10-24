@@ -27325,7 +27325,7 @@ Value Interpreter::evalIndex(Index* idx) {
             !(idx->index && idx->index->kind == NK::Unary &&
               static_cast<const Unary*>(idx->index.get())->op == "dimslip")) {
             if (Value* bp = tctx().cur->find(ve->name)) {
-                if (bp->t == VT::Array && bp->arr() && !bp->ext() && bp->ofType().empty() &&
+                if (bp->t == VT::Array && !bp->packedLive() && bp->arr() && !bp->ext() && bp->ofType().empty() &&
                     !bp->elemDefault() && bp->hashKind.empty()) { // `is default` arrays take the slow path
                     auto arr = bp->arr(); // keeps elements alive if the index expr mutates the var
                     Value iv = eval(idx->index.get());
@@ -28625,6 +28625,9 @@ Value Interpreter::evalIndex(Index* idx) {
         // one subscript O(n), so a loop over an attribute array was quadratic:
         // 20,000 reads of a 20,000-element array took 12.9 s against 8 ms for the
         // same loop over a lexical.
+        // (a packed array's word for a computed key, before arr() unpacks it)
+        std::optional<Value> early;
+        if (Value w; packedComputedRead(idx, base, early, w)) return w;
         ValueList built;
         if (!(base.t == VT::Array && base.arr())) built = base.flatten();
         const ValueList& src = (base.t == VT::Array && base.arr()) ? *base.arr() : built;
@@ -28683,7 +28686,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 indices.push_back(from);
             }
         } else {
-            Value iv = eval(idx->index.get());
+            Value iv = early ? std::move(*early) : eval(idx->index.get());
             // A Range held in a `$` container is ONE item, and an item index is
             // its number: `@a[my $ = ^2]` is `@a[2]` (the elems), not a slice
             // (a FINITE one: an endless `$r = 0..*` keeps slicing to the end,

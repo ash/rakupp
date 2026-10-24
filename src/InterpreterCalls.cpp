@@ -4784,7 +4784,9 @@ bool Interpreter::packedStoreShape(const Assign* a) {
     if (ix->multiDim) return shapedLaneShape(ix) && packedRhsPure(a->value.get());
     return packedIndexShape(ix) && packedRhsPure(a->value.get());
 }
-// …and the subscript it takes: `@name[$i]` or `@name[3]`, nothing else
+// …and the subscript it takes: `@name[$i]`, `@name[3]`, or a key computed
+// with no effects (`@name[$i + 1]`, packedRhsPure), which the general path may
+// evaluate a second time
 bool Interpreter::packedIndexShape(const Index* ix) {
     if (ix->isHash || ix->multiDim || ix->semicolonSub || ix->zen || !ix->adverb.empty() || !ix->base ||
         ix->base->kind != NK::VarExpr || !ix->index)
@@ -4794,14 +4796,14 @@ bool Interpreter::packedIndexShape(const Index* ix) {
         !(nameLetterAt(bv->name, 1) || bv->name[1] == '_'))
         return false;
     const Expr* ie = ix->index.get();
-    return ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
-                                  : ie->kind == NK::VarExpr && packedRhsPure(ie);
+    return ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty() : packedRhsPure(ie);
 }
 
 // The word a packed `int`/`num` array holds for `@a[$i]` / `@a[3]`, or for
 // `@m[$i; $j]` in a shaped one's packed row: @a a plain lexical that is still
 // packed, writable, with no `is default`, and the subscript a machine Int in
-// range. Null for anything else, before anything with an effect is evaluated.
+// range. Null for anything else, before anything with an effect is evaluated
+// (a computed subscript has none: packedIndexShape).
 PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
     if (ix->multiDim) {
         const Value* row = shapedLeafRow(ix, at, true);
@@ -4816,17 +4818,40 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
         return nullptr;
     long long i;
     if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
-    else {
+    else if (ix->index->kind == NK::VarExpr) {
         auto* ive = static_cast<VarExpr*>(ix->index.get());
         Value* ip = padPtr(ive);
         if (!ip) ip = tctx().cur->find(ive->name);
         if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return nullptr;
         i = ip->i;
     }
+    else {
+        const Value k = eval(ix->index.get());
+        if (k.t != VT::Int || k.big() || !k.hashKind.empty()) return nullptr;
+        i = k.i;
+    }
     PackedArr* pa = bp->packed();
     if (i < 0 || i >= (long long)pa->w.size()) return nullptr;
     at = (size_t)i;
     return pa;
+}
+
+// evalIndex's array arm for a packed `int` / `num` array read with a
+// COMPUTED key (`@a[$i + 1]`; the fast paths take a variable or a literal):
+// the word, when the key is a machine Int in range. The arm's arr() unpacks
+// the array for good, and every read after it, a --cnp kernel's included,
+// would go the long way. The key is evaluated here, once; false leaves it in
+// `key` for the arm to use.
+bool Interpreter::packedComputedRead(Index* ix, const Value& base, std::optional<Value>& key, Value& out) {
+    if (base.t != VT::Array || !base.packedLive() || !base.hashKind.empty() || base.elemDefault() ||
+        ix->index->kind == NK::Range)
+        return false;
+    key = eval(ix->index.get());
+    if (key->t != VT::Int || key->big() || !key->hashKind.empty() || !base.packedLive()) return false;
+    const PackedArr* pa = base.packed();
+    if (key->i < 0 || key->i >= (long long)pa->w.size()) return false;
+    out = pa->at((size_t)key->i);
+    return true;
 }
 
 // The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when

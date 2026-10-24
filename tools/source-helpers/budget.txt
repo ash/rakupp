@@ -7,7 +7,7 @@ default file 10000
 default function 1500
 
 file src/Builtins.cpp 10512
-file src/InterpreterCore.cpp 32830
+file src/InterpreterCore.cpp 32840
 file src/MethodCallPart2.cpp 11200
 file src/Parser.cpp 18200
 
