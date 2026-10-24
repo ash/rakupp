@@ -10,7 +10,8 @@ here.*
 
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
-72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a.*
+72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
+de2e08d4.*
 
 ---
 
@@ -164,6 +165,12 @@ interpreted.
   `-2**64 - 1 .. -2**64` ran once at int64's min. `2**64 .. *` carried no
   start at all, so its .raku said 9223372036854775807..Inf; it walks lazily
   now, until its `last`.
+- **`++` and `--` in a `--cnp` kernel store .succ and .pred** (de2e08d4), as
+  interpreted. Anything but a machine number was stepped by `+ 1`: `my $b =
+  False; $b++` counted to 3 where the interpreter and Rakudo answer True,
+  `$s++` on "a" died "Cannot convert string to number", and `@flags[$i]++`
+  made a Bool element an Int. A FatRat whose parts fit two words ran on the
+  Rat lane, so `$fr * 3 + 0` answered a Rat; it stays boxed now.
 
 ### Fixed: crashes
 
