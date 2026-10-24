@@ -44,6 +44,21 @@
 
 // ---- the frame -------------------------------------------------------------
 //
+// A box register holding a packed `int` / `num` array carries a view of its
+// words (FORTRAN-LESSONS item 2), so that `@a[$i]` reads one and `@a[$i] = $x`
+// writes one with no call (rk_st_idxw, rk_st_idxsetw). What is fixed for the
+// box's life — an Array, packed, no `hashKind`, no element default — Cnp.cpp
+// checks when the box is loaded; what can change under it, an unpack or a
+// resize, the stencil reads from the array itself each time. `w` is null when
+// the register has no view. A stencil that writes a number straight into a
+// register leaves that register's old view behind, so a view counts only while
+// the register's tag still says RK_T_BOX.
+typedef struct RkCnpView {
+    int64_t* const* w;               // the words' std::vector: its begin, then its end
+    const volatile uint8_t* gone;    // PackedArr::unpacked
+    uint64_t tag;                    // RK_T_INT or RK_T_NUM
+} RkCnpView;
+
 // `r` and `t` are passed to every stencil as arguments as well as living here,
 // so the hot paths reach them without loading through the frame. The rest is
 // touched only by the helpers, which are already the slow path.
@@ -65,6 +80,10 @@ typedef struct RkCnpFrame {
     int64_t   ctl;
     void*     isites;   // element-store sites: an array register and its keys
     int64_t*  den;      // one denominator per register, meaningful under RK_T_RAT
+    RkCnpView* views;   // one per register, meaningful under RK_T_BOX
+    // Interpreter::liveWorkers_ in parallel mode, a constant 0 under the GIL:
+    // a word is stored in place only while no worker runs (rk_st_idxsetw)
+    const volatile int32_t* workers;
 } RkCnpFrame;
 
 // The signature every stencil has, and therefore the signature of the whole

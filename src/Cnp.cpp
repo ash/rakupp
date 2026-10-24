@@ -74,6 +74,7 @@ struct Frame {
     std::vector<uint8_t> t;
     std::vector<Value>   boxes;
     std::vector<int64_t> den;   // the Rat lane's denominators
+    std::vector<RkCnpView> views;   // a packed array box's words (setView)
     std::exception_ptr   err;
 
     explicit Frame(size_t n) { reset(n); }
@@ -84,12 +85,14 @@ struct Frame {
         t.assign(n, RK_T_INT);
         boxes.resize(n);
         den.assign(n, 1);
+        views.assign(n, RkCnpView{});
         abi = RkCnpFrame{};
         abi.r = r.data();
         abi.t = t.data();
         abi.boxes = boxes.data();
         abi.err = &err;
         abi.den = den.data();
+        abi.views = views.data();
     }
     // …and after the run: a register lets go of what it held, so a frame
     // waiting in the pool pins no string, object or exception.
@@ -131,6 +134,34 @@ void stash(RkCnpFrame* f) { *static_cast<std::exception_ptr*>(f->err) = std::cur
 
 // ---- register <-> Value ----------------------------------------------------
 
+// rk_st_idxw and rk_st_idxsetw read a std::vector's first two words as its
+// begin and its end, which is how the standard libraries this builds with lay
+// one out, and an atomic flag and counter as the plain byte and int32 beneath
+// them. Checked once rather than assumed: where it does not hold, no box gets
+// a view and every element access takes the call.
+const bool g_viewsOk = [] {
+    std::vector<int64_t> v(3);
+    int64_t* const* p = reinterpret_cast<int64_t* const*>(&v);
+    return sizeof(std::atomic<bool>) == 1 && sizeof(std::atomic<int>) == sizeof(int32_t) &&
+           p[0] == v.data() && p[1] == v.data() + 3;
+}();
+const int32_t kNoWorkers = 0;   // RkCnpFrame::workers under the GIL
+
+// Box register k's view of its words (CnpAbi.h RkCnpView): packedAt's checks
+// of the array, made once, as the box is loaded. Every write of a box comes
+// through here (setReg, and rk_cnp_idxset after a store that may replace it).
+void setView(RkCnpFrame* f, uint64_t k) {
+    RkCnpView& vw = f->views[k];
+    vw.w = nullptr;
+    if (!g_viewsOk || f->t[k] != RK_T_BOX) return;
+    const Value& b = static_cast<Value*>(f->boxes)[k];
+    if (b.t != VT::Array || !b.packedLive() || !b.hashKind.empty() || b.elemDefault()) return;
+    PackedArr* pa = b.packed();
+    vw.w = reinterpret_cast<int64_t* const*>(&pa->w);
+    vw.gone = reinterpret_cast<const volatile uint8_t*>(&pa->unpacked);
+    vw.tag = pa->isNum ? RK_T_NUM : RK_T_INT;
+}
+
 Value regValue(RkCnpFrame* f, uint64_t k) {
     switch (f->t[k]) {
         case RK_T_INT:  return Value::integer(f->r[k]);
@@ -163,7 +194,8 @@ void setReg(RkCnpFrame* f, uint64_t k, const Value& v) {
              v.ratN()->fitsLL() && v.ratD()->fitsLL() && !v.ratD()->isZero()) {
         f->r[k] = v.ratN()->toLL(); f->den[k] = v.ratD()->toLL(); f->t[k] = RK_T_RAT;
     }
-    else { boxes[k] = v; f->t[k] = RK_T_BOX; return; }
+    else { boxes[k] = v; f->t[k] = RK_T_BOX; setView(f, k); return; }
+    f->views[k].w = nullptr;
     // Release whatever the register used to hold, so that a loop cannot pin a
     // string or an object it stopped using thousands of iterations ago.
     if (was == RK_T_BOX) boxes[k] = Value();
@@ -484,6 +516,7 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
         if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
         v.natBits = 0; v.natSigned = v.natFloat = false;
         rtIndexRef(*cur, regValue(f, (uint64_t)s.keys.back()), s.hash.back() != 0) = std::move(v);
+        setView(f, (uint64_t)s.base);   // (the store may have unpacked, grown or replaced it)
         return 0;
     } catch (...) { stash(f); return 1; }
 }
@@ -606,7 +639,7 @@ struct StencilIds {
     int cmp[6];          // lt le gt ge eq ne — the value form
     int jcmp[6], jcmpi[6], jncmp[6], jncmpi[6];
     int jmp, jt, jf, jdef, ret, jtslow, jfslow, jdefslow;
-    int natchk, natchkslow, call, jctl, idxget, idxset, div, alen, chain, newarr;
+    int natchk, natchkslow, call, jctl, idxget, idxw, idxset, idxsetw, div, alen, chain, newarr;
     bool ok = false;
 };
 
@@ -635,7 +668,8 @@ const StencilIds& ids() {
         v.jtslow = g("rk_st_jtslow"); v.jfslow = g("rk_st_jfslow"); v.jdefslow = g("rk_st_jdefslow");
         v.natchk = g("rk_st_natchk"); v.natchkslow = g("rk_st_natchkslow");
         v.call = g("rk_st_call"); v.jctl = g("rk_st_jctl");
-        v.idxget = g("rk_st_idxget"); v.idxset = g("rk_st_idxset");
+        v.idxget = g("rk_st_idxget"); v.idxw = g("rk_st_idxw"); v.idxset = g("rk_st_idxset");
+        v.idxsetw = g("rk_st_idxsetw");
         v.div = g("rk_st_div");
         v.alen = g("rk_st_alen");
         v.chain = g("rk_st_chain");
@@ -664,7 +698,7 @@ int cmpOpIndex(int slot) {
 // have meant knowing the index of the op that comes AFTER the one bailing out,
 // which is not known while that one is being emitted.
 struct ColdReq {
-    enum Kind { Binop, BinopImm, CmpBranch, CmpBranchImm, Unop, Movebox, Truthy, Defined, NatChk } kind;
+    enum Kind { Binop, BinopImm, CmpBranch, CmpBranchImm, Unop, Movebox, Truthy, Defined, NatChk, IdxGet, IdxSet } kind;
     int      hot = -1;            // the op whose guard bails here
     uint64_t a = 0, b = 0, c = 0; // meaning depends on kind
     int      op = 0;              // an RkCnpOp
@@ -693,19 +727,33 @@ struct Lower {
         chainHash.push_back(ix->isHash ? 1 : 0);
         return true;
     }
-    // read the element a chain names, into a fresh register
+    // read the element a chain names, into a fresh register: a `[…]` level
+    // as a packed array's word where it is one (idxw), the runtime's
+    // indexing for anything else
     int chainGet(int base, const std::vector<int>& keys) {
         int cur = base;
         for (size_t i = 0; i < keys.size(); i++) {
             int d = temp();
-            emit(ids().idxget, (uint64_t)cur, (uint64_t)keys[i], (uint64_t)d, (uint64_t)chainHash[i]);
+            if (chainHash[i]) emit(ids().idxget, (uint64_t)cur, (uint64_t)keys[i], (uint64_t)d, 1);
+            else {
+                int h = emit(ids().idxw, (uint64_t)cur, (uint64_t)keys[i], (uint64_t)d);
+                colds.push_back({ColdReq::IdxGet, h, (uint64_t)cur, (uint64_t)keys[i], (uint64_t)d, 0, 0, 0, false});
+            }
             cur = d;
         }
         return cur;
     }
+    // store into the element a chain names: one `[…]` level as a packed
+    // array's word where it is one (idxsetw), the site's general store for
+    // anything else
     void chainSet(int base, const std::vector<int>& keys, int val) {
         isites.push_back(IndexSite{base, keys, chainHash});
-        emit(ids().idxset, (uint64_t)(isites.size() - 1), (uint64_t)val);
+        const uint64_t site = isites.size() - 1;
+        if (keys.size() == 1 && !chainHash[0]) {
+            int h = emit(ids().idxsetw, (uint64_t)base, (uint64_t)keys[0], (uint64_t)val);
+            colds.push_back({ColdReq::IdxSet, h, site, (uint64_t)val, 0, 0, 0, 0, false});
+        }
+        else emit(ids().idxset, site, (uint64_t)val);
     }
     std::vector<Op>      ops;
     std::vector<ColdReq> colds;
@@ -1520,6 +1568,14 @@ void Lower::finish() {
                 emit(ids().movebox, c.a, c.b);
                 ops.back().cont = cont;
                 break;
+            case ColdReq::IdxGet:
+                emit(ids().idxget, c.a, c.b, c.c, 0);
+                ops.back().cont = cont;
+                break;
+            case ColdReq::IdxSet:
+                emit(ids().idxset, c.a, c.b);
+                ops.back().cont = cont;
+                break;
             case ColdReq::Truthy: {
                 int h = emit(c.negate ? ids().jfslow : ids().jtslow, c.a);
                 ops[h].cont = cont; ops[h].target = target;
@@ -1724,6 +1780,7 @@ bool run(Kernel* k, Interpreter& I, Value** slots, const std::vector<bool>& writ
     FrameLease lease(k->nregs);
     Frame& f = *lease.f;
     f.abi.interp = &I;
+    f.abi.workers = I.parallelMode_ ? reinterpret_cast<const volatile int32_t*>(&I.liveWorkers_) : &kNoWorkers;
     f.abi.consts = (void*)&k->consts;
     f.abi.calls = (void*)&k->calls;
     f.abi.slots = (void*)slots;

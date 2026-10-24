@@ -366,6 +366,35 @@ int rk_st_natchk(F* f, int64_t* r, uint8_t* t) {
     SLOW;
 }
 
+// `@a[$i]` over a packed `int` / `num` array: the word, with no call
+// (FORTRAN-LESSONS item 2). The box's view says where the words are; an
+// unpack, a subscript past the end, a box with no view or a key that is no
+// machine Int goes to rk_cnp_idxget, as every read did before.
+int rk_st_idxw(F* f, int64_t* r, uint8_t* t) {
+    const RkCnpView* v = &f->views[OP0];
+    uint64_t k = OP1;
+    if (t[OP0] != RK_T_BOX || !v->w || t[k] != RK_T_INT || *v->gone) SLOW;
+    const int64_t* w = v->w[0];
+    uint64_t i = (uint64_t)r[k];
+    if (i >= (uint64_t)(v->w[1] - w)) SLOW;   // (a negative key too)
+    r[OP2] = w[i]; t[OP2] = (uint8_t)v->tag;
+    NEXT;
+}
+// `@a[$i] = $x` into a packed `int` / `num` array: the word, with no call, as
+// rk_cnp_idxset's own packed lane stores it. A value of the other kind, a key
+// past the end, a box with no view or a live worker thread (a word written
+// there could race the one-time unpack) goes to rk_cnp_idxset.
+int rk_st_idxsetw(F* f, int64_t* r, uint8_t* t) {
+    const RkCnpView* v = &f->views[OP0];
+    uint64_t k = OP1, x = OP2;
+    if (t[OP0] != RK_T_BOX || !v->w || t[k] != RK_T_INT || t[x] != v->tag || *v->gone || *f->workers) SLOW;
+    int64_t* w = v->w[0];
+    uint64_t i = (uint64_t)r[k];
+    if (i >= (uint64_t)(v->w[1] - w)) SLOW;   // (a negative key too)
+    w[i] = r[x];   // (a Num register holds its bits)
+    NEXT;
+}
+
 // The kernel ran the loop to completion. The trampoline writes the registers
 // back into the interpreter's containers.
 int rk_st_ret(F* f, int64_t* r, uint8_t* t) { (void)f; (void)r; (void)t; return RK_CNP_OK; }
