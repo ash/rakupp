@@ -16602,6 +16602,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         packedNow = true;
                     }
                 }
+                // …and `my num @c = @b` copies @b's words (packedCopy), not its Values
+                else if (opEq(a->op, "=") && !keepDefault && lv->t == VT::Array && lv->payloadUnique() &&
+                         !lv->elemDefault() && !lv->shape()) packedNow = packedCopy(rhs, keepType, nv);
                 // (a fresh list hands its buffer over; only rhs.t is read below)
                 if (!packedNow) nv = coerceArrayTake(rhs);
                 // what an `@` container is ASSIGNED is an Array, lazy or not:

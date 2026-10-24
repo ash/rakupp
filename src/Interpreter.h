@@ -4809,6 +4809,7 @@ private:
     PackedArr* packedWordAt(Index* ix, size_t& at);   // …the word it names in a still-packed array, or null
     bool packedComputedRead(Index* ix, const Value& base, std::optional<Value>& key, Value& out);   // `@a[$i + 1]` from the words
     Value subscriptKey(Expr* e);   // a subscript's key, evaluated; a Failure throws (detonateFailureKey)
+    bool packedCopy(const Value& rhs, const std::string& keepType, Value& out);   // `my num @c = @b`: the words
     bool packedStep(Unary* u, Value& out);         // `@a[$i]++` on that word (PACKED-ARRAY-PLAN)
     static bool shapedLaneShape(const Index* ix);   // `@m[$i; 2]`: the shaped-array lanes' syntax
     const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null

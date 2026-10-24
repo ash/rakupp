@@ -4862,6 +4862,25 @@ bool Interpreter::packedComputedRead(Index* ix, const Value& base, std::optional
     return true;
 }
 
+// `my num @c = @b`: a packed `int` / `num` array's words, copied into a fresh
+// packed body for a full-width array of the same kind. The general path reads
+// @b's Values through coerceArray, which unpacks @b for good, so every read of
+// it after the copy went the long way (FORTRAN-LESSONS' axpy-loop: 300 ms
+// where the same loop over an array built by `»*»` takes 65). False for
+// anything else, a shaped or itemized source among it.
+bool Interpreter::packedCopy(const Value& rhs, const std::string& keepType, Value& out) {
+    if (rhs.t != VT::Array || rhs.itemized || !rhs.packedLive() || !rhs.hashKind.empty() || rhs.ext() || rhs.shape())
+        return false;
+    const PackedArr* src = rhs.packed();
+    if (src->isNum ? keepType != "num" && keepType != "num64" : keepType != "int" && keepType != "int64") return false;
+    auto pa = makePayload<PackedArr>();
+    pa->isNum = src->isNum;
+    pa->w = src->w;
+    out = Value::array();
+    out.setPacked(pa);
+    return true;
+}
+
 // The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when
 // @a is still packed, the subscript is in range and EXPR's value is a plain
 // machine Int (Num, for a `num` array) — what the boxed element would have
