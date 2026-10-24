@@ -11,7 +11,7 @@ here.*
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
-de2e08d4.*
+de2e08d4; c95d9332.*
 
 ---
 
@@ -66,6 +66,10 @@ interpreted.
   $i` (untyped 0.017); a hash-increment body no kernel takes, 1M, 0.217 →
   0.023 s (untyped 0.020); the findings file's `--cnp` dot loop over 10M
   `num`s 1.860 → 0.144 s (untyped 0.143).
+- **`--exe -O` gives `for ^$n -> int $i` and `-> Int $i` the unboxed loop
+  lane** (c95d9332), as it gives `-> $i`; the typed loop ran boxed through
+  the typed binder. `$s = $s + $i` in a sub over 10M, against a87a6b73, best
+  of 3: 60.6 → 2.2 ms (untyped 2.2).
 
 ### Fixed: silent wrong answers
 
