@@ -11,7 +11,8 @@ here.*
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
-de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec.*
+de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
+4405241a (FORTRAN-LESSONS 2).*
 
 ---
 
@@ -80,6 +81,12 @@ interpreted.
   (5e5d80ec). `@a[$i + 1]`, read or stored, unpacked the array for good in
   the interpreter, so a `--cnp` loop entered after it read boxed Values. The
   key is still evaluated once.
+- **`--cnp` reads and writes a packed array's word with no call** (4405241a;
+  FORTRAN-LESSONS-2026-10-15 item 2), its fixed facts checked once as the
+  register is loaded. Against a87a6b73, best of 3, 10M iterations: the
+  findings file's dot loop 140.9 → 58.6 ms, one read 80.7 → 45.7 ms (no
+  read: 42.2), axpy 178.5 → 64.5 ms, a three-point stencil over 1M 103.8 →
+  33.9 ms, and its flat 200×200 matmul 419.0 → 60.4 ms (with 5e5d80ec).
 
 ### Fixed: silent wrong answers
 

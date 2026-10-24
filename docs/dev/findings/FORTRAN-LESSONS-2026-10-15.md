@@ -506,6 +506,16 @@ each array register the loop indexes:
 **Estimate:** the dot loop from 15 to about 6 ns an iteration. The basis is
 4.6 ns for the same loop with no reads, plus a few instructions per leaf load.
 
+**Done** (4405241a, with 5e5d80ec, 2026-10-24), as a check on each access
+rather than a versioned loop. A box register carries a view of the array's
+words, made when the register is loaded. The read and store stencils
+re-check only what can change: unpacked, the key a machine Int in range,
+and for a store the value's kind and no live worker. The dot loop measures
+58.6 ms, 5.9 ns an iteration, at the estimate; the flat matmul 60.4 ms
+against 419.0. No store needs an unshare: a copy of a packed array (`my num
+@c = @b`) gets words of its own. The trip-count rule that drops the
+per-read compare is still open.
+
 **The ceiling past that:** `--cnp` cannot vectorize, because each operation is
 a stencil over a register file in memory. Vector speed comes from two places:
 
