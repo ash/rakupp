@@ -156,6 +156,10 @@ warnings or errors; it had existed for `--lint` alone.
   ([PARALLEL-PLAN.md](PARALLEL-PLAN.md)). The ambitious one: a real
   happens-before checker is a project, not a task. Parked here so the idea
   has an address.
+  **Planned 2026-10-24 → [RACE-DETECTOR-PLAN.md](RACE-DETECTOR-PLAN.md):**
+  FastTrack over the memory model's primitives, hooks beside the P3 stripe
+  sites, a labeled `t/race-detect/` corpus first. Working name `--race`; the plan
+  recommends `--detect-races`, since `race` is a Raku keyword.
 
 ## Small compatibility niceties
 

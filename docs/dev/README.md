@@ -284,6 +284,10 @@ to look when what you want is not listed here.
   measured, reverted; the record exists so it does not have to be rediscovered.
 - **[experiments/MANDEL.md](experiments/MANDEL.md)** — notes on the Mandelbrot
   example and its performance history.
+- **[experiments/STALE-ELEMENT-POINTER.md](experiments/STALE-ELEMENT-POINTER.md)** —
+  the element pointer `lvalue()` hands out, racing a sibling's growth: a lane
+  under the array's stripe versus retired buffers, both prototyped, crash rates
+  and parallel cost measured, the lane recommended. Nothing landed.
 
 ## History
 
