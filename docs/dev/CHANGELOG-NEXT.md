@@ -12,7 +12,8 @@ here.*
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
 de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
-4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001; 960e8aed; 7fcca8a8.*
+4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001; 960e8aed; 7fcca8a8;
+273863ac.*
 
 ---
 
@@ -218,6 +219,18 @@ interpreted.
   probes of the forms agree with Rakudo 2026.09. Bools keep a packed array
   packed: `@a[$i] = $i %% 3` under `--cnp` takes 8.1 ms over 1M, from 30.9
   on a87a6b73 (best of 3).
+- **A store through an alias of a native array's element converts or
+  refuses as Rakudo's does** (273863ac). `my $x := @n[1]; $x = 1.5`, `for @n
+  { $_ = 1.5 }`, `given @n[0] { … }`, an `is rw` or `\a` parameter, a `.kv`
+  value, `(@n[0], @n[1]) = …` and `@a[0] := @n[0]` took what they were
+  given, so an int8 held 300 and an int array 1.5, and `@n[0] ||= Nil`
+  stored Nil. True is 1 now, 300 into an int8 is 44, and 1.5, "7", Nil or a
+  big Int dies as an unbox, as `@n[0] += 1.5` already did. A native
+  variable refuses a Str as an unbox too, and `$i ||= Nil`, `$i .= Str` and
+  the Any a `$` holds for Nil are refused, as Rakudo refuses them. Through
+  an alias of any array's element, `$x ||= 5` now stores. An interpreted rw
+  loop over a native array pays a few nanoseconds an iteration for it
+  (`for @ints { }` over 2M: 69.4 → 76.9 ms against 74895cce).
 
 ### Fixed: crashes
 
@@ -316,8 +329,13 @@ does not.
   before any subscript sees it, and one that has thrown is not marked
   handled, so using it again rethrows its exception where Rakudo dies with
   another (85d56001).
-- A native element written through an alias (`my $x := @n[1]; $x = 1.5`,
-  `for @n { $_ = 1.5 }`) or by `||= Nil` takes the value as it comes, where
-  Rakudo refuses each (960e8aed). Rakudo's literal-index
+- A native element reached through `map` (`@n.map({ $_ = 1.5 })`) or a
+  `.pairs` value takes the value as it comes, and so does a native `str`
+  variable (`my str $s; $s = 5`). `for @n[0 .. 1]` aliases the elements
+  where Rakudo's Range slice of a native array is a copy. `$_ += 1` at
+  int64's max through an alias wraps, as a native variable does in Rakudo,
+  where Rakudo's element refuses it as too wide. A native element reads as
+  a boxed Int: `@n[0] + @n[0]` at 2**62 does not wrap, and `f(@n[0])` picks
+  an `Int` candidate over an `int` one (273863ac). Rakudo's literal-index
   `(@u[0] = 2**64 - 1)` answers -1; Raku++ answers 2**64 - 1, as Rakudo does
-  under a computed key.
+  under a computed key (960e8aed).
