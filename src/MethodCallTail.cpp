@@ -5,7 +5,7 @@
 
 namespace rakupp {
 
-void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v, char how = 'o');   // InterpreterBinding.cpp
 bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // InterpreterOperators.cpp
 
 // How many positionals a `sort` / `min` / `max` callable takes: two or more is
@@ -962,6 +962,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto kkey = [objKeyed](const Value& k) -> std::string {
             return objKeyed ? objHashIndex(k) : k.toStr();
         };
+        // (a Failure key throws, as `%h{$f}` does)
+        if (!args.empty() && m.size() > 4 && m.compare(m.size() - 4, 4, "-KEY") == 0) detonateFailureKey(args[0]);
         if (m == "AT-KEY" && !args.empty()) {
             auto it = inv.hash()->find(kkey(args[0]));
             return it != inv.hash()->end() ? it->second : Value::any();
@@ -5126,28 +5128,21 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                         "Cannot resolve caller " + sig + "); Routine does not have any candidates.  Is only the proto defined?"};
                 }
             }
-            // a native-typed array (`my str @a`, `my int @a`) rejects a value of the
-            // wrong native kind — str takes Str, int/uint/byte take Int, num takes Real
-            auto natCheck = [&](const Value& v) {
-                if (inv.ofType().empty() || v.t == VT::Nil) return; // a Nil RESETS, it is not a store
-                std::string bt = inv.ofType().substr(0, inv.ofType().find(','));
-                bool isNat = bt == "str" || bt == "byte" || bt == "atomicint" ||
-                             bt.compare(0, 3, "int") == 0 ||
-                             bt.compare(0, 4, "uint") == 0 || bt.compare(0, 3, "num") == 0;
-                if (!isNat) return; // boxed-type arrays keep their existing behaviour
-                // …and a mixin over a Str (`"bar" but Type<words>`, highlighter's
+            // a native-typed array (`my str @a`, `my int @a`) takes what its
+            // element takes (nativeElemStore): True as 1, 300 into an int8 as
+            // 44, a Num into a num array and nothing else. A refusal is
+            // X::TypeCheck naming push / unshift (`throws-like …, got => Str`)
+            // and an unbox for append / prepend, as Rakudo words each.
+            const std::string natT = elemTypeForStore(inv, false);
+            const bool natArr = !natT.empty() && !typeNameLead(natT[0]);
+            auto natCheck = [&](Value& v) {
+                if (!natArr) return;
+                // …but a mixin over a Str (`"bar" but Type<words>`, highlighter's
                 // tagged needle) is a Str with a role on it: its box is the string
-                bool ok = bt == "str" ? (v.t == VT::Str || v.isAllomorph() || // an allomorph's Str side
-                                         (v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
-                                          v.obj()->boxed().t == VT::Str))
-                        : bt.compare(0, 3, "num") == 0 ? v.isNumeric()
-                        : (v.t == VT::Int || v.t == VT::Bool);
-                // X::TypeCheck with the offending value, as Rakudo's native
-                // push/append/unshift report it (`throws-like …, got => Str`)
-                if (!ok) throwTypedV("X::TypeCheck",
-                    {{"got", v}, {"expected", Value::typeObj(bt)}, {"operation", Value::str(m.s)}},
-                    "Type check failed in " + m.s + " to " + bt + " array; expected " + bt +
-                    " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
+                if (natT == "str" && v.t == VT::Object && v.obj() && v.obj()->hasBoxed &&
+                    v.obj()->boxed().t == VT::Str)
+                    return;
+                nativeElemStore(natT, v, m == "push" || m == "unshift" ? 'p' : 'a', 0, m.s);
             };
             // a shaped array (`my @a[2;2]`) has fixed dimensions — size-changing
             // operations are illegal
@@ -5183,6 +5178,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // a native-int element array (`uint32 @W`) wraps each stored value to
             // its bit width (SHA1's `@W.push: S(...)` relies on uint32 overflow)
             auto natMask = [&](Value v) -> Value {
+                if (natArr) return v;   // (natCheck converts what a native array takes)
                 bool sign; int bits = Value::natWidthOfType(inv.ofType(), sign);
                 if (bits > 0 && bits < 64 && (v.t == VT::Int || v.t == VT::Bool)) {
                     unsigned long long u = (unsigned long long)v.toInt() & ((1ULL << bits) - 1);
@@ -5413,11 +5409,13 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // a typed array checks its REPLACEMENTS before any of them lands
                 // — a splice that dies leaves the array untouched — and says
                 // so with its own exception (Rakudo: X::TypeCheck::Splice).
-                // A NATIVE element type is a separate story that stays as it
-                // is: Rakudo rejects it as an unboxing failure (X::AdHoc,
+                // A NATIVE element type converts each one (True as 1) or
+                // refuses it as an unboxing failure, as Rakudo does (X::AdHoc,
                 // "This type cannot unbox to a native integer"), not as a
-                // splice type check, and rakupp does not reject it at all.
-                if (std::string want = elemTypeOf(inv); !want.empty())
+                // splice type check.
+                if (std::string nt = elemTypeForStore(inv, false); !nt.empty() && !typeNameLead(nt[0]))
+                    for (auto& x : repl) nativeElemStore(nt, x, 'a');
+                else if (std::string want = elemTypeOf(inv); !want.empty())
                     for (auto& x : repl) {
                         if (x.t == VT::Nil || typeOrSubsetMatches(x, want)) continue;
                         throwTypedV("X::TypeCheck::Splice",

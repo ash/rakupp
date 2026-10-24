@@ -1856,6 +1856,7 @@ struct ExecContext {
     // store, which may grow it: a refused element takes the new slots back off
     // (checkElemTypeOrShrink). Null for anything else.
     Value* lastLvalueGrowBase = nullptr;
+    long long lastLvalueElemIdx = 0;   // …and the index of the element it named (nativeElemStore's message)
     size_t lastLvalueGrowSize = 0;
     // An element write through a list of an Array's elements (ElemView): the
     // array and the index there the write is mirrored to, set by lvalue() and
@@ -3198,6 +3199,11 @@ public:
     // empty one, or Any/Mu, checks nothing. `symbol` names the container in
     // the message when the site knows it ("@a", "@!data").
     std::string elemTypeOf(const Value& container);
+    std::string elemTypeForStore(const Value& container, bool isHash);   // …or a native array's own (`int8`)
+    std::string nativeElemTypeOf(const Value& container);   // `int8` of a `my int8 @a`, or ""
+    void nativeElemStore(const std::string& t, Value& v, char how, long long idx = 0, const std::string& op = "", Value* handed = nullptr);
+    Value sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol);
+    Value sliceStoreResult(const Value& container);
     void checkElemType(const std::string& want, const Value& v, const std::string& symbol);
     void checkElemType(const Value& container, const Value& v, const std::string& symbol = "") {
         std::string w = elemTypeOf(container);
@@ -3354,7 +3360,7 @@ public:
     Value nilAttrDefault(const ClassAttr& at, const std::string& resolvedType);
     void minmaxOperands(const ValueList& items, ValueList& each, std::vector<char>* exOf);   // what `.minmax` compares
     Value minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);
-    void checkElemTypeOrShrink(const std::string& want, const Value& v, const std::string& symbol, Value* growBase, size_t growSize);
+    bool checkElemTypeOrShrink(const std::string& want, Value& v, const std::string& symbol, Value* growBase, size_t growSize, Value* passed = nullptr);
     Value* newGlobalSymbolSlot(const std::string& nm);                    // `GLOBAL::<Probe> = 43`
     void publishOurExport(const std::string& name, const Value& v);       // `our &f is export = …` in EXPORT::DEFAULT
     Value hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args);
@@ -4799,8 +4805,11 @@ private:
     static bool plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes the declaration lane
     static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane
     bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
-    static bool packedIndexShape(const Index* ix);   // `@a[$i]` / `@a[3]`: the packed lanes' 1-D subscript
+    static bool packedIndexShape(const Index* ix);   // `@a[$i]` / `@a[3]` / `@a[$i + 1]`: the packed lanes' 1-D subscript
     PackedArr* packedWordAt(Index* ix, size_t& at);   // …the word it names in a still-packed array, or null
+    bool packedComputedRead(Index* ix, const Value& base, std::optional<Value>& key, Value& out);   // `@a[$i + 1]` from the words
+    Value subscriptKey(Expr* e);   // a subscript's key, evaluated; a Failure throws (detonateFailureKey)
+    bool packedCopy(const Value& rhs, const std::string& keepType, Value& out);   // `my num @c = @b`: the words
     bool packedStep(Unary* u, Value& out);         // `@a[$i]++` on that word (PACKED-ARRAY-PLAN)
     static bool shapedLaneShape(const Index* ix);   // `@m[$i; 2]`: the shaped-array lanes' syntax
     const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null
@@ -5709,6 +5718,7 @@ inline Value applyArithValue(const char* op, const Value& l, const Value& r) {
 std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev = 1); // sprintf engine (also used by the Format type)
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
+void   detonateFailureKey(const Value& key);   // a Failure used as a subscript throws (rtIndexGet)
 // `$l ~~ $r` / `$l !~~ $r` once BOTH sides are values. A Callable matcher is
 // INVOKED with the topic — the arm that lives in evalBinary, which emitted code
 // never runs — and everything else goes to the interpreter's own smartmatch,

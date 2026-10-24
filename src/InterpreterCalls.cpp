@@ -4757,11 +4757,13 @@ static bool packedRhsPure(const Expr* e, int depth = 0) {
                (nameLetterAt(ve->name, 1) || ve->name[1] == '_');
     };
     switch (e->kind) {
-        case NK::IntLit: case NK::NumLit: return true;
+        case NK::IntLit: case NK::NumLit: case NK::BoolLit: return true;
         case NK::VarExpr: return lex(e, '$');
         case NK::Binary: {
             auto* b = static_cast<const Binary*>(e);
-            static const char* kOps[] = {"+", "-", "*", "/", "%", "div", "mod", "+&", "+|", "+^", "+<", "+>", "**"};
+            // (and the numeric tests, whose Bool an int array holds as 0 or 1)
+            static const char* kOps[] = {"+", "-", "*", "/", "%", "div", "mod", "+&", "+|", "+^", "+<", "+>", "**",
+                                         "%%", "==", "!=", "<", "<=", ">", ">="};
             bool ok = false;
             for (const char* o : kOps) if (b->op == o) { ok = true; break; }
             return ok && packedRhsPure(b->lhs.get(), depth + 1) && packedRhsPure(b->rhs.get(), depth + 1);
@@ -4784,7 +4786,9 @@ bool Interpreter::packedStoreShape(const Assign* a) {
     if (ix->multiDim) return shapedLaneShape(ix) && packedRhsPure(a->value.get());
     return packedIndexShape(ix) && packedRhsPure(a->value.get());
 }
-// …and the subscript it takes: `@name[$i]` or `@name[3]`, nothing else
+// …and the subscript it takes: `@name[$i]`, `@name[3]`, or a key computed
+// with no effects (`@name[$i + 1]`, packedRhsPure), which the general path may
+// evaluate a second time
 bool Interpreter::packedIndexShape(const Index* ix) {
     if (ix->isHash || ix->multiDim || ix->semicolonSub || ix->zen || !ix->adverb.empty() || !ix->base ||
         ix->base->kind != NK::VarExpr || !ix->index)
@@ -4794,14 +4798,14 @@ bool Interpreter::packedIndexShape(const Index* ix) {
         !(nameLetterAt(bv->name, 1) || bv->name[1] == '_'))
         return false;
     const Expr* ie = ix->index.get();
-    return ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty()
-                                  : ie->kind == NK::VarExpr && packedRhsPure(ie);
+    return ie->kind == NK::IntLit ? static_cast<const IntLit*>(ie)->big.empty() : packedRhsPure(ie);
 }
 
 // The word a packed `int`/`num` array holds for `@a[$i]` / `@a[3]`, or for
 // `@m[$i; $j]` in a shaped one's packed row: @a a plain lexical that is still
 // packed, writable, with no `is default`, and the subscript a machine Int in
-// range. Null for anything else, before anything with an effect is evaluated.
+// range. Null for anything else, before anything with an effect is evaluated
+// (a computed subscript has none: packedIndexShape).
 PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
     if (ix->multiDim) {
         const Value* row = shapedLeafRow(ix, at, true);
@@ -4816,17 +4820,65 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
         return nullptr;
     long long i;
     if (ix->index->kind == NK::IntLit) i = static_cast<IntLit*>(ix->index.get())->v;
-    else {
+    else if (ix->index->kind == NK::VarExpr) {
         auto* ive = static_cast<VarExpr*>(ix->index.get());
         Value* ip = padPtr(ive);
         if (!ip) ip = tctx().cur->find(ive->name);
         if (!ip || ip->t != VT::Int || ip->big() || !ip->hashKind.empty()) return nullptr;
         i = ip->i;
     }
+    else {
+        const Value k = eval(ix->index.get());
+        if (k.t != VT::Int || k.big() || !k.hashKind.empty()) return nullptr;
+        i = k.i;
+    }
     PackedArr* pa = bp->packed();
     if (i < 0 || i >= (long long)pa->w.size()) return nullptr;
     at = (size_t)i;
     return pa;
+}
+
+Value Interpreter::subscriptKey(Expr* e) {
+    Value k = eval(e);
+    detonateFailureKey(k);
+    return k;
+}
+
+// evalIndex's array arm for a packed `int` / `num` array read with a
+// COMPUTED key (`@a[$i + 1]`; the fast paths take a variable or a literal):
+// the word, when the key is a machine Int in range. The arm's arr() unpacks
+// the array for good, and every read after it, a --cnp kernel's included,
+// would go the long way. The key is evaluated here, once; false leaves it in
+// `key` for the arm to use.
+bool Interpreter::packedComputedRead(Index* ix, const Value& base, std::optional<Value>& key, Value& out) {
+    if (base.t != VT::Array || !base.packedLive() || !base.hashKind.empty() || base.elemDefault() ||
+        ix->index->kind == NK::Range)
+        return false;
+    key = subscriptKey(ix->index.get());
+    if (key->t != VT::Int || key->big() || !key->hashKind.empty() || !base.packedLive()) return false;
+    const PackedArr* pa = base.packed();
+    if (key->i < 0 || key->i >= (long long)pa->w.size()) return false;
+    out = pa->at((size_t)key->i);
+    return true;
+}
+
+// `my num @c = @b`: a packed `int` / `num` array's words, copied into a fresh
+// packed body for a full-width array of the same kind. The general path reads
+// @b's Values through coerceArray, which unpacks @b for good, so every read of
+// it after the copy went the long way (FORTRAN-LESSONS' axpy-loop: 300 ms
+// where the same loop over an array built by `»*»` takes 65). False for
+// anything else, a shaped or itemized source among it.
+bool Interpreter::packedCopy(const Value& rhs, const std::string& keepType, Value& out) {
+    if (rhs.t != VT::Array || rhs.itemized || !rhs.packedLive() || !rhs.hashKind.empty() || rhs.ext() || rhs.shape())
+        return false;
+    const PackedArr* src = rhs.packed();
+    if (src->isNum ? keepType != "num" && keepType != "num64" : keepType != "int" && keepType != "int64") return false;
+    auto pa = makePayload<PackedArr>();
+    pa->isNum = src->isNum;
+    pa->w = src->w;
+    out = Value::array();
+    out.setPacked(pa);
+    return true;
 }
 
 // The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when
@@ -4853,6 +4905,7 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
     Value v = eval(a->value.get());
     v.readonly = v.immutableBind = false;
     if (v.natBits == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
+    if (!pa->isNum && v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);   // (an int array holds True as 1)
     if (!plainWordValue(v, pa->isNum)) return false;
     if (op != '=') {
         if (pa->isNum) {

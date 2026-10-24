@@ -7543,7 +7543,7 @@ bool Interpreter::boolify(const Value& v) {
 // (The untyped reset is the `Any` TYPE OBJECT, not the bare undefined value:
 // that one is a HOLE — a deleted or never-written slot — and `.List`, `:exists`
 // and the typed renderings tell the two apart, as Rakudo does.)
-void coerceElemValue(Interpreter& I, const std::string& want, Value& v);   // InterpreterBinding.cpp
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v, char how = 'o');   // InterpreterBinding.cpp
 std::string coercionTarget(const std::string& t, std::string* from = nullptr);   // InterpreterBinding.cpp
 // an element type as a store must satisfy it: a coercion type's target (`Hash(Any)` → Hash)
 static std::string elemTargetOf(const std::string& want) {
@@ -11700,7 +11700,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // value, so hand it the constraint here (the twin of
         // lastLvalueAttrType). Cleared by the assignment before it asks.
         if (base) {
-            tcx.lastLvalueElemType = elemTypeOf(*base);
+            tcx.lastLvalueElemType = elemTypeForStore(*base, idx->isHash);
             if (!tcx.lastLvalueElemType.empty() && !idx->isHash && base->t == VT::Array && base->arr()) {
                 tcx.lastLvalueGrowBase = base;
                 tcx.lastLvalueGrowSize = base->arr()->size();
@@ -11750,7 +11750,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // part was `:$b` (the Pair shares $b's), a value otherwise. Writing
             // through `$c<b>` reaches it; it does not turn the Capture into a Hash.
             if (base->t == VT::Array && base->hashKind == "Capture" && base->arr() && idx->index) {
-                const std::string key = eval(idx->index.get()).toStr();
+                const std::string key = subscriptKey(idx->index.get()).toStr();
                 for (auto it = base->arr()->rbegin(); it != base->arr()->rend(); ++it)
                     if (it->t == VT::Pair && it->namedArg && it->s == key && it->pairVal()) {
                         if (it->pairValRO) throwImmutable(*it->pairVal());
@@ -11784,7 +11784,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // one it does not — and throws X::AdHoc for both, so a `CATCH` that
             // keys on the message (Crane does) sees what it expects.
             if (base->t == VT::Hash && base->hashKind == "Map" && base->hash()) {
-                std::string key = eval(idx->index.get()).toStr();
+                std::string key = subscriptKey(idx->index.get()).toStr();
                 bool had = base->hash()->count(key) != 0;
                 // …but REACHING THROUGH it is no change to the Map: `%m<a><b> = 666`
                 // writes into the Hash the Map holds
@@ -11801,7 +11801,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (base->t == VT::Object && base->obj() && base->obj()->cls &&
                 base->obj()->cls->findMethod("AT-KEY")) {
                 static thread_local Value atKeyHold;
-                Value k = eval(idx->index.get());
+                Value k = subscriptKey(idx->index.get());
                 // lvalue mode: a `return-rw` in AT-KEY hands back the REAL
                 // container (`method AT-KEY($k) { return-rw %!h{$k} }`);
                 // a Proxy return still routes through the held copy (shared
@@ -11837,7 +11837,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             if (h2 == "AT-KEY" || h2 == "*") {
                                 Value& slot = base->obj()->attrs[at2.name];
                                 if (slot.t != VT::Hash || !slot.hash()) slot = Value::makeHash();
-                                Value kv2 = eval(idx->index.get());
+                                Value kv2 = subscriptKey(idx->index.get());
                                 // type-object keys use the same keying as the
                                 // delegated Hash protocol reads
                                 std::string key2 = hashSubKey(kv2, &slot);
@@ -11861,7 +11861,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `return-rw`'s not-an-lvalue fallback, and Crane's `set` then wrote
             // into a copy and reported success (issue #69).
             if (base->t == VT::Pair && base->pairVal()) {
-                std::string pk = hashSubKey(eval(idx->index.get()), base);
+                std::string pk = hashSubKey(subscriptKey(idx->index.get()), base);
                 tcx.lvalueImmutable = "Pair";
                 if (base->s == pk) return base->pairVal();
                 static thread_local Value pairMiss;   // a key the pair does not have
@@ -11889,7 +11889,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 // (a `$` variable holds what it vivifies in its Scalar: `$h<k> = 1` is `${:k(1)}`)
                 if (idx->base->kind == NK::VarExpr && scalarSlotExpr(idx->base.get())) base->itemized = true;
             }
-            Value subKey = eval(idx->index.get());                      // key eval BEFORE the stripe (user code)
+            Value subKey = subscriptKey(idx->index.get());                      // key eval BEFORE the stripe (user code)
             checkObjHashKey(*base, subKey);
             // a coercive QuantHash key type (`SetHash[Int()]`): the element
             // STORED is the coerced key, so `.keys` answers 666, not "666"
@@ -11951,7 +11951,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 base->obj()->boxed().arr() && !base->obj()->cls->findMethod("AT-POS") &&
                 idx->index && idx->adverb.empty() && !idx->multiDim) {
                 auto arr = base->obj()->boxed().arrS();
-                Value kv = eval(idx->index.get());
+                Value kv = subscriptKey(idx->index.get());
                 if (kv.t == VT::Code && kv.code() && kv.code()->ci().isWhateverCode)
                     kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
                 if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat) {
@@ -11964,7 +11964,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (base->t == VT::Object && base->obj() && base->obj()->cls &&
                 base->obj()->cls->findMethod("AT-POS")) {
                 static thread_local Value atPosHold;
-                Value k = eval(idx->index.get());
+                Value k = subscriptKey(idx->index.get());
                 // `$obj[*-1]` — a Whatever index resolves against the CONTAINER's
                 // own `.elems` before the subscript, which is what Rakudo does
                 // (it calls .elems and hands AT-POS the resolved Int). Passed
@@ -12026,7 +12026,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                             if (h2 == "AT-POS" || h2 == "*") {
                                 Value& slot = base->obj()->attrs[at2.name];
                                 if (slot.t != VT::Array) slot = Value::array();
-                                Value kv2 = eval(idx->index.get());
+                                Value kv2 = subscriptKey(idx->index.get());
                                 if (kv2.t == VT::Code && kv2.code() && kv2.code()->ci().isWhateverCode)
                                     kv2 = callCallable(kv2, ValueList{Value::integer((long long)slot.arr()->size())});
                                 long long j = kv2.toInt();
@@ -12049,7 +12049,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 tcx.lvalueImmutableVal = *base;
                 // a READ through here still sees the element
                 static thread_local Value rangeElem;
-                Value kv0 = eval(idx->index.get());
+                Value kv0 = subscriptKey(idx->index.get());
                 try { rangeElem = methodCall(*base, "AT-POS", ValueList{kv0}); }
                 catch (RakuError&) { rangeElem = Value::any(); }
                 return &rangeElem;
@@ -12058,7 +12058,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // lands in the list, and the assignment mirrors it into the array
             if (base->t == VT::Array && base->isList && base->enumName.empty() && base->arr() &&
                 base->elemView()) {
-                Value kv0 = eval(idx->index.get());
+                Value kv0 = subscriptKey(idx->index.get());
                 if (kv0.t == VT::Code && kv0.code() && kv0.code()->ci().isWhateverCode)
                     kv0 = callCallable(kv0, ValueList{Value::integer((long long)base->arr()->size())});
                 const long long li = kv0.toInt();
@@ -12083,7 +12083,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 return &viewMiss;
             }
             if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty()) {
-                Value kv0 = eval(idx->index.get());
+                Value kv0 = subscriptKey(idx->index.get());
                 if (kv0.t == VT::Code && kv0.code() && kv0.code()->ci().isWhateverCode)
                     kv0 = callCallable(kv0, ValueList{Value::integer((long long)base->arr()->size())});
                 long long li = kv0.toInt();
@@ -12107,7 +12107,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // Nil-Any sheet closes with (NA-36).
             if (base->t == VT::Int || base->t == VT::Num || base->t == VT::Rat ||
                 base->t == VT::Str || base->t == VT::Bool || base->t == VT::Complex) {
-                Value kx = eval(idx->index.get());
+                Value kx = subscriptKey(idx->index.get());
                 long long ki = (kx.t == VT::Code && kx.code() && kx.code()->ci().isWhateverCode)
                                  ? whateverPos(kx, 1).toInt() : kx.toInt();
                 if (ki == 0 || ki == -1)
@@ -12124,7 +12124,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             // `@a[*-1] = v` / `@a[*-1]++`: a WhateverCode index resolves against the
             // current length (like the read path), not eagerly to 0.
-            Value keyV = eval(idx->index.get());
+            Value keyV = subscriptKey(idx->index.get());
             if (keyV.t == VT::Code && keyV.code() && keyV.code()->ci().isWhateverCode)
                 keyV = callCallable(keyV, ValueList{Value::integer((long long)base->arr()->size())});
             long long i = writeIndexInt(keyV);
@@ -12156,6 +12156,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `@a[0]++` under `is default(42)` counts from 42 (an assignment
             // just overwrites it; the gaps stay holes)
             if (grown && base->elemDefault()) (*base->arr())[i] = *base->elemDefault();
+            tctx().lastLvalueElemIdx = i;
             return &(*base->arr())[i];
         }
     }
@@ -12741,7 +12742,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (ix->base && ix->base->kind == NK::NameTerm && ix->index) {
             const std::string& bn = static_cast<NameTerm*>(ix->base.get())->name;
             if (bn == "OUR::" || bn == "OUR") {
-                std::string sym = tcx.pkgPrefix + eval(ix->index.get()).toStr();
+                std::string sym = tcx.pkgPrefix + subscriptKey(ix->index.get()).toStr();
                 if (Value* p = global_->find(sym)) return p;
                 global_->define(sym, Value::any());
                 return global_->find(sym);
@@ -12823,7 +12824,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             (ix->base->kind == NK::MethodCall || ix->base->kind == NK::ListExpr)) {
             static thread_local Value idxHold;
             Value b = eval(ix->base.get());
-            Value k = eval(ix->index.get());
+            Value k = subscriptKey(ix->index.get());
             if (b.t == VT::Array && b.arr() && !b.isList && (k.t == VT::Int)) {
                 long long n = k.toInt();
                 if (n >= 0) {
@@ -14147,7 +14148,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             const bool hashOk = bp && ix->isHash && bp->t == VT::Hash && bp->hash() && bp->hashKind.empty() &&
                                 !bp->objKeyed;
             if (arrOk || hashOk) {
-                Value iv = eval(ix->index.get());
+                Value iv = subscriptKey(ix->index.get());
                 const bool slice = (iv.t == VT::Array && iv.arr() && !iv.itemized) ||
                                    (iv.t == VT::Range && !isEndlessRange(iv));
                 bool plain = slice;
@@ -14890,7 +14891,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable Blob"};
                 int w = bp->blobElemSize();
-                Value kv = eval(idx->index.get());
+                Value kv = subscriptKey(idx->index.get());
                 if (kv.t == VT::Code && kv.code() && kv.code()->ci().isWhateverCode) // $b[*-1] = v
                     kv = callCallable(kv, ValueList{Value::integer(bp->blobElems())});
                 // a SLICE index distributes the RHS elements across the range:
@@ -15004,7 +15005,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (ix->base && ix->base->kind == NK::NameTerm && ix->index) {
             const std::string& bn = static_cast<NameTerm*>(ix->base.get())->name;
             if (bn == "OUR::" || bn == "OUR") {
-                std::string sym = tctx().pkgPrefix + eval(ix->index.get()).toStr();
+                std::string sym = tctx().pkgPrefix + subscriptKey(ix->index.get()).toStr();
                 Value rhs = eval(a->value.get());
                 global_->define(sym, rhs);
                 return sink ? Value::any() : rhs;
@@ -15105,7 +15106,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value* bp = nullptr;
                 try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
                 if (bp && bp->t == VT::Str && bp->hashKind == "CArray") {
-                    long long i = eval(ix->index.get()).toInt();
+                    long long i = subscriptKey(ix->index.get()).toInt();
                     Value v = evalValueOf(a->value.get());
                     ncLocalAssign(*bp, i, v);
                     return v;
@@ -15134,7 +15135,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (ix->index && !ix->multiDim && ix->adverb.empty() && bv && !bv->declare &&
                 bv->name.size() > 1 && (bv->name[0] == '%' || bv->name[0] == '@') &&
                 ix->index->kind != NK::StrLit && ix->index->kind != NK::IntLit && ix->index->kind != NK::VarExpr) {
-                Value keys = eval(ix->index.get());
+                Value keys = subscriptKey(ix->index.get());
                 Value* basep = lvalue(ix->base.get());
                 if (keys.t == VT::Array && keys.arr() && !keys.itemized && basep &&
                     ((ix->isHash && basep->t == VT::Hash && basep->hash() && basep->hashKind.empty()) ||
@@ -15238,7 +15239,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                ? eval(ix->base.get()) : Value::any();
                     if (base.t == VT::Object && base.obj() && base.obj()->cls &&
                         base.obj()->cls->findMethod(ix->isHash ? "BIND-KEY" : "BIND-POS")) {
-                        ValueList ba; ba.push_back(eval(ix->index.get())); ba.push_back(prox);
+                        ValueList ba; ba.push_back(subscriptKey(ix->index.get())); ba.push_back(prox);
                         Value r = methodCall(base, ix->isHash ? "BIND-KEY" : "BIND-POS", ba);
                         return sink ? Value::any() : r;
                     }
@@ -15266,7 +15267,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (base.t == VT::Object && base.obj() && base.obj()->cls) {
                     const char* meth = ix->isHash ? "BIND-KEY" : "BIND-POS";
                     if (base.obj()->cls->findMethod(meth)) {
-                        Value key = eval(ix->index.get());
+                        Value key = subscriptKey(ix->index.get());
                         Value rhs = evalValueOf(a->value.get());
                         ValueList ba; ba.push_back(key); ba.push_back(rhs);
                         Value r = methodCall(base, meth, ba);
@@ -15325,7 +15326,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // and a pointer to a temporary would outlive it — so leave
                     // that case exactly as it was rather than store a dangler.
                     if (of != "Str") {
-                        long long i = eval(ix->index.get()).toInt();
+                        long long i = subscriptKey(ix->index.get()).toInt();
                         Value v = evalValueOf(a->value.get());
                         if (i >= 0) ncWriteElem(liveAddr, of, i, v);
                         return v;
@@ -15349,7 +15350,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 if (h == meth || h == "*") { has = true; break; }
                     }
                     if (has) {
-                        Value k = eval(ix->index.get());
+                        Value k = subscriptKey(ix->index.get());
                         Value v = evalValueOf(a->value.get());
                         methodCall(*bp, meth, ValueList{k, v});
                         if (sink) return Value::any();
@@ -15399,7 +15400,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             if (bp && bp->t == VT::Hash && bp->hash() &&
                 (bp->hashKind == "SetHash" || bp->hashKind == "BagHash" || bp->hashKind == "MixHash")) {
-                Value kv = eval(ix->index.get());
+                Value kv = subscriptKey(ix->index.get());
                 // `SetHash[Int()]` keeps the COERCED key: `%qh{"666"} = 1` holds 666
                 {
                     const std::string of = bp->ofType();
@@ -15504,7 +15505,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (ix->base && ix->base->kind == NK::ListExpr && !ix->isHash && sliceSubscript(ix) &&
                 ix->index->kind != NK::Whatever && plainListLiteral(static_cast<ListExpr*>(ix->base.get()))) {
                 auto* le = static_cast<ListExpr*>(ix->base.get());
-                Value keys = eval(ix->index.get());
+                Value keys = subscriptKey(ix->index.get());
                 if (keys.t == VT::Array || keys.t == VT::Range) {
                     ValueList ks = keys.flatten();
                     Value rv = evalValueOf(a->value.get());
@@ -15534,7 +15535,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // the count is only known once the base is resolved, so mark it
                 // and fill the key list below.
                 bool wholeSlice = ix->index->kind == NK::Whatever;
-                Value keys = wholeSlice ? Value::array() : eval(ix->index.get());
+                Value keys = wholeSlice ? Value::array() : subscriptKey(ix->index.get());
                 if (wholeSlice) keys.isList = true;
                 // `@a[*-4 .. *-1] = …` — a curried subscript (a Range of
                 // WhateverCodes) resolves against the array's size first
@@ -15634,12 +15635,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             materializeLazy(rv, ks.size());
                             if (rv.arr()) vs = *rv.arr();
                         }
-                        Value out = Value::array(); out.isList = true;
+                        Value out = sliceStoreResult(*bp);   // (a List, or a native array's own kind)
                         for (size_t i = 0; i < ks.size(); i++) {
                             Value v = i < vs.size() ? nilElemDefault(vs[i], *bp) : Value::any();
-                            // a typed container checks a SLICE assignment too
-                            coerceElemValue(*this, elemTypeOf(*bp), v);
-                            checkElemType(*bp, v, containerNameOf(ix->base.get(), ix->isHash ? '%' : '@'));
+                            // a typed container checks a SLICE assignment too (sliceElemStore)
+                            Value took = sliceElemStore(*bp, ix->isHash, v, containerNameOf(ix->base.get(), ix->isHash ? '%' : '@'));
                             if (ix->isHash && bp->t == VT::Hash && bp->hash()) {
                                 const std::string& hk = bp->hashKind;
                                 if (hk == "SetHash" || hk == "BagHash" || hk == "MixHash") {
@@ -15667,7 +15667,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1, Value::any());
                                 (*bp->arr())[j] = v;
                             }
-                            out.arr()->push_back(v);
+                            out.arr()->push_back(std::move(took));
                         }
                         return sink ? Value::any() : out;
                     }
@@ -15874,7 +15874,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         try {
                             bv = eval(ix->base.get());
                             if (bv.t == VT::Hash && bv.hash() && bv.hashKind.empty())
-                                present = bv.hash()->count(hashSubKey(eval(ix->index.get()), &bv)) > 0;
+                                present = bv.hash()->count(hashSubKey(subscriptKey(ix->index.get()), &bv)) > 0;
                         } catch (RakuError&) { present = true; }   // leave odd shapes to the path below
                         if (!present) {
                             auto scope = tctx().cur;
@@ -15953,7 +15953,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (h) {
                     // keyed as every other write keys it, so `my \t := %type2allo{Int}`
                     // finds the entry an object hash (`%h{Any}`) stored under Int
-                    Value kv = eval(ix->index.get());
+                    Value kv = subscriptKey(ix->index.get());
                     checkObjHashKey(hv, kv);
                     std::string key = hashSubKey(kv, &hv);
                     if (h->emplace(key, Value::any()).second && !objHashKeyType(hv).empty()) {
@@ -16001,7 +16001,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     !(base->isList && base->s != "Seq" && base->enumName.empty()))
                     arr = base->arrS();
                 if (arr) {
-                    Value kv = eval(ix->index.get());
+                    Value kv = subscriptKey(ix->index.get());
                     if (kv.t == VT::Code && kv.code() && kv.code()->ci().isWhateverCode)
                         kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
                     long long i = kv.toInt();
@@ -16189,12 +16189,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // $*ERR` throws — roast S02-types/array.t). The Index lvalue arm left
         // the constraint behind; Nil is not an assignment but a RESET, and the
         // arm further down turns it into the element default.
+        Value nativePassThrough; bool elemPass = false;   // (what a native element's `=` answers: below)
         if ((opEq(a->op, "=") || opEq(a->op, ":=")) && a->target->kind == NK::Index && !tctx().lastLvalueElemType.empty()) {
-            std::string want = tctx().lastLvalueElemType;
-            tctx().lastLvalueElemType.clear();
+            std::string want = std::exchange(tctx().lastLvalueElemType, {});
             auto* ixt = static_cast<Index*>(a->target.get());
-            coerceElemValue(*this, want, rhs);   // `my Int() %h; %h<a> = "1"`
-            checkElemTypeOrShrink(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'), growBase, growSize);
+            coerceElemValue(*this, want, rhs, '=');   // `my Int() %h; %h<a> = "1"`
+            elemPass = checkElemTypeOrShrink(want, rhs, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'), growBase,
+                                             growSize, opEq(a->op, "=") ? &nativePassThrough : nullptr);
         }
         // …and `%h.AT-KEY(k) = v` / `@a.AT-POS(i) = v`, the method spelling
         if (opEq(a->op, "=") && a->target->kind == NK::MethodCall && !tctx().lastLvalueElemType.empty()) {
@@ -16601,6 +16602,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         packedNow = true;
                     }
                 }
+                // …and `my num @c = @b` copies @b's words (packedCopy), not its Values
+                else if (opEq(a->op, "=") && !keepDefault && lv->t == VT::Array && lv->payloadUnique() &&
+                         !lv->elemDefault() && !lv->shape()) packedNow = packedCopy(rhs, keepType, nv);
                 // (a fresh list hands its buffer over; only rhs.t is read below)
                 if (!packedNow) nv = coerceArrayTake(rhs);
                 // what an `@` container is ASSIGNED is an Array, lazy or not:
@@ -17146,11 +17150,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (nb && opEq(a->op, "=") && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
             nativeAssignCheck(*lv, nb, nf, a->target->kind == NK::VarExpr
                                    ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x"), ns);
-        // (a native ELEMENT store answers what was assigned — `(@u8[0] = -1)`
-        // is -1 — while the slot keeps the wrapped value)
-        Value nativePassThrough;
-        const bool elemPass = nb && opEq(a->op, "=") && a->target->kind == NK::Index && lv->t == VT::Int;
-        if (elemPass) nativePassThrough = *lv;
+        // (a native ELEMENT store answers what it was handed — `(@u8[0] = -1)`
+        // is -1 — while the slot keeps it wrapped; see checkElemTypeOrShrink)
+        if (!elemPass && nb && opEq(a->op, "=") && a->target->kind == NK::Index && lv->t == VT::Int)
+            { elemPass = true; nativePassThrough = *lv; }
         if (nb) wrapNative(*lv, nb, ns, nf);
         if (elemPass && !sink) { nativePassThrough.natBits = 0; return nativePassThrough; }
         // A `constant` is immutable once it holds its value — `constant C = 5;
@@ -17308,7 +17311,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value* bp = nullptr;
             try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
-                long long i = eval(ix->index.get()).toInt();
+                long long i = subscriptKey(ix->index.get()).toInt();
                 Value rhsB = eval(a->value.get());
                 std::string binop = a->written().substr(0, a->written().size() - 1);   // `×=` applies `×`
                 int esz = bp->blobElemSize();
@@ -25561,7 +25564,7 @@ Value Interpreter::evalUnary(Unary* u) {
             std::string want = tctx().lastLvalueElemType;
             tctx().lastLvalueElemType.clear();
             auto* ixt = static_cast<Index*>(u->operand.get());
-            coerceElemValue(*this, want, newv);
+            coerceElemValue(*this, want, newv, '+');
             checkElemType(want, newv, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
         }
         *lv = newv;
@@ -26979,7 +26982,7 @@ Value Interpreter::evalIndex(Index* idx) {
                       idx->base->kind == NK::Range || idx->base->kind == NK::Unary)) {
         Value base = eval(idx->base.get());
         if ((base.t == VT::Array && base.arr()) || base.t == VT::Range) {
-            Value code = eval(idx->index.get());
+            Value code = subscriptKey(idx->index.get());
             if (code.t == VT::Code && code.code() && !code.code()->ci().isWhateverCode) {
                 Value n = methodCall(base, "elems", ValueList{});
                 Value k = callCallable(code, ValueList{n});
@@ -27090,7 +27093,7 @@ Value Interpreter::evalIndex(Index* idx) {
             std::string base = pkg;
             if (base.size() > 2 && base.compare(base.size() - 2, 2, "::") == 0)
                 base = base.substr(0, base.size() - 2);
-            std::string key = hashSubKey(eval(idx->index.get()));
+            std::string key = hashSubKey(subscriptKey(idx->index.get()));
             if (base == "PROCESS" && key.size() > 1 && std::strchr("$@%&", key[0])) {
                 // PROCESS symbols live as `$*NAME` dynamics
                 std::string dyn = key.size() > 1 && std::strchr("*!?.^", key[1])
@@ -27206,7 +27209,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 ixs.arr()->push_back(eval(de.get()));
             args.push_back(ixs);
         }
-        else args.push_back(eval(idx->index.get()));
+        else args.push_back(subscriptKey(idx->index.get()));
         try { out = callCallable(*fn, args); }
         catch (RakuError& e) {
             if (isMultiNoMatch(e)) return false;
@@ -27313,7 +27316,10 @@ Value Interpreter::evalIndex(Index* idx) {
     // Fast path: `@plainvar[intexpr]` — the overwhelmingly common array read.
     // Grab the array's shared_ptr (one refcount, safe across the index eval)
     // instead of copying the whole ~300-byte Value three times through eval().
-    if (!idx->isHash && idx->adverb.empty() && idx->index &&
+    std::optional<Value> early;   // a key evaluated here that the array arm below takes
+    // (a Range written as the key, `@a[$k++ .. 2]`, is never one Int: the array
+    // arm evaluates its two ends itself)
+    if (!idx->isHash && idx->adverb.empty() && idx->index && idx->index->kind != NK::Range &&
         idx->base->kind == NK::VarExpr) {
         auto* ve = static_cast<VarExpr*>(idx->base.get());
         // `@a[|| @dims]` is a navigation, not a subscript: its index expression is
@@ -27325,10 +27331,10 @@ Value Interpreter::evalIndex(Index* idx) {
             !(idx->index && idx->index->kind == NK::Unary &&
               static_cast<const Unary*>(idx->index.get())->op == "dimslip")) {
             if (Value* bp = tctx().cur->find(ve->name)) {
-                if (bp->t == VT::Array && bp->arr() && !bp->ext() && bp->ofType().empty() &&
+                if (bp->t == VT::Array && !bp->packedLive() && bp->arr() && !bp->ext() && bp->ofType().empty() &&
                     !bp->elemDefault() && bp->hashKind.empty()) { // `is default` arrays take the slow path
                     auto arr = bp->arr(); // keeps elements alive if the index expr mutates the var
-                    Value iv = eval(idx->index.get());
+                    Value iv = subscriptKey(idx->index.get());
                     if (iv.t == VT::Int && !iv.big()) {
                         long long ix = iv.i;
                         if (ix < 0) { // negative is out of range (no Python wraparound) → ARMED Failure
@@ -27352,8 +27358,10 @@ Value Interpreter::evalIndex(Index* idx) {
                         if (bp->shape()) shapedBoundsCheck(bp->shape(), 0, ix);
                         return Value::any();
                     }
-                    // non-Int subscript (range/whatever/list): fall through with the
-                    // base already at hand — re-enter the general machinery below
+                    // non-Int subscript (range/whatever/list): fall through to the
+                    // general machinery's array arm, which takes this key rather
+                    // than evaluating it again (`@a[$i++ + 0.5]` steps $i once)
+                    early = std::move(iv);
                 }
             }
         }
@@ -27379,7 +27387,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // Line) thread the same as plain Hashes. Adverbed/slice subscripts on a
     // junction stay unsupported rather than half-threaded.
     if (isJunction(base) && idx->index && idx->adverb.empty()) {
-        Value iv = eval(idx->index.get());
+        Value iv = subscriptKey(idx->index.get());
         Value out = Value::array(); out.enumName = base.enumName;
         for (auto& el : *base.arr())
             out.arr()->push_back(methodCall(el, idx->isHash ? "AT-KEY" : "AT-POS", ValueList{iv}));
@@ -27400,7 +27408,7 @@ Value Interpreter::evalIndex(Index* idx) {
             for (int i = 0; i < 3; i++) out.arr()->push_back(pairAt(i));
             return out;
         }
-        Value k = eval(idx->index.get());
+        Value k = subscriptKey(idx->index.get());
         auto one = [&](long long i) {
             if (i < 0) i += 3;
             return (i >= 0 && i < 3) ? pairAt((int)i) : Value::nil();
@@ -27424,7 +27432,7 @@ Value Interpreter::evalIndex(Index* idx) {
         const bool existsQ = nadv == "exists";
         Value miss = existsQ ? Value::boolean(false) : Value::nil();
         if (!idx->index) return miss;
-        Value k = eval(idx->index.get());
+        Value k = subscriptKey(idx->index.get());
         if (k.t == VT::Array && k.arr()) {
             Value out = Value::array(); out.isList = true;
             for (size_t j = 0; j < k.arr()->size(); j++) out.arr()->push_back(miss);
@@ -27437,7 +27445,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // that may not exist yet (`self.chars[$row][1..$w]`) and counting on the
     // slice's WIDTH; answering a lone (Any) collapsed the row to nothing.
     if (base.t == VT::Any && idx->index && !idx->multiDim && !idx->isHash) {
-        Value k = eval(idx->index.get());
+        Value k = subscriptKey(idx->index.get());
         if (k.t == VT::Range || (k.t == VT::Array && k.arr())) {
             // an undefined scalar is a one-item list, so `$x[0..*]` is ((Any)):
             // an endless range stops at that one element, as Rakudo's does
@@ -27456,7 +27464,7 @@ Value Interpreter::evalIndex(Index* idx) {
         if ((base.t == VT::Str && base.hashKind == "CArray") ||
             (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
              base.hash()->count("addr"))) {
-            Value kv = eval(idx->index.get());
+            Value kv = subscriptKey(idx->index.get());
             if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr())) {
                 bool live = base.t == VT::Hash;
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
@@ -27475,11 +27483,11 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (base.t == VT::Str && base.hashKind == "CArray")
-            return ncLocalAt(base, eval(idx->index.get()).toInt());
+            return ncLocalAt(base, subscriptKey(idx->index.get()).toInt());
         long long liveAddr; std::string of;
         if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
             ncLiveAddrOf(base, liveAddr, of)) {
-            long long i = eval(idx->index.get()).toInt();
+            long long i = subscriptKey(idx->index.get()).toInt();
             Value el = ncReadElem(liveAddr, of, i);
             if (base.hashKind == "CArray") el = ncClassElem(std::move(el), nullptr, of, i);
             if (ncIsPointerElem(of) && el.t == VT::Int) return ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
@@ -27538,7 +27546,7 @@ Value Interpreter::evalIndex(Index* idx) {
         if (cit == classes_.end()) cit = classes_.find(resolveClassAlias(base.s));
         if (cit != classes_.end() && cit->second)
             if (Value* umm = cit->second->findMethod("^parameterize")) {
-                Value iv = eval(idx->index.get());
+                Value iv = subscriptKey(idx->index.get());
                 ValueList a2; a2.push_back(base);
                 if (iv.t == VT::Array && iv.isList && !iv.itemized && iv.arr())
                     for (auto& e : *iv.arr()) a2.push_back(e);
@@ -27548,7 +27556,7 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
-        Value p = eval(idx->index.get());
+        Value p = subscriptKey(idx->index.get());
         if (p.t == VT::Type) {
             Value ty = Value::typeObj(base.s);
             ty.ofTypeM() = base.ofType().empty() ? p.s : base.ofType() + "," + p.s;
@@ -27574,7 +27582,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 if (i < 0) i += (long long)items.size();      // negative indices count from the end
                 return (i >= 0 && i < (long long)items.size()) ? items[(size_t)i] : Value::typeObj("Mu");
             };
-            Value k = eval(idx->index.get());
+            Value k = subscriptKey(idx->index.get());
             // `$buf[*-1]` — a Whatever index is a closure over the element
             // count, exactly as it is for an Array.
             if (k.t == VT::Code && k.code() && k.code()->ci().isWhateverCode)
@@ -27612,7 +27620,7 @@ Value Interpreter::evalIndex(Index* idx) {
         else if (adv == "delete") method = idx->isHash ? "DELETE-KEY" : "DELETE-POS";
         else if (!adv.empty()) method = ""; // :k/:v/:kv/:p — leave to the generic path
         if (!method.empty() && covers(base.obj()->cls.get(), method)) {
-            Value k = eval(idx->index.get());
+            Value k = subscriptKey(idx->index.get());
             // `$obj[*-1]` — a Whatever index resolves against the CONTAINER's own
             // `.elems` first, which is what Rakudo does (it calls .elems and
             // hands AT-POS the resolved Int). Passed through raw, a class's
@@ -27656,7 +27664,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // A lazy list (infinite `… … *` / lazy `.map`): grow its prefix to cover the
     // requested index/slice before subscripting.
     if (base.t == VT::Array && base.ext() && !idx->isHash) {
-        Value iv = eval(idx->index.get());
+        Value iv = subscriptKey(idx->index.get());
         // an infinite lazy array has no end: `@a[*-1]` / `@a[*]` can't be indexed
         if (std::static_pointer_cast<LazySeqState>(base.ext())->infinite &&
             (iv.t == VT::Whatever || (iv.t == VT::Code && iv.code() && iv.code()->ci().isWhateverCode)))
@@ -27686,7 +27694,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // WhateverCode that indexes its argument (mirrors `*.method`).
     if (base.t == VT::Whatever || (base.t == VT::Code && base.code() && base.code()->ci().isWhateverCode)) {
         bool isHash = idx->isHash;
-        Value keyv = eval(idx->index.get());
+        Value keyv = subscriptKey(idx->index.get());
         Value inner = base;
         Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
         code.code()->ciM().isWhateverCode = true;
@@ -27859,7 +27867,7 @@ Value Interpreter::evalIndex(Index* idx) {
     if (base.t == VT::Match) {
         { bool done = false; Value av = matchSubscriptAdverb(base, idx, done); if (done) return av; }   // `$<p>:exists`
         if (idx->isHash) {
-            Value kv = eval(idx->index.get());
+            Value kv = subscriptKey(idx->index.get());
             // `$<w1 w2 w3>` / `$/{'x','y'}` — a SLICE of the named captures
             if (kv.t == VT::Array && kv.arr() && !kv.ext()) {
                 Value out = Value::array(); out.isList = true;
@@ -27874,7 +27882,7 @@ Value Interpreter::evalIndex(Index* idx) {
             if (base.hash()) { auto it = base.hash()->find(key); if (it != base.hash()->end()) return it->second; }
             return Value::nil();
         }
-        Value iv = eval(idx->index.get());
+        Value iv = subscriptKey(idx->index.get());
         // A SLICE of a Match — `($str ~~ /(.+)(\d+)/)[0,1]`, the idiomatic way to
         // read two captures at once — answers a list of those captures, as it
         // does on an Array. Only the single-index form was handled, so the slice
@@ -28196,7 +28204,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 return out;
             }
         }
-        Value iv = eval(idx->index.get());
+        Value iv = subscriptKey(idx->index.get());
         // A LAZY array reifies up to the index before an adverb looks at it:
         // `my @a = 1...*; @a[2]:delete` must delete the 3 that is there, not a
         // slot nothing has pulled yet — a later read would pull it back fresh
@@ -28541,7 +28549,7 @@ Value Interpreter::evalIndex(Index* idx) {
         // stored as an Array of positionals + Pairs, and `c<i>` finds the named part.
         // On a plain Array with no such named element it's a type error (`$aref<0>`).
         if (base.t == VT::Array) {
-            Value iv = eval(idx->index.get());
+            Value iv = subscriptKey(idx->index.get());
             std::string key = iv.toStr();
             bool capturish = base.hashKind == "Capture"; // \(…) — even with no named parts
             // …or an argument list that kept its NAMED parts; a plain List of
@@ -28554,7 +28562,7 @@ Value Interpreter::evalIndex(Index* idx) {
             if (capturish) return Value::any(); // Capture without that named part
             throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing."};
         }
-        Value iv = eval(idx->index.get());
+        Value iv = subscriptKey(idx->index.get());
         auto lookup1 = [&](const std::string& key) -> Value {
             // a Pair is associative on its own key; any OTHER key is Nil (not the
             // Any a Hash answers — a Pair has no element type to default to)
@@ -28606,7 +28614,7 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // positional [0] on a non-Positional item returns the item itself: `$hashref[0] === $hashref`
     if (!idx->isHash && base.t == VT::Hash && base.hashKind.empty()) {
-        Value iv = eval(idx->index.get());
+        Value iv = subscriptKey(idx->index.get());
         // `*-1` counts the hash's PAIRS: an empty `{}[*-1]` is index -1, a Failure
         if (iv.t == VT::Code && iv.code() && iv.code()->ci().isWhateverCode) {
             long long n = whateverPos(iv, base.hash() ? (long long)base.hash()->size() : 0).toInt();
@@ -28625,6 +28633,8 @@ Value Interpreter::evalIndex(Index* idx) {
         // one subscript O(n), so a loop over an attribute array was quadratic:
         // 20,000 reads of a 20,000-element array took 12.9 s against 8 ms for the
         // same loop over a lexical.
+        // (a packed array's word for a computed key, before arr() unpacks it)
+        if (Value w; !early && packedComputedRead(idx, base, early, w)) return w;
         ValueList built;
         if (!(base.t == VT::Array && base.arr())) built = base.flatten();
         const ValueList& src = (base.t == VT::Array && base.arr()) ? *base.arr() : built;
@@ -28648,9 +28658,9 @@ Value Interpreter::evalIndex(Index* idx) {
         if (idx->index->kind == NK::Range) {
             auto* re = static_cast<RangeExpr*>(idx->index.get());
             // `*` in an endpoint resolves to the list length: `@a[0 .. *-2]`, `@a[*-3 .. *-1]`.
-            Value fromV = eval(re->from.get());
+            Value fromV = subscriptKey(re->from.get());
             long long from = resolveWhat(fromV);
-            Value toV = eval(re->to.get());
+            Value toV = subscriptKey(re->to.get());
             // a FRACTIONAL endpoint: the range's own members, each truncated —
             // `@a[0..^2.5]` is 0, 1, 2 and `@a[0.5..2]` is 0, 1 (Rakudo)
             auto frac = [](const Value& v) {
@@ -28683,7 +28693,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 indices.push_back(from);
             }
         } else {
-            Value iv = eval(idx->index.get());
+            Value iv = early ? std::move(*early) : subscriptKey(idx->index.get());
             // A Range held in a `$` container is ONE item, and an item index is
             // its number: `@a[my $ = ^2]` is `@a[2]` (the elems), not a slice
             // (a FINITE one: an endless `$r = 0..*` keeps slicing to the end,
@@ -28902,7 +28912,7 @@ Value Interpreter::evalIndex(Index* idx) {
     }
     // An Array, Str or Range base never reaches this tail: the slice/scalar block
     // above returns on every path for those. What is left is the scalar-as-list case.
-    Value ivRaw = eval(idx->index.get());
+    Value ivRaw = subscriptKey(idx->index.get());
     if (base.t == VT::Pair || base.t == VT::Int || base.t == VT::Num ||
                base.t == VT::Rat || base.t == VT::Bool || base.t == VT::Complex ||
                base.t == VT::Any || base.t == VT::Type ||
