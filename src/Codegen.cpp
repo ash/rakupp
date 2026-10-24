@@ -2515,7 +2515,16 @@ struct Codegen {
                         });
                     } else body = "return " + exArg(u->operand.get()) + ";\n";
                     if (u->op == "do") return "([&]()->Value{\n" + body + "}())";
-                    return "([&]()->Value{ RtTryScope __ts(Interpreter::tctx()); try { Value __r = ([&]()->Value{\n" + body + "}()); "
+                    // a Failure the block returns is consumed (rtTryFailure),
+                    // unless the block says `no fatal`: then it is the value
+                    bool noFatal = false;
+                    if (u->operand->kind == NK::BlockExpr)
+                        for (auto& s : static_cast<BlockExpr*>(u->operand.get())->body)
+                            if (s->kind == NK::UseStmt && static_cast<UseStmt*>(s.get())->isNo &&
+                                static_cast<UseStmt*>(s.get())->module == "fatal")
+                                noFatal = true;
+                    return "([&]()->Value{ RtTryScope __ts(Interpreter::tctx()); try { Value __r = ([&]()->Value{\n" + body + "}()); " +
+                           std::string(noFatal ? "" : "if (rtTryFailure(RT, __r)) return Value::nil(); ") +
                            "RT.dynVarRef(\"$!\") = Value::nil(); return __r; } "
                            "catch (const RakuError& __e) { RT.dynVarRef(\"$!\") = RT.exceptionFor(__e); return Value::nil(); } }())";
                 }
@@ -4104,7 +4113,7 @@ struct Codegen {
                     return "rtNativeStoreK(" + rhs + ", " + kind + ", " + cesc(dt) + ", " + cesc(n) + ", " + src + ")";
                 }
                 if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
-                    return "rtNativeStoreLike(" + mangleVar(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
+                    return "rtNativeStoreLike(" + varRef(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
                 // `=` does: `my $a = [1, 2]; for $a { … }` is one iteration, and
                 // `.raku` says `$[1, 2]`. (What can only be a scalar skips it.)
@@ -5391,7 +5400,7 @@ struct Codegen {
     // where it has one
     static std::string nativeArithCall(const std::string& op, const std::string& L, const std::string& R) {
         const char* f = op == "+" ? "rtNativeAdd" : op == "-" ? "rtNativeSub" : op == "*" ? "rtNativeMul"
-                      : op == "/" ? "rtNativeDiv" : nullptr;
+                      : op == "/" ? "rtNativeDiv" : op == "%" ? "rtNativeMod" : op == "div" ? "rtNativeIntDiv" : nullptr;
         if (f) return std::string(f) + "(" + L + ", " + R + ")";
         return "rtNativeArith(" + cesc(op) + ", " + L + ", " + R + ")";
     }
@@ -5432,6 +5441,10 @@ struct Codegen {
         char c1 = n[1];
         if (!(ascii::isalpha((unsigned char)c1) || c1 == '_')) return ""; // $!, $/, $0, $*X, $?X, $.x …
         if (laxVars_.count(n)) return "";  // a runtime slot, not an unboxable local
+        // a module routine's outer name has no C++ local (varRef reaches it
+        // through the frame), and its store is the interpreter's
+        // (rtOuterScalarStore): the boxed emission has both
+        if (moduleMode_ && aotFree_.count(n)) return "";
         return mangleVar(n);
     }
     // Compile e into the lane; returns a C++ `long long` rvalue ("" = lane fails).

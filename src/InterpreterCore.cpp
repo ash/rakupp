@@ -25098,11 +25098,11 @@ Value Interpreter::evalUnary(Unary* u) {
                 r = runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {});
             }
             else r = eval(u->operand.get());
-            // A block that RETURNS a Failure sets `$!` too — it did not throw, but
-            // the failure is still what happened. Without this `try { 1 % 0 }`
-            // handed back an undefined value with `$!` cleared to Nil, so there was
-            // no way to ask what went wrong.
-            if (r.t == VT::Hash && r.hashKind == "Failure" && r.hash() && !noFatal) {
+            // A block that RETURNS a live Failure sets `$!` too — it did not throw,
+            // but the failure is still what happened (`try { 1 % 0 }` handed back
+            // an undefined value with `$!` cleared, and nothing said what went
+            // wrong). A HANDLED one (`.so`, `.defined`) is the value, as Rakudo's.
+            if (!noFatal && rtLiveFailure(r)) {
                 setBang(failureException(r));
                 // …and the try CONSUMES it: Rakudo's `try { 1 div 0 }` is Nil with
                 // `$!` set, not the live Failure. Handing the Failure back left it

@@ -3157,6 +3157,12 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
         if (!base.hash()) base.setHash(makePayload<ValueMap>());
         return (*base.hash())[name];
     }
+    // `$failure.handled = True` marks it inert — the one writable accessor a
+    // Failure has, as the interpreter's own lvalue arm has it
+    if (base.t == VT::Hash && base.hashKind == "Failure" && name == "handled") {
+        if (!base.hash()) base.setHash(makePayload<ValueMap>());
+        return (*base.hash())["handled"];
+    }
     if (base.t == VT::Object && base.obj()) {
         // (the accessor's own attribute and key: ClassInfo::findAccessorAttr)
         const std::string* slot = nullptr;
@@ -4150,8 +4156,12 @@ void detonateFailureKey(const Value& key) {
         for (const Value& e : *key.arr())
             if (e.t == VT::Hash && e.hashKind == "Failure") failureDetonate(e);
 }
+// (the kind test at the call: an Int or Str key, the common one, makes no call)
+static inline void detonateFailureKeyAt(const Value& key) {
+    if (key.t == VT::Hash || key.t == VT::Array) detonateFailureKey(key);
+}
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
-    detonateFailureKey(key);
+    detonateFailureKeyAt(key);
     // A Whatever — or a WhateverCode such as `*-1` — is an END-RELATIVE
     // subscript however it arrived. Native codegen picks idxW when it can SEE
     // the star written in the subscript; when the star came through a variable
@@ -5651,7 +5661,7 @@ Value& rtKeptAssign(Interpreter& I, Value& ref, Value v) {
 }
 // stepOp: the `postfix:<++>` / `prefix:<-->` a step site resolves the place for
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp) {
-    detonateFailureKey(key);
+    detonateFailureKeyAt(key);
     if (isHash) {
         // A Pair is Associative but immutable: `$p<a> = 9` is X::Assignment::RO,
         // as the interpreter's lvalue refuses it. Vivifying below REPLACED the
@@ -7875,6 +7885,18 @@ Value Interpreter::inlineBlockValue() {
     Value b; b.t = VT::Code; b.setCode(makePayload<Callable>());
     b.code()->ciM().isBlock = true;
     return b;
+}
+
+bool rtLiveFailure(const Value& r) {
+    if (r.t != VT::Hash || r.hashKind != "Failure" || !r.hash()) return false;
+    auto h = r.hash()->find("handled");
+    return h == r.hash()->end() || !h->second.truthy();
+}
+bool rtTryFailure(Interpreter& I, Value& r) {
+    if (!rtLiveFailure(r)) return false;
+    I.dynVarRef("$!") = I.failureException(r);
+    (*r.hash())["handled"] = Value::boolean(true);
+    return true;
 }
 
 // `try { no fatal; … }` — the block turns `use fatal` back off.

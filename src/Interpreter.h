@@ -5226,6 +5226,26 @@ inline Value rtNativeDiv(const Value& l, const Value& r) {   // (two ints, or a 
     if (!rtNativeIntPair(l, r) && rtNumPair(l, r, a, b) && b != 0.0) return rtNativeNumOf(a / b);
     return rtNativeArithSlow("/", l, r);
 }
+// `%` and `div` on two ints, floored as rtNativeIntOp has them (`int.min div -1`
+// wraps); a zero divisor, and anything not two ints, is the general path's
+inline Value rtNativeMod(const Value& l, const Value& r) {
+    if (rtNativeIntPair(l, r) && r.i != 0) {
+        if (r.i == -1) return rtNativeIntOf(0);
+        long long m = l.i % r.i;
+        if (m != 0 && ((m < 0) != (r.i < 0))) m += r.i;
+        return rtNativeIntOf((unsigned long long)m);
+    }
+    return rtNativeArith("%", l, r);
+}
+inline Value rtNativeIntDiv(const Value& l, const Value& r) {
+    if (rtNativeIntPair(l, r) && r.i != 0) {
+        if (r.i == -1) return rtNativeIntOf(0ULL - (unsigned long long)l.i);
+        long long q = l.i / r.i;
+        if ((l.i % r.i != 0) && ((l.i < 0) != (r.i < 0))) q--;
+        return rtNativeIntOf((unsigned long long)q);
+    }
+    return rtNativeArithSlow("div", l, r);
+}
 // The store into a native (codegen): a plain Num into a `num`, or a plain
 // machine Int into an `int`, changes only the tags — wrapNative's own fast arms,
 // after nativeAssignCheck has nothing to say about either. Anything else takes
@@ -5242,13 +5262,25 @@ RAKUPP_ALWAYS_INLINE bool rtNativeStoreFast(Value& v, bool isFloat) {
 // full-width float (`num`, `num64`), 2 a full-width int (`int`, `int64`), 0
 // anything else. Comparing the type's name instead was two strcmp calls a store
 // (out of line, as this was): half the time of a `num` sub's loop.
+// …and a native num into a full-width `int`, which converts as wrapNative has
+// it (toInt: toward zero, saturating, NaN 0). Only a NATIVE num converts: a
+// boxed one is refused (nativeRefusesKind), and takes the general path.
+RAKUPP_ALWAYS_INLINE bool rtNativeNumToIntFast(Value& v) {
+    if (v.t != VT::Num || !v.natBits || !v.natFloat || v.x_ || v.p_ || !v.enumName.empty() ||
+        !v.enumType.empty() || !v.hashKind.empty())
+        return false;
+    v = rtNativeIntOf((unsigned long long)v.toInt());
+    return true;
+}
 RAKUPP_ALWAYS_INLINE Value rtNativeStoreK(Value v, int kind, const char* type, const char* name, bool srcNative) {
     if (kind && rtNativeStoreFast(v, kind == 1)) return v;
+    if (kind == 2 && rtNativeNumToIntFast(v)) return v;
     return rtNativeValue(v, type, name, srcNative);
 }
 RAKUPP_ALWAYS_INLINE Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
     if (!slot.natBits) return v;   // not (or no longer) a native container
     if (slot.natBits == 64 && (slot.natFloat || slot.natSigned) && rtNativeStoreFast(v, slot.natFloat)) return v;
+    if (slot.natBits == 64 && slot.natSigned && !slot.natFloat && rtNativeNumToIntFast(v)) return v;
     return rtNativeValueLike(slot, v, name, srcNative);
 }
 
@@ -5880,6 +5912,12 @@ struct RtTryScope {
     explicit RtTryScope(ExecContext& c) : t(c) { t.compiledTry++; }
     ~RtTryScope() { t.compiledTry--; }
 };
+// …and a block that RETURNS a live Failure: the `try` consumes it, as the
+// interpreter's does — `$!` is its exception, it is marked handled, and the
+// `try` is Nil. False (nothing done) for any other value, a Failure already
+// handled (`.so`, `.defined`) among them: that one is the `try`'s value.
+bool rtTryFailure(Interpreter& I, Value& r);
+bool rtLiveFailure(const Value& r);   // a Failure nothing has handled yet (the interpreter's `try` asks too)
 // --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
 // steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)
 // --exe multi dispatch guards: the idx-th positional argument by reference
