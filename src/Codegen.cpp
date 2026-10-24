@@ -5897,7 +5897,11 @@ struct Codegen {
                 auto* f = static_cast<ForStmt*>(st);
                 U.atTop = false;
                 if (f->asExpr || f->rwVars || f->destructure) { U.fail(); return; }
-                if (f->vars.size() > 1 || !f->params.empty()) { U.fail(); return; }
+                // (`-> int $i` / `-> Int $i` counts as `-> $i` does: countedForParam.
+                // A native operation that leaves int64 bails, and the boxed loop
+                // binds it as the native it is, which wraps.)
+                const Param* cp = countedForParam(f);
+                if (f->vars.size() > 1 || (!f->params.empty() && !cp)) { U.fail(); return; }
                 Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
                 if (!uRangeOf(f, rFrom, rTo, exF, exT)) { U.fail(); return; }
                 { bool sv = U.inHeader; U.inHeader = true;
@@ -5905,7 +5909,7 @@ struct Codegen {
                   uCollectExpr(rTo, U);
                   U.inHeader = sv; }
                 if (!U.ok) return;
-                std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
+                std::string tv = cp ? cp->name : f->vars.empty() ? std::string("$_") : f->vars[0];
                 if (U.topics.count(tv) || U.slots.count(tv)) { U.fail(); return; }  // shadowing
                 U.topics.insert(tv);
                 U.local.insert(tv);
@@ -6473,7 +6477,8 @@ struct Codegen {
                 auto* f = static_cast<ForStmt*>(st);
                 Expr* rFrom = nullptr; Expr* rTo = nullptr; bool exF = false, exT = false;
                 if (!uRangeOf(f, rFrom, rTo, exF, exT)) return false;
-                std::string tv = f->vars.empty() ? std::string("$_") : f->vars[0];
+                const Param* cp = countedForParam(f);
+                std::string tv = cp ? cp->name : f->vars.empty() ? std::string("$_") : f->vars[0];
                 std::string lv = uLocal_[tv];
                 std::vector<std::string> pre;
                 std::string lo = rFrom ? uExpr(rFrom, LT::I64, pre) : std::string("0LL");
