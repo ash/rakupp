@@ -2643,6 +2643,27 @@ ExprPtr Parser::parseExpr(int minbp) {
             throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
                              cur().line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
         }
+        // C's conditional `cond ? a : b`, which Raku spells `?? !!`. A lone `?`
+        // is no infix, so the expression used to end at it and `? a` started a
+        // new statement: `my $s = $n > 2 ? "many" : "few"` set $s to True.
+        // Rakudo's infix:sym<?> refuses when a `:` follows before the next `;`
+        // — in the raw text, strings included, so the token texts are scanned
+        // the same way. With no colon Rakudo only says "Confused".
+        if (!ismsPerl5_ && isOp("?") && !userInfix_.count("?")) {
+            bool colon = false;
+            for (size_t i = pos_ + 1; i < toks_.size(); i++) {
+                const Token& t = toks_[i];
+                if (t.kind == Tok::Semicolon || t.kind == Tok::End) break;
+                size_t p = t.text.find_first_of(";:");
+                if (p != std::string::npos) { colon = t.text[p] == ':'; break; }
+            }
+            if (colon) {
+                std::string old = "? and : for the ternary conditional operator";
+                std::string repl = "?? and !!";
+                throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
+                                 cur().line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
+            }
+        }
         // negated infix (`!eq`, `!%%` when lexed apart): `!` glued to a negatable
         // comparison op applies the op and negates its Bool
         if (cur().kind == Tok::Op && cur().text == "!" && !peek().spaceBefore) {

@@ -9,11 +9,11 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: d7c6d9d5, 3e97932e and e30e2827 (FLOAT-HEAVY-ISSUES);
-e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
-72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
-de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
-4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001; 960e8aed; 7fcca8a8;
-273863ac.*
+e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
+9d48b3b5, 184c423c, 72e0c5fb and 316e5855 (FatRoast); 07775af3
+(FORTRAN-LESSONS 1a); e614993a; de2e08d4; c95d9332; d0ba733b
+(FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
+85d56001; 960e8aed; 7fcca8a8; 273863ac.*
 
 ---
 
@@ -231,6 +231,11 @@ interpreted.
   an alias of any array's element, `$x ||= 5` now stores. An interpreted rw
   loop over a native array pays a few nanoseconds an iteration for it
   (`for @ints { }` over 2M: 69.4 → 76.9 ms against 74895cce).
+- **C's `cond ? a : b` is a compile error, as in Rakudo** (93f9a4af). A lone
+  `?` ended the expression and `? a` began a new statement, so
+  `my $s = $n > 2 ? "many" : "few"` set `$s` to True; other shapes died of
+  "Malformed radix number" or "expected )". It is now Rakudo's X::Obsolete,
+  "Unsupported use of ? and : for the ternary conditional operator".
 
 ### Fixed: crashes
 
@@ -311,6 +316,16 @@ strings 538 / 507 of 1413 → 675 / 648 of 1414; names 951 / 933 of 1181 →
 1022 / 1010 of 1166; ops 429 / 418 of 446 → 422 / 420 of 422. Plain Roast:
 1419 / 1396 of 1419. In none of the seven does Rakudo pass a file Raku++
 does not.
+
+### Behaves like Rakudo
+
+- **An undeclared routine in the main program is a compile-time report with
+  its line** (c7a12943): `say length("Riga")` printed a run-time "Undefined
+  routine 'length'" at line 0, and now prints Rakudo's ===SORRY!===
+  "Undeclared routine: length used at line 1. Did you mean 'elems', 'chars',
+  'codes'?", every such name at once, with Rakudo's fixed hints (`local`,
+  `foreach`, `quit`, a phaser in lower case, …). `len` is no longer "Did you
+  mean 'leg'?".
 
 ### Left open
 

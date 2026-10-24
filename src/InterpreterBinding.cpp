@@ -2271,22 +2271,24 @@ static bool termConstantName(const std::string& n) {
     };
     return terms.count(n) != 0;
 }
+// `begin 42` — a phaser spelled in lower case: Rakudo suggests the phaser.
+// The phaser it means, or "".
+static std::string lowerCasePhaser(const std::string& name) {
+    static const std::set<std::string> kPhasers = {
+        "BEGIN", "CHECK", "INIT", "END", "ENTER", "LEAVE", "KEEP", "UNDO", "FIRST",
+        "NEXT", "LAST", "PRE", "POST", "CATCH", "CONTROL", "QUIT", "CLOSE", "DOC"};
+    std::string up = name;
+    for (auto& ch : up) if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
+    return up != name && kPhasers.count(up) ? up : "";
+}
 [[noreturn]] void undeclaredRoutine(const std::string& name) {
     if (termConstantName(name))
         throw RakuError{Value::typeObj("X::Undeclared"),
             "Variable '&" + name + "' is not declared. Perhaps you forgot a 'sub' if this "
             "was intended to be part of a signature?"};
-    // `begin 42` — a phaser spelled in lower case: Rakudo suggests the phaser
-    {
-        static const std::set<std::string> kPhasers = {
-            "BEGIN", "CHECK", "INIT", "END", "ENTER", "LEAVE", "KEEP", "UNDO", "FIRST",
-            "NEXT", "LAST", "PRE", "POST", "CATCH", "CONTROL", "QUIT", "CLOSE", "DOC"};
-        std::string up = name;
-        for (auto& ch : up) if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
-        if (up != name && kPhasers.count(up))
-            throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
-                "Undefined routine '" + name + "'. Did you mean '" + up + "'?"};
-    }
+    if (std::string up = lowerCasePhaser(name); !up.empty())
+        throw RakuError{Value::typeObj("X::Undeclared::Symbols"),
+            "Undefined routine '" + name + "'. Did you mean '" + up + "'?"};
     throw RakuError{Value::typeObj("X::Undeclared::Symbols"), "Undefined routine '" + name + "'"};
 }
 
@@ -5800,11 +5802,45 @@ Value Interpreter::roleCandidates(ClassInfo* ci) {
     push(self != classes_.end() && self->second.get() == ci ? self->second : nullptr);
     return out;
 }
+// The line of the LAST call to each routine name, the one Rakudo's "used at
+// line N" names. The same walk as spCallsE; a node without a line of its own
+// has its parent's.
+static void lastCallLines(const Expr* e, int line, std::map<std::string, int>& out);
+static void lastCallLinesS(const Stmt* s, std::map<std::string, int>& out) {
+    if (!s) return;
+    if (s->kind == NK::ExprStmt) lastCallLines(static_cast<const ExprStmt*>(s)->e.get(), s->line, out);
+    else if (s->kind == NK::Block) for (auto& st : static_cast<const Block*>(s)->stmts) lastCallLinesS(st.get(), out);
+    else if (s->kind == NK::ReturnStmt) lastCallLines(static_cast<const ReturnStmt*>(s)->value.get(), s->line, out);
+}
+static void lastCallLines(const Expr* e, int line, std::map<std::string, int>& out) {
+    if (!e) return;
+    if (e->line) line = e->line;
+    switch (e->kind) {
+        case NK::Call: { auto* c = static_cast<const Call*>(e);
+            int& l = out[c->name]; l = std::max(l, line);
+            lastCallLines(c->callee.get(), line, out); for (auto& a : c->args) lastCallLines(a.get(), line, out); return; }
+        case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); lastCallLines(m->inv.get(), line, out);
+            for (auto& a : m->args) lastCallLines(a.get(), line, out); return; }
+        case NK::Assign: { auto* a = static_cast<const Assign*>(e); lastCallLines(a->target.get(), line, out); lastCallLines(a->value.get(), line, out); return; }
+        case NK::Binary: { auto* b = static_cast<const Binary*>(e); lastCallLines(b->lhs.get(), line, out); lastCallLines(b->rhs.get(), line, out); return; }
+        case NK::Unary: lastCallLines(static_cast<const Unary*>(e)->operand.get(), line, out); return;
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); lastCallLines(t->cond.get(), line, out);
+            lastCallLines(t->then.get(), line, out); lastCallLines(t->els.get(), line, out); return; }
+        case NK::ListExpr: for (auto& i : static_cast<const ListExpr*>(e)->items) lastCallLines(i.get(), line, out); return;
+        case NK::BlockExpr: for (auto& st : static_cast<const BlockExpr*>(e)->body) lastCallLinesS(st.get(), out); return;
+        default: return;
+    }
+}
 // A call to a routine nothing declares, found BEFORE the code runs: `say 42;
 // nope()` prints nothing. Only for code the call walker sees all of (plain
 // statements — any declaration or other statement kind makes it opaque), and
 // only names no scope, builtin or type answers.
-void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
+// For the main program (`unit`) it is Rakudo's compile-time report, every
+// such name at once with its line:
+//   ===SORRY!=== Error while compiling -e
+//   Undeclared routine:
+//       length used at line 1. Did you mean 'elems', 'chars', 'codes'?
+void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts, bool unit) {
     std::set<std::string> calls, declared;
     for (auto& st : stmts) {
         spCallsS(st.get(), calls);
@@ -5829,6 +5865,7 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         "return-rw", "last", "next", "redo", "proceed", "succeed", "leave", "emit", "done",
         "callsame", "callwith", "nextsame", "nextwith", "samewith", "nextcallee", "lastcall",
         "sink", "quietly", "do", "gather", "start", "await", "item", "list", "flat", "slip"};
+    std::vector<std::string> unknown;   // (in name order, as Rakudo lists them)
     for (auto& n : calls) {
         if (n.empty() || n[0] == '\x02' || n.rfind("__", 0) == 0 || declared.count(n)) continue;
         // an operator's name (`infix:<nosuch>(42)`) is asked of the operators;
@@ -5841,8 +5878,52 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts) {
         if (builtins_.count(n) || builtinRef(n) || classes_.count(n) || isKnownTypeName(n)) continue;
         if (tctx().cur && tctx().cur->find("&" + n)) continue;
         if (global_ && global_->find("&" + n)) continue;
-        undeclaredRoutine(n);
+        // (`pi()` is an undeclared VARIABLE)
+        if (!unit || termConstantName(n)) undeclaredRoutine(n);
+        unknown.push_back(n);
     }
+    if (unknown.empty()) return;
+    // Rakudo's fixed answers for the names other languages have: what to try
+    // instead, or the construct that replaces it
+    static const std::map<std::string, std::vector<std::string>> kInstead = {
+        {"length", {"elems", "chars", "codes"}}, {"bytes", {".encode($encoding).bytes"}}, {"break", {"last"}}};
+    static const std::map<std::string, std::string> kObsolete = {
+        {"local", "temp (or dynamic var)"}, {"foreach", "'for'"}, {"quit", "'exit'"},
+        {"new", "method call syntax"}, {"y", "'tr'"}, {"qr", "'rx'"},
+        {"use", "\"v\" prefix for pragma (e.g., \"use v6;\", \"use v6.c;\")"}};
+    std::map<std::string, int> lines;
+    for (auto& st : stmts) lastCallLinesS(st.get(), lines);
+    std::string msg = unknown.size() == 1 ? "Undeclared routine:" : "Undeclared routines:";
+    Value unk = Value::makeHash(), sugs = Value::makeHash();
+    int first = 0;
+    for (auto& n : unknown) {
+        const int ln = lines[n];
+        if (!first || (ln && ln < first)) first = ln;
+        msg += "\n    " + n + " used at line " + std::to_string(ln);
+        Value ls = Value::array(); ls.isList = true;
+        ls.arr()->push_back(Value::integer(ln));
+        (*unk.hash())[n] = ls;
+        auto ob = kObsolete.find(n);
+        if (ob != kObsolete.end()) { msg += " (in Raku please use " + ob->second + " instead)"; continue; }
+        auto in = kInstead.find(n);
+        const std::string up = lowerCasePhaser(n);
+        std::vector<std::string> sug = in != kInstead.end() ? in->second
+                                     : !up.empty() ? std::vector<std::string>{up} : routineSuggestions(n);
+        if (sug.empty()) continue;
+        Value sl = Value::array(); sl.isList = true;
+        for (size_t i = 0; i < sug.size(); i++) {
+            msg += (i ? "', '" : ". Did you mean '") + sug[i];
+            sl.arr()->push_back(Value::str(sug[i]));
+        }
+        msg += "'?";
+        (*sugs.hash())[n] = sl;
+    }
+    // filename+line make it a compile-time error: the top-level printer gives
+    // it the ===SORRY!=== banner
+    throwTypedV("X::Undeclared::Symbols",
+                {{"unk_routines", unk}, {"routine_suggestion", sugs}, {"type_suggestion", Value::makeHash()},
+                 {"line", Value::integer(first)}, {"filename", Value::str(srcFile_.empty() ? "-e" : srcFile_)}},
+                msg);
 }
 bool Interpreter::fatalHere() const {
     for (const Env* e = tctx().cur.get(); e; e = e->parent.get())

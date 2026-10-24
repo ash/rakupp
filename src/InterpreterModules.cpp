@@ -3759,9 +3759,17 @@ std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
 // A misspelled ROUTINE name: the built-in routines and the `&` names in scope
 std::vector<std::string> Interpreter::routineSuggestions(const std::string& name) {
     std::vector<std::string> cands;
+    // A word operator rakupp also takes as a call, `leg("a", "b")`, is no
+    // routine to Rakudo, which never suggests one: `len` is not "Did you mean
+    // 'leg'?". (Parser::isWordInfixName's list less min/max/minmax, which are
+    // subs too; the runtime of a --slim binary has no Parser to ask.)
+    static const std::set<std::string> kInfixOnly = {
+        "eq", "ne", "lt", "gt", "le", "ge", "cmp", "leg", "eqv", "before", "after", "unicmp",
+        "coll", "x", "xx", "and", "or", "xor", "andthen", "orelse", "notandthen", "div", "mod",
+        "gcd", "lcm", "but", "does"};
     for (auto& kv : builtins_)
         if (!kv.first.empty() && kv.first[0] != '_' && kv.first.find(':') == std::string::npos &&
-            builtinVisible(kv.first))
+            builtinVisible(kv.first) && !kInfixOnly.count(kv.first))
             cands.push_back(kv.first);
     for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
         for (auto& kv : e->vars)
@@ -8588,7 +8596,7 @@ int Interpreter::run(Program& prog) {
         if (unitIsOutermost(&prog) && declCheckEnabled()) {
             bool plain = !prog.stmts.empty();
             for (auto& st : prog.stmts) if (!st || st->kind != NK::ExprStmt) { plain = false; break; }
-            if (plain) checkUndeclaredCalls(prog.stmts);
+            if (plain) checkUndeclaredCalls(prog.stmts, true);
         }
         // Remember what the program declared for itself, before any `use` runs:
         // a module's publish must not overwrite these (see mainlineSubNames_).

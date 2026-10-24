@@ -2116,7 +2116,7 @@ public:
     Value callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr, bool ownFrame = false, bool arityCheck = false, bool whereVerified = false);
     bool fatalHere() const; // is the current scope under `use fatal`?
     Value* pkgRelativeRoutine(const std::string& name); // `Q::f` from inside package P: P::Q::f
-    void checkUndeclaredCalls(const std::vector<StmtPtr>& stmts); // `nope()` refused before running
+    void checkUndeclaredCalls(const std::vector<StmtPtr>& stmts, bool unit = false); // `nope()` refused before running
     // `R.^candidates`: one type object per declaration of R's role group, each
     // carrying its declaration (RoleCandidateRef in ext) so `.WHY` can tell them apart
     Value roleCandidates(ClassInfo* ci);
