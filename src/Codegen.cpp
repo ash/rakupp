@@ -5743,9 +5743,8 @@ struct Codegen {
                         tv->d().declShape || tv->d().declTypeExpr || tv->pkgSymbol || tv->viaPseudoPkg) {
                         U.fail(); return;
                     }
-                    // a native in a loop HEADER outlives the lane in a box the
-                    // store-back would replace without its width: not taken
-                    if (nk && U.inHeader) { U.fail(); return; }
+                    // (a native in a loop HEADER outlives the lane: its
+                    // store-back builds the native, as its declaration does)
                     if (nk) U.natDecl[nm] = nk;
                     if (nk) U.pinned.insert(nm);
                     // A declaration that SHADOWS a name the lane already holds
@@ -6843,11 +6842,17 @@ struct Codegen {
             }
         // An escaping name's box may hold anything at all (it was `Value::any()`
         // a moment ago), so this CONSTRUCTS rather than writing a payload under
-        // a tag that was never checked.
-        for (auto& n : escStore)
-            line(ind + 1, varRef(n) + " = " + (uType_[n] == LT::F64 ? "Value::number(" : uType_[n] == LT::STR
-                                                   ? "Value::str(std::move(" : "Value::integer(")
-                        + uLocal_[n] + (uType_[n] == LT::STR ? "));" : ");"));
+        // a tag that was never checked. A native (`loop (my int $i …)`) is built
+        // as its declaration builds it, tags and all, so that `$i` after the
+        // loop is still the native it was declared.
+        for (auto& n : escStore) {
+            std::string v = (uType_[n] == LT::F64 ? "Value::number(" : uType_[n] == LT::STR
+                                 ? "Value::str(std::move(" : "Value::integer(")
+                          + uLocal_[n] + (uType_[n] == LT::STR ? "))" : ")");
+            if (auto nd = U.natDecl.find(n); nd != U.natDecl.end())
+                v = "rtNativeStoreK(" + v + (nd->second == 'n' ? ", 1, \"num\", " : ", 2, \"int\", ") + cesc(n) + ", false)";
+            line(ind + 1, varRef(n) + " = " + v + ";");
+        }
         line(ind + 1, ok + " = true;");
         line(ind, "} while (0);");
         line(ind, "if (!" + ok + ") {");
