@@ -13,7 +13,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 9d48b3b5, 184c423c, 72e0c5fb and 316e5855 (FatRoast); 07775af3
 (FORTRAN-LESSONS 1a); e614993a; de2e08d4; c95d9332; d0ba733b
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
-85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1.*
+85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21.*
 
 ---
 
@@ -244,6 +244,14 @@ interpreted.
   element instead of storing into it, and `.VAR` of one was its value's type.
   22 shapes agree with Rakudo 2026.09; a list assignment into a Proxy now
   runs its STORE.
+- **A routine named after a block prefix gets its arguments** (08a17d21).
+  `sub start($x) { $x + 1 }; say start(5)` said 1: the prefix handed the sub
+  its thunk as a Block, and `start(2, 3)` died. `do(5)`, `try(5)`,
+  `quietly(5)` and `once(5)` never called the routine, and `gather(5)` was
+  empty. Glued to its paren, such a name is now the routine's call (`react`
+  and `supply` too), while `start { … }` and `start 5` stay the prefix. A
+  routine declared below its call counts, which also fixes `say repeat(5);
+  sub repeat($x) {…}`, a parse error before.
 
 ### Fixed: crashes
 
