@@ -12,7 +12,7 @@ here.*
 e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 9d48b3b5, 184c423c,
 72e0c5fb and 316e5855 (FatRoast); 07775af3 (FORTRAN-LESSONS 1a); e614993a;
 de2e08d4; c95d9332; d0ba733b (FORTRAN-LESSONS 1b); 5e5d80ec;
-4405241a (FORTRAN-LESSONS 2); 769ed705.*
+4405241a (FORTRAN-LESSONS 2); 769ed705; 85d56001.*
 
 ---
 
@@ -197,6 +197,12 @@ interpreted.
   the general path: with `my @a = 10, 20, 30`, `@a[$i++ + 0.5]` read 20 and
   left $i at 2 (Rakudo: 10, and 1), `@a[($i++, 1)]` read (20 20), and
   `@a[key()]` called key() twice.
+- **A Failure used as a subscript throws what it carries** (85d56001), as in
+  Rakudo, where it indexed as the 2 its hash holds: with `my $f = 1 div 0`,
+  `@a[$f] = 5` stored into @a[2], `@a[$f]:exists` was True and `%h{$f} = 5`
+  made a key of the Failure's fields. Slices, junctions, `++`, `:delete`,
+  native arrays and the AT-POS / *-KEY methods throw too, interpreted,
+  compiled and in a `--cnp` kernel.
 
 ### Fixed: crashes
 
@@ -291,3 +297,7 @@ does not.
 - t/exe/fuzz.raku's 20 `*-shadow` programs, which failed at parse time on
   v5.5.0, were not valid Raku (Rakudo refuses them too); the generator now
   writes valid ones, and all 232 programs agree.
+- A Failure that builds a Range (`my $r = $f .. 2; @a[$r]`) is still 2
+  before any subscript sees it, and one that has thrown is not marked
+  handled, so using it again rethrows its exception where Rakudo dies with
+  another (85d56001).
