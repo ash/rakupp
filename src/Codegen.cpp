@@ -5517,6 +5517,9 @@ struct Codegen {
     std::string nrWrapFor_;                        // the sub whose Value function bodyDef emits next (subDef)
     std::vector<std::string>* nrGuards_ = nullptr; // while set: a guarded form's tests, in evaluation order
     int nrGuardOff_ = 0;                           // > 0: no guarded form (the boxed side of one)
+    struct NrCache { std::string base; char k = 0; std::string c; };   // one array's facts in an open native loop
+    std::vector<std::vector<NrCache>> nrCaches_;   // per open native loop, innermost last
+    bool nrCacheOff_ = false;                      // the per-access forms only (nrGuarded's second run)
 
     static std::string nrName(const std::string& sub) { return "n_" + mangleSub(sub).substr(2); }
     static char nrParamKind(const Param& p) {
@@ -5626,19 +5629,117 @@ struct Codegen {
         }
     }
     // Run `f` collecting the tests its native form needs; its C++ and the tests
-    // joined with && (`guard`), or "" when it has no native form or needs none
+    // joined with && (`guard`), or "" when it has no native form or needs none.
+    // Inside a loop with facts, `f` runs twice: with them, and with the
+    // per-access tests, which take over while the facts answer no words.
     template <class F> std::string nrGuarded(F&& f, std::string& guard) {
         if (nrGuards_ || nrGuardOff_ || !nrMode_) return "";
-        std::vector<std::string> gs;
-        nrGuards_ = &gs;
-        std::string c;
-        try { c = f(); } catch (...) { nrGuards_ = nullptr; throw; }
-        nrGuards_ = nullptr;
-        if (c.empty() || gs.empty()) return "";
-        guard.clear();
-        std::set<std::string> seen;   // a test met twice is made once, where first met
-        for (auto& g : gs) if (seen.insert(g).second) guard += (guard.empty() ? "" : " && ") + g;
-        return c;
+        auto run = [&](std::string& g) -> std::string {
+            std::vector<std::string> gs;
+            nrGuards_ = &gs;
+            std::string c;
+            try { c = f(); } catch (...) { nrGuards_ = nullptr; throw; }
+            nrGuards_ = nullptr;
+            if (c.empty() || gs.empty()) return "";
+            g.clear();
+            std::set<std::string> seen;   // a test met twice is made once, where first met
+            for (auto& x : gs) if (seen.insert(x).second) g += (g.empty() ? "" : " && ") + x;
+            return c;
+        };
+        std::string g1, g2, c2;
+        const std::string c1 = run(g1);
+        if (c1.empty() || nrCaches_.empty() || nrCacheOff_) { guard = g1; return c1; }
+        nrCacheOff_ = true;
+        try { c2 = run(g2); } catch (...) { nrCacheOff_ = false; throw; }
+        nrCacheOff_ = false;
+        if (c2.empty() || (c1 == c2 && g1 == g2)) { guard = g1; return c1; }
+        guard = "(" + g1 + ") || (" + g2 + ")";
+        return "((" + g1 + ") ? (" + c1 + ") : (" + c2 + "))";
+    }
+    // Loop facts. A native loop checks what the element forms test (the array
+    // packed with words of its kind, no element default, no worker running)
+    // once on entry, for each file-scope native array it reads or writes by
+    // word (__nCache), and keeps the words' address and length in a local: an
+    // element's test is then its index against that length. Anything boxed
+    // that runs in the loop, a guarded form's boxed side among them, and a
+    // native routine's call may change an array, so after each the facts of
+    // every open loop are checked again (nrRefresh). While a worker thread
+    // runs they answer a length of 0, and the per-access forms take over.
+    const NrCache* nrCacheFor(const VarExpr* v, const std::string& base) const {
+        if (nrCacheOff_) return nullptr;
+        bool sh = false;
+        if (nrLookup(v->name, sh) || sh) return nullptr;   // a local of the name hides the array
+        for (auto s = nrCaches_.rbegin(); s != nrCaches_.rend(); ++s)
+            for (auto& c : *s) if (c.base == base) return &c;
+        return nullptr;
+    }
+    std::string nrRefresh() const {
+        std::string t;
+        for (auto& s : nrCaches_)
+            for (auto& c : s) t += "__nCache(" + c.base + ", " + (c.k == 'n' ? "true" : "false") + ", " + c.c + "); ";
+        return t;
+    }
+    // a value that may have run boxed code, the facts checked again after it
+    std::string nrAfter(const std::string& x) const {
+        if (nrCaches_.empty()) return x;
+        return "([&]() { auto __r = (" + x + "); " + nrRefresh() + "return __r; }())";
+    }
+    void nrRefreshLine(int ind) { if (!nrCaches_.empty()) line(ind, nrRefresh()); }
+    // The arrays a loop's word forms name (`out`), and the `@` names it declares
+    void nrWordBases(const Expr* e, std::vector<const VarExpr*>& out, std::set<std::string>& decl) const {
+        if (!e) return;
+        switch (e->kind) {
+            case NK::VarExpr: { auto* v = static_cast<const VarExpr*>(e); if (v->declare) decl.insert(v->name); return; }
+            case NK::Index: {
+                auto* i = static_cast<const Index*>(e);
+                if (nrWordArray(i)) out.push_back(static_cast<const VarExpr*>(i->base.get()));
+                else nrWordBases(i->base.get(), out, decl);
+                nrWordBases(i->index.get(), out, decl);
+                return;
+            }
+            case NK::Binary: { auto* b = static_cast<const Binary*>(e); nrWordBases(b->lhs.get(), out, decl); nrWordBases(b->rhs.get(), out, decl); return; }
+            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) nrWordBases(o.get(), out, decl); return;
+            case NK::Unary: nrWordBases(static_cast<const Unary*>(e)->operand.get(), out, decl); return;
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                nrWordBases(t->cond.get(), out, decl); nrWordBases(t->then.get(), out, decl); nrWordBases(t->els.get(), out, decl);
+                return;
+            }
+            case NK::Call: for (auto& a : static_cast<const Call*>(e)->args) nrWordBases(a.get(), out, decl); return;
+            case NK::Assign: { auto* a = static_cast<const Assign*>(e); nrWordBases(a->target.get(), out, decl); nrWordBases(a->value.get(), out, decl); return; }
+            case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) nrWordBases(x.get(), out, decl); return;
+            default: return;
+        }
+    }
+    void nrWordBases(const std::vector<StmtPtr>& ss, std::vector<const VarExpr*>& out, std::set<std::string>& decl) const {
+        for (auto& sp : ss) {
+            const Stmt* s = sp.get();
+            if (!s) continue;
+            switch (s->kind) {
+                case NK::ExprStmt: nrWordBases(static_cast<const ExprStmt*>(s)->e.get(), out, decl); break;
+                case NK::ReturnStmt: nrWordBases(static_cast<const ReturnStmt*>(s)->value.get(), out, decl); break;
+                case NK::IfStmt: {
+                    auto* f = static_cast<const IfStmt*>(s);
+                    for (auto& br : f->branches) { nrWordBases(br.first.get(), out, decl); if (br.second) nrWordBases(br.second->stmts, out, decl); }
+                    if (f->elseBlock) nrWordBases(f->elseBlock->stmts, out, decl);
+                    break;
+                }
+                case NK::WhileStmt: {
+                    auto* w = static_cast<const WhileStmt*>(s);
+                    nrWordBases(w->cond.get(), out, decl);
+                    if (w->body) nrWordBases(w->body->stmts, out, decl);
+                    break;
+                }
+                case NK::LoopStmt: {
+                    auto* l = static_cast<const LoopStmt*>(s);
+                    nrWordBases(l->init.get(), out, decl); nrWordBases(l->cond.get(), out, decl); nrWordBases(l->incr.get(), out, decl);
+                    if (l->body) nrWordBases(l->body->stmts, out, decl);
+                    break;
+                }
+                case NK::Block: nrWordBases(static_cast<const Block*>(s)->stmts, out, decl); break;
+                default: break;
+            }
+        }
     }
     // An Int or Num operand of a double operation, as rtNumOperand reads it
     static std::string nrDouble(const NrT& t) { return t.k == 'i' ? "((double)(" + t.c + "))" : t.c; }
@@ -5777,9 +5878,16 @@ struct Codegen {
                 if (!ak) return r;
                 NrT i = nrExpr(ix->index.get());
                 if (i.k != 'i') return r;
-                const std::string base = varRef(static_cast<VarExpr*>(ix->base.get())->name);
-                nrGuards_->push_back("__nPk(" + base + ", " + (ak == 'n' ? "true" : "false") + ", " + i.c + ")");
-                r.c = std::string(ak == 'n' ? "__nWN(" : "__nWI(") + base + ", " + i.c + ")";
+                auto* bv = static_cast<VarExpr*>(ix->base.get());
+                const std::string base = varRef(bv->name);
+                if (const NrCache* ch = nrCacheFor(bv, base)) {   // the loop's facts
+                    nrGuards_->push_back("((uint64_t)(" + i.c + ") < " + ch->c + ".n)");
+                    r.c = std::string(ak == 'n' ? "__nCWN(" : "__nCWI(") + ch->c + ", " + i.c + ")";
+                }
+                else {
+                    nrGuards_->push_back("__nPk(" + base + ", " + (ak == 'n' ? "true" : "false") + ", " + i.c + ")");
+                    r.c = std::string(ak == 'n' ? "__nWN(" : "__nWI(") + base + ", " + i.c + ")";
+                }
                 r.k = ak;   // the plain Int or Num the element unpacks to
                 return r;
             }
@@ -5800,7 +5908,7 @@ struct Codegen {
                 if (it != nrSubs_.end()) {
                     std::string a;
                     if (nrGuards_ || !it->second.rk || !nrArgs(c, it->second, a)) return r;
-                    r.c = nrName(c->name) + "(" + a + ")";
+                    r.c = nrAfter(nrName(c->name) + "(" + a + ")");
                     r.k = it->second.rk;   // a plain value: the call hands back no native tags
                     return r;
                 }
@@ -5848,7 +5956,7 @@ struct Codegen {
         if (t.k == 'i') return "((" + t.c + ") != 0)";
         if (t.k == 'n') return "((" + t.c + ") != 0.0)";
         if (!boxedOk || !nrSafeNoDecl(e)) return "";
-        return exBool(e);
+        return nrAfter(exBool(e));
     }
     // A value converted as a store into a native of kind `k` converts it
     // (rtNativeStoreK): directly when the native form allows it, through the
@@ -5869,8 +5977,9 @@ struct Codegen {
         else if (nrSafeNoDecl(value)) boxed = exArg(value);
         else return "";
         const std::string src = nativeNumericStatic(value) ? "true" : "false";
-        return "rtNativeStoreK(" + boxed + ", " + (k == 'i' ? "2" : "1") + ", " + cesc(type) + ", " + cesc(name) +
-               ", " + src + ")" + (k == 'i' ? ".i" : ".n");
+        const std::string st = "rtNativeStoreK(" + boxed + ", " + (k == 'i' ? "2" : "1") + ", " + cesc(type) + ", " +
+                               cesc(name) + ", " + src + ")" + (k == 'i' ? ".i" : ".n");
+        return t.k ? st : nrAfter(st);
     }
     // Declare a native local in the innermost scope; a second `my` of the name
     // in the same scope is the same C++ variable, assigned
@@ -6022,6 +6131,7 @@ struct Codegen {
         if (!nrSafe(e)) return false;
         std::vector<std::string> decl = std::move(nrDeclared_);
         stmt(s, ind);
+        nrRefreshLine(ind);
         for (auto& n : decl) nrScopes_.back()[n] = NrVar{};
         return true;
     }
@@ -6075,9 +6185,9 @@ struct Codegen {
                             NrGuardOff off{this};
                             if (!nrSafeNoDecl(val)) return false;
                             const std::string fn = bop == "+" ? "rtAdd(" : bop == "-" ? "rtSub(" : "rtMul(";
-                            line(ind, nv->c + " = (" + g + ") ? (" + nv->c + " " + bop + " (" + w + ")) : rtNativeStoreK(" +
-                                      fn + nrBox(NrT{nv->c, 'n', true}) + ", " + exArg(val) + "), 1, \"num\", " +
-                                      cesc(v->name) + ", false).n;");
+                            line(ind, nv->c + " = (" + g + ") ? (" + nv->c + " " + bop + " (" + w + ")) : " +
+                                      nrAfter("rtNativeStoreK(" + fn + nrBox(NrT{nv->c, 'n', true}) + ", " + exArg(val) +
+                                              "), 1, \"num\", " + cesc(v->name) + ", false).n") + ";");
                             return true;
                         }
                         NrT r = nrExpr(val);
@@ -6103,8 +6213,8 @@ struct Codegen {
                         NrGuardOff off{this};
                         if (!nrSafeNoDecl(a->value.get())) return false;
                         const std::string src = nativeNumericStatic(a->value.get()) ? "true" : "false";
-                        const std::string boxed = "rtNativeStoreLike(" + g + ", " + exArg(a->value.get()) + ", " +
-                                                  cesc(v->name) + ", " + src + ")";
+                        const std::string boxed = nrAfter("rtNativeStoreLike(" + g + ", " + exArg(a->value.get()) + ", " +
+                                                          cesc(v->name) + ", " + src + ")");
                         if (!w.empty()) line(ind, g + " = (" + gd + ") ? " + nrBox(NrT{w, gk, true}) + " : " + boxed + ";");
                         else line(ind, g + " = " + boxed + ";");
                         return true;
@@ -6129,23 +6239,31 @@ struct Codegen {
             if (a->op == "=" && a->target->kind == NK::Index && s) {
                 auto* ix = static_cast<Index*>(a->target.get());
                 if (const char ak = nrWordArray(ix)) {
-                    std::string g, iC, vC, base;
-                    const std::string ok = nrGuarded([&]() -> std::string {
+                    std::string g;
+                    const std::string set = nrGuarded([&]() -> std::string {
                         NrT i = nrExpr(ix->index.get());
                         if (i.k != 'i') return "";
                         NrT v = nrExpr(a->value.get());
                         if (v.k != ak) return "";
-                        iC = i.c; vC = v.c;
-                        base = varRef(static_cast<VarExpr*>(ix->base.get())->name);
+                        auto* bv = static_cast<VarExpr*>(ix->base.get());
+                        const std::string base = varRef(bv->name);
                         // (the value's read of the same element takes the stricter test)
-                        const std::string args = base + ", " + (ak == 'n' ? "true" : "false") + ", " + iC + ")";
+                        if (const NrCache* ch = nrCacheFor(bv, base)) {
+                            const std::string rd = "((uint64_t)(" + i.c + ") < " + ch->c + ".n)";
+                            const std::string wr = "((uint64_t)(" + i.c + ") < " + ch->c + ".n && " + ch->c + ".w)";
+                            auto it = std::find(nrGuards_->begin(), nrGuards_->end(), rd);
+                            if (it != nrGuards_->end()) *it = wr;
+                            else nrGuards_->push_back(wr);
+                            return std::string(ak == 'n' ? "__nCSetWN(" : "__nCSetWI(") + ch->c + ", " + i.c + ", " + v.c + ")";
+                        }
+                        const std::string args = base + ", " + (ak == 'n' ? "true" : "false") + ", " + i.c + ")";
                         auto rd = std::find(nrGuards_->begin(), nrGuards_->end(), "__nPk(" + args);
                         if (rd != nrGuards_->end()) *rd = "__nPkW(" + args;
                         else nrGuards_->push_back("__nPkW(" + args);
-                        return "1";
+                        return std::string(ak == 'n' ? "__nSetWN(" : "__nSetWI(") + base + ", " + i.c + ", " + v.c + ")";
                     }, g);
-                    if (!ok.empty()) {
-                        line(ind, "if (" + g + ") " + (ak == 'n' ? "__nSetWN(" : "__nSetWI(") + base + ", " + iC + ", " + vC + ");");
+                    if (!set.empty()) {
+                        line(ind, "if (" + g + ") " + set + ";");
                         line(ind, "else {");
                         NrGuardOff off{this};
                         if (!nrDelegate(s, e, ind + 1)) return false;
@@ -6180,12 +6298,14 @@ struct Codegen {
             std::string a;
             if (it != nrSubs_.end() && nrArgs(c, it->second, a)) {
                 line(ind, nrName(c->name) + "(" + a + ");");
+                nrRefreshLine(ind);
                 return true;
             }
         }
         if (!s) {   // a loop header's part: a boxed expression, evaluated
             if (!nrSafeNoDecl(e)) return false;
             line(ind, "(void)(" + exArg(e) + ");");
+            nrRefreshLine(ind);
             return true;
         }
         return nrDelegate(s, e, ind);
@@ -6278,19 +6398,14 @@ struct Codegen {
                     auto* w = static_cast<WhileStmt*>(s);
                     // (a statement-modifier `while` has no block of its own: refused)
                     if (last || !w->var.empty() || !w->params.empty() || w->asExpr || w->modifier || !w->body) return false;
-                    std::string c = nrCond(w->cond.get(), true);
-                    if (c.empty()) return false;
-                    if (w->isUntil) c = "!(" + c + ")";
-                    if (!nrLoop(c, w->body.get(), nullptr, ind)) return false;
+                    if (!nrLoop(w->cond.get(), w->isUntil, w->body.get(), nullptr, ind)) return false;
                     break;
                 }
                 case NK::LoopStmt: {
                     auto* l = static_cast<LoopStmt*>(s);
                     if (last || l->asExpr || !l->body) return false;
                     if (l->init && !nrEffect(nullptr, l->init.get(), ind)) return false;   // (its `my` is the enclosing scope's)
-                    std::string c = l->cond ? nrCond(l->cond.get(), true) : std::string("true");
-                    if (c.empty()) return false;
-                    if (!nrLoop(c, l->body.get(), l->incr.get(), ind)) return false;
+                    if (!nrLoop(l->cond.get(), false, l->body.get(), l->incr.get(), ind)) return false;
                     break;
                 }
                 case NK::Block: {
@@ -6324,10 +6439,35 @@ struct Codegen {
         return t && t->kind == NK::VarExpr && static_cast<const VarExpr*>(t)->declare &&
                isNativeScalarDecl(static_cast<const VarExpr*>(t)->d().declType);
     }
-    // A native loop: the condition tested before each turn, `next` jumping to
-    // just before the step
-    bool nrLoop(const std::string& cond, Block* body, Expr* incr, int ind) {
+    // A native loop: the condition (none: true; `until`: negated) tested before
+    // each turn, `next` jumping to just before the step; its arrays' facts
+    // checked on entry
+    bool nrLoop(Expr* condE, bool until, Block* body, Expr* incr, int ind) {
         if (!body->label.empty()) return false;
+        std::vector<const VarExpr*> bases;
+        std::set<std::string> decl;
+        nrWordBases(condE, bases, decl);
+        nrWordBases(incr, bases, decl);
+        nrWordBases(body->stmts, bases, decl);
+        std::vector<NrCache> mine;
+        for (const VarExpr* v : bases) {
+            bool sh = false;
+            if (decl.count(v->name) || !topVars_.count(v->name) || nrLookup(v->name, sh) || sh) continue;
+            const std::string base = varRef(v->name);
+            if (nrCacheFor(v, base)) continue;   // an enclosing loop's
+            bool dup = false;
+            for (auto& c : mine) dup = dup || c.base == base;
+            if (dup) continue;
+            NrCache c{base, nativeArrays_.at(v->name), gensym("__nc")};
+            line(ind, "__nC " + c.c + "; __nCache(" + base + ", " + (c.k == 'n' ? "true" : "false") + ", " + c.c + ");");
+            mine.push_back(std::move(c));
+        }
+        const bool cached = !mine.empty();
+        if (cached) nrCaches_.push_back(std::move(mine));
+        struct PopCache { Codegen* g; bool on; ~PopCache() { if (on) g->nrCaches_.pop_back(); } } __pc{this, cached};
+        std::string cond = condE ? nrCond(condE, true) : std::string("true");
+        if (cond.empty()) return false;
+        if (until) cond = "!(" + cond + ")";
         const std::string nx = gensym("__nnext");
         line(ind, "for (;;) {");
         line(ind + 1, "if (!(" + cond + ")) break;");
@@ -6553,7 +6693,23 @@ struct Codegen {
             "static inline int64_t __nWI(const Value& a, int64_t i) { return a.packed()->w[(size_t)i]; }\n"
             "static inline double __nWN(const Value& a, int64_t i) { double d; std::memcpy(&d, &a.packed()->w[(size_t)i], 8); return d; }\n"
             "static inline void __nSetWI(const Value& a, int64_t i, int64_t x) { a.packed()->w[(size_t)i] = x; }\n"
-            "static inline void __nSetWN(const Value& a, int64_t i, double x) { std::memcpy(&a.packed()->w[(size_t)i], &x, 8); }\n";
+            "static inline void __nSetWN(const Value& a, int64_t i, double x) { std::memcpy(&a.packed()->w[(size_t)i], &x, 8); }\n"
+            "// …and a native loop's facts of one array (Codegen::nrLoop): the words' address\n"
+            "// and length while those tests hold and no worker runs, else a length of 0;\n"
+            "// `w` while a store may write them\n"
+            "struct __nC { int64_t* d = nullptr; uint64_t n = 0; bool w = false; };\n"
+            "[[gnu::always_inline]] static inline void __nCache(const Value& a, bool isNum, __nC& c) {\n"
+            "    if (a.pk_ == PK::Packed && a.t == VT::Array && a.packedLive() && a.hashKind.empty() && !a.elemDefault() &&\n"
+            "        a.packed()->isNum == isNum && !(RT.parallelMode_ && RT.liveWorkers_.load(std::memory_order_acquire) > 0)) {\n"
+            "        PackedArr* p = a.packed();\n"
+            "        c.d = p->w.data(); c.n = p->w.size(); c.w = !a.readonly;\n"
+            "    }\n"
+            "    else { c.d = nullptr; c.n = 0; c.w = false; }\n"
+            "}\n"
+            "static inline int64_t __nCWI(const __nC& c, int64_t i) { return c.d[i]; }\n"
+            "static inline double __nCWN(const __nC& c, int64_t i) { double d; std::memcpy(&d, &c.d[i], 8); return d; }\n"
+            "static inline void __nCSetWI(const __nC& c, int64_t i, int64_t x) { c.d[i] = x; }\n"
+            "static inline void __nCSetWN(const __nC& c, int64_t i, double x) { std::memcpy(&c.d[i], &x, 8); }\n";
         for (auto& kv : nrSubs_) t += "static " + kv.second.sig + ";\n";
         return t + "\n";
     }
