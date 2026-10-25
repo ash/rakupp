@@ -81,9 +81,9 @@ sub agree(Str $name, Str $code, Str $want, :@native) {
 }
 
 # 1. Steps and stores on outer variables (native, untyped, typed), in a program
-#    a native array makes bundle.
+#    a typed `@` the backend refuses (`my Str @keep`) makes bundle.
 agree('outer', q:to/END/, '2 2 2|1 1 1|0 0 0|10 10 10|7 7 7|-9223372036854775808', :native<s1 s2 s3 s4 s5 s6>);
-    my num @keep = 1e0;
+    my Str @keep = "x";
     my int $ni = 0; my $nu = 0; my Int $nt = 0;
     sub s1() { $ni++; $nu++; $nt++ }
     sub s2() { ++$ni; ++$nu; ++$nt }
@@ -141,7 +141,7 @@ my $try-code = q:to/END/;
     END
 my $try-want = 'Any X::Numeric::DivideByZero|0.5 Nil|Failure Nil|Failure Nil True|Any X::Numeric::DivideByZero True|after';
 agree('try-failure', $try-code, $try-want);
-agree('try-failure-bundled', "my num \@keep = 1e0;\n" ~ $try-code, $try-want, :native<probe lax handled>);
+agree('try-failure-bundled', "my Str \@keep = 'x';\n" ~ $try-code, $try-want, :native<probe lax handled>);
 
 # 4. A Failure as a subscript.
 agree('failure-key', q:to/END/, 'key: X::Str::Numeric|slice: X::Str::Numeric|[1 2 3]|2');

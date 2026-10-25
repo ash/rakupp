@@ -819,6 +819,47 @@ struct Codegen {
             default: return false;
         }
     }
+    static bool nativeArrayType(const std::string& t) { return t == "int" || t == "int64" || t == "num" || t == "num64"; }
+    // Every `@` name the program declares a full-width native array, in any
+    // scope: an element read or a statement store of one takes the
+    // packed-aware helpers (rtIndexGetP, rtIndexStore). A name native in one
+    // scope and plain in another takes them in both, which costs the plain one
+    // a test: the helpers answer for any array.
+    std::set<std::string> nativeArrays_;
+    void collectNativeArrays(const std::vector<StmtPtr>& ss) { for (auto& s : ss) collectNativeArrays(s.get()); }
+    void collectNativeArrays(const Stmt* s) {
+        if (!s) return;
+        auto decl = [&](const Expr* x) {
+            if (!x || x->kind != NK::VarExpr) return;
+            auto* v = static_cast<const VarExpr*>(x);
+            if (v->declare && v->name.size() > 1 && v->name[0] == '@' && nativeArrayType(v->d().declType))
+                nativeArrays_.insert(v->name);
+        };
+        switch (s->kind) {
+            case NK::ExprStmt: {
+                const Expr* e = static_cast<const ExprStmt*>(s)->e.get();
+                decl(e && e->kind == NK::Assign ? static_cast<const Assign*>(e)->target.get() : e);
+                return;
+            }
+            case NK::Block: collectNativeArrays(static_cast<const Block*>(s)->stmts); return;
+            case NK::IfStmt: {
+                auto* f = static_cast<const IfStmt*>(s);
+                for (auto& br : f->branches) if (br.second) collectNativeArrays(br.second->stmts);
+                if (f->elseBlock) collectNativeArrays(f->elseBlock->stmts);
+                return;
+            }
+            case NK::WhileStmt: if (auto* b = static_cast<const WhileStmt*>(s)->body.get()) collectNativeArrays(b->stmts); return;
+            case NK::LoopStmt: if (auto* b = static_cast<const LoopStmt*>(s)->body.get()) collectNativeArrays(b->stmts); return;
+            case NK::ForStmt: if (auto* b = static_cast<const ForStmt*>(s)->body.get()) collectNativeArrays(b->stmts); return;
+            case NK::SubDecl: collectNativeArrays(static_cast<const SubDecl*>(s)->body); return;
+            default: return;
+        }
+    }
+    bool nativeArrayBase(const Expr* e) const {
+        if (!e || e->kind != NK::VarExpr) return false;
+        auto* v = static_cast<const VarExpr*>(e);
+        return !v->declare && nativeArrays_.count(v->name);
+    }
     static void refuseDeclTraits(const VarExpr* v) {
         const std::string& n = v->name;
         // `state $n` (and the anonymous `$++`) keeps its value across runs of
@@ -826,7 +867,9 @@ struct Codegen {
         // say $n++ }` printed 0 0 — and `(state $n)++` / `@a[$++]` named a
         // local nothing declared, failing the whole C++ build
         if (v->d().declScope == "state") unsupported("a `state` variable");
-        if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->d().declType.empty())
+        // (a full-width native array compiles: rtNativeArrayNew, its words kept)
+        if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->d().declType.empty() &&
+            !(n[0] == '@' && nativeArrayType(v->d().declType)))
             unsupported("a typed " + std::string(1, n[0]) + " variable (my " + v->d().declType + " " + n + ")");
         if (v->d().declDefault) unsupported("an `is default` variable");
         if (!v->d().declCoerce.empty()) unsupported("a coercion-typed variable");
@@ -1719,6 +1762,10 @@ struct Codegen {
         for (size_t i = 0; i < dims.size(); i++) { if (i) mk += ", "; mk += ex(dims[i]); }
         mk += "}, " + cesc(v->d().declType) + ")";
         if (rhs.empty()) return mk;
+        // (a native one takes no lazy list, as the interpreter refuses it before the store)
+        if (!v->d().declType.empty())
+            return "([&]()->Value{ Value __sh = " + mk + "; Value __sv = " + rhs + "; RT.refuseLazyNative(__sh, __sv);"
+                   " rtShapedStore(__sh, __sv, " + cesc(v->d().declType) + "); return __sh; }())";
         return "([&]()->Value{ Value __sh = " + mk + "; rtShapedStore(__sh, " + rhs
              + ", " + cesc(v->d().declType) + "); return __sh; }())";
     }
@@ -2356,6 +2403,9 @@ struct Codegen {
                     return "RT.methodCall(" + ex(ix->base.get()) + ", \"AT-POS\", ValueList{"
                          + multiDimArgs(ix) + "})";
                 std::string fn = hasWhatever(ix->index.get()) ? "RT.idxW" : "rtIndexGet"; // @a[*-1] / @a[*]
+                // (an array declared native: its word while it is packed)
+                if (fn == "rtIndexGet" && !ix->isHash && nativeArrayBase(ix->base.get()))
+                    return "rtIndexGetP(" + ex(ix->base.get()) + ", " + ex(ix->index.get()) + ")";
                 return fn + "(" + ex(ix->base.get()) + ", " + ex(ix->index.get()) + ", "
                      + (ix->isHash ? "true" : "false") + ")";
             }
@@ -3792,6 +3842,23 @@ struct Codegen {
                         return;
                     }
                 }
+                // `@a[$i] = v;` into an array declared native: rtIndexStore,
+                // which writes a packed array's word where the element's place
+                // would unpack it — the value first, as the assignment's own
+                // order has it
+                if (e->kind == NK::Assign && !moduleMode_) {
+                    auto* a = static_cast<Assign*>(e);
+                    auto* ix = a->op == "=" && a->target->kind == NK::Index ? static_cast<Index*>(a->target.get()) : nullptr;
+                    auto* bv = ix && ix->base && ix->base->kind == NK::VarExpr ? static_cast<VarExpr*>(ix->base.get()) : nullptr;
+                    if (bv && !ix->isHash && !ix->multiDim && nativeArrayBase(bv) &&
+                        !hasStarLit(ix->index.get()) && ix->index->kind != NK::Range && ix->index->kind != NK::ListExpr) {
+                        noteKeptList(a);
+                        const std::string sv = gensym("__sv");
+                        line(ind, "{ Value " + sv + " = " + exArg(a->value.get()) + "; rtIndexStore(RT, " +
+                                  lvalueExpr(bv) + ", " + ex(ix->index.get()) + ", std::move(" + sv + ")); }");
+                        return;
+                    }
+                }
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
                     auto* dv = static_cast<VarExpr*>(e);
@@ -4164,7 +4231,19 @@ struct Codegen {
             auto* v = static_cast<VarExpr*>(tgt);
             const std::string& n = v->name;
             // (`@a = Nil` is one element, the default: [Any], as coerceArray has it)
-            if (!n.empty() && n[0] == '@') return "rtArrayVal(rtNilToAny(" + rhs + "))";
+            // A native array is filled as the interpreter fills it (arrayStore),
+            // and so is `@a = …` into any array that turns out typed
+            if (!n.empty() && n[0] == '@') {
+                const bool dollar = value && value->kind == NK::VarExpr &&
+                                    !static_cast<VarExpr*>(value)->name.empty() && static_cast<VarExpr*>(value)->name[0] == '$';
+                if (v->declare && nativeArrayType(v->d().declType))
+                    return "rtNativeArrayNew(RT, " + cesc(v->d().declType) + ", " + cesc(n) + ", " + rhs + ", " +
+                           (dollar ? "true" : "false") + ")";
+                if (!v->declare && !moduleMode_)
+                    return "rtArrayAssignTo(RT, " + varRef(n) + ", " + rhs + ", " + cesc(n) + ", " +
+                           (dollar ? "true" : "false") + ")";
+                return "rtArrayVal(rtNilToAny(" + rhs + "))";
+            }
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…
             // A store into a NATIVE scalar converts, checks and wraps as the
             // interpreter's does, and the value comes back carrying the width,
@@ -8776,6 +8855,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         asTopVar(kv.first, kv.second.second);
     }
     g.scanUserOps(prog, multiCands);
+    g.collectNativeArrays(prog.stmts);
 
     g.out << "// Generated by `rakupp --exe` — native transpilation of a Raku program.\n"
              "#include \"Interpreter.h\"\n#include \"Value.h\"\n#include <cmath>\n#include <vector>\n#include <string>\n#include <iostream>\n#include <utility>\n#include <cstdlib>\n"

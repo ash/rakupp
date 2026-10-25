@@ -4901,6 +4901,226 @@ bool Interpreter::packedCopy(const Value& rhs, const std::string& keepType, Valu
     return true;
 }
 
+void coerceElemValue(Interpreter& I, const std::string& want, Value& v, char how = 'o');   // InterpreterBinding.cpp
+Value nilElemDefault(const Value& v, const Value& container);   // InterpreterCore.cpp
+
+// A NATIVE array stores every element there and then, so it cannot take a
+// list that never ends — at either end: `@num = -Inf..0e0` is refused as
+// `0e0..Inf` is, with the action and the array's type. (Before a shaped
+// store, so not in arrayStore itself.)
+void Interpreter::refuseLazyNative(const Value& lv, const Value& rhs) {
+    if (isNativeScalarName(lv.ofType()) &&
+        (isEndlessLazy(rhs) ||
+         ((rhs.t == VT::Range || rhs.t == VT::Array) && rhs.b) ||   // `lazy 1..100`: finite, still lazy
+         (rhs.t == VT::Range && (endlessLow(rhs) || endlessHigh(rhs)))))
+        throwTypedV("X::Cannot::Lazy",
+                    {{"action", Value::str("initialize")}, {"what", Value::str(lv.typeName())}},
+                    "Cannot initialize a " + lv.typeName() + " with a lazy list");
+}
+
+// What `@a = …` stores into the `@` container `lvRef`, and a bind the
+// evalAssign arms before it leave (`:=` of a Range): the strict unboxing a
+// native `int`/`num`/`str` array applies to each element, the words a
+// full-width one keeps (PACKED-ARRAY-PLAN), the refill that keeps the
+// container's identity, and its element type and default. Compiled code
+// calls it for a native array (rtNativeArrayNew, rtArrayAssignTo), so the
+// two mean the same thing. `dollarSource`: the right side is a `$`
+// variable (which itemizes a Range); `tname`: the container's name, for
+// messages.
+void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dollarSource, const std::string& tname) {
+    Value* lv = &lvRef;
+    const std::string keepType = lv->ofType();
+    auto keepDefault = lv->elemDefault();
+    // a Blob/Buf assigned to a NATIVE array spreads as its elements
+    // (`my uint32 @W = $M`); to an ordinary one it is a single item
+    if (isAssign && rhs.t == VT::Str && !rhs.itemized &&
+        (rhs.hashKind == "Blob" || rhs.hashKind == "Buf")) {
+        *lv = coerceArray(rhs, isNativeScalarName(lv->ofType()));
+    }
+    else if (isAssign && dollarSource && rhs.t == VT::Range) {
+        // a $-container ITEMIZES: `my @r = $r` is ONE element (the
+        // Range), unlike the flattening `my @r = 1..5` (Array/List
+        // itemization is wider surgery; Range is the roast-tested bit)
+        Value one = Value::array();
+        one.arr()->push_back(rhs);
+        *lv = one;
+    }
+    // a JUNCTION is one value, not a list: `my @a = any(3, 4)` holds it
+    else if (isAssign && isJunction(rhs)) {
+        Value one = Value::array();
+        one.arr()->push_back(rhs);
+        one.ofTypeM() = keepType; one.elemDefaultM() = keepDefault;
+        *lv = one;
+    }
+    else {
+        // PACKED-ARRAY-PLAN: `my int @a = LO .. HI` fills the words
+        // straight from the Range, never building the Values a finite
+        // Int Range would flatten to (coerceArray's plain Array of plain
+        // Ints, which is what they unpack to)
+        bool packedNow = false;
+        Value nv;
+        if (isAssign && rhs.t == VT::Range && !rhs.rNum() && rhs.ofType().empty() &&
+            !rhs.ext() && (keepType == "int" || keepType == "int64") && !keepDefault &&
+            lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape()) {
+            const long long lo = rhs.rFrom() + (rhs.rExFrom() ? 1 : 0);
+            const long long hi = rhs.rTo() - (rhs.rExTo() ? 1 : 0);
+            if (hi < lo || (unsigned long long)(hi - lo) < (1ull << 31)) {
+                auto pa = makePayload<PackedArr>();
+                if (hi >= lo) {
+                    pa->w.reserve((size_t)(hi - lo) + 1);
+                    for (long long k = lo; k <= hi; k++) pa->w.push_back(k);
+                }
+                nv = Value::array();
+                nv.setPacked(pa);
+                packedNow = true;
+            }
+        }
+        // …and `my num @c = @b` copies @b's words (packedCopy), not its Values
+        else if (isAssign && !keepDefault && lv->t == VT::Array && lv->payloadUnique() &&
+                 !lv->elemDefault() && !lv->shape()) packedNow = packedCopy(rhs, keepType, nv);
+        // (a fresh list hands its buffer over; only rhs.t is read below)
+        if (!packedNow) nv = coerceArrayTake(rhs);
+        // what an `@` container is ASSIGNED is an Array, lazy or not:
+        // `my @b = (1, 2 ... *)` reifies on demand but is no Seq (it was
+        // the Seq itself, so `.^name` said Seq and `.join` showed none of
+        // what indexing had reified). A bind (`sub f(@x)`) keeps the List.
+        if (!packedNow && nv.t == VT::Array && nv.ext() && nv.isList &&
+            (nv.s == "Seq" || nv.s.empty())) { nv.isList = false; nv.s = std::string(); }
+        if (!packedNow && nv.arr()) { // each element enters a container: Nil resets
+            Value proto; proto.ofTypeM() = keepType; proto.elemDefaultM() = keepDefault;
+            std::string want = elemTypeOfSpec(keepType);
+            // `@a = Nil` is a RESET to ONE default element, never a
+            // store — so it is not type-checked, and in a TYPED
+            // container the element is that type's type object, not a
+            // bare Any (Rakudo: `my Bool @r = Nil` is
+            // Array[Bool].new(Bool); coerceArray can only synthesise
+            // the Any, because it does not know the target's type).
+            const bool reset = rhs.t == VT::Nil;
+            // a NATIVE numeric array unboxes each element: a Str (or any
+            // other non-number) is refused, as Rakudo refuses it
+            const bool natNum = !reset && isNativeScalarName(keepType) &&
+                                keepType.compare(0, 3, "str") != 0;
+            const bool natFloat = natNum && keepType.compare(0, 3, "num") == 0;
+            const bool natStr = !reset && keepType == "str";
+            // the container's `:D`/`:U` smiley (by its name, `tname`), asked
+            // once for the whole list rather than once per element
+            const bool smileyCk = elemSmileyOf(tname) != 0;
+            for (auto& el : *nv.arr()) {
+                const bool hole = el.t == VT::Nil || el.t == VT::Any || el.t == VT::Type;
+                // …and unboxes it EXACTLY: an int array takes an Int that
+                // fits a machine word (not 1e0, not 2**65), a num array a
+                // Num (not 1), a str array a Str (not 1) — Rakudo's STORE
+                // refuses each of those rather than converting
+                bool refuse = false;
+                if (natNum && !hole) {
+                    if (natFloat) refuse = el.t != VT::Num && !typeOrSubsetMatches(el, "Num");
+                    else refuse = el.t != VT::Int && el.t != VT::Bool && !typeOrSubsetMatches(el, "Int");
+                }
+                if (natNum && !hole && !refuse && !natFloat && el.t == VT::Int && el.big())
+                    throwTyped("X::AdHoc", {},
+                        "Cannot unbox " + std::to_string(el.big()->bitLength() + 1) +
+                        " bit wide bigint into native integer");
+                if (refuse)
+                    throwTyped("X::AdHoc", {},
+                        "This type cannot unbox to a native " +
+                        std::string(natFloat ? "number" : "integer") +
+                        ": P6opaque, " + el.typeName());
+                if (natStr && !hole && !(el.t == VT::Str && el.hashKind.empty()) &&
+                    !typeOrSubsetMatches(el, "Str"))
+                    throwTyped("X::AdHoc", {},
+                        "This type cannot unbox to a native string: P6opaque, " + el.typeName());
+                // …and what it stores is the NATIVE value: a NumStr's Num,
+                // True's 1, 300 wrapped into an int8 as 44
+                if (natNum && !hole) {
+                    if (natFloat) {
+                        if (el.t != VT::Num || el.isAllomorph() || keepType == "num32")
+                            wrapNative(el, keepType == "num32" ? 32 : 64, true, true);
+                        el.natBits = 0; el.natFloat = false;
+                    }
+                    else {
+                        bool sg = true;
+                        const int bits = Value::natWidthOfType(keepType, sg);
+                        if (el.t != VT::Int || el.isAllomorph() || !el.enumName.empty() ||
+                            !el.enumType.empty())
+                            el = Value::integer(el.toInt());
+                        if (bits > 0) { wrapNative(el, bits, sg); el.natBits = 0; el.natSigned = false; }
+                    }
+                }
+                // a HOLE (the bare undefined scalar of a never-written
+                // slot, not a type object put there) reads as the native
+                // type's zero: `my @a; @a[1] = 1; my int @b = @a` is 0, 1
+                // (rakudo#2912, S09-typed-arrays/native-*.t)
+                if ((natNum || natStr) && el.t == VT::Any) {
+                    el = natStr ? Value::str("") : natFloat ? Value::number(0.0) : Value::integer(0);
+                    continue;
+                }
+                // (a defined element is already what the slot stores)
+                if (reset || el.t == VT::Nil) el = nilElemDefault(Value::nil(), proto);
+                // …and a TYPED one checks it: `my Int @a = 1, "x"` throws
+                if (!want.empty() && !reset) {
+                    coerceElemValue(*this, want, el);
+                    checkElemType(want, el, tname);
+                }
+                if (smileyCk) checkElemSmiley(tname, want, el);   // `my Int:D @x = Nil` dies
+            }
+        }
+        // PACKED-ARRAY-PLAN: a full-width `int`/`num` array whose every
+        // element came out a plain machine Int (Num) — the Value
+        // `Value::integer(x)` (`number(x)`) would be, nothing else set —
+        // is stored as words, when nothing else holds the container's
+        // storage (so the refill's identity has no other observer). It
+        // unpacks to exactly those Values the first time anything asks
+        // for them as Values.
+        if (!packedNow && isAssign && rhs.t != VT::Nil && nv.arr() && lv->t == VT::Array &&
+            lv->payloadUnique() && !lv->elemDefault() && !lv->shape() &&
+            (keepType == "int" || keepType == "int64" || keepType == "num" || keepType == "num64")) {
+            const bool asNum = keepType[0] == 'n';
+            bool all = true;
+            for (auto& el : *nv.arr())
+                if (!plainWordValue(el, asNum)) { all = false; break; }
+            if (all) {
+                auto pa = makePayload<PackedArr>();
+                pa->isNum = asNum;
+                pa->w.reserve(nv.arr()->size());
+                for (auto& el : *nv.arr()) pa->w.push_back(el.i);   // (`i` and `n` share one word)
+                nv.setPacked(pa);
+                packedNow = true;
+            }
+        }
+        // `=` REFILLS the same container (Raku identity): anything bound
+        // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change.
+        // When the coerced buffer has NO other owner (coerceArray built it
+        // fresh, which is every ordinary `@a = list`), its contents MOVE in
+        // O(1) instead of being copied a second time — `my @rows =
+        // $text.split("\n").map(…)` over 85k rows paid a full elementwise
+        // copy here for a buffer about to be thrown away. A shared buffer
+        // (a lazy RHS passes its own arr through) still copies: moving out
+        // of it would gut the list the RHS still holds.
+        if (packedNow) {}   // (lv's storage had no other holder: nv's words replace it)
+        else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) {
+            if (nv.payloadUnique()) *lv->arr() = std::move(*nv.arr());
+            else                         *lv->arr() = *nv.arr();
+            nv.setArr(lv->arrS());
+        }
+        // A FRESH slot (an attribute a custom BUILD writes first, before
+        // any seed) must still own its OWN buffer: storing the coerced
+        // value as-is shared the CALLER's array, and the module's later
+        // `@!points = @!points.pairs` rewrote the caller's @points
+        // (Algorithm::KDimensionalTree's search points turned into
+        // index=>point pairs under the caller's feet).
+        else if (nv.t == VT::Array && nv.arr() && !nv.payloadUnique()) {
+            Value own = Value::array();
+            *own.arr() = *nv.arr();
+            own.isList = false;
+            own.ofTypeM() = nv.ofType();
+            nv = own;
+        }
+        *lv = nv;
+    }
+    if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
+    if (keepDefault && !lv->elemDefault()) lv->elemDefaultM() = keepDefault;
+}
+
 // The packed-store lane (simpleSlot 7): `@a[$i] = EXPR` writes the word when
 // @a is still packed, the subscript is in range and EXPR's value is a plain
 // machine Int (Num, for a `num` array) — what the boxed element would have

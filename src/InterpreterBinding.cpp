@@ -7887,6 +7887,42 @@ Value Interpreter::inlineBlockValue() {
     return b;
 }
 
+// --exe: a native array (`my num @a`, `my int @a`, full width): its typed
+// container (rtTypedDefault, as the declaration makes it), filled as the
+// interpreter's `=` fills it (arrayStore: each element unboxed or refused,
+// the words kept)
+Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value rhs, bool dollarSource) {
+    Value a = rtTypedDefault(type, '@');
+    I.refuseLazyNative(a, rhs);
+    I.arrayStore(a, rhs, true, dollarSource, name);
+    return a;
+}
+// …and `@a = …` into a container that exists: a typed one as the interpreter
+// stores it; any other as a compiled `@a = …` always did
+Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource) {
+    if (lv.t != VT::Array || lv.ofType().empty() || lv.shape()) return rtArrayVal(rtNilToAny(std::move(rhs)));
+    I.refuseLazyNative(lv, rhs);
+    I.arrayStore(lv, rhs, true, dollarSource, name);
+    return lv;
+}
+// --exe `@a[$i] = v` into a packed array (rtIndexStore): its word, when the
+// value is a machine Int (Num, for a `num` array) and the index in range, and
+// no worker thread runs (a word written then could race the unpack:
+// packedElemStore's rule). False leaves the store to the element's place. A
+// native value's tags are no part of what the element holds.
+bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v) {
+    if (key.t != VT::Int || base.t != VT::Array || !base.packedLive() || key.big() || !key.hashKind.empty() ||
+        !key.enumName.empty() || !base.hashKind.empty() || base.elemDefault() || base.readonly ||
+        (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0))
+        return false;
+    PackedArr* pa = base.packed();
+    if (key.i < 0 || key.i >= (long long)pa->w.size()) return false;
+    Value w = v;
+    w.natBits = 0; w.natSigned = false; w.natFloat = false; w.readonly = false; w.itemized = false;
+    if (!plainWordValue(w, pa->isNum)) return false;
+    pa->w[(size_t)key.i] = w.i;
+    return true;
+}
 bool rtLiveFailure(const Value& r) {
     if (r.t != VT::Hash || r.hashKind != "Failure" || !r.hash()) return false;
     auto h = r.hash()->find("handled");

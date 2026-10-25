@@ -2631,6 +2631,10 @@ public:
     // hand over a defined instance instead, or `if $!` is False and `.message`
     // is "no such method".
     Value failureException(const Value& failure);
+    // what `@a = …` stores into an `@` container (evalAssign's, and compiled
+    // code's for a native array: rtNativeArrayNew, rtArrayAssignTo)
+    void arrayStore(Value& lv, Value& rhs, bool isAssign, bool dollarSource, const std::string& tname);
+    void refuseLazyNative(const Value& lv, const Value& rhs);   // …before it: a native array takes no lazy list
     // Run the innermost CONTROL handler for a `warn` (CX::Warn). True = the
     // handler .resume'd, so the default stderr print is suppressed; false =
     // no handler, or it finished without resuming (default behaviour stands).
@@ -5918,6 +5922,32 @@ struct RtTryScope {
 // handled (`.so`, `.defined`) among them: that one is the `try`'s value.
 bool rtTryFailure(Interpreter& I, Value& r);
 bool rtLiveFailure(const Value& r);   // a Failure nothing has handled yet (the interpreter's `try` asks too)
+// --exe: a native array declared and filled (arrayStore), `@a = …` into an
+// existing container, and `@a[$i] = v` in statement position: a packed
+// array's word when it can take one (rtPackedStore), the element's place
+// otherwise, as every element store was
+Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value rhs, bool dollarSource);
+Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource);
+bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
+Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp);
+inline void rtIndexStore(Interpreter& I, Value& base, const Value& key, Value v) {
+    if (base.pk_ == PK::Packed && rtPackedStore(I, base, key, v)) return;
+    rtIndexRef(base, key, false, nullptr) = std::move(v);
+}
+// …and `@a[$i]` read from one: the word, while the array is packed and the
+// subscript a machine Int in range (the Value the element unpacks to,
+// PackedArr::at), without unpacking it, which sends every read after it the
+// long way; anything else as rtIndexGet. (Codegen asks for these two only
+// for an array declared native: an ordinary one pays nothing for them.)
+Value rtIndexGet(const Value& base, const Value& key, bool isHash);
+inline Value rtIndexGetP(const Value& base, const Value& key) {
+    if (base.pk_ == PK::Packed && key.t == VT::Int && base.t == VT::Array && base.packedLive() && !key.big() &&
+        key.hashKind.empty() && key.enumName.empty() && base.hashKind.empty() && !base.elemDefault()) {
+        const PackedArr* pa = base.packed();
+        if (key.i >= 0 && key.i < (long long)pa->w.size()) return pa->at((size_t)key.i);
+    }
+    return rtIndexGet(base, key, false);
+}
 // --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
 // steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)
 // --exe multi dispatch guards: the idx-th positional argument by reference
