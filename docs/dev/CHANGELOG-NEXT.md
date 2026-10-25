@@ -15,7 +15,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 42f79e98, b9108e1d, 0b9950b1, 500c29e2, 1b182b8e, 828e52d5, 4d1c7cc3,
-80ea9030 and d972abe7.*
+80ea9030, d972abe7 and 166334a9.*
 
 ---
 
@@ -163,6 +163,14 @@ plain before 500c29e2 and native from it, unless they say otherwise.
 
 ### Fixed: silent wrong answers
 
+- **A routine compiled in a bundled program judges a store into a native
+  array's element as the interpreter does** (166334a9). Compiled on its own,
+  with no view of the program's declarations, it wrote the element's place:
+  a Str, a Rat or a Failure into an `int` or `num` array, and an Int into a
+  `num` one, were stored, `@w[$i] += 2.5` left 2.5, a Bool stayed one, `++`
+  at int64's top and an `int8` past its range did not wrap. Each module's
+  routines now know its native `@` names, of any width, and a store into one
+  asks the array whether it is native before taking the native path.
 - **Compiled `try` consumes a live Failure** (42f79e98), as interpreted: a block
   that returned one handed the Failure back and left `$!` unset; now `try`
   answers Nil, sets `$!` and marks the Failure handled.
@@ -460,10 +468,6 @@ does not.
   and `my int $t = @n[0] + @n[1]`, die "Cannot unbox 64 bit wide bigint" where
   Rakudo wraps, interpreted and compiled alike. `@n[0, 1]` on a native array
   is a native array where Rakudo's is a List.
-- In a program `--exe` bundles, a routine it compiles natively (module mode,
-  without the program's declarations) still stores into a native array's
-  element unchecked: `@w[$i] += 2.5` into an `int` array leaves 2.5, as it
-  did before these changes (8c570a98).
 - Reading a top-level loop's header variable where its C++ declaration is
   not in scope fails the `--exe` build with a C++ error (`v_si` undeclared):
   a routine (`sub show { say $i }` beside `loop (my int $i = 0; …)`), or a
