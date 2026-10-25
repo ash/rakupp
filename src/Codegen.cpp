@@ -6414,10 +6414,11 @@ struct Codegen {
         nrMode_ = true; nrRk_ = s.rk;
         bool ok = false;
         FrameScope __fs{this};
-        std::string text;
+        std::string text, topic;
         try {
             text = capture([&]() {
-                topics.push_back(routineTopic(nullptr, 1));
+                topic = routineTopic(nullptr, 1);
+                topics.push_back(topic);
                 struct Pop { Codegen* g; ~Pop() { g->topics.pop_back(); } } __pt{this};
                 ok = nrStmts(d->body, 1, s.rk != 0);
                 if (ok && s.rk) line(1, std::string("return ") + (s.rk == 'i' ? "0" : "0.0") + ";");
@@ -6425,6 +6426,12 @@ struct Codegen {
         } catch (const CodegenError&) { ok = false; }
         nrMode_ = false; nrScopes_.clear(); nrLoopNext_.clear();
         if (!ok || __fs.used()) return false;
+        // the routine's own `$_`, a Value made and destroyed on every call: only
+        // when something in the body reads it
+        const std::string decl = "    Value " + topic + " = ";
+        const size_t eol = text.find('\n');
+        if (eol != std::string::npos && text.compare(0, decl.size(), decl) == 0 && text.find(topic, eol) == std::string::npos)
+            text.erase(0, eol + 1);
         s.sig = sig;
         nrBodies_[d->name] = "static " + sig + " {\n" + text + "}\n";
         return true;
@@ -6521,24 +6528,25 @@ struct Codegen {
             "}\n"
             "static inline int64_t __nModZ(int64_t a, int64_t b) { return b ? __nMod(a, b) : __nZero(\"%\", a); }\n"
             "static inline int64_t __nDivZ(int64_t a, int64_t b) { return b ? __nDiv(a, b) : __nZero(\"div\", a); }\n"
-            "static inline int64_t __nGI(const Value& v, const char* n) {\n"
-            "    if (v.t == VT::Int && !v.big()) return v.i;\n"
-            "    return rtNativeStoreK(v, 2, \"int\", n, false).i;\n"
+            "// a file-scope native's value: the test inline, the conversion out of line\n"
+            "[[gnu::noinline]] static int64_t __nGIs(const Value& v, const char* n) { return rtNativeStoreK(v, 2, \"int\", n, false).i; }\n"
+            "[[gnu::noinline]] static double __nGNs(const Value& v, const char* n) { return rtNativeStoreK(v, 1, \"num\", n, false).n; }\n"
+            "[[gnu::always_inline]] static inline int64_t __nGI(const Value& v, const char* n) {\n"
+            "    return v.t == VT::Int && !v.big() ? v.i : __nGIs(v, n);\n"
             "}\n"
-            "static inline double __nGN(const Value& v, const char* n) {\n"
-            "    if (v.t == VT::Num) return v.n;\n"
-            "    return rtNativeStoreK(v, 1, \"num\", n, false).n;\n"
+            "[[gnu::always_inline]] static inline double __nGN(const Value& v, const char* n) {\n"
+            "    return v.t == VT::Num ? v.n : __nGNs(v, n);\n"
             "}\n"
             "static inline int64_t __nArgI(const Value& v) { return v.t == VT::Int && !v.big() ? v.i : v.toInt(); }\n"
             "static inline double __nArgN(const Value& v) { return v.t == VT::Num ? v.n : v.toNum(); }\n"
             "// an element of a packed native array as its word: read under rtIndexGetP's\n"
             "// tests, written under rtPackedStore's too\n"
-            "static inline bool __nPk(const Value& a, bool isNum, int64_t i) {\n"
+            "[[gnu::always_inline]] static inline bool __nPk(const Value& a, bool isNum, int64_t i) {\n"
             "    if (a.pk_ != PK::Packed || a.t != VT::Array || !a.packedLive() || !a.hashKind.empty() || a.elemDefault()) return false;\n"
             "    const PackedArr* p = a.packed();\n"
             "    return p->isNum == isNum && i >= 0 && i < (int64_t)p->w.size();\n"
             "}\n"
-            "static inline bool __nPkW(const Value& a, bool isNum, int64_t i) {\n"
+            "[[gnu::always_inline]] static inline bool __nPkW(const Value& a, bool isNum, int64_t i) {\n"
             "    return __nPk(a, isNum, i) && !a.readonly &&\n"
             "           !(RT.parallelMode_ && RT.liveWorkers_.load(std::memory_order_acquire) > 0);\n"
             "}\n"
