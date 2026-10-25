@@ -13,7 +13,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 9d48b3b5, 184c423c, 72e0c5fb and 316e5855 (FatRoast); 07775af3
 (FORTRAN-LESSONS 1a); e614993a; de2e08d4; c95d9332; d0ba733b
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
-85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21.*
+85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
+42f79e98, b9108e1d, 0b9950b1, 500c29e2 and 1b182b8e.*
 
 ---
 
@@ -94,8 +95,56 @@ interpreted.
   axpy-loop, which starts that way, 403.3 → 64.7 ms, and reading @b after the
   copy 258.6 → 44.9 ms.
 
+The next six entries measure `--exe -O` against the build before each commit,
+best of 5 interleaved, on one program of three routines (a recursion of
+about 500 calls over four native parameters updating file-scope tables at
+its leaves, a loop over one array, and an integer routine), its arrays
+plain before 500c29e2 and native from it, unless they say otherwise.
+
+- **A bundled program's routine that steps or stores into an outer variable
+  stays native** (42f79e98). `$n++`, `$n = $n + 1` and the like under -O, and
+  any store into a native outer, named a C++ local a routine of a bundled
+  program has not got, and the routine ran interpreted; the recursion ran
+  2.3× faster.
+- **Native `%`, `div`, and a `num` stored into an `int`, are inline in
+  compiled code** (42f79e98): `%` and `div` built a string from the operator
+  on every call, and the store took the general conversion. An Int or Str
+  subscript key makes no call. A routine of `int` locals doing integer
+  arithmetic on a `num` argument: 2,659 → 1,459 instructions a call.
+- **A compiled native store of a native `+ - *` skips the store's checks**
+  (b9108e1d) when the value can only be a fresh number of the target's kind:
+  that routine 1,459 → 1,317 instructions a call (untyped 1,294).
+- **A sub whose parameters are all full-width `int` / `num` compiles to a
+  plain C++ function over int64_t and double** (0b9950b1), beside its Value
+  function; a call of another such sub is a direct C++ call. A statement
+  whose native operation could answer other than a number keeps the boxed
+  form. The recursion 110.3 → 59.8 µs a call (plain `--exe` 220.5 → 64.0),
+  the integer routine 134.5 → 75.0 ns; untyped code retires the same
+  instructions.
+- **`my num @a` / `my int @a` compile under `--exe`** (500c29e2): a typed `@`
+  declaration bundled the whole program with the interpreter. A full-width
+  native array is built and filled as the interpreter does (one routine for
+  both engines now), keeps its words, and an element read or store uses them
+  while the array is packed. The recursion over native arrays 371.7 → 33.3 µs
+  a call, the loop 6.64 → 1.07 µs, the integer routine 580.8 → 72.0 ns; the
+  binary 29.91G → 3.06G instructions. A `num @x` parameter still bundles.
+- **A native routine reads and writes a native array's element as its word**
+  (1b182b8e), and a `/` with a Num on either side divides as a double, behind
+  the runtime tests that make that the answer (the array packed, the index in
+  range, a divisor not zero); otherwise the statement runs boxed, as before.
+  A routine ending in a loop gets its native function. The recursion 33.5 →
+  14.9 µs a call, the loop 1.10 → 0.64 µs; the binary 3.06G → 1.48G
+  instructions. The same program over plain arrays, and untyped, retire the
+  same instructions as before.
+
 ### Fixed: silent wrong answers
 
+- **Compiled `try` consumes a live Failure** (42f79e98), as interpreted: a block
+  that returned one handed the Failure back and left `$!` unset; now `try`
+  answers Nil, sets `$!` and marks the Failure handled.
+- **A Failure already handled passes through `try`** (42f79e98), as its value
+  with `$!` Nil, as in Rakudo 2026.09, in both engines; it was consumed like a
+  live one.
 - **Compiled `-$x` on 0e0 is -0** (d7c6d9d5), as interpreted and in Rakudo; it
   was `0 - $x`, which is +0. An object's `-$o` asks its `.Numeric`, not its
   `.Bridge`, as the interpreter does.
@@ -262,6 +311,8 @@ interpreted.
   S07-hyperrace/basics.t segfaulted about one run in six. 300 runs, none.
 - **`-O` compiles a `--> Int` sub of no parameters that is an int kernel**
   (e30e2827); its kernel guard named an `__a` its direct overload has not got.
+- **Compiled `$failure.handled = True` works** (42f79e98); it died "Target is
+  not assignable".
 - **Workers auto-extending one array by index no longer realloc its buffer
   at once** (90bc6e23). Four workers storing `@r[$w * 10_000 + $_]` into an
   empty array died 8/8 in parallel mode (SIGABRT, SIGBUS, SIGSEGV); the
@@ -380,3 +431,8 @@ does not.
   an `Int` candidate over an `int` one (273863ac). Rakudo's literal-index
   `(@u[0] = 2**64 - 1)` answers -1; Raku++ answers 2**64 - 1, as Rakudo does
   under a computed key (960e8aed).
+- A `--> int` call's result is a boxed Int to the native arithmetic around it,
+  as a native element is: `$s = $s + f($x)` into a `my int $s` at int64's max,
+  and `my int $t = @n[0] + @n[1]`, die "Cannot unbox 64 bit wide bigint" where
+  Rakudo wraps, interpreted and compiled alike. `@n[0, 1]` on a native array
+  is a native array where Rakudo's is a List.
