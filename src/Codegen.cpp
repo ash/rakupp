@@ -3470,7 +3470,9 @@ struct Codegen {
             emitCatchHandler(catchBlk, ind + 1);
             line(ind, "}");
         } else {
-            for (Stmt* s : regular) stmt(s, ind);
+            const bool nr = topLevel && post.empty() && topLevelEnds.empty();
+            for (Stmt* s : regular)
+                if (!nr || !nrMainline(s, ind)) stmt(s, ind);
         }
         for (auto it = post.rbegin(); it != post.rend(); ++it) emitPhaserBody(*it, ind);
     }
@@ -5562,6 +5564,8 @@ struct Codegen {
     struct NrCache { std::string base; char k = 0; std::string c; };   // one array's facts in an open native loop
     std::vector<std::vector<NrCache>> nrCaches_;   // per open native loop, innermost last
     bool nrCacheOff_ = false;                      // the per-access forms only (nrGuarded's second run)
+    bool nrOn_ = false;                            // planNative ran (not refused for the program as a whole)
+    bool nrMain_ = false;                          // emitting a top-level loop natively (nrMainline)
 
     static std::string nrName(const std::string& sub) { return "n_" + mangleSub(sub).substr(2); }
     static char nrParamKind(const Param& p) {
@@ -5727,62 +5731,56 @@ struct Codegen {
         return "([&]() { auto __r = (" + x + "); " + nrRefresh() + "return __r; }())";
     }
     void nrRefreshLine(int ind) { if (!nrCaches_.empty()) line(ind, nrRefresh()); }
-    // The arrays a loop's word forms name (`out`), and the `@` names it declares
-    void nrWordBases(const Expr* e, std::vector<const VarExpr*>& out, std::set<std::string>& decl) const {
+    // Each expression of the kinds a native body is made of, and each of its
+    // parts, in a statement or its subexpressions (nrVisit)
+    using NrSee = std::function<void(const Expr*)>;
+    void nrVisit(const Expr* e, const NrSee& f) const {
         if (!e) return;
+        f(e);
         switch (e->kind) {
-            case NK::VarExpr: { auto* v = static_cast<const VarExpr*>(e); if (v->declare) decl.insert(v->name); return; }
-            case NK::Index: {
-                auto* i = static_cast<const Index*>(e);
-                if (nrWordArray(i)) out.push_back(static_cast<const VarExpr*>(i->base.get()));
-                else nrWordBases(i->base.get(), out, decl);
-                nrWordBases(i->index.get(), out, decl);
-                return;
-            }
-            case NK::Binary: { auto* b = static_cast<const Binary*>(e); nrWordBases(b->lhs.get(), out, decl); nrWordBases(b->rhs.get(), out, decl); return; }
-            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) nrWordBases(o.get(), out, decl); return;
-            case NK::Unary: nrWordBases(static_cast<const Unary*>(e)->operand.get(), out, decl); return;
+            case NK::Index: { auto* i = static_cast<const Index*>(e); nrVisit(i->base.get(), f); nrVisit(i->index.get(), f); return; }
+            case NK::Binary: { auto* b = static_cast<const Binary*>(e); nrVisit(b->lhs.get(), f); nrVisit(b->rhs.get(), f); return; }
+            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) nrVisit(o.get(), f); return;
+            case NK::Unary: nrVisit(static_cast<const Unary*>(e)->operand.get(), f); return;
             case NK::Ternary: {
                 auto* t = static_cast<const Ternary*>(e);
-                nrWordBases(t->cond.get(), out, decl); nrWordBases(t->then.get(), out, decl); nrWordBases(t->els.get(), out, decl);
+                nrVisit(t->cond.get(), f); nrVisit(t->then.get(), f); nrVisit(t->els.get(), f);
                 return;
             }
-            case NK::Call: for (auto& a : static_cast<const Call*>(e)->args) nrWordBases(a.get(), out, decl); return;
-            case NK::Assign: { auto* a = static_cast<const Assign*>(e); nrWordBases(a->target.get(), out, decl); nrWordBases(a->value.get(), out, decl); return; }
-            case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) nrWordBases(x.get(), out, decl); return;
+            case NK::Call: for (auto& a : static_cast<const Call*>(e)->args) nrVisit(a.get(), f); return;
+            case NK::Assign: { auto* a = static_cast<const Assign*>(e); nrVisit(a->target.get(), f); nrVisit(a->value.get(), f); return; }
+            case NK::ListExpr: for (auto& x : static_cast<const ListExpr*>(e)->items) nrVisit(x.get(), f); return;
             default: return;
         }
     }
-    void nrWordBases(const std::vector<StmtPtr>& ss, std::vector<const VarExpr*>& out, std::set<std::string>& decl) const {
-        for (auto& sp : ss) {
-            const Stmt* s = sp.get();
-            if (!s) continue;
-            switch (s->kind) {
-                case NK::ExprStmt: nrWordBases(static_cast<const ExprStmt*>(s)->e.get(), out, decl); break;
-                case NK::ReturnStmt: nrWordBases(static_cast<const ReturnStmt*>(s)->value.get(), out, decl); break;
-                case NK::IfStmt: {
-                    auto* f = static_cast<const IfStmt*>(s);
-                    for (auto& br : f->branches) { nrWordBases(br.first.get(), out, decl); if (br.second) nrWordBases(br.second->stmts, out, decl); }
-                    if (f->elseBlock) nrWordBases(f->elseBlock->stmts, out, decl);
-                    break;
-                }
-                case NK::WhileStmt: {
-                    auto* w = static_cast<const WhileStmt*>(s);
-                    nrWordBases(w->cond.get(), out, decl);
-                    if (w->body) nrWordBases(w->body->stmts, out, decl);
-                    break;
-                }
-                case NK::LoopStmt: {
-                    auto* l = static_cast<const LoopStmt*>(s);
-                    nrWordBases(l->init.get(), out, decl); nrWordBases(l->cond.get(), out, decl); nrWordBases(l->incr.get(), out, decl);
-                    if (l->body) nrWordBases(l->body->stmts, out, decl);
-                    break;
-                }
-                case NK::Block: nrWordBases(static_cast<const Block*>(s)->stmts, out, decl); break;
-                default: break;
+    void nrVisit(const Stmt* s, const NrSee& f) const {
+        if (!s) return;
+        switch (s->kind) {
+            case NK::ExprStmt: nrVisit(static_cast<const ExprStmt*>(s)->e.get(), f); return;
+            case NK::ReturnStmt: nrVisit(static_cast<const ReturnStmt*>(s)->value.get(), f); return;
+            case NK::IfStmt: {
+                auto* i = static_cast<const IfStmt*>(s);
+                for (auto& br : i->branches) { nrVisit(br.first.get(), f); if (br.second) nrVisit(br.second->stmts, f); }
+                if (i->elseBlock) nrVisit(i->elseBlock->stmts, f);
+                return;
             }
+            case NK::WhileStmt: {
+                auto* w = static_cast<const WhileStmt*>(s);
+                nrVisit(w->cond.get(), f);
+                if (w->body) nrVisit(w->body->stmts, f);
+                return;
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<const LoopStmt*>(s);
+                nrVisit(l->init.get(), f); nrVisit(l->cond.get(), f); nrVisit(l->incr.get(), f);
+                if (l->body) nrVisit(l->body->stmts, f);
+                return;
+            }
+            case NK::Block: nrVisit(static_cast<const Block*>(s)->stmts, f); return;
+            default: return;
         }
     }
+    void nrVisit(const std::vector<StmtPtr>& ss, const NrSee& f) const { for (auto& s : ss) nrVisit(s.get(), f); }
     // An Int or Num operand of a double operation, as rtNumOperand reads it
     static std::string nrDouble(const NrT& t) { return t.k == 'i' ? "((double)(" + t.c + "))" : t.c; }
     // A value in the form of a native of kind `k`, when that is native
@@ -6172,6 +6170,7 @@ struct Codegen {
         nrDeclared_.clear();
         if (!nrSafe(e)) return false;
         std::vector<std::string> decl = std::move(nrDeclared_);
+        if (nrMain_ && !decl.empty()) return false;   // (a refused top-level loop is emitted again, boxed)
         stmt(s, ind);
         nrRefreshLine(ind);
         for (auto& n : decl) nrScopes_.back()[n] = NrVar{};
@@ -6355,123 +6354,125 @@ struct Codegen {
     // A routine's statements. `tail`: the last one produces its native result.
     bool nrStmts(const std::vector<StmtPtr>& ss, int ind, bool tail) {
         if (tail && ss.empty()) return false;
-        for (size_t i = 0; i < ss.size(); i++) {
-            Stmt* s = ss[i].get();
-            const bool last = tail && i + 1 == ss.size();
-            if (!s || !s->label.empty()) return false;
-            switch (s->kind) {
-                case NK::ExprStmt: {
-                    Expr* e = static_cast<ExprStmt*>(s)->e.get();
-                    if (last) {
-                        NrT t = nrExpr(e);
-                        if (t.k != nrRk_) return false;
-                        line(ind, "return " + t.c + ";");
-                        break;
-                    }
-                    if (!nrEffect(s, e, ind)) return false;
+        for (size_t i = 0; i < ss.size(); i++)
+            if (!nrStmt(ss[i].get(), ind, tail && i + 1 == ss.size())) return false;
+        return true;
+    }
+    // …one of them (`last`: the one that produces the native result)
+    bool nrStmt(Stmt* s, int ind, bool last) {
+        if (!s || !s->label.empty()) return false;
+        switch (s->kind) {
+            case NK::ExprStmt: {
+                Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                if (last) {
+                    NrT t = nrExpr(e);
+                    if (t.k != nrRk_) return false;
+                    line(ind, "return " + t.c + ";");
                     break;
                 }
-                case NK::ReturnStmt: {
-                    auto* r = static_cast<ReturnStmt*>(s);
-                    if (r->isRw) return false;
-                    if (!r->value) {
-                        if (nrRk_) return false;   // a bare `return` answers Nil, which a native result cannot be
-                        line(ind, "return;");
-                        break;
-                    }
-                    NrT t = nrExpr(r->value.get());
-                    if (nrRk_) {
-                        if (t.k != nrRk_) return false;
-                        line(ind, "return " + t.c + ";");
-                        break;
-                    }
-                    if (t.k) line(ind, "(void)(" + t.c + ");");
-                    else {
-                        if (!nrSafeNoDecl(r->value.get())) return false;
-                        line(ind, "(void)(" + exArg(r->value.get()) + ");");
-                    }
+                if (!nrEffect(s, e, ind)) return false;
+                break;
+            }
+            case NK::ReturnStmt: {
+                auto* r = static_cast<ReturnStmt*>(s);
+                if (r->isRw || nrMain_) return false;   // (outside a routine it is the boxed code's error)
+                if (!r->value) {
+                    if (nrRk_) return false;   // a bare `return` answers Nil, which a native result cannot be
                     line(ind, "return;");
                     break;
                 }
-                case NK::IfStmt: {
-                    auto* f = static_cast<IfStmt*>(s);
-                    if (!f->thenVar.empty() || !f->elseVar.empty() || !f->elseParams.empty() ||
-                        f->branches.empty() || (last && !f->elseBlock) || (f->isUnless && f->branches.size() > 1))
-                        return false;
-                    for (auto& bv : f->branchVars) if (!bv.empty()) return false;
-                    for (auto& bp : f->branchParams) if (!bp.empty()) return false;
-                    for (size_t bi = 0; bi < f->branches.size(); bi++) {
-                        auto& br = f->branches[bi];
-                        if (!br.second || !br.second->label.empty()) return false;
-                        // a statement-modifier `if`'s statement declares in the scope
-                        // around it, which the braces here would not: none may
-                        if (f->modifier)
-                            for (auto& st : br.second->stmts)
-                                if (st->kind == NK::ExprStmt) {
-                                    Expr* x = static_cast<ExprStmt*>(st.get())->e.get();
-                                    nrDeclared_.clear();
-                                    nrSafe(x);
-                                    const bool decl = !nrDeclared_.empty() || nrDeclaresNative(x);
-                                    nrDeclared_.clear();
-                                    if (decl) return false;
-                                }
-                        std::string c = nrCond(br.first.get(), true);
-                        if (c.empty()) return false;
-                        if (f->isUnless) c = "!(" + c + ")";
-                        line(ind, std::string(bi ? "else if (" : "if (") + c + ") {");
-                        nrScopes_.emplace_back();
-                        const bool ok = nrStmts(br.second->stmts, ind + 1, last);
-                        nrScopes_.pop_back();
-                        if (!ok) return false;
-                        line(ind, "}");
-                    }
-                    if (f->elseBlock) {
-                        if (!f->elseBlock->label.empty()) return false;
-                        line(ind, "else {");
-                        nrScopes_.emplace_back();
-                        const bool ok = nrStmts(f->elseBlock->stmts, ind + 1, last);
-                        nrScopes_.pop_back();
-                        if (!ok) return false;
-                        line(ind, "}");
-                    }
+                NrT t = nrExpr(r->value.get());
+                if (nrRk_) {
+                    if (t.k != nrRk_) return false;
+                    line(ind, "return " + t.c + ";");
                     break;
                 }
-                case NK::WhileStmt: {
-                    auto* w = static_cast<WhileStmt*>(s);
-                    // (a statement-modifier `while` has no block of its own: refused)
-                    if (last || !w->var.empty() || !w->params.empty() || w->asExpr || w->modifier || !w->body) return false;
-                    if (!nrLoop(w->cond.get(), w->isUntil, w->body.get(), nullptr, ind)) return false;
-                    break;
+                if (t.k) line(ind, "(void)(" + t.c + ");");
+                else {
+                    if (!nrSafeNoDecl(r->value.get())) return false;
+                    line(ind, "(void)(" + exArg(r->value.get()) + ");");
                 }
-                case NK::LoopStmt: {
-                    auto* l = static_cast<LoopStmt*>(s);
-                    if (last || l->asExpr || !l->body) return false;
-                    if (l->init && !nrEffect(nullptr, l->init.get(), ind)) return false;   // (its `my` is the enclosing scope's)
-                    if (!nrLoop(l->cond.get(), false, l->body.get(), l->incr.get(), ind)) return false;
-                    break;
-                }
-                case NK::Block: {
-                    auto* b = static_cast<Block*>(s);
-                    if (b->isCatch || !b->phaser.empty()) return false;
-                    line(ind, "{");
+                line(ind, "return;");
+                break;
+            }
+            case NK::IfStmt: {
+                auto* f = static_cast<IfStmt*>(s);
+                if (!f->thenVar.empty() || !f->elseVar.empty() || !f->elseParams.empty() ||
+                    f->branches.empty() || (last && !f->elseBlock) || (f->isUnless && f->branches.size() > 1))
+                    return false;
+                for (auto& bv : f->branchVars) if (!bv.empty()) return false;
+                for (auto& bp : f->branchParams) if (!bp.empty()) return false;
+                for (size_t bi = 0; bi < f->branches.size(); bi++) {
+                    auto& br = f->branches[bi];
+                    if (!br.second || !br.second->label.empty()) return false;
+                    // a statement-modifier `if`'s statement declares in the scope
+                    // around it, which the braces here would not: none may
+                    if (f->modifier)
+                        for (auto& st : br.second->stmts)
+                            if (st->kind == NK::ExprStmt) {
+                                Expr* x = static_cast<ExprStmt*>(st.get())->e.get();
+                                nrDeclared_.clear();
+                                nrSafe(x);
+                                const bool decl = !nrDeclared_.empty() || nrDeclaresNative(x);
+                                nrDeclared_.clear();
+                                if (decl) return false;
+                            }
+                    std::string c = nrCond(br.first.get(), true);
+                    if (c.empty()) return false;
+                    if (f->isUnless) c = "!(" + c + ")";
+                    line(ind, std::string(bi ? "else if (" : "if (") + c + ") {");
                     nrScopes_.emplace_back();
-                    const bool ok = nrStmts(b->stmts, ind + 1, last);
+                    const bool ok = nrStmts(br.second->stmts, ind + 1, last);
                     nrScopes_.pop_back();
                     if (!ok) return false;
                     line(ind, "}");
-                    break;
                 }
-                case NK::LastStmt:
-                    if (last || !static_cast<LastStmt*>(s)->target.empty() || nrLoopNext_.empty()) return false;
-                    line(ind, "break;");
-                    break;
-                case NK::NextStmt:
-                    if (last || !static_cast<NextStmt*>(s)->target.empty() || nrLoopNext_.empty()) return false;
-                    line(ind, "goto " + nrLoopNext_.back() + ";");
-                    break;
-                default:
-                    return false;
+                if (f->elseBlock) {
+                    if (!f->elseBlock->label.empty()) return false;
+                    line(ind, "else {");
+                    nrScopes_.emplace_back();
+                    const bool ok = nrStmts(f->elseBlock->stmts, ind + 1, last);
+                    nrScopes_.pop_back();
+                    if (!ok) return false;
+                    line(ind, "}");
+                }
+                break;
             }
+            case NK::WhileStmt: {
+                auto* w = static_cast<WhileStmt*>(s);
+                // (a statement-modifier `while` has no block of its own: refused)
+                if (last || !w->var.empty() || !w->params.empty() || w->asExpr || w->modifier || !w->body) return false;
+                if (!nrLoop(w->cond.get(), w->isUntil, w->body.get(), nullptr, ind)) return false;
+                break;
+            }
+            case NK::LoopStmt: {
+                auto* l = static_cast<LoopStmt*>(s);
+                if (last || l->asExpr || !l->body) return false;
+                if (l->init && !nrEffect(nullptr, l->init.get(), ind)) return false;   // (its `my` is the enclosing scope's)
+                if (!nrLoop(l->cond.get(), false, l->body.get(), l->incr.get(), ind)) return false;
+                break;
+            }
+            case NK::Block: {
+                auto* b = static_cast<Block*>(s);
+                if (b->isCatch || !b->phaser.empty()) return false;
+                line(ind, "{");
+                nrScopes_.emplace_back();
+                const bool ok = nrStmts(b->stmts, ind + 1, last);
+                nrScopes_.pop_back();
+                if (!ok) return false;
+                line(ind, "}");
+                break;
+            }
+            case NK::LastStmt:
+                if (last || !static_cast<LastStmt*>(s)->target.empty() || nrLoopNext_.empty()) return false;
+                line(ind, "break;");
+                break;
+            case NK::NextStmt:
+                if (last || !static_cast<NextStmt*>(s)->target.empty() || nrLoopNext_.empty()) return false;
+                line(ind, "goto " + nrLoopNext_.back() + ";");
+                break;
+            default:
+                return false;
         }
         return true;
     }
@@ -6486,11 +6487,16 @@ struct Codegen {
     // checked on entry
     bool nrLoop(Expr* condE, bool until, Block* body, Expr* incr, int ind) {
         if (!body->label.empty()) return false;
-        std::vector<const VarExpr*> bases;
-        std::set<std::string> decl;
-        nrWordBases(condE, bases, decl);
-        nrWordBases(incr, bases, decl);
-        nrWordBases(body->stmts, bases, decl);
+        std::vector<const VarExpr*> bases;   // the arrays its word forms name
+        std::set<std::string> decl;          // …and the names it declares
+        const NrSee see = [&](const Expr* x) {
+            if (x->kind == NK::VarExpr && static_cast<const VarExpr*>(x)->declare) decl.insert(static_cast<const VarExpr*>(x)->name);
+            else if (x->kind == NK::Index && nrWordArray(static_cast<const Index*>(x)))
+                bases.push_back(static_cast<const VarExpr*>(static_cast<const Index*>(x)->base.get()));
+        };
+        nrVisit(condE, see);
+        nrVisit(incr, see);
+        nrVisit(body->stmts, see);
         std::vector<NrCache> mine;
         for (const VarExpr* v : bases) {
             bool sh = false;
@@ -6618,6 +6624,57 @@ struct Codegen {
         nrBodies_[d->name] = "static " + sig + " {\n" + text + "}\n";
         return true;
     }
+    // A loop of the mainline, as a native routine's loop is emitted, when it
+    // reads or writes an element of a native array or calls a native routine
+    // (a lane takes neither; other loops keep their emission). Its header's
+    // `my` is a native local for the loop's extent, and the boxed variable,
+    // declared as the boxed loop declares it, takes its value after the loop.
+    // A statement in it that runs boxed may declare nothing: a refused loop
+    // is emitted again, boxed, and the first attempt's declarations would
+    // stand in the way. Not done where something could read the header's
+    // variable while the loop runs, or after an exception leaves it: a CATCH,
+    // LEAVE or END at the top level (emitSeq).
+    bool nrMainline(Stmt* s, int ind) {
+        if (!nrOn_ || moduleMode_ || nrMode_ || inClosure() || !s->label.empty()) return false;
+        if (s->kind != NK::LoopStmt && s->kind != NK::WhileStmt) return false;
+        bool worth = false;
+        nrVisit(s, [&](const Expr* x) {
+            if (x->kind == NK::Index && nrWordArray(static_cast<const Index*>(x))) worth = true;
+            else if (x->kind == NK::Call && !static_cast<const Call*>(x)->callee &&
+                     nrBodies_.count(static_cast<const Call*>(x)->name))
+                worth = true;
+        });
+        if (!worth) return false;
+        nrMode_ = true; nrMain_ = true; nrRk_ = 0;
+        nrScopes_.assign(1, {});
+        nrLoopNext_.clear();
+        bool ok = false;
+        std::string text;
+        std::map<std::string, NrVar> top;
+        {
+            FrameScope __fs{this};
+            try {
+                text = capture([&]() { ok = nrStmt(s, ind + 1, false); });
+            } catch (const CodegenError&) { ok = false; }
+            ok = ok && !__fs.used();
+            if (ok) top = nrScopes_.front();
+        }
+        nrMode_ = false; nrMain_ = false; nrScopes_.clear(); nrLoopNext_.clear();
+        if (!ok) return false;
+        if (s->kind == NK::LoopStmt) {   // (as stmtNative declares them for the boxed loop)
+            auto* l = static_cast<LoopStmt*>(s);
+            if (l->init) hoistExprDecls(l->init.get(), ind, /*includeRoot=*/true);
+            if (l->cond) hoistExprDecls(l->cond.get(), ind, /*includeRoot=*/true);
+            if (l->incr) hoistExprDecls(l->incr.get(), ind, /*includeRoot=*/true);
+        }
+        else hoistExprDecls(static_cast<WhileStmt*>(s)->cond.get(), ind);
+        line(ind, "{");
+        out << text;
+        for (auto& kv : top)
+            if (kv.second.k) line(ind + 1, varRef(kv.first) + " = " + nrBox(NrT{kv.second.c, kv.second.k, true}) + ";");
+        line(ind, "}");
+        return true;
+    }
     // Decide the native routines (a fixpoint: one that falls out changes the
     // calls of every other) and render them into nrBodies_
     void planNative(const std::vector<SubDecl*>& subs, const std::string& srcText) {
@@ -6627,6 +6684,7 @@ struct Codegen {
         for (const char* w : {".wrap", "EVAL", "::(", "CALLER::", "OUTER::", "MY::", "LEXICAL::", "callframe"})
             if (srcText.find(w) != std::string::npos) return;
         nrSixE_ = srcText.find("v6.e") != std::string::npos;
+        nrOn_ = true;
         std::map<std::string, SubDecl*> cand;
         for (SubDecl* d : subs) {
             if (d->isMulti || d->isProto || d->isMethod || d->isNative || d->retRw || d->retLiteralPresent ||
@@ -6689,7 +6747,7 @@ struct Codegen {
     }
     // The text before the routines: helpers and forward declarations
     std::string nrPreamble() const {
-        if (nrBodies_.empty()) return "";
+        if (nrBodies_.empty() && !(nrOn_ && !nativeArrays_.empty())) return "";   // (a top-level loop may use it too)
         std::string t =
             "// native routines (see Codegen::planNative): plain C++ functions over\n"
             "// int64_t and double, beside the routines' Value functions\n"
