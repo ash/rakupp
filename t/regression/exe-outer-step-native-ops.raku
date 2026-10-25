@@ -18,6 +18,10 @@
 #     still refused.
 #   · `$failure.handled = True` (and back to False), which compiled code
 #     refused as "Target is not assignable".
+#   · a native store of a native `+ - *` (or a `%`/`div` by a non-zero
+#     literal) of full-width natives skips its checks; the variable must stay
+#     native (it wraps afterwards), and a sized target, a literal-only value
+#     and a `%` by a variable keep the store.
 #
 # Expected values from Rakudo 2026.09 (2026-10-24).
 # Contract: exit 0 + last line PASS.
@@ -184,6 +188,36 @@ agree('failure-handled', q:to/END/, 'before: False|after: True|try: Failure Nil|
     }
     set-it(); unset-it();
     my $m = h(2e0, 0e0); $m.handled = True; say "main: ", $m.handled;
+    END
+
+# 7. Native stores of native operations.
+agree('native-store', q:to/END/, '-9223372033854775781 -9223372036854775804 -3 9223372033854775768 -1294967275|2147483648|2.5 -1.5|-9223372036854775808 6|modzero died');
+    sub ints(int $a, int $b) {
+        my int $x = $a * $b + 7;
+        $x = $x + 9223372036854775807;
+        my int $y = 2 + 3;
+        $y = $y + 9223372036854775807;
+        my int $n = -$a;
+        my int $w = -$a * 2 - $b;
+        $w = $w * $a;
+        $w = $w + 9223372036854775807;
+        my int32 $t = $a * $b;
+        "$x $y $n $w $t"
+    }
+    sub sized(int $a) { my int32 $s = 2147483647; my int $x = $s + $a; "$x" }
+    sub nums(num $p, num $q) {
+        my num $y = $p * 2e0 + $q;
+        $y = $y - $q * 3e0;
+        my num $z = -$p;
+        "$y $z"
+    }
+    sub modlit(int $a) { my int $r = $a % 7; my int $q = $a div -3; $r = $r + 9223372036854775807; "$r $q" }
+    sub modzero(int $a, int $b) { my int $z = ($a % $b) * 3; $z }
+    say ints(3, 1_000_000_007);
+    say sized(1);
+    say nums(1.5e0, 0.25e0);
+    say modlit(-20);
+    { say modzero(1, 0); CATCH { default { say "modzero died" } } }
     END
 
 $work.dir».unlink;

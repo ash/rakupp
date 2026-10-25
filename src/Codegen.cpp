@@ -4094,6 +4094,67 @@ struct Codegen {
         Param tp; tp.type = ty;
         return "rtTypedStore(RT, " + rhs + ", " + typedFastCode(tp) + ", " + cesc(ty) + ", " + cesc(n) + ")";
     }
+    // An assignment's native target of exactly full width: 'i' (`int`, `int64`),
+    // 'n' (`num`, `num64`), else 0 (a sized one wraps or rounds on the store)
+    static char fullWidthNative(const VarExpr* v) {
+        if (!v->lexResolved) return 0;
+        const std::string& t = v->d().readType;
+        if (v->nativeIntRead) return t == "int" || t == "int64" ? 'i' : 0;
+        if (v->nativeNumRead) return t == "num" || t == "num64" ? 'n' : 0;
+        return 0;
+    }
+    // …and a native READ whose every value fits an int64 (a `uint64` may not)
+    static char nativeLeafKind(const VarExpr* v) {
+        if (!v->lexResolved) return 0;
+        static const std::set<std::string> fits = {"int", "int64", "int32", "int16", "int8",
+                                                   "uint32", "uint16", "uint8", "byte"};
+        const std::string& t = v->d().readType;
+        if (v->nativeIntRead) return fits.count(t) ? 'i' : 0;
+        if (v->nativeNumRead) return t == "num" || t == "num64" || t == "num32" ? 'n' : 0;
+        return 0;
+    }
+    // A value already in the form a full-width native store of `kind` leaves
+    // (rtNativeIntOf, rtNativeNumOf), so the store can go: a native `+ - *` or
+    // prefix `-` (nativeArithCall, rtNativeNeg) whose leaves are such natives
+    // and literals, all of the kind. Each of those answers a fresh number of
+    // the kind or throws. A `%` or `div` on top keeps the store unless its
+    // divisor is a non-zero literal: under 6.e a zero divisor answers a
+    // Failure, which the store refuses.
+    static bool nonZeroIntLit(const Expr* e) {
+        if (e && e->kind == NK::Unary && !static_cast<const Unary*>(e)->postfix && static_cast<const Unary*>(e)->op == "-")
+            e = static_cast<const Unary*>(e)->operand.get();
+        return e && e->kind == NK::IntLit && static_cast<const IntLit*>(e)->big.empty() && static_cast<const IntLit*>(e)->v != 0;
+    }
+    bool freshNative(const Expr* e, char kind, bool top = true) const {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::IntLit: return !top && kind == 'i' && static_cast<const IntLit*>(e)->big.empty();
+            case NK::NumLit: {
+                auto* l = static_cast<const NumLit*>(e);
+                return !top && kind == 'n' && !l->isRat && !l->imaginary;
+            }
+            case NK::VarExpr: return !top && nativeLeafKind(static_cast<const VarExpr*>(e)) == kind;
+            case NK::Unary: {
+                auto* u = static_cast<const Unary*>(e);
+                if (u->postfix || u->op != "-" || !u->operand || opDeclared("prefix:<->")) return false;
+                const NK ok = u->operand->kind;
+                if (!top && (ok == NK::IntLit || ok == NK::NumLit)) return freshNative(u->operand.get(), kind, false);
+                char k = 0;
+                return nativeNumericStatic(u, &k) && k == kind && freshNative(u->operand.get(), kind, false);
+            }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                const std::string& o = b->op;
+                if (!(o == "+" || o == "-" || o == "*" ||
+                      (kind == 'i' && (o == "%" || o == "div") && (!top || nonZeroIntLit(b->rhs.get())))))
+                    return false;
+                char k = 0;
+                return nativeNumericStatic(b, &k) && k == kind && !opDeclared("infix:<" + b->written() + ">") &&
+                       freshNative(b->lhs.get(), kind, false) && freshNative(b->rhs.get(), kind, false);
+            }
+            default: return false;
+        }
+    }
     // Assigning a list to an @-array materializes a fresh (bracket-gisting) Array.
     std::string coerceFor(Expr* tgt, const std::string& rhs, Expr* value = nullptr) {
         if (tgt->kind == NK::VarExpr) {
@@ -4110,10 +4171,14 @@ struct Codegen {
                 if (v->declare && isNativeScalarDecl(v->d().declType)) {
                     const std::string& dt = v->d().declType;
                     const char* kind = dt == "num" || dt == "num64" ? "1" : dt == "int" || dt == "int64" ? "2" : "0";
+                    if (*kind != '0' && freshNative(value, *kind == '1' ? 'n' : 'i')) return rhs;
                     return "rtNativeStoreK(" + rhs + ", " + kind + ", " + cesc(dt) + ", " + cesc(n) + ", " + src + ")";
                 }
-                if (!v->declare && (v->nativeIntRead || v->nativeNumRead))
+                if (!v->declare && (v->nativeIntRead || v->nativeNumRead)) {
+                    const char k = fullWidthNative(v);
+                    if (k && freshNative(value, k)) return rhs;
                     return "rtNativeStoreLike(" + varRef(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
+                }
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
                 // `=` does: `my $a = [1, 2]; for $a { … }` is one iteration, and
                 // `.raku` says `$[1, 2]`. (What can only be a scalar skips it.)
