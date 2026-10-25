@@ -827,14 +827,22 @@ struct Codegen {
     // a test: the helpers answer for any array. The kind: 'i' (int), 'n'
     // (num), '?' when the name is declared both ways.
     std::map<std::string, char> nativeArrays_;
+    // …and those of any native element type (`int8`, `uint`, `str`): what a
+    // routine compiled in module mode judges its element stores by
+    // (nativeElemTarget), as the program's declarations reach it through
+    // AotNames
+    std::set<std::string> nativeElemNames_;
     void collectNativeArrays(const std::vector<StmtPtr>& ss) { for (auto& s : ss) collectNativeArrays(s.get()); }
     void collectNativeArrays(const Stmt* s) {
         if (!s) return;
         auto decl = [&](const Expr* x) {
             if (!x || x->kind != NK::VarExpr) return;
             auto* v = static_cast<const VarExpr*>(x);
-            if (v->declare && v->name.size() > 1 && v->name[0] == '@' && nativeArrayType(v->d().declType)) {
-                const char k = v->d().declType[0] == 'i' ? 'i' : 'n';
+            if (!v->declare || v->name.size() < 2 || v->name[0] != '@') return;
+            const std::string& t = v->d().declType;
+            if (isNativeScalarDecl(t) || t == "str") nativeElemNames_.insert(v->name);
+            if (nativeArrayType(t)) {
+                const char k = t[0] == 'i' ? 'i' : 'n';
                 auto it = nativeArrays_.emplace(v->name, k).first;
                 if (it->second != k) it->second = '?';
             }
@@ -856,6 +864,7 @@ struct Codegen {
             case NK::LoopStmt: if (auto* b = static_cast<const LoopStmt*>(s)->body.get()) collectNativeArrays(b->stmts); return;
             case NK::ForStmt: if (auto* b = static_cast<const ForStmt*>(s)->body.get()) collectNativeArrays(b->stmts); return;
             case NK::SubDecl: collectNativeArrays(static_cast<const SubDecl*>(s)->body); return;
+            case NK::ClassDecl: collectNativeArrays(static_cast<const ClassDecl*>(s)->body); return;
             default: return;
         }
     }
@@ -868,22 +877,34 @@ struct Codegen {
     // subscript, not `*`): the Index, else null. Every store into one goes
     // through rtElemStoreN, which converts, wraps or refuses as the
     // interpreter's does; the element's place (rtIndexRef) takes anything.
+    // In module mode the name may be another array's where the routine runs
+    // (the declarations are the whole module's, of any width), and a store
+    // there keeps module mode's own path unless the array is native
+    // (rtNatArr), the kept List's item checked among the rest.
     Index* nativeElemTarget(Expr* e) {
-        if (moduleMode_ || !e || e->kind != NK::Index) return nullptr;
+        if (!e || e->kind != NK::Index) return nullptr;
         auto* ix = static_cast<Index*>(e);
         if (ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index ||
-            !nativeArrayBase(ix->base.get()) || hasStarLit(ix->index.get()) || isSliceSubscript(ix->index.get()))
+            hasStarLit(ix->index.get()) || isSliceSubscript(ix->index.get()))
             return nullptr;
-        return ix;
+        if (!moduleMode_) return nativeArrayBase(ix->base.get()) ? ix : nullptr;
+        auto* bv = ix->base && ix->base->kind == NK::VarExpr ? static_cast<VarExpr*>(ix->base.get()) : nullptr;
+        return bv && !bv->declare && nativeElemNames_.count(bv->name) ? ix : nullptr;
     }
     // …its element stepped: the value the step answers (the old one for a postfix)
     std::string nativeElemStep(Index* ix, bool up, bool postfix) {
         noteIndexWrite(ix->base.get());
         const std::string base = lvalueExpr(ix->base.get());
-        return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(ix->index.get()) +
-               "; Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, rtStep(_o, " +
-               (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; }), '+'); " +
-               (postfix ? "return rtStepOld(std::move(_o));" : "return _n;") + " }())";
+        const std::string step = std::string("rtStep(_o, ") + (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; })";
+        const std::string native = "Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " + step +
+                                   ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");
+        std::string other;   // (module mode, an array not native after all: the step as it was)
+        if (moduleMode_)
+            other = " Value& _r = rtIndexRef(__b, __k, false, " +
+                    cesc(std::string(postfix ? "postfix" : "prefix") + ":<" + (up ? "++" : "--") + ">") +
+                    "); Value _o = _r; _r = " + step + "; " + (postfix ? "return rtStepOld(std::move(_o));" : "return _r;");
+        return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(ix->index.get()) + "; " +
+               (moduleMode_ ? "if (rtNatArr(RT, __b)) { " + native + " }" + other : native) + " }())";
     }
     static void refuseDeclTraits(const VarExpr* v) {
         const std::string& n = v->name;
@@ -4503,10 +4524,18 @@ struct Codegen {
         // kept (keepListContainers), whose item for a TYPED variable checks what
         // it takes (rtKeptAssign). The value first, as `=` has it; a native
         // program never holds such a List.
+        Index* nix = nativeElemTarget(tgt);
+        if (a->op == "=" && moduleMode_ && nix) {   // (…and an element of a native array, nativeElemTarget)
+            noteIndexWrite(nix->base.get());
+            const std::string base = lvalueExpr(nix->base.get());
+            return "([&]() -> Value { Value __kv = " + coerceFor(tgt, rhs, a->value.get()) + "; Value& __b = " + base +
+                   "; Value __k = " + ex(nix->index.get()) + "; if (rtNatArr(RT, __b)) return rtElemStoreN(RT, __b, __k, "
+                   "std::move(__kv), '='); t_keptItem = {}; return rtKeptAssign(RT, rtIndexRef(__b, __k, false, nullptr), "
+                   "std::move(__kv)); }())";
+        }
         if (a->op == "=" && moduleMode_ && tgt->kind == NK::Index)
             return "([&]() -> Value& { Value __kv = " + coerceFor(tgt, rhs, a->value.get()) +
                    "; t_keptItem = {}; return rtKeptAssign(RT, " + lvalueExpr(tgt) + ", std::move(__kv)); }())";
-        Index* nix = nativeElemTarget(tgt);
         if (a->op == "=" && nix) {   // (the value first, as the assignment's own order has it)
             noteIndexWrite(nix->base.get());
             const std::string base = lvalueExpr(nix->base.get());
@@ -4561,8 +4590,13 @@ struct Codegen {
             if (nix) {
                 noteIndexWrite(nix->base.get());
                 const std::string base = lvalueExpr(nix->base.get());
-                return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(nix->index.get()) +
-                       "; Value __r = rtIndexGetP(__b, __k); " + op + " return rtElemStoreN(RT, __b, __k, std::move(__r), 'o'); }())";
+                const std::string native = "Value __r = rtIndexGetP(__b, __ek); " + op +
+                                           " return rtElemStoreN(RT, __b, __ek, std::move(__r), 'o');";
+                return "([&]()->Value{ Value& __b = " + base + "; Value __ek = " + ex(nix->index.get()) + "; " +
+                       (moduleMode_ ? "if (rtNatArr(RT, __b)) { " + native + " } t_keptItem = {}; "
+                                      "Value& __r = rtIndexRef(__b, __ek, false, nullptr); RtKept __k(__r); " +
+                                      op + " __k.check(RT, __r); return __r;"
+                                    : native) + " }())";
             }
             std::string ref = lvalueExpr(tgt);
             // (in a module routine, through a kept item for a typed variable,
@@ -9611,6 +9645,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     g.rwMethodNames_ = names.rwMethods;
     g.aotTypeNames_ = names.types;
     g.lexOps_ = names.ops;
+    g.nativeElemNames_ = names.nativeArrays;
     g.aotFree_ = freeNames;
     g.aotLocals_ = locals;
     g.aotTag_ = fn;
@@ -9661,6 +9696,12 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
 }
 
 } // namespace
+
+std::set<std::string> nativeArrayNames(const Program& p) {
+    Codegen g;
+    g.collectNativeArrays(p.stmts);
+    return g.nativeElemNames_;
+}
 
 std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& callEnvNames,
                                    std::vector<int>* delegatedLines, bool optimize) {

@@ -91,7 +91,12 @@ std::string transpileToCpp(Program& prog, bool optimize = false, const std::stri
 // which resolves the binding in reach; the body cannot.
 struct AotNames {
     std::set<std::string> callEnv, rwSubs, rwMethods, types, ops;
+    std::set<std::string> nativeArrays;   // the module's `@` names declared native, any width (nativeArrayNames)
 };
+// The `@` names a program declares with a native element type, in any scope
+// (`my int @a`, `my int8 @b`, `my str @c`): its routines compiled in module
+// mode judge stores into their elements as the interpreter does
+std::set<std::string> nativeArrayNames(const Program& p);
 // `delegatedLines`, when given, receives the source line of every statement
 // the body hands to the interpreter (RAKUPP_AOT_REPORT). `optimize` is the
 // program's `-O`.

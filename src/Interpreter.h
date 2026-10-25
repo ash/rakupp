@@ -5932,6 +5932,11 @@ Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value
 Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource);
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
+// …and whether an array is native (a routine compiled in module mode asks:
+// the name it was told is native may be another array's where it runs)
+inline bool rtNatArr(Interpreter& I, const Value& b) {
+    return b.t == VT::Array && !b.ofType().empty() && !I.nativeElemTypeOf(b).empty();
+}
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp);
 inline void rtIndexStore(Interpreter& I, Value& base, const Value& key, Value v) {
     if (base.pk_ == PK::Packed && rtPackedStore(I, base, key, v)) return;
