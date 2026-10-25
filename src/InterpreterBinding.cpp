@@ -4168,6 +4168,14 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // (`my $i = *-1; @a[$i]`) only the KEY knows, and this read element one.
     if (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode))
         if (g_cbInterp) return g_cbInterp->idxW(base, key, isHash);
+    // a slice of a NATIVE array is a native array of the same type, as the
+    // interpreter's is (`@ints[^2]` is `array[int].new(1, 2)`), not a List
+    auto nativeSlice = [&](Value& out) {
+        if (isHash || base.t != VT::Array || base.isList || !isNativeScalarName(base.ofType())) return false;
+        out.isList = false;
+        out.ofTypeM() = base.ofType();
+        return true;
+    };
     // An INFINITE range subscript (`@a[1..Inf]`, `@a[$s ..^ $e]` with $e = Inf)
     // is lazy and stops at the end of the list, as the interpreter's does;
     // flattened, it was thousands of Nils.
@@ -4177,6 +4185,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         const long long n = (long long)base.arr()->size();
         for (long long i = key.rFrom() + (key.rExFrom() ? 1 : 0); i < n; i++)
             out.arr()->push_back(rtIndexGet(base, Value::integer(i), false));
+        nativeSlice(out);
         return out;
     }
     // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
@@ -4184,6 +4193,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         Value out = Value::array(); out.isList = true;
         const ValueList ks = key.flatten();
         for (auto& k : ks) out.arr()->push_back(rtIndexGet(base, k, isHash));
+        if (nativeSlice(out)) return out;
         // a slice of an Array's elements, every index one it has, writes
         // through to the array (ElemView), as the interpreter's slice does
         if (!isHash && base.t == VT::Array && base.arr() && !ks.empty() && out.arr()->size() == ks.size()) {

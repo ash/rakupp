@@ -824,16 +824,20 @@ struct Codegen {
     // scope: an element read or a statement store of one takes the
     // packed-aware helpers (rtIndexGetP, rtIndexStore). A name native in one
     // scope and plain in another takes them in both, which costs the plain one
-    // a test: the helpers answer for any array.
-    std::set<std::string> nativeArrays_;
+    // a test: the helpers answer for any array. The kind: 'i' (int), 'n'
+    // (num), '?' when the name is declared both ways.
+    std::map<std::string, char> nativeArrays_;
     void collectNativeArrays(const std::vector<StmtPtr>& ss) { for (auto& s : ss) collectNativeArrays(s.get()); }
     void collectNativeArrays(const Stmt* s) {
         if (!s) return;
         auto decl = [&](const Expr* x) {
             if (!x || x->kind != NK::VarExpr) return;
             auto* v = static_cast<const VarExpr*>(x);
-            if (v->declare && v->name.size() > 1 && v->name[0] == '@' && nativeArrayType(v->d().declType))
-                nativeArrays_.insert(v->name);
+            if (v->declare && v->name.size() > 1 && v->name[0] == '@' && nativeArrayType(v->d().declType)) {
+                const char k = v->d().declType[0] == 'i' ? 'i' : 'n';
+                auto it = nativeArrays_.emplace(v->name, k).first;
+                if (it->second != k) it->second = '?';
+            }
         };
         switch (s->kind) {
             case NK::ExprStmt: {
@@ -5511,6 +5515,8 @@ struct Codegen {
     bool nrSixE_ = false;                          // 6.e: an integer `%` / `div` by zero answers a Failure
     std::vector<std::string> nrDeclared_;          // the boxed locals a delegated statement declares
     std::string nrWrapFor_;                        // the sub whose Value function bodyDef emits next (subDef)
+    std::vector<std::string>* nrGuards_ = nullptr; // while set: a guarded form's tests, in evaluation order
+    int nrGuardOff_ = 0;                           // > 0: no guarded form (the boxed side of one)
 
     static std::string nrName(const std::string& sub) { return "n_" + mangleSub(sub).substr(2); }
     static char nrParamKind(const Param& p) {
@@ -5579,11 +5585,77 @@ struct Codegen {
         return true;
     }
 
+    // Guarded forms. An element of an array declared native is a machine word
+    // while the array is packed, and a `/` with a Num on either side (an Int on
+    // the other, or a Num) is a double division by a non-zero divisor: both
+    // have a native form behind a test (the array packed with words of the
+    // kind and the index in range, as rtIndexGetP has it; the divisor not
+    // zero, as rtSlash has it). A statement or condition holding such parts is
+    // emitted twice, `(TESTS) ? NATIVE : BOXED`, the boxed side as before.
+    // Inside a guarded form nothing calls out or runs boxed, so nothing
+    // between the tests and the reads can change an array.
+    struct NrGuardOff {
+        Codegen* g;
+        explicit NrGuardOff(Codegen* c) : g(c) { g->nrGuardOff_++; }
+        ~NrGuardOff() { g->nrGuardOff_--; }
+    };
+    // `@a[I]` of an array declared native of one kind: 'i' or 'n', else 0
+    char nrWordArray(const Index* ix) const {
+        if (!ix || ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() ||
+            !nativeArrayBase(ix->base.get()))
+            return 0;
+        const char k = nativeArrays_.at(static_cast<const VarExpr*>(ix->base.get())->name);
+        return k == '?' ? 0 : k;
+    }
+    // Could the expression have a guarded form (an element read of a native
+    // array, or a `/` by something other than a literal)? A cheap look first.
+    bool nrWordish(const Expr* e) const {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::Index: { auto* i = static_cast<const Index*>(e); return nrWordArray(i) || nrWordish(i->index.get()); }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                if (b->op == "/" && !nonZeroNumLit(b->rhs.get())) return true;
+                return nrWordish(b->lhs.get()) || nrWordish(b->rhs.get());
+            }
+            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) if (nrWordish(o.get())) return true; return false;
+            case NK::Unary: return nrWordish(static_cast<const Unary*>(e)->operand.get());
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); return nrWordish(t->cond.get()) || nrWordish(t->then.get()) || nrWordish(t->els.get()); }
+            case NK::Call: for (auto& a : static_cast<const Call*>(e)->args) if (nrWordish(a.get())) return true; return false;
+            default: return false;
+        }
+    }
+    // Run `f` collecting the tests its native form needs; its C++ and the tests
+    // joined with && (`guard`), or "" when it has no native form or needs none
+    template <class F> std::string nrGuarded(F&& f, std::string& guard) {
+        if (nrGuards_ || nrGuardOff_ || !nrMode_) return "";
+        std::vector<std::string> gs;
+        nrGuards_ = &gs;
+        std::string c;
+        try { c = f(); } catch (...) { nrGuards_ = nullptr; throw; }
+        nrGuards_ = nullptr;
+        if (c.empty() || gs.empty()) return "";
+        guard.clear();
+        std::set<std::string> seen;   // a test met twice is made once, where first met
+        for (auto& g : gs) if (seen.insert(g).second) guard += (guard.empty() ? "" : " && ") + g;
+        return c;
+    }
+    // An Int or Num operand of a double operation, as rtNumOperand reads it
+    static std::string nrDouble(const NrT& t) { return t.k == 'i' ? "((double)(" + t.c + "))" : t.c; }
+    // A value in the form of a native of kind `k`, when that is native
+    static std::string nrConvT(const NrT& t, char k) {
+        if (t.k == k) return t.c;
+        if (k == 'n' && t.k == 'i' && t.tagged) return "((double)(" + t.c + "))";
+        if (k == 'i' && t.k == 'n' && t.tagged) return "__nToI(" + t.c + ")";
+        if (k == 'i' && t.k == 'b') return "((int64_t)(" + t.c + "))";
+        return "";
+    }
+
     // An expression with a native form: its C++ over int64_t/double/bool. It has
     // one exactly where the boxed code computes a native value (a native read,
     // a literal, a nativeNumericStatic operation), compares numbers, or calls a
     // native routine; anything else answers k == 0, and the caller takes the
-    // boxed form.
+    // boxed form. While nrGuards_ is set it also has the guarded forms above.
     NrT nrExpr(Expr* e) {
         NrT r;
         if (!e) return r;
@@ -5655,14 +5727,27 @@ struct Codegen {
                 }
                 if (o == "+" || o == "-" || o == "*" || o == "%" || o == "div") {
                     char k = 0;
-                    if (!nativeNumericStatic(b, &k)) return r;
+                    if (!nativeNumericStatic(b, &k)) {
+                        // a Num and a Num or an Int, not both natives (an element,
+                        // a `/`, a call's result, an int with a num): the boxed
+                        // operation is the double one (rtAdd's Num arm), its
+                        // result a plain Num. Two Ints of that kind grow instead
+                        // of wrapping: no native form.
+                        if (o == "%" || o == "div") return r;
+                        NrT a = nrExpr(b->lhs.get());
+                        if (a.k != 'n' && a.k != 'i') return r;
+                        NrT c = nrExpr(b->rhs.get());
+                        if ((c.k != 'n' && c.k != 'i') || (a.k != 'n' && c.k != 'n')) return r;
+                        r.c = "((" + nrDouble(a) + ") " + o + " (" + nrDouble(c) + "))"; r.k = 'n';
+                        return r;
+                    }
                     NrT a = nrExpr(b->lhs.get()), c = nrExpr(b->rhs.get());
                     if (a.k != k || c.k != k) return r;
                     if (k == 'n') { r.c = "((" + a.c + ") " + o + " (" + c.c + "))"; r.k = 'n'; r.tagged = true; return r; }
                     if (o == "%" || o == "div") {
                         const std::string f = o == "%" ? "__nMod" : "__nDiv";
                         if (nonZeroIntLit(b->rhs.get())) r.c = f + "(" + a.c + ", " + c.c + ")";
-                        else if (!nrSixE_) r.c = f + "Z(" + a.c + ", " + c.c + ")";
+                        else if (!nrSixE_ && !nrGuards_) r.c = f + "Z(" + a.c + ", " + c.c + ")";   // (it may throw)
                         else return r;
                     }
                     else r.c = "((int64_t)((uint64_t)(" + a.c + ") " + o + " (uint64_t)(" + c.c + ")))";
@@ -5670,20 +5755,37 @@ struct Codegen {
                     return r;
                 }
                 // `/` is never a native operation: two Nums give a plain Num, and
-                // a zero divisor a Failure, which only the boxed path holds
+                // a zero divisor a Failure, which only the boxed path holds. By
+                // anything but a non-zero literal it is a guarded form.
                 if (o == "/") {
-                    if (!nonZeroNumLit(b->rhs.get())) return r;
-                    NrT a = nrExpr(b->lhs.get()), c = nrExpr(b->rhs.get());
-                    if (a.k != 'n' || c.k != 'n') return r;
-                    r.c = "((" + a.c + ") / (" + c.c + "))";
+                    const bool lit = nonZeroNumLit(b->rhs.get());
+                    if (!lit && !nrGuards_) return r;
+                    NrT a = nrExpr(b->lhs.get());
+                    if (lit ? a.k != 'n' : a.k != 'n' && a.k != 'i') return r;
+                    NrT c = nrExpr(b->rhs.get());
+                    if (lit ? c.k != 'n' : (c.k != 'n' && c.k != 'i') || (a.k != 'n' && c.k != 'n')) return r;   // (two Ints: a Rat)
+                    if (!lit) nrGuards_->push_back("((" + nrDouble(c) + ") != 0.0)");
+                    r.c = "((" + nrDouble(a) + ") / (" + nrDouble(c) + "))";
                     r.k = 'n';
                     return r;
                 }
                 return r;
             }
+            case NK::Index: {   // a guarded form only
+                auto* ix = static_cast<Index*>(e);
+                const char ak = nrGuards_ ? nrWordArray(ix) : 0;
+                if (!ak) return r;
+                NrT i = nrExpr(ix->index.get());
+                if (i.k != 'i') return r;
+                const std::string base = varRef(static_cast<VarExpr*>(ix->base.get())->name);
+                nrGuards_->push_back("__nPk(" + base + ", " + (ak == 'n' ? "true" : "false") + ", " + i.c + ")");
+                r.c = std::string(ak == 'n' ? "__nWN(" : "__nWI(") + base + ", " + i.c + ")";
+                r.k = ak;   // the plain Int or Num the element unpacks to
+                return r;
+            }
             case NK::Ternary: {
                 auto* t = static_cast<Ternary*>(e);
-                std::string c = nrCond(t->cond.get(), true);
+                std::string c = nrCond(t->cond.get(), !nrGuards_);
                 if (c.empty()) return r;
                 NrT a = nrExpr(t->then.get()), x = nrExpr(t->els.get());
                 if (!a.k || a.k != x.k || a.tagged != x.tagged) return r;
@@ -5697,7 +5799,7 @@ struct Codegen {
                 auto it = nrSubs_.find(c->name);
                 if (it != nrSubs_.end()) {
                     std::string a;
-                    if (!it->second.rk || !nrArgs(c, it->second, a)) return r;
+                    if (nrGuards_ || !it->second.rk || !nrArgs(c, it->second, a)) return r;
                     r.c = nrName(c->name) + "(" + a + ")";
                     r.k = it->second.rk;   // a plain value: the call hands back no native tags
                     return r;
@@ -5722,6 +5824,15 @@ struct Codegen {
     // `boxedOk`) as the boxed `if` tests it (exBool)
     std::string nrCond(Expr* e, bool boxedOk) {
         if (!e) return "";
+        if (boxedOk && nrWordish(e)) {
+            std::string g;
+            const std::string w = nrGuarded([&] { return nrCond(e, false); }, g);
+            if (!w.empty()) {
+                NrGuardOff off{this};
+                const std::string plain = nrCond(e, true);
+                return plain.empty() ? "" : "((" + g + ") ? (" + w + ") : (" + plain + "))";
+            }
+        }
         if (e->kind == NK::Binary) {
             auto* b = static_cast<Binary*>(e);
             const bool andOp = b->op == "&&" || b->op == "and", orOp = b->op == "||" || b->op == "or";
@@ -5743,11 +5854,16 @@ struct Codegen {
     // (rtNativeStoreK): directly when the native form allows it, through the
     // boxed store otherwise (which also refuses what a native cannot hold)
     std::string nrConv(Expr* value, char k, const std::string& type, const std::string& name) {
+        std::string g;
+        const std::string w = nrWordish(value) ? nrGuarded([&] { return nrConvT(nrExpr(value), k); }, g) : "";
+        if (!w.empty()) {
+            NrGuardOff off{this};
+            const std::string plain = nrConv(value, k, type, name);
+            return plain.empty() ? "" : "((" + g + ") ? (" + w + ") : (" + plain + "))";
+        }
         NrT t = nrExpr(value);
-        if (t.k == k) return t.c;
-        if (k == 'n' && t.k == 'i' && t.tagged) return "((double)(" + t.c + "))";
-        if (k == 'i' && t.k == 'n' && t.tagged) return "__nToI(" + t.c + ")";
-        if (k == 'i' && t.k == 'b') return "((int64_t)(" + t.c + "))";
+        std::string c = nrConvT(t, k);
+        if (!c.empty()) return c;
         std::string boxed;
         if (t.k) boxed = nrBox(t);
         else if (nrSafeNoDecl(value)) boxed = exArg(value);
@@ -5814,7 +5930,7 @@ struct Codegen {
                 if (n == "$_" || n == "$/" || n == "$!" || n == "@_" || n == "%_" || n.size() < 2) return false;
                 if (ascii::isdigit((unsigned char)n[1]) || n[1] == '?' || n[1] == '=' || n[1] == '~') return false;
                 if (v->declare) {
-                    if (isNativeScalarDecl(v->d().declType)) return false;   // (nrStmts declares those)
+                    if (n[0] == '$' && isNativeScalarDecl(v->d().declType)) return false;   // (nrStmts declares those)
                     nrDeclared_.push_back(n);
                 }
                 return true;
@@ -5915,7 +6031,8 @@ struct Codegen {
     // statement, or null for a loop header's part.
     bool nrEffect(Stmt* s, Expr* e, int ind) {
         if (!e) return true;
-        if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) {   // `my int $x;`
+        if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare &&
+            static_cast<VarExpr*>(e)->name[0] == '$') {   // `my int $x;` (`my int @a` is the boxed code's)
             auto* v = static_cast<VarExpr*>(e);
             const std::string& dt = v->d().declType;
             if (dt == "int" || dt == "int64") { nrDecl(v->name, 'i', "0", ind); return true; }
@@ -5928,7 +6045,7 @@ struct Codegen {
                 const std::string& op = a->op;
                 if (v->declare) {
                     const std::string& dt = v->d().declType;
-                    const char k = dt == "int" || dt == "int64" ? 'i' : dt == "num" || dt == "num64" ? 'n' : 0;
+                    const char k = v->name[0] != '$' ? 0 : dt == "int" || dt == "int64" ? 'i' : dt == "num" || dt == "num64" ? 'n' : 0;
                     if (k) {
                         if (op != "=" || v->d().declDefault) return false;
                         std::string c = nrConv(a->value.get(), k, dt, v->name);
@@ -5948,7 +6065,22 @@ struct Codegen {
                     if (op == "+=" || op == "-=" || op == "*=") {
                         const std::string bop = op.substr(0, 1);
                         if (opDeclared("infix:<" + bop + ">") || opDeclared("infix:<" + op + ">")) return false;
-                        NrT r = nrExpr(a->value.get());
+                        Expr* val = a->value.get();
+                        // a num's guarded form; its boxed side the boxed operation
+                        // (rtAdd and kin), stored as into the native
+                        std::string g;
+                        const std::string w = k == 'n' && nrWordish(val)
+                            ? nrGuarded([&] { NrT t = nrExpr(val); return t.k == 'n' ? t.c : std::string(); }, g) : "";
+                        if (!w.empty()) {
+                            NrGuardOff off{this};
+                            if (!nrSafeNoDecl(val)) return false;
+                            const std::string fn = bop == "+" ? "rtAdd(" : bop == "-" ? "rtSub(" : "rtMul(";
+                            line(ind, nv->c + " = (" + g + ") ? (" + nv->c + " " + bop + " (" + w + ")) : rtNativeStoreK(" +
+                                      fn + nrBox(NrT{nv->c, 'n', true}) + ", " + exArg(val) + "), 1, \"num\", " +
+                                      cesc(v->name) + ", false).n;");
+                            return true;
+                        }
+                        NrT r = nrExpr(val);
                         if (r.k != k) return false;
                         if (k == 'i') line(ind, nv->c + " = (int64_t)((uint64_t)" + nv->c + " " + bop + " (uint64_t)(" + r.c + "));");
                         else line(ind, nv->c + " = " + nv->c + " " + bop + " (" + r.c + ");");
@@ -5959,15 +6091,22 @@ struct Codegen {
                 else if (char gk = nrGlobalKind(v)) {
                     const std::string g = varRef(v->name);
                     if (op == "=") {
-                        NrT t = nrExpr(a->value.get());
+                        std::string gd;
+                        const std::string w = nrWordish(a->value.get())
+                            ? nrGuarded([&] { NrT t = nrExpr(a->value.get()); return t.k == gk ? t.c : std::string(); }, gd) : "";
+                        NrT t;
+                        if (w.empty()) t = nrExpr(a->value.get());
                         if (t.k == gk) {
                             line(ind, g + " = " + nrBox(NrT{t.c, gk, true}) + ";");
                             return true;
                         }
+                        NrGuardOff off{this};
                         if (!nrSafeNoDecl(a->value.get())) return false;
                         const std::string src = nativeNumericStatic(a->value.get()) ? "true" : "false";
-                        line(ind, g + " = rtNativeStoreLike(" + g + ", " + exArg(a->value.get()) + ", " +
-                                  cesc(v->name) + ", " + src + ");");
+                        const std::string boxed = "rtNativeStoreLike(" + g + ", " + exArg(a->value.get()) + ", " +
+                                                  cesc(v->name) + ", " + src + ")";
+                        if (!w.empty()) line(ind, g + " = (" + gd + ") ? " + nrBox(NrT{w, gk, true}) + " : " + boxed + ";");
+                        else line(ind, g + " = " + boxed + ";");
                         return true;
                     }
                     if (op == "+=" || op == "-=" || op == "*=") {
@@ -5982,6 +6121,37 @@ struct Codegen {
                         return true;
                     }
                     return false;
+                }
+            }
+            // `@a[I] = V;` into an array declared native: the word written in
+            // place behind the guarded form's tests and rtPackedStore's (no
+            // worker running, not read-only), else the boxed statement
+            if (a->op == "=" && a->target->kind == NK::Index && s) {
+                auto* ix = static_cast<Index*>(a->target.get());
+                if (const char ak = nrWordArray(ix)) {
+                    std::string g, iC, vC, base;
+                    const std::string ok = nrGuarded([&]() -> std::string {
+                        NrT i = nrExpr(ix->index.get());
+                        if (i.k != 'i') return "";
+                        NrT v = nrExpr(a->value.get());
+                        if (v.k != ak) return "";
+                        iC = i.c; vC = v.c;
+                        base = varRef(static_cast<VarExpr*>(ix->base.get())->name);
+                        // (the value's read of the same element takes the stricter test)
+                        const std::string args = base + ", " + (ak == 'n' ? "true" : "false") + ", " + iC + ")";
+                        auto rd = std::find(nrGuards_->begin(), nrGuards_->end(), "__nPk(" + args);
+                        if (rd != nrGuards_->end()) *rd = "__nPkW(" + args;
+                        else nrGuards_->push_back("__nPkW(" + args);
+                        return "1";
+                    }, g);
+                    if (!ok.empty()) {
+                        line(ind, "if (" + g + ") " + (ak == 'n' ? "__nSetWN(" : "__nSetWI(") + base + ", " + iC + ", " + vC + ");");
+                        line(ind, "else {");
+                        NrGuardOff off{this};
+                        if (!nrDelegate(s, e, ind + 1)) return false;
+                        line(ind, "}");
+                        return true;
+                    }
                 }
             }
         }
@@ -6180,12 +6350,14 @@ struct Codegen {
         return true;
     }
     // Is a routine's value Nil on every way out: each `return` bare, and its
-    // last statement a bare `return`, a call of such a routine, or an if/else
-    // of those?
+    // last statement a bare `return`, a call of such a routine, a loop (one
+    // not collecting its values answers Nil), or an if/else of those?
     bool nrNilTail(const std::vector<StmtPtr>& ss) const {
         if (ss.empty()) return false;
         const Stmt* s = ss.back().get();
         if (s->kind == NK::ReturnStmt) return !static_cast<const ReturnStmt*>(s)->value;
+        if (s->kind == NK::WhileStmt) return !static_cast<const WhileStmt*>(s)->asExpr;
+        if (s->kind == NK::LoopStmt) return !static_cast<const LoopStmt*>(s)->asExpr;
         if (s->kind == NK::ExprStmt) {
             const Expr* e = static_cast<const ExprStmt*>(s)->e.get();
             if (!e || e->kind != NK::Call) return false;
@@ -6358,7 +6530,22 @@ struct Codegen {
             "    return rtNativeStoreK(v, 1, \"num\", n, false).n;\n"
             "}\n"
             "static inline int64_t __nArgI(const Value& v) { return v.t == VT::Int && !v.big() ? v.i : v.toInt(); }\n"
-            "static inline double __nArgN(const Value& v) { return v.t == VT::Num ? v.n : v.toNum(); }\n";
+            "static inline double __nArgN(const Value& v) { return v.t == VT::Num ? v.n : v.toNum(); }\n"
+            "// an element of a packed native array as its word: read under rtIndexGetP's\n"
+            "// tests, written under rtPackedStore's too\n"
+            "static inline bool __nPk(const Value& a, bool isNum, int64_t i) {\n"
+            "    if (a.pk_ != PK::Packed || a.t != VT::Array || !a.packedLive() || !a.hashKind.empty() || a.elemDefault()) return false;\n"
+            "    const PackedArr* p = a.packed();\n"
+            "    return p->isNum == isNum && i >= 0 && i < (int64_t)p->w.size();\n"
+            "}\n"
+            "static inline bool __nPkW(const Value& a, bool isNum, int64_t i) {\n"
+            "    return __nPk(a, isNum, i) && !a.readonly &&\n"
+            "           !(RT.parallelMode_ && RT.liveWorkers_.load(std::memory_order_acquire) > 0);\n"
+            "}\n"
+            "static inline int64_t __nWI(const Value& a, int64_t i) { return a.packed()->w[(size_t)i]; }\n"
+            "static inline double __nWN(const Value& a, int64_t i) { double d; std::memcpy(&d, &a.packed()->w[(size_t)i], 8); return d; }\n"
+            "static inline void __nSetWI(const Value& a, int64_t i, int64_t x) { a.packed()->w[(size_t)i] = x; }\n"
+            "static inline void __nSetWN(const Value& a, int64_t i, double x) { std::memcpy(&a.packed()->w[(size_t)i], &x, 8); }\n";
         for (auto& kv : nrSubs_) t += "static " + kv.second.sig + ";\n";
         return t + "\n";
     }

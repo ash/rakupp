@@ -3139,6 +3139,8 @@ Value rtSliceFrom(const Value& base, long long from, bool exFrom) {
     if (base.t == VT::Array && base.arr()) {
         long long n = (long long)base.arr()->size();
         for (long long i = from + (exFrom ? 1 : 0); i < n; i++) out.arr()->push_back((*base.arr())[i]);
+        // (a native array's slice is a native array of its type, as rtIndexGet's)
+        if (!base.isList && isNativeScalarName(base.ofType())) { out.isList = false; out.ofTypeM() = base.ofType(); }
     }
     else if (base.t == VT::Str) { // "abc"[1..*] is rare but harmless to support: chars
         std::string ss = base.s;
