@@ -865,6 +865,9 @@ struct Codegen {
     bool laxKnown_ = true;
     // A variable reference: a C++ local, unless the unit auto-vivifies the name.
     std::string varRef(const std::string& name) {
+        // a native routine's native local, read by a statement emitted boxed:
+        // the value the boxed code would hold (planNative)
+        if (nrMode_) if (const NrVar* nv = nrLocal(name)) return nrBox(NrT{nv->c, nv->k, true});
         if (laxVars_.count(name)) return "RT.laxVarRef(" + cesc(name) + ")";
         if (moduleMode_) {
             aotRefs_.insert(name);
@@ -5403,6 +5406,898 @@ struct Codegen {
         }
         kernelText_ = t + "\n";
     }
+    // ---- native routines (planNative) -----------------------------------
+    // A top-level sub whose every parameter is a full-width `int` or `num`, and
+    // whose result is one of those or nothing, also compiles to a plain C++
+    // function, `n_<name>`, over int64_t and double. Its native locals are C++
+    // scalars, its native arithmetic is machine arithmetic (an `int` wraps, a
+    // `num` is a double: the interpreter's native semantics), and a call to
+    // another routine of the kind is a direct C++ call. It never bails, so it
+    // needs no exact re-run: wherever a native operation could answer other
+    // than a number (a zero divisor), it takes the boxed path, which answers or
+    // throws from the same point. A statement it has no native form for is
+    // emitted as the boxed code emits it, each native local read as the boxed
+    // value it stands for (varRef); one that could write a native local, leave
+    // the routine or a native loop, or read the routine's frame refuses the
+    // routine instead (nrSafe).
+    struct NrSub { std::vector<char> pk; char rk = 0; bool nilValued = false; std::string sig; };
+    std::map<std::string, NrSub> nrSubs_;          // name -> its native function
+    std::map<std::string, std::string> nrBodies_;  // name -> the function's definition
+    struct NrVar { char k = 0; std::string c; };   // 'i' int64_t, 'n' double, 0 a boxed local of that name
+    struct NrT { std::string c; char k = 0; bool tagged = false; };   // k: 'i', 'n', 'b' (a bool); 0 = none
+    bool nrMode_ = false;                          // emitting a native routine's body
+    std::vector<std::map<std::string, NrVar>> nrScopes_;
+    std::vector<std::string> nrLoopNext_;          // the open native loops' `next` labels, innermost last
+    char nrRk_ = 0;                                // the routine's own result: 'i', 'n', or 0 (none)
+    bool nrSixE_ = false;                          // 6.e: an integer `%` / `div` by zero answers a Failure
+    std::vector<std::string> nrDeclared_;          // the boxed locals a delegated statement declares
+    std::string nrWrapFor_;                        // the sub whose Value function bodyDef emits next (subDef)
+
+    static std::string nrName(const std::string& sub) { return "n_" + mangleSub(sub).substr(2); }
+    static char nrParamKind(const Param& p) {
+        if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy || p.isRw ||
+            p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr || p.hadWhere || p.defConstraint ||
+            p.coerce || p.typeCapture || p.codeSig || !p.captureName.empty() || p.name.size() < 2 ||
+            !(nameLetterAt(p.name, 1) || p.name[1] == '_') || p.name == "$_")
+            return 0;
+        if (p.type == "int" || p.type == "int64") return 'i';
+        if (p.type == "num" || p.type == "num64") return 'n';
+        return 0;
+    }
+    // The native local a name resolves to here; `shadowed` says a boxed local
+    // of that name hides it (and any global of the name) instead.
+    const NrVar* nrLookup(const std::string& n, bool& shadowed) const {
+        shadowed = false;
+        for (auto s = nrScopes_.rbegin(); s != nrScopes_.rend(); ++s) {
+            auto it = s->find(n);
+            if (it == s->end()) continue;
+            if (!it->second.k) { shadowed = true; return nullptr; }
+            return &it->second;
+        }
+        return nullptr;
+    }
+    const NrVar* nrLocal(const std::string& n) const { bool sh = false; return nrMode_ ? nrLookup(n, sh) : nullptr; }
+    // A native local as the boxed code holds it: a value carrying the native tags
+    static std::string nrBox(const NrT& t) {
+        if (t.k == 'i') return t.tagged ? "rtNativeIntOf((unsigned long long)(" + t.c + "))" : "Value::integer((long long)(" + t.c + "))";
+        if (t.k == 'n') return t.tagged ? "rtNativeNumOf(" + t.c + ")" : "Value::number(" + t.c + ")";
+        return "Value::boolean(" + t.c + ")";
+    }
+    // A top-level variable declared a full-width native, read or written here
+    // (a C++ global holding its Value): 'i', 'n', or 0
+    char nrGlobalKind(const VarExpr* v) const {
+        if (v->declare || !topVars_.count(v->name)) return 0;
+        bool sh = false;
+        if (nrLookup(v->name, sh) || sh) return 0;
+        auto t = topVarTypes_.find(v->name);
+        if (t == topVarTypes_.end()) return 0;
+        if ((t->second == "int" || t->second == "int64") && v->nativeIntRead) return 'i';
+        if ((t->second == "num" || t->second == "num64") && v->nativeNumRead) return 'n';
+        return 0;
+    }
+    static bool nonZeroNumLit(const Expr* e) {
+        if (e && e->kind == NK::Unary && !static_cast<const Unary*>(e)->postfix && static_cast<const Unary*>(e)->op == "-")
+            e = static_cast<const Unary*>(e)->operand.get();
+        return e && e->kind == NK::NumLit && !static_cast<const NumLit*>(e)->isRat &&
+               !static_cast<const NumLit*>(e)->imaginary && static_cast<const NumLit*>(e)->v != 0.0;
+    }
+    // `floor` / `ceiling` as the built-in: nothing of the program's own by the name
+    bool nrBuiltin(const std::string& n) const {
+        return !userSubs.count(n) && !multiNames.count(n) && !envSubs.count(n) && !codeVars.count(n) &&
+               !lexOps_.count(n) && !moduleExports_.count(n) && !callEnvNames_.count(n);
+    }
+    // A routine call's arguments as the native function takes them, or false
+    bool nrArgs(const Call* c, const NrSub& s, std::string& out) {
+        if (c->args.size() != s.pk.size()) return false;
+        out.clear();
+        for (size_t i = 0; i < c->args.size(); i++) {
+            const Expr* a = c->args[i].get();
+            if (!a || a->kind == NK::Pair) return false;
+            NrT t = nrExpr(const_cast<Expr*>(a));
+            if (t.k != s.pk[i]) return false;
+            out += (i ? ", " : "") + t.c;
+        }
+        return true;
+    }
+
+    // An expression with a native form: its C++ over int64_t/double/bool. It has
+    // one exactly where the boxed code computes a native value (a native read,
+    // a literal, a nativeNumericStatic operation), compares numbers, or calls a
+    // native routine; anything else answers k == 0, and the caller takes the
+    // boxed form.
+    NrT nrExpr(Expr* e) {
+        NrT r;
+        if (!e) return r;
+        switch (e->kind) {
+            case NK::IntLit: {
+                auto* l = static_cast<IntLit*>(e);
+                if (!l->big.empty()) return r;
+                r.c = l->v == LLONG_MIN ? "INT64_MIN" : "INT64_C(" + std::to_string(l->v) + ")";
+                r.k = 'i';
+                return r;
+            }
+            case NK::NumLit: {
+                auto* l = static_cast<NumLit*>(e);
+                if (l->isRat || l->imaginary) return r;
+                char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", l->v);
+                r.c = "((double)(" + std::string(nb) + "))";
+                r.k = 'n';
+                return r;
+            }
+            case NK::VarExpr: {
+                auto* v = static_cast<VarExpr*>(e);
+                if (v->declare) return r;
+                bool sh = false;
+                if (const NrVar* nv = nrLookup(v->name, sh)) { r.c = nv->c; r.k = nv->k; r.tagged = true; return r; }
+                if (sh) return r;
+                if (char gk = nrGlobalKind(v)) {
+                    r.c = std::string(gk == 'i' ? "__nGI(" : "__nGN(") + varRef(v->name) + ", " + cesc(v->name) + ")";
+                    r.k = gk; r.tagged = true;
+                }
+                return r;
+            }
+            case NK::Unary: {
+                auto* u = static_cast<Unary*>(e);
+                if (u->postfix || !u->operand) return r;
+                if (u->op == "-") {
+                    if (opDeclared("prefix:<->")) return r;
+                    const NK ok = u->operand->kind;
+                    if (ok == NK::IntLit || ok == NK::NumLit) {   // a negative literal
+                        NrT a = nrExpr(u->operand.get());
+                        if (a.k) { r.c = "(-(" + a.c + "))"; r.k = a.k; }
+                        return r;
+                    }
+                    if (!nativeNumericStatic(u)) return r;
+                    NrT a = nrExpr(u->operand.get());
+                    if (a.k == 'i') { r.c = "((int64_t)(0ULL - (uint64_t)(" + a.c + ")))"; r.k = 'i'; r.tagged = true; }
+                    else if (a.k == 'n') { r.c = "(-(" + a.c + "))"; r.k = 'n'; r.tagged = true; }
+                    return r;
+                }
+                if (u->op == "!" || u->op == "not") {
+                    if (opDeclared("prefix:<" + u->op + ">")) return r;
+                    std::string c = nrCond(u->operand.get(), false);
+                    if (!c.empty()) { r.c = "(!(" + c + "))"; r.k = 'b'; }
+                    return r;
+                }
+                return r;
+            }
+            case NK::Binary: {
+                auto* b = static_cast<Binary*>(e);
+                const std::string& o = b->op;
+                if (opDeclared("infix:<" + b->written() + ">")) return r;
+                if (o == "<" || o == "<=" || o == ">" || o == ">=" || o == "==" || o == "!=") {
+                    NrT a = nrExpr(b->lhs.get());
+                    if (a.k != 'i' && a.k != 'n') return r;
+                    NrT c = nrExpr(b->rhs.get());
+                    if (c.k != a.k) return r;
+                    r.c = "((" + a.c + ") " + o + " (" + c.c + "))";
+                    r.k = 'b';
+                    return r;
+                }
+                if (o == "+" || o == "-" || o == "*" || o == "%" || o == "div") {
+                    char k = 0;
+                    if (!nativeNumericStatic(b, &k)) return r;
+                    NrT a = nrExpr(b->lhs.get()), c = nrExpr(b->rhs.get());
+                    if (a.k != k || c.k != k) return r;
+                    if (k == 'n') { r.c = "((" + a.c + ") " + o + " (" + c.c + "))"; r.k = 'n'; r.tagged = true; return r; }
+                    if (o == "%" || o == "div") {
+                        const std::string f = o == "%" ? "__nMod" : "__nDiv";
+                        if (nonZeroIntLit(b->rhs.get())) r.c = f + "(" + a.c + ", " + c.c + ")";
+                        else if (!nrSixE_) r.c = f + "Z(" + a.c + ", " + c.c + ")";
+                        else return r;
+                    }
+                    else r.c = "((int64_t)((uint64_t)(" + a.c + ") " + o + " (uint64_t)(" + c.c + ")))";
+                    r.k = 'i'; r.tagged = true;
+                    return r;
+                }
+                // `/` is never a native operation: two Nums give a plain Num, and
+                // a zero divisor a Failure, which only the boxed path holds
+                if (o == "/") {
+                    if (!nonZeroNumLit(b->rhs.get())) return r;
+                    NrT a = nrExpr(b->lhs.get()), c = nrExpr(b->rhs.get());
+                    if (a.k != 'n' || c.k != 'n') return r;
+                    r.c = "((" + a.c + ") / (" + c.c + "))";
+                    r.k = 'n';
+                    return r;
+                }
+                return r;
+            }
+            case NK::Ternary: {
+                auto* t = static_cast<Ternary*>(e);
+                std::string c = nrCond(t->cond.get(), true);
+                if (c.empty()) return r;
+                NrT a = nrExpr(t->then.get()), x = nrExpr(t->els.get());
+                if (!a.k || a.k != x.k || a.tagged != x.tagged) return r;
+                r.c = "((" + c + ") ? (" + a.c + ") : (" + x.c + "))";
+                r.k = a.k; r.tagged = a.tagged;
+                return r;
+            }
+            case NK::Call: {
+                auto* c = static_cast<Call*>(e);
+                if (c->callee || c->dotAmp || c->name.empty()) return r;
+                auto it = nrSubs_.find(c->name);
+                if (it != nrSubs_.end()) {
+                    std::string a;
+                    if (!it->second.rk || !nrArgs(c, it->second, a)) return r;
+                    r.c = nrName(c->name) + "(" + a + ")";
+                    r.k = it->second.rk;   // a plain value: the call hands back no native tags
+                    return r;
+                }
+                if ((c->name == "floor" || c->name == "ceiling") && c->args.size() == 1 && nrBuiltin(c->name)) {
+                    NrT a = nrExpr(c->args[0].get());
+                    // a native num stays one (rtNativeNumOp); an Int is its own floor
+                    if (a.k == 'n' && a.tagged) {
+                        r.c = std::string(c->name == "floor" ? "std::floor(" : "std::ceil(") + a.c + ")";
+                        r.k = 'n'; r.tagged = true;
+                        return r;
+                    }
+                    if (a.k == 'i') return a;
+                }
+                return r;
+            }
+            default:
+                return r;
+        }
+    }
+    // A condition as a C++ bool: natively where it has a native form, else (when
+    // `boxedOk`) as the boxed `if` tests it (exBool)
+    std::string nrCond(Expr* e, bool boxedOk) {
+        if (!e) return "";
+        if (e->kind == NK::Binary) {
+            auto* b = static_cast<Binary*>(e);
+            const bool andOp = b->op == "&&" || b->op == "and", orOp = b->op == "||" || b->op == "or";
+            if ((andOp || orOp) && !opDeclared("infix:<" + b->written() + ">")) {
+                std::string l = nrCond(b->lhs.get(), boxedOk);
+                std::string r = l.empty() ? "" : nrCond(b->rhs.get(), boxedOk);
+                if (r.empty()) return "";
+                return "((" + l + ")" + (andOp ? " && " : " || ") + "(" + r + "))";
+            }
+        }
+        NrT t = nrExpr(e);
+        if (t.k == 'b') return t.c;
+        if (t.k == 'i') return "((" + t.c + ") != 0)";
+        if (t.k == 'n') return "((" + t.c + ") != 0.0)";
+        if (!boxedOk || !nrSafeNoDecl(e)) return "";
+        return exBool(e);
+    }
+    // A value converted as a store into a native of kind `k` converts it
+    // (rtNativeStoreK): directly when the native form allows it, through the
+    // boxed store otherwise (which also refuses what a native cannot hold)
+    std::string nrConv(Expr* value, char k, const std::string& type, const std::string& name) {
+        NrT t = nrExpr(value);
+        if (t.k == k) return t.c;
+        if (k == 'n' && t.k == 'i' && t.tagged) return "((double)(" + t.c + "))";
+        if (k == 'i' && t.k == 'n' && t.tagged) return "__nToI(" + t.c + ")";
+        if (k == 'i' && t.k == 'b') return "((int64_t)(" + t.c + "))";
+        std::string boxed;
+        if (t.k) boxed = nrBox(t);
+        else if (nrSafeNoDecl(value)) boxed = exArg(value);
+        else return "";
+        const std::string src = nativeNumericStatic(value) ? "true" : "false";
+        return "rtNativeStoreK(" + boxed + ", " + (k == 'i' ? "2" : "1") + ", " + cesc(type) + ", " + cesc(name) +
+               ", " + src + ")" + (k == 'i' ? ".i" : ".n");
+    }
+    // Declare a native local in the innermost scope; a second `my` of the name
+    // in the same scope is the same C++ variable, assigned
+    void nrDecl(const std::string& name, char k, const std::string& init, int ind) {
+        auto& sc = nrScopes_.back();
+        auto it = sc.find(name);
+        if (it != sc.end() && it->second.k == k) { line(ind, it->second.c + " = " + init + ";"); return; }
+        std::string c = "n" + mangleVar(name) + "_" + std::to_string(tmp++);
+        line(ind, std::string(k == 'i' ? "int64_t " : "double ") + c + " = " + init + "; (void)" + c + ";");
+        sc[name] = {k, c};
+    }
+
+    // Does this expression read (or name) a native local anywhere? Over-answers
+    // yes for a node it does not know.
+    bool nrMentions(const Expr* e) const {
+        if (!e) return false;
+        switch (e->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: return false;
+            case NK::VarExpr: return nrLocal(static_cast<const VarExpr*>(e)->name) != nullptr;
+            case NK::Binary: { auto* b = static_cast<const Binary*>(e); return nrMentions(b->lhs.get()) || nrMentions(b->rhs.get()); }
+            case NK::ChainExpr: for (auto& o : static_cast<const ChainExpr*>(e)->operands) if (nrMentions(o.get())) return true; return false;
+            case NK::Unary: return nrMentions(static_cast<const Unary*>(e)->operand.get());
+            case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); return nrMentions(t->cond.get()) || nrMentions(t->then.get()) || nrMentions(t->els.get()); }
+            case NK::Index: { auto* i = static_cast<const Index*>(e); return nrMentions(i->base.get()) || nrMentions(i->index.get()); }
+            case NK::Call: { auto* c = static_cast<const Call*>(e); if (nrMentions(c->callee.get())) return true; for (auto& a : c->args) if (nrMentions(a.get())) return true; return false; }
+            case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); if (nrMentions(m->inv.get()) || nrMentions(m->methodExpr.get())) return true; for (auto& a : m->args) if (nrMentions(a.get())) return true; return false; }
+            case NK::Pair: { auto* p = static_cast<const PairExpr*>(e); return nrMentions(p->keyExpr.get()) || nrMentions(p->value.get()); }
+            case NK::ListExpr: for (auto& it : static_cast<const ListExpr*>(e)->items) if (nrMentions(it.get())) return true; return false;
+            case NK::ArrayLit: for (auto& it : static_cast<const ArrayLit*>(e)->items) if (nrMentions(it.get())) return true; return false;
+            case NK::HashLit: for (auto& it : static_cast<const HashLit*>(e)->items) if (nrMentions(it.get())) return true; return false;
+            case NK::InterpStr: for (auto& it : static_cast<const InterpStr*>(e)->parts) if (nrMentions(it.get())) return true; return false;
+            case NK::Assign: { auto* a = static_cast<const Assign*>(e); return nrMentions(a->target.get()) || nrMentions(a->value.get()); }
+            case NK::Range: { auto* r = static_cast<const RangeExpr*>(e); return nrMentions(r->from.get()) || nrMentions(r->to.get()); }
+            default: return true;
+        }
+    }
+    // Is this assignment target, or the thing it subscripts, a native local?
+    bool nrWritesNative(const Expr* t) const {
+        if (!t) return false;
+        if (t->kind == NK::VarExpr) return nrLocal(static_cast<const VarExpr*>(t)->name) != nullptr;
+        if (t->kind == NK::Index) return nrWritesNative(static_cast<const Index*>(t)->base.get());
+        if (t->kind == NK::ListExpr) { for (auto& it : static_cast<const ListExpr*>(t)->items) if (nrWritesNative(it.get())) return true; return false; }
+        return nrMentions(t);
+    }
+    // A boxed expression a native routine may hand to the boxed emitter: it
+    // writes no native local and takes none as a container, neither leaves the
+    // routine nor a native loop, and reads nothing of the routine's frame. A
+    // node it does not know refuses. The boxed locals it declares are recorded
+    // (nrDeclared_), to hide natives and globals of the same name after it.
+    bool nrSafe(const Expr* e) {
+        if (!e) return true;
+        switch (e->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: return true;
+            case NK::VarExpr: {
+                auto* v = static_cast<const VarExpr*>(e);
+                const std::string& n = v->name;
+                if (n == "$_" || n == "$/" || n == "$!" || n == "@_" || n == "%_" || n.size() < 2) return false;
+                if (ascii::isdigit((unsigned char)n[1]) || n[1] == '?' || n[1] == '=' || n[1] == '~') return false;
+                if (v->declare) {
+                    if (isNativeScalarDecl(v->d().declType)) return false;   // (nrStmts declares those)
+                    nrDeclared_.push_back(n);
+                }
+                return true;
+            }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                if ((b->op == "~~" || b->op == "!~~") && nrMentions(b->lhs.get())) return false;
+                return nrSafe(b->lhs.get()) && nrSafe(b->rhs.get());
+            }
+            case NK::ChainExpr:
+                for (auto& o : static_cast<const ChainExpr*>(e)->operands) if (!nrSafe(o.get())) return false;
+                return true;
+            case NK::Unary: {
+                auto* u = static_cast<const Unary*>(e);
+                static const std::set<std::string> pure = {"-", "+", "!", "not", "?", "so", "~", "+^", "?^", "^"};
+                if (!pure.count(u->op)) return false;   // ++/--, `\`, temp, let, and the statement prefixes
+                return nrSafe(u->operand.get());
+            }
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                return nrSafe(t->cond.get()) && nrSafe(t->then.get()) && nrSafe(t->els.get());
+            }
+            case NK::Index: {
+                auto* i = static_cast<const Index*>(e);
+                return nrSafe(i->base.get()) && nrSafe(i->index.get());
+            }
+            case NK::Call: {
+                auto* c = static_cast<const Call*>(e);
+                static const std::set<std::string> ctl = {
+                    "return", "return-rw", "fail", "take", "take-rw", "emit", "done", "leave", "succeed",
+                    "proceed", "callsame", "callwith", "nextsame", "nextwith", "samewith", "nextcallee",
+                    "lastcall", "next", "last", "redo", "goto", "EVAL", "EVALFILE", "callframe", "gather",
+                    "start", "lazy", "eager", "temp", "let"};
+                if (c->callee || c->name.empty() || ctl.count(c->name)) return false;
+                if (rwSubs.count(c->name))
+                    for (auto& a : c->args) if (nrMentions(a.get())) return false;
+                for (auto& a : c->args) if (!nrSafe(a.get())) return false;
+                return true;
+            }
+            case NK::MethodCall: {
+                auto* m = static_cast<const MethodCall*>(e);
+                if (!m->inv || nrMentions(m->inv.get())) return false;   // the topic's; or a native as an invocant
+                if (m->methodExpr && !nrSafe(m->methodExpr.get())) return false;
+                if (!nrSafe(m->inv.get())) return false;
+                for (auto& a : m->args) if (!nrSafe(a.get())) return false;
+                return true;
+            }
+            case NK::Pair: {
+                auto* p = static_cast<const PairExpr*>(e);
+                return nrSafe(p->keyExpr.get()) && nrSafe(p->value.get());
+            }
+            case NK::ListExpr:
+                for (auto& it : static_cast<const ListExpr*>(e)->items) if (!nrSafe(it.get())) return false;
+                return true;
+            case NK::ArrayLit:
+                for (auto& it : static_cast<const ArrayLit*>(e)->items) if (!nrSafe(it.get())) return false;
+                return true;
+            case NK::HashLit:
+                for (auto& it : static_cast<const HashLit*>(e)->items) if (!nrSafe(it.get())) return false;
+                return true;
+            case NK::InterpStr:
+                for (auto& it : static_cast<const InterpStr*>(e)->parts) if (!nrSafe(it.get())) return false;
+                return true;
+            case NK::Assign: {
+                auto* a = static_cast<const Assign*>(e);
+                if (a->op == ":=" || a->op == "::=" || nrWritesNative(a->target.get())) return false;
+                return nrSafe(a->target.get()) && nrSafe(a->value.get());
+            }
+            case NK::Range: {
+                auto* r = static_cast<const RangeExpr*>(e);
+                return nrSafe(r->from.get()) && nrSafe(r->to.get());
+            }
+            default:
+                return false;
+        }
+    }
+    // …and one that declares nothing (a condition, a value, a loop header's
+    // part): only a whole statement may declare, in the scope it is in
+    bool nrSafeNoDecl(const Expr* e) {
+        nrDeclared_.clear();
+        const bool ok = nrSafe(e) && nrDeclared_.empty();
+        nrDeclared_.clear();
+        return ok;
+    }
+    // An expression statement handed to the boxed emitter, its boxed locals
+    // then hiding natives of their names
+    bool nrDelegate(Stmt* s, Expr* e, int ind) {
+        nrDeclared_.clear();
+        if (!nrSafe(e)) return false;
+        std::vector<std::string> decl = std::move(nrDeclared_);
+        stmt(s, ind);
+        for (auto& n : decl) nrScopes_.back()[n] = NrVar{};
+        return true;
+    }
+
+    // An expression in statement position: a native declaration, store or step,
+    // a native routine's call, or else the boxed statement. `s` is its
+    // statement, or null for a loop header's part.
+    bool nrEffect(Stmt* s, Expr* e, int ind) {
+        if (!e) return true;
+        if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) {   // `my int $x;`
+            auto* v = static_cast<VarExpr*>(e);
+            const std::string& dt = v->d().declType;
+            if (dt == "int" || dt == "int64") { nrDecl(v->name, 'i', "0", ind); return true; }
+            if (dt == "num" || dt == "num64") { nrDecl(v->name, 'n', "0.0", ind); return true; }
+        }
+        if (e->kind == NK::Assign) {
+            auto* a = static_cast<Assign*>(e);
+            if (a->target->kind == NK::VarExpr) {
+                auto* v = static_cast<VarExpr*>(a->target.get());
+                const std::string& op = a->op;
+                if (v->declare) {
+                    const std::string& dt = v->d().declType;
+                    const char k = dt == "int" || dt == "int64" ? 'i' : dt == "num" || dt == "num64" ? 'n' : 0;
+                    if (k) {
+                        if (op != "=" || v->d().declDefault) return false;
+                        std::string c = nrConv(a->value.get(), k, dt, v->name);
+                        if (c.empty()) return false;
+                        nrDecl(v->name, k, c, ind);
+                        return true;
+                    }
+                }
+                else if (const NrVar* nv = nrLocal(v->name)) {
+                    const char k = nv->k;
+                    if (op == "=") {
+                        std::string c = nrConv(a->value.get(), k, k == 'i' ? "int" : "num", v->name);
+                        if (c.empty()) return false;
+                        line(ind, nv->c + " = " + c + ";");
+                        return true;
+                    }
+                    if (op == "+=" || op == "-=" || op == "*=") {
+                        const std::string bop = op.substr(0, 1);
+                        if (opDeclared("infix:<" + bop + ">") || opDeclared("infix:<" + op + ">")) return false;
+                        NrT r = nrExpr(a->value.get());
+                        if (r.k != k) return false;
+                        if (k == 'i') line(ind, nv->c + " = (int64_t)((uint64_t)" + nv->c + " " + bop + " (uint64_t)(" + r.c + "));");
+                        else line(ind, nv->c + " = " + nv->c + " " + bop + " (" + r.c + ");");
+                        return true;
+                    }
+                    return false;
+                }
+                else if (char gk = nrGlobalKind(v)) {
+                    const std::string g = varRef(v->name);
+                    if (op == "=") {
+                        NrT t = nrExpr(a->value.get());
+                        if (t.k == gk) {
+                            line(ind, g + " = " + nrBox(NrT{t.c, gk, true}) + ";");
+                            return true;
+                        }
+                        if (!nrSafeNoDecl(a->value.get())) return false;
+                        const std::string src = nativeNumericStatic(a->value.get()) ? "true" : "false";
+                        line(ind, g + " = rtNativeStoreLike(" + g + ", " + exArg(a->value.get()) + ", " +
+                                  cesc(v->name) + ", " + src + ");");
+                        return true;
+                    }
+                    if (op == "+=" || op == "-=" || op == "*=") {
+                        const std::string bop = op.substr(0, 1);
+                        if (opDeclared("infix:<" + bop + ">") || opDeclared("infix:<" + op + ">")) return false;
+                        NrT r = nrExpr(a->value.get());
+                        if (r.k != gk) return false;
+                        const std::string cur = std::string(gk == 'i' ? "__nGI(" : "__nGN(") + g + ", " + cesc(v->name) + ")";
+                        const std::string nv = gk == 'i' ? "(int64_t)((uint64_t)" + cur + " " + bop + " (uint64_t)(" + r.c + "))"
+                                                         : cur + " " + bop + " (" + r.c + ")";
+                        line(ind, g + " = " + nrBox(NrT{nv, gk, true}) + ";");
+                        return true;
+                    }
+                    return false;
+                }
+            }
+        }
+        if (e->kind == NK::Unary) {
+            auto* u = static_cast<Unary*>(e);
+            if ((u->op == "++" || u->op == "--") && u->operand && u->operand->kind == NK::VarExpr) {
+                auto* v = static_cast<VarExpr*>(u->operand.get());
+                const char* d = u->op == "++" ? " + " : " - ";
+                if (const NrVar* nv = nrLocal(v->name)) {
+                    if (nv->k == 'i') line(ind, nv->c + " = (int64_t)((uint64_t)" + nv->c + d + "1ULL);");
+                    else line(ind, nv->c + " = " + nv->c + d + "1.0;");
+                    return true;
+                }
+                if (char gk = nrGlobalKind(v)) {
+                    const std::string g = varRef(v->name);
+                    const std::string cur = std::string(gk == 'i' ? "__nGI(" : "__nGN(") + g + ", " + cesc(v->name) + ")";
+                    const std::string nv = gk == 'i' ? "(int64_t)((uint64_t)" + cur + d + "1ULL)" : cur + d + "1.0";
+                    line(ind, g + " = " + nrBox(NrT{nv, gk, true}) + ";");
+                    return true;
+                }
+            }
+        }
+        if (e->kind == NK::Call) {
+            auto* c = static_cast<Call*>(e);
+            auto it = c->callee || c->dotAmp ? nrSubs_.end() : nrSubs_.find(c->name);
+            std::string a;
+            if (it != nrSubs_.end() && nrArgs(c, it->second, a)) {
+                line(ind, nrName(c->name) + "(" + a + ");");
+                return true;
+            }
+        }
+        if (!s) {   // a loop header's part: a boxed expression, evaluated
+            if (!nrSafeNoDecl(e)) return false;
+            line(ind, "(void)(" + exArg(e) + ");");
+            return true;
+        }
+        return nrDelegate(s, e, ind);
+    }
+    // A routine's statements. `tail`: the last one produces its native result.
+    bool nrStmts(const std::vector<StmtPtr>& ss, int ind, bool tail) {
+        if (tail && ss.empty()) return false;
+        for (size_t i = 0; i < ss.size(); i++) {
+            Stmt* s = ss[i].get();
+            const bool last = tail && i + 1 == ss.size();
+            if (!s || !s->label.empty()) return false;
+            switch (s->kind) {
+                case NK::ExprStmt: {
+                    Expr* e = static_cast<ExprStmt*>(s)->e.get();
+                    if (last) {
+                        NrT t = nrExpr(e);
+                        if (t.k != nrRk_) return false;
+                        line(ind, "return " + t.c + ";");
+                        break;
+                    }
+                    if (!nrEffect(s, e, ind)) return false;
+                    break;
+                }
+                case NK::ReturnStmt: {
+                    auto* r = static_cast<ReturnStmt*>(s);
+                    if (r->isRw) return false;
+                    if (!r->value) {
+                        if (nrRk_) return false;   // a bare `return` answers Nil, which a native result cannot be
+                        line(ind, "return;");
+                        break;
+                    }
+                    NrT t = nrExpr(r->value.get());
+                    if (nrRk_) {
+                        if (t.k != nrRk_) return false;
+                        line(ind, "return " + t.c + ";");
+                        break;
+                    }
+                    if (t.k) line(ind, "(void)(" + t.c + ");");
+                    else {
+                        if (!nrSafeNoDecl(r->value.get())) return false;
+                        line(ind, "(void)(" + exArg(r->value.get()) + ");");
+                    }
+                    line(ind, "return;");
+                    break;
+                }
+                case NK::IfStmt: {
+                    auto* f = static_cast<IfStmt*>(s);
+                    if (!f->thenVar.empty() || !f->elseVar.empty() || !f->elseParams.empty() ||
+                        f->branches.empty() || (last && !f->elseBlock) || (f->isUnless && f->branches.size() > 1))
+                        return false;
+                    for (auto& bv : f->branchVars) if (!bv.empty()) return false;
+                    for (auto& bp : f->branchParams) if (!bp.empty()) return false;
+                    for (size_t bi = 0; bi < f->branches.size(); bi++) {
+                        auto& br = f->branches[bi];
+                        if (!br.second || !br.second->label.empty()) return false;
+                        // a statement-modifier `if`'s statement declares in the scope
+                        // around it, which the braces here would not: none may
+                        if (f->modifier)
+                            for (auto& st : br.second->stmts)
+                                if (st->kind == NK::ExprStmt) {
+                                    Expr* x = static_cast<ExprStmt*>(st.get())->e.get();
+                                    nrDeclared_.clear();
+                                    nrSafe(x);
+                                    const bool decl = !nrDeclared_.empty() || nrDeclaresNative(x);
+                                    nrDeclared_.clear();
+                                    if (decl) return false;
+                                }
+                        std::string c = nrCond(br.first.get(), true);
+                        if (c.empty()) return false;
+                        if (f->isUnless) c = "!(" + c + ")";
+                        line(ind, std::string(bi ? "else if (" : "if (") + c + ") {");
+                        nrScopes_.emplace_back();
+                        const bool ok = nrStmts(br.second->stmts, ind + 1, last);
+                        nrScopes_.pop_back();
+                        if (!ok) return false;
+                        line(ind, "}");
+                    }
+                    if (f->elseBlock) {
+                        if (!f->elseBlock->label.empty()) return false;
+                        line(ind, "else {");
+                        nrScopes_.emplace_back();
+                        const bool ok = nrStmts(f->elseBlock->stmts, ind + 1, last);
+                        nrScopes_.pop_back();
+                        if (!ok) return false;
+                        line(ind, "}");
+                    }
+                    break;
+                }
+                case NK::WhileStmt: {
+                    auto* w = static_cast<WhileStmt*>(s);
+                    // (a statement-modifier `while` has no block of its own: refused)
+                    if (last || !w->var.empty() || !w->params.empty() || w->asExpr || w->modifier || !w->body) return false;
+                    std::string c = nrCond(w->cond.get(), true);
+                    if (c.empty()) return false;
+                    if (w->isUntil) c = "!(" + c + ")";
+                    if (!nrLoop(c, w->body.get(), nullptr, ind)) return false;
+                    break;
+                }
+                case NK::LoopStmt: {
+                    auto* l = static_cast<LoopStmt*>(s);
+                    if (last || l->asExpr || !l->body) return false;
+                    if (l->init && !nrEffect(nullptr, l->init.get(), ind)) return false;   // (its `my` is the enclosing scope's)
+                    std::string c = l->cond ? nrCond(l->cond.get(), true) : std::string("true");
+                    if (c.empty()) return false;
+                    if (!nrLoop(c, l->body.get(), l->incr.get(), ind)) return false;
+                    break;
+                }
+                case NK::Block: {
+                    auto* b = static_cast<Block*>(s);
+                    if (b->isCatch || !b->phaser.empty()) return false;
+                    line(ind, "{");
+                    nrScopes_.emplace_back();
+                    const bool ok = nrStmts(b->stmts, ind + 1, last);
+                    nrScopes_.pop_back();
+                    if (!ok) return false;
+                    line(ind, "}");
+                    break;
+                }
+                case NK::LastStmt:
+                    if (last || !static_cast<LastStmt*>(s)->target.empty() || nrLoopNext_.empty()) return false;
+                    line(ind, "break;");
+                    break;
+                case NK::NextStmt:
+                    if (last || !static_cast<NextStmt*>(s)->target.empty() || nrLoopNext_.empty()) return false;
+                    line(ind, "goto " + nrLoopNext_.back() + ";");
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return true;
+    }
+    static bool nrDeclaresNative(const Expr* e) {
+        if (!e) return false;
+        const Expr* t = e->kind == NK::Assign ? static_cast<const Assign*>(e)->target.get() : e;
+        return t && t->kind == NK::VarExpr && static_cast<const VarExpr*>(t)->declare &&
+               isNativeScalarDecl(static_cast<const VarExpr*>(t)->d().declType);
+    }
+    // A native loop: the condition tested before each turn, `next` jumping to
+    // just before the step
+    bool nrLoop(const std::string& cond, Block* body, Expr* incr, int ind) {
+        if (!body->label.empty()) return false;
+        const std::string nx = gensym("__nnext");
+        line(ind, "for (;;) {");
+        line(ind + 1, "if (!(" + cond + ")) break;");
+        line(ind + 1, "{");
+        nrScopes_.emplace_back();
+        nrLoopNext_.push_back(nx);
+        const bool ok = nrStmts(body->stmts, ind + 2, false);
+        nrLoopNext_.pop_back();
+        nrScopes_.pop_back();
+        if (!ok) return false;
+        line(ind + 1, "}");
+        line(ind + 1, nx + ": ;");
+        if (incr) {
+            if (incr->kind == NK::ListExpr) {
+                for (auto& it : static_cast<ListExpr*>(incr)->items) if (!nrEffect(nullptr, it.get(), ind + 1)) return false;
+            }
+            else if (!nrEffect(nullptr, incr, ind + 1)) return false;
+        }
+        line(ind, "}");
+        return true;
+    }
+    // Is a routine's value Nil on every way out: each `return` bare, and its
+    // last statement a bare `return`, a call of such a routine, or an if/else
+    // of those?
+    bool nrNilTail(const std::vector<StmtPtr>& ss) const {
+        if (ss.empty()) return false;
+        const Stmt* s = ss.back().get();
+        if (s->kind == NK::ReturnStmt) return !static_cast<const ReturnStmt*>(s)->value;
+        if (s->kind == NK::ExprStmt) {
+            const Expr* e = static_cast<const ExprStmt*>(s)->e.get();
+            if (!e || e->kind != NK::Call) return false;
+            auto it = nrSubs_.find(static_cast<const Call*>(e)->name);
+            return it != nrSubs_.end() && !it->second.rk && it->second.nilValued;
+        }
+        if (s->kind == NK::IfStmt) {
+            auto* f = static_cast<const IfStmt*>(s);
+            if (!f->elseBlock) return false;
+            for (auto& br : f->branches) if (!br.second || !nrNilTail(br.second->stmts)) return false;
+            return nrNilTail(f->elseBlock->stmts);
+        }
+        return false;
+    }
+    bool nrAllReturnsBare(const std::vector<StmtPtr>& ss) const {
+        for (auto& sp : ss) {
+            const Stmt* s = sp.get();
+            if (!s) continue;
+            if (s->kind == NK::ReturnStmt && static_cast<const ReturnStmt*>(s)->value) return false;
+            if (s->kind == NK::IfStmt) {
+                auto* f = static_cast<const IfStmt*>(s);
+                for (auto& br : f->branches) if (br.second && !nrAllReturnsBare(br.second->stmts)) return false;
+                if (f->elseBlock && !nrAllReturnsBare(f->elseBlock->stmts)) return false;
+            }
+            if (s->kind == NK::WhileStmt && static_cast<const WhileStmt*>(s)->body && !nrAllReturnsBare(static_cast<const WhileStmt*>(s)->body->stmts)) return false;
+            if (s->kind == NK::LoopStmt && static_cast<const LoopStmt*>(s)->body && !nrAllReturnsBare(static_cast<const LoopStmt*>(s)->body->stmts)) return false;
+            if (s->kind == NK::Block && !nrAllReturnsBare(static_cast<const Block*>(s)->stmts)) return false;
+        }
+        return true;
+    }
+    // One routine's native function, into nrBodies_; false if any part of it
+    // has no form here (the routine then keeps its boxed body alone)
+    bool nrEmit(SubDecl* d) {
+        NrSub& s = nrSubs_[d->name];
+        const auto& ps = sigOf(d);
+        BodyScope __bs{this, /*closure=*/false};
+        lexDirect_.clear();
+        struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
+            __cp{this, std::exchange(curParams_, &ps)};
+        std::set<std::string> params;
+        for (auto& p : ps) params.insert(p.name);
+        analyzeCells(d->body, params);
+        if (!cellVars_.empty()) return false;   // a local a closure shares: none here
+        markParams(ps);
+        std::string sig = std::string(s.rk == 'i' ? "int64_t " : s.rk == 'n' ? "double " : "void ") + nrName(d->name) + "(";
+        nrScopes_.assign(1, {});
+        nrLoopNext_.clear();
+        for (size_t i = 0; i < ps.size(); i++) {
+            const std::string c = "n" + mangleVar(ps[i].name);
+            nrScopes_.back()[ps[i].name] = {s.pk[i], c};
+            sig += (i ? ", " : "") + std::string(s.pk[i] == 'i' ? "int64_t " : "double ") + c;
+        }
+        sig += ")";
+        nrMode_ = true; nrRk_ = s.rk;
+        bool ok = false;
+        FrameScope __fs{this};
+        std::string text;
+        try {
+            text = capture([&]() {
+                topics.push_back(routineTopic(nullptr, 1));
+                struct Pop { Codegen* g; ~Pop() { g->topics.pop_back(); } } __pt{this};
+                ok = nrStmts(d->body, 1, s.rk != 0);
+                if (ok && s.rk) line(1, std::string("return ") + (s.rk == 'i' ? "0" : "0.0") + ";");
+            });
+        } catch (const CodegenError&) { ok = false; }
+        nrMode_ = false; nrScopes_.clear(); nrLoopNext_.clear();
+        if (!ok || __fs.used()) return false;
+        s.sig = sig;
+        nrBodies_[d->name] = "static " + sig + " {\n" + text + "}\n";
+        return true;
+    }
+    // Decide the native routines (a fixpoint: one that falls out changes the
+    // calls of every other) and render them into nrBodies_
+    void planNative(const std::vector<SubDecl*>& subs, const std::string& srcText) {
+        if (moduleMode_) return;
+        if (const char* nk = std::getenv("RAKUPP_NO_KERNELS")) if (*nk && *nk != '0') return;
+        // a wrapper must see every call, and these name a routine's lexicals at run time
+        for (const char* w : {".wrap", "EVAL", "::(", "CALLER::", "OUTER::", "MY::", "LEXICAL::", "callframe"})
+            if (srcText.find(w) != std::string::npos) return;
+        nrSixE_ = srcText.find("v6.e") != std::string::npos;
+        std::map<std::string, SubDecl*> cand;
+        for (SubDecl* d : subs) {
+            if (d->isMulti || d->isProto || d->isMethod || d->isNative || d->retRw || d->retLiteralPresent ||
+                d->deprecated || d->testAssertion || !d->traits.empty() || !d->altParams.empty() || d->nameExpr ||
+                d->body.empty() || d->immediateCall || multiNames.count(d->name) || rwSubs.count(d->name) ||
+                moduleExports_.count(d->name) || d->name.find(':') != std::string::npos || d->name == "MAIN" ||
+                d->name.empty())
+                continue;
+            const std::string& rt = d->retType;
+            const char rk = rt.empty() ? 0 : rt == "int" || rt == "int64" ? 'i' : rt == "num" || rt == "num64" ? 'n' : '?';
+            if (rk == '?') continue;
+            NrSub s;
+            s.rk = rk;
+            bool ok = true;
+            for (const Param& p : sigOf(d)) {
+                const char k = nrParamKind(p);
+                if (!k) { ok = false; break; }
+                s.pk.push_back(k);
+            }
+            if (!ok) continue;
+            s.nilValued = !rk;
+            cand[d->name] = d;
+            nrSubs_[d->name] = s;
+        }
+        for (bool changed = true; changed;) {
+            changed = false;
+            nrBodies_.clear();
+            for (auto it = cand.begin(); it != cand.end();) {
+                if (nrEmit(it->second)) { ++it; continue; }
+                nrSubs_.erase(it->first);
+                it = cand.erase(it);
+                changed = true;
+            }
+            for (auto& c : cand) {
+                NrSub& s = nrSubs_[c.first];
+                if (s.rk || !s.nilValued) continue;
+                if (!nrAllReturnsBare(c.second->body) || !nrNilTail(c.second->body)) { s.nilValued = false; changed = true; }
+            }
+        }
+        // keep what runs: the routines whose Value function calls the native
+        // function, and the native functions those call
+        std::set<std::string> keep;
+        std::vector<std::string> work;
+        for (auto& kv : nrSubs_)
+            if (kv.second.rk || kv.second.nilValued) { keep.insert(kv.first); work.push_back(kv.first); }
+        while (!work.empty()) {
+            const std::string body = nrBodies_[work.back()];
+            work.pop_back();
+            for (auto& kv : nrSubs_)
+                if (!keep.count(kv.first) && body.find(nrName(kv.first) + "(") != std::string::npos) {
+                    keep.insert(kv.first);
+                    work.push_back(kv.first);
+                }
+        }
+        for (auto it = nrSubs_.begin(); it != nrSubs_.end();) {
+            if (keep.count(it->first)) { ++it; continue; }
+            nrBodies_.erase(it->first);
+            it = nrSubs_.erase(it);
+        }
+    }
+    // The text before the routines: helpers and forward declarations
+    std::string nrPreamble() const {
+        if (nrBodies_.empty()) return "";
+        std::string t =
+            "// native routines (see Codegen::planNative): plain C++ functions over\n"
+            "// int64_t and double, beside the routines' Value functions\n"
+            "static inline int64_t __nToI(double d) {   // as Value::toInt has a Num\n"
+            "    if (d != d) return 0;\n"
+            "    if (d >= 9223372036854775807.0) return INT64_MAX;\n"
+            "    if (d <= -9223372036854775808.0) return INT64_MIN;\n"
+            "    return (int64_t)d;\n"
+            "}\n"
+            "static inline int64_t __nMod(int64_t a, int64_t b) { if (b == -1) return 0; int64_t m = a % b; if (m && ((m < 0) != (b < 0))) m += b; return m; }\n"
+            "static inline int64_t __nDiv(int64_t a, int64_t b) {\n"
+            "    if (b == -1) return (int64_t)(0ULL - (uint64_t)a);\n"
+            "    int64_t q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q;\n"
+            "}\n"
+            "// a zero divisor: the boxed operation's answer, as a store into an `int` takes it\n"
+            "static int64_t __nZero(const char* op, int64_t a) {\n"
+            "    return rtNativeStoreK(rtNativeArith(op, rtNativeIntOf((unsigned long long)a), rtNativeIntOf(0)), 2, \"int\", \"\", true).i;\n"
+            "}\n"
+            "static inline int64_t __nModZ(int64_t a, int64_t b) { return b ? __nMod(a, b) : __nZero(\"%\", a); }\n"
+            "static inline int64_t __nDivZ(int64_t a, int64_t b) { return b ? __nDiv(a, b) : __nZero(\"div\", a); }\n"
+            "static inline int64_t __nGI(const Value& v, const char* n) {\n"
+            "    if (v.t == VT::Int && !v.big()) return v.i;\n"
+            "    return rtNativeStoreK(v, 2, \"int\", n, false).i;\n"
+            "}\n"
+            "static inline double __nGN(const Value& v, const char* n) {\n"
+            "    if (v.t == VT::Num) return v.n;\n"
+            "    return rtNativeStoreK(v, 1, \"num\", n, false).n;\n"
+            "}\n"
+            "static inline int64_t __nArgI(const Value& v) { return v.t == VT::Int && !v.big() ? v.i : v.toInt(); }\n"
+            "static inline double __nArgN(const Value& v) { return v.t == VT::Num ? v.n : v.toNum(); }\n";
+        for (auto& kv : nrSubs_) t += "static " + kv.second.sig + ";\n";
+        return t + "\n";
+    }
+    // The body of a native routine's Value function, after its parameters are
+    // bound: the native function's call, or "" to keep the boxed body
+    std::string nrWrapper(const std::string& name, const std::vector<Param>& ps) const {
+        auto it = nrSubs_.find(name);
+        if (it == nrSubs_.end() || !nrBodies_.count(name)) return "";
+        const NrSub& s = it->second;
+        if (!s.rk && !s.nilValued) return "";
+        std::string call = nrName(name) + "(";
+        for (size_t i = 0; i < ps.size(); i++)
+            call += (i ? ", " : "") + std::string(s.pk[i] == 'i' ? "__nArgI(" : "__nArgN(") + mangleVar(ps[i].name) + ")";
+        call += ")";
+        if (s.rk == 'i') return "        return Value::integer((long long)" + call + ");\n";
+        if (s.rk == 'n') return "        return Value::number(" + call + ");\n";
+        return "        " + call + ";\n        return Value::nil();\n";
+    }
     // The first lines of a kernel sub's Value function: the twin, when every
     // argument is a plain Int (`args`: the C++ expressions for them, or empty
     // for a ValueList `__a`). A twin that keeps bailing stops being tried.
@@ -5510,6 +6405,7 @@ struct Codegen {
         // through the frame), and its store is the interpreter's
         // (rtOuterScalarStore): the boxed emission has both
         if (moduleMode_ && aotFree_.count(n)) return "";
+        if (nrMode_ && nrLocal(n)) return "";   // …and so has a native routine's native local
         return mangleVar(n);
     }
     // Compile e into the lane; returns a C++ `long long` rvalue ("" = lane fails).
@@ -7348,6 +8244,9 @@ struct Codegen {
     // Emit a sub/candidate body given its C++ function name.
     void bodyDef(const std::string& fnName, const std::vector<Param>& ps, const std::vector<StmtPtr>& body, bool fast = false,
                  const std::string& kernelName = "", const std::string& retType = "") {
+        // (planNative: after the binding, the native function's call is the body)
+        const std::string nrSub = std::exchange(nrWrapFor_, std::string());
+        const std::string nrw = nrSub.empty() ? std::string() : nrWrapper(nrSub, ps);
         BodyScope __bs{this, /*closure=*/false};
         lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
         struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
@@ -7397,7 +8296,7 @@ struct Codegen {
                 if (!ps[i].isRaw)
                     line(1, ps[i].sigil == '$' ? "itemizeScalar(" + nm + ");" : nm + " = unitemized(std::move(" + nm + "));");
             }
-            if (!kernelName.empty() && !anyCell) {
+            if (!kernelName.empty() && !anyCell && nrw.empty()) {
                 std::vector<std::string> ka;
                 for (auto& p : ps) ka.push_back(mangleVar(p.name));
                 out << kernelEntry(kernelName, ka, /*boxed=*/false);
@@ -7407,7 +8306,8 @@ struct Codegen {
                 if (anyCell)
                     for (size_t i = 0; i < ps.size(); i++)
                         line(2, declVar(ps[i].name, "std::move(__p" + std::to_string(i) + ")") + ";");
-                emitBody(body, &ps);
+                if (!nrw.empty()) out << nrw;
+                else emitBody(body, &ps);
             });
             out << retWrap(retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
                                     "    try {\n" + text + "    } " + routineCatch(__fs.used()) + "\n");
@@ -7419,7 +8319,7 @@ struct Codegen {
         bool hasRw = false;
         for (auto& p : ps) if (p.isRw && !p.named && !p.slurpy && !p.invocant) hasRw = true;
         line(0, "static Value " + fnName + "(ValueList" + (hasRw ? "&" : "") + " __a) {");
-        if (!kernelName.empty()) out << kernelEntry(kernelName, {});
+        if (!kernelName.empty() && nrw.empty()) out << kernelEntry(kernelName, {});
         // A ROUTINE BODY IS A ReturnEx BOUNDARY. `return` itself compiles to a C++
         // return, so this catches the ones thrown from elsewhere — a builtin such
         // as `fail`, or an interpreter-evaluated callback. Without it they escaped
@@ -7429,7 +8329,8 @@ struct Codegen {
         FrameScope __fs{this};
         std::string text = capture([&]() {
             bindParams(ps, 2, false);
-            emitBody(body, &ps);
+            if (!nrw.empty()) out << nrw;
+            else emitBody(body, &ps);
         });
         out << retWrap(retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
                                 "    try {\n" + text + "    } " + routineCatch(__fs.used()) + "\n");
@@ -7439,6 +8340,7 @@ struct Codegen {
         if (d->isNative) { nativeSubDef(d); return; }
         RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
                                           mangleSub(d->name) + "(__a); })", d->name)};
+        nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
                 kernelSubs_.count(d->name) ? d->name : std::string(), d->retType);
     }
@@ -7904,6 +8806,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     if (!enumConsts.empty()) g.out << "\n";
 
     g.planKernels(subs, srcText);
+    g.planNative(subs, srcText);
     // forward declarations (subs + multis + class methods)
     for (SubDecl* d : subs) {
         auto fit = g.fastSubs.find(d->name);
@@ -7921,11 +8824,13 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             g.out << "static Value " << g.methodFn(cd->name, Codegen::methodKey(mp.get())) << "(ValueList&);\n";
     g.out << "\n";
     g.out << g.kernelText_;   // empty unless a sub qualifies (planKernels)
+    g.out << g.nrPreamble();  // …and the same for planNative
 
     // Generate all code into buffers FIRST (definitions, class registration,
     // program body), so the full set of builtin call sites is known before we
     // emit the cached `__bfN` pointer declarations they reference.
     std::string defs = g.capture([&]() {
+        for (auto& nb : g.nrBodies_) g.out << nb.second << "\n";
         for (SubDecl* d : subs) { g.subDef(d); g.out << "\n"; }
         for (auto& mc : multiCands) { g.multiDef(mc.first, mc.second); g.out << "\n"; }
         for (ClassDecl* cd : classes) { g.classMethodDefs(cd); g.out << "\n"; }

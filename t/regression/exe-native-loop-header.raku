@@ -9,7 +9,10 @@
 #
 # This file holds the interpreter, `--exe` and `--exe -O` to Rakudo 2026.09's
 # lines, and counts the lanes `-O` emits, so the loops cannot drift back to
-# the boxed path unnoticed.
+# the boxed path unnoticed. A loop in a sub whose parameters are all natives
+# runs in its native form (planNative: a C++ loop over int64_t and double,
+# one `__nnext` label each) when its Value function calls that form; such a
+# loop counts as a lane does.
 #
 # Contract: exit 0 + last line PASS.
 my @fail;
@@ -56,8 +59,9 @@ held('interpreted', $interp.out.slurp(:close)); $interp.err.slurp(:close);
 
 # A count that falls means a loop went back to boxed.
 my $cpp = run($bin, '--cpp', '-O', $f.absolute, :out, :err);
-my $lanes = +$cpp.out.slurp(:close).comb('unboxed loop lane'); $cpp.err.slurp(:close);
-@fail.push("only $lanes loops carry a lane, want 6") unless $lanes >= 6;
+my $text = $cpp.out.slurp(:close); $cpp.err.slurp(:close);
+my $lanes = +$text.comb('unboxed loop lane') + +$text.comb(/ ^^ \s* '__nnext' \d+ ': ;' /);
+@fail.push("only $lanes loops carry a lane or run natively, want 6") unless $lanes >= 6;
 
 for (('--exe', '-O'), ('--exe',)) -> @mode {
     my $exe = $dir.add("nativehdr-{+@mode}.bin");
