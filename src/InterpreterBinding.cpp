@@ -7933,6 +7933,19 @@ bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v
     pa->w[(size_t)key.i] = w.i;
     return true;
 }
+// --exe: any store into an element of an array declared native, as the
+// interpreter judges one (nativeElemStore): `how` '=' an assignment (refused
+// as a type check), 'o' through the element's container (`+=`: refused as an
+// unbox), '+' a step (wrapped at the width). What it leaves goes in as a word
+// where it can (rtPackedStore), into the element's place otherwise; an array
+// that is not native after all takes the value as it is. Returns that value.
+Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how) {
+    if (std::string t = I.nativeElemTypeOf(base); !t.empty())
+        I.nativeElemStore(t, v, how, key.t == VT::Int && !key.big() ? key.i : 0);
+    if (base.pk_ == PK::Packed && rtPackedStore(I, base, key, v)) return v;
+    rtIndexRef(base, key, false, nullptr) = v;
+    return v;
+}
 bool rtLiveFailure(const Value& r) {
     if (r.t != VT::Hash || r.hashKind != "Failure" || !r.hash()) return false;
     auto h = r.hash()->find("handled");

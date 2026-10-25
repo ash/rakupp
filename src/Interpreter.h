@@ -5931,10 +5931,11 @@ bool rtLiveFailure(const Value& r);   // a Failure nothing has handled yet (the 
 Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value rhs, bool dollarSource);
 Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource);
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
+Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp);
 inline void rtIndexStore(Interpreter& I, Value& base, const Value& key, Value v) {
     if (base.pk_ == PK::Packed && rtPackedStore(I, base, key, v)) return;
-    rtIndexRef(base, key, false, nullptr) = std::move(v);
+    rtElemStoreN(I, base, key, std::move(v), '=');
 }
 // …and `@a[$i]` read from one: the word, while the array is packed and the
 // subscript a machine Int in range (the Value the element unpacks to,

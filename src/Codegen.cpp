@@ -864,6 +864,27 @@ struct Codegen {
         auto* v = static_cast<const VarExpr*>(e);
         return !v->declare && nativeArrays_.count(v->name);
     }
+    // An element of an array declared native as the target of a store (one
+    // subscript, not `*`): the Index, else null. Every store into one goes
+    // through rtElemStoreN, which converts, wraps or refuses as the
+    // interpreter's does; the element's place (rtIndexRef) takes anything.
+    Index* nativeElemTarget(Expr* e) {
+        if (moduleMode_ || !e || e->kind != NK::Index) return nullptr;
+        auto* ix = static_cast<Index*>(e);
+        if (ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index ||
+            !nativeArrayBase(ix->base.get()) || hasStarLit(ix->index.get()) || isSliceSubscript(ix->index.get()))
+            return nullptr;
+        return ix;
+    }
+    // …its element stepped: the value the step answers (the old one for a postfix)
+    std::string nativeElemStep(Index* ix, bool up, bool postfix) {
+        noteIndexWrite(ix->base.get());
+        const std::string base = lvalueExpr(ix->base.get());
+        return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(ix->index.get()) +
+               "; Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, rtStep(_o, " +
+               (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; }), '+'); " +
+               (postfix ? "return rtStepOld(std::move(_o));" : "return _n;") + " }())";
+    }
     static void refuseDeclTraits(const VarExpr* v) {
         const std::string& n = v->name;
         // `state $n` (and the anonymous `$++`) keeps its value across runs of
@@ -2608,6 +2629,7 @@ struct Codegen {
                     if (u->op == "i") return "RT.postfixIPub(" + ex(u->operand.get()) + ")"; // (2+3)i
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
                     checkWritable(u->operand.get());
+                    if (Index* nix = nativeElemTarget(u->operand.get())) return nativeElemStep(nix, u->op == "++", true);
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = "rtStep(_o, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
@@ -2619,6 +2641,7 @@ struct Codegen {
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     checkWritable(u->operand.get());
+                    if (Index* nix = nativeElemTarget(u->operand.get())) return nativeElemStep(nix, u->op == "++", false);
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
@@ -3834,6 +3857,10 @@ struct Codegen {
                     auto* u = static_cast<Unary*>(e);
                     if ((u->op == "++" || u->op == "--") && u->operand) {
                         checkWritable(u->operand.get());
+                        if (Index* nix = nativeElemTarget(u->operand.get())) {
+                            line(ind, "(void)" + nativeElemStep(nix, u->op == "++", false) + ";");
+                            return;
+                        }
                         std::string delta = u->op == "++" ? "1" : "-1";
                         std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                           ", [&]() -> Interpreter& { return RT; })";
@@ -4477,6 +4504,13 @@ struct Codegen {
         if (a->op == "=" && moduleMode_ && tgt->kind == NK::Index)
             return "([&]() -> Value& { Value __kv = " + coerceFor(tgt, rhs, a->value.get()) +
                    "; t_keptItem = {}; return rtKeptAssign(RT, " + lvalueExpr(tgt) + ", std::move(__kv)); }())";
+        Index* nix = nativeElemTarget(tgt);
+        if (a->op == "=" && nix) {   // (the value first, as the assignment's own order has it)
+            noteIndexWrite(nix->base.get());
+            const std::string base = lvalueExpr(nix->base.get());
+            return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; return rtElemStoreN(RT, " +
+                   base + ", " + ex(nix->index.get()) + ", std::move(__v), '='); }())";
+        }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
         const std::string ubinop = a->written().substr(0, a->written().size() - 1);   // `×=`: `infix:<×>`
@@ -4509,7 +4543,6 @@ struct Codegen {
         }
         // compound assignment to an index binds the slot once (avoids double side effects)
         if (tgt->kind == NK::Index) {
-            std::string ref = lvalueExpr(tgt);
             std::string fb = binop == "*" || binop == "~" || binop == "," ? std::string() : fastBin(binop); // see `*=` note below
             std::string nv = binop == "||" ? "RT.boolify(__r) ? __r : (" + rhs + ")"
                            : binop == "&&" ? "RT.boolify(__r) ? (" + rhs + ") : __r"
@@ -4521,6 +4554,15 @@ struct Codegen {
                                  : binop == "," ? "rtCommaAssign(__r, " + rhs + ");"  // the metaop over `infix:<,>`
                                  : into ? "applyArithInto(" + cesc(binop) + ", __r, " + rhs + ");"
                                  : "__r = " + nv + ";";
+            // (an element of a native array: computed on its value, and stored
+            // as through the element's container, rtElemStoreN 'o')
+            if (nix) {
+                noteIndexWrite(nix->base.get());
+                const std::string base = lvalueExpr(nix->base.get());
+                return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(nix->index.get()) +
+                       "; Value __r = rtIndexGetP(__b, __k); " + op + " return rtElemStoreN(RT, __b, __k, std::move(__r), 'o'); }())";
+            }
+            std::string ref = lvalueExpr(tgt);
             // (in a module routine, through a kept item for a typed variable,
             // the result is checked, and a refusal leaves the old value: RtKept)
             if (moduleMode_)
