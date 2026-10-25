@@ -14,7 +14,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 (FORTRAN-LESSONS 1a); e614993a; de2e08d4; c95d9332; d0ba733b
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
-42f79e98, b9108e1d, 0b9950b1, 500c29e2 and 1b182b8e.*
+42f79e98, b9108e1d, 0b9950b1, 500c29e2, 1b182b8e, 828e52d5, 4d1c7cc3,
+80ea9030 and d972abe7.*
 
 ---
 
@@ -95,7 +96,7 @@ interpreted.
   axpy-loop, which starts that way, 403.3 → 64.7 ms, and reading @b after the
   copy 258.6 → 44.9 ms.
 
-The next six entries measure `--exe -O` against the build before each commit,
+The next nine entries measure `--exe -O` against the build before each commit,
 best of 5 interleaved, on one program of three routines (a recursion of
 about 500 calls over four native parameters updating file-scope tables at
 its leaves, a loop over one array, and an integer routine), its arrays
@@ -128,6 +129,10 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   while the array is packed. The recursion over native arrays 371.7 → 33.3 µs
   a call, the loop 6.64 → 1.07 µs, the integer routine 580.8 → 72.0 ns; the
   binary 29.91G → 3.06G instructions. A `num @x` parameter still bundles.
+  Every compiled store into an element (`=`, `op=`, `++`) converts, wraps or
+  refuses as the interpreter's does (80ea9030): until then one the word could
+  not take went to the element's place, which took a Str, a Rat, a Failure or
+  an Int too wide, kept a Bool, and did not wrap a step.
 - **A native routine reads and writes a native array's element as its word**
   (1b182b8e), and a `/` with a Num on either side divides as a double, behind
   the runtime tests that make that the answer (the array packed, the index in
@@ -136,6 +141,25 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   14.9 µs a call, the loop 1.10 → 0.64 µs; the binary 3.06G → 1.48G
   instructions. The same program over plain arrays, and untyped, retire the
   same instructions as before.
+- **A native routine's read of a file-scope native and its element tests are
+  inline, and it makes no `$_` it does not read** (828e52d5): the read's
+  conversion sat in the same function as its test, which clang called out of
+  line, and every call built and destroyed the routine's own `$_`. The binary
+  1.500G → 1.225G instructions.
+- **A native loop checks its arrays' facts once, on entry** (4d1c7cc3): what
+  an element's test asked at every access (packed, of its kind, no default,
+  no worker running) is asked as the loop starts and again after anything
+  boxed or a native call runs in it, and an element's test is its index
+  against the length kept. While a worker runs, the per-access tests answer,
+  as before. The recursion 12,892 → 8,604 ns a call, the binary 1.215G →
+  0.851G instructions.
+- **A top-level `loop` or `while` over native arrays, or calling a native
+  routine, compiles as a native routine's loop does** (d972abe7): native
+  locals for its header's `my int`, the facts on entry, direct calls. A
+  statement in it that runs boxed may declare nothing, and a program with a
+  CATCH, LEAVE or END at its top level keeps its loops as they were. The
+  loop 589 → 55.2 ns a call, the integer routine 75.0 → 14.6 ns (over plain
+  arrays 58.0 → 14.2), the binary 0.853G → 0.767G instructions.
 
 ### Fixed: silent wrong answers
 
@@ -436,3 +460,11 @@ does not.
   and `my int $t = @n[0] + @n[1]`, die "Cannot unbox 64 bit wide bigint" where
   Rakudo wraps, interpreted and compiled alike. `@n[0, 1]` on a native array
   is a native array where Rakudo's is a List.
+- In a program `--exe` bundles, a routine it compiles natively (module mode,
+  without the program's declarations) still stores into a native array's
+  element unchecked: `@w[$i] += 2.5` into an `int` array leaves 2.5, as it
+  did before these changes (8c570a98).
+- Reading a top-level loop's header variable where its C++ declaration is
+  not in scope fails the `--exe` build with a C++ error (`v_si` undeclared):
+  a routine (`sub show { say $i }` beside `loop (my int $i = 0; …)`), or a
+  top-level CATCH. The same before these changes (8c570a98).
