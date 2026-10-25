@@ -42,7 +42,19 @@ my %known-bad;
 # runs). Residual crash shapes the CONTRACT does not yet cover — and the
 # next stress programs should stage: iteration during mutation, object
 # attribute races, and same-slot torn copies of pointer-carrying values.
-my %known-flaky;
+#
+# ub-indexed-grow joined 2026-10-24, half fixed. Its growth used to realloc one
+# buffer from several threads at once and died on every parallel run; the
+# auto-extend now takes push's stripe, and the reproducer went from 8/8 crashed
+# to 2/40. What is left is a different shape: the element pointer lvalue()
+# hands out outlives the stripe, a sibling's growth moves the buffer under it,
+# and the store writes freed memory, so a later realloc aborts: 2/30 on the
+# block-per-worker phase alone, 1/50 on this program. Proof that it is the move:
+# with the buffer reserved ahead, so that growth never moves it, that phase ran
+# 0/60.
+my %known-flaky =
+    'ub-indexed-grow/parallel' => 'an element pointer outlives the stripe; a sibling growth moves the buffer under the store',
+;
 # The TSan-parallel ratchet (2026-08-08): the blanket parallel-skip is GONE —
 # seven correctness programs now run STRICT under ThreadSanitizer in parallel
 # mode (atomic-counter, channel-pipeline, hash-guarded, lock-counter,
@@ -54,6 +66,7 @@ my %tsan-parallel-skip =
     # them (the NATIVE matrix is where their no-crash contract is enforced)
     'ub-array-push'          => 'stages a deliberate race',
     'ub-hash-write'          => 'stages a deliberate race',
+    'ub-indexed-grow'        => 'stages a deliberate race',
     'ub-iterate-during-push' => 'stages a deliberate race',
     'ub-object-attrs'        => 'stages a deliberate race',
     'ub-torn-values'         => 'stages a deliberate race',

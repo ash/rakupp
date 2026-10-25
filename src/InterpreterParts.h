@@ -1313,6 +1313,17 @@ static inline Value arrayMissingDefault(const Value& base) {
 // at the (Int) type object — and `.raku` prints what a read would give
 // (sheet LA-21). An untyped container grows empty holes.
 Value containerFill(const Value& base);
+// Grow `a` until index `i` exists, `fill()` making each new slot, under push's
+// stripe: two workers auto-extending one array each realloc'd its buffer at
+// once (t/stress/ub-indexed-grow). `named`, when this grew it, is what slot `i`
+// starts as (`is default`). One compare and nothing else when `i` is there.
+template <class F>
+inline void growToIndex(const Interpreter& I, ValueList& a, long long i, F fill, const Value* named = nullptr) {
+    if ((long long)a.size() > i) return;
+    Interpreter::ParStripe gs(I, &a);
+    while ((long long)a.size() <= i) a.push_back(fill());
+    if (named) a[(size_t)i] = *named;
+}
 
 // …and back out of whatever is carrying it.
 static inline std::shared_ptr<BtRecord> btOf(const Value& v) {

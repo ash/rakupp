@@ -13,7 +13,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 9d48b3b5, 184c423c, 72e0c5fb and 316e5855 (FatRoast); 07775af3
 (FORTRAN-LESSONS 1a); e614993a; de2e08d4; c95d9332; d0ba733b
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
-85d56001; 960e8aed; 7fcca8a8; 273863ac.*
+85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21.*
 
 ---
 
@@ -236,6 +236,22 @@ interpreted.
   `my $s = $n > 2 ? "many" : "few"` set `$s` to True; other shapes died of
   "Malformed radix number" or "expected )". It is now Rakudo's X::Obsolete,
   "Unsupported use of ? and : for the ternary conditional operator".
+- **A store reaches the container an element is bound to** (84add3b1).
+  After `@b[1] := my $c`, `@b[1] = 9` left $c as (Any): the bind looked $c up
+  before the declaration made it. `$x := my $c` was the same, and
+  `@b[1] := my $c = 4` died on the store. A slice (`@b[1, 2] = …`,
+  `%h<a b> = …`) or list assignment (`($c, @b[1]) = …`) replaced a bound
+  element instead of storing into it, and `.VAR` of one was its value's type.
+  22 shapes agree with Rakudo 2026.09; a list assignment into a Proxy now
+  runs its STORE.
+- **A routine named after a block prefix gets its arguments** (08a17d21).
+  `sub start($x) { $x + 1 }; say start(5)` said 1: the prefix handed the sub
+  its thunk as a Block, and `start(2, 3)` died. `do(5)`, `try(5)`,
+  `quietly(5)` and `once(5)` never called the routine, and `gather(5)` was
+  empty. Glued to its paren, such a name is now the routine's call (`react`
+  and `supply` too), while `start { … }` and `start 5` stay the prefix. A
+  routine declared below its call counts, which also fixes `say repeat(5);
+  sub repeat($x) {…}`, a parse error before.
 
 ### Fixed: crashes
 
@@ -246,6 +262,11 @@ interpreted.
   S07-hyperrace/basics.t segfaulted about one run in six. 300 runs, none.
 - **`-O` compiles a `--> Int` sub of no parameters that is an int kernel**
   (e30e2827); its kernel guard named an `__a` its direct overload has not got.
+- **Workers auto-extending one array by index no longer realloc its buffer
+  at once** (90bc6e23). Four workers storing `@r[$w * 10_000 + $_]` into an
+  empty array died 8/8 in parallel mode (SIGABRT, SIGBUS, SIGSEGV); the
+  growth now takes push's stripe, and t/stress/ub-indexed-grow.raku stages it.
+  2/40 still crash: see Left open.
 
 ### Fixed: what FatRoast found
 
@@ -329,6 +350,11 @@ does not.
 
 ### Left open
 
+- A store into an array element can still land in a buffer a sibling worker's
+  growth has just moved, in a program that races the two (90bc6e23): an
+  in-bounds store racing a push crashes about a quarter of runs, and
+  ub-indexed-grow's parallel leg is on t/stress's `%known-flaky`. Two fixes
+  were prototyped and measured in docs/dev/experiments/STALE-ELEMENT-POINTER.md.
 - Issues 2, 4 and 14 still bundle the mainline; 10 (a `use`d module's sub
   costs ~6× compiled) and 21 (no array-element loop lane) are unchanged.
 - Found and open, the same on v5.5.0: `sub f(int $x) { $x * 2**62 }`
