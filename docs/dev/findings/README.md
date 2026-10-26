@@ -285,6 +285,23 @@ logs and the reviews. This page is the complete list.
   - Open: issue 21 (an array-element lane), bundling over a list literal, a
     native array or `CATCH`, module-sub calls, `.pop`/`.splice` dispatched by
     name (22), and a native-typed program still 1.3× its untyped twin (23).
+- **[FORTRAN-GAP-2026-10-24.md](FORTRAN-GAP-2026-10-24.md)** *(2026-10-24, at
+  5.5.0-59-g64313848)* — why the float-heavy program stays 51× behind
+  Fortran compiled, and what would close it.
+  - About 3× of the gap is the program's layout. Rust, with the same layout,
+    is 16× faster than Raku++.
+  - libm is 0.3% of the compiled profile and bigints 0%; the rest is boxes.
+    That answers NUM-UNBOX-PLAN's "other 12%".
+  - Three kernels written the Fortran way (natives, fixed tables) run
+    1.1–1.6× slower under `--exe -O` than untyped, and 5–11× slower with
+    native arrays, which bundle the program.
+  - Two defects:
+    - in a bundled program, `-O` drops a routine that updates a file-scope
+      variable;
+    - `try` around a returned Failure answers differently compiled.
+  - The lever beyond the plan: a routine declared all-native compiles to a
+    plain C++ function with no bail. Native semantics are machine semantics,
+    so such a routine may also write to file-scope native tables.
 
 ## One-off bug reports
 
