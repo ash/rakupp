@@ -179,3 +179,87 @@ sleep and log again inside one `$lock.protect` print
 **Not for speed.** A CPU-bound fan-out gains nothing under it, and work that
 mostly waits — on `sleep`, a child process, a socket — overlaps in both modes,
 because a thread that waits lets the others run.
+
+## How do I find a data race?
+
+**Run the program with `--detect-races`.** The race detector tracks which
+thread touched each shared variable, and which synchronization ordered those
+accesses: an `await`, a `Lock`, a `Channel`, a `Supply`, a `⚛` operation.
+Two accesses from different threads, at least one a write, with nothing
+ordering them, are a data race. Each pair of sites is reported once, on
+stderr when the program ends, and a run that raced exits 66. The unguarded
+counter from above:
+
+```
+$ rakupp --detect-races counter.raku
+123240
+rakupp: data race on $n
+  write at line 2 (thread T2, a start from line 2)
+  previous write at line 2 (thread T3, a start from line 2)
+  nothing orders them: no Lock, await, Channel, Supply or ⚛ between the two threads
+rakupp: 1 data race (251,063 occurrences)
+```
+
+The `Lock` and `atomicint` versions run silent. stdout is not touched, so a
+program's own output still compares. `RAKUPP_RACE=1` in the environment does
+the same, and the program's child processes inherit it; the flag checks only
+the program it is given. A race in a module names the file, and the report
+lists the routines the later access was in ([CLI.md](../CLI.md#finding-data-races---detect-races)).
+
+**It reports races that gave the right answer.** It asks whether anything
+ordered the accesses, not whether they collided, so it reports a race in a
+run that happened to come out right, which comparing with `RAKUPP_GIL=1`
+cannot see. A program that waits on a worker with `sleep` instead of `await`
+prints the expected `True` on every run, and has a race:
+
+```raku
+my $ready = False;
+start { sleep 0.1; $ready = True };
+sleep 0.5;
+say $ready;
+```
+
+```
+rakupp: data race on $ready
+  read at line 4 (thread T0, the main thread)
+  previous write at line 2 (thread T1, a start from line 2)
+  nothing orders them: no Lock, await, Channel, Supply or ⚛ between the two threads
+```
+
+**Arrays, hashes and objects.** Each array element, hash entry and
+attribute is a location of its own. Workers that write different elements
+of a pre-sized array, or different attributes of one object, do not race.
+Changing an array's length (a `push`, a `splice`, a store past the end, a
+list assignment) or a hash's keys (a new key, a `:delete`, a list
+assignment) writes the whole container, and every element access or lookup
+reads it. So four workers inserting keys no other worker uses still race,
+on the keys:
+
+```raku
+my %seen;
+await (^4).map: -> $w { start { %seen{"$w-$_"} = True for ^2_500 } };
+say %seen.elems;
+```
+
+```
+rakupp: data race on the keys of %seen
+  write at line 2 (thread T1, a start from line 2)
+  previous write at line 2 (thread T3, a start from line 2)
+  nothing orders them: no Lock, await, Channel, Supply or ⚛ between the two threads
+  (inserting a key, deleting one or assigning the whole hash changes its keys,
+  and every lookup reads them)
+```
+
+The same program with `my %seen = (^4 X~ "-" X~ ^2_500).map(* => False)`
+before the workers start only writes entries that exist, and runs silent.
+
+**What it does not see yet.** The detector is still being built
+([RACE-DETECTOR-PLAN.md](../../dev/plans/RACE-DETECTOR-PLAN.md)). Some
+access paths carry no hook yet. Slices (`@a[1, 2]`, `%h<a b>`), a `for %h`
+loop, native arrays (`my int @a`) and a class's own `AT-POS` are among them,
+and a race through one of them goes unreported. It reports only what the
+run did: a `hyper for` the engine runs on one thread has no race to report.
+Code that runs as a loop kernel has no hooks, so the detector switches the
+kernels off, and a program that relied on them runs slower than the
+detector alone accounts for. For the same reason it is refused with
+`--jit`, `--cnp` and the compilers.

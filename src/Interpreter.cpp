@@ -3770,7 +3770,10 @@ void rtShapedStore(Value& lv, const Value& rhs, const std::string& keepType) {
 // under Rakudo, where an Array may be lazy too.
 static Value reifyIfFinite(const Value& v) {
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
-    if (st->finiteSource) {   // a handle's lines: read to the end, keep the values
+    // a handle's lines, and any source read live that is not endless (a
+    // Channel's `.list`, standard input): not lazy, so read to the end, unless
+    // it was declared so (`my @a = lazy $c.list` stays lazy)
+    if (!st->declaredLazy && (st->finiteSource || (st->streaming && !st->infinite))) {
         forceLazy(v);
         Value r = Value::array(*v.arr()); r.isList = false; return r;
     }
@@ -4373,7 +4376,7 @@ Value Interpreter::callProtoBodyMethod(const Value& proto, const Value& self,
     return invokeMethod(proto, self, std::move(args), rwArgs, /*ownFrame=*/true);
 }
 
-thread_local std::vector<std::shared_ptr<ReactCtx>> Interpreter::reactStack_;
+thread_local ReactStack Interpreter::reactStack_;
 thread_local int Interpreter::threadDepth_ = 0;
 
 // the live interpreter's class registry, for free-function smartmatch on user
@@ -6885,18 +6888,18 @@ void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
         // gil_ while the socket readers that would settle it queued for it.
         if (t_holdsGil) {
             gilYieldNotify();
-            ps->cv.wait(plk, [&] { return ps->done; });
+            ps->cv.wait(plk, [&] { return bool(ps->done); });
             plk.unlock();                  // drop ps->m BEFORE reacquiring the GIL (as below)
             gilLock();
             return;
         }
-        ps->cv.wait(plk, [&] { return ps->done; });
+        ps->cv.wait(plk, [&] { return bool(ps->done); });
         return;
     }
     static thread_local ExecContext parked; // per-thread stash (supports nested await)
     saveCtx(parked);
     gilYieldNotify();
-    ps->cv.wait(plk, [&] { return ps->done; });
+    ps->cv.wait(plk, [&] { return bool(ps->done); });
     plk.unlock();          // drop ps->m BEFORE reacquiring the GIL (avoids ABBA with keep/break/second-awaiter)
     gil_.lock();
     loadCtx(parked);
@@ -7085,6 +7088,7 @@ void Interpreter::runReactLoop(const std::shared_ptr<ReactCtx>& ctx) {
         while (drainDeferred()) {}
     }
     while (drainDeferred()) {}
+    raceAcquire(ctx->cv.race, RaceEdge::React);   // whoever ended its sources happens before what follows it
 }
 
 // Wake every parked react so its worker can unwind promptly at shutdown:

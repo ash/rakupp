@@ -1608,7 +1608,7 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
     if (g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(od, &entry);
     Value* slot = entry.deref();
     {
-        ParStripe ws(*this, slot); // torn-copy contract
+        ParStripe ws(*this, slot); raceAttr(od, slot, RaceAcc::Write); // torn-copy contract
         *slot = std::move(v);
     }
     return slot;
@@ -2018,7 +2018,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto settle = [ps, ph](bool broke, Value v) {
                 std::vector<std::function<void()>> fire;
                 { std::lock_guard<std::mutex> lk(ps->m);
-                  if (ps->done) return;
+                  if (ps->done.v) return;
                   ps->done = true; if (broke) { ps->broken = true; ps->cause = v; ps->causeMsg = v.toStr(); } else ps->result = v;
                   fire.swap(ps->thens); ps->cv.notify_all(); }
                 (*ph)["status"] = Value::str(broke ? "Broken" : "Kept");
@@ -2138,11 +2138,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto ch = c.hashS();
                 auto settle = [ch, ps](bool failed, Value cause) {
                     std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                    raceChanClose(ch.get());
                     (*ch)["closed"] = Value::boolean(true);
                     if (failed) (*ch)["failCause"] = cause;
                     if ((*ch)["queue"].arr()->empty()) {
                         std::lock_guard<std::mutex> lk(ps->m);
-                        if (!ps->done) {
+                        if (!ps->done.v) {
                             if (failed) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); }
                             else ps->result = Value::boolean(true);
                             ps->done = true;
@@ -2154,7 +2155,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
                 emitCb.code()->ciM().builtin = [ch](Interpreter&, ValueList& a) -> Value {
                     std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
-                    if (!a.empty()) (*ch)["queue"].arr()->push_back(a[0]);
+                    if (!a.empty()) { raceChanSend(ch.get()); (*ch)["queue"].arr()->push_back(a[0]); }
                     return Value::any();
                 };
                 Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
@@ -2565,7 +2566,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // holding the channel here would close a supplier→tap→channel cycle)
             emitCb.code()->ciM().builtin = [qarr, key = (const void*)c.hash()](Interpreter&, ValueList& a) -> Value {
                 std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(key));
-                if (!a.empty()) qarr->push_back(a[0]);
+                if (!a.empty()) { raceChanSend(key); qarr->push_back(a[0]); }
                 return Value::any();
             };
             (*tapRec.hash())["emit"] = emitCb;
@@ -2581,11 +2582,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto ch = c.hashS();
             auto settle = [ch, ps](bool failed, Value cause) {
                 std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                raceChanClose(ch.get());
                 (*ch)["closed"] = Value::boolean(true);
                 if (failed) (*ch)["failCause"] = cause;
                 if ((*ch)["queue"].arr()->empty()) {
                     std::lock_guard<std::mutex> plk(ps->m);
-                    if (!ps->done) {
+                    if (!ps->done.v) {
                         if (failed) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); }
                         else ps->result = Value::boolean(true);
                         ps->done = true;
@@ -2605,7 +2607,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             Value sup = (*inv.hash())["supplier"];
             if (sup.t == VT::Hash && sup.hash()->count("taps")) {
                 stampTapRecord(*tapRec.hash(), sup.hash());
-                std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                std::lock_guard<RaceMutex> regLk(supplierMutex(sup.hash()));
                 (*sup.hash())["taps"].arr()->push_back(tapRec);
             }
             return c;
@@ -2658,7 +2660,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (sup.t == VT::Hash && sup.hash()->count("taps")) {
                     // registration and replay are one step (see tapSupply)
                     stampTapRecord(*tapRec.hash(), sup.hash());
-                    std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                    std::lock_guard<RaceMutex> regLk(supplierMutex(sup.hash()));
                     (*sup.hash())["taps"].arr()->push_back(tapRec);
                     replayPreserved(sup, tapRec);
                     registered = true;
@@ -3264,7 +3266,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (;;) {
                         bool finished;
                         {   // the supplier's own stripe — done/quit are written under it
-                            std::lock_guard<std::recursive_mutex> lk(supplierMutex(sup.hash()));
+                            std::lock_guard<RaceMutex> lk(supplierMutex(sup.hash()));
                             finished = (sup.hash()->count("done_state") && (*sup.hash())["done_state"].truthy())
                                     || (sup.hash()->count("quit_state") && (*sup.hash())["quit_state"].truthy());
                         }
@@ -4232,7 +4234,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // that sees this promise settled reflects it onto the same hash
             // under that lock, and two unguarded writers can tear a Value
             auto settle = [&] { (*inv.hash())["status"] = Value::str("Kept"); (*inv.hash())["result"] = v; };
-            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->result = v; ps->done = true; } settle(); fire.swap(ps->thens); ps->cv.notify_all(); }
+            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done.v) { ps->result = v; ps->done = true; } settle(); fire.swap(ps->thens); ps->cv.notify_all(); }
             else settle();
             for (auto& f : fire) f(); // run `.then` continuations now that it's settled
             return inv;
@@ -4253,7 +4255,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             std::vector<std::function<void()>> fire;
             auto settle = [&] { (*inv.hash())["status"] = Value::str("Broken"); (*inv.hash())["cause"] = c; };   // under ps->m, as keep
-            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done) { ps->broken = true; ps->cause = c; ps->causeMsg = c.toStr(); ps->done = true; } settle(); fire.swap(ps->thens); ps->cv.notify_all(); }
+            if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (!ps->done.v) { ps->broken = true; ps->cause = c; ps->causeMsg = c.toStr(); ps->done = true; } settle(); fire.swap(ps->thens); ps->cv.notify_all(); }
             else settle();
             for (auto& f : fire) f();
             return inv;
@@ -4372,10 +4374,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // Cro's client keeps the response promise from the socket reader,
             // and `.then({ await .result.body })` waited for body bytes only
             // that reader could deliver.
-            std::function<void()> deferred = [self, run]() { self->spawnDelayedNative(0, run); };
+            // (--race: registering hands the closure over through the promise, an edge of its own)
+            RaceSnap reg = g_race ? raceSnapshot(RaceEdge::Then) : RaceSnap();
+            std::function<void()> deferred = [self, run, reg]() { RaceForkTag t(RaceEdge::Then); self->spawnDelayedNative(0, [run, reg]() mutable { raceAcquireSnap(reg, RaceEdge::Then); run(); }); };
             if (ps) { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(deferred); }
             else if (kind == "timer") spawnDelayedNative(timerRemainingSecs(inv), run); // fire when the timer does, not at t=0
-            else if (kind == "anyof" || kind == "allof") thenCombinator(inv, run);     // when its members say so
+            else if (kind == "anyof" || kind == "allof") thenCombinator(inv, [run, reg]() mutable { raceAcquireSnap(reg, RaceEdge::Then); run(); });     // when its members say so
             else if (kind == "proc") {
                 // a lazily-realized process promise: nobody else will run it, so
                 // `.then` is a realization point (as await is) — the callback
@@ -4650,6 +4654,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     return p;
                 }
                 h["__held"] = Value::boolean(true);
+                raceAcquire(inv.hash(), RaceEdge::LockAsync);   // (a waiter's edge is its Promise)
             }
             methodCall(p, "keep", ValueList{Value::boolean(true)});
             return p;
@@ -4662,6 +4667,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (!h.count("__held") || !h["__held"].truthy())
                     throwTyped("X::Lock::Async::NotLocked", {},
                                "Cannot unlock a Lock::Async that is not currently locked");
+                raceRelease(inv.hash(), RaceEdge::LockAsync);
                 auto q = h.find("__queue");
                 if (q != h.end() && q->second.arr() && !q->second.arr()->empty()) {
                     next = q->second.arr()->front();
@@ -4681,6 +4687,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && (inv.hashKind == "Lock" || inv.hashKind == "Lock::Async")) {
         auto st = inv.ext() ? std::static_pointer_cast<LockState>(inv.ext()) : nullptr;
+        const void* raceKey = st ? (const void*)st.get() : (const void*)inv.hash();   // (no mutex under the GIL: the edges all the same)
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
             if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
             if (st) { // real mutual exclusion, released even if the block throws
@@ -4689,12 +4696,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // (which needs the GIL to run its protected block and release).
                 if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); }
                 std::lock_guard<std::recursive_mutex> lk(st->m, std::adopt_lock);
+                RaceHold rh(raceKey, RaceEdge::Lock);
                 return callCallable(args[0], {});
             }
+            RaceHold rh(raceKey, RaceEdge::Lock);
             return callCallable(args[0], {});
         }
-        if (m == "lock" || m == "acquire") { if (st) { if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); } } return Value::boolean(true); }
-        if (m == "unlock" || m == "release") { if (st) st->m.unlock(); return Value::boolean(true); }
+        if (m == "lock" || m == "acquire") { if (st) { if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); } } raceAcquire(raceKey, RaceEdge::Lock); return Value::boolean(true); }
+        if (m == "unlock" || m == "release") { raceRelease(raceKey, RaceEdge::Lock); if (st) st->m.unlock(); return Value::boolean(true); }
         if (m == "condition") {
             Value v = Value::makeHash(); v.hashKind = "LockCondition";
             if (st) { auto cs = std::make_shared<LockCondState>(); cs->lock = st; v.extM() = cs; }
@@ -4717,7 +4726,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // it, so the signalling thread can take it, and re-takes it
                 std::unique_lock<std::recursive_mutex> lk(cs->lock->m, std::adopt_lock);
                 bool parked = gilPark();
+                raceRelease(cs->lock.get(), RaceEdge::Lock);
                 cs->cv.wait(lk);
+                raceAcquire(cs->lock.get(), RaceEdge::Lock);
                 gilUnpark(parked);
                 lk.release();   // still held — protect releases it
                 if (pred.t != VT::Code) break;
@@ -4727,18 +4738,21 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && inv.hashKind == "Semaphore") {
         auto st = inv.ext() ? std::static_pointer_cast<SemaphoreState>(inv.ext()) : nullptr;
+        const void* raceKey = st ? (const void*)st.get() : (const void*)inv.hash();
         if (m == "acquire") {
             if (st) { std::unique_lock<std::mutex> lk(st->m); st->cv.wait(lk, [&]{ return st->count > 0; }); st->count--; }
+            raceAcquire(raceKey, RaceEdge::Semaphore);
             return Value::boolean(true);
         }
         if (m == "release") {
+            raceRelease(raceKey, RaceEdge::Semaphore);
             if (st) { std::lock_guard<std::mutex> lk(st->m); st->count++; st->cv.notify_one(); }
             return Value::boolean(true);
         }
         if (m == "try_acquire" || m == "try-acquire") {
-            if (!st) return Value::boolean(true);
+            if (!st) { raceAcquire(raceKey, RaceEdge::Semaphore); return Value::boolean(true); }
             std::lock_guard<std::mutex> lk(st->m);
-            if (st->count > 0) { st->count--; return Value::boolean(true); }
+            if (st->count > 0) { st->count--; raceAcquire(raceKey, RaceEdge::Semaphore); return Value::boolean(true); }
             return Value::boolean(false);
         }
     }
@@ -8370,7 +8384,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if ((it == inv.obj()->attrs.end() || !rtIsDefined(it->second)) &&
                 m == "payload" && ci->name == "X::AdHoc")
                 return Value::str("Unexplained error");
-            return it != inv.obj()->attrs.end() ? it->second : Value::any();
+            if (it == inv.obj()->attrs.end()) return Value::any();
+            ParStripe rs(*this, &it->second); raceAttr(inv.obj(), &it->second, RaceAcc::Read);   // torn-copy contract, as a `$!a` read keeps it
+            return it->second;
         }
         // `has %.h handles <iterator list …>` — a NAMED delegation is a real method
         // on the class in Rakudo, so it outranks every universal fallback below.

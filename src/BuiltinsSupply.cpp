@@ -66,7 +66,9 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
         Interpreter* ip = &I2;
         auto deferred = [&]() -> SupplyTapCtx::Deferred {
             auto saved = makePayload<ValueList>(args);
-            return {sub, [ip, ctx, fn, saved] {
+            RaceSnap snap = g_race ? raceSnapshot(RaceEdge::Supply) : RaceSnap();   // the deliverer's clock
+            return {sub, [ip, ctx, fn, saved, snap] {
+                raceAcquireSnap(snap, RaceEdge::Supply);
                 if (ctx->done) return;
                 ip->tctx().tapStack.push_back(ctx);
                 struct G { Interpreter* i; ~G() { i->tctx().tapStack.pop_back(); } } g{ip};
@@ -79,6 +81,7 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
             if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
             if (ctx->running > 0) { ctx->queue.push_back(deferred()); return Value::any(); }
             ctx->running++;                  // the activation is this thread's now
+            raceAcquire(ctx->race, RaceEdge::Supply);
             // …but older deliveries still waiting go first: this one joins the
             // back of the line (a holder that died on an exception left them)
             now = ctx->queue.empty();
@@ -86,7 +89,7 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
         }
         if (now) {
             try { fn(I2, args); }
-            catch (...) { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; throw; }
+            catch (...) { std::lock_guard<std::mutex> lk(ctx->m); raceRelease(ctx->race, RaceEdge::Supply); ctx->running--; throw; }
         }
         I2.drainSupplyQueue(ctx);
         return Value::any();
@@ -155,10 +158,10 @@ void Interpreter::drainSupplyQueue(const std::shared_ptr<SupplyTapCtx>& ctx) {
                 ctx->queue.erase(ctx->queue.begin());
                 if (!(d.sub && ctx->closedSubs.count(d.sub))) run = std::move(d.run);
             }
-            if (!run) { ctx->running--; return; }
+            if (!run) { raceRelease(ctx->race, RaceEdge::Supply); ctx->running--; return; }
         }
         try { run(); }
-        catch (...) { std::lock_guard<std::mutex> lk(ctx->m); ctx->running--; throw; }
+        catch (...) { std::lock_guard<std::mutex> lk(ctx->m); raceRelease(ctx->race, RaceEdge::Supply); ctx->running--; throw; }
     }
 }
 
@@ -692,10 +695,11 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr()
                              ? qi->second.arr() : nullptr;
                 if (!q) drained = true;
-                else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
+                else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; raceChanTake(chan.hash(), q->size()); }
                 else {
                     auto ci = chan.hash()->find("closed");
                     drained = ci != chan.hash()->end() && ci->second.truthy();
+                    if (drained) raceChanSawClose(chan.hash());
                 }
             }
             if (drained) break;
@@ -1026,13 +1030,14 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr() ? qi->second.arr() : nullptr;
                 if (!q) fin = true;
-                else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; }
+                else if (!q->empty()) { v = q->front(); q->erase(q->begin()); got = true; raceChanTake(chan.hash(), q->size()); }
                 else {
                     auto ci = chan.hash()->find("closed");
                     fin = ci != chan.hash()->end() && ci->second.truthy();
                     // S-60: a FAILED channel is a quit, not a quiet end — the
                     // cause reaches the whenever's QUIT phasers, or the react.
                     if (fin) {
+                        raceChanSawClose(chan.hash());
                         auto fi = chan.hash()->find("failCause");
                         if (fi != chan.hash()->end()) { failCause = fi->second; failed = true; }
                     }
@@ -1519,10 +1524,10 @@ Value watchFilter(const Value& sup, const Value& blk) {
 // (the class 925260b1 fixed for a react's own taps). tapSupply leaves the
 // supplier's key in the record; the registry only compares the address.
 static const char* const kTapSupKey = "\x01supkey";
-std::unique_lock<std::recursive_mutex> lockTapRecord(const ValueMap& rec) {
+std::unique_lock<RaceMutex> lockTapRecord(const ValueMap& rec) {
     auto k = rec.find(kTapSupKey);
     if (k == rec.end()) return {};
-    return std::unique_lock<std::recursive_mutex>(supplierMutex((const void*)(intptr_t)k->second.i));
+    return std::unique_lock<RaceMutex>(supplierMutex((const void*)(intptr_t)k->second.i));
 }
 void stampTapRecord(ValueMap& rec, const ValueMap* sup) {
     rec[kTapSupKey] = Value::integer((long long)(uintptr_t)sup);
@@ -1620,7 +1625,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // empty the store — S-09's "resumes preserving for the next first tap".
         // Under the supplier's own stripe, so no live value overtakes the replay.
         if (sup.t == VT::Hash && sup.hash()->count("taps")) {
-            std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+            std::lock_guard<RaceMutex> regLk(supplierMutex(sup.hash()));
             stampTapRecord(*tapRec.hash(), sup.hash());
             (*sup.hash())["taps"].arr()->push_back(tapRec);
             replayPreserved(sup, tapRec);
@@ -1629,7 +1634,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // (the flag under the supplier's lock, as the fan-out reads it)
         if (sup.t == VT::Hash && sup.hash()->count("done_state") && (*sup.hash())["done_state"].truthy()) {
             bool fire = false;
-            {   std::lock_guard<std::recursive_mutex> lk(supplierMutex(sup.hash()));
+            {   std::lock_guard<RaceMutex> lk(supplierMutex(sup.hash()));
                 if (!(tapRec.hash()->count("ended") && (*tapRec.hash())["ended"].truthy())) {
                     (*tapRec.hash())["ended"] = Value::boolean(true);
                     fire = true;
@@ -2239,7 +2244,10 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         auto spent = std::make_shared<std::atomic<long long>>(0);
         Value inEmit; inEmit.t = VT::Code; inEmit.setCode(makePayload<Callable>());
         Value emitOut = emitCb;
-        inEmit.code()->ciM().builtin = [buf, spent, elemsP, emitOut](Interpreter& I, ValueList& a) -> Value {
+        // (--race: a tap's deliveries are serial, here on two threads, the emitter's
+        // and the ticker's; both hold the tap, as does the hand-off through `buf`)
+        inEmit.code()->ciM().builtin = [buf, spent, elemsP, emitOut, handle](Interpreter& I, ValueList& a) -> Value {
+            RaceHold rh(handle.get(), RaceEdge::Supply);
             Value v = a.empty() ? Value::any() : a[0];
             if (spent->load() < elemsP->load() && emitOut.t == VT::Code) {
                 spent->fetch_add(1);
@@ -2285,6 +2293,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             bool firstPass = true;                  // the bucket starts FULL: the
             for (;;) {                              // first refill is one tick later
                 if (stopped()) break;
+                RaceHold rh(handle.get(), RaceEdge::Supply);
                 self->gilLock();
                 ExecContext wctx; self->loadCtx(wctx);
                 tctx().cur = spawnScope;

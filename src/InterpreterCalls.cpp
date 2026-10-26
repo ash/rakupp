@@ -648,8 +648,8 @@ void Interpreter::rwWriteThrough(Expr* target) {
         // the copy and the store under their slots' stripes (torn-copy contract):
         // the parameter may be written from a worker the callee started
         Value v;
-        { Value* src = e->local(name); ParStripe rs(*this, src); v = *src; }
-        { ParStripe ws(*this, dit->second); *dit->second = v; }
+        { Value* src = e->local(name); ParStripe rs(*this, src); v = *raceR(src); }
+        { ParStripe ws(*this, dit->second); raceW(dit->second) = v; }
         { ParStripe ss(*this, e); e->x().rwSynced[name] = v; }   // read by copyOutRw on the caller's thread
         return;
     }
@@ -657,7 +657,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     auto it = e->ex->rwLinks.find(name);
     if (it == e->ex->rwLinks.end()) return;
     Value v;
-    { Value* src = e->local(name); ParStripe rs(*this, src); v = *src; }   // as above
+    { Value* src = e->local(name); ParStripe rs(*this, src); v = *raceR(src); }   // as above
     auto savedCur = tctx().cur;
     tctx().cur = it->second.second; // the caller's scope, where the arg expr lives
     // ONE hop only: write through to the caller's slot. Chaining further up on
@@ -675,7 +675,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     try {
         Expr* tgt = peelIncDec(it->second.first);
         if (!assignMultiDimSlice(tgt, v))
-            if (Value* lv = lvalue(tgt)) { ParStripe ws(*this, lv); *lv = v; }
+            if (Value* lv = lvalue(tgt)) { ParStripe ws(*this, lv); raceW(lv) = v; }
     } catch (...) {}
     tctx().cur = savedCur;
     // …and the ORIGINAL container behind the chain, when the hop above is not
@@ -688,7 +688,7 @@ void Interpreter::rwWriteThrough(Expr* target) {
     auto rt = e->ex->rwRoots.find(name);
     if (rt != e->ex->rwRoots.end()) {
         tctx().cur = rt->second.second;
-        try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) { ParStripe ws(*this, lv); *lv = v; } } catch (...) {}
+        try { if (Value* lv = lvalue(peelIncDec(rt->second.first))) { ParStripe ws(*this, lv); raceW(lv) = v; } } catch (...) {}
         tctx().cur = savedCur;
     }
     // under the frame's stripe: a worker the callee started writes through
@@ -1359,6 +1359,7 @@ bool Interpreter::atomicOn(const std::string& op, Value& lv, const ValueList& mo
             Value nv = more[1];
             typed(nv);
             std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv));
+            RaceHold rh(&lv, RaceEdge::Atomic); if (g_race) raceSlot(&lv, RaceAcc::Atomic);   // (inside the stripe: the clocks keep the ops' order)
             Value seen = lv;
             if (applyArith("===", seen, more[0]).truthy()) lv = nv;
             out = seen;
@@ -1377,20 +1378,23 @@ bool Interpreter::atomicOn(const std::string& op, Value& lv, const ValueList& mo
             // than once.
             for (;;) {
                 Value seen;
-                { std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv)); seen = lv; }
+                { std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv)); RaceHold rh(&lv, RaceEdge::Atomic); if (g_race) raceSlot(&lv, RaceAcc::Atomic); seen = lv; }
                 Value next = callCallable(more[0], ValueList{seen});
                 typed(next);
                 std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv));
+                RaceHold rh(&lv, RaceEdge::Atomic); if (g_race) raceSlot(&lv, RaceAcc::Atomic);
                 if (applyArith("===", lv, seen).truthy()) { lv = next; out = next; return true; }
             }
         }
         std::lock_guard<std::recursive_mutex> lk(atomicStripe(&lv));
+        RaceHold rh(&lv, RaceEdge::Atomic); if (g_race) raceSlot(&lv, RaceAcc::Atomic);
         out = lv;
         return true;
     }
     // REAL atomicity (the GIL used to be the only serialization — in parallel
     // mode these lost updates: 12,540 of 20,000 in the stress suite's first run)
     std::lock_guard<std::recursive_mutex> alock(atomicStripe(&lv));
+    RaceHold rh(&lv, RaceEdge::Atomic); if (g_race) raceSlot(&lv, RaceAcc::Atomic);
     const long long cur = lv.toInt();
     const long long n2 = more.empty() ? 0 : more[0].toInt();
     if (op == "atomic-fetch")          out = lv;
@@ -2078,7 +2082,7 @@ Value Interpreter::proxyStore(const Value& proxy, const Value& v) {
 // a list assignment wrote the slot outright, unbinding `$c` instead.
 void Interpreter::storeThrough(Value& slot, const Value& v) {
     if (slot.t == VT::Hash && slot.hashKind == proxyKind() && slot.hash()) { Value p = slot; proxyStore(p, v); }
-    else slot = v;
+    else raceW(&slot) = v;   // (a list assignment's scalar, or an element: the classifier decides)
 }
 
 Value Interpreter::makePathProxy(std::shared_ptr<Env> scope, Expr* path) {
@@ -2571,14 +2575,14 @@ Value Interpreter::makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::strin
             // the copy under the slot's stripe (torn-copy contract): a Proxy
             // travels, and the frame's own thread may be storing meanwhile
             ParStripe rs(I, op);
-            return *op;
+            return *I.raceR(op);
         },
         [owner, src](Interpreter& I, ValueList& sa) -> Value {
             Value nv = sa.empty() ? Value::any() : sa[0];
             Value* op = owner->local(src);
             if (op && op->t == VT::Hash && op->hashKind == "Proxy" && op->hash() && op->hash()->count("STORE"))
                 return I.proxyStore(*op, nv);
-            if (op) { ParStripe ws(I, op); *op = nv; }   // as FETCH
+            if (op) { ParStripe ws(I, op); I.raceW(op) = nv; }   // as FETCH
             else owner->define(src, nv);
             return nv;
         });
@@ -2619,7 +2623,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
         Value* p = owner->local(vname);
         if (!p) return Value::str("");
         Value v;
-        { ParStripe rs(I, p); v = *p; }   // torn-copy contract, as makeEnvSlotProxy
+        { ParStripe rs(I, p); v = *I.raceR(p); }   // torn-copy contract, as makeEnvSlotProxy
         return I.deproxy(v);
     };
     Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
@@ -2635,7 +2639,7 @@ Value Interpreter::substrRwProxy(std::shared_ptr<Env> owner, const std::string& 
     store.code()->ciM().builtin = [owner, vname, cur, from, len](Interpreter& I, ValueList& sa) -> Value {
         Value nv = sa.empty() ? Value::str("") : sa.back();
         Value out = I.spliceStr(cur(I), from, len, nv);
-        if (Value* p = owner->local(vname)) { ParStripe ws(I, p); *p = out; }
+        if (Value* p = owner->local(vname)) { ParStripe ws(I, p); I.raceW(p) = out; }
         return nv;
     };
     (*proxy.hash())["FETCH"] = fetch;
@@ -3514,7 +3518,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     }
                     // a `%` target is STORED into, as `my %h = …` is: Nil values
                     // reset, and an odd count is an error rather than a lost item
-                    if (nm[0] == '%') { rest.isList = true; *lv = coerceHash(rest, /*store=*/true); }
+                    if (nm[0] == '%') { rest.isList = true; raceW(lv) = coerceHash(rest, /*store=*/true); }
                     else *lv = rest;
                     continue;
                 }
@@ -3578,7 +3582,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                 if (nb && !isBinding && nativeRefusesKind(v, nf))   // `my num ($a, $b) = 1/2, 2e0`
                     throwNativeKind(v, nf, ns);
                 if (!nb && !isBinding && v.natBits) dropNativeTags(v);   // see dropNativeTags
-                if (isBinding) *lv = v;
+                if (isBinding) raceW(lv) = v;
                 else storeThrough(*lv, v);   // (a bound element: `($x, @b[1]) = 1, 2`)
                 if (nb && (lv->t == VT::Str || (lv->t == VT::Int && lv->big())))
                     nativeAssignCheck(*lv, nb, nf, tgt->kind == NK::VarExpr

@@ -73,6 +73,8 @@ compatibility.
   [When something dies](#when-something-dies).
 - `--hints` — performance hints on stderr (`RAKUPP_HINTS=1`); see
   [Performance hints](#performance-hints---hints).
+- `--detect-races` — report data races between threads, and exit 66; see
+  [Finding data races](#finding-data-races---detect-races).
 - `--stagestats`, `--trace`, `--repl-after` — what a run did, as it did it;
   see [Inside a run](#inside-a-run---stagestats---trace-and---repl-after).
 - `--completions=bash|zsh|fish` — a completion script for the shell; see
@@ -424,6 +426,53 @@ hint: line 1: an exact Rat raised to 10000: its numerator and denominator run to
 The one hint so far, when it fires and what to do about it, is in
 [HINTS.md](HINTS.md). Its static counterpart is the `exact-power` rule of
 `--lint` ([LINT.md](LINT.md)).
+
+## Finding data races: `--detect-races`
+
+**`--detect-races`** runs a program under the race detector. It records
+which thread touched each variable, array element and length, hash entry
+and set of keys, and attribute, and which synchronization ordered those
+accesses: an `await`, a `Lock`, a `Channel`, a `Supply`, a `⚛` operation.
+Two accesses from different threads, at least one a write, that nothing
+orders are a data race. Each is reported once, on stderr, when the program
+ends. A run that raced exits 66, and one that failed keeps its own status.
+stdout is untouched.
+
+```
+$ rakupp --detect-races counter.raku
+127301
+rakupp: data race on $n
+  write at line 2 (thread T4, a start from line 2)
+  previous write at line 2 (thread T2, a start from line 2)
+  nothing orders them: no Lock, await, Channel, Supply or ⚛ between the two threads
+rakupp: 1 data race (235,624 occurrences)
+```
+
+A race in a module names the file, and the access that found it lists the
+routines it was in:
+
+```
+$ rakupp --detect-races -Ilib words.raku
+8
+rakupp: data race on the keys of %counts
+  write at line 4 of lib/Tally.rakumod (thread T1, a start from line 5)
+    in sub note-word, called at line 3
+    in sub count-all, called at line 5
+  previous read at line 4 of lib/Tally.rakumod (thread T2, a start from line 5)
+  nothing orders them: no Lock, await, Channel, Supply or ⚛ between the two threads
+  (inserting a key, deleting one or assigning the whole hash changes its keys,
+  and every lookup reads them)
+```
+
+| Knob | Meaning |
+|---|---|
+| `--detect-races` | the detector, for this program; the program's own child processes run without it |
+| `RAKUPP_RACE=1` | the same, as an environment variable, which child processes inherit |
+
+The detector watches what the interpreter runs, so it is refused with the
+compilers, `--target=js`, `--jit` and `--cnp`, and it turns the loop
+kernels off. What it sees and what it misses is in
+[faq/threads.md](faq/threads.md), "How do I find a data race?".
 
 ## `--profile`
 

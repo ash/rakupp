@@ -376,6 +376,10 @@ void Interpreter::registerBuiltinsPart5() {
         // a Slip argument is its elements, as in any argument list:
         // `push @c, (1,2).Slip` adds two (Rakudo), as `@c.push: (1,2).Slip` does
         if (!a.empty() && a[0].t == VT::Array) {
+            // under the array's stripe, as the method's mutators take it: two
+            // threads pushing at once must not tear the buffer (the no-crash
+            // contract; the race itself is still the program's)
+            Interpreter::ParStripe ps(I, a[0].arr());
             for (size_t i = 1; i < a.size(); i++) {
                 if (a[i].t == VT::Array && a[i].arr() && a[i].s == "Slip")
                     for (auto& e : *a[i].arr()) a[0].arr()->push_back(e);
@@ -391,7 +395,10 @@ void Interpreter::registerBuiltinsPart5() {
             throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot pop a lazy list"};
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw
         if (!a.empty() && a[0].t == VT::Array && a[0].isList) { ValueList none; return I.methodCall(a[0], "pop", none); }
-        if (!a.empty() && a[0].t == VT::Array && !a[0].arr()->empty()) { Value v = a[0].arr()->back(); a[0].arr()->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
+        if (!a.empty() && a[0].t == VT::Array) {   // (the emptiness test under the stripe too, see push)
+            Interpreter::ParStripe ps(I, a[0].arr());
+            if (!a[0].arr()->empty()) { Value v = a[0].arr()->back(); a[0].arr()->pop_back(); if (v.t == VT::Array) v.itemized = true; return v; }
+        }
         // empty: the METHOD's Failure, not a silent Any (see B["shift"])
         if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "pop", none); }
         return Value::any();
@@ -401,7 +408,10 @@ void Interpreter::registerBuiltinsPart5() {
         if (!a.empty() && a[0].t == VT::Array && a[0].ext() && std::static_pointer_cast<LazySeqState>(a[0].ext())->infinite) I.materializeLazy(a[0], 1);
         // a List refuses resizing — the METHOD arm owns the X::Immutable throw
         if (!a.empty() && a[0].t == VT::Array && a[0].isList) { ValueList none; return I.methodCall(a[0], "shift", none); }
-        if (!a.empty() && a[0].t == VT::Array && !a[0].arr()->empty()) { Value v = a[0].arr()->front(); a[0].arr()->erase(a[0].arr()->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
+        if (!a.empty() && a[0].t == VT::Array) {   // (the emptiness test under the stripe too, see push)
+            Interpreter::ParStripe ps(I, a[0].arr());
+            if (!a[0].arr()->empty()) { Value v = a[0].arr()->front(); a[0].arr()->erase(a[0].arr()->begin()); if (v.t == VT::Array) v.itemized = true; return v; }
+        }
         // empty: hand off to the METHOD so the sub answers the same Failure
         // (X::Cannot::Empty) instead of a silent Any
         if (!a.empty() && a[0].t == VT::Array) { ValueList none; return I.methodCall(a[0], "shift", none); }
@@ -522,7 +532,7 @@ void Interpreter::registerBuiltinsPart5() {
     // has no `.elems` until it is made eager, gists as (...), and an Array
     // assigned from it stays lazy until it has been read to the end. An endless
     // Range and a list that is already lazy keep the flag they always had.
-    B["lazy"] = [](Interpreter&, ValueList& a) -> Value {
+    B["lazy"] = [](Interpreter& I, ValueList& a) -> Value {
         auto declared = [](ValueList items) -> Value {
             Value out = Value::array(); out.isList = true; out.s = "Seq"; out.b = true;
             auto st = std::make_shared<LazySeqState>();
@@ -543,6 +553,28 @@ void Interpreter::registerBuiltinsPart5() {
             const bool endless = v.t == VT::Range && v.rTo() >= 9000000000000000000LL;
             if (v.t == VT::Range && !endless && !v.itemized) return declared(v.flatten());
             if (v.t == VT::Array && !v.ext() && !v.itemized && v.arr()) return declared(*v.arr());
+            // a source read live but finite (a Channel's `.list`, a handle's
+            // lines) is not lazy until declared so: a declared view that pulls
+            // from it, leaving the source itself as it was
+            if (v.t == VT::Array && v.ext() && !v.itemized) {
+                auto src = std::static_pointer_cast<LazySeqState>(v.ext());
+                if (!src->infinite && !src->declaredLazy && (src->streaming || src->finiteSource)) {
+                    Value out = Value::array(); out.isList = true; out.s = "Seq"; out.b = true;
+                    auto st = std::make_shared<LazySeqState>();
+                    st->gatherSeq = true;
+                    st->declaredLazy = true;
+                    auto at = std::make_shared<size_t>(0);
+                    Interpreter* ip = &I;
+                    st->appendNext = [v, at, ip](ValueList& buf) -> bool {
+                        ip->materializeLazy(v, *at + 1);
+                        if (*at >= v.arr()->size()) return false;
+                        buf.push_back((*v.arr())[(*at)++]);
+                        return true;
+                    };
+                    out.extM() = st;
+                    return out;
+                }
+            }
             if (v.t == VT::Range || v.t == VT::Array) v.b = true; // b marks laziness for .is-lazy
             return v;
         }
@@ -1124,7 +1156,7 @@ void Interpreter::registerBuiltinsPart5() {
                 // reflect settled members onto their hashes so `.so`/`.status` read true
                 for (size_t i = 0; i < pss.size(); i++) {
                     std::lock_guard<std::mutex> lk(pss[i]->m);
-                    if (pss[i]->done && psvals[i]->hash()) {
+                    if (pss[i]->done.v && psvals[i]->hash()) {
                         (*psvals[i]->hash())["status"] = Value::str(pss[i]->broken ? "Broken" : "Kept");
                         if (!pss[i]->broken) (*psvals[i]->hash())["result"] = pss[i]->result;
                     }

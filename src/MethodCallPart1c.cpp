@@ -579,7 +579,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
                 bool failed = inv.hash()->count("failCause") > 0;
                 std::lock_guard<std::mutex> lk(ps->m);
-                if (!ps->done) {
+                if (!ps->done.v) {
                     if (failed) { ps->broken = true; ps->cause = (*inv.hash())["failCause"]; ps->causeMsg = (*inv.hash())["failCause"].toStr(); }
                     else ps->result = Value::boolean(true);
                     ps->done = true;
@@ -592,12 +592,13 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             Value v = args.empty() ? Value::any() : args[0];
             std::lock_guard<std::recursive_mutex> lk(chm);
             if (isClosed()) throw RakuError{Value::typeObj("X::Channel::SendOnClosed"), "Cannot send a message on a closed channel"};
+            raceChanSend(inv.hash());
             q.push_back(v); return v;
         }
         if (m == "poll") {
             std::lock_guard<std::recursive_mutex> lk(chm);
-            if (q.empty()) { keepClosedIfDrained(); return Value::nil(); }
-            Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
+            if (q.empty()) { if (isClosed()) raceChanSawClose(inv.hash()); keepClosedIfDrained(); return Value::nil(); }
+            Value v = q.front(); q.erase(q.begin()); raceChanTake(inv.hash(), q.size()); keepClosedIfDrained(); return v;
         }
         if (m == "receive") {
           for (;;) {
@@ -642,6 +643,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             std::lock_guard<std::recursive_mutex> lk(chm);
             if (q.empty()) {
                 if (isClosed()) {
+                    raceChanSawClose(inv.hash());
                     if (inv.hash()->count("failCause")) throw RakuError{(*inv.hash())["failCause"], "Channel failed"};
                     throw RakuError{Value::typeObj("X::Channel::ReceiveOnClosed"), "Cannot receive a message on a closed channel"};
                 }
@@ -650,11 +652,11 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 if (t_hot.poll.isWorker) continue;
                 return Value::nil(); // nothing running that could ever send
             }
-            Value v = q.front(); q.erase(q.begin()); keepClosedIfDrained(); return v;
+            Value v = q.front(); q.erase(q.begin()); raceChanTake(inv.hash(), q.size()); keepClosedIfDrained(); return v;
                   }
         }
         if (m == "close") {
-            { std::lock_guard<std::recursive_mutex> lk(chm); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); }
+            { std::lock_guard<std::recursive_mutex> lk(chm); raceChanClose(inv.hash()); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); }
             // A `whenever $c` / `$c.Supply` reader gets to see everything sent
             // before the close returns: `$c.close; is-deeply @seen, …` right
             // after the last send (S17-channel/basic.t) found the reader still
@@ -685,6 +687,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 if (ci != inv.hash()->end() && ci->second.truthy() && !inv.hash()->count("failCause"))
                     return Value::boolean(true);
             }
+            raceChanClose(inv.hash());
             (*inv.hash())["closed"] = Value::boolean(true);
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)
@@ -696,7 +699,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             if (q.empty() && inv.ext()) {
                 auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
                 std::lock_guard<std::mutex> lk(ps->m);
-                if (!ps->done) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); ps->done = true; }
+                if (!ps->done.v) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); ps->done = true; }
                 ps->cv.notify_all();
                 if (inv.hash()->count("closedPromise")) (*(*inv.hash())["closedPromise"].hash())["status"] = Value::str("Broken");
             }
@@ -725,8 +728,8 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 for (;;) {
                     bool nobody = false;
                     {   std::lock_guard<std::recursive_mutex> lk(cm);
-                        if (!cq->empty()) { cache.push_back(cq->front()); cq->erase(cq->begin()); return true; }
-                        if ((*chan.hash())["closed"].b) break;
+                        if (!cq->empty()) { cache.push_back(cq->front()); cq->erase(cq->begin()); raceChanTake(chan.hash(), cq->size()); return true; }
+                        if ((*chan.hash())["closed"].b) { raceChanSawClose(chan.hash()); break; }
                         // nobody left to send: the last sender may have sent and
                         // closed between the look above and this check, so this
                         // decision is taken under the lock, after one more look
@@ -734,7 +737,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     }
                     if (nobody) {
                         std::lock_guard<std::recursive_mutex> lk(cm);
-                        if (!cq->empty()) { cache.push_back(cq->front()); cq->erase(cq->begin()); return true; }
+                        if (!cq->empty()) { cache.push_back(cq->front()); cq->erase(cq->begin()); raceChanTake(chan.hash(), cq->size()); return true; }
                         break;
                     }
                     if (self->gilHeld_ && !self->parallelMode_) self->yieldToWorkerFor(0.02);
@@ -1004,14 +1007,14 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // emits ran the tap blocks simultaneously and interleaved into the
             // taps vector — the stress suite measured 1,694 of 2,000 arrivals.
             // The supplier's stripe serializes emit/done/quit AND registration.
-            std::lock_guard<std::recursive_mutex> emitLk(supplierMutex(H));
+            std::lock_guard<RaceMutex> emitLk(supplierMutex(H));
             if (preserve("emit", v)) return Value::boolean(true);
             ValueList snap = tapSnapshot();
             for (auto& t : snap) { if (t.t != VT::Hash) continue; feed(t, v); }
             return Value::boolean(true);
         }
         if (m == "done") {
-            std::lock_guard<std::recursive_mutex> doneLk(supplierMutex(H));
+            std::lock_guard<RaceMutex> doneLk(supplierMutex(H));
             // Remember the done state so a tap that registers LATER (an eager
             // `start { $s.emit(…); $s.done }` that ran before the react tapped it)
             // is closed immediately instead of leaving its react source live forever.
@@ -1039,7 +1042,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             return Value::boolean(true);
         }
         if (m == "quit") {
-            std::lock_guard<std::recursive_mutex> quitLk(supplierMutex(H));
+            std::lock_guard<RaceMutex> quitLk(supplierMutex(H));
             // Recorded for the same reason as done_state: a Supply.wait on a
             // supplier that quits must return, not block forever.
             (*H)["quit_state"] = Value::boolean(true);
@@ -1337,7 +1340,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 (*rec.hash())["emit"] = e; (*rec.hash())["done"] = d; (*rec.hash())["quit"] = q;
                 stampTapRecord(*rec.hash(), sup.hash());
                 {   // (registered as every Supplier tap is: under the supplier's lock)
-                    std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                    std::lock_guard<RaceMutex> regLk(supplierMutex(sup.hash()));
                     (*sup.hash())["taps"].arr()->push_back(rec);
                 }
                 ValueList one{sup};

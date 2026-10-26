@@ -1710,6 +1710,28 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ok(run-rakupp-err('--sandbox', '--jit', '-e', '1')[2] == 4, '--sandbox refuses --jit');
     }
 
+    # --detect-races: the race detector by flag (t/race-detect/run.raku is its gate)
+    {
+        my ($o, $e, $x) = run-rakupp-err('--detect-races', '-e',
+            'my $n = 0; await (^2).map: { start { $n++ for ^2_000 } }; say "done"');
+        ok($o eq "done\n" && $x == 66 && $e.contains('rakupp: data race on $n'),
+           '--detect-races reports a race on stderr and exits 66, stdout untouched');
+        ($o, $e, $x) = run-rakupp-err('--detect-races', '-e',
+            'my $n = 0; my $l = Lock.new; await (^2).map: { start { $l.protect({ $n++ }) for ^2_000 } }; say $n');
+        ok($o eq "4000\n" && $x == 0 && !$e.contains('data race'), '--detect-races: a Lock orders the accesses, silence');
+        is(run-rakupp('--detect-races', '-e', 'say %*ENV<RAKUPP_RACE>:exists')[0], "False\n",
+           "--detect-races leaves the program's environment, and so its child processes, alone");
+        ok(run-rakupp-err('--lint', '--detect-races', '-e', '1')[1].contains('Illegal option --detect-races'),
+           '--detect-races outside a run is illegal');
+        ok(run-rakupp-err('--detect-races', '--jit', '-e', '1')[2] == 4, '--detect-races refuses --jit');
+        # (from RAKUPP_OPT the re-run must take the OS's argv: the merged one has no null at its end)
+        my $p = run($*EXECUTABLE, '-e', 'my $n = 0; await (^2).map: { start { $n++ for ^2_000 } }',
+                    :out, :err, :env(%(|%*ENV, RAKUPP_OPT => '--detect-races')));
+        $p.out.slurp(:close);
+        ok($p.err.slurp(:close).contains('rakupp: data race on $n') && $p.exitcode == 66,
+           'RAKUPP_OPT=--detect-races reports as the flag does');
+    }
+
     # --stack-size: the recursion ceiling, exposed
     #
     # 128M, not the 64M this was written with. What the pair below proves is

@@ -2740,7 +2740,12 @@ inline bool nativeIntArg(const Value& v) {
 
 const bool g_noKernels = [] {
     const char* e = std::getenv("RAKUPP_NO_KERNELS");
-    return e && *e && *e != '0';
+    // the race detector (RAKUPP_RACE, RAKUPP_RACE_TRACE) has no hooks in a
+    // kernel's native loop, so it runs without them (read here, not through
+    // g_race: another file's static, not yet initialized)
+    const char* r = std::getenv("RAKUPP_RACE");
+    const char* t = std::getenv("RAKUPP_RACE_TRACE");
+    return (e && *e && *e != '0') || (r && *r && *r != '0') || (t && *t);
 }();
 // RAKUPP_KERNEL_TRACE=1: name each routine as its kernel is decided (stderr)
 const bool g_kernelTrace = [] {

@@ -1560,6 +1560,7 @@ template <> struct Body<Value> final : ValueBodyBase {
     template <class... A>
     explicit Body(std::in_place_t, A&&... a) : v(std::forward<A>(a)...) { target = &v; }
     void destroySelf() noexcept override {
+        if (g_race) raceForgetRange(this, sizeof(Body));   // a cell's inside is a scalar location
         this->~Body();
         SlabPool::dealloc(static_cast<void*>(this), sizeof(Body));
     }

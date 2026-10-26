@@ -1316,7 +1316,7 @@ void configure(const Options& o, const std::string& cxx, const std::string& inc,
     if (const char* t = std::getenv("RAKUPP_JIT_THRESHOLD"))
         g_opt.threshold = (unsigned)std::strtoul(t, nullptr, 10);
     if (std::getenv("RAKUPP_JIT_VERBOSE")) g_opt.verbose = true;
-    if (!o.on) { g_on = false; return; }
+    if (!o.on || g_race) { g_on = false; return; }   // (the race detector has no hooks in compiled loops)
     if (g_opt.backend == Backend::Cnp) {
         // Nothing to look for on the machine: the stencils were compiled into
         // this binary. The only question is whether this build has any.

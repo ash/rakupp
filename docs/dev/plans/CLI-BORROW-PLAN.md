@@ -12,7 +12,8 @@ Batch 3 (same day): `--watch` and `rakupp doc SYMBOL` — 10 checks.
 Thirteen items landed in one day; what remains is the four that are
 projects rather than flags (the sandbox, `--profile=heap`, `--race`,
 inline script dependencies) plus `--explain` (content routing) and
-`--lint --fix` (sequenced after `--fmt`).
+`--lint --fix` (sequenced after `--fmt`). `--race` landed 2026-10-25 as
+`--detect-races`, the race detector.
 Two entries closed without code: `-u` (stdout is already
 unbuffered here, issue #51) and `rakupp test .` (the installer took a path
 before this file was written); `--lsp` had landed before the campaign.
@@ -151,7 +152,10 @@ warnings or errors; it had existed for `--lint` alone.
   `--seed` picks one and prints `rakupp: --seed=N` to stderr, the rspec
   move. Hash iteration order needed no pinning — it is insertion order
   here and never varied. `srand` still wins after it.
-- **`--race`-style diagnostics** (Go `-race`) — flag unsynchronized shared
+- ~~**`--race`-style diagnostics**~~ (Go `-race`) — DONE 2026-10-25 as
+  **`--detect-races`** ([RACE-DETECTOR-PLAN.md](RACE-DETECTOR-PLAN.md), P3;
+  [guide/CLI.md](../../guide/CLI.md#finding-data-races---detect-races)).
+  The original note: flag unsynchronized shared
   access now that v3 is parallel-by-default
   ([PARALLEL-PLAN.md](PARALLEL-PLAN.md)). The ambitious one: a real
   happens-before checker is a project, not a task. Parked here so the idea

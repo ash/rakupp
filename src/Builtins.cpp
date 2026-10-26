@@ -17,12 +17,12 @@ namespace rakupp {
 // (two suppliers emitting into each other's taps), which serializing
 // implementations cannot avoid. Registry entries are never reclaimed — one
 // mutex per supplier ever created, and address reuse just reuses a mutex.
-std::recursive_mutex& supplierMutex(const void* key) {
+RaceMutex& supplierMutex(const void* key) {
     static std::mutex regM;
-    static std::map<const void*, std::unique_ptr<std::recursive_mutex>> reg;
+    static std::map<const void*, std::unique_ptr<RaceMutex>> reg;
     std::lock_guard<std::mutex> lk(regM);
     auto& p = reg[key];
-    if (!p) p = std::make_unique<std::recursive_mutex>();
+    if (!p) p = std::make_unique<RaceMutex>();
     return *p;
 }
 
@@ -6263,8 +6263,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             }
             const unsigned kind = k & 3;   // 0 the general path, 1 plain, 2 plain with checks
             bool named = kind != 0;
-            // (a Pair passed POSITIONALLY is not a named argument: the general
-            // path refuses it, as Rakudo's default constructor does)
+            // (a Pair passed POSITIONALLY is not a named argument: the general path refuses it, as Rakudo's default constructor does)
             for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) { named = false; break; }
             if (named) {
                 ExecContext& t = tctx();
@@ -6360,17 +6359,16 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             return inv;
         }
     }
-    // `.push` onto a plain untyped Array, of arguments that are no list, Slip,
-    // Nil or native: straight to the store. The guards rule out every special
-    // case the general path meets before its push arm (methodCallTail), which
-    // it reached only after ~250 ns of other method checks per call. (The
-    // tests are Interpreter.h's, and -O's rtMPush makes the same ones.)
+    // `.push` onto a plain untyped Array, of arguments that are no list, Slip, Nil or native:
+    // straight to the store. The guards rule out every special case the general path meets
+    // before its push arm (methodCallTail), which it reached only after ~250 ns of other
+    // method checks per call. (The tests are Interpreter.h's; -O's rtMPush makes the same.)
     if (m.size() == 4 && opEq(m, "push") && !args.empty() && rtPushPlainTarget(inv) && builtinExt_.empty()) {
         bool plain = true;
         for (auto& a : args)
             if (!rtPushPlainArg(a)) { plain = false; break; }
         if (plain) {
-            Interpreter::ParStripe mutStripe(*this, inv.arr());
+            Interpreter::ParStripe mutStripe(*this, inv.arr()); raceLen(inv.arr(), RaceAcc::Write);
             for (auto& a : args) inv.arr()->push_back(a);
             return inv;
         }
@@ -6425,12 +6423,12 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 if (opEq(m, "WHICH") && !classes_.count(inv.s)) return which();
                 break;
             case VT::Array:
-                if (opEq(m, "elems") && rtElemsPlain(inv)) return Value::integer((long long)inv.arr()->size());
+                if (opEq(m, "elems") && rtElemsPlain(inv)) { raceLen(inv.arr(), RaceAcc::Read); return Value::integer((long long)inv.arr()->size()); }
                 // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
                 if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
                     inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&
                     !inv.holdsContainers() && !inv.elemDefault() && inv.ofType().empty()) {
-                    Value out = Value::array(); out.isList = true; out.s = "Seq";
+                    Value out = Value::array(); out.isList = true; out.s = "Seq"; raceLen(inv.arr(), RaceAcc::Read);
                     const ValueList& src = *inv.arr();
                     out.arr()->reserve(src.size() * 2);
                     for (size_t i = 0; i < src.size(); i++) {
@@ -6447,7 +6445,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             // methodCall's kv-family step make it
             case VT::Hash:
                 if (opEq(m, "values") && inv.hash()) {
-                    Value out = Value::array(); out.isList = true; out.s = "Seq";
+                    Value out = Value::array(); out.isList = true; out.s = "Seq"; raceKeys(inv.hash(), RaceAcc::Read);
                     out.arr()->reserve(inv.hash()->size());
                     for (auto& kv : *inv.hash()) out.arr()->push_back(kv.second);
                     return out;
@@ -6824,6 +6822,7 @@ extern const char* const kCatHandleSrc;                                         
 
 Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs,
                                    bool skipOwn) {
+    raceOn(&invIn, mName);   // (--race: a method reads its container's length or keys)
     // The invocant arrives BY REFERENCE. It used to be by value, which cost a
     // 376-byte copy and up to eleven atomic refcount bumps on every method call —
     // to serve the handful of arms that actually rewrite it (the class-alias
@@ -6992,7 +6991,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // (WHAT, HOW, …) and those an arm above the accessor's answers for
             // any object keep the slow path.
             else if (args.empty()) {
-                if (const Value* slot = plainAccessorSlot(inv, m)) return *slot;
+                if (const Value* slot = plainAccessorSlot(inv, m)) { ParStripe rs(*this, slot); raceAttr(inv.obj(), slot, RaceAcc::Read); return *slot; }
             }
         }
     }

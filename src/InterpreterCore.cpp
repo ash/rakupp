@@ -1966,11 +1966,11 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (!ps->broken) return;
                     auto it = sched.hash()->find("uncaught_handler");
                     if (it == sched.hash()->end() || it->second.t != VT::Code) return;
-                    Value h = it->second;
+                    Value h = it->second; (void)bool(ps->done);   // (--race: the handler sees the worker's past)
                     try { self->callCallable(h, ValueList{ps->cause}); } catch (...) {}
                 };
-                bool settled;
-                { std::lock_guard<std::mutex> lk(ps->m); settled = ps->done; if (!settled) ps->thens.push_back(fire); }
+                bool settled;   // (looking is not an await: .v, no --race edge)
+                { std::lock_guard<std::mutex> lk(ps->m); settled = ps->done.v; if (!settled) ps->thens.push_back(fire); }
                 if (settled) fire();
             }
             // Rakudo sink semantics: a discarded FRESH object with a user-defined
@@ -3077,7 +3077,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                     // native CI leg; glibc surfaces what macOS's
                     // allocator forgives). Under the GIL this is one
                     // predicted branch.
-                    ParStripe es(*this, arr.get());
+                    ParStripe es(*this, arr.get()); raceElem(arr.get(), pi, RaceAcc::Read);
                     if (pi >= arr->size()) break;
                     env->vars["$_"] = (*arr)[pi];
                 }
@@ -3138,7 +3138,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
             if (oneItem) items.push_back(lv);
             else if (lv.t == VT::Array && lv.arr()) {
-                if (!liveArr) { ParStripe cs(*this, lv.arr());
+                if (!liveArr) { ParStripe cs(*this, lv.arr()); raceLen(lv.arr(), RaceAcc::Read);
                     items = isMultiDimShaped(lv) ? shapedLeaves(lv) : *lv.arr(); }  // snapshot under the stripe (torn-copy contract)
                 fillArrayHoles(lv, items); }
             else if (lv.t == VT::Range) items = lv.flatten();
@@ -3803,7 +3803,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 // variable still goes back to the array, under the stripe — when
                 // the body changed it.
                 ValueList snap;
-                { ParStripe es(*this, arr.get()); snap = *arr; }
+                { ParStripe es(*this, arr.get()); raceLen(arr.get(), RaceAcc::Read); snap = *arr; }
                 runHyperLoop(fs, n0,
                     [&](size_t k, const std::shared_ptr<Env>& sc) {
                         const size_t pk = P(k);
@@ -3858,13 +3858,13 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 const size_t pi = P(i);
                 if (flat && topic && scope.use_count() == 1) {
                     cycleMaybeCollect();   // (a flat body clears no scope: the safe point is here)
-                    ParStripe es(*this, arr.get());
+                    ParStripe es(*this, arr.get()); raceElem(arr.get(), pi, RaceAcc::Read);
                     if (pi >= arr->size()) break;
                     wasHole = holeDflt && (*arr)[pi].t == VT::Any;
                     *topic = asTopic(wasHole ? *holeDflt : (*arr)[pi], var, 0);
                 } else {
                     freshScope();
-                    ParStripe es(*this, arr.get());
+                    ParStripe es(*this, arr.get()); raceElem(arr.get(), pi, RaceAcc::Read);
                     if (pi >= arr->size()) break;
                     wasHole = holeDflt && (*arr)[pi].t == VT::Any;
                     topic = &scope->define(var, asTopic(wasHole ? *holeDflt : (*arr)[pi], var, 0));
@@ -3913,7 +3913,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     }
     else if (scalarItem) items.push_back(listv); // a $-scalar / itemized source is one item
     else if (listv.t == VT::Array && listv.arr()) {
-        if (!liveArr) { ParStripe cs(*this, listv.arr()); items = *listv.arr(); } // one-level, snapshot under the stripe
+        if (!liveArr) { ParStripe cs(*this, listv.arr()); raceLen(listv.arr(), RaceAcc::Read); items = *listv.arr(); } // one-level, snapshot under the stripe
         fillArrayHoles(listv, items); }
     else if (listv.t == VT::Range) items = listv.flatten();
     else if (listv.t == VT::Hash && listv.hash() &&
@@ -8009,7 +8009,7 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
     else if (x->t == VT::Int || x->t == VT::Num || x->t == VT::Rat || x->t == VT::Bool)
         txt = x->toStr();   // the text applyArith's `~` takes
     else return false;
-    SlotStripe ws(*this, slot);
+    SlotStripe ws(*this, slot, RaceAcc::Write);
     if (front) rtCatPrependText(*slot, txt);
     else rtCatAppendText(*slot, txt);
     return true;
@@ -8678,7 +8678,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
             if (Value* lv = lvalue((*rwArgs)[0].get())) {
                 Value rhs = args.size() > 1 ? args[1] : Value::any();
-                *lv = (opEq(op, "=")) ? rhs : applyBinOp(op.substr(0, op.size() - 1), *lv, rhs);
+                raceW(lv) = (opEq(op, "=")) ? rhs : applyBinOp(op.substr(0, op.size() - 1), *lv, rhs);
                 return *lv;
             }
         }
@@ -8742,7 +8742,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     tctx().cur = callerEnv;
                     struct R { std::shared_ptr<Env> v; ~R() { tctx().cur = v; } } r{saved};
                     try {
-                        if (Value* lv = lvalue(ae)) if (!lv->readonly) *lv = nv;
+                        if (Value* lv = lvalue(ae)) if (!lv->readonly) raceW(lv) = nv;
                     } catch (RakuError&) {}
                 };
                 builtinArgWriter_ = &fromExprs;
@@ -9785,7 +9785,7 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
     // frame's — each lock alone, never two at once.
     Env* const fe = env.get();
     auto paramValue = [&](Value* pv) { ParStripe rs(*this, pv); return *pv; };
-    auto storeInto = [&](Value* lv, const Value& v) { ParStripe ws(*this, lv); *lv = v; };
+    auto storeInto = [&](Value* lv, const Value& v) { ParStripe ws(*this, lv); raceW(lv) = v; };
     auto syncedUnchanged = [&](const std::string& n, const Value& cur) {
         Value syv;
         {   ParStripe ss(*this, fe);
@@ -9861,7 +9861,7 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
                 for (size_t k = 0; k < n; k++)
                     try {
                         if (Value* lv = lvalue(const_cast<Expr*>((*rwArgs)[pi + k].get())))
-                            *lv = (*pv->arr())[k];
+                            raceW(lv) = (*pv->arr())[k];
                     } catch (...) {}
             break;
         }
@@ -11445,7 +11445,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                                                                           : ve->attrBare];
                 // (an object under construction notes the write for `is required`; `@!a.push` writes no slot)
                 if (!asInvocant && g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(selfp->obj(), slot);
-                return slot;
+                return raceNoteAttr(slot, selfp->obj());
             }
             // a TYPE OBJECT has no attributes to write: `Class.m` where `m`
             // assigns `$!a` dies (the read path answers the same)
@@ -11502,7 +11502,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     for (ClassInfo* c = selfp->obj()->cls.get(); c; c = c->parent.get())
                         for (auto& at : c->attrs)
                             if (at.name == an && at.sigil == ve->name[0])
-                                return &selfp->obj()->attrs[an];
+                                return raceNoteAttr(&selfp->obj()->attrs[an], selfp->obj());
                 }
             }
         }
@@ -11975,11 +11975,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     throwTypedV("X::TypeCheck::Assignment",
                         {{"got", Value::typeObj("Hash")}, {"expected", Value::typeObj(want)}},
                         "Type check failed in assignment; expected " + want + " but got Hash");
-            Interpreter::ParStripe insStripe(*this, base->hash());
+            Interpreter::ParStripe insStripe(*this, base->hash()); raceKeysLv(base->hash(), key);
             // a NEW key starts as the hash's `is default(…)` (see the array arm)
             if (base->elemDefault() && base->hashKind.empty() && !base->hash()->count(key))
-                return &((*base->hash())[key] = *base->elemDefault());
-            return &(*base->hash())[key];
+                return raceNoteEntry(&((*base->hash())[key] = *base->elemDefault()), base->hash(), key);
+            return raceNoteEntry(&(*base->hash())[key], base->hash(), key);
         } else {
             // `$obj[$i] = v` on an OBJECT whose class defines AT-POS: assign through
             // the container that returns (XML::Element hands back a Proxy). Same rule
@@ -12197,7 +12197,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             growToIndex(*this, *base->arr(), i, [&] { return containerFill(*base); },
                         grown ? base->elemDefault().get() : nullptr);
             tctx().lastLvalueElemIdx = i;
-            return &(*base->arr())[i];
+            return raceNoteElem(&(*base->arr())[i], base->arr(), (size_t)i);
         }
     }
     // method-call lvalue: $obj.accessor = value  (rw accessors)
@@ -12710,9 +12710,9 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                     shadowed = true;
                 }
                 if (shadowed && qualDeclares)
-                    return &base->obj()->attrs[mc->methodQual + "\x01" + mcName];
+                    return raceNoteAttr(&base->obj()->attrs[mc->methodQual + "\x01" + mcName], base->obj());
             }
-            return &base->obj()->attrs[acc ? *accSlot : mcName];
+            return raceNoteAttr(&base->obj()->attrs[acc ? *accSlot : mcName], base->obj());
         }
     }
     // `$(expr)` as an assignment target: the itemization wrapper is transparent
@@ -12986,7 +12986,7 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
       : sv == 3 ? rakupp::sub_ovf(slot->i, rhs.i, &z)
                 : rakupp::mul_ovf(slot->i, rhs.i, &z))
         return false;
-    Interpreter::SlotStripe ws(I, slot); // torn-copy contract, as the general store
+    Interpreter::SlotStripe ws(I, slot, RaceAcc::Write); // torn-copy contract, as the general store
     slot->i = z;
     return true;
 }
@@ -13205,7 +13205,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if (nb && nativeNeedsCheck(rv, nfl))
                                 nativeAssignCheck(rv, nb, nfl, (a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get())->name : std::string("$x")), nsg);
                             {
-                                SlotStripe ws(*this, slot); // torn-copy contract
+                                SlotStripe ws(*this, slot, RaceAcc::Write); // torn-copy contract
                                 *slot = std::move(rv);
                             }
                             if (nb) wrapNative(*slot, nb, nsg, nfl);
@@ -13228,15 +13228,15 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             static const char* kOps[] = {"", "", "+", "-", "*", "~"};
                             const char* bop = kOps[(int)sv];
                             if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
-                                if (sv == 4) *slot = Value::integer(1);       // *= from 1
-                                else if (sv == 5) *slot = Value::str("");     // ~= from ''
-                                else *slot = Value::integer(0);               // +=/-= from 0
+                                if (sv == 4) slotStore(slot, Value::integer(1));       // *= from 1
+                                else if (sv == 5) slotStore(slot, Value::str(""));     // ~= from ''
+                                else slotStore(slot, Value::integer(0));               // +=/-= from 0
                             }
                             if (sv == 5 && slot->t == VT::Str && rhs.t == VT::Str &&
                                 rhs.hashKind.empty() && !rhs.itemized) {
                                 bool asciiRhs = true;
                                 for (unsigned char ch : rhs.s) if (ch >= 0x80) { asciiRhs = false; break; }
-                                SlotStripe ws(*this, slot);
+                                SlotStripe ws(*this, slot, RaceAcc::Write);
                                 if (asciiRhs) slot->s.appendAscii(rhs.s.str());
                                 else nfcAppendCow(slot->s, rhs.s);
                             } else if (sv == 5 && slot->t == VT::Str && slot->hashKind.empty() &&
@@ -13248,23 +13248,18 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 const bool plainInt = rhs.t == VT::Int && rhs.enumName.empty() &&
                                                       rhs.enumType.empty() && !rhs.natBits;
                                 std::string txt = rhs.toStr();   // the text applyArith's `~` takes
-                                SlotStripe ws(*this, slot);
+                                SlotStripe ws(*this, slot, RaceAcc::Write);
                                 if (plainInt) slot->s.appendAscii(txt);   // (digits)
                                 else rtCatAppendText(*slot, txt);
                             } else if ((sv == 2 || sv == 3) &&
                                        (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
                                 // `$t += $d` keeps the Duration a Duration, as `+` does
-                                Value l0 = *slot;
+                                Value l0 = slotRead(slot);
                                 Value nv = applyArith(bop, l0, rhs);
                                 tagTemporal(bop, l0, rhs, nv);
-                                SlotStripe ws(*this, slot);
-                                *slot = std::move(nv);
-                            } else if (!(sv <= 4 && !nb && intOpAssignInPlace(*this, slot, rhs, sv)) &&
-                                       !applyArithIntoTry(bop, *slot, rhs)) {
-                                Value nv = applyArith(bop, *slot, rhs);
-                                SlotStripe ws(*this, slot);
-                                *slot = std::move(nv);
-                            }
+                                slotStore(slot, std::move(nv));
+                            } else if (!(sv <= 4 && !nb && intOpAssignInPlace(*this, slot, rhs, sv)))
+                                opAssignArith(slot, bop, rhs);
                             if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl,   // WRAPS an Int, refuses another kind
                                                         compoundSrcNative(bop, rhs, a->value.get(), nfl));
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
@@ -13293,7 +13288,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             else nv = applyArith(bop2, *slot, rhs);
                         }
                         {
-                            SlotStripe ws(*this, slot);
+                            SlotStripe ws(*this, slot, RaceAcc::Write);
                             *slot = std::move(nv);
                         }
                         if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl,   // WRAPS an Int, refuses another kind
@@ -13373,7 +13368,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     Value arr = coerceArray(rhs, isNativeScalarName(lv->ofType()));
                     if (lv->t == VT::Array && lv->arr() && arr.t == VT::Array && arr.arr() && lv->arr() != arr.arr()) {
                         ValueList contents = *arr.arr();
-                        *lv->arr() = std::move(contents);
+                        *lv->arr() = std::move(contents); raceLen(lv->arr(), RaceAcc::Write);
                     }
                     else *lv = std::move(arr);
                 }
@@ -13381,7 +13376,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     Value h = coerceHash(rhs, /*store=*/true, lv->objKeyed);
                     if (lv->t == VT::Hash && lv->hash() && h.t == VT::Hash && h.hash() && lv->hash() != h.hash()) {
                         auto contents = *h.hash();
-                        *lv->hash() = std::move(contents);
+                        *lv->hash() = std::move(contents); raceKeys(lv->hash(), RaceAcc::Write);
                     }
                     else *lv = std::move(h);
                 }
@@ -13649,23 +13644,23 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         const long long bi = bt == VT::Int ? (long long)ctSlot->i : 0;   // only the live one:
         const double bn = bt == VT::Num ? (double)ctSlot->n : 0;          // they share a word
         Value before;
-        if (!plainNum) before = *ctSlot;
+        if (!plainNum) before = slotRead(ctSlot);
         r = evalAssignInner(a, sink);
         const bool unchangedType = sameTypeOk && ctSlot->t == bt &&
                                    (plainNum ? ctSlot->hashKind.empty() && ctSlot->enumType.empty()
                                              : isDefined(before) && ctSlot->hashKind == before.hashKind &&
                                                ctSlot->enumType == before.enumType);
         if (!unchangedType) {
-            Value nv = *ctSlot;
+            Value nv = slotRead(ctSlot);
             try { enforceTypedAssign(static_cast<VarExpr*>(a->target.get())->name, nv); }
             catch (...) {
-                if (plainNum) *ctSlot = bt == VT::Int ? Value::integer(bi) : Value::number(bn);
-                else *ctSlot = before;
+                if (plainNum) slotStore(ctSlot, bt == VT::Int ? Value::integer(bi) : Value::number(bn));
+                else slotStore(ctSlot, before);
                 throw;
             }
             // a coercion type converted it: `my Int() $c = 1; $c /= 2` holds 0
             if (nv.t != ctSlot->t || nv.hashKind != ctSlot->hashKind) {
-                *ctSlot = nv;
+                slotStore(ctSlot, nv);
                 if (!sink) r = nv;
             }
         }
@@ -14151,7 +14146,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             else if (v.t == VT::Array || v.t == VT::Hash) v.itemized = false;
             Value* lv = lvalue(a->target.get());
-            *lv = v;
+            raceW(lv) = v;
             lv->readonly = true;
             if (sg == '$') tctx().cur->x().varConstant.insert(cv->name);
             return v;
@@ -14166,7 +14161,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value proxy;
         if (substrRwProxyOf(a->value.get(), proxy)) {
             Value* lv = lvalue(a->target.get());
-            *lv = proxy;
+            raceW(lv) = proxy;
             return proxy;
         }
     }
@@ -14202,7 +14197,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         lst.arr()->push_back(arrOk ? makeArraySlotProxy(bp->arrS(), (size_t)k.i)
                                                    : makeHashSlotProxy(bp->hashS(), hashSubKey(k, bp)));
                     Value* lv = lvalue(a->target.get());
-                    *lv = lst;
+                    raceW(lv) = lst;
                     return lst;
                 }
             }
@@ -14222,7 +14217,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (lv) {
                 Value rhs = eval(a->value.get());
                 std::string bin = a->op.substr(0, a->op.size() - 1);   // "+=" -> "+"
-                *lv = opEq(a->op, "=") ? rhs : applyBinOp(bin, *lv, rhs);
+                raceW(lv) = opEq(a->op, "=") ? rhs : applyBinOp(bin, *lv, rhs);
                 return sink ? Value::any() : *lv;
             }
         }
@@ -14473,8 +14468,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         }
                 }
                 Value* lv = lvalue(it.get());
-                if (ve->name[0] == '@') *lv = coerceArray(v, isNativeScalarName(lv->ofType()));
-                else if (ve->name[0] == '%') *lv = coerceHash(v, /*store=*/true, lv->objKeyed);
+                if (ve->name[0] == '@') raceW(lv) = coerceArray(v, isNativeScalarName(lv->ofType()));
+                else if (ve->name[0] == '%') raceW(lv) = coerceHash(v, /*store=*/true, lv->objKeyed);
                 else *lv = v;
             }
             return sink ? Value::any() : rhs;
@@ -15571,7 +15566,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         Value* lv = lvalue(item);
                         if (lv->readonly) throwNotWritable(*lv);
                         if (item->kind == NK::VarExpr) enforceTypedAssign(static_cast<VarExpr*>(item)->name, v);
-                        *lv = std::move(v);
+                        raceW(lv) = std::move(v);
                     }
                     return sink ? Value::any() : rv;
                 }
@@ -15746,7 +15741,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 b.arr()->push_back(eval(it.get()));
             }
             Value* lv = lvalue(a->target.get());
-            *lv = b;
+            raceW(lv) = b;
             return sink ? Value::any() : *lv;
         }
         // `my \x = $ = 5` / `my \x = my $y = 3`: the right side DECLARES the
@@ -16363,7 +16358,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // and `.convert-function` then answered "no such method" on a Hash.
         // (read under the slot's stripe: another thread may be replacing the object)
         Value cur;
-        if (opEq(a->op, "=") && lv->t == VT::Object) { SlotStripe rs(*this, lv); cur = *lv; }
+        if (opEq(a->op, "=") && lv->t == VT::Object) { SlotStripe rs(*this, lv, RaceAcc::Read); cur = *lv; }
         if (cur.obj() && cur.obj()->cls && cur.obj()->cls->findMethod("STORE")) {
             // …but only for a %/@ variable. A `$` scalar HOLDS its object rather
             // than BEING a container of that type — `my $v = Hash::Ordered.new(…);
@@ -16564,7 +16559,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     throwTypedV("X::TypeCheck::Binding",
                                 {{"got", rhs}, {"expected", Value::typeObj("Positional")}},
                                 "Type check failed in binding; expected Positional but got Seq");
-                *lv = rhs;
+                raceW(lv) = rhs;
                 // …but the `@` sigil says "this name IS the list": binding an
                 // ITEMIZED array ($[…], which is what the slurpy one-arg rule
                 // hands each `**@params` element) must de-itemize, or `for @data`
@@ -16587,7 +16582,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (ClassInfo* c = rhs.obj()->cls.get(); c; c = c->parent.get())
                     if (c->nativeParent == "Array" || c->nativeParent == "List" ||
                         c->doesRole("Positional") || c->doesRole("Iterable")) { positional = true; break; }
-                if (positional) *lv = rhs;
+                if (positional) raceW(lv) = rhs;
                 else *lv = coerceArray(rhs);
             }
             // `my @a := 1` — a bind gives the NAME the value itself, and an
@@ -16611,7 +16606,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // (`my uint32 @W = $M`); to an ordinary one it is a single item
             else if (opEq(a->op, "=") && rhs.t == VT::Str && !rhs.itemized &&
                      (rhs.hashKind == "Blob" || rhs.hashKind == "Buf")) {
-                *lv = coerceArray(rhs, isNativeScalarName(lv->ofType()));
+                raceW(lv) = coerceArray(rhs, isNativeScalarName(lv->ofType()));
             }
             else if (opEq(a->op, "=") && a->value && a->value->kind == NK::VarExpr &&
                      !static_cast<VarExpr*>(a->value.get())->name.empty() &&
@@ -16622,14 +16617,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // itemization is wider surgery; Range is the roast-tested bit)
                 Value one = Value::array();
                 one.arr()->push_back(rhs);
-                *lv = one;
+                raceW(lv) = one;
             }
             // a JUNCTION is one value, not a list: `my @a = any(3, 4)` holds it
             else if (opEq(a->op, "=") && isJunction(rhs)) {
                 Value one = Value::array();
                 one.arr()->push_back(rhs);
                 one.ofTypeM() = keepType; one.elemDefaultM() = keepDefault;
-                *lv = one;
+                raceW(lv) = one;
             }
             else {
                 // PACKED-ARRAY-PLAN: `my int @a = LO .. HI` fills the words
@@ -16777,7 +16772,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // (a lazy RHS passes its own arr through) still copies: moving out
                 // of it would gut the list the RHS still holds.
                 if (packedNow) {}   // (lv's storage had no other holder: nv's words replace it)
-                else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) {
+                else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) { raceLen(lv->arr(), RaceAcc::Write);
                     if (nv.payloadUnique()) *lv->arr() = std::move(*nv.arr());
                     else                         *lv->arr() = *nv.arr();
                     nv.setArr(lv->arrS());
@@ -16795,7 +16790,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     own.ofTypeM() = nv.ofType();
                     nv = own;
                 }
-                *lv = nv;
+                raceW(lv) = nv;
             }
             if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
             if (keepDefault && !lv->elemDefault()) lv->elemDefaultM() = keepDefault;
@@ -16845,7 +16840,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 "might happen to contain elements of the\ncorrect type.");
                     }
                 }
-                *lv = rhs; return sink ? Value::any() : *lv;
+                raceW(lv) = rhs; return sink ? Value::any() : *lv;
             }
             // `my %h := $obj` where the object DOES Associative binds the object
             // itself — coercing it to a plain Hash threw away every method the
@@ -16887,7 +16882,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 "Type check failed for " + lv->hashKind + " key; expected " +
                                 keyT + " but got " + orig.gist()};
                     }
-                *lv = nh;
+                raceW(lv) = nh;
                 lv->ofTypeM() = keyT;
             }
             else {
@@ -16902,11 +16897,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         checkElemType(want, kv.second, targetName('%'));
                         checkElemSmiley(targetName('%'), want, kv.second);   // `my Int:D %h = a => Nil`
                     }
-                if (lv->t == VT::Hash && lv->hash() && nv.hash() && lv->hash() != nv.hash()) {
+                if (lv->t == VT::Hash && lv->hash() && nv.hash() && lv->hash() != nv.hash()) { raceKeys(lv->hash(), RaceAcc::Write);
                     *lv->hash() = *nv.hash(); // refill in place, keep container identity
                     nv.setHash(lv->hashS());
                 }
-                *lv = nv;
+                raceW(lv) = nv;
                 if (keepObjKeyed) lv->objKeyed = true; // the shape survives refills
                 // `my %h is Map = …` — the initialiser is the only fill a Map
                 // takes; from here on it is immutable (a re-assignment dies)
@@ -16957,8 +16952,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value* bp = nullptr;
             if (ix->base->kind == NK::VarExpr) bp = lvalue(ix->base.get());
             else if (plainAccessor) { try { bp = lvalue(ix->base.get()); } catch (RakuError&) {} }
-            if (bp && bp->elemDefault()) *lv = *bp->elemDefault();          // `is default(…)`
-            else if (bp && !bp->ofType().empty()) *lv = typedElemDefault(*bp);
+            if (bp && bp->elemDefault()) raceW(lv) = *bp->elemDefault();          // `is default(…)`
+            else if (bp && !bp->ofType().empty()) raceW(lv) = typedElemDefault(*bp);
             else *lv = Value::typeObj("Any");   // a reset, not a hole (see nilElemDefault)
         }
         else if (rhs.t == VT::Nil && opEq(a->op, "=") && a->target->kind == NK::VarExpr &&
@@ -17036,7 +17031,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     }
                     if (en->local(nm)) break;
                 }
-            *lv = dv;
+            raceW(lv) = dv;
         }
         else {
             // typed container: enforce the constraint on assignment for the core
@@ -17193,8 +17188,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 nativeNeedsCheck(rhs, nf))   // (`sub f(\a) { a = 1.5 }` over a native element too)
                 nativeAssignCheck(rhs, nb, nf, containerNameOf(a->target.get(), '$'), ns);
             if (!nb && opEq(a->op, "=") && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
-            SlotStripe ws(*this, lv); // paired with the striped copy-out (torn-copy contract)
-            *lv = rhs;
+            SlotStripe ws(*this, lv, RaceAcc::Write); // paired with the striped copy-out (torn-copy contract)
+            raceW(lv) = rhs;
         }
         // A plain `=` into a native refuses what it cannot unbox (a Str, a
         // bigint wider than 64 bits) before wrapping — `my int $x = 2**64`
@@ -17241,7 +17236,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         std::string base = a->op.substr(1, a->op.find(']') - 1);
         Value* lv = lvalue(a->target.get());
         Value r = eval(a->value.get());
-        *lv = applyBinOp(base, *lv, r);
+        raceW(lv) = applyBinOp(base, *lv, r);
         return sink ? Value::any() : *lv;
     }
     // `A R= B` is plain assignment with the roles swapped: `B = A`.
@@ -17251,7 +17246,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (lv->readonly)
             throwNotWritable(*lv);
         v.readonly = v.immutableBind = false;
-        *lv = std::move(v);
+        raceW(lv) = std::move(v);
         return sink ? Value::any() : *lv;
     }
     if (a->op.size() > 2 && a->op[0] == 'R' && a->op.back() == '=' &&
@@ -17339,14 +17334,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 else if (rhs.t == VT::Array && rhs.arr() && !rhs.itemized) items = *rhs.arr();
                 else items.push_back(rhs);
                 ParStripe ws(*this, lv);
-                lv->arr()->swap(items);
+                lv->arr()->swap(items); raceLen(lv->arr(), RaceAcc::Write);
                 return sink ? Value::any() : *lv;
             }
             if (hashTarget) {
                 Value h = rhs.t == VT::Hash && !rhs.itemized ? rhs : methodCall(rhs, "Hash", ValueList{});
                 if (h.t == VT::Hash && h.hash()) {
                     ParStripe ws(*this, lv);
-                    *lv->hash() = *h.hash();
+                    *lv->hash() = *h.hash(); raceKeys(lv->hash(), RaceAcc::Write);
                     return sink ? Value::any() : *lv;
                 }
             }
@@ -17356,7 +17351,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             const auto* sci = scElem ? static_cast<Index*>(a->target.get())->index.get() : nullptr;
             if (scalarTarget || (sci && sci->kind != NK::ArrayLit && sci->kind != NK::ListExpr &&
                                  sci->kind != NK::Range)) itemizeScalar(rhs);
-            { SlotStripe ws(*this, lv); *lv = rhs; } // torn-copy contract
+            { SlotStripe ws(*this, lv, RaceAcc::Write); *lv = rhs; } // torn-copy contract
             if (nb) wrapNative(*lv, nb, ns, nf);
             return sink ? Value::any() : itemize(*lv);
         }
@@ -17405,7 +17400,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 checkElemType(opElemWant, *lv, opAssignElemName(*this, ixt));
             } catch (...) { *lv = opElemPrev; throw; }
         }
-        return sink ? Value::any() : *lv;
+        return sink ? Value::any() : slotRead(lv);
     };
     ViewMirrorWrite opViewMirror;   // (a write through a list of an Array's elements: see ElemView)
     if (opElemTarget && tctx().viewMirrorArr) {
@@ -17473,11 +17468,11 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     const std::string* lookW = a->uniSpelled ? uniOpWritten(binop) : nullptr;
     const std::string& look = lookW ? *lookW : binop;
     if (binop == "^^" || binop == "xor") { // one-true xor keeps the true side (else Nil)
-        *lv = lv->truthy() ? (rhs.truthy() ? Value::nil() : *lv) : rhs;
+        Value out = slotRead(lv);   // (a copy: .truthy may run a user .Bool)
+        slotStore(lv, out = out.truthy() ? (rhs.truthy() ? Value::nil() : out) : rhs);
         if (sink) return Value::any();
         // a `$`-variable target answers its CONTAINER, as `or=` does: a List
         // it holds stays one item (`@p = $x xor= 42, 43` makes @p[0] the List)
-        Value out = *lv;
         if (a->target->kind == NK::VarExpr && !static_cast<VarExpr*>(a->target.get())->name.empty() &&
             static_cast<VarExpr*>(a->target.get())->name[0] == '$' && (out.t == VT::Array || out.t == VT::Hash))
             out.itemized = true;
@@ -17511,7 +17506,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (binop == "Z") for (size_t i = 0; i < es.size() && i < rs.size(); i++) es[i] = rs[i];
             else              for (auto& e : es) e = rs.back();
         }
-        else if (!rs.empty()) *lv = rs.back();
+        else if (!rs.empty()) slotStore(lv, rs.back());
         return opDone();
     }
     // `$a Z+= 2` / `@a Z~= <x y>` — the zip of an ASSIGNMENT operator applies
@@ -17525,14 +17520,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                      : rhs.t == VT::Range              ? rhs.flatten()
                                                        : ValueList{rhs};
         auto opAssign = [&](Value& slot, const Value& x) {
-            Value cur = slot;
+            Value cur = slotRead(&slot);
             if (cur.t == VT::Any || cur.t == VT::Nil || cur.t == VT::Type) {
                 if (inner == "+" || inner == "-") cur = Value::integer(0);
                 else if (inner == "*" || inner == "**") cur = Value::integer(1);
                 else if (inner == "~") cur = Value::str("");
             }
-            slot = applyBinOp(inner, cur, x);
-            return slot;
+            slotStore(&slot, cur = applyBinOp(inner, cur, x));
+            return cur;
         };
         Value out = Value::seq();
         if (lv->t == VT::Array && lv->arr() && !lv->itemized) {
@@ -17546,7 +17541,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // call too. The target is read ONCE here (lvalue() above), so a subscript's
     // index cannot run twice. Issue #85.
     if (binop == ",") {
-        rtCommaAssign(*lv, rhs);
+        Value l = slotRead(lv);   // (a copy, as the operator's: an Array or Hash it holds fills in place)
+        rtCommaAssign(l, rhs);
+        slotStore(lv, std::move(l));
         return opDone();
     }
     // `$obj OP= x` reuses a user `sub infix:<OP>` overload (Raku's `is deep` also
@@ -17554,15 +17551,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     bool overloaded = false;
     if (lv->t == VT::Object || rhs.t == VT::Object) {
         if (Value* f = tctx().cur->find("&infix:<" + look + ">"))
-            try { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
+            try { slotStore(lv, callCallable(*f, ValueList{slotRead(lv), rhs})); overloaded = true; }
             catch (RakuError&) {}
     }
     // …and over CORE operands it meets the built-in exactly as `$t + x` does:
     // `multi infix:<+>(Int, Int $b where * > 100)` takes `$t += 200` too
     else if (RAKUPP_UNLIKELY(lexShadowPossible(look))) {
-        Value uv;
-        if (Value* f = lexShadowedInfix(look, *lv, rhs)) { *lv = callCallable(*f, ValueList{*lv, rhs}); overloaded = true; }
-        else if (userInfixOverCore(look, *lv, rhs, uv)) { *lv = std::move(uv); overloaded = true; }
+        Value uv, cur = slotRead(lv);   // (a copy: the dispatch runs user code)
+        if (Value* f = lexShadowedInfix(look, cur, rhs)) { slotStore(lv, callCallable(*f, ValueList{cur, rhs})); overloaded = true; }
+        else if (userInfixOverCore(look, cur, rhs, uv)) { slotStore(lv, std::move(uv)); overloaded = true; }
     }
     // an undefined value appended (`$s ~= $u`) warns as the operand of `~` it is
     if (!overloaded && binop == "~" && uninitOperand(rhs)) {
@@ -17572,61 +17569,30 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     // An undefined target autovivifies with the operator's NEUTRAL element:
     // `my $x; $x *= 2` is 1*2 == 2, `+=` starts from 0, `~=` from ''.
     if (!overloaded && (lv->t == VT::Any || lv->t == VT::Nil || lv->t == VT::Type)) {
-        if (binop == "*" || binop == "**" || binop == "%%") *lv = Value::integer(1);
-        else if (binop == "~") *lv = Value::str("");
+        if (binop == "*" || binop == "**" || binop == "%%") slotStore(lv, Value::integer(1));
+        else if (binop == "~") slotStore(lv, Value::str(""));
         // …and an operator with NO neutral element refuses (Rakudo's zero-arg candidate)
         else if (binop == "%" || binop == "x")
             throw RakuError{Value::typeObj("X::NoZeroArgMeaning"),
                             "No zero-argument meaning for: infix:<" + binop + ">"};
-        else if (binop == "+" || binop == "-") *lv = Value::integer(0);
+        else if (binop == "+" || binop == "-") slotStore(lv, Value::integer(0));
     }
     // `$s ~= $obj` honours a user-defined Str method, exactly like binary `~`
     // (XML::Document.Str appends its root element object this way)
     // (and composes across the join as `~` does)
     if (!overloaded && binop == "~" && (lv->t == VT::Object || rhs.t == VT::Object)) {
-        const std::string lt = strInStrContext(*lv);
-        *lv = Value::str(nfcConcat(lt, strInStrContext(rhs), nfcKnown(*lv), nfcKnown(rhs)));
+        const Value cur = slotRead(lv);   // (a copy: a user .Str runs)
+        const std::string lt = strInStrContext(cur);
+        slotStore(lv, Value::str(nfcConcat(lt, strInStrContext(rhs), nfcKnown(cur), nfcKnown(rhs))));
         return opDone();
     }
-    // `$s ~= $n` with a plain Int: its decimal text is ASCII, so it appends in
-    // place like an ASCII Str below. Through applyBinOp every append copied the
-    // whole string — `$s ~= $_ % 10` over 300k iterations took 8.5 s.
-    if (!overloaded && binop == "~" && lv->t == VT::Str && lv->hashKind.empty() && rhs.t == VT::Int &&
-        !rhs.x_ && rhs.pk_ == PK::None && rhs.hashKind.empty() && rhs.enumName.empty() && rhs.enumType.empty() && !rhs.natBits) {
-        lv->s.appendAscii(std::to_string(rhs.i));
-        return opDone();
-    }
-    // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
-    // string each step. Appending PURE-ASCII text can never change the NFC form of
-    // the existing buffer (ASCII is a base, never a combining mark, and is already
-    // NFC), so append in place — O(1) amortised, keeping string-building O(n). Only
-    // a non-ASCII right-hand side needs a re-normalisation across the join.
-    if (!overloaded && binop == "~" && lv->t == VT::Str && rhs.t == VT::Str) {
-        auto bloby = [](const Value& v) {
-            return !v.itemized &&
-                   (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
-        };
-        // `$blob ~= $blob` appends BYTES and yields a Buf, like the binary form.
-        // Normalizing here would corrupt them, and a high byte looks non-ASCII.
-        if (bloby(*lv) && bloby(rhs) && lv->blobElemSize() == rhs.blobElemSize()) {
-            lv->s += rhs.s;
-            lv->hashKind = "Buf";
-            identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
-            if (lv->ofType().empty()) lv->ofTypeM() = rhs.ofType();
-            return opDone();
-        }
-        bool asciiRhs = true;
-        for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
-        if (asciiRhs) lv->s.appendAscii(rhs.s.str());
-        else if (lv->hashKind.empty() && rhs.hashKind.empty()) nfcAppendCow(lv->s, rhs.s);
-        else lv->s = nfcNormalize(lv->s + rhs.s);   // (a Buf on one side: its bytes are not text)
-        return opDone();
-    }
+    // `$s ~= $n` and `$s ~= $t` append in place, O(1) amortised (catAssignInPlace)
+    if (!overloaded && binop == "~" && catAssignInPlace(lv, rhs)) return opDone();
     if (!overloaded && !subsets_.empty() && a->target->kind == NK::VarExpr &&
         !subsetTypeOfVar(static_cast<VarExpr*>(a->target.get())->name).empty()) {
-        Value nv = applyBinOp(look, *lv, rhs);  // checked BEFORE the store
+        Value nv = applyBinOp(look, slotRead(lv), rhs);  // checked BEFORE the store
         subsetMutationCheck(a->target.get(), nv);
-        *lv = nv;
+        slotStore(lv, std::move(nv));
         return opDone();
     }
     if (!overloaded) {
@@ -17639,23 +17605,23 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         // sums `now - $start` into an undefined slot)
         auto temporal = [](const Value& v) { return v.hashKind == "Instant" || v.hashKind == "Duration"; };
         if (binop == "**" && nb && !nf && nativeIntPowNegative(*lv, rhs, a->value.get()))
-            *lv = Value::integer(0);   // `$i **= -1` on a native int (see nativeIntPowNegative)
+            slotStore(lv, Value::integer(0));   // `$i **= -1` on a native int (see nativeIntPowNegative)
         else if ((binop == "+" || binop == "-" || binop == "%") && (temporal(*lv) || temporal(rhs))) {
-            Value l0 = *lv;
+            Value l0 = slotRead(lv);
             Value res = applyArith(binop, l0, rhs);
             tagTemporal(binop, l0, rhs, res);
-            *lv = std::move(res);
+            slotStore(lv, std::move(res));
         }
         // fall back to a user `sub infix:<OP>` when the operator isn't built-in
         // (so `$m mx= 9` works for any operands, not just objects)
-        else try { applyArithInto(binop, *lv, rhs); }
+        else try { opAssignArith(lv, binop, rhs); }
         catch (RakuError&) {
-            if (Value* f = tctx().cur->find("&infix:<" + look + ">")) *lv = callCallable(*f, ValueList{*lv, rhs});
+            if (Value* f = tctx().cur->find("&infix:<" + look + ">")) slotStore(lv, callCallable(*f, ValueList{slotRead(lv), rhs}));
             else throw;
         }
         if (arrayTarget && lv->t != VT::Array) {
             Value nv = *lv;
-            *lv = arrKeep;                            // the SAME Array, refilled
+            raceW(lv) = arrKeep;                            // the SAME Array, refilled
             ValueList one{nv}; lv->arr()->swap(one);
         }
         // Z/X answer a Seq, and an `@`-sigil target holds an ARRAY: after
@@ -21649,7 +21615,7 @@ int Interpreter::tryCondBool(Expr* e) {
             else {
                 auto* ve = static_cast<VarExpr*>(oe);
                 Value* q = padPtrIn(ve, cur);
-                p = q ? q : cur->find(ve->name);
+                p = raceRd(q ? q : cur->find(ve->name));
             }
             return (p && p->t == VT::Str && p->hashKind.empty()) ? p : nullptr;
         };
@@ -21672,7 +21638,7 @@ int Interpreter::tryCondBool(Expr* e) {
         }
         auto* ve = static_cast<VarExpr*>(oe);
         Value* p = padPtr(ve);
-        if (!p) p = tctx().cur->find(ve->name);
+        if (!p) p = tctx().cur->find(ve->name); raceRd(p);
         if (!p || p->t != VT::Int || !p->hashKind.empty() || p->big()) return false;
         if (p->natBits && op[0] == '!') return false; // see nativeMixedSignNe
         out = p->i;
@@ -21773,7 +21739,7 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
             if (bp->t != VT::Array || !bp->arr() || k.t != VT::Int || k.big() || k.natBits) return nullptr;
             auto& a = *bp->arr();
             if (k.i < 0 || (unsigned long long)k.i >= a.size()) return nullptr;
-            el = &a[(size_t)k.i];
+            el = raceNoteElem(&a[(size_t)k.i], &a, (size_t)k.i);
         } else {
             // what hashSubKey answers for a plain hash: the key's Str
             if (bp->t != VT::Hash || !bp->hash() || bp->objKeyed) return nullptr;
@@ -21781,9 +21747,9 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
             if (k.t == VT::Str) ks = k.s.str();
             else if (k.t == VT::Int && !k.big() && !k.natBits) ks = std::to_string(k.i);
             else return nullptr;
-            auto it = bp->hash()->find(ks);
+            auto it = bp->hash()->find(ks); raceKeys(bp->hash(), RaceAcc::Read);
             if (it == bp->hash()->end()) return nullptr;
-            el = &it->second;
+            el = raceNoteEntry(&it->second, bp->hash(), ks);
         }
         return plainIntSlotValue(*el) ? el : nullptr;
     }
@@ -21803,7 +21769,7 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
                 const std::string& key = attrSlotFor(selfp->obj(), ve->attrBare, buf);
                 auto it = selfp->obj()->attrs.find(key);
                 if (it == selfp->obj()->attrs.end() || !plainIntSlotValue(it->second)) return nullptr;
-                return &it->second;
+                return raceNoteAttr(&it->second, selfp->obj());
             }
     return nullptr;
 }
@@ -21816,7 +21782,7 @@ static inline const Value* fusedIntLeaf(const Binary* b, Expr* x, bool isLit, En
     else {
         auto* ve = static_cast<VarExpr*>(x);
         Value* q = Interpreter::padPtrIn(ve, cur);
-        p = q ? q : cur->find(ve->name);
+        p = raceRd(q ? q : cur->find(ve->name));
     }
     return (p && p->t == VT::Int && !p->big() && p->hashKind.empty() &&
             (!p->natBits || (p->natBits == 64 && p->natSigned && !p->natFloat))) ? p : nullptr;
@@ -21840,7 +21806,7 @@ static inline const Value* fusedIntLeaf(const Binary* b, Expr* x, bool isLit, En
         case 4: if (rakupp::pow_ovf(lp->i, rp->i, &z)) return false; break;
         default: if (!rtIntWordOp(op[0], op[1], lp->i, rp->i, z)) return false;
     }
-    Interpreter::SlotStripe ws(I, slot);
+    Interpreter::SlotStripe ws(I, slot, RaceAcc::Write);
     slot->i = z;
     return true;
 }
@@ -21870,7 +21836,7 @@ bool Interpreter::fusedIntAssign(Binary* b, Value* slot) {
       : op[0] == '-' ? rakupp::sub_ovf(lp->i, rp->i, &z)
                      : rakupp::mul_ovf(lp->i, rp->i, &z))
         return false;
-    SlotStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+    SlotStripe ws(*this, slot, RaceAcc::Write);   // torn-copy contract, as the lane's store
     slot->i = z;   // (`i` and `n` share one word: no `n` to clear)
     return true;
 }
@@ -21908,7 +21874,7 @@ Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
         auto scal = [&](Expr* x) -> const Value* {
             auto* ve = static_cast<VarExpr*>(x);
             Value* p = padPtrIn(ve, cur);
-            if (!p) p = cur->find(ve->name);
+            if (!p) p = cur->find(ve->name); raceRd(p);
             return (p && p->hashKind.empty() &&
                     (p->t == VT::Int || p->t == VT::Num ||
                      p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
@@ -21951,7 +21917,7 @@ Value Interpreter::unaryNegHandler(Interpreter& I, Expr* e) {
         Env* const cur = tctx().cur.get();
         auto* ve = static_cast<VarExpr*>(u->operand.get());
         const Value* p = padPtrIn(ve, cur);
-        if (!p) p = cur->find(ve->name);
+        if (!p) p = cur->find(ve->name); raceRd(p);
         if (p && p->hashKind.empty() && p->enumName.empty() && !p->natBits) {
             if (p->t == VT::Num) return Value::number(-p->n);
             if (p->t == VT::Int && !p->big() && p->i != LLONG_MIN) return Value::integer(-p->i);
@@ -22264,7 +22230,7 @@ static bool typedOperand(Expr* e, Env* cur, TNum& o) {
         case NK::VarExpr: {
             auto* ve = static_cast<VarExpr*>(e);
             const Value* p = Interpreter::padPtrIn(ve, cur);
-            if (!p) p = cur->find(ve->name);
+            if (!p) p = cur->find(ve->name); raceRd(p);
             if (!p || !p->hashKind.empty()) return false;
             if (!p->natBits) {
                 if (p->t == VT::Int) { if (p->big()) return false; o.f = 0; o.i = p->i; return true; }
@@ -22380,7 +22346,7 @@ static inline bool nativeNumberSlotValue(const Value& v) {
 [[gnu::noinline]] static void fusedRatStore(Interpreter& I, Value* slot, const TNum& o) {
     if (slot->t == VT::Rat && (o.f & TN_RAT)) {
         BigInt nn(o.i), dd(o.d);
-        Interpreter::SlotStripe ws(I, slot);
+        Interpreter::SlotStripe ws(I, slot, RaceAcc::Write);
         if (slot->x_.use_count() == 1 && slot->x_->ratN.use_count() == 1 && slot->x_->ratD.use_count() == 1) {
             ValueExt& x = *slot->x_;
             *x.ratN = std::move(nn);
@@ -22389,7 +22355,7 @@ static inline bool nativeNumberSlotValue(const Value& v) {
         }
     }
     Value v = typedResultValue(o);
-    Interpreter::SlotStripe ws(I, slot);
+    Interpreter::SlotStripe ws(I, slot, RaceAcc::Write);
     *slot = std::move(v);
 }
 
@@ -22423,7 +22389,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
         return false;
     if (!native) {
         if (slot->t == VT::Rat || (o.f & TN_RAT)) { fusedRatStore(*this, slot, o); return true; }
-        SlotStripe ws(*this, slot);   // torn-copy contract, as the lane's store
+        SlotStripe ws(*this, slot, RaceAcc::Write);   // torn-copy contract, as the lane's store
         if (o.f & TN_NUM) { slot->t = VT::Num; slot->n = o.n; }
         else { slot->t = VT::Int; slot->i = o.i; }
         return true;
@@ -22431,7 +22397,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     const int bits = slot->natBits;
     if (slot->natFloat) {
         if (!(o.f & TN_NUM)) return false;
-        SlotStripe ws(*this, slot);
+        SlotStripe ws(*this, slot, RaceAcc::Write);
         slot->n = bits == 32 ? (double)(float)o.n : o.n;
         return true;
     }
@@ -22442,7 +22408,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
         z = (slot->natSigned && (u & (1ULL << (bits - 1)))) ? (long long)u - (long long)(1ULL << bits)
                                                             : (long long)u;
     }
-    SlotStripe ws(*this, slot);
+    SlotStripe ws(*this, slot, RaceAcc::Write);
     slot->i = z;
     return true;
 }
@@ -22575,7 +22541,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
             const Value* p = padPtrIn(ve, cur);
             if (!p) p = cur->find(ve->name);
             if (!p) return false;
-            SlotStripe rs(*this, p);
+            SlotStripe rs(*this, p, RaceAcc::Read);
             if (p->isCell() || p->natBits || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
                 !p->enumName.empty() || !p->enumType.empty() || p->isList || p->itemized)
                 return false;
@@ -22599,7 +22565,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
                 else {
                     auto* ve = static_cast<VarExpr*>(x);
                     p = padPtrIn(ve, cur);
-                    if (!p) p = cur->find(ve->name);
+                    if (!p) p = cur->find(ve->name); raceRd(p);
                 }
                 if (!p || p->natBits || !p->hashKind.empty()) return false;
                 if (p->t == VT::Int) { if (p->big()) return false; o.f = 0; o.i = p->i; return true; }
@@ -22863,7 +22829,7 @@ Value Interpreter::evalBinary(Binary* b) {
             auto scal = [&](Expr* e) -> const Value* {
                 auto* ve = static_cast<VarExpr*>(e);
                 Value* p = padPtrIn(ve, cur);   // annotated: the slot, no hashing
-                if (!p) p = cur->find(ve->name);
+                if (!p) p = cur->find(ve->name); raceRd(p);
                 return (p && p->hashKind.empty() &&
                         (p->t == VT::Int || p->t == VT::Num ||
                          p->t == VT::Str || p->t == VT::Bool)) ? p : nullptr;
@@ -23547,7 +23513,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (r.code()->coldM().nativeSym.empty()) r.code()->coldM().nativeSym = r.code()->ci().name;
                 r.code()->mixinsRW().roles.push_back("NativeCall::Native");
                 if (opEq(op, "does") && b->lhs->kind == NK::VarExpr)
-                    try { if (Value* lv = lvalue(b->lhs.get())) *lv = r; } catch (...) {}
+                    try { if (Value* lv = lvalue(b->lhs.get())) raceW(lv) = r; } catch (...) {}
                 return r;
             }
         }
@@ -23660,7 +23626,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 if (opEq(op, "does") && !baseIsObject && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
                     NK k = b->lhs->kind;
                     if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
-                        try { if (Value* lv = lvalue(b->lhs.get())) *lv = res; } catch (...) {}
+                        try { if (Value* lv = lvalue(b->lhs.get())) raceW(lv) = res; } catch (...) {}
                 }
                 return res;
             }
@@ -23708,7 +23674,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if (opEq(op, "does") && !baseIsObject && res.t == VT::Object && res.obj() && res.obj()->hasBoxed) {
             NK k = b->lhs->kind;
             if (k == NK::VarExpr || k == NK::Index || k == NK::MethodCall)
-                try { if (Value* lv = lvalue(b->lhs.get())) *lv = res; } catch (...) {}
+                try { if (Value* lv = lvalue(b->lhs.get())) raceW(lv) = res; } catch (...) {}
             // …and a bare ENUM VALUE name is rebound, short and qualified:
             // `AA does role { method m { … } }; AA.m` (Rakudo mixes into the constant)
             else if (k == NK::NameTerm && tctx().cur) {
@@ -23784,7 +23750,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if (sig == '@' && lazySetOperand(src))
             throw RakuError{Value::typeObj("X::Cannot::Lazy"),
                             "Cannot push a lazy list onto a Array"};
-        *lv = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src, /*store=*/true) : src;
+        raceW(lv) = sig == '@' ? coerceArray(src) : sig == '%' ? coerceHash(src, /*store=*/true) : src;
         return *lv;
     }
   armSeq:
@@ -23966,7 +23932,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // assignment guard because a substitution never goes through `=`.
                 if (Value* lv = lvalue(b->lhs.get())) {
                     if (lv->readonly) throwNotWritable(*lv);   // an X::AdHoc, as Rakudo's
-                    *lv = Value::str(out);
+                    raceW(lv) = Value::str(out);
                 }
                 Value sd = Value::makeHash(); sd.hashKind = "StrDistance";
                 (*sd.hash())["before"] = Value::str(before);
@@ -23981,7 +23947,7 @@ Value Interpreter::evalBinary(Binary* b) {
             // assignment guard because a substitution never goes through `=`.
             if (Value* lv = lvalue(b->lhs.get())) {
                 if (lv->readonly) throwNotWritable(*lv);   // an X::AdHoc, as Rakudo's
-                *lv = Value::str(out);
+                raceW(lv) = Value::str(out);
             }
             // s/// returns the Match / List of matches — and False, not Nil, when
             // nothing matched (same rule as the `m//` form above)
@@ -25406,7 +25372,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     Value old;
                     if (u->postfix) old = *slot;
                     {
-                        SlotStripe ws(*this, slot);   // torn-copy contract, as the full store
+                        SlotStripe ws(*this, slot, RaceAcc::Write);   // torn-copy contract, as the full store
                         slot->i = z;   // (`i` and `n` share one word: no `n` to clear)
                     }
                     return u->postfix ? old : *slot;
@@ -25441,7 +25407,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     Value old = *lv;
                     Value nv = applyArith(opEq(u->op, "++") ? "+" : "-", old, Value::integer(1));
                     subsetMutationCheck(u->operand.get(), nv);
-                    *lv = nv;
+                    raceW(lv) = nv;
                     return u->postfix ? old : nv;
                 }
             }
@@ -25570,7 +25536,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (lv && lv->t == VT::Hash && lv->hashKind == "Proxy" == false && lv->hashKind == "Pointer") {
             Value old = *lv;
             ValueList none;
-            *lv = methodCall(old, opEq(u->op, "++") ? "succ" : "pred", none);
+            raceW(lv) = methodCall(old, opEq(u->op, "++") ? "succ" : "pred", none);
             return u->postfix ? old : *lv;
         }
         // `++`/`--` MUTATE, so a readonly container refuses them just as `=` does.
@@ -25626,7 +25592,7 @@ Value Interpreter::evalUnary(Unary* u) {
             coerceElemValue(*this, want, newv, '+');
             checkElemType(want, newv, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
         }
-        *lv = newv;
+        raceW(lv) = newv;
         if (anyRwLinks_) rwWriteThrough(u->operand.get()); // ++/-- on a linked rw param
         // BagHash/SetHash/MixHash element ++/--: a weight reaching 0 (or below)
         // removes the key entirely (`%h<a>--` deletes a 1-weighted item)
@@ -26173,7 +26139,7 @@ Value Interpreter::evalCall(Call* c) {
         if (v.t == VT::Array) v.b = true;   // .is-lazy
         return v;
     }
-    ValueList args = evalArgs(c->args);
+    ValueList args = [&] { RaceQuiet rq(special && (c->name == "cas" || c->name.rfind("atomic-", 0) == 0)); return evalArgs(c->args); }();
     // Whatever-curry over USER-DEFINED infixes: `* quack 5` / `5 quack *` /
     // `* quack *` build a WhateverCode, exactly like built-in binaries
     if (special && c->name.rfind("infix:<", 0) == 0 && args.size() == 2) {
@@ -26492,6 +26458,7 @@ Value Interpreter::evalCall(Call* c) {
         auto it = builtins_.find(c->name);
         if (it != builtins_.end() && !builtinVisible(c->name)) it = builtins_.end(); // 6.e-only sub, and this is not 6.e
         if (it != builtins_.end()) {
+            raceOn(args.empty() ? nullptr : &args[0], c->name);   // (`push @a, …`: --race, as a method on @a)
             // a built-in sub reads the Seqs it is given, so an unread one is
             // cached (SeqToken) — `eager` excepted, which reads one for good,
             // and `list`, which hands a lone Seq back UNREAD (Rakudo:
@@ -26633,7 +26600,7 @@ Value Interpreter::evalCall(Call* c) {
             if (!c->args.empty()) { try { lv = lvalue(c->args[0].get()); } catch (...) {} }
             if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"),
                                      "Cannot modify an immutable value"};
-            *lv = result;
+            raceW(lv) = result;
         }
         return result;
     }
@@ -26655,7 +26622,7 @@ Value Interpreter::evalCall(Call* c) {
              !opEq(op, "===") && !opEq(op, "!===") && !opEq(op, "!=:=") && !opEq(op, "=~=") && !opEq(op, "!=~="));
         if (isAssign && c->args.size() >= 2) {
             if (Value* lv = lvalue(c->args[0].get())) {
-                *lv = (opEq(op, "=")) ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
+                raceW(lv) = (opEq(op, "=")) ? args[1] : applyBinOp(op.substr(0, op.size() - 1), *lv, args[1]);
                 return *lv;
             }
         }
@@ -27231,7 +27198,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     // that was already gone (S17-lowlevel/cas.t built a CYCLIC
                     // linked list, or segfaulted, roughly one run in three).
                     const Value& slot = (*bp->arr())[i];
-                    ParStripe rs(*this, &slot);
+                    ParStripe rs(*this, &slot); raceElem(bp->arr(), (size_t)i, RaceAcc::Read);
                     // a HOLE of a typed array reads as its element type
                     // (`my Int @a; @a[2] = 1; @a[0]` is Int), as past its end
                     if (slot.t == VT::Any && !bp->ofType().empty()) return arrayMissingDefault(*bp);
@@ -28479,9 +28446,9 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (wantDelete) for (auto& h : hits) if (h.exists) {
-            if (idx->isHash) base.hash()->erase(h.skey.empty() ? h.keyV.toStr() : h.skey);
+            if (idx->isHash) { raceKeys(base.hash(), RaceAcc::Write); base.hash()->erase(h.skey.empty() ? h.keyV.toStr() : h.skey); }
             else { long long ai = h.keyV.toInt();
-                   if (base.arr() && ai >= 0 && ai < (long long)base.arr()->size()) (*base.arr())[ai] = Value::any(); }
+                   if (base.arr() && ai >= 0 && ai < (long long)base.arr()->size()) { raceElem(base.arr(), (size_t)ai, RaceAcc::Write); (*base.arr())[ai] = Value::any(); } }
         }
         // trailing holes shrink the array after deletes (plain subscripts only —
         // a multidim form that fell through indexes NESTED arrays, not this one)
@@ -28628,9 +28595,9 @@ Value Interpreter::evalIndex(Index* idx) {
             if (base.t == VT::Pair)
                 return key == base.s && base.pairVal() ? *base.pairVal() : Value::nil();
             if (base.t == VT::Hash && base.hash()) {
-                auto it = base.hash()->find(key);
+                auto it = base.hash()->find(key); raceKeys(base.hash(), RaceAcc::Read);
                 if (it != base.hash()->end()) {
-                    ParStripe rs(*this, &it->second); // torn-copy contract
+                    ParStripe rs(*this, &it->second); raceEntry(base.hash(), key, RaceAcc::Read); // torn-copy contract
                     return it->second;
                 }
             }
@@ -28863,7 +28830,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (base.t == VT::Array && (src[i].t == VT::Nil || src[i].t == VT::Any) &&
                         (base.elemDefault() || !base.ofType().empty()))
                         return arrayMissingDefault(base);
-                    ParStripe rs(*this, &src[i]); // torn-copy contract (see the fast path above)
+                    ParStripe rs(*this, &src[i]); raceElem(&src != &built ? &src : nullptr, (size_t)i, RaceAcc::Read); // torn-copy contract
                     return src[i];
                 }
                 // a SHAPED array has no slots past its shape: reading one dies
@@ -30165,7 +30132,7 @@ Value Interpreter::eval(Expr* e) {
             if (ExecContext& tc = tctx(); !tc.bindRawTails) {
                 if (Value* p = padPtrIn(ve, tc.cur.get())) {
                     if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
-                        SlotStripe rs(*this, p);   // torn-copy contract, as in evalVarExpr
+                        SlotStripe rs(*this, p, RaceAcc::Read);   // torn-copy contract, as in evalVarExpr
                         Value out = *p;
                         out.readonly = out.immutableBind = false;
                         return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
@@ -30177,7 +30144,7 @@ Value Interpreter::eval(Expr* e) {
                     if (Value* p = tc.cur->find(ve->name)) {
                         if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                             ParStripe rs(*this, p);
-                            Value out = *p;
+                            Value out = *raceR(p);
                             out.readonly = out.immutableBind = false;
                             return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
                         }
@@ -30790,7 +30757,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // ancestor of the CURRENT scope (padPtr) — see PADS-PLAN.md.
         if (Value* p = padPtr(ve)) {
             if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
-                SlotStripe rs(*this, p); // torn-copy contract, as below
+                SlotStripe rs(*this, p, RaceAcc::Read); // torn-copy contract, as below
                 Value out = *p;
                 out.readonly = out.immutableBind = false;
                 return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
@@ -30821,7 +30788,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 // value: `my $y = $x` and `my @a = $x, 2` build writable
                 // slots of their own. (The `$_`/`$/` readonly tests read
                 // their slot directly, so they still see the flag.)
-                Value out = *p;
+                Value out = *raceR(p);
                 out.readonly = out.immutableBind = false;
                 return listOfContainersRead(*this, std::move(out), ve->name.empty() ? '$' : ve->name[0]);
             }
@@ -30942,7 +30909,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (!ve->attrTwin.empty()) {
                 auto st = selfp->obj()->attrs.find(ve->attrTwin);
                 if (st != selfp->obj()->attrs.end()) {
-                    ParStripe rs(*this, &st->second); // torn-copy contract
+                    ParStripe rs(*this, &st->second); raceAttr(selfp->obj(), &st->second, RaceAcc::Read); // torn-copy contract
                     return st->second;
                 }
             }
@@ -30952,7 +30919,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (it != selfp->obj()->attrs.end()) {
                 // torn-copy contract, the ATTRIBUTE half — `cas($!head,
                 // …)` writes this slot under the same stripe.
-                ParStripe rs(*this, &it->second);
+                ParStripe rs(*this, &it->second); raceAttr(selfp->obj(), &it->second, RaceAcc::Read);
                 return it->second;
             }
             if (ve->name[1] == '.') return methodCall(*selfp, an, {});
@@ -31755,7 +31722,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             const Value& iv = *preInv;
             if (iv.t == VT::Object && iv.obj() && iv.obj()->cls)
                 if (const Value* slot = plainAccessorSlot(iv, mc->method)) {
-                    Value res = *slot;
+                    Value res = [&] { ParStripe rs(*this, slot); raceAttr(iv.obj(), slot, RaceAcc::Read); return *slot; }();   // torn-copy contract
                     seqMint(res, iv);
                     return res;
                 }
@@ -32457,12 +32424,12 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             else if (inv.t == VT::Type && inv.s.str().rfind("Array[", 0) == 0 && inv.s.str().back() == ']')
                 vivType = inv.s.str().substr(6, inv.s.str().size() - 7);
             if ((lv->t == VT::Any || lv->t == VT::Nil) && !vivType.empty()) {
-                *lv = Value::array(); lv->ofTypeM() = vivType;
+                raceW(lv) = Value::array(); lv->ofTypeM() = vivType;
             }
-            else if (lv->t == VT::Any || lv->t == VT::Nil) *lv = Value::array();
+            else if (lv->t == VT::Any || lv->t == VT::Nil) raceW(lv) = Value::array();
             else if (lv->t == VT::Type && lv->s == "Array") {
                 std::string et = lv->ofType();
-                *lv = Value::array(); lv->ofTypeM() = et;
+                raceW(lv) = Value::array(); lv->ofTypeM() = et;
             }
             // an ELEMENT slot holds the vivified Array in its Scalar, as an
             // assigned element does: `%h<a>.push: "x"; %h<a>.raku` is `$["x"]` —
@@ -32500,7 +32467,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
             // nothing matched, nothing changed: the container keeps what
             // it held (an Int stays an Int, as in Rakudo)
-            if (nsub) *lv = Value::str(out);
+            if (nsub) raceW(lv) = Value::str(out);
             return mres;
         }
     }
@@ -32786,7 +32753,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 for (size_t k = 0; k < le->items.size() && k < out.arr()->size(); k++)
                     if (Value* elv = lvalue(le->items[k].get())) *elv = (*out.arr())[k];
             }
-            else if (Value* lv = lvalue(mc->inv.get())) { out.isList = false; *lv = out; }
+            else if (Value* lv = lvalue(mc->inv.get())) { out.isList = false; raceW(lv) = out; }
         }
         return out;
     }

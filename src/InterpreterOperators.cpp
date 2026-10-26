@@ -646,7 +646,7 @@ static Value negInt(long long i) {
 }
 
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
-    if (v.t == VT::Array) v.seqTouch();   // `+$s` is its count: a Seq is cached (SeqToken)
+    if (v.t == VT::Array) { v.seqTouch(); raceOn(&v, std::string()); }   // `+$s` is its count: a Seq is cached (SeqToken)
     if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->ci().isWhateverCode &&
         !v.code()->ci().isBlock)
         throwCodeNumeric(v);
@@ -2561,6 +2561,65 @@ std::unique_lock<std::recursive_mutex> Interpreter::lockStripe(const void* p) {
         return std::unique_lock<std::recursive_mutex>(m, std::adopt_lock);
     }
     return std::unique_lock<std::recursive_mutex>(m);
+}
+
+// `$x OP= y` by the operator, the last arm of both OP= paths: the big multiply
+// in place when it applies (it refuses while workers are live), else
+// applyArith over slotView, stored back with slotStore. The op's type picks
+// applyArith's overload as the caller's did: a literal also tags a temporal.
+void Interpreter::opAssignArith(Value* lv, const char* op, const Value& r) {
+    if (applyArithIntoTry(op, raceW(lv), r)) return;
+    Value c0;
+    slotStore(lv, applyArith(op, slotView(lv, c0), r));
+}
+void Interpreter::opAssignArith(Value* lv, const std::string& op, const Value& r) {
+    if (op.size() == 1 && applyArithIntoTry(op.c_str(), raceW(lv), r)) return;
+    Value c0;
+    slotStore(lv, applyArith(op, slotView(lv, c0), r));
+}
+
+// `$s ~= x` in evalAssignInner's general path. Under the slot's stripe, with
+// the types checked under it too: another thread may be appending to the same
+// buffer, or storing something else, at the same time. False, the slot
+// untouched, when the append is not one of these.
+bool Interpreter::catAssignInPlace(Value* lv, const Value& rhs) {
+    if (rhs.t != VT::Str && rhs.t != VT::Int) return false;
+    bool asciiRhs = true;
+    if (rhs.t == VT::Str)
+        for (unsigned char c : rhs.s) if (c >= 0x80) { asciiRhs = false; break; }
+    SlotStripe ws(*this, lv, RaceAcc::Write);
+    if (lv->t != VT::Str) return false;
+    // `$s ~= $n` with a plain Int: its decimal text is ASCII, so it appends in
+    // place like an ASCII Str below. Through applyBinOp every append copied the
+    // whole string — `$s ~= $_ % 10` over 300k iterations took 8.5 s.
+    if (rhs.t == VT::Int) {
+        if (!lv->hashKind.empty() || rhs.x_ || rhs.pk_ != PK::None || !rhs.hashKind.empty() ||
+            !rhs.enumName.empty() || !rhs.enumType.empty() || rhs.natBits) return false;
+        lv->s.appendAscii(std::to_string(rhs.i));
+        return true;
+    }
+    // `$s ~= …` appends into the existing buffer instead of rebuilding the whole
+    // string each step. Appending PURE-ASCII text can never change the NFC form of
+    // the existing buffer (ASCII is a base, never a combining mark, and is already
+    // NFC), so append in place — O(1) amortised, keeping string-building O(n). Only
+    // a non-ASCII right-hand side needs a re-normalisation across the join.
+    auto bloby = [](const Value& v) {
+        return !v.itemized &&
+               (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
+    };
+    // `$blob ~= $blob` appends BYTES and yields a Buf, like the binary form.
+    // Normalizing here would corrupt them, and a high byte looks non-ASCII.
+    if (bloby(*lv) && bloby(rhs) && lv->blobElemSize() == rhs.blobElemSize()) {
+        lv->s += rhs.s;
+        lv->hashKind = "Buf";
+        identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
+        if (lv->ofType().empty()) lv->ofTypeM() = rhs.ofType();
+        return true;
+    }
+    if (asciiRhs) lv->s.appendAscii(rhs.s.str());
+    else if (lv->hashKind.empty() && rhs.hashKind.empty()) nfcAppendCow(lv->s, rhs.s);
+    else lv->s = nfcNormalize(lv->s + rhs.s);   // (a Buf on one side: its bytes are not text)
+    return true;
 }
 
 // A private call needs a `self` in scope — OR a routine declared inside the

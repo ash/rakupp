@@ -224,6 +224,13 @@ work, join results with `await`); **route** shared data through a
 `Channel` or `Supply`; **count** with `atomicint`; **guard** the rest with
 `Lock.protect`. Reach for raw shared mutation last, and only guarded.
 
+`rakupp --detect-races` runs a program under the race detector, which
+reports the accesses this contract leaves undefined: two threads touching
+the same variable, at least one writing, with none of the primitives above
+between them. It tracks variables, array elements and lengths, hash entries
+and keys, and attributes; see [faq/threads.md](faq/threads.md), "How do I
+find a data race?".
+
 ---
 
 ## Promises
