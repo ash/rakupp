@@ -5,6 +5,7 @@
 #include "Cycle.h"   // the backup cycle collector: Env notes what a scope exit drops
 #include "IntOps.h"
 #include "ConstInit.h"  // RAKUPP_CONSTINIT on the thread_local declarations below
+#include "RaceDetector.h"  // --race: the sync edges (RaceDone, RaceCv, the fork in BigStackThread)
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -957,7 +958,8 @@ struct Env {
         }
         for (size_t i = 64; i < n; i++) f(pad[i]);
     }
-    void cycleNoteSlots() { forEachLiveSlot([](const Value& v) { cycleNote(v); }); }
+    // (every death and every reuse of a frame passes here first: --race forgets its slots then)
+    void cycleNoteSlots() { if (RAKUPP_RACE_ON()) raceForgetEnv(this); forEachLiveSlot([](const Value& v) { cycleNote(v); }); }
     // …and a scope let go of while a routine made in it keeps it (Cycle.h)
     void cycleNoteKeptSlots() { forEachLiveSlot([](const Value& v) { cycleNoteKept(v); }); }
     ~Env() { cycleNoteSlots(); }
@@ -1357,6 +1359,7 @@ struct ExecContext;
 struct ThreadHot {
     LoopPoll poll;
     ExecContext* ctx = nullptr;   // see Interpreter::tctx()
+    RaceThread* race = nullptr;   // the race detector's record of this thread (RaceDetector.cpp)
 };
 RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
 // A worker thread's count in liveWorkers_, given back when the thread has let
@@ -1441,6 +1444,9 @@ struct SupplyTapCtx {
     // it finds the queue empty, in the same critical section: a delivery that
     // queued behind it cannot be left behind. Never held around Raku code.
     std::mutex m;
+    // --race: taking the activation acquires and handing it back releases, so
+    // the bodies it runs are ordered; a queued delivery carries a snapshot
+    RaceSlot race;
     void closeSub(long long id) { std::lock_guard<std::mutex> lk(m); closedSubs.insert(id); }
     void clearQueue() { std::lock_guard<std::mutex> lk(m); queue.clear(); }
     // >0 while a value is being handed to the DOWNSTREAM tap. `done` called
@@ -1951,7 +1957,7 @@ struct LazySeqState {
 struct PromiseState {
     std::mutex m;
     std::condition_variable cv;
-    bool done = false;
+    RaceDone done;       // a bool; under --race, a settle releases and a read that sees it acquires
     bool broken = false;
     Value result;        // the kept value
     Value cause;         // exception payload when broken
@@ -1977,7 +1983,7 @@ struct ReactCtx {
     std::atomic<bool> closed{false};
     bool aborted = false;  // drainWorkers wake-up: a parked WORKER react unwinds
     std::mutex m;
-    std::condition_variable cv;
+    RaceCv cv;             // a condition_variable; under --race a notify releases (runReactLoop acquires)
     // Externally-wired taps (e.g. OS-signal taps) whose teardown isn't driven by
     // supplyCloseStack_. When the react block ends they must be closed, or their
     // dispatcher keeps firing the handler after the block is gone (a second
@@ -1993,6 +1999,20 @@ struct ReactCtx {
     // `whenever <a b c>.Supply` prints before the first emitted value. The
     // synchronous drains queue here; B["react"] runs them after the body.
     std::vector<std::function<void()>> deferred;
+};
+// The reacts a thread is inside. Running a react's body, or one of its whenever
+// bodies, pushes the react and pops it after; for --race that is a monitor
+// the bodies run one at a time inside, so a push acquires the react's clock
+// and a pop releases into it (runReactLoop acquires it once more at the end).
+struct ReactStack : std::vector<std::shared_ptr<ReactCtx>> {
+    void push_back(const std::shared_ptr<ReactCtx>& c) {
+        std::vector<std::shared_ptr<ReactCtx>>::push_back(c);
+        if (c) raceAcquire(c->cv.race, RaceEdge::React);
+    }
+    void pop_back() {
+        if (!empty() && back()) raceRelease(back()->cv.race, RaceEdge::React);
+        std::vector<std::shared_ptr<ReactCtx>>::pop_back();
+    }
 };
 
 long long nowMicros(); // steady_clock microseconds — the gather probe's budget clock
@@ -3120,14 +3140,50 @@ public:
     // (through the pad or by name): the pointer alone decides, found in the
     // pad of a frame on the current scope chain. The search is out of line,
     // as lockStripe is: inlined, it grew the frames of the hot paths.
+    // `acc` says what the access is, for --race (which checks it under the
+    // stripe, so a location's shadow sees its accesses in their real order).
     struct SlotStripe {
         std::unique_lock<std::recursive_mutex> l;
-        SlotStripe(const Interpreter& I, const void* p) {
+        SlotStripe(const Interpreter& I, const void* p, RaceAcc acc) {
             if (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_acquire) > 0)   // (acquire: see ParStripe)
                 l = I.lockSlotStripe(p);
+            if (RAKUPP_RACE_ON()) I.raceSlot(p, acc);
         }
     };
     std::unique_lock<std::recursive_mutex> lockSlotStripe(const void* p) const;
+    // --race: `p` is a scalar location when it is a pad slot of a frame on the
+    // current scope chain (and not a private one), the inside of a cell one of
+    // those frames holds, or one of their variables. Anything else (an element,
+    // an attribute, a temporary) is not this hook's (RaceDetector.cpp).
+#if defined(__GNUC__) || defined(__clang__)
+    [[gnu::cold, gnu::noinline]]
+#endif
+    void raceSlot(const void* p, RaceAcc acc) const;
+    // …and a container location as the report names it, where an access is
+    // (its file and line, as one int), and the routines it is in (RaceDetector.cpp)
+    std::string raceLocName(int kind, const void* c, uint64_t sub, const std::string* key) const;
+    int raceSite() const;
+    std::string raceBacktrace() const;
+    // …the same, for a store or a load the stripes do not cover, in place:
+    // `raceW(lv) = v;` for `*lv = v;`, `raceR(p)` for `p` before a read
+    Value& raceW(Value* lv) const { if (RAKUPP_RACE_ON()) raceSlot(lv, RaceAcc::Write); return *lv; }
+    template <class P> P raceR(P p) const { if (RAKUPP_RACE_ON() && p) raceSlot(p, RaceAcc::Read); return p; }
+    // The torn-copy contract for a read-modify-write (OP=). What it computes
+    // from is slotView: the slot itself while no other thread can reach it,
+    // else a copy taken under its stripe, because another thread's store frees
+    // what a reference reads (two threads' `$s ~= "a"` crashed on a double
+    // free). slotStore puts the result back under the stripe. No lock is held
+    // in between, so the operator may run user code.
+    const Value& slotView(const Value* p, Value& copy) const {
+        SlotStripe rs(*this, p, RaceAcc::None);
+        return rs.l.owns_lock() ? (copy = *p) : *p;
+    }
+    Value slotRead(const Value* p) const { SlotStripe rs(*this, p, RaceAcc::None); return *p; }
+    void slotStore(Value* p, const Value& v) const { SlotStripe ws(*this, p, RaceAcc::Write); *p = v; }
+    void slotStore(Value* p, Value&& v) const { SlotStripe ws(*this, p, RaceAcc::Write); *p = std::move(v); }
+    void opAssignArith(Value* lv, const char* op, const Value& r);          // `*lv = applyArith(op, *lv, r)`, so
+    void opAssignArith(Value* lv, const std::string& op, const Value& r);   // (InterpreterOperators.cpp)
+    bool catAssignInPlace(Value* lv, const Value& r);   // `$s ~= x` appending in place, under the stripe
     void applySubTraits(SubDecl* sd); // run user `is` traits of a hoisted sub at its textual position
     void applyParamTraits(const std::vector<Param>& params, const Value& fn); // …and a signature's PARAMETER traits
     // subset NAME of BASE where EXPR — refinement types for dispatch and ~~
@@ -3977,9 +4033,14 @@ public:
         pthread_t h_{};
 #endif
         bool joinable_ = false;
-        struct Fn { std::function<void()> f; };
+        struct Fn { std::function<void()> f; RaceThread* race = nullptr; };
         // (t_workerExit first: the thread's last thread_local to go — workerFinished)
-        static void run_(void* p) { t_workerExit.onWorker = true; std::unique_ptr<Fn> g(static_cast<Fn*>(p)); g->f(); }
+        static void run_(void* p) {
+            t_workerExit.onWorker = true; std::unique_ptr<Fn> g(static_cast<Fn*>(p));
+            if (g->race) raceBegin(g->race);
+            g->f();
+            if (g->race) raceEnd();
+        }
         // A body run INLINE (no thread could be made — always, in a WASM build
         // without pthreads) runs on the caller's thread, whose registers it
         // would otherwise replace: a worker body loads an empty context and
@@ -4004,6 +4065,7 @@ public:
             // being one shared slot and becomes one per thread (see g_stmtLine).
             stmtLinesGoThreaded();
             auto* fn = new Fn{std::move(f)};
+            if (RAKUPP_RACE_ON()) fn->race = raceFork();   // the fork edge: every worker starts here
             const size_t kStack = stackBytes ? stackBytes
                                              : (size_t)256 << 20; // 256 MiB (virtual; committed on use)
 #if defined(_WIN32)
@@ -4481,7 +4543,7 @@ public:
     std::vector<std::string> argv_;
     std::shared_ptr<Program> mainSigProg_; // --exe: owns the Params &MAIN's metadata borrows (registerCompiledMain)
     std::unordered_map<std::string, Value> compiledEnums_; // --exe: enum members by name (registerEnumMember)
-    static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_; // active `react {}` event loops
+    static thread_local ReactStack reactStack_; // active `react {}` event loops
     RAKUPP_CONSTINIT static thread_local int threadDepth_; // >0 while running inside a Thread.start/Promise worker block (is-initial-thread)
 public:
     Value currentThread();            // `$*THREAD`: the Thread this code runs on

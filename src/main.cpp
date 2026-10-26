@@ -2548,6 +2548,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--hints", 0, nullptr, "performance hints on stderr (as RAKUPP_HINTS=1)"},
     {"--stagestats", 0, nullptr, "phase timings and module loads on stderr"},
     {"--trace", 0, nullptr, "print each statement as it runs"},
+    {"--detect-races", 0, nullptr, "report data races between threads when the program ends (exit 66)"},
     {"--repl-after", 0, nullptr, "run the program, then open a session on its state"},
     {"--auto", 0, nullptr, "install the modules the program uses that are missing, then run it"},
     {"--completions", 1, "bash zsh fish", "print a shell completion script"},
@@ -2849,6 +2850,8 @@ int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
     std::string exePath = selfExePath(argv[0]); // resolve the real binary (argv[0] may be a bare PATH name)
+    if (std::getenv("RAKUPP_RACE_FLAG")) { dropEnv("RAKUPP_RACE"); dropEnv("RAKUPP_RACE_FLAG"); }   // (--detect-races, below)
+    char** const osArgv = argv; [[maybe_unused]] const int osArgc = argc;   // as the OS gave it, null-terminated: what --detect-races re-runs
 #ifndef _WIN32
     { char rp[4096]; if (realpath(exePath.c_str(), rp)) exePath = rp; }
 #endif // Windows: GetModuleFileNameW is already absolute; _fullpath would ANSI-mangle the UTF-8
@@ -3035,6 +3038,7 @@ int main(int argc, char** argv) {
     bool jsonOut = false;                 // --json: -c/--lint findings as JSON
     bool stageStats = false;              // --stagestats: phase timings on stderr
     bool traceStmts = false;              // --trace: every statement, as it runs
+    bool detectRaces = false;             // --detect-races: the race detector (RACE-DETECTOR-PLAN)
     bool replAfter = false;               // --repl-after: run, then a session on the result
     bool watch = false;                   // --watch: rerun on change (run, -c, --lint)
     bool optimize = false;                // -O (compile modes and --cpp)
@@ -3127,6 +3131,7 @@ int main(int argc, char** argv) {
             // process hears it too. Off by default: Rakudo prints nothing there,
             // and a program's stderr is part of what it does.
             if (a == "--hints") { putEnv("RAKUPP_HINTS", "1", true); continue; }
+            if (a == "--detect-races") { detectRaces = true; continue; }
             if (a.rfind("--color=", 0) == 0 || a.rfind("--colour=", 0) == 0) {
                 std::string v = a.substr(a.find('=') + 1);
                 if (v == "always") putEnv("RAKUPP_COLOR", "1", true);
@@ -3550,6 +3555,9 @@ int main(int argc, char** argv) {
         // session. The Jupyter kernel is not confined yet (SANDBOX-PLAN S1).
         if (sandboxFlag && (!runsCode || mode == Mode::Jupyter)) return illegalOpt("--sandbox");
         if (stackBytes && !runsCode) return illegalOpt("--stack-size");
+        // --detect-races watches what the interpreter runs: compiled code has no hooks
+        if (detectRaces && !runsCode) return illegalOpt("--detect-races");
+        if (detectRaces && g_jitAsked) { std::cerr << "--detect-races cannot see inside the loops --jit and --cnp compile; drop one of them\n"; return 4; }
         if (jsonOut && mode != Mode::Check && mode != Mode::Lint) return illegalOpt("--json");
         if (stageStats && mode != Mode::Run) return illegalOpt("--stagestats");
         if (traceStmts && mode != Mode::Run) return illegalOpt("--trace");
@@ -3565,6 +3573,21 @@ int main(int argc, char** argv) {
         std::vector<std::string> childArgs;
         for (int i = 1; i < argc; i++) if (std::string(argv[i]) != "--watch") childArgs.push_back(argv[i]);
         return watchLoop(exePath, childArgs, fileName, libPaths);
+    }
+    // --detect-races: the detector's switch is read once, as the process
+    // starts, so that the hooks test a constant. The flag sets RAKUPP_RACE and
+    // runs this same command line again, in place; the new process clears
+    // both variables first thing, so the program's own children run unwatched.
+    if (detectRaces && !rakupp::g_race) {
+        putEnv("RAKUPP_RACE", "1", true);
+        putEnv("RAKUPP_RACE_FLAG", "1", true);
+#if !defined(_WIN32)
+        ::execv(exePath.c_str(), osArgv);   // (not the RAKUPP_OPT-merged argv: the new process merges it again)
+        std::cerr << "--detect-races: cannot run " << exePath << " again: " << std::strerror(errno) << "\n";
+        return 4;
+#else
+        return runChild(exePath, std::vector<std::string>(osArgv + 1, osArgv + osArgc));
+#endif
     }
     if (stageStats) rakupp::rakuppSetStageStats(true);
     if (traceStmts) rakupp::rakuppSetTrace(true);
@@ -3714,6 +3737,8 @@ int main(int argc, char** argv) {
 "                               every module load, on stderr when the run ends\n"
 "  --trace                      Print each statement to stderr as it runs\n"
 "                               (file:line and the source line)\n"
+"  --detect-races               Report data races between threads on stderr when\n"
+"                               the program ends; a run that raced exits 66\n"
 "  --auto                       Install the modules the program uses that are\n"
 "                               missing (from the ecosystem, into ~/.raku, without\n"
 "                               their test suites), then run it. With --exe,\n"

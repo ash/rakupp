@@ -4,6 +4,7 @@
 // that file is what forced them into a header. Internal to the implementation —
 // nothing outside src/ should include this.
 #include "Value.h"
+#include "RaceDetector.h"   // RaceMutex: the Supplier mutex is a sync edge
 #if !defined(_WIN32)
 #include <sys/wait.h>
 #include <fcntl.h>   // AT_FDCWD, for the statx(2) birth time below
@@ -272,13 +273,13 @@ long long subjectGraphemeOffset(const std::shared_ptr<void>& subject, size_t b);
 // One stripe per Supplier, serializing emit/done/quit and tap registration.
 // Shared so `Supply.wait` can read the supplier's completion state without
 // racing an emit on another thread. Defined in Builtins.cpp.
-std::recursive_mutex& supplierMutex(const void* key);
+RaceMutex& supplierMutex(const void* key);
 // The lock a Supplier-fed tap record is read under: its supplier's
 // (supplierMutex), named by the key tapSupply stamps on the record. Empty for a
 // record no supplier feeds. Every write to such a record, and every read of it
 // off the emit fan-out, holds this — an unlocked insert can rehash the record
 // under a fan-out on another thread. Defined in BuiltinsSupply.cpp.
-std::unique_lock<std::recursive_mutex> lockTapRecord(const ValueMap& rec);
+std::unique_lock<RaceMutex> lockTapRecord(const ValueMap& rec);
 // Stamp that key on a record about to join `sup`'s taps (before it is shared).
 void stampTapRecord(ValueMap& rec, const ValueMap* sup);
 

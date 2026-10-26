@@ -1271,6 +1271,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // out to be finite answers False, as it did when the probe was eager.
             if (lst->gatherSeq) { materializeLazy(inv, 1); return Value::boolean(!lst->exhausted); }
 #endif
+            // a source read live but finite (a Channel, a handle's lines, a conditioned
+            // `Seq.from-loop`) is not lazy either: Rakudo asks the iterator, and theirs say no
+            if ((lst->streaming || lst->finiteSource) && !lst->infinite) return Value::boolean(false);
             return Value::boolean(true);
         }
 #if RAKUPP_HAVE_CORO
@@ -5174,7 +5177,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // mutators below run under the array's stripe — unguarded
             // concurrent pushes are still a race for the USER's data (loss is
             // allowed), but vector growth can no longer corrupt the runtime.
-            Interpreter::ParStripe mutStripe(*this, inv.arr());
+            Interpreter::ParStripe mutStripe(*this, inv.arr()); if (RAKUPP_RACE_ON()) raceLenImpl(inv.arr(), raceResizes(m.s) ? RaceAcc::Write : RaceAcc::Read);
             // a native-int element array (`uint32 @W`) wraps each stored value to
             // its bit width (SHA1's `@W.push: S(...)` relies on uint32 overflow)
             auto natMask = [&](Value v) -> Value {

@@ -3427,6 +3427,7 @@ void Interpreter::runParallel(size_t n, size_t batch, size_t degreeWanted,
     else {
         std::vector<Value> workers;
         workers.reserve(degree);
+        RaceForkTag tag(RaceEdge::Hyper);   // (the join is each worker's Promise)
         for (size_t k = 0; k < degree; k++) workers.push_back(spawnPromise(work));
         for (auto& p : workers) awaitPromise(std::static_pointer_cast<PromiseState>(p.ext()));
     }
@@ -8961,6 +8962,7 @@ int Interpreter::run(Program& prog) {
     runEnds(); // END phasers (reverse source order), after the mainline
     drainWorkers(); // join any outstanding async workers before we tear down
     code = testRunEnd(code, exited);
+    code = raceFinish(code);   // --race: the report, and 66 for a run that raced
     // A daemon `start {…}` (e.g. a server accept loop) was left running. We've
     // emitted all output; flush and hard-exit so the detached thread can't wedge
     // teardown (and isn't waited on), matching Rakudo abandoning thread-pool work.

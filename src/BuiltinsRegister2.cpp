@@ -1762,7 +1762,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // order (Roast supplier-preserving.t emits from a `start`).
                     if (sup.t == VT::Hash && sup.hash()->count("taps")) {
                         stampTapRecord(*tapRec.hash(), sup.hash());
-                        std::lock_guard<std::recursive_mutex> regLk(supplierMutex(sup.hash()));
+                        std::lock_guard<RaceMutex> regLk(supplierMutex(sup.hash()));
                         (*sup.hash())["taps"].arr()->push_back(tapRec);
                         I.replayPreserved(sup, tapRec);
                     }
@@ -1781,9 +1781,9 @@ void Interpreter::registerBuiltinsPart4() {
                                 // emitting this very moment, and an unlocked insert
                                 // into the record let it miss `closed` and deliver
                                 // past `done` (Roast supplier-preserving.t)
-                                std::unique_lock<std::recursive_mutex> lk;
+                                std::unique_lock<RaceMutex> lk;
                                 if (sup.t == VT::Hash && sup.hash())
-                                    lk = std::unique_lock<std::recursive_mutex>(supplierMutex(sup.hash()));
+                                    lk = std::unique_lock<RaceMutex>(supplierMutex(sup.hash()));
                                 if ((*rec)["on-closed"].truthy()) return Value::any();
                                 (*rec)["on-closed"] = Value::boolean(true);
                                 (*rec)["closed"] = Value::boolean(true);

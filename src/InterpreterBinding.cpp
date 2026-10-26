@@ -2704,7 +2704,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
                 return *lv;
             }
         }
-        *lv = std::move(v);
+        raceW(lv) = std::move(v);
         if (nb) wrapNative(*lv, nb, ns, nf);
         return *lv;
     }
@@ -3382,7 +3382,7 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
 
 bool Interpreter::frameSymbol(Env* f, const std::string& key, Value& out) {
     if (!f) return false;
-    if (Value* p = f->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
+    if (Value* p = f->local(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
     if (f->declStmts) {
         std::vector<const VarExpr*> decls;
         spDeclaredInRaw(*static_cast<const std::vector<StmtPtr>*>(f->declStmts), decls);
@@ -3431,7 +3431,7 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     // undeclared-variable check already rules
     auto findWithPending = [&](Env* from, Value& o) -> bool {
         for (Env* f = from; f; f = f->parent.get()) {
-            if (Value* p = f->local(key)) { ParStripe rs(*this, p); o = *p; return true; }
+            if (Value* p = f->local(key)) { ParStripe rs(*this, p); o = *raceR(p); return true; }
             if (importedBuiltinSym(f, key, o)) return true;
             if (f->declStmts) {
                 std::vector<const VarExpr*> decls;
@@ -3444,26 +3444,26 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
     };
     switch (mode) {
         case 'F':
-            if (e) if (Value* p = e->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (e) if (Value* p = e->local(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             if (importedBuiltinSym(e, key, out)) return true;
             // a loop body's `state` names live in the loop's own state frame,
             // just outside the body's
             if (e && e->parent && e->parent->loopFrame)
-                if (Value* p = e->parent->local(key)) { ParStripe rs(*this, p); out = *p; return true; }
+                if (Value* p = e->parent->local(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             return false;
         case 'C':
             if (e && !dynName && findWithPending(e, out)) return true;
-            if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             return false;
         case 'L':
-            if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (e) if (Value* p = e->find(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             for (Env* f = e; f; f = f->parent.get()) if (importedBuiltinSym(f, key, out)) return true;
             // the root stash names the pseudo-packages too: `::.<MY>`
             if (!key.empty() && !std::strchr("$@%&", key[0]) && isPseudoChain(key)) {
                 out = makePseudoStash(key);
                 return true;
             }
-            if (dynName) if (Value* p = findDynamicLenient(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (dynName) if (Value* p = findDynamicLenient(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             return false;
         case 'S': {
             // an INLINE block (`if 1 { … }`) is called by the block around it:
@@ -3471,27 +3471,27 @@ bool Interpreter::pseudoStashGet(const Value& self, const std::string& key, Valu
             if (e)
                 for (Env* w = e->parent.get(); w; w = w->parent.get()) {
                     if (Value* p = w->local(key)) {
-                        if (dynName || w->xr().varDynamic.count(key)) { ParStripe rs(*this, p); out = *p; return true; }
+                        if (dynName || w->xr().varDynamic.count(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
                         break;
                     }
                     if (w->routineFrame) break;
                 }
             long d = at.count("dyn") ? (long)at["dyn"].toInt() : (long)tctx().dynStack.size();
             for (long k = std::min(d, (long)tctx().dynStack.size() - 1); k >= 0; k--)
-                if (Env* f = tctx().dynStack[k]) if (Value* p = dynInFrame(f, key)) { ParStripe rs(*this, p); out = *p; return true; }
+                if (Env* f = tctx().dynStack[k]) if (Value* p = dynInFrame(f, key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             return false;
         }
         case 'P':
             if (key.size() > 1 && key[1] != '*') {
                 std::string dk = key.substr(0, 1) + "*" + key.substr(1);
-                if (Value* p = findDynamicLenient(dk)) { ParStripe rs(*this, p); out = *p; return true; }
+                if (Value* p = findDynamicLenient(dk)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
                 out = dynVar(dk);
                 return !(out.t == VT::Nil || out.t == VT::Any);
             }
-            if (Value* p = findDynamicLenient(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (Value* p = findDynamicLenient(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             return false;
         case 'D':
-            if (dynName) if (Value* p = findDynamicViaGlobal(key)) { ParStripe rs(*this, p); out = *p; return true; }
+            if (dynName) if (Value* p = findDynamicViaGlobal(key)) { ParStripe rs(*this, p); out = *raceR(p); return true; }
             return false;
         default: break;
     }
@@ -3594,7 +3594,7 @@ Value Interpreter::pseudoStashCall(const std::string& m, const Value& self, Valu
                 throw RakuError{Value::typeObj("X::Assignment::RO"),
                                 "Cannot modify an immutable '" + key + "' (it is not dynamic)"};
         }
-        { ParStripe ws(*this, slot); *slot = v; }   // torn-copy contract: a stash travels
+        { ParStripe ws(*this, slot); raceW(slot) = v; }   // torn-copy contract: a stash travels
         return v;
     }
     if (m == "DELETE-KEY")
@@ -7399,7 +7399,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         try {
             if (Value* lv = argSlot(rb.arg - rwArgOff)) {
                 int nb = lv->natBits; bool ns = lv->natSigned;
-                *lv = nv;
+                raceW(lv) = nv;
                 if (nb && rb.ptrType.empty() && !rb.cls) wrapNative(*lv, nb, ns);
             }
         } catch (RakuError&) {}

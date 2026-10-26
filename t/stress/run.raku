@@ -69,6 +69,7 @@ my %tsan-parallel-skip =
     'ub-indexed-grow'        => 'stages a deliberate race',
     'ub-iterate-during-push' => 'stages a deliberate race',
     'ub-object-attrs'        => 'stages a deliberate race',
+    'ub-opassign'            => 'stages a deliberate race',
     'ub-torn-values'         => 'stages a deliberate race',
     'ub-env-sharing'         => 'stages a deliberate race',
 ;

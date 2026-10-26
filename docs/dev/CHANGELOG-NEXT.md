@@ -14,8 +14,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 (FORTRAN-LESSONS 1a); e614993a; de2e08d4; c95d9332; d0ba733b
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
-42f79e98, b9108e1d, 0b9950b1, 500c29e2, 1b182b8e, 828e52d5, 4d1c7cc3,
-80ea9030, d972abe7, 166334a9 and 29b10450.*
+12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
+1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450.*
 
 ---
 
@@ -160,6 +160,27 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   CATCH, LEAVE or END at its top level keeps its loops as they were. The
   loop 589 → 55.2 ns a call, the integer routine 75.0 → 14.6 ns (over plain
   arrays 58.0 → 14.2), the binary 0.853G → 0.767G instructions.
+
+### New
+
+- **`--detect-races` reports data races between threads** (12af490d;
+  docs/dev/plans/RACE-DETECTOR-PLAN.md). `rakupp --detect-races prog.raku`,
+  or `RAKUPP_RACE=1`, watches scalar variables, array elements and lengths,
+  hash entries and keys, and attributes. It reports each pair of accesses
+  from two threads, at least one a write, that no `await`, `Lock`,
+  `Channel`, `Supply` or `⚛` orders. Each report goes to stderr once, when
+  the program ends, with both sites, the threads, a backtrace of the later
+  access and every name the location was reached by; a run that raced
+  exits 66. It is a FastTrack happens-before detector, so it also reports
+  races that gave the right answer. The flag is refused with the compilers,
+  `--target=js`, `--jit` and `--cnp`, and it turns the loop kernels off.
+  Detector off, the hooks cost within about ±0.7% instructions and cycles
+  on the benchmarks measured. t/race-detect/ is its gate (134 checks at 20
+  runs each). tools/race-sweep.raku runs files plain and under it: Roast
+  S17 and four distributions reported 11 races, each one in the test, none
+  the detector's own mistake
+  (docs/dev/findings/RACE-SWEEP-2026-10-25.md). guide/CLI.md, "Finding data
+  races", and faq/threads.md have the user's side.
 
 ### Fixed: silent wrong answers
 
@@ -356,6 +377,19 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   empty array died 8/8 in parallel mode (SIGABRT, SIGBUS, SIGSEGV); the
   growth now takes push's stripe, and t/stress/ub-indexed-grow.raku stages it.
   2/40 still crash: see Left open.
+- **Compound assignment to a shared container no longer crashes**
+  (12af490d). `$s ~= "a"` from two threads appended into one buffer at once,
+  a double free on every run at 3,000 appends each. The other `OP=` arms
+  computed from the slot and stored back unstriped: a Rat or a big Int
+  `+=`, `,=`, `~= $obj`, a typed or subset variable, `Z~=`. Every arm now
+  computes from the slot or a copy taken under its stripe and stores under
+  it, and the generated accessor's fast reads take the stripe too. Of 48
+  shapes, each run by two threads on one container, 33 crashed before and
+  none do now. t/stress/ub-opassign.raku.
+- **`push @a, …`, `pop @a` and `shift @a` from two threads no longer crash**
+  (12af490d). The sub forms changed the array in place without the stripe
+  the methods take: 3 runs in 6 crashed. t/stress/ub-array-push.raku has a
+  sub-form phase, which crashed every run before.
 
 ### Fixed: what FatRoast found
 
@@ -436,6 +470,13 @@ does not.
   'codes'?", every such name at once, with Rakudo's fixed hints (`local`,
   `foreach`, `quit`, a phaser in lower case, …). `len` is no longer "Did you
   mean 'leg'?".
+- **A source read live but finite is not lazy** (12af490d). `Channel.list`,
+  a handle's `.lines` (standard input included), a process's output and a
+  `Seq.from-loop` with a condition answered `.is-lazy` True, and an Array
+  assigned from one stayed lazy; Rakudo says False and reads them to the
+  end. A `for` still walks them one item at a time, and `lazy` still
+  declares one lazy. t/regression/live-finite-sources-not-lazy.raku agrees
+  with Rakudo 2026.09.
 
 ### Left open
 

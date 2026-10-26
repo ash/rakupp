@@ -164,6 +164,50 @@ segfaults on every run of the previous binary and is clean in all four
 mode/sanitizer combinations after. Cost: +0.5% instructions retired on a
 microbenchmark that does nothing but read elements and attributes.
 
+**P3 torn-copy contract, third delivery (2026-10-25): compound assignment.**
+`=` kept the rule and OP= did not:
+
+- `$s ~= "a"` appended into the string's buffer in place, with no stripe.
+  Two workers appending to one variable reallocated the same buffer, which
+  is a double free in malloc, on every run at 3,000 appends each. A reader
+  copying the variable meanwhile copied a buffer freed under it.
+- The other arms computed `applyArith(op, *lv, r)` from a reference to the
+  slot and stored the result back unstriped. A Rat, a big Int, the List of
+  `,=` or the text of `~= $obj` was read from a slot another worker had just
+  replaced.
+
+A probe of 48 OP= shapes, each run by two workers on one container, crashed
+on 33. The fix covers every OP= arm in `evalAssign` and `evalAssignInner`:
+
+- Each arm computes from `slotView`: the slot itself while no other thread
+  can reach it, else a copy taken under its stripe.
+- It stores with `slotStore`, under the stripe.
+- An append in place happens under the stripe too (`catAssignInPlace`).
+- No lock is held while the operator runs, because the operator may run
+  user code.
+- The typed-container wrapper (`compoundCheckSlot`) copies and restores
+  under the stripe.
+- The generated accessor's reads take it as well: the `plainAccessorSlot`
+  fast path that `$o.a` takes, and methodCallPart2's accessor arm. The
+  accessor read was the last crash in the probe, against `$o.a ~= "x"`.
+
+New contract program: `t/stress/ub-opassign.raku`. It crashes on every
+parallel run of the previous binary and passes after.
+
+Cost, single-threaded: an interleaved A/B against the same tree without the
+fix, 21 pairs per benchmark, with a base-against-base null control,
+`RAKUPP_NO_KERNELS=1`, at load 5–6. No benchmark was slower:
+
+| benchmark | change | pairs slower | null |
+|---|---|---|---|
+| hash element `+=` | −2.0% | 4 of 21 | −0.1% |
+| Num and Rat `+=` | −0.5% | 4 of 21 | −0.1% |
+| accessor read and `+=` | −0.0% | 10 of 21 | +0.1% |
+| element and pad `~=` | −3.0% | 0 of 21 | −0.1% |
+| typed `+=` and `~=` | −0.9% | 0 of 21 | −0.2% |
+| vars | +0.1% | 11 of 21 | +0.0% |
+| strcat | −1.3% | 4 of 21 | −0.4% |
+
 ### P3 — container strategy (the crash-elimination decision)
 
 The design choice this plan must make concrete: how shared `Array`/`Hash`/

@@ -11,5 +11,11 @@ await (^$N).map: {
         @out.push($_) for ^$M;
     }
 };
-say "survived: elems={@out.elems} of {$N * $M} (data loss is allowed; dying is not)";
+# …and the sub forms, which the builtins do in place: `push`, `pop` and
+# `shift` took no stripe until 2026-10-25, and this phase crashed every run
+# of the binary before (6 of 6)
+my @sub;
+await (^$N).map: { start { push @sub, $_ for ^$M } };
+await (^$N).map: { start { pop @sub for ^($M div 4); shift @sub for ^($M div 4) } };
+say "survived: elems={@out.elems} of {$N * $M}, {@sub.elems} after the sub forms (data loss is allowed; dying is not)";
 say 'PASS';

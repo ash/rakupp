@@ -1320,7 +1320,7 @@ Value containerFill(const Value& base);
 template <class F>
 inline void growToIndex(const Interpreter& I, ValueList& a, long long i, F fill, const Value* named = nullptr) {
     if ((long long)a.size() > i) return;
-    Interpreter::ParStripe gs(I, &a);
+    Interpreter::ParStripe gs(I, &a); raceLen(&a, RaceAcc::Write);   // (--race: a store past the end grows it)
     while ((long long)a.size() <= i) a.push_back(fill());
     if (named) a[(size_t)i] = *named;
 }
@@ -1481,7 +1481,7 @@ bool engineProxyRead(Interpreter& I, const Value& proxy, Value& out);
 // slot's stripe (the torn-copy contract every variable read keeps), then read.
 static inline bool engineProxySlotRead(Interpreter& I, const Value* slot, Value& out) {
     Value pv;
-    { Interpreter::SlotStripe rs(I, slot); pv = *slot; }
+    { Interpreter::SlotStripe rs(I, slot, RaceAcc::Read); pv = *slot; }
     return engineProxyRead(I, pv, out);
 }
 

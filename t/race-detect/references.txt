@@ -1,0 +1,61 @@
+# t/stress programs in the race detector's corpus, labeled by reference
+# (RACE-DETECTOR-PLAN P0). Each was read against the memory model in
+# docs/guide/ASYNC.md; the labels mean what the `# race-detect:` headers in
+# must-stay-silent/ and must-report/ mean. Every t/stress program prints PASS
+# last, so that is the expected output of the silent ones.
+#
+# path                                  verdict  edges (silent) / location (report)
+#
+# Correct programs. The edges are the ones each run is sure to show; one that
+# a schedule can make redundant is left out: channel-pipeline awaits its
+# producers before it reads the channel, so its channel acquires learn
+# nothing new, and promise-chain's `.then`s run inline or as a fork depending
+# on whether the start block has already finished.
+t/stress/lock-counter.raku              silent   start lock promise
+t/stress/hash-guarded.raku              silent   start lock promise
+t/stress/atomic-counter.raku            silent   start atomic promise
+t/stress/channel-pipeline.raku          silent   start promise
+t/stress/supply-fanin.raku              silent   start supply promise
+t/stress/promise-chain.raku             silent   start promise
+t/stress/parallel-map.raku              silent   start promise
+#
+# The ub-* family stages deliberate races (their headers say so).
+t/stress/ub-array-push.raku             report   array shape @out
+t/stress/ub-env-sharing.raku            report   scalar $shared-counter
+t/stress/ub-hash-write.raku             report   hash shape %h
+# ub-indexed-grow skips the parallel leg: the stale element pointer
+# (docs/dev/experiments/STALE-ELEMENT-POINTER.md) crashes it about one run in
+# 50, and under the detector about one in four, because the detector's work
+# at a store runs between lvalue() and the write, the window the bug lives in.
+t/stress/ub-indexed-grow.raku           report   array shape @blocks   par:skip
+t/stress/ub-iterate-during-push.raku    report   array shape @shared
+t/stress/ub-object-attrs.raku           report   attribute $!count
+t/stress/ub-opassign.raku               report   scalar $s
+t/stress/ub-torn-values.raku            report   scalar $slot
+#
+# The private-* contract programs: the owner stores into $v while a worker
+# stores into the same container (through a closure, an alias, an rw
+# parameter, EVAL, a Pair, the stash, a take-rw, a lazy map, `hyper for`)
+# with nothing between them. Their owner stores only while `$w.status` says
+# Planned; under RAKUPP_GIL=1 the worker can run to completion first, and
+# then the owner's first `.status` reads Kept (an acquire) and it stores
+# nothing: a run with no race in it. So they skip the GIL leg (gil:skip).
+t/stress/private-bind.raku              report   scalar $v   gil:skip
+t/stress/private-eval-value.raku        report   scalar $v   gil:skip
+t/stress/private-eval.raku              report   scalar $v   gil:skip
+t/stress/private-for-rw.raku            report   scalar $v   gil:skip
+t/stress/private-map-seq.raku           report   scalar $v   gil:skip
+t/stress/private-nested-sub.raku        report   scalar $v   gil:skip
+t/stress/private-pair.raku              report   scalar $v   gil:skip
+t/stress/private-rw-link.raku           report   scalar $v   gil:skip
+t/stress/private-rw-param.raku          report   scalar $v   gil:skip
+t/stress/private-start-capture.raku     report   scalar $v   gil:skip
+t/stress/private-stash.raku             report   scalar $v   gil:skip
+t/stress/private-take-rw.raku           report   scalar $v   gil:skip
+# (private-hyper-for races the same way, but rakupp runs that `hyper for` on one
+# thread: an array literal in its body keeps it serial. A happens-before
+# detector judges the run that happened, so it has nothing to report there.)
+#
+# cas-containers swaps each slot with `cas` while another worker reads it
+# plainly: a plain access mixed with an atomic one.
+t/stress/cas-containers.raku            report   scalar $lex

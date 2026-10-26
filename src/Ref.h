@@ -155,12 +155,15 @@ void cycleNoteRelease(Payload* p) noexcept;     // Cycle.cpp
 }
 struct ObjectData;
 
+extern const bool g_race;                                  // RaceDetector.h: --race is on
+void raceForgetRange(const void* begin, std::size_t bytes);  // …and a dying body's shadows go
 template <class T>
 struct Body final : Payload {
     T v;
     template <class... A>
     explicit Body(std::in_place_t, A&&... a) : v(std::forward<A>(a)...) {}
     void destroySelf() noexcept override {
+        if (g_race) raceForgetRange(this, sizeof(Body));
         this->~Body();
         SlabPool::dealloc(static_cast<void*>(this), sizeof(Body));
     }
