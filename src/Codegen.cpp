@@ -832,6 +832,9 @@ struct Codegen {
     // (nativeElemTarget), as the program's declarations reach it through
     // AotNames
     std::set<std::string> nativeElemNames_;
+    // …and the `@` names declared otherwise (`my @a`, `my Int @a`): an array
+    // of such a name is never native (a declaration cannot be bound to one)
+    std::set<std::string> plainArrays_;
     void collectNativeArrays(const std::vector<StmtPtr>& ss) { for (auto& s : ss) collectNativeArrays(s.get()); }
     void collectNativeArrays(const Stmt* s) {
         if (!s) return;
@@ -841,6 +844,7 @@ struct Codegen {
             if (!v->declare || v->name.size() < 2 || v->name[0] != '@') return;
             const std::string& t = v->d().declType;
             if (isNativeScalarDecl(t) || t == "str") nativeElemNames_.insert(v->name);
+            else plainArrays_.insert(v->name);
             if (nativeArrayType(t)) {
                 const char k = t[0] == 'i' ? 'i' : 'n';
                 auto it = nativeArrays_.emplace(v->name, k).first;
@@ -873,38 +877,49 @@ struct Codegen {
         auto* v = static_cast<const VarExpr*>(e);
         return !v->declare && nativeArrays_.count(v->name);
     }
-    // An element of an array declared native as the target of a store (one
+    // An element of an array that may be native as the target of a store (one
     // subscript, not `*`): the Index, else null. Every store into one goes
     // through rtElemStoreN, which converts, wraps or refuses as the
     // interpreter's does; the element's place (rtIndexRef) takes anything.
-    // In module mode the name may be another array's where the routine runs
-    // (the declarations are the whole module's, of any width), and a store
-    // there keeps module mode's own path unless the array is native
-    // (rtNatArr), the kept List's item checked among the rest.
-    Index* nativeElemTarget(Expr* e) {
+    // `ask` is set where the array may as well not be native: there the store
+    // asks it first (rtNatArr), and one that is not takes the store as it was
+    // (in module mode, the kept List's item checked among the rest). That is
+    // every store in module mode, whose names are the whole module's; a
+    // parameter's array, or one under a name no plain declaration has (a
+    // block's parameter); an attribute's; and one a `$` variable holds. An
+    // array declared native is known to be one; one declared plain never is.
+    Index* nativeElemTarget(Expr* e, bool& ask) {
+        ask = false;
         if (!e || e->kind != NK::Index) return nullptr;
         auto* ix = static_cast<Index*>(e);
         if (ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index ||
             hasStarLit(ix->index.get()) || isSliceSubscript(ix->index.get()))
             return nullptr;
-        if (!moduleMode_) return nativeArrayBase(ix->base.get()) ? ix : nullptr;
         auto* bv = ix->base && ix->base->kind == NK::VarExpr ? static_cast<VarExpr*>(ix->base.get()) : nullptr;
-        return bv && !bv->declare && nativeElemNames_.count(bv->name) ? ix : nullptr;
+        if (!bv || bv->declare || bv->name.size() < 2) return nullptr;
+        const std::string& n = bv->name;
+        if (n[0] == '$') return ask = true, ix;
+        if (n[0] != '@') return nullptr;
+        if (!moduleMode_ && nativeArrayBase(bv)) return ix;
+        bool param = false;
+        if (curParams_) for (const Param& p : *curParams_) param = param || p.name == n;
+        if (moduleMode_ || param || n[1] == '!' || n[1] == '.' || !plainArrays_.count(n)) return ask = true, ix;
+        return nullptr;
     }
     // …its element stepped: the value the step answers (the old one for a postfix)
-    std::string nativeElemStep(Index* ix, bool up, bool postfix) {
+    std::string nativeElemStep(Index* ix, bool ask, bool up, bool postfix) {
         noteIndexWrite(ix->base.get());
         const std::string base = lvalueExpr(ix->base.get());
         const std::string step = std::string("rtStep(_o, ") + (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; })";
         const std::string native = "Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " + step +
                                    ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");
-        std::string other;   // (module mode, an array not native after all: the step as it was)
-        if (moduleMode_)
+        std::string other;   // (an array not native after all: the step as it was)
+        if (ask)
             other = " Value& _r = rtIndexRef(__b, __k, false, " +
                     cesc(std::string(postfix ? "postfix" : "prefix") + ":<" + (up ? "++" : "--") + ">") +
                     "); Value _o = _r; _r = " + step + "; " + (postfix ? "return rtStepOld(std::move(_o));" : "return _r;");
         return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(ix->index.get()) + "; " +
-               (moduleMode_ ? "if (rtNatArr(RT, __b)) { " + native + " }" + other : native) + " }())";
+               (ask ? "if (rtNatArr(RT, __b)) { " + native + " }" + other : native) + " }())";
     }
     static void refuseDeclTraits(const VarExpr* v) {
         const std::string& n = v->name;
@@ -2650,7 +2665,9 @@ struct Codegen {
                     if (u->op == "i") return "RT.postfixIPub(" + ex(u->operand.get()) + ")"; // (2+3)i
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
                     checkWritable(u->operand.get());
-                    if (Index* nix = nativeElemTarget(u->operand.get())) return nativeElemStep(nix, u->op == "++", true);
+                    bool ask = false;
+                    if (Index* nix = nativeElemTarget(u->operand.get(), ask))
+                        return viewSyncWrap(u->operand.get(), nativeElemStep(nix, ask, u->op == "++", true));
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = "rtStep(_o, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
@@ -2662,7 +2679,9 @@ struct Codegen {
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     checkWritable(u->operand.get());
-                    if (Index* nix = nativeElemTarget(u->operand.get())) return nativeElemStep(nix, u->op == "++", false);
+                    bool ask = false;
+                    if (Index* nix = nativeElemTarget(u->operand.get(), ask))
+                        return viewSyncWrap(u->operand.get(), nativeElemStep(nix, ask, u->op == "++", false));
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
                                       ", [&]() -> Interpreter& { return RT; })";
@@ -3880,8 +3899,9 @@ struct Codegen {
                     auto* u = static_cast<Unary*>(e);
                     if ((u->op == "++" || u->op == "--") && u->operand) {
                         checkWritable(u->operand.get());
-                        if (Index* nix = nativeElemTarget(u->operand.get())) {
-                            line(ind, "(void)" + nativeElemStep(nix, u->op == "++", false) + ";");
+                        bool ask = false;
+                        if (Index* nix = nativeElemTarget(u->operand.get(), ask)) {
+                            line(ind, "(void)" + viewSyncWrap(u->operand.get(), nativeElemStep(nix, ask, u->op == "++", false)) + ";");
                             return;
                         }
                         std::string delta = u->op == "++" ? "1" : "-1";
@@ -4524,7 +4544,8 @@ struct Codegen {
         // kept (keepListContainers), whose item for a TYPED variable checks what
         // it takes (rtKeptAssign). The value first, as `=` has it; a native
         // program never holds such a List.
-        Index* nix = nativeElemTarget(tgt);
+        bool ask = false;
+        Index* nix = nativeElemTarget(tgt, ask);
         if (a->op == "=" && moduleMode_ && nix) {   // (…and an element of a native array, nativeElemTarget)
             noteIndexWrite(nix->base.get());
             const std::string base = lvalueExpr(nix->base.get());
@@ -4539,6 +4560,10 @@ struct Codegen {
         if (a->op == "=" && nix) {   // (the value first, as the assignment's own order has it)
             noteIndexWrite(nix->base.get());
             const std::string base = lvalueExpr(nix->base.get());
+            if (ask)
+                return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; Value& __b = " + base +
+                       "; Value __k = " + ex(nix->index.get()) + "; if (rtNatArr(RT, __b)) return rtElemStoreN(RT, __b, "
+                       "__k, std::move(__v), '='); return rtIndexRef(__b, __k, false, nullptr) = std::move(__v); }())";
             return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; return rtElemStoreN(RT, " +
                    base + ", " + ex(nix->index.get()) + ", std::move(__v), '='); }())";
         }
@@ -4592,11 +4617,13 @@ struct Codegen {
                 const std::string base = lvalueExpr(nix->base.get());
                 const std::string native = "Value __r = rtIndexGetP(__b, __ek); " + op +
                                            " return rtElemStoreN(RT, __b, __ek, std::move(__r), 'o');";
+                // (an array not native after all: the operation as it was)
+                const std::string other = moduleMode_
+                    ? "t_keptItem = {}; Value& __r = rtIndexRef(__b, __ek, false, nullptr); RtKept __k(__r); " + op +
+                      " __k.check(RT, __r); return __r;"
+                    : "Value& __r = rtIndexRef(__b, __ek, false, nullptr); " + op + " return __r;";
                 return "([&]()->Value{ Value& __b = " + base + "; Value __ek = " + ex(nix->index.get()) + "; " +
-                       (moduleMode_ ? "if (rtNatArr(RT, __b)) { " + native + " } t_keptItem = {}; "
-                                      "Value& __r = rtIndexRef(__b, __ek, false, nullptr); RtKept __k(__r); " +
-                                      op + " __k.check(RT, __r); return __r;"
-                                    : native) + " }())";
+                       (ask ? "if (rtNatArr(RT, __b)) { " + native + " } " + other : native) + " }())";
             }
             std::string ref = lvalueExpr(tgt);
             // (in a module routine, through a kept item for a typed variable,
