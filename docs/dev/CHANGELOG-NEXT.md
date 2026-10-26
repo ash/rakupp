@@ -15,7 +15,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 42f79e98, b9108e1d, 0b9950b1, 500c29e2, 1b182b8e, 828e52d5, 4d1c7cc3,
-80ea9030, d972abe7 and 166334a9.*
+80ea9030, d972abe7, 166334a9 and 29b10450.*
 
 ---
 
@@ -171,6 +171,12 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   at int64's top and an `int8` past its range did not wrap. Each module's
   routines now know its native `@` names, of any width, and a store into one
   asks the array whether it is native before taking the native path.
+- **A compiled store into a native array's element through a parameter, a
+  block's parameter, a `$` variable or an attribute is judged too**
+  (29b10450): `sub f(@a) { @a[0] = 2.5 }` given an `int` array stored 2.5,
+  and so did `$x[0] = 2.5` with `$x` holding one. Such a store asks the array
+  at run time; one into an array declared plain never asks, and programs
+  storing only into those compile to the same C++ as before.
 - **Compiled `try` consumes a live Failure** (42f79e98), as interpreted: a block
   that returned one handed the Failure back and left `$!` unset; now `try`
   answers Nil, sets `$!` and marks the Failure handled.
